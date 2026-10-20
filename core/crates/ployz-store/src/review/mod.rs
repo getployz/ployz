@@ -26,7 +26,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use ts_rs::TS;
 
-pub use approval::{DestructiveEffect, DestructiveKind};
+pub use approval::{DestructiveEffect, DestructiveKind, LostAfter};
 pub(crate) use approval::{Gate, Moving, approve, approve_move, approve_retry, move_asks};
 
 use crate::Actor;

@@ -265,8 +265,8 @@ export const runAgentCall = Effect.fn("Agent.runCall")(function* (caller: AgentC
     const gated: Gated = yield* runGated(caller, write.write, call.approvalId);
     if ("asking" in gated) return gated;
     if ("denied" in gated) return done({ ok: false, refusal: gated.denied });
-    // A save finishes in its tool, so it answers `saved` as native MCP does. A Deployment's answer stays the Store's: the Run card draws it.
-    const outcome = write.write.command === "publish" ? yield* finish(agentResume(state, [answered(gated.result)]), read, agentWrite(caller)) : gated.result;
+    // A save and a refusal finish in the tool, so they answer as native MCP does. A Deployment's answer stays the Store's: the Run card draws it.
+    const outcome = write.write.command === "publish" || !gated.result.ok ? yield* finish(agentResume(state, [answered(gated.result)]), read, agentWrite(caller)) : gated.result;
     return done(outcome.ok && gated.nothingDestroyed ? { ...outcome, nothing_destroyed: true } : outcome);
   }
   const acted = yield* runGatedAct(caller, write.write, call.approvalId);

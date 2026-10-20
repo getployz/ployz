@@ -42,6 +42,7 @@ const REFUSED_ONCE: &str =
     "Cloud refused this Fleet Token. It is checked once more before the loop removes it";
 const GAVE_UP: &str = "Preparation stopped mid-step on every try. Run sudo ployz server checkin --install to try again.";
 const STALE_PLOYZD: &str = "ployzd_outdated";
+const IN_ANOTHER_CLUSTER: &str = "in_another_cluster";
 pub(crate) const NO_CLUSTER: &str = "No cluster yet";
 pub(crate) const NO_CLUSTER_WHY: &str = "Enroll one server in Ployz Cloud to start it.";
 
@@ -99,7 +100,8 @@ pub(crate) trait Host {
         progress: &dyn Fn(crate::cloud_enroll::EnrollStage),
     ) -> Result<Committed, String>;
     async fn discard_zfs_build(&self) -> Result<(), String>;
-    async fn participating(&self) -> bool;
+    /// The name this Server holds in the cluster it already participates in.
+    async fn participating(&self) -> Option<String>;
 }
 
 pub(crate) struct System {
@@ -193,7 +195,7 @@ impl Host for System {
         enroll::discard_zfs_build(&self.ployzd).await
     }
 
-    async fn participating(&self) -> bool {
+    async fn participating(&self) -> Option<String> {
         use crate::context::{Connection, ConnectionSource, SelectedConnections};
         use ployz_core::{InspectRequest, LocalMachinePhase, op};
 
@@ -213,13 +215,16 @@ impl Host for System {
                 .call_repeatable::<op::Inspect>(InspectRequest::default(), None)
                 .await
                 .ok()?;
-            Some(details.phase == LocalMachinePhase::Participating)
+            (details.phase == LocalMachinePhase::Participating).then(|| {
+                details
+                    .machine
+                    .map_or_else(|| self.hostname(), |machine| machine.name.to_string())
+            })
         };
         tokio::time::timeout(PROBE_TIMEOUT, inspect)
             .await
             .ok()
             .flatten()
-            .unwrap_or(false)
     }
 }
 
@@ -766,6 +771,17 @@ async fn check_in<H: Host>(
         no_cluster: false,
     };
     status.blockers.extend(stale.clone());
+    let member = if status.attempt.is_none() {
+        host.participating().await.map(|name| Issue {
+            code: IN_ANOTHER_CLUSTER.to_owned(),
+            message: format!(
+                "Already in another cluster. Remove it there first: ployz server rm {name}"
+            ),
+        })
+    } else {
+        None
+    };
+    status.blockers.extend(member.clone());
     let probed = tokio::time::timeout(PROBE_TIMEOUT, host.probe())
         .await
         .unwrap_or_else(|_| {
@@ -787,6 +803,7 @@ async fn check_in<H: Host>(
     };
     let mut report = probe.report(host.hostname(), state.as_ref());
     report.blockers.extend(stale);
+    report.blockers.extend(member);
     status.blockers.clone_from(&report.blockers);
     let request = CheckinRequest {
         protocol_version: wire::PROTOCOL_VERSION,
@@ -810,7 +827,7 @@ async fn check_in<H: Host>(
                     .attempt
                     .as_ref()
                     .is_some_and(|attempt| attempt.failure.is_none())
-                && host.participating().await =>
+                && host.participating().await.is_some() =>
         {
             status.answer = Seen::Joined;
             Next::Enrolled

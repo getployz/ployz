@@ -269,6 +269,11 @@ impl Host for Scripted {
             }
             if let Some(pace) = self.pace {
                 tokio::time::sleep(pace).await;
+                if let Some(last) = self.stages.last() {
+                    tokio::time::timeout(HEARTBEAT / 2, self.cloud.told(*last))
+                        .await
+                        .unwrap();
+                }
             }
         }
         self.events.lock().unwrap().push("finished");
@@ -284,8 +289,8 @@ impl Host for Scripted {
         )
     }
 
-    async fn participating(&self) -> bool {
-        self.participating
+    async fn participating(&self) -> Option<String> {
+        self.participating.then(|| "web-1".to_owned())
     }
 
     async fn discard_zfs_build(&self) -> Result<(), String> {

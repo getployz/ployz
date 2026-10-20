@@ -3,9 +3,10 @@ import { CopyButton } from "#/components/copy-button";
 import { Button } from "#/components/ui/button";
 import { SettingsRow, SettingsSection, SettingsWorkspace } from "#/components/settings/settings-section";
 import type { ServerStatus } from "#/modules/machines/server-status";
+import { type RoleGate, useRoleGate } from "#/modules/organization/members.queries";
 import type { RuntimeMachineRecord } from "#/modules/runtime/runtime.collection";
 import { releaseLine, rolloutRunning, serverUpgradeLine, type ServerUpgradeLine } from "#/modules/server-upgrade/server-upgrade";
-import { useNow, useRequestUpgrade, useServerUpgradeSettings } from "#/modules/server-upgrade/server-upgrade.hooks";
+import { UPGRADE_REFUSED, useNow, useRequestUpgrade, useServerUpgradeSettings } from "#/modules/server-upgrade/server-upgrade.hooks";
 import { useChannelRelease, useServerUpgrades } from "#/modules/server-upgrade/server-upgrade.queries";
 
 /** The Ployz release this Server runs, and its one Upgrade line. */
@@ -23,6 +24,7 @@ export function ServerUpgradeSection({ machine, status, organizationSlug }: {
   const release = useChannelRelease(serverLine === null ? null : { channel, line: serverLine });
   const { pendingFrom, upgrade } = useRequestUpgrade(organizationSlug, latest?.attemptId ?? null, machine);
   const now = useNow(everyLatest.some((row) => row.outcome === "running"));
+  const gate = useRoleGate(organizationSlug, "servers:operate", UPGRADE_REFUSED);
 
   const line = serverUpgradeLine({
     version,
@@ -36,13 +38,15 @@ export function ServerUpgradeSection({ machine, status, organizationSlug }: {
     rolloutRunning: rolloutRunning(everyLatest, now),
   });
 
-  return <ServerUpgradeRow version={version} line={line} onUpgrade={upgrade} />;
+  return <ServerUpgradeRow version={version} line={line} gate={gate} onUpgrade={upgrade} />;
 }
 
 /** What the Ployz section shows for one Upgrade line. */
-export function ServerUpgradeRow({ version, line, onUpgrade }: {
+export function ServerUpgradeRow({ version, line, gate, onUpgrade }: {
   version: string;
   line: ServerUpgradeLine;
+  /** Whether your role may upgrade. */
+  gate: RoleGate;
   onUpgrade: () => void;
 }) {
   const [showDetails, setShowDetails] = useState(false);
@@ -80,9 +84,9 @@ export function ServerUpgradeRow({ version, line, onUpgrade }: {
         </>}
         commit="none"
         control={line?.kind === "behind" && line.canUpgrade ? (
-          <Button variant="outline" onClick={onUpgrade}>Upgrade</Button>
+          <Button variant="outline" disabled={!gate.allowed} title={gate.reason} onClick={onUpgrade}>Upgrade</Button>
         ) : line?.kind === "failed" && line.canRetry ? (
-          <Button variant="outline" onClick={() => { setShowDetails(false); onUpgrade(); }}>Try again</Button>
+          <Button variant="outline" disabled={!gate.allowed} title={gate.reason} onClick={() => { setShowDetails(false); onUpgrade(); }}>Try again</Button>
         ) : null}
       />
       {line?.kind === "failed" && line.details !== null && showDetails ? (

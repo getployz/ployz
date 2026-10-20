@@ -5,7 +5,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::RpcError;
-use ployz_core::config::SavedEnvironmentIntent;
+use ployz_core::config::{SavedEnvironmentIntent, SavedServiceIntent};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use ts_rs::TS;
@@ -30,6 +30,22 @@ pub struct DestructiveEffect {
     pub node: String,
     /// The row it changes, as `diff` shows it.
     pub path: String,
+    /// A detach that moves the Service onto a Volume restored from the detached
+    /// one: the writes it leaves behind.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub lost_after: Option<LostAfter>,
+}
+
+/// What a restore leaves behind: the source's writes after `at` are not in
+/// `restored`.
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize, TS)]
+pub struct LostAfter {
+    /// The restore point's time, in Unix seconds.
+    #[ts(type = "number")]
+    pub at: u64,
+    /// The restored Volume's name.
+    pub restored: String,
 }
 
 /// What a Destructive Effect destroys.
@@ -158,6 +174,7 @@ pub(crate) fn destructive_effects(
                 name: volume.name.clone(),
                 node: volume.resource_id.clone(),
                 path: format!("volumes.{}", volume.name),
+                lost_after: None,
             });
         }
     }
@@ -167,6 +184,7 @@ pub(crate) fn destructive_effects(
             name: name.to_owned(),
             node: deployed.id.clone(),
             path,
+            lost_after: None,
         };
         let Some(service) = target
             .services
@@ -192,7 +210,10 @@ pub(crate) fn destructive_effects(
                 && !mounted
             {
                 let path = format!("{slug}.mounts.{}", volume.name);
-                effects.insert(effect(DestructiveKind::DetachesVolume, &volume.name, path));
+                effects.insert(DestructiveEffect {
+                    lost_after: lost_after(running, target, service, id),
+                    ..effect(DestructiveKind::DetachesVolume, &volume.name, path)
+                });
             }
         }
         let config = &service.config;
@@ -226,6 +247,31 @@ pub(crate) fn destructive_effects(
         }
     }
     effects
+}
+
+/// What `service` loses by leaving Volume `source` for a Volume this publication
+/// restores from it.
+fn lost_after(
+    running: &SavedEnvironmentIntent,
+    target: &SavedEnvironmentIntent,
+    service: &SavedServiceIntent,
+    source: &str,
+) -> Option<LostAfter> {
+    target.volumes.iter().find_map(|restored| {
+        let from = restored.restored_from.as_ref()?;
+        let new = running
+            .volumes
+            .iter()
+            .all(|held| held.resource_id != restored.resource_id);
+        let mounts = service
+            .volume_attachments
+            .iter()
+            .any(|mount| mount.volume_resource_id == restored.resource_id);
+        (from.volume == source && new && mounts).then(|| LostAfter {
+            at: from.at,
+            restored: restored.name.clone(),
+        })
+    })
 }
 
 /// The digest a human approves for `command` (as Cloud names it: `publish`, `admit`,
@@ -417,6 +463,7 @@ pub(crate) fn approve_retry(
             name: loss.volume.name.to_string(),
             node: loss.volume.id.to_string(),
             path: format!("volumes.{}", loss.volume.name),
+            lost_after: None,
         })
         .collect();
     let accepted: BTreeSet<&VolumeName> = retry.accept_volume_loss.iter().collect();
