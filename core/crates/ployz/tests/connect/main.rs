@@ -236,6 +236,92 @@ async fn cli_exec_says_when_its_container_stopped_under_it() {
     }
 }
 
+#[tokio::test]
+async fn cli_exec_retry_repeats_the_scope_flags_it_was_given() {
+    use ployz_core::ExecResponseFrame::{ExecId, Exit};
+    let in_staging = |container_hex, service_hex| {
+        let mut parts = ployz_core::ContainerObservationParts::from(listing_container(
+            container_hex,
+            service_hex,
+            "web-1",
+            ContainerKind::ServiceContainer,
+            ContainerRuntimeObservation::Running {
+                health: HealthObservation::Healthy,
+            },
+        ));
+        parts.namespace = ployz_core::Namespace::parse("shop-staging").unwrap();
+        ployz_core::ContainerObservation::try_from(parts).unwrap()
+    };
+    let mut service = DiscoveryService::new(test_description());
+    service.exec_frames = Some(vec![ExecId("started".into()), Exit(137)]);
+    service.listed_after_exec = Some(vec![in_staging('b', 'b')]);
+    service
+        .listed_containers
+        .lock()
+        .unwrap()
+        .push(in_staging('a', 'a'));
+    let (address, server) = serve_discovery(service).await;
+    let store = tempfile::tempdir().unwrap();
+    let ployz = async |args: &[&str]| {
+        let home = tempfile::tempdir().unwrap();
+        tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
+            .current_dir(home.path())
+            .env("HOME", home.path())
+            .env("PLOYZ_CONFIG", home.path().join("config.yaml"))
+            .env(
+                "PLOYZ_STORE",
+                format!("sqlite:{}", store.path().join("store.db").display()),
+            )
+            .env_remove("PLOYZ_TOKEN")
+            .env("PLOYZ_CLOUD_URL", "http://127.0.0.1:9")
+            .env_remove("PLOYZ_PROJECT")
+            .env_remove("PLOYZ_ENV")
+            .arg("--connect")
+            .arg(format!("tcp://{address}"))
+            .args(args)
+            .output()
+            .await
+            .unwrap()
+    };
+    for args in [
+        &["project", "new", "shop"][..],
+        &["env", "new", "staging", "--project", "shop"],
+        &["project", "new", "other"],
+        &[
+            "service",
+            "add",
+            "web-1",
+            "--image",
+            "nginx:1",
+            "--project",
+            "shop",
+            "--env",
+            "staging",
+        ],
+    ] {
+        let output = ployz(args).await;
+        assert_eq!(output.status.code(), Some(0), "{args:?}: {output:?}");
+    }
+    let output = ployz(&[
+        "exec",
+        "-T",
+        "--project",
+        "shop",
+        "--env",
+        "staging",
+        "web-1",
+        "true",
+    ])
+    .await;
+    server.abort();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(1), "{stderr}");
+    assert!(
+        stderr.contains("retry: ployz exec --project shop --env staging shop-staging/web-1"),
+        "{stderr}"
+    );
+}
+
 struct FakeConnector {
     outcomes: Mutex<VecDeque<bool>>,
     attempts: Mutex<Vec<String>>,

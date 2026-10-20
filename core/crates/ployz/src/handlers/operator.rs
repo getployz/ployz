@@ -297,6 +297,11 @@ pub fn exec(root: &ArgMatches) -> Result<(), Error> {
         ServiceSelector::parse(typed.clone())?,
         scope(root)?.as_ref(),
     )?;
+    let scope_flags: String = ["project", "env"]
+        .into_iter()
+        .filter(|id| leaf.value_source(id) == Some(ValueSource::CommandLine))
+        .filter_map(|id| Some(format!("--{id} {} ", leaf.get_one::<String>(id)?)))
+        .collect();
     let container = leaf
         .get_one::<String>("container")
         .filter(|selector| !selector.is_empty())
@@ -343,7 +348,10 @@ pub fn exec(root: &ArgMatches) -> Result<(), Error> {
                 .await
             {
                 let hint = if stopped.another_runs {
-                    Hint::Retry(format!("ployz exec {}", session.target.identity))
+                    Hint::Retry(format!(
+                        "ployz exec {scope_flags}{}",
+                        session.target.identity
+                    ))
                 } else {
                     Hint::Inspect("ployz ps".into())
                 };
