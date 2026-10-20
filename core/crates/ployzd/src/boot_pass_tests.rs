@@ -7,9 +7,8 @@ use std::{
 use ployz_core::{
     AdvertisedEndpoint, ContainerAddress, ContainerId, ContainerKind, ContainerLocator,
     ContainerNow, ContainerObservation, ContainerRuntimeObservation, ContainerWant, CopyRotation,
-    DeploymentLogId, EnsuredContainer, Gen, HealthObservation, Machine, MachineId, MachineName,
-    MachineRuntime, MembershipEvidence, Namespace, QualifiedService, ResolvedServiceSpec,
-    WireGuardPublicKey,
+    EnsuredContainer, Gen, HealthObservation, Machine, MachineId, MachineName, MachineRuntime,
+    MembershipEvidence, Namespace, QualifiedService, ResolvedServiceSpec, WireGuardPublicKey,
 };
 use serde_json::json;
 use tokio::{sync::watch, time::Instant};
@@ -87,10 +86,7 @@ fn routes(
             let containers = copies.iter().map(|copy| copy.container_id).collect();
             (
                 (machine.id, api()),
-                IngressRouteRow::Acked(IngressRouteAck {
-                    deploy: DeploymentLogId::parse("d2").unwrap(),
-                    containers,
-                }),
+                IngressRouteRow::Acked(IngressRouteAck { containers }),
             )
         })
         .collect()

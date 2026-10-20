@@ -946,7 +946,6 @@ impl MachineOperations for Scripted {
             routes: self.routes(service, true),
             complete: true,
             down: self.down.clone(),
-            ..RoutesRead::default()
         })
     }
 

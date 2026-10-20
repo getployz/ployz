@@ -291,7 +291,6 @@ impl MachineOperations for Client {
         self.invoke::<op::ReadRoutes>(
             ReadRoutesRequest {
                 service: service.clone(),
-                routes_only: true,
             },
             &MachineTarget::from(machine_id),
             Some(TARGET_RPC_TIMEOUT),

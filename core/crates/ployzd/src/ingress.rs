@@ -44,11 +44,6 @@ pub(crate) mod caddy;
 
 use caddy::CaddyAdmin;
 
-/// Acks name the Containers routed, not a deploy.
-fn rotation_ack_deploy() -> DeploymentLogId {
-    DeploymentLogId::parse("rotation").expect("rotation is a valid deploy id")
-}
-
 /// Run the Caddy watcher.
 #[expect(
     clippy::too_many_arguments,
@@ -506,7 +501,6 @@ fn route_acks(routes: &ProxyRoutes) -> BTreeMap<QualifiedService, IngressRouteAc
         .iter()
         .map(|(service, route)| {
             let ack = IngressRouteAck {
-                deploy: rotation_ack_deploy(),
                 containers: route
                     .iter()
                     .map(|serving| serving.as_observation().container_id)

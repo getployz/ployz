@@ -26,8 +26,7 @@ use ployz_core::{
     Namespace, OpaquePayload, PROTOCOL_MAJOR, QualifiedService, RequestedServiceSpec,
     ResolvedServiceSpec, ResolvedUpdateConfig, RotationEdge, RoutesRead, RpcError, RpcErrorCode,
     RpcRequestBody, RpcResponse, RunTarget, ServiceId, ServiceMount, ServiceVolume,
-    ServiceVolumeGraph, ServiceVolumeReference, ServingPointer, ServingPointerPublication,
-    UpdateOrder, VolumeInventory, WireGuardPublicKey,
+    ServiceVolumeGraph, ServiceVolumeReference, UpdateOrder, VolumeInventory, WireGuardPublicKey,
 };
 use ployz_testkit::{
     fake_machine::{Fake, FakeMachine, FakeStream},
@@ -80,8 +79,6 @@ pub(super) struct DeployService {
     pub(super) volumes: Arc<Mutex<Vec<DockerVolume>>>,
     /// Volume copies every Machine reports from storage.
     pub(super) copies: Arc<Mutex<BTreeMap<DockerVolumeName, ployz_core::ProvisionedCopy>>>,
-    /// Serving Pointers published so far; every Machine acks a pointer as soon as it lands.
-    pointers: Arc<Mutex<BTreeMap<QualifiedService, ServingPointer>>>,
     /// Removed copies stay. A listed Container no want touched keeps the rotation it
     /// was listed with.
     rotations: Arc<Mutex<BTreeMap<ContainerId, Rotated>>>,
@@ -150,7 +147,6 @@ impl DeployService {
             listing_blocked: None,
             volumes: Arc::new(Mutex::new(Vec::new())),
             copies: Arc::new(Mutex::new(BTreeMap::new())),
-            pointers: Arc::new(Mutex::new(BTreeMap::new())),
             rotations: Arc::new(Mutex::new(BTreeMap::new())),
             unrouted: Arc::new(Mutex::new(BTreeSet::new())),
             sticky_proxies: BTreeSet::new(),
@@ -1072,51 +1068,15 @@ impl FakeMachine for DeployService {
         self.record_mutation();
         unused()
     }
-    async fn publish_serving_pointer(
-        &self,
-        request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        let RpcRequestBody::PublishServingPointer(publish) =
-            request.into_inner().decode_request().unwrap().body
-        else {
-            panic!("expected pointer publication");
-        };
-        let mut pointers = self.pointers.lock().unwrap();
-        let current = pointers.get(&publish.service).cloned();
-        let publication = if current == publish.read {
-            pointers.insert(publish.service, publish.pointer);
-            ServingPointerPublication::Published
-        } else {
-            ServingPointerPublication::Superseded { current }
-        };
-        encoded(RpcResponse::from(publication))
-    }
     async fn read_routes(
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         let RpcRequestBody::ReadRoutes(read) = request.into_inner().decode_request().unwrap().body
         else {
-            panic!("expected pointer read");
+            panic!("expected a routes read");
         };
-        if read.routes_only {
-            return encoded(RpcResponse::from(self.routes(&read.service)));
-        }
-        let pointer = self.pointers.lock().unwrap().get(&read.service).cloned();
-        let acks = pointer
-            .iter()
-            .flat_map(|pointer| {
-                self.machines
-                    .iter()
-                    .map(move |observed| (observed.machine.id, pointer.deploy.clone()))
-            })
-            .collect();
-        encoded(RpcResponse::from(RoutesRead {
-            all_routed: pointer.is_some(),
-            pointer,
-            acks,
-            ..RoutesRead::default()
-        }))
+        encoded(RpcResponse::from(self.routes(&read.service)))
     }
     async fn prune_images(
         &self,

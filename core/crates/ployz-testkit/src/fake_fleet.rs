@@ -822,9 +822,7 @@ impl Fleet {
                 };
                 unary(self.ensure(target, container_id, &request.want)?)
             }
-            RpcRequestBody::ReadRoutes(request) if request.routes_only => {
-                unary(self.routes(&request.service).into())
-            }
+            RpcRequestBody::ReadRoutes(request) => unary(self.routes(&request.service).into()),
             RpcRequestBody::InspectStorage(_) => unary(self.by_id(target)?.storage().into()),
             RpcRequestBody::ListVolumes(_) => unary(
                 VolumeInventory {
@@ -1005,7 +1003,6 @@ impl Fleet {
                 .collect(),
             complete: true,
             down: offline.iter().map(|machine| machine.id).collect(),
-            ..RoutesRead::default()
         }
     }
 

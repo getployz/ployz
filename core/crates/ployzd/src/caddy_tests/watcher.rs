@@ -923,7 +923,7 @@ async fn first_publish_signals_once() {
         vec![ingress("example.com", 80, HttpProtocol::Http)],
     );
     state.transactions.lock().unwrap().push(vec![Statement {
-        query: "INSERT INTO ingress_routes (machine_id, service, deploy, containers) VALUES (?, ?, ?, ?)"
+        query: "INSERT INTO ingress_routes (machine_id, service, containers) VALUES (?, ?, ?)"
             .into(),
         params: ack(&machine, &[&stale]),
     }]);
@@ -999,7 +999,6 @@ fn ack(machine: &Machine, routed: &[&ContainerObservation]) -> Vec<Value> {
     vec![
         json!(machine.id),
         json!("app/api"),
-        json!("rotation"),
         json!(serde_json::to_string(&ids).unwrap()),
     ]
 }
