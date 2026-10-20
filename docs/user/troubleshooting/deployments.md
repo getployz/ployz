@@ -203,8 +203,8 @@ Pushing an image to your registry deploys nothing, and a server that already has
 
 **Failed at pull**, with `Image nginx:1.27-alpne not found, or its registry needs credentials`
 
-Your servers couldn't download the image, so the deploy stopped before it changed anything. A
-version that was already running keeps running. A registry answers the same way for a tag that
+Your servers couldn't download the image, so the deploy stopped before any of its services
+changed. A version that was already running keeps running. A registry answers the same way for a tag that
 doesn't exist and for a private image you have no access to.
 
 - Check the name and tag under **Settings → Source**. Look for typos, and check that the tag is

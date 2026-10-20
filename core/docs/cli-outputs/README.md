@@ -136,7 +136,7 @@ Retry: ployz project rm scratch1 --confirm scratch1
 
 ## 5. Warnings
 
-Dominant: `WARNING: <sentence>.` on stderr. 33 lines, 8 distinct texts. `server add` prints its Docker only warning as `! Docker only (not recommended): Volumes on this Server get no size limits, …` instead (5 lines, [cluster/server.md](cluster/server.md)).
+Dominant: `WARNING: <sentence>.` on stderr. 35 lines, 8 distinct texts. `server add` prints its Docker only warning as `! Docker only (not recommended): Volumes on this Server get no size limits, …` instead (5 lines, [cluster/server.md](cluster/server.md)).
 
 | Count | Text (start) | Capture |
 |---|---|---|

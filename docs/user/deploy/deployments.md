@@ -60,10 +60,10 @@ In the CLI, `ployz discard` with no path drops every staged change in the enviro
 changes someone else staged from the dashboard or an agent, and lists each one it dropped. Pass a
 path, such as `ployz discard web.env.KEY`, to drop only that change. It also names each saved change
 it took out and the command that brings it back, such as `ployz discard web`. `ployz diff` lists
-those rows and `ployz status` counts them. Plain `ployz discard` goes back to what is deployed.
-While a deploy is queued or running, that is the version being deployed, not the one still
-running. `ployz discard --target review` matches the dashboard's **Discard all changes** and goes
-back to your latest saved version.
+those rows and `ployz status` counts them. Plain `ployz discard` returns each service to what is
+deployed, or, for a service a queued or running deploy is changing, to the value that deploy is
+bringing in. `ployz discard --target review` matches the dashboard's **Discard all changes** and
+goes back to your latest saved version.
 
 The dashboard's **Deploy** needs a staged change. To ship the same commit and settings again,
 click **Redeploy** on the newest deployment. To move GitHub services to their branch's latest
