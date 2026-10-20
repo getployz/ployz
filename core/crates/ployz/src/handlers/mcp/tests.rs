@@ -1281,6 +1281,18 @@ async fn a_human_who_unticks_approve_denies_it_in_cloud_with_their_reason() {
 
 #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
 #[tokio::test]
+async fn a_denial_reason_that_ends_its_sentence_is_not_ended_twice() {
+    let (denied, _) =
+        unticked(json!({ "approve": false, "reason": "the worker still drains." })).await;
+    assert_eq!(
+        denied["result"]["content"][0]["text"],
+        "The human denied this deploy: the worker still drains. Nothing was deployed; do \
+         not retry it unless they ask."
+    );
+}
+
+#[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
+#[tokio::test]
 async fn a_human_who_unticks_approve_without_a_reason_denies_it_in_cloud() {
     let (denied, decided) = unticked(json!({ "approve": false, "reason": " " })).await;
     assert_eq!(
