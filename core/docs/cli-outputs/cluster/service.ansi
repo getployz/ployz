@@ -1,35 +1,138 @@
 === service ls :: $ ployz service ls
-SERVICE	PRIVATE DNS	SOURCE	NEXT DEPLOY
-api	api	image	-
-web	web	image	-
+SERVICE   PRIVATE DNS   SOURCE   NEXT DEPLOY
+api       api           image    -
+web       web           image    -
 
 === service inspect :: $ ployz service inspect web
-Service web (a085f2f9-e4df-439e-9d34-99e5b3ee7405)
-Private DNS: web
-Source: image
-env={"GREETING":"hello"}
-image="alpine:3.23.3"
-maxRetries=10
-privateDns="web"
-replicas=2
-restartPolicy="unless-stopped"
-startCommand="sh -c 'echo started; while true; do echo tick; sleep 2; done'"
+service                web
+private dns            web
+source                 image
+cpuLimit               - (default)
+healthcheck            - (default)
+image                  "alpine:3.23.3" (default -)
+maxRetries             10 (default)
+memLimit               - (default)
+preDeployCommand       - (default)
+privateDns             "web" (default)
+registryCredential     - (default)
+replicas               2 (default 1)
+restartPolicy          "unless-stopped" (default)
+startCommand           "sh -c 'echo started; while true; do echo tick; sleep 2; done'" (default -)
+template               - (default)
+updateOrder            - (default)
+env.GREETING           "hello"
+env.GREETING.exported  false (default)
+domains                -
 
 === service inspect --json :: $ ployz service inspect web --json
 {
   "change": null,
   "changes": [],
+  "domains": [],
   "environment": {
-    "id": "52712cb1-5621-43aa-987b-900e655738a0",
+    "id": "96430fcc-088f-45be-9cbe-5e67e7e2f507",
     "name": "production",
     "project": "shop",
     "revision": 10
   },
-  "id": "a085f2f9-e4df-439e-9d34-99e5b3ee7405",
-  "lineage": "a085f2f9-e4df-439e-9d34-99e5b3ee7405",
+  "id": "608e4644-cd97-46d2-bb82-416f75554478",
+  "lineage": "608e4644-cd97-46d2-bb82-416f75554478",
   "name": "web",
   "private_dns": "web",
-  "row": "a085f2f9-e4df-439e-9d34-99e5b3ee7405:node",
+  "row": "608e4644-cd97-46d2-bb82-416f75554478:node",
+  "settings": [
+    {
+      "apply": "staged",
+      "default": null,
+      "path": "web.cpuLimit",
+      "value": null
+    },
+    {
+      "apply": "staged",
+      "default": null,
+      "path": "web.healthcheck",
+      "value": null
+    },
+    {
+      "apply": "staged",
+      "default": null,
+      "path": "web.image",
+      "value": "alpine:3.23.3"
+    },
+    {
+      "apply": "staged",
+      "default": 10,
+      "path": "web.maxRetries",
+      "value": 10
+    },
+    {
+      "apply": "staged",
+      "default": null,
+      "path": "web.memLimit",
+      "value": null
+    },
+    {
+      "apply": "staged",
+      "default": null,
+      "path": "web.preDeployCommand",
+      "value": null
+    },
+    {
+      "apply": "staged",
+      "default": "web",
+      "path": "web.privateDns",
+      "value": "web"
+    },
+    {
+      "apply": "immediate",
+      "default": null,
+      "path": "web.registryCredential",
+      "value": null
+    },
+    {
+      "apply": "staged",
+      "default": 1,
+      "path": "web.replicas",
+      "value": 2
+    },
+    {
+      "apply": "staged",
+      "default": "unless-stopped",
+      "path": "web.restartPolicy",
+      "value": "unless-stopped"
+    },
+    {
+      "apply": "staged",
+      "default": null,
+      "path": "web.startCommand",
+      "value": "sh -c 'echo started; while true; do echo tick; sleep 2; done'"
+    },
+    {
+      "apply": "immediate",
+      "default": null,
+      "path": "web.template",
+      "value": null
+    },
+    {
+      "apply": "staged",
+      "default": null,
+      "path": "web.updateOrder",
+      "value": null
+    },
+    {
+      "apply": "staged",
+      "default": null,
+      "path": "web.env.GREETING",
+      "row": "608e4644-cd97-46d2-bb82-416f75554478:variables.GREETING",
+      "value": "hello"
+    },
+    {
+      "apply": "staged",
+      "default": false,
+      "path": "web.env.GREETING.exported",
+      "value": false
+    }
+  ],
   "source": "image",
   "template": null,
   "values": {

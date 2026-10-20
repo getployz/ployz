@@ -205,6 +205,87 @@ fn nodes(store: &ConfigStore, who: &Actor, n: u8) -> Vec<(String, NodeStatus)> {
 }
 
 #[test]
+fn diff_and_a_deployment_list_each_kind_of_node_by_name_not_by_id() {
+    let (store, who) = shop();
+    sentry(&store, &who);
+    // web's id sorts before api's.
+    assert_eq!(changed(&store, &who), ["api", "web", "sentry"]);
+    admit(&store, &who, 1, &[], None).unwrap();
+    assert_eq!(
+        nodes(&store, &who, 1)
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect::<Vec<_>>(),
+        ["api", "web", "sentry"]
+    );
+}
+
+#[test]
+fn a_recreated_service_lists_after_the_one_it_replaces_whichever_id_sorts_first() {
+    // The replacement's id sorts below the original's (…03) in one run, above it in the other.
+    for replacement in [
+        "00000000-0000-4000-8000-000000000000",
+        "00000000-0000-4000-8000-0000000000ff",
+    ] {
+        let (store, who) = shop();
+        backend::deploy(&store, &who, "production", 1);
+        store
+            .write(
+                &who,
+                &RemoveService {
+                    environment: EnvironmentRef::default(),
+                    service: ServiceName::parse("web").unwrap(),
+                },
+            )
+            .unwrap();
+        store
+            .write(
+                &who,
+                &CreateService {
+                    id: ServiceLineageId::parse(replacement).unwrap(),
+                    environment: EnvironmentRef::default(),
+                    name: ServiceName::parse("web").unwrap(),
+                    image: Some("nginx:2".into()),
+                    template: None,
+                },
+            )
+            .unwrap();
+        let view = diff(&store, &who);
+        for changes in [view.changes.clone(), view.review_changes()] {
+            let listed: Vec<_> = changes
+                .iter()
+                .map(|change| (change.name.as_str(), change.lifecycle))
+                .collect();
+            assert_eq!(
+                listed,
+                [
+                    ("web", ReviewLifecycleKind::Delete),
+                    ("web", ReviewLifecycleKind::Create)
+                ],
+                "replacement {replacement}"
+            );
+        }
+        admit(&store, &who, 2, &[], None).unwrap();
+        let ids: Vec<_> = store
+            .read(&who, &ployz_store::DeploymentQuery { id: id(2) })
+            .unwrap()
+            .nodes
+            .into_iter()
+            .map(|node| node.node.id().to_owned())
+            .collect();
+        assert_eq!(
+            ids,
+            [
+                "00000000-0000-4000-8000-000000000004",
+                "00000000-0000-4000-8000-000000000003",
+                replacement
+            ],
+            "replacement {replacement}"
+        );
+    }
+}
+
+#[test]
 fn a_deploy_publishes_then_its_runner_records_it_into_applied_state() {
     let (store, who) = shop();
     let admitted = admit(&store, &who, 1, &[], None).unwrap();
@@ -251,8 +332,8 @@ fn a_deploy_publishes_then_its_runner_records_it_into_applied_state() {
     assert_eq!(
         nodes(&store, &who, 1),
         [
-            ("web".to_owned(), NodeStatus::Deployed),
-            ("api".to_owned(), NodeStatus::Deployed)
+            ("api".to_owned(), NodeStatus::Deployed),
+            ("web".to_owned(), NodeStatus::Deployed)
         ]
     );
     assert!(
@@ -279,8 +360,8 @@ fn a_deploy_publishes_then_its_runner_records_it_into_applied_state() {
     assert_eq!(
         nodes(&store, &who, 2),
         [
-            ("web".to_owned(), NodeStatus::Pending),
-            ("api".to_owned(), NodeStatus::Unchanged)
+            ("api".to_owned(), NodeStatus::Unchanged),
+            ("web".to_owned(), NodeStatus::Pending)
         ]
     );
     // Ending without executing leaves what the preview settled: nothing ran on api either way.
@@ -290,8 +371,8 @@ fn a_deploy_publishes_then_its_runner_records_it_into_applied_state() {
     assert_eq!(
         nodes(&store, &who, 2),
         [
-            ("web".to_owned(), NodeStatus::NotAttempted),
-            ("api".to_owned(), NodeStatus::Unchanged)
+            ("api".to_owned(), NodeStatus::Unchanged),
+            ("web".to_owned(), NodeStatus::NotAttempted)
         ]
     );
 }
@@ -822,8 +903,8 @@ fn an_existing_shared_config_keeps_its_edit_after_a_mounter_fails() {
     assert_eq!(
         nodes(&store, &who, 2),
         [
-            ("web".to_owned(), NodeStatus::Deployed),
             ("api".to_owned(), NodeStatus::Failed),
+            ("web".to_owned(), NodeStatus::Deployed),
             ("sentry".to_owned(), NodeStatus::Failed),
         ]
     );
@@ -851,8 +932,8 @@ fn an_existing_shared_config_waits_for_pending_mounters() {
     assert_eq!(
         nodes(&store, &who, 2),
         [
-            ("web".to_owned(), NodeStatus::Deployed),
             ("api".to_owned(), NodeStatus::Pending),
+            ("web".to_owned(), NodeStatus::Deployed),
             ("sentry".to_owned(), NodeStatus::Pending),
         ]
     );
@@ -1147,8 +1228,8 @@ fn a_partial_outcome_applies_only_confirmed_nodes() {
     assert_eq!(
         nodes(&store, &who, 1),
         [
-            ("web".to_owned(), NodeStatus::Deployed),
-            ("api".to_owned(), NodeStatus::Failed)
+            ("api".to_owned(), NodeStatus::Failed),
+            ("web".to_owned(), NodeStatus::Deployed)
         ]
     );
     // Only `api` is still to deploy; a different outcome can't overwrite this one.
@@ -1710,6 +1791,7 @@ fn a_failed_row_keeps_its_cause_chain_and_unfinished_rows_end_not_attempted() {
     assert_eq!(
         states,
         [
+            ("api".to_owned(), "beta".to_owned(), RowState::NotAttempted),
             (
                 "web".to_owned(),
                 "alpha".to_owned(),
@@ -1725,7 +1807,6 @@ fn a_failed_row_keeps_its_cause_chain_and_unfinished_rows_end_not_attempted() {
                     cancelled: false,
                 }
             ),
-            ("api".to_owned(), "beta".to_owned(), RowState::NotAttempted),
         ]
     );
 }
@@ -2029,11 +2110,11 @@ fn nothing_executed_applies_nothing() {
     assert_eq!(
         nodes(&store, &who, 1),
         [
-            ("web".to_owned(), NodeStatus::NotAttempted),
-            ("api".to_owned(), NodeStatus::NotAttempted)
+            ("api".to_owned(), NodeStatus::NotAttempted),
+            ("web".to_owned(), NodeStatus::NotAttempted)
         ]
     );
-    assert_eq!(changed(&store, &who), ["web", "api"]);
+    assert_eq!(changed(&store, &who), ["api", "web"]);
 }
 
 #[test]
@@ -2164,11 +2245,11 @@ fn a_cancelled_queued_deployment_never_runs() {
     assert_eq!(
         nodes(&store, &who, 1),
         [
-            ("web".to_owned(), NodeStatus::NotAttempted),
-            ("api".to_owned(), NodeStatus::NotAttempted)
+            ("api".to_owned(), NodeStatus::NotAttempted),
+            ("web".to_owned(), NodeStatus::NotAttempted)
         ]
     );
-    assert_eq!(changed(&store, &who), ["web", "api"]);
+    assert_eq!(changed(&store, &who), ["api", "web"]);
 }
 
 #[test]
@@ -2200,8 +2281,8 @@ fn a_cancelled_running_deployment_keeps_its_confirmed_node_outcomes() {
         assert_eq!(
             nodes(&store, &who, n),
             [
-                ("web".to_owned(), NodeStatus::Deployed),
-                ("api".to_owned(), NodeStatus::Failed)
+                ("api".to_owned(), NodeStatus::Failed),
+                ("web".to_owned(), NodeStatus::Deployed)
             ]
         );
         cancelled_nodes(&store, &who, n)
@@ -2268,8 +2349,10 @@ fn a_copy_restored_after_another_service_failed_is_not_cancelled() {
         };
         store.record(&id(n), &a, executed).unwrap();
         assert_eq!(status(&store, &who, n), DeploymentStatus::Failed);
-        let web = rows(&store, &who, n).remove(0);
-        assert_eq!(web.0, "web");
+        let web = rows(&store, &who, n)
+            .into_iter()
+            .find(|(node, _)| node == "web")
+            .unwrap();
         assert!(
             matches!(
                 web.1[0].state,
@@ -2286,6 +2369,15 @@ fn a_copy_restored_after_another_service_failed_is_not_cancelled() {
     for (n, failed) in [(1, "api"), (2, "web")] {
         assert!(restored_after(n, failed).is_empty(), "{failed} first");
     }
+}
+
+fn web_row(store: &ConfigStore, who: &Actor) -> ServerRow {
+    rows(store, who, 1)
+        .into_iter()
+        .find(|(node, _)| node == "web")
+        .unwrap()
+        .1
+        .remove(0)
 }
 
 #[test]
@@ -2307,7 +2399,7 @@ fn a_real_failure_after_a_cancel_on_the_same_service_reads_failed_on_its_row_and
     store
         .record(&id(1), &a, RunEvidence::Progress(first))
         .unwrap();
-    let state = &rows(&store, &who, 1)[0].1[0].state;
+    let state = &web_row(&store, &who).state;
     assert!(
         matches!(
             state,
@@ -2335,7 +2427,7 @@ fn a_real_failure_after_a_cancel_on_the_same_service_reads_failed_on_its_row_and
         removed: Vec::new(),
     };
     store.record(&id(1), &a, executed).unwrap();
-    let state = &rows(&store, &who, 1)[0].1[0].state;
+    let state = &web_row(&store, &who).state;
     assert!(
         matches!(
             state,
@@ -2349,8 +2441,8 @@ fn a_real_failure_after_a_cancel_on_the_same_service_reads_failed_on_its_row_and
     assert_eq!(
         nodes(&store, &who, 1),
         [
-            ("web".to_owned(), NodeStatus::Failed),
-            ("api".to_owned(), NodeStatus::Unchanged)
+            ("api".to_owned(), NodeStatus::Unchanged),
+            ("web".to_owned(), NodeStatus::Failed)
         ]
     );
     assert!(cancelled_nodes(&store, &who, 1).is_empty());
@@ -2457,8 +2549,10 @@ fn a_store_from_before_cancelled_reads_the_work_a_cancel_stopped_as_failed() {
     store.record(&id(1), &a, executed).unwrap();
     assert_eq!(status(&store, &who, 1), DeploymentStatus::Cancelled);
     assert_eq!(cancelled_nodes(&store, &who, 1), ["api"]);
-    let api = &rows(&store, &who, 1)[1];
-    assert_eq!(api.0, "api");
+    let api = rows(&store, &who, 1)
+        .into_iter()
+        .find(|(node, _)| node == "api")
+        .unwrap();
     assert!(
         matches!(
             api.1[0].state,
@@ -2530,7 +2624,7 @@ fn a_runner_that_loses_track_after_preparing_leaves_the_outcome_unknown() {
         code(store.record(&id(1), &a, succeeded(&["web", "api"]))),
         RpcErrorCode::Conflict
     );
-    assert_eq!(changed(&store, &who), ["web", "api"]);
+    assert_eq!(changed(&store, &who), ["api", "web"]);
 
     // Abandoned after preparing: unknown too.
     admit(&store, &who, 2, &[], None).unwrap();
@@ -2654,8 +2748,8 @@ fn a_retry_ships_exactly_what_the_failed_deployment_froze() {
     assert_eq!(
         nodes(&store, &who, 1),
         [
-            ("web".to_owned(), NodeStatus::Deployed),
-            ("api".to_owned(), NodeStatus::Failed)
+            ("api".to_owned(), NodeStatus::Failed),
+            ("web".to_owned(), NodeStatus::Deployed)
         ]
     );
     assert!(
@@ -3059,8 +3153,8 @@ fn a_staged_removal_leaves_applied_state_until_its_deploy_confirms_it() {
     assert_eq!(
         nodes(&store, &who, 1),
         [
-            ("web".to_owned(), NodeStatus::Deployed),
-            ("api".to_owned(), NodeStatus::Deployed)
+            ("api".to_owned(), NodeStatus::Deployed),
+            ("web".to_owned(), NodeStatus::Deployed)
         ]
     );
     let listed = store.read(&who, &ServicesQuery::default()).unwrap();
@@ -3936,16 +4030,16 @@ fn a_service_confirmed_mid_run_stays_deployed_when_the_runner_is_lost() {
     assert_eq!(
         nodes(&store, &who, 1),
         [
-            ("web".to_owned(), NodeStatus::Deployed),
-            ("api".to_owned(), NodeStatus::Pending)
+            ("api".to_owned(), NodeStatus::Pending),
+            ("web".to_owned(), NodeStatus::Deployed)
         ]
     );
     store.record(&id(1), &a, RunEvidence::Abandoned).unwrap();
     assert_eq!(
         nodes(&store, &who, 1),
         [
-            ("web".to_owned(), NodeStatus::Deployed),
-            ("api".to_owned(), NodeStatus::Unknown)
+            ("api".to_owned(), NodeStatus::Unknown),
+            ("web".to_owned(), NodeStatus::Deployed)
         ]
     );
     // web is in Applied State: only api is still to deploy.

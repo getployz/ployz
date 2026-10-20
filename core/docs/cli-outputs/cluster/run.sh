@@ -123,7 +123,7 @@ c "$S" "server build-cache-clear --json" -- $P server build-cache-clear --json
 m "$S" "server set (labels)" -- $P server set gamma --label-add zone=b
 m "$S" "server set --json" -- $P server set gamma --label-rm zone --json
 m "$S" "server set (no change flags)" -- $P server set gamma
-m "$S" "server upgrade (same version)" -- $P server upgrade 0.2.3 gamma
+m "$S" "server upgrade (fails at launch: the testkit has no systemd)" -- $P server upgrade 0.2.3 gamma
 m "$S" "server forget (standalone)" -- $P server forget
 
 D=$CAPTURES/deploy.md
@@ -208,7 +208,7 @@ m "$O" "build without a Cloud Build Grant" -- $P build --grant x --deployment 1 
 E=$CAPTURES/errors.md
 c "$E" "server show unknown" -- $P server show nope
 c "$E" "service inspect unknown" -- $P service inspect nope
-c "$E" "server rm without --confirm" -- $P server rm gamma
+m "$E" "server rm without --confirm" -- $P server rm gamma
 c "$E" "server drain unknown" -- $P server drain nope
 docker stop "$NET-2" >/dev/null
 c "$E" "server ls (gamma stopped)" -- $P server ls

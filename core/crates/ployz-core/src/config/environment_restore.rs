@@ -7,7 +7,7 @@ use ts_rs::TS;
 use super::*;
 
 /// Environment Node families with distinct configuration and restore semantics.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum EnvironmentNodeType {
     Service,
