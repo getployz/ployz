@@ -119,7 +119,7 @@ with the server's reason as the cause, and `retry: ployz deploy …`
 
 A deploy that only changes the CPU limit or raises the Memory limit applies it to the running
 replica in place (see [Changing a limit](../services/settings.md#changing-a-limit)). Here the
-server refused before changing anything, so the replica still serves with its old limits. The
+server refused before changing anything, so the replica keeps its old limits. The
 usual cause is a Container changed on the server outside Ployz, for example with `docker update`:
 the server refuses a Memory limit below the one the Container runs with, since lowering it could
 kill the Container. Ployz has no command that only replaces a replica. Deploy a change to another
