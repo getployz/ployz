@@ -10,7 +10,7 @@ export function failOnStoreUnmountAfterWindow() {
 
 /**
  * A render still in flight when a test ends flushes on a later task, after cleanup and possibly after `window` is gone.
- * Register it after the file's cleanup hook, so it runs first.
+ * Register it before the file's cleanup hook: Vitest runs `afterEach` hooks in reverse order, so it runs after unmount.
  */
 export function failOnRenderAfterTest() {
   afterEach(async () => {

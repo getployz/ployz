@@ -47,6 +47,7 @@ beforeEach(() => {
   });
 });
 failOnStoreUnmountAfterWindow();
+failOnRenderAfterTest();
 afterEach(() => {
   cleanup();
   cleanStores(authClient.$store.atoms["session"]);
@@ -58,7 +59,6 @@ afterEach(() => {
   if (originalScrollTo) Object.defineProperty(HTMLElement.prototype, "scrollTo", originalScrollTo);
   else Reflect.deleteProperty(HTMLElement.prototype, "scrollTo");
 });
-failOnRenderAfterTest();
 
 async function show({ orgStore = "ready", scope = "environment", billingEnabled = false, path = "/cloud/acme/store/production/logs" }: {
   orgStore?: "ready" | "pending" | "failed";
