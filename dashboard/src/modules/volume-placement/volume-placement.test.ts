@@ -609,6 +609,13 @@ describe("two write losses on one Volume", () => {
     expect(named([failover(null)])).toBe("web-1 · recent changes");
   });
 
+  it("dates a restore point from another day in the Data loss confirm, and gives today's the time alone", () => {
+    const confirm = (now: Date) => volumeLossItems(lossByVolume([restore(at)]), () => undefined, now)[0]?.detail;
+    const dated = new Intl.DateTimeFormat("en-GB", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+    expect(confirm(new Date(2026, 9, 10, 23, 0))).toBe(`changes after ${lossTime(at)}`);
+    expect(confirm(new Date(2026, 9, 13, 9, 0))).toBe(`changes after ${dated.format(at)}`);
+  });
+
   it.each([["restore first", false], ["failover first", true]])("takes an unknown cutoff over a known one, %s", (_, flipped) => {
     const lost = [restore(at), failover(null)];
     expect(lossByVolume(flipped ? lost.reverse() : lost)).toEqual([{ name: "data", deletes: [{ machine_id: id("web-1") }], loss: "writes" }]);

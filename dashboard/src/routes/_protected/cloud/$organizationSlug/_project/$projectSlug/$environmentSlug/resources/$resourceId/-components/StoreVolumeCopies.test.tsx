@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { MachineId } from "@ployz/sdk";
 import { copiesFromPlacement } from "#/modules/volume-copies/volume-copies.placement";
 import type { PlacementRow } from "#/modules/volume-placement/volume-placement";
@@ -44,11 +44,17 @@ function panel(members: Member[], placement: PlacementRow | null, options: {
     servers={options.servers ?? members.map((entry) => server(entry.machine.name))} accepting={members.map((entry) => entry.machine.id)}
     upgrade={options.upgrade ?? []} seeds disabled={false} deploying={options.deploying ?? false} stage={stage} restore={restore}
     deleteCopy={deleteCopy} refresh={refresh} refreshing={options.refreshing ?? false}
-    open={options.open ? id(options.open) : null} onOpen={onOpen} now={NOW} />);
+    open={options.open ? id(options.open) : null} onOpen={onOpen} />);
   return { stage, deleteCopy, restore, onOpen, refresh };
 }
 const group = (label: string) => within(screen.getByRole("list", { name: label }));
 const rows = (label: string) => group(label).queryAllByRole("listitem").map((item) => item.textContent);
+
+beforeEach(() => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(NOW);
+});
+afterEach(() => vi.useRealTimers());
 
 describe("VolumeCopiesPanel", () => {
   afterEach(cleanup);
@@ -156,6 +162,16 @@ describe("VolumeCopiesPanel", () => {
     expect(screen.getByText(`Changes after ${dated.format(at)} lost`)).toBeTruthy();
   });
 
+  it("dates an old copy's restore point once the day turns, with the Servers' answer unchanged", () => {
+    vi.useFakeTimers({ toFake: ["Date", "setInterval", "clearInterval"] });
+    vi.setSystemTime(new Date(2026, 9, 11, 23, 59));
+    const at = new Date(2026, 9, 11, 23, 55);
+    panel([member("web-1", "writer"), mirrorAsOf("web-3", at)], row([]));
+    expect(rows("Elsewhere")).toEqual([expect.stringContaining(`Old copy · ${clock.format(at)}`)]);
+    act(() => vi.advanceTimersByTime(2 * 60_000));
+    expect(rows("Elsewhere")).toEqual([expect.stringContaining(`Old copy · ${dated.format(at)}`)]);
+  });
+
   it("gives an old copy's and a silent Primary's restore point from today the time alone", async () => {
     const at = new Date(NOW.getTime() - 5 * 60_000);
     panel([member("web-1", "writer"), mirrorAsOf("web-3", at)], row([]));
@@ -204,6 +220,16 @@ describe("mirror detail", () => {
   it("dates a restore point from another day, so an older point reads apart from today's", () => {
     const at = new Date(NOW.getTime() - 3 * DAY);
     panel([member("web-1", "writer"), mirrorAsOf("web-2", at)], row(["web-2"]), { open: "web-2" });
+    expect(screen.getByText(dated.format(at))).toBeTruthy();
+  });
+
+  it("dates the restore point once the day turns, with the Servers' answer unchanged", () => {
+    vi.useFakeTimers({ toFake: ["Date", "setInterval", "clearInterval"] });
+    vi.setSystemTime(new Date(2026, 9, 11, 23, 59));
+    const at = new Date(2026, 9, 11, 23, 55);
+    panel([member("web-1", "writer"), mirrorAsOf("web-2", at)], row(["web-2"]), { open: "web-2" });
+    expect(screen.getByText(clock.format(at))).toBeTruthy();
+    act(() => vi.advanceTimersByTime(2 * 60_000));
     expect(screen.getByText(dated.format(at))).toBeTruthy();
   });
 
