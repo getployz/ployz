@@ -227,17 +227,23 @@ pub(super) async fn connect_or_unanswered(
 /// Dial through Cloud's Server Access; `None` when Cloud knows Servers and none answers.
 async fn answering(
     matches: &ArgMatches,
-    access: cloud_account::ServerAccess,
+    mut access: cloud_account::ServerAccess,
 ) -> Result<Option<Client>, Error> {
     if access.connections.is_empty() {
-        return match access.unreachable.is_empty() {
-            true => Err(no_servers()),
-            false => Ok(None),
+        return match (access.unreachable.is_empty(), access.refused.is_empty()) {
+            (true, true) => Err(no_servers()),
+            (false, true) => Ok(None),
+            (_, false) => Err(no_server_access(access, Vec::new(), None)),
         };
     }
-    match dial_connections(matches, access.connections).await {
+    let held = held_servers(&access.connections);
+    let refused = access.refused.is_empty();
+    match dial_connections(matches, std::mem::take(&mut access.connections)).await {
         Ok(client) => Ok(Some(client)),
-        Err(ConnectError::AllFailed { reached: false, .. }) => Ok(None),
+        Err(ConnectError::AllFailed { reached: false, .. }) if refused => Ok(None),
+        Err(error @ ConnectError::AllFailed { reached: false, .. }) => {
+            Err(no_server_access(access, held, Some(error)))
+        }
         Err(error) => Err(error.into()),
     }
 }
@@ -256,11 +262,13 @@ async fn entries(
             Ok(credential) => {
                 let access = cloud_account::server_access(&credential).await?;
                 if access.connections.is_empty() {
-                    return Err(if access.unreachable.is_empty() {
-                        no_servers()
-                    } else {
-                        no_reachable_server(access.unreachable, &access.names, None)
-                    });
+                    return Err(
+                        if access.unreachable.is_empty() && access.refused.is_empty() {
+                            no_servers()
+                        } else {
+                            no_server_access(access, Vec::new(), None)
+                        },
+                    );
                 }
                 return Ok(SelectedConnections {
                     source: ConnectionSource::Cloud,
@@ -293,28 +301,32 @@ async fn entries(
 /// Cloud's dial into this Organization's Servers, or `None` when it has none.
 async fn dial(
     matches: &ArgMatches,
-    access: cloud_account::ServerAccess,
+    mut access: cloud_account::ServerAccess,
 ) -> Result<Option<Client>, Error> {
     if access.connections.is_empty() {
-        if access.unreachable.is_empty() {
+        if access.unreachable.is_empty() && access.refused.is_empty() {
             return Ok(None);
         }
-        return Err(no_reachable_server(access.unreachable, &access.names, None));
+        return Err(no_server_access(access, Vec::new(), None));
     }
-    // Cloud hands back the connections it holds without probing their Servers.
-    let mut unreachable = access
-        .connections
-        .iter()
-        .filter_map(|connection| connection.machine_id().copied())
-        .collect::<Vec<_>>();
-    unreachable.extend(access.unreachable);
-    match dial_connections(matches, access.connections).await {
+    let held = held_servers(&access.connections);
+    match dial_connections(matches, std::mem::take(&mut access.connections)).await {
         Ok(client) => Ok(Some(client)),
-        Err(error @ ConnectError::AllFailed { reached: false, .. }) if !unreachable.is_empty() => {
-            Err(no_reachable_server(unreachable, &access.names, Some(error)))
+        Err(error @ ConnectError::AllFailed { reached: false, .. })
+            if !held.is_empty() || !access.unreachable.is_empty() || !access.refused.is_empty() =>
+        {
+            Err(no_server_access(access, held, Some(error)))
         }
         Err(error) => Err(error.into()),
     }
+}
+
+/// The Servers Cloud handed connections for, held without probing them.
+fn held_servers(connections: &[crate::context::Connection]) -> Vec<ployz_core::MachineId> {
+    connections
+        .iter()
+        .filter_map(|connection| connection.machine_id().copied())
+        .collect()
 }
 
 async fn dial_connections(
@@ -331,6 +343,60 @@ async fn dial_connections(
 
 fn no_servers() -> Error {
     Error::not_found("this Organization has no Servers").hint(Hint::Next("ployz server add".into()))
+}
+
+/// No Server of `access` gave this command access: the `unanswered` ones it held a
+/// connection to and those Cloud couldn't reach didn't answer, and Cloud says why each
+/// refused one couldn't. Only with no refusal does it read as [`no_reachable_server`].
+fn no_server_access(
+    access: cloud_account::ServerAccess,
+    mut unanswered: Vec<ployz_core::MachineId>,
+    cause: Option<ConnectError>,
+) -> Error {
+    unanswered.extend(access.unreachable);
+    if access.refused.is_empty() {
+        return no_reachable_server(unanswered, &access.names, cause);
+    }
+    let name = |id: &ployz_core::MachineId| {
+        access
+            .names
+            .get(id)
+            .cloned()
+            .unwrap_or_else(|| id.to_string())
+    };
+    let message = match (access.refused.as_slice(), unanswered.as_slice()) {
+        ([one], []) => format!(
+            "Server {} couldn't give this command access: {}",
+            name(&one.machine_id),
+            one.message
+        ),
+        (refused, unanswered) => {
+            let mut why = refused
+                .iter()
+                .map(|server| format!("{} said \"{}\"", name(&server.machine_id), server.message))
+                .collect::<Vec<_>>();
+            why.extend(
+                unanswered
+                    .iter()
+                    .map(|id| format!("{} isn't answering", name(id))),
+            );
+            format!(
+                "No Server could give this command access: {}.",
+                why.join("; ")
+            )
+        }
+    };
+    let refused = access
+        .refused
+        .iter()
+        .map(|server| json!({ "machine_id": server.machine_id, "message": server.message }))
+        .collect::<Vec<_>>();
+    Error::detailed_caused(
+        RpcErrorCode::Unavailable,
+        message,
+        json!({ "refused": refused, "unreachable": unanswered }),
+        cause,
+    )
 }
 
 /// None of `unreachable` answered, each named where Cloud holds its name; `cause` says how
@@ -361,9 +427,12 @@ fn no_reachable_server(
     )
 }
 
-/// Whether `report` is [`no_reachable_server`]'s: Servers Cloud knows that didn't answer.
+/// Whether `report` is [`no_reachable_server`]'s: Servers Cloud knows that didn't answer,
+/// and none that refused.
 pub(super) fn servers_unanswered(report: &RpcError) -> bool {
-    report.code == RpcErrorCode::Unavailable && report.details.get("unreachable").is_some()
+    report.code == RpcErrorCode::Unavailable
+        && report.details.get("unreachable").is_some()
+        && report.details.get("refused").is_none()
 }
 
 pub(super) struct ConnectionOptions {
@@ -1010,6 +1079,7 @@ mod tests {
         let access = |unreachable| cloud_account::ServerAccess {
             connections: Vec::new(),
             unreachable,
+            refused: Vec::new(),
             names: [(
                 ployz_core::MachineId::parse("b".repeat(32)).unwrap(),
                 "box-node-7".to_owned(),
@@ -1047,6 +1117,7 @@ mod tests {
             ]))
             .unwrap(),
             unreachable: vec![ployz_core::MachineId::parse(gone.clone()).unwrap()],
+            refused: Vec::new(),
             names: [(
                 ployz_core::MachineId::parse(held.clone()).unwrap(),
                 "web-1".to_owned(),
@@ -1080,6 +1151,7 @@ mod tests {
         let unprovisioned = cloud_account::ServerAccess {
             connections: Vec::new(),
             unreachable: vec![ployz_core::MachineId::parse("b".repeat(32)).unwrap()],
+            refused: Vec::new(),
             names: BTreeMap::new(),
         };
         assert!(answering(matches, unprovisioned).await.unwrap().is_none());
@@ -1094,5 +1166,50 @@ mod tests {
         }))
         .unwrap();
         assert!(answering(matches, held).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn a_server_that_refused_cloud_is_not_one_that_did_not_answer() {
+        let matches = crate::cli::command()
+            .try_get_matches_from(["ployz", "server", "forget", "web-1"])
+            .unwrap();
+        let matches = leaf_matches(&matches);
+        let (refusing, gone) = ("a".repeat(32), "b".repeat(32));
+        let access = |unreachable: &[&String]| -> cloud_account::ServerAccess {
+            serde_json::from_value(json!({
+                "connections": [],
+                "unreachable": unreachable,
+                "refused": [{ "machine_id": refusing, "message": "Cluster store is not available" }],
+                "names": { refusing.clone(): "web-1" },
+            }))
+            .unwrap()
+        };
+
+        let Err(error) = dial(matches, access(&[])).await else {
+            panic!("dialed a Server that refused");
+        };
+        let report = error.report();
+        assert_eq!(
+            report.message,
+            "Server web-1 couldn't give this command access: Cluster store is not available"
+        );
+        assert!(!servers_unanswered(&report), "{report:?}");
+        let Err(error) = answering(matches, access(&[])).await else {
+            panic!("a Server that refused is not unanswered");
+        };
+        assert!(!servers_unanswered(&error.report()));
+
+        let Err(error) = dial(matches, access(&[&gone])).await else {
+            panic!("dialed a Server that refused");
+        };
+        let report = error.report();
+        assert_eq!(
+            report.message,
+            format!(
+                "No Server could give this command access: web-1 said \"Cluster store is not available\"; {gone} isn't answering."
+            )
+        );
+        assert_eq!(report.details.get("unreachable"), Some(&json!([gone])));
+        assert!(!servers_unanswered(&report), "{report:?}");
     }
 }

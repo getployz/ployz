@@ -331,6 +331,10 @@ A server that just joined or restarted answers within a minute; try again then.
 4. If you deleted the servers, see
    [Forget servers you deleted](../servers/manage-servers.md#forget-servers-you-deleted).
 
+A server that answers but refuses says so instead, with its own reason:
+`Server web-1 couldn't give this command access: Cluster store is not available`. It is running, so
+don't forget it. Read why in its logs with `sudo journalctl -u ployz -n 200`.
+
 ## A server shows Offline
 
 The server's page says **Can't reach web-2**. Services that run only there are down. Stopping Ployz

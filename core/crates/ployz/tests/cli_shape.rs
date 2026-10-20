@@ -620,6 +620,8 @@ struct WaitingCloud {
     rows: Vec<serde_json::Value>,
     list: &'static str,
     unreachable: Vec<String>,
+    /// The Servers Server Access says refused Cloud, with what each said.
+    refused: Vec<serde_json::Value>,
     /// The names Server Access gives the Servers, by id.
     names: serde_json::Value,
     /// The connections Server Access hands back, held before any Server was probed.
@@ -654,6 +656,7 @@ impl WaitingCloud {
             rows,
             list: "200 OK",
             unreachable: Vec::new(),
+            refused: Vec::new(),
             names: serde_json::json!({}),
             connections: Vec::new(),
             rejects: Vec::new(),
@@ -676,6 +679,7 @@ fn waiting_cloud(
         rows,
         list,
         unreachable,
+        refused,
         names,
         connections,
         rejects,
@@ -733,7 +737,12 @@ fn waiting_cloud(
                 }
                 "POST /api/cli/server-access" => (
                     "200 OK",
-                    serde_json::json!({ "connections": connections, "unreachable": unreachable, "names": names }),
+                    serde_json::json!({
+                        "connections": connections,
+                        "unreachable": unreachable,
+                        "refused": refused,
+                        "names": names,
+                    }),
                 ),
                 "GET /api/cli/enrollments" => {
                     if enrollment_reads > 0 {
@@ -1281,6 +1290,38 @@ fn removing_a_server_that_does_not_answer_points_to_forget() {
         next.ends_with(" server forget web-1 --confirm dead"),
         "{json}"
     );
+}
+
+#[test]
+fn removing_a_server_that_refused_cloud_says_why_and_not_to_forget_it() {
+    let routes = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let refusing = "b".repeat(32);
+    let cloud = waiting_cloud(
+        routes,
+        WaitingCloud {
+            refused: vec![serde_json::json!({
+                "machine_id": refusing,
+                "message": "Machine is not participating",
+            })],
+            names: serde_json::json!({ refusing.clone(): "web-1" }),
+            ..WaitingCloud::of(Vec::new())
+        },
+    );
+    let token = [("PLOYZ_TOKEN", "ployz_secret"), ("PLOYZ_CLOUD_URL", &cloud)];
+
+    let (code, json, _) = run_json_with(&["server", "rm", "web-1", "--json"], &token);
+    assert_eq!(code, Some(1), "{json}");
+    assert_eq!(
+        json.pointer("/error/message").unwrap(),
+        "Server web-1 couldn't give this command access: Machine is not participating",
+        "{json}"
+    );
+    assert_eq!(
+        json.pointer("/error/details/refused/0/machine_id").unwrap(),
+        &serde_json::json!(refusing),
+        "{json}"
+    );
+    assert_eq!(json.pointer("/error/details/next"), None, "{json}");
 }
 
 #[test]

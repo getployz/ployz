@@ -41,8 +41,12 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
 
 /// A reset needs its Server to answer. Servers that didn't answer may be gone, and one that
 /// is gone is forgotten instead; a Cloud that couldn't hand out the connections is retried.
+/// A Server's own refusal says what is wrong with it.
 fn unanswered_reset(error: Error, matches: &ArgMatches, selector: &str) -> Error {
     let report = error.report();
+    if report.details.get("refused").is_some() {
+        return error;
+    }
     if super::servers_unanswered(&report) {
         let forget = super::super::rerun(
             matches,

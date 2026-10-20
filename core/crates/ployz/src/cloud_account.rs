@@ -222,11 +222,21 @@ pub(crate) struct ServerClears {
 #[derive(Debug, Deserialize)]
 pub(crate) struct ServerAccess {
     pub(crate) connections: Vec<crate::context::Connection>,
-    /// Servers Cloud couldn't provision a holder on now.
+    /// Servers that didn't answer Cloud's provisioning of a holder now.
     pub(crate) unreachable: Vec<MachineId>,
+    /// Servers Cloud couldn't provision a holder on for another reason, such as their own refusal.
+    #[serde(default)]
+    pub(crate) refused: Vec<RefusedServer>,
     /// The names enrollment gave the Organization's Servers, where Cloud holds one.
     #[serde(default, deserialize_with = "text_names")]
     pub(crate) names: BTreeMap<MachineId, String>,
+}
+
+/// A Server that gave Cloud no holder for a reason other than silence, with that reason.
+#[derive(Debug, Deserialize)]
+pub(crate) struct RefusedServer {
+    pub(crate) machine_id: MachineId,
+    pub(crate) message: String,
 }
 
 /// Names are display only: an entry that is not a Machine ID and a string is dropped, so
