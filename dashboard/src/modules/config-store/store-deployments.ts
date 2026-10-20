@@ -145,8 +145,17 @@ export function reviewGroups(diff: DiffView, services: readonly ServiceListing[]
     }
     runtime.changeCount = runtime.rows.length + (runtime.lifecycle === "update" ? 0 : 1);
   }
-  return groups;
+  return groups.sort(reviewOrder);
 }
+
+const kindRank = { service: 0, volume: 1, config: 2 } satisfies Record<NodeChange["type"], number>;
+const stepRank = { delete: 0, update: 1, create: 2 } satisfies Record<NodeChange["lifecycle"], number>;
+const ascending = (a: number | string, b: number | string) => (a < b ? -1 : a > b ? 1 : 0);
+
+/** The Store's review order: Services, Volumes, then Configs, each by name; a removal before what took its name. */
+const reviewOrder = (a: ChangeGroup, b: ChangeGroup) =>
+  ascending(kindRank[a.nodeType], kindRank[b.nodeType]) || ascending(a.nodeName, b.nodeName)
+  || ascending(stepRank[a.lifecycle], stepRank[b.lifecycle]) || ascending(a.nodeId, b.nodeId);
 
 function sameReviewRow(left: ChangeRow, right: ChangeRow): boolean {
   if (!left.row || !right.row) return left.path === right.path;
