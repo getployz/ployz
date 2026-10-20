@@ -54,6 +54,9 @@ rollback. Discarding a service or volume you never deployed deletes it. Discard 
 version. When your latest saved version is not running, for example because its deploy failed,
 the bottom bar shows **#4 not running** with **Deploy** instead of a change count. Neither its **⋮**
 menu nor Details offers **Discard all** then, since nothing is left to discard.
+A new service's change starts with what it runs, its image or its repository and branch, such as
+`web.image: null → "nginx:1"`. Those rows have no Discard of their own: discard the service.
+`ployz discard web.image` says so and names the command, `ployz discard web`.
 If you discard saved changes back to what is deployed, Details still shows the draft reversal.
 Saving records that reversal; Discard on its row returns it to the latest saved value.
 In the CLI, `ployz discard` with no path drops every staged change in the environment, including

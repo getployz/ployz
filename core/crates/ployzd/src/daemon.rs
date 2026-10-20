@@ -337,6 +337,7 @@ impl Daemon {
                 .map_err(io::Error::other)?;
         let socket_path = config.socket.clone();
         let retire_admin = corrosion.as_ref().map(RunningCorrosion::admin_client);
+        let ingress_admin = corrosion.as_ref().map(RunningCorrosion::admin_client);
         let retire_id = local_id;
         let local_for_servers = local.clone();
         let shutdown_for_servers = shutdown.clone();
@@ -396,11 +397,18 @@ impl Daemon {
                 if !wait_for_participation(records.clone(), shutdown.clone()).await? {
                     return Ok(());
                 }
-                match (local_machine.clone(), replicated_store.clone()) {
-                    (Some(machine), Some(replicated)) => {
+                match (
+                    local_machine.clone(),
+                    replicated_store.clone(),
+                    machine_view.clone(),
+                    ingress_admin,
+                ) {
+                    (Some(machine), Some(replicated), Some(machines), Some(admin)) => {
                         ingress::run(
                             machine,
                             replicated,
+                            machines,
+                            admin,
                             ingress_data_dir,
                             ingress_runtime_dir,
                             shutdown.clone(),

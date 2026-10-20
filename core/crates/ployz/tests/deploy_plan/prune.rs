@@ -573,3 +573,40 @@ fn removes(plan: &ployz::deploy::DeployPreview, hex: char) -> bool {
         )
     })
 }
+
+#[test]
+fn a_removal_retires_a_stray_pending_copy_before_any_routed_one() {
+    let debug = spec("debug");
+    let service = service_id('b');
+    let rotated = |hex, machine_hex, rotation| {
+        let mut copy = container(hex, machine_hex, &debug, &service);
+        copy.try_update(|parts| parts.rotation = Some(rotation))
+            .unwrap();
+        copy
+    };
+    let snapshot = DeploySnapshot {
+        machines: vec![machine('1', "first"), machine('2', "second")],
+        containers: vec![
+            rotated('a', '1', ployz_core::CopyRotation::In),
+            rotated('c', '2', ployz_core::CopyRotation::Pending),
+        ],
+        ..Default::default()
+    };
+    let intent =
+        DeployIntent::apply_all(Namespace::parse("app").unwrap(), [], PlanOptions::default());
+
+    let plan = preview_deploy(&intent, &snapshot).unwrap();
+
+    // While a Pending sibling remains, proxies keep the last routed copy, so
+    // its Out could never be confirmed unlisted.
+    let retired: Vec<ContainerId> = operations(&plan)
+        .iter()
+        .map(|operation| {
+            let DeployOperation::RemoveContainer { container_id, .. } = operation else {
+                panic!("only removals are planned: {operation:?}");
+            };
+            *container_id
+        })
+        .collect();
+    assert_eq!(retired, [container_id('c'), container_id('a')]);
+}
