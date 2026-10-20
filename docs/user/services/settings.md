@@ -150,7 +150,8 @@ service with a volume runs one replica, and preview environments run one of each
 
 Empty by default, which means no limit. Set it in vCPUs, up to 64, to keep a busy service from
 slowing the others on its server. Ployz doesn't check that a server has room for it, so leave
-headroom. See [Scaling and multiple servers](scaling.md#run-more-replicas).
+headroom. Changes and `ployz diff` show it in vCPUs, such as `0.5 vCPUs → 2 vCPUs`. See
+[Scaling and multiple servers](scaling.md#run-more-replicas).
 
 ### Memory limit
 

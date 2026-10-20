@@ -799,6 +799,8 @@ pub(crate) fn changed(row: &ployz_core::config::ServiceSettingChange) -> Vec<Str
     let Some(domains) = ployz_store::DomainChange::of(row) else {
         let value = |value: &serde_json::Value| match value.as_f64() {
             Some(gb) if row.path.ends_with(".memLimit") => ployz_store::memory_size(gb),
+            Some(1.0) if row.path.ends_with(".cpuLimit") => "1 vCPU".to_owned(),
+            Some(cpus) if row.path.ends_with(".cpuLimit") => format!("{cpus} vCPUs"),
             _ => shown(value),
         };
         return vec![format!(
@@ -993,6 +995,23 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(changed(&row), ["web.memLimit: null → 192 MiB"]);
+    }
+
+    #[test]
+    fn a_staged_cpu_limit_reads_in_vcpus() {
+        let row = |before: serde_json::Value, after: serde_json::Value| {
+            let row: ployz_core::config::ServiceSettingChange = serde_json::from_value(json!({
+                "path": "web.cpuLimit", "kind": "update", "canRestore": true,
+                "before": before, "after": after,
+            }))
+            .unwrap();
+            changed(&row)
+        };
+        assert_eq!(
+            row(json!(0.5), json!(2)),
+            ["web.cpuLimit: 0.5 vCPUs → 2 vCPUs"]
+        );
+        assert_eq!(row(json!(null), json!(1)), ["web.cpuLimit: null → 1 vCPU"]);
     }
 
     /// Two reads of Working State's revision, with `between` run between them.
