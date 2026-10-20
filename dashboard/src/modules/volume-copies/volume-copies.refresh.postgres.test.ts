@@ -30,8 +30,8 @@ const inngest = new Inngest({ id: "volume-copies-refresh-test" });
 vi.spyOn(inngest, "send").mockResolvedValue({ ids: [] });
 
 const SNAPSHOT = { copy: { ...COPIES.writer, newest: { name: "w-1-5", guid: "12", created_unix_seconds: 1_790_000_100 } } };
-// The SDK's own 10s timeout on a target Machine's RPC.
-const TIMED_OUT = new RpcError({ code: "unavailable", message: "target Machine RPC timed out", details: null });
+// The SDK's own 10s timeout on a target Machine's RPC: no Machine sent it.
+const TIMED_OUT = new RpcError({ code: "unavailable", message: "target Machine RPC timed out", details: null, unanswered: true });
 
 describe("Refresh now", () => {
   let harness: PostgresTestHarness;
@@ -378,6 +378,24 @@ describe("Refresh now", () => {
       refusal: { code: "unanswered", message: "web-2 didn't answer in time, so data's sync may have reached it; volume sync data again says where its mirrors got to", details: null },
     });
     expect((await harness.pool.query(`select failure from volume_mirror_status where failure is not null`)).rows).toEqual([]);
+  });
+
+  it("says a hand-off whose reply never came may have reached the mirror, whatever code the SDK gives it", async () => {
+    const lost = new RpcError({ code: "internal", message: "connection reset", details: null, unanswered: true });
+    const cluster = await pairedCluster((want) => want.kind === "mirror" ? Promise.reject(lost) : Promise.resolve(SNAPSHOT));
+    expect(await run(refreshOn(cluster))).toEqual({
+      ok: false,
+      refusal: { code: "unanswered", message: "web-2 didn't answer in time, so data's sync may have reached it; volume sync data again says where its mirrors got to", details: null },
+    });
+  });
+
+  it("reads a mirror's own unavailable refusal as its answer, not as a hand-off that may have reached it", async () => {
+    const draining = new RpcError({ code: "unavailable", message: "web-2 is draining", details: null });
+    const cluster = await pairedCluster((want) => want.kind === "mirror" ? Promise.reject(draining) : Promise.resolve(SNAPSHOT));
+    expect(await run(refreshOn(cluster))).toEqual({
+      ok: false,
+      refusal: { code: "conflict", message: "data-web-2 refused the pull: set_volume_copy on web-2: unavailable: web-2 is draining", details: null },
+    });
   });
 
   it("answers with the round's pull failures when the writer's snapshot times out", async () => {
