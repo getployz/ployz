@@ -31,6 +31,7 @@ const runtimeWatchMachineSchema = Schema.Struct({
     runtime: Schema.Struct({
       daemon_version: Schema.String,
       running_builds: Schema.Number,
+      pool_committable_bytes: Schema.NullOr(Schema.Number).pipe(Schema.withDecodingDefaultKey(Effect.succeed(null))),
       capabilities: Schema.Array(Schema.String).pipe(Schema.withDecodingDefaultKey(Effect.succeed([]))),
     }),
   }),
@@ -141,6 +142,7 @@ export function runtimeWatchFrameForTransport(
         runtime: {
           daemon_version: machine.machine.runtime.daemon_version,
           running_builds: machine.machine.runtime.running_builds,
+          pool_committable_bytes: machine.machine.runtime.pool_committable_bytes ?? null,
           capabilities: [...(machine.machine.runtime.capabilities ?? [])],
         },
       },
@@ -226,6 +228,7 @@ export function runtimeSnapshotFromWatchFrame(
       runningBuilds: machine.machine.runtime.running_builds,
       daemonVersion: machine.machine.runtime.daemon_version,
       capabilities: machine.machine.runtime.capabilities,
+      poolCommittableBytes: machine.machine.runtime.pool_committable_bytes,
       membership: machine.membership,
       observedContainerCount: containerCounts.get(machine.machine.id) ?? 0,
       observedAt,

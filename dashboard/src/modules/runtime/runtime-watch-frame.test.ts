@@ -93,6 +93,7 @@ describe("runtimeSnapshotFromWatchFrame", () => {
               kernel_version: "6.1.0",
               memory_total_bytes: 16_000_000_000,
               running_builds: 1,
+              pool_committable_bytes: 12_884_901_888,
               capabilities: ["ployz.logs.tail.v1"],
             },
           }),
@@ -141,6 +142,7 @@ describe("runtimeSnapshotFromWatchFrame", () => {
           effectiveBuildConcurrency: 2,
           runningBuilds: 1,
           capabilities: ["ployz.logs.tail.v1"],
+          poolCommittableBytes: 12_884_901_888,
           daemonVersion: "0.1.2",
           membership: "suspect",
           observedContainerCount: 1,
@@ -249,6 +251,23 @@ describe("runtimeSnapshotFromWatchFrame", () => {
       ["web-4", "slot", "old_copy"],
       ["web-5", "slot", "mirror"],
     ]);
+  });
+
+  it("reads a Pool's room as unknown from a daemon that doesn't report it, or a transport from before it did", () => {
+    const frame = runtimeWatchFrameForTransport(runtimeWatchFrameFixture({
+      machines: [runtimeWatchMachineObservationFixture({ machine: runtimeWatchMachineFixture("machine-a", "edge-a") })],
+    }));
+    expect(runtimeSnapshotFromWatchFrame(frame).machines[0]?.poolCommittableBytes).toBeNull();
+
+    const [machine] = frame.machines;
+    if (!machine) throw new Error("Expected a machine.");
+    const { pool_committable_bytes: _, ...olderRuntime } = machine.machine.runtime;
+    const older = Schema.decodeUnknownOption(runtimeWatchFrameSchema)({
+      ...frame,
+      machines: [{ ...machine, machine: { ...machine.machine, runtime: olderRuntime } }],
+    });
+    if (Option.isNone(older)) throw new Error("Expected Runtime Watch frame.");
+    expect(runtimeSnapshotFromWatchFrame(older.value).machines[0]?.poolCommittableBytes).toBeNull();
   });
 
   it("accepts additive SDK fields while requiring the retained evidence", () => {

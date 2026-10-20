@@ -63,6 +63,8 @@ export const runtimeMachineRecordSchema = Schema.Struct({
   daemonVersion: Schema.String,
   /** Every capability the Server's daemon serves; empty when its record predates the field, which claims nothing. */
   capabilities: Schema.Array(Schema.String),
+  /** Bytes of Volume bounds the Server's Pool could still take on, a hint below the edge; null when unobserved or from an older daemon. */
+  poolCommittableBytes: Schema.NullOr(Schema.Number),
   membership: Schema.String,
   observedContainerCount: NonnegativeInt,
   observedAt: Schema.String,
