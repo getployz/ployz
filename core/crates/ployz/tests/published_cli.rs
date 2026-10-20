@@ -31,6 +31,8 @@ struct Cloud {
     keys: Vec<String>,
     /// Bodies posted to run routes.
     bodies: Vec<Value>,
+    /// How `GET organizations` says Cloud hears the caller.
+    via: Option<String>,
 }
 
 fn fake_cloud(cloud: Arc<Mutex<Cloud>>) -> String {
@@ -69,6 +71,13 @@ fn fake_cloud(cloud: Arc<Mutex<Cloud>>) -> String {
                     manifest["revision"] = Value::from(cloud.revision.as_str());
                     (200, manifest)
                 }
+                "GET /api/cli/organizations" => (
+                    200,
+                    json!({
+                        "organizations": [{ "id": "o1", "slug": "acme", "name": "Acme", "current": true }],
+                        "via": cloud.via,
+                    }),
+                ),
                 run if run.starts_with("POST /api/cli/run/") => {
                     cloud.keys.extend(key);
                     cloud
@@ -136,6 +145,45 @@ impl Fixture {
             .env("no_proxy", "127.0.0.1")
             .env("NO_COLOR", "1");
         command
+    }
+
+    /// Run under `script`, so stdin is a terminal, typing `typed`; the exit code and the screen.
+    #[cfg(target_os = "linux")]
+    fn at_a_terminal(&self, args: &[&str], typed: &str) -> (Option<i32>, String) {
+        let ployz = format!("{} {}", env!("CARGO_BIN_EXE_ployz"), args.join(" "));
+        let mut child = Command::new("script")
+            .args(["--quiet", "--return", "--command", &ployz, "/dev/null"])
+            .env("HOME", self.home.path())
+            .env("PLOYZ_CONFIG", self.config())
+            .env("PLOYZ_TOKEN", "ployz_test_token")
+            .env("PLOYZ_CLOUD_URL", &self.url)
+            .env("NO_PROXY", "127.0.0.1")
+            .env("no_proxy", "127.0.0.1")
+            .env("NO_COLOR", "1")
+            .env("TERM", "xterm")
+            .env_remove("CI")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .as_mut()
+            .unwrap()
+            .write_all(typed.as_bytes())
+            .unwrap();
+        let output = child.wait_with_output().unwrap();
+        (output.status.code(), text(&output.stdout))
+    }
+
+    fn heard_as(&self, via: &str) {
+        self.cloud.lock().unwrap().via = Some(via.to_owned());
+    }
+
+    fn ran(&self) -> bool {
+        self.routes()
+            .iter()
+            .any(|route| route.starts_with("POST /api/cli/run/"))
     }
 
     fn routes(&self) -> Vec<String> {
@@ -350,7 +398,7 @@ fn unknown_command_evicts_the_entry_and_names_the_loss() {
 }
 
 #[test]
-fn a_typed_name_is_refused_without_a_terminal_before_cloud_is_asked() {
+fn a_typed_name_is_refused_without_a_terminal_before_anything_runs() {
     let cloud = Fixture::new("one");
     let entry = fixture_entries()
         .into_iter()
@@ -378,6 +426,111 @@ fn a_typed_name_is_refused_without_a_terminal_before_cloud_is_asked() {
             .any(|route| route.starts_with("POST /api/cli/run/")),
         "nothing ran"
     );
+}
+
+/// The typed entry Cloud keeps from agents, with its positionals filled in.
+fn typed_for_people() -> Vec<String> {
+    let entry = fixture_entries()
+        .into_iter()
+        .find(|entry| entry["typed"] == "organization" && entry["agents"] == false)
+        .expect("the fixture has a typed entry agents can't run");
+    let mut args = argv(&entry);
+    for positional in entry["positional"].as_array().unwrap() {
+        args.push(format!("{}-value", positional.as_str().unwrap()));
+    }
+    args
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn an_agent_token_is_refused_before_it_is_asked_for_the_name() {
+    let cloud = Fixture::new("one");
+    cloud.heard_as("agent");
+    let args = typed_for_people();
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+
+    let (code, screen) = cloud.at_a_terminal(&args, "acme\n");
+
+    assert_ne!(code, Some(0), "{screen}");
+    assert!(!screen.contains("Type acme to continue"), "{screen}");
+    assert!(
+        screen.contains(&format!(
+            "an agent token can't run ployz {}",
+            args[..3].join(" ")
+        )),
+        "{screen}"
+    );
+    assert!(!cloud.ran(), "nothing ran");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn an_agent_token_is_forbidden_in_json_at_a_terminal() {
+    let cloud = Fixture::new("one");
+    cloud.heard_as("agent");
+    let mut args = typed_for_people();
+    args.push("--json".into());
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+
+    let (code, screen) = cloud.at_a_terminal(&args, "");
+
+    assert_ne!(code, Some(0), "{screen}");
+    assert!(screen.contains(r#""code":"forbidden""#), "{screen}");
+    assert!(!cloud.ran(), "nothing ran");
+}
+
+#[test]
+fn an_agent_token_without_a_terminal_is_forbidden() {
+    let cloud = Fixture::new("one");
+    cloud.heard_as("agent");
+    let args = typed_for_people();
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+
+    let output = cloud.ployz(&args);
+
+    assert!(!output.status.success());
+    let stderr = text(&output.stderr);
+    assert!(
+        stderr.contains(&format!(
+            "an agent token can't run ployz {}",
+            args[..3].join(" ")
+        )),
+        "{stderr}"
+    );
+    assert!(!cloud.ran(), "nothing ran");
+}
+
+#[test]
+fn a_person_without_a_terminal_still_needs_one() {
+    let cloud = Fixture::new("one");
+    cloud.heard_as("cli");
+    let mut args = typed_for_people();
+    args.push("--json".into());
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+
+    let output = cloud.ployz(&args);
+
+    assert!(!output.status.success());
+    assert_eq!(
+        stdout_json(&output)["error"]["code"],
+        "confirmation_required"
+    );
+    assert!(!cloud.ran(), "nothing ran");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_person_types_the_name_and_the_command_runs() {
+    let cloud = Fixture::new("one");
+    cloud.heard_as("cli");
+    let args = typed_for_people();
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+
+    let (code, screen) = cloud.at_a_terminal(&args, "acme\n");
+
+    assert_eq!(code, Some(0), "{screen}");
+    assert!(screen.contains("Type acme to continue"), "{screen}");
+    assert!(cloud.ran(), "{screen}");
 }
 
 #[test]
