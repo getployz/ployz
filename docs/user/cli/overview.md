@@ -45,7 +45,10 @@ The sign-in is saved in `~/.config/ployz`, or in `$XDG_CONFIG_HOME/ployz` when y
 Commands act on your only project and its default environment. With more than one, add
 `--project my-app --env production`, or run `ployz link --project my-app --env production` once in
 your app's directory.
-`ployz ctx` shows where commands act from here.
+`ployz ctx` shows where commands act from here. In a directory with no project linked, it asks Cloud
+which projects there are: it names your only project, or says the organization has several and
+how to link one. If Cloud doesn't answer within a few seconds, it shows `(none)` and the same
+`ployz link` step.
 
 ## Set up your coding agent
 
@@ -359,7 +362,8 @@ from `ployz env ls`, or for `project rm` the project from `ployz project ls`. Un
 `removal: removing`, with the removal's `id` and the removal deployments it ran in `deployments`.
 When one of them didn't apply, it also reports that deployment in full under `deployment` (its
 `status`, `outcome` and `nodes`) and `next`: the command that finishes it, with the same
-`--ployz-config` when you passed one.
+`--ployz-config` when you passed one. Each server it waits on is under `waiting_on`, by its name
+in `server` and its machine ID in `server_id`.
 
 Ployz colors its output in a terminal. With `CI` set or `TERM=dumb`, it prints plain text even in
 one. Set `NO_COLOR=1` or pass `--color never` to turn color off, or `--color always` to keep it

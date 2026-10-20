@@ -464,6 +464,81 @@ fn color_never_emits_no_escapes() {
 }
 
 #[test]
+fn asking_ps_for_a_container_column_says_where_the_ids_are() {
+    for args in [
+        &["ps", "--container"][..],
+        &["ps", "--wide"],
+        &["ps", "--sort", "service", "--wide"],
+        &["ps", "-o", "wide"],
+        &["ps", "--format={{.ID}}"],
+        &["ps", "-q"],
+    ] {
+        let (code, stderr) = run_human(args);
+        assert_eq!(code, Some(2), "{args:?}: {stderr}");
+        assert!(
+            stderr.contains(
+                "with server access, 'ployz ps --json' lists each container's container_id"
+            ),
+            "{args:?}: {stderr}"
+        );
+        assert!(!stderr.contains("--connect"), "{args:?}: {stderr}");
+    }
+
+    let (code, json, stderr) = run_json(&["ps", "--json", "--container"]);
+    assert_eq!(code, Some(2), "{stderr}");
+    assert_eq!(json.pointer("/error/code").unwrap(), "invalid_argument");
+    assert!(message(&json).contains("ployz ps --json"), "{json}");
+
+    let (_, stderr) = run_human(&["ps", "--bogus"]);
+    assert!(!stderr.contains("container_id"), "{stderr}");
+}
+
+#[test]
+fn a_column_flag_given_as_the_sort_value_keeps_claps_error() {
+    for (args, says) in [
+        (
+            &["ps", "--sort", "--wide"][..],
+            "unexpected argument '--wide'",
+        ),
+        (&["ps", "--sort", "-w"], "unexpected argument '-w'"),
+        (&["ps", "--sort=--wide"], "invalid value '--wide'"),
+    ] {
+        let (code, stderr) = run_human(args);
+        assert_eq!(code, Some(2), "{args:?}: {stderr}");
+        assert!(stderr.contains(says), "{args:?}: {stderr}");
+        assert!(!stderr.contains("container_id"), "{args:?}: {stderr}");
+    }
+}
+
+#[test]
+fn a_column_flag_after_the_option_terminator_keeps_claps_error() {
+    for args in [
+        &["ps", "--", "--wide"][..],
+        &["ps", "--sort", "service", "--", "--wide"],
+    ] {
+        let (code, stderr) = run_human(args);
+        assert_eq!(code, Some(2), "{args:?}: {stderr}");
+        assert!(
+            stderr.contains("unexpected argument '--wide'"),
+            "{args:?}: {stderr}"
+        );
+        assert!(!stderr.contains("container_id"), "{args:?}: {stderr}");
+    }
+
+    let (code, stderr) = run_human(&["ps", "--wide", "--", "--wide"]);
+    assert_eq!(code, Some(2), "{stderr}");
+    assert!(stderr.contains("container_id"), "{stderr}");
+}
+
+#[test]
+fn a_column_flag_on_another_command_keeps_its_error_when_a_global_took_ps_as_its_value() {
+    let (code, stderr) = run_human(&["--connect", "ps", "server", "ls", "--wide"]);
+    assert_eq!(code, Some(2), "{stderr}");
+    assert!(stderr.contains("Usage: ployz server ls"), "{stderr}");
+    assert!(!stderr.contains("container_id"), "{stderr}");
+}
+
+#[test]
 fn color_always_keeps_a_piped_record_colored_and_auto_leaves_it_plain() {
     let stdout = |args: &[&str]| String::from_utf8(human_output(args, &[]).stdout).unwrap();
     assert_eq!(
@@ -2721,7 +2796,7 @@ fn server_token_create_prints_the_secret_once_with_its_install_line() {
         "Created blue-heron\n",
         "Anyone with this token can add servers. Keep it secret.",
         &format!(
-            "curl -fsSL https://ployz.sh | sudo PLOYZ_CLOUD_URL='{cloud}' PLOYZ_ENROLL_TOKEN=pflt_secret sh -s -- {}\n",
+            "curl -fsSL https://ployz.sh | PLOYZ_FLEET_TOKEN=pflt_secret sudo --preserve-env=PLOYZ_FLEET_TOKEN PLOYZ_CLOUD_URL='{cloud}' sh -s -- {}\n",
             env!("CARGO_PKG_VERSION")
         ),
         "Shown once. Expires in 7d.",
@@ -2758,14 +2833,16 @@ fn server_token_create_json_carries_the_secret_and_install_line() {
     let json: serde_json::Value = serde_json::from_str(&stdout).unwrap();
     assert_eq!(json.pointer("/fleet_token/token").unwrap(), "pflt_secret");
     assert_eq!(json.pointer("/fleet_token/name").unwrap(), "amber-falcon");
+    let install = json
+        .pointer("/install")
+        .and_then(serde_json::Value::as_str)
+        .unwrap();
     assert!(
-        json.pointer("/install")
-            .and_then(serde_json::Value::as_str)
-            .unwrap()
-            .ends_with(&format!(
-                "PLOYZ_ENROLL_TOKEN=pflt_secret sh -s -- {}",
-                env!("CARGO_PKG_VERSION")
-            )),
+        install.contains("| PLOYZ_FLEET_TOKEN=pflt_secret sudo --preserve-env=PLOYZ_FLEET_TOKEN "),
+        "{json}"
+    );
+    assert!(
+        install.ends_with(&format!(" sh -s -- {}", env!("CARGO_PKG_VERSION"))),
         "{json}"
     );
 }

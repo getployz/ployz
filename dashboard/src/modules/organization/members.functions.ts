@@ -28,7 +28,10 @@ const ranAs = <N extends CommandName>(caller: Caller, name: N, input: JsonValue)
 const ran = <N extends CommandName>(headers: Headers, organizationSlug: string, name: N, input: JsonValue) =>
   dashboardCaller(headers, organizationSlug).pipe(Effect.flatMap((caller) => ranAs(caller, name, input)));
 
-/** Pending invites name who was invited, so only owners and admins see them. */
+/**
+ * Pending invites name who was invited, so only owners and admins see them. `support` marks a support visit, which has
+ * no row of its own.
+ */
 export const listMembersServerFn = createServerFn({ method: "GET" })
   .middleware([publicErrorMiddleware, actorMiddleware])
   .validator(strictValidator(Schema.Struct({ organizationSlug: Slug })))
@@ -38,6 +41,7 @@ export const listMembersServerFn = createServerFn({ method: "GET" })
       members: ranAs(caller, "org_member_ls", {}),
       invites: manages(caller) ? ranAs(caller, "org_invite_ls", {}) : Effect.succeed([]),
       mail: Effect.map(AppConfig, (config) => config.mail !== null),
+      support: Effect.succeed(caller.support !== null),
     }))));
   });
 

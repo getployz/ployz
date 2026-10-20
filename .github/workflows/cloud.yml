@@ -55,39 +55,16 @@ env:
   CARGO_INCREMENTAL: 0
 
 jobs:
-  static:
-    needs: [sdk]
+  # One job: every check needs the SDK, and separate jobs each paid checkout, pnpm install, the SDK
+  # download and a runner queue. Later checks run after an earlier one fails, so each still reports.
+  check:
+    name: Build and test
     runs-on: ${{ inputs.runner || 'ubuntu-24.04' }}
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
-        with:
-          ref: ${{ inputs.release-tag }}
-      - uses: ./.github/actions/setup-cloud
-        with:
-          package-cache: ${{ inputs.release-tag == '' }}
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        with:
-          name: ${{ needs.sdk.outputs.name }}
-          run-id: ${{ needs.sdk.outputs.run-id }}
-          github-token: ${{ github.token }}
-          path: core/crates/ployz-sdk
-      - name: Typecheck the SDK package
-        run: bash ../core/scripts/check-sdk-types.sh
-      - name: Typecheck
-        run: pnpm pr:check typecheck
-      - name: Lint
-        if: ${{ !cancelled() }}
-        run: pnpm pr:check lint
-
-  sdk:
-    name: Prepare matching SDK
-    runs-on: ${{ inputs.runner || 'ubuntu-24.04' }}
-    timeout-minutes: 15
-    # The SDK built from these sources: an earlier run's upload, or this run's build.
-    outputs:
-      name: ${{ steps.lookup.outputs.name }}
-      run-id: ${{ steps.lookup.outputs.run-id || github.run_id }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      actions: write
+      packages: write
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
@@ -105,10 +82,16 @@ jobs:
           if [ -n "$RELEASE_TAG" ]; then sed -i 's/^run-id=.*/run-id=/' "$RUNNER_TEMP/lookup.out"; fi
           if [ "$EVENT" = pull_request ] && grep -qx 'run-id=' "$RUNNER_TEMP/lookup.out"; then sed -i 's/^name=.*/&-pr-dev/' "$RUNNER_TEMP/lookup.out"; fi
           cat "$RUNNER_TEMP/lookup.out" >> "$GITHUB_OUTPUT"
-      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
-        if: steps.lookup.outputs.run-id == ''
+      - uses: ./.github/actions/setup-cloud
         with:
-          node-version: 22
+          package-cache: ${{ inputs.release-tag == '' }}
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        if: steps.lookup.outputs.run-id != ''
+        with:
+          name: ${{ steps.lookup.outputs.name }}
+          run-id: ${{ steps.lookup.outputs.run-id }}
+          github-token: ${{ github.token }}
+          path: core/crates/ployz-sdk
       - uses: ./.github/actions/setup-rust
         if: steps.lookup.outputs.run-id == ''
         with:
@@ -134,30 +117,40 @@ jobs:
             core/crates/ployz-sdk/generated/**
           retention-days: ${{ github.ref == 'refs/heads/main' && 14 || 3 }}
           if-no-files-found: error
-
-  build:
-    permissions:
-      contents: read
-      packages: write
-    needs: [sdk, static, test]
-    runs-on: ${{ inputs.runner || 'ubuntu-24.04' }}
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      # Runs only when every step above passed; each check below needs the SDK and nothing else before it.
+      - name: SDK ready
+        id: sdk
+        run: test -f ../core/crates/ployz-sdk/ployz-sdk.node
+      - name: Typecheck the SDK package
+        if: ${{ !cancelled() && steps.sdk.outcome == 'success' }}
+        run: bash ../core/scripts/check-sdk-types.sh
+      - name: Typecheck
+        if: ${{ !cancelled() && steps.sdk.outcome == 'success' }}
+        run: pnpm pr:check typecheck
+      - name: Lint
+        if: ${{ !cancelled() && steps.sdk.outcome == 'success' }}
+        run: pnpm pr:check lint
+      # The suite is CPU-bound: unsharded it takes about as long as the two shards did together,
+      # but a shard job also paid its own setup and runner queue.
+      - name: Unit and PostgreSQL tests
+        if: ${{ !cancelled() && steps.sdk.outcome == 'success' }}
+        env:
+          PLOYZ_TEST_ENV_FILE: .env.test
+        run: pnpm test --reporter=default --reporter=github-actions --reporter=junit --outputFile.junit=test-results/junit.xml
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
         with:
-          ref: ${{ inputs.release-tag }}
-      - uses: ./.github/actions/setup-cloud
-        with:
-          package-cache: ${{ inputs.release-tag == '' }}
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        with:
-          name: ${{ needs.sdk.outputs.name }}
-          run-id: ${{ needs.sdk.outputs.run-id }}
-          github-token: ${{ github.token }}
-          path: core/crates/ployz-sdk
+          name: cloud-test-results
+          path: dashboard/test-results
+          retention-days: 7
+          if-no-files-found: ignore
       - name: Build and verify frontend package
+        id: frontend
+        if: ${{ !cancelled() && steps.sdk.outcome == 'success' }}
         run: pnpm pr:check build
+      # Last before publishing: pruning dev dependencies leaves the checks above unable to run.
       - name: Package and smoke-test runtime image
+        if: ${{ !cancelled() && steps.frontend.outcome == 'success' }}
         run: |
           pnpm prune --prod
           docker build -f ../Dockerfile.cloud -t ployz-cloud:ci ..
@@ -171,6 +164,7 @@ jobs:
             require.resolve("inngest/connect");
           '
       # Railway's web and worker deploy a pinned ployz-cloud:<sha>, so every main commit publishes one.
+      # Its condition has no status function, so it runs only when every step above passed.
       - name: Publish image
         if: inputs.release-tag != '' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
         env:
@@ -180,39 +174,3 @@ jobs:
           printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
           docker tag ployz-cloud:ci "$IMAGE"
           docker push "$IMAGE"
-
-
-  test:
-    needs: [sdk]
-    runs-on: ${{ inputs.runner || 'ubuntu-24.04' }}
-    timeout-minutes: 10
-    # The suite is CPU-bound on a 4-vCPU runner. Two shards keep each job near three minutes;
-    # a third saved about a minute of wall time but billed a setup and a rounded-up minute more.
-    strategy:
-      fail-fast: false
-      matrix:
-        shard: [1, 2]
-    steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
-        with:
-          ref: ${{ inputs.release-tag }}
-      - uses: ./.github/actions/setup-cloud
-        with:
-          package-cache: ${{ inputs.release-tag == '' }}
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        with:
-          name: ${{ needs.sdk.outputs.name }}
-          run-id: ${{ needs.sdk.outputs.run-id }}
-          github-token: ${{ github.token }}
-          path: core/crates/ployz-sdk
-      - name: Unit and PostgreSQL tests
-        env:
-          PLOYZ_TEST_ENV_FILE: .env.test
-        run: pnpm test --shard=${{ matrix.shard }}/2 --reporter=default --reporter=github-actions --reporter=junit --outputFile.junit=test-results/junit.xml
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        if: always()
-        with:
-          name: cloud-test-results-${{ matrix.shard }}
-          path: dashboard/test-results
-          retention-days: 7
-          if-no-files-found: ignore
