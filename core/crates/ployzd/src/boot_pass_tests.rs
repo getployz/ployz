@@ -78,7 +78,6 @@ fn copy(suffix: u8, machine: &Machine, r#gen: u64) -> ContainerObservation {
     .unwrap()
 }
 
-/// Every Machine in `routing` acks the given copies of `api`.
 fn routes(
     routing: &[(&Machine, &[&ContainerObservation])],
 ) -> BTreeMap<(MachineId, QualifiedService), IngressRouteRow> {
