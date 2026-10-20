@@ -4831,3 +4831,109 @@ fn a_deploy_admitted_behind_a_running_retry_builds_from_the_retried_upload() {
         )])
     );
 }
+
+/// `web` and `api` without a source, each deployed from `a` then from `b`.
+fn uploaded_twice(store: &ConfigStore, who: &Actor) {
+    for name in ["web", "api"] {
+        store
+            .write(
+                who,
+                &Edit {
+                    environment: EnvironmentRef::default(),
+                    expect: None,
+                    changes: vec![Change::Unset {
+                        path: SettingPath::parse(&format!("{name}.image")).unwrap(),
+                    }],
+                },
+            )
+            .unwrap();
+    }
+    let a = runner("cli-a");
+    for (n, digest) in [(1, 'a'), (2, 'b')] {
+        deploy_sent(store, who, n, Some(digest));
+        store.claim(&id(n), &a).unwrap();
+        store
+            .record(&id(n), &a, RunEvidence::Prepared(preview(&["web", "api"])))
+            .unwrap();
+        store
+            .record(&id(n), &a, succeeded(&["web", "api"]))
+            .unwrap();
+    }
+}
+
+/// Deployment `n`, claimed, applies `completed` and fails on `failed`.
+fn partly(store: &ConfigStore, n: u8, completed: &str, failed: &str) {
+    let a = runner("cli-a");
+    store
+        .record(&id(n), &a, RunEvidence::Prepared(preview(&["web", "api"])))
+        .unwrap();
+    store
+        .record(
+            &id(n),
+            &a,
+            RunEvidence::Executed {
+                progress: Vec::new(),
+                outcome: Box::new(outcome(json!({
+                    "type": "failed",
+                    "completed": [operation(completed)],
+                    "failed": {"type": "operation", "operation": operation(failed), "error": {
+                        "type": "machine", "action": "RemoveContainer",
+                        "error": {"code": "internal", "message": "disk failure", "details": {}}
+                    }},
+                    "unexecuted": []
+                }))),
+                removed: Vec::new(),
+            },
+        )
+        .unwrap();
+}
+
+#[test]
+fn verifier_a_running_retry_that_fails_a_service_leaves_its_queued_deploy_on_its_confirmed_upload()
+{
+    let (store, who) = shop();
+    uploaded_twice(&store, &who);
+    let a = runner("cli-a");
+    retry(&store, &who, 3, 1).unwrap();
+    store.claim(&id(3), &a).unwrap();
+    admit(&store, &who, 4, &["web"], None).unwrap();
+    partly(&store, 3, "api", "web");
+    assert!(nodes(&store, &who, 3).contains(&("web".to_owned(), NodeStatus::Failed)));
+    assert_eq!(
+        store.claim(&id(4), &a).unwrap().uploads,
+        std::collections::BTreeMap::from([(
+            ServiceName::parse("web").unwrap(),
+            Some(digested('b').digest)
+        )])
+    );
+}
+
+#[test]
+fn verifier_a_failed_upload_keeps_the_upload_a_partial_retry_applied() {
+    let (store, who) = shop();
+    uploaded_twice(&store, &who);
+    retry(&store, &who, 3, 1).unwrap();
+    store.claim(&id(3), &runner("cli-a")).unwrap();
+    partly(&store, 3, "web", "api");
+    store
+        .write_trusted(
+            &who,
+            &Admit::Deploy(Deploy {
+                id: id(4),
+                environment: EnvironmentRef::default(),
+                services: vec![ServiceName::parse("web").unwrap()],
+                version: None,
+                upload: Some(digested('c')),
+                accept_volume_loss: Vec::new(),
+                message: None,
+            }),
+            &Trusted::default(),
+        )
+        .unwrap();
+    fail(&store, 4);
+    assert_eq!(
+        kept_of(&store, &who, &[1, 2, 4]),
+        [true, true, true],
+        "web still runs a, api b, and c is web's latest sent"
+    );
+}
