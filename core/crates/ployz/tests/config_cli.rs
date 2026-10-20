@@ -1482,6 +1482,33 @@ fn an_agent_adds_checks_and_removes_domains() {
             "{unreached}"
         );
 
+        // A context connection that knows its Server names it, and says why in a few words.
+        if !cloud {
+            let home = tempfile::tempdir().unwrap();
+            let machine = "0123456789abcdef0123456789abcdef";
+            std::fs::write(
+                home.path().join("config.yaml"),
+                format!(
+                    "current_context: lab\ncontexts:\n  lab:\n    connections:\n      - tcp: 127.0.0.1:1\n        machine_id: {machine}\n"
+                ),
+            )
+            .unwrap();
+            let output = store
+                .command(home.path())
+                .args(["--json", "deploy", "--plan"])
+                .output()
+                .unwrap();
+            let planned: Value = serde_json::from_slice(&output.stdout).unwrap();
+            let cause = planned["ingress_unchecked"][0].as_str().unwrap_or_default();
+            assert!(
+                cause.starts_with(&format!("Server {machine} isn't answering ("))
+                    && cause.contains("refused")
+                    && !cause.contains("retry")
+                    && !cause.contains("Machine"),
+                "{planned}"
+            );
+        }
+
         let listed = ok(store, &["domain", "ls"]);
         let first = &listed["domains"][0];
         assert_eq!(first["status"], json!("setting_up"));
