@@ -53,16 +53,6 @@ impl Ackers {
             Self::Unread => vec!["unknown, the Machine list was never read".to_owned()],
         }
     }
-
-    pub(crate) fn lists(&self, machine: &MachineId) -> bool {
-        match self {
-            Self::Known(named) => named.contains_key(machine),
-            Self::Incomplete { named, unnamed } => {
-                named.contains_key(machine) || unnamed.contains(machine)
-            }
-            Self::Unread => false,
-        }
-    }
 }
 
 /// One round's membership: the Machines that must ack, and the Machines the
