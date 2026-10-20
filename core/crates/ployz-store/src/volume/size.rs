@@ -186,9 +186,9 @@ pub(crate) enum StorageRule<'a> {
     /// History restore staged earlier doesn't block an unrelated edit.
     Edit { volume: &'a str },
     /// An intent made earlier coming back: publish, Deploy admission, a History
-    /// restore or undo, a Branch landing. A Managed Volume fits at or below its fixed
-    /// size, since a Deploy accepts a live bound at or above the size it asks for, so
-    /// rolling back past a grow still deploys. A Docker Volume, or a change of kind,
+    /// restore or undo, a Branch landing. A Managed Volume fits at any size, since a
+    /// Deploy ships it at the size its Servers hold ([`held`]), so a revision saved
+    /// before a grow or a shrink still deploys. A Docker Volume, or a change of kind,
     /// must match.
     Replay,
 }
@@ -226,30 +226,13 @@ pub(crate) fn check_storage<'a>(
                 VolumeKind::Provisioned {
                     maximum_bytes: asked,
                 },
-            ) if edited => error::conflict(
+            ) => error::conflict(
                 format!(
                     "{name} is deployed at {fixed}; {} it with ployz volume set {name} --size {}",
                     if asked > fixed { "grow" } else { "shrink" },
                     gb(*asked)
                 ),
                 json!({ "volume": name, "storage_locked": true, "recorded": fixed }),
-            ),
-            (
-                VolumeKind::Provisioned {
-                    maximum_bytes: fixed,
-                },
-                VolumeKind::Provisioned {
-                    maximum_bytes: asked,
-                },
-            ) => error::conflict(
-                format!(
-                    "This revision asks {asked} for {name}, which is deployed at {fixed}. Grow it \
-                     first with ployz volume set {name} --size {}",
-                    gb(*asked)
-                ),
-                json!({
-                    "volume": name, "storage_locked": true, "recorded": fixed, "asked": asked
-                }),
             ),
             _ => error::conflict(
                 format!(
@@ -272,13 +255,7 @@ fn fits(fixed: &VolumeKind, asked: &VolumeKind, edited: bool) -> bool {
             VolumeKind::Provisioned {
                 maximum_bytes: asked,
             },
-        ) => {
-            if edited {
-                asked == fixed
-            } else {
-                asked <= fixed
-            }
-        }
+        ) => !edited || asked == fixed,
         (fixed, asked) => fixed == asked,
     }
 }
@@ -301,7 +278,7 @@ mod tests {
     }
 
     #[test]
-    fn a_managed_volume_fits_exactly_when_edited_and_at_or_below_when_replayed() {
+    fn a_managed_volume_fits_exactly_when_edited_and_at_any_size_when_replayed() {
         let docker = VolumeKind::Docker {};
         for (fixed, asked, edited, expected) in [
             (managed(10), managed(10), true, true),
@@ -309,7 +286,7 @@ mod tests {
             (managed(10), managed(5), true, false),
             (managed(10), managed(5), false, true),
             (managed(10), managed(20), true, false),
-            (managed(10), managed(20), false, false),
+            (managed(10), managed(20), false, true),
             (docker, docker, true, true),
             (docker, docker, false, true),
             (docker, managed(10), true, false),

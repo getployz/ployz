@@ -830,26 +830,90 @@ fn a_replayed_intent_fits_at_or_below_the_lock() {
     );
 }
 
+/// Every Managed Volume size Deployment `n`'s Deploy Intent asks its Servers to hold,
+/// in GB.
+fn shipped_sizes(store: &ConfigStore, n: u8) -> Vec<u64> {
+    fn collect(value: &Value, sizes: &mut Vec<u64>) {
+        match value {
+            Value::Object(fields) => {
+                for (key, field) in fields {
+                    match field.as_u64() {
+                        Some(bytes) if key == "maximum_bytes" || key == "maximumBytes" => {
+                            sizes.push(bytes / 1_000_000_000);
+                        }
+                        _ => collect(field, sizes),
+                    }
+                }
+            }
+            Value::Array(items) => items.iter().for_each(|item| collect(item, sizes)),
+            Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {}
+        }
+    }
+    let claimed = store
+        .claim(&id(n), &RunnerId::parse("runner").unwrap())
+        .unwrap();
+    let mut sizes = Vec::new();
+    collect(&serde_json::to_value(&claimed.intent).unwrap(), &mut sizes);
+    sizes
+}
+
+/// Deployment `n` ships `data` at `size` GB, runs, and leaves the lock and Applied
+/// State there: a Deploy grows or shrinks nothing.
+fn deploys_at(store: &ConfigStore, who: &Actor, n: u8, size: u64) {
+    let shipped = shipped_sizes(store, n);
+    assert!(!shipped.is_empty(), "Deployment {n} ships a Managed Volume");
+    assert!(
+        shipped.iter().all(|&shipped| shipped == size),
+        "{shipped:?}"
+    );
+    run(store, n);
+    let listed = listing(store, who, "data");
+    assert_eq!(listed.volume.storage, managed(size));
+    assert_eq!(listed.recorded_storage, Some(gb(size)));
+    assert_eq!(storage_row(store, who), None);
+}
+
 #[test]
-fn a_replayed_intent_above_the_lock_is_refused() {
+fn a_replayed_intent_above_the_lock_deploys_at_the_held_size() {
     let (store, who) = shop(managed(20));
     deploy(&store, &who, 1);
     resize(&store, 20, 10).unwrap();
-    let message = "This revision asks 20 GB for data, which is deployed at 10 GB. Grow it first \
-                   with ployz volume set data --size 20";
-    let details = json!({
-        "volume": "data", "storage_locked": true,
-        "recorded": 10_000_000_000_u64, "asked": 20_000_000_000_u64
-    });
-    let refused = restore(&store, &who, revision_of(&store, &who, 1)).unwrap_err();
-    assert_eq!(refused.code, RpcErrorCode::Conflict);
-    assert_eq!(refused.message, message);
-    assert_eq!(refused.details, details);
-    let refused = redeploy(&store, &who, 1, 2).unwrap_err();
-    assert_eq!(refused.code, RpcErrorCode::Conflict);
-    assert_eq!(refused.message, message);
-    assert_eq!(refused.details, details);
-    assert_eq!(listing(&store, &who, "data").volume.storage, managed(10));
+    redeploy(&store, &who, 1, 2).unwrap();
+    deploys_at(&store, &who, 2, 10);
+
+    // Restoring revision #1 stages the 20 GB it asked for; its Deploy holds 10 GB.
+    restore(&store, &who, revision_of(&store, &who, 1)).unwrap();
+    assert_eq!(
+        storage_row(&store, &who),
+        Some((storage_json(10), storage_json(20)))
+    );
+    admit(&store, &who, 3).unwrap();
+    let shipped = shipped_sizes(&store, 3);
+    assert_eq!(shipped.iter().max(), Some(&10));
+    run(&store, 3);
+    assert_eq!(listing(&store, &who, "data").recorded_storage, Some(gb(10)));
+}
+
+#[test]
+fn a_revision_saved_before_a_shrink_deploys_at_the_held_size() {
+    let (store, who) = shop(managed(5));
+    deploy(&store, &who, 1);
+    set(&store, &who, "web.image", json!("postgres:18"));
+    publish(&store, &who);
+    resize(&store, 5, 3).unwrap();
+    admit(&store, &who, 2).unwrap();
+    deploys_at(&store, &who, 2, 3);
+}
+
+#[test]
+fn a_deploy_with_nothing_staged_after_a_shrink_ships_at_the_held_size() {
+    let (store, who) = shop(managed(5));
+    publish(&store, &who);
+    deploy(&store, &who, 1);
+    resize(&store, 5, 3).unwrap();
+    admit(&store, &who, 2).unwrap();
+    assert_eq!(revision_of(&store, &who, 2), revision_of(&store, &who, 1));
+    deploys_at(&store, &who, 2, 3);
 }
 
 #[test]
