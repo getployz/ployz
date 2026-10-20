@@ -2367,9 +2367,6 @@ pub(super) fn prepare_discard(
         DiscardTarget::Review => saved.unwrap_or(&reviewed.head.intent).clone(),
         DiscardTarget::Head => reviewed.head.intent.clone(),
     };
-    // A discard goes back to the size the Servers hold, which the review compared
-    // against, not the size the Saved revision asked for.
-    crate::volume::size::held(tx, &environment.summary.id, &mut baseline.volumes)?;
     if target == DiscardTarget::Review && path.is_some() {
         return Err(error::invalid(
             "Review discard takes the whole reviewed list",

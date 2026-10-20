@@ -150,8 +150,9 @@ fn applied_volume(
 
 /// `volumes` at the size their Servers hold: a Provisioned Volume's lock row, once a
 /// Deploy fixed one, whatever its Saved revision asked for. A Saved revision keeps
-/// what it asked for as history; what it puts into Head or Applied State reads the
-/// lock. A Docker Volume and an undeployed one stay as they are.
+/// what it asked for as history; read as the latest Saved State, or put into Head
+/// or Applied State, it says the lock's size. A Docker Volume and an undeployed one
+/// stay as they are.
 pub(crate) fn held(
     tx: &mut dyn Tx,
     environment: &EnvironmentId,

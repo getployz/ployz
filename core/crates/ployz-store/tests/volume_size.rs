@@ -9,16 +9,16 @@
 
 use ployz_core::config::VolumeKind;
 use ployz_core::{
-    DeployOutcome, DeployPreview, ProvisionedVolumeMaximumBytes, RpcError, RpcErrorCode,
-    ServiceName,
+    DeployOutcome, DeployPreview, DockerVolumeName, ProvisionedVolumeMaximumBytes, RpcError,
+    RpcErrorCode, ServiceName,
 };
 use ployz_store::{
     Actor, Admit, Change, ConfigStore, CreateProject, CreateService, CreateVolume, Deploy,
     DeploymentId, DeploymentQuery, Discard, DiscardTarget, Edit, EnvironmentId, EnvironmentRef,
     HistoryAction, HistoryPreviewQuery, Mount, OrganizationId, ProjectId, ProjectName, Publish,
-    Retry, Revision, RunEvidence, RunnerId, ServiceLineageId, SetVolumeStorage, SettingPath,
-    StageHistory, SystemEvent, Trusted, VolumeId, VolumeListing, VolumeName, VolumeResized,
-    VolumesQuery,
+    RemoveVolume, Retry, Revision, RunEvidence, RunnerId, ServiceLineageId, SetVolumeStorage,
+    SettingPath, StageHistory, SystemEvent, Trusted, VolumeId, VolumeListing, VolumeName,
+    VolumeObservation, VolumeResized, VolumesQuery,
 };
 use serde_json::{Value, json};
 
@@ -448,6 +448,127 @@ fn a_discard_after_a_record_keeps_the_recorded_size() {
         assert_eq!(view.draft_count, 0, "{target:?}");
         assert_eq!(view.total_count, 0, "{target:?}");
     }
+}
+
+#[test]
+fn a_save_or_deploy_after_a_record_creates_no_revision() {
+    let (store, who) = shop(managed(10));
+    publish(&store, &who);
+    deploy(&store, &who, 1);
+    resize(&store, 10, 20).unwrap();
+
+    let published = store
+        .write_trusted(
+            &who,
+            &Publish {
+                id: None,
+                environment: EnvironmentRef::default(),
+                version: None,
+                message: None,
+                accept_volume_loss: Vec::new(),
+            },
+            &Trusted::default(),
+        )
+        .unwrap();
+    assert!(!published.created);
+    assert_eq!(published.saved, Some(revision_of(&store, &who, 1)));
+
+    deploy(&store, &who, 2);
+    assert_eq!(revision_of(&store, &who, 2), revision_of(&store, &who, 1));
+    assert_eq!(listing(&store, &who, "data").volume.storage, managed(20));
+}
+
+#[test]
+fn a_restore_after_a_record_overwrites_nothing() {
+    let (store, who) = shop(managed(10));
+    publish(&store, &who);
+    deploy(&store, &who, 1);
+    resize(&store, 10, 20).unwrap();
+
+    let revision = revision_of(&store, &who, 1);
+    let preview = store
+        .read(
+            &who,
+            &HistoryPreviewQuery {
+                environment: EnvironmentRef::default(),
+                revision,
+                action: HistoryAction::Restore,
+                change: None,
+            },
+        )
+        .unwrap();
+    assert!(preview.overwritten.is_empty(), "{:?}", preview.overwritten);
+    store
+        .write(
+            &who,
+            &StageHistory {
+                environment: EnvironmentRef::default(),
+                revision,
+                action: HistoryAction::Restore,
+                change: None,
+                version: preview.version,
+                accept_overwrite: false,
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        draft_storage_row(&store, &who),
+        Some((storage_json(20), storage_json(10)))
+    );
+}
+
+#[test]
+fn a_partial_deploy_after_a_record_needs_no_volume_evidence() {
+    let (store, who) = shop(managed(10));
+    add_api(&store, &who);
+    create_volume_on(
+        &store,
+        &who,
+        "00000000-0000-4000-8000-000000000009",
+        "cache",
+        managed(5),
+        "api",
+    );
+    publish(&store, &who);
+    deploy(&store, &who, 1);
+    store
+        .write(
+            &who,
+            &RemoveVolume {
+                environment: EnvironmentRef::default(),
+                volume: VolumeName::parse("cache").unwrap(),
+            },
+        )
+        .unwrap();
+    store
+        .write_trusted(
+            &who,
+            &Publish {
+                id: None,
+                environment: EnvironmentRef::default(),
+                version: None,
+                message: None,
+                accept_volume_loss: Vec::new(),
+            },
+            &Trusted {
+                volumes: Some(VolumeObservation {
+                    sought: vec![
+                        DockerVolumeName::parse(
+                            "shop-production_vol-00000000-0000-4000-8000-000000000009",
+                        )
+                        .unwrap(),
+                    ],
+                    held: Vec::new(),
+                    unanswered: Vec::new(),
+                    failure: None,
+                }),
+                ..Trusted::default()
+            },
+        )
+        .unwrap();
+    resize(&store, 10, 20).unwrap();
+
+    admit_only(&store, &who, 2, &["web"]).unwrap();
 }
 
 #[test]

@@ -242,13 +242,10 @@ pub(crate) fn review(tx: &mut dyn Tx, environment: &Environment) -> Result<Revie
             .collect::<Vec<_>>(),
     );
     view.broken = crate::rules::broken_in(tx, environment, names)?;
-    let mut baseline = saved.as_ref().map_or_else(
+    let baseline = saved.as_ref().map_or_else(
         || crate::scope::empty(environment.summary.name.as_str()),
         |saved| saved.intent.clone(),
     );
-    // A record moved Working State to the size the Servers hold; against the size
-    // the Saved revision asked for, that is no draft of the user's.
-    crate::volume::size::held(tx, id, &mut baseline.volumes)?;
     let draft = saved_comparison(environment, &baseline)?;
     view.draft_changes = draft.changes;
     view.draft_count = draft.total_count;
@@ -994,7 +991,10 @@ pub(crate) fn latest_saved(
     let Some(row) = rows.first() else {
         return Ok(None);
     };
-    let intent = row.intent(1, "Saved State")?;
+    let mut intent = canonicalize_environment_intent(row.intent(1, "Saved State")?);
+    // The revision keeps the size it asked for as history; read as the latest
+    // Saved State, it says the size the Servers hold, as Head does.
+    crate::volume::size::held(tx, environment, &mut intent.volumes)?;
     let accepted = match row.optional_text(2)? {
         Some(json) => {
             serde_json::from_str(json).map_err(|_| error::corrupt("accepted Volume losses"))?
@@ -1003,7 +1003,7 @@ pub(crate) fn latest_saved(
     };
     Ok(Some(Saved {
         revision: Revision(row.number(0, "revision")?),
-        intent: canonicalize_environment_intent(intent),
+        intent,
         accepted,
     }))
 }
