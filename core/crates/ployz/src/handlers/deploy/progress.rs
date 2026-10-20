@@ -1370,6 +1370,12 @@ mod tests {
             ingress_warnings(&view),
             ["Ingress isn't running on web-1: pull failed. Deploy again to retry."]
         );
+        view.deployment.ingress.first_mut().unwrap().failure =
+            Some(IngressFailure::Failed { cause: " ".into() });
+        assert_eq!(
+            ingress_warnings(&view),
+            ["Ingress isn't running on web-1. Deploy again to retry."]
+        );
     }
 
     #[test]
@@ -1413,6 +1419,11 @@ mod tests {
                 "Couldn't check ingress: lab-1 went unobserved (connection refused). Deploy again to retry.",
                 "Couldn't check ingress: lab-2 went unobserved (no answer). Deploy again to retry."
             ]
+        );
+        view.deployment.warnings = vec![DeploymentWarning::IngressUnchecked { cause: "".into() }];
+        assert_eq!(
+            ingress_warnings(&view),
+            ["Couldn't check ingress. Deploy again to retry."]
         );
     }
 

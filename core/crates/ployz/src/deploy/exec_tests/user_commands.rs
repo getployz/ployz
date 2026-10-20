@@ -763,7 +763,7 @@ async fn a_failed_restart_or_stop_and_its_outcome_read_as_sentences() {
         ("Stop failed?", "Stop failed? It is back In."),
         ("Stop failed!", "Stop failed! It is back In."),
         ("Stop failed. ", "Stop failed. It is back In."),
-        ("Stop failed:", "Stop failed:. It is back In."),
+        ("Stop failed:", "Stop failed. It is back In."),
         ("", "It is back In."),
     ] {
         let named = if reason.is_empty() { "." } else { ":" };
