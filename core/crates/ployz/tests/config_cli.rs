@@ -1410,6 +1410,19 @@ fn an_agent_adds_checks_and_removes_domains() {
             (cloud, !cloud),
             "{planned}"
         );
+        let unreached = ok(
+            store,
+            &[&["deploy", "--plan"][..], &UNREACHABLE_SERVER].concat(),
+        );
+        let cause = unreached["ingress_unchecked"][0]
+            .as_str()
+            .unwrap_or_default();
+        assert!(
+            cause.starts_with(
+                "Ployz couldn't reach your Server's daemon: Couldn't open a connection to the Server: "
+            ) && cause.contains("refused"),
+            "{unreached}"
+        );
 
         let listed = ok(store, &["domain", "ls"]);
         let first = &listed["domains"][0];
@@ -3010,6 +3023,13 @@ fn an_agent_plans_deploys_and_reads_the_deployment() {
         assert_eq!(deployed["saved"], json!(1));
         assert_eq!(deployed["status"], json!("failed"));
         assert_eq!(deployed["outcome"]["type"], json!("not_executed"));
+        let outcome = deployed["outcome"].to_string();
+        assert!(
+            outcome.contains("Ployz couldn't reach your Server's daemon")
+                && !outcome.contains("connections from")
+                && !outcome.contains("Machine"),
+            "{outcome}"
+        );
         assert_eq!(deployed["nodes"][0]["outcome"], json!("not_attempted"));
         let id = deployed["id"].as_str().unwrap().to_owned();
         assert_eq!(

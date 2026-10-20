@@ -892,7 +892,13 @@ mod tests {
                 .unwrap_err()
                 .causes()
                 .get(..2),
-            Some(&["Could not connect to the Machine.", "transport error"].map(String::from)[..]),
+            Some(
+                &[
+                    "Couldn't open a connection to the Server.",
+                    "transport error"
+                ]
+                .map(String::from)[..]
+            ),
         );
     }
 
