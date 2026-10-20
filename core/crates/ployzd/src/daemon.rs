@@ -494,7 +494,8 @@ impl Daemon {
                     machine_id: retire_id,
                     machine: crate::machine::LocalMachine::new(local.clone())
                         .with_containers(Some(runtime))
-                        .with_plugin(plugin.clone()),
+                        .with_plugin(plugin.clone())
+                        .with_cluster(Some((replicated.clone(), admin.clone()))),
                     replicated,
                     machines,
                     admin,
