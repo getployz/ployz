@@ -1856,3 +1856,98 @@ async fn a_deploy_with_an_unchanged_service_records_its_outcome() {
     assert!(recorded.is_ok(), "{recorded:?}");
     client.assert_done();
 }
+
+/// Two ingress repairs planned from one snapshot, where the second admits the pointer
+/// only after the first has flipped it, as when its image pull finishes later. Both
+/// repairs only add a copy, so the second must keep the first's new Ingress Proxy.
+#[tokio::test]
+async fn a_late_ingress_repair_keeps_the_proxy_an_earlier_repair_published() {
+    use crate::deploy::planning::ingress_repairs::{ingress_intent, ingress_on, servers};
+    use crate::deploy::planning::{SlotAction, plan_ingress_repairs};
+
+    let first = crate::global_fixtures::machine('1', "edge-1");
+    let second = crate::global_fixtures::machine('2', "edge-2");
+    let serving = crate::global_fixtures::machine('3', "edge-3");
+    let snapshot = servers(
+        &[first.clone(), second.clone(), serving.clone()],
+        vec![ingress_on('c', &serving)],
+    );
+    let plans: Vec<_> = plan_ingress_repairs(&ingress_intent(), &snapshot)
+        .into_iter()
+        .map(|repair| match repair.action {
+            SlotAction::Create(Ok(plan)) => plan,
+            action => panic!("a create on each empty Server, got {action:?}"),
+        })
+        .collect();
+    let [first_plan, second_plan] = plans.as_slice() else {
+        panic!("two empty Servers to repair, got {plans:?}");
+    };
+    let ingress = QualifiedService::system_ingress();
+    let earlier = ServingPointer {
+        deploy: DeploymentLogId::parse("earlier").unwrap(),
+        containers: vec![container('c')],
+        previous: None,
+        retiring: Vec::new(),
+        deciding: None,
+    };
+
+    let first_client = Scripted::new(vec![created(
+        Call::Run(first.id, ContainerKind::ServiceContainer),
+        &container('a'),
+    )]);
+    first_client
+        .pointers
+        .lock()
+        .unwrap()
+        .insert(ingress.clone(), earlier);
+    let outcome = super::super::execute_operation_sequence(
+        first_plan,
+        &run_id(),
+        &first_client,
+        &CancellationToken::new(),
+        None,
+    )
+    .await;
+    assert!(
+        matches!(outcome, DeployOutcome::Success { .. }),
+        "{outcome:?}"
+    );
+    let mut published = first_client.pointers.lock().unwrap()[&ingress].clone();
+    published.deploy = DeploymentLogId::parse("first-repair").unwrap();
+
+    let second_client = Scripted::new(vec![created(
+        Call::Run(second.id, ContainerKind::ServiceContainer),
+        &container('b'),
+    )]);
+    second_client
+        .pointers
+        .lock()
+        .unwrap()
+        .insert(ingress.clone(), published);
+    let outcome = super::super::execute_operation_sequence(
+        second_plan,
+        &run_id(),
+        &second_client,
+        &CancellationToken::new(),
+        None,
+    )
+    .await;
+
+    assert!(
+        matches!(outcome, DeployOutcome::Success { .. }),
+        "{outcome:?}"
+    );
+    let last = second_client.pointers.lock().unwrap()[&ingress].clone();
+    let mut serving_now = last.containers.clone();
+    serving_now.sort();
+    assert_eq!(
+        (serving_now, last.retiring),
+        (
+            vec![container('a'), container('b'), container('c')],
+            Vec::new()
+        ),
+        "the second repair retired the first repair's Ingress Proxy"
+    );
+    first_client.assert_done();
+    second_client.assert_done();
+}
