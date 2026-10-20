@@ -3,7 +3,7 @@
 use std::collections::VecDeque;
 
 use ployz_core::{
-    Machine, MachineId, MachineName, Namespace, QualifiedService, WireGuardPublicKey,
+    Machine, MachineId, MachineName, Namespace, QualifiedService, RpcError, WireGuardPublicKey,
 };
 use serde_json::json;
 use tokio_util::sync::CancellationToken;
@@ -12,6 +12,7 @@ use super::{
     DrainClient, DrainOutcome, DrainReport, DrainScope, DrainStop, Lost, MachineRef, Move,
     MoveFailure, Ready, Remaining, ServiceDrain, ServicesRole, StayReason, execute,
 };
+use crate::deploy::cleanup::Copy;
 use crate::deploy::{Converged, OldCopyEnd};
 use crate::drain::retirement::Retirement;
 
@@ -121,6 +122,12 @@ struct Scripted {
     /// Cancelled once the first Service converges.
     cancel_after_converge: Option<CancellationToken>,
     retired: bool,
+    /// Copies listed on the drained Server before each Service converges; an exhausted
+    /// script lists none.
+    copies: VecDeque<Result<Vec<Copy>, RpcError>>,
+    /// How each Out copy ends once let go, in order.
+    ends: VecDeque<OldCopyEnd>,
+    let_go: Vec<Copy>,
 }
 
 impl DrainClient for Scripted {
@@ -151,6 +158,21 @@ impl DrainClient for Scripted {
         self.convergences
             .pop_front()
             .expect("one scripted convergence per Service")
+    }
+
+    async fn copies_on(
+        &mut self,
+        _server: &MachineId,
+        _service: &QualifiedService,
+    ) -> Result<Vec<Copy>, RpcError> {
+        self.copies.pop_front().unwrap_or_else(|| Ok(Vec::new()))
+    }
+
+    async fn let_go(&mut self, copy: &Copy, _cancellation: &CancellationToken) -> OldCopyEnd {
+        self.let_go.push(copy.clone());
+        self.ends
+            .pop_front()
+            .expect("one scripted end per Out copy")
     }
 }
 
