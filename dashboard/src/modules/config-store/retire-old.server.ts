@@ -1,6 +1,6 @@
 import "@tanstack/react-start/server-only";
-import { and, eq } from "drizzle-orm";
-import { Effect } from "effect";
+import { and, eq, ne, or } from "drizzle-orm";
+import { Effect, Option } from "effect";
 import { cloudStore, storeTry } from "#/modules/config-store/store-sdk.server";
 import { connectionsOf } from "#/modules/config-store/config-store.server";
 import { type CleanupLeft, deploymentCleanup, type DeploymentCleanupState } from "#/modules/config-store/tables";
@@ -17,27 +17,52 @@ export const retireOldCopies = Effect.fn("DeploymentCleanup.retireOld")(function
   return yield* storeTry<{ left: CleanupLeft[] }>(() => store.retireOld(data.organizationId, data.deploymentId, connections));
 });
 
-/** Run `runId` cleans up the Deployment, `left` still running so far. A newer run of the same Deployment takes the row. */
+const cleanupOf = (data: ConfigDeploymentRetireRequestedEventData) =>
+  ({ deploymentId: data.deploymentId, organizationId: data.organizationId, environmentId: data.environmentId });
+
+const ownWaitingRow = (runId: string) => and(eq(deploymentCleanup.runId, runId), eq(deploymentCleanup.state, "waiting"));
+
+/**
+ * Run `runId` cleans up the Deployment, `left` still running so far. A newer run of the same Deployment takes the row,
+ * but the run's own ended row stays ended: its cancel can land before this write does.
+ */
 export const recordCleanupWaiting = Effect.fn("DeploymentCleanup.waiting")(function* (
   runId: string, data: ConfigDeploymentRetireRequestedEventData, left: readonly CleanupLeft[] = [],
 ) {
   const { drizzle } = yield* Database;
   const waiting = { runId, state: "waiting" as const, left: [...left], message: null, updatedAt: new Date() };
   yield* drizzle.insert(deploymentCleanup)
-    .values({ deploymentId: data.deploymentId, organizationId: data.organizationId, environmentId: data.environmentId, ...waiting })
-    .onConflictDoUpdate({ target: deploymentCleanup.deploymentId, set: waiting });
+    .values({ ...cleanupOf(data), ...waiting })
+    .onConflictDoUpdate({
+      target: deploymentCleanup.deploymentId,
+      set: waiting,
+      setWhere: or(ne(deploymentCleanup.runId, runId), eq(deploymentCleanup.state, "waiting")),
+    });
 });
 
 export type CleanupEnd = { state: Exclude<DeploymentCleanupState, "waiting">; left?: readonly CleanupLeft[]; message?: string };
 
-/** Run `runId`'s cleanup ended. Only a waiting row ends, so a late failure or cancel never rewrites how it ended. */
-export const endCleanup = Effect.fn("DeploymentCleanup.end")(function* (runId: string, end: CleanupEnd) {
+/**
+ * Run `runId`'s cleanup ended. Given the Deployment it cleans up, the end lands even before the run's first waiting row.
+ * It never rewrites how a run ended, nor takes the row from another run still waiting.
+ */
+export const endCleanup = Effect.fn("DeploymentCleanup.end")(function* (
+  runId: string, end: CleanupEnd, requested: Option.Option<ConfigDeploymentRetireRequestedEventData>,
+) {
   const { drizzle } = yield* Database;
-  const ended = yield* drizzle.update(deploymentCleanup)
-    .set({ state: end.state, left: [...end.left ?? []], message: end.message ?? null, updatedAt: new Date() })
-    .where(and(eq(deploymentCleanup.runId, runId), eq(deploymentCleanup.state, "waiting")))
-    .returning({ deploymentId: deploymentCleanup.deploymentId });
-  return ended.length;
+  const ended = { runId, state: end.state, left: [...end.left ?? []], message: end.message ?? null, updatedAt: new Date() };
+  const returning = { deploymentId: deploymentCleanup.deploymentId };
+  const rows = Option.isNone(requested)
+    ? yield* drizzle.update(deploymentCleanup).set(ended).where(ownWaitingRow(runId)).returning(returning)
+    : yield* drizzle.insert(deploymentCleanup)
+      .values({ ...cleanupOf(requested.value), ...ended })
+      .onConflictDoUpdate({
+        target: deploymentCleanup.deploymentId,
+        set: ended,
+        setWhere: or(ownWaitingRow(runId), and(ne(deploymentCleanup.runId, runId), ne(deploymentCleanup.state, "waiting"))),
+      })
+      .returning(returning);
+  return rows.length;
 });
 
 /** The Deployment's cleanup, or null for one Cloud never cleaned up. */
