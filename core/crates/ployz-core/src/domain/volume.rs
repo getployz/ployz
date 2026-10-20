@@ -425,6 +425,11 @@ pub enum DockerVolumeStorageObservation {
         /// as a writer.
         #[serde(default)]
         role: Option<crate::CopyRole>,
+        /// What a slot's Machine recorded it as; unset on every other role and from older
+        /// daemons.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        slot_role: Option<crate::SlotRole>,
     },
 }
 

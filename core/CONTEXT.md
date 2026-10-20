@@ -453,7 +453,7 @@ The one copy of a Provisioned Volume that Containers mount read-write: the datas
 _Avoid_: primary, master, active replica, source of truth
 
 **Mirror**:
-A read-only point-in-time copy of a Provisioned Volume held in a hidden slot on another Machine's Pool, refreshed by request. Docker never lists a slot; the Pool still pays for its bound. It is not continuous replication and does not make the Volume shared.
+A read-only point-in-time copy of a Provisioned Volume held in a hidden slot on another Machine's Pool, refreshed by request. Docker never lists a slot; the Pool still pays for its bound. It is not continuous replication and does not make the Volume shared. The Machine records each slot's role: a pull makes it a Mirror, and a cut or a departure that parks the Writer's root in it makes it an **Old copy**, which nothing refreshes.
 _Avoid_: replica, standby, backup, secondary
 
 **Lease**:
