@@ -1607,9 +1607,57 @@ impl<'a> Rows<'a> {
         &self,
         client: &C,
         progress: &Progress,
-        old: BTreeMap<usize, Result<Option<ContainerObservation>, ExecutionError>>,
+        mut old: BTreeMap<usize, Result<Option<ContainerObservation>, ExecutionError>>,
         cancellation: &CancellationToken,
     ) -> Inspected {
+        // A Pending sibling keeps every proxy routing a Held copy, so when the
+        // step withdraws one, its own Pending copies, never routed, go first.
+        let withdraws = old
+            .values()
+            .filter_map(|observed| observed.as_ref().ok()?.as_ref())
+            .any(|observed| {
+                !crate::ingress::is_system_ingress(observed)
+                    && matches!(
+                        observed.rotation(),
+                        CopyRotation::In | CopyRotation::Held(_)
+                    )
+            });
+        let pending = join_all(
+            old.iter()
+                .filter(|_| withdraws)
+                .filter_map(|(task, observed)| {
+                    let observed = observed.as_ref().ok()?.as_ref()?;
+                    (*observed.rotation() == CopyRotation::Pending
+                        && !crate::ingress::is_system_ingress(observed))
+                    .then(|| async move {
+                        let copy = cleanup::Copy::observed(observed);
+                        let removed =
+                            cleanup::remove(client, &copy, AnonymousVolumes::Remove).await;
+                        (*task, removed)
+                    })
+                }),
+        )
+        .await;
+        for (task, removed) in pending {
+            let error = match removed {
+                Ok(cleanup::Step::Done) => {
+                    old.insert(task, Ok(None));
+                    continue;
+                }
+                Ok(cleanup::Step::Refused(refusal)) => {
+                    machine_error(MachineAction::RemoveContainer, refusal.into_error())
+                }
+                Ok(step @ (cleanup::Step::NotConfirmed(_) | cleanup::Step::Cancelled)) => {
+                    unreachable!("a removal waits on no proxy: {step:?}")
+                }
+                Err(error) => machine_error(MachineAction::RemoveContainer, error),
+            };
+            return Inspected {
+                old,
+                failed: Some(error),
+                withdrawn: std::sync::Mutex::new(BTreeMap::new()),
+            };
+        }
         let withdrawals = join_all(old.iter().filter_map(|(task, observed)| {
             let observed = observed.as_ref().ok()?.as_ref()?;
             Some(async move {

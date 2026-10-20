@@ -506,6 +506,49 @@ async fn stop_first_publishes_the_new_copies_and_retires_the_stopped_ones() {
     client.assert_done();
 }
 
+#[tokio::test(start_paused = true)]
+async fn a_stop_first_step_withdraws_beside_a_pending_copy_a_dead_run_left() {
+    let (first, second) = (machine('1'), machine('2'));
+    let (old_first, old_second) = (container('a'), container('b'));
+    let (new_first, new_second) = (container('c'), container('d'));
+    let plan = vec![
+        swap(&first, &old_first, UpdateOrder::StopFirst),
+        swap(&second, &old_second, UpdateOrder::StopFirst),
+    ];
+    let mut missing = error("not found");
+    missing.code = RpcErrorCode::NotFound;
+    let client = Scripted::new(vec![
+        observed(Call::Inspect(first, old_first), running()),
+        observed(Call::Inspect(second, old_second), running()),
+        ok(Call::Remove(second, old_second)),
+        ok(Call::Stop(first, old_first)),
+        created(
+            Call::Run(first, ContainerKind::ServiceContainer),
+            &new_first,
+        ),
+        created(
+            Call::Run(second, ContainerKind::ServiceContainer),
+            &new_second,
+        ),
+        observed(Call::Inspect(first, old_first), running()),
+        Step(Call::Inspect(second, old_second), Reply::Error(missing)),
+        ok(Call::Remove(first, old_first)),
+    ])
+    .with_copy(&first, &old_first, CopyRotation::In)
+    .with_copy(&second, &old_second, CopyRotation::Pending)
+    .routing(&api());
+
+    let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
+
+    assert_eq!(
+        outcome.services(),
+        ended(&[("api", ServiceResult::New)]),
+        "{outcome:?}"
+    );
+    assert_eq!(client.brought_in(), [new_first, new_second]);
+    client.assert_done();
+}
+
 #[tokio::test]
 async fn a_stop_first_or_rolling_failure_restores_every_old_copy_and_removes_every_new_one() {
     for order in [UpdateOrder::StopFirst, UpdateOrder::Rolling] {

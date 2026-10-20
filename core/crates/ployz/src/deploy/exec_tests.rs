@@ -324,6 +324,13 @@ impl Scripted {
         self
     }
 
+    /// Every proxy already routes the In copies of `service`, as it would
+    /// before the run, so the rule's kept route applies from the first read.
+    fn routing(self, service: &QualifiedService) -> Self {
+        self.routes(service, false);
+        self
+    }
+
     fn rotation(&self, container_id: &ContainerId) -> Option<CopyRotation> {
         self.copies
             .lock()
