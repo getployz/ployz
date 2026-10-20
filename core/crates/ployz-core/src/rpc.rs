@@ -25,8 +25,8 @@ use crate::{
     AdvertisedEndpoint, CapabilityName, CertificateHost, ContainerId, ContainerKind,
     ContainerObservation, Machine, MachineId, MachineLogService, MachineName, MachineObservation,
     MachineRuntime, MachineUpdate, ManagementCapability, ManagementClientLabel, Namespace,
-    PinnedAddresses, QualifiedService, ResolvedServiceSpec, SelectedEndpoint, ServingPointer,
-    StorageChoice, WireGuardPublicKey,
+    PinnedAddresses, PullPolicy, QualifiedService, ResolvedServiceSpec, SelectedEndpoint,
+    ServingPointer, StorageChoice, WireGuardPublicKey,
 };
 
 mod docker;
@@ -1700,27 +1700,42 @@ impl RpcError {
         CapabilityRefusal::new(&self.code, self.details.clone())
     }
 
-    /// `self` from a pull of `image`, naming the image when the answer is not found.
-    /// A registry answers not found for a missing tag and a private repository alike.
+    /// `self` from a pull of `image` under `policy`, naming both when the answer is not
+    /// found. A registry answers not found for a missing tag and a private repository alike.
     #[must_use]
-    pub fn pulling(mut self, image: &str) -> Self {
+    pub fn pulling(mut self, image: &str, policy: PullPolicy) -> Self {
         if self.code == RpcErrorCode::NotFound && self.details.is_null() {
-            self.details = serde_json::json!({ MISSING_IMAGE: image });
+            self.details = serde_json::json!({ MISSING_IMAGE: image, PULL_POLICY: policy });
         }
         self
     }
 
     /// The image a not-found pull named through [`Self::pulling`].
     #[must_use]
-    pub fn missing_image(&self) -> Option<&str> {
+    pub fn missing_image(&self) -> Option<MissingImage<'_>> {
         if self.code != RpcErrorCode::NotFound {
             return None;
         }
-        self.details.get(MISSING_IMAGE)?.as_str()
+        Some(MissingImage {
+            image: self.details.get(MISSING_IMAGE)?.as_str()?,
+            policy: self
+                .details
+                .get(PULL_POLICY)
+                .and_then(|policy| PullPolicy::deserialize(policy).ok()),
+        })
     }
 }
 
 const MISSING_IMAGE: &str = "missing_image";
+const PULL_POLICY: &str = "pull_policy";
+
+/// An image a pull answered not found for, from [`RpcError::missing_image`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MissingImage<'a> {
+    pub image: &'a str,
+    /// The policy it was pulled under, when the error recorded one.
+    pub policy: Option<PullPolicy>,
+}
 
 /// A Machine refused a route because its Ployz lacks the route's capability.
 #[derive(Clone, Debug, PartialEq)]

@@ -283,7 +283,7 @@ describe("resolveGithubBranchHead", () => {
 
     expect(Result.isFailure(result)).toBe(true);
     if (Result.isSuccess(result)) return;
-    expect(result.failure).toMatchObject({ code: "invalid_input" });
+    expect(result.failure).toMatchObject({ code: "invalid_argument" });
     expect(fetchMock).not.toHaveBeenCalled();
   });
 });

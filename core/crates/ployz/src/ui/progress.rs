@@ -7,7 +7,7 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime};
 
 use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle};
-use ployz_core::{DeployWarning, MachineId, Namespace, QualifiedService};
+use ployz_core::{DeployWarning, MachineId, Namespace, QualifiedService, ServiceName};
 use ployz_store::tools::{LogText, Withheld};
 use ployz_store::{DeploymentId, RowPhase};
 use unicode_segmentation::UnicodeSegmentation;
@@ -520,7 +520,7 @@ fn drive(
                     .rows
                     .iter()
                     .filter(|row| row.state.active())
-                    .map(|row| format!("{}, {}", label(&row.subject, &frame), word(row)))
+                    .map(|row| format!("{} ({})", label(&row.subject, &frame), word(row)))
                     .collect::<Vec<_>>()
                     .join(", ");
                 let _ = writeln!(writer, "  still waiting: {waiting}");
@@ -1065,7 +1065,10 @@ pub(crate) struct Detail {
 /// to show or withhold.
 #[derive(Debug)]
 pub(crate) struct LogTail {
+    /// The runtime identity, which a rename keeps; JSON reports it.
     pub service: QualifiedService,
+    /// The Service's name now, which the human header shows.
+    pub name: ServiceName,
     pub machine: MachineId,
     pub server: String,
     pub log: Option<LogText>,
@@ -1082,7 +1085,7 @@ impl Diagnostic {
             )?;
         }
         for tail in &self.logs {
-            let (service, server) = (&tail.service.name, &tail.server);
+            let (service, server) = (&tail.name, &tail.server);
             match &tail.log {
                 None => {}
                 Some(LogText::Shown(excerpt)) if excerpt.lines().is_empty() => {}

@@ -39,7 +39,7 @@ pub(super) fn frame(view: &DeploymentView) -> Frame {
             .and_then(|preview| preview.depths.get(runtime))
             .copied();
         let mut row = service_row(
-            QualifiedService::new(view.namespace.clone(), runtime.clone()),
+            QualifiedService::new(view.namespace.clone(), name.clone()),
             depth,
             node.rows.iter().map(|row| Replica {
                 machine: row.machine_id,
@@ -365,12 +365,13 @@ fn failure(view: &DeploymentView, command: impl Fn(&[&str]) -> String) -> Failur
                 primary_seen = true;
             } else {
                 diagnostic.failures.push(Detail {
-                    message: format!("{} on {}: {row_reason}.", service.name, row.server),
+                    message: format!("{name} on {}: {row_reason}.", row.server),
                     causes: row_cause.clone(),
                 });
             }
             diagnostic.logs.push(LogTail {
                 service: service.clone(),
+                name: name.clone(),
                 machine: row.machine_id,
                 server: row.server.clone(),
                 log: log.clone(),
@@ -431,7 +432,7 @@ fn failure(view: &DeploymentView, command: impl Fn(&[&str]) -> String) -> Failur
     }
     let mut failure = Failure::from(RpcError {
         code: RpcErrorCode::Internal,
-        message: reason,
+        message: crate::ui::sentence(reason),
         cause,
         details: serde_json::Value::Null,
     })
@@ -480,19 +481,58 @@ mod tests {
     }
 
     #[test]
-    fn replicas_fold_into_one_service_row_under_its_runtime_identity() {
+    fn replicas_fold_into_one_service_row_under_its_service_name() {
         let frame = frame(&view());
         assert_eq!(frame.rows.len(), 3);
         assert!(frame.rows.iter().any(|row| matches!(
             &row.subject,
             Subject::Service(graph)
-                if graph.service.to_string() == "shop-production/private-web"
+                if graph.service.to_string() == "shop-production/web"
                     && graph.total == 2
                     && graph.machines.len() == 2
         ) && row.state == State::Failed));
         assert!(frame.rows.iter().any(
             |row| matches!(&row.subject, Subject::Node { name, .. } if name == "Volume data")
         ));
+    }
+
+    #[test]
+    fn a_renamed_service_reads_by_its_service_name_not_its_private_name() {
+        let mut removal = view();
+        removal.deployment.status = DeploymentStatus::Applied;
+        removal.deployment.remove = true;
+        removal.nodes.truncate(1);
+        let node = removal.nodes.first_mut().unwrap();
+        node.outcome = NodeStatus::Removed;
+        for row in &mut node.rows {
+            row.state = RowState::Completed;
+        }
+        let lines = crate::ui::progress::live_lines(&frame(&removal), 0, 80, 40, false);
+        assert!(lines.iter().any(|line| line.contains(" web ")), "{lines:?}");
+        assert!(
+            !lines.iter().any(|line| line.contains("private-web")),
+            "{lines:?}"
+        );
+        let failure = failure(&view(), command);
+        let text = crate::ui::plain(&failure);
+        assert!(
+            text.contains("web on edge: CreateContainer failed"),
+            "{text}"
+        );
+        assert!(
+            !text.contains("private-web on edge: CreateContainer"),
+            "{text}"
+        );
+        assert!(
+            text.contains("Last 1 log lines from web on edge:"),
+            "{text}"
+        );
+        assert!(!text.contains("from private-web"), "{text}");
+        // JSON keeps the runtime identity that log lookups use.
+        assert_eq!(
+            failure.json().pointer("/details/progress/logs/0/service"),
+            Some(&json!("shop-production/private-web"))
+        );
     }
 
     #[test]
@@ -1046,7 +1086,7 @@ mod tests {
             assert!(matches!(
                 &row.subject,
                 Subject::Service(graph)
-                    if graph.service.to_string() == "shop-production/private-web" && graph.total == 0
+                    if graph.service.to_string() == "shop-production/web" && graph.total == 0
             ));
             assert_eq!(row.detail.as_deref(), Some(detail));
             assert_eq!(row.state, state);
