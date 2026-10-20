@@ -174,16 +174,16 @@ describe("removeOrganization", () => {
   });
 
   it("frees the slug, and an old link to it opens the new Organization only for its members", async () => {
-    const KILN = "00000000-0000-4000-8000-00000000c006";
-    const NEW_KILN = "00000000-0000-4000-8000-00000000c007";
-    const [fay, gus] = (await harness.db.insert(user).values([
-      { email: "fay@example.test", name: "Fay" },
+    const KILN = "00000000-0000-4000-8000-00000000c00a";
+    const NEW_KILN = "00000000-0000-4000-8000-00000000c00b";
+    const [ivy, gus] = (await harness.db.insert(user).values([
+      { email: "ivy@example.test", name: "Ivy" },
       { email: "gus@example.test", name: "Gus" },
     ]).returning({ id: user.id })).map((row) => row.id) as [string, string];
     await harness.db.insert(organization).values({ id: KILN, name: "Kiln", slug: "kiln" });
-    await harness.db.insert(member).values({ userId: fay, organizationId: KILN, role: "owner" });
+    await harness.db.insert(member).values({ userId: ivy, organizationId: KILN, role: "owner" });
     const store = await harness.runEffect(openCloudStore(harness.databaseUrl, harness.database, "test-encryption-secret"));
-    const result = await harness.runEffect(removeOrganization({ userId: fay, organization: { id: KILN, slug: "kiln" }, role: "owner" }, KILN).pipe(
+    const result = await harness.runEffect(removeOrganization({ userId: ivy, organization: { id: KILN, slug: "kiln" }, role: "owner" }, KILN).pipe(
       Effect.provideService(CloudStore, { open: Effect.succeed(store) }),
       Effect.provideService(OrganizationRuntime, asTestDouble<OrganizationRuntimeService>()({})),
       Effect.provideService(Ployz, asTestDouble<PloyzService>()({})),
@@ -197,14 +197,14 @@ describe("removeOrganization", () => {
       Effect.map((access) => access.organization.id),
       Effect.provideService(SupportStaff, supportStaffOf([])),
     )));
-    const former = await open(fay);
+    const former = await open(ivy);
     expect(Exit.isFailure(former) && Cause.pretty(former.cause)).toContain("The organization was not found.");
     expect(await open(gus)).toEqual(Exit.succeed(NEW_KILN));
   });
 
   it("reads a new Organization on a reused slug in full from the deleted one's cursor", async () => {
-    const OVEN = "00000000-0000-4000-8000-00000000c008";
-    const NEW_OVEN = "00000000-0000-4000-8000-00000000c009";
+    const OVEN = "00000000-0000-4000-8000-00000000c00c";
+    const NEW_OVEN = "00000000-0000-4000-8000-00000000c00d";
     const [hal] = (await harness.db.insert(user).values({ email: "hal@example.test", name: "Hal" }).returning({ id: user.id })).map((row) => row.id) as [string];
     await harness.db.insert(organization).values({ id: OVEN, name: "Oven", slug: "oven" });
     await harness.db.insert(member).values({ userId: hal, organizationId: OVEN, role: "owner" });
