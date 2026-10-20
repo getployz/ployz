@@ -49,6 +49,7 @@ import { createOrganizationForSession } from "#/modules/organization/organizatio
 import { fakeGithubApi } from "#/test/fake-github";
 import * as ids from "#/test/ids";
 import { postgresTestDatabase } from "#/test/postgres";
+import { sendsNowhere } from "#/test/store-cloud";
 
 const origin = "http://localhost:3000";
 
@@ -139,7 +140,7 @@ const cliLayer = Effect.fn(function* (
     configLayer,
     databaseLayer,
     Layer.succeed(Polar, { mode: "self_hosted" }),
-    Layer.succeed(InngestClient, overrides.inngest ?? new Inngest({ id: "cli-test" })),
+    Layer.succeed(InngestClient, overrides.inngest ?? sendsNowhere()),
     Layer.succeed(SecretEncryption, encryption),
     Layer.succeed(GithubApi, github.service),
     ployz,
