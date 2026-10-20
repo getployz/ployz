@@ -435,7 +435,7 @@ async fn remove_releases_a_commitment_and_usage_is_not_a_growth_input() {
     );
 }
 
-async fn start_pool_with_data(
+pub(super) async fn start_pool_with_data(
     test: &TestDir,
 ) -> (PathBuf, tokio::task::JoinHandle<std::io::Result<()>>) {
     let socket = test.0.join("plugin.sock");
