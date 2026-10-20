@@ -10,8 +10,8 @@ use std::{
 
 use hex::encode as hex_encode;
 use ployz_core::{
-    ConfigMount, ConfigSpec, ContainerId, CopyRotation, DockerVolumeName, ResolvedServiceSpec,
-    VolumeGen,
+    ConfigMount, ConfigSpec, ContainerId, ContainerRun, CopyRotation, DockerVolumeName,
+    ResolvedServiceSpec, VolumeGen,
 };
 use rusqlite::{Connection, OptionalExtension, params};
 use sha2::{Digest, Sha256};
@@ -30,6 +30,10 @@ CREATE TABLE IF NOT EXISTS volume_floors (
 CREATE TABLE IF NOT EXISTS rotations (
     id       TEXT NOT NULL PRIMARY KEY,
     rotation TEXT NOT NULL CHECK (json_valid(rotation))
+);
+CREATE TABLE IF NOT EXISTS stops (
+    id  TEXT NOT NULL PRIMARY KEY,
+    run TEXT NOT NULL CHECK (json_valid(run))
 );
 ";
 static TEMPORARY_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -121,6 +125,29 @@ impl MachineSpecStore {
             .collect()
     }
 
+    /// The run this Machine last stopped for a `Stopped` want, if any.
+    pub async fn stopped_run(
+        &self,
+        container_id: &ContainerId,
+    ) -> Result<Option<ContainerRun>, Error> {
+        let path = self.path.clone();
+        let container_id = container_id.to_string();
+        let encoded = blocking(move || {
+            connect(&path)?
+                .query_row(
+                    "SELECT run FROM stops WHERE id = ?1",
+                    [container_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()
+                .map_err(Error::from)
+        })
+        .await?;
+        encoded
+            .map(|encoded| serde_json::from_str(&encoded).map_err(Error::from))
+            .transpose()
+    }
+
     #[must_use]
     pub fn subscribe_rotations(&self) -> watch::Receiver<()> {
         self.rotations.subscribe()
@@ -201,6 +228,28 @@ impl ConfigOperation<'_> {
         Ok(())
     }
 
+    /// Record that this Machine stopped `run` for a `Stopped` want, and republish
+    /// observations as [`Self::set_rotation`] does.
+    pub async fn set_stopped(
+        &mut self,
+        container_id: &ContainerId,
+        run: &ContainerRun,
+    ) -> Result<(), Error> {
+        let path = self.store.path.clone();
+        let container_id = container_id.to_string();
+        let run = serde_json::to_string(run)?;
+        blocking(move || {
+            connect(&path)?.execute(
+                "INSERT INTO stops (id, run) VALUES (?1, ?2) ON CONFLICT (id) DO UPDATE SET run = excluded.run",
+                params![container_id, run],
+            )?;
+            Ok(())
+        })
+        .await?;
+        self.store.rotations.send_replace(());
+        Ok(())
+    }
+
     pub async fn put(
         &mut self,
         container_id: &ContainerId,
@@ -225,6 +274,7 @@ impl ConfigOperation<'_> {
         blocking(move || {
             let connection = connect(&path)?;
             connection.execute("DELETE FROM rotations WHERE id = ?1", [&container_id])?;
+            connection.execute("DELETE FROM stops WHERE id = ?1", [&container_id])?;
             let removed =
                 connection.execute("DELETE FROM containers WHERE id = ?1", [container_id])? > 0;
             if removed

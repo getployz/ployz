@@ -59,8 +59,9 @@ const fn container(report: &ContainerReport) -> Container {
         (ContainerState::Running, Some(Health::Starting | Health::Unhealthy), _) => {
             Container::Running
         }
+        (ContainerState::Stopped, _, _) => Container::Stopped,
         (ContainerState::Exited, _, Some(0))
-        | (ContainerState::Created | ContainerState::Paused, _, _) => Container::Stopped,
+        | (ContainerState::Created | ContainerState::Paused, _, _) => Container::Idle,
         (ContainerState::Exited | ContainerState::Restarting | ContainerState::Dead, _, _) => {
             Container::Down
         }
@@ -439,3 +440,7 @@ service_act_tool!(
     Gate::Cloud,
     "Stop a Service's containers until started again. Deletes nothing."
 );
+
+#[cfg(test)]
+#[path = "runtime_tests.rs"]
+mod tests;

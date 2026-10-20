@@ -8,9 +8,9 @@ use ployz_core::metrics::{
     HostPoint, MarkerKind, MetricHistoryReply, MetricMarker, MetricPoints, ServicePoint,
 };
 use ployz_core::{
-    ConfiguredHealthcheck, ContainerId, ContainerKind, CopyRotation, DeploymentLogId,
-    HealthcheckCommand, HealthcheckSpec, MachineFailure, MachineSuccess, Namespace,
-    QualifiedService, RpcError, RpcErrorCode, ServiceId, ServiceName,
+    ConfiguredHealthcheck, ContainerId, ContainerKind, ContainerRuntimeObservation, CopyRotation,
+    DeploymentLogId, HealthcheckCommand, HealthcheckSpec, MachineFailure, MachineSuccess,
+    Namespace, QualifiedService, RpcError, RpcErrorCode, ServiceId, ServiceName,
 };
 use ployz_store::DeploymentId;
 use ployz_store::tools::cloud::{ContainerState, LogsAnswer, MetricRow};
@@ -50,6 +50,33 @@ fn a_services_copies_include_its_hook_containers_marked_as_hooks() {
         hook,
     };
     assert_eq!(copies, [copy('1', false), copy('2', true)]);
+}
+
+#[test]
+fn a_copy_its_server_stopped_reads_stopped_and_one_that_exited_alone_reads_exited() {
+    let server = machine('a', "alpha");
+    let exited = |hex| {
+        let mut copy = running_on(&server, hex);
+        copy.try_update(|parts| parts.runtime = ContainerRuntimeObservation::Exited { code: 1 })
+            .unwrap();
+        copy
+    };
+    let crashed = exited('1');
+    let mut stopped = exited('2');
+    stopped.try_update(|parts| parts.stopped = true).unwrap();
+    let names = BTreeMap::from([(server.id, &server.name)]);
+
+    let states = copies_of(
+        [&crashed, &stopped].into_iter(),
+        &names,
+        &Namespace::parse("app").unwrap(),
+        &ServiceName::parse("api").unwrap(),
+    )
+    .into_iter()
+    .map(|copy| copy.state)
+    .collect::<Vec<_>>();
+
+    assert_eq!(states, [ContainerState::Exited, ContainerState::Stopped]);
 }
 
 const SECOND: i64 = NANOS_PER_SECOND;

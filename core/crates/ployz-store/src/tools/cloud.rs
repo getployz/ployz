@@ -89,6 +89,8 @@ pub enum ContainerState {
     Restarting,
     Paused,
     Exited,
+    /// Exited after its Server stopped it on request; `exit_code` is still the one it left.
+    Stopped,
     Dead,
 }
 

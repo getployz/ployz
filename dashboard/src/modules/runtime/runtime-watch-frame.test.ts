@@ -30,6 +30,23 @@ describe("runtimeSnapshotFromWatchFrame", () => {
     expect(frame.containers[0]).not.toHaveProperty("resolved_spec");
   });
 
+  it("keeps the mark of a run its Server stopped on request beside its exit code", () => {
+    const stopped = runtimeWatchContainerFixture("machine-a", "ctr-stopped");
+    stopped.runtime = { state: "exited", code: 1 };
+    stopped.stopped = true;
+    const crashed = runtimeWatchContainerFixture("machine-a", "ctr-crashed");
+    crashed.runtime = { state: "exited", code: 1 };
+    const frame = runtimeWatchFrameForTransport(runtimeWatchFrameFixture({
+      services: [{ identity: "production/api", service_id: stopped.resolved_spec.service_id, containers: [stopped, crashed], hook_containers: [] }],
+      containers: [stopped, crashed],
+    }));
+    const parsed = Schema.decodeUnknownSync(runtimeWatchFrameSchema)(frame);
+    expect(runtimeSnapshotFromWatchFrame(parsed).services[0]?.containers.map((container) => container.runtime)).toEqual([
+      { state: "exited", code: 1, stopped: true },
+      { state: "exited", code: 1 },
+    ]);
+  });
+
   it("retains direct Engine observations without inferring a runtime verdict", () => {
     const api = runtimeWatchContainerFixture("machine-a", "ctr-api");
     const hook = runtimeWatchContainerFixture("machine-b", "ctr-hook");

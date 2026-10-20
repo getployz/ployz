@@ -656,6 +656,9 @@ fn report(container: &ContainerObservation, server: &ServerName) -> ContainerRep
         }
         ContainerRuntimeObservation::Paused => (ContainerState::Paused, None, None),
         ContainerRuntimeObservation::Restarting => (ContainerState::Restarting, None, None),
+        ContainerRuntimeObservation::Exited { code } if container.stopped => {
+            (ContainerState::Stopped, Some(*code), None)
+        }
         ContainerRuntimeObservation::Exited { code } => (ContainerState::Exited, Some(*code), None),
         ContainerRuntimeObservation::Removing => (ContainerState::Exited, None, None),
         ContainerRuntimeObservation::Dead | ContainerRuntimeObservation::Unknown { .. } => {

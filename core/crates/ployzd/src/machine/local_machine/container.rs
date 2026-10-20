@@ -346,7 +346,7 @@ impl LocalMachine {
             let mut floor = containers.floor_turn().await;
             Ok(floor.admit(name, r#gen).await?.map(|()| Some(floor)))
         };
-        self.stop_checked(installation, container, drain, stop, withdraw, admit)
+        self.stop_checked(installation, container, drain, stop, false, withdraw, admit)
             .await
     }
 
@@ -362,26 +362,39 @@ impl LocalMachine {
         stop: &StopOptions,
     ) -> Result<Result<ContainerObservation, ContainerRefusal>, Error> {
         let containers = self.containers.as_ref().ok_or(Error::DockerUnavailable)?;
+        let record = target == RotationTarget::Stopped;
         let target = &target;
         let withdraw = || async move {
             Ok(leave_rotation(containers, container, target)
                 .await?
                 .map(|_turn| containers.withdraw(*container)))
         };
-        self.stop_checked(installation, container, drain, stop, withdraw, || {
-            leave_rotation(containers, container, target)
-        })
+        self.stop_checked(
+            installation,
+            container,
+            drain,
+            stop,
+            record,
+            withdraw,
+            || leave_rotation(containers, container, target),
+        )
         .await
     }
 
     /// Drains before the exclusive turn, then stops under it while holding what
-    /// `check` returned. A refusal from `withdraw` or `check` stops nothing.
+    /// `check` returned. A refusal from `withdraw` or `check` stops nothing. With
+    /// `record`, the run it stopped is recorded, so its exit reads as a stop.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "one stop's facts and its two guards, shared by every stop path"
+    )]
     async fn stop_checked<G, R, W, WFut, F, Fut>(
         &self,
         installation: &crate::mutation::MutationGuard,
         container: &ContainerId,
         drain: Drain,
         stop: &StopOptions,
+        record: bool,
         withdraw: W,
         check: F,
     ) -> Result<Result<ContainerObservation, R>, Error>
@@ -394,9 +407,11 @@ impl LocalMachine {
         let _ = installation;
         let containers = self.containers.as_ref().ok_or(Error::DockerUnavailable)?;
         let machine_id = self.record().id();
-        let observed = containers.inspect_managed(container, &machine_id).await?;
-        if !is_running(&observed.runtime) {
-            return Ok(Ok(observed));
+        let observed = containers
+            .inspect_managed_details(container, &machine_id)
+            .await?;
+        if !is_running(&observed.container.runtime) {
+            return Ok(Ok(observed.container));
         }
         let _withdrawal = match withdraw().await? {
             Ok(withdrawal) => withdrawal,
@@ -418,6 +433,9 @@ impl LocalMachine {
         drop(held);
         drop(turn);
         stopped?;
+        if record && let Some(run) = &observed.run {
+            containers.record_stop(container, run).await?;
+        }
         Ok(Ok(containers
             .inspect_managed(container, &machine_id)
             .await?))
