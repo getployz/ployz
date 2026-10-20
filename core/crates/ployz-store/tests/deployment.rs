@@ -2622,6 +2622,108 @@ fn a_real_failure_beside_the_cancelled_work_the_outcome_names_wins_the_reason_an
     );
 }
 
+/// A cancel stops web, then api fails on its own, then web's next operation fails on
+/// its own on the same row. The Store keeps web's row finished from the cancel, but
+/// api failed on its own first, so api names the reason.
+#[test]
+fn the_first_real_failure_names_the_reason_though_a_cancel_finished_another_row_first() {
+    let (store, who) = shop();
+    admit(&store, &who, 1, &[], None).unwrap();
+    let a = runner("runner-a");
+    store.claim(&id(1), &a).unwrap();
+    store
+        .record(
+            &id(1),
+            &a,
+            RunEvidence::Prepared(preview(&["web", "api", "web"])),
+        )
+        .unwrap();
+    cancel(&store, &who, 1).unwrap();
+    let cancelled = json!({"type": "failed", "error": {"type": "cancelled"}});
+    let failed = json!({"type": "failed", "error": create_error()});
+    let mut tracker = RowTracker::default();
+    let mut report = |rows: &[(&str, &str, Value)]| tracker.changes(&progress(rows));
+    // The Store records times in whole seconds.
+    let next_second = || std::thread::sleep(std::time::Duration::from_secs(1));
+    let web_stopped = report(&[
+        ("web", "alpha", cancelled.clone()),
+        ("api", "alpha", waiting(5_000)),
+    ]);
+    store
+        .record(&id(1), &a, RunEvidence::Progress(web_stopped))
+        .unwrap();
+    next_second();
+    let api_failed = report(&[
+        ("web", "alpha", cancelled.clone()),
+        ("api", "alpha", failed.clone()),
+    ]);
+    store
+        .record(&id(1), &a, RunEvidence::Progress(api_failed))
+        .unwrap();
+    next_second();
+    let executed = RunEvidence::Executed {
+        progress: report(&[
+            ("web", "alpha", cancelled),
+            ("api", "alpha", failed.clone()),
+            ("web", "alpha", failed),
+        ]),
+        outcome: Box::new(outcome(json!({
+            "type": "failed", "completed": [],
+            "failed": {"type": "operation", "operation": operation("web"), "error": {"type": "cancelled"}},
+            "unexecuted": [operation("api"), operation("web")]
+        }))),
+        removed: Vec::new(),
+    };
+    store.record(&id(1), &a, executed).unwrap();
+    let web = web_row(&store, &who);
+    assert!(
+        matches!(
+            web.state,
+            RowState::Failed {
+                stopped_by: StoppedBy::NOTHING,
+                ..
+            }
+        ),
+        "{:?}",
+        web.state
+    );
+    let api = &rows(&store, &who, 1)
+        .into_iter()
+        .find(|(node, _)| node == "api")
+        .unwrap()
+        .1[0];
+    assert!(
+        web.finished_at < api.finished_at,
+        "the cancel finished web's row before api failed: {web:?} {api:?}"
+    );
+    let view = store
+        .read(&who, &ployz_store::DeploymentQuery { id: id(1) })
+        .unwrap();
+    let Some(ployz_store::Outcome::Executed {
+        reason, cancelled, ..
+    }) = view.deployment.outcome
+    else {
+        panic!("expected an executed outcome");
+    };
+    assert_eq!(
+        reason.as_deref(),
+        Some("api: create Container failed"),
+        "api failed on its own before web did"
+    );
+    assert!(!cancelled);
+    assert_eq!(
+        nodes(&store, &who, 1),
+        [
+            ("api".to_owned(), NodeStatus::Failed),
+            ("web".to_owned(), NodeStatus::Failed)
+        ]
+    );
+    assert!(
+        cancelled_nodes(&store, &who, 1).is_empty(),
+        "web failed on its own, so its node reads Failed, not Cancelled"
+    );
+}
+
 /// The row state and Node Outcome a Store from before Cancelled decodes, as it
 /// shipped them.
 mod before_cancelled {
