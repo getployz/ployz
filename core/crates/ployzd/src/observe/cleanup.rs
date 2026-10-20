@@ -522,15 +522,17 @@ fn prune_exits(dir: &Path, before: i64) -> io::Result<()> {
         kept_lines.push(b'\n');
     }
     let temp = dir.join(EXITS_TEMP_FILE);
-    fs::OpenOptions::new()
+    let mut file = fs::OpenOptions::new()
         .write(true)
         .create(true)
         .truncate(true)
         .mode(0o600)
         .custom_flags(OFlag::O_NOFOLLOW.bits())
-        .open(&temp)?
-        .write_all(&kept_lines)?;
-    fs::rename(&temp, &path)
+        .open(&temp)?;
+    file.write_all(&kept_lines)?;
+    file.sync_all()?;
+    fs::rename(&temp, &path)?;
+    fs::File::open(dir)?.sync_all()
 }
 
 fn delete_file(containers_fd: RawFd, candidate: &Candidate) -> nix::Result<()> {
