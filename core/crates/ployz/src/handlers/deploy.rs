@@ -926,23 +926,30 @@ fn plan(matches: &ArgMatches, store: &Store, services: Vec<ServiceName>) -> Resu
                 cause.trim_end_matches('.')
             ));
         }
-        if !plan.unresolved.is_empty() {
-            let unresolved: Vec<_> = plan
-                .unresolved
-                .iter()
-                .map(|item| match item.as_str() {
-                    "operations" => "which containers start and stop",
-                    "volume data" => "which volume data is deleted",
-                    other => other,
-                })
-                .collect();
-            ui::stream(format_args!(
-                "Decided by the Servers when it runs: {}.",
-                unresolved.join(", ")
-            ));
+        if let Some(undecided) = undecided(&plan.unresolved) {
+            ui::stream(format_args!("{undecided}"));
         }
         ui::hint(&Hint::Next(hint.clone()));
     })
+}
+
+/// The plan's line for what only the Servers decide, as people read it.
+fn undecided(unresolved: &[String]) -> Option<String> {
+    if unresolved.is_empty() {
+        return None;
+    }
+    let unresolved: Vec<_> = unresolved
+        .iter()
+        .map(|item| match item.as_str() {
+            "operations" => "which containers start and stop",
+            "volume data" => "which volume data is deleted",
+            other => other,
+        })
+        .collect();
+    Some(format!(
+        "Decided by the Servers when it runs: {}.",
+        unresolved.join(", ")
+    ))
 }
 
 fn ingress_check(matches: &ArgMatches) -> Result<crate::ingress::IngressCheck, String> {
@@ -1347,8 +1354,22 @@ fn service_outcome_lines(services: &[ployz_core::ServiceOutcome]) -> Vec<String>
 
 #[cfg(test)]
 mod tests {
-    use super::{Tone, open_events, service_outcome_lines, ships_all, status_tone, status_word};
+    use super::{
+        Tone, open_events, service_outcome_lines, ships_all, status_tone, status_word, undecided,
+    };
     use ployz_core::{RpcErrorCode, ServiceName};
+
+    #[test]
+    fn the_plan_says_what_the_servers_decide_in_plain_words() {
+        assert_eq!(undecided(&[]), None);
+        assert_eq!(
+            undecided(&["operations".to_owned(), "volume data".to_owned()]).as_deref(),
+            Some(
+                "Decided by the Servers when it runs: which containers start and stop, \
+                 which volume data is deleted."
+            )
+        );
+    }
 
     #[test]
     fn an_events_path_that_cannot_be_written_names_the_flag_and_the_path() {

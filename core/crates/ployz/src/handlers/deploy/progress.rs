@@ -477,8 +477,10 @@ fn failure(view: &DeploymentView, command: impl Fn(&[&str]) -> String) -> Failur
             hints.push(Hint::Inspect(command(
                 &[&["get", image.as_str()][..], &scope].concat(),
             )));
-            bad_image = true;
         }
+        // An image it didn't build that won't pull fails again on any Server, whichever
+        // failure the inspect hint above reads.
+        bad_image |= pulled && !build_failed && built.is_none();
     }
     let mut failure = Failure::from(RpcError {
         code: RpcErrorCode::Internal,
@@ -776,6 +778,24 @@ mod tests {
             hints(&failure(&view, command)),
             [
                 "inspect: ployz get web.image --project shop --env production",
+                "undo: ployz history undo 1 --project shop --env production",
+            ]
+        );
+    }
+
+    #[test]
+    fn an_image_that_wont_pull_on_one_server_still_says_to_undo_when_another_fails_to_start() {
+        let mut view = view();
+        for row in failed_rows(&mut view) {
+            *row = Some(FailedAt::Pull);
+        }
+        if let Some(row) = failed_rows(&mut view).nth(1) {
+            *row = Some(FailedAt::Start);
+        }
+        assert_eq!(
+            hints(&failure(&view, command)),
+            [
+                "inspect: ployz logs web --project shop --env production",
                 "undo: ployz history undo 1 --project shop --env production",
             ]
         );

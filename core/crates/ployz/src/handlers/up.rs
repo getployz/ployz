@@ -135,17 +135,20 @@ pub(super) fn up(root: &ArgMatches) -> Result<(), Error> {
         if !shipped.presented {
             say_view(view);
         }
-        // A failed Deployment left the app as it was, or not running at all.
-        if shipped.ran.is_ok() {
-            for url in &up.urls {
-                crate::ui::stream(format_args!("Open {url}"));
-            }
+        for url in opens(&up.urls, &shipped.ran) {
+            crate::ui::stream(format_args!("Open {url}"));
         }
         if let Some(dashboard) = &up.dashboard {
             crate::ui::stream(format_args!("Dashboard: {dashboard}"));
         }
     })?;
     shipped.ran
+}
+
+/// The URLs to say `Open` for: none when the Deployment failed, since it left the app as
+/// it was, or not running at all.
+fn opens<'u>(urls: &'u [String], ran: &Result<(), Error>) -> &'u [String] {
+    if ran.is_ok() { urls } else { &[] }
 }
 
 /// Run `ployz server add DESTINATION` as this command's first step.
@@ -268,6 +271,13 @@ fn directory_name(directory: &Path) -> ServiceName {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_failed_deployment_says_to_open_nothing() {
+        let urls = vec!["https://web.example.com".to_owned()];
+        assert_eq!(opens(&urls, &Ok(())), urls.as_slice());
+        assert!(opens(&urls, &Err(Error::cancelled())).is_empty());
+    }
 
     #[test]
     fn a_directory_names_its_project_or_falls_back_to_app() {
