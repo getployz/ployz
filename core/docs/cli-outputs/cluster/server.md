@@ -144,7 +144,7 @@ $ ployz server add --standalone --no-install root@10.255.255.1 --ssh-timeout 3
 stderr:
 ```
 WARNING: Docker only (not recommended): Volumes on this Server get no size limits, and it won't get backups, Server moves or zero-downtime migrations as they arrive.
-all 1 connections from the explicit connection failed: connection attempt failed: SSH connection to root@10.255.255.1 timed out after 3 seconds; a slow or distant Server may need --ssh-timeout 60
+Ployz couldn't reach your Server's daemon: connection attempt failed: SSH connection to root@10.255.255.1 timed out after 3 seconds; a slow or distant Server may need --ssh-timeout 60
 ```
 
 ### server add: without --standalone (needs Cloud login)

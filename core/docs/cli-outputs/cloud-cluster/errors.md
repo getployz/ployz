@@ -47,7 +47,7 @@ $ ployz exec worker -- true
 
 stderr:
 ```
-Machine RPC failed: Docker operation failed: Docker responded with status code 409: container c1f3947b56ef4cac9d549a166461acedf612dbe57569bfe34b61d82ba792cba7 is not running
+Ployz's call to your Server's daemon failed: Docker operation failed: Docker responded with status code 409: container c1f3947b56ef4cac9d549a166461acedf612dbe57569bfe34b61d82ba792cba7 is not running
 ```
 
 ### logs of a stopped Service 

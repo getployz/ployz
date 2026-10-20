@@ -9,7 +9,7 @@ OCI runtime exec failed: exec failed: unable to start container process: exec: "
 Docker responded with status code 400: exec process is not started
 
 === exec in a stopped Service  :: $ ployz exec worker -- true
-Machine RPC failed: Docker operation failed: Docker responded with status code 409: container c1f3947b56ef4cac9d549a166461acedf612dbe57569bfe34b61d82ba792cba7 is not running
+Ployz's call to your Server's daemon failed: Docker operation failed: Docker responded with status code 409: container c1f3947b56ef4cac9d549a166461acedf612dbe57569bfe34b61d82ba792cba7 is not running
 
 === logs of a stopped Service  :: $ ployz logs worker --tail 2
 2026-10-05T02:32:23.672641169+00:00 machine-1 worker/c1f3947b56ef | 2026/10/05 02:32:23 Starting up on port 80
