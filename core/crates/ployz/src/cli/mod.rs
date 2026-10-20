@@ -82,7 +82,7 @@ pub(crate) fn connection_args(include_context: bool) -> Vec<Arg> {
             .global(true),
         value("ployz-config", None)
             .env(env::CONFIG)
-            .default_value("~/.config/ployz/config.yaml")
+            .default_value(crate::context::default_config_path())
             .value_hint(ValueHint::FilePath)
             // PLOYZ_CONFIG is the way to point elsewhere; the flag stays for tests.
             .hide(true)
@@ -186,11 +186,15 @@ fn review_version(version: &str) -> Result<String, &'static str> {
         {
             Ok(version.to_owned())
         }
-        [revision, saved, rest @ ..]
-            if !rest.is_empty()
-                && revision.parse::<u64>().is_ok()
+        [revision, saved, token, digests @ ..]
+            if revision.parse::<u64>().is_ok()
                 && saved.parse::<u64>().is_ok()
-                && rest.iter().all(|part| !part.is_empty()) =>
+                && token.split_once('.').is_some_and(|(deployed, ended)| {
+                    deployed.parse::<u64>().is_ok() && ended.parse::<u64>().is_ok()
+                })
+                && digests.iter().all(|digest| {
+                    !digest.is_empty() && digest.chars().all(|c| c.is_ascii_hexdigit())
+                }) =>
         {
             Ok(version.to_owned())
         }
@@ -264,6 +268,12 @@ mod tests {
             "x:1:0.1",
             "3:1:0.1:",
             "shop:ab12cd",
+            "16:1:0.0XYZ",
+            "16:1:0.0; rm -rf /",
+            "16:1:0.0 trailing",
+            "16:1:0.0/extra",
+            "16:1:0",
+            "3:0:0.12:ab12cd!",
         ] {
             assert!(super::review_version(bad).is_err(), "{bad}");
         }
