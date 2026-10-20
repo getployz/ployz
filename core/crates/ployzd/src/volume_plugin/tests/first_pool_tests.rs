@@ -948,6 +948,8 @@ case "$name" in
         printf '%s\n' "${{3#refquota=}}" > '{volume_bound}'
         touch '{volume}'
         ;;
+      'set refquota='*' ployz/ployz/data') printf '%s\n' "${{2#refquota=}}" > '{volume_bound}' ;;
+      'get -Hp -o value refquota ployz/ployz/data') cat '{volume_bound}' ;;
       'create -o refquota='*' ployz/ployz/other')
         printf '%s\n' "${{3#refquota=}}" > '{other_bound}'
         touch '{other}'

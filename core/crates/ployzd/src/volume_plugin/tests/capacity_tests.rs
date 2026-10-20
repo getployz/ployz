@@ -363,30 +363,53 @@ fn committed_pool(
     (socket, server)
 }
 
-async fn create_other(test: &TestDir, fixed: bool, bytes: u64) -> Value {
+async fn on_committed_pool(test: &TestDir, fixed: bool, path: &str, body: Value) -> Value {
     let (socket, server) = committed_pool(test, fixed);
-    let response = post(
-        &socket,
-        "/VolumeDriver.Create",
-        json!({"Name":"other","Opts":{"size":format!("{bytes}b")}}),
-    )
-    .await;
+    let response = post(&socket, path, body).await;
     server.abort();
     response
 }
 
+async fn create_other(test: &TestDir, fixed: bool, bytes: u64) -> Value {
+    on_committed_pool(
+        test,
+        fixed,
+        "/VolumeDriver.Create",
+        json!({"Name":"other","Opts":{"size":format!("{bytes}b")}}),
+    )
+    .await
+}
+
+async fn grow_data_by(test: &TestDir, fixed: bool, bytes: u64) -> Value {
+    on_committed_pool(
+        test,
+        fixed,
+        "/Volume.Size.Set",
+        json!({"name": "data", "maximum_bytes": ROOT_BOUND + bytes}),
+    )
+    .await
+}
+
+async fn committable(fixed: bool) -> u64 {
+    let test = TestDir::new();
+    let (socket, server) = committed_pool(&test, fixed);
+    let inspected = post(&socket, "/Storage.Inspect", json!(null)).await;
+    server.abort();
+    let capacity: ployz_core::StorageCapacity =
+        serde_json::from_value(inspected.get("Ok").cloned().unwrap()).unwrap();
+    assert_eq!(capacity.copies.len(), 2, "a root and a slot: {inspected}");
+    let committable = capacity.committable_bytes().unwrap();
+    assert!(committable > GIB, "fixed={fixed}: {committable}");
+    committable
+}
+
 #[tokio::test]
 async fn committable_bytes_is_exactly_what_volume_creation_admits() {
-    for (fixed, refusal) in [(true, "automatic growth"), (false, "Not enough disk space")] {
-        let test = TestDir::new();
-        let (socket, server) = committed_pool(&test, fixed);
-        let inspected = post(&socket, "/Storage.Inspect", json!(null)).await;
-        server.abort();
-        let capacity: ployz_core::StorageCapacity =
-            serde_json::from_value(inspected.get("Ok").cloned().unwrap()).unwrap();
-        assert_eq!(capacity.copies.len(), 2, "a root and a slot: {inspected}");
-        let committable = capacity.committable_bytes().unwrap();
-        assert!(committable > GIB, "fixed={fixed}: {committable}");
+    for (fixed, refusal) in [
+        (true, "cannot grow automatically"),
+        (false, "Not enough disk space"),
+    ] {
+        let committable = committable(fixed).await;
 
         let over = TestDir::new();
         let refused = create_other(&over, fixed, committable + 1).await;
@@ -403,6 +426,37 @@ async fn committable_bytes_is_exactly_what_volume_creation_admits() {
         assert_eq!(
             create_other(&edge, fixed, committable).await,
             json!({"Err":""}),
+            "fixed={fixed}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn committable_bytes_is_exactly_what_a_grow_admits() {
+    for fixed in [true, false] {
+        let committable = committable(fixed).await;
+
+        let over = TestDir::new();
+        let refused = grow_data_by(&over, fixed, committable + 1).await;
+        assert_eq!(
+            refused
+                .pointer("/Err/details/reason")
+                .and_then(Value::as_str),
+            Some("no_capacity"),
+            "fixed={fixed}: {refused}"
+        );
+        assert!(
+            !fs::read_to_string(over.0.join("commands"))
+                .unwrap()
+                .contains("zfs set refquota="),
+            "fixed={fixed}: a refused grow sets no bound"
+        );
+
+        let edge = TestDir::new();
+        let grown = grow_data_by(&edge, fixed, committable).await;
+        assert_eq!(
+            grown,
+            json!({"Ok": {"bound_bytes": ROOT_BOUND + committable}}),
             "fixed={fixed}"
         );
     }
