@@ -61,7 +61,8 @@ When a server running one of your replicas powers off, a new connection to it gi
 second and the request goes to another replica. A request that had already reached it, or that
 went out on a connection the web server keeps open to it, waits about 14 seconds. Then a `GET`,
 like a page load, goes to another replica, and anything else, like a form post, gets
-`504 · NO_RESPONSE`. Send that one again.
+`504 · NO_RESPONSE`. Your app may have handled it before the connection broke, so check whether
+it went through, like whether the order exists, before you send it again.
 
 The same 14-second limit applies to visitors. When a visitor's connection stops acknowledging
 data for about 13 seconds, say a phone on a bad network in the middle of a download, the web
