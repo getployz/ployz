@@ -4583,6 +4583,12 @@ fn without_a_terminal_a_save_waits_until_a_human_approves_it() {
         ),
         "{stderr}"
     );
+    // A token's approval names no Organization, so the CLI can't link the agent's panel.
+    assert!(
+        stderr.contains("Approve apr_1 in Ployz Cloud at http://"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("Waiting on you"), "{stderr}");
     assert!(
         stderr.contains("Waiting for approval in Ployz Cloud… approved.\n"),
         "{stderr}"

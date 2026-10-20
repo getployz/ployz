@@ -11,6 +11,7 @@ use reqwest::Method;
 use serde::Deserialize;
 
 use crate::cloud_account::{self, Credential, StoreCallError};
+use crate::cloud_login::LoginError;
 use crate::failure::Failure;
 
 const POLL: Duration = Duration::from_secs(1);
@@ -270,10 +271,10 @@ pub(crate) fn settle(
     }
     let interrupted = crate::cancellation::interrupted()
         .map_err(|error| StoreCallError::Stopped(Failure::from(error)))?;
-    crate::ui::note(format!(
-        "Approve {} under Waiting on you in the Ployz agent at {}",
-        asked.id,
-        agent_panel(credential, asked.organization.as_deref())
+    crate::ui::note(where_to_approve(
+        credential,
+        &asked.id,
+        asked.organization.as_deref(),
     ));
     crate::ui::hint(&crate::ui::Hint::Next(format!(
         "ployz org approval approve {}",
@@ -295,10 +296,21 @@ pub(crate) fn settle(
     // Ctrl-C or losing Cloud ends the wait, not the approval: it is still there to answer.
     let stopped = match settled {
         Some(Ok(_)) => return Ok(asked.id.clone()),
-        Some(Err(StoreCallError::Cloud(error))) => Failure::from(error).context(format!(
-            "Stopped waiting for approval {}; it stays pending in Ployz Cloud.",
-            asked.id
-        )),
+        Some(Err(StoreCallError::Cloud(error))) if unanswered(&error) => Failure::from(error)
+            .context(format!(
+                "Stopped waiting for approval {}; it stays pending in Ployz Cloud.",
+                asked.id
+            )),
+        // Cloud answered, but not with the approval: nothing says it is still pending.
+        Some(Err(StoreCallError::Cloud(error))) => {
+            let transient = matches!(error, LoginError::Status { status, .. } if status >= 500);
+            let failure =
+                Failure::from(error).context(format!("Couldn't check approval {}.", asked.id));
+            if !transient {
+                return Err(StoreCallError::Stopped(failure));
+            }
+            failure
+        }
         Some(Err(error)) => return Err(error),
         None => Failure::coded(
             RpcErrorCode::Internal,
@@ -311,17 +323,47 @@ pub(crate) fn settle(
     ))
 }
 
-/// The Ployz agent's panel in Cloud, where an approval waits under Waiting on you: in the
-/// Organization the approval names, else the one this device acts in.
-fn agent_panel(credential: &Credential, organization: Option<&str>) -> String {
+/// Where a human answers approval `id`: the Ployz agent's panel, where it waits under
+/// Waiting on you, in the Organization the approval names, else the one this device acts
+/// in. A token's approval that names none points at Cloud itself.
+fn where_to_approve(credential: &Credential, id: &str, organization: Option<&str>) -> String {
     let cloud = credential.cloud().trim_end_matches('/');
     let organization = organization.or(match credential {
         Credential::Device(signed_in) => Some(signed_in.organization.slug.as_str()),
         Credential::Token { .. } => None,
     });
     match organization {
-        Some(organization) => format!("{cloud}/cloud/{organization}?chat={}", uuid::Uuid::new_v4()),
-        None => cloud.to_owned(),
+        Some(organization) => format!(
+            "Approve {id} under Waiting on you in the Ployz agent at {cloud}/cloud/{organization}?chat={}",
+            uuid::Uuid::new_v4()
+        ),
+        None => format!("Approve {id} in Ployz Cloud at {cloud}"),
+    }
+}
+
+/// Whether Cloud never answered the approval's read, or refused the credential before
+/// looking: either way the approval is as it was.
+fn unanswered(error: &LoginError) -> bool {
+    match error {
+        LoginError::Unreachable { .. }
+        | LoginError::Unanswered { .. }
+        | LoginError::Store { .. }
+        | LoginError::Corrupt { .. }
+        | LoginError::TokenCloudUnreadable(_)
+        | LoginError::OtherCloud { .. }
+        | LoginError::SignedOut
+        | LoginError::Ended
+        | LoginError::TokenRefused
+        | LoginError::NotMember(_) => true,
+        LoginError::Unsupported(_)
+        | LoginError::Status { .. }
+        | LoginError::Reply(_)
+        | LoginError::Expired
+        | LoginError::Denied
+        | LoginError::AwaitingApproval { .. }
+        | LoginError::TokenBound
+        | LoginError::UnknownOrganization(_)
+        | LoginError::UnknownCredential(_) => false,
     }
 }
 

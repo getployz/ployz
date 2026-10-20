@@ -24,6 +24,10 @@ enum Answer {
     Approved,
     /// Drops the connection unanswered, as a Cloud gone mid-wait does.
     Gone,
+    /// Answers `404 {}`, as a Cloud without the approvals route does.
+    Missing,
+    /// Answers `503` with a body, as a Cloud failing for the moment does.
+    Failing,
 }
 
 /// Cloud that asks for approval `apr_9` before it removes Organization acme or forgets
@@ -77,6 +81,12 @@ fn fake_cloud_answering(seen: Seen, confirms: bool, answer: Answer) -> String {
                     })
                     .to_string(),
                 ),
+                "GET /api/cli/approvals/apr_9" if matches!(answer, Answer::Missing) => {
+                    ("404 Not Found", "{}".to_owned())
+                }
+                "GET /api/cli/approvals/apr_9" if matches!(answer, Answer::Failing) => {
+                    ("503 Service Unavailable", "upstream down".to_owned())
+                }
                 "GET /api/cli/approvals/apr_9" => (
                     "200 OK",
                     json!({ "approval": { "status": "approved" } }).to_string(),
@@ -279,5 +289,38 @@ fn losing_cloud_while_waiting_leaves_the_approval_pending_and_names_the_retry() 
         json.pointer("/error/code"),
         Some(&json!("approval_required")),
         "{json}"
+    );
+}
+
+#[test]
+fn an_answered_error_while_waiting_names_the_approval_without_calling_it_pending() {
+    let cloud = fake_cloud_answering(Arc::default(), true, Answer::Missing);
+    let missing = ployz(&cloud, &["org", "rm", "acme", "--confirm", "acme"]);
+    assert_eq!(missing.status.code(), Some(1), "{missing:?}");
+    let stderr = String::from_utf8_lossy(&missing.stderr);
+    assert!(
+        stderr.contains("error: Couldn't check approval apr_9."),
+        "{stderr}"
+    );
+    assert!(stderr.contains("does not offer CLI access"), "{stderr}");
+    assert!(!stderr.contains("stays pending"), "{stderr}");
+    assert!(!stderr.contains("retry: "), "{stderr}");
+
+    let cloud = fake_cloud_answering(Arc::default(), true, Answer::Failing);
+    let failing = ployz(&cloud, &["org", "rm", "acme", "--confirm", "acme"]);
+    assert_eq!(failing.status.code(), Some(1), "{failing:?}");
+    let stderr = String::from_utf8_lossy(&failing.stderr);
+    assert!(
+        stderr.contains("error: Couldn't check approval apr_9."),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("stays pending"), "{stderr}");
+    let retry = stderr
+        .lines()
+        .find_map(|line| line.strip_prefix("retry: "))
+        .unwrap_or_default();
+    assert!(
+        retry.ends_with("org rm acme --confirm acme --approval apr_9"),
+        "{stderr}"
     );
 }
