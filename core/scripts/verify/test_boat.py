@@ -748,35 +748,42 @@ class Pool(unittest.TestCase):
         self.assertEqual(boat.read(boat.fingerprints("bake-a")), {"containers": []})
         self.assertEqual([path.exists() for path in kept], [True, True, True])
 
-    def boot(self, **run):
-        """Run start() on one sandbox; returns the guest scripts and fingerprint captures in order."""
-        boat.write(boat.BAKES, ["bake-a"])
-        info = dict(sandbox=dict(ip="2001:db8:0:1::1", sshEndpoint="203.0.113.1:22"))
+    def test_a_bare_sandbox_opens_80_and_443_through_ufw(self):
         provider = self.provider("machine-1")
         boat.write(provider.registry, dict(run="run1", sandboxes={}))
-        provider.run.update(corrosion="corrosion", **run)
+        provider.run.update(bare=True, image=None)
         provider.launch = lambda node: provider.mark(node["name"], id="bx_a", state="running") or "bx_a"
+        info = dict(sandbox=dict(ip="2001:db8:0:1::1", sshEndpoint="203.0.113.1:22"))
         provider.boat = lambda *args, **kwargs: subprocess.CompletedProcess([], 0, json.dumps(info).encode(), b"")
         provider.wait_agent = provider.install_key = lambda *args, **kwargs: None
-        steps = []
-        provider.exec = lambda node, args, **kwargs: steps.append(" ".join(args))
-        provider.fingerprint = lambda node: steps.append("fingerprint") or {"containers": []}
+        scripts = []
+        provider.exec = lambda node, argv, **kwargs: scripts.append(" ".join(argv))
         provider.start(dict(name="machine-1"))
-        opened = [n for n, step in enumerate(steps) if "ufw allow 80/tcp" in step and "ufw allow 443/tcp" in step]
-        return steps, opened
+        self.assertEqual(scripts, ["sh -ec ufw allow 80/tcp >/dev/null; ufw allow 443/tcp >/dev/null"])
 
-    def test_a_baked_sandbox_opens_80_and_443_after_the_stash_and_fingerprint_hold_the_bakes_firewall(self):
-        steps, opened = self.boot(bare=False)
-        stashed = next(n for n, step in enumerate(steps) if boat.STASH in step)
-        self.assertEqual(len(opened), 1)
-        self.assertGreater(opened[0], stashed)
-        self.assertGreater(opened[0], steps.index("fingerprint"))
+    def test_down_deletes_a_bare_sandbox_and_never_pools_it(self):
+        provider = self.provider("machine-1")
+        provider.run.update(bare=True, image=None)
+        boat.write(provider.registry, dict(run="run1", sandboxes={"machine-1": dict(
+            id="bx_a", state="running", ip="2001:db8:0:1::1", ssh="203.0.113.1:22")}))
+        provider.park = lambda name: self.fail("a bare sandbox was offered to the pool")
+        provider.destroy()
+        self.assertIn(["delete", "bx_a", "--yes"], self.calls)
+        self.assertIsNone(boat.read(boat.POOL))
 
-    def test_a_bare_sandbox_opens_80_and_443(self):
-        self.assertEqual(len(self.boot(bare=True, image=None)[1]), 1)
-
-    def test_the_bake_never_opens_ports_into_its_snapshot(self):
-        self.assertEqual(self.boot(bare=False, image=boat.SNAPSHOT)[1], [])
+    def test_every_clone_disables_ufw_because_boat_restores_it(self):
+        provider = self.provider("machine-1")
+        boat.write(provider.registry, dict(run="run1", sandboxes={}))
+        provider.run["corrosion"] = "corrosion"
+        provider.launch = lambda node: provider.mark(node["name"], id="bx_a", state="running") or "bx_a"
+        info = dict(sandbox=dict(ip="2001:db8:0:1::1", sshEndpoint="203.0.113.1:22"))
+        provider.boat = lambda *args, **kwargs: subprocess.CompletedProcess([], 0, json.dumps(info).encode(), b"")
+        scripts = []
+        provider.exec = lambda node, argv, **kwargs: scripts.append(argv[2])
+        provider.wait_agent = lambda *args, **kwargs: None
+        provider.fingerprint = lambda node: {"containers": []}
+        provider.start(dict(name="machine-1"))
+        self.assertIn("ufw disable", scripts[0])
 
     def test_the_ledger_keeps_what_one_lock_saves_and_is_no_run_record(self):
         with boat.pool() as entries:
@@ -835,8 +842,6 @@ class Pool(unittest.TestCase):
 
 # Docker as far as the image reset reaches it, backed by a JSON file of tags, image ids and build cache entries.
 # A `ployz` Volume needs the volume plugin, which answers only while ployz-volume-plugin.socket listens.
-BAKE_RULES = "*filter\n### tuple ### allow tcp 22 0.0.0.0/0 any 0.0.0.0/0 in\n-A ufw-user-input -p tcp --dport 22 -j ACCEPT\nCOMMIT\n"
-BAKE_RULES6 = "*filter\n### tuple ### allow tcp 22 ::/0 any ::/0 in\n-A ufw6-user-input -p tcp --dport 22 -j ACCEPT\nCOMMIT\n"
 FAKE_GUEST = r"""#!/usr/bin/env python3
 import json, os, sys
 path = os.environ["FAKE_GUEST_STATE"]
@@ -952,7 +957,7 @@ class Reset(unittest.TestCase):
         files = {"usr/local/bin/ployz": "bake ployz", "usr/bin/runc": "bake runc", "usr/bin/runcon": "runcon",
                  "etc/systemd/system/ployz.service": "unit", "var/lib/ployz/state": "bake state", "run/keep": "",
                  "opt/keep": "", "root/.ssh/authorized_keys": "key", "root/notes": "bake", "srv/keep": "",
-                 "var/tmp/cloud-init/keep": "", "etc/ufw/user.rules": BAKE_RULES, "etc/ufw/user6.rules": BAKE_RULES6}
+                 "var/tmp/cloud-init/keep": ""}
         for name, content in files.items():
             Path(self.root, name).parent.mkdir(parents=True, exist_ok=True)
             Path(self.root, name).write_text(content)
@@ -1029,23 +1034,6 @@ class Reset(unittest.TestCase):
         self.assertEqual(json.loads(state.read_text()), docker)
         self.assertFalse(Path(env["FAKE_DOCKER_ROOT"]).exists() and any(Path(env["FAKE_DOCKER_ROOT"]).iterdir()))
         self.assertEqual(boat.differences(bake, self.fingerprint(env)), [])
-
-    def test_reset_closes_the_ports_a_run_opened_through_ufw(self):
-        env, _, bake = self.baked()
-        files = self.tree()
-        self.write("etc/ufw/user.rules", BAKE_RULES + "### tuple ### allow tcp 80 0.0.0.0/0 any 0.0.0.0/0 in\n")
-        self.write("etc/ufw/user6.rules", BAKE_RULES6 + "### tuple ### allow tcp 80 ::/0 any ::/0 in\n")
-        self.assertEqual([line.split(" ")[0] for line in boat.differences(bake, self.fingerprint(env))], ["firewall"])
-        self.guest(boat.RESET, env, str(self.stash), "key")
-        self.assertEqual(self.tree(), files)
-        self.assertEqual(boat.differences(bake, self.fingerprint(env)), [])
-
-    def test_the_firewall_matches_across_clones_whose_boat_rules_differ(self):
-        _, _, bake = self.baked()
-        self.setUp()
-        self.write("etc/ufw/user.rules", BAKE_RULES + "### tuple ### allow udp 20376:20379 0.0.0.0/0 any 0.0.0.0/0 in\n")
-        env, _, clone = self.baked()
-        self.assertEqual((bake["firewall"], clone["firewall"]), ([], []))
 
     def test_reset_removes_a_ployz_volume_whether_or_not_its_plugin_was_listening(self):
         for listening in (True, False):

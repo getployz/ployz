@@ -34,6 +34,12 @@
 //!                                       Cloud
 //!     analytics/
 //!       salts.json                      the day salts Cloud handed out
+//!     settled/
+//!       <cid>-<exit|oom>-<ts>           an exit or OOM kill the harvester
+//!                                       settled, kept while a resumed
+//!                                       Docker event stream can repeat it
+//!       <cid>-<exit|oom>-<ts>.pending   one whose marker or crash is not
+//!                                       stored yet
 //! ```
 //!
 //! The store sits under `DockerRootDir` because a hardlink only works on the
@@ -70,6 +76,7 @@ const REQUESTS_DIR: &str = "requests";
 const RETIRED_OUTBOXES: [&str; 1] = ["pageviews"];
 const ANALYTICS_DIR: &str = "analytics";
 const SALTS_FILE: &str = "salts.json";
+const SETTLED_DIR: &str = "settled";
 const LOG_SUFFIX: &str = ".log";
 const SEGMENT_SUFFIX: &str = ".jsonl";
 const HOUR_SECS: u64 = 60 * 60;
@@ -122,6 +129,11 @@ impl StoreRoot {
     #[must_use]
     pub fn salts(&self) -> PathBuf {
         self.0.join(ANALYTICS_DIR).join(SALTS_FILE)
+    }
+
+    #[must_use]
+    pub fn settled(&self) -> PathBuf {
+        self.0.join(SETTLED_DIR)
     }
 
     /// `<DockerRootDir>/ployz-observe`, which holds the version dirs.

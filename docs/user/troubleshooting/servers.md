@@ -234,9 +234,10 @@ prepares Docker and ZFS meanwhile.
    before if Cloud accepts it. A new token in the file starts over with its own two chances. A
    refusal during the install itself ends it with an error instead, since the token was only just
    given, and starts nothing.
-10. `Rejected`, `Token expired` or `Token revoked` are final: the loop stops, deletes
-   `/etc/ployz/fleet-token` if it still holds the token Cloud answered, and won't start again at
-   boot. A token Cloud refuses twice in a row, at least a minute apart by Cloud's clock, because you revoked or
+10. `Rejected`, `Token expired` or `Token revoked` are final. The running check-in loop stops,
+   deletes `/etc/ployz/fleet-token`, or the file you named with `--token-file`, if it still holds
+   the token Cloud answered, and won't start again at boot. If the answer comes during
+   `ployz server checkin --install`, the install ends with an error and keeps the file. A token Cloud refuses twice in a row, at least a minute apart by Cloud's clock, because you revoked or
    deleted it, reads `Token revoked`. If you put a new token in the file as the loop stops, it
    keeps it and restarts with it, unless Cloud rejected the server. Put a new Fleet Token in that file and run `sudo ployz server checkin --install`
    again to start a new check-in attempt. A non-rejection response clears the local rejection
@@ -251,8 +252,8 @@ prepares Docker and ZFS meanwhile.
 12. Once you approve the server, the loop enrolls it and the **this server** line walks through
     `Installing`, `Enrolling`, `Queued to join`, `Setting up ZFS`, `Joining` and `Publishing`,
     the same stages Ployz Cloud shows. `Queued to join` means other servers are joining the
-    fleet first. When it reads `Joined`, the loop turns itself off and deletes
-    `/etc/ployz/fleet-token`.
+    fleet first. When it reads `Joined`, the running check-in loop turns itself off and deletes
+    `/etc/ployz/fleet-token`, or the file you named with `--token-file`.
 13. `Enroll failed` means a stage failed, and the line after it names the stage and why, for
     example `Enroll failed at enrolling: Docker is not running`. The server goes back to waiting
     and Ployz Cloud shows the same failure. Fix the cause, then approve the server again in Ployz

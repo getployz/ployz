@@ -157,6 +157,7 @@ const MadeOrganization = Schema.Struct({ id: Schema.String, slug: Schema.String,
 const Reply = Schema.Struct({
   run: Schema.optionalKey(Schema.Struct({ id: Schema.String, state: Schema.String })),
   organizations: Schema.optionalKey(Schema.Array(Schema.Struct({ id: Schema.String, slug: Schema.String, current: Schema.Boolean }))),
+  via: Schema.optionalKey(Schema.String),
   token: Schema.optionalKey(Schema.Struct({ id: Schema.String, secret: Schema.String, organization: Schema.String, kind: Schema.String })),
   tokens: Schema.optionalKey(Schema.Array(Schema.Struct({
     id: Schema.String, kind: Schema.String, current: Schema.Boolean, expired: Schema.Boolean,
@@ -1353,6 +1354,15 @@ it.live(
         const ci = yield* mint({ name: "ci" });
         const byAgent = yield* cli("POST", "tokens", { ...alice, via: "agent" }, { name: "sneaky", expires_in_days: 30, kind: "cli" });
         assert.strictEqual(byAgent.json.token?.kind, "agent", byAgent.text);
+
+        // How Cloud hears the caller: `ployz` reads it to refuse an agent before asking for a typed name.
+        const via = Effect.fn(function* (as: As) {
+          return (yield* cli("GET", "organizations", as)).json.via;
+        });
+        assert.deepStrictEqual(
+          [yield* via(alice), yield* via({ bearer: ci }), yield* via({ bearer: agent }), yield* via({ bearer: ci, via: "agent" })],
+          ["cli", "cli", "agent", "agent"],
+        );
 
         const listed = yield* cli("GET", "tokens", alice);
         assert.deepStrictEqual(listed.json.tokens?.map(({ kind }) => kind).sort(), ["agent", "agent", "cli"]);

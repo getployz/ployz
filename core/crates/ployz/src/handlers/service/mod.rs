@@ -232,14 +232,9 @@ fn process_table(
             ),
             Row::Container(container) => {
                 let observation = container.as_observation();
-                let id = if seen.get(row).is_some_and(|count| *count > 1) {
-                    Cell::from(crate::ui::short_id(observation.container_id.as_str()))
-                } else {
-                    Cell::from("")
-                };
                 (
                     Cell::status(process_state(&observation.runtime), state_tone(container)),
-                    id,
+                    Cell::from(crate::ui::short_id(observation.container_id.as_str())),
                 )
             }
         };

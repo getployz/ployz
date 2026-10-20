@@ -474,7 +474,7 @@ mod tests {
     }
 
     #[test]
-    fn machine_policy_defaults_and_invalid_input_are_bounded() {
+    fn machine_policy_defaults_and_invalid_arguments_are_bounded() {
         let policy = HostPolicy::from_settings(|_| None).unwrap();
         assert_eq!(policy.queue_capacity, 100);
         assert_eq!(policy.queue_timeout, None);

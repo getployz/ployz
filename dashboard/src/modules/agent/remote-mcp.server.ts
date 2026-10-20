@@ -6,6 +6,7 @@ import { APIError } from "better-auth/api";
 import { Effect, Option, Schema } from "effect";
 import { AGENT_TOOLS, type AgentCaller, type AgentResult, type AgentTool, runAgentCall } from "#/modules/agent/agent-runner.server";
 import { CATALOG } from "#/modules/agent/agent-tools";
+import { findCommand } from "#/modules/commands/commands.server";
 import { asRecord, asString, projectJsonObject, projectJsonValue } from "#/lib/json";
 import type { JsonObject } from "#/db/tables";
 import { grantClaimsOf, oauthCaller } from "#/modules/identity/caller.server";
@@ -78,6 +79,15 @@ const text = (body: JsonObject, isError: boolean): CallToolResult =>
 
 type Claim = { message: string; url: string };
 
+/** A published command's retry names the approval its call carried, which stays good while the plan it approved does. */
+const carrying = (tool: AgentTool, approval: string | null, result: AgentResult): AgentResult => {
+  if (approval === null || findCommand(tool.name) === undefined || !("outcome" in result) || !("refusal" in result.outcome)) return result;
+  const { refusal } = result.outcome;
+  if ("next" in refusal || !("retry" in refusal) || refusal.retry === undefined) return result;
+  const input = asRecord(refusal.retry.input);
+  return input === null ? result : { outcome: { ok: false, refusal: { ...refusal, retry: { ...refusal.retry, input: { ...input, approval } } } } };
+};
+
 const resultOf = (result: AgentResult, key: string, link: () => string, claim: Claim | null): CallToolResult => {
   if ("asking" in result) {
     const { approvalId, refusal } = result.asking;
@@ -123,13 +133,14 @@ const serverFor = (caller: AgentCaller, request: Request, run: Run, appUrl: URL,
       const key = given.key ?? randomUUID();
       keys.push(key);
       const sent = tool.keyed ? { ...input, request_key: key } : input;
-      const result = await run(runAgentCall(caller, {
+      const approvalId = tool.gated ? asString(approval) : null;
+      const result = carrying(tool, approvalId, await run(runAgentCall(caller, {
         tool: tool.name,
         input: projectJsonValue(sent) ?? null,
         key,
-        approvalId: tool.gated ? asString(approval) : null,
+        approvalId,
         page: { at: "organization" },
-      }));
+      })));
       const refused = "outcome" in result && "refusal" in result.outcome ? result.outcome.refusal : null;
       const claim = refused?.code === "claim_required" ? { message: refused.message, url: await run(claimUrlFor(caller.organization.id)) } : null;
       return resultOf(result, key, link, claim);

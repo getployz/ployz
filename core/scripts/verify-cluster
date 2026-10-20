@@ -98,7 +98,7 @@ def build(run, commands, *, daemon):
     started = time.monotonic()
     destination = Path(run["manifest"]).parent / "artifacts"
     cargo_args = shlex.split(os.environ.get("PLOYZ_VERIFY_CARGO_ARGS", ""))
-    names = ["ployz", *(["ployzd"] if daemon == "checkout" else [])]
+    names = [*([] if run.get("cli") else ["ployz"]), *(["ployzd"] if daemon == "checkout" else [])]
     artifacts.binaries(destination, names, cargo_args, commands)
     if daemon == "main":
         if not artifacts.fetch_main(artifacts.key("ployzd", shlex.join(cargo_args)), destination, "--daemon checkout to build"):
@@ -111,7 +111,8 @@ def build(run, commands, *, daemon):
     for name in names:
         (destination / name).chmod(0o755)
         hashes[name] = hashlib.sha256((destination / name).read_bytes()).hexdigest()
-    run["client_sha256"] = hashes["ployz"]
+    if "ployz" in hashes:
+        run["client_sha256"] = hashes["ployz"]
     if daemon:
         run["binaries"] = hashes
     run["timings"]["build"] = round(time.monotonic() - started, 3)
@@ -176,6 +177,17 @@ def select_daemons(run, commands, specs, *, default):
     save(run)
 
 
+def select_cli(run, commands):
+    """Pick the CLI that drives the run: this checkout's CLI asks for its own wire, which an older daemon can't serve,
+    so when every Machine runs one release, and none enrolled on the checkout daemon, that release's CLI drives it."""
+    versions = {node["daemon"]["version"] if node["daemon"]["source"] not in LOCAL else None for node in run["machines"]}
+    run["cli"] = next(iter(versions)) if len(versions) == 1 and None not in versions and not run.get("bridged") else None
+    if run["cli"]:
+        hashes = releases.acquire(run["cli"], commands, Path(run["manifest"]).parent / "artifacts" / "runtime" / run["cli"], "ployz")
+        run["client_sha256"] = hashes["ployz"]
+    save(run)
+
+
 def dashboard_state(dashboard):
     state = dashboard / ".verify" / "run"
     url = next(line.split("=", 1)[1] for line in (state / "env").read_text().splitlines() if line.startswith("APP_URL="))
@@ -202,7 +214,8 @@ def cli_environment(run):
         environment.update(PLOYZ_TOKEN=(directory / "private" / "cloud-token").read_text(), PLOYZ_CLOUD_URL=run["cloud"]["url"])
     else:
         environment.update(PLOYZ_CONTEXT="verify", PLOYZ_STORE="sqlite:" + str(directory / "private" / "store.sqlite"))
-    return str(directory / "artifacts" / "ployz"), environment, directory / "workspace"
+    ployz = Path(directory, "artifacts", *(["runtime", run["cli"]] if run.get("cli") else []), "ployz")
+    return str(ployz), environment, directory / "workspace"
 
 
 def cli(run, commands, args, **kwargs):
@@ -678,7 +691,10 @@ def up(args):
         run["bridged"] = [name for name, daemon in boot.items() if daemon is checkout]
         booted = {daemon["version"] if daemon["source"] not in LOCAL else None for daemon in boot.values()}
         run["bootstrap_release"] = next(iter(booted)) if len(booted) == 1 and None not in booted else "0.2.2"
-        save(run)
+        select_cli(run, commands)
+        if not run["cli"] and any(node["daemon"]["source"] not in LOCAL for node in run["machines"]):
+            print("This checkout's CLI needs daemons that serve its wire (ployz.serving.routes.v1), "
+                  "so release daemons in this mixed cluster may refuse it", file=sys.stderr)
         # The context joins compilation and the dashboard before failure cleanup can remove resources.
         with ThreadPoolExecutor(max_workers=2) as builder:
             binaries = builder.submit(build, run, commands, daemon=local_daemon(
@@ -837,8 +853,9 @@ def main():
     launch.add_argument("--provider", choices=PROVIDERS, default="boat",
                         help="Where Machines run: boat sandboxes (default), or incus VMs on this host")
     launch.add_argument("--machines", type=int, choices=range(1, 9), default=1)
-    daemon_help = ("[MACHINE=]SOURCE, repeatable. SOURCE is checkout, main (main's CI build, stale), stable, beta or an exact release version; "
-                   "a bare SOURCE sets every Machine and MACHINE=SOURCE overrides one")
+    daemon_help = ("[MACHINE=]SOURCE, repeatable. SOURCE is checkout, main (main's CI build, stale), stable, beta or an exact release version. "
+                   "When every Machine runs one release, that release's CLI drives the run, otherwise this checkout's CLI. "
+                   "A bare SOURCE sets every Machine and MACHINE=SOURCE overrides one")
     launch.add_argument("--daemon", action="append", metavar="[MACHINE=]SOURCE", help=daemon_help + "; checkout by default")
     launch.add_argument("--memory", help="RAM per Machine VM as an Incus size; 2GiB by default; needs --provider incus")
     launch.add_argument("--disk", help="Root disk per Machine VM, which bounds its Machine Pool; 24GiB by default; needs --provider incus")
@@ -976,6 +993,7 @@ def main():
             print(f"Removed cluster. Evidence: {commands.evidence}")
         else:
             select_daemons(run, commands, args.daemon or [], default="checkout")
+            select_cli(run, commands)
             build(run, commands, daemon=local_daemon([node["daemon"] for node in run["machines"]]))
             started = time.monotonic()
             if run.get("bare"):
