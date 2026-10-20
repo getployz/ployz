@@ -161,7 +161,6 @@ where
         client = ensure_uninitialized(matches, matches.get_flag("yes"), true, client).await?;
     }
     report.step(Step::Enroll);
-    progress(EnrollStage::Enrolling);
     let (details, machine_token, name, outcome) = enroll_current_identity(
         &mut client,
         requested_name,
@@ -253,6 +252,7 @@ async fn enroll_current_identity(
         requested_storage,
         initial_policy.clone(),
     );
+    progress(EnrollStage::Enrolling);
     let outcome = cloud_enroll::enroll(url, token, &identity, progress).await?;
     Ok((details, machine_token, name, outcome))
 }

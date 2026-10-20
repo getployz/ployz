@@ -338,6 +338,37 @@ async fn caddy_lookup_failure_happens_before_initialize() {
 }
 
 #[tokio::test]
+async fn an_unnamed_server_on_an_empty_hostname_fails_before_asking_cloud_to_enroll() {
+    let enroll = EnrollListen::script([]).await;
+    let daemon = JoinDaemon::new(registration());
+    let machine_addr = serve_machine(daemon.clone()).await;
+
+    let output = harness::cli()
+        .args([
+            "--connect",
+            &format!("ssh://root@{machine_addr}"),
+            "server",
+            "add",
+            "--token-file",
+            harness::token_file(),
+            "--cloud-url",
+            &enroll.url,
+            "--yes",
+        ])
+        .output()
+        .await
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("Server name is required because the remote hostname is empty"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("Asking Cloud"), "{stderr}");
+    assert!(enroll.posts().is_empty());
+}
+
+#[tokio::test]
 async fn cloud_init_retries_not_yet_then_joins() {
     let registration = registration();
     let machine_id = registration.assigned_machine.id;

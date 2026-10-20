@@ -109,6 +109,10 @@ fn fake_cloud_answering(seen: Seen, confirms: bool, answer: Answer) -> String {
                     json!({ "organization": "acme", "servers": [], "volumes": [], "cancelled": [] }).to_string(),
                 ),
                 "POST /api/cli/forget-servers" => ("409 Conflict", ASKED_FORGET.to_owned()),
+                "POST /api/cli/server-access" => (
+                    "200 OK",
+                    json!({ "connections": [], "unreachable": ["a".repeat(32)] }).to_string(),
+                ),
                 "GET /api/cli/forget-servers" => (
                     "200 OK",
                     json!({
@@ -277,6 +281,75 @@ fn forgetting_every_server_says_it_is_asking_cloud_except_under_json() {
         json_of(&json).pointer("/error/code"),
         Some(&json!("confirmation_required"))
     );
+    let stderr = String::from_utf8_lossy(&json.stderr);
+    assert!(!stderr.contains("Asking Cloud"), "{stderr}");
+}
+
+#[test]
+fn forgetting_a_lone_server_that_does_not_answer_says_it_is_asking_cloud_once() {
+    let cloud = fake_cloud(Arc::default(), true);
+
+    let asked = ployz(&cloud, &["server", "forget", "web-1"]);
+    assert_eq!(asked.status.code(), Some(2), "{asked:?}");
+    let stderr = String::from_utf8_lossy(&asked.stderr);
+    assert_eq!(
+        stderr
+            .matches("Asking Cloud which Servers to forget…")
+            .count(),
+        1,
+        "{stderr}"
+    );
+    assert!(stderr.contains("It needs dead typed"), "{stderr}");
+
+    let forgot = ployz(&cloud, &["server", "forget", "web-1", "--confirm", "dead"]);
+    assert!(forgot.status.success(), "{forgot:?}");
+    let stderr = String::from_utf8_lossy(&forgot.stderr);
+    assert_eq!(
+        stderr
+            .matches("Asking Cloud which Servers to forget…")
+            .count(),
+        1,
+        "{stderr}"
+    );
+    assert_eq!(
+        stderr
+            .matches("Asking Cloud to forget the Servers…")
+            .count(),
+        1,
+        "{stderr}"
+    );
+}
+
+#[test]
+fn forgetting_every_server_says_once_that_it_asks_cloud_to_forget_them_except_under_json() {
+    let seen = Arc::default();
+    let cloud = fake_cloud(Arc::clone(&seen), true);
+
+    let forgot = ployz(&cloud, &["server", "forget", "--confirm", "acme"]);
+    assert!(forgot.status.success(), "{forgot:?}");
+    let stderr = String::from_utf8_lossy(&forgot.stderr);
+    assert_eq!(
+        stderr
+            .matches("Asking Cloud to forget the Servers…")
+            .count(),
+        1,
+        "{stderr}"
+    );
+    assert_eq!(seen.lock().unwrap().drain(..).count(), 2);
+
+    let json = ployz(
+        &cloud,
+        &[
+            "--json",
+            "server",
+            "forget",
+            "--confirm",
+            "acme",
+            "--approval",
+            "apr_9",
+        ],
+    );
+    assert!(json.status.success(), "{}", json_of(&json));
     let stderr = String::from_utf8_lossy(&json.stderr);
     assert!(!stderr.contains("Asking Cloud"), "{stderr}");
 }

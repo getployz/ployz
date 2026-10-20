@@ -1,6 +1,8 @@
 //! `server forget`: Forget one Server without a reset, or with no Server named, every
 //! Server of the Organization when they were deleted.
 
+use std::cell::Cell;
+
 use clap::{ArgMatches, Command};
 use ployz_core::RpcErrorCode;
 
@@ -62,15 +64,13 @@ fn forget_all(root: &ArgMatches) -> Result<(), Error> {
         };
         Ok::<_, Error>((credential, typed))
     })?;
-    let forgotten = approval::approved(
+    forget_through_cloud(
         &runtime,
+        matches,
         &credential,
-        Verb::Forget,
-        matches.get_one::<String>("approval").cloned(),
-        |id| super::approved_rerun(matches, &["server", "forget", "--confirm", typed], id),
-        async |approval| cloud_account::forget_servers(&credential, typed, approval).await,
-    )?;
-    finished(&forgotten)
+        typed,
+        &["server", "forget", "--confirm", typed],
+    )
 }
 
 /// `server forget <server>` when no Server answers, so no Cluster can take it out: Cloud
@@ -83,19 +83,37 @@ pub(super) fn forget_unanswered(
     selector: &str,
 ) -> Result<(), Error> {
     let organization = runtime.block_on(unanswered(matches, credential, selector))?;
+    forget_through_cloud(
+        runtime,
+        matches,
+        credential,
+        &organization,
+        &["server", "forget", selector, "--confirm", "dead"],
+    )
+}
+
+/// Cloud's forget, once a human approves it, which tries every Server again before it
+/// forgets them. `confirmed` is the command that reruns it with an approval's id.
+fn forget_through_cloud(
+    runtime: &tokio::runtime::Runtime,
+    matches: &ArgMatches,
+    credential: &Credential,
+    organization: &str,
+    confirmed: &[&str],
+) -> Result<(), Error> {
+    let announced = Cell::new(false);
     let forgotten = approval::approved(
         runtime,
         credential,
         Verb::Forget,
         matches.get_one::<String>("approval").cloned(),
-        |id| {
-            super::approved_rerun(
-                matches,
-                &["server", "forget", selector, "--confirm", "dead"],
-                id,
-            )
+        |id| super::approved_rerun(matches, confirmed, id),
+        async |approval| {
+            if !announced.replace(true) && !crate::ui::json() {
+                crate::ui::note("Asking Cloud to forget the Servers…");
+            }
+            cloud_account::forget_servers(credential, organization, approval).await
         },
-        async |approval| cloud_account::forget_servers(credential, &organization, approval).await,
     )?;
     finished(&forgotten)
 }
