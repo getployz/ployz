@@ -1154,6 +1154,7 @@ fn fixture_observation(
         address: None,
         labels: BTreeMap::new(),
         container_id,
+        stopped: false,
     })
     .unwrap()
 }

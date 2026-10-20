@@ -417,6 +417,7 @@ mod tests {
             resolved_spec: service_spec(None, None),
             address: None,
             labels: Default::default(),
+            stopped: false,
         })
         .unwrap();
         ContainerDetails {

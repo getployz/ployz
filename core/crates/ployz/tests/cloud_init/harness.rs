@@ -390,6 +390,7 @@ impl JoinDaemon {
                         resolved_spec: new.resolved_spec,
                         address: None,
                         labels: Default::default(),
+                        stopped: false,
                     })
                     .unwrap();
                 containers.push(container.clone());
@@ -1048,6 +1049,7 @@ pub fn ingress_on(machine: &Machine) -> ContainerObservation {
         resolved_spec: spec,
         address: None,
         labels: Default::default(),
+        stopped: false,
     })
     .unwrap()
 }

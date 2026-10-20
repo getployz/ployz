@@ -82,7 +82,8 @@ Open the service and click **⋮** next to its name. A running service offers **
   stops there and leaves the rest untouched. The service shows why, like **Container 4 on web-2
   didn't come back**, with **Retry**.
 - **Stop** asks first: every container stops on every server until you start the service or
-  deploy.
+  deploy. A stopped service reads **Stopped**, even when your app exits with an error code on
+  shutdown, as some wrappers like `npm start` do.
 - **Start** starts every stopped container.
 
 The dashboard can't run a command in a service yet. The CLI does all four:

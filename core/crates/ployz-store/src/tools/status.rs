@@ -12,6 +12,8 @@ pub enum ServiceStatus {
     /// It runs, but fewer replicas serve than it asks for, or none serves yet.
     Degraded,
     Crashed,
+    /// Nothing runs or crashed, and a Server stopped one of its containers on request.
+    Stopped,
     /// It should run and nothing does, or every container exited cleanly.
     NotRunning,
     /// It has never deployed, or has no source to run.
@@ -29,7 +31,9 @@ pub enum Container {
     Serving,
     /// Running, but it has not passed its healthcheck yet.
     Running,
-    /// Exited with code 0.
+    /// Exited with code 0, created, or paused.
+    Idle,
+    /// Exited after its Server stopped it on request, whatever its exit code.
     Stopped,
     /// Exited with an error, restarting, or any other state.
     Down,
@@ -100,6 +104,8 @@ fn evidence(facts: &ServiceFacts<'_>, whole: bool) -> ServiceStatus {
     if running == 0 {
         return if containers.contains(&Container::Down) {
             ServiceStatus::Crashed
+        } else if containers.contains(&Container::Stopped) {
+            ServiceStatus::Stopped
         } else {
             ServiceStatus::NotRunning
         };

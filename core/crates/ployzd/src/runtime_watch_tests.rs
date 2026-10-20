@@ -399,6 +399,7 @@ fn container(id: &str, service_name: &str, kind: ContainerKind) -> ContainerObse
         resolved_spec,
         address: None,
         labels: Default::default(),
+        stopped: false,
     })
     .unwrap()
 }
