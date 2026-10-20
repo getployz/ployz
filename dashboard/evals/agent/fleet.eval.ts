@@ -1,5 +1,6 @@
 import { describe, it } from "@effect/vitest";
 import { fakeText } from "@tanstack/ai/testing";
+import { SealedNames } from "@ployz/sdk";
 import { Effect, Layer } from "effect";
 import { expect } from "vitest";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
@@ -15,12 +16,17 @@ describe("the fake fleet", () => {
     const session = yield* OrganizationRuntime.use((runtime) => runtime.open(ORGANIZATION)).pipe(Effect.provide(services));
     expect(session.status).toBe("connected");
     if (session.status !== "connected") return;
-    const events = yield* session.connected.logs({ filter: { serviceName: "web" }, tail: 50, follow: false });
-    const messages = yield* Effect.promise(async () => {
-      const said: string[] = [];
-      for await (const event of events) if (event.type === "record") said.push(event.record.message);
-      return said;
-    });
+    // Nothing in the fleet is Sealed: every read the readers ask for answers no names.
+    const sealed = new SealedNames();
+    const messages = yield* Effect.scoped(Effect.gen(function* () {
+      yield* Effect.forkScoped(Effect.forever(Effect.andThen(Effect.promise(() => sealed.wanted()), Effect.sync(() => sealed.begin().done([])))));
+      const events = yield* session.connected.logs({ filter: { serviceName: "web" }, sealed, tail: 50, follow: false });
+      return yield* Effect.promise(async () => {
+        const said: string[] = [];
+        for await (const event of events) if (event.type === "record" && event.record.text === "shown") said.push(event.record.message);
+        return said;
+      });
+    }));
     expect(messages).toContain("starting session store");
     const ledger = yield* fleet.ledger;
     expect(ledger.filter(({ command }) => command === "tail_logs").map(({ machine }) => machine)).toContain("web-1");

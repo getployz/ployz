@@ -71,7 +71,7 @@ const phonesHidden = "hidden min-wf-nav:inline-flex";
 export function CrumbTrigger({ label, name, current, className }: { label: string; name: string; current?: boolean; className?: string }) {
   return (
     <PopoverTrigger render={<Button variant={current ? "outline" : "ghost"} size="sm"
-      aria-label={`${label}: ${name}`} title={name} className={cn("min-w-0", className)} />}>
+      aria-label={`${label}: ${name}`} title={name} className={cn("min-w-0 shrink", className)} />}>
       <span className="truncate">{name}</span>
       <ChevronsUpDownIcon data-icon="inline-end" />
     </PopoverTrigger>
@@ -107,7 +107,7 @@ export function EnvironmentCrumbs({ scope }: { scope: EnvironmentScope }) {
     ] : [],
     <Fragment key={`environment:${scope.projectSlug}/${scope.environmentSlug}`}>
       <EnvironmentCrumb scope={scope} />
-      {current?.protected ? <Badge variant="secondary"><LockIcon />Protected</Badge> : null}
+      {current?.protected ? <Badge variant="secondary" title="Protected"><LockIcon /><span className="max-wf-nav:sr-only">Protected</span></Badge> : null}
     </Fragment>,
     ...section === "architecture" ? [] : [<BreadcrumbPage key="place" className="px-1 font-semibold">{getDashboardSectionLabel(section)}</BreadcrumbPage>],
   ]} />;

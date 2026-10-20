@@ -3,6 +3,7 @@ import { createFileRoute, type ErrorComponentProps } from "@tanstack/react-route
 import { RouteErrorAlert } from "#/components/route-error-alert";
 import { requireStoreEnvironment, prefetchRemoteUptime } from "#/collections/route-data";
 import { environmentUptimeQueryOptions } from "#/modules/uptime/uptime.queries";
+import { toErrorMessage } from "#/lib/error-message";
 import {
   EnvironmentCanvasScene,
   PendingCanvas,
@@ -35,10 +36,7 @@ function CanvasError({ error }: ErrorComponentProps) {
     <div className="flex h-full items-center justify-center p-6">
       <RouteErrorAlert
         title="Couldn’t load this environment"
-        description={
-          (error instanceof Error && error.message) ||
-          "The environment data could not be loaded."
-        }
+        description={toErrorMessage(error, "The environment data could not be loaded.")}
       />
     </div>
   );

@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import type { ReactNode, Ref } from "react";
 import { PlusIcon } from "lucide-react";
 import { Button } from "#/components/ui/button";
 import { Item, ItemActions, ItemContent, ItemDescription, ItemFooter, ItemHeader, ItemTitle } from "#/components/ui/item";
@@ -138,7 +138,7 @@ export function SettingsWorkspace({ label, hint, tools, children }: {
   children: ReactNode;
 }) {
   return (
-    <Item data-archetype="workspace" className={`${CARD_CHILD} flex-col items-stretch`}>
+    <Item data-archetype="workspace" className={`${CARD_CHILD} flex-col flex-nowrap items-stretch`}>
       <ItemHeader>
         <SettingsText label={label} hint={hint} />
         {tools ? <ItemActions>{tools}</ItemActions> : null}
@@ -158,15 +158,16 @@ export function SettingsFoot({ children }: { children: ReactNode }) {
 }
 
 /** The `+ X` button of a foot or a closed disclosure. */
-export function SettingsAddButton({ children, onClick, disabled, changed }: {
+export function SettingsAddButton({ children, onClick, disabled, changed, ref }: {
   children: ReactNode;
   onClick: () => void;
   disabled?: boolean;
   /** Pink: what it would add is staged to go. */
   changed?: boolean;
+  ref?: Ref<HTMLButtonElement>;
 }) {
   return (
-    <Button type="button" variant="outline" size="sm" disabled={disabled} data-changed={changed || undefined} onClick={onClick}>
+    <Button ref={ref} type="button" variant="outline" size="sm" disabled={disabled} data-changed={changed || undefined} onClick={onClick}>
       <PlusIcon data-icon="inline-start" />{children}
     </Button>
   );

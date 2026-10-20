@@ -108,7 +108,9 @@ fn fake_cloud(browser: Arc<Mutex<Browser>>, routes: Arc<Mutex<Vec<String>>>) -> 
                         "tokens": [{ "id": "t1", "name": TOKEN_NAME,
                             "created_at": "2026-01-01", "expires_at": "2030-01-01",
                             "expired": false, "current": false, "scope": "Full as you" }],
-                        "devices": [], "revoking": [],
+                        "devices": [{ "id": "d1", "created_at": "2026-10-18T02:49:32.724Z",
+                            "expires_at": "2026-10-25T02:49:32.724Z", "current": true }],
+                        "revoking": [],
                     }),
                 ),
                 "GET /api/cli/organizations" => (
@@ -204,6 +206,27 @@ fn token_names_cannot_inject_terminal_controls_but_json_preserves_them() {
         };
         assert_eq!(json_of(&json).pointer(pointer).unwrap(), TOKEN_NAME);
     }
+}
+
+#[test]
+fn token_ls_says_which_login_each_device_is_and_what_it_can_do() {
+    let cloud = fake_cloud(Arc::new(Mutex::new(Browser::Approved)), Arc::default());
+    let dir = tempfile::tempdir().unwrap();
+    let config = dir.path().join("config.yaml");
+    for args in [
+        vec!["login", "--json", "--cloud-url", &cloud],
+        vec!["login", "--json"],
+    ] {
+        assert!(ployz(&config, &args).status.success());
+    }
+    let listed = ployz(&config, &["token", "ls"]);
+    assert!(listed.status.success());
+    let stdout = String::from_utf8(listed.stdout).unwrap();
+    assert!(
+        stdout.lines().any(|line| line
+            == "device\td1\tployz login 2026-10-18\tFull as you\t2026-10-25T02:49:32.724Z\tcurrent"),
+        "{stdout}"
+    );
 }
 
 #[test]
@@ -459,6 +482,18 @@ fn org_rm_of_another_organization_refuses_before_cloud_removes_anything() {
     assert_eq!(refused.status.code(), Some(2));
     let refused = json_of(&refused);
     assert_eq!(refused.pointer("/error/code").unwrap(), "invalid_argument");
+    let unknown = json_of(&ployz(
+        &config,
+        &["org", "rm", "nosuch", "--confirm", "nosuch", "--json"],
+    ));
+    assert_eq!(
+        unknown.pointer("/error/message").unwrap(),
+        "no Organization nosuch of yours"
+    );
+    assert_eq!(
+        unknown.pointer("/error/details/next").unwrap(),
+        "ployz org ls"
+    );
     assert!(
         !routes
             .lock()
