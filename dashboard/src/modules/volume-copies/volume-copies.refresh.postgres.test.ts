@@ -1,4 +1,4 @@
-import type { Client, ConfigStore, MachineId, VolumeSwitchRequest, WantedCopy } from "@ployz/sdk";
+import { type Client, type ConfigStore, type MachineId, RpcError, type VolumeCopy, type VolumeSwitchRequest, type WantedCopy } from "@ployz/sdk";
 import { Effect, Fiber, Layer } from "effect";
 import { TestClock } from "effect/testing";
 import { Inngest } from "inngest";
@@ -28,6 +28,10 @@ const environment = { project: "shop", environment: "production" };
 const web = (name: string) => name.padEnd(32, "0") as MachineId;
 const inngest = new Inngest({ id: "volume-copies-refresh-test" });
 vi.spyOn(inngest, "send").mockResolvedValue({ ids: [] });
+
+const SNAPSHOT = { copy: { ...COPIES.writer, newest: { name: "w-1-5", guid: "12", created_unix_seconds: 1_790_000_100 } } };
+// The SDK's own 10s timeout on a target Machine's RPC.
+const TIMED_OUT = new RpcError({ code: "unavailable", message: "target Machine RPC timed out", details: null });
 
 describe("Refresh now", () => {
   let harness: PostgresTestHarness;
@@ -61,6 +65,28 @@ describe("Refresh now", () => {
   };
   const refresh = () => run(refreshMirror(caller, environment, volumeId, () => Effect.succeed(blockers), () => Effect.succeed(members), () => Effect.succeed(members), ask));
   const runs = async () => (await harness.pool.query(`select kind, state from volume_run order by created_at`)).rows;
+  // The real askCopy, over a session to a paired Cluster whose SetVolumeCopy answers `answer`.
+  const pairedCluster = async (answer: (want: WantedCopy) => Promise<{ readonly copy: VolumeCopy }>) => {
+    const encryption = makeSecretEncryption("test-encryption-secret");
+    await harness.pool.query(`insert into organization_pairing (organization_id, encrypted_pairing_secret, founder_claim_machine_id, founder_machine_id)
+      values ($1, $2, $3, $3)`, [organizationId, encryption.encrypt("pairing"), "1".repeat(32)]);
+    await harness.pool.query(`insert into organization_machine (organization_id, machine_id, cluster_key, encrypted_capability)
+      values ($1, $2, $3, $4)`, [organizationId, "1".repeat(32), hashEnrollmentToken("pairing"), encryption.encrypt("ployz1:test")]);
+    return makeOrganizationRuntimeLayer(
+      (id) => loadOrganizationConnections(id).pipe(Effect.provideService(Database, harness.database), Effect.provideService(SecretEncryption, encryption)),
+      noPairingChanges,
+    ).pipe(Layer.provide(makePloyzLayer({
+      connect: async () => asTestDouble<Client>()({
+        close: async () => {},
+        volumeSwitch: async (_machine: MachineId, request: VolumeSwitchRequest) => {
+          if (request.command !== "set_volume_copy") throw new Error(`unexpected ${request.command}`);
+          return answer(request.payload.want);
+        },
+      }),
+    })));
+  };
+  const refreshOn = (cluster: Layer.Layer<OrganizationRuntime>) =>
+    refreshMirror(caller, environment, volumeId, () => Effect.succeed(blockers), () => Effect.succeed(members), () => Effect.succeed(members)).pipe(Effect.provide(cluster));
 
   beforeAll(async () => { harness = await startPostgresTestHarness(); }, 60_000);
   afterAll(async () => { await harness?.stop(); });
@@ -186,26 +212,11 @@ describe("Refresh now", () => {
   }, 30_000);
 
   it("opens each session's SQL outside the Cluster time, and answers once a SetVolumeCopy the mirror never answers spends it", async () => {
-    const encryption = makeSecretEncryption("test-encryption-secret");
-    await harness.pool.query(`insert into organization_pairing (organization_id, encrypted_pairing_secret, founder_claim_machine_id, founder_machine_id)
-      values ($1, $2, $3, $3)`, [organizationId, encryption.encrypt("pairing"), "1".repeat(32)]);
-    await harness.pool.query(`insert into organization_machine (organization_id, machine_id, cluster_key, encrypted_capability)
-      values ($1, $2, $3, $4)`, [organizationId, "1".repeat(32), hashEnrollmentToken("pairing"), encryption.encrypt("ployz1:test")]);
     const switched: string[] = [];
-    const cluster = makeOrganizationRuntimeLayer(
-      (id) => loadOrganizationConnections(id).pipe(Effect.provideService(Database, harness.database), Effect.provideService(SecretEncryption, encryption)),
-      noPairingChanges,
-    ).pipe(Layer.provide(makePloyzLayer({
-      connect: async () => asTestDouble<Client>()({
-        close: async () => {},
-        volumeSwitch: async (_machine: MachineId, request: VolumeSwitchRequest) => {
-          if (request.command !== "set_volume_copy") throw new Error(`unexpected ${request.command}`);
-          switched.push(request.payload.want.kind);
-          if (request.payload.want.kind === "mirror") return new Promise(() => {});
-          return { copy: { ...COPIES.writer, newest: { name: "w-1-5", guid: "12", created_unix_seconds: 1_790_000_100 } } };
-        },
-      }),
-    })));
+    const cluster = await pairedCluster((want) => {
+      switched.push(want.kind);
+      return want.kind === "mirror" ? new Promise<never>(() => {}) : Promise.resolve(SNAPSHOT);
+    });
     const holder = await harness.pool.connect();
     await holder.query(`begin; lock table organization_pairing in access exclusive mode`);
     const waitFor = (check: () => Promise<boolean> | boolean) => Effect.promise(() => vi.waitFor(async () => {
@@ -214,8 +225,7 @@ describe("Refresh now", () => {
     const held = Effect.promise(() => new Promise<"held">((resolve) => { setTimeout(() => resolve("held"), 10_000); }));
 
     const answer = await run(Effect.gen(function* () {
-      const fiber = yield* Effect.forkDetach(refreshMirror(caller, environment, volumeId, () => Effect.succeed(blockers), () => Effect.succeed(members), () => Effect.succeed(members))
-        .pipe(Effect.provide(cluster)));
+      const fiber = yield* Effect.forkDetach(refreshOn(cluster));
       yield* waitFor(async () => (await harness.pool.query(`select 1 from pg_stat_activity where wait_event_type = 'Lock'`)).rowCount === 1);
       yield* TestClock.adjust(2 * SYNC_CLUSTER_BUDGET_MS);
       yield* Effect.promise(() => holder.query(`commit`));
@@ -231,6 +241,15 @@ describe("Refresh now", () => {
     });
     expect(switched).toEqual(["snapshot", "mirror"]);
   }, 30_000);
+
+  it("says a hand-off the mirror's Server timed out on may have reached it, and blames no mirror for it", async () => {
+    const cluster = await pairedCluster((want) => want.kind === "mirror" ? Promise.reject(TIMED_OUT) : Promise.resolve(SNAPSHOT));
+    expect(await run(refreshOn(cluster))).toEqual({
+      ok: false,
+      refusal: { code: "unanswered", message: "web-2 didn't answer in time, so data's sync may have reached it; volume sync data again says where its mirrors got to", details: null },
+    });
+    expect((await harness.pool.query(`select failure from volume_mirror_status where failure is not null`)).rows).toEqual([]);
+  });
 
   it("reads what the syncs saw of each mirror", async () => {
     expect(await run(mirrorStatuses(organizationId, volumeId))).toEqual([]);

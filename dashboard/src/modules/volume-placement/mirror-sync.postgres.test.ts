@@ -191,6 +191,15 @@ describe("the mirror sync", () => {
     expect(asked).toEqual(["mirror web-3"]);
   });
 
+  it("takes no snapshot when no reply came back to a resent pull, since the mirror may still be pulling", async () => {
+    members = [member("web-1", "writer"), member("web-2", "pulling")];
+    const lost: CopyAsk = () => Effect.fail(new SwitchAttemptError(null, "set_volume_copy on web-2: unavailable: target Machine RPC timed out", true));
+    expect((await run(syncMirrors(organizationId, volume, () => Effect.succeed(members), lost))).lines).toEqual([
+      "web-2 didn't answer in time, so db's sync may have reached it; volume sync db again says where its mirrors got to",
+    ]);
+    expect(await status()).toEqual([]);
+  });
+
   it("records no failure when a newer run fences the hand-off", async () => {
     mirrorAnswer = { ok: false, reason: "stale", copy: COPIES.mirror, message: "a newer run took db" };
     expect((await sync()).lines).toEqual(["db-web-2 refused the pull: a newer run took db"]);

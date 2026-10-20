@@ -38,7 +38,7 @@ import {
 } from "#/modules/runtime/organization-runtime.server";
 import { RuntimeConnectionFailure } from "#/modules/runtime/runtime-connection-errors";
 import { type Requirement, requirementFor, requirements, serverSupports } from "#/modules/runtime/daemon-compat";
-import { observeVolumeCopies, type PloyzSdkError, sdkFailureMessage, setVolumeCopyRefusal } from "#/modules/runtime/ployz.server";
+import { observeVolumeCopies, type PloyzSdkError, rpcErrorCode, sdkFailureMessage, setVolumeCopyRefusal } from "#/modules/runtime/ployz.server";
 import {
   alreadyOn, newestGuid, type PlanInput, type Planned, planForwardRelease, planFromCopies, type Refusal, type RefusalCode, type ReleaseFrom, restoreSource,
   roleOf, writerRemovedMessage,
@@ -1005,9 +1005,12 @@ export function switchFailureMessage(reason: SwitchReason, ctx: Pick<RunContext,
   }
 }
 
-/** A failed attempt the step may retry; `reason` is the Machine's refusal, if it gave one. */
+/**
+ * A failed attempt the step may retry; `reason` is the Machine's refusal, if it gave one. `unanswered` when no reply came
+ * back, so the Machine may have acted on it.
+ */
 export class SwitchAttemptError extends Error {
-  constructor(readonly reason: SwitchReason | null, message: string) {
+  constructor(readonly reason: SwitchReason | null, message: string, readonly unanswered = false) {
     super(message);
   }
 }
@@ -1055,7 +1058,8 @@ export const askCopy = Effect.fn("VolumeRun.askCopy")(function* (asker: CopyAske
       if (error instanceof ClusterOutOfTime) return Effect.fail(error);
       const refused = setVolumeCopyRefusal("cause" in error ? error.cause : undefined);
       if (refused === null) {
-        return Effect.fail(new SwitchAttemptError(null, `set_volume_copy on ${machine.name}: ${sdkFailureMessage(error, [machine])}`));
+        const message = `set_volume_copy on ${machine.name}: ${sdkFailureMessage(error, [machine])}`;
+        return Effect.fail(new SwitchAttemptError(null, message, rpcErrorCode(error) === "unavailable"));
       }
       const { reason, copy } = refused;
       const message = switchFailureMessage(reason, asker, machine) ?? `${machine.name} is busy with ${asker.volumeName}`;
