@@ -507,7 +507,7 @@ pub(in crate::deploy) async fn relocate<C: MachineOperations>(
     spec: &ResolvedServiceSpec,
     to: &MachineId,
     old: &Copy,
-    name: &dyn Fn(&MachineId) -> MachineRef,
+    name: &(dyn Fn(&MachineId) -> MachineRef + Sync),
     cancellation: &CancellationToken,
 ) -> Result<Relocated, RelocateError> {
     let (new, deploy) = super::exec::move_container(
