@@ -25,8 +25,7 @@ use self::rotation::RotationWant;
 use super::super::ingress::admit_ingress_service;
 use super::{Error, LocalMachine};
 use crate::docker::{
-    ContainerCreated, ContainerRequest, ContainerRuntime, ImageIngest, RotationTurn, Withdrawal,
-    same_creation,
+    ContainerCreated, ContainerRequest, ImageIngest, RotationTurn, Withdrawal, same_creation,
 };
 use crate::docker_image::ImagePull;
 use crate::machine::{STORAGE_OBSERVATION_TIMEOUT, local_storage};
@@ -735,11 +734,11 @@ impl LocalMachine {
         let mut wait = ReadyWait::new(healthcheck, monitor);
         let started = tokio::time::Instant::now();
         loop {
-            let details = containers
-                .inspect_managed_details(container_id, &machine_id)
+            let inspected = containers
+                .inspect_managed_run(container_id, &machine_id)
                 .await?;
             let elapsed = started.elapsed();
-            let wake = match wait.poll(&details, elapsed).0 {
+            let wake = match wait.poll(&inspected.details, elapsed).0 {
                 HealthPoll::Complete if checked || elapsed >= monitor => {
                     return Ok(HealthVerdict::Healthy);
                 }
@@ -752,7 +751,7 @@ impl LocalMachine {
                     return Ok(HealthVerdict::Failed {
                         observation,
                         last_check,
-                        oom_killed: oom_killed(containers, container_id).await,
+                        oom_killed: inspected.oom_killed,
                     });
                 }
                 HealthPoll::Failed(HealthFailure::TimedOut {
@@ -762,7 +761,7 @@ impl LocalMachine {
                     return Ok(HealthVerdict::TimedOut {
                         deadline_millis,
                         last_check,
-                        oom_killed: oom_killed(containers, container_id).await,
+                        oom_killed: inspected.oom_killed,
                     });
                 }
                 HealthPoll::Failed(HealthFailure::Cancelled) => {
@@ -1044,15 +1043,6 @@ impl LocalMachine {
 
 /// Whether Docker still runs the Container's process. Paused and restarting count as
 /// running: both can write the Volume again without a start.
-/// Whether Docker OOM-killed a process of a Container whose health just failed. The
-/// failure stands as observed when Docker can't say.
-async fn oom_killed(containers: &ContainerRuntime, container_id: &ContainerId) -> bool {
-    containers
-        .oom_killed(container_id)
-        .await
-        .unwrap_or_default()
-}
-
 fn is_running(runtime: &ContainerRuntimeObservation) -> bool {
     matches!(
         runtime,
