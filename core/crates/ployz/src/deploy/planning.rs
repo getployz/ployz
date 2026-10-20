@@ -77,9 +77,9 @@ pub struct DeployPlan {
     preview: DeployPreview,
     /// The intent's pull credentials, for execution only; never in the preview.
     registry_auth: std::collections::BTreeMap<ployz_core::ServiceName, ployz_core::RegistryAuth>,
-    /// The plan only adds copies, so each flip also keeps everything the pointer it
-    /// replaces serves, including copies another Deploy published after this plan's
-    /// snapshot.
+    /// The plan only adds copies, so each flip serves what the pointer it replaces
+    /// serves plus this plan's new copies, never its planned keep list: the pointer may
+    /// have gained or withdrawn copies since this plan's snapshot.
     adds_only: bool,
 }
 

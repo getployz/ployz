@@ -1224,14 +1224,16 @@ fn proposed(
     started: &[(MachineId, ContainerId)],
     stopped_old: &[ContainerId],
 ) -> ServingPointer {
-    let mut containers = group.kept.clone();
-    let serving = current
-        .filter(|_| adds_only)
-        .into_iter()
-        .flat_map(|current| current.containers.iter().copied());
-    for id in serving.chain(started.iter().map(|(_, id)| *id)) {
-        if !containers.contains(&id) {
-            containers.push(id);
+    let mut containers = if adds_only {
+        current
+            .map(|current| current.containers.clone())
+            .unwrap_or_default()
+    } else {
+        group.kept.clone()
+    };
+    for (_, id) in started {
+        if !containers.contains(id) {
+            containers.push(*id);
         }
     }
     let mut pointer = succession(current, run.clone(), containers);
