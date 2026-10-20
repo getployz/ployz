@@ -35,7 +35,7 @@ pub(crate) struct Copy {
 impl Copy {
     pub(crate) fn observed(observation: &ContainerObservation) -> Self {
         Self {
-            machine_id: observation.machine_id.clone(),
+            machine_id: observation.machine_id,
             service: observation.identity(),
             container_id: observation.container_id,
             rotation: observation.rotation().clone(),
@@ -154,7 +154,7 @@ async fn wait_routes<C: MachineOperations>(
         };
         let waiting = still_waiting(&read, &satisfied);
         for machine in read.routes.keys() {
-            if !waiting.contains(machine) && confirmed.insert(machine.clone()) {
+            if !waiting.contains(machine) && confirmed.insert(*machine) {
                 acked(machine);
             }
         }
@@ -179,7 +179,7 @@ fn still_waiting(
         .iter()
         .filter(|(machine, _)| !read.down.contains(*machine))
         .filter(|(_, routed)| !routed.as_ref().is_some_and(satisfied))
-        .map(|(machine, _)| machine.clone())
+        .map(|(machine, _)| *machine)
         .collect()
 }
 
@@ -283,7 +283,7 @@ pub(crate) async fn retire<C: MachineOperations>(
     }
     match take_out(client, copy, allow_empty, cancellation).await? {
         Step::Done => remove(client, copy, anonymous_volumes).await,
-        step => Ok(step),
+        step @ (Step::Refused(_) | Step::NotConfirmed(_) | Step::Cancelled) => Ok(step),
     }
 }
 
