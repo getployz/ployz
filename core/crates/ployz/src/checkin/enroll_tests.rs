@@ -289,8 +289,8 @@ impl Host for Scripted {
         )
     }
 
-    async fn participating(&self) -> bool {
-        self.participating
+    async fn participating(&self) -> Option<String> {
+        self.participating.then(|| "web-1".to_owned())
     }
 
     async fn discard_zfs_build(&self) -> Result<(), String> {

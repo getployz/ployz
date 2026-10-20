@@ -225,6 +225,11 @@ impl Drop for FakeMachine {
 }
 
 fn native_addon() -> PathBuf {
+    // CI names the addon its `--all-features` workspace build made. Building `-p ployz-sdk`
+    // alone resolves other features, so it would compile the SDK's dependencies again.
+    if let Some(addon) = std::env::var_os("PLOYZ_SDK_ADDON") {
+        return PathBuf::from(addon);
+    }
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let workspace = manifest.join("../..");
     let target = option_env!("CARGO_TARGET_DIR")
