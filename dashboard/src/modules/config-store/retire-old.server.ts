@@ -1,9 +1,10 @@
 import "@tanstack/react-start/server-only";
-import { and, eq, ne, or } from "drizzle-orm";
+import { and, eq, lt, ne, or } from "drizzle-orm";
 import { Effect, Option } from "effect";
 import { cloudStore, storeTry } from "#/modules/config-store/store-sdk.server";
 import { connectionsOf } from "#/modules/config-store/config-store.server";
 import { type CleanupLeft, deploymentCleanup, type DeploymentCleanupState } from "#/modules/config-store/tables";
+import type { InngestRunStatus } from "#/modules/inngest/client";
 import type { ConfigDeploymentRetireRequestedEventData } from "#/modules/inngest/events";
 import { Database } from "#/server/database.server";
 
@@ -63,6 +64,30 @@ export const endCleanup = Effect.fn("DeploymentCleanup.end")(function* (
       })
       .returning(returning);
   return rows.length;
+});
+
+/** A live run rewrites its waiting row each minute, so only a row this quiet is worth asking Inngest about. */
+const CLEANUP_QUIET_MS = 15 * 60_000;
+
+const LOST_CLEANUP = "Cloud lost track of this cleanup. Deploy again to retire what it left.";
+
+/**
+ * End each waiting cleanup whose Inngest run is gone, failed with what it last left running. A run Inngest still reports
+ * running, or that Inngest can't answer for, keeps its row.
+ */
+export const closeStaleCleanups = Effect.fn("DeploymentCleanup.closeStale")(function* <R>(
+  runStatus: (runId: string) => Effect.Effect<InngestRunStatus, unknown, R>,
+) {
+  const { drizzle } = yield* Database;
+  const quiet = yield* drizzle.select({ runId: deploymentCleanup.runId, left: deploymentCleanup.left }).from(deploymentCleanup)
+    .where(and(eq(deploymentCleanup.state, "waiting"), lt(deploymentCleanup.updatedAt, new Date(Date.now() - CLEANUP_QUIET_MS))));
+  let closed = 0;
+  for (const { runId, left } of quiet) {
+    const status = yield* runStatus(runId).pipe(Effect.option);
+    if (Option.isNone(status) || status.value === "running") continue;
+    closed += yield* endCleanup(runId, { state: "failed", left, message: LOST_CLEANUP }, Option.none());
+  }
+  return { closed };
 });
 
 /** The Deployment's cleanup, or null for one Cloud never cleaned up. */

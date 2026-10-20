@@ -95,8 +95,9 @@ describe("Inngest function policies", () => {
       { id: "analytics-retention", retries: 3, concurrency: [{ limit: 1 }] },
       { id: "tear-down-anonymous-organization", retries: 3, concurrency: [{ key: "event.data.organizationId", limit: 1 }] },
       { id: "schedule-anonymous-sweep", retries: 3, concurrency: [{ limit: 1 }] },
-      { id: "retire-old", retries: 2, concurrency: [{ key: "event.data.environmentId", limit: 1 }] },
+      { id: "retire-old", retries: 3, concurrency: [{ key: "event.data.environmentId", limit: 1 }] },
       { id: "cancel-retire-old", retries: 3, concurrency: [{ key: "event.data.run_id", limit: 1 }] },
+      { id: "close-stale-deployment-cleanups", retries: 3, concurrency: [{ limit: 1 }] },
     ]);
   });
 

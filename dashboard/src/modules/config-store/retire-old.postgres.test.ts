@@ -1,9 +1,12 @@
 import { InngestTestEngine } from "@inngest/test";
-import { Option } from "effect";
+import { Effect, Option } from "effect";
 import { Inngest } from "inngest";
 import { afterAll, beforeAll, expect, it } from "vitest";
 import { createCancelRetireOld } from "#/modules/config-store/retire-old.inngest";
-import { endCleanup, readDeploymentCleanup, recordCleanupWaiting } from "#/modules/config-store/retire-old.server";
+import {
+  closeStaleCleanups, endCleanup, readDeploymentCleanup, recordCleanupWaiting,
+} from "#/modules/config-store/retire-old.server";
+import type { InngestRunStatus } from "#/modules/inngest/client";
 import { configDeploymentRetireRequestedEvent } from "#/modules/inngest/events";
 import { makeInngestEffectRunner, type runInngestEffect } from "#/server/run.server";
 import { type PostgresTestHarness, startPostgresTestHarness } from "#/test/postgres";
@@ -81,3 +84,24 @@ it("keeps a cleanup cancelled when the cancel lands while its first waiting writ
   }
   expect(await harness.runEffect(readDeploymentCleanup(ORGANIZATION, "race"))).toMatchObject({ state: "cancelled" });
 }, 30_000);
+
+it("fails only a waiting cleanup whose Inngest run is gone, keeping what it left, and never a live or unknown one", async () => {
+  const machine3 = { machine: "machine-3", service: "web", reason: "machine-3 did not answer" };
+  const statuses = new Map<string, InngestRunStatus | "unreachable">([
+    ["run-completed", "completed"], ["run-missing", "missing"], ["run-slow", "running"], ["run-unreachable", "unreachable"],
+    ["run-fresh", "missing"],
+  ]);
+  for (const runId of statuses.keys()) await harness.runEffect(recordCleanupWaiting(runId, requested(runId), [machine3]));
+  await harness.pool.query("update deployment_cleanup set updated_at = now() - interval '1 hour' where run_id <> 'run-fresh'");
+
+  const swept = await harness.runEffect(closeStaleCleanups((runId) => {
+    const status = statuses.get(runId);
+    return status === undefined || status === "unreachable" ? Effect.fail(new Error("unreachable")) : Effect.succeed(status);
+  }));
+
+  expect(swept).toEqual({ closed: 2 });
+  const lost = { state: "failed", left: [machine3], message: "Cloud lost track of this cleanup. Deploy again to retire what it left." };
+  const waiting = { state: "waiting", left: [machine3], message: null };
+  const states = await Promise.all([...statuses.keys()].map((runId) => harness.runEffect(readDeploymentCleanup(ORGANIZATION, runId))));
+  expect(states).toEqual([lost, lost, waiting, waiting, waiting]);
+});
