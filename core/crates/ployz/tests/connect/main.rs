@@ -116,6 +116,212 @@ async fn cli_exec_requires_exit_status_or_detached_start_confirmation() {
     }
 }
 
+#[tokio::test]
+async fn cli_exec_says_when_its_container_stopped_under_it() {
+    use ployz_core::ExecResponseFrame::{ExecId, Exit, Stdout};
+    use std::time::Duration;
+    let running = || ContainerRuntimeObservation::Running {
+        health: HealthObservation::Healthy,
+    };
+    let web = |container_hex, runtime| {
+        listing_container(
+            container_hex,
+            'a',
+            "web",
+            ContainerKind::ServiceContainer,
+            runtime,
+        )
+    };
+    let by_id = "a".repeat(32);
+    let cases = [
+        (
+            vec![web('b', running())],
+            1,
+            Some((
+                "The container for app/web stopped; exec ended.",
+                "ployz exec app/web",
+            )),
+        ),
+        (
+            vec![web('a', ContainerRuntimeObservation::Exited { code: 137 })],
+            1,
+            Some(("The container for app/web stopped; exec ended.", "ployz ps")),
+        ),
+        (vec![web('a', running())], 137, None),
+        (
+            vec![
+                web('a', running()),
+                listing_container('b', 'b', "web", ContainerKind::ServiceContainer, running()),
+            ],
+            137,
+            None,
+        ),
+        (
+            vec![web('a', ContainerRuntimeObservation::Paused)],
+            137,
+            None,
+        ),
+        (
+            vec![web(
+                'a',
+                ContainerRuntimeObservation::Unknown {
+                    raw: json!("frozen"),
+                },
+            )],
+            137,
+            None,
+        ),
+        (
+            vec![],
+            1,
+            Some(("The container for app/web stopped; exec ended.", "ployz ps")),
+        ),
+    ]
+    .into_iter()
+    .map(|(after, exit, said)| ("app/web", after, exit, said))
+    .chain([(
+        by_id.as_str(),
+        vec![listing_container(
+            'b',
+            'b',
+            "web",
+            ContainerKind::ServiceContainer,
+            running(),
+        )],
+        1,
+        Some(("stopped; exec ended.", "retry: ployz exec app/web")),
+    )]);
+    for (selector, after, exit, said) in cases {
+        let mut service = DiscoveryService::new(test_description());
+        service.exec_frames = Some(vec![
+            ExecId("started".into()),
+            Stdout(b"tick\n".to_vec()),
+            Exit(137),
+        ]);
+        service.listed_after_exec = Some(after);
+        service
+            .listed_containers
+            .lock()
+            .unwrap()
+            .push(web('a', running()));
+        let (address, server) = serve_discovery(service).await;
+        let config = tempfile::NamedTempFile::new().unwrap();
+        let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"));
+        command.kill_on_drop(true);
+        command.args([
+            "--connect",
+            &format!("tcp://{address}"),
+            "--ployz-config",
+            config.path().to_str().unwrap(),
+            "exec",
+            "-T",
+            selector,
+            "true",
+        ]);
+        let result = tokio::time::timeout(Duration::from_secs(10), command.output())
+            .await
+            .unwrap()
+            .unwrap();
+        server.abort();
+        let stderr = String::from_utf8_lossy(&result.stderr);
+        assert_eq!(result.status.code(), Some(exit), "{stderr}");
+        assert_eq!(String::from_utf8_lossy(&result.stdout), "tick\n");
+        match said {
+            Some((sentence, hint)) => {
+                assert!(stderr.contains(sentence), "{stderr}");
+                assert!(stderr.contains(hint), "{stderr}");
+            }
+            None => assert!(!stderr.contains("exec ended"), "{stderr}"),
+        }
+    }
+}
+
+#[tokio::test]
+async fn cli_exec_retry_repeats_the_scope_flags_it_was_given() {
+    use ployz_core::ExecResponseFrame::{ExecId, Exit};
+    let in_staging = |container_hex, service_hex| {
+        let mut parts = ployz_core::ContainerObservationParts::from(listing_container(
+            container_hex,
+            service_hex,
+            "web-1",
+            ContainerKind::ServiceContainer,
+            ContainerRuntimeObservation::Running {
+                health: HealthObservation::Healthy,
+            },
+        ));
+        parts.namespace = ployz_core::Namespace::parse("shop-staging").unwrap();
+        ployz_core::ContainerObservation::try_from(parts).unwrap()
+    };
+    let mut service = DiscoveryService::new(test_description());
+    service.exec_frames = Some(vec![ExecId("started".into()), Exit(137)]);
+    service.listed_after_exec = Some(vec![in_staging('b', 'b')]);
+    service
+        .listed_containers
+        .lock()
+        .unwrap()
+        .push(in_staging('a', 'a'));
+    let (address, server) = serve_discovery(service).await;
+    let store = tempfile::tempdir().unwrap();
+    let ployz = async |args: &[&str]| {
+        let home = tempfile::tempdir().unwrap();
+        tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
+            .current_dir(home.path())
+            .env("HOME", home.path())
+            .env("PLOYZ_CONFIG", home.path().join("config.yaml"))
+            .env(
+                "PLOYZ_STORE",
+                format!("sqlite:{}", store.path().join("store.db").display()),
+            )
+            .env_remove("PLOYZ_TOKEN")
+            .env("PLOYZ_CLOUD_URL", "http://127.0.0.1:9")
+            .env_remove("PLOYZ_PROJECT")
+            .env_remove("PLOYZ_ENV")
+            .arg("--connect")
+            .arg(format!("tcp://{address}"))
+            .args(args)
+            .output()
+            .await
+            .unwrap()
+    };
+    for args in [
+        &["project", "new", "shop"][..],
+        &["env", "new", "staging", "--project", "shop"],
+        &["project", "new", "other"],
+        &[
+            "service",
+            "add",
+            "web-1",
+            "--image",
+            "nginx:1",
+            "--project",
+            "shop",
+            "--env",
+            "staging",
+        ],
+    ] {
+        let output = ployz(args).await;
+        assert_eq!(output.status.code(), Some(0), "{args:?}: {output:?}");
+    }
+    let output = ployz(&[
+        "exec",
+        "-T",
+        "--project",
+        "shop",
+        "--env",
+        "staging",
+        "web-1",
+        "true",
+    ])
+    .await;
+    server.abort();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(1), "{stderr}");
+    assert!(
+        stderr.contains("retry: ployz exec --project shop --env staging shop-staging/web-1"),
+        "{stderr}"
+    );
+}
+
 struct FakeConnector {
     outcomes: Mutex<VecDeque<bool>>,
     attempts: Mutex<Vec<String>>,

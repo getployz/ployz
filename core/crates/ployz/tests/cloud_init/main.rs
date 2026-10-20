@@ -913,7 +913,11 @@ async fn partial_peer_observation_reports_incomplete_catch_up_before_placement()
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("partial Service observations"), "{stderr}");
     assert!(stderr.contains("it remains a Cluster member"), "{stderr}");
-    assert!(stderr.contains(unreachable.id.as_str()), "{stderr}");
+    assert!(
+        stderr.contains("observations: unreachable: "),
+        "the unseen Server reads by name: {stderr}"
+    );
+    assert!(!stderr.contains(unreachable.id.as_str()), "{stderr}");
     assert!(daemon.ensure_requests().is_empty());
     daemon.join_request();
 }
