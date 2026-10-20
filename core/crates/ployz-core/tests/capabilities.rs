@@ -7,13 +7,13 @@ use ployz_core::{
     LIST_CONTAINERS_CAPABILITY, LIST_IMAGES_CAPABILITY, LIST_MACHINES_CAPABILITY,
     LIST_VOLUMES_CAPABILITY, LOG_HISTORY_CAPABILITY, MACHINE_STORAGE_OBSERVATION_CAPABILITY,
     METRIC_HISTORY_CAPABILITY, MINT_BUILD_GRANT_CAPABILITY, PREPARE_VOLUMES_CAPABILITY,
-    PRUNE_IMAGES_CAPABILITY, PUBLISH_CERTIFICATE_MATERIAL_CAPABILITY,
-    PUBLISH_SERVING_POINTER_CAPABILITY, PULL_IMAGE_CAPABILITY, PULL_IMAGE_FROM_MACHINE_CAPABILITY,
-    READ_ROUTES_CAPABILITY, REGISTER_MACHINE_CAPABILITY, REMOVE_VOLUME_CAPABILITY,
-    REQUEST_MACHINE_UPGRADE_CAPABILITY, RUNTIME_WATCH_CAPABILITY, Rpc, SEED_VOLUME_CAPABILITY,
-    SELECT_ENDPOINT_CAPABILITY, SET_MANAGEMENT_CLIENT_CAPABILITY, SET_PUSH_TARGET_CAPABILITY,
-    SET_VOLUME_COPY_CAPABILITY, TAIL_LOGS_CAPABILITY, UPDATE_MACHINE_CAPABILITY,
-    VOLUME_FLOOR_CAPABILITY, op,
+    PRUNE_IMAGES_CAPABILITY, PUBLISH_CERTIFICATE_MATERIAL_CAPABILITY, PULL_IMAGE_CAPABILITY,
+    PULL_IMAGE_FROM_MACHINE_CAPABILITY, READ_ROUTES_CAPABILITY, REGISTER_MACHINE_CAPABILITY,
+    REMOVE_VOLUME_CAPABILITY, REQUEST_MACHINE_UPGRADE_CAPABILITY, RUNTIME_WATCH_CAPABILITY, Rpc,
+    SEED_VOLUME_CAPABILITY, SELECT_ENDPOINT_CAPABILITY, SET_MANAGEMENT_CLIENT_CAPABILITY,
+    SET_PUSH_TARGET_CAPABILITY, SET_VOLUME_COPY_CAPABILITY, SET_VOLUME_SIZE_CAPABILITY,
+    TAIL_LOGS_CAPABILITY, UPDATE_CONTAINER_LIMITS_CAPABILITY, UPDATE_MACHINE_CAPABILITY,
+    VOLUME_FLOOR_CAPABILITY, VOLUME_SHRINK_CAPABILITY, op,
 };
 
 /// Capability constants are generated from the catalog, so a typo would stay
@@ -57,11 +57,16 @@ fn catalogued_capabilities_keep_stable_spellings() {
         (LIST_VOLUMES_CAPABILITY, "ployz.volume.list.v1"),
         (REMOVE_VOLUME_CAPABILITY, "ployz.volume.remove.v1"),
         (
+            UPDATE_CONTAINER_LIMITS_CAPABILITY,
+            "ployz.container.limits.update.v1",
+        ),
+        (
             INSPECT_VOLUME_COPY_CAPABILITY,
             "ployz.volume.copy.inspect.v1",
         ),
         (SEED_VOLUME_CAPABILITY, "ployz.volume.seed.v1"),
         (SET_VOLUME_COPY_CAPABILITY, "ployz.volume.copy.set.v1"),
+        (SET_VOLUME_SIZE_CAPABILITY, "ployz.volume.size.set.v1"),
         (LIST_IMAGES_CAPABILITY, "ployz.image.list.v1"),
         (PRUNE_IMAGES_CAPABILITY, "ployz.image.prune.v1"),
         (
@@ -82,10 +87,6 @@ fn catalogued_capabilities_keep_stable_spellings() {
             PUBLISH_CERTIFICATE_MATERIAL_CAPABILITY,
             "ployz.certificates.publish.v1",
         ),
-        (
-            PUBLISH_SERVING_POINTER_CAPABILITY,
-            "ployz.serving.publish.v1",
-        ),
         (READ_ROUTES_CAPABILITY, "ployz.serving.routes.v1"),
         (UPDATE_MACHINE_CAPABILITY, "ployz.machine.update.v1"),
         (LEAVE_MACHINE_CAPABILITY, "ployz.machine.leave.v1"),
@@ -100,6 +101,7 @@ fn catalogued_capabilities_keep_stable_spellings() {
         (RUNTIME_WATCH_CAPABILITY, "ployz.runtime.watch.v1"),
         (EXEC_CONTAINER_CAPABILITY, "ployz.container.exec.v1"),
         (VOLUME_FLOOR_CAPABILITY, "ployz.volume.copy.floor.v1"),
+        (VOLUME_SHRINK_CAPABILITY, "ployz.volume.size.shrink.v1"),
     ];
     for (capability, spelling) in frozen {
         assert_eq!(capability, spelling);
@@ -134,6 +136,7 @@ fn advertised_capability_groups_match_the_frozen_catalog() {
             "ployz.container.list.v1",
             "ployz.container.inspect.v1",
             "ployz.container.ensure.v1",
+            "ployz.container.limits.update.v1",
             "ployz.storage.inspect.v1",
             "ployz.storage.prepare.v1",
             "ployz.volume.list.v1",
@@ -141,6 +144,7 @@ fn advertised_capability_groups_match_the_frozen_catalog() {
             "ployz.volume.copy.inspect.v1",
             "ployz.volume.seed.v1",
             "ployz.volume.copy.set.v1",
+            "ployz.volume.size.set.v1",
             "ployz.image.list.v1",
             "ployz.image.prune.v1",
             "ployz.image.ingest.ensure.v1",
@@ -154,13 +158,13 @@ fn advertised_capability_groups_match_the_frozen_catalog() {
             "ployz.container.exec.v1",
             "ployz.build.v1",
             "ployz.volume.copy.floor.v1",
+            "ployz.volume.size.shrink.v1",
         ]
     );
     assert_eq!(
         names(CapabilityAdvertisement::Cluster),
         [
             "ployz.certificates.publish.v1",
-            "ployz.serving.publish.v1",
             "ployz.serving.routes.v1",
             "ployz.runtime.watch.v1",
         ]
@@ -243,7 +247,6 @@ const FIELD_FLOOR: &[&str] = &[
     "ployz.metrics.history.v1",
     "ployz.rpc.describe-contract.v1",
     "ployz.runtime.watch.v1",
-    "ployz.serving.publish.v1",
     "ployz.serving.routes.v1",
     "ployz.storage.inspect.v1",
     "ployz.storage.prepare.v1",
@@ -268,6 +271,18 @@ const ABOVE_FLOOR: &[(&str, &str)] = &[
     (
         "ployz.image.pull.v1",
         "falls back: an older daemon pulls when it creates the Container",
+    ),
+    (
+        "ployz.volume.size.set.v1",
+        "gated: a caller checks the contract first and refuses the resize, naming the Server whose daemon lacks it",
+    ),
+    (
+        "ployz.volume.size.shrink.v1",
+        "gated: a caller checks the contract on every Machine holding a copy and refuses the shrink, naming the Server whose daemon lacks it",
+    ),
+    (
+        "ployz.container.limits.update.v1",
+        "gated: the planner updates in place only on a Machine advertising it, and replaces the Container on any other",
     ),
 ];
 

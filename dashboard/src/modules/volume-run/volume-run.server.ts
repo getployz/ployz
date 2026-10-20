@@ -11,6 +11,7 @@ import type {
   SnapshotGuid,
   SwitchError,
   VolumeCopy,
+  VolumeKind,
   VolumeSwitchRequest,
   WantedCopy,
 } from "@ployz/sdk";
@@ -33,16 +34,18 @@ import {
   clusterRead,
   OrganizationRuntime,
   PLAN_CLUSTER_BUDGET_MS,
+  requireClusterTime,
   RUNTIME_FRAME_TIMEOUT_MS,
   withClusterBudget,
 } from "#/modules/runtime/organization-runtime.server";
 import { RuntimeConnectionFailure } from "#/modules/runtime/runtime-connection-errors";
 import { type Requirement, requirementFor, requirements, serverSupports } from "#/modules/runtime/daemon-compat";
-import { observeVolumeCopies, type PloyzSdkError, sdkFailureMessage, setVolumeCopyRefusal } from "#/modules/runtime/ployz.server";
+import { observeVolumeCopies, type PloyzSdkError, RpcError, sdkFailureMessage, setVolumeCopyRefusal } from "#/modules/runtime/ployz.server";
 import {
   alreadyOn, newestGuid, type PlanInput, type Planned, planForwardRelease, planFromCopies, type Refusal, type RefusalCode, type ReleaseFrom, restoreSource,
   roleOf, writerRemovedMessage,
 } from "#/modules/volume-run/plan";
+import { RESIZE_REQUIREMENTS } from "#/modules/volume-run/resize";
 import { isBehind, isCurrent, releaseLine } from "#/modules/server-upgrade/server-upgrade";
 import { channelRelease, organizationReleaseChannel } from "#/modules/server-upgrade/server-upgrade.server";
 import { volumeRun } from "#/modules/volume-run/tables";
@@ -76,11 +79,13 @@ type PlannedPhase = Extract<Planned, { ok: true }>["phase"];
 type RunBase = {
   readonly id: string;
   readonly organizationId: string;
+  readonly environmentId: string;
   readonly volumeId: string;
   readonly volumeName: string;
   readonly dockerVolume: string;
   readonly orphan: boolean;
   readonly refquotaBytes: number;
+  readonly recordedBytes: number;
   readonly gen: number;
   readonly phase: VolumeRunPhase;
   readonly current: MachineId | null;
@@ -122,11 +127,13 @@ export const contextOf = (row: VolumeRunRow): RunContext => ({
   ...laneInputOf(row),
   id: row.id,
   organizationId: row.organizationId,
+  environmentId: row.environmentId,
   volumeId: row.volumeId,
   volumeName: row.volumeName,
   dockerVolume: row.dockerVolume,
   orphan: row.orphan,
   refquotaBytes: row.refquotaBytes,
+  recordedBytes: row.recordedBytes,
   gen: row.gen,
   phase: row.phase,
   current: row.current,
@@ -143,6 +150,7 @@ const KIND_WORDS = {
   release: "release",
   restore: "restore",
   seed: "restore",
+  resize: "resize",
   deploy: "deploy",
 } satisfies Record<VolumeRunKind, string>;
 
@@ -264,15 +272,18 @@ export const owedCommitments = Effect.fn("VolumeRun.owedCommitments")(function* 
   return newest.flatMap((row) => owed(row) ?? []);
 });
 
-// A sync's cut assumes a writer, and an owed Volume has none until the finish starts one on B.
-const OWED_KINDS: ReadonlySet<VolumeRunKind> = new Set<VolumeRunKind>(["move", "mirror", "seed", "sync"]);
+// A sync's cut assumes a writer, and an owed Volume has none until the finish starts one on B. A resize asks every
+// copy, and the one the Move finishes on is not yet the writer.
+const OWED_KINDS = {
+  move: true, mirror: true, seed: true, sync: true, resize: true, delete_mirror: false, release: false, restore: false, deploy: false,
+} as const satisfies Record<VolumeRunKind, boolean>;
 
 /**
  * A run that would undo or copy around a Move still owed its finish, or destroy the copy it finishes on. That copy is
  * known by its Machine's id, since the Server may be renamed, so a removal whose slot resolved to no id is refused.
  */
 const refusedWhileOwed = (input: VolumeLaneInput, pending: Owed) => {
-  if (OWED_KINDS.has(input.kind)) return true;
+  if (OWED_KINDS[input.kind]) return true;
   if (input.kind !== "delete_mirror") return false;
   return input.args.machine === undefined || input.args.machine === pending.current;
 };
@@ -293,9 +304,9 @@ const namedOwedRefusal = Effect.fn("VolumeRun.namedOwedRefusal")(function* (pend
 
 type DeleteMirrorArgs = VolumeRunArgs["delete_mirror"];
 
-const withSlotMachine = ({ slot, confirmed_name }: DeleteMirrorArgs, machines: readonly MachineRef[]): DeleteMirrorArgs => {
-  const machine = machines.find((entry) => entry.name === slot)?.id;
-  return machine === undefined ? { slot, confirmed_name } : { slot, confirmed_name, machine };
+const withSlotMachine = (args: DeleteMirrorArgs, machines: readonly MachineRef[]): DeleteMirrorArgs => {
+  const machine = machines.find((entry) => entry.name === args.slot)?.id;
+  return machine === undefined ? args : { ...args, machine };
 };
 
 export const releaseChangedMessage = (volumeName: string) => `${volumeName} changed since this release was planned; release it again`;
@@ -344,10 +355,18 @@ export const resolveVolume = Effect.fn("VolumeRun.resolveVolume")(function* (
     volumeName: volume.name,
     dockerVolume: dockerVolumeName(owned.namespace, volume.id),
     refquotaBytes: volume.storage.kind === "provisioned" ? volume.storage.maximumBytes : 0,
+    recordedBytes: volume.recorded_storage ?? 0,
   };
 });
 
-/** A seed copies the source's dataset as is, so the restored Volume must still ask for the source's storage. */
+/**
+ * The storage a Volume holds: the size the Store recorded for a deployed Managed Volume, which a staged older revision
+ * leaves as it is, else what Working State asks.
+ */
+export const heldStorage = (volume: { readonly storage: VolumeKind; readonly recorded_storage?: number }): VolumeKind =>
+  volume.recorded_storage === undefined ? volume.storage : { kind: "provisioned", maximumBytes: volume.recorded_storage };
+
+/** A seed copies the source's dataset as is, so the restored Volume must still hold the source's storage. */
 const seedLandingRefusal = Effect.fn("VolumeRun.seedLandingRefusal")(function* (
   organizationId: string,
   environment: EnvironmentRef,
@@ -360,7 +379,7 @@ const seedLandingRefusal = Effect.fn("VolumeRun.seedLandingRefusal")(function* (
   if (source === undefined || into === undefined) {
     return { code: "conflict", message: "The restored Volume or its source is gone. Discard the restore.", details: null } satisfies StoreRefusal;
   }
-  if (JSON.stringify(source.storage) === JSON.stringify(into.storage)) return null;
+  if (JSON.stringify(heldStorage(source)) === JSON.stringify(heldStorage(into))) return null;
   return {
     code: "conflict",
     message: `${into.name}'s storage no longer matches ${source.name}'s, so the restore can't land on it. Discard the restore and restore again.`,
@@ -373,6 +392,7 @@ const refusalCode = {
   confirm_required: "confirmation_required",
   invalid: "invalid_argument",
   already_on: "conflict",
+  already_sized: "conflict",
   no_writer: "conflict",
   two_writers: "conflict",
   volume_switching: "conflict",
@@ -385,7 +405,7 @@ const refusalCode = {
 
 /** A plan's refusal as the Store hears it; a call whose outcome already holds is settled, so the Store offers no retry. */
 const storeRefusal = ({ code, message, next }: Refusal): StoreRefusal => {
-  if (code === "already_on") return { code: refusalCode[code], message, details: { settled: true } };
+  if (code === "already_on" || code === "already_sized") return { code: refusalCode[code], message, details: { settled: true } };
   return { code: refusalCode[code], message, details: next === undefined ? null : { next } };
 };
 
@@ -429,6 +449,7 @@ function phaseEffects(volume: ResolvedVolume, phase: PlannedPhase, forgets: read
     case "restore":
     case "demote":
     case "seed":
+    case "resize":
       return [];
   }
 }
@@ -441,6 +462,7 @@ const VERBS = {
   move: null,
   restore: null,
   seed: null,
+  resize: null,
   deploy: null,
 } satisfies Record<VolumeRunKind, OperationVerb | null>;
 
@@ -504,7 +526,10 @@ export const planOnCluster = Effect.fn("VolumeRun.planOnCluster")(function* (
     const forward = planForwardRelease(volume.volumeName, yield* owedTarget(pending, members.value), members.value);
     if (forward.kind === "blocked") return { ok: false, refusal: { code: "conflict", message: forward.message, details: null } } satisfies VolumeRunPlan;
   }
-  const planned = planFromCopies({ ...input, volumeName: volume.volumeName, orphan: false }, members.value);
+  const planInput: PlanInput = input.kind === "resize"
+    ? { ...input, volumeName: volume.volumeName, orphan: false, recordedBytes: volume.recordedBytes, refquotaBytes: volume.refquotaBytes }
+    : { ...input, volumeName: volume.volumeName, orphan: false };
+  const planned = planFromCopies(planInput, members.value);
   if (!planned.ok) {
     return { ok: false, refusal: storeRefusal(planned.refusal) } satisfies VolumeRunPlan;
   }
@@ -638,6 +663,7 @@ const takeLane = Effect.fn("VolumeRun.takeLane")(function* (caller: Caller, { in
       volumeName: volume.volumeName,
       dockerVolume: volume.dockerVolume,
       refquotaBytes: volume.refquotaBytes,
+      recordedBytes: volume.recordedBytes,
       kind: input.kind,
       args: input.args,
       state: inngestRunId === null ? "requested" : "running",
@@ -781,7 +807,7 @@ export const releaseLanesOff = Effect.fn("VolumeRun.releaseLanesOff")(function* 
     if (!bound && !writes.includes(lane.dockerVolume)) continue;
     const taker: LaneTaker = {
       input: { volumeId: lane.volumeId, kind: "release", args: {} },
-      volume: { environmentId: lane.environmentId, volumeName: lane.volumeName, dockerVolume: lane.dockerVolume, refquotaBytes: lane.refquotaBytes },
+      volume: { environmentId: lane.environmentId, volumeName: lane.volumeName, dockerVolume: lane.dockerVolume, refquotaBytes: lane.refquotaBytes, recordedBytes: lane.recordedBytes },
       id: crypto.randomUUID(),
       lane: lane.id,
     };
@@ -960,7 +986,7 @@ export const unreachable = (error: Error) =>
 /** Cloud holds no connection to the Organization's Servers, as once their pairing is removed. */
 export class ClusterNotConnected extends Data.TaggedError("ClusterNotConnected")<{ readonly message: string }> {}
 
-const openSession = Effect.fn("VolumeRun.openSession")(function* (organizationId: string) {
+export const openSession = Effect.fn("VolumeRun.openSession")(function* (organizationId: string) {
   const session = yield* (yield* OrganizationRuntime).open(organizationId);
   if (session.status === "unreachable") return yield* new ClusterUnreachable({ message: "The cluster is unreachable." });
   if (session.status === "no_connection") return yield* new ClusterNotConnected({ message: "The cluster is no_connection." });
@@ -1012,12 +1038,24 @@ export function switchFailureMessage(reason: SwitchReason, ctx: Pick<RunContext,
   }
 }
 
+/**
+ * Whether the Machine got a failed request: `answered` when it sent the failure, `unanswered` when no reply came back, so
+ * it may have acted on it, and `unreached` when the Cluster's dial to it failed, so it never got the request.
+ */
+export type SwitchReach = "answered" | "unanswered" | "unreached";
+
 /** A failed attempt the step may retry; `reason` is the Machine's refusal, if it gave one. */
 export class SwitchAttemptError extends Error {
-  constructor(readonly reason: SwitchReason | null, message: string) {
+  constructor(readonly reason: SwitchReason | null, message: string, readonly reach: SwitchReach = "answered") {
     super(message);
   }
 }
+
+const switchReach = (cause: unknown): SwitchReach => {
+  if (!(cause instanceof RpcError)) return "answered";
+  if (cause.targetUnreached) return "unreached";
+  return cause.unanswered ? "unanswered" : "answered";
+};
 
 /** The verbs a run still sends through `sendSwitch`: SeedVolume and the reads. */
 type SwitchRequest = Extract<VolumeSwitchRequest, { command: "seed_volume" | "inspect_volume_copy" }>;
@@ -1051,10 +1089,15 @@ export type CopyAsker = Pick<RunContext, "organizationId" | "dockerVolume" | "vo
 
 /**
  * One SetVolumeCopy. A refusal is an answer, since the caller decides what follows it; only a failure to ask fails,
- * so a run's step retries.
+ * so a run's step retries. Spent Cluster time fails it before it opens a session, and out of time is `inFlight` only
+ * when the SetVolumeCopy itself was cut. Any other failure but a `SwitchAttemptError` is a session that didn't open, so
+ * the SetVolumeCopy was never sent.
  */
 export const askCopy = Effect.fn("VolumeRun.askCopy")(function* (asker: CopyAsker, machine: MachineRef, expect: ExpectedCopy, want: WantedCopy) {
-  const session = yield* openSession(asker.organizationId);
+  yield* requireClusterTime;
+  const session = yield* openSession(asker.organizationId).pipe(
+    Effect.catchIf((error) => error instanceof ClusterOutOfTime, () => Effect.fail(new ClusterOutOfTime({ inFlight: false }))),
+  );
   return yield* session.volumeSwitch(machine.id, { command: "set_volume_copy", payload: { name: asker.dockerVolume, expect, want, gen: asker.gen } }).pipe(
     clusterRead,
     Effect.map((reply): CopyAnswer => ({ ok: true, copy: reply.copy })),
@@ -1062,7 +1105,8 @@ export const askCopy = Effect.fn("VolumeRun.askCopy")(function* (asker: CopyAske
       if (error instanceof ClusterOutOfTime) return Effect.fail(error);
       const refused = setVolumeCopyRefusal("cause" in error ? error.cause : undefined);
       if (refused === null) {
-        return Effect.fail(new SwitchAttemptError(null, `set_volume_copy on ${machine.name}: ${sdkFailureMessage(error, [machine])}`));
+        const message = `set_volume_copy on ${machine.name}: ${sdkFailureMessage(error, [machine])}`;
+        return Effect.fail(new SwitchAttemptError(null, message, switchReach("cause" in error ? error.cause : undefined)));
       }
       const { reason, copy } = refused;
       const message = switchFailureMessage(reason, asker, machine) ?? `${machine.name} is busy with ${asker.volumeName}`;
@@ -1228,7 +1272,12 @@ export const startWriter = Effect.fn("VolumeRun.startWriter")(function* (ctx: Ru
   const { container } = yield* session.inspectContainer(holder.machine_id, holder.container_id).pipe(
     Effect.mapError((error) => new Error(`reading ${holder.resolved_spec.name}'s spec: ${sdkFailureMessage(error)}`)),
   );
-  const spec = container.resolved_spec;
+  // The spec was resolved at the Service's last Deploy; a resize since then raised the copies, and the Store recorded it.
+  const volumes = container.resolved_spec.volumes.map((volume) =>
+    volume.source.kind === "provisioned" && volume.source.name === ctx.dockerVolume && ctx.recordedBytes > 0
+      ? { ...volume, source: { ...volume.source, maximum_bytes: ctx.recordedBytes } }
+      : volume);
+  const spec = { ...container.resolved_spec, volumes };
   if (ownedBy !== null) yield* requireOwner(ctx.id, ownedBy);
   return yield* askCopy(ctx, to, start.expect, {
     kind: "writer",
@@ -1284,12 +1333,17 @@ export const observeVolumeMembers = Effect.fn("VolumeRun.observeMembers")(functi
     const lacks = (capability: string) => lackSentence(organizationId, capability, server, run?.kind).pipe(
       Effect.map((lack): Member => ({ machine: ref, answered: false, lack })),
     );
-    const floorless = run !== undefined && serverSupports({ capabilities: machine.runtime.capabilities ?? [] }, requirements.volumeFloor) === false;
+    const capabilities = { capabilities: machine.runtime.capabilities ?? [] };
+    const floorless = run !== undefined && serverSupports(capabilities, requirements.volumeFloor) === false;
+    // A resize asks every holder, so a holder that may not serve the verb, a Server listing no capabilities included, lacks it.
+    const unsized = run?.kind === "resize" ? RESIZE_REQUIREMENTS.find((requirement) => serverSupports(capabilities, requirement) !== true) : undefined;
     return session.volumeSwitch(machine.id, { command: "inspect_volume_copy", payload: { name: dockerVolume } }).pipe(
       clusterRead,
       Effect.timeout(OBSERVE_TIMEOUT),
       Effect.flatMap((view) => floorless && (view.copy !== null || isDestination(run, ref))
         ? lacks(requirements.volumeFloor.capability)
+        : unsized !== undefined && view.copy !== null
+        ? lacks(unsized.capability)
         : Effect.succeed<Member>({
           machine: ref,
           address: managementAddress(machine.public_key),
@@ -1306,7 +1360,8 @@ export const observeVolumeMembers = Effect.fn("VolumeRun.observeMembers")(functi
 
 /** What a run of each kind is called when a Server can't run it. */
 const RUN_FEATURES = {
-  mirror: "Volume mirror", sync: "Mirror refresh", delete_mirror: "Mirror removal", move: "Volume move", release: "Volume move", restore: "Using a mirror", seed: "Volume restore", deploy: "Deploy",
+  mirror: "Volume mirror", sync: "Mirror refresh", delete_mirror: "Mirror removal", move: "Volume move", release: "Volume move", restore: "Using a mirror", seed: "Volume restore",
+  resize: "Volume resize", deploy: "Deploy",
 } satisfies Record<VolumeRunKind, string>;
 
 const lackSentence = Effect.fn("VolumeRun.lackSentence")(function* (
@@ -1381,7 +1436,7 @@ export const requeueTakenMoves = Effect.fn("VolumeRun.requeueTakenMoves")(functi
     const again = yield* admitRun(
       { userId: null, organizationId: row.organizationId },
       { volumeId: row.volumeId, kind: "move", args: resume },
-      { environmentId: row.environmentId, volumeName: row.volumeName, dockerVolume: row.dockerVolume, refquotaBytes: row.refquotaBytes },
+      { environmentId: row.environmentId, volumeName: row.volumeName, dockerVolume: row.dockerVolume, refquotaBytes: row.refquotaBytes, recordedBytes: row.recordedBytes },
       crypto.randomUUID(),
     );
     if (again.ok) {
@@ -1412,6 +1467,7 @@ const endAndRelease = Effect.fn("VolumeRun.endAndRelease")(function* (owned: SQL
         volumeName: row.volumeName,
         dockerVolume: row.dockerVolume,
         refquotaBytes: row.refquotaBytes,
+        recordedBytes: row.recordedBytes,
         kind: "release",
         args: {},
         phase: row.phase,

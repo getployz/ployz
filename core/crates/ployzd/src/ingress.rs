@@ -14,6 +14,7 @@ use std::{
     path::{Path, PathBuf},
     time::Duration,
 };
+use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
 use crate::{
@@ -43,12 +44,20 @@ pub(crate) mod caddy;
 
 use caddy::CaddyAdmin;
 
-/// Acks name the Containers routed, not a deploy.
-fn rotation_ack_deploy() -> DeploymentLogId {
-    DeploymentLogId::parse("rotation").expect("rotation is a valid deploy id")
+/// What this process's ingress has published since it started: how many writes
+/// succeeded, and the Containers the last one acked per Service. A row already in
+/// Corrosion may predate a power-off, so only these count as this Machine's acks.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) struct PublishedRoutes {
+    pub(crate) count: u64,
+    pub(crate) routes: BTreeMap<QualifiedService, BTreeSet<ContainerId>>,
 }
 
 /// Run the Caddy watcher.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "each is a distinct daemon handle the watcher owns"
+)]
 pub(crate) async fn run(
     machine: Machine,
     replicated: ReplicatedStore,
@@ -56,6 +65,7 @@ pub(crate) async fn run(
     admin: AdminClient,
     data_dir: PathBuf,
     runtime_dir: PathBuf,
+    route_publishes: watch::Sender<PublishedRoutes>,
     shutdown: CancellationToken,
 ) -> io::Result<()> {
     let local = machine.id;
@@ -69,6 +79,7 @@ pub(crate) async fn run(
         },
         caddy::config_path(&data_dir),
         runtime_dir.join("caddy/admin.sock"),
+        route_publishes,
         shutdown,
     )
     .await
@@ -377,6 +388,7 @@ pub(crate) async fn watch_caddy<A: CaddyAdmin, Connect, ConnectFuture, LoadDown,
     replicated: ReplicatedStore,
     mut load_down: LoadDown,
     config_file: PathBuf,
+    route_publishes: watch::Sender<PublishedRoutes>,
     shutdown: CancellationToken,
     mut connect: Connect,
 ) -> io::Result<()>
@@ -458,8 +470,17 @@ where
                         }
                         last_input = Some(input);
                     }
-                    publish_route_acks(&replicated, &machine.id, &mut acked, route_acks(&routes))
-                        .await;
+                    let acks = route_acks(&routes);
+                    let published = acks
+                        .iter()
+                        .map(|(service, ack)| (service.clone(), ack.containers.clone()))
+                        .collect();
+                    if publish_route_acks(&replicated, &machine.id, &mut acked, acks).await {
+                        route_publishes.send_modify(|publishes| {
+                            publishes.count += 1;
+                            publishes.routes = published;
+                        });
+                    }
                     routed = routes;
                 }
                 Err(error) => {
@@ -492,7 +513,6 @@ fn route_acks(routes: &ProxyRoutes) -> BTreeMap<QualifiedService, IngressRouteAc
         .iter()
         .map(|(service, route)| {
             let ack = IngressRouteAck {
-                deploy: rotation_ack_deploy(),
                 containers: route
                     .iter()
                     .map(|serving| serving.as_observation().container_id)
@@ -508,7 +528,7 @@ async fn publish_route_acks(
     machine_id: &MachineId,
     acked: &mut BTreeMap<QualifiedService, Option<IngressRouteAck>>,
     acks: BTreeMap<QualifiedService, IngressRouteAck>,
-) {
+) -> bool {
     let mut changes: BTreeMap<_, _> = acked
         .keys()
         .filter(|service| !acks.contains_key(*service))
@@ -527,7 +547,8 @@ async fn publish_route_acks(
             *acked = acks
                 .into_iter()
                 .map(|(service, ack)| (service, Some(ack)))
-                .collect()
+                .collect();
+            true
         }
         Err(error) => {
             // The write may have committed anyway, so the next pass rewrites or deletes these rows.
@@ -538,6 +559,7 @@ async fn publish_route_acks(
                 error = %ployz_core::error_chain::inline(&error),
                 "failed to publish ingress route acks, retrying next pass"
             );
+            false
         }
     }
 }

@@ -30,7 +30,7 @@ import type {
   WatchOptions,
 } from "@ployz/sdk";
 import { connect as connectSdk, machineUpgradeAttemptId, observeCopies, ployzVersion, SealedNames, setVolumeCopyRefusal } from "@ployz/sdk";
-import { Context, Data, Effect, Layer, Option, Schema, type Scope } from "effect";
+import { Context, Data, Effect, Fiber, Layer, Option, Schema, type Scope } from "effect";
 import type { JsonValue } from "#/db/tables";
 import { describeFailureCause } from "#/lib/error-message";
 import { projectJsonValue } from "#/lib/json";
@@ -168,9 +168,22 @@ type PloyzBindings = {
   readonly connect: (options: ConnectOptions) => Promise<Client>;
 };
 
+/** Why a bound cut a close, such as `ClusterOutOfTime`, or a plain error a bound failed with. */
+export type CloseCut = { readonly _tag: string } | Error;
+
+/**
+ * How a session closes when its scope does. `closeWithin` bounds the close for a short-lived caller (pass `clusterRead`
+ * to spend Cluster time on it): a close it cuts aborts the connection and goes on in the background. Without it, the
+ * scope waits for the close.
+ */
+export type PloyzSessionClose = {
+  readonly closeWithin?: (close: Effect.Effect<void>) => Effect.Effect<void, CloseCut>;
+};
+
 export interface PloyzService {
   readonly connect: (
     options: SharedConnectOptions,
+    close?: PloyzSessionClose,
   ) => Effect.Effect<PloyzSession, PloyzProviderError, Scope.Scope>;
 }
 
@@ -367,9 +380,29 @@ function closeSession(session: Client) {
   );
 }
 
+/** The warning for a close its bound cut: only running out of Cluster time is "in time". */
+export function closeCutWarning(cut: CloseCut) {
+  if ("_tag" in cut && cut._tag === "ClusterOutOfTime") return "The Ployz session didn't close in time, so its connection was aborted.";
+  const failure = "_tag" in cut ? cut._tag : cut.message || cut.name;
+  return `The Ployz session's close failed with ${failure}, so its connection was aborted.`;
+}
+
+function closeSessionWithin(
+  session: Client,
+  controller: AbortController,
+  closeWithin: NonNullable<PloyzSessionClose["closeWithin"]>,
+) {
+  return Effect.forkDetach(closeSession(session)).pipe(
+    Effect.flatMap((closing) => closeWithin(Fiber.join(closing))),
+    Effect.catch((error) => Effect.sync(() => controller.abort()).pipe(
+      Effect.andThen(Effect.logWarning(closeCutWarning(error))),
+    )),
+  );
+}
+
 export function makePloyzLayer(bindings: PloyzBindings) {
   return Layer.succeed(Ployz, {
-    connect: (options) =>
+    connect: (options, { closeWithin } = {}) =>
       Effect.gen(function* () {
         const controller = yield* Effect.acquireRelease(
           Effect.sync(() => new AbortController()),
@@ -384,7 +417,7 @@ export function makePloyzLayer(bindings: PloyzBindings) {
             catch: (cause) =>
               new PloyzProviderError({ operation: "connect", cause }),
           }),
-          closeSession,
+          (session) => closeWithin === undefined ? closeSession(session) : closeSessionWithin(session, controller, closeWithin),
           { interruptible: true },
         ).pipe(Effect.map(wrapClient));
       }),

@@ -3,12 +3,15 @@
 # real Server.
 #
 # Prerequisites (manual): a paired setup, started from core/ with
-#   run=$(scripts/verify-cluster up --machines 1 --daemon stable --cloud)
-# then seeded with Organization `ada`, Project `shop`, Environment `production`
-# running web (nginx, generated domain web.ada.ployz.test on port 80, custom
-# domain acme.com), api, postgres (Volume pg-data) and worker, plus a staged,
-# undeployed Branch `fix-api`. This script never starts, restarts or tears the
-# setup down.
+#   run=$(scripts/verify-cluster up --machines 1 --daemon checkout --cloud)
+# (a release daemon refuses this checkout's CLI), seeded with Organization
+# `ada`, Project `shop`, Environment `production` holding web (nginx, custom
+# domain acme.com, no generated domain, so `domain set web` refuses), api,
+# postgres (Volume pg-data), worker and redis, plus a staged, undeployed Branch
+# `fix-api`. Then, through `scripts/verify-cluster cli "$run" --`, run
+# `link --project shop`, `service rm redis` (its HTTP health check never
+# passes) and `deploy`. This script never starts, restarts or tears the setup
+# down.
 #
 #   MANIFEST=/abs/core/.verify/<run>/cluster.json [SECTIONS="..."] run.sh [PARENT]
 #   publish.sh DIR
@@ -53,7 +56,7 @@ CAPTURES=$("$DOCS/capture-dir.sh" "${1:-}") || exit 1
 WRAPPER=$(mktemp /tmp/ployz-cloud.XXXXXX) || exit 1
 readonly SECTIONS RUN_DIR WORKSPACE CAPTURES WRAPPER
 # up_section records here what it changed, so a run that stops early puts it back.
-restore_links='' restore_index=''
+restore_links='' restore_index='' made_git=''
 # save FILE   copies FILE aside and prints the copy's path, or absent
 save() {
   if [ ! -e "$1" ]; then echo absent; return; fi
@@ -70,6 +73,7 @@ cleanup() {
   rm -f "$WRAPPER"
   [ -z "$restore_links" ] || restore "$RUN_DIR/private/links.json" "$restore_links"
   [ -z "$restore_index" ] || restore "$WORKSPACE/index.html" "$restore_index"
+  [ -z "$made_git" ] || rm -rf -- "$WORKSPACE/.git"
 }
 trap cleanup EXIT
 echo "raw captures in $CAPTURES"
@@ -205,6 +209,17 @@ up_section() {
   local f=deploy.md D=$CAPTURES/deploy.md links=$RUN_DIR/private/links.json index=$WORKSPACE/index.html
   restore_links=$(save "$links") || exit 1
   restore_index=$(save "$index") || exit 1
+  # up uploads what Git keeps, and this checkout ignores .verify/, so the
+  # workspace gets a repository of its own, as an app directory would have.
+  if [ ! -e "$WORKSPACE/.git" ]; then
+    git -C "$WORKSPACE" init -q || exit 1
+    made_git=1
+  fi
+  # up makes a Project only for a directory with no link.
+  local unlinked
+  unlinked=$(mktemp "$links.XXXXXX") || exit 1
+  jq --arg k "$WORKSPACE" 'del(.[$k])' "$links" >"$unlinked" || { rm -f -- "$unlinked"; exit 1; }
+  mv -f -- "$unlinked" "$links"
   h $f "up from a directory with index.html"
   c $D "up --help" -- $P up --help
   printf '<h1>hello from ployz up</h1>\n' >"$WORKSPACE/index.html"
@@ -218,16 +233,13 @@ up_section() {
   m $D "project rm the up Project" -- $P project rm workspace --confirm workspace
   c $D "status with the directory still linked to the removed Project" -- $P status
   c $D "status --json with the directory still linked to the removed Project" -- $P --json status
-  # No command unlinks a directory; drop the run's link so later commands act
-  # on shop again.
-  local next
-  next=$(mktemp "$links.XXXXXX") || exit 1
-  jq --arg k "$WORKSPACE" 'del(.[$k])' "$links" >"$next" || { rm -f -- "$next"; exit 1; }
-  mv -f -- "$next" "$links"
-  [ "$restore_links" = absent ] || rm -f -- "$restore_links"
+  # Put the links back as they were, so later commands act on shop again.
+  restore "$links" "$restore_links"
   restore_links=''
   restore "$index" "$restore_index"
   restore_index=''
+  [ -z "$made_git" ] || rm -rf -- "$WORKSPACE/.git"
+  made_git=''
 }
 
 runtime_section() {

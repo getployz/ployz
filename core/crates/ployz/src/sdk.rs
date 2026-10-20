@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde::Serialize;
 use serde_json::Value;
@@ -44,7 +44,9 @@ pub use github_build::{
 };
 pub use running::Running;
 pub use store_call::store_call;
-pub use store_runner::{Sources, observe_copies, observe_volumes, run_deployment};
+pub use store_runner::{
+    RetireLeft, RetireOutcome, Sources, observe_copies, observe_volumes, retire_old, run_deployment,
+};
 
 /// Cancellable preparation whose progress is retained until read, within a byte budget.
 pub type RunningPreparation = Running<PreparedDeploy>;
@@ -127,7 +129,10 @@ pub struct ObservedCopy {
 fn volume_switch_path(body: &RpcRequestBody) -> Result<&'static str, RpcError> {
     use RpcRequestBody as Body;
     match body {
-        Body::InspectVolumeCopy(_) | Body::SeedVolume(_) | Body::SetVolumeCopy(_) => body
+        Body::InspectVolumeCopy(_)
+        | Body::SeedVolume(_)
+        | Body::SetVolumeCopy(_)
+        | Body::SetVolumeSize(_) => body
             .unary_path()
             .ok_or_else(|| invalid_argument(format!("{} is not a unary RPC", body.command()))),
         _ => Err(invalid_argument(format!(
@@ -140,12 +145,13 @@ fn volume_switch_path(body: &RpcRequestBody) -> Result<&'static str, RpcError> {
 /// The JSON a Volume switch verb's answer carries, or the Machine's error as it sent it.
 #[expect(
     clippy::wildcard_enum_match_arm,
-    reason = "the volume copy verbs answer with two reply kinds; any other kind is a Machine fault"
+    reason = "the Volume switch verbs answer with three reply kinds; any other kind is a Machine fault"
 )]
 fn volume_switch_payload(command: &str, body: RpcResponseBody) -> Result<Value, RpcError> {
     let payload = match body {
         RpcResponseBody::VolumeCopyView(view) => serde_json::to_value(view),
         RpcResponseBody::SetVolumeCopyReply(reply) => serde_json::to_value(reply),
+        RpcResponseBody::SetVolumeSizeReply(reply) => serde_json::to_value(reply),
         RpcResponseBody::Error(error) => return Err(error),
         other => {
             return Err(RpcError {
@@ -204,11 +210,14 @@ pub struct RunningDeploy {
 }
 
 /// A failure, and whether no Machine sent it: the dial failed, or the call went out and
-/// no status came back. A Machine's own refusal is `unanswered: false`.
+/// no status came back. A Machine's own refusal is `unanswered: false`, and so is a call
+/// the entry Machine says it could not dial its target for, since no Machine got it.
 #[derive(Debug)]
 pub struct CallError {
     pub error: RpcError,
     pub unanswered: bool,
+    /// The entry Machine says it could not dial the call's target.
+    pub target_unreached: bool,
 }
 
 impl std::fmt::Display for CallError {
@@ -226,7 +235,8 @@ impl std::error::Error for CallError {
 impl From<ConnectError> for CallError {
     fn from(error: ConnectError) -> Self {
         Self {
-            unanswered: error.unreached() || error.unreplied(),
+            unanswered: (error.unreached() || error.unreplied()) && !error.target_unreached(),
+            target_unreached: error.target_unreached(),
             error: error.into(),
         }
     }
@@ -237,6 +247,7 @@ impl From<RpcError> for CallError {
         Self {
             error,
             unanswered: false,
+            target_unreached: false,
         }
     }
 }
@@ -315,13 +326,35 @@ impl Session {
         }
     }
 
+    /// [`Self::until_closed`] for a call the Machine may take: a close once the call has
+    /// started ends the wait, not the call, so it is `unanswered`. A close seen before the
+    /// call starts sends nothing.
+    async fn until_closed_answered<T>(
+        &self,
+        work: impl std::future::Future<Output = Result<T, CallError>>,
+    ) -> Result<T, CallError> {
+        let started = AtomicBool::new(false);
+        tokio::select! {
+            biased;
+            () = self.inner.cancel.cancelled() => Err(CallError {
+                error: closed(),
+                unanswered: started.load(Ordering::Relaxed),
+                target_unreached: false,
+            }),
+            result = async {
+                started.store(true, Ordering::Relaxed);
+                work.await
+            } => result,
+        }
+    }
+
     async fn unary<T: Rpc>(&self, request: T::Request) -> Result<T::Response, RpcError> {
         Ok(self.unary_answered::<T>(request).await?)
     }
 
     async fn unary_answered<T: Rpc>(&self, request: T::Request) -> Result<T::Response, CallError> {
         let mut client = self.client()?;
-        self.until_closed(async {
+        self.until_closed_answered(async {
             client
                 .call::<T>(request, None)
                 .await
@@ -780,8 +813,10 @@ impl Session {
     /// Returns `invalid_argument` when `request` is not one of the Volume switch
     /// commands or `machine` is not a Machine Target, and the Machine's [`RpcError`]
     /// otherwise, its `details` a `SwitchError` when the fence refused or a
-    /// `SetVolumeCopyRefused` when SetVolumeCopy refused.
-    pub async fn volume_switch(&self, machine: &str, request: Value) -> Result<Value, RpcError> {
+    /// `SetVolumeCopyRefused` when SetVolumeCopy refused. A failure no Machine sent is
+    /// `unanswered`: the Machine may have taken the request. One whose entry Machine
+    /// could not dial `machine` is not, since `machine` never got it.
+    pub async fn volume_switch(&self, machine: &str, request: Value) -> Result<Value, CallError> {
         let target =
             MachineTarget::parse(machine).map_err(|error| invalid_argument(error.to_string()))?;
         let body: RpcRequestBody =
@@ -790,14 +825,22 @@ impl Session {
         let request = ployz_core::RpcRequest::from(body);
         let client = self.client()?;
         let response = self
-            .until_closed(client.invoke_raw(
-                &request,
-                path,
-                Some(&target),
-                Some(crate::connect::TARGET_RPC_TIMEOUT),
-            ))
+            .until_closed_answered(async {
+                client
+                    .invoke_raw(
+                        &request,
+                        path,
+                        Some(&target),
+                        Some(crate::connect::TARGET_RPC_TIMEOUT),
+                    )
+                    .await
+                    .map_err(CallError::from)
+            })
             .await?;
-        volume_switch_payload(request.body.command(), response.body)
+        Ok(volume_switch_payload(
+            request.body.command(),
+            response.body,
+        )?)
     }
 
     /// Live Observation of Data Loss that removing `machine` would cause.

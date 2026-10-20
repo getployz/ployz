@@ -105,6 +105,7 @@ fn new_named_volume_containers_default_to_stop_first_in_every_mode() {
                 | DeployOperation::StopContainer { .. }
                 | DeployOperation::RemoveContainer { .. }
                 | DeployOperation::ReplaceContainer(_)
+                | DeployOperation::UpdateContainer(_)
                 | DeployOperation::StopHook { .. }
                 | DeployOperation::RunHook { .. }
                 | DeployOperation::PrepareVolumes { .. }
@@ -387,6 +388,7 @@ fn placement_by_shared_label_keeps_every_match() {
             | DeployOperation::StopContainer { .. }
             | DeployOperation::RemoveContainer { .. }
             | DeployOperation::ReplaceContainer(..)
+            | DeployOperation::UpdateContainer(..)
             | DeployOperation::StopHook { .. }
             | DeployOperation::RunHook { .. }
             | DeployOperation::PrepareVolumes { .. }
@@ -413,6 +415,7 @@ fn empty_placement_keeps_every_eligible_machine_and_all_is_a_label_value() {
                 | DeployOperation::StopContainer { .. }
                 | DeployOperation::RemoveContainer { .. }
                 | DeployOperation::ReplaceContainer(..)
+                | DeployOperation::UpdateContainer(..)
                 | DeployOperation::StopHook { .. }
                 | DeployOperation::RunHook { .. }
                 | DeployOperation::PrepareVolumes { .. }
@@ -577,6 +580,7 @@ fn inferred_update_order_preserves_the_two_stop_first_heuristics() {
                             pool_size_bytes: 10 * ployz_core::STORAGE_GIB,
                         },
                         unmanaged_used_bytes: 0,
+                        slot_bound_bytes: 0,
                         volumes: BTreeMap::from([(
                             app_volume("data"),
                             ployz_core::ProvisionedVolumeMaximumBytes::new(
@@ -597,6 +601,7 @@ fn inferred_update_order_preserves_the_two_stop_first_heuristics() {
             .iter()
             .find_map(|row| match &row.operation {
                 DeployOperation::ReplaceContainer(operation) => Some(operation.spec.update.order),
+                DeployOperation::UpdateContainer(update) => Some(update.spec.update.order),
                 DeployOperation::WaitHealthy { .. }
                 | DeployOperation::RunContainer { .. }
                 | DeployOperation::StopContainer { .. }
@@ -987,6 +992,7 @@ fn run_machine_ids(plan: &DeployPreview) -> Vec<MachineId> {
             | DeployOperation::StopContainer { .. }
             | DeployOperation::RemoveContainer { .. }
             | DeployOperation::ReplaceContainer(_)
+            | DeployOperation::UpdateContainer(_)
             | DeployOperation::StopHook { .. }
             | DeployOperation::RunHook { .. }
             | DeployOperation::PrepareVolumes { .. }

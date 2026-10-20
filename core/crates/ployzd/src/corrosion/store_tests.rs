@@ -6,13 +6,14 @@ use std::{
 };
 
 use ployz_core::{
-    CertificateHost, ContainerId, DeploymentLogId, DockerVolume, DockerVolumeId, DockerVolumeName,
-    IngressHost, IssuanceClock, IssuanceFailure, Machine, MachineId, QualifiedService,
-    ServingPointer, ServingPointerPublication,
+    CertificateHost, ContainerId, DockerVolume, DockerVolumeId, DockerVolumeName, IngressHost,
+    IssuanceClock, IssuanceFailure, Machine, MachineId, QualifiedService,
 };
 use serde_json::json;
 
-use super::{IngressRouteAck, IngressRouteChange, IngressRouteRow, ReplicatedStore};
+use super::{
+    IngressRouteAck, IngressRouteChange, IngressRouteRow, ReplicatedStore, store::RuntimeOverlay,
+};
 use crate::corrosion::{ApiClient, Statement};
 use crate::machine::{
     LocalMachine, LocalMachineBody, LocalMachinePrior, LocalMachineRecord, LocalMachineStore,
@@ -223,16 +224,27 @@ async fn publication_guard_rechecks_the_local_phase() {
     let (machine, local) = participating_record();
     let publication = store.machine_publication().await;
     assert_eq!(
-        publication.publishable_machine(&local, 0),
+        publication.publishable_machine(&local, RuntimeOverlay::default()),
         Some(machine.clone())
     );
-    // Running Builds are an observation on the published Machine, never in the record.
-    let mut building = machine;
-    building.runtime.running_builds = 2;
-    assert_eq!(publication.publishable_machine(&local, 2), Some(building));
-    assert!(
-        matches!(local.body(), LocalMachineBody::Participating { machine, .. } if machine.runtime.running_builds == 0)
+    let mut observed = machine;
+    observed.runtime.running_builds = 2;
+    observed.runtime.pool_committable_bytes = Some(7 << 30);
+    assert_eq!(
+        publication.publishable_machine(
+            &local,
+            RuntimeOverlay {
+                running_builds: 2,
+                pool_committable_bytes: Some(7 << 30),
+            }
+        ),
+        Some(observed)
     );
+    assert!(matches!(
+        local.body(),
+        LocalMachineBody::Participating { machine, .. }
+            if machine.runtime.running_builds == 0 && machine.runtime.pool_committable_bytes.is_none()
+    ));
 
     let LocalMachineBody::Participating {
         machine: body_machine,
@@ -251,7 +263,71 @@ async fn publication_guard_rechecks_the_local_phase() {
         local.private_key().clone(),
     )
     .unwrap();
-    assert_eq!(publication.publishable_machine(&local, 0), None);
+    assert_eq!(
+        publication.publishable_machine(&local, RuntimeOverlay::default()),
+        None
+    );
+}
+
+#[tokio::test]
+async fn publisher_republishes_when_pool_committable_bytes_change() {
+    use std::time::Duration;
+
+    let (replicated, server) = crate::corrosion::fake_cluster::store_with_subscriptions().await;
+    let data_dir = std::env::temp_dir().join(format!("ployzd-committable-{}", MachineId::random()));
+    let mut store = LocalMachineStore::open(&data_dir).unwrap();
+    store
+        .enroll(ployz_core::EnrollRequest {
+            role: ployz_core::EnrollAs::Founder {
+                initial_policy: Default::default(),
+                name: ployz_core::MachineName::parse("local").unwrap(),
+                cluster_network: "10.210.0.0/16".parse().unwrap(),
+                public_ip: None,
+                advertised_endpoints: vec![ployz_core::AdvertisedEndpoint(
+                    "192.0.2.1:51820".parse().unwrap(),
+                )],
+            },
+            wireguard_mtu: None,
+            pinned: Default::default(),
+        })
+        .unwrap();
+    let owner = RecordOwner::spawn(store).unwrap();
+    let id = owner.record().id();
+    let shutdown = tokio_util::sync::CancellationToken::new();
+    let view = crate::corrosion::MachineView::start(replicated.clone(), shutdown.clone());
+    let (committable, observed) = tokio::sync::watch::channel(None);
+    let publisher = tokio::spawn(crate::corrosion::run_machine_publisher(
+        Some((replicated.clone(), view)),
+        owner,
+        crate::corrosion::LiveRuntime::new(tokio::sync::watch::channel(0).1, observed),
+        shutdown.clone(),
+    ));
+    let published = |expected: Option<u64>| {
+        let replicated = replicated.clone();
+        async move {
+            tokio::time::timeout(Duration::from_secs(5), async {
+                loop {
+                    let row = replicated.machine(id.as_str()).await.unwrap();
+                    if row.is_some_and(|machine| machine.runtime.pool_committable_bytes == expected)
+                    {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            })
+            .await
+            .unwrap_or_else(|_| panic!("{expected:?} was never published"));
+        }
+    };
+
+    published(None).await;
+    committable.send_replace(Some(7 << 30));
+    published(Some(7 << 30)).await;
+
+    shutdown.cancel();
+    publisher.await.unwrap().unwrap();
+    server.abort();
+    let _ = std::fs::remove_dir_all(data_dir);
 }
 
 fn participating_record() -> (Machine, LocalMachineRecord) {
@@ -529,119 +605,6 @@ async fn machine_reads_reject_document_identity_different_from_row_key() {
 }
 
 #[tokio::test]
-async fn serving_pointers_round_trip_and_skip_malformed_rows() {
-    let db = corrosion_db();
-    let pointer = |deploy: &str, container: &str| ServingPointer {
-        deploy: DeploymentLogId::parse(deploy).unwrap(),
-        containers: vec![ContainerId::parse(container.repeat(64)).unwrap()],
-        previous: None,
-        retiring: Vec::new(),
-        deciding: None,
-    };
-    let api = QualifiedService::parse("app/api").unwrap();
-    let web = QualifiedService::parse("app/web").unwrap();
-    let rows = [
-        (
-            ServingPointer::key(&api),
-            serde_json::to_string(&pointer("d1", "a")).unwrap(),
-        ),
-        (
-            ServingPointer::key(&web),
-            serde_json::to_string(&pointer("d2", "b")).unwrap(),
-        ),
-        ("serving/app/broken".to_owned(), "{".to_owned()),
-        ("network".to_owned(), "\"10.210.0.0/16\"".to_owned()),
-    ];
-    for (key, value) in rows {
-        db.execute(
-            "INSERT INTO cluster (key, value) VALUES (?, ?)",
-            rusqlite::params![key, value],
-        )
-        .unwrap();
-    }
-    let (store, task) = identity_store(db).await;
-
-    let pointers = store.serving_pointers().await.unwrap();
-    assert_eq!(pointers.get(&api), Some(&pointer("d1", "a")));
-    assert_eq!(pointers.get(&web), Some(&pointer("d2", "b")));
-    let broken = QualifiedService::parse("app/broken").unwrap();
-    assert_eq!(pointers.get(&broken), None);
-    task.abort();
-}
-
-#[tokio::test]
-async fn serving_pointer_compare_and_set_writes_only_over_the_value_read() {
-    let pointer = |deploy: &str, container: &str| ServingPointer {
-        deploy: DeploymentLogId::parse(deploy).unwrap(),
-        containers: vec![ContainerId::parse(container.repeat(64)).unwrap()],
-        previous: None,
-        retiring: Vec::new(),
-        deciding: None,
-    };
-    let api = QualifiedService::parse("app/api").unwrap();
-    let (store, task) = identity_store(corrosion_db()).await;
-    let first = pointer("d1", "a");
-    let second = pointer("d2", "b");
-
-    assert_eq!(
-        store
-            .compare_and_set_serving_pointer(&api, None, &first)
-            .await
-            .unwrap(),
-        ServingPointerPublication::Published,
-        "insert when absent"
-    );
-    assert_eq!(
-        store.serving_pointer(&api).await.unwrap(),
-        Some(first.clone())
-    );
-    assert_eq!(
-        store
-            .compare_and_set_serving_pointer(&api, None, &second)
-            .await
-            .unwrap(),
-        ServingPointerPublication::Superseded {
-            current: Some(first.clone())
-        },
-        "insert when present"
-    );
-    assert_eq!(
-        store
-            .compare_and_set_serving_pointer(&api, Some(&first), &second)
-            .await
-            .unwrap(),
-        ServingPointerPublication::Published,
-        "update on a matching read"
-    );
-    assert_eq!(
-        store
-            .compare_and_set_serving_pointer(&api, Some(&first), &pointer("d3", "c"))
-            .await
-            .unwrap(),
-        ServingPointerPublication::Superseded {
-            current: Some(second.clone())
-        },
-        "update on a stale read"
-    );
-    assert_eq!(
-        store.serving_pointer(&api).await.unwrap(),
-        Some(second.clone())
-    );
-
-    let (fourth, fifth) = (pointer("d4", "d"), pointer("d5", "e"));
-    let (left, right) = tokio::join!(
-        store.compare_and_set_serving_pointer(&api, Some(&second), &fourth),
-        store.compare_and_set_serving_pointer(&api, Some(&second), &fifth),
-    );
-    let published = [left.unwrap(), right.unwrap()]
-        .into_iter()
-        .filter(|outcome| *outcome == ServingPointerPublication::Published)
-        .count();
-    assert_eq!(published, 1, "two writers from one read: exactly one wins");
-    task.abort();
-}
-
-#[tokio::test]
 async fn ingress_route_acks_upsert_and_delete_against_the_schema() {
     let db = rusqlite::Connection::open_in_memory().unwrap();
     db.execute_batch(include_str!("schema.sql")).unwrap();
@@ -649,8 +612,7 @@ async fn ingress_route_acks_upsert_and_delete_against_the_schema() {
     let machine = MachineId::parse("a".repeat(32)).unwrap();
     let api = QualifiedService::parse("app/api").unwrap();
     let web = QualifiedService::parse("app/web").unwrap();
-    let ack = |deploy: &str, containers: &[&str]| IngressRouteAck {
-        deploy: DeploymentLogId::parse(deploy).unwrap(),
+    let ack = |containers: &[&str]| IngressRouteAck {
         containers: containers
             .iter()
             .map(|id| ContainerId::parse(id.repeat(64)).unwrap())
@@ -660,12 +622,12 @@ async fn ingress_route_acks_upsert_and_delete_against_the_schema() {
         store
             .api()
             .query(Statement::new(
-                "SELECT machine_id, service_id, deploy, containers FROM ingress_routes ORDER BY service_id",
+                "SELECT machine_id, service_id, containers FROM ingress_routes ORDER BY service_id",
                 [],
             ))
             .await
             .unwrap()
-            .rows(["machine_id", "service_id", "deploy", "containers"])
+            .rows(["machine_id", "service_id", "containers"])
             .unwrap()
             .into_iter()
             .map(|row| row.map(|value| value.as_str().unwrap().to_owned()))
@@ -676,11 +638,8 @@ async fn ingress_route_acks_upsert_and_delete_against_the_schema() {
         .publish_ingress_routes(
             &machine,
             &BTreeMap::from([
-                (
-                    api.clone(),
-                    IngressRouteChange::Upsert(ack("d1", &["b", "a"])),
-                ),
-                (web.clone(), IngressRouteChange::Upsert(ack("d1", &[]))),
+                (api.clone(), IngressRouteChange::Upsert(ack(&["b", "a"]))),
+                (web.clone(), IngressRouteChange::Upsert(ack(&[]))),
             ]),
         )
         .await
@@ -689,7 +648,7 @@ async fn ingress_route_acks_upsert_and_delete_against_the_schema() {
         .publish_ingress_routes(
             &machine,
             &BTreeMap::from([
-                (api, IngressRouteChange::Upsert(ack("d2", &["c"]))),
+                (api, IngressRouteChange::Upsert(ack(&["c"]))),
                 (web, IngressRouteChange::Delete),
             ]),
         )
@@ -701,7 +660,6 @@ async fn ingress_route_acks_upsert_and_delete_against_the_schema() {
         vec![[
             machine.to_string(),
             "app/api".to_owned(),
-            "d2".to_owned(),
             format!("[\"{}\"]", "c".repeat(64)),
         ]]
     );
@@ -709,7 +667,7 @@ async fn ingress_route_acks_upsert_and_delete_against_the_schema() {
         store.ingress_routes().await.unwrap(),
         BTreeMap::from([(
             (machine, QualifiedService::parse("app/api").unwrap()),
-            IngressRouteRow::Acked(ack("d2", &["c"]))
+            IngressRouteRow::Acked(ack(&["c"]))
         )])
     );
     task.abort();

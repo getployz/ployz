@@ -27,7 +27,7 @@ use crate::{
     certificates,
     corrosion::{
         CorrosionConfig, CorrosionPaths, DEFAULT_CONTAINER_NAME, Error as CorrosionError,
-        MachineView, RunningCorrosion, remove_retained, run_machine_publisher,
+        LiveRuntime, MachineView, RunningCorrosion, remove_retained, run_machine_publisher,
     },
     dns::DnsService,
     docker::{ContainerRuntime, ImageIngest, LocalDocker, MachineSpecStore, SpecStoreError},
@@ -325,7 +325,13 @@ impl Daemon {
         let publisher = run_machine_publisher(
             replicated_store.clone().zip(machine_view.clone()),
             local.clone(),
-            running_builds,
+            LiveRuntime::new(
+                running_builds,
+                containers.as_ref().map_or_else(
+                    || tokio::sync::watch::channel(None).1,
+                    ContainerRuntime::pool_committable_bytes,
+                ),
+            ),
             shutdown.clone(),
         );
         let rediscovery = crate::machine::LocalMachine::new(local.clone());
@@ -336,9 +342,10 @@ impl Daemon {
                 .await
                 .map_err(io::Error::other)?;
         let socket_path = config.socket.clone();
-        let retire_admin = corrosion.as_ref().map(RunningCorrosion::admin_client);
         let ingress_admin = corrosion.as_ref().map(RunningCorrosion::admin_client);
-        let retire_id = local_id;
+        let boot_admin = corrosion.as_ref().map(RunningCorrosion::admin_client);
+        let (route_publishes, published_routes) =
+            tokio::sync::watch::channel(crate::ingress::PublishedRoutes::default());
         let local_for_servers = local.clone();
         let shutdown_for_servers = shutdown.clone();
         let servers = tokio::spawn(async move {
@@ -411,6 +418,7 @@ impl Daemon {
                             admin,
                             ingress_data_dir,
                             ingress_runtime_dir,
+                            route_publishes,
                             shutdown.clone(),
                         )
                         .await
@@ -440,29 +448,32 @@ impl Daemon {
                 }
                 Ok(())
             };
-            let retire = async {
+            let boot_pass = async {
                 if !wait_for_participation(records.clone(), shutdown.clone()).await? {
                     return Ok(());
                 }
-                match (
+                let (Some(runtime), Some(replicated), Some(machines), Some(admin)) = (
                     containers.clone(),
                     replicated_store.clone(),
                     machine_view.clone(),
-                    retire_admin,
-                ) {
-                    (Some(runtime), Some(replicated), Some(machines), Some(admin)) => {
-                        let host = crate::retire::DaemonHost {
-                            machine_id: retire_id,
-                            machine: crate::machine::LocalMachine::new(local.clone())
-                                .with_containers(Some(runtime.clone()))
-                                .with_plugin(plugin.clone()),
-                            containers: runtime,
-                            machines,
-                            admin,
-                        };
-                        crate::retire::run(host, replicated, shutdown.clone()).await;
-                    }
-                    _ => shutdown.cancelled().await,
+                    boot_admin,
+                ) else {
+                    return Ok(());
+                };
+                let first_synced = runtime.first_synced();
+                let host = crate::boot_pass::DaemonHost {
+                    machine_id: local_id,
+                    machine: crate::machine::LocalMachine::new(local.clone())
+                        .with_containers(Some(runtime))
+                        .with_plugin(plugin.clone())
+                        .with_cluster(Some((replicated.clone(), admin.clone()))),
+                    replicated,
+                    machines,
+                    admin,
+                };
+                tokio::select! {
+                    () = shutdown.cancelled() => {}
+                    () = crate::boot_pass::run(host, first_synced, published_routes) => {}
                 }
                 Ok(())
             };
@@ -475,7 +486,7 @@ impl Daemon {
                 dns,
                 ingress,
                 certificates,
-                retire,
+                boot_pass,
             )
             .map(|_| ())
         });

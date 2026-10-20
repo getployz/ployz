@@ -45,7 +45,7 @@ pub use ployz_core::{
 pub use schedule::{ServiceGroup, Step};
 
 pub(crate) use progress::pending_rows;
-pub(crate) use report::{Replica, service_row, starts};
+pub(crate) use report::{Replica, service_row, starts, updates};
 
 fn is_at_rest(runtime: &ContainerRuntimeObservation) -> bool {
     matches!(
@@ -716,9 +716,9 @@ pub enum PlanError {
         /// Machine holding the existing Volume.
         machine: MachineName,
     },
-    /// A Ployz-driver Volume exists with a different bound or malformed options.
+    /// A Ployz-driver Volume exists with a bound below the request or different labels.
     #[error(
-        "Managed volume {name} on Server '{machine}' has a different size limit; a Volume's size is fixed once deployed, so its data is neither resized nor replaced (requested {maximum_bytes})"
+        "Managed volume {name} on Server '{machine}' is smaller than the requested {maximum_bytes} or has different labels; a Deploy neither grows nor replaces a Volume's data"
     )]
     ExistingProvisionedVolumeMismatch {
         name: DockerVolumeName,

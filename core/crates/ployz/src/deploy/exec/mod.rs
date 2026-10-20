@@ -11,17 +11,18 @@ use futures_util::{
 };
 use ployz_core::labels::CREATION_KEY;
 use ployz_core::{
-    AnonymousVolumes, AnswerWhen, ContainerDetails, ContainerId, ContainerKind, ContainerLocator,
-    ContainerNow, ContainerObservation, ContainerRefusal, ContainerRefusalReason,
-    ContainerRuntimeObservation, ContainerWant, CopyRotation, CreationKey, DependencyHealthFailure,
-    DeployEvent, DeployWarning, DeploymentLogId, DockerVolumeId, Drain, EnsuredContainer,
-    ExecutionError, ExposedPort, FailedOperation, Gen, HEALTH_POLL_INTERVAL, HealthFailure,
-    HealthVerdict, HookFailure, ImagePulled, InspectContainerRequest, ListContainersRequest,
-    MachineAction, MachineId, MachineName, MachineTarget, MembershipObservation, Namespace,
-    NewContainer, OperationPhase, OutOfMemory, PortPublication, PullPolicy, QualifiedService,
-    ReadRoutesRequest, RemoveContainerPurpose, RemoveVolumeRequest, ResolvedServiceSpec, Retry,
-    RoutesRead, RpcError, RpcErrorCode, RunRotation, RunTarget, ServiceId, ServiceName,
-    ServiceOutcome, SlotKey, StopOptions, TransportProtocol, UpdateOrder, op,
+    AnonymousVolumes, AnswerWhen, ContainerDetails, ContainerId, ContainerKind,
+    ContainerLimitsUpdated, ContainerLocator, ContainerNow, ContainerObservation, ContainerRefusal,
+    ContainerRefusalReason, ContainerRuntimeObservation, ContainerWant, CopyRotation, CreationKey,
+    DependencyHealthFailure, DeployEvent, DeployWarning, DeploymentLogId, DockerVolumeId, Drain,
+    EnsuredContainer, ExecutionError, ExposedPort, FailedOperation, Gen, HEALTH_POLL_INTERVAL,
+    HealthFailure, HealthVerdict, HookFailure, ImagePulled, InspectContainerRequest,
+    ListContainersRequest, MachineAction, MachineId, MachineName, MachineTarget,
+    MembershipObservation, Namespace, NewContainer, OperationPhase, OutOfMemory, PortPublication,
+    PullPolicy, QualifiedService, ReadRoutesRequest, RemoveContainerPurpose, RemoveVolumeRequest,
+    ResolvedServiceSpec, Retry, RoutesRead, RpcError, RpcErrorCode, RunRotation, RunTarget,
+    ServiceId, ServiceName, ServiceOutcome, SlotKey, StopOptions, TransportProtocol,
+    UpdateContainerLimitsRequest, UpdateOrder, op,
 };
 use sha2::{Digest, Sha256};
 use tokio::sync::mpsc::UnboundedSender;
@@ -47,14 +48,10 @@ const DEFAULT_HOOK_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 const RESTART_WAIT: Duration = Duration::from_secs(60);
 const RESTART_POLL: Duration = Duration::from_millis(250);
 
-#[allow(clippy::large_enum_variant)]
-enum Stop {
-    Failed {
-        index: usize,
-        error: ExecutionError,
-        compensation: Option<ReplacementCompensation<ExecutionError>>,
-    },
-    Superseded(QualifiedService),
+struct Stop {
+    index: usize,
+    error: ExecutionError,
+    compensation: Option<ReplacementCompensation<ExecutionError>>,
 }
 
 fn operation_at(operations: &[DeployOperation], index: usize) -> &DeployOperation {
@@ -96,20 +93,21 @@ fn outcome_from(
                 services,
             }
         }
-        Some(Stop::Failed {
+        Some(Stop {
             index,
             error,
             compensation,
         }) => {
-            let failed = match (operation_at(operations, index), compensation) {
-                (DeployOperation::ReplaceContainer(operation), Some(compensation)) => {
+            let operation = operation_at(operations, index);
+            let failed = match (operation, compensation) {
+                (DeployOperation::ReplaceContainer(replacement), Some(compensation)) => {
                     FailedOperation::Replacement {
-                        operation: operation.clone(),
+                        operation: replacement.clone(),
                         error,
                         compensation,
                     }
                 }
-                (operation, _) => FailedOperation::Operation {
+                (_, _) => FailedOperation::Operation {
                     operation: operation.clone(),
                     error,
                 },
@@ -121,12 +119,6 @@ fn outcome_from(
                 services,
             }
         }
-        Some(Stop::Superseded(service)) => DeployOutcome::Superseded {
-            completed: done(None, true),
-            service,
-            unexecuted: done(None, false),
-            services,
-        },
     }
 }
 
@@ -151,6 +143,13 @@ pub(crate) trait MachineOperations {
         container_id: &ContainerId,
     ) -> Result<ContainerDetails, RpcError>;
     async fn remove_volume(&self, id: &DockerVolumeId) -> Result<(), RpcError>;
+    /// Apply `spec`'s CPU and memory limits to the running `container_id` in place.
+    async fn update_container_limits(
+        &self,
+        machine_id: &MachineId,
+        container_id: &ContainerId,
+        spec: &ResolvedServiceSpec,
+    ) -> Result<ContainerLimitsUpdated, RpcError>;
     /// Whether `machine_id` already runs a Container of this Global spec, which a
     /// start into `slot` adopts instead of creating.
     async fn runs_global(
@@ -179,6 +178,8 @@ pub(crate) trait MachineOperations {
         machine_id: &MachineId,
         service: &QualifiedService,
     ) -> Result<RoutesRead, RpcError>;
+    /// [`Self::read_routes`] as the entry Machine this client reaches reads it.
+    async fn read_entry_routes(&self, service: &QualifiedService) -> Result<RoutesRead, RpcError>;
 }
 
 impl MachineOperations for Client {
@@ -301,9 +302,18 @@ impl MachineOperations for Client {
         self.invoke::<op::ReadRoutes>(
             ReadRoutesRequest {
                 service: service.clone(),
-                routes_only: true,
             },
             &MachineTarget::from(machine_id),
+            Some(TARGET_RPC_TIMEOUT),
+        )
+        .await
+    }
+
+    async fn read_entry_routes(&self, service: &QualifiedService) -> Result<RoutesRead, RpcError> {
+        self.invoke_entry::<op::ReadRoutes>(
+            ReadRoutesRequest {
+                service: service.clone(),
+            },
             Some(TARGET_RPC_TIMEOUT),
         )
         .await
@@ -337,6 +347,23 @@ impl MachineOperations for Client {
         .map(|_| ())
     }
 
+    async fn update_container_limits(
+        &self,
+        machine_id: &MachineId,
+        container_id: &ContainerId,
+        spec: &ResolvedServiceSpec,
+    ) -> Result<ContainerLimitsUpdated, RpcError> {
+        self.invoke::<op::UpdateContainerLimits>(
+            UpdateContainerLimitsRequest {
+                container_id: *container_id,
+                spec: spec.clone(),
+            },
+            &MachineTarget::from(machine_id),
+            Some(TARGET_RPC_TIMEOUT),
+        )
+        .await
+    }
+
     async fn runs_global(
         &self,
         machine_id: &MachineId,
@@ -367,7 +394,7 @@ impl Ran {
     fn started(id: ContainerId) -> Self {
         Self {
             started: Some(id),
-            held_old: None,
+            ..Self::default()
         }
     }
 }
@@ -467,10 +494,12 @@ restart_policy! {
     wait fn ensure_container(&self, machine_id: &MachineId, want: ContainerWant) -> Result<(ContainerNow, Option<HealthVerdict>), RpcError>;
     wait fn inspect_container(&self, machine_id: &MachineId, container_id: &ContainerId) -> Result<ContainerDetails, RpcError>;
     wait fn remove_volume(&self, id: &DockerVolumeId) -> Result<(), RpcError>;
+    wait fn update_container_limits(&self, machine_id: &MachineId, container_id: &ContainerId, spec: &ResolvedServiceSpec) -> Result<ContainerLimitsUpdated, RpcError>;
     wait fn runs_global(&self, machine_id: &MachineId, slot: &SlotKey, spec: &ResolvedServiceSpec) -> Result<bool, RpcError>;
     wait fn ensure_image(&self, machine_id: &MachineId, spec: &ResolvedServiceSpec) -> Result<ImagePulled, RpcError>;
     wait fn ensure_unsettled(&self, machine_id: &MachineId, want: ContainerWant, timeout: Option<Duration>) -> Result<EnsuredContainer, RpcError>;
     wait fn read_routes(&self, machine_id: &MachineId, service: &QualifiedService) -> Result<RoutesRead, RpcError>;
+    wait fn read_entry_routes(&self, service: &QualifiedService) -> Result<RoutesRead, RpcError>;
 }
 
 async fn wait_out_restart<T, Fut>(
@@ -700,13 +729,13 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
                         if let Some(old) = ran.held_old {
                             stopped.entry(group).or_default().push(*old);
                         }
-                        if schedule.group(group).publish && starts_container(operation) {
-                            if let Some(container_id) = ran.started {
-                                progress.set_running(
-                                    index,
-                                    OperationPhase::WaitingForSwitch { container_id },
-                                );
-                            }
+                        if let (true, Some(container_id)) =
+                            (schedule.group(group).publish, ran.started)
+                        {
+                            progress.set_running(
+                                index,
+                                OperationPhase::WaitingForSwitch { container_id },
+                            );
                             awaiting_flip.entry(group).or_default().push(index);
                         } else {
                             completed.insert(index);
@@ -740,8 +769,11 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
                         }
                     }
                     Err(OperationFailure::Ordinary(error)) => {
+                        if lost_to_newer(&error, None) {
+                            schedule.apply(Event::NewerServing(schedule.group_of(index)));
+                        }
                         progress.fail(index, error.clone());
-                        stop.get_or_insert(Stop::Failed {
+                        stop.get_or_insert(Stop {
                             index,
                             error,
                             compensation: None,
@@ -752,8 +784,11 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
                         error,
                         compensation,
                     }) => {
+                        if lost_to_newer(&error, Some(compensation.as_ref())) {
+                            schedule.apply(Event::NewerServing(schedule.group_of(index)));
+                        }
                         progress.fail(index, error.clone());
-                        stop.get_or_insert(Stop::Failed {
+                        stop.get_or_insert(Stop {
                             index,
                             error,
                             compensation: Some(*compensation),
@@ -769,11 +804,13 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
                     .service
                     .clone()
                     .expect("only Service groups publish");
-                let qualified = QualifiedService::new(plan.namespace.clone(), service.clone());
-                let task = schedule.publish_failure_task(group);
-                let mut fail = |error: ExecutionError, event: Event| {
+                let last = schedule.publish_failure_task(group);
+                let mut fail = |task: usize, error: ExecutionError, event: Event| {
+                    if lost_to_newer(&error, None) {
+                        schedule.apply(Event::NewerServing(group));
+                    }
                     progress.fail(task, error.clone());
-                    stop.get_or_insert(Stop::Failed {
+                    stop.get_or_insert(Stop {
                         index: task,
                         error,
                         compensation: None,
@@ -792,6 +829,7 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
                     Published::Unconfirmed(machines) => {
                         unread.insert(group);
                         fail(
+                            last,
                             machine_error(
                                 MachineAction::ReadRoutes,
                                 unavailable(rows.not_confirmed(&machines)),
@@ -804,16 +842,15 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
                     Published::OutUnconfirmed(error) => {
                         unread.insert(group);
                         stopped.remove(&group);
-                        fail(error, Event::PublishUnconfirmed(group));
-                    }
-                    Published::Superseded => {
-                        stop.get_or_insert(Stop::Superseded(qualified));
-                        schedule.apply(Event::PublishFailed(group));
+                        fail(last, error, Event::PublishUnconfirmed(group));
                     }
                     Published::Cancelled => {
-                        fail(ExecutionError::Cancelled, Event::PublishFailed(group));
+                        fail(last, ExecutionError::Cancelled, Event::PublishFailed(group));
                     }
-                    Published::Failed(error) => fail(error, Event::PublishFailed(group)),
+                    Published::CopyFailed { task, error } => {
+                        fail(task, error, Event::PublishFailed(group));
+                    }
+                    Published::Failed(error) => fail(last, error, Event::PublishFailed(group)),
                 }
             }
             None => {
@@ -838,7 +875,7 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
                             }
                         };
                         progress.fail(task, error.clone());
-                        stop.get_or_insert(Stop::Failed {
+                        stop.get_or_insert(Stop {
                             index: task,
                             error,
                             compensation: None,
@@ -875,6 +912,20 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
     let outcome = outcome_from(operations, &completed, stop, schedule.services());
     progress.outcome(outcome.clone());
     outcome
+}
+
+fn lost_to_newer(
+    error: &ExecutionError,
+    compensation: Option<&ReplacementCompensation<ExecutionError>>,
+) -> bool {
+    matches!(error, ExecutionError::NewerServing { .. })
+        || matches!(
+            compensation,
+            Some(ReplacementCompensation::OldStopped {
+                restore_old_container: RestoreAttempt::NewerServing,
+                ..
+            })
+        )
 }
 
 /// A stop-first copy shares its Volume with the new copy on its Machine, so
@@ -932,7 +983,7 @@ async fn restore_group<C: MachineOperations>(
         let why = if blocked.contains(&old.machine_id) {
             Some("its new copy may be serving".to_owned())
         } else {
-            let restore = restore_old(client, old, spec, rows, &cleanup).await;
+            let restore = restore_old(client, progress, old, spec, rows, &cleanup).await;
             if restore.may_run {
                 may_run.insert(old.machine_id);
             }
@@ -941,7 +992,7 @@ async fn restore_group<C: MachineOperations>(
                     restored = true;
                     None
                 }
-                RestoreAttempt::NotServing => None,
+                RestoreAttempt::NotServing | RestoreAttempt::NewerServing => None,
                 RestoreAttempt::LeftHeld => Some("another Deploy holds it".to_owned()),
                 RestoreAttempt::Failed { error } => Some(error.to_string()),
             }
@@ -1067,6 +1118,7 @@ fn left_by(error: ExecutionError) -> Left {
         error @ (ExecutionError::Health { .. }
         | ExecutionError::DependencyHealth { .. }
         | ExecutionError::Hook { .. }
+        | ExecutionError::NewerServing { .. }
         | ExecutionError::Cancelled) => {
             Left::Failed(RpcError::caused(RpcErrorCode::Internal, &error))
         }
@@ -1086,7 +1138,7 @@ fn untouched(
     let outcome = outcome_from(
         operations,
         &BTreeSet::new(),
-        Some(Stop::Failed {
+        Some(Stop {
             index,
             error,
             compensation: None,
@@ -1120,9 +1172,11 @@ enum Published {
     Unconfirmed(cleanup::Unconfirmed),
     /// The new copies are listed, but an old copy's Out was not seen through.
     OutUnconfirmed(ExecutionError),
-    /// A newer gen already serves: the new copies are discarded.
-    Superseded,
     Cancelled,
+    CopyFailed {
+        task: usize,
+        error: ExecutionError,
+    },
     Failed(ExecutionError),
 }
 
@@ -1176,6 +1230,7 @@ async fn publish_group<C: MachineOperations>(
                     error @ (ExecutionError::Health { .. }
                     | ExecutionError::DependencyHealth { .. }
                     | ExecutionError::Hook { .. }
+                    | ExecutionError::NewerServing { .. }
                     | ExecutionError::Cancelled) => {
                         Left::Failed(RpcError::caused(RpcErrorCode::Internal, &error))
                     }
@@ -1240,10 +1295,9 @@ async fn publish_group<C: MachineOperations>(
             }
         }
     }
-    if let Some(first) = unlisting.first() {
+    if !unlisting.is_empty() {
         let ids: BTreeSet<ContainerId> = unlisting.iter().map(|copy| copy.container_id).collect();
-        let unlisted =
-            cleanup::wait_none_listed(client, &first.machine_id, service, &ids, cancellation).await;
+        let unlisted = cleanup::wait_none_listed(client, service, &ids, cancellation).await;
         let (left, error) = match unlisted {
             Ok(cleanup::Wait::Done) => (None, None),
             Ok(cleanup::Wait::TimedOut(machines)) => {
@@ -1255,7 +1309,7 @@ async fn publish_group<C: MachineOperations>(
             }
             Ok(cleanup::Wait::Cancelled) => (Some(Left::Interrupted), None),
             Err(error) => (
-                Some(Left::FailedOn(first.machine_id, error.clone())),
+                Some(Left::Unread(error.clone())),
                 Some(machine_error(MachineAction::ReadRoutes, error)),
             ),
         };
@@ -1327,29 +1381,24 @@ async fn route_new<C: MachineOperations>(
         let spec = operation_at(operations, *task)
             .spec()
             .expect("a started copy has a spec");
-        match cleanup::bring_in(client, &copy, spec, Some(rows.run.clone())).await {
-            Ok(cleanup::BroughtIn::In) => {}
+        let error = match cleanup::bring_in(client, &copy, spec, Some(rows.run.clone())).await {
+            Ok(cleanup::BroughtIn::In) => continue,
             Ok(cleanup::BroughtIn::NotIn { health, .. }) => {
-                return Err(Published::Failed(health_error(*container_id, health, spec)));
+                health_error(*container_id, health, spec)
             }
             Ok(cleanup::BroughtIn::Refused(refusal))
                 if refusal.reason == ContainerRefusalReason::OlderThanIn =>
             {
-                return Err(Published::Superseded);
+                ExecutionError::NewerServing {
+                    service: service.clone(),
+                }
             }
             Ok(cleanup::BroughtIn::Refused(refusal)) => {
-                return Err(Published::Failed(machine_error(
-                    MachineAction::StartContainer,
-                    refusal.into_error(),
-                )));
+                machine_error(MachineAction::StartContainer, refusal.into_error())
             }
-            Err(error) => {
-                return Err(Published::Failed(machine_error(
-                    MachineAction::StartContainer,
-                    error,
-                )));
-            }
-        }
+            Err(error) => machine_error(MachineAction::StartContainer, error),
+        };
+        return Err(Published::CopyFailed { task: *task, error });
     }
     let ids: BTreeSet<ContainerId> = new.iter().map(|(_, _, id)| *id).collect();
     match cleanup::wait_listed(client, first_machine, service, &ids, cancellation, |_| {}).await {
@@ -1366,6 +1415,8 @@ async fn route_new<C: MachineOperations>(
     Ok(())
 }
 
+/// The copies the group's publish retires. A copy updated in place is one of
+/// the Service's serving copies and stays.
 fn old_copies(
     group: &ServiceGroup,
     operations: &[DeployOperation],
@@ -1386,6 +1437,7 @@ fn old_copies(
             | DeployOperation::RunContainer { .. }
             | DeployOperation::StopContainer { .. }
             | DeployOperation::RemoveContainer { .. }
+            | DeployOperation::UpdateContainer(_)
             | DeployOperation::StopHook { .. }
             | DeployOperation::RunHook { .. }
             | DeployOperation::RemoveVolume { .. } => None,
@@ -1685,8 +1737,8 @@ impl<'a> Rows<'a> {
         mut old: BTreeMap<usize, Result<Option<ContainerObservation>, ExecutionError>>,
         cancellation: &CancellationToken,
     ) -> Inspected {
-        // A Pending sibling keeps every proxy routing a Held copy, so when the
-        // step withdraws one, its own Pending copies, never routed, go first.
+        // A dead run's Pending copies were never routed, so when the step
+        // withdraws a routed copy, they go first with no proxy wait.
         let withdraws = old
             .values()
             .filter_map(|observed| observed.as_ref().ok()?.as_ref())
@@ -1934,6 +1986,13 @@ impl<'a> Rows<'a> {
                 (self.not_confirmed(&unconfirmed), unconfirmed.unanswered)
             }
             Left::Interrupted => ("interrupted".into(), Vec::new()),
+            Left::Unread(error) => (
+                format!(
+                    "the routes could not be read through the Machine this Deploy connects to: {}",
+                    error.message
+                ),
+                Vec::new(),
+            ),
             Left::DeployFailed => ("the Deploy failed".into(), Vec::new()),
             Left::NotListed => (
                 format!(
@@ -1947,13 +2006,19 @@ impl<'a> Rows<'a> {
                 let unanswered = error.code == RpcErrorCode::Unavailable;
                 self.failed_on(copy.machine_id, error, unanswered)
             }
-            Left::FailedOn(machine_id, error) => self.failed_on(machine_id, error, false),
             Left::NotRestored(left, why) => {
                 let (reason, away) = self.explain(copy, *left);
                 (
                     format!("{reason}, and it could not go back In: {why}"),
                     away,
                 )
+            }
+            Left::OlderNotRemoved(left) => {
+                let (reason, away) = self.explain(copy, *left);
+                let newer = ExecutionError::NewerServing {
+                    service: copy.service.clone(),
+                };
+                (format!("{newer}, and removing it failed: {reason}"), away)
             }
         }
     }
@@ -1982,15 +2047,16 @@ impl<'a> Rows<'a> {
 enum Left {
     NotConfirmed(cleanup::Unconfirmed),
     Interrupted,
+    /// The entry Machine could not read the routes, so no copy was seen unlisted.
+    Unread(RpcError),
     /// The owner's view never listed a new copy, so it would refuse the Out.
     NotListed,
     Refused(ContainerRefusal),
     /// A call to the copy's owner failed.
     Failed(RpcError),
-    /// A call to this Machine, not the copy's owner, failed.
-    FailedOn(MachineId, RpcError),
     /// This run Held the copy and could not bring it back In, for this reason.
     NotRestored(Box<Left>, String),
+    OlderNotRemoved(Box<Left>),
     DeployFailed,
 }
 
@@ -2014,22 +2080,26 @@ async fn execute_operation<C: MachineOperations>(
     slots: &Slots<'_>,
     rows: &Rows<'_>,
 ) -> Result<Ran, OperationFailure> {
-    progress.set_running(index, OperationPhase::Starting);
+    // An in-place update starts nothing, so its row never reads as starting.
+    progress.set_running(
+        index,
+        if matches!(operation, DeployOperation::UpdateContainer(_)) {
+            OperationPhase::UpdatingContainer
+        } else {
+            OperationPhase::Starting
+        },
+    );
     match operation {
         DeployOperation::PrepareVolumes { machine_id, specs } => client
             .prepare_volumes(machine_id, specs)
             .await
             .map(|_| Ran::default())
-            .map_err(|mut error| {
-                if !error.details.is_object() {
-                    error.details = serde_json::json!({});
-                }
-                error
-                    .details
-                    .as_object_mut()
-                    .expect("details normalized to object")
-                    .insert("machine_id".into(), serde_json::json!(machine_id));
-                machine_error(MachineAction::PrepareVolumes, error).into()
+            .map_err(|error| {
+                machine_error(
+                    MachineAction::PrepareVolumes,
+                    naming_machine(error, machine_id),
+                )
+                .into()
             }),
         DeployOperation::WaitHealthy { dependency, .. } => {
             wait_healthy(client, index, progress, dependency, rows.run, cancellation)
@@ -2074,9 +2144,9 @@ async fn execute_operation<C: MachineOperations>(
             )
             .await
             .map(|copy| Ran {
-                started: None,
                 held_old: (copy.rotation == CopyRotation::Held(rows.run.clone()))
                     .then(|| Box::new((details.container.resolved_spec.clone(), copy))),
+                ..Ran::default()
             })
             .map_err(Into::into),
             Err(ExecutionError::Machine { error, .. }) if error.code == RpcErrorCode::NotFound => {
@@ -2188,6 +2258,18 @@ async fn execute_operation<C: MachineOperations>(
             .map(Ran::started)
             .map_err(Into::into)
         }
+        // The copy stays In under its own id whether the update succeeds or fails.
+        DeployOperation::UpdateContainer(update) => client
+            .update_container_limits(&update.machine_id, &update.container_id, &update.spec)
+            .await
+            .map(|_| Ran::default())
+            .map_err(|error| {
+                machine_error(
+                    MachineAction::UpdateContainerLimits,
+                    naming_machine(error, &update.machine_id),
+                )
+                .into()
+            }),
         DeployOperation::StopHook {
             machine_id,
             container_id,
@@ -2815,12 +2897,36 @@ async fn leave_unstopped<C: MachineOperations>(
     let not_restored = match cleanup::bring_in(client, copy, spec, Some(rows.run.clone())).await {
         Ok(cleanup::BroughtIn::In) => None,
         Ok(cleanup::BroughtIn::NotIn { .. }) => Some("it failed health".to_owned()),
+        Ok(cleanup::BroughtIn::Refused(refusal))
+            if refusal.reason == ContainerRefusalReason::OlderThanIn =>
+        {
+            return retire_older(client, progress, copy, rows).await;
+        }
         Ok(cleanup::BroughtIn::Refused(refusal)) => Some(refusal.message),
         Err(error) => Some(error.message),
     };
     match not_restored {
         None => rows.leave_running(progress, copy, left),
         Some(why) => rows.leave_running(progress, copy, Left::NotRestored(Box::new(left), why)),
+    }
+}
+
+async fn retire_older<C: MachineOperations>(
+    client: &C,
+    progress: &Progress,
+    copy: &cleanup::Copy,
+    rows: &Rows<'_>,
+) {
+    let retired = cleanup::retire(
+        client,
+        copy,
+        false,
+        AnonymousVolumes::Remove,
+        &CancellationToken::new(),
+    )
+    .await;
+    if let Some(left) = left_unless_done(retired) {
+        rows.leave_running(progress, copy, Left::OlderNotRemoved(Box::new(left)));
     }
 }
 
@@ -2856,7 +2962,7 @@ async fn compensate<C: MachineOperations>(
     let compensation = match held_old {
         Some((spec, old)) => ReplacementCompensation::OldStopped {
             stop_new_container,
-            restore_old_container: restore_old(client, &old, &spec, rows, cancellation)
+            restore_old_container: restore_old(client, progress, &old, &spec, rows, cancellation)
                 .await
                 .attempt,
         },
@@ -2883,6 +2989,7 @@ struct Restore {
 
 async fn restore_old<C: MachineOperations>(
     client: &C,
+    progress: &Progress,
     old: &cleanup::Copy,
     spec: &ResolvedServiceSpec,
     rows: &Rows<'_>,
@@ -2916,6 +3023,12 @@ async fn restore_old<C: MachineOperations>(
             if refusal.reason == ployz_core::ContainerRefusalReason::HeldByOtherRun =>
         {
             return ended(RestoreAttempt::LeftHeld, false);
+        }
+        Ok(cleanup::BroughtIn::Refused(refusal))
+            if refusal.reason == ContainerRefusalReason::OlderThanIn =>
+        {
+            retire_older(client, progress, old, rows).await;
+            return ended(RestoreAttempt::NewerServing, false);
         }
         Ok(cleanup::BroughtIn::Refused(refusal)) => {
             return ended(
@@ -3108,6 +3221,16 @@ pub(super) async fn inspect<C: MachineOperations>(
 
 fn machine_error(action: MachineAction, error: RpcError) -> ExecutionError {
     ExecutionError::Machine { action, error }
+}
+
+/// The Machine that answered `error`, for a failure sentence that names the Server.
+fn naming_machine(mut error: RpcError, machine_id: &MachineId) -> RpcError {
+    if let serde_json::Value::Object(details) = &mut error.details {
+        details.insert("machine_id".into(), serde_json::json!(machine_id));
+    } else {
+        error.details = serde_json::json!({ "machine_id": machine_id });
+    }
+    error
 }
 
 fn ignore_not_found(result: Result<(), RpcError>) -> Result<(), RpcError> {

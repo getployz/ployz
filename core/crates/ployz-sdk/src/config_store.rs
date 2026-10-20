@@ -246,6 +246,57 @@ impl ConfigStore {
         )
     }
 
+    /// Claim the Organization's queued Deployment `deployment` as `runner`, and
+    /// resolve to its summary. Its upload is the one it builds from now that the
+    /// Deployment ahead of it settled: the one Cloud extracts before `runDeployment`
+    /// runs it as the same runner. Claiming again as that runner changes nothing
+    /// until it runs. Only Cloud's worker calls this.
+    ///
+    /// # Errors
+    /// Returns `conflict` when this runner has nothing to run, or a storage error.
+    #[napi(ts_return_type = "Promise<DeploymentSummary>")]
+    pub async fn claim_deployment(
+        &self,
+        organization: String,
+        deployment: String,
+        runner: String,
+    ) -> Result<serde_json::Value> {
+        let who = actor(organization, None)?;
+        let (deployment, runner) = ids(deployment, runner)?;
+        // Only a Deployment of this Organization runs here.
+        let owned = deployment.clone();
+        self.run(move |store| store.read(&who, &ployz_store::DeploymentQuery { id: owned }))
+            .await?;
+        self.run(move |store| {
+            store
+                .claim(&deployment, &runner)
+                .map(|claimed| claimed.deployment)
+        })
+        .await
+    }
+
+    /// Retire the old copies the Organization's Deployment `deployment` left running,
+    /// on one of `connections` (`Connection[]`): each copy its Deploy reported left
+    /// running, of a Service it deployed or removed. A copy already gone counts as
+    /// retired, so a retry is safe. Resolves to the copies still running
+    /// (`RetireOutcome`), each with its Machine and why. Only Cloud's worker calls this.
+    ///
+    /// # Errors
+    /// Returns `not_found` for a Deployment of another Organization, the connection's
+    /// error when no Server can be reached, or a storage error.
+    #[napi(ts_return_type = "Promise<RetireOutcome>")]
+    pub async fn retire_old(
+        &self,
+        organization: String,
+        deployment: String,
+        #[napi(ts_arg_type = "Connection[]")] connections: serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        let who = actor(organization, None)?;
+        let deployment = DeploymentId::parse(deployment).map_err(rpc_to_napi)?;
+        let connections = crate::parse_connections(connections)?;
+        to_json(ployz::sdk::retire_old(Arc::clone(&self.store), who, deployment, connections).await)
+    }
+
     /// Record that `runner` stopped without finishing Deployment `deployment`: its
     /// outcome is unknown once it prepared it. Recording it after an outcome changes
     /// nothing.

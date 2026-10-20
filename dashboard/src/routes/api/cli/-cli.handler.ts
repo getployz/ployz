@@ -3,7 +3,7 @@ import { Effect, Schema } from "effect";
 import { Uuid } from "#/lib/schema";
 import { ApprovalDecision } from "#/modules/approvals/approvals";
 import { decideAndApply } from "#/modules/approvals/apply.server";
-import { type Gate, gateOperation } from "#/modules/approvals/approvals.server";
+import { carriedInto, type Gate, gateOperation } from "#/modules/approvals/approvals.server";
 import { disconnectGithub, githubBranches, githubConnection, GithubRepositories } from "#/modules/github/github-cli.server";
 import { type Caller, TOKEN_KINDS } from "#/modules/identity/actor";
 import { callerOrganizations, resolveCaller } from "#/modules/identity/caller.server";
@@ -124,13 +124,15 @@ function volumeRunInput(body: typeof NewVolumeRun.Type): VolumeRunInput {
     case "sync":
       return { kind: "sync", args: { full: true } };
     case "delete_mirror":
-      return { kind: "delete_mirror", args: { slot: body.slot ?? null, confirmed_name: body.confirm ?? null } };
+      return { kind: "delete_mirror", args: { slot: body.slot ?? null, confirmed_name: body.confirm ?? null, role: "any" } };
     case "move":
       return { kind: "move", args: { to: body.to } };
     case "release":
       return { kind: "release", args: {} };
     case "restore":
       return { kind: "restore", args: { from: body.from } };
+    case "resize":
+      return { kind: "resize", args: { maximum_bytes: body.maximum_bytes } };
   }
 }
 
@@ -204,6 +206,9 @@ export const handleCliRequest = Effect.fn("Cli.handle")(function* (request: Requ
       return { organization: yield* createOrganizationForSession(caller.userId, caller.credential.id, input) };
     }
     case "DELETE organizations/:id": {
+      // A Project refuses the removal before the gate, so an approval it carries is checked first.
+      const carried = yield* carriedInto(caller, approvalHeader(request), { command: "remove", subject: `organization:${caller.organization.id}` });
+      if (carried !== null) return refusal(carried);
       const removal = yield* removeOrganization(caller, decodeURIComponent(id ?? ""), { gate: gated(caller, request) });
       return removal.ok ? removal.value : refusal(removal.refusal);
     }
@@ -412,6 +417,9 @@ export const handleCliRequest = Effect.fn("Cli.handle")(function* (request: Requ
           details: { next: `ployz org use ${input.organization}` },
         });
       }
+      // Nothing to forget skips the gate, so an approval it carries is checked first.
+      const carried = yield* carriedInto(caller, approvalHeader(request), { command: "forget", subject: `servers:${caller.organization.id}` });
+      if (carried !== null) return refusal(carried);
       const forgotten = yield* forgetServers(forgetter(caller), (checked) => gated(caller, request)(forgetServersAsked(caller.organization, checked)));
       return forgotten.ok ? { organization: caller.organization.slug, ...forgotten.value } : refusal(forgotten.refusal);
     }
@@ -462,6 +470,9 @@ export const handleCliRequest = Effect.fn("Cli.handle")(function* (request: Requ
       const body = yield* decodeBody(SyncVolume, request, "A volume sync takes its environment.");
       const unsynced = unheld(caller, OPERATIONS["volume.sync"].requires, body.environment.environment);
       if (unsynced !== null) return refusal(unsynced.refusal);
+      // It asks no one, and still refuses an approval carried into it that isn't for exactly this sync.
+      const carried = yield* carriedInto(caller, approvalHeader(request), { command: "sync", subject: `volume:${id ?? ""}` });
+      if (carried !== null) return refusal(carried);
       return yield* refreshMirror({ userId: caller.userId, organizationId: caller.organization.id }, body.environment, id ?? "").pipe(
         Effect.map((synced) => synced.ok ? { lines: synced.lines } : refusal(synced.refusal)),
         Effect.catchTag("NotFound", (missing) => Effect.succeed(missingRefusal(missing.message))),

@@ -9,8 +9,10 @@ import type {
   RuntimeWatchView,
   SetVolumeCopyReply,
   SetVolumeCopyRequest,
+  SetVolumeSizeReply,
   SlotRole,
   Snapshot,
+  SystemEvent,
   VolumeCopy,
   VolumeCopyView,
   VolumeSwitchRequest,
@@ -62,6 +64,7 @@ import { PATIENCE_WAITS } from "#/modules/volume-run/patience";
 import type { Member, VolumeRunInput } from "#/modules/volume-run/volume-run";
 import { member } from "#/modules/volume-run/volume-run.test-fixture";
 import { appliedMirrors, observePlacement } from "#/modules/volume-placement/volume-placement";
+import { deleteOldCopy } from "#/modules/volume-placement/volume-placement.server";
 import { type DeployLane, fenceDeployVolume, finishDeployVolumes, placeDeployVolumes, releaseFollowed } from "#/modules/volume-run/volume-run.deploy.server";
 import type { Caller } from "#/modules/identity/actor";
 import { runVolume } from "#/modules/operations/operations.server";
@@ -99,12 +102,16 @@ type FakeMachine = {
   stopped?: boolean;
   /** The gen floor every admitted set raises, as the daemon does; a set with a lower gen is stale. */
   floor?: number;
+  /** The size its copy holds; a set never lowers it. */
+  bound?: number;
+  /** Size requests it answers `switching` to before it holds the size. */
+  switching?: number;
 };
 
 type FakeContainer = { machine: string; id: string; running: boolean; created?: number; rotation?: CopyRotation; gen?: number };
 
 /**
- * What a fake Machine does with the next request of one label: refuse, apply it and lose the reply, fail to answer, or
+ * What a fake Machine does with the next request of one label: refuse, apply it and lose the reply, fail with its own error, or
  * hold it in flight until the test lands it.
  */
 type Fault = CopyRefusal | "lost" | "down" | "held" | RawFault;
@@ -113,6 +120,9 @@ type Fault = CopyRefusal | "lost" | "down" | "held" | RawFault;
 class RawFault {
   constructor(readonly cause: { code: string; message: string; details: unknown }) {}
 }
+
+/** A reply that never came back, as the SDK rejects it: its own timeout on a target Machine's RPC, which no Machine sent. */
+const NO_REPLY = new RpcError({ code: "unavailable", message: "target Machine RPC timed out", details: null, unanswered: true });
 
 /** An RPC error shaped as the SDK's RpcError. */
 type RpcFault = Error & { code: string };
@@ -124,6 +134,7 @@ const answering = (fault: true | RpcFault): AsyncIterable<RuntimeWatchView> => (
 });
 
 const at = 1_790_000_000;
+const GB = 1_000_000_000;
 const snap = (guid: string, name = `dep-${guid}`): Snapshot => ({ name, guid, created_unix_seconds: at });
 const base = snap("10");
 const seedCopy: VolumeCopy = { kind: "root", readonly: false, newest: null, epoch: 0, seed: true };
@@ -184,7 +195,10 @@ describe("volume runs", () => {
   let storeProject: string;
   /** Runs once after the Store answers a namespaces read, as a write committed between that read and the next. */
   let afterNamespaces: (() => void) | null;
-  let storeVolumes: Array<{ id: string; name: string; storage: { kind: "provisioned"; maximumBytes: number } | { kind: "docker" }; change?: "delete" }>;
+  let storeVolumes: Array<{ id: string; name: string; storage: { kind: "provisioned"; maximumBytes: number } | { kind: "docker" }; change?: "delete"; recorded_storage?: number }>;
+  /** Every system event the Store recorded, and how it refuses the next one, if it does. */
+  let storeEvents: SystemEvent[];
+  let storeRefuse: ((event: SystemEvent) => InstanceType<typeof RpcError> | null) | null;
   /** The nodes every Deployment the Store reads back targets. */
   let deployNodes: Array<{ type: "volume" | "service"; id: string; name: string; outcome: "pending"; rows: [] }>;
 
@@ -245,7 +259,7 @@ describe("volume runs", () => {
       case "writer":
         return copy?.kind === "root" && copy.epoch === expect.epoch;
       case "mirror":
-        return copy?.kind === "slot" && copy.newest?.guid === expect.newest && copy.slot === expect.slot;
+        return copy?.kind === "slot" && copy.newest?.guid === expect.newest && copy.slot === expect.slot && (expect.role === undefined || copy.role === expect.role);
     }
   };
 
@@ -362,7 +376,7 @@ describe("volume runs", () => {
           container_id: container,
           rotation,
           gen,
-          resolved_spec: { name: "web", container: { pull_policy: "always", environment: { POSTGRES_PASSWORD: `secret-${machine(target).name}` } }, volumes: [{ source: { kind: "provisioned", name: dockerVolume } }] },
+          resolved_spec: { name: "web", container: { pull_policy: "always", environment: { POSTGRES_PASSWORD: `secret-${machine(target).name}` } }, volumes: [{ source: { kind: "provisioned", name: dockerVolume, maximum_bytes: 5_000_000 } }] },
         },
       };
     }),
@@ -373,11 +387,12 @@ describe("volume runs", () => {
       verbs.push(`remove@${machine(target).name}(${container})`);
       containers = containers.filter((entry) => entry.id !== container);
     }),
-    volumeSwitch: (target: string, request: VolumeSwitchRequest) => Effect.suspend((): Effect.Effect<VolumeCopyView | SetVolumeCopyReply, PloyzSdkError> => {
+    volumeSwitch: (target: string, request: VolumeSwitchRequest) => Effect.suspend((): Effect.Effect<VolumeCopyView | SetVolumeCopyReply | SetVolumeSizeReply, PloyzSdkError> => {
       const fake = machine(target);
       if (fake.silent === true) return Effect.never;
       if (fake.lacks !== undefined) return Effect.fail(new ServerLacks({ machineId: target, capability: requirements.volumeMove.capability }));
       const fail = (fault: Fault) => Effect.fail(new PloyzProviderError({ operation: "volume switch", cause: failure(fault, fake.copy) }));
+      const unanswered = Effect.fail(new PloyzProviderError({ operation: "volume switch", cause: NO_REPLY }));
       if (request.command === "inspect_volume_copy") {
         const fault = failNext.get(`inspect@${fake.name}`);
         if (fault !== undefined) {
@@ -385,6 +400,22 @@ describe("volume runs", () => {
           return fail(fault);
         }
         return Effect.succeed(inspect(fake));
+      }
+      if (request.command === "set_volume_size") {
+        const asked = request.payload.maximum_bytes;
+        verbs.push(`size@${fake.name}(${asked / GB})`);
+        if (fake.capabilities?.includes(requirements.volumeSize.capability) === false) {
+          return Effect.fail(new ServerLacks({ machineId: target, capability: requirements.volumeSize.capability }));
+        }
+        if ((fake.switching ?? 0) > 0) {
+          fake.switching = (fake.switching ?? 0) - 1;
+          return fail(new RawFault({ code: "failed_precondition", message: "switching", details: { reason: "switching" } }));
+        }
+        const fault = failNext.get(`size@${fake.name}`);
+        failNext.delete(`size@${fake.name}`);
+        if (fault !== undefined) return fail(fault);
+        fake.bound = Math.max(fake.bound ?? 0, asked);
+        return Effect.succeed({ bound_bytes: fake.bound });
       }
       if (request.command !== "set_volume_copy") return Effect.die(new Error(`the run sent ${request.command}`));
       const { expect: expected, want } = request.payload;
@@ -402,11 +433,11 @@ describe("volume runs", () => {
         failNext.delete(key);
         if (fault === "lost") {
           transition(fake, expected, want);
-          return fail("down");
+          return unanswered;
         }
         if (fault === "held") {
           held.set(key, () => transition(fake, expected, want));
-          return fail("down");
+          return unanswered;
         }
         if (fault !== undefined) return fail(fault);
         const gen = request.payload.gen ?? 0;
@@ -438,6 +469,12 @@ describe("volume runs", () => {
         open: Effect.succeed(asTestDouble<ConfigStore>()({
           githubCancel: async () => [],
           abandonDeployment: async (id: string) => ({ id, status: "failed" }),
+          system: async (_: string, event: SystemEvent) => {
+            const refusal = storeRefuse?.(event) ?? null;
+            if (refusal !== null) throw refusal;
+            storeEvents.push(event);
+            return { written: "edited" };
+          },
           read: async (_: string, query: { query: string; id?: string; environment?: { project: string | null } }) => {
             if (query.query === "namespaces") {
               const answer = { namespaces: [{ namespace: "shop-production", project: storeProject, environment: "production" }] };
@@ -489,6 +526,8 @@ describe("volume runs", () => {
       ...["fsn-2", "fsn-3"].flatMap((server) => [`04-forget-${server}`, `03-forget-${server}`])]
       .flatMap((id) => Array.from({ length: 6 }, (_, check) => `${id}-wait-${check + 1}`)),
     ...Array.from({ length: 8 }, (_, check) => `01-wait-${check}`),
+    ...["fsn-1", "fsn-2", "fsn-3"].flatMap((server) => [0, 1, 2].flatMap((index) =>
+      Array.from({ length: 119 }, (_, check) => `03-${index}-size-${idOf(server)}-wait-${check + 1}`))),
   ].map((id) => ({ id, handler: () => undefined }));
   const execute = (runRowId: string, runId = "run-1", steps?: Array<{ id: string; handler: () => object | undefined }>, volume = volumeId, took?: string, attempt = 0) => new InngestTestEngine({
     function: createRunVolume(new Inngest({ id: "test" }), runEffect),
@@ -518,7 +557,7 @@ describe("volume runs", () => {
     return found;
   };
   const context = (id: string): RunContext => ({
-    id, organizationId, volumeId, volumeName: "data", dockerVolume, kind: "sync", args: { full: false }, orphan: false, refquotaBytes: 0, gen: 0, phase: "warm", current: null,
+    id, organizationId, environmentId: "env-1", volumeId, volumeName: "data", dockerVolume, kind: "sync", args: { full: false }, orphan: false, refquotaBytes: 0, recordedBytes: 0, gen: 0, phase: "warm", current: null,
   });
   const running = async (id: string) =>
     harness.pool.query(`update volume_run set state = 'running', inngest_run_id = 'run-1' where id = $1`, [id]);
@@ -544,6 +583,8 @@ describe("volume runs", () => {
     storeProject = "shop";
     afterNamespaces = null;
     storeVolumes = [{ id: volumeId, name: "data", storage: { kind: "provisioned", maximumBytes: 5_000_000 } }];
+    storeEvents = [];
+    storeRefuse = null;
     deployNodes = [{ type: "service", id: "svc-web", name: "web", outcome: "pending", rows: [] }, { type: "volume", id: volumeId, name: "data", outcome: "pending", rows: [] }];
     machines = [
       { name: "fsn-1", pool: true, copy: writerCopy() },
@@ -757,7 +798,7 @@ describe("volume runs", () => {
     });
 
     it("a mirror removal under way says it finishes on its own, and a release leaves it to, since it cannot retract a destroy a Machine started", async () => {
-      const removal = await requested({ kind: "delete_mirror", args: { slot: "fsn-2", confirmed_name: null } });
+      const removal = await requested({ kind: "delete_mirror", args: { slot: "fsn-2", confirmed_name: null, role: "any" } });
 
       const removing = `data is busy with a mirror removal, which finishes on its own; ployz volume runs data ${removal.id} follows it`;
       expect(await request({ kind: "sync", args: { full: false } })).toMatchObject({ ok: false, refusal: { code: "conflict", message: removing } });
@@ -1624,6 +1665,21 @@ describe("volume runs", () => {
     });
 
     it.each([
+      ["the size a resize recorded since the Deploy", 20 * GB, 20 * GB],
+      ["the spec's own size while none is recorded", 0, 5_000_000],
+    ])("starts B at %s", async (_, recordedBytes, maximumBytes) => {
+      const ctx = { ...(await owned()), recordedBytes };
+      containers = [{ machine: "fsn-1", id: "web-fsn-1", running: false }];
+
+      await runEffect(commitAndStart(ctx, "run-1", { to: { id: B, name: "fsn-2" }, from: { id: idOf("fsn-1"), name: "fsn-1" }, expect: { kind: "none" }, at: base.guid, epoch: 1 }));
+
+      expect(sent.at(-1)?.want).toMatchObject({
+        kind: "writer",
+        start: { kind: "create", resolved_spec: { volumes: [{ source: { kind: "provisioned", name: dockerVolume, maximum_bytes: maximumBytes } }] } },
+      });
+    });
+
+    it.each([
       { rotation: "in", sent: { in: { run: null, expect: "pending" } } },
       { rotation: { held: "run-user" }, sent: "pending" },
       { rotation: "pending", sent: "pending" },
@@ -1755,7 +1811,7 @@ describe("volume runs", () => {
 
     describe("a committed Move whose release failed", () => {
       const A = idOf("fsn-1");
-      const volume = { environmentId: "env-1", volumeName: "data", dockerVolume, refquotaBytes: 5_000_000 };
+      const volume = { environmentId: "env-1", volumeName: "data", dockerVolume, refquotaBytes: 5_000_000, recordedBytes: 0 };
       const finishes = "data finishes on fsn-2; ployz volume release data finishes it now";
       const changed = "data changed since this release was planned; release it again";
       let G: Snapshot;
@@ -1799,9 +1855,9 @@ describe("volume runs", () => {
           { kind: "mirror", args: { to: "fsn-3" } },
           { kind: "sync", args: { full: true } },
           { kind: "sync", args: { full: false } },
-          { kind: "delete_mirror", args: { slot: "fsn-2", confirmed_name: null, machine: B } },
-          { kind: "delete_mirror", args: { slot: "fsn-3", confirmed_name: null } },
-          { kind: "delete_mirror", args: { slot: null, confirmed_name: null } },
+          { kind: "delete_mirror", args: { slot: "fsn-2", confirmed_name: null, machine: B, role: "any" } },
+          { kind: "delete_mirror", args: { slot: "fsn-3", confirmed_name: null, role: "any" } },
+          { kind: "delete_mirror", args: { slot: null, confirmed_name: null, role: "any" } },
           seed,
         ] satisfies VolumeRunInput[]) {
           expect(await insert(input)).toEqual({
@@ -1815,7 +1871,7 @@ describe("volume runs", () => {
         expect(await plan({ kind: "move", args: { to: "fsn-1" } })).toEqual({
           ok: false, refusal: { code: "conflict", message: finishes, details: { run: expect.objectContaining({ id: release.id }) } },
         });
-        expect(await insert({ kind: "delete_mirror", args: { slot: "fsn-3", confirmed_name: null, machine: idOf("fsn-3") } })).toMatchObject({ ok: true });
+        expect(await insert({ kind: "delete_mirror", args: { slot: "fsn-3", confirmed_name: null, machine: idOf("fsn-3"), role: "any" } })).toMatchObject({ ok: true });
       });
 
       it("previews a release as going forward to B, removing A's stopped Container, and pins both", async () => {
@@ -2180,14 +2236,72 @@ describe("volume runs", () => {
   describe("delete_mirror", () => {
     it("forgets the slot, then the writer's snapshots shared with it", async () => {
       machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(base) };
-      const run = await requested({ kind: "delete_mirror", args: { slot: "fsn-2", confirmed_name: null } });
+      const run = await requested({ kind: "delete_mirror", args: { slot: "fsn-2", confirmed_name: null, role: "any" } });
 
       const output = await execute(run.id);
 
       expect(output.result).toEqual({ runId: run.id, destroyed: ["fsn-2"] });
       expect(verbs).toEqual(["forget@fsn-2", "forget@fsn-1"]);
+      expect(sent[0]?.expect).toEqual({ kind: "mirror", newest: base.guid, slot: "1" });
       expect(machines[1]?.copy).toBeNull();
       expect(await rows()).toMatchObject([{ state: "done", epoch: null }]);
+    });
+
+    it("refuses an old copy a late pull made the mirror after the run looked, and deletes nothing", async () => {
+      machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(base, null, "7", "old_copy") };
+      beforeSet.set("forget@fsn-2", () => { named("fsn-2").copy = slotCopy(base, null, "7", "mirror"); });
+      const run = await requested({ kind: "delete_mirror", args: { slot: "fsn-2", confirmed_name: null, machine: idOf("fsn-2"), role: "old_copy" } });
+
+      await execute(run.id);
+
+      expect(sent.at(-1)?.expect).toEqual({ kind: "mirror", newest: base.guid, slot: "7", role: "old_copy" });
+      expect(verbs).toEqual(["forget@fsn-2"]);
+      expect(machines[1]?.copy).toEqual(slotCopy(base, null, "7", "mirror"));
+      expect(await rows()).toMatchObject([{ state: "failed", message: "data-fsn-2 is no longer an old copy, so nothing was deleted" }]);
+    });
+
+    const LEGACY = "data's delete was requested before Ployz recorded which copy it deletes, so nothing was deleted. Delete the copy again.";
+    const legacyOldCopyDelete = async () => {
+      machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(base, null, "7", "old_copy") };
+      const admitted = await runEffect(deleteOldCopy(organizationId, userId, { volumeId, environment, server: "fsn-2" }));
+      if (!admitted.ok) throw new Error(admitted.refusal.message);
+      await harness.pool.query(`update volume_run set args = args - 'role' where id = $1`, [admitted.run.id]);
+      named("fsn-2").copy = slotCopy(base, null, "7", "mirror");
+      return admitted.run.id;
+    };
+
+    it("refuses an old copy's delete admitted before runs recorded the role, and deletes nothing", async () => {
+      const id = await legacyOldCopyDelete();
+
+      await execute(id);
+
+      expect(verbs.filter((verb) => verb.startsWith("forget"))).toEqual([]);
+      expect(machines[1]?.copy).toEqual(slotCopy(base, null, "7", "mirror"));
+      expect(await rows()).toMatchObject([{ state: "failed", message: LEGACY }]);
+    });
+
+    it("refuses such a delete resumed while already running, and deletes nothing", async () => {
+      const id = await legacyOldCopyDelete();
+      await harness.pool.query(`update volume_run set state = 'running', inngest_run_id = 'run-1' where id = $1`, [id]);
+
+      await execute(id, "run-1", undefined, volumeId, undefined, 1);
+
+      expect(verbs.filter((verb) => verb.startsWith("forget"))).toEqual([]);
+      expect(machines[1]?.copy).toEqual(slotCopy(base, null, "7", "mirror"));
+      expect(await rows()).toMatchObject([{ state: "failed", message: LEGACY }]);
+    });
+
+    it("deletes only the old copy it was admitted for, though a pull made it the mirror before the run looked", async () => {
+      machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(base, null, "7", "old_copy") };
+      const admitted = await runEffect(deleteOldCopy(organizationId, userId, { volumeId, environment, server: "fsn-2" }));
+      if (!admitted.ok) throw new Error(admitted.refusal.message);
+      named("fsn-2").copy = slotCopy(base, null, "7", "mirror");
+
+      await execute(admitted.run.id);
+
+      expect(sent.find((request) => request.want.kind === "forget")?.expect).toEqual({ kind: "mirror", newest: base.guid, slot: "7", role: "old_copy" });
+      expect(machines[1]?.copy).toEqual(slotCopy(base, null, "7", "mirror"));
+      expect(await rows()).toMatchObject([{ state: "failed", message: "data-fsn-2 is no longer an old copy, so nothing was deleted" }]);
     });
   });
 
@@ -2322,7 +2436,7 @@ describe("volume runs", () => {
 
       const lost = await execute(run.id);
 
-      expect(lost.error).toMatchObject({ name: "Error", message: "set_volume_copy on fsn-1: internal: dataset is busy" });
+      expect(lost.error).toMatchObject({ name: "Error", message: "set_volume_copy on fsn-1: unavailable: target Machine RPC timed out" });
       expect(await rows()).toMatchObject([{ state: "running" }]);
       expect(named("fsn-1").copy).toMatchObject({ kind: "slot", readonly: true });
       verbs = [];
@@ -2880,7 +2994,7 @@ describe("volume runs", () => {
       machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(base), lacks: "0.2.4" };
       vi.stubGlobal("fetch", async () => new Response("v0.2.5\n"));
       try {
-        const run = await requested({ kind: "delete_mirror", args: { slot: "fsn-2", confirmed_name: null } });
+        const run = await requested({ kind: "delete_mirror", args: { slot: "fsn-2", confirmed_name: null, role: "any" } });
 
         await execute(run.id);
 
@@ -2908,9 +3022,203 @@ describe("volume runs", () => {
     });
   });
 
+  const caller: Caller = { userId, organization: { id: organizationId, slug: "acme" }, credential: { kind: "session", id: "session-1" }, role: "owner", support: null, via: "agent" };
+  /** A run as the CLI asks for it, planned on the Cluster before any row. */
+  const admit = (input: VolumeRunInput) => runEffect(runVolume(caller, { volumeId, environment, ...input }, { key: null, approvalId: null }));
+
+  describe("resize", () => {
+    const serves = [requirements.volumeFloor.capability, requirements.volumeSize.capability];
+    const sized = (name: string, copy: VolumeCopy | null): FakeMachine => ({ name, pool: true, copy, capabilities: serves, bound: 10 * GB });
+    const grow = (gigabytes: number): VolumeRunInput => ({ kind: "resize", args: { maximum_bytes: gigabytes * GB } });
+    const bounds = () => Object.fromEntries(machines.map((fake) => [fake.name, (fake.bound ?? 0) / GB]));
+    const refusal = (details: { reason: string; bound_bytes?: number; capacity?: { code: string; required_growth_bytes?: number } }) =>
+      new RawFault({ code: "failed_precondition", message: details.reason, details });
+    const recorded = { event: "volume_resized", environment: "env-1", volume: volumeId, from: 10 * GB, to: 20 * GB };
+
+    beforeEach(() => {
+      storeVolumes = [{ id: volumeId, name: "data", storage: { kind: "provisioned", maximumBytes: 10 * GB }, recorded_storage: 10 * GB }];
+      machines = [sized("fsn-1", writerCopy()), sized("fsn-2", slotCopy(base)), sized("fsn-3", slotCopy(base, null, "2"))];
+    });
+
+    it("grows every mirror, then the primary, then records the size, and says where the Volume is", async () => {
+      const run = await requested(grow(20));
+
+      const output = await execute(run.id);
+
+      expect(output.result).toEqual({ runId: run.id, resized: 20 * GB });
+      expect(verbs).toEqual(["size@fsn-2(20)", "size@fsn-3(20)", "size@fsn-1(20)"]);
+      expect(bounds()).toEqual({ "fsn-1": 20, "fsn-2": 20, "fsn-3": 20 });
+      expect(storeEvents).toEqual([recorded]);
+      expect(await rows()).toMatchObject([{ kind: "resize", state: "done", epoch: null, message: "data is 20 GB on fsn-2, fsn-3, fsn-1" }]);
+    });
+
+    it("a copy already bigger holds, and a copy that keeps switching is asked again until it holds", async () => {
+      named("fsn-2").bound = 30 * GB;
+      named("fsn-3").switching = 2;
+      const run = await requested(grow(20));
+
+      await execute(run.id);
+
+      expect(verbs).toEqual(["size@fsn-2(20)", "size@fsn-3(20)", "size@fsn-3(20)", "size@fsn-3(20)", "size@fsn-1(20)"]);
+      expect(bounds()).toEqual({ "fsn-1": 20, "fsn-2": 30, "fsn-3": 20 });
+      expect(storeEvents).toEqual([recorded]);
+      expect(await rows()).toMatchObject([{ state: "done" }]);
+    });
+
+    it("asked again for a size every copy holds, asks each again and tells the Store again", async () => {
+      const first = await requested(grow(20));
+      await execute(first.id);
+      verbs.length = 0;
+      const again = await requested(grow(20));
+
+      await execute(again.id, "run-2");
+
+      expect(verbs).toEqual(["size@fsn-2(20)", "size@fsn-3(20)", "size@fsn-1(20)"]);
+      expect(bounds()).toEqual({ "fsn-1": 20, "fsn-2": 20, "fsn-3": 20 });
+      expect(storeEvents).toEqual([recorded, recorded]);
+      expect(await rows()).toMatchObject([{ id: first.id, state: "done" }, { id: again.id, state: "done" }]);
+    });
+
+    it("a cancellation after the record leaves every copy and the Store at the new size", async () => {
+      const run = await requested(grow(20));
+
+      await execute(run.id, "run-1", [{ id: "05-finish", handler: () => undefined }]);
+      await runEffect(closeVolumeRun("run-1", "cancellation"));
+
+      expect(bounds()).toEqual({ "fsn-1": 20, "fsn-2": 20, "fsn-3": 20 });
+      expect(storeEvents).toEqual([recorded]);
+      expect(await rows()).toMatchObject([{ state: "cancelled", message: "the run was cancelled" }]);
+    });
+
+    it("the primary without room ends the run with the mirrors grown, the Store at the old size, and what to do", async () => {
+      failNext.set("size@fsn-1", refusal({ reason: "no_capacity", capacity: { code: "insufficient_storage", required_growth_bytes: 4 * GB } }));
+      const run = await requested(grow(20));
+
+      await execute(run.id);
+
+      expect(verbs).toEqual(["size@fsn-2(20)", "size@fsn-3(20)", "size@fsn-1(20)"]);
+      expect(bounds()).toEqual({ "fsn-1": 10, "fsn-2": 20, "fsn-3": 20 });
+      expect(storeEvents).toEqual([]);
+      expect(await rows()).toMatchObject([{
+        state: "failed",
+        message: "fsn-1 has no room to grow data to 20 GB. data stays 10 GB. fsn-2, fsn-3 already hold 20 GB. Free space on fsn-1, then run ployz volume set data --size 20 again.",
+      }]);
+    });
+
+    it("a mirror gone from its Server ends the run before the rest are asked", async () => {
+      failNext.set("size@fsn-2", refusal({ reason: "not_found" }));
+      const run = await requested(grow(20));
+
+      await execute(run.id);
+
+      expect(verbs).toEqual(["size@fsn-2(20)"]);
+      expect(bounds()).toEqual({ "fsn-1": 10, "fsn-2": 10, "fsn-3": 10 });
+      expect(await rows()).toMatchObject([{
+        state: "failed",
+        message: "fsn-2 no longer holds a copy of data. data stays 10 GB. fsn-3, fsn-1 were not asked. Run ployz volume set data --size 20 again.",
+      }]);
+    });
+
+    it("a copy switching past the run's patience ends it as read-only", { timeout: 60_000 }, async () => {
+      named("fsn-2").switching = 200;
+      const run = await requested(grow(20));
+
+      await execute(run.id);
+
+      expect(verbs).toHaveLength(120);
+      expect(await rows()).toMatchObject([{
+        state: "failed",
+        message: "fsn-2 kept data read-only for 120 checks. data stays 10 GB. fsn-3, fsn-1 were not asked. Run ployz volume set data --size 20 again.",
+      }]);
+    });
+
+    it("a Store that recorded another size since the run read it ends the run failed, naming both, and lowers no copy", async () => {
+      storeRefuse = () => new RpcError({ code: "conflict", message: "size changed", details: { reason: "size_changed", volume: volumeId, recorded: { kind: "provisioned", maximumBytes: 30 * GB } } });
+      const run = await requested(grow(20));
+
+      await execute(run.id);
+
+      expect(bounds()).toEqual({ "fsn-1": 20, "fsn-2": 20, "fsn-3": 20 });
+      expect(await rows()).toMatchObject([{
+        state: "failed",
+        message: "data grew to 20 GB on fsn-2, fsn-3, fsn-1, but the Store records data at 30 GB, not 10 GB; read its size again",
+      }]);
+    });
+
+    it("a Store that couldn't be asked fails the record step for Inngest to retry, ending nothing", async () => {
+      storeRefuse = () => new RpcError({ code: "unavailable", message: "the Store is busy", details: null });
+      const run = await requested(grow(20));
+
+      const output = await execute(run.id);
+
+      expect(output.error).toBeDefined();
+      expect(bounds()).toEqual({ "fsn-1": 20, "fsn-2": 20, "fsn-3": 20 });
+      expect(storeEvents).toEqual([]);
+      expect(await rows()).toMatchObject([{ state: "running" }]);
+    });
+
+    it("a Volume the Store no longer deploys ends the run failed after every copy grew", async () => {
+      storeRefuse = () => new RpcError({ code: "not_found", message: "no such lock", details: null });
+      const run = await requested(grow(20));
+
+      await execute(run.id);
+
+      expect(await rows()).toMatchObject([{
+        state: "failed",
+        message: "data grew to 20 GB on fsn-2, fsn-3, fsn-1, but data is no longer deployed, so its size was not recorded",
+      }]);
+    });
+
+    it.each([
+      ["lists no capabilities", undefined],
+      ["lacks the size verb", [requirements.volumeFloor.capability]],
+    ])("a holder that %s refuses the run at admission, before any row", async (_, capabilities) => {
+      named("fsn-2").capabilities = capabilities;
+
+      expect(await admit(grow(20))).toEqual({ ok: false, refusal: { code: "unsupported", message: "Volume resize needs a newer Ployz on fsn-2.", details: null } });
+
+      expect(verbs).toEqual([]);
+      expect(await rows()).toEqual([]);
+    });
+
+    it("a holder that lost the size verb since admission fails the run at its first look, asking no Server for a size", async () => {
+      const run = await requested(grow(20));
+      named("fsn-3").capabilities = [requirements.volumeFloor.capability];
+
+      await execute(run.id);
+
+      expect(verbs).toEqual([]);
+      expect(await rows()).toMatchObject([{ state: "failed", message: "Volume resize needs a newer Ployz on fsn-3." }]);
+    });
+
+    it("the size the Store already records is settled at admission", async () => {
+      expect(await admit(grow(10))).toEqual({ ok: false, refusal: { code: "conflict", message: "data already has 10 GB", details: { settled: true } } });
+      expect(await rows()).toEqual([]);
+    });
+
+    it("is refused while a Move runs, and while a committed Move is owed its release", async () => {
+      const move = await requested({ kind: "move", args: { to: "fsn-2" } });
+      await running(move.id);
+
+      expect(await request(grow(20))).toMatchObject({ ok: false, refusal: { code: "conflict", message: volumeBusyMessage({ id: move.id, kind: "move", volumeName: "data" }) } });
+
+      await harness.pool.query("update volume_run set state = 'cancelled', phase = 'committed', current = $2, finished_at = now() where id = $1", [move.id, idOf("fsn-2")]);
+      expect(await request(grow(20))).toMatchObject({ ok: false, refusal: { code: "conflict", message: "data finishes on fsn-2; ployz volume release data finishes it now" } });
+      expect((await rows()).map((row) => row.kind)).toEqual(["move"]);
+    });
+
+    it("a release takes a warm resize over", async () => {
+      const run = await requested(grow(20));
+      await running(run.id);
+
+      expect(await request({ kind: "release", args: {} })).toMatchObject({ ok: true, run: { kind: "release", state: "requested" } });
+
+      expect(await rows()).toMatchObject([{ id: run.id, state: "cancelled", message: "volume release took this run over" }, { kind: "release", state: "requested" }]);
+    });
+  });
+
   describe("admission", () => {
-    const caller: Caller = { userId, organization: { id: organizationId, slug: "acme" }, credential: { kind: "session", id: "session-1" }, role: "owner", support: null, via: "agent" };
-    const run = (input: VolumeRunInput) => runEffect(runVolume(caller, { volumeId, environment, ...input }, { key: null, approvalId: null }));
+    const run = admit;
 
     it("a Mirror Remove of the last copy asks first, names the copy it deletes, and writes no run", async () => {
       machines = [
@@ -2918,7 +3226,7 @@ describe("volume runs", () => {
         { name: "fsn-2", pool: true, copy: slotCopy(base) },
       ];
 
-      const admitted = await run({ kind: "delete_mirror", args: { slot: null, confirmed_name: "data" } });
+      const admitted = await run({ kind: "delete_mirror", args: { slot: null, confirmed_name: "data", role: "any" } });
 
       expect(admitted).toMatchObject({
         ok: false,
@@ -2936,7 +3244,7 @@ describe("volume runs", () => {
       const busy = await requested({ kind: "sync", args: { full: false } });
       send.mockClear();
 
-      const admitted = await run({ kind: "delete_mirror", args: { slot: null, confirmed_name: "data" } });
+      const admitted = await run({ kind: "delete_mirror", args: { slot: null, confirmed_name: "data", role: "any" } });
 
       expect(admitted).toEqual({
         ok: false,
@@ -3332,7 +3640,7 @@ describe("volume runs", () => {
       const cut = afterCut();
       const taken = await moving("committed");
       await harness.pool.query("update volume_run set state = 'failed', finished_at = now() where id = $1", [taken.id]);
-      const mirror = await requested({ kind: "delete_mirror", args: { slot: "fsn-3", confirmed_name: null, machine: idOf("fsn-3") } });
+      const mirror = await requested({ kind: "delete_mirror", args: { slot: "fsn-3", confirmed_name: null, machine: idOf("fsn-3"), role: "any" } });
       deployNodes = [{ type: "service", id: "svc-api", name: "api", outcome: "pending", rows: [] }];
 
       const placed = await place();
@@ -3449,7 +3757,7 @@ describe("volume runs", () => {
 
       it("a mirror removal running on another Server does not stop a Deploy from following it", async () => {
         await failedCommit();
-        await requested({ kind: "delete_mirror", args: { slot: "fsn-3", confirmed_name: null, machine: idOf("fsn-3") } });
+        await requested({ kind: "delete_mirror", args: { slot: "fsn-3", confirmed_name: null, machine: idOf("fsn-3"), role: "any" } });
 
         expect(await place()).toMatchObject([{ kind: "follow", to: "fsn-2", ended: true }]);
       });
@@ -3460,30 +3768,30 @@ describe("volume runs", () => {
         const owes = "data finishes on web-2; ployz volume release data finishes it now";
         const plan = (input: VolumeRunInput) => runEffect(planVolumeRun(organizationId, { volumeId, environment, ...input }));
 
-        expect(await plan({ kind: "delete_mirror", args: { slot: "web-2", confirmed_name: null } })).toMatchObject({ ok: false, refusal: { message: owes } });
-        expect(await request({ kind: "delete_mirror", args: { slot: "web-2", confirmed_name: null } })).toMatchObject({ ok: false, refusal: { message: owes } });
+        expect(await plan({ kind: "delete_mirror", args: { slot: "web-2", confirmed_name: null, role: "any" } })).toMatchObject({ ok: false, refusal: { message: owes } });
+        expect(await request({ kind: "delete_mirror", args: { slot: "web-2", confirmed_name: null, role: "any" } })).toMatchObject({ ok: false, refusal: { message: owes } });
         expect(await request({ kind: "move", args: { to: "fsn-1" } })).toMatchObject({ ok: false, refusal: { message: owes } });
       });
 
       it("protects B by the id its plan observed: removing its mirror by the new name is refused while the Cluster stops answering", async () => {
         await failedCommit();
         machines = machines.map((fake) => fake.name === "fsn-2" ? { ...fake, name: "web-2", id: idOf("fsn-2") } : fake);
-        const volume = { environmentId: "env-1", volumeName: "data", dockerVolume, refquotaBytes: 5_000_000 };
-        const planned = await runEffect(planVolumeRun(organizationId, { volumeId, environment, kind: "delete_mirror", args: { slot: "web-2", confirmed_name: null } }));
+        const volume = { environmentId: "env-1", volumeName: "data", dockerVolume, refquotaBytes: 5_000_000, recordedBytes: 0 };
+        const planned = await runEffect(planVolumeRun(organizationId, { volumeId, environment, kind: "delete_mirror", args: { slot: "web-2", confirmed_name: null, role: "any" } }));
         expect(planned).toMatchObject({ ok: false, refusal: { message: "data finishes on web-2; ployz volume release data finishes it now" } });
         frameFault = () => true;
 
-        const asked = { kind: "delete_mirror", args: { slot: "web-2", confirmed_name: null, machine: idOf("fsn-2") } } satisfies VolumeRunInput;
+        const asked = { kind: "delete_mirror", args: { slot: "web-2", confirmed_name: null, machine: idOf("fsn-2"), role: "any" } } satisfies VolumeRunInput;
         expect(await runEffect(insertRun({ userId, organizationId }, { volumeId, ...asked }, volume, crypto.randomUUID()))).toMatchObject({ ok: false, refusal: { code: "conflict" } });
-        expect(await request({ kind: "delete_mirror", args: { slot: "web-2", confirmed_name: null } })).toMatchObject({ ok: false, refusal: { code: "conflict" } });
+        expect(await request({ kind: "delete_mirror", args: { slot: "web-2", confirmed_name: null, role: "any" } })).toMatchObject({ ok: false, refusal: { code: "conflict" } });
         expect((await lanes()).filter((lane) => lane.kind === "delete_mirror")).toEqual([]);
       });
 
       it("admits removing another mirror by the id its plan observed, reading no Server inside the admission", async () => {
         const cut = await failedCommit();
         machines.push({ name: "fsn-3", pool: true, copy: slotCopy(cut) });
-        const volume = { environmentId: "env-1", volumeName: "data", dockerVolume, refquotaBytes: 5_000_000 };
-        const planned = await runEffect(planVolumeRun(organizationId, { volumeId, environment, kind: "delete_mirror", args: { slot: "fsn-3", confirmed_name: "data" } }));
+        const volume = { environmentId: "env-1", volumeName: "data", dockerVolume, refquotaBytes: 5_000_000, recordedBytes: 0 };
+        const planned = await runEffect(planVolumeRun(organizationId, { volumeId, environment, kind: "delete_mirror", args: { slot: "fsn-3", confirmed_name: "data", role: "any" } }));
         if (!planned.ok) throw new Error(planned.refusal.message);
         expect(planned.input).toMatchObject({ kind: "delete_mirror", args: { slot: "fsn-3", machine: idOf("fsn-3") } });
         frameFault = () => true;
@@ -3506,7 +3814,7 @@ describe("volume runs", () => {
         const plan = (input: VolumeRunInput) => runEffect(planVolumeRun(organizationId, { volumeId, environment, ...input }));
 
         expect(await plan({ kind: "release", args: {} })).toMatchObject({ ok: false, refusal: { message: advice } });
-        expect(await plan({ kind: "delete_mirror", args: { slot: "fsn-4", confirmed_name: null } })).toMatchObject({ ok: false, refusal: { message: advice } });
+        expect(await plan({ kind: "delete_mirror", args: { slot: "fsn-4", confirmed_name: null, role: "any" } })).toMatchObject({ ok: false, refusal: { message: advice } });
 
         machines = machines.filter((fake) => fake.name !== "fsn-1" && fake.name !== "fsn-3");
         expect(await plan({ kind: "release", args: {} })).toMatchObject({ ok: true, input: { kind: "release", args: { plan: { forward: { to: idOf("fsn-2") } } } } });
@@ -3525,7 +3833,7 @@ describe("volume runs", () => {
         const plan = (input: VolumeRunInput) => runEffect(planVolumeRun(organizationId, { volumeId, environment, ...input }));
 
         expect(await plan({ kind: "release", args: {} })).toMatchObject({ ok: false, refusal: { message: writer } });
-        expect(await plan({ kind: "delete_mirror", args: { slot: "fsn-4", confirmed_name: null } })).toMatchObject({ ok: false, refusal: { message: writer } });
+        expect(await plan({ kind: "delete_mirror", args: { slot: "fsn-4", confirmed_name: null, role: "any" } })).toMatchObject({ ok: false, refusal: { message: writer } });
       });
 
       it("a Deploy targeting the Volume holds it beside the follow: a Move is refused as deploying, then as owed once the Deploy ends", async () => {
@@ -3618,13 +3926,13 @@ describe("volume runs", () => {
         const [released] = await runEffect(releaseFollowed("env-1", DEPLOY, placed));
 
         expect((await lanes()).filter((lane) => lane.kind !== "move")).toMatchObject([{ id: released, kind: "release", state: "requested", args: { follows: idOf("fsn-2") } }]);
-        expect(await request({ kind: "delete_mirror", args: { slot: "fsn-3", confirmed_name: null, machine: idOf("fsn-3") } }))
+        expect(await request({ kind: "delete_mirror", args: { slot: "fsn-3", confirmed_name: null, machine: idOf("fsn-3"), role: "any" } }))
           .toMatchObject({ ok: false, busy: expect.objectContaining({ id: released, kind: "release" }) });
       });
 
       it("a mirror removal the Deploy stamped beside it no longer counts as deploying once the release is asked", async () => {
         await failedCommit();
-        const mirror = await requested({ kind: "delete_mirror", args: { slot: "fsn-3", confirmed_name: null, machine: idOf("fsn-3") } });
+        const mirror = await requested({ kind: "delete_mirror", args: { slot: "fsn-3", confirmed_name: null, machine: idOf("fsn-3"), role: "any" } });
         const placed = await place();
         await harness.pool.query("update volume_run set state = 'done', finished_at = now() where id = $1", [mirror.id]);
 
@@ -3644,7 +3952,7 @@ describe("volume runs", () => {
         const settled = await requested({ kind: "release", args: {} });
         await harness.pool.query("update volume_run set state = $2, finished_at = now(), phase = 'committed', current = $3 where id = $1", [settled.id, state, idOf(current)]);
 
-        const volume = { environmentId: "env-1", volumeName: "data", dockerVolume, refquotaBytes: 5_000_000 };
+        const volume = { environmentId: "env-1", volumeName: "data", dockerVolume, refquotaBytes: 5_000_000, recordedBytes: 0 };
         const follow = { volumeId, kind: "release" as const, args: { follows: idOf("fsn-2") } };
 
         expect(await runEffect(releaseFollowed("env-1", DEPLOY, placed))).toEqual([]);
@@ -3656,7 +3964,7 @@ describe("volume runs", () => {
       describe("once a release admitted after a mirror removal the Deploy placed beside took the commitment over and floored B at its newer gen", () => {
         const successor = async (state: "running" | "done") => {
           await failedCommit();
-          const mirror = await requested({ kind: "delete_mirror", args: { slot: "fsn-3", confirmed_name: null, machine: idOf("fsn-3") } });
+          const mirror = await requested({ kind: "delete_mirror", args: { slot: "fsn-3", confirmed_name: null, machine: idOf("fsn-3"), role: "any" } });
           deployNodes = [{ type: "service", id: "svc-api", name: "api", outcome: "pending", rows: [] }];
           const placed = await place();
           await harness.pool.query("update volume_run set state = 'done', finished_at = now() where id = $1", [mirror.id]);
@@ -3761,6 +4069,7 @@ describe("volume runs", () => {
           { id: "placement-0", handler: () => ({ kind: "done" }) },
           { id: "refresh-mirrors", handler: () => undefined },
           { id: "run-deployment", handler: () => ({ ran: { id: "d-1", status: "applied", remove: false } }) },
+          { id: "retire-old", handler: () => ({ ids: [] }) },
           { id: "sync-uptime", handler: () => undefined },
           { id: "forget-run", handler: () => undefined },
           { id: "delete-orphan-mirrors", handler: () => undefined },
@@ -3916,7 +4225,7 @@ describe("volume runs", () => {
     });
 
     it("with a delete_mirror lane: plain beside it, no hold and no Floor call", async () => {
-      const pruning = await requested({ kind: "delete_mirror", args: { slot: "fsn-2", confirmed_name: null } });
+      const pruning = await requested({ kind: "delete_mirror", args: { slot: "fsn-2", confirmed_name: null, role: "any" } });
 
       expect(await place()).toEqual([]);
 
@@ -3924,6 +4233,20 @@ describe("volume runs", () => {
       expect(await lanes()).toMatchObject([{ id: pruning.id, kind: "delete_mirror", state: "requested" }]);
       expect(await finish()).toEqual({ ended: 0, requeued: [], refused: [] });
       expect(await lanes()).toMatchObject([{ id: pruning.id, kind: "delete_mirror", state: "requested" }]);
+    });
+
+    it("with a resize lane: plain beside it, stamped so a move asked for later is refused, and no size verb", async () => {
+      storeVolumes = [{ id: volumeId, name: "data", storage: { kind: "provisioned", maximumBytes: 10 * GB }, recorded_storage: 10 * GB }];
+      for (const fake of machines) fake.capabilities = [requirements.volumeFloor.capability, requirements.volumeSize.capability];
+      const growing = await requested({ kind: "resize", args: { maximum_bytes: 20 * GB } });
+
+      expect(await place()).toEqual([]);
+
+      expect(verbs).toEqual([]);
+      expect(await lanes()).toMatchObject([{ id: growing.id, kind: "resize", state: "requested" }]);
+      expect((await harness.pool.query("select id, held_by from volume_run")).rows).toEqual([{ id: growing.id, held_by: DEPLOY }]);
+      expect(await finish()).toEqual({ ended: 0, requeued: [], refused: [] });
+      expect(await lanes()).toMatchObject([{ id: growing.id, kind: "resize", state: "requested" }]);
     });
 
     it("with a sync lane: the sync yields, since its demote cuts the writer, and the Deploy floors A with nothing to request again", async () => {
@@ -3978,6 +4301,7 @@ describe("volume runs", () => {
             verbs.push("run-deployment");
             return { ran: { id: "d-1", status: "applied", remove: false } };
           } },
+          { id: "retire-old", handler: () => ({ ids: [] }) },
           { id: "sync-uptime", handler: () => undefined },
           { id: "forget-run", handler: () => undefined },
           { id: "delete-orphan-mirrors", handler: () => undefined },
@@ -4132,6 +4456,7 @@ describe("volume runs", () => {
         { id: "record-run", handler: () => undefined },
         { id: "plan-builds", handler: () => [] },
         { id: "run-deployment", handler: () => ({ ran: { id: "d-1", status, remove: false } }) },
+        { id: "retire-old", handler: () => ({ ids: [] }) },
         { id: "sync-uptime", handler: () => undefined },
         { id: "forget-run", handler: () => undefined },
       ],

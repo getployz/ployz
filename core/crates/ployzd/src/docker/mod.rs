@@ -3,6 +3,7 @@ mod create;
 mod http_health;
 mod images;
 mod lifecycle;
+mod limits;
 mod managed_service;
 mod observe;
 mod peer_pull;
@@ -51,8 +52,10 @@ use observe::ObservationSink;
 
 pub(crate) use create::container_log_config;
 pub(crate) use lifecycle::{ContainerCreated, ContainerRequest, require_eligible, same_creation};
+pub use limits::UnappliedLimits;
 pub(crate) use managed_service::{DesiredContainer, Ensure, ManagedService};
 pub(crate) use peer_pull::pull_from_ingest;
+use ployz_core::LimitsRefusal;
 pub use spec_store::{Error as SpecStoreError, FloorTurn, MachineSpecStore};
 pub use unregistry::ImageIngest;
 
@@ -261,6 +264,7 @@ pub struct ContainerRuntime {
     specs: MachineSpecStore,
     sink: Option<ObservationSink>,
     stopping: watch::Sender<BTreeMap<ContainerId, usize>>,
+    first_synced: watch::Sender<bool>,
     checks: Arc<std::sync::Mutex<CheckRecords>>,
     stranded: Arc<tokio::sync::Mutex<observe::StrandedIngress>>,
 }
@@ -273,6 +277,7 @@ impl ContainerRuntime {
             specs,
             sink: None,
             stopping: watch::Sender::new(BTreeMap::new()),
+            first_synced: watch::Sender::new(false),
             checks: Arc::new(std::sync::Mutex::new(CheckRecords::new(chrono::Utc::now()))),
             stranded: Arc::default(),
         }
@@ -306,6 +311,25 @@ impl ContainerRuntime {
             container_id: *container_id,
             rotation,
         })
+    }
+
+    /// Record that this Machine stopped `run` of the Container for a `Stopped` want.
+    /// Observations of that run, once exited, report it stopped; a later run does not.
+    ///
+    /// # Errors
+    ///
+    /// Returns when the Machine database cannot be written.
+    pub async fn record_stop(
+        &self,
+        container_id: &ContainerId,
+        run: &ployz_core::ContainerRun,
+    ) -> Result<(), Error> {
+        Ok(self
+            .specs
+            .config_operation()
+            .await
+            .set_stopped(container_id, run)
+            .await?)
     }
 
     /// The recorded rotations of `container_ids`, in one read. A copy that never left
@@ -521,6 +545,33 @@ impl ContainerRuntime {
         Ok(runtime_observation(inspected.state.as_ref()))
     }
 
+    /// The run of `container_id` that exited at or after `since`: what a stop issued
+    /// at `since` ended. Docker stamps the exit on this host's clock. `None` while it
+    /// runs, and for a run that exited before `since`, which the stop found over.
+    ///
+    /// # Errors
+    ///
+    /// Returns when Docker cannot inspect the Container.
+    pub async fn run_ended_since(
+        &self,
+        container_id: &ContainerId,
+        since: chrono::DateTime<chrono::Utc>,
+    ) -> Result<Option<ployz_core::ContainerRun>, Error> {
+        let inspected = decode_raw_inspect(
+            self.docker
+                .client
+                .inspect_container(container_id.as_str(), None)
+                .await,
+            container_id,
+        )?;
+        let ended = matches!(
+            runtime_observation(inspected.state.as_ref()),
+            ContainerRuntimeObservation::Exited { .. }
+        ) && finished_at(inspected.state.as_ref())
+            .is_some_and(|finished| finished >= since);
+        Ok(ended.then(|| container_run(&inspected)).flatten())
+    }
+
     pub async fn inspect_managed(
         &self,
         container_id: &ContainerId,
@@ -617,6 +668,13 @@ impl ContainerRuntime {
             };
         }
         let runtime = withdrawn(runtime, self.is_withdrawn(container_id));
+        let stopped = if matches!(runtime, ContainerRuntimeObservation::Exited { .. })
+            && let Some(run) = &run
+        {
+            self.specs.stopped_run(container_id).await?.as_ref() == Some(run)
+        } else {
+            false
+        };
         let container =
             ployz_core::ContainerObservation::try_from(ployz_core::ContainerObservationParts {
                 rotation: Some(rotation),
@@ -635,6 +693,7 @@ impl ContainerRuntime {
                     .iter()
                     .map(|(key, value)| (key.clone(), value.clone()))
                     .collect(),
+                stopped,
             })?;
         let oom_killed = inspected
             .state
@@ -871,6 +930,12 @@ fn container_run(inspected: &RawContainerInspect) -> Option<ployz_core::Containe
 
 fn started_at(state: Option<&serde_json::Value>) -> Option<chrono::DateTime<chrono::Utc>> {
     chrono::DateTime::parse_from_rfc3339(state?.get("StartedAt")?.as_str()?)
+        .ok()
+        .map(Into::into)
+}
+
+fn finished_at(state: Option<&serde_json::Value>) -> Option<chrono::DateTime<chrono::Utc>> {
+    chrono::DateTime::parse_from_rfc3339(state?.get("FinishedAt")?.as_str()?)
         .ok()
         .map(Into::into)
 }
@@ -1156,6 +1221,23 @@ pub enum Error {
     WorkNotAccepted,
     #[error("container is not managed by Ployz")]
     NotManaged,
+    #[error("container {0} is not a Service Container")]
+    NotAServiceContainer(ContainerId),
+    /// The requested spec is not a limits-only change of this Container's spec.
+    #[error("container {container_id} cannot take these limits in place: {refusal}")]
+    LimitsRefused {
+        container_id: ContainerId,
+        refusal: LimitsRefusal,
+    },
+    /// Docker accepted the update but reports other limits.
+    #[error("Docker reports other limits on container {container_id} after an update: {limits}")]
+    LimitsUnapplied {
+        container_id: ContainerId,
+        limits: Box<UnappliedLimits>,
+    },
+    /// Docker took the update, but the Container was not running when read back.
+    #[error("container {0} stopped after its limits update")]
+    StoppedAfterLimitsUpdate(ContainerId),
     #[error("resolved spec not found in machine.db for {0}")]
     SpecNotFound(ContainerId),
     #[error("container {0} was not found")]
@@ -1220,6 +1302,7 @@ impl Error {
             | Self::VolumeInUse { .. }
             | Self::SlotNameOccupied(_)
             | Self::ServicePlacementMismatch
+            | Self::LimitsRefused { .. }
             | Self::WorkNotAccepted => RpcErrorCode::Conflict,
             Self::ProvisionedStorageUnsupported | Self::UnsupportedImageStore => RpcErrorCode::Unsupported,
             Self::VolumeCreatedButUnverified { .. }
@@ -1238,6 +1321,7 @@ impl Error {
             | Self::MissingField(_)
             | Self::MissingLabel(_)
             | Self::InvalidValue { .. }
+            | Self::NotAServiceContainer(_)
             | Self::NotManaged => RpcErrorCode::InvalidArgument,
             Self::Docker(_)
             | Self::ImagePull(_)
@@ -1248,6 +1332,8 @@ impl Error {
             | Self::SpecStore(_)
             | Self::ReplicatedStore(_)
             | Self::Clock(_)
+            | Self::LimitsUnapplied { .. }
+            | Self::StoppedAfterLimitsUpdate(_)
             | Self::InvalidVolumeStatus(_)
             | Self::UnexpectedVolumeName { .. }
             | Self::Observation(_) => RpcErrorCode::Internal,
@@ -1270,6 +1356,7 @@ impl From<&Error> for RpcError {
                 serde_json::json!({ "in_use_by": services })
             }
             Error::DiskFull { full, .. } => full.details(),
+            Error::LimitsRefused { refusal, .. } => serde_json::json!({ "reason": refusal }),
             _ => serde_json::Value::Null,
         };
         let code = error.rpc_code();

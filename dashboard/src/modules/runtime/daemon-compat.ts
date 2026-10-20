@@ -8,6 +8,7 @@ export const requirements = {
   olderLogs: { capability: "ployz.logs.history.v2", feature: "Older logs", plural: true },
   volumeMove: { capability: "ployz.volume.copy.set.v1", feature: "Volume move" },
   volumeFloor: { capability: "ployz.volume.copy.floor.v1", feature: "Volume move" },
+  volumeSize: { capability: "ployz.volume.size.set.v1", feature: "Volume resize" },
   pruneImages: { capability: "ployz.image.prune.v1", feature: "Image cleanup" },
   buildGrantInspect: { capability: "ployz.build.grant.inspect.v1", feature: "GitHub builds", plural: true },
   leave: { capability: "ployz.machine.leave.v1", feature: "Server removal" },

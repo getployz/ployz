@@ -68,4 +68,4 @@ if [ -z "$key" ] || ! { fetch --extra "$release" || { [ "$extra" != "$release" ]
   fi
 fi
 node crates/ployz-sdk/tests/config-contract.mjs
-node --test crates/ployz-sdk/tests/node_logs.js
+node --test crates/ployz-sdk/tests/node_logs.js crates/ployz-sdk/tests/node_connect.js

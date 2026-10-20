@@ -23,13 +23,13 @@ These scripts are dev tooling that an operator runs on their own checkout. They 
 - [store/run.sh](store/run.sh): needs only the debug binary `core/target/debug/ployz`; it runs against the hidden SQLite Store (`PLOYZ_STORE=sqlite:…`) under an isolated HOME.
 - [cloud/run.sh](cloud/run.sh): starts its own seeded local Cloud with `dashboard/scripts/verify/up.sh` and stops only that one at the end (`KEEP=1` leaves it running). It refuses to run while this checkout already has a verify Cloud (`dashboard/.verify/run`), because `up.sh` would wipe it, including the one `verify-cluster up --cloud` uses.
 - [cluster/run.sh](cluster/run.sh): needs privileged Docker, `cargo build -p ployz -p ployzd`, and `docker pull ghcr.io/getployz/ployz-testkit:main`; it builds alpha, beta, gamma plus a lone `solo`, then tears them down. Its Cluster, image and HOME carry a random per-run id, so runs from two checkouts never collide. It stops when a setup capture that later captures depend on fails, such as `server add`.
-- [cloud-cluster/run.sh](cloud-cluster/run.sh): needs a paired run from `scripts/verify-cluster up --machines 1 --daemon stable --cloud`; call it as `MANIFEST=…/cluster.json SECTIONS="deploy runtime domain env errors up" run.sh [PARENT]`. Without `MANIFEST` it takes the newest run, and without `SECTIONS` it runs all six. `up` appends to `deploy.md`, so it needs `deploy` earlier in the same run. It refuses a run whose manifest lacks a `.cloud` block or whose `state` is not `ready` (a torn-down run keeps its manifest as `removed`), and one that does not answer.
+- [cloud-cluster/run.sh](cloud-cluster/run.sh): needs a paired run from `scripts/verify-cluster up --machines 1 --daemon checkout --cloud`, linked to `shop` and deployed as its header says; call it as `MANIFEST=…/cluster.json SECTIONS="deploy runtime domain env errors up" run.sh [PARENT]`. Without `MANIFEST` it takes the newest run, and without `SECTIONS` it runs all six. `up` appends to `deploy.md`, so it needs `deploy` earlier in the same run. It refuses a run whose manifest lacks a `.cloud` block or whose `state` is not `ready` (a torn-down run keeps its manifest as `removed`), and one that does not answer.
 
 - [record.py](record.py): runs one command in a PTY and writes an asciicast, a GIF (`agg`) and a last-frame PNG (`ffmpeg`), as in `record.py --gif out.gif --png out.png -- 'ployz deploy'`. It writes nothing unless the command exits with `--expect-exit` (default 0), and replaces each output through a temp file and a rename. [prototype-media/make.sh](prototype-media/make.sh) uses it to re-record the prototype GIFs.
 - [cap.sh](cap.sh): appends one command's capture to a `.md` and its terminal rendering to the matching `.ansi`. Every driver captures through it.
 - [capture-dir.sh](capture-dir.sh): creates a driver's fresh output directory under PARENT, so two drivers never share one, and refuses a PARENT inside a git checkout.
 - [publish.sh](publish.sh): copies a finished driver run over the tracked captures, as drawn above.
-- [scrub.sh](scrub.sh): the scrub `publish.sh` runs. Public IPv4 addresses become `203.0.113.10`, because Servers report the capturing host's public IP, and secrets (`ployz_` tokens, `pmet_` enrollment tokens, `ppair_` pairing secrets) keep their prefix and become `<prefix>_<redacted>`.
+- [scrub.sh](scrub.sh): the scrub `publish.sh` runs. Public IPv4 addresses become `203.0.113.10` and global IPv6 addresses `2001:db8::10`, because Servers report their public IP, and secrets (`ployz_` tokens, `pmet_` enrollment tokens, `ppair_` pairing secrets) keep their prefix and become `<prefix>_<redacted>`. `bash scrub.test.sh` checks it after a change.
 
 Each `.md` holds one block per command with its exit code, stdout and stderr. Each `.ansi` holds the same commands run under a terminal. Exit 124 means the capture's own timeout killed the command.
 
@@ -178,6 +178,7 @@ Raw upstream errors pass through:
 - `inspect Machine upgrade worker: No such file or directory (os error 2)` ([cluster/server.md](cluster/server.md))
 - `error: Ployz couldn't reach your Server's daemon.` with `cause: SSH connection to root@10.255.255.1 timed out after 3 seconds; …` ([cluster/server.md](cluster/server.md))
 - `error: Server box-node-09c8 isn't answering. Check that its Ployz daemon is running, then retry.` with the connection's `cause:`, when a connection Cloud handed over fails; by Machine ID when Cloud holds no name. No capture yet: pinned by `cli_shape::a_server_cloud_handed_a_connection_for_that_does_not_answer_is_named`
+- `Couldn't check ingress: Server 0123456789abcdef0123456789abcdef isn't answering (Connection refused (os error 111)).` on `deploy --plan`, and as the deploy's `! Couldn't check ingress: … Deploy again to retry.` warning, when the Server the check goes through doesn't answer. A connection that names no Server keeps the whole line. No capture yet: pinned by `config_cli::an_agent_adds_checks_and_removes_domains` and `ingress::tests::an_unchecked_ingress_names_the_server_and_why`
 
 ## 7. Follow-up hints
 
@@ -222,7 +223,7 @@ Captured with gamma stopped ([cluster/errors.md](cluster/errors.md)) unless note
 | logs, server logs | 0 | Nothing; gamma's lines are just missing |
 | server show gamma | 1 | `target Machine RPC timed out` |
 
-A failed Deployment also exits 3, with the result on stdout and nothing on stderr: `Deployment #1 of shop/production: failed` / `  No Server is enrolled in this Organization` ([store/errors.md](store/errors.md)).
+A failed Deployment exits 1, with its progress and the error on stderr: `Deploying #1 of shop/production`, a line per node such as `db: not started` and `Volume pgdata: not attempted`, then `error: No Server is enrolled in this Organization.` ([store/errors.md](store/errors.md)). A Deployment that applied but could not see every Server, or that a newer one superseded or someone cancelled, exits 3.
 
 ## 10. Human output that is really JSON
 

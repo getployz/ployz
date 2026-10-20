@@ -13,9 +13,12 @@ use super::{
     spec::{HealthcheckSpec, ResolvedServiceSpec},
 };
 use crate::{
-    ContainerAddress, ContainerId, DEPLOYMENT_ID_LABEL, DeploymentLogId, MachineId, Namespace,
-    QualifiedService, ServiceId, ServiceName,
+    ContainerAddress, ContainerId, DeploymentLogId, MachineId, Namespace, QualifiedService,
+    ServiceId, ServiceName,
 };
+
+/// Docker label carrying the deployment that created a Container.
+pub const DEPLOYMENT_ID_LABEL: &str = "ployz.deployment.id";
 
 /// Value that replaces each environment value in a redacted observation.
 pub const REDACTED_ENVIRONMENT_VALUE: &str = "<redacted>";
@@ -254,6 +257,11 @@ pub struct ContainerObservationParts {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional = nullable)]
     pub r#gen: Option<Gen>,
+    /// The owning Machine ended this exited run for a `Stopped` want, so its exit
+    /// code is no crash. Never set on a later run, nor by older daemons.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[ts(optional, as = "Option<bool>")]
+    pub stopped: bool,
 }
 
 /// A coherent observation of one managed Container, retaining its historical spec.
@@ -698,6 +706,36 @@ mod tests {
     }
 
     #[test]
+    fn the_stop_mark_is_on_the_wire_only_when_set_and_absent_reads_unstopped() {
+        let mut stopped = observation(ContainerKind::ServiceContainer);
+        stopped
+            .try_update(|parts| {
+                parts.runtime = ContainerRuntimeObservation::Exited { code: 1 };
+                parts.stopped = true;
+            })
+            .unwrap();
+        let wire = serde_json::to_value(&stopped).unwrap();
+        assert_eq!(
+            wire.get("runtime"),
+            Some(&json!({"state": "exited", "code": 1}))
+        );
+        assert_eq!(wire.get("stopped"), Some(&json!(true)));
+
+        let mut older = wire;
+        older.as_object_mut().unwrap().remove("stopped");
+        let decoded: ContainerObservation = serde_json::from_value(older).unwrap();
+        assert!(
+            !decoded.stopped,
+            "an older daemon's observation never says stopped"
+        );
+        assert_eq!(
+            serde_json::to_value(&decoded).unwrap().get("stopped"),
+            None,
+            "nor does an unstopped one"
+        );
+    }
+
+    #[test]
     fn mixed_observation_converts_to_exactly_one_role_proven_view() {
         let service = observation(ContainerKind::ServiceContainer);
         let hook = observation(ContainerKind::PreDeployHook);
@@ -1004,6 +1042,7 @@ mod tests {
             resolved_spec,
             address: None,
             labels: BTreeMap::new(),
+            stopped: false,
         })
         .unwrap()
     }

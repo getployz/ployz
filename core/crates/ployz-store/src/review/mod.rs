@@ -117,6 +117,7 @@ impl DiffView {
                 current.comparison = Some(ReviewComparisonRole::Saved);
             }
         }
+        by_name(&mut changes);
         changes
     }
 
@@ -157,8 +158,9 @@ pub struct NodeChange {
     pub comparison: Option<ReviewComparisonRole>,
     /// Its changed Settings, by `SERVICE.SETTING` path.
     pub settings: Vec<ServiceSettingChange>,
-    /// What the change does to Volume data: `deleted` for a deployed Volume it
-    /// removes, `kept` for a Service that stops mounting a Volume that stays.
+    /// What the change does to Volume data: `deleted` for a Volume it removes that is
+    /// deployed or mounted by a Deployment in flight, `kept` for a Service that stops
+    /// mounting a Volume that stays.
     pub data: Option<DataEffect>,
     /// For a Config changed in place, the deployed Services mounting it: they restart
     /// to take its new files.
@@ -219,8 +221,14 @@ pub(crate) fn review(tx: &mut dyn Tx, environment: &Environment) -> Result<Revie
     let saved = latest_saved(tx, id)?;
     let head = crate::deployment::head(tx, environment)?;
     let introductions = introductions(tx, environment)?;
-    let mut view = compare(environment, saved.as_ref(), &head, &introductions)?;
     let deployed = approval::deployed(&head);
+    let mut view = compare(
+        environment,
+        saved.as_ref(),
+        &head,
+        &deployed,
+        &introductions,
+    )?;
     let cluster_domains = if crate::domain::has_generated(&deployed) {
         crate::deployment::cluster_domains(tx, id, &head)?
     } else {
@@ -242,7 +250,28 @@ pub(crate) fn review(tx: &mut dyn Tx, environment: &Environment) -> Result<Revie
     let draft = saved_comparison(environment, &baseline)?;
     view.draft_changes = draft.changes;
     view.draft_count = draft.total_count;
+    by_name(&mut view.changes);
+    by_name(&mut view.draft_changes);
     Ok(Review { view, saved, head })
+}
+
+/// Services, then Volumes, then Configs, each by name. A node removed and one recreated
+/// under its name list removal first, then update, then create; the id only settles what
+/// nothing else tells apart.
+fn by_name(changes: &mut [NodeChange]) {
+    let step = |lifecycle: ReviewLifecycleKind| match lifecycle {
+        ReviewLifecycleKind::Delete => 0,
+        ReviewLifecycleKind::Update => 1,
+        ReviewLifecycleKind::Create => 2,
+    };
+    changes.sort_by(|a, b| {
+        (a.node.node_type, &a.name, step(a.lifecycle), &a.node.id).cmp(&(
+            b.node.node_type,
+            &b.name,
+            step(b.lifecycle),
+            &b.node.id,
+        ))
+    });
 }
 
 fn saved_comparison(
@@ -256,6 +285,7 @@ fn compare(
     environment: &Environment,
     saved: Option<&Saved>,
     head: &Head,
+    deployed: &SavedEnvironmentIntent,
     introductions: &SavedEnvironmentIntent,
 ) -> Result<DiffView, RpcError> {
     let id = &environment.summary.id;
@@ -399,13 +429,10 @@ fn compare(
                         row
                     })
                     .collect();
-                let data = data_effect(&group.node, group.lifecycle, &settings, &head.applied);
-                let restarts = restarts(
-                    &group.node,
-                    group.lifecycle,
-                    &environment.working,
-                    &head.applied,
-                )?;
+                let data =
+                    data_effect(&group.node, group.lifecycle, deployed, &environment.working);
+                let restarts =
+                    restarts(&group.node, group.lifecycle, &environment.working, deployed)?;
                 Ok(NodeChange {
                     node: group.node,
                     name,
@@ -503,8 +530,8 @@ pub(crate) fn consent(saved: Option<&Saved>) -> &[crate::VolumeLoss] {
 }
 
 /// Core compares a new Service with its introduction, which holds the source it was
-/// added with, so its create gets what it runs here, as `set` names it: `web.image`, or
-/// `web.repository` and `web.branch`. One changed since already has its row.
+/// added with, so its create gets [`introduced_source`]. One changed since already has
+/// its row.
 fn sources(view: &mut DiffView, working: &SavedEnvironmentIntent) {
     for change in &mut view.changes {
         if change.lifecycle != ReviewLifecycleKind::Create
@@ -519,53 +546,61 @@ fn sources(view: &mut DiffView, working: &SavedEnvironmentIntent) {
         else {
             continue;
         };
-        let parts = match &service.config.source {
-            ServiceSource::Image { image, .. } => {
-                vec![(ServiceSetting::Image, Setting::Source, json!(image))]
-            }
-            ServiceSource::Git {
-                repository, branch, ..
-            } => {
-                let mut parts = vec![(
-                    ServiceSetting::Git(GitSetting::Repository),
-                    Setting::Source,
-                    json!(repository),
-                )];
-                if let ServiceGitBranch::Connected { name } = branch {
-                    parts.push((
-                        ServiceSetting::Git(GitSetting::Branch),
-                        Setting::Branch,
-                        json!(name),
-                    ));
-                }
-                parts
-            }
-            ServiceSource::Empty { .. } => Vec::new(),
-        };
-        let rows: Vec<_> = parts
-            .into_iter()
-            .filter_map(|(setting, at, after)| {
-                let row = RowId::of(&service.lineage_id, At::Setting(at));
-                let changed = change
-                    .settings
-                    .iter()
-                    .any(|shown| shown.row == Some(row.clone()));
-                (!changed).then(|| ServiceSettingChange {
-                    path: format!("{}.{}", service.slug, setting.name()),
-                    kind: ChangeKind::Add,
-                    before: serde_json::Value::Null,
-                    after,
-                    // Discarding the Service takes it; alone it has nothing to go back to.
-                    can_restore: false,
-                    row: Some(row),
-                    config_name: None,
-                    hostnames: None,
-                })
-            })
-            .collect();
+        let rows: Vec<_> =
+            introduced_source(&service.slug, &service.lineage_id, &service.config.source)
+                .into_iter()
+                .filter(|row| !change.settings.iter().any(|shown| shown.row == row.row))
+                .collect();
         view.total_count += rows.len();
         change.settings.splice(0..0, rows);
     }
+}
+
+/// What a Service named `slug` shows of `source` as it is created: what it runs, as
+/// `set` names it: `web.image`, or `web.repository` and `web.branch`.
+#[must_use]
+pub fn introduced_source(
+    slug: &str,
+    lineage: &str,
+    source: &ServiceSource,
+) -> Vec<ServiceSettingChange> {
+    let parts = match source {
+        ServiceSource::Image { image, .. } => {
+            vec![(ServiceSetting::Image, Setting::Source, json!(image))]
+        }
+        ServiceSource::Git {
+            repository, branch, ..
+        } => {
+            let mut parts = vec![(
+                ServiceSetting::Git(GitSetting::Repository),
+                Setting::Source,
+                json!(repository),
+            )];
+            if let ServiceGitBranch::Connected { name } = branch {
+                parts.push((
+                    ServiceSetting::Git(GitSetting::Branch),
+                    Setting::Branch,
+                    json!(name),
+                ));
+            }
+            parts
+        }
+        ServiceSource::Empty { .. } => Vec::new(),
+    };
+    parts
+        .into_iter()
+        .map(|(setting, at, after)| ServiceSettingChange {
+            path: format!("{slug}.{}", setting.name()),
+            kind: ChangeKind::Add,
+            before: serde_json::Value::Null,
+            after,
+            // Discarding the Service takes it; alone it has nothing to go back to.
+            can_restore: false,
+            row: Some(RowId::of(lineage, At::Setting(at))),
+            config_name: None,
+            hostnames: None,
+        })
+        .collect()
 }
 
 /// Core compares Settings only, so a Service renamed since Head gets its name row
@@ -631,41 +666,35 @@ fn config_name(intents: &[&SavedEnvironmentIntent; 2], id: &str) -> Option<Strin
         .map(|config| config.name.to_string())
 }
 
-/// A deployed Volume removed deletes data; a Service removed, or one of its mounts
-/// dropped, keeps the Volume.
+/// A Volume `deployed` holds, removed, deletes data; a Service removed, or one of
+/// its mounts dropped, keeps a Volume `working` still holds.
 fn data_effect(
     node: &ReviewNodeIdentity,
     lifecycle: ReviewLifecycleKind,
-    settings: &[ServiceSettingChange],
-    applied: &SavedEnvironmentIntent,
+    deployed: &SavedEnvironmentIntent,
+    working: &SavedEnvironmentIntent,
 ) -> Option<DataEffect> {
     match node.node_type {
         EnvironmentNodeType::Volume => (lifecycle == ReviewLifecycleKind::Delete
-            && applied
+            && deployed
                 .volumes
                 .iter()
                 .any(|volume| volume.resource_id == node.id))
         .then_some(DataEffect::Deleted),
-        EnvironmentNodeType::Service => {
-            let detached = settings
-                .iter()
-                .any(|row| row.path.contains(".mounts.") && row.after.is_null());
-            let removed_with_mounts = lifecycle == ReviewLifecycleKind::Delete
-                && applied
-                    .services
-                    .iter()
-                    .any(|service| service.id == node.id && !service.volume_attachments.is_empty());
-            (detached || removed_with_mounts).then_some(DataEffect::Kept)
-        }
+        EnvironmentNodeType::Service => approval::detached(deployed, working, &node.id)
+            .next()
+            .map(|_| DataEffect::Kept),
         EnvironmentNodeType::Config => None,
     }
 }
 
+/// The Services of `working` that mount Config `node`, updated, and already run in
+/// `deployed`.
 fn restarts(
     node: &ReviewNodeIdentity,
     lifecycle: ReviewLifecycleKind,
     working: &SavedEnvironmentIntent,
-    applied: &SavedEnvironmentIntent,
+    deployed: &SavedEnvironmentIntent,
 ) -> Result<Vec<ployz_core::ServiceName>, RpcError> {
     if node.node_type != EnvironmentNodeType::Config || lifecycle != ReviewLifecycleKind::Update {
         return Ok(Vec::new());
@@ -678,7 +707,7 @@ fn restarts(
                 .config_attachments
                 .iter()
                 .any(|mount| mount.config_resource_id == node.id)
-                && applied.services.iter().any(|old| old.id == service.id)
+                && deployed.services.iter().any(|old| old.id == service.id)
         })
         .map(|service| {
             ployz_core::ServiceName::parse(service.slug.as_str())
@@ -720,7 +749,12 @@ pub(crate) fn publish(
     (message, accepted): (Option<&str>, &[crate::VolumeLoss]),
 ) -> Result<(Revision, bool), RpcError> {
     let intent = canonicalize_environment_intent(intent);
-    crate::volume::check_storage(tx, environment, &intent)?;
+    crate::volume::check_storage(
+        tx,
+        environment,
+        &intent.volumes,
+        crate::volume::StorageRule::Replay,
+    )?;
     if let Some(latest) = latest
         && latest.intent == intent
     {
@@ -979,7 +1013,10 @@ pub(crate) fn latest_saved(
     let Some(row) = rows.first() else {
         return Ok(None);
     };
-    let intent = row.intent(1, "Saved State")?;
+    let mut intent = canonicalize_environment_intent(row.intent(1, "Saved State")?);
+    // The revision keeps the size it asked for as history; read as the latest
+    // Saved State, it says the size the Servers hold, as Head does.
+    crate::volume::size::held(tx, environment, &mut intent.volumes)?;
     let accepted = match row.optional_text(2)? {
         Some(json) => {
             serde_json::from_str(json).map_err(|_| error::corrupt("accepted Volume losses"))?
@@ -988,7 +1025,7 @@ pub(crate) fn latest_saved(
     };
     Ok(Some(Saved {
         revision: Revision(row.number(0, "revision")?),
-        intent: canonicalize_environment_intent(intent),
+        intent,
         accepted,
     }))
 }

@@ -55,8 +55,10 @@ export type DeployLane =
 
 const CLOUD = (organizationId: string) => ({ userId: null, organizationId });
 
-// A sync may demote the writer with a cut, so it is not beside the writer.
-const BESIDE_WRITER: ReadonlySet<VolumeRunKind> = new Set<VolumeRunKind>(["mirror", "seed", "delete_mirror"]);
+// A sync may demote the writer with a cut, so it is not beside the writer. A resize only raises each copy's bound.
+const BESIDE_WRITER = {
+  mirror: true, seed: true, delete_mirror: true, resize: true, sync: false, move: false, release: false, restore: false, deploy: false,
+} as const satisfies Record<VolumeRunKind, boolean>;
 
 const FENCE_ROUNDS = 3;
 
@@ -91,7 +93,7 @@ export const placeDeployVolumes = Effect.fn("VolumeRun.placeDeploy")(function* (
     const beside: string[] = [];
     const placed: DeployLane[] = [];
     for (const lane of lanes) {
-      if (BESIDE_WRITER.has(lane.kind)) {
+      if (BESIDE_WRITER[lane.kind]) {
         if (targets.has(lane.volumeId)) beside.push(lane.id);
         continue;
       }
@@ -112,17 +114,17 @@ export const placeDeployVolumes = Effect.fn("VolumeRun.placeDeploy")(function* (
       const resume = input.kind === "move" ? input.args : (deploy?.resume ?? null);
       const { run } = yield* takeDeployLane(CLOUD(organizationId), {
         input: { volumeId: lane.volumeId, kind: "deploy", args: hold ? { deployment: deploymentId, resume: null, hold } : { deployment: deploymentId, resume } },
-        volume: { environmentId, volumeName: lane.volumeName, dockerVolume: lane.dockerVolume, refquotaBytes: lane.refquotaBytes },
+        volume: { environmentId, volumeName: lane.volumeName, dockerVolume: lane.dockerVolume, refquotaBytes: lane.refquotaBytes, recordedBytes: lane.recordedBytes },
         id: crypto.randomUUID(),
       }, inngestRunId);
       if (!hold) placed.push({ kind: "took", run, resume });
     }
     if (beside.length > 0) yield* drizzle.update(volumeRun).set({ heldBy: inngestRunId }).where(inArray(volumeRun.id, beside));
     const laned = new Set(lanes.map((lane) => lane.volumeId));
-    const hold = (volumeId: string, { volumeName, dockerVolume, refquotaBytes }: { volumeName: string; dockerVolume: string; refquotaBytes: number }) =>
+    const hold = (volumeId: string, { volumeName, dockerVolume, refquotaBytes, recordedBytes }: { volumeName: string; dockerVolume: string; refquotaBytes: number; recordedBytes: number }) =>
       holdDeployLane(CLOUD(organizationId), {
         input: { volumeId, kind: "deploy", args: { deployment: deploymentId, resume: null, hold: true } },
-        volume: { environmentId, volumeName, dockerVolume, refquotaBytes },
+        volume: { environmentId, volumeName, dockerVolume, refquotaBytes, recordedBytes },
         id: crypto.randomUUID(),
       }, inngestRunId);
     // Each hold locks its Volume's commitment until this transaction ends. No two Deploys hold the same Volumes at once
@@ -134,11 +136,12 @@ export const placeDeployVolumes = Effect.fn("VolumeRun.placeDeploy")(function* (
         volumeName: volume.name,
         dockerVolume: dockerVolumeName(deployment.namespace, volume.id),
         refquotaBytes: volume.storage.kind === "provisioned" ? volume.storage.maximumBytes : 0,
+        recordedBytes: volume.recorded_storage ?? 0,
       });
     }
     for (const row of yield* owedCommitments(organizationId, environmentId)) {
       // A hold, its own or one it took over, takes nothing, so the commitment still has no run.
-      if (lanes.some((lane) => lane.volumeId === row.volumeId && !BESIDE_WRITER.has(lane.kind) && !isHold(lane))) continue;
+      if (lanes.some((lane) => lane.volumeId === row.volumeId && !BESIDE_WRITER[lane.kind] && !isHold(lane))) continue;
       const to = yield* laneTarget(row);
       if (to === null) return yield* Effect.fail(new NonRetriableError(`${row.volumeName} is moving to a Server its run never named`));
       if (!laned.has(row.volumeId) && !targets.has(row.volumeId)) yield* hold(row.volumeId, row);
@@ -329,7 +332,7 @@ export const releaseFollowed = Effect.fn("VolumeRun.releaseFollowed")(function* 
       return yield* admitRun(
         CLOUD(run.organizationId),
         { volumeId: run.volumeId, kind: "release", args: { follows } },
-        { environmentId, volumeName: run.volumeName, dockerVolume: run.dockerVolume, refquotaBytes: run.refquotaBytes },
+        { environmentId, volumeName: run.volumeName, dockerVolume: run.dockerVolume, refquotaBytes: run.refquotaBytes, recordedBytes: run.recordedBytes },
         id,
       );
     }));

@@ -8,9 +8,9 @@ use ployz_core::metrics::{
     HostPoint, MarkerKind, MetricHistoryReply, MetricMarker, MetricPoints, ServicePoint,
 };
 use ployz_core::{
-    ConfiguredHealthcheck, ContainerId, ContainerKind, CopyRotation, DeploymentLogId,
-    HealthcheckCommand, HealthcheckSpec, MachineFailure, MachineSuccess, Namespace,
-    QualifiedService, RpcError, RpcErrorCode, ServiceId, ServiceName,
+    ConfiguredHealthcheck, ContainerId, ContainerKind, ContainerRuntimeObservation, CopyRotation,
+    DeploymentLogId, HealthcheckCommand, HealthcheckSpec, MachineFailure, MachineSuccess,
+    Namespace, QualifiedService, RpcError, RpcErrorCode, ServiceId, ServiceName,
 };
 use ployz_store::DeploymentId;
 use ployz_store::tools::cloud::{ContainerState, LogsAnswer, MetricRow};
@@ -20,8 +20,8 @@ use ployz_store::tools::{
 use tokio::time::Instant;
 
 use super::{
-    NANOS_PER_SECOND, Readable, ServiceCopy, Started, copies_of, logs, remove_one, start_one,
-    stop_one, summarize,
+    NANOS_PER_SECOND, Readable, ServiceCopy, Started, copies_of, logs, remove_one, report,
+    start_one, stop_one, summarize,
 };
 use crate::global_fixtures::{container_id, machine, running_on};
 use crate::sdk::test_support as support;
@@ -50,6 +50,73 @@ fn a_services_copies_include_its_hook_containers_marked_as_hooks() {
         hook,
     };
     assert_eq!(copies, [copy('1', false), copy('2', true)]);
+}
+
+#[test]
+fn a_copy_its_server_stopped_reads_stopped_and_one_that_exited_alone_reads_exited() {
+    let server = machine('a', "alpha");
+    let exited = |hex| {
+        let mut copy = running_on(&server, hex);
+        copy.try_update(|parts| parts.runtime = ContainerRuntimeObservation::Exited { code: 1 })
+            .unwrap();
+        copy
+    };
+    let crashed = report(&exited('1'), &server.name);
+    let mut stopped = exited('2');
+    stopped.try_update(|parts| parts.stopped = true).unwrap();
+    let stopped = report(&stopped, &server.name);
+
+    for report in [&crashed, &stopped] {
+        assert_eq!(
+            (report.state, report.exit_code),
+            (ContainerState::Exited, Some(1))
+        );
+    }
+    assert!(!crashed.stopped);
+    assert!(stopped.stopped);
+}
+
+/// A containers answer as a reader from before the stop mark decodes it: the
+/// states `ployz mcp` knew then, and no `stopped`.
+#[derive(Debug, PartialEq, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum OldContainerState {
+    Created,
+    Running,
+    Restarting,
+    Paused,
+    Exited,
+    Dead,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct OldContainerReport {
+    state: OldContainerState,
+    exit_code: Option<i64>,
+}
+
+#[test]
+fn a_reader_older_than_the_stop_mark_reads_a_stopped_copy_as_exited_with_its_code() {
+    let server = machine('a', "alpha");
+    let mut stopped = running_on(&server, '2');
+    stopped
+        .try_update(|parts| {
+            parts.runtime = ContainerRuntimeObservation::Exited { code: 1 };
+            parts.stopped = true;
+        })
+        .unwrap();
+
+    let wire = serde_json::to_value(report(&stopped, &server.name)).unwrap();
+    assert_eq!(
+        wire.get("stopped"),
+        Some(&serde_json::json!(true)),
+        "a newer reader sees the stop"
+    );
+    let old: OldContainerReport =
+        serde_json::from_value(wire).expect("an older ployz mcp decodes a newer Cloud's answer");
+
+    assert_eq!(old.state, OldContainerState::Exited);
+    assert_eq!(old.exit_code, Some(1));
 }
 
 const SECOND: i64 = NANOS_PER_SECOND;

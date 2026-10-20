@@ -1,7 +1,9 @@
 === diff (staged changes) :: $ ployz diff
 db (create)
+  db.image: null → "postgres:16"
   db.mounts.pgdata: null → "/var/lib/postgresql/data"
 web (create)
+  web.image: null → "nginx:1.27"
   web.healthcheck: null → {"path":"/healthz","timeoutSeconds":300}
   web.env.A: null → "1"
   web.env.API_KEY: null → {"secret":true}
@@ -19,19 +21,27 @@ next: ployz deploy --project shop
     {
       "comparison": "introduction",
       "data": null,
-      "id": "430251f2-8125-4a07-a6ae-dc9cd76832ff",
+      "id": "baf8048c-0015-4ba8-a02e-0704e56d032b",
       "lifecycle": "create",
       "name": "db",
       "restarts": [],
-      "row": "430251f2-8125-4a07-a6ae-dc9cd76832ff:node",
+      "row": "baf8048c-0015-4ba8-a02e-0704e56d032b:node",
       "settings": [
+        {
+          "after": "postgres:16",
+          "before": null,
+          "canRestore": false,
+          "kind": "add",
+          "path": "db.image",
+          "row": "baf8048c-0015-4ba8-a02e-0704e56d032b:source"
+        },
         {
           "after": "/var/lib/postgresql/data",
           "before": null,
           "canRestore": true,
           "kind": "add",
           "path": "db.mounts.pgdata",
-          "row": "430251f2-8125-4a07-a6ae-dc9cd76832ff:mounts.9c3a6adf-5556-4c17-b492-caaf199a34b2"
+          "row": "baf8048c-0015-4ba8-a02e-0704e56d032b:mounts.e7a31905-500e-4093-a38a-169c7d748e62"
         }
       ],
       "type": "service"
@@ -39,12 +49,20 @@ next: ployz deploy --project shop
     {
       "comparison": "introduction",
       "data": null,
-      "id": "7265b113-b85e-4796-98d6-ad9e94589c70",
+      "id": "4cfd51bd-fe4d-4e26-b844-e677f062cfba",
       "lifecycle": "create",
       "name": "web",
       "restarts": [],
-      "row": "7265b113-b85e-4796-98d6-ad9e94589c70:node",
+      "row": "4cfd51bd-fe4d-4e26-b844-e677f062cfba:node",
       "settings": [
+        {
+          "after": "nginx:1.27",
+          "before": null,
+          "canRestore": false,
+          "kind": "add",
+          "path": "web.image",
+          "row": "4cfd51bd-fe4d-4e26-b844-e677f062cfba:source"
+        },
         {
           "after": {
             "path": "/healthz",
@@ -54,7 +72,7 @@ next: ployz deploy --project shop
           "canRestore": true,
           "kind": "update",
           "path": "web.healthcheck",
-          "row": "7265b113-b85e-4796-98d6-ad9e94589c70:healthcheck"
+          "row": "4cfd51bd-fe4d-4e26-b844-e677f062cfba:healthcheck"
         },
         {
           "after": "1",
@@ -62,7 +80,7 @@ next: ployz deploy --project shop
           "canRestore": true,
           "kind": "add",
           "path": "web.env.A",
-          "row": "7265b113-b85e-4796-98d6-ad9e94589c70:variables.A"
+          "row": "4cfd51bd-fe4d-4e26-b844-e677f062cfba:variables.A"
         },
         {
           "after": {
@@ -72,7 +90,7 @@ next: ployz deploy --project shop
           "canRestore": true,
           "kind": "add",
           "path": "web.env.API_KEY",
-          "row": "7265b113-b85e-4796-98d6-ad9e94589c70:variables.API_KEY"
+          "row": "4cfd51bd-fe4d-4e26-b844-e677f062cfba:variables.API_KEY"
         },
         {
           "after": {
@@ -82,7 +100,7 @@ next: ployz deploy --project shop
           "canRestore": true,
           "kind": "add",
           "path": "web.env.API_KEY2",
-          "row": "7265b113-b85e-4796-98d6-ad9e94589c70:variables.API_KEY2"
+          "row": "4cfd51bd-fe4d-4e26-b844-e677f062cfba:variables.API_KEY2"
         },
         {
           "after": "two",
@@ -90,7 +108,7 @@ next: ployz deploy --project shop
           "canRestore": true,
           "kind": "add",
           "path": "web.env.B",
-          "row": "7265b113-b85e-4796-98d6-ad9e94589c70:variables.B"
+          "row": "4cfd51bd-fe4d-4e26-b844-e677f062cfba:variables.B"
         },
         {
           "after": "postgres://${{ db.PLOYZ_PRIVATE_DOMAIN }}/app",
@@ -98,7 +116,7 @@ next: ployz deploy --project shop
           "canRestore": true,
           "kind": "add",
           "path": "web.env.DB_URL",
-          "row": "7265b113-b85e-4796-98d6-ad9e94589c70:variables.DB_URL"
+          "row": "4cfd51bd-fe4d-4e26-b844-e677f062cfba:variables.DB_URL"
         },
         {
           "after": "info",
@@ -106,7 +124,7 @@ next: ployz deploy --project shop
           "canRestore": true,
           "kind": "add",
           "path": "web.env.LOG_LEVEL",
-          "row": "7265b113-b85e-4796-98d6-ad9e94589c70:variables.LOG_LEVEL"
+          "row": "4cfd51bd-fe4d-4e26-b844-e677f062cfba:variables.LOG_LEVEL"
         }
       ],
       "type": "service"
@@ -114,11 +132,11 @@ next: ployz deploy --project shop
     {
       "comparison": "introduction",
       "data": null,
-      "id": "9c3a6adf-5556-4c17-b492-caaf199a34b2",
+      "id": "e7a31905-500e-4093-a38a-169c7d748e62",
       "lifecycle": "create",
       "name": "pgdata",
       "restarts": [],
-      "row": "9c3a6adf-5556-4c17-b492-caaf199a34b2:node",
+      "row": "e7a31905-500e-4093-a38a-169c7d748e62:node",
       "settings": [],
       "type": "volume"
     }
@@ -127,11 +145,11 @@ next: ployz deploy --project shop
     {
       "comparison": "saved",
       "data": null,
-      "id": "430251f2-8125-4a07-a6ae-dc9cd76832ff",
+      "id": "baf8048c-0015-4ba8-a02e-0704e56d032b",
       "lifecycle": "create",
       "name": "db",
       "restarts": [],
-      "row": "430251f2-8125-4a07-a6ae-dc9cd76832ff:node",
+      "row": "baf8048c-0015-4ba8-a02e-0704e56d032b:node",
       "settings": [
         {
           "after": {
@@ -143,7 +161,7 @@ next: ployz deploy --project shop
           "canRestore": false,
           "kind": "add",
           "path": "db.source",
-          "row": "430251f2-8125-4a07-a6ae-dc9cd76832ff:source"
+          "row": "baf8048c-0015-4ba8-a02e-0704e56d032b:source"
         },
         {
           "after": "db",
@@ -151,7 +169,7 @@ next: ployz deploy --project shop
           "canRestore": false,
           "kind": "add",
           "path": "db.privateDns",
-          "row": "430251f2-8125-4a07-a6ae-dc9cd76832ff:privateDns"
+          "row": "baf8048c-0015-4ba8-a02e-0704e56d032b:privateDns"
         },
         {
           "after": [],
@@ -159,7 +177,7 @@ next: ployz deploy --project shop
           "canRestore": false,
           "kind": "add",
           "path": "db.managedHostnames",
-          "row": "430251f2-8125-4a07-a6ae-dc9cd76832ff:managedHostnames"
+          "row": "baf8048c-0015-4ba8-a02e-0704e56d032b:managedHostnames"
         },
         {
           "after": "/var/lib/postgresql/data",
@@ -167,7 +185,7 @@ next: ployz deploy --project shop
           "canRestore": false,
           "kind": "add",
           "path": "db.mounts.pgdata",
-          "row": "430251f2-8125-4a07-a6ae-dc9cd76832ff:mounts.9c3a6adf-5556-4c17-b492-caaf199a34b2"
+          "row": "baf8048c-0015-4ba8-a02e-0704e56d032b:mounts.e7a31905-500e-4093-a38a-169c7d748e62"
         }
       ],
       "type": "service"
@@ -175,11 +193,11 @@ next: ployz deploy --project shop
     {
       "comparison": "saved",
       "data": null,
-      "id": "7265b113-b85e-4796-98d6-ad9e94589c70",
+      "id": "4cfd51bd-fe4d-4e26-b844-e677f062cfba",
       "lifecycle": "create",
       "name": "web",
       "restarts": [],
-      "row": "7265b113-b85e-4796-98d6-ad9e94589c70:node",
+      "row": "4cfd51bd-fe4d-4e26-b844-e677f062cfba:node",
       "settings": [
         {
           "after": {
@@ -191,7 +209,7 @@ next: ployz deploy --project shop
           "canRestore": false,
           "kind": "add",
           "path": "web.source",
-          "row": "7265b113-b85e-4796-98d6-ad9e94589c70:source"
+          "row": "4cfd51bd-fe4d-4e26-b844-e677f062cfba:source"
         },
         {
           "after": {
@@ -202,7 +220,7 @@ next: ployz deploy --project shop
           "canRestore": false,
           "kind": "add",
           "path": "web.healthcheck",
-          "row": "7265b113-b85e-4796-98d6-ad9e94589c70:healthcheck"
+          "row": "4cfd51bd-fe4d-4e26-b844-e677f062cfba:healthcheck"
         },
         {
           "after": "web",
@@ -210,7 +228,7 @@ next: ployz deploy --project shop
           "canRestore": false,
           "kind": "add",
           "path": "web.privateDns",
-          "row": "7265b113-b85e-4796-98d6-ad9e94589c70:privateDns"
+          "row": "4cfd51bd-fe4d-4e26-b844-e677f062cfba:privateDns"
         },
         {
           "after": [],
@@ -218,7 +236,7 @@ next: ployz deploy --project shop
           "canRestore": false,
           "kind": "add",
           "path": "web.managedHostnames",
-          "row": "7265b113-b85e-4796-98d6-ad9e94589c70:managedHostnames"
+          "row": "4cfd51bd-fe4d-4e26-b844-e677f062cfba:managedHostnames"
         },
         {
           "after": "1",
@@ -226,7 +244,7 @@ next: ployz deploy --project shop
           "canRestore": false,
           "kind": "add",
           "path": "web.env.A",
-          "row": "7265b113-b85e-4796-98d6-ad9e94589c70:variables.A"
+          "row": "4cfd51bd-fe4d-4e26-b844-e677f062cfba:variables.A"
         },
         {
           "after": {
@@ -236,7 +254,7 @@ next: ployz deploy --project shop
           "canRestore": false,
           "kind": "add",
           "path": "web.env.API_KEY",
-          "row": "7265b113-b85e-4796-98d6-ad9e94589c70:variables.API_KEY"
+          "row": "4cfd51bd-fe4d-4e26-b844-e677f062cfba:variables.API_KEY"
         },
         {
           "after": {
@@ -246,7 +264,7 @@ next: ployz deploy --project shop
           "canRestore": false,
           "kind": "add",
           "path": "web.env.API_KEY2",
-          "row": "7265b113-b85e-4796-98d6-ad9e94589c70:variables.API_KEY2"
+          "row": "4cfd51bd-fe4d-4e26-b844-e677f062cfba:variables.API_KEY2"
         },
         {
           "after": "two",
@@ -254,7 +272,7 @@ next: ployz deploy --project shop
           "canRestore": false,
           "kind": "add",
           "path": "web.env.B",
-          "row": "7265b113-b85e-4796-98d6-ad9e94589c70:variables.B"
+          "row": "4cfd51bd-fe4d-4e26-b844-e677f062cfba:variables.B"
         },
         {
           "after": "postgres://${{ db.PLOYZ_PRIVATE_DOMAIN }}/app",
@@ -262,7 +280,7 @@ next: ployz deploy --project shop
           "canRestore": false,
           "kind": "add",
           "path": "web.env.DB_URL",
-          "row": "7265b113-b85e-4796-98d6-ad9e94589c70:variables.DB_URL"
+          "row": "4cfd51bd-fe4d-4e26-b844-e677f062cfba:variables.DB_URL"
         },
         {
           "after": "info",
@@ -270,7 +288,7 @@ next: ployz deploy --project shop
           "canRestore": false,
           "kind": "add",
           "path": "web.env.LOG_LEVEL",
-          "row": "7265b113-b85e-4796-98d6-ad9e94589c70:variables.LOG_LEVEL"
+          "row": "4cfd51bd-fe4d-4e26-b844-e677f062cfba:variables.LOG_LEVEL"
         }
       ],
       "type": "service"
@@ -278,11 +296,11 @@ next: ployz deploy --project shop
     {
       "comparison": "saved",
       "data": null,
-      "id": "9c3a6adf-5556-4c17-b492-caaf199a34b2",
+      "id": "e7a31905-500e-4093-a38a-169c7d748e62",
       "lifecycle": "create",
       "name": "pgdata",
       "restarts": [],
-      "row": "9c3a6adf-5556-4c17-b492-caaf199a34b2:node",
+      "row": "e7a31905-500e-4093-a38a-169c7d748e62:node",
       "settings": [
         {
           "after": {
@@ -293,7 +311,7 @@ next: ployz deploy --project shop
           "canRestore": false,
           "kind": "add",
           "path": "volumes.pgdata.storage",
-          "row": "9c3a6adf-5556-4c17-b492-caaf199a34b2:storage"
+          "row": "e7a31905-500e-4093-a38a-169c7d748e62:storage"
         }
       ],
       "type": "volume"
@@ -302,7 +320,7 @@ next: ployz deploy --project shop
   "draft_count": 3,
   "effects": [],
   "environment": {
-    "id": "21abbb55-7ab1-4483-9b82-2ce3f1d1cbfa",
+    "id": "c1677827-c00b-4f99-8cc6-78e133cfa766",
     "name": "production",
     "project": "shop",
     "revision": 21
@@ -314,14 +332,16 @@ next: ployz deploy --project shop
   "next": "ployz deploy --project shop",
   "saved": null,
   "setup": [],
-  "total_count": 11,
+  "total_count": 13,
   "version": "21:0:0.0"
 }
 
 === diff (after save, not deployed) :: $ ployz diff
 db (create)
+  db.image: null → "postgres:16"
   db.mounts.pgdata: null → "/var/lib/postgresql/data"
 web (create)
+  web.image: null → "nginx:1.27"
   web.env.A: null → "1"
   web.env.API_KEY: null → {"secret":true}
   web.env.API_KEY2: null → {"secret":true}
@@ -342,7 +362,7 @@ No staged changes in empty/production.
   "draft_count": 0,
   "effects": [],
   "environment": {
-    "id": "c8a635dd-2847-46e3-946d-e7976d8b3de6",
+    "id": "036163b3-4f8b-4b1a-b12a-efd282c3c8f4",
     "name": "production",
     "project": "empty",
     "revision": 1
@@ -362,7 +382,6 @@ db (delete)
   db.image: "postgres:16" → null
   db.privateDns: "db" → null
   db.mounts.pgdata: "/var/lib/postgresql/data" → null
-  a detached Volume keeps its data
 web (delete)
   web.image: "nginx:1.27" → null
   web.replicas: 4 → null
@@ -378,13 +397,14 @@ pgdata (delete)
 next: ployz deploy --skip-deploy --project shop
 
 === diff in the Parent after a Sync :: $ ployz diff
+db (create)
+  db.image: null → "postgres:16"
+  db.mounts.pgdata: null → "/var/lib/postgresql/data"
 web (create)
   web.image: "nginx:1.27" → "nginx:1.28"
   web.env.DB_URL: null → "postgres://${{ db.PLOYZ_PRIVATE_DOMAIN }}/app"
   web.env.DEBUG: null → "1"
   web.env.NEW: null → "1"
-db (create)
-  db.mounts.pgdata: null → "/var/lib/postgresql/data"
 pgdata (create)
 next: ployz deploy --project shop
 
@@ -395,11 +415,39 @@ next: ployz deploy --project shop
     {
       "comparison": "introduction",
       "data": null,
-      "id": "70e1e3d2-e0ac-4856-a13c-9994cf812d17",
+      "id": "48a89ae4-88fd-43f5-a79a-8eaae504e790",
+      "lifecycle": "create",
+      "name": "db",
+      "restarts": [],
+      "row": "48a89ae4-88fd-43f5-a79a-8eaae504e790:node",
+      "settings": [
+        {
+          "after": "postgres:16",
+          "before": null,
+          "canRestore": false,
+          "kind": "add",
+          "path": "db.image",
+          "row": "48a89ae4-88fd-43f5-a79a-8eaae504e790:source"
+        },
+        {
+          "after": "/var/lib/postgresql/data",
+          "before": null,
+          "canRestore": true,
+          "kind": "add",
+          "path": "db.mounts.pgdata",
+          "row": "48a89ae4-88fd-43f5-a79a-8eaae504e790:mounts.70539159-9a97-4512-8be7-134245653d96"
+        }
+      ],
+      "type": "service"
+    },
+    {
+      "comparison": "introduction",
+      "data": null,
+      "id": "ab3ffa36-063c-441c-ae8e-6bb29e05b23c",
       "lifecycle": "create",
       "name": "web",
       "restarts": [],
-      "row": "70e1e3d2-e0ac-4856-a13c-9994cf812d17:node",
+      "row": "ab3ffa36-063c-441c-ae8e-6bb29e05b23c:node",
       "settings": [
         {
           "after": {
@@ -415,7 +463,7 @@ next: ployz deploy --project shop
           "canRestore": true,
           "kind": "update",
           "path": "web.source",
-          "row": "70e1e3d2-e0ac-4856-a13c-9994cf812d17:source"
+          "row": "ab3ffa36-063c-441c-ae8e-6bb29e05b23c:source"
         },
         {
           "after": "postgres://${{ db.PLOYZ_PRIVATE_DOMAIN }}/app",
@@ -423,7 +471,7 @@ next: ployz deploy --project shop
           "canRestore": true,
           "kind": "add",
           "path": "web.env.DB_URL",
-          "row": "70e1e3d2-e0ac-4856-a13c-9994cf812d17:variables.DB_URL"
+          "row": "ab3ffa36-063c-441c-ae8e-6bb29e05b23c:variables.DB_URL"
         },
         {
           "after": "1",
@@ -431,7 +479,7 @@ next: ployz deploy --project shop
           "canRestore": true,
           "kind": "add",
           "path": "web.env.DEBUG",
-          "row": "70e1e3d2-e0ac-4856-a13c-9994cf812d17:variables.DEBUG"
+          "row": "ab3ffa36-063c-441c-ae8e-6bb29e05b23c:variables.DEBUG"
         },
         {
           "after": "1",
@@ -439,7 +487,7 @@ next: ployz deploy --project shop
           "canRestore": true,
           "kind": "add",
           "path": "web.env.NEW",
-          "row": "70e1e3d2-e0ac-4856-a13c-9994cf812d17:variables.NEW"
+          "row": "ab3ffa36-063c-441c-ae8e-6bb29e05b23c:variables.NEW"
         }
       ],
       "type": "service"
@@ -447,31 +495,11 @@ next: ployz deploy --project shop
     {
       "comparison": "introduction",
       "data": null,
-      "id": "91eb1be9-f932-4960-bd04-3cc3892ab37a",
-      "lifecycle": "create",
-      "name": "db",
-      "restarts": [],
-      "row": "91eb1be9-f932-4960-bd04-3cc3892ab37a:node",
-      "settings": [
-        {
-          "after": "/var/lib/postgresql/data",
-          "before": null,
-          "canRestore": true,
-          "kind": "add",
-          "path": "db.mounts.pgdata",
-          "row": "91eb1be9-f932-4960-bd04-3cc3892ab37a:mounts.5ece3534-fed3-4955-8f42-588e3f174b84"
-        }
-      ],
-      "type": "service"
-    },
-    {
-      "comparison": "introduction",
-      "data": null,
-      "id": "5ece3534-fed3-4955-8f42-588e3f174b84",
+      "id": "70539159-9a97-4512-8be7-134245653d96",
       "lifecycle": "create",
       "name": "pgdata",
       "restarts": [],
-      "row": "5ece3534-fed3-4955-8f42-588e3f174b84:node",
+      "row": "70539159-9a97-4512-8be7-134245653d96:node",
       "settings": [],
       "type": "volume"
     }
@@ -480,11 +508,11 @@ next: ployz deploy --project shop
     {
       "comparison": "saved",
       "data": null,
-      "id": "70e1e3d2-e0ac-4856-a13c-9994cf812d17",
+      "id": "ab3ffa36-063c-441c-ae8e-6bb29e05b23c",
       "lifecycle": "update",
       "name": "web",
       "restarts": [],
-      "row": "70e1e3d2-e0ac-4856-a13c-9994cf812d17:node",
+      "row": "ab3ffa36-063c-441c-ae8e-6bb29e05b23c:node",
       "settings": [
         {
           "after": {
@@ -504,7 +532,7 @@ next: ployz deploy --project shop
           "canRestore": true,
           "kind": "update",
           "path": "web.source",
-          "row": "70e1e3d2-e0ac-4856-a13c-9994cf812d17:source"
+          "row": "ab3ffa36-063c-441c-ae8e-6bb29e05b23c:source"
         },
         {
           "after": "1",
@@ -512,7 +540,7 @@ next: ployz deploy --project shop
           "canRestore": true,
           "kind": "add",
           "path": "web.env.DEBUG",
-          "row": "70e1e3d2-e0ac-4856-a13c-9994cf812d17:variables.DEBUG"
+          "row": "ab3ffa36-063c-441c-ae8e-6bb29e05b23c:variables.DEBUG"
         },
         {
           "after": "1",
@@ -520,7 +548,7 @@ next: ployz deploy --project shop
           "canRestore": true,
           "kind": "add",
           "path": "web.env.NEW",
-          "row": "70e1e3d2-e0ac-4856-a13c-9994cf812d17:variables.NEW"
+          "row": "ab3ffa36-063c-441c-ae8e-6bb29e05b23c:variables.NEW"
         }
       ],
       "type": "service"
@@ -529,7 +557,7 @@ next: ployz deploy --project shop
   "draft_count": 3,
   "effects": [],
   "environment": {
-    "id": "21abbb55-7ab1-4483-9b82-2ce3f1d1cbfa",
+    "id": "c1677827-c00b-4f99-8cc6-78e133cfa766",
     "name": "production",
     "project": "shop",
     "revision": 33
@@ -540,22 +568,22 @@ next: ployz deploy --project shop
     {
       "changes": 3,
       "newer": false,
-      "proposal": "4c53c893-aeef-4e49-99ad-4a9e11351f63",
+      "proposal": "4b348b9c-8845-4eba-bebb-2f9308891168",
       "revision": 3,
       "source": {
-        "id": "642e0a02-21d7-4651-960a-c52da7fb9db7",
+        "id": "ca09f2f0-2b3e-4a30-8bc7-7e879e167de2",
         "kind": "environment",
         "live": true,
         "name": "fix-web"
       },
-      "sync": "10c7920a-7cfe-42bb-bac1-7dba04f20ae7"
+      "sync": "98571073-7c7d-4264-ad5a-514a93734a3f"
     }
   ],
   "incoming": [],
   "next": "ployz deploy --project shop",
   "saved": 3,
   "setup": [],
-  "total_count": 8,
+  "total_count": 9,
   "version": "33:3:0.0"
 }
 

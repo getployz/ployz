@@ -23,8 +23,8 @@ use ployz_core::{
     MembershipObservation, NAMESPACE_LABEL, ObservedDataLoss, OpaquePayload, PROTOCOL_MAJOR,
     QualifiedService, RUNTIME_WATCH_MESSAGE_SIZE_LIMIT, Registered, RoutesRead, RpcError,
     RpcErrorCode, RpcRequestBody, RpcResponse, RuntimeWatchFrame, RuntimeWatchRequest,
-    ServingPointer, ServingPointerPublication, VolumeInventory, VolumeObservationFailure,
-    VolumeRemoved, WireGuardPublicKey, encode_runtime_watch_frame, op,
+    VolumeInventory, VolumeObservationFailure, VolumeRemoved, WireGuardPublicKey,
+    encode_runtime_watch_frame, op,
 };
 use ployz_testkit::fake_machine::{Fake, FakeMachine, FakeStream};
 use serde_json::Value;
@@ -192,8 +192,6 @@ pub(super) struct DiscoveryService {
     pub(super) reset_warning: Arc<Mutex<Option<String>>>,
     pub(super) reset_machines: Arc<Mutex<Vec<MachineId>>>,
     pub(super) removed_machines: Arc<Mutex<Vec<MachineId>>>,
-    /// Serving Pointers published so far; every Machine acks a pointer as soon as it lands.
-    pointers: Arc<Mutex<BTreeMap<QualifiedService, ServingPointer>>>,
     /// Copies a want touched, with their rotation; removed copies leave. A listed
     /// Container no want touched keeps the rotation it was listed with.
     copies: Arc<Mutex<BTreeMap<ContainerId, ployz_core::ContainerObservation>>>,
@@ -226,6 +224,22 @@ pub(super) struct DiscoveryService {
     pub(super) update_refusal: Option<RpcError>,
     /// SelectEndpoint is unimplemented, as on a daemon older than it.
     pub(super) select_unimplemented: bool,
+    /// How SetVolumeCopy fails on these targets; every other target leaves it unimplemented.
+    pub(super) set_volume_copy_failures: BTreeMap<MachineId, SwitchFailure>,
+}
+
+#[derive(Clone)]
+pub(super) enum SwitchFailure {
+    /// The target refuses with this status itself.
+    Refused(Status),
+    /// The entry's router heard nothing back from the target.
+    Unanswered,
+    /// The entry's router could not dial the target, so the target never got the call.
+    Undialed,
+    /// No reply ever comes, so the caller's own deadline ends the call.
+    Hangs,
+    /// The target takes the request, signals it, and never replies.
+    Taken(Arc<tokio::sync::Notify>),
 }
 
 impl DiscoveryService {
@@ -274,7 +288,6 @@ impl DiscoveryService {
             reset_warning: Arc::new(Mutex::new(None)),
             reset_machines: Arc::new(Mutex::new(Vec::new())),
             removed_machines: Arc::new(Mutex::new(Vec::new())),
-            pointers: Arc::new(Mutex::new(BTreeMap::new())),
             copies: Arc::default(),
             served: Arc::default(),
             management_clients: Arc::default(),
@@ -293,6 +306,7 @@ impl DiscoveryService {
             update_unavailable: false,
             update_refusal: None,
             select_unimplemented: false,
+            set_volume_copy_failures: BTreeMap::new(),
         }
     }
 
@@ -1304,60 +1318,18 @@ impl FakeMachine for DiscoveryService {
         ))
     }
 
-    async fn publish_serving_pointer(
-        &self,
-        request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        let RpcRequestBody::PublishServingPointer(publish) =
-            request.into_inner().decode_request().unwrap().body
-        else {
-            panic!("expected pointer publication");
-        };
-        let mut pointers = self.pointers.lock().unwrap();
-        let current = pointers.get(&publish.service).cloned();
-        let publication = if current == publish.read {
-            pointers.insert(publish.service, publish.pointer);
-            ServingPointerPublication::Published
-        } else {
-            ServingPointerPublication::Superseded { current }
-        };
-        Ok(Response::new(
-            RpcResponse::from(publication).encode().unwrap(),
-        ))
-    }
     async fn read_routes(
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         let RpcRequestBody::ReadRoutes(read) = request.into_inner().decode_request().unwrap().body
         else {
-            panic!("expected pointer read");
+            panic!("expected a routes read");
         };
-        if read.routes_only {
-            return Ok(Response::new(
-                RpcResponse::from(self.routes(&read.service))
-                    .encode()
-                    .unwrap(),
-            ));
-        }
-        let pointer = self.pointers.lock().unwrap().get(&read.service).cloned();
-        let acks = pointer
-            .iter()
-            .flat_map(|pointer| {
-                self.machines
-                    .iter()
-                    .map(move |observed| (observed.machine.id, pointer.deploy.clone()))
-            })
-            .collect();
         Ok(Response::new(
-            RpcResponse::from(RoutesRead {
-                all_routed: pointer.is_some(),
-                pointer,
-                acks,
-                ..RoutesRead::default()
-            })
-            .encode()
-            .unwrap(),
+            RpcResponse::from(self.routes(&read.service))
+                .encode()
+                .unwrap(),
         ))
     }
     async fn pull_image(
@@ -1460,6 +1432,31 @@ impl FakeMachine for DiscoveryService {
                 .encode()
                 .unwrap(),
         ))
+    }
+
+    async fn set_volume_copy(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        let machine_id =
+            MachineId::parse(request.metadata().get("machine").unwrap().to_str().unwrap()).unwrap();
+        match self.set_volume_copy_failures.get(&machine_id) {
+            Some(SwitchFailure::Refused(status)) => Err(status.clone()),
+            Some(SwitchFailure::Unanswered) => Err(ployz_core::rpc::target_unanswered_status(
+                &std::io::Error::new(std::io::ErrorKind::ConnectionReset, "connection reset"),
+            )),
+            Some(SwitchFailure::Undialed) => Err(ployz_core::rpc::target_unreached_status(
+                &std::io::Error::new(std::io::ErrorKind::ConnectionRefused, "tcp connect error"),
+            )),
+            Some(SwitchFailure::Hangs) => std::future::pending().await,
+            Some(SwitchFailure::Taken(taken)) => {
+                taken.notify_one();
+                std::future::pending().await
+            }
+            None => Err(Status::unimplemented(
+                "SetVolumeCopy is not used by this fixture",
+            )),
+        }
     }
 
     async fn leave(
@@ -1579,6 +1576,7 @@ fn created_container(
         resolved_spec,
         address: None,
         labels: BTreeMap::new(),
+        stopped: false,
     })
     .unwrap()
 }
@@ -1591,6 +1589,7 @@ pub(super) fn empty_storage() -> ployz_core::StorageCapacity {
             host_available_bytes: 90 * ployz_core::STORAGE_GIB,
         },
         unmanaged_used_bytes: 0,
+        slot_bound_bytes: 0,
         volumes: BTreeMap::new(),
         copies: BTreeMap::new(),
     }

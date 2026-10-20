@@ -528,7 +528,8 @@ pub(in crate::deploy) async fn relocate<C: MachineOperations>(
             error @ (ExecutionError::Machine { .. }
             | ExecutionError::Health { .. }
             | ExecutionError::DependencyHealth { .. }
-            | ExecutionError::Hook { .. }) => RelocateError::NotServing {
+            | ExecutionError::Hook { .. }
+            | ExecutionError::NewerServing { .. }) => RelocateError::NotServing {
                 detail: crate::ui::row(&error),
                 replacement_removed,
             },
@@ -1079,6 +1080,7 @@ mod tests {
             resolved_spec: spec,
             address: None,
             labels: Default::default(),
+            stopped: false,
         })
         .unwrap()
     }

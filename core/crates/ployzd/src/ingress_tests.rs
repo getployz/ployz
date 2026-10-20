@@ -136,6 +136,7 @@ mod rule_f {
             resolved_spec,
             address: Some(ContainerAddress([10, 210, suffix, 2].into())),
             labels: BTreeMap::new(),
+            stopped: false,
         })
         .unwrap()
     }
@@ -264,6 +265,35 @@ mod rule_f {
     }
 
     #[test]
+    fn a_held_copy_leaves_the_route_while_new_copies_are_pending() {
+        let current = routed([copy(1, machine('a'), CopyRotation::In)]);
+
+        let routes = next(
+            [
+                copy(1, machine('a'), held()),
+                copy(2, machine('b'), CopyRotation::Pending),
+                copy(3, machine('c'), CopyRotation::Pending),
+            ],
+            &[],
+            &current,
+        );
+
+        assert_eq!(ids(&routes), Some(BTreeSet::new()));
+    }
+
+    #[test]
+    fn a_held_copy_leaves_the_route_while_a_routed_copy_is_out_of_view() {
+        let current = routed([
+            copy(1, machine('a'), CopyRotation::In),
+            copy(2, machine('b'), CopyRotation::In),
+        ]);
+
+        let routes = next([copy(1, machine('a'), held())], &[], &current);
+
+        assert_eq!(ids(&routes), Some(BTreeSet::from([2])));
+    }
+
+    #[test]
     fn a_routed_copy_out_of_view_keeps_the_route() {
         let current = routed([copy(1, machine('a'), CopyRotation::In)]);
 
@@ -301,7 +331,6 @@ mod rule_f {
         let acks = route_acks(&routes);
 
         let ack = acks.get(&api()).expect("api has an ack");
-        assert_eq!(ack.deploy.as_str(), "rotation");
         assert_eq!(
             ack.containers,
             BTreeSet::from([ContainerId::parse("2".repeat(64)).unwrap()])

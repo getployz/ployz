@@ -30,6 +30,36 @@ describe("runtimeSnapshotFromWatchFrame", () => {
     expect(frame.containers[0]).not.toHaveProperty("resolved_spec");
   });
 
+  it("keeps the mark of a run its Server stopped on request beside its exit code", () => {
+    const stopped = runtimeWatchContainerFixture("machine-a", "ctr-stopped");
+    stopped.runtime = { state: "exited", code: 1 };
+    stopped.stopped = true;
+    const crashed = runtimeWatchContainerFixture("machine-a", "ctr-crashed");
+    crashed.runtime = { state: "exited", code: 1 };
+    const frame = runtimeWatchFrameForTransport(runtimeWatchFrameFixture({
+      services: [{ identity: "production/api", service_id: stopped.resolved_spec.service_id, containers: [stopped, crashed], hook_containers: [] }],
+      containers: [stopped, crashed],
+    }));
+    const parsed = Schema.decodeUnknownSync(runtimeWatchFrameSchema)(frame);
+    expect(runtimeSnapshotFromWatchFrame(parsed).services[0]?.containers.map((container) => container.runtime)).toEqual([
+      { state: "exited", code: 1, stopped: true },
+      { state: "exited", code: 1 },
+    ]);
+  });
+
+  it("lets the browser read a frame whose runtime carries a key its bundle does not know, as an older bundle reads stopped", () => {
+    const container = runtimeWatchContainerFixture("machine-a", "ctr-stopped");
+    container.runtime = { state: "exited", code: 1 };
+    const frame = runtimeWatchFrameForTransport(runtimeWatchFrameFixture({
+      services: [{ identity: "production/api", service_id: container.resolved_spec.service_id, containers: [container], hook_containers: [] }],
+      containers: [container],
+    }));
+    const newer = { ...frame, containers: frame.containers.map((sent) => ({ ...sent, runtime: { ...sent.runtime, unknown_to_this_bundle: true } })) };
+    const parsed = Schema.decodeUnknownOption(runtimeWatchFrameSchema)(newer);
+    expect(Option.isSome(parsed)).toBe(true);
+    expect(Option.getOrThrow(parsed).containers[0]?.runtime).toEqual({ state: "exited", code: 1 });
+  });
+
   it("retains direct Engine observations without inferring a runtime verdict", () => {
     const api = runtimeWatchContainerFixture("machine-a", "ctr-api");
     const hook = runtimeWatchContainerFixture("machine-b", "ctr-hook");
@@ -63,6 +93,7 @@ describe("runtimeSnapshotFromWatchFrame", () => {
               kernel_version: "6.1.0",
               memory_total_bytes: 16_000_000_000,
               running_builds: 1,
+              pool_committable_bytes: 12_884_901_888,
               capabilities: ["ployz.logs.tail.v1"],
             },
           }),
@@ -111,6 +142,7 @@ describe("runtimeSnapshotFromWatchFrame", () => {
           effectiveBuildConcurrency: 2,
           runningBuilds: 1,
           capabilities: ["ployz.logs.tail.v1"],
+          poolCommittableBytes: 12_884_901_888,
           daemonVersion: "0.1.2",
           membership: "suspect",
           observedContainerCount: 1,
@@ -188,7 +220,7 @@ describe("runtimeSnapshotFromWatchFrame", () => {
     expect(runtimeSnapshotFromWatchFrame(frame).published).toEqual(["api.example.test", "plain.example.test"]);
   });
 
-  it("carries each managed Volume copy's role, and a slot's as its Machine records it, and nothing else of the Volume", () => {
+  it("carries each managed Volume copy's role and bound, and a slot's role as its Machine records it, and nothing else of the Volume", () => {
     const provisioned = (machineId: string, role: "slot" | "switching" | null, slot_role?: "mirror" | "old_copy") =>
       runtimeWatchVolumeFixture(machineId, "app_vol-v1", {
         labels: { secret: "label" },
@@ -206,19 +238,44 @@ describe("runtimeSnapshotFromWatchFrame", () => {
     }));
 
     expect(frame.volumes).toEqual([
-      { machine_id: "web-1", name: "app_vol-v1", role: "writer", slot_role: null },
-      { machine_id: "web-2", name: "app_vol-v1", role: "slot", slot_role: "mirror" },
-      { machine_id: "web-3", name: "app_vol-v1", role: "switching", slot_role: null },
-      { machine_id: "web-4", name: "app_vol-v1", role: "slot", slot_role: "old_copy" },
-      { machine_id: "web-5", name: "app_vol-v1", role: "slot", slot_role: "mirror" },
+      { machine_id: "web-1", name: "app_vol-v1", role: "writer", slot_role: null, bound_bytes: 10 },
+      { machine_id: "web-2", name: "app_vol-v1", role: "slot", slot_role: "mirror", bound_bytes: 10 },
+      { machine_id: "web-3", name: "app_vol-v1", role: "switching", slot_role: null, bound_bytes: 10 },
+      { machine_id: "web-4", name: "app_vol-v1", role: "slot", slot_role: "old_copy", bound_bytes: 10 },
+      { machine_id: "web-5", name: "app_vol-v1", role: "slot", slot_role: "mirror", bound_bytes: 10 },
     ]);
-    expect(runtimeSnapshotFromWatchFrame(frame).volumeCopies.map(({ machineId, role, slotRole }) => [machineId, role, slotRole])).toEqual([
-      ["web-1", "writer", null],
-      ["web-2", "slot", "mirror"],
-      ["web-3", "switching", null],
-      ["web-4", "slot", "old_copy"],
-      ["web-5", "slot", "mirror"],
+    expect(runtimeSnapshotFromWatchFrame(frame).volumeCopies.map(({ machineId, role, slotRole, boundBytes }) => [machineId, role, slotRole, boundBytes])).toEqual([
+      ["web-1", "writer", null, 10],
+      ["web-2", "slot", "mirror", 10],
+      ["web-3", "switching", null, 10],
+      ["web-4", "slot", "old_copy", 10],
+      ["web-5", "slot", "mirror", 10],
     ]);
+  });
+
+  it("reads a copy's bound as unknown from a transport from before it carried one", () => {
+    const frame = Schema.decodeUnknownSync(runtimeWatchFrameSchema)({
+      ...runtimeWatchFrameForTransport(runtimeWatchFrameFixture()),
+      volumes: [{ machine_id: "web-1", name: "app_vol-v1", role: "writer", slot_role: null }],
+    });
+    expect(runtimeSnapshotFromWatchFrame(frame).volumeCopies[0]?.boundBytes).toBeNull();
+  });
+
+  it("reads a Pool's room as unknown from a daemon that doesn't report it, or a transport from before it did", () => {
+    const frame = runtimeWatchFrameForTransport(runtimeWatchFrameFixture({
+      machines: [runtimeWatchMachineObservationFixture({ machine: runtimeWatchMachineFixture("machine-a", "edge-a") })],
+    }));
+    expect(runtimeSnapshotFromWatchFrame(frame).machines[0]?.poolCommittableBytes).toBeNull();
+
+    const [machine] = frame.machines;
+    if (!machine) throw new Error("Expected a machine.");
+    const { pool_committable_bytes: _, ...olderRuntime } = machine.machine.runtime;
+    const older = Schema.decodeUnknownOption(runtimeWatchFrameSchema)({
+      ...frame,
+      machines: [{ ...machine, machine: { ...machine.machine, runtime: olderRuntime } }],
+    });
+    if (Option.isNone(older)) throw new Error("Expected Runtime Watch frame.");
+    expect(runtimeSnapshotFromWatchFrame(older.value).machines[0]?.poolCommittableBytes).toBeNull();
   });
 
   it("accepts additive SDK fields while requiring the retained evidence", () => {

@@ -97,7 +97,10 @@ pub use removal::{
     Waiting, docker_volume,
 };
 pub use review::history::{HistoryAction, SavedRevision};
-pub use review::{DataEffect, DestructiveEffect, DestructiveKind, DiffView, LostAfter, NodeChange};
+pub use review::{
+    DataEffect, DestructiveEffect, DestructiveKind, DiffView, LostAfter, NodeChange,
+    introduced_source,
+};
 pub use rules::{BrokenReference, Missing, ReferenceAt};
 pub use scope::{EnvironmentRef, EnvironmentSummary};
 pub use sealing::SealingKey;
@@ -112,6 +115,7 @@ pub use teardown::{
 pub use trusted::{
     Approval, Asks, ObservationFailure, ObservationStage, Trusted, VolumeObservation,
 };
+pub use volume::size::VolumeResized;
 
 /// Who is asking, and in which Organization. Every read and write is scoped to it.
 #[derive(Clone, Debug, Eq, PartialEq)]

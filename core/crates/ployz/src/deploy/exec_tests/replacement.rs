@@ -549,6 +549,54 @@ async fn a_stop_first_step_withdraws_beside_a_pending_copy_a_dead_run_left() {
     client.assert_done();
 }
 
+#[tokio::test(start_paused = true)]
+async fn a_stop_first_scale_up_withdraws_the_old_copy_beside_pending_new_ones() {
+    let (first, second, third) = (machine('1'), machine('2'), machine('3'));
+    let old = container('a');
+    let (new_first, new_second, new_third) = (container('c'), container('d'), container('e'));
+    let mut added = spec(None, None, None);
+    added.update.order = UpdateOrder::StopFirst;
+    let plan = vec![
+        swap(&third, &old, UpdateOrder::StopFirst),
+        run(&first, added.clone(), true),
+        run(&second, added, true),
+    ];
+    let mut client = Scripted::new(vec![
+        observed(Call::Inspect(third, old), running()),
+        created(
+            Call::Run(first, ContainerKind::ServiceContainer),
+            &new_first,
+        ),
+        created(
+            Call::Run(second, ContainerKind::ServiceContainer),
+            &new_second,
+        ),
+        ok(Call::Stop(third, old)),
+        created(
+            Call::Run(third, ContainerKind::ServiceContainer),
+            &new_third,
+        ),
+        observed(Call::Inspect(third, old), running()),
+        ok(Call::Remove(third, old)),
+    ])
+    .with_copy(&third, &old, CopyRotation::In)
+    .routing(&api());
+    client.acks.insert(third, Ack::After(1));
+
+    let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
+
+    assert_eq!(
+        outcome.services(),
+        ended(&[("api", ServiceResult::New)]),
+        "{outcome:?}"
+    );
+    assert_eq!(
+        client.brought_in().into_iter().collect::<BTreeSet<_>>(),
+        BTreeSet::from([new_first, new_second, new_third])
+    );
+    client.assert_done();
+}
+
 #[tokio::test]
 async fn a_stop_first_or_rolling_failure_restores_every_old_copy_and_removes_every_new_one() {
     for order in [UpdateOrder::StopFirst, UpdateOrder::Rolling] {
@@ -767,8 +815,8 @@ async fn a_failed_group_stops_its_new_copies_before_it_restores_the_held_ones() 
                 Call::Run(second, ContainerKind::ServiceContainer),
                 &new_second,
             ),
-            ok(Call::Discard(second, new_second)),
             ok(Call::Stop(first, new_first)),
+            ok(Call::Discard(second, new_second)),
             ok(Call::Restart(first, old_first)),
             ok(Call::Restart(second, old_second)),
             ok(Call::Remove(first, new_first)),
@@ -938,6 +986,93 @@ async fn a_refused_or_failed_restore_leaves_the_service_empty() {
         );
         client.assert_done();
     }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_restore_a_newer_deploy_refuses_reads_as_the_newer_deploy_serving() {
+    for removes in [true, false] {
+        let machine = machine('1');
+        let (old, newer) = (container('a'), container('c'));
+        let plan = vec![swap(&machine, &old, UpdateOrder::StopFirst)];
+        let client = Scripted::new(vec![
+            observed(Call::Inspect(machine, old), running()),
+            ok(Call::Stop(machine, old)),
+            failed(
+                Call::Run(machine, ContainerKind::ServiceContainer),
+                "start failed",
+            ),
+            ok(Call::DiscardSlot(machine, ContainerKind::ServiceContainer)),
+            if removes {
+                ok(Call::Remove(machine, old))
+            } else {
+                failed(Call::Remove(machine, old), "the disk is busy")
+            },
+        ])
+        .with_copy(&machine, &old, CopyRotation::In)
+        .with_copy_at(&api(), &machine, &newer, CopyRotation::In, Gen::new(100));
+
+        let (outcome, warnings) =
+            execute_reported(&plan, &[machine], &client, &CancellationToken::new()).await;
+
+        assert_eq!(
+            outcome.services(),
+            ended(&[("api", ServiceResult::Newer)]),
+            "removes {removes}"
+        );
+        let shown = crate::ui::plain(&crate::deploy::report::failure(&outcome, &[], Vec::new()));
+        assert!(
+            shown.contains(
+                "  A newer deploy is already serving; the old Container will not serve again.\n"
+            ),
+            "removes {removes}: {shown}"
+        );
+        assert!(
+            !shown.contains("Could not restore"),
+            "removes {removes}: {shown}"
+        );
+        assert!(!shown.contains("newer deploy is already serving app/api"));
+        if removes {
+            assert!(warnings.is_empty(), "{warnings:?}");
+            assert_eq!(client.rotation(&old), None);
+        } else {
+            assert_eq!(
+                warnings,
+                [left_running(
+                    "machine-1",
+                    "a newer deploy is already serving app/api, and removing it failed: the disk is busy"
+                )]
+            );
+        }
+        client.assert_done();
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_cancelled_deploy_still_removes_an_old_copy_a_newer_deploy_refuses() {
+    let machine = machine('1');
+    let (old, newer) = (container('a'), container('c'));
+    let plan = vec![swap(&machine, &old, UpdateOrder::StopFirst)];
+    let run = Call::Run(machine, ContainerKind::ServiceContainer);
+    let cancellation = CancellationToken::new();
+    let client = Scripted {
+        cancel_on: Some((run.clone(), cancellation.clone())),
+        read_latency: true,
+        ..Scripted::new(vec![
+            observed(Call::Inspect(machine, old), running()),
+            ok(Call::Stop(machine, old)),
+            failed(run, "start failed"),
+            ok(Call::DiscardSlot(machine, ContainerKind::ServiceContainer)),
+            ok(Call::Remove(machine, old)),
+        ])
+    }
+    .with_copy(&machine, &old, CopyRotation::In)
+    .with_copy_at(&api(), &machine, &newer, CopyRotation::In, Gen::new(100));
+
+    let (_, warnings) = execute_reported(&plan, &[machine], &client, &cancellation).await;
+
+    assert!(warnings.is_empty(), "{warnings:?}");
+    assert_eq!(client.rotation(&old), None, "the old copy is removed");
+    client.assert_done();
 }
 
 #[tokio::test]

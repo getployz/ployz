@@ -1,5 +1,6 @@
 import type { BuildStatus, BuildView, DeploymentView, FailedAt, NodeOutcome, NodeStatus, RowPhase, ServerRow } from "@ployz/sdk";
-import { buildNodeId, nodeLight, type NodeLight } from "#/modules/config-store/store-deployments";
+import { buildNodeId, nodeLight, shownNodeStatus, type NodeLight } from "#/modules/config-store/store-deployments";
+import type { DeploymentCleanupState, DeploymentCleanupView } from "#/modules/config-store/tables";
 import type { RunSearch } from "./run-search";
 
 /** Unix seconds over a node's rows; `finished` stays null until every row finished. */
@@ -9,8 +10,10 @@ export type RunTiming = { started: number; finished: number | null };
 type RunNodeBase = { id: string; name: string; light: NodeLight; column: number; row: number; timing?: RunTiming };
 export type BuildRunNode = RunNodeBase & { type: "build"; build: BuildView };
 export type OutcomeRunNode = RunNodeBase & { type: NodeOutcome["type"]; node: NodeOutcome };
-/** One entry of a Deployment as it reports it: a build, or a Service, Volume or Config node. */
-export type RunNode = BuildRunNode | OutcomeRunNode;
+/** Cloud retiring the old copies the Deployment replaced, after its Services. */
+export type CleanupRunNode = RunNodeBase & { type: "cleanup"; cleanup: DeploymentCleanupView };
+/** One entry of a Deployment as it reports it: a build, or a Service, Volume or Config node; then Cloud's cleanup. */
+export type RunNode = BuildRunNode | OutcomeRunNode | CleanupRunNode;
 
 /** A build to its Service, or a Service to one depending on it; `animated` while the target runs. */
 export type RunEdge = { id: string; source: string; target: string; animated: boolean };
@@ -32,6 +35,7 @@ export function rowPhaseLabel(phase: RowPhase): string {
     case "stopping_container": return "Stopping container";
     case "removing_container": return "Removing container";
     case "removing_volume": return "Removing volume";
+    case "updating_container": return "Updating limits";
     case "compensating": return "Rolling back";
     default:
       return phase satisfies never;
@@ -48,7 +52,9 @@ export function rowLabel(row: ServerRow): string {
     case "pending": return "Pending";
     case "running": return rowPhaseLabel(row.phase);
     case "completed": return "Done";
-    case "failed": return row.step ? `Failed at ${failedAtLabels[row.step]}` : "Failed";
+    case "failed":
+      if (row.cancelled) return "Cancelled";
+      return row.step ? `Failed at ${failedAtLabels[row.step]}` : "Failed";
     case "not_attempted": return "Not attempted";
     case "unknown": return "Unknown";
     default:
@@ -61,7 +67,7 @@ export function rowLight(row: ServerRow): NodeLight {
     case "pending": return "queued";
     case "running": return "deploying";
     case "completed": return "deployed";
-    case "failed": return "failed";
+    case "failed": return row.cancelled ? "not_applied" : "failed";
     case "not_attempted": return "not_applied";
     case "unknown": return "unknown";
     default:
@@ -107,21 +113,39 @@ export function orderRows(nodes: Placeable[], edges: Pick<RunEdge, "source" | "t
   return rows;
 }
 
-const columnRanks = { build: 0, volume: 1, config: 2, service: 3 } satisfies Record<RunNode["type"], number>;
+const columnRanks = { build: 0, volume: 1, config: 2, service: 3, cleanup: 4 } satisfies Record<RunNode["type"], number>;
+
+const CLEANUP_NODE_ID = "cleanup";
+
+const cleanupLights = {
+  waiting: "deploying", done: "deployed", left_running: "unknown", cancelled: "not_applied", failed: "failed",
+} satisfies Record<DeploymentCleanupState, NodeLight>;
+
+export function cleanupLabel(cleanup: DeploymentCleanupView): string {
+  switch (cleanup.state) {
+    case "waiting": return "Waiting";
+    case "done": return "Done";
+    case "left_running": return `Left running on ${[...new Set(cleanup.left.map((left) => left.machine))].join(", ")}`;
+    case "cancelled": return "A newer Deployment took over";
+    case "failed": return "Failed";
+    default:
+      return cleanup.state satisfies never;
+  }
+}
 
 /**
  * A Deployment's Services at their preview depth, each build in the column just before its Service, and Volumes and
  * Configs in the first column, since nothing says which Service mounts them. Edges run from each build to its Service
  * and along the preview's dependencies. A deployed Service reads as running while any of its rows runs, old copies
- * stopping included, and an edge animates while its Service runs.
+ * stopping included, and an edge animates while its Service runs. Cloud's `cleanup`, when it ran one, follows last.
  */
-export function makeRunGraph(deployment: DeploymentView): RunGraph {
+export function makeRunGraph(deployment: DeploymentView, cleanup: DeploymentCleanupView | null = null): RunGraph {
   const runtime = (name: string) => deployment.runtime_names[name] ?? name;
   const runs = (node: NodeOutcome) =>
     node.type === "service" && deployment.in_flight && node.rows.some((row) => row.state === "running");
   const outcomes = deployment.nodes.map((node): OutcomeRunNode => ({
     type: node.type, id: node.id, name: node.name, node, row: 0, timing: rowTiming(node.rows),
-    light: runs(node) && node.outcome === "deployed" ? "deploying" : nodeLight(node.outcome, deployment),
+    light: runs(node) && node.outcome === "deployed" ? "deploying" : nodeLight(shownNodeStatus(node), deployment),
     column: node.type === "service" ? (deployment.preview?.depths[runtime(node.name)] ?? 0) + 1 : 0,
   }));
   const services = new Map(outcomes.filter((node) => node.type === "service").map((node) => [runtime(node.name), node]));
@@ -133,6 +157,12 @@ export function makeRunGraph(deployment: DeploymentView): RunGraph {
     })),
     ...outcomes,
   ];
+  if (cleanup !== null) {
+    unplaced.push({
+      type: "cleanup", id: CLEANUP_NODE_ID, name: "Cleanup", cleanup, row: 0, light: cleanupLights[cleanup.state],
+      column: Math.max(-1, ...unplaced.map((node) => node.column)) + 1,
+    });
+  }
   const links = [
     ...deployment.builds.map((build) => [buildNodeId(build.service), services.get(runtime(build.service))] as const),
     ...(deployment.preview?.dependencies ?? []).map(([dependency, dependent]) => [services.get(dependency)?.id, services.get(dependent)] as const),
@@ -162,7 +192,7 @@ export function selectRunNode(graph: RunGraph, search: RunSearch): RunNode | und
   return nodes.find((node) => node.id === search.job)
     ?? (origin && "id" in origin ? nodes.find((node) => node.type === origin.kind && node.id === origin.id) : undefined)
     ?? nodes.find((node) => node.light === "failed")
-    ?? nodes.find((node) => node.type !== "build" && node.node.rows.some((row) => row.state === "running"))
+    ?? nodes.find((node) => "node" in node && node.node.rows.some((row) => row.state === "running"))
     ?? nodes.find((node) => node.type === "build" && node.build.status === "building")
     ?? nodes.find((node) => node.light === "deploying")
     ?? nodes.find((node) => node.type === "service")

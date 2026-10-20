@@ -145,8 +145,17 @@ export function reviewGroups(diff: DiffView, services: readonly ServiceListing[]
     }
     runtime.changeCount = runtime.rows.length + (runtime.lifecycle === "update" ? 0 : 1);
   }
-  return groups;
+  return groups.sort(reviewOrder);
 }
+
+const kindRank = { service: 0, volume: 1, config: 2 } satisfies Record<NodeChange["type"], number>;
+const stepRank = { delete: 0, update: 1, create: 2 } satisfies Record<NodeChange["lifecycle"], number>;
+const ascending = (a: number | string, b: number | string) => (a < b ? -1 : a > b ? 1 : 0);
+
+/** The Store's review order: Services, Volumes, then Configs, each by name; a removal before what took its name. */
+const reviewOrder = (a: ChangeGroup, b: ChangeGroup) =>
+  ascending(kindRank[a.nodeType], kindRank[b.nodeType]) || ascending(a.nodeName, b.nodeName)
+  || ascending(stepRank[a.lifecycle], stepRank[b.lifecycle]) || ascending(a.nodeId, b.nodeId);
 
 function sameReviewRow(left: ChangeRow, right: ChangeRow): boolean {
   if (!left.row || !right.row) return left.path === right.path;
@@ -237,16 +246,25 @@ type WaitingCi = Partial<Pick<DeploymentSummary, "ci">>;
 export const deploymentLight = ({ status, ci }: Pick<DeploymentSummary, "status"> & WaitingCi): DeploymentLight =>
   ci === "failed" ? "failed" : deploymentStatusIcons[status];
 
+/**
+ * A node's outcome as users read it: Failed work the Deployment's cancel stopped reads Cancelled. The Store marks it
+ * rather than giving it a status of its own, so a reader from before Cancelled reads Failed.
+ */
+export type ShownNodeStatus = NodeStatus | "cancelled";
+
+export const shownNodeStatus = ({ outcome, cancelled }: Pick<NodeOutcome, "outcome" | "cancelled">): ShownNodeStatus =>
+  outcome === "failed" && cancelled ? "cancelled" : outcome;
+
 export const nodeStatusLabels = {
-  pending: "Pending", deployed: "Deployed", removed: "Removed", failed: "Failed", not_attempted: "Not attempted",
-  unchanged: "Unchanged", unknown: "Unknown",
-} satisfies Record<NodeStatus, string>;
+  pending: "Pending", deployed: "Deployed", removed: "Removed", failed: "Failed", cancelled: "Cancelled",
+  not_attempted: "Not attempted", unchanged: "Unchanged", unknown: "Unknown",
+} satisfies Record<ShownNodeStatus, string>;
 
 /** Whether the Deployment left the node as intended: deployed, removed, or nothing it had to change. */
-export const nodeApplied = (outcome: NodeStatus) => outcome === "deployed" || outcome === "removed" || outcome === "unchanged";
+export const nodeApplied = (outcome: ShownNodeStatus) => outcome === "deployed" || outcome === "removed" || outcome === "unchanged";
 
 /** A node's outcome as the badges and canvas lighting show it; a pending node reads as its Deployment does. */
-export function nodeLight(outcome: NodeStatus, deployment: Pick<DeploymentSummary, "status" | "in_flight">): NodeLight {
+export function nodeLight(outcome: ShownNodeStatus, deployment: Pick<DeploymentSummary, "status" | "in_flight">): NodeLight {
   if (nodeApplied(outcome)) return "deployed";
   if (outcome === "failed") return "failed";
   if (outcome === "unknown") return "unknown";

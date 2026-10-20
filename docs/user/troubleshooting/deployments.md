@@ -112,6 +112,33 @@ up to the most **memLimit** allows, 1024 GB; set the size your app needs. A serv
 1024 GB gets no `next:` command: it has to use less memory. Nor does a service without a
 **memLimit**.
 
+## My new limit didn't apply
+
+**web: Server edge did not apply the new limits. The Container keeps its previous limits.**,
+with the server's reason as the cause, and `retry: ployz deploy …`
+
+A deploy that only changes the CPU limit or raises the Memory limit applies it to the running
+replica in place (see [Changing a limit](../services/settings.md#changing-a-limit)). Here the
+server refused before changing anything, so the replica keeps its old limits. The
+usual cause is a Container changed on the server outside Ployz, for example with `docker update`:
+the server refuses a Memory limit below the one the Container runs with, since lowering it could
+kill the Container. Ployz has no command that only replaces a replica. Deploy a change to another
+setting of the service at the same time, such as a variable, and the deploy replaces the replica
+with the new limits.
+
+**web: Server edge found the Container not running, so the new limits do not apply.**
+
+The replica had stopped before the server could change it. Run the `retry:` command. A replica
+still stopped is replaced with one that has the new limits, and one its restart policy brought
+back gets the new limits in place.
+
+**web: Server edge could not confirm the new limits.**, with Docker's reason or the lost
+connection as the cause
+
+The server asked Docker for the change and got an error, read back other limits, found the
+replica stopped right after the change, or didn't answer in time. Which limits the replica runs with now is not known. Run the `retry:` command: a
+replica already on the new limits passes as up to date, and any other is updated again.
+
 ## My running service fails its healthcheck
 
 A replica passed its **Healthcheck** once and fails it now. It keeps getting traffic, so the
@@ -161,7 +188,10 @@ setup commands. The first one that fails stops the deploy.
 ## My service shows Crashed or Stopped
 
 None of the service's replicas is running. **Crashed** means one exited with an error or keeps
-restarting; **Stopped** means they all exited cleanly and weren't restarted. During a first
+restarting; **Stopped** means they all exited cleanly, or you stopped them, and weren't restarted.
+A replica you stopped reads **Stopped** whatever code your app exited with, and `ployz ps` shows
+it as `stopped`. One that exited on its own before your stop reached it still reads **Crashed**.
+During a first
 deploy a card can read **Not running** or **Crashed** for a few seconds: if the deployment ends
 **Deployed**, there's nothing to fix.
 
@@ -264,6 +294,16 @@ reads, such as one of its variables. Each service keeps its own upload, but one 
 only one of them. Services that don't need a new build reuse their images, so this only stops when
 the service with the older upload must build again. Run the command it shows, and `web` builds
 from its own upload.
+
+## A waiting deploy says its upload is chosen when it starts
+
+`uploaded by nick, sha256 3f2a9c81b0d4 for now; chosen again when it starts`
+
+A deploy without a new upload builds each service from the upload it last ran. If you deploy
+while another deployment is still running, yours waits, and which upload each service ran is
+known only once that one ends. When yours starts, its page and `ployz deployment show` show the
+upload it runs, which can differ from the one it showed while it waited. To ship the code in your
+directory instead, run `ployz up`.
 
 ## Deploy asks me to confirm it deletes data
 

@@ -319,8 +319,8 @@ $ timeout 30 ployz deploy --project shop
 stderr:
 ```
 Deploying #1 of shop/production
-  web: not started
   db: not started
+  web: not started
   Volume pgdata: not attempted
 ───────────────
 3 not attempted

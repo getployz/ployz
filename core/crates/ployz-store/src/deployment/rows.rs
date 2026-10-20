@@ -1,12 +1,12 @@
 //! Per-Server Deployment outcomes.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
-use ployz_core::config::SavedServiceIntent;
+use ployz_core::config::{SavedEnvironmentIntent, SavedServiceIntent};
 use ployz_core::{
     ContainerId, ContainerRuntimeObservation, DependencyHealthFailure, DeployOperation,
-    ExecutionError, HealthFailure, HookFailure, MachineAction, MachineId, OperationPhase,
-    OperationRow, OperationStatus, OutOfMemory, PullPolicy, RpcError, ServiceName,
+    ExecutionError, HealthFailure, HookFailure, LimitsRefusal, MachineAction, MachineId,
+    OperationPhase, OperationRow, OperationStatus, OutOfMemory, PullPolicy, RpcError, ServiceName,
 };
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -23,7 +23,8 @@ use crate::tools::{LogText, Withheld};
 pub enum RowState {
     Pending,
     /// `serving` is true once every new Container this Server starts serves,
-    /// so stop and remove phases then work on old ones.
+    /// so stop and remove phases then work on old ones. A Container updated
+    /// in place serves throughout.
     Running {
         phase: RowPhase,
         #[serde(default)]
@@ -49,6 +50,12 @@ pub enum RowState {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[ts(optional)]
         out_of_memory: Option<OutOfMemory>,
+        /// The Deployment's cancel stopped this work while it ran, so it reads
+        /// Cancelled. A marker on Failed rather than a state of its own, so a reader
+        /// from before it reads Failed.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        #[ts(as = "Option<bool>", optional)]
+        cancelled: bool,
     },
     /// The Deployment stopped before this work finished.
     NotAttempted,
@@ -102,14 +109,15 @@ impl FailedAt {
                 MachineAction::RemoveContainer => Some(Self::Remove),
                 MachineAction::PullImage => Some(Self::Pull),
                 MachineAction::InspectContainer
+                | MachineAction::UpdateContainerLimits
                 | MachineAction::ListContainers
-                | MachineAction::ReadRoutes
-                | MachineAction::PublishServingPointer => from_phase(),
+                | MachineAction::ReadRoutes => from_phase(),
             },
             ExecutionError::Health { .. } | ExecutionError::DependencyHealth { .. } => {
                 Some(Self::Health)
             }
             ExecutionError::Hook { .. } => Some(Self::Hook),
+            ExecutionError::NewerServing { .. } => None,
             ExecutionError::Cancelled => from_phase(),
         }
     }
@@ -147,6 +155,7 @@ pub enum RowPhase {
     StoppingContainer,
     RemovingContainer,
     RemovingVolume,
+    UpdatingContainer,
     Compensating,
 }
 
@@ -160,7 +169,10 @@ impl RowPhase {
             Self::StoppingContainer => Some(FailedAt::Stop),
             Self::RemovingContainer => Some(FailedAt::Remove),
             Self::RemovingVolume => Some(FailedAt::Volume),
-            Self::Starting | Self::WaitingForSwitch | Self::Compensating => None,
+            Self::Starting
+            | Self::WaitingForSwitch
+            | Self::UpdatingContainer
+            | Self::Compensating => None,
         }
     }
 }
@@ -177,6 +189,7 @@ impl From<&OperationPhase> for RowPhase {
             OperationPhase::StoppingContainer => Self::StoppingContainer,
             OperationPhase::RemovingContainer => Self::RemovingContainer,
             OperationPhase::RemovingVolume => Self::RemovingVolume,
+            OperationPhase::UpdatingContainer => Self::UpdatingContainer,
             OperationPhase::Compensating => Self::Compensating,
         }
     }
@@ -243,6 +256,10 @@ pub struct ServerProgress {
     /// The Server's name, or its Machine ID when it has none.
     pub server: String,
     pub state: RowState,
+    /// Only cancelled work stopped it. The Store marks it Cancelled when the
+    /// Deployment's cancel asked for that, and leaves it Failed otherwise.
+    #[serde(default)]
+    pub stopped: bool,
 }
 
 /// Why something failed, as users read it: our sentence, then what it came from,
@@ -319,6 +336,46 @@ impl Failure {
                 error,
             } if let Some(full) = error.disk_full() => {
                 (full.to_string(), ployz_core::error_chain::causes(error))
+            }
+            ExecutionError::Machine {
+                action: MachineAction::UpdateContainerLimits,
+                error,
+            } => {
+                let server = error
+                    .details
+                    .get("machine_id")
+                    .and_then(serde_json::Value::as_str)
+                    .map(|id| {
+                        operations
+                            .iter()
+                            .find(|row| row.machine_id.to_string() == id)
+                            .and_then(|row| row.machine_name.as_ref())
+                            .map_or_else(|| id.to_owned(), ToString::to_string)
+                    });
+                let mut cause = vec![error.message.clone()];
+                cause.extend(ployz_core::error_chain::causes(error));
+                // A refusal comes before any Docker change, so the old limits hold.
+                // Anything else, such as a Docker error, an unapplied read-back or a
+                // lost answer, leaves the live limits unknown.
+                let outcome = match LimitsRefusal::from_details(&error.details) {
+                    Some(LimitsRefusal::NotRunning) => {
+                        "found the Container not running, so the new limits do not apply"
+                    }
+                    Some(_) => {
+                        "did not apply the new limits. The Container keeps its previous limits"
+                    }
+                    None => "could not confirm the new limits",
+                };
+                (
+                    format!(
+                        "{} {outcome}",
+                        server.map_or_else(
+                            || "The Server".to_owned(),
+                            |name| format!("Server {name}")
+                        )
+                    ),
+                    cause,
+                )
             }
             ExecutionError::Machine { action, error } => {
                 let mut cause = vec![error.message.clone()];
@@ -419,6 +476,10 @@ impl Failure {
                     | HookFailure::Exit { .. } => vec![failure.to_string()],
                 },
             ),
+            ExecutionError::NewerServing { service } => (
+                format!("A newer deploy is already serving {service}"),
+                Vec::new(),
+            ),
             ExecutionError::Cancelled => ("Cancelled".to_owned(), Vec::new()),
         };
         Self { reason, cause }
@@ -427,12 +488,15 @@ impl Failure {
 
 type Key = (ServiceName, MachineId);
 
-/// Whether `operation` starts a new Service Container.
+/// Whether `operation` leaves a Service Container serving the new spec: a fresh
+/// start, or a running Container updated in place.
 #[must_use]
 pub const fn starts_container(operation: &DeployOperation) -> bool {
     matches!(
         operation,
-        DeployOperation::RunContainer { .. } | DeployOperation::ReplaceContainer(_)
+        DeployOperation::RunContainer { .. }
+            | DeployOperation::ReplaceContainer(_)
+            | DeployOperation::UpdateContainer(_)
     )
 }
 
@@ -442,7 +506,8 @@ pub const fn starts_container(operation: &DeployOperation) -> bool {
 pub struct RowTracker {
     last: BTreeMap<Key, RowState>,
     containers: BTreeMap<u32, ContainerId>,
-    failed: BTreeMap<Key, u32>,
+    /// The operation each Server's row failed with, and whether it really failed.
+    failed: BTreeMap<Key, (u32, bool)>,
 }
 
 impl RowTracker {
@@ -460,8 +525,12 @@ impl RowTracker {
             } else {
                 self.containers.remove(&row.index);
             }
-            if matches!(row.status, OperationStatus::Failed { .. }) {
-                self.failed.entry(key.clone()).or_insert(row.index);
+            if let OperationStatus::Failed { error } = &row.status {
+                let real = !error.cancelled();
+                let kept = self.failed.entry(key.clone()).or_insert((row.index, real));
+                if real && !kept.1 {
+                    *kept = (row.index, real);
+                }
             }
             let server = row
                 .machine_name
@@ -472,8 +541,9 @@ impl RowTracker {
                 .or_insert_with(|| (server, Vec::new(), None));
             statuses.push((&row.status, starts_container(&row.operation)));
             if starts_container(&row.operation) {
-                let done = matches!(row.status, OperationStatus::Completed);
-                *serving = Some(serving.unwrap_or(true) && done);
+                let serves = matches!(row.operation, DeployOperation::UpdateContainer(_))
+                    || matches!(row.status, OperationStatus::Completed);
+                *serving = Some(serving.unwrap_or(true) && serves);
             }
         }
         let mut changes = Vec::new();
@@ -481,7 +551,7 @@ impl RowTracker {
             let container = self
                 .failed
                 .get(&key)
-                .is_some_and(|index| self.containers.contains_key(index));
+                .is_some_and(|(index, _)| self.containers.contains_key(index));
             let state = state(
                 snapshot,
                 &statuses,
@@ -493,11 +563,13 @@ impl RowTracker {
                 continue;
             }
             self.last.insert(key.clone(), state.clone());
+            let stopped = self.failed.get(&key).is_some_and(|(_, real)| !real);
             changes.push(ServerProgress {
                 service: key.0,
                 machine: key.1,
                 server,
                 state,
+                stopped,
             });
         }
         changes
@@ -508,7 +580,7 @@ impl RowTracker {
     pub fn container(&self, row: &ServerProgress) -> Option<ContainerId> {
         self.failed
             .get(&(row.service.clone(), row.machine))
-            .and_then(|index| self.containers.get(index))
+            .and_then(|(index, _)| self.containers.get(index))
             .copied()
     }
 }
@@ -519,9 +591,9 @@ fn container(row: &OperationRow, last: Option<ContainerId>) -> Option<ContainerI
             OperationPhase::WaitingForHealth { container_id, .. }
             | OperationPhase::WaitingForHook { container_id, .. }
             | OperationPhase::WaitingForSwitch { container_id } => Some(*container_id),
-            OperationPhase::StoppingContainer | OperationPhase::RemovingContainer => {
-                row.operation.container_id()
-            }
+            OperationPhase::StoppingContainer
+            | OperationPhase::RemovingContainer
+            | OperationPhase::UpdatingContainer => row.operation.container_id(),
             OperationPhase::Starting
             | OperationPhase::CreatingContainer
             | OperationPhase::StartingContainer
@@ -532,9 +604,9 @@ fn container(row: &OperationRow, last: Option<ContainerId>) -> Option<ContainerI
             ExecutionError::Health { container_id, .. }
             | ExecutionError::Hook { container_id, .. } => Some(*container_id),
             ExecutionError::Machine { action, .. } => match action {
-                MachineAction::StopContainer | MachineAction::RemoveContainer => {
-                    row.operation.container_id()
-                }
+                MachineAction::StopContainer
+                | MachineAction::RemoveContainer
+                | MachineAction::UpdateContainerLimits => row.operation.container_id(),
                 MachineAction::InspectContainer => last,
                 MachineAction::CreateContainer
                 | MachineAction::StartContainer
@@ -542,10 +614,11 @@ fn container(row: &OperationRow, last: Option<ContainerId>) -> Option<ContainerI
                 | MachineAction::RemoveVolume
                 | MachineAction::PullImage
                 | MachineAction::ListContainers
-                | MachineAction::ReadRoutes
-                | MachineAction::PublishServingPointer => None,
+                | MachineAction::ReadRoutes => None,
             },
-            ExecutionError::DependencyHealth { .. } | ExecutionError::Cancelled => None,
+            ExecutionError::DependencyHealth { .. }
+            | ExecutionError::NewerServing { .. }
+            | ExecutionError::Cancelled => None,
         },
         OperationStatus::Completed => last,
         OperationStatus::Pending | OperationStatus::Unexecuted => None,
@@ -560,10 +633,13 @@ fn state(
     container: bool,
     serving: bool,
 ) -> RowState {
-    let (mut failed, mut running, mut switching, mut pending, mut unstarted, mut completed) =
-        (None, None, None, 0, 0, 0);
+    let (mut failed, mut cancelled, mut running, mut switching) = (None, None, None, None);
+    let (mut pending, mut unstarted, mut completed) = (0, 0, 0);
     for (status, starts) in statuses {
         match status {
+            OperationStatus::Failed { error } if error.cancelled() => {
+                cancelled = cancelled.or(Some(error));
+            }
             OperationStatus::Failed { error } => failed = failed.or(Some(error)),
             OperationStatus::Running {
                 phase: phase @ OperationPhase::WaitingForSwitch { .. },
@@ -577,7 +653,7 @@ fn state(
             OperationStatus::Unexecuted => {}
         }
     }
-    if let Some(error) = failed {
+    if let Some(error) = failed.or(cancelled) {
         let Failure { reason, cause } = Failure::of(error, operations);
         return RowState::Failed {
             reason,
@@ -592,8 +668,10 @@ fn state(
                 ExecutionError::Machine { .. }
                 | ExecutionError::DependencyHealth { .. }
                 | ExecutionError::Hook { .. }
+                | ExecutionError::NewerServing { .. }
                 | ExecutionError::Cancelled => None,
             },
+            cancelled: false,
         };
     }
     if let Some(phase) = running {
@@ -638,13 +716,20 @@ pub(super) fn record(
     rows: &[ServerProgress],
 ) -> Result<(), RpcError> {
     let now = now();
+    // Only the Deployment's own cancel makes the work it stopped read Cancelled.
+    let cancelling = stored.summary.status == DeploymentStatus::Cancelling;
     for row in rows {
+        let mut state = row.state.clone();
+        if let RowState::Failed { cancelled, .. } = &mut state {
+            *cancelled = row.stopped && cancelling;
+        }
+        let state = &state;
         let started = matches!(
-            row.state,
+            state,
             RowState::Running { .. } | RowState::Completed | RowState::Failed { .. }
         )
         .then_some(now);
-        let finished = row.state.finished().then_some(now);
+        let finished = state.finished().then_some(now);
         let machine = row.machine.to_string();
         let kept = tx.query(
             "SELECT history FROM config_deployment_row \
@@ -659,7 +744,7 @@ pub(super) fn record(
             None => Some(Vec::new()),
             Some(kept) => history(kept, 0)?,
         }
-        .map(|history| json_text(&entered(history, now, &row.state)));
+        .map(|history| json_text(&entered(history, now, state)));
         tx.execute(
             "INSERT INTO config_deployment_row \
              (deployment_id, service, machine, organization_id, server, state, started, finished, history) \
@@ -675,7 +760,7 @@ pub(super) fn record(
                 row.service.as_str().into(),
                 machine.as_str().into(),
                 row.server.as_str().into(),
-                json_text(&row.state).as_str().into(),
+                json_text(state).as_str().into(),
                 started.into(),
                 finished.into(),
                 history.as_deref().into(),
@@ -683,6 +768,27 @@ pub(super) fn record(
         )?;
     }
     Ok(())
+}
+
+/// The runtime Services one of whose rows failed on its own.
+pub(super) fn failed(tx: &mut dyn Tx, stored: &Stored) -> Result<BTreeSet<ServiceName>, RpcError> {
+    let found = tx.query(
+        "SELECT service, state FROM config_deployment_row WHERE deployment_id = ?1",
+        &[stored.summary.id.as_str().into()],
+    )?;
+    let mut failed = BTreeSet::new();
+    for row in &found {
+        if matches!(
+            row.json(1, "Deployment row")?,
+            RowState::Failed {
+                cancelled: false,
+                ..
+            }
+        ) {
+            failed.insert(row.parse(0, "Deployment row")?);
+        }
+    }
+    Ok(failed)
 }
 
 pub(super) fn settle(tx: &mut dyn Tx, stored: &Stored) -> Result<(), RpcError> {
@@ -740,9 +846,12 @@ pub(crate) fn servers(
         .collect()
 }
 
+/// Each node's rows. A mounted Volume's or Config's rows read the Deployment's Saved
+/// State, which is left in `saved` for the caller to reuse.
 pub(super) fn of_nodes(
     tx: &mut dyn Tx,
     stored: &Stored,
+    saved: &mut Option<SavedEnvironmentIntent>,
 ) -> Result<BTreeMap<String, Vec<ServerRow>>, RpcError> {
     let found = tx.query(
         "SELECT service, server, state, started, finished, machine, history \
@@ -799,7 +908,11 @@ pub(super) fn of_nodes(
     {
         return Ok(nodes);
     }
-    let saved = saved_at(tx, &stored.summary.environment_id, stored.summary.saved)?;
+    let saved = saved.insert(saved_at(
+        tx,
+        &stored.summary.environment_id,
+        stored.summary.saved,
+    )?);
     for node in &stored.nodes {
         let id = match node {
             TargetNode::Service { .. } => continue,
@@ -843,10 +956,15 @@ pub(super) fn of_nodes(
 
 fn merge_mounting_row(kept: &mut ServerRow, row: &ServerRow) {
     let priority = |state: &RowState| match state {
-        RowState::Failed { .. } => 6,
-        RowState::Unknown => 5,
-        RowState::Running { .. } => 4,
-        RowState::Pending => 3,
+        RowState::Failed {
+            cancelled: false, ..
+        } => 7,
+        RowState::Unknown => 6,
+        RowState::Running { .. } => 5,
+        RowState::Pending => 4,
+        RowState::Failed {
+            cancelled: true, ..
+        } => 3,
         RowState::NotAttempted => 2,
         RowState::Completed => 1,
     };
@@ -913,6 +1031,67 @@ mod tests {
         );
     }
 
+    #[test]
+    fn only_cancelled_work_is_stopped_and_a_real_failure_names_the_row() {
+        let container_id = ContainerId::parse("a".repeat(64)).unwrap();
+        let failed = |error| OperationStatus::Failed { error };
+        let create = || {
+            failed(ExecutionError::Machine {
+                action: MachineAction::CreateContainer,
+                error: RpcError {
+                    code: RpcErrorCode::Internal,
+                    message: "no space left on device".into(),
+                    details: serde_json::Value::Null,
+                    cause: Vec::new(),
+                },
+            })
+        };
+        let hook = |stop_error| {
+            failed(ExecutionError::Hook {
+                container_id,
+                failure: HookFailure::Cancelled { stop_error },
+            })
+        };
+        let tracked = |statuses: &[OperationStatus]| {
+            let machine_id = "a".repeat(32);
+            let rows: Vec<OperationRow> = serde_json::from_value(serde_json::Value::Array(
+                statuses
+                    .iter()
+                    .enumerate()
+                    .map(|(index, status)| serde_json::json!({
+                        "index": index, "machine_id": machine_id, "service_name": "web",
+                        "operation": {"type": "remove_container", "machine_id": machine_id, "container_id": "c".repeat(64)},
+                        "status": status
+                    }))
+                    .collect(),
+            ))
+            .unwrap();
+            let row = super::RowTracker::default().changes(&rows).remove(0);
+            let RowState::Failed { reason, .. } = row.state else {
+                panic!("expected a failed row, got {:?}", row.state);
+            };
+            (row.stopped, reason)
+        };
+        let cancelled = || failed(ExecutionError::Cancelled);
+        assert_eq!(tracked(&[cancelled()]), (true, "Cancelled".to_owned()));
+        assert!(tracked(&[hook(None)]).0);
+        assert!(tracked(&[cancelled(), OperationStatus::Completed]).0);
+        assert!(!tracked(&[create()]).0);
+        let (stopped, reason) = tracked(&[cancelled(), create()]);
+        assert!(!stopped, "a real failure beside a cancel's is not stopped");
+        assert_ne!(reason, "Cancelled", "the row names its real failure");
+        assert!(
+            !tracked(&[hook(Some(RpcError {
+                code: RpcErrorCode::Unavailable,
+                message: "stop timed out".into(),
+                details: serde_json::Value::Null,
+                cause: Vec::new(),
+            }))])
+            .0,
+            "a hook the cancel could not stop may still run"
+        );
+    }
+
     fn reason(observation: ContainerRuntimeObservation) -> String {
         failure(observation).reason
     }
@@ -960,6 +1139,104 @@ mod tests {
             format!(
                 "Server {machine_id} needs a newer Ployz. It cannot serve ployz.serving.routes.v1."
             )
+        );
+    }
+
+    #[test]
+    fn a_container_updated_in_place_serves_throughout() {
+        let machine_id = "a".repeat(32);
+        let tracked = |status: serde_json::Value| {
+            let rows: Vec<OperationRow> = serde_json::from_value(serde_json::json!([{
+                "index": 0, "machine_id": machine_id, "service_name": "web",
+                "operation": {
+                    "type": "update_container", "machine_id": machine_id, "container_id": "c".repeat(64),
+                    "spec": {
+                        "service_id": "b".repeat(32), "name": "web",
+                        "mode": {"mode": "replicated", "replicas": 1},
+                        "container": {"image": "web:1", "pull_policy": "missing", "resources": {"memory_bytes": 64}}
+                    }
+                },
+                "status": status
+            }]))
+            .unwrap();
+            super::RowTracker::default().changes(&rows).remove(0).state
+        };
+        assert_eq!(
+            tracked(
+                serde_json::json!({"type": "running", "phase": {"type": "updating_container"}})
+            ),
+            RowState::Running {
+                phase: RowPhase::UpdatingContainer,
+                serving: true,
+            }
+        );
+        assert_eq!(
+            tracked(serde_json::json!({"type": "completed"})),
+            RowState::Completed
+        );
+    }
+
+    #[test]
+    fn a_failed_limits_update_names_the_server_and_keeps_dockers_words() {
+        let machine_id = "a".repeat(32);
+        let operations: Vec<OperationRow> = serde_json::from_value(serde_json::json!([{
+            "index": 0, "machine_id": machine_id, "machine_name": "prod-1",
+            "operation": {"type": "remove_container", "machine_id": machine_id, "container_id": "c".repeat(64)},
+            "status": {"type": "pending"}
+        }]))
+        .unwrap();
+        let docker = "Docker responded with status code 400: Conflicting options: Nano CPUs and CPU Period cannot both be set";
+        let error = ExecutionError::Machine {
+            action: MachineAction::UpdateContainerLimits,
+            error: RpcError {
+                code: RpcErrorCode::Internal,
+                message: "Docker operation failed".into(),
+                details: serde_json::json!({"machine_id": machine_id}),
+                cause: vec![docker.into()],
+            },
+        };
+        let named = Failure::of(&error, &operations);
+        assert_eq!(
+            named.reason,
+            "Server prod-1 could not confirm the new limits"
+        );
+        assert_eq!(named.cause, ["Docker operation failed", docker]);
+        assert_eq!(
+            Failure::of(&error, &[]).reason,
+            format!("Server {machine_id} could not confirm the new limits")
+        );
+    }
+
+    #[test]
+    fn a_refused_limits_update_says_which_limits_hold() {
+        let machine_id = "a".repeat(32);
+        let refused = |reason: &str, message: &str| ExecutionError::Machine {
+            action: MachineAction::UpdateContainerLimits,
+            error: RpcError {
+                code: RpcErrorCode::Conflict,
+                message: message.into(),
+                details: serde_json::json!({"machine_id": machine_id, "reason": reason}),
+                cause: Vec::new(),
+            },
+        };
+        let message = "container c cannot take these limits in place: the Container runs with a higher memory limit";
+        let before_any_change = Failure::of(&refused("would_lower_memory", message), &[]);
+        assert_eq!(
+            before_any_change.reason,
+            format!(
+                "Server {machine_id} did not apply the new limits. The Container keeps its previous limits"
+            )
+        );
+        assert_eq!(before_any_change.cause, [message]);
+        assert_eq!(
+            Failure::of(&refused("not_running", "stopped"), &[]).reason,
+            format!(
+                "Server {machine_id} found the Container not running, so the new limits do not apply"
+            )
+        );
+        assert_eq!(
+            Failure::of(&refused("some_future_reason", "later"), &[]).reason,
+            format!("Server {machine_id} could not confirm the new limits")
         );
     }
 

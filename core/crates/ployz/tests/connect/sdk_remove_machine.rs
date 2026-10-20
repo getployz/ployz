@@ -705,6 +705,7 @@ fn cluster_with_a_held_peer(
             host_available_bytes: 90 * ployz_core::STORAGE_GIB,
         },
         unmanaged_used_bytes: 0,
+        slot_bound_bytes: 0,
         volumes: BTreeMap::from([(docker("app-prod_data"), bytes)]),
         copies: BTreeMap::from([(
             docker("app-prod_logs"),

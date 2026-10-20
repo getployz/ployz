@@ -1,6 +1,6 @@
 use crate::{
     InspectVolumeCopyRequest, SeedVolumeRequest, SetVolumeCopyReply, SetVolumeCopyRequest,
-    StorageCapacity, VolumeCopyView,
+    SetVolumeSizeReply, SetVolumeSizeRequest, StorageCapacity, VolumeCopyView,
     metrics::{MetricHistoryReply, MetricHistoryRequest},
 };
 use std::{
@@ -26,7 +26,7 @@ use crate::{
     ContainerObservation, Machine, MachineId, MachineLogService, MachineName, MachineObservation,
     MachineRuntime, MachineUpdate, ManagementCapability, ManagementClientLabel, Namespace,
     PinnedAddresses, PullPolicy, QualifiedService, ResolvedServiceSpec, SelectedEndpoint,
-    ServingPointer, StorageChoice, WireGuardPublicKey,
+    StorageChoice, WireGuardPublicKey,
 };
 
 mod docker;
@@ -1305,35 +1305,11 @@ pub struct DiskSpace {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct CertificateMaterialPublished {}
 
-/// Write one Service's Serving Pointer only if its row still holds `read`.
-///
-/// `read: None` is a first publish and writes only when no row exists.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct PublishServingPointerRequest {
-    pub service: QualifiedService,
-    pub read: Option<ServingPointer>,
-    pub pointer: ServingPointer,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "outcome", rename_all = "snake_case")]
-pub enum ServingPointerPublication {
-    Published,
-    /// The row no longer held the value the writer read; nothing was written.
-    Superseded {
-        current: Option<ServingPointer>,
-    },
-}
-
 /// Read which copies of one Service each live proxy routes, from the target
 /// Machine's replicated store.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ReadRoutesRequest {
     pub service: QualifiedService,
-    /// Any participating Machine answers, and `pointer` may lag. Without it only the
-    /// Serving Pointer publisher answers; others refuse with [`NotPointerPublisher`].
-    #[serde(default)]
-    pub routes_only: bool,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
@@ -1348,51 +1324,6 @@ pub struct RoutesRead {
     /// Machines the membership sample reported Down; their routes no longer count.
     #[serde(default)]
     pub down: BTreeSet<MachineId>,
-    pub pointer: Option<ServingPointer>,
-    /// Machines whose ingress_routes row routes `pointer`'s deploy and every
-    /// Container it names, and which deploy that is. Empty without a pointer.
-    #[serde(default)]
-    pub acks: BTreeMap<MachineId, crate::DeploymentLogId>,
-    /// Every Machine not reported Down acks `pointer`. False without a pointer or
-    /// while the Machine list is partly replicated.
-    #[serde(default)]
-    pub all_routed: bool,
-}
-
-/// Refusal of a Serving Pointer read or publish by a Machine that is not the lowest-id
-/// Machine inviting RPC in its own Membership Observation.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "reason", rename = "not_pointer_publisher")]
-pub struct NotPointerPublisher {
-    /// The Machine the refusing Machine sees as the publisher.
-    pub publisher: MachineId,
-}
-
-impl NotPointerPublisher {
-    /// The refusal carried by `error`, if it is one.
-    #[must_use]
-    pub fn from_error(error: &RpcError) -> Option<Self> {
-        let tagged =
-            error.details.get("reason").and_then(Value::as_str) == Some("not_pointer_publisher");
-        if error.code != RpcErrorCode::Unavailable || !tagged {
-            return None;
-        }
-        Self::deserialize(&error.details).ok()
-    }
-
-    /// An RPC error that carries this refusal in `details`.
-    #[must_use]
-    pub fn rpc_error(&self) -> RpcError {
-        RpcError {
-            code: RpcErrorCode::Unavailable,
-            message: format!(
-                "Serving Pointers are published by Machine {}",
-                self.publisher
-            ),
-            details: serde_json::to_value(self).unwrap_or(Value::Null),
-            cause: Vec::new(),
-        }
-    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
@@ -1478,6 +1409,7 @@ macro_rules! define_responses {
 define_responses! {
     ContractDescription(ContractDescription) => "contract_description";
     SetVolumeCopyReply(SetVolumeCopyReply) => "set_volume_copy_reply";
+    SetVolumeSizeReply(SetVolumeSizeReply) => "set_volume_size_reply";
     MachineDetails(MachineDetails) => "machine_details";
     Enrolled(Enrolled) => "enrolled";
     Registered(Registered) => "registered";
@@ -1492,6 +1424,7 @@ define_responses! {
     PreparedVolumes(PreparedVolumes) => "prepared_volumes";
     VolumeInventory(VolumeInventory) => "volume_inventory";
     VolumeRemoved(VolumeRemoved) => "volume_removed";
+    ContainerLimitsUpdated(ContainerLimitsUpdated) => "container_limits_updated";
     VolumeCopyView(crate::VolumeCopyView) => "volume_copy_view";
     MachineImages(MachineImages) => "machine_images";
     ImageIngestOpened(ImageIngestOpened) => "image_ingest_opened";
@@ -1500,7 +1433,6 @@ define_responses! {
     BuildGrantMinted(BuildGrantMinted) => "build_grant_minted";
     BuildGrantInspected(BuildGrantInspected) => "build_grant_inspected";
     CertificateMaterialPublished(CertificateMaterialPublished) => "certificate_material_published";
-    ServingPointerPublication(ServingPointerPublication) => "serving_pointer_publication";
     RoutesRead(RoutesRead) => "routes_read";
     MachineUpdated(MachineUpdated) => "machine_updated";
     MachineUpgradeAttempt(MachineUpgradeAttempt) => "machine_upgrade_attempt";
@@ -1824,6 +1756,22 @@ pub fn target_unanswered_status(error: &(dyn std::error::Error + 'static)) -> to
     let mut status = caused_status(tonic::Code::Unavailable, error);
     status.metadata_mut().insert(
         TARGET_UNANSWERED_KEY,
+        tonic::metadata::MetadataValue::from_static("1"),
+    );
+    status
+}
+
+/// Metadata an entry Machine's router adds to a [`TARGET_UNANSWERED_KEY`] status when its
+/// dial to the target failed, so the target never got the call. Its absence says nothing.
+pub const TARGET_UNREACHED_KEY: &str = "ployz-target-unreached";
+
+/// [`target_unanswered_status`], also marked [`TARGET_UNREACHED_KEY`].
+#[cfg(not(target_arch = "wasm32"))]
+#[must_use]
+pub fn target_unreached_status(error: &(dyn std::error::Error + 'static)) -> tonic::Status {
+    let mut status = target_unanswered_status(error);
+    status.metadata_mut().insert(
+        TARGET_UNREACHED_KEY,
         tonic::metadata::MetadataValue::from_static("1"),
     );
     status
@@ -2167,34 +2115,5 @@ mod streaming_routing_tests {
         ] {
             assert_eq!(super::capability_of(path), None);
         }
-    }
-}
-
-#[cfg(test)]
-mod not_pointer_publisher_tests {
-    use super::*;
-
-    #[test]
-    fn only_an_unavailable_error_tagged_as_the_refusal_redirects() {
-        let refusal = NotPointerPublisher {
-            publisher: MachineId::parse("1".repeat(32)).unwrap(),
-        };
-        let error = refusal.rpc_error();
-        assert_eq!(
-            NotPointerPublisher::from_error(&error),
-            Some(refusal.clone())
-        );
-
-        let untagged = RpcError {
-            details: serde_json::json!({ "publisher": refusal.publisher }),
-            ..error.clone()
-        };
-        assert_eq!(NotPointerPublisher::from_error(&untagged), None);
-
-        let other_code = RpcError {
-            code: RpcErrorCode::Conflict,
-            ..error
-        };
-        assert_eq!(NotPointerPublisher::from_error(&other_code), None);
     }
 }

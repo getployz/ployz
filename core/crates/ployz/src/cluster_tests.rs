@@ -342,6 +342,7 @@ fn observation(id: char, machine: char) -> ContainerObservation {
         .unwrap(),
         address: None,
         labels: BTreeMap::new(),
+        stopped: false,
     })
     .unwrap()
 }

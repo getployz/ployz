@@ -16,7 +16,7 @@ use ts_rs::TS;
 
 use crate::{
     cluster::HealthWaitError,
-    connect::{Client, TARGET_RPC_TIMEOUT},
+    connect::{Client, ConnectError, TARGET_RPC_TIMEOUT},
     deploy::{DeployIntent, DeployPlan, Outcome, SlotAction},
     failure::Failure,
 };
@@ -158,6 +158,33 @@ pub(crate) async fn planned_slots(client: &mut Client) -> Result<IngressCheck, F
     })
 }
 
+/// Why the ingress check through `server` failed, on one line. A connection failure
+/// names the Server it went to, and when no daemon replied, says it isn't answering
+/// with the transport's last word. Any other failure, such as the image lookup this
+/// process makes itself, is about no Server and keeps its whole line.
+pub(crate) fn unchecked(failure: &Failure, server: Option<String>) -> String {
+    let Some(connect) = failure.connect_error() else {
+        return crate::ui::row(failure);
+    };
+    let named = if let ConnectError::AllFailed { server, .. } = connect {
+        server.clone()
+    } else {
+        None
+    };
+    let unanswered = connect.unreached() || connect.unreplied();
+    match (named, server) {
+        (Some(server), _) | (None, Some(server)) if unanswered => {
+            match ployz_core::error_chain::causes(failure).pop() {
+                Some(why) => format!("Server {server} isn't answering ({why})"),
+                None => format!("Server {server} isn't answering"),
+            }
+        }
+        // The failure names the Server it tried itself.
+        (Some(_), _) | (None, None) => crate::ui::row(failure),
+        (None, Some(server)) => format!("{} (on Server {server})", crate::ui::row(failure)),
+    }
+}
+
 enum Work {
     Create(Box<DeployPlan>),
     Start(ContainerId),
@@ -289,11 +316,6 @@ fn failure(outcome: &Outcome) -> Option<IngressFailure> {
             FailedOperation::Operation { error, .. }
             | FailedOperation::Replacement { error, .. } => error.to_string(),
         })),
-        DeployOutcome::Superseded { .. } => Some(IngressFailure::Failed {
-            cause: "another Server's repair published the Ingress Proxy first, \
-                    so this one was rolled back"
-                .into(),
-        }),
         DeployOutcome::Success { .. } | DeployOutcome::Interrupted { .. } => None,
     }
 }
@@ -378,6 +400,55 @@ mod tests {
         }
     }
 
+    #[test]
+    fn an_unchecked_ingress_names_the_server_and_why() {
+        let silent = Failure::from(ConnectError::Rpc(
+            crate::connect::TransportError::budget_expired("no reply"),
+        ));
+        assert_eq!(
+            unchecked(&silent, Some("box-node-09c8".into())),
+            "Server box-node-09c8 isn't answering (no reply)"
+        );
+        // Unnamed, it keeps the whole line.
+        assert_eq!(unchecked(&silent, None), crate::ui::row(&silent));
+
+        let answered = Failure::from(ConnectError::Remote(RpcError {
+            code: RpcErrorCode::Internal,
+            message: "Docker is down".into(),
+            details: serde_json::Value::Null,
+            cause: Vec::new(),
+        }));
+        assert_eq!(
+            unchecked(&answered, Some("box-node-09c8".into())),
+            "Docker is down (on Server box-node-09c8)"
+        );
+
+        // A failure this process had itself, like the image lookup, names no Server.
+        let local = Failure::from(IngressImageError::Timeout(
+            "Docker Hub didn't answer".into(),
+        ));
+        assert_eq!(
+            unchecked(&local, Some("box-node-09c8".into())),
+            crate::ui::row(&local)
+        );
+
+        // A connection that failed names its own Server, over the one the caller passed.
+        let refused = Failure::from(ConnectError::AllFailed {
+            selection: crate::context::ConnectionSource::Cloud,
+            attempts: 1,
+            server: Some("web-2".into()),
+            retry: ployz_core::Retry::Never,
+            reached: false,
+            last: Some(Box::new(ConnectError::Io(std::io::Error::from(
+                std::io::ErrorKind::ConnectionRefused,
+            )))),
+        });
+        assert_eq!(
+            unchecked(&refused, Some("other".into())),
+            "Server web-2 isn't answering (connection refused)"
+        );
+    }
+
     #[tokio::test]
     async fn a_start_that_stays_up_is_repaired() {
         assert_eq!(
@@ -460,21 +531,29 @@ mod tests {
         assert!(cause.contains("exited with code 1"), "{cause}");
     }
 
-    /// A create that lost the Serving Pointer race had its Ingress Proxy removed again,
+    /// A create a newer repair already serves past had its Ingress Proxy removed again,
     /// so that Server is still without ingress and the repair must say so.
     #[test]
-    fn a_superseded_create_is_a_failed_repair() {
-        let superseded = DeployOutcome::Superseded {
+    fn a_create_a_newer_repair_serves_past_is_a_failed_repair() {
+        let lost = DeployOutcome::Failed {
             completed: Vec::new(),
-            service: QualifiedService::system_ingress(),
+            failed: FailedOperation::Operation {
+                operation: ployz_core::DeployOperation::RemoveContainer {
+                    machine_id: ployz_core::MachineId::parse("a".repeat(32)).unwrap(),
+                    container_id: ContainerId::parse("c".repeat(64)).unwrap(),
+                    purpose: ployz_core::RemoveContainerPurpose::Retire,
+                },
+                error: ployz_core::ExecutionError::NewerServing {
+                    service: QualifiedService::system_ingress(),
+                },
+            },
             unexecuted: Vec::new(),
             services: Vec::new(),
         };
-        assert!(
-            matches!(failure(&superseded), Some(IngressFailure::Failed { .. })),
-            "{:?}",
-            failure(&superseded)
-        );
+        let Some(IngressFailure::Failed { cause }) = failure(&lost) else {
+            panic!("a lost race is a failed repair: {:?}", failure(&lost));
+        };
+        assert!(cause.contains("newer deploy is already serving"), "{cause}");
     }
 
     #[tokio::test]

@@ -6,7 +6,7 @@ use super::{
     ConfigMount, Placement, PortPublication, RequestedServiceSpec, ResolvedServiceSpec,
     ServiceContainerSpec, ServiceMode,
 };
-use crate::{ServiceMount, ServiceName, ServiceVolume};
+use crate::{RawVolumeSource, ServiceMount, ServiceName, ServiceVolume, VolumeSource};
 
 /// Content identity of the Resolved Service Spec fields whose change requires a new Container.
 ///
@@ -162,7 +162,7 @@ impl ServingShape {
             "restart": restart,
             "placement": placement,
             "ports": sorted_json(ports),
-            "volumes": sorted_json(volumes.iter().map(|volume| (&volume.reference, volume.source.kind(), volume.source.creation_labels()))),
+            "volumes": sorted_json(volumes.iter().map(|volume| (&volume.reference, source_shape(&volume.source), volume.source.creation_labels()))),
             "mounts": sorted_json(mounts),
             "configs": configs,
             "config_mounts": sorted_json(config_mounts),
@@ -199,6 +199,23 @@ impl RequestedServiceSpec {
     #[must_use]
     pub fn serving_shape(&self) -> ServingShape {
         ServingShape::of_requested(self)
+    }
+}
+
+/// A Provisioned Volume's bound is the Volume's, not the Container's: a resize raises
+/// it on every copy while the Container runs, and a Deploy accepts a bound at or
+/// above what it asks, so the Container that mounts it keeps serving.
+fn source_shape(source: &VolumeSource) -> serde_json::Value {
+    match source.kind() {
+        RawVolumeSource::Provisioned { name, labels, .. } => {
+            serde_json::json!({ "kind": "provisioned", "name": name, "labels": labels })
+        }
+        other @ (RawVolumeSource::External { .. }
+        | RawVolumeSource::Ordinary { .. }
+        | RawVolumeSource::Bind { .. }
+        | RawVolumeSource::Tmpfs { .. }) => {
+            serde_json::to_value(other).expect("serving shape JSON is serializable")
+        }
     }
 }
 
@@ -257,6 +274,46 @@ mod tests {
 
         other.container.image = "api:2".into();
         assert_ne!(spec.serving_shape(), other.serving_shape());
+    }
+
+    fn mounting(source: serde_json::Value) -> ResolvedServiceSpec {
+        serde_json::from_value(json!({
+            "service_id": "a".repeat(32),
+            "name": "db",
+            "mode": { "mode": "replicated", "replicas": 1 },
+            "container": { "image": "postgres:17", "pull_policy": "missing" },
+            "volumes": [{ "reference": "data", "source": source }],
+            "mounts": [{ "volume": "data", "target": "/data" }],
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn a_provisioned_volume_grown_live_keeps_the_serving_shape() {
+        let provisioned = |name: &str, maximum_bytes: u64| {
+            mounting(json!({
+                "kind": "provisioned", "name": format!("app_{name}"), "maximum_bytes": maximum_bytes,
+                "scope": { "namespace": "app", "logical_name": name }
+            }))
+        };
+        let at_5 = provisioned("data", 5_000_000_000);
+        assert_eq!(
+            at_5.serving_shape(),
+            provisioned("data", 8_000_000_000).serving_shape()
+        );
+        assert_eq!(
+            at_5.serving_shape(),
+            provisioned("data", 8_000_000_000)
+                .to_requested()
+                .serving_shape()
+        );
+        assert_ne!(
+            at_5.serving_shape(),
+            provisioned("other", 5_000_000_000).serving_shape()
+        );
+        let tmpfs =
+            |size_bytes: u64| mounting(json!({ "kind": "tmpfs", "size_bytes": size_bytes }));
+        assert_ne!(tmpfs(4096).serving_shape(), tmpfs(8192).serving_shape());
     }
 
     fn web_spec(container: serde_json::Value) -> ResolvedServiceSpec {

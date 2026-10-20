@@ -1,4 +1,5 @@
-import type { ExpectedCopy, MachineName, Snapshot, SnapshotGuid, VolumeCopy } from "@ployz/sdk";
+import type { ExpectedCopy, MachineName, SlotRole, Snapshot, SnapshotGuid, VolumeCopy } from "@ployz/sdk";
+import { planResize, type ResizePhase } from "#/modules/volume-run/resize";
 import { type AnsweredMember, copyName, type Member, type ReleasePlan, type VolumeRunArgs, type VolumeRunInput } from "#/modules/volume-run/volume-run";
 
 /** `cutting` is a read-only root: a cut began on it and has not renamed it to a slot yet. */
@@ -13,6 +14,7 @@ export type RefusalCode =
   | "second_mirror"
   | "invalid"
   | "already_on"
+  | "already_sized"
   | "no_mirror"
   | "no_copy"
   | "another_copy"
@@ -39,16 +41,22 @@ export type ReleaseFrom =
 export type Planned =
   | { readonly ok: true; readonly phase: { readonly kind: "mirror"; readonly writer: AnsweredMember; readonly target: AnsweredMember } }
   | { readonly ok: true; readonly phase: { readonly kind: "sync"; readonly writer: AnsweredMember; readonly mirror: AnsweredMember; readonly full: boolean } }
-  | { readonly ok: true; readonly phase: { readonly kind: "delete_mirror"; readonly destroy: readonly AnsweredMember[]; readonly forget: AnsweredMember | null } }
+  | { readonly ok: true; readonly phase: { readonly kind: "delete_mirror"; readonly destroy: readonly AnsweredMember[]; readonly forget: AnsweredMember | null; readonly role: SlotRole | null } }
   | { readonly ok: true; readonly phase: { readonly kind: "move"; readonly writer: AnsweredMember; readonly target: AnsweredMember; readonly start: MoveStart } }
   | { readonly ok: true; readonly phase: { readonly kind: "landed"; readonly target: AnsweredMember; readonly behind: readonly AnsweredMember[] } }
   | { readonly ok: true; readonly phase: { readonly kind: "release"; readonly from: ReleaseFrom } }
   | { readonly ok: true; readonly phase: { readonly kind: "restore"; readonly from: AnsweredMember; readonly lostAfter: Snapshot | null } }
   | { readonly ok: true; readonly phase: { readonly kind: "demote"; readonly old: AnsweredMember; readonly writer: AnsweredMember } }
   | { readonly ok: true; readonly phase: { readonly kind: "seed"; readonly source: AnsweredMember; readonly args: VolumeRunArgs["seed"] } }
+  | { readonly ok: true; readonly phase: ResizePhase }
   | { readonly ok: false; readonly refusal: Refusal };
 
-export type PlanInput = VolumeRunInput & { readonly volumeName: string; readonly orphan: boolean };
+/**
+ * A resize also carries the sizes the Store holds for the Volume: `recordedBytes`, the one its copies hold, 0 before
+ * the first Deploy, and `refquotaBytes`, the Working one, 0 for a Docker Volume.
+ */
+export type PlanInput = (Exclude<VolumeRunInput, { kind: "resize" }> | (Extract<VolumeRunInput, { kind: "resize" }> & { readonly recordedBytes: number; readonly refquotaBytes: number }))
+  & { readonly volumeName: string; readonly orphan: boolean };
 
 export function roleOf(member: Member): Role {
   if (!member.answered) return "unanswered";
@@ -120,7 +128,11 @@ export function planFromCopies(input: PlanInput, members: readonly Member[]): Pl
       if (writers.length > 0) return refuse("invalid", `${name} still has a writer on ${writers.map(named).join(", ")}`);
       const destroy = [...roots, ...mirrors];
       if (destroy.length === 0) return refuse("no_mirror", `${name} has no mirror`);
-      return { ok: true, phase: { kind: "delete_mirror", destroy, forget: null } };
+      return { ok: true, phase: { kind: "delete_mirror", destroy, forget: null, role: null } };
+    }
+    const { role } = input.args;
+    if (role === undefined) {
+      return refuse("invalid", `${name}'s delete was requested before Ployz recorded which copy it deletes, so nothing was deleted. Delete the copy again.`);
     }
     if (unanswered !== undefined) return unknown(unanswered);
     const writers = withRole("writer");
@@ -134,7 +146,7 @@ export function planFromCopies(input: PlanInput, members: readonly Member[]): Pl
       return refuse("confirm_required", `${only} is ${name}'s only copy; volume mirror rm ${only} --confirm ${name}`);
     }
     const [writer] = roots;
-    return { ok: true, phase: { kind: "delete_mirror", destroy, forget: roots.length === 1 && writer !== undefined ? writer : null } };
+    return { ok: true, phase: { kind: "delete_mirror", destroy, forget: roots.length === 1 && writer !== undefined ? writer : null, role: role === "any" ? null : role } };
   }
 
   if (unanswered !== undefined) return unknown(unanswered);
@@ -170,6 +182,8 @@ export function planFromCopies(input: PlanInput, members: readonly Member[]): Pl
     return refuse("no_writer", `${name} has no writer; deploy ${name} before mirroring it`);
   }
   if (roleOf(root) === "cutting") return midRun(name, mirrors, root);
+
+  if (input.kind === "resize") return planResize(name, input.args, { recorded: input.recordedBytes, working: input.refquotaBytes }, root, mirrors);
 
   if (input.kind === "sync") {
     const [mirror, second] = mirrors;

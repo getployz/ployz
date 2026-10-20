@@ -1156,7 +1156,7 @@
             "type": "boolean"
           },
           "size": {
-            "description": "New storage limit. Only before its first Deploy.",
+            "description": "New storage limit. Only before its first Deploy; a deployed Volume resizes through a Volume resize on Ployz Cloud.",
             "examples": [
               "10GiB"
             ],
@@ -1887,7 +1887,7 @@
       "read_only": true
     },
     {
-      "description": "Your servers now: state, release, upgrade, drain, disk, what runs there, leftovers no Environment owns, latest operation. This call asks no human.",
+      "description": "Your servers now: state, release, upgrade, drain, disk, what runs there, leftovers no Environment owns, latest operation, and a failed drain a later one hides. This call asks no human.",
       "destructive": false,
       "gate": "never",
       "input_schema": {

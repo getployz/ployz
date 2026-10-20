@@ -140,6 +140,7 @@ fn typescript_declarations() -> String {
     declarations.add::<super::MetricHistory>();
     declarations.add::<super::MetricHistoryInput>();
     declarations.add::<super::CopyObservation>();
+    declarations.add::<super::RetireOutcome>();
     declarations.add::<ployz_core::InspectVolumeCopyRequest>();
     declarations.add::<ployz_core::SeedVolumeRequest>();
     declarations.add::<ployz_core::VolumeCopyView>();
@@ -147,6 +148,9 @@ fn typescript_declarations() -> String {
     declarations.add::<ployz_core::SetVolumeCopyRequest>();
     declarations.add::<ployz_core::SetVolumeCopyReply>();
     declarations.add::<ployz_core::SetVolumeCopyRefused>();
+    declarations.add::<ployz_core::SetVolumeSizeRequest>();
+    declarations.add::<ployz_core::SetVolumeSizeReply>();
+    declarations.add::<ployz_core::SetVolumeSizeRefused>();
     declarations.add::<ployz_core::EnsureContainerRequest>();
     declarations.add::<ployz_core::EnsuredContainer>();
     declarations.add::<ployz_store::tools::ToolDef>();

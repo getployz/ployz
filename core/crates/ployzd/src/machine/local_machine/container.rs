@@ -8,13 +8,14 @@
 use std::sync::Arc;
 
 use ployz_core::{
-    AnonymousVolumes, ContainerId, ContainerKind, ContainerLocator, ContainerNow,
-    ContainerObservation, ContainerRefusal, ContainerRefusalReason, ContainerRuntimeObservation,
-    ContainerWant, CopyRotation, DockerVolumeName, Drain, EnsuredContainer, ImageIngestOpened,
-    ImageIngestReason, ImagePulled, ImagesRemoved, LocalMachinePhase, MachineStorageObservation,
-    Namespace, NewContainer, PruneImagesRequest, PullImageFromMachineRequest, PullImageRequest,
-    ResolvedServiceSpec, RotationEdge, RotationRefusal, RotationTarget, RunRotation, RunTarget,
-    Start, StopOptions, VolumeGen, VolumeRemoved,
+    AnonymousVolumes, ContainerId, ContainerKind, ContainerLimitsUpdated, ContainerLocator,
+    ContainerNow, ContainerObservation, ContainerRefusal, ContainerRefusalReason,
+    ContainerRuntimeObservation, ContainerWant, CopyRotation, DockerVolumeName, Drain,
+    EnsuredContainer, ImageIngestOpened, ImageIngestReason, ImagePulled, ImagesRemoved,
+    LocalMachinePhase, MachineStorageObservation, Namespace, NewContainer, PruneImagesRequest,
+    PullImageFromMachineRequest, PullImageRequest, ResolvedServiceSpec, RotationEdge,
+    RotationRefusal, RotationTarget, RunRotation, RunTarget, Start, StopOptions, VolumeGen,
+    VolumeRemoved,
 };
 use ployz_core::{
     AnswerWhen, ContainerRun, DeploymentLogId, Gen, HEALTH_POLL_INTERVAL, HealthFailure,
@@ -346,7 +347,7 @@ impl LocalMachine {
             let mut floor = containers.floor_turn().await;
             Ok(floor.admit(name, r#gen).await?.map(|()| Some(floor)))
         };
-        self.stop_checked(installation, container, drain, stop, withdraw, admit)
+        self.stop_checked(installation, container, drain, stop, false, withdraw, admit)
             .await
     }
 
@@ -362,26 +363,43 @@ impl LocalMachine {
         stop: &StopOptions,
     ) -> Result<Result<ContainerObservation, ContainerRefusal>, Error> {
         let containers = self.containers.as_ref().ok_or(Error::DockerUnavailable)?;
+        let record = target == RotationTarget::Stopped;
         let target = &target;
         let withdraw = || async move {
             Ok(leave_rotation(containers, container, target)
                 .await?
                 .map(|_turn| containers.withdraw(*container)))
         };
-        self.stop_checked(installation, container, drain, stop, withdraw, || {
-            leave_rotation(containers, container, target)
-        })
+        self.stop_checked(
+            installation,
+            container,
+            drain,
+            stop,
+            record,
+            withdraw,
+            || leave_rotation(containers, container, target),
+        )
         .await
     }
 
     /// Drains before the exclusive turn, then stops under it while holding what
     /// `check` returned. A refusal from `withdraw` or `check` stops nothing.
+    ///
+    /// With `record`, a stop that ended a run records it, so its exit reads as a stop.
+    /// The run is read after the stop, under the turn, so it is the one the stop ended
+    /// even when the Container restarted during the drain. A run that exited before
+    /// the stop was issued ended on its own, so its exit stays a crash.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "one stop's facts and its two guards, shared by every stop path"
+    )]
     async fn stop_checked<G, R, W, WFut, F, Fut>(
         &self,
         installation: &crate::mutation::MutationGuard,
         container: &ContainerId,
         drain: Drain,
         stop: &StopOptions,
+        record: bool,
         withdraw: W,
         check: F,
     ) -> Result<Result<ContainerObservation, R>, Error>
@@ -408,48 +426,27 @@ impl LocalMachine {
             Ok(held) => held,
             Err(refused) => return Ok(Err(refused)),
         };
-        let stopped = containers
+        let issued = chrono::Utc::now();
+        containers
             .stop(
                 container,
                 stop.signal.as_deref(),
                 stop.grace_period_seconds.map(i32::from),
             )
-            .await;
+            .await?;
+        let ended = if record {
+            containers.run_ended_since(container, issued).await?
+        } else {
+            None
+        };
         drop(held);
+        if let Some(run) = ended {
+            containers.record_stop(container, &run).await?;
+        }
         drop(turn);
-        stopped?;
         Ok(Ok(containers
             .inspect_managed(container, &machine_id)
             .await?))
-    }
-
-    pub(crate) async fn remove_drained_if<W>(
-        &self,
-        container: ContainerId,
-        still_wanted: W,
-    ) -> Result<bool, Error>
-    where
-        W: std::future::Future<Output = Result<bool, crate::corrosion::Error>> + Send + 'static,
-    {
-        let local = self.clone();
-        self.finish_mutation(async move {
-            let containers = local.containers.as_ref().ok_or(Error::DockerUnavailable)?;
-            let still_wanted = async { Ok::<_, Error>(still_wanted.await?) };
-            match containers
-                .stop_if(&container, None, None, still_wanted)
-                .await
-            {
-                Ok(true) | Err(Error::Docker(crate::docker::Error::ContainerNotFound(_))) => {}
-                Ok(false) => return Ok(false),
-                Err(error) => return Err(error),
-            }
-            let remove_volumes = AnonymousVolumes::default() == AnonymousVolumes::Remove;
-            match containers.remove(&container, remove_volumes, false).await {
-                Ok(()) | Err(crate::docker::Error::ContainerNotFound(_)) => Ok(true),
-                Err(error) => Err(error.into()),
-            }
-        })
-        .await
     }
 
     /// The cut's Container half: drain and stop every holder of the Volume, then run
@@ -645,6 +642,31 @@ impl LocalMachine {
                 .await?;
             // Every caller discards this reply; a deploy reads ports from its `PullImage`.
             Ok(ImagePulled::default())
+        })
+        .await
+    }
+
+    /// Apply `spec`'s CPU and memory limits to Container `container_id` in place
+    /// under shared admission, like a Container start.
+    ///
+    /// # Errors
+    ///
+    /// Returns when Docker is unavailable, admission is busy, or the Machine refuses
+    /// or fails the update.
+    pub(crate) async fn update_container_limits(
+        &self,
+        container_id: ContainerId,
+        spec: ResolvedServiceSpec,
+    ) -> Result<ContainerLimitsUpdated, Error> {
+        let local = self.clone();
+        let shared = self.owner.admission_lock().read_owned().await;
+        self.finish_admitted(shared, async move {
+            Ok(local
+                .containers
+                .as_ref()
+                .ok_or(Error::DockerUnavailable)?
+                .update_limits(&container_id, &spec)
+                .await?)
         })
         .await
     }

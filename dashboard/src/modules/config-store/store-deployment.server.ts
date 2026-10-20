@@ -79,7 +79,8 @@ const checkoutSources = Effect.fn("StoreDeployment.checkoutSources")(function* (
 
 /**
  * Run an admitted Deployment as `runner` on the Organization's Servers, all inside the Rust SDK, with its Git Services
- * checked out at their pinned commits and its upload, while Cloud holds it, extracted. Resolves to the Deployment's
+ * checked out at their pinned commits and its upload, while Cloud holds it, extracted. It claims first: a Deployment
+ * without an upload of its own takes the one its Services last ran as it starts. Resolves to the Deployment's
  * summary, or to what the Store said when there is nothing to run; a source Cloud can't read is recorded as why nothing
  * ran; any other failure is retried. Once it has ended, the uploads it replaced go.
  */
@@ -92,7 +93,8 @@ export const runStoreDeployment = Effect.fn("StoreDeployment.run")(function* (
   return yield* Effect.gen(function* () {
     const sources = yield* Effect.all({
       checkouts: checkoutSources(store, data.organizationId, data.deploymentId),
-      upload: uploadOwner(store, data.organizationId, data.deploymentId).pipe(
+      upload: storeTry(() => store.claimDeployment(data.organizationId, data.deploymentId, runner)).pipe(
+        Effect.flatMap(() => uploadOwner(store, data.organizationId, data.deploymentId)),
         Effect.flatMap((owner) => owner === undefined ? Effect.succeed(undefined) : fromGithub(extractUpload(data.organizationId, owner))),
       ),
     }).pipe(Effect.catchTag("SourceUnreadable", (error) => Effect.succeed({ failure: error.message })));
@@ -224,7 +226,8 @@ export const unclaimedStoreDeployments = Effect.fn("StoreDeployment.unclaimed")(
     if (Option.isSome(view) && view.value.in_flight) held.add(view.value.environment.id);
   }
   return unclaimed.filter((found) => !held.has(found.environment)).map((found): ConfigDeploymentAdmittedEventData => ({
-    organizationId: found.organization, environmentId: found.environment, deploymentId: found.deployment, trigger: "user",
+    organizationId: found.organization, environmentId: found.environment, deploymentId: found.deployment, number: found.number,
+    trigger: "user",
   }));
 });
 

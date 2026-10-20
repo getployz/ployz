@@ -429,9 +429,10 @@ fn a_cut_valid_list_still_names_the_closest_setting() {
     let (code, stderr) = run_human(&["explain", "web.restart_policy"]);
     assert_eq!(code, Some(2), "{stderr}");
     assert!(
-        stderr.contains("\nvalid: did you mean restartPolicy?\nvalid: "),
+        stderr.contains("\ndid you mean restartPolicy?\nvalid: "),
         "{stderr}"
     );
+    assert_eq!(stderr.matches("valid:").count(), 1, "{stderr}");
 }
 
 #[test]
@@ -3072,6 +3073,30 @@ fn server_enroll_takes_waiting_selection_and_storage_flags() {
                 .try_get_matches_from(["ployz", "server", "enroll"].into_iter().chain(args))
                 .is_err()
         );
+    }
+}
+
+#[test]
+fn volume_set_waits_only_for_a_size() {
+    let parse = |args: &[&str]| {
+        ployz::cli::command()
+            .try_get_matches_from(["ployz", "volume", "set", "data"].iter().chain(args))
+    };
+    for args in [
+        &["--size", "20"][..],
+        &["--size", "20", "--wait"],
+        &["--docker"],
+        &["--shared-writes"],
+    ] {
+        parse(args).unwrap();
+    }
+    for args in [
+        &["--wait"][..],
+        &["--docker", "--wait"],
+        &["--shared-writes", "--wait"],
+        &["--size", "20", "--docker"],
+    ] {
+        assert!(parse(args).is_err(), "{args:?}");
     }
 }
 

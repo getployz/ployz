@@ -54,6 +54,13 @@ fn replace(machine: MachineId, order: UpdateOrder) -> DeployOperation {
         skip_health_monitor: false,
     })
 }
+fn update(machine: MachineId) -> DeployOperation {
+    DeployOperation::UpdateContainer(ployz_core::LimitsUpdateOperation {
+        machine_id: machine,
+        container_id: old('f'),
+        spec: spec(),
+    })
+}
 fn remove(machine: MachineId) -> DeployOperation {
     DeployOperation::RemoveContainer {
         machine_id: machine,
@@ -191,7 +198,6 @@ fn group(service: &str, dependencies: &[&str]) -> ServiceGroup {
             .collect(),
         steps: Vec::new(),
         publish: true,
-        kept: Vec::new(),
     }
 }
 
@@ -222,6 +228,16 @@ fn row_state(state: &str) -> RowState {
             log: None,
             unanswered: false,
             out_of_memory: None,
+            cancelled: false,
+        },
+        "cancelled" => RowState::Failed {
+            reason: "Cancelled".into(),
+            cause: Vec::new(),
+            step: Some(ployz_store::FailedAt::Create),
+            log: None,
+            unanswered: false,
+            out_of_memory: None,
+            cancelled: true,
         },
         "not_attempted" => RowState::NotAttempted,
         other => panic!("unknown row state {other}"),
@@ -249,6 +265,7 @@ fn graph_frame(groups: &[ServiceGroup], services: &[(&str, &[&str])]) -> Frame {
                         state,
                         timing: Timing::Unavailable,
                         starts: true,
+                        updates: false,
                     }),
                 )
             })
@@ -449,6 +466,32 @@ fn a_failure_leaves_every_later_service_not_started() {
 }
 
 #[test]
+fn a_cancel_reads_cancelled_where_it_stopped_work_and_failed_where_work_failed() {
+    let frame = graph_frame(
+        &[
+            group("db", &[]),
+            group("api", &["db"]),
+            group("web", &["db"]),
+        ],
+        &[
+            ("db", &["completed"]),
+            ("api", &["cancelled", "completed"]),
+            ("web", &["failed", "cancelled"]),
+        ],
+    );
+    assert_eq!(
+        lines(&frame),
+        [
+            "depth 0",
+            "  ✔ db  switched 1/1",
+            "depth 1",
+            "  ⊘ api  cancelled (1/2 ready)",
+            "  ✘ web  failed (0/2 ready)",
+        ]
+    );
+}
+
+#[test]
 fn a_start_first_switch_reads_switched_while_old_containers_drain() {
     let (one, two) = (MachineId::random(), MachineId::random());
     let switched = |status| {
@@ -546,6 +589,52 @@ fn a_kept_service_that_only_clears_an_old_copy_reads_as_an_update() {
     );
 }
 
+/// An in-place update starts no copy, so the row never claims a switch.
+#[test]
+fn a_limits_update_reads_as_updated_limits_not_switched() {
+    let machine = MachineId::random();
+    let updating = |status| tracked(vec![planned(0, update(machine), status)]);
+    assert_eq!(
+        updating(OperationStatus::Pending),
+        ["depth 0", "  · web  waiting 0/1"]
+    );
+    assert_eq!(
+        updating(running(OperationPhase::UpdatingContainer)),
+        ["depth 0", "  ⠋ web  updating limits 0/1  0.0s"]
+    );
+    assert_eq!(
+        updating(OperationStatus::Completed),
+        ["depth 0", "  ✔ web  updated limits 1/1"]
+    );
+}
+
+#[test]
+fn a_service_updated_on_one_server_and_replaced_on_another_counts_each() {
+    let (first, second) = (MachineId::random(), MachineId::random());
+    assert_eq!(
+        tracked(vec![
+            planned(0, update(first), OperationStatus::Completed),
+            planned(
+                1,
+                replace(second, UpdateOrder::StartFirst),
+                OperationStatus::Completed
+            ),
+        ]),
+        ["depth 0", "  ✔ web  switched 1/1, updated limits 1/1"]
+    );
+    assert_eq!(
+        tracked(vec![
+            planned(0, update(first), OperationStatus::Completed),
+            planned(
+                1,
+                replace(second, UpdateOrder::StartFirst),
+                OperationStatus::Pending
+            ),
+        ]),
+        ["depth 0", "  ◐ web  booting 1/2"]
+    );
+}
+
 fn moving_off_an_old_hook() -> DeployPreview {
     use ployz_core::{
         ContainerKind, ContainerObservation, ContainerObservationParts,
@@ -609,6 +698,7 @@ fn moving_off_an_old_hook() -> DeployPreview {
             resolved_spec: resolved.clone(),
             address: None,
             labels: Default::default(),
+            stopped: false,
         })
         .unwrap()
     };
@@ -766,7 +856,7 @@ fn contextual_failure_keeps_one_deepest_cause_tail_and_exact_inspect_command() {
         server: "edge".into(),
         log: Some(shown("could not load configuration")),
     };
-    let failure = crate::handlers::ingress_hints(failure(&outcome, vec![tail]), |args| {
+    let failure = crate::handlers::ingress_hints(failure(&outcome, &[], vec![tail]), |args| {
         shell_words::join(
             std::iter::once("ployz")
                 .chain(args.iter().copied())
@@ -803,6 +893,47 @@ fn contextual_failure_keeps_one_deepest_cause_tail_and_exact_inspect_command() {
 }
 
 #[test]
+fn a_failed_limits_update_names_the_server_and_claims_nothing_about_the_live_limits() {
+    let machine = MachineId::random();
+    let docker = "Docker responded with status code 400: Conflicting options: Nano CPUs and CPU Period cannot both be set";
+    let update = planned(
+        0,
+        DeployOperation::UpdateContainer(ployz_core::LimitsUpdateOperation {
+            machine_id: machine,
+            container_id: old('f'),
+            spec: spec(),
+        }),
+        OperationStatus::Pending,
+    );
+    let outcome = DeployOutcome::Failed {
+        completed: Vec::new(),
+        failed: FailedOperation::Operation {
+            operation: update.operation.clone(),
+            error: ExecutionError::Machine {
+                action: MachineAction::UpdateContainerLimits,
+                error: RpcError {
+                    code: RpcErrorCode::Internal,
+                    message: "Docker operation failed".into(),
+                    details: serde_json::json!({"machine_id": machine}),
+                    cause: vec![docker.into()],
+                },
+            },
+        },
+        unexecuted: Vec::new(),
+        services: Vec::new(),
+    };
+    let failure = failure(&outcome, std::slice::from_ref(&update), Vec::new());
+    assert_eq!(
+        crate::ui::plain(&failure),
+        format!("error: web: Server edge could not confirm the new limits.\n  cause: {docker}\n")
+    );
+    assert_eq!(
+        failure.json().get("cause"),
+        Some(&serde_json::json!(["Docker operation failed", docker]))
+    );
+}
+
+#[test]
 fn a_missing_image_reads_as_its_own_sentence_over_the_docker_cause() {
     let docker = "Docker responded with status code 404: nginx:doesnotexist: not found";
     let outcome = DeployOutcome::Failed {
@@ -824,7 +955,7 @@ fn a_missing_image_reads_as_its_own_sentence_over_the_docker_cause() {
         services: Vec::new(),
     };
     assert_eq!(
-        crate::ui::plain(&failure(&outcome, Vec::new())),
+        crate::ui::plain(&failure(&outcome, &[], Vec::new())),
         format!(
             "error: web: Image nginx:doesnotexist not found, or its registry needs credentials.\n  cause: {docker}\n"
         )
@@ -861,7 +992,7 @@ fn missing_tail_retains_inspect_and_compensation_is_only_actual_evidence() {
         log: None,
     };
     let text = crate::ui::plain(&crate::handlers::ingress_hints(
-        failure(&outcome, vec![tail]),
+        failure(&outcome, &[], vec![tail]),
         |args| {
             shell_words::join(
                 std::iter::once("ployz")
@@ -880,6 +1011,47 @@ fn missing_tail_retains_inspect_and_compensation_is_only_actual_evidence() {
     assert!(text.contains("inspect: ployz logs shop/web"));
     assert!(!text.contains("Last 0"));
     assert!(!text.contains("Restored the old"));
+}
+
+#[test]
+fn a_deploy_a_newer_one_serves_shows_no_logs_and_no_logs_hint() {
+    let machine = MachineId::random();
+    let outcome = DeployOutcome::Failed {
+        completed: Vec::new(),
+        failed: FailedOperation::Operation {
+            operation: operation(0, machine, OperationStatus::Pending).operation,
+            error: ExecutionError::NewerServing {
+                service: QualifiedService::parse("shop/web").unwrap(),
+            },
+        },
+        unexecuted: Vec::new(),
+        services: Vec::new(),
+    };
+    let tail = |log| LogTail {
+        service: QualifiedService::parse("shop/web").unwrap(),
+        name: ServiceName::parse("web").unwrap(),
+        machine,
+        server: "edge".into(),
+        log,
+    };
+    for log in [
+        Some(shown("listening on :8080")),
+        Some(ployz_store::tools::LogText::Withheld {
+            why: ployz_store::tools::Withheld::Unanswered,
+        }),
+    ] {
+        let text = crate::ui::plain(&crate::handlers::ingress_hints(
+            failure(&outcome, &[], vec![tail(log)]),
+            |args| shell_words::join(std::iter::once("ployz").chain(args.iter().copied())),
+        ));
+        assert!(
+            text.starts_with("error: web: A newer deploy is already serving shop/web."),
+            "{text}"
+        );
+        assert!(!text.contains("log lines"), "{text}");
+        assert!(!text.contains("Logs from"), "{text}");
+        assert!(!text.contains("ployz logs"), "{text}");
+    }
 }
 
 fn shown(text: &str) -> ployz_store::tools::LogText {

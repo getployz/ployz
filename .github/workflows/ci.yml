@@ -9,12 +9,13 @@ on:
   workflow_dispatch:
 
 concurrency:
-  # Main pushes share one group, so a newer one cancels older ones. Kache's main builds come mostly from the
-  # latest main run, though a cancelled run keeps what it wrote first, and an older main commit may have no
-  # finished run. A manual run of main groups by commit and is never cancelled once it runs; a newer manual
-  # run of the same commit can still replace it while it waits. Manual runs and pushes never cancel each other.
+  # A main run that has started always finishes. Main pushes share one group, so one run goes while the newest
+  # push waits, and a newer push replaces the waiting one. Each finished main run refreshes kache: PR builds sit
+  # on top of main, so when main runs were cancelled before writing, every PR recompiled what main had changed.
+  # A manual run of main groups by commit; a newer manual run of the same commit can replace it while it waits.
+  # Manual runs and pushes never cancel each other. PR runs and other branches cancel their older run.
   group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.event_name }}-${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.sha || github.ref }}
-  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' || github.ref != 'refs/heads/main' }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
   contents: read
@@ -114,30 +115,41 @@ jobs:
             exit 1
           fi
 
+  # Each shard builds one group of crates on its own runner and runs half of their tests:
+  # the job is bound by the runner's 4 cores. Groups build without workspace-wide feature
+  # unification, so a group sees only the features its own crates turn on.
   rust-tests:
+    name: rust-tests (${{ matrix.group }}-${{ matrix.half }})
     defaults:
       run:
         working-directory: core
     needs: changes
     if: contains(fromJSON(needs.changes.outputs.jobs), 'rust-tests')
-    name: rust-tests (${{ matrix.shard }}/4)
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     permissions:
       contents: read
       actions: write
-    # Standard runners cost a public repo nothing, so each shard builds the workspace itself:
-    # four builds side by side finish sooner than one build feeding an archive to the shards.
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4]
-    env:
-      SHARD: ${{ matrix.shard }}
-      PARTITION: count:${{ matrix.shard }}/4
+        group: [cli, daemon, store]
+        half: [1, 2]
+        include:
+          # Every crate the other groups leave out, so a new crate's tests run here.
+          - group: cli
+            packages: --workspace --exclude ployzd --exclude ployz-store
+            node: true
+          - group: daemon
+            packages: -p ployzd
+          # The Store suites on SQLite, then on Postgres.
+          - group: store
+            packages: -p ployz-store
+            postgres: true
     services:
       postgres:
-        image: postgres:16-alpine
+        # An empty image starts no service.
+        image: ${{ matrix.postgres && needs.changes.outputs.postgres == 'true' && 'postgres:16-alpine' || '' }}
         env:
           POSTGRES_PASSWORD: postgres
         ports: ["5432:5432"]
@@ -147,55 +159,59 @@ jobs:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup-rust
         with:
-          cache-key: workspace-tests
+          # Both halves of a group build the same crates, so they share one cache manifest.
+          cache-key: tests-${{ matrix.group }}
       - uses: actions/setup-node@v4
+        if: matrix.node
         with:
           node-version: 22
       - uses: taiki-e/install-action@c3ec0de9ae7f1019cea21aa96aa0a895b9552063 # v2
         with:
           tool: cargo-nextest@0.9.143
-      - name: Build native SDK and Rust tests together
-        run: cargo build --workspace --all-targets --all-features --profile test --locked --timings
-      - name: Test with a hostile ambient Ployz context
-        env:
-          PLOYZ_CONFIG: ${{ runner.temp }}/hostile-ployz-config.yaml
-          # Built above with `eval`; the SDK tests would otherwise rebuild it with other features.
-          PLOYZ_SDK_ADDON: ${{ github.workspace }}/core/target/debug/libployz_sdk.so
+      - name: Build the group's tests
+        run: cargo build ${{ matrix.packages }} --all-targets --all-features --profile test --locked --timings
+      - name: Write a hostile ambient Ployz context
         run: |
-          cat > "$PLOYZ_CONFIG" <<'EOF'
+          cat > "$RUNNER_TEMP/hostile-ployz-config.yaml" <<'EOF'
           current_context: hostile
           contexts:
             hostile:
               connections:
                 - tcp: 127.0.0.1:1
           EOF
-          cargo nextest run --workspace --all-features --locked --no-fail-fast --partition "$PARTITION"
-          if [ "$SHARD" = 1 ]; then cargo test --doc --workspace --all-features --locked; fi
+      - name: Test with a hostile ambient Ployz context
+        env:
+          PLOYZ_CONFIG: ${{ runner.temp }}/hostile-ployz-config.yaml
+          # Built above with `eval`; the SDK tests would otherwise rebuild it with other features.
+          PLOYZ_SDK_ADDON: ${{ github.workspace }}/core/target/debug/libployz_sdk.so
+        run: cargo nextest run ${{ matrix.packages }} --partition hash:${{ matrix.half }}/2 --all-features --locked --no-fail-fast
+      - name: Doc tests with a hostile ambient Ployz context
+        if: matrix.half == 1 && !cancelled()
+        env:
+          PLOYZ_CONFIG: ${{ runner.temp }}/hostile-ployz-config.yaml
+        run: cargo test --doc ${{ matrix.packages }} --all-features --locked
       # A throwaway server: durability only slows each test's new database.
       - name: Stop the test Postgres syncing to disk
-        if: needs.changes.outputs.postgres == 'true'
+        if: matrix.postgres && needs.changes.outputs.postgres == 'true'
         run: >-
           docker exec ${{ job.services.postgres.id }} psql -U postgres -q
           -c 'ALTER SYSTEM SET fsync = off'
           -c 'ALTER SYSTEM SET synchronous_commit = off'
           -c 'ALTER SYSTEM SET full_page_writes = off'
           -c 'SELECT pg_reload_conf()'
-      # The workspace's features, as built above: `--package ployz-store` alone resolves other features and recompiles.
       - name: ployz-store tests on Postgres
-        if: needs.changes.outputs.postgres == 'true'
+        if: matrix.postgres && needs.changes.outputs.postgres == 'true'
         env:
           PLOYZ_STORE_TEST_POSTGRES: postgres://postgres:postgres@127.0.0.1:5432
-        run: cargo nextest run --workspace --all-features --locked -E 'package(ployz-store)' --partition "$PARTITION"
+        run: cargo nextest run ${{ matrix.packages }} --partition hash:${{ matrix.half }}/2 --all-features --locked
       - name: Check the missing SSH prerequisite
-        if: matrix.shard == 1
+        if: matrix.group == 'cli' && matrix.half == 1 && !cancelled()
         env:
           PLOYZ_BIN: ${{ github.workspace }}/core/target/debug/ployz
         run: bash scripts/test-missing-ssh-client.sh
-      # Last: installing Docker restarts dockerd, which stops the Postgres service.
       # Main pushes only: it mostly catches drift in the newest Docker release, and costs 2 minutes per run.
-      # The last shard runs it, away from the doc tests and SSH check on the first.
       - name: Decode the latest Docker's local log files as docker logs prints them
-        if: github.event_name == 'push' && matrix.shard == 4
+        if: matrix.group == 'daemon' && matrix.half == 1 && github.event_name == 'push'
         env:
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER: sudo -E
         run: |
@@ -204,9 +220,9 @@ jobs:
           docker pull --quiet alpine:3.23.3
           cargo nextest run --package ployzd --all-features --locked --run-ignored only -E 'test(observe::integration_tests::decoding_matches_docker_logs_byte_for_byte)'
       - uses: actions/upload-artifact@v4
-        if: always() && matrix.shard == 1
+        if: always()
         with:
-          name: rust-build-timings
+          name: rust-build-timings-${{ matrix.group }}-${{ matrix.half }}
           path: core/target/cargo-timings/*.html
           retention-days: 7
           if-no-files-found: ignore

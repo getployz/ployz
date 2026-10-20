@@ -3,9 +3,10 @@
 //!
 //! A Deployment carries one upload, the one Cloud extracts for it. Each Service
 //! without a source it targets builds from that upload when it sent one, and
-//! otherwise from the one it last built from, which may be older. Cloud keeps, per
-//! Service, that upload and its latest upload sent, and every upload a Deployment
-//! that may still run builds from.
+//! otherwise from the one it last built from, which may be older. Without one sent,
+//! admission's choice is chosen again as it starts, once the Deployment ahead of it
+//! settled. Cloud keeps, per Service, that upload and its latest upload sent, and
+//! every upload a Deployment that may still run builds or may start from.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -86,36 +87,59 @@ pub(crate) fn own<'a>(deployment: &'a Stored, service: &str) -> Option<&'a Uploa
 pub(crate) struct ServiceUploads {
     /// A retry, or a Deploy without a new upload, sent none.
     pub(crate) sent: bool,
+    /// Chosen by lineage at admission, so chosen again as it starts. A retry builds
+    /// from what its source did, so it never is.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(crate) provisional: bool,
     pub(crate) services: BTreeMap<String, UploadDigest>,
 }
 
-/// Whether `deployment` moves its Services onto the uploads it builds from: it sent
-/// them, it applied, or it may still run. A failed retry of an older upload leaves
-/// each on its latest.
-fn advances(deployment: &Stored) -> bool {
-    deployment.summary.status == crate::DeploymentStatus::Applied
-        || deployment.summary.in_flight
-        || deployment
-            .service_uploads
-            .as_ref()
-            .is_none_or(|uploads| uploads.sent)
+/// Whether `deployment` applied `service`: it runs the upload it built it from.
+fn applied(deployment: &Stored, service: &str) -> bool {
+    deployment.run.nodes.get(service).is_some_and(|status| {
+        status.applied(deployment.summary.status == crate::DeploymentStatus::Applied)
+    })
 }
 
-/// The upload `service` builds from: its own in the latest Deployment that moved it.
-fn lineage<'a>(deployments: &'a [Stored], service: &str) -> Option<(usize, &'a UploadDigest)> {
+/// Whether `deployment` moved `service` onto the upload it builds it from: it sent
+/// that upload, or applied `service`. A retry leaves a Service it didn't apply on
+/// its latest, and one that never ran leaves every one. One admitted before uploads
+/// were kept per Service may be a retry, so only applying moves it.
+fn moved(deployment: &Stored, service: &str) -> bool {
+    deployment
+        .service_uploads
+        .as_ref()
+        .is_some_and(|uploads| uploads.sent)
+        || applied(deployment, service)
+}
+
+/// Whether a Deployment admitted now runs after `deployment` has moved `service`:
+/// it did, or it is running, so the next one queues behind it. A queued one is
+/// superseded instead.
+fn ahead(deployment: &Stored, service: &str) -> bool {
+    moved(deployment, service)
+        || (deployment.summary.in_flight
+            && deployment.summary.status != crate::DeploymentStatus::Queued)
+}
+
+/// The upload `service` builds from: its own in the latest Deployment that `moves` it.
+fn lineage<'a>(
+    deployments: &'a [Stored],
+    service: &str,
+    moves: fn(&Stored, &str) -> bool,
+) -> Option<(usize, &'a UploadDigest)> {
     deployments
         .iter()
         .enumerate()
         .rev()
-        .filter(|(_, deployment)| advances(deployment))
+        .filter(|(_, deployment)| moves(deployment, service))
         .find_map(|(at, deployment)| own(deployment, service).map(|digest| (at, digest)))
 }
 
 /// What a Deployment admitted with `upload` builds its target Services without a
 /// source from: the upload it carries, and each such Service's digest by lineage.
-/// A new upload is every one's. Without one, each builds from the upload it last
-/// built from, and the Deployment carries the newest of those: the one Cloud
-/// extracts. One with none yet builds from the carried one.
+/// A new upload is every one's. Without one, the choice is [`chosen`]'s, and it is
+/// chosen again as the Deployment starts.
 pub(crate) fn admitted(
     tx: &mut dyn Tx,
     environment: &EnvironmentId,
@@ -142,16 +166,75 @@ pub(crate) fn admitted(
             Some(upload),
             Some(ServiceUploads {
                 sent: true,
+                provisional: false,
                 services,
             }),
         ));
     }
-    let deployments = uploaded(tx, environment)?;
+    Ok(chosen(&uploaded(tx, environment)?, &sourceless)?
+        .map_or((None, None), |(carried, uploads)| {
+            (Some(carried), Some(uploads))
+        }))
+}
+
+/// Choose again, as `stored` starts, the uploads admission chose it by lineage: the
+/// Deployment ahead of it has settled, so whether it moved each Service is known.
+/// The Deployment then carries, and shows, the upload it runs.
+pub(crate) fn claimed(tx: &mut dyn Tx, stored: &mut Stored) -> Result<(), RpcError> {
+    let Some(ServiceUploads {
+        provisional: true,
+        services: frozen,
+        ..
+    }) = &stored.service_uploads
+    else {
+        return Ok(());
+    };
+    let sourceless: Vec<&str> = frozen.keys().map(String::as_str).collect();
+    let deployments: Vec<Stored> = uploaded(tx, &stored.summary.environment_id)?
+        .into_iter()
+        .filter(|deployment| deployment.summary.id != stored.summary.id)
+        .collect();
+    let mut services = frozen.clone();
+    if let Some((carried, chosen)) = chosen(&deployments, &sourceless)? {
+        stored.summary.upload = Some(carried);
+        services = chosen.services;
+    }
+    let uploads = ServiceUploads {
+        sent: false,
+        provisional: false,
+        services,
+    };
+    tx.execute(
+        "UPDATE config_deployment SET upload = ?2, service_uploads = ?3 WHERE id = ?1",
+        &[
+            stored.summary.id.as_str().into(),
+            stored
+                .summary
+                .upload
+                .as_ref()
+                .map(super::json_text)
+                .as_deref()
+                .into(),
+            super::json_text(&uploads).as_str().into(),
+        ],
+    )?;
+    stored.service_uploads = Some(uploads);
+    Ok(())
+}
+
+/// What `sourceless` Services build from, by lineage among `deployments`: each the
+/// upload it last built from, and the newest of those as the one carried, the one
+/// Cloud extracts. One with none yet builds from the carried one. None when no
+/// Service has one.
+fn chosen(
+    deployments: &[Stored],
+    sourceless: &[&str],
+) -> Result<Option<(UploadedSource, ServiceUploads)>, RpcError> {
     // Each Service's own upload, with where its latest Deployment stands.
     let owned: Vec<(&str, usize, &UploadDigest)> = sourceless
         .iter()
         .filter_map(|service| {
-            lineage(&deployments, service).map(|(at, digest)| (*service, at, digest))
+            lineage(deployments, service, ahead).map(|(at, digest)| (*service, at, digest))
         })
         .collect();
     // The newest, preferring what that Deployment carried itself.
@@ -166,7 +249,7 @@ pub(crate) fn admitted(
         .max_by_key(|(_, at, digest)| (*at, carries(*at, digest)))
         .map(|(_, _, digest)| *digest)
     else {
-        return Ok((None, None));
+        return Ok(None);
     };
     let Some(carried) = deployments
         .iter()
@@ -187,19 +270,22 @@ pub(crate) fn admitted(
             ((*service).to_owned(), digest.clone())
         })
         .collect();
-    Ok((
-        Some(carried),
-        Some(ServiceUploads {
+    Ok(Some((
+        carried,
+        ServiceUploads {
             sent: false,
+            provisional: true,
             services,
-        }),
-    ))
+        },
+    )))
 }
 
 /// The digests Cloud keeps for `environment`, given `held`, the Deployments Cloud
 /// holds an upload for: those that sent one. Each Service without a source keeps
-/// the upload it last built from and its latest upload sent, and a Deployment that
-/// may still run keeps every upload it builds from.
+/// the upload it next builds from, the one it runs, and its latest upload sent, and
+/// a Deployment that may still run keeps every upload it builds from. A queued one
+/// whose uploads are chosen as it starts keeps those of each Service it targets, so
+/// whichever it starts from is there.
 fn kept(
     tx: &mut dyn Tx,
     environment: &EnvironmentId,
@@ -225,23 +311,32 @@ fn kept(
                 .flat_map(|uploads| uploads.services.values().cloned()),
         );
     }
-    let Some(saved) = crate::review::latest_saved(tx, environment)? else {
-        return Ok(kept);
-    };
-    for service in saved
-        .intent
-        .services
+    let saved = crate::review::latest_saved(tx, environment)?;
+    let mut services: BTreeSet<&str> = saved
         .iter()
+        .flat_map(|saved| saved.intent.services.iter())
         .filter(|service| matches!(service.config.source, ServiceSource::Empty { .. }))
-    {
+        .map(|service| service.id.as_str())
+        .collect();
+    services.extend(
+        deployments
+            .iter()
+            .filter(|deployment| deployment.summary.in_flight)
+            .filter_map(|deployment| deployment.service_uploads.as_ref())
+            .filter(|uploads| uploads.provisional)
+            .flat_map(|uploads| uploads.services.keys().map(String::as_str)),
+    );
+    for service in services {
         let mut latest = deployments.iter().rev();
-        kept.extend(lineage(&deployments, &service.id).map(|(_, digest)| digest.clone()));
+        for moves in [moved, applied] {
+            kept.extend(lineage(&deployments, service, moves).map(|(_, digest)| digest.clone()));
+        }
         kept.extend(
             latest
                 .find(|deployment| {
-                    held.contains(&deployment.summary.id) && targets(deployment, &service.id)
+                    held.contains(&deployment.summary.id) && targets(deployment, service)
                 })
-                .and_then(|deployment| own(deployment, &service.id))
+                .and_then(|deployment| own(deployment, service))
                 .cloned(),
         );
     }

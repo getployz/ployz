@@ -166,6 +166,16 @@ write `1GiB`. Changes and `ployz diff` show it in the unit it was likely given, 
 killed, and its [Restart policy](#restart-policy) decides whether it comes back. See
 [Scaling and multiple servers](scaling.md#run-more-replicas).
 
+### Changing a limit
+
+A deploy that only changes the CPU limit, or only raises the Memory limit, applies it to each
+running replica in place, with no restart. A replica replaces instead when the deploy lowers the
+Memory limit or sets its first one, clears a limit, or changes anything else. Every replica that
+needs the new limit replaces when the deploy also adds or replaces replicas of the service, or
+when any server running one of those replicas runs an older Ployz. If a server fails to apply the new
+limit, the deploy fails there and the replica keeps running with its old limit; deploying again
+retries.
+
 ## Build
 
 Only services built from a GitHub repository have this section.
@@ -216,7 +226,8 @@ and runs without a shell; wrap it in `sh -c '…'` to get one. See
 
 Off until you click **Pre-deploy command**. Use it for migrations, like `npm run migrate`: if it
 fails or runs past 5 minutes, the deploy fails and the old version keeps running, but Ployz
-doesn't undo what it changed. See
+doesn't undo what it changed. Turn it off and the next deploy removes the service's old pre-deploy
+containers once they have finished, so `ployz ps` stops listing them. See
 [Deploy without downtime](../deploy/deployments.md#deploy-without-downtime).
 
 ### Healthcheck

@@ -1149,7 +1149,7 @@ fn a_removal_supersedes_a_queued_deploy_that_would_run_the_service() {
         [
             vec!["web".to_owned(), "worker".to_owned(), "db".to_owned()],
             vec!["db".to_owned()],
-            vec!["data".to_owned(), "cache".to_owned()]
+            vec!["cache".to_owned(), "data".to_owned()]
         ]
     );
     assert!(store.claim(&queued, &runner()).is_err());
@@ -1171,7 +1171,7 @@ fn a_removal_tears_down_what_a_deploy_claimed_before_its_push() {
         [
             vec!["web".to_owned(), "worker".to_owned(), "db".to_owned()],
             vec!["db".to_owned()],
-            vec!["data".to_owned(), "cache".to_owned()]
+            vec!["cache".to_owned(), "data".to_owned()]
         ]
     );
 }

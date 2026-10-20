@@ -209,6 +209,10 @@ pub(crate) fn admit(
         ships: shipped(&nodes),
         runner: None,
         upload,
+        chooses_upload_at_start: super::chooses_upload_at_start(
+            DeploymentStatus::Queued,
+            service_uploads.as_ref(),
+        ),
         remove: saved == NOTHING,
         admitted_by: who.principal.clone(),
         admitted_at,
@@ -584,6 +588,22 @@ pub(crate) fn retry(
         }
         let environment = scope::load_by_id(tx, &stored.summary.environment_id)?;
         crate::removal::guard_removal(tx, &environment)?;
+    } else {
+        // Its revision asks a storage of each Volume it ships; one resized since may
+        // no longer fit it. A Volume it never shipped it leaves as it is.
+        let saved = saved_at(tx, &stored.summary.environment_id, stored.summary.saved)?;
+        let shipped = saved.volumes.iter().filter(|volume| {
+            stored
+                .nodes
+                .iter()
+                .any(|node| node.id() == volume.resource_id)
+        });
+        crate::volume::check_storage(
+            tx,
+            &stored.summary.environment_id,
+            shipped,
+            crate::volume::StorageRule::Replay,
+        )?;
     }
     // What a rollback retires is frozen against Applied State now, which a newer
     // running Deployment may yet change. A queued one is superseded, as by a Deploy,
@@ -647,6 +667,7 @@ pub(crate) fn retry(
     let retried_uploads = stored.service_uploads.clone().map(|uploads| {
         json_text(&super::uploads::ServiceUploads {
             sent: false,
+            provisional: false,
             ..uploads
         })
     });
@@ -707,6 +728,7 @@ pub(crate) fn retry(
         push: None,
         ci: None,
         held: false,
+        chooses_upload_at_start: false,
         ..stored.summary
     };
     Ok((summary, rollback))
@@ -1076,7 +1098,6 @@ pub(crate) fn claim(
         }
     };
     let sources = build::sources_of(tx, &stored)?;
-    let uploads = build::uploads_of(tx, &stored)?;
     let saved = saved_at(tx, &stored.summary.environment_id, stored.summary.saved)?;
     let branch = crate::branch::lowering(tx, &stored.summary.environment_id, &saved)?;
     let (services, removals) = stored.lowering();
@@ -1118,11 +1139,13 @@ pub(crate) fn claim(
              WHERE environment_id = ?1 AND status IN ('running', 'cancelling')",
             &[stored.summary.environment_id.as_str().into()],
         )?;
+        super::uploads::claimed(tx, &mut stored)?;
         save(tx, &mut stored)?;
         if taken_over > 0 {
             crate::review::scrub_sealed(tx, &stored.summary.environment_id)?;
         }
     }
+    let uploads = build::uploads_of(tx, &stored)?;
     if stored.run.warnings != warnings {
         stored.run.warnings = warnings;
         stored.summary.warnings = stored.run.summary_warnings();
@@ -1388,19 +1411,59 @@ pub(crate) fn record(
             let projection =
                 project_runtime_outcome(preview, json!({ "version": 1, "outcome": outcome }))
                     .map_err(|_| invalid_evidence("Deploy Outcome"))?;
+            super::rows::record(tx, &stored, &progress)?;
+            // The Deployment's cancel stopped the run, and each Service it left
+            // unfinished, unless one of its rows failed on its own.
+            let cancelled = if stored.summary.status == DeploymentStatus::Cancelling
+                && matches!(
+                    &*outcome,
+                    DeployOutcome::Failed {
+                        failed: FailedOperation::Operation { error, .. }
+                            | FailedOperation::Replacement { error, .. },
+                        ..
+                    } if error.cancelled()
+                ) {
+                let failed = super::rows::failed(tx, &stored)?;
+                projection
+                    .failed_services
+                    .iter()
+                    .filter(|service| !failed.contains(*service))
+                    .cloned()
+                    .collect()
+            } else {
+                std::collections::BTreeSet::new()
+            };
             let saved = saved_at(tx, &stored.summary.environment_id, stored.summary.saved)?;
             let applied = applied_state(tx, &stored.summary.environment_id, &saved)?;
-            let nodes = node_outcomes(
-                &stored.nodes,
-                &saved,
-                &applied,
-                &Evidence::Executed {
-                    preview,
-                    projection: &projection,
-                    removed: &removed,
-                },
-            );
-            let nodes = keep_advanced(&stored.run.nodes, nodes);
+            let outcomes = |projection| {
+                node_outcomes(
+                    &stored.nodes,
+                    &saved,
+                    &applied,
+                    &Evidence::Executed {
+                        preview,
+                        projection,
+                        removed: &removed,
+                    },
+                )
+            };
+            let nodes = keep_advanced(&stored.run.nodes, outcomes(&projection));
+            // A node the cancel alone failed no longer fails once the Services it
+            // stopped count as never attempted.
+            let mut uncancelled = projection.clone();
+            uncancelled
+                .failed_services
+                .retain(|service| !cancelled.contains(service));
+            uncancelled.unattempted_services.extend(cancelled);
+            let uncancelled = outcomes(&uncancelled);
+            let cancelled = nodes
+                .iter()
+                .filter(|(id, status)| {
+                    **status == NodeStatus::Failed
+                        && uncancelled.get(*id) != Some(&NodeStatus::Failed)
+                })
+                .map(|(id, _)| id.clone())
+                .collect();
             // A Deploy that left a Volume's data behind, or may have left a Service
             // it retires or removes running, didn't finish: a retry removes it.
             let unfinished = |(id, status): (&String, &NodeStatus)| {
@@ -1430,13 +1493,12 @@ pub(crate) fn record(
                     } => compensation.lines().into_iter().map(String::from).collect(),
                     DeployOutcome::Failed { .. }
                     | DeployOutcome::Success { .. }
-                    | DeployOutcome::Superseded { .. }
                     | DeployOutcome::Interrupted { .. } => Vec::new(),
                 },
             };
-            super::rows::record(tx, &stored, &progress)?;
             super::rows::settle(tx, &stored)?;
             stored.run.nodes = nodes;
+            stored.run.cancelled = cancelled;
             stored.run.executed = Some(executed);
             if taken_over {
                 // Another runner owns the Environment now: the run stays Unknown and
@@ -1981,22 +2043,25 @@ fn end(
     Ok(stored.summary)
 }
 
-/// Put each node `stored` confirmed (Deployed or Removed) into Applied State as
-/// its Saved revision has it; once it `succeeded`, every Unchanged node too: the
-/// Deploy covered it even when the runtime had nothing to do (a rename, a tag).
-/// Applying one again changes nothing. The Environment's Branches then follow it.
+/// Put each node `stored` confirmed into Applied State as its Saved revision has
+/// it, by [`NodeStatus::applied`], a Volume at the size its Servers hold. Applying
+/// one again changes nothing. The Environment's Branches then follow it.
 fn advance(tx: &mut dyn Tx, stored: &Stored, succeeded: bool) -> Result<(), RpcError> {
     let advanced: Vec<&TargetNode> = stored
         .nodes
         .iter()
         .filter(|node| {
-            stored.run.nodes.get(node.id()).is_some_and(|status| {
-                status.advances() || (succeeded && *status == NodeStatus::Unchanged)
-            })
+            stored
+                .run
+                .nodes
+                .get(node.id())
+                .is_some_and(|status| status.applied(succeeded))
         })
         .collect();
     if !advanced.is_empty() {
         let saved = saved_at(tx, &stored.summary.environment_id, stored.summary.saved)?;
+        let mut volumes = saved.volumes.clone();
+        crate::volume::size::held(tx, &stored.summary.environment_id, &mut volumes)?;
         let mut deployed = std::collections::BTreeSet::new();
         for node in advanced {
             let applied = match node {
@@ -2005,8 +2070,7 @@ fn advance(tx: &mut dyn Tx, stored: &Stored, succeeded: bool) -> Result<(), RpcE
                     .iter()
                     .find(|service| service.id == node.id())
                     .map(scope::Node::Service),
-                TargetNode::Volume { .. } => saved
-                    .volumes
+                TargetNode::Volume { .. } => volumes
                     .iter()
                     .find(|volume| volume.resource_id == node.id())
                     .map(scope::Node::Volume),

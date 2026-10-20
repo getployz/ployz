@@ -12,6 +12,7 @@ const connectionsFor = (id) => [{ unix: path.join(socketDirectory, `${id}.sock`)
 const machineId = process.env.PLOYZ_MACHINE_ID;
 const machineA = process.env.PLOYZ_MACHINE_A;
 const machineB = process.env.PLOYZ_MACHINE_B;
+const machineC = process.env.PLOYZ_MACHINE_C;
 
 if (
   !addon ||
@@ -19,7 +20,8 @@ if (
   !socketDirectory ||
   !machineId ||
   !machineA ||
-  !machineB
+  !machineB ||
+  !machineC
 ) {
   throw new Error("Node volume smoke is missing environment");
 }
@@ -40,6 +42,7 @@ async function expectRpc(fn, code) {
     if (rpc.code !== code) {
       throw new Error(`expected ${code}, got ${rpc.code}: ${rpc.message}`);
     }
+    return rpc;
   }
 }
 
@@ -86,15 +89,18 @@ function volume(machine, name) {
   );
 
   // A well-formed switch verb reaches the Machine instead of failing to parse; this
-  // fixture refuses every switch verb.
-  await expectRpc(
-    () =>
-      client.volumeSwitch(machineB, {
-        command: "set_volume_copy",
-        payload: { name: "data", expect: { kind: "none" }, want: { kind: "forget" } },
-      }),
-    "unsupported",
-  );
+  // fixture's Machine B refuses every switch verb, Machine A never answers one, and the
+  // entry Machine cannot dial Machine C.
+  const forget = { command: "set_volume_copy", payload: { name: "data", expect: { kind: "none" }, want: { kind: "forget" } } };
+  const refused = await expectRpc(() => client.volumeSwitch(machineB, forget), "unsupported");
+  if (refused.unanswered !== false) throw new Error("a Machine's refusal is an answer");
+  const silent = await expectRpc(() => client.volumeSwitch(machineA, forget), "unavailable");
+  if (silent.unanswered !== true) throw new Error("a switch no Machine answered must say so, since it may have been taken");
+  if (refused.targetUnreached !== false) throw new Error("a Machine's refusal reached its target");
+  if (silent.targetUnreached !== false) throw new Error("a lost reply may have reached its target");
+  const undialed = await expectRpc(() => client.volumeSwitch(machineC, forget), "unavailable");
+  if (undialed.targetUnreached !== true) throw new Error("a switch the entry could not dial must say it never reached the target");
+  if (undialed.unanswered !== false) throw new Error("a switch that never reached its target cannot have been taken");
 
   await client.close();
   await expectRpc(

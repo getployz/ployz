@@ -84,6 +84,8 @@ enum Call {
     /// Gone with no drain, by the slot of a new Container of this kind.
     DiscardSlot(MachineId, ContainerKind),
     RemoveVolume(DockerVolumeId),
+    /// Limits of a running Container changed in place.
+    UpdateLimits(MachineId, ContainerId),
 }
 
 #[derive(Clone)]
@@ -235,6 +237,8 @@ struct Scripted {
     /// A Held ask on this copy lands, but no reply to it, or to a resend,
     /// ever arrives.
     unanswered_held: BTreeSet<ContainerId>,
+    /// The reason an unanswered In or Held ask fails with.
+    unanswered_reason: &'static str,
     /// This many route reads fail before the next one answers.
     failed_route_reads: Mutex<usize>,
     /// A route read takes a scheduler turn, as an RPC does.
@@ -254,6 +258,11 @@ struct Scripted {
     incomplete: bool,
     /// Once this move is applied, every route read fails.
     reads_fail_after: Option<Move>,
+    /// Once this move is applied, a route read sent to this Machine goes
+    /// unanswered, as when it is cut off.
+    cut_off_after: Option<(Move, MachineId)>,
+    /// This many entry route reads go unanswered before the next one answers.
+    blipped_entry_reads: Mutex<usize>,
     /// What each proxy last routed, kept by the real rule.
     served: Mutex<BTreeMap<MachineId, ployz_core::ProxyRoutes>>,
     moves: Mutex<Vec<Move>>,
@@ -286,6 +295,7 @@ impl Scripted {
             unanswered_in: BTreeSet::new(),
             answered_error_after_in: BTreeSet::new(),
             unanswered_held: BTreeSet::new(),
+            unanswered_reason: "no answer before the deadline",
             failed_route_reads: Mutex::new(0),
             read_latency: false,
             moved: Mutex::new(BTreeMap::new()),
@@ -295,6 +305,8 @@ impl Scripted {
             lagging: Mutex::new(BTreeMap::new()),
             incomplete: false,
             reads_fail_after: None,
+            cut_off_after: None,
+            blipped_entry_reads: Mutex::new(0),
             served: Mutex::new(BTreeMap::new()),
             moves: Mutex::new(Vec::new()),
             listed: Mutex::new(Vec::new()),
@@ -333,6 +345,51 @@ impl Scripted {
             },
         );
         self
+    }
+
+    /// A route read through `machine_id`, or through the entry when `None`.
+    async fn read_at(
+        &self,
+        machine_id: Option<&MachineId>,
+        service: &QualifiedService,
+    ) -> Result<RoutesRead, RpcError> {
+        if self.read_latency {
+            tokio::task::yield_now().await;
+        }
+        {
+            let mut failing = self.failed_route_reads.lock().unwrap();
+            if *failing > 0 {
+                *failing -= 1;
+                return Err(error("the route query failed"));
+            }
+        }
+        if self
+            .reads_fail_after
+            .as_ref()
+            .is_some_and(|applied| self.moves().contains(applied))
+        {
+            return Err(unavailable("the route read failed"));
+        }
+        if self
+            .cut_off_after
+            .as_ref()
+            .is_some_and(|(applied, cut)| Some(cut) == machine_id && self.moves().contains(applied))
+        {
+            return Err(RpcError::unanswered_target(
+                RpcErrorCode::Unavailable,
+                "target Machine RPC timed out".into(),
+            ));
+        }
+        let routes = if machine_id.is_some_and(|machine_id| self.lags(machine_id, true)) {
+            self.before(service)
+        } else {
+            self.routes(service, true)
+        };
+        Ok(RoutesRead {
+            routes,
+            complete: !self.incomplete,
+            down: self.down.clone(),
+        })
     }
 
     /// Every proxy already routes the In copies of `service`, as it would
@@ -704,7 +761,7 @@ impl Scripted {
             {
                 return Err(RpcError::unanswered_target(
                     RpcErrorCode::Unavailable,
-                    "no answer before the deadline".into(),
+                    self.unanswered_reason.into(),
                 ));
             }
             Decision::Met => {
@@ -773,7 +830,7 @@ impl Scripted {
         {
             return Err(RpcError::unanswered_target(
                 RpcErrorCode::Unavailable,
-                "no answer before the deadline".into(),
+                self.unanswered_reason.into(),
             ));
         }
         Ok(EnsuredContainer::Ensured {
@@ -954,7 +1011,8 @@ impl Scripted {
                 | Call::Run(..)
                 | Call::Inspect(..)
                 | Call::DiscardSlot(..)
-                | Call::RemoveVolume(_) => {}
+                | Call::RemoveVolume(_)
+                | Call::UpdateLimits(..) => {}
             }
         }
         answer
@@ -1106,34 +1164,21 @@ impl MachineOperations for Scripted {
         machine_id: &MachineId,
         service: &QualifiedService,
     ) -> Result<RoutesRead, RpcError> {
-        if self.read_latency {
-            tokio::task::yield_now().await;
-        }
+        self.read_at(Some(machine_id), service).await
+    }
+
+    async fn read_entry_routes(&self, service: &QualifiedService) -> Result<RoutesRead, RpcError> {
         {
-            let mut failing = self.failed_route_reads.lock().unwrap();
-            if *failing > 0 {
-                *failing -= 1;
-                return Err(error("the route query failed"));
+            let mut blipped = self.blipped_entry_reads.lock().unwrap();
+            if *blipped > 0 {
+                *blipped -= 1;
+                return Err(RpcError::unanswered_target(
+                    RpcErrorCode::Unavailable,
+                    "target Machine RPC timed out".into(),
+                ));
             }
         }
-        if self
-            .reads_fail_after
-            .as_ref()
-            .is_some_and(|applied| self.moves().contains(applied))
-        {
-            return Err(unavailable("the route read failed"));
-        }
-        let routes = if self.lags(machine_id, true) {
-            self.before(service)
-        } else {
-            self.routes(service, true)
-        };
-        Ok(RoutesRead {
-            routes,
-            complete: !self.incomplete,
-            down: self.down.clone(),
-            ..RoutesRead::default()
-        })
+        self.read_at(None, service).await
     }
 
     async fn inspect_container(
@@ -1191,6 +1236,20 @@ impl MachineOperations for Scripted {
 
     async fn remove_volume(&self, id: &DockerVolumeId) -> Result<(), RpcError> {
         unit(self.next(Call::RemoveVolume(id.clone())))
+    }
+
+    async fn update_container_limits(
+        &self,
+        machine_id: &MachineId,
+        container_id: &ContainerId,
+        spec: &ResolvedServiceSpec,
+    ) -> Result<ContainerLimitsUpdated, RpcError> {
+        unit(self.next(Call::UpdateLimits(*machine_id, *container_id))).map(|()| {
+            ContainerLimitsUpdated {
+                container_id: *container_id,
+                limits: spec.container.resources.limits(),
+            }
+        })
     }
 
     async fn runs_global(
@@ -1255,6 +1314,8 @@ mod health;
 mod hooks;
 #[path = "exec_tests/image_ports.rs"]
 mod image_ports;
+#[path = "exec_tests/limits.rs"]
+mod limits;
 #[path = "exec_tests/moving.rs"]
 mod moving;
 #[path = "exec_tests/replacement.rs"]
@@ -1375,6 +1436,7 @@ fn observation(
         resolved_spec: spec,
         address: None,
         labels: Default::default(),
+        stopped: false,
     })
     .unwrap()
 }

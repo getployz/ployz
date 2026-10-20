@@ -7,10 +7,10 @@ use std::time::Duration;
 
 use ployz_core::service::proxy_routes;
 use ployz_core::{
-    ContainerAddress, ContainerDetails, ContainerId, ContainerLocator, ContainerNow,
-    ContainerObservation, ContainerRefusal, ContainerRefusalReason, ContainerWant, CopyRotation,
-    DockerVolumeId, EnsuredContainer, HealthVerdict, ImagePulled, Machine, MachineId, MachineName,
-    Namespace, ObservedGlobalSlotSpec, Placement, ProxyRoutes, QualifiedService,
+    ContainerAddress, ContainerDetails, ContainerId, ContainerLimitsUpdated, ContainerLocator,
+    ContainerNow, ContainerObservation, ContainerRefusal, ContainerRefusalReason, ContainerWant,
+    CopyRotation, DockerVolumeId, EnsuredContainer, HealthVerdict, ImagePulled, Machine, MachineId,
+    MachineName, Namespace, ObservedGlobalSlotSpec, Placement, ProxyRoutes, QualifiedService,
     ResolvedServiceSpec, ResolvedUpdateConfig, RoutesRead, RpcError, RpcErrorCode,
     ServiceContainer, ServiceMode, ServiceName, ServiceObservation, SlotKey,
 };
@@ -150,6 +150,15 @@ impl MachineOperations for Cluster {
         unreachable!("retirement removes no volumes")
     }
 
+    async fn update_container_limits(
+        &self,
+        _machine_id: &MachineId,
+        _container_id: &ContainerId,
+        _spec: &ResolvedServiceSpec,
+    ) -> Result<ContainerLimitsUpdated, RpcError> {
+        unreachable!("retirement changes no limits")
+    }
+
     async fn runs_global(
         &self,
         _machine_id: &MachineId,
@@ -258,8 +267,11 @@ impl MachineOperations for Cluster {
             routes,
             complete: true,
             down: self.down.clone(),
-            ..RoutesRead::default()
         })
+    }
+
+    async fn read_entry_routes(&self, _service: &QualifiedService) -> Result<RoutesRead, RpcError> {
+        unreachable!("retirement reads routes through the copy's own Machine")
     }
 }
 

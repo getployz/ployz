@@ -24,13 +24,13 @@ pub use certificate::{
     CertificateRow, published_cover,
 };
 pub use machine_view::{MachineView, MachinesSnapshot};
-pub use publisher::{run_machine_publisher, wait_for_catch_up};
+pub use publisher::{LiveRuntime, run_machine_publisher, wait_for_catch_up};
 pub use service::{
     CorrosionConfig, CorrosionPaths, DEFAULT_CONTAINER_NAME, RunningCorrosion, remove_retained,
 };
 pub(crate) use store::{
     IngressRouteAck, IngressRouteChange, IngressRouteRow, LocalContainerSnapshot,
-    LocalVolumeSnapshot, ServingPointers,
+    LocalVolumeSnapshot,
 };
 pub use store::{ReplicatedObservations, ReplicatedStore};
 

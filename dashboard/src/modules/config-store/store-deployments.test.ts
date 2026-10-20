@@ -218,7 +218,7 @@ const deployment = (fields: Partial<DeploymentView>) => asTestDouble<DeploymentV
 });
 
 it("says who started a Deployment and what it ships: the Service's commit, else the first pinned one, else its upload", () => {
-  const builds = [{ service: "web", commit: "8a7ed6e9f0", status: "built", message: null, started_at: null, finished_at: null }, { service: "api", commit: "1234567abc", status: "built", message: null, started_at: null, finished_at: null }] as const;
+  const builds = [{ service: "web", commit: "8a7ed6e9f0", status: "built", message: null, started_at: null, finished_at: null, server: null, github_skipped: null }, { service: "api", commit: "1234567abc", status: "built", message: null, started_at: null, finished_at: null, server: null, github_skipped: null }] as const;
   expect(deploymentByline(deployment({ admitted_by: "Nick", builds: [...builds] }), "api")).toBe("by Nick · 1234567");
   expect(deploymentByline(deployment({ admitted_by: "Nick", builds: [...builds] }), "whoami")).toBe("by Nick · 8a7ed6e");
   // A retry of someone else's upload names both; one's own upload names the uploader once.
@@ -360,6 +360,15 @@ it("marks a node the Working State has back since the Saved version as coming ba
   const [merged] = reviewGroups({ ...diff, changes: [changed], draft_changes: [restored] }, services);
   expect(merged?.lifecycle).toBe("create");
   expect(merged?.comesBack).toBe(true);
+});
+
+it("lists a draft-only node by kind and name among the runtime changes, as the CLI does", () => {
+  const web = asTestDouble<DiffView["changes"][number]>()(diff.changes[0] ?? {});
+  const volume = asTestDouble<DiffView["changes"][number]>()(diff.changes[1] ?? {});
+  const api = { ...web, id: "s2", name: "api", comparison: "saved" as const, settings: [] };
+  const old = { ...web, id: "s0", lifecycle: "delete" as const, comparison: "saved" as const, settings: [] };
+  const groups = reviewGroups({ ...diff, changes: [{ ...web, lifecycle: "create" }, volume], draft_changes: [api, old] }, services);
+  expect(groups.map((group) => [group.nodeName, group.lifecycle])).toEqual([["api", "update"], ["web", "delete"], ["web", "create"], ["pg-data", "create"]]);
 });
 
 it("lets a whole runtime lifecycle dominate draft children and counts its node marker", () => {

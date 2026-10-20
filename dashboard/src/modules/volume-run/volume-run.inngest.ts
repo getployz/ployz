@@ -1,4 +1,4 @@
-import type { ContainerId, ExpectedCopy, MachineId, Snapshot, VolumeCopy, WantedCopy } from "@ployz/sdk";
+import type { ContainerId, ExpectedCopy, MachineId, SlotRole, Snapshot, VolumeCopy, WantedCopy } from "@ployz/sdk";
 import { Effect, Option, Schema } from "effect";
 import { NonRetriableError } from "inngest";
 import { attemptLifecycle } from "#/modules/inngest/attempt-lifecycle";
@@ -10,7 +10,10 @@ import {
   volumeRunRequestedEventType,
   volumeRunTakenEventType,
 } from "#/modules/inngest/events";
+import { gigabytes } from "#/modules/config-store/store-volumes";
 import { PATIENCE, PATIENCE_WAITS, waitsFor } from "#/modules/volume-run/patience";
+import { gb, type ResizePhase, type ResizeStep, type SizeDirection, type SizeOutcome, undoOnRefusal } from "#/modules/volume-run/resize";
+import { type RecordAnswer, recordVolumeSize, resizeCopy } from "#/modules/volume-run/volume-size.server";
 import { fenceTaken } from "#/modules/volume-run/volume-run.deploy.server";
 import { alreadyOn, epochOf, expectOf, observedEpoch, type Planned, planForwardRelease, planFromCopies } from "#/modules/volume-run/plan";
 import { type AnsweredMember, copyName, type Member, type ReleasePlan } from "#/modules/volume-run/volume-run";
@@ -106,6 +109,7 @@ export async function runVolume(
   if (phase.kind === "seed") return seedVolume(steps, phase);
   if (phase.kind === "delete_mirror") return deleteMirror(steps, phase);
   if (phase.kind === "landed") return landVolume(steps, phase);
+  if (phase.kind === "resize") return resizeVolume(steps, phase);
   // A plain sync row only demotes a primary that came back; with one primary, the rowless mirror sync refreshes the mirror.
   if (phase.kind === "sync" && !phase.full) {
     await finish(steps, "02-finish", `${run.volumeName} has one primary to keep`);
@@ -287,11 +291,26 @@ async function mirrorVolume(steps: RunSteps, phase: PhaseOf<"mirror"> | PhaseOf<
   }
 }
 
+/** A slot's delete names the role its request was admitted for, so its Machine refuses a slot that holds another by then. */
+const deleteExpect = (copy: VolumeCopy | null, role: SlotRole | null): ExpectedCopy => {
+  const expect = expectOf(copy);
+  return expect.kind === "mirror" && role !== null ? { ...expect, role } : expect;
+};
+
+const ROLE_NOUN = { mirror: "a mirror", old_copy: "an old copy" } as const;
+
 async function deleteMirror(steps: RunSteps, phase: PhaseOf<"delete_mirror">) {
   const { run } = steps;
   try {
     for (const slot of phase.destroy) {
-      await mustSet(steps, `03-forget-${slot.machine.name}`, slot.machine, expectOf(slot.view.copy), { kind: "forget" }, `${slot.machine.name} is still busy with ${run.volumeName}`);
+      const expect = deleteExpect(slot.view.copy, phase.role);
+      const answer = await setCopy(steps, `03-forget-${slot.machine.name}`, slot.machine, expect, { kind: "forget" }, `${slot.machine.name} is still busy with ${run.volumeName}`);
+      if (answer.ok) continue;
+      const { role } = phase;
+      const reroled = role !== null && answer.reason === "mismatch" && answer.copy?.kind === "slot" && answer.copy.role !== role;
+      throw new NonRetriableError(reroled
+        ? `${copyName(run.volumeName, slot.machine.name)} is no longer ${ROLE_NOUN[role]}, so nothing was deleted`
+        : answer.message);
     }
     if (phase.forget !== null) {
       const writer = phase.forget;
@@ -302,6 +321,82 @@ async function deleteMirror(steps: RunSteps, phase: PhaseOf<"delete_mirror">) {
   }
   await finish(steps, "05-finish");
   return { runId: run.id, destroyed: phase.destroy.map((slot) => slot.machine.name) };
+}
+
+const SIZING = { grow: "Growing" } satisfies Record<SizeDirection, string>;
+
+const names = (machines: readonly MachineRef[]) => machines.map((machine) => machine.name).join(", ");
+
+/**
+ * A resize walks the planner's steps in order and takes no epoch: SetVolumeSize is unfenced, which is safe only
+ * because a grow never lowers a bound. A refusal ends the run failed, naming the Server, and undoes the record only
+ * while no copy holds the size yet, so the Store never says more than every copy holds.
+ */
+async function resizeVolume(steps: RunSteps, phase: ResizePhase) {
+  const { step, runEffect, run, runId } = steps;
+  const sets = phase.steps.flatMap((each) => (each.kind === "set" ? [each.member.machine] : []));
+  const done: ("recorded" | "held")[] = [];
+  for (const [index, each] of phase.steps.entries()) {
+    if (each.kind === "record") {
+      const recorded: RecordAnswer = await step.run(`03-${index}-record`, () => runEffect(recordVolumeSize(run, runId, { from: phase.from, to: phase.to })));
+      if (!recorded.ok) return fail(steps, "05-failed", `${run.volumeName} grew to ${gb(phase.to)} on ${names(sets)}, but ${recorded.message}`);
+      done.push("recorded");
+      continue;
+    }
+    const { machine } = each.member;
+    await step.run(`03-${index}-note`, () => runEffect(noteRun(run, runId, `${SIZING[phase.direction]} ${run.volumeName} to ${gb(phase.to)} on ${machine.name}`)));
+    const outcome = await sizeSettle(steps, `03-${index}-size-${machine.id}`, each, phase);
+    if (outcome.kind === "refused") {
+      let recorded = done.includes("recorded");
+      if (undoOnRefusal(done)) {
+        const undone: RecordAnswer = await step.run("04-unrecord", () => runEffect(recordVolumeSize(run, runId, { from: phase.to, to: phase.from })));
+        recorded = !undone.ok;
+      }
+      return fail(steps, "05-failed", refusedMessage(run.volumeName, phase, sets, machine, outcome, recorded));
+    }
+    done.push("held");
+  }
+  await finish(steps, "05-finish", `${run.volumeName} is ${gb(phase.to)} on ${names(sets)}`);
+  return { runId: run.id, resized: phase.to };
+}
+
+/**
+ * One holder's SetVolumeSize, asked again with the same request while the Machine answers `switching`, as `settle`
+ * does on `busy`: the request spends no retry.
+ */
+async function sizeSettle({ step, runEffect, run, runId }: RunSteps, id: string, set: Extract<ResizeStep, { kind: "set" }>, phase: ResizePhase) {
+  const { machine } = set.member;
+  for (let check = 0; check < BUSY_CHECKS; check += 1) {
+    if (check > 0) await step.sleep(`${id}-wait-${check}`, BUSY_WAIT);
+    const outcome: SizeOutcome = await step.run(check === 0 ? id : `${id}-${check}`, () => runEffect(resizeCopy(run, runId, machine, phase.to, phase.direction)));
+    if (outcome.kind !== "retry") return outcome;
+  }
+  const kept: SizeOutcome = { kind: "refused", reason: "read_only", message: `${machine.name} kept ${run.volumeName} read-only for ${BUSY_CHECKS} checks`, boundBytes: null, capacity: null };
+  return kept;
+}
+
+/**
+ * The refusal, then what the Store says, which copies already hold the size and which were not asked, then what to
+ * do: "db-1 has no room to grow data to 20 GB. data stays 10 GB. db-2, db-3 already hold 20 GB;
+ * db-4 was not asked. Free space on db-1, then run ployz volume set data --size 20 again."
+ */
+function refusedMessage(
+  name: string, phase: ResizePhase, sets: readonly MachineRef[], refusedBy: MachineRef, outcome: Extract<SizeOutcome, { kind: "refused" }>, recorded: boolean,
+) {
+  const at = sets.findIndex((machine) => machine.id === refusedBy.id);
+  const hold = sets.slice(0, at);
+  const unasked = sets.slice(at + 1);
+  const copies = [
+    ...(hold.length > 0 ? [`${names(hold)} already ${hold.length === 1 ? "holds" : "hold"} ${gb(phase.to)}`] : []),
+    ...(unasked.length > 0 ? [`${names(unasked)} ${unasked.length === 1 ? "was" : "were"} not asked`] : []),
+  ];
+  const again = `run ployz volume set ${name} --size ${gigabytes(phase.to)} again`;
+  return [
+    `${outcome.message}.`,
+    recorded ? `${name} is ${gb(phase.to)}.` : `${name} stays ${gb(phase.from)}.`,
+    ...(copies.length > 0 ? [`${copies.join("; ")}.`] : []),
+    outcome.reason === "no_capacity" ? `Free space on ${refusedBy.name}, then ${again}.` : `Run ${again.slice("run ".length)}.`,
+  ].join(" ");
 }
 
 /** Restore makes the one copy left the writer; it starts no Container, so the next Deploy runs the Service on it. */

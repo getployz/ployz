@@ -143,51 +143,51 @@ case "$*" in
     f='{props}'/"$9/snapshots"
     [ ! -e "$f" ] || cut -f1,2 "$f"
     ;;
-  'list -Hp -o name,refquota,used,usedbydataset,mountpoint,mounted,readonly -r tank')
+  'list -Hp -o name,refquota,used,usedbydataset,referenced,mountpoint,mounted,readonly -r tank')
     if [ -e '{list_fails}' ]; then echo 'pool is busy' >&2; exit 1; fi
     if [ -e '{hold_list}' ]; then
       touch '{list_held}'
       while [ -e '{hold_list}' ]; do sleep 0.01; done
     fi
-    printf 'tank\t0\t0\t0\t/tank\tyes\toff\n'
+    printf 'tank\t0\t0\t0\t0\t/tank\tyes\toff\n'
     if [ -e '{root}' ]; then
       if [ -e '{incompatible_root}' ]; then root_mountpoint=/tank/ployz; else root_mountpoint=/var/lib/ployz-volumes; fi
       if [ -e '{readonly_root}' ]; then root_readonly=on; else root_readonly=off; fi
-      printf 'tank/ployz\t0\t0\t0\t%s\tno\t%s\n' "$root_mountpoint" "$root_readonly"
+      printf 'tank/ployz\t0\t0\t0\t0\t%s\tno\t%s\n' "$root_mountpoint" "$root_readonly"
     fi
     if [ -e '{volume}' ]; then
       if [ -e '{mounted}' ]; then state=yes; else state=no; fi
       if [ -e '{incompatible_volume}' ]; then volume_mountpoint=/srv/data; else volume_mountpoint=/var/lib/ployz-volumes/data; fi
-      if [ -e '{unbounded_volume}' ]; then refquota=none; else refquota=1073741824; fi
+      if [ -e '{unbounded_volume}' ]; then refquota=none; else refquota=$(prop tank/ployz/data refquota 1073741824); fi
       if [ -e '{readonly_volume}' ]; then volume_readonly=on; else volume_readonly=off; fi
-      printf 'tank/ployz/data\t%s\t966367642\t966367642\t%s\t%s\t%s\n' "$refquota" "$volume_mountpoint" "$state" "$volume_readonly"
+      printf 'tank/ployz/data\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$refquota" "$(prop tank/ployz/data used 966367642)" "$(prop tank/ployz/data usedbydataset 966367642)" "$(prop tank/ployz/data referenced 966367642)" "$volume_mountpoint" "$state" "$volume_readonly"
     fi
     if [ -e '{descendant}' ]; then
-      printf 'tank/ployz/data/child\t536870912\t0\t0\t/var/lib/ployz-volumes/data/child\tno\toff\n'
+      printf 'tank/ployz/data/child\t536870912\t0\t0\t0\t/var/lib/ployz-volumes/data/child\tno\toff\n'
     fi
     if [ -e '{sibling}' ]; then
-      printf 'tank/ployz/sibling\t1073741824\t0\t0\t/var/lib/ployz-volumes/sibling\tno\toff\n'
+      printf 'tank/ployz/sibling\t1073741824\t0\t0\t0\t/var/lib/ployz-volumes/sibling\tno\toff\n'
     fi
     if [ -e '{seed_volume}' ]; then
-      printf 'tank/ployz/{seed}\t%s\t0\t0\t/var/lib/ployz-volumes/{seed}\tno\t%s\n' "$(prop tank/ployz/{seed} refquota 1073741824)" "$(prop tank/ployz/{seed} readonly off)"
+      printf 'tank/ployz/{seed}\t%s\t0\t0\t0\t/var/lib/ployz-volumes/{seed}\tno\t%s\n' "$(prop tank/ployz/{seed} refquota 1073741824)" "$(prop tank/ployz/{seed} readonly off)"
     fi
     if [ -e '{slot}' ] || [ -e '{mirror_root}' ] || [ -e '{mirror}' ] || [ -e '{seed_slot}' ]; then
-      printf 'tank/ployz-mirror\t0\t0\t0\t/var/lib/ployz-mirror\tno\ton\n'
+      printf 'tank/ployz-mirror\t0\t0\t0\t0\t/var/lib/ployz-mirror\tno\ton\n'
     fi
     if [ -e '{slot}' ]; then
-      printf 'tank/ployz-mirror/copy\t{slot_bound}\t0\t0\t/var/lib/ployz-mirror/copy\tno\ton\n'
-      printf 'tank/ployz-mirror/copy/fs\t{slot_bound}\t0\t0\t/var/lib/ployz-mirror/copy/fs\tno\ton\n'
+      printf 'tank/ployz-mirror/copy\t{slot_bound}\t0\t0\t0\t/var/lib/ployz-mirror/copy\tno\ton\n'
+      printf 'tank/ployz-mirror/copy/fs\t{slot_bound}\t0\t0\t0\t/var/lib/ployz-mirror/copy/fs\tno\ton\n'
     fi
     if [ -e '{mirror}' ]; then
-      printf 'tank/ployz-mirror/data\t%s\t0\t0\t/var/lib/ployz-mirror/data\tno\ton\n' "$(prop tank/ployz-mirror/data refquota {slot_bound})"
+      printf 'tank/ployz-mirror/data\t%s\t0\t0\t0\t/var/lib/ployz-mirror/data\tno\ton\n' "$(prop tank/ployz-mirror/data refquota {slot_bound})"
       if [ -e '{mirror_fs}' ]; then
-        printf 'tank/ployz-mirror/data/fs\t%s\t0\t0\t/var/lib/ployz-mirror/data/fs\tno\t%s\n' "$(prop tank/ployz-mirror/data/fs refquota {slot_bound})" "$(prop tank/ployz-mirror/data/fs readonly on)"
+        printf 'tank/ployz-mirror/data/fs\t%s\t%s\t%s\t%s\t/var/lib/ployz-mirror/data/fs\tno\t%s\n' "$(prop tank/ployz-mirror/data/fs refquota {slot_bound})" "$(prop tank/ployz-mirror/data/fs used 0)" "$(prop tank/ployz-mirror/data/fs usedbydataset 0)" "$(prop tank/ployz-mirror/data/fs referenced 0)" "$(prop tank/ployz-mirror/data/fs readonly on)"
       fi
     fi
     if [ -e '{seed_slot}' ]; then
-      printf 'tank/ployz-mirror/{seed}\t%s\t0\t0\t/var/lib/ployz-mirror/{seed}\tno\ton\n' "$(prop tank/ployz-mirror/{seed} refquota {slot_bound})"
+      printf 'tank/ployz-mirror/{seed}\t%s\t0\t0\t0\t/var/lib/ployz-mirror/{seed}\tno\ton\n' "$(prop tank/ployz-mirror/{seed} refquota {slot_bound})"
       if [ -e '{seed_fs}' ]; then
-        printf 'tank/ployz-mirror/{seed}/fs\t%s\t0\t0\t/var/lib/ployz-mirror/{seed}/fs\tno\t%s\n' "$(prop tank/ployz-mirror/{seed}/fs refquota {slot_bound})" "$(prop tank/ployz-mirror/{seed}/fs readonly on)"
+        printf 'tank/ployz-mirror/{seed}/fs\t%s\t0\t0\t0\t/var/lib/ployz-mirror/{seed}/fs\tno\t%s\n' "$(prop tank/ployz-mirror/{seed}/fs refquota {slot_bound})" "$(prop tank/ployz-mirror/{seed}/fs readonly on)"
       fi
     fi
     ;;
@@ -230,7 +230,7 @@ case "$*" in
     ;;
   'get -Hp -o value refquota tank/ployz/data')
     require "$6"
-    if [ -e '{unbounded_volume}' ]; then echo none; else echo 1073741824; fi
+    if [ -e '{unbounded_volume}' ]; then echo none; else prop "$6" "$5" 1073741824; fi
     ;;
   'get -Hp -o value refquota tank/ployz-mirror/data/fs')
     require "$6"

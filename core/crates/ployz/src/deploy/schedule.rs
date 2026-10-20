@@ -4,8 +4,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::{
-    ContainerId, DeployOperation, MachineId, RemoveContainerPurpose, ServiceName, ServiceOutcome,
-    ServiceResult,
+    DeployOperation, MachineId, RemoveContainerPurpose, ServiceName, ServiceOutcome, ServiceResult,
 };
 
 /// New Containers one Machine starts at once for one Deploy. Containers still
@@ -30,6 +29,9 @@ pub(crate) enum TaskKind {
     /// Removes a copy the Service's previous pointer named, so it waits until
     /// every Machine routes the new pointer.
     Unroute,
+    /// Changes a serving copy in place: it starts nothing, so it takes no window
+    /// slot and waits on no route.
+    Update,
     Other,
 }
 
@@ -44,6 +46,7 @@ impl TaskKind {
             DeployOperation::RunContainer { .. } | DeployOperation::ReplaceContainer(_) => {
                 Self::Start
             }
+            DeployOperation::UpdateContainer(_) => Self::Update,
             DeployOperation::PrepareVolumes { .. }
             | DeployOperation::WaitHealthy { .. }
             | DeployOperation::StopContainer { .. }
@@ -72,9 +75,6 @@ pub struct ServiceGroup {
     /// Flip this Service's pointer once its steps complete. A group without a
     /// Service never publishes.
     pub publish: bool,
-    /// Current Containers of the Service no operation of this Deploy names;
-    /// the flip keeps pointing at them.
-    pub kept: Vec<ContainerId>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -90,6 +90,8 @@ pub(crate) enum Event {
     Published(usize),
     PublishFailed(usize),
     PublishUnconfirmed(usize),
+    /// A newer Deploy's copies serve the group's Service.
+    NewerServing(usize),
     /// Every live proxy lists `service`'s new copies.
     Routed(ServiceName),
 }
@@ -121,6 +123,7 @@ pub(crate) struct Schedule {
     /// Starts dispatched and not yet returned, whatever their group's phase.
     starting: BTreeSet<usize>,
     unconfirmed: BTreeSet<usize>,
+    newer_serving: BTreeSet<usize>,
     failed: bool,
 }
 
@@ -156,6 +159,7 @@ impl Schedule {
             routed: BTreeSet::new(),
             starting: BTreeSet::new(),
             unconfirmed: BTreeSet::new(),
+            newer_serving: BTreeSet::new(),
             failed: false,
         }
     }
@@ -215,7 +219,9 @@ impl Schedule {
             .filter(|(_, slot)| slot.group.changes_its_service())
             .filter_map(|(index, Slot { group, phase })| {
                 let result = match phase {
+                    _ if self.newer_serving.contains(&index) => ServiceResult::Newer,
                     _ if self.unconfirmed.contains(&index) => ServiceResult::Unconfirmed,
+                    Phase::Done if self.updates_in_place(group) => ServiceResult::Updated,
                     Phase::Done => ServiceResult::New,
                     Phase::Waiting => ServiceResult::NotStarted,
                     Phase::Active { .. } | Phase::Publishing | Phase::Failed => ServiceResult::Old,
@@ -226,6 +232,18 @@ impl Schedule {
                     .map(|service| ServiceOutcome { service, result })
             })
             .collect()
+    }
+
+    /// The group changes its serving copies in place and starts none.
+    fn updates_in_place(&self, group: &ServiceGroup) -> bool {
+        let kinds = || {
+            group
+                .steps
+                .iter()
+                .flat_map(step_tasks)
+                .map(|task| self.task(task).kind)
+        };
+        kinds().any(|kind| kind == TaskKind::Update) && kinds().all(|kind| kind != TaskKind::Start)
     }
 
     /// The group's tasks, or the following group's when a Service only
@@ -313,6 +331,9 @@ impl Schedule {
             Event::PublishUnconfirmed(group) => {
                 self.unconfirmed.insert(group);
                 self.apply(Event::PublishFailed(group));
+            }
+            Event::NewerServing(group) => {
+                self.newer_serving.insert(group);
             }
             Event::Routed(service) => {
                 self.routed.insert(service);
@@ -455,7 +476,7 @@ impl Schedule {
         group: &'a ServiceGroup,
         task: usize,
     ) -> impl Iterator<Item = &'a ServiceName> {
-        let waits = self.task(task).kind != TaskKind::Other;
+        let waits = !matches!(self.task(task).kind, TaskKind::Other | TaskKind::Update);
         group.dependencies.iter().filter(move |dependency| {
             waits && self.published.contains(*dependency) && !self.routed.contains(*dependency)
         })
@@ -493,7 +514,6 @@ mod tests {
             dependencies: dependencies.iter().map(|name| self::name(name)).collect(),
             steps,
             publish: true,
-            kept: Vec::new(),
         }
     }
 
@@ -878,7 +898,6 @@ mod tests {
                     dependencies: Vec::new(),
                     steps: vec![Step::Serial(0)],
                     publish: false,
-                    kept: Vec::new(),
                 },
                 group("a", &[], vec![Step::Serial(1)]),
                 group("b", &[], vec![Step::Serial(2)]),
@@ -908,7 +927,6 @@ mod tests {
                     dependencies: vec![name("a")],
                     steps: vec![Step::Serial(1)],
                     publish: false,
-                    kept: Vec::new(),
                 },
             ],
             vec![
@@ -935,7 +953,6 @@ mod tests {
                 dependencies: Vec::new(),
                 steps: vec![Step::Serial(0)],
                 publish: true,
-                kept: Vec::new(),
             }],
             vec![start('1')],
         );

@@ -31,6 +31,7 @@ const runtimeWatchMachineSchema = Schema.Struct({
     runtime: Schema.Struct({
       daemon_version: Schema.String,
       running_builds: Schema.Number,
+      pool_committable_bytes: Schema.NullOr(Schema.Number).pipe(Schema.withDecodingDefaultKey(Effect.succeed(null))),
       capabilities: Schema.Array(Schema.String).pipe(Schema.withDecodingDefaultKey(Effect.succeed([]))),
     }),
   }),
@@ -45,13 +46,15 @@ const runtimeWatchIncompleteVolumeIdSchema = Schema.Struct({
 
 /**
  * A managed Volume's copy on one Machine. An unset Engine role is a writer; a read-only root reports `switching`. A slot
- * carries what its Machine recorded it as, a mirror or an old copy; every other copy carries null.
+ * carries what its Machine recorded it as, a mirror or an old copy; every other copy carries null. Its bound is null
+ * from a transport that predates it.
  */
 const runtimeWatchVolumeCopySchema = Schema.Struct({
   machine_id: Schema.String,
   name: Schema.String,
   role: Schema.Literals(["writer", "slot", "switching"]),
   slot_role: Schema.NullOr(Schema.Literals(["mirror", "old_copy"])),
+  bound_bytes: Schema.NullOr(Schema.Number).pipe(Schema.withDecodingDefaultKey(Effect.succeed(null))),
 });
 
 const runtimeWatchCertificateSchema = Schema.Struct({
@@ -141,6 +144,7 @@ export function runtimeWatchFrameForTransport(
         runtime: {
           daemon_version: machine.machine.runtime.daemon_version,
           running_builds: machine.machine.runtime.running_builds,
+          pool_committable_bytes: machine.machine.runtime.pool_committable_bytes ?? null,
           capabilities: [...(machine.machine.runtime.capabilities ?? [])],
         },
       },
@@ -156,6 +160,7 @@ export function runtimeWatchFrameForTransport(
         name: volume.id.name,
         role: volume.storage.role ?? "writer",
         slot_role: volume.storage.role === "slot" ? volume.storage.slot_role ?? "mirror" : null,
+        bound_bytes: volume.storage.bound_bytes,
       }]
       : []),
     certificates: frame.certificates.map((certificate) => ({
@@ -226,6 +231,7 @@ export function runtimeSnapshotFromWatchFrame(
       runningBuilds: machine.machine.runtime.running_builds,
       daemonVersion: machine.machine.runtime.daemon_version,
       capabilities: machine.machine.runtime.capabilities,
+      poolCommittableBytes: machine.machine.runtime.pool_committable_bytes,
       membership: machine.membership,
       observedContainerCount: containerCounts.get(machine.machine.id) ?? 0,
       observedAt,
@@ -238,7 +244,9 @@ export function runtimeSnapshotFromWatchFrame(
       hookContainers: service.hook_containers.map(runtimeContainerRecordFromWatch),
       observedAt,
     })),
-    volumeCopies: frame.volumes.map((copy) => ({ machineId: copy.machine_id, name: copy.name, role: copy.role, slotRole: copy.slot_role })),
+    volumeCopies: frame.volumes.map((copy) => ({
+      machineId: copy.machine_id, name: copy.name, role: copy.role, slotRole: copy.slot_role, boundBytes: copy.bound_bytes,
+    })),
     certificates: frame.certificates.map((certificate) => ({
       hostname: certificate.hostname,
       status: certificate.status,
@@ -289,6 +297,8 @@ function runtimeWatchContainerForTransport(container: RuntimeWatchView["containe
     kind: container.kind,
     runtime: container.runtime.state === "running"
       ? { state: container.runtime.state, health: container.runtime.health }
+      : container.runtime.state === "exited" && container.stopped === true
+      ? { state: container.runtime.state, code: container.runtime.code, stopped: true as const }
       : container.runtime.state === "exited"
       ? { state: container.runtime.state, code: container.runtime.code }
       : { state: container.runtime.state },

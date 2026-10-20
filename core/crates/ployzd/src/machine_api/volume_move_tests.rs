@@ -97,6 +97,16 @@ async fn moved_service_stays_routed() {
 
     cut(&fleet, 0).await;
     assert!(!fleet.node(0).running(source), "the cut stops the holder");
+    assert!(
+        !fleet
+            .node(0)
+            .runtime
+            .inspect_managed(&source, &fleet.node(0).row.id)
+            .await
+            .unwrap()
+            .stopped,
+        "a move's drain is no stop on request"
+    );
 
     // As the dashboard's Move does: the source copy's gen, and In because it was In.
     let destination = fleet.with_plugin(

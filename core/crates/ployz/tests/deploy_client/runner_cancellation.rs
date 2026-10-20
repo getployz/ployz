@@ -112,8 +112,8 @@ async fn cancel_during_image_only_preview_stops_the_rpc_without_admitting_work()
     server.abort();
 }
 
-#[tokio::test]
-async fn a_run_another_runner_takes_over_mid_execution_records_it_interrupted() {
+/// Runs the Deployment until it creates, then has another runner take the Environment over.
+async fn taken_over_mid_create() -> (Arc<ConfigStore>, Actor, DeploymentId) {
     let (store, actor, id) = deployment();
     let service = DeployService::new(machine('a', "entry")).hold_health();
     let mutations = service.mutating_rpcs();
@@ -157,8 +157,21 @@ async fn a_run_another_runner_takes_over_mid_execution_records_it_interrupted() 
         .unwrap()
         .expect("the store takes the interrupted outcome");
     assert_eq!(summary.status, DeploymentStatus::Unknown);
-    let Some(ployz_store::Outcome::Executed { summary, .. }) = summary.outcome else {
-        panic!("expected an executed outcome, got {:?}", summary.outcome);
+    server.abort();
+    (store, actor, id)
+}
+
+#[tokio::test]
+async fn a_run_another_runner_takes_over_mid_execution_records_it_interrupted() {
+    let (store, actor, id) = taken_over_mid_create().await;
+    let view = store
+        .read(&actor, &ployz_store::DeploymentQuery { id })
+        .unwrap();
+    let Some(ployz_store::Outcome::Executed { summary, .. }) = &view.deployment.outcome else {
+        panic!(
+            "expected an executed outcome, got {:?}",
+            view.deployment.outcome
+        );
     };
     assert_eq!(
         summary.get("reason").and_then(serde_json::Value::as_str),
@@ -175,15 +188,108 @@ async fn a_run_another_runner_takes_over_mid_execution_records_it_interrupted() 
         Some(&serde_json::json!(1)),
         "{summary}"
     );
-    let view = store
-        .read(&actor, &ployz_store::DeploymentQuery { id: id.clone() })
-        .unwrap();
     assert!(
         view.nodes
             .iter()
             .all(|node| node.outcome == ployz_store::NodeStatus::NotAttempted),
         "an interrupted run confirms nothing into Applied State: {:?}",
         view.nodes
+    );
+}
+
+#[tokio::test]
+async fn a_takeover_nobody_cancelled_records_no_row_or_node_cancelled() {
+    let (store, actor, id) = taken_over_mid_create().await;
+    let view = store
+        .read(&actor, &ployz_store::DeploymentQuery { id })
+        .unwrap();
+    let nodes = serde_json::to_value(&view.nodes).unwrap();
+    let web = nodes
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|node| node["name"] == "web")
+        .unwrap();
+    assert_eq!(web.get("cancelled"), None, "{web}");
+    let rows = web["rows"].as_array().unwrap();
+    assert!(!rows.is_empty(), "{web}");
+    assert!(
+        rows.iter().all(|row| row.get("cancelled").is_none()),
+        "only the Deployment's cancel stops work as cancelled: {web}"
+    );
+}
+
+#[tokio::test]
+async fn cancel_during_a_create_records_the_work_it_stopped_cancelled_not_failed() {
+    let (store, actor, id) = deployment();
+    let service = DeployService::new(machine('a', "entry")).hold_health();
+    let mutations = service.mutating_rpcs();
+    let (address, server) = listening(service).await;
+    let running = tokio::spawn(ployz::sdk::run_deployment(
+        Arc::clone(&store),
+        id.clone(),
+        RunnerId::parse("cancelled").unwrap(),
+        vec![ployz::context::Connection::tcp(address)],
+        Ok(Default::default()),
+    ));
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while mutations.load(std::sync::atomic::Ordering::SeqCst) == 0 {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("the run starts creating");
+    store
+        .write(
+            &actor,
+            &ployz_store::Cancel {
+                deployment: id.clone(),
+            },
+        )
+        .unwrap();
+    let summary = tokio::time::timeout(Duration::from_secs(10), running)
+        .await
+        .expect("cancel must stop the create")
+        .unwrap()
+        .unwrap();
+    assert_eq!(summary.status, DeploymentStatus::Cancelled);
+
+    let view = store
+        .read(&actor, &ployz_store::DeploymentQuery { id })
+        .unwrap();
+    let nodes = serde_json::to_value(&view.nodes).unwrap();
+    let web = nodes
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|node| node["name"] == "web")
+        .unwrap();
+    // Failed as before Cancelled, so older readers read it; marked for newer ones.
+    assert_eq!(
+        (&web["outcome"], &web["cancelled"]),
+        (&serde_json::json!("failed"), &serde_json::json!(true)),
+        "{web}"
+    );
+    let states: Vec<_> = web["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| {
+            (
+                row["server"].clone(),
+                row["state"].clone(),
+                row["cancelled"].clone(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        states,
+        [(
+            serde_json::json!("entry"),
+            serde_json::json!("failed"),
+            serde_json::json!(true)
+        )],
+        "{web}"
     );
     server.abort();
 }

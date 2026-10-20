@@ -105,19 +105,12 @@ pub(crate) async fn apply_requested(
             }
         }
         DeployOutcome::Failed { .. } => {
-            let mut failure = report::failure(&outcome, tails);
+            let mut failure = report::failure(&outcome, &evidence.operations, tails);
             if signal.is_cancelled() {
                 failure = failure.interrupted();
             }
             Err(failure.into())
         }
-        DeployOutcome::Superseded { ref service, .. } => Err(Failure::coded(
-            ployz_core::RpcErrorCode::Conflict,
-            format!(
-                "Another deploy published {service} first; it and the Services after it keep what served before."
-            ),
-        )
-        .into()),
         DeployOutcome::Interrupted { .. } => Err(Failure::coded(
             ployz_core::RpcErrorCode::Unavailable,
             "Another runner took over this deployment.",

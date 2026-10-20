@@ -8,6 +8,7 @@ import { ForgetServer, ForgetServers, RemoveServer, UpgradeServer, VOLUME_RUN_BO
 import { RequestServerUpgradeInput } from "#/modules/server-upgrade/server-upgrade";
 import { RefreshMirrorInput } from "#/modules/volume-copies/volume-copies";
 import { DeleteCopyInput, StageRestoreInput } from "#/modules/volume-placement/volume-placement";
+import { ResizeVolumeInput } from "#/modules/volume-run/resize-check";
 import type { Permission } from "#/modules/organization/permissions";
 import type { VolumeRunRequestKind } from "#/modules/volume-run/volume-run";
 
@@ -25,6 +26,7 @@ export const OPERATION_TOOLS = [
   "volume_mirror_remove",
   "volume_restore",
   "volume_seed",
+  "volume_resize",
   "service_restart",
   "service_start",
   "service_stop",
@@ -63,6 +65,7 @@ const operation = <F extends Schema.Struct.Fields, const I extends Idempotency>(
 const Name = Schema.NonEmptyString;
 const Names = Schema.Array(Schema.NonEmptyString);
 const Seconds = Schema.Int;
+const Bytes = Schema.Int;
 
 const CLI_FOLLOWS = { omitted: "The CLI follows the run itself." } as const;
 const UI_FOLLOWS = { omitted: "The page follows the run live." } as const;
@@ -368,6 +371,31 @@ export const OPERATIONS = {
       ui: STAGED,
     },
   }),
+  "volume.resize": operation({
+    options: Schema.Struct({ volume: Name, environment: Name, size: Bytes, wait: Seconds }),
+    requires: "services:control",
+    gate: "approval",
+    idempotency: "volume_resize",
+    surfaces: {
+      cli: {
+        route: VOLUME_RUNS,
+        body: VOLUME_RUN_BODIES.resize,
+        options: { volume: { via: ":id" }, environment: { via: "environment" }, size: { via: "maximum_bytes" }, wait: CLI_FOLLOWS },
+      },
+      agent: { absent: "No agent tool resizes a deployed Volume; its volume_update is refused with the CLI command." },
+      ui: {
+        fn: "resizeVolumeServerFn",
+        input: ResizeVolumeInput,
+        ungated: "The human confirms in the page's own dialog.",
+        options: {
+          volume: { via: "volumeId" },
+          environment: { via: "environment" },
+          size: { via: "maximumBytes" },
+          wait: { omitted: "The drawer follows the run itself." },
+        },
+      },
+    },
+  }),
   "volume.seed": operation({
     options: Schema.Struct({ volume: Name, environment: Name, guid: Name, name: Name, at: Schema.Number }),
     requires: "changes:stage",
@@ -414,4 +442,5 @@ export const VOLUME_OPERATIONS = {
   delete_mirror: OPERATIONS["volume.remove_mirror"],
   restore: OPERATIONS["volume.restore"],
   seed: OPERATIONS["volume.seed"],
+  resize: OPERATIONS["volume.resize"],
 } as const satisfies Record<VolumeRunRequestKind, { readonly idempotency: OperationTool; readonly requires: Permission }>;

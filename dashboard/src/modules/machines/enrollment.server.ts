@@ -14,7 +14,7 @@ import { organizationPairing as schemaOrganizationPairing } from "#/modules/runt
 import type { Actor } from "#/modules/identity/actor";
 import { requireAccess, requireAccessById } from "#/modules/organization/access.server";
 import { Ployz, ployzVersion } from "#/modules/runtime/ployz.server";
-import { ClusterOutOfTime, clusterRead, OrganizationRuntime, withClusterBudget } from "#/modules/runtime/organization-runtime.server";
+import { ClusterOutOfTime, clusterRead, OrganizationRuntime, SESSION_CLOSE_CLUSTER_MS, withClusterBudget } from "#/modules/runtime/organization-runtime.server";
 import { PostHog } from "#/modules/analytics/posthog.server";
 import {
   enrollmentExpiry,
@@ -766,9 +766,9 @@ export const publishMachineEnrollment = Effect.fn("MachineEnrollment.publishCand
       yield* Effect.scoped(Effect.gen(function* () {
         yield* (yield* Ployz).connect({
           connections: [{ machine_id: input.machineId, management: input.capability }], timeoutMs: 10_000,
-        });
+        }, { closeWithin: clusterRead });
         yield* publish(expectedIv);
-      }));
+      })).pipe(withClusterBudget(SESSION_CLOSE_CLUSTER_MS));
     }
     yield* sendInngestEvent(createObservePushTargetRequestedEvent()).pipe(
       Effect.catch((error) => Effect.logWarning("Push target request failed; the 5-minute sweep sets it.", error)),

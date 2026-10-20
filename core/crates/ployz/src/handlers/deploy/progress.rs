@@ -1,16 +1,18 @@
 //! Present the Store's recorded Deployment evidence without new Cluster reads.
 
-use crate::deploy::{Replica, service_row, starts};
+use crate::deploy::{Replica, service_row, starts, updates};
 use crate::failure::Failure;
 use crate::ui::{
     Hint,
     progress::{Detail, Diagnostic, Frame, LogTail, Row, Run, State, Subject, Timing},
 };
+use ployz_core::config::{RuntimeFailureKind, RuntimeOutcomeSummary};
 use ployz_core::{QualifiedService, RpcError, RpcErrorCode, config::MEM_LIMIT_MAX};
 use ployz_store::{
     BuildStatus, DeployedNode, DeploymentStatus, DeploymentSummary, DeploymentView,
-    DeploymentWarning, FailedAt, IngressAction, IngressFailure, NodeStatus, RowState,
+    DeploymentWarning, FailedAt, IngressAction, IngressFailure, NodeOutcome, NodeStatus, RowState,
 };
+use serde::Deserialize;
 use std::time::{Duration, UNIX_EPOCH};
 
 pub(super) fn frame(view: &DeploymentView) -> Frame {
@@ -26,7 +28,7 @@ pub(super) fn frame(view: &DeploymentView) -> Frame {
                         DeployedNode::Service { name, .. } => name.to_string(),
                     },
                 },
-                state: node_state(node.outcome, false),
+                state: node_state(node, false),
                 detail: None,
                 timing: Timing::Unavailable,
             });
@@ -48,6 +50,10 @@ pub(super) fn frame(view: &DeploymentView) -> Frame {
                     .preview
                     .as_ref()
                     .is_none_or(|preview| starts(&preview.operations, runtime, row.machine_id)),
+                updates: view
+                    .preview
+                    .as_ref()
+                    .is_some_and(|preview| updates(&preview.operations, runtime, row.machine_id)),
                 timing: match (row.started_at, row.finished_at) {
                     (Some(start), Some(end)) => Timing::Finished(Duration::from_secs(
                         u64::try_from(end.saturating_sub(start)).unwrap_or(0),
@@ -63,18 +69,24 @@ pub(super) fn frame(view: &DeploymentView) -> Frame {
         if node.rows.is_empty() {
             let build = view.builds.iter().find(|build| build.service == *name);
             row.state = node_state(
-                node.outcome,
+                node,
                 build.is_some_and(|build| build.status == BuildStatus::Failed),
             );
             row.detail = build.map(|build| {
-                match build.status {
+                let word = match build.status {
                     BuildStatus::Pending => "build pending",
                     BuildStatus::Building => "building",
                     BuildStatus::Built => "built",
                     BuildStatus::Reused => "build reused",
                     BuildStatus::Failed => "build failed",
+                };
+                match (&build.server, build.status) {
+                    (
+                        Some(server),
+                        BuildStatus::Building | BuildStatus::Built | BuildStatus::Failed,
+                    ) => format!("{word} on {server}"),
+                    _ => word.to_owned(),
                 }
-                .to_owned()
             });
         }
         rows.push(row);
@@ -132,11 +144,12 @@ pub(super) fn frame(view: &DeploymentView) -> Frame {
     }
 }
 
-fn node_state(outcome: NodeStatus, build_failed: bool) -> State {
-    match outcome {
+fn node_state(node: &NodeOutcome, build_failed: bool) -> State {
+    match node.outcome {
         NodeStatus::Pending if build_failed => State::Failed,
         NodeStatus::Pending => State::Pending,
         NodeStatus::Deployed | NodeStatus::Removed => State::Completed,
+        NodeStatus::Failed if node.cancelled => State::Cancelled,
         NodeStatus::Failed => State::Failed,
         NodeStatus::NotAttempted => State::NotAttempted,
         NodeStatus::Unchanged => State::Unchanged,
@@ -203,6 +216,30 @@ fn ingress_unchecked(view: &DeploymentView) -> impl Iterator<Item = &str> {
             | DeploymentWarning::IngressNotServing { .. }
             | DeploymentWarning::Deploy { .. } => None,
         })
+}
+
+/// Where each build ran, and why GitHub passed one on to the Servers.
+pub(super) fn builders(view: &DeploymentView) -> Vec<String> {
+    view.builds
+        .iter()
+        .filter_map(|build| {
+            let built = build
+                .server
+                .as_ref()
+                .filter(|_| build.status == BuildStatus::Built)
+                .map(|server| format!("{} built on {server}.", build.service));
+            let skipped = build
+                .github_skipped
+                .as_deref()
+                .map(|why| why.trim_end_matches('.'));
+            match (built, skipped) {
+                (Some(built), Some(why)) => Some(format!("{built} GitHub skipped it: {why}.")),
+                (Some(built), None) => Some(built),
+                (None, Some(why)) => Some(format!("GitHub skipped {}: {why}.", build.service)),
+                (None, None) => None,
+            }
+        })
+        .collect()
 }
 
 /// What the Deployment left out of a Service's variables or a Config's files.
@@ -398,6 +435,14 @@ fn failure(view: &DeploymentView, command: impl Fn(&[&str]) -> String) -> Failur
         view.environment.name.as_str(),
     ];
     let deployment = target(&view.deployment);
+    let lost_to_newer = matches!(
+        &view.deployment.outcome,
+        Some(ployz_store::Outcome::Executed { summary, .. })
+            if matches!(
+                RuntimeOutcomeSummary::deserialize(summary),
+                Ok(RuntimeOutcomeSummary::Failed { reason: RuntimeFailureKind::NewerServing, .. })
+            )
+    );
     let mut diagnostic = Diagnostic::default();
     if let Some(ployz_store::Outcome::Executed { compensation, .. }) = &view.deployment.outcome {
         diagnostic.compensation = compensation
@@ -446,6 +491,9 @@ fn failure(view: &DeploymentView, command: impl Fn(&[&str]) -> String) -> Failur
                     message: format!("{name} on {}: {row_reason}.", row.server),
                     causes: row_cause.clone(),
                 });
+            }
+            if lost_to_newer {
+                continue;
             }
             diagnostic.logs.push(LogTail {
                 service: service.clone(),
@@ -522,7 +570,11 @@ fn failure(view: &DeploymentView, command: impl Fn(&[&str]) -> String) -> Failur
         bad_image |= pulled && !build_failed && built.is_none();
     }
     let mut failure = Failure::from(RpcError {
-        code: RpcErrorCode::Internal,
+        code: if lost_to_newer {
+            RpcErrorCode::Conflict
+        } else {
+            RpcErrorCode::Internal
+        },
         message: crate::ui::sentence(reason),
         cause,
         details: serde_json::Value::Null,
@@ -638,6 +690,38 @@ mod tests {
             failure.json().pointer("/details/progress/logs/0/service"),
             Some(&json!("shop-production/private-web"))
         );
+    }
+
+    #[test]
+    fn a_failed_limits_update_keeps_dockers_words_and_says_to_deploy_again() {
+        let docker = "Docker responded with status code 400: Conflicting options: Nano CPUs and CPU Period cannot both be set";
+        let reason = "web: Server edge could not confirm the new limits";
+        let cause = ["Docker operation failed", docker];
+        let mut view = view();
+        view.deployment.outcome = Some(
+            serde_json::from_value(json!({
+                "type": "executed", "summary": {}, "reason": reason, "cause": cause,
+            }))
+            .unwrap(),
+        );
+        view.nodes = vec![serde_json::from_value(json!({
+            "type": "service", "id": "cccccccc-cccc-4ccc-8ccc-cccccccccccc", "name": "web", "outcome": "failed", "rows": [
+                {"machine_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "server": "edge", "state": "failed", "reason": &reason[5..], "cause": cause, "log": null, "started_at": 1, "finished_at": 2}
+            ]
+        }))
+        .unwrap()];
+        let failure = failure(&view, command);
+        assert_eq!(
+            crate::ui::plain(&failure),
+            format!(
+                "error: {reason}.\n  cause: {docker}\nretry: ployz deploy --project shop --env production\n"
+            )
+        );
+        assert_eq!(
+            hints(&failure),
+            ["retry: ployz deploy --project shop --env production"]
+        );
+        assert_eq!(failure.json().get("cause"), Some(&json!(cause)));
     }
 
     #[test]
@@ -953,6 +1037,36 @@ mod tests {
                 },
             )
             .unwrap_or_else(|error| panic!("{proposal}: {error:?}"));
+    }
+
+    #[test]
+    fn a_deploy_a_newer_one_serves_past_is_a_conflict_without_the_losing_copys_logs() {
+        let mut view = view();
+        view.deployment.outcome = Some(
+            serde_json::from_value(json!({
+                "type": "executed",
+                "summary": {"type": "failed", "completed": 1, "unexecuted": 0, "reason": "newer_serving"},
+                "reason": "web: a newer deploy is already serving web",
+            }))
+            .unwrap(),
+        );
+        for row in failed_rows(&mut view) {
+            *row = None;
+        }
+        let failed = failure(&view, command);
+        assert_eq!(failed.report().code, RpcErrorCode::Conflict);
+        assert!(failed.is_outcome());
+        assert_eq!(crate::ui::exit_code(&failed.report().code), 1);
+        assert_eq!(failed.json().pointer("/details/progress/logs/0"), None);
+        let text = crate::ui::plain(&failed);
+        assert!(!text.contains("startup failed"), "{text}");
+        assert!(inspects(&failed).is_empty());
+        assert!(
+            failed
+                .hints()
+                .iter()
+                .any(|hint| matches!(hint, Hint::Retry(_)))
+        );
     }
 
     #[test]
@@ -1393,6 +1507,8 @@ mod tests {
             message: None,
             started_at: None,
             finished_at: None,
+            server: None,
+            github_skipped: None,
         });
         assert!(!visible(&view));
         for (status, detail, state) in [
@@ -1424,5 +1540,47 @@ mod tests {
         ));
         assert!(!visible(&view));
         assert!(noop(&view));
+    }
+
+    #[test]
+    fn a_build_names_its_server_while_it_runs_and_once_it_ends() {
+        let mut view = view();
+        view.deployment.status = DeploymentStatus::Running;
+        view.nodes.truncate(1);
+        view.nodes.first_mut().unwrap().rows.clear();
+        view.builds = serde_json::from_value(json!([
+            {"service": "web", "commit": null, "status": "building", "message": null, "server": "machine-1"}
+        ]))
+        .unwrap();
+        assert_eq!(
+            frame(&view).rows.first().unwrap().detail.as_deref(),
+            Some("building on machine-1")
+        );
+        view.builds.first_mut().unwrap().status = BuildStatus::Built;
+        assert_eq!(
+            frame(&view).rows.first().unwrap().detail.as_deref(),
+            Some("built on machine-1")
+        );
+        assert_eq!(builders(&view), ["web built on machine-1."]);
+    }
+
+    #[test]
+    fn a_build_github_passed_on_says_why_and_where_it_built_instead() {
+        let mut view = view();
+        view.builds = serde_json::from_value(json!([
+            {"service": "web", "commit": null, "status": "built", "message": null, "server": "machine-2",
+             "github_skipped": "acme/web has no .github/workflows/ployz-build.yml on its default branch"},
+            {"service": "api", "commit": null, "status": "failed", "message": "exit code: 1",
+             "github_skipped": "GitHub couldn't take the build: rate limited."},
+            {"service": "worker", "commit": null, "status": "reused", "message": null}
+        ]))
+        .unwrap();
+        assert_eq!(
+            builders(&view),
+            [
+                "web built on machine-2. GitHub skipped it: acme/web has no .github/workflows/ployz-build.yml on its default branch.",
+                "GitHub skipped api: GitHub couldn't take the build: rate limited.",
+            ]
+        );
     }
 }

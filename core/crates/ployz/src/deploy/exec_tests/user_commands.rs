@@ -67,6 +67,17 @@ impl MachineOperations for Recording {
         self.fake.remove_volume(id).await
     }
 
+    async fn update_container_limits(
+        &self,
+        machine_id: &MachineId,
+        container_id: &ContainerId,
+        spec: &ResolvedServiceSpec,
+    ) -> Result<ContainerLimitsUpdated, RpcError> {
+        self.fake
+            .update_container_limits(machine_id, container_id, spec)
+            .await
+    }
+
     async fn runs_global(
         &self,
         machine_id: &MachineId,
@@ -103,6 +114,10 @@ impl MachineOperations for Recording {
         service: &QualifiedService,
     ) -> Result<RoutesRead, RpcError> {
         self.fake.read_routes(machine_id, service).await
+    }
+
+    async fn read_entry_routes(&self, service: &QualifiedService) -> Result<RoutesRead, RpcError> {
+        self.fake.read_entry_routes(service).await
     }
 }
 
@@ -739,6 +754,69 @@ async fn an_unanswered_held_ask_whose_re_read_fails_brings_the_copy_back_in() {
         .with_copy(&machine('a'), &container('1'), CopyRotation::In);
         let ran = run_command(command, Recording::of(fake)).await;
         assert_failed_back_in(&ran, command);
+    }
+}
+
+/// A failed restart or stop reads as the reason, then where the copy was left,
+/// however the reason ended: one sentence break, never a doubled or stray one.
+#[tokio::test(start_paused = true)]
+async fn a_failed_restart_or_stop_and_its_outcome_read_as_sentences() {
+    let copy = container('1');
+    for (reason, read) in [
+        (
+            "target Machine RPC timed out",
+            "target Machine RPC timed out. It is back In.",
+        ),
+        (
+            "target Machine RPC timed out.",
+            "target Machine RPC timed out. It is back In.",
+        ),
+        ("Stop failed?", "Stop failed? It is back In."),
+        ("Stop failed!", "Stop failed! It is back In."),
+        ("Stop failed. ", "Stop failed. It is back In."),
+        ("", "It is back In."),
+    ] {
+        let stop_failed = Scripted::new(vec![
+            inspected(),
+            failed(Call::Stop(machine('a'), copy), reason),
+        ])
+        .with_copy(&machine('a'), &copy, CopyRotation::In);
+        let held_unread = || {
+            Scripted {
+                unanswered_held: BTreeSet::from([copy]),
+                unanswered_reason: reason,
+                ..Scripted::new(vec![
+                    inspected(),
+                    failed(Call::Inspect(machine('a'), copy), "no answer"),
+                ])
+            }
+            .with_copy(&machine('a'), &copy, CopyRotation::In)
+        };
+        for (command, fake, code, message) in [
+            (
+                Command::Restart,
+                stop_failed,
+                RpcErrorCode::Internal,
+                read.to_owned(),
+            ),
+            (
+                Command::Restart,
+                held_unread(),
+                RpcErrorCode::Unavailable,
+                format!("Container {copy} was not restarted: {read}"),
+            ),
+            (
+                Command::Stop,
+                held_unread(),
+                RpcErrorCode::Unavailable,
+                format!("Container {copy} was not stopped: {read}"),
+            ),
+        ] {
+            let ran = run_command(command, Recording::of(fake)).await;
+            let error = ran.answer.unwrap_err();
+            assert_eq!(error.message, message, "{command:?} {reason:?}");
+            assert_eq!(error.code, code, "{command:?} {reason:?}");
+        }
     }
 }
 

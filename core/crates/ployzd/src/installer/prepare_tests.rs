@@ -58,9 +58,28 @@ fn assert_nothing_installed_or_loaded(log: &str) {
     assert_eq!(log.lines().find(forbidden), None, "{log}");
 }
 
+/// A `dpkg` whose `-S` answers `status` for the prepared ZFS source and fails for any other path.
+fn dpkg_owner(status: u8) -> String {
+    format!(
+        "case \"$1\" in -S) [ \"$2\" = \"$PLOYZ_INSTALLER_CONTRACT_ROOT/usr/src/zfs-2.1.11\" ] || exit 2; [ {status} = 0 ] && echo \"zfs-dkms: $2\"; [ {status} = 2 ] && echo 'dpkg-query: error: unexpected end of file in diversions' >&2; exit {status} ;; esac"
+    )
+}
+
 fn dpkg_query(installed: &[&str]) -> String {
-    let installed = installed.join("|");
-    format!("case \"$3\" in {installed}) printf 'install ok installed' ;; *) exit 1 ;; esac")
+    let statuses: Vec<_> = installed
+        .iter()
+        .map(|package| (*package, "install ok installed"))
+        .collect();
+    dpkg_statuses(&statuses)
+}
+
+/// A `dpkg-query` that prints each package's `${Status}` and doesn't know any other package.
+fn dpkg_statuses(statuses: &[(&str, &str)]) -> String {
+    let arms: String = statuses
+        .iter()
+        .map(|(package, status)| format!("{package}) printf '{status}' ;; "))
+        .collect();
+    format!("case \"$3\" in {arms}*) exit 1 ;; esac")
 }
 
 #[tokio::test]
@@ -94,8 +113,17 @@ async fn debian_prepare_builds_the_module_without_installing_it() {
             &[
                 ("uname", &format!("echo {DEBIAN_KERNEL}")),
                 ("modinfo", "exit 1"),
-                ("dpkg", ""),
-                ("dpkg-query", &dpkg_query(&["dkms", "perl"])),
+                ("dpkg", &dpkg_owner(1)),
+                // Held and half-configured packages are already here, so preparation neither
+                // installs nor claims them; a removed one's left configuration is no package.
+                (
+                    "dpkg-query",
+                    &dpkg_statuses(&[
+                        ("dkms", "hold ok installed"),
+                        ("perl", "install ok half-configured"),
+                        ("file", "deinstall ok config-files"),
+                    ]),
+                ),
                 (
                     "apt-get",
                     "case \"$*\" in *'download zfs-dkms') : > zfs-dkms_2.1.11-1_all.deb ;; esac",
@@ -132,6 +160,7 @@ async fn debian_prepare_builds_the_module_without_installing_it() {
             .lines()
             .filter(|line| !line.starts_with("uname") && !line.starts_with("modinfo"))
             .filter(|line| !line.starts_with("dpkg-query") && !line.starts_with("dkms status"))
+            .filter(|line| !line.starts_with("dpkg -S"))
             .collect();
         let headers = format!("linux-headers-{DEBIAN_KERNEL} linux-headers-amd64");
         // A registration this Machine did not make is only built, never removed or replaced.
@@ -189,6 +218,126 @@ async fn debian_prepare_builds_the_module_without_installing_it() {
             "PACKAGE_NAME=\"zfs\"\nAUTOINSTALL=\"no\"\n"
         );
         assert!(!root.join("data/machine.json").exists());
+    }
+}
+
+/// Prepare rebuilds a recorded build only when the package manager says no package ships its
+/// source. A package's source is only built, and an unanswered query leaves everything alone.
+#[tokio::test]
+async fn debian_prepare_rebuilds_a_recorded_build_only_when_no_package_ships_it() {
+    const CASE: &str = "PLOYZ_PREPARE_DEBIAN_RECORDED_CONTRACT";
+    if let Ok(name) = env::var(CASE) {
+        let root = contract_root();
+        // The failing cases fail the job; the parent reads the outcome from state.json.
+        let _ = prepare_at(&InstallPaths::at(&root), false, async || Ok(())).await;
+        fs::write(root.join("child-completed"), name).unwrap();
+        return;
+    }
+
+    let registered = "case \"$*\" in 'status -m zfs -v 2.1.11') echo 'zfs/2.1.11: added' ;; esac";
+    for (case, dpkg, dkms) in [
+        ("packaged", 0, registered),
+        (
+            "packaged-unregistered",
+            0,
+            "[ \"$1\" = build ] && echo 'Error! The module/version combo: zfs-2.1.11 is not located in the DKMS tree.' >&2 && exit 3; exit 0",
+        ),
+        ("unpackaged", 1, registered),
+        ("query-failed", 2, registered),
+        ("foreign-query-failed", 2, registered),
+    ] {
+        let fixture = host(
+            case,
+            DEBIAN_12,
+            &[
+                ("uname", &format!("echo {DEBIAN_KERNEL}")),
+                ("modinfo", "exit 1"),
+                ("dpkg", &dpkg_owner(dpkg)),
+                ("dpkg-query", &dpkg_query(&["dkms", "perl", "zfs-dkms"])),
+                (
+                    "apt-get",
+                    "case \"$*\" in *'download zfs-dkms') : > zfs-dkms_2.1.11-1_all.deb ;; esac",
+                ),
+                (
+                    "dpkg-deb",
+                    "mkdir -p \"$3/usr/src/zfs-2.1.11\"; printf 'PACKAGE_NAME=\"zfs\"\\nAUTOINSTALL=\"yes\"\\n' > \"$3/usr/src/zfs-2.1.11/dkms.conf\"",
+                ),
+                ("dkms", dkms),
+            ],
+        );
+        let root = fixture.path();
+        let paths = InstallPaths::at(root);
+        let source_dir = root.join("usr/src/zfs-2.1.11");
+        fs::create_dir_all(&source_dir).unwrap();
+        fs::write(source_dir.join("dkms.conf"), "package\n").unwrap();
+        fs::create_dir_all(prepare_dir(&paths)).unwrap();
+        let claim = claimed_build(&paths, &source_dir);
+        if case != "foreign-query-failed" {
+            claim.save().unwrap();
+        }
+        run_contract_child_with_environment(
+            "installer::prepare::tests::debian_prepare_rebuilds_a_recorded_build_only_when_no_package_ships_it",
+            root,
+            OsString::from(CASE),
+            OsString::from(case),
+            case,
+            [],
+        );
+
+        let log = read_log(root);
+        let dkms_changes: Vec<String> = log
+            .lines()
+            .filter(|line| line.starts_with("dkms") && !line.starts_with("dkms status"))
+            .map(str::to_owned)
+            .collect();
+        let build = format!("dkms build -m zfs -v 2.1.11 -k {DEBIAN_KERNEL}");
+        let conf = fs::read_to_string(source_dir.join("dkms.conf")).unwrap();
+        let state = read_state(root);
+        let failure = zfs_summary(&state.zfs.step);
+        match case {
+            // A registration this Machine didn't make is only built, even when its owner is unknown.
+            "packaged" | "foreign-query-failed" => {
+                assert_eq!(dkms_changes, [build], "{log}");
+                assert_eq!(conf, "package\n");
+                assert_eq!(state.zfs.step, ZfsStep::Ready);
+                assert_eq!(state.zfs_build, None);
+            }
+            "packaged-unregistered" => {
+                assert_eq!(dkms_changes, [build], "{log}");
+                assert_eq!(conf, "package\n");
+                assert!(
+                    failure.contains(&format!(
+                        "the zfs-dkms package owns {}",
+                        source_dir.display()
+                    )) && failure.contains("`dpkg-reconfigure zfs-dkms`"),
+                    "{failure}"
+                );
+            }
+            "unpackaged" => {
+                assert_eq!(
+                    dkms_changes,
+                    [
+                        "dkms remove -m zfs -v 2.1.11 --all".to_owned(),
+                        "dkms add -m zfs -v 2.1.11".to_owned(),
+                        build,
+                    ],
+                    "{log}"
+                );
+                assert_eq!(conf, "PACKAGE_NAME=\"zfs\"\nAUTOINSTALL=\"no\"\n");
+                assert_eq!(state.zfs.step, ZfsStep::Ready);
+                assert_eq!(state.zfs_build, claim.state.zfs_build);
+            }
+            _ => {
+                assert!(dkms_changes.is_empty(), "{log}");
+                assert_eq!(conf, "package\n");
+                assert!(
+                    failure.contains("couldn't tell whether a package owns")
+                        && failure.contains("unexpected end of file"),
+                    "{failure}"
+                );
+                assert_eq!(state.zfs_build, claim.state.zfs_build);
+            }
+        }
     }
 }
 
@@ -277,7 +426,10 @@ fn amazon_linux_build_stops_at_dkms_build() {
                 "dnf",
                 "case \"$*\" in *repoquery*) echo kernel-devel-1:6.1.186 ;; esac",
             ),
-            ("rpm", "case \"$3\" in make) exit 0 ;; *) exit 1 ;; esac"),
+            (
+                "rpm",
+                "case \"$1 ${3-}\" in *' make') exit 0 ;; -qf*) [ \"$2\" = \"$PLOYZ_INSTALLER_CONTRACT_ROOT/usr/src/zfs-2.4.4\" ] || exit 2; echo \"file $2 is not owned by any package\" ;; esac; exit 1",
+            ),
             (
                 "curl",
                 "while [ \"$1\" != -o ]; do shift; done\ncat < \"$PLOYZ_INSTALLER_CONTRACT_ROOT/tarball\" > \"$2\"",
@@ -441,6 +593,7 @@ fn discard_removes_only_what_preparation_added_case(case: &str, name: &str, inst
         DEBIAN_12,
         &[
             ("apt-get", ""),
+            ("dpkg", &dpkg_owner(1)),
             ("dpkg-query", &dpkg_query(installed)),
             (
                 "dkms",
@@ -492,7 +645,11 @@ fn discard_removes_only_what_preparation_added_case(case: &str, name: &str, inst
     let log = read_log(root);
     let changes: Vec<&str> = log
         .lines()
-        .filter(|line| !line.starts_with("dkms status") && !line.starts_with("dpkg-query"))
+        .filter(|line| {
+            !line.starts_with("dkms status")
+                && !line.starts_with("dpkg-query")
+                && !line.starts_with("dpkg -S")
+        })
         .collect();
     assert_eq!(
         changes,
@@ -539,8 +696,8 @@ fn discard_leaves_a_build_its_package_ships_alone() {
         "installer::prepare::tests::discard_leaves_a_build_its_package_ships_alone",
         CASE,
         "source-owned",
-        &["dkms"],
-        "[ \"$1\" = -S ] && echo \"zfs-dkms: $2\"",
+        &dpkg_query(&["dkms"]),
+        &dpkg_owner(0),
     );
     let root = fixture.path();
     assert!(host_changes(root).is_empty(), "{}", read_log(root));
@@ -561,24 +718,212 @@ fn discard_removes_another_versions_build_but_keeps_the_packages_zfs_dkms_needs(
         return;
     }
 
-    let (fixture, source_dir) = discard_beside_installed_zfs(
+    // Removing dkms would take zfs-dkms with it in any of these states: a held or deselected
+    // package is still installed, and a half-configured one is still there to remove.
+    for (name, zfs_dkms) in [
+        ("other-version-installed", "install ok installed"),
+        ("other-version-held", "hold ok installed"),
+        ("other-version-deinstall", "deinstall ok installed"),
+        ("other-version-purge", "purge ok installed"),
+        (
+            "other-version-half-configured",
+            "install ok half-configured",
+        ),
+        ("other-version-unpacked", "install ok unpacked"),
+        (
+            "other-version-reinstreq",
+            "install reinstreq half-installed",
+        ),
+    ] {
+        let (fixture, source_dir) = discard_beside_installed_zfs(
+            "installer::prepare::tests::discard_removes_another_versions_build_but_keeps_the_packages_zfs_dkms_needs",
+            CASE,
+            name,
+            &dpkg_statuses(&[("zfs-dkms", zfs_dkms), ("dkms", "install ok installed")]),
+            "exit 1",
+        );
+        let root = fixture.path();
+        assert_eq!(
+            host_changes(root),
+            ["dkms remove -m zfs -v 2.1.11 --all"],
+            "{name}: {}",
+            read_log(root)
+        );
+        assert!(!source_dir.exists(), "{name}");
+        let state = read_state(root);
+        assert_eq!(state.zfs_build, None, "{name}");
+        assert!(state.added_packages.is_empty(), "{name}");
+    }
+
+    // Only zfs-dkms's left configuration remains, so the build packages go.
+    let (fixture, _) = discard_beside_installed_zfs(
         "installer::prepare::tests::discard_removes_another_versions_build_but_keeps_the_packages_zfs_dkms_needs",
         CASE,
-        "other-version-installed",
-        &["zfs-dkms", "dkms"],
+        "other-version-config-files",
+        &dpkg_statuses(&[("zfs-dkms", "deinstall ok config-files")]),
         "exit 1",
     );
     let root = fixture.path();
     assert_eq!(
         host_changes(root),
-        ["dkms remove -m zfs -v 2.1.11 --all"],
+        [
+            "dkms remove -m zfs -v 2.1.11 --all",
+            "apt-get -o DPkg::Lock::Timeout=300 remove -y -qq dkms lsb-release",
+        ],
         "{}",
         read_log(root)
     );
-    assert!(!source_dir.exists());
-    let state = read_state(root);
-    assert_eq!(state.zfs_build, None);
-    assert!(state.added_packages.is_empty());
+}
+
+/// Anything but dpkg's three-word status is no answer, so discard refuses rather than reading it
+/// as "not installed".
+#[test]
+fn dpkg_status_without_three_words_is_no_answer() {
+    assert_eq!(dpkg_status_installed("hold ok installed"), Some(true));
+    assert_eq!(
+        dpkg_status_installed("unknown ok not-installed"),
+        Some(false)
+    );
+    assert_eq!(dpkg_status_installed(""), None);
+    assert_eq!(dpkg_status_installed("installed"), None);
+}
+
+#[test]
+fn discard_keeps_a_build_whose_owner_is_unknown() {
+    const CASE: &str = "PLOYZ_PREPARE_DISCARD_UNKNOWN_OWNER_CONTRACT";
+    if let Ok(name) = env::var(CASE) {
+        let root = contract_root();
+        let error = discard_at(&InstallPaths::at(&root)).unwrap_err();
+        fs::write(root.join("discard-error"), error.to_string()).unwrap();
+        fs::write(root.join("child-completed"), name).unwrap();
+        return;
+    }
+
+    let (fixture, source_dir) = discard_beside_installed_zfs(
+        "installer::prepare::tests::discard_keeps_a_build_whose_owner_is_unknown",
+        CASE,
+        "owner-unknown",
+        &dpkg_query(&["dkms"]),
+        &dpkg_owner(2),
+    );
+    let root = fixture.path();
+    assert!(host_changes(root).is_empty(), "{}", read_log(root));
+    assert!(source_dir.exists());
+    let error = fs::read_to_string(root.join("discard-error")).unwrap();
+    assert!(
+        error.contains("couldn't tell whether a package owns"),
+        "{error}"
+    );
+    assert_eq!(
+        read_state(root).zfs_build,
+        claimed_build(&InstallPaths::at(root), &source_dir)
+            .state
+            .zfs_build
+    );
+}
+
+/// On Amazon Linux, discard removes a build only on rpm's English negative for its source alone,
+/// and removes packages only once rpm says zfs-dkms isn't installed.
+#[test]
+fn amazon_linux_discard_needs_rpms_plain_answer() {
+    const CASE: &str = "PLOYZ_PREPARE_DISCARD_RPM_CONTRACT";
+    if let Ok(name) = env::var(CASE) {
+        let root = contract_root();
+        if let Err(error) = discard_at(&InstallPaths::at(&root)) {
+            fs::write(root.join("discard-error"), error.to_string()).unwrap();
+        }
+        fs::write(root.join("child-completed"), name).unwrap();
+        return;
+    }
+
+    let english = "echo \"file $2 is not owned by any package\"";
+    let german = "echo \"Die Datei $2 gehört zu keinem Paket\"";
+    let not_installed = "echo 'package zfs-dkms is not installed'";
+    let database_error = "echo 'error: cannot open Packages database in /var/lib/rpm' >&2";
+    for (case, owner, installed) in [
+        (
+            "unowned",
+            format!("if [ \"$LC_ALL\" = C ]; then {english}; else {german}; fi"),
+            not_installed.to_owned(),
+        ),
+        (
+            "database-error",
+            format!("{english}; {database_error}"),
+            not_installed.to_owned(),
+        ),
+        ("localized", german.to_owned(), not_installed.to_owned()),
+        (
+            "package-query-failed",
+            english.to_owned(),
+            format!("{not_installed}; {database_error}"),
+        ),
+    ] {
+        let fixture = host(
+            case,
+            AMAZON_LINUX_2023,
+            &[
+                (
+                    "rpm",
+                    &format!(
+                        "case \"$1\" in -qf) [ \"$2\" = \"$PLOYZ_INSTALLER_CONTRACT_ROOT/usr/src/zfs-2.1.11\" ] || exit 2; {owner} ;; -q) {installed} ;; esac; exit 1"
+                    ),
+                ),
+                ("dnf", ""),
+                (
+                    "dkms",
+                    "case \"$1\" in status) echo 'zfs/2.1.11: added' ;; esac",
+                ),
+            ],
+        );
+        let root = fixture.path();
+        let paths = InstallPaths::at(root);
+        let source_dir = root.join("usr/src/zfs-2.1.11");
+        fs::create_dir_all(&source_dir).unwrap();
+        fs::create_dir_all(prepare_dir(&paths)).unwrap();
+        let claim = claimed_build(&paths, &source_dir);
+        claim.save().unwrap();
+        run_contract_child_with_environment(
+            "installer::prepare::tests::amazon_linux_discard_needs_rpms_plain_answer",
+            root,
+            OsString::from(CASE),
+            OsString::from(case),
+            case,
+            [(OsString::from("LC_ALL"), OsString::from("de_DE.UTF-8"))],
+        );
+
+        let log = read_log(root);
+        let changes: Vec<&str> = log
+            .lines()
+            .filter(|line| !line.starts_with("dkms status") && !line.starts_with("rpm"))
+            .collect();
+        let error = fs::read_to_string(root.join("discard-error")).unwrap_or_default();
+        let state = read_state(root);
+        match case {
+            "unowned" => {
+                assert_eq!(
+                    changes,
+                    [
+                        "dkms remove -m zfs -v 2.1.11 --all",
+                        "dnf remove -y dkms lsb-release"
+                    ],
+                    "{log}"
+                );
+                assert!(!source_dir.exists());
+                assert_eq!(state.zfs_build, None);
+            }
+            _ => {
+                assert!(changes.is_empty(), "{case}: {log}");
+                assert!(source_dir.exists(), "{case}");
+                assert_eq!(state.zfs_build, claim.state.zfs_build, "{case}");
+                let refusal = if case == "package-query-failed" {
+                    "couldn't tell whether zfs-dkms is installed"
+                } else {
+                    "couldn't tell whether a package owns"
+                };
+                assert!(error.contains(refusal), "{case}: {error}");
+            }
+        }
+    }
 }
 
 fn discard_in_child(name: &str) {
@@ -603,7 +948,7 @@ fn discard_beside_installed_zfs(
     test: &str,
     case: &str,
     name: &str,
-    installed: &[&str],
+    dpkg_query: &str,
     dpkg: &str,
 ) -> (tempfile::TempDir, PathBuf) {
     let fixture = host(
@@ -611,7 +956,7 @@ fn discard_beside_installed_zfs(
         DEBIAN_12,
         &[
             ("apt-get", ""),
-            ("dpkg-query", &dpkg_query(installed)),
+            ("dpkg-query", dpkg_query),
             ("dpkg", dpkg),
             (
                 "dkms",

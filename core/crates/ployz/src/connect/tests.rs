@@ -308,6 +308,25 @@ fn deadline_exceeded_is_retryable_not_unreachable() {
 }
 
 #[test]
+fn only_a_status_the_router_sent_says_the_target_was_never_reached() {
+    let reset = || io::Error::new(io::ErrorKind::ConnectionReset, "stream reset");
+    let mut marked_then_reset = ployz_core::rpc::target_unreached_status(&reset());
+    marked_then_reset.set_source(std::sync::Arc::new(reset()));
+    let lost = crate::sdk::CallError::from(ConnectError::from(marked_then_reset));
+    assert!(lost.unanswered, "{lost}");
+    assert!(!lost.target_unreached, "{lost}");
+
+    let undialed = crate::sdk::CallError::from(ConnectError::from(
+        ployz_core::rpc::target_unreached_status(&io::Error::new(
+            io::ErrorKind::ConnectionRefused,
+            "tcp connect error",
+        )),
+    ));
+    assert!(!undialed.unanswered, "{undialed}");
+    assert!(undialed.target_unreached, "{undialed}");
+}
+
+#[test]
 fn only_a_spent_budget_or_the_router_reports_the_target_unanswered() {
     let dropped = io::Error::new(io::ErrorKind::BrokenPipe, "connection closed");
     for (error, unanswered) in [

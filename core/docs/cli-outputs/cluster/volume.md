@@ -7,8 +7,7 @@ $ ployz volume add data --docker --mount web:/data
 
 stderr:
 ```
-WARNING: Docker volume (not recommended): no size limit, and it stays out of backups and Server moves as they arrive.
-data would be attached to web; set replicas to 1, or add it with shared writes on
+error: data would be attached to web; set replicas to 1, or add it with shared writes on
 next: ployz volume add data --mount web:/data --docker --shared-writes --env production --project shop
 ```
 
@@ -27,7 +26,8 @@ Storage: Docker volume (no size limit)
 
 stderr:
 ```
-WARNING: Docker volume (not recommended): no size limit, and it stays out of backups and Server moves as they arrive.
+! Docker volume (not recommended): no size limit, and it stays out of backups and Server moves as they arrive.
+next: ployz deploy
 ```
 
 ### volume add managed (--json)
@@ -41,18 +41,18 @@ stdout:
 ```
 {
   "environment": {
-    "id": "52712cb1-5621-43aa-987b-900e655738a0",
+    "id": "96430fcc-088f-45be-9cbe-5e67e7e2f507",
     "name": "production",
     "project": "shop",
     "revision": 12
   },
-  "next": "ployz diff",
+  "next": "ployz deploy",
   "staged": [
     "volumes.cache",
     "api.mounts.cache"
   ],
   "volume": {
-    "id": "b403d017-1d63-491c-8264-19180119b004",
+    "id": "39f15369-bfc8-4367-a9da-ae9ec8ff496c",
     "name": "cache",
     "shared_writes": false,
     "storage": {
@@ -68,26 +68,27 @@ stdout:
 
 stderr:
 ```
-WARNING: No Server here can host Managed volumes yet, so a Deploy of this one fails until one can: add a Server with Managed volumes, or use --docker instead.
+! No Server here can host Managed volumes yet, so a Deploy of this one fails until one can: add a Server with Managed volumes, or use --docker instead.
 ```
 
 ### deploy with a Managed volume and no ZFS Server (fails)
 
 ```console
 $ ployz deploy
-# exit 3
+# exit 1
 ```
 
-stdout:
+stderr:
 ```
-queued: web pending, api pending, cache pending, data pending
-failed: web not attempted, api not attempted, cache not attempted, data not attempted
-Deployment #10 of shop/production: failed
-  Service api: No available Server can host Managed volumes. Add a Server with Managed volumes, or keep this data in a Docker volume instead (ployz volume add NAME --docker)
-  web: not attempted
-  api: not attempted
-  cache: not attempted
-  data: not attempted
+Deploying #9 of shop/production
+  api: not started
+  web: not started
+  Volume cache: not attempted
+  Volume data: not attempted
+───────────────
+4 not attempted
+error: Service api: No available Server can host Managed volumes. Add a Server with Managed volumes, or keep this data in a Docker volume instead (ployz volume add NAME --docker).
+retry: ployz deploy --project shop --env production
 ```
 
 ### volume ls
@@ -115,7 +116,7 @@ stdout:
 ```
 {
   "environment": {
-    "id": "52712cb1-5621-43aa-987b-900e655738a0",
+    "id": "96430fcc-088f-45be-9cbe-5e67e7e2f507",
     "name": "production",
     "project": "shop",
     "revision": 12
@@ -124,7 +125,7 @@ stdout:
     {
       "change": "create",
       "deployed": false,
-      "id": "b403d017-1d63-491c-8264-19180119b004",
+      "id": "39f15369-bfc8-4367-a9da-ae9ec8ff496c",
       "mounts": [
         {
           "path": "/cache",
@@ -142,7 +143,7 @@ stdout:
     {
       "change": "create",
       "deployed": false,
-      "id": "fb5fbf41-f4eb-4151-a3b5-2158bb829dc4",
+      "id": "708d0431-a823-4abd-bace-7dd1461c5d21",
       "mounts": [
         {
           "path": "/data",
@@ -169,13 +170,13 @@ $ ployz volume inspect data
 
 stdout:
 ```
-Volume data (fb5fbf41-f4eb-4151-a3b5-2158bb829dc4)
-Storage: Docker volume (no size limit)
-Storage settings: locked after deployment was requested
-Shared writes: off
-Deployed: no
-Next Deploy: create
-Mounted by api at /data
+volume = data
+storage = Docker volume (no size limit)
+storage settings = locked after deployment was requested
+shared writes = off
+deployed = no
+next deploy = create
+mounted by = api at /data
 ```
 
 ### volume inspect --json
@@ -191,13 +192,13 @@ stdout:
   "change": "create",
   "deployed": false,
   "environment": {
-    "id": "52712cb1-5621-43aa-987b-900e655738a0",
+    "id": "96430fcc-088f-45be-9cbe-5e67e7e2f507",
     "name": "production",
     "project": "shop",
     "revision": 12
   },
-  "id": "fb5fbf41-f4eb-4151-a3b5-2158bb829dc4",
-  "lineage": "fb5fbf41-f4eb-4151-a3b5-2158bb829dc4",
+  "id": "708d0431-a823-4abd-bace-7dd1461c5d21",
+  "lineage": "708d0431-a823-4abd-bace-7dd1461c5d21",
   "mounts": [
     {
       "path": "/data",
@@ -234,8 +235,7 @@ $ ployz volume set cache --docker
 
 stderr:
 ```
-WARNING: Docker volume (not recommended): no size limit, and it stays out of backups and Server moves as they arrive.
-Volume cache storage cannot change after deployment has been requested
+error: Volume cache keeps its storage once a Deploy has been requested; add a new Volume for other storage
 ```
 
 ### volume rename
@@ -250,6 +250,11 @@ stdout:
 Staged rename of Volume store in shop/production.
 ```
 
+stderr:
+```
+next: ployz deploy
+```
+
 ### volume rm (never-deployed Managed volume)
 
 ```console
@@ -262,6 +267,11 @@ stdout:
 Staged removal of Volume cache in shop/production.
 ```
 
+stderr:
+```
+next: ployz deploy
+```
+
 ### deploy with volumes
 
 ```console
@@ -269,15 +279,18 @@ $ ployz deploy
 # exit 0
 ```
 
-stdout:
+stderr:
 ```
-queued: web pending, api pending, store pending
-running: web unchanged, api pending, store pending
-applied: web unchanged, api deployed, store deployed
-Deployment #11 of shop/production: applied
-  web: unchanged
-  api: deployed
-  store: deployed
+Deploying #10 of shop/production
+  api (depth 0): booting 0/1
+  web (depth 0): unchanged
+  Volume store: pending
+  api (depth 0): switching 1/1
+  api (depth 0): switched 1/1
+  api: draining old
+  Volume store: completed
+───────────────────────────────────────────
+2 deployed · 1 unchanged · across 2 servers
 ```
 
 ### volume ls after deploy
@@ -305,29 +318,34 @@ stdout:
 Staged removal of Volume store in shop/production.
 ```
 
+stderr:
+```
+next: ployz deploy
+```
+
 ### deploy refused: volume loss
 
 ```console
 $ ployz deploy
-# exit 1
+# exit 2
 ```
 
 stderr:
 ```
-This permanently deletes the data of store. Accept each by name.
-Retry: ployz deploy --accept-volume-loss store --expect-version 16:7:0.10:3d1ac37da6e0cfb1
+error: This permanently deletes the data of store. Accept each by name
+retry: ployz deploy --accept-volume-loss store --expect-version 16:7:0.10:3db84a7b2f1973e4
 ```
 
 ### deploy refused: volume loss (--json)
 
 ```console
 $ ployz deploy --json
-# exit 1
+# exit 2
 ```
 
 stdout:
 ```
-{"error":{"code":"confirmation_required","details":{"accept":["store"],"next":"ployz deploy --accept-volume-loss store --expect-version 16:7:0.10:3d1ac37da6e0cfb1","version":"16:7:0.10:3d1ac37da6e0cfb1","volumes":[{"deletes":[{"machine_id":"d7bb999f0d454dbcacc63d085021de34","name":"shop-production_vol-fb5fbf41-f4eb-4151-a3b5-2158bb829dc4"}],"docker_volume":"shop-production_vol-fb5fbf41-f4eb-4151-a3b5-2158bb829dc4","id":"fb5fbf41-f4eb-4151-a3b5-2158bb829dc4","name":"store"}]},"message":"This permanently deletes the data of store. Accept each by name.\nRetry: ployz deploy --accept-volume-loss store --expect-version 16:7:0.10:3d1ac37da6e0cfb1"}}
+{"error":{"cause":[],"code":"confirmation_required","details":{"accept":["store"],"retry":"ployz deploy --accept-volume-loss store --expect-version 16:7:0.10:3db84a7b2f1973e4","version":"16:7:0.10:3db84a7b2f1973e4","volumes":[{"deletes":[{"machine_id":"91e8bbd81cd34c59a186d49d3375bbe8","name":"shop-production_vol-708d0431-a823-4abd-bace-7dd1461c5d21"}],"docker_volume":"shop-production_vol-708d0431-a823-4abd-bace-7dd1461c5d21","id":"708d0431-a823-4abd-bace-7dd1461c5d21","name":"store"}]},"message":"This permanently deletes the data of store. Accept each by name"}}
 ```
 
 ### volume inspect unknown
@@ -339,18 +357,18 @@ $ ployz volume inspect nope
 
 stderr:
 ```
-No Volume named nope in Environment production
+error: No Volume named nope in Environment production
 ```
 
 ### build without a Cloud Build Grant
 
 ```console
 $ ployz build --grant x --deployment 1 --commit abc --fingerprint f
-# exit 1
+# exit 2
 ```
 
 stderr:
 ```
-invalid Build Grant "[redacted]": `ployzgrant1:` followed by unpadded base64url of a 64-byte body
+error: invalid Build Grant "[redacted]": `ployzgrant1:` followed by unpadded base64url of a 64-byte body
 ```
 

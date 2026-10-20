@@ -315,16 +315,6 @@ pub enum DeployOutcome<E> {
         #[serde(default)]
         services: Vec<ServiceOutcome>,
     },
-    /// Another Deploy published `service`'s Serving Pointer first. The lost
-    /// compare-and-set is never retried; this Deploy's Containers of `service`
-    /// were removed and `unexecuted` holds every operation not completed.
-    Superseded {
-        completed: Vec<DeployOperation>,
-        service: QualifiedService,
-        unexecuted: Vec<DeployOperation>,
-        #[serde(default)]
-        services: Vec<ServiceOutcome>,
-    },
     /// The store handed this Deploy's environment to another runner while it ran.
     Interrupted {
         completed: Vec<DeployOperation>,
@@ -341,7 +331,6 @@ impl<E> DeployOutcome<E> {
         match self {
             Self::Success { services, .. }
             | Self::Failed { services, .. }
-            | Self::Superseded { services, .. }
             | Self::Interrupted { services, .. } => services,
         }
     }
@@ -355,16 +344,20 @@ pub struct ServiceOutcome {
 }
 
 /// A Service ends a Deploy wholly on one side: every replica new, every
-/// replica old, or untouched because the Deploy stopped before it.
-/// `Unconfirmed` means its serving pointer write got no answer and could not be
-/// read back, so it may serve either side.
+/// replica old, every replica changed in place, or untouched because the Deploy
+/// stopped before it. `Unconfirmed` means some proxies never confirmed routing its
+/// new copies, so it may serve either side. `Newer` means a newer Deploy's copies
+/// serve it.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum ServiceResult {
     New,
     Old,
+    /// Its copies kept serving and took the new limits in place.
+    Updated,
     NotStarted,
     Unconfirmed,
+    Newer,
 }
 
 /// Why a Deploy Operation did not complete.
@@ -464,6 +457,8 @@ pub enum RestoreAttempt<E> {
     LeftHeld,
     /// The old container was not serving before this Deploy; nothing to restore.
     NotServing,
+    /// A newer Deploy's copy is In, so the old container can never be In again.
+    NewerServing,
     /// The restore, or the wait for the proxies to route the old container, returned `error`.
     Failed { error: E },
 }
@@ -477,6 +472,9 @@ impl<E> RestoreAttempt<E> {
             Self::LeftHeld => "The old Container is left Held by another Deploy.",
             Self::NotServing => {
                 "The old Container was not serving before this Deploy; nothing to restore."
+            }
+            Self::NewerServing => {
+                "A newer deploy is already serving; the old Container will not serve again."
             }
             Self::Failed { .. } => "Could not restore the old Container.",
         }
@@ -509,6 +507,15 @@ pub struct ReplacementOperation {
     pub spec: ResolvedServiceSpec,
     /// Skip waiting on container health after the replacement starts.
     pub skip_health_monitor: bool,
+}
+
+/// Change a running Container's CPU and memory limits to its new spec's, in place.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+pub struct LimitsUpdateOperation {
+    pub machine_id: MachineId,
+    pub container_id: ContainerId,
+    /// The spec the Container serves once its limits match.
+    pub spec: ResolvedServiceSpec,
 }
 
 /// Why a Deploy stops a Container.
@@ -572,6 +579,9 @@ pub enum DeployOperation {
     },
     /// Replace `old_container_id` with a new container from the replacement spec.
     ReplaceContainer(ReplacementOperation),
+    /// Apply the spec's CPU and memory limits to `container_id` in place. The
+    /// Container keeps its id whether the Machine applies the limits or not.
+    UpdateContainer(LimitsUpdateOperation),
     /// Stop a pre-deploy hook container that is still running, before [`Self::RunHook`]
     /// starts the next one.
     StopHook {
@@ -930,11 +940,12 @@ pub enum MachineAction {
     StopContainer,
     RemoveContainer,
     RemoveVolume,
+    /// Change a running Container's CPU and memory limits in place.
+    UpdateContainerLimits,
     /// Make a Service image present before any Container changes.
     PullImage,
     ListContainers,
     ReadRoutes,
-    PublishServingPointer,
 }
 
 impl Display for MachineAction {
@@ -947,10 +958,10 @@ impl Display for MachineAction {
             Self::StopContainer => "stop Container",
             Self::RemoveContainer => "remove Container",
             Self::RemoveVolume => "remove Volume",
+            Self::UpdateContainerLimits => "update Container limits",
             Self::PullImage => "pull image",
             Self::ListContainers => "list Containers",
             Self::ReadRoutes => "read routes",
-            Self::PublishServingPointer => "publish Serving Pointer",
         })
     }
 }
@@ -1100,8 +1111,39 @@ pub enum ExecutionError {
         container_id: ContainerId,
         failure: HookFailure,
     },
+    #[error("a newer deploy is already serving {service}")]
+    NewerServing { service: QualifiedService },
     #[error("deploy cancelled")]
     Cancelled,
+}
+
+impl ExecutionError {
+    /// Whether a cancel stopped the work, rather than the work failing. The
+    /// cancel may be the Deployment's own, a takeover's or a failure elsewhere in
+    /// the run's. A hook whose stop also failed may still run, so that is a failure.
+    #[must_use]
+    pub const fn cancelled(&self) -> bool {
+        matches!(
+            self,
+            Self::Cancelled
+                | Self::Health {
+                    failure: HealthFailure::Cancelled,
+                    ..
+                }
+                | Self::DependencyHealth {
+                    failure: DependencyHealthFailure::Cancelled
+                        | DependencyHealthFailure::Container {
+                            failure: HealthFailure::Cancelled,
+                            ..
+                        },
+                    ..
+                }
+                | Self::Hook {
+                    failure: HookFailure::Cancelled { stop_error: None },
+                    ..
+                }
+        )
+    }
 }
 
 /// Live evidence of one in-flight Deploy. Not a Watch frame.
@@ -1186,6 +1228,8 @@ pub enum OperationPhase {
     StoppingContainer,
     RemovingContainer,
     RemovingVolume,
+    /// Docker is changing the running Container's limits in place.
+    UpdatingContainer,
     Compensating,
 }
 
@@ -1233,6 +1277,7 @@ impl DeployOperation {
             | Self::StopHook { machine_id, .. }
             | Self::RunHook { machine_id, .. } => *machine_id,
             Self::ReplaceContainer(replacement) => replacement.machine_id,
+            Self::UpdateContainer(update) => update.machine_id,
             Self::RemoveVolume { id } => id.machine_id,
         }
     }
@@ -1244,6 +1289,7 @@ impl DeployOperation {
             Self::WaitHealthy { dependent, .. } => Some(&dependent.name),
             Self::RunContainer { spec, .. } | Self::RunHook { spec, .. } => Some(&spec.name),
             Self::ReplaceContainer(replacement) => Some(&replacement.spec.name),
+            Self::UpdateContainer(update) => Some(&update.spec.name),
             Self::StopContainer { .. }
             | Self::RemoveContainer { .. }
             | Self::StopHook { .. }
@@ -1260,6 +1306,7 @@ impl DeployOperation {
             | Self::RemoveContainer { container_id, .. }
             | Self::StopHook { container_id, .. } => Some(*container_id),
             Self::ReplaceContainer(replacement) => Some(replacement.old_container_id),
+            Self::UpdateContainer(update) => Some(update.container_id),
             Self::WaitHealthy { .. }
             | Self::RunContainer { .. }
             | Self::RunHook { .. }
@@ -1274,6 +1321,7 @@ impl DeployOperation {
         match self {
             Self::RunContainer { spec, .. } | Self::RunHook { spec, .. } => Some(spec),
             Self::ReplaceContainer(replacement) => Some(&replacement.spec),
+            Self::UpdateContainer(update) => Some(&update.spec),
             Self::WaitHealthy { .. }
             | Self::StopContainer { .. }
             | Self::RemoveContainer { .. }

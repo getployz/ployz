@@ -46,6 +46,7 @@ import { AppConfig } from "#/server/config.server";
 import { Database, DatabaseLive } from "#/server/database.server";
 import { encodePublicError, statusForPublicError, Unauthorized } from "#/server/public-error";
 import { createOrganizationForSession } from "#/modules/organization/organization-state.server";
+import { connectionAborts } from "#/test/connection-aborts";
 import { fakeGithubApi } from "#/test/fake-github";
 import * as ids from "#/test/ids";
 import { postgresTestDatabase } from "#/test/postgres";
@@ -78,10 +79,14 @@ const encryption = makeSecretEncryption("fixture-server-access-encryption-123456
  * as a daemon does, or drop the Set's reply. Failures are the SDK's own RpcError, marked unanswered as it marks them.
  */
 function fakeServers() {
-  const servers = new Map<string, { online: boolean | "hangs" | "refuses" | "drops"; slots: Map<string, string> }>();
+  const servers = new Map<string, {
+    online: boolean | "hangs" | "refuses" | "drops"; slots: Map<string, string>; closeHangs?: boolean;
+  }>();
+  const aborts = connectionAborts();
   let sets = 0;
   const layer = makePloyzLayer({
     connect: async (options) => {
+      aborts.watch(options.signal);
       const [connection] = options.connections;
       const server = connection && "machine_id" in connection ? servers.get(connection.machine_id ?? "") : undefined;
       if (server?.online === "hangs") return new Promise<never>(() => undefined);
@@ -104,11 +109,11 @@ function fakeServers() {
         setPushTarget: async () => undefined,
         clearManagementClient: async (label: string) => { server.slots.delete(label); },
         inspect: async () => ({ management_clients: [...server.slots.keys()] }),
-        close: async () => undefined,
+        close: () => server.closeHangs ? new Promise<void>(() => {}) : Promise.resolve(),
       });
     },
   });
-  return { servers, layer, sets: () => sets };
+  return { servers, layer, aborts, sets: () => sets };
 }
 
 const pairingSecret = "ppair_fixture_server_access";
@@ -320,6 +325,43 @@ const signIn = Effect.fn(function* (name: string) {
   assert.strictEqual(response.status, 200);
   return { session: response.headers.get("set-auth-token") ?? assert.fail("no session token") };
 });
+
+// Catches `ployz volume sync`, which asks no one, running under any approval carried into it.
+it.live(
+  "a quick volume sync refuses an approval carried into it for another operation, target or session, and takes one for exactly it",
+  () =>
+    Effect.gen(function* () {
+      const layer = yield* cliLayer();
+      yield* Effect.gen(function* () {
+        const { drizzle } = yield* Database;
+        const alice = yield* signUp("alice");
+        const laptop = yield* signIn("alice");
+        const [owner] = yield* drizzle.select({ userId: member.userId }).from(member).where(eq(member.organizationId, alice.organization.id));
+        const userId = owner?.userId ?? assert.fail("no owner");
+        const sessionOf = (token: string) => drizzle.select({ id: session.id }).from(session).where(eq(session.token, token.split(".", 1)[0] ?? token))
+          .pipe(Effect.map(([row]) => row?.id ?? assert.fail("no session")));
+        const here = yield* sessionOf(alice.session);
+        const approved = (command: string, subject: string, credentialId: string) => drizzle.insert(operationApprovals).values({
+          organizationId: alice.organization.id, subject, requestedByUserId: userId, via: "cli", credentialKind: "session", credentialId,
+          command, digest: `${command}:${subject}`, status: "approved", decidedByUserId: userId, decidedAt: new Date(),
+          review: asTestDouble<typeof operationApprovals.$inferInsert.review>()({ effects: [], operation: { verb: command, name: "data", preview: null } }),
+        }).returning({ id: operationApprovals.id }).pipe(Effect.map(([row]) => row?.id ?? assert.fail("no approval")));
+        const sync = (approval: string) => cli("POST", "volumes/vol-1/sync", { ...alice, approval }, { environment: { project: "shop", environment: "production" } });
+
+        for (const id of [
+          yield* approved("release", "volume:vol-1", here),
+          yield* approved("sync", "volume:vol-2", here),
+          yield* approved("sync", "volume:vol-1", yield* sessionOf(laptop.session)),
+        ]) {
+          const refused = yield* sync(id);
+          assert.deepStrictEqual([refused.status, refused.json.error?.code], [403, "forbidden"], refused.text);
+        }
+        // Its own approval passes, and the sync goes on to the Servers, which this test has none of.
+        const own = yield* sync(yield* approved("sync", "volume:vol-1", here));
+        assert.deepStrictEqual([own.status, own.json.error?.code], [500, "unanswered"], own.text);
+      }).pipe(Effect.provide(layer));
+    }),
+);
 
 it.live(
   "an Organization Token acts in its own Organization until it expires, is revoked, or its maker leaves",
@@ -831,6 +873,36 @@ it.live(
       }).pipe(Effect.provide(layer));
     }),
   90_000,
+);
+
+it.live(
+  "Server access sets and clears a holder within the CLI's request budget, aborting each connection, when the Server's "
+    + "session never closes",
+  () =>
+    Effect.gen(function* () {
+      const fake = fakeServers();
+      const layer = yield* cliLayer(fake.layer);
+      yield* Effect.gen(function* () {
+        const database = yield* Database;
+        const alice = yield* signUp("alice");
+        const machine = ids.machineId("00000000000000000000000000001256");
+        yield* enroll(alice.organization.id, machine, true);
+        const server = { online: true, slots: new Map<string, string>(), closeHangs: true };
+        fake.servers.set(machine, server);
+
+        const started = Date.now();
+        const access = (yield* cli("POST", "server-access", alice)).json;
+        assert.isBelow(Date.now() - started, 15_000);
+        assert.deepStrictEqual(access.connections?.map((row) => row.machine_id), [machine]);
+
+        yield* database.drizzle.delete(member).where(eq(member.organizationId, alice.organization.id));
+        const swept = yield* retireServerAccess();
+        assert.deepStrictEqual(swept.confirmed, [machine]);
+        assert.strictEqual(server.slots.size, 0);
+        assert.deepStrictEqual(fake.aborts.aborted(), [true, true]);
+      }).pipe(Effect.provide(layer));
+    }),
+  60_000,
 );
 
 it.live(
@@ -1587,16 +1659,16 @@ it.live(
         const approvalId = asked.approval_id ?? assert.fail("no approval id");
         yield* cli("POST", `approvals/${approvalId}`, alice, { approve: { digest: asked.approval ?? "" } });
 
+        const covers = "This approval covers only the request to forget fra-1. Run the command again without it to ask for one.";
         const reset = yield* cli("DELETE", `servers/${fra1}`, { ...alice, approval: approvalId }, { confirm_data_loss: { confirmed: [] } });
-        assert.strictEqual(reset.json.error?.code, "approval_required");
-        assert.notStrictEqual(reset.json.error?.details?.approval_id ?? assert.fail("no approval id"), approvalId);
+        assert.deepStrictEqual(refusedWith(reset), [403, covers]);
 
         const started = yield* cli("POST", `servers/${fra1}/forget`, { ...alice, approval: approvalId }, {});
         const removalId = started.json.id ?? assert.fail("no removal id");
         const resetAfterUse = yield* cli("DELETE", `servers/${fra1}`, { ...alice, approval: approvalId }, { confirm_data_loss: { confirmed: [] } });
-        assert.strictEqual(resetAfterUse.json.error?.code, "approval_required");
+        assert.deepStrictEqual(refusedWith(resetAfterUse), [403, covers]);
         const elsewhere = yield* cli("POST", `servers/${"e".repeat(32)}/forget`, { ...alice, approval: approvalId }, {});
-        assert.strictEqual(elsewhere.json.error?.code, "not_found");
+        assert.deepStrictEqual(refusedWith(elsewhere), [403, covers]);
         const ended = new Date();
         yield* drizzle.update(machineRemoveAttempt).set({
           state: "failed", inngestRunId: "run-1", startedAt: ended, terminalAt: ended, failureCode: "unreachable", failureMessage: "gone",
@@ -1629,6 +1701,11 @@ it.live(
           .where(eq(machineRemoveAttempt.id, removalId));
         cluster.observesFra1 = false;
 
+        const laptop = yield* signIn("alice");
+        assert.deepStrictEqual(refusedWith(yield* cli("POST", `servers/${fra1}/forget`, { ...laptop, approval: approvalId }, {})), [
+          403,
+          "This approval was asked for from another session or token. Run the command again without it to ask for one from here.",
+        ]);
         const retried = yield* cli("POST", `servers/${fra1}/forget`, { ...alice, approval: approvalId }, {});
         assert.strictEqual(retried.status, 200);
         assert.strictEqual(retried.json.id, removalId);

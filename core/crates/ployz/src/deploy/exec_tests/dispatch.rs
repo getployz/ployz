@@ -418,6 +418,7 @@ async fn removal_sent(purpose: ployz_core::RemoveContainerPurpose) -> Vec<Contai
                         })
                     }
                     other @ (RpcRequestBody::DescribeContract(_)
+                    | RpcRequestBody::UpdateContainerLimits(_)
                     | RpcRequestBody::Inspect(_)
                     | RpcRequestBody::Enroll(_)
                     | RpcRequestBody::Register(_)
@@ -437,6 +438,7 @@ async fn removal_sent(purpose: ployz_core::RemoveContainerPurpose) -> Vec<Contai
                     | RpcRequestBody::InspectVolumeCopy(_)
                     | RpcRequestBody::SeedVolume(_)
                     | RpcRequestBody::SetVolumeCopy(_)
+                    | RpcRequestBody::SetVolumeSize(_)
                     | RpcRequestBody::ListImages(_)
                     | RpcRequestBody::PruneImages(_)
                     | RpcRequestBody::EnsureImageIngest(_)
@@ -445,7 +447,6 @@ async fn removal_sent(purpose: ployz_core::RemoveContainerPurpose) -> Vec<Contai
                     | RpcRequestBody::MintBuildGrant(_)
                     | RpcRequestBody::InspectBuildGrant(_)
                     | RpcRequestBody::PublishCertificateMaterial(_)
-                    | RpcRequestBody::PublishServingPointer(_)
                     | RpcRequestBody::ReadRoutes(_)
                     | RpcRequestBody::MetricHistory(_)
                     | RpcRequestBody::LogHistory(_)

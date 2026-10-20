@@ -29,11 +29,11 @@ pub use rows::{
 use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::config::{
-    CompiledNodeConfig, EncryptedSecretValue, LowerDeploymentConfig, LowerDeploymentConfigFile,
-    LowerDeploymentInput, LowerDeploymentSnapshot, LowerDeploymentVolume, RuntimeOutcomeProjection,
-    SavedConfigIntent, SavedEnvironmentIntent, SavedServiceIntent, SavedVolumeIntent,
-    ServiceConfig, ServiceImageCredentials, ServiceSource, ValuePartOwner,
-    canonicalize_environment_intent, compile_environment_intent, lower_deployment,
+    CompiledNodeConfig, EncryptedSecretValue, EnvironmentNodeType, LowerDeploymentConfig,
+    LowerDeploymentConfigFile, LowerDeploymentInput, LowerDeploymentSnapshot,
+    LowerDeploymentVolume, RuntimeOutcomeProjection, SavedConfigIntent, SavedEnvironmentIntent,
+    SavedServiceIntent, SavedVolumeIntent, ServiceConfig, ServiceImageCredentials, ServiceSource,
+    ValuePartOwner, canonicalize_environment_intent, compile_environment_intent, lower_deployment,
     parse_runtime_preview, project_runtime_outcome, redacted_runtime_preview,
 };
 use ployz_core::{
@@ -150,6 +150,12 @@ pub struct DeploymentSummary {
     pub runner: Option<RunnerId>,
     /// What its Services without a source of their own build from.
     pub upload: Option<UploadedSource>,
+    /// Whether `upload` is chosen again as it starts: it sent none, so its Services
+    /// build from the upload each last ran then, which a Deployment ahead of it may
+    /// still change.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[ts(optional, as = "Option<bool>")]
+    pub chooses_upload_at_start: bool,
     /// Whether it removes the Environment from the Servers: it ships the empty
     /// Environment ([`NOTHING`]) and deletes the data it accepted.
     pub remove: bool,
@@ -314,6 +320,8 @@ pub struct Unclaimed {
     pub organization: OrganizationId,
     pub environment: EnvironmentId,
     pub deployment: DeploymentId,
+    /// Its place in its Environment's queue: a newer Deployment has a higher number.
+    pub number: u64,
     /// When it was admitted, in Unix seconds.
     #[ts(type = "number")]
     pub admitted_at: i64,
@@ -377,6 +385,11 @@ pub struct NodeOutcome {
     #[serde(flatten)]
     pub node: DeployedNode,
     pub outcome: NodeStatus,
+    /// The Deployment's cancel stopped its work, so it reads Cancelled. Set only
+    /// on a Failed `outcome`, which a reader from before Cancelled reads.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[ts(as = "Option<bool>", optional)]
+    pub cancelled: bool,
     /// Its work on each Server, once its runner started executing.
     #[serde(default)]
     pub rows: Vec<ServerRow>,
@@ -407,6 +420,13 @@ impl NodeStatus {
     /// Whether Applied State holds the node as this Deployment shipped it.
     pub(crate) const fn advances(self) -> bool {
         matches!(self, Self::Deployed | Self::Removed)
+    }
+
+    /// Whether Applied State takes the node from a Deployment that `succeeded` or
+    /// not: once it succeeded, an Unchanged node too, since the Deploy covered it
+    /// even when the runtime had nothing to do (a rename, a tag).
+    pub(crate) const fn applied(self, succeeded: bool) -> bool {
+        self.advances() || (succeeded && matches!(self, Self::Unchanged))
     }
 }
 
@@ -633,6 +653,36 @@ impl TargetNode {
         }
     }
 
+    /// Where views list it: Services, then Volumes, then Configs, each by name, as the
+    /// review does.
+    pub(crate) fn listed(&self) -> (EnvironmentNodeType, &str) {
+        match self {
+            Self::Service { name, .. } => (EnvironmentNodeType::Service, name.as_str()),
+            Self::Volume { name, .. } => (EnvironmentNodeType::Volume, name.as_str()),
+            Self::Config { name, .. } => (EnvironmentNodeType::Config, name.as_str()),
+        }
+    }
+
+    /// [`Self::listed`], then a node the Deployment takes away, being gone from `saved`,
+    /// before one that took its name; the id only settles what nothing else tells apart.
+    pub(crate) fn order(
+        &self,
+        saved: &SavedEnvironmentIntent,
+    ) -> (EnvironmentNodeType, &str, bool, &str) {
+        let id = self.id();
+        let stays = match self {
+            Self::Service { .. } => {
+                !self.retires() && saved.services.iter().any(|service| service.id == id)
+            }
+            Self::Volume { deletes, .. } => {
+                deletes.is_none() && saved.volumes.iter().any(|volume| volume.resource_id == id)
+            }
+            Self::Config { .. } => saved.configs.iter().any(|config| config.resource_id == id),
+        };
+        let (kind, name) = self.listed();
+        (kind, name, stays, id)
+    }
+
     /// The node as views name it.
     fn shown(&self) -> DeployedNode {
         match self {
@@ -730,6 +780,11 @@ struct Run {
     /// Each target node's Node Outcome, by node ID, once execution ran.
     #[serde(default)]
     nodes: BTreeMap<String, NodeStatus>,
+    /// The Failed nodes only the Deployment's cancel stopped, which read
+    /// Cancelled. Kept apart from `nodes` so a Store from before Cancelled reads
+    /// them Failed.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    cancelled: BTreeSet<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     warnings: Vec<DeploymentWarning>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -977,6 +1032,11 @@ fn stored(row: &Row) -> Result<Stored, RpcError> {
     // Only a push holds, and a push that admitted a Deployment froze what it ships,
     // at least one node: a hold, cancelled or not, froze none.
     let held = push.is_some() && nodes.is_empty();
+    let service_uploads: Option<uploads::ServiceUploads> = row
+        .optional_text(23)?
+        .map(serde_json::from_str)
+        .transpose()
+        .map_err(|_| error::corrupt("Deployment uploads"))?;
     Ok(Stored {
         summary: DeploymentSummary {
             id: row.parse(0, "identity")?,
@@ -996,6 +1056,7 @@ fn stored(row: &Row) -> Result<Stored, RpcError> {
                 .map(serde_json::from_str)
                 .transpose()
                 .map_err(|_| error::corrupt("Deployment upload"))?,
+            chooses_upload_at_start: chooses_upload_at_start(status, service_uploads.as_ref()),
             remove: row.number::<Revision>(4, "revision")? == NOTHING,
             admitted_by: row.parse_optional(13, "identity")?,
             admitted_at: row.int(14)?,
@@ -1022,17 +1083,25 @@ fn stored(row: &Row) -> Result<Stored, RpcError> {
         cluster_domain: row.parse_optional(10, "identity")?,
         lease,
         listed: row.int(22)?,
-        service_uploads: row
-            .optional_text(23)?
-            .map(serde_json::from_str)
-            .transpose()
-            .map_err(|_| error::corrupt("Deployment uploads"))?,
+        service_uploads,
     })
 }
 
-/// Write `stored`'s status and run, keeping `in_flight` in step with its status.
+/// Whether a Deployment in `status` chooses its upload again as it starts: it is
+/// queued, and admission chose `uploads` while one ahead of it could still move them.
+fn chooses_upload_at_start(
+    status: DeploymentStatus,
+    uploads: Option<&uploads::ServiceUploads>,
+) -> bool {
+    status == DeploymentStatus::Queued && uploads.is_some_and(|uploads| uploads.provisional)
+}
+
+/// Write `stored`'s status and run, keeping `in_flight` and
+/// `chooses_upload_at_start` in step with its status.
 fn save(tx: &mut dyn Tx, stored: &mut Stored) -> Result<(), RpcError> {
     stored.summary.in_flight = stored.summary.status.in_flight();
+    stored.summary.chooses_upload_at_start =
+        chooses_upload_at_start(stored.summary.status, stored.service_uploads.as_ref());
     tx.execute(
         "UPDATE config_deployment SET status = ?1, run = ?2, runner = ?4, lease = ?5, \
          started = ?6, ended = ?7 WHERE id = ?3",
@@ -1072,11 +1141,19 @@ fn running(stored: &Stored) -> Result<(), RpcError> {
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    /// How many times this thread loaded a Saved revision, for tests that bound it.
+    pub(crate) static SAVED_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 pub(crate) fn saved_at(
     tx: &mut dyn Tx,
     environment: &EnvironmentId,
     revision: Revision,
 ) -> Result<SavedEnvironmentIntent, RpcError> {
+    #[cfg(test)]
+    SAVED_READS.set(SAVED_READS.get() + 1);
     if revision == NOTHING {
         return scope::load_by_id(tx, environment)
             .map(|loaded| crate::scope::empty(&loaded.working.environment_slug));

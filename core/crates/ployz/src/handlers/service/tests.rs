@@ -130,6 +130,33 @@ fn ps_names_servers_and_shows_container_ids_on_every_row_once_two_rows_read_the_
 }
 
 #[test]
+fn ps_reads_a_run_its_machine_stopped_as_stopped_and_any_other_exit_by_its_code() {
+    let exited = || ContainerRuntimeObservation::Exited { code: 1 };
+    let mut parts = observation('a', 'b', "web", exited()).into_parts();
+    parts.stopped = true;
+    let stopped =
+        ServiceContainer::try_from(ployz_core::ContainerObservation::try_from(parts).unwrap())
+            .unwrap();
+    let crashed = ServiceContainer::try_from(observation('c', 'b', "api", exited())).unwrap();
+    let containers = [
+        ContainerRef::Service(&stopped),
+        ContainerRef::Service(&crashed),
+    ];
+    let name = MachineName::parse("machine-1").unwrap();
+    let names = HashMap::from([(MachineId::parse("b".repeat(32)).unwrap(), &name)]);
+    let mut out = Vec::new();
+    process_table(&containers, Some(&scoped(&[])), &names, &HashSet::new())
+        .write(&mut out, false)
+        .unwrap();
+    assert_eq!(
+        String::from_utf8(out).unwrap(),
+        "SERVICE\tKIND\tSERVER\tSTATE\n\
+         web\tservice\tmachine-1\tstopped\n\
+         api\tservice\tmachine-1\texited with code 1\n"
+    );
+}
+
+#[test]
 fn ps_names_a_renamed_service_by_its_name_now_not_its_private_name() {
     let running = || ContainerRuntimeObservation::Running {
         health: HealthObservation::NotConfigured,
@@ -316,6 +343,7 @@ fn observation(
         .unwrap(),
         address: None,
         labels: Default::default(),
+        stopped: false,
     })
     .unwrap()
 }

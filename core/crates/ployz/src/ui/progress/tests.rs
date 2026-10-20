@@ -112,6 +112,7 @@ fn a_removed_service_counts_as_removed_in_the_summary() {
                 state,
                 timing: Timing::Unavailable,
                 starts: false,
+                updates: false,
             }],
         )
     };
@@ -648,6 +649,7 @@ fn service(name: &str, depth: u32, servers: usize, state: &ployz_store::RowState
             state,
             timing: Timing::Finished(Duration::from_secs(5)),
             starts: true,
+            updates: false,
         }),
     )
 }
@@ -661,6 +663,7 @@ fn an_overflowing_view_drops_switched_rows_before_a_deeper_failure() {
         log: None,
         unanswered: false,
         out_of_memory: None,
+        cancelled: false,
     };
     let mut rows: Vec<_> = (0..12)
         .map(|i| service(&format!("svc{i}"), 0, 1, &ployz_store::RowState::Completed))
@@ -696,6 +699,7 @@ fn an_overflowing_view_puts_finished_ingress_repairs_after_a_failure() {
         log: None,
         unanswered: false,
         out_of_memory: None,
+        cancelled: false,
     };
     let mut rows: Vec<_> = (0..12)
         .map(|n| Row {

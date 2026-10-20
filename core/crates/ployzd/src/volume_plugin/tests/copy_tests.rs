@@ -21,13 +21,13 @@ use super::inspect_tests::{set_property, start};
 use super::*;
 
 const ROOT: &str = "tank/ployz/data";
-const SLOT: &str = "tank/ployz-mirror/data";
-const SLOT_FS: &str = "tank/ployz-mirror/data/fs";
+pub(super) const SLOT: &str = "tank/ployz-mirror/data";
+pub(super) const SLOT_FS: &str = "tank/ployz-mirror/data/fs";
 const BOUND: u64 = 1_073_741_824;
 
 type Server = tokio::task::JoinHandle<io::Result<()>>;
 
-fn set_snapshots(test: &TestDir, dataset: &str, snapshots: &[(&str, u64)]) {
+pub(super) fn set_snapshots(test: &TestDir, dataset: &str, snapshots: &[(&str, u64)]) {
     let lines: String = snapshots
         .iter()
         .enumerate()
@@ -268,6 +268,61 @@ async fn a_pull_of_the_snapshot_an_old_copy_holds_makes_it_a_mirror() {
 
     let reply = post(&socket, "/Volume.Copy.Pull", pull("f-1")).await;
     assert_eq!(reply.pointer("/Ok/role"), Some(&json!("mirror")), "{reply}");
+    assert_eq!(
+        slot_roles(&socket).await,
+        (json!("mirror"), json!("mirror"))
+    );
+    server.abort();
+}
+
+/// What the daemon does for a `SetVolumeCopy` Forget want against a slot: plan against
+/// the inspected copy, and call the Destroy route only on `MirrorToForget`.
+async fn set_forget(socket: &Path, expect: &ployz_core::ExpectedCopy) -> Value {
+    let copy = parsed_copy(&post(socket, "/Volume.Copy.Inspect", json!({"name": "data"})).await);
+    let plan = ployz_core::plan(
+        copy.as_ref(),
+        false,
+        expect,
+        &ployz_core::WantedCopy::Forget,
+    );
+    if plan != ployz_core::CopyPlan::Transition(ployz_core::CopyTransition::MirrorToForget) {
+        return json!({"Planned": format!("{plan:?}")});
+    }
+    post(socket, "/Volume.Copy.Destroy", json!({"name": "data"})).await
+}
+
+/// Cloud deletes an old copy it saw; a cancelled run's pull that landed after Cloud looked
+/// made the slot the mirror at the same snapshot, so the delete names the old copy's role
+/// and the Machine refuses it.
+#[tokio::test]
+#[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
+async fn a_delete_of_an_old_copy_refuses_the_mirror_a_late_pull_made_of_it() {
+    let source = Source::start(Some(BOUND), "").await;
+    let test = TestDir::new();
+    let (socket, server) = puller(&test, &["root", "volume", "mounted"], source.port);
+    set_snapshots(&test, ROOT, &[("w-1-1", 11)]);
+    let seen = post(
+        &socket,
+        "/Volume.Copy.Cut",
+        json!({"name": "data", "target": "f-1"}),
+    )
+    .await;
+    assert_eq!(seen.pointer("/Ok/role"), Some(&json!("old_copy")), "{seen}");
+    let delete: ployz_core::ExpectedCopy = serde_json::from_value(json!({
+        "kind": "mirror",
+        "newest": seen["Ok"]["newest"]["guid"],
+        "slot": seen["Ok"]["slot"],
+        "role": "old_copy",
+    }))
+    .unwrap();
+
+    let late = post(&socket, "/Volume.Copy.Pull", pull("f-1")).await;
+    assert_eq!(late.pointer("/Ok/role"), Some(&json!("mirror")), "{late}");
+
+    assert_eq!(
+        set_forget(&socket, &delete).await,
+        json!({"Planned": "Refuse(Mismatch)"})
+    );
     assert_eq!(
         slot_roles(&socket).await,
         (json!("mirror"), json!("mirror"))
@@ -640,11 +695,11 @@ async fn the_writer_route_reopens_a_read_only_root_of_its_own_epoch() {
 /// the first answer whose key the request URI contains, else the default one. A held
 /// answer sends its headers at once and its stream only after `release`; a silent one
 /// never answers.
-struct Source {
+pub(super) struct Source {
     requests: Arc<StdMutex<Vec<String>>>,
     answers: Arc<StdMutex<Vec<Answer>>>,
     gate: Arc<Semaphore>,
-    port: u16,
+    pub(super) port: u16,
 }
 
 #[derive(Clone)]
@@ -663,7 +718,7 @@ enum Mode {
 }
 
 impl Source {
-    async fn start(bound: Option<u64>, stream: &str) -> Self {
+    pub(super) async fn start(bound: Option<u64>, stream: &str) -> Self {
         let requests = Arc::new(StdMutex::new(Vec::new()));
         let answers = Arc::new(StdMutex::new(vec![Answer {
             key: String::new(),
@@ -752,7 +807,7 @@ impl Source {
     }
 }
 
-fn puller(test: &TestDir, markers: &[&str], port: u16) -> (PathBuf, Server) {
+pub(super) fn puller(test: &TestDir, markers: &[&str], port: u16) -> (PathBuf, Server) {
     puller_stalling_after(test, markers, port, Duration::from_secs(60))
 }
 
@@ -785,13 +840,13 @@ fn puller_with_receives(
     (socket, tokio::spawn(serve(listener, storage)), receives)
 }
 
-fn pull(target: &str) -> Value {
+pub(super) fn pull(target: &str) -> Value {
     json!({"name": "data", "from": "::1", "target": target})
 }
 
 /// Polls the copy until the pull landed `target` read-only or stopped with a failure.
 /// The receive shows `target` before the pull checks the copy's properties.
-async fn landed(socket: &Path, target: &str) -> Value {
+pub(super) async fn landed(socket: &Path, target: &str) -> Value {
     for _ in 0..300 {
         let copy = post(socket, "/Volume.Copy.Inspect", json!({"name": "data"})).await;
         if (copy.pointer("/Ok/newest/name") == Some(&json!(target))
@@ -1260,8 +1315,7 @@ async fn departure_stops_a_pull_into_a_slot_it_keeps() {
         fs::write(test.0.join("props/stall-read"), "").unwrap();
         post(&socket, "/Volume.Copy.Pull", pull("w-1-2")).await;
         receive_pid(&test).await;
-        let scan =
-            "list -Hp -o name,refquota,used,usedbydataset,mountpoint,mounted,readonly -r tank";
+        let scan = "list -Hp -o name,refquota,used,usedbydataset,referenced,mountpoint,mounted,readonly -r tank";
         // The pull ran this scan before it answered, so only a stall proves the departure's.
         let stalled = test.0.join("props/stalled");
         let _ = fs::remove_file(&stalled);
@@ -2484,6 +2538,7 @@ fn mirror_expect(copy: &Value) -> ployz_core::ExpectedCopy {
     ployz_core::ExpectedCopy::Mirror {
         newest: newest.guid,
         slot,
+        role: None,
     }
 }
 
