@@ -12,7 +12,7 @@ use std::{
 use axum::{body::Body, extract::Request, response::IntoResponse};
 use tokio::{net::TcpListener, process::Command, sync::Semaphore};
 
-use super::super::transfer::ZfsChild;
+use super::super::transfer::{Receives, ZfsChild};
 use super::*;
 
 const BOUND: u64 = 1_073_741_824;
@@ -194,5 +194,73 @@ async fn an_inspect_a_panicked_receive_child_writes_under_answers_the_copy_befor
         during == before || during == after,
         "during: {during}\nbefore: {before}\nafter: {after}"
     );
+    server.abort();
+}
+
+/// A failed task whose dropped child never exits answers its failure once the hold has
+/// passed. That child is stuck, and hiding the failure for it would hold the pull in
+/// flight forever.
+#[tokio::test]
+async fn an_inspect_answers_a_failure_whose_dropped_child_never_exits_once_the_hold_passes() {
+    let (port, stream) = held_source("break\n").await;
+    stream.add_permits(1);
+    let test = TestDir::new();
+    fs::write(test.0.join("root"), "").unwrap();
+    let (zpool, zfs) = fake_zfs(&test.0, USABLE_POOL);
+    let mut storage = VolumeStorage::with_programs(zpool, zfs);
+    storage.send_port = port;
+    storage.receives = Receives::holding(Duration::from_millis(200));
+    let receives = storage.receives.clone();
+    let socket = test.0.join("plugin.sock");
+    let server = tokio::spawn(serve(UnixListener::bind(&socket).unwrap(), storage));
+    let name: DockerVolumeName = "data".parse().unwrap();
+    let inspect = || post(&socket, "/Volume.Copy.Inspect", json!({"name": "data"}));
+
+    let pull = json!({"name": "data", "from": "::1", "target": "w-1-1"});
+    post(&socket, "/Volume.Copy.Pull", pull).await;
+    until(|| test.0.join("props/receive-ready").exists()).await;
+    until(|| !receives.running(&name)).await;
+
+    let held = test.0.join("child-gate");
+    fs::write(&held, "").unwrap();
+    receives.spawn(&name, |stop| {
+        let mut child = ZfsChild::spawn(
+            Command::new("sh").args([
+                "-c",
+                &format!("while [ -e '{}' ]; do sleep 0.01; done", held.display()),
+            ]),
+            &stop,
+        )
+        .unwrap();
+        child.spare_from_kill();
+        async move {
+            let _child = child;
+            panic!("the receive task broke");
+        }
+    });
+
+    let panicked = json!("the receive task panicked");
+    let answered = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let copy = inspect().await;
+            if copy.pointer("/Ok/pull/failure") == Some(&panicked) {
+                return copy;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    assert!(
+        receives.running(&name),
+        "the child exited, so this proves nothing"
+    );
+    assert!(
+        answered.is_ok(),
+        "the failure stayed hidden behind a stuck child"
+    );
+    assert_eq!(receives.failure(&name).as_deref(), panicked.as_str());
+
+    fs::remove_file(&held).unwrap();
+    until(|| !receives.running(&name)).await;
     server.abort();
 }
