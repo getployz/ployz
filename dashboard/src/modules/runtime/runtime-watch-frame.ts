@@ -46,13 +46,15 @@ const runtimeWatchIncompleteVolumeIdSchema = Schema.Struct({
 
 /**
  * A managed Volume's copy on one Machine. An unset Engine role is a writer; a read-only root reports `switching`. A slot
- * carries what its Machine recorded it as, a mirror or an old copy; every other copy carries null.
+ * carries what its Machine recorded it as, a mirror or an old copy; every other copy carries null. Its bound is null
+ * from a transport that predates it.
  */
 const runtimeWatchVolumeCopySchema = Schema.Struct({
   machine_id: Schema.String,
   name: Schema.String,
   role: Schema.Literals(["writer", "slot", "switching"]),
   slot_role: Schema.NullOr(Schema.Literals(["mirror", "old_copy"])),
+  bound_bytes: Schema.NullOr(Schema.Number).pipe(Schema.withDecodingDefaultKey(Effect.succeed(null))),
 });
 
 const runtimeWatchCertificateSchema = Schema.Struct({
@@ -158,6 +160,7 @@ export function runtimeWatchFrameForTransport(
         name: volume.id.name,
         role: volume.storage.role ?? "writer",
         slot_role: volume.storage.role === "slot" ? volume.storage.slot_role ?? "mirror" : null,
+        bound_bytes: volume.storage.bound_bytes,
       }]
       : []),
     certificates: frame.certificates.map((certificate) => ({
@@ -241,7 +244,9 @@ export function runtimeSnapshotFromWatchFrame(
       hookContainers: service.hook_containers.map(runtimeContainerRecordFromWatch),
       observedAt,
     })),
-    volumeCopies: frame.volumes.map((copy) => ({ machineId: copy.machine_id, name: copy.name, role: copy.role, slotRole: copy.slot_role })),
+    volumeCopies: frame.volumes.map((copy) => ({
+      machineId: copy.machine_id, name: copy.name, role: copy.role, slotRole: copy.slot_role, boundBytes: copy.bound_bytes,
+    })),
     certificates: frame.certificates.map((certificate) => ({
       hostname: certificate.hostname,
       status: certificate.status,

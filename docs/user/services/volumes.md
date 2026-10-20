@@ -35,10 +35,11 @@ The limit starts at 5 GB. A volume can't grow past it: once it's full, writes fa
 limit is set aside on the server's disk, so a deploy fails if no server has room for it.
 
 You can change the limit under **Storage** in the volume's panel until you deploy the volume.
-On Ployz Cloud you can then grow it while its service keeps running. Type a larger
-**Storage limit** in the panel and confirm **Grow volume**. The panel shows the resize until it
-ends. It refuses a smaller limit, a server whose Ployz is too old to grow it, or a size a server
-reports no room for, before you confirm. You can also grow it from the CLI:
+If that first deploy fails, the limit stays fixed in the panel. Once the volume deploys, you can
+grow it on Ployz Cloud while its service keeps running. Type a larger **Storage limit** in the
+panel and confirm **Grow volume**. The panel shows the resize until it ends. Before you confirm,
+it refuses a smaller limit, a server whose Ployz is too old to grow it or that isn't reporting to
+Cloud, and a size a server reports no room for. You can also grow it from the CLI:
 
 ```sh
 # Grow the data volume to 20 GB on every server that holds a copy

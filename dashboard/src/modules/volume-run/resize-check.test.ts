@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { RuntimeMachineRecord } from "#/modules/runtime/runtime.collection";
+import type { RuntimeMachineRecord, RuntimeVolumeCopy } from "#/modules/runtime/runtime.collection";
 import { checkResize, growWords, type Holder, holdersOf, type ResizeAsk, type ResizeVerdict } from "#/modules/volume-run/resize-check";
 import { member } from "#/modules/volume-run/volume-run.test-fixture";
 
@@ -7,7 +7,7 @@ const GB = 1_000_000_000;
 type ResizeVerdictCopies = Extract<ResizeVerdict, { kind: "grow" }>["copies"];
 const SIZE = ["ployz.volume.size.set.v1"];
 const holder = (name: string, role: Holder["role"], options: Partial<Holder> = {}): Holder =>
-  ({ name, role, capabilities: SIZE, committableBytes: null, ...options });
+  ({ name, role, capabilities: SIZE, committableBytes: null, boundBytes: null, ...options });
 const ask = (requested: number, options: Partial<ResizeAsk> = {}): ResizeAsk =>
   ({ volume: "data", recorded: 10 * GB, working: 10 * GB, requested, holders: [holder("fsn-1", "primary"), holder("fsn-2", "mirror")], ...options });
 
@@ -24,9 +24,29 @@ describe("checkResize", () => {
       { kind: "refused", message: "Growing needs a newer Ployz on fsn-1, fsn-3." },
     ],
     [
-      "a holder Cloud has no record of may not serve the verb",
-      ask(20 * GB, { holders: [holder("fsn-1", "primary", { capabilities: null })] }),
-      { kind: "refused", message: "Growing needs a newer Ployz on fsn-1." },
+      "a holder Cloud has no record of can't be checked",
+      ask(20 * GB, { holders: [holder("fsn-1", "primary", { capabilities: null }), holder("fsn-2", "mirror")] }),
+      { kind: "refused", message: "fsn-1 isn't reporting to Cloud, so growing can't check it." },
+    ],
+    [
+      "copies with no primary have no deployed size to grow, as the run refuses",
+      ask(20 * GB, { holders: [holder("fsn-2", "mirror"), holder("fsn-3", "old_copy")] }),
+      { kind: "refused", message: "data has no deployed size to change yet; deploy it first." },
+    ],
+    [
+      "no copy anywhere has no deployed size to grow",
+      ask(20 * GB, { holders: [] }),
+      { kind: "refused", message: "data has no deployed size to change yet; deploy it first." },
+    ],
+    [
+      "a retry after a partial grow needs no room on the copy that already grew",
+      ask(20 * GB, { holders: [holder("fsn-1", "primary", { committableBytes: 15 * GB, boundBytes: 10 * GB }), holder("fsn-2", "mirror", { committableBytes: 0, boundBytes: 20 * GB })] }),
+      { kind: "grow", from: 10 * GB, to: 20 * GB, copies: [{ name: "fsn-1", role: "primary" }, { name: "fsn-2", role: "mirror" }] },
+    ],
+    [
+      "a copy's own bound sets the room it needs",
+      ask(20 * GB, { holders: [holder("fsn-1", "primary"), holder("fsn-2", "mirror", { committableBytes: 4 * GB, boundBytes: 15 * GB })] }),
+      { kind: "refused", message: "fsn-2 has room to grow it by 4 GB at most." },
     ],
     [
       "the tightest Pool among primary and mirrors refuses, its room rounded down",
@@ -79,18 +99,21 @@ describe("growWords", () => {
 describe("holdersOf", () => {
   const record = (id: string, capabilities: readonly string[], poolCommittableBytes: number | null) =>
     ({ id: id.padEnd(32, "0"), capabilities, poolCommittableBytes }) as RuntimeMachineRecord;
+  const copy = (server: string, volumeId: string, boundBytes: number | null): RuntimeVolumeCopy =>
+    ({ machineId: server.padEnd(32, "0"), name: `shop-production_vol-${volumeId}`, role: "slot", slotRole: "mirror", boundBytes });
 
-  it("reads each copy's Server record, and none for a Server without one", () => {
+  it("reads each copy's Server record and its bound there, and none for a Server without them", () => {
     const members = [member("fsn-2", "mirror"), member("fsn-1", "writer"), member("fsn-3", "old"), member("fsn-4", "empty")];
-    expect(holdersOf(members, [record("fsn-1", SIZE, 30 * GB), record("fsn-2", [], null)])).toEqual([
-      { name: "fsn-1", role: "primary", capabilities: SIZE, committableBytes: 30 * GB },
-      { name: "fsn-2", role: "mirror", capabilities: [], committableBytes: null },
-      { name: "fsn-3", role: "old_copy", capabilities: null, committableBytes: null },
+    const copies = [copy("fsn-1", "data", 10 * GB), copy("fsn-2", "data", 20 * GB), copy("fsn-2", "other", 50 * GB), copy("fsn-3", "data", null)];
+    expect(holdersOf("data", members, [record("fsn-1", SIZE, 30 * GB), record("fsn-2", [], null)], copies)).toEqual([
+      { name: "fsn-1", role: "primary", capabilities: SIZE, committableBytes: 30 * GB, boundBytes: 10 * GB },
+      { name: "fsn-2", role: "mirror", capabilities: [], committableBytes: null, boundBytes: 20 * GB },
+      { name: "fsn-3", role: "old_copy", capabilities: null, committableBytes: null, boundBytes: null },
     ]);
   });
 
   it("knows no holders until the Servers answer and their records are in", () => {
-    expect(holdersOf(undefined, [])).toBeNull();
-    expect(holdersOf([member("fsn-1", "writer")], null)).toBeNull();
+    expect(holdersOf("data", undefined, [], [])).toBeNull();
+    expect(holdersOf("data", [member("fsn-1", "writer")], null, [])).toBeNull();
   });
 });

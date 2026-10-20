@@ -154,13 +154,14 @@ function VolumeDrawer({ params, environment, volume, volumes, services, settings
 
 function StoreVolumeStorage({ state, removing, copies }: { state: StoreVolume; removing: boolean; copies: Pick<VolumeCopiesData, "holders" | "running"> }) {
   const writer = useStoreWriter(state.organizationSlug);
-  const { storage, storage_locked, recorded_storage } = state.volume;
+  const { storage, storage_locked, recorded_storage, deployed } = state.volume;
   const [managed, holdManaged] = useCommitHold(storage.kind === "provisioned");
   const sizeGB = managed && storage.kind === "provisioned" ? gigabytes(storage.maximumBytes) : DEFAULT_VOLUME_GB;
   const save = (next: NonNullable<ReturnType<typeof volumeStorage>>) =>
     writer.commit({ command: "set_volume_storage", environment: state.environment, volume: state.volume.name, storage: next });
 
-  if (storage_locked && !removing && storage.kind === "provisioned" && recorded_storage !== undefined) {
+  // A failed first Deploy locks the storage too, and leaves no size on any Server to grow.
+  if (storage_locked && deployed && !removing && storage.kind === "provisioned" && recorded_storage !== undefined) {
     return (
       <>
         <StoreVolumeSize organizationSlug={state.organizationSlug} environment={state.environment} volume={state.volume}

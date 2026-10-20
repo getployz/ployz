@@ -134,8 +134,8 @@ it.each([
 const GB = 1_000_000_000;
 const SIZE = ["ployz.volume.size.set.v1"];
 const holders = (fsn2: readonly string[] = SIZE): Holder[] => [
-  { name: "fsn-1", role: "primary", capabilities: SIZE, committableBytes: 40 * GB },
-  { name: "fsn-2", role: "mirror", capabilities: fsn2, committableBytes: null },
+  { name: "fsn-1", role: "primary", capabilities: SIZE, committableBytes: 40 * GB, boundBytes: 10 * GB },
+  { name: "fsn-2", role: "mirror", capabilities: fsn2, committableBytes: null, boundBytes: 10 * GB },
 ];
 const deployed = (maximumBytes = 10 * GB): Partial<VolumeListing> =>
   ({ deployed: true, storage_locked: true, storage: { kind: "provisioned", maximumBytes }, recorded_storage: 10 * GB });
@@ -186,6 +186,22 @@ it("shows a resize the Servers refuse at admission in the field", async () => {
   expect(screen.queryByRole("alertdialog")).toBeNull();
 });
 
+it("keeps the confirm open while its grow is admitted, so Escape can't strand the field", async () => {
+  await openDrawer(SETTINGS, deployed(), null, { data: { holders: holders() } });
+  let refuse!: (error: Error) => void;
+  vi.spyOn(runs, "resizeVolumeServerFn").mockImplementation(() => new Promise((_, reject) => { refuse = reject; }));
+  enter("20");
+  const dialog = await screen.findByRole("alertdialog");
+  fireEvent.click(within(dialog).getByRole("button", { name: "Grow" }));
+  await within(dialog).findByRole("button", { name: /Growing/ });
+  fireEvent.keyDown(dialog, { key: "Escape" });
+  await act(async () => { await new Promise((resolve) => setTimeout(resolve, 50)); });
+  expect(screen.getByRole("alertdialog")).toBe(dialog);
+  await act(async () => { refuse(new Error("data has a move in progress")); });
+  await screen.findByText("data has a move in progress");
+  await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+});
+
 it("stages the held size back over a restored smaller revision, with no resize", async () => {
   await openDrawer(SETTINGS, deployed(4 * GB), null, { data: { holders: holders() } });
   screen.getByText("A restored revision asks for 4 GB; the servers keep 10 GB. Enter 10 to keep it.");
@@ -200,8 +216,14 @@ it("stages the held size back over a restored smaller revision, with no resize",
 
 it("waits for another run on the volume before it grows", async () => {
   await openDrawer(SETTINGS, deployed(), null, { data: { holders: holders(), running: run("move", { to: "fsn-2" }, "running") } });
-  screen.getByText("Moving to fsn-2. Growing waits for it to finish.");
+  screen.getByText("Moving to fsn-2. Grow it once that finishes.");
   expect(limit().hasAttribute("disabled")).toBe(true);
+});
+
+it("keeps a managed volume fixed when its first deploy left no copy", async () => {
+  await openDrawer(SETTINGS, { ...deployed(), deployed: false }, null, { data: { holders: [] } });
+  screen.getByText("Fixed after the first deploy.");
+  expect(screen.queryByRole("textbox", { name: "Storage limit" })).toBeNull();
 });
 
 it("keeps a deployed Docker volume fixed", async () => {

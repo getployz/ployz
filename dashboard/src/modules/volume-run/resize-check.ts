@@ -1,20 +1,24 @@
 import { Schema } from "effect";
 import { MaximumBytes } from "#/modules/operations/cli-wire";
 import { listNames } from "#/lib/plural";
-import type { RuntimeMachineRecord } from "#/modules/runtime/runtime.collection";
+import type { RuntimeMachineRecord, RuntimeVolumeCopy } from "#/modules/runtime/runtime.collection";
 import { serverSupports } from "#/modules/runtime/daemon-compat";
 import { observePlacement, VolumeInput } from "#/modules/volume-placement/volume-placement";
 import { type Bytes, gb, RESIZE_ORDER } from "#/modules/volume-run/resize";
-import type { Member } from "#/modules/volume-run/volume-run";
+import { type Member, parseDockerVolumeName } from "#/modules/volume-run/volume-run";
 
 const GB = 1_000_000_000;
 
-/** A Server holding a copy, with what its machine record says; null fields are a record Cloud hasn't seen. */
+/**
+ * A Server holding a copy, with what its machine record says and the bound its copy holds there; null fields are a
+ * record or a bound Cloud hasn't seen.
+ */
 export type Holder = {
   readonly name: string;
   readonly role: "primary" | "mirror" | "old_copy";
   readonly capabilities: readonly string[] | null;
   readonly committableBytes: number | null;
+  readonly boundBytes: number | null;
 };
 
 /** A size typed for a deployed Volume. `holders` is null until the Servers have answered and their records are in. */
@@ -45,24 +49,36 @@ export function checkResize({ volume, recorded, working, requested, holders }: R
   if (requested < recorded) return { kind: "refused", message: `${volume} is deployed at ${gb(recorded)}; a deployed volume can't shrink yet.` };
   if (requested === recorded) return working === recorded ? { kind: "settled" } : { kind: "restage" };
   if (holders === null) return { kind: "grow", from: recorded, to: requested, copies: null };
+  if (!holders.some((holder) => holder.role === "primary")) {
+    return { kind: "refused", message: `${volume} has no deployed size to change yet; deploy it first.` };
+  }
 
-  // The run asks every copy, old ones included, and a record listing no capabilities may not serve the verb.
-  const lacking = holders.filter((holder) => holder.capabilities === null
-    || RESIZE_ORDER.grow.requires.some((requirement) => serverSupports({ capabilities: holder.capabilities ?? [] }, requirement) !== true));
+  // The run asks every copy, old ones included. A Server with no record can't be checked, and an empty list claims no verb.
+  const unreported = holders.filter((holder) => holder.capabilities === null).map((holder) => holder.name);
+  if (unreported.length > 0) {
+    const one = unreported.length === 1;
+    return { kind: "refused", message: `${listNames(unreported)} ${one ? "isn't" : "aren't"} reporting to Cloud, so growing can't check ${one ? "it" : "them"}.` };
+  }
+  const lacking = holders.filter((holder) =>
+    RESIZE_ORDER.grow.requires.some((requirement) => serverSupports({ capabilities: holder.capabilities ?? [] }, requirement) !== true));
   if (lacking.length > 0) return { kind: "refused", message: `Growing needs a newer Ployz on ${lacking.map((holder) => holder.name).join(", ")}.` };
 
-  // The run grows every slot, an old copy included, so each one's Pool must take the growth.
+  // The run grows every slot, an old copy included, so each one's Pool must take what its own bound lacks: a copy an
+  // earlier grow left at the size needs nothing.
   const growing = ROLE_ORDER.flatMap((role) => holders.filter((holder) => holder.role === role));
-  const [tightest] = growing.flatMap((holder) => holder.committableBytes === null ? [] : [{ name: holder.name, room: holder.committableBytes }])
-    .sort((a, b) => a.room - b.room);
-  if (tightest !== undefined && requested - recorded > tightest.room) {
-    const room = Math.floor(tightest.room / GB) * GB;
-    return { kind: "refused", message: room === 0 ? `${tightest.name} has no room to grow it.` : `${tightest.name} has room to grow it by ${gb(room)} at most.` };
+  const [short] = growing.flatMap(({ name, committableBytes, boundBytes }) =>
+    committableBytes !== null && Math.max(0, requested - (boundBytes ?? recorded)) > committableBytes ? [{ name, room: committableBytes }] : []);
+  if (short !== undefined) {
+    const room = Math.floor(short.room / GB) * GB;
+    return { kind: "refused", message: room === 0 ? `${short.name} has no room to grow it.` : `${short.name} has room to grow it by ${gb(room)} at most.` };
   }
   return { kind: "grow", from: recorded, to: requested, copies: growing.map(({ name, role }) => ({ name, role })) };
 }
 
-/** What the confirm says a grow does: the primary first, then its mirrors and old copies, by Server. */
+/**
+ * What the confirm says a grow does. It names the Servers in reading order, the primary's first, then its mirrors' and
+ * old copies'; the run itself grows the mirrors first.
+ */
 export function growWords(volume: string, { from, to, copies }: Extract<ResizeVerdict, { kind: "grow" }>): string {
   const named = (role: Holder["role"]) => (copies ?? []).filter((copy) => copy.role === role).map((copy) => copy.name);
   const [primary] = named("primary");
@@ -73,13 +89,18 @@ export function growWords(volume: string, { from, to, copies }: Extract<ResizeVe
   return `Grow ${volume} from ${gb(from)} to ${gb(to)} ${where}. Its services keep running.`;
 }
 
-/** The copies the Servers report, each with its machine record. Null until both are known. */
-export function holdersOf(members: readonly Member[] | undefined, machines: readonly RuntimeMachineRecord[] | null): readonly Holder[] | null {
+/** The copies of `volumeId` the Servers report, each with its machine record and its bound. Null until both are known. */
+export function holdersOf(volumeId: string, members: readonly Member[] | undefined, machines: readonly RuntimeMachineRecord[] | null,
+  copies: readonly RuntimeVolumeCopy[]): readonly Holder[] | null {
   if (members === undefined || machines === null) return null;
   const observed = observePlacement(members);
   const holder = (server: { readonly id: string; readonly name: string }, role: Holder["role"]): Holder => {
     const machine = machines.find((candidate) => candidate.id === server.id);
-    return { name: server.name, role, capabilities: machine?.capabilities ?? null, committableBytes: machine?.poolCommittableBytes ?? null };
+    const copy = copies.find((candidate) => candidate.machineId === server.id && parseDockerVolumeName(candidate.name)?.volumeId === volumeId);
+    return {
+      name: server.name, role, capabilities: machine?.capabilities ?? null, committableBytes: machine?.poolCommittableBytes ?? null,
+      boundBytes: copy?.boundBytes ?? null,
+    };
   };
   return [
     ...(observed.primary === null ? [] : [holder(observed.primary, "primary")]),
