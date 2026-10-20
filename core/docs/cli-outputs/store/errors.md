@@ -293,7 +293,7 @@ $ timeout 30 ployz ps --project shop
 stderr:
 ```
 error: no contexts found in Ployz config /tmp/ployz-cli-outputs-store/home/config.yaml
-next: ployz server ls
+next: ployz login
 ```
 
 ### cluster command --json (ps)
@@ -305,7 +305,7 @@ $ timeout 30 ployz --json ps --project shop
 
 stdout:
 ```
-{"error":{"cause":[],"code":"not_found","details":{"next":"ployz server ls"},"message":"no contexts found in Ployz config /tmp/ployz-cli-outputs-store/home/config.yaml"}}
+{"error":{"cause":[],"code":"not_found","details":{"next":"ployz login"},"message":"no contexts found in Ployz config /tmp/ployz-cli-outputs-store/home/config.yaml"}}
 ```
 
 ### deploy without a cluster
@@ -337,7 +337,7 @@ $ timeout 30 ployz service restart web --project shop
 stderr:
 ```
 error: no contexts found in Ployz config /tmp/ployz-cli-outputs-store/home/config.yaml
-next: ployz server ls
+next: ployz login
 ```
 
 ### logs without a cluster
@@ -350,6 +350,6 @@ $ timeout 30 ployz logs web --project shop
 stderr:
 ```
 error: no contexts found in Ployz config /tmp/ployz-cli-outputs-store/home/config.yaml
-next: ployz server ls
+next: ployz login
 ```
 

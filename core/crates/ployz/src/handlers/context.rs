@@ -13,17 +13,28 @@ use crate::context::{
 
 use super::{Error, leaf_matches, required};
 
-/// Where a signed-in user with no contexts finds their Servers instead,
-/// keeping a config file named on the command line.
-fn no_contexts_next(leaf: &ArgMatches) -> String {
+/// The command that gets a user with no contexts past them, keeping a config file named on
+/// the command line. Signed out, that is `ployz login`: Cloud Servers need no context. Signed
+/// in, it is their Cloud Servers, unless `PLOYZ_CONTEXT` would send `server ls` back here, in
+/// which case no command does.
+fn no_contexts_next(leaf: &ArgMatches) -> Option<String> {
+    let signed_in = super::runtime()
+        .is_ok_and(|runtime| matches!(super::server::signed_in(&runtime, leaf), Ok(Some(_))));
+    let command: &[&str] = if !signed_in {
+        &["login"]
+    } else if std::env::var_os(crate::cli::env::CONTEXT).is_some() {
+        return None;
+    } else {
+        &["server", "ls"]
+    };
     let mut args = vec!["ployz"];
     if leaf.value_source("ployz-config") == Some(clap::parser::ValueSource::CommandLine)
         && let Some(path) = leaf.get_one::<String>("ployz-config")
     {
         args.extend(["--ployz-config", path]);
     }
-    args.extend(["server", "ls"]);
-    shell_words::join(args)
+    args.extend(command);
+    Some(shell_words::join(args))
 }
 
 /// Whatever command failed for want of a context gets the line `ctx ls` prints.
@@ -31,7 +42,7 @@ pub(super) fn with_no_contexts_next(failure: Error, leaf: &ArgMatches) -> Error 
     if !failure.has_no_contexts() {
         return failure;
     }
-    failure.hint(Hint::Next(no_contexts_next(leaf)))
+    failure.hint(no_contexts_next(leaf).map(Hint::Next))
 }
 
 fn config(matches: &ArgMatches) -> Result<Config, Error> {
@@ -93,7 +104,9 @@ pub(super) fn list(matches: &ArgMatches) -> Result<(), Error> {
     if !contexts.is_empty() {
         return ui::list(&json!({ "contexts": contexts }), &table);
     }
-    let next = no_contexts_next(leaf_matches(matches));
+    let Some(next) = no_contexts_next(leaf_matches(matches)) else {
+        return ui::list(&json!({ "contexts": contexts }), &table);
+    };
     ui::list(&json!({ "contexts": contexts, "next": next }), &table)?;
     ui::hint(&Hint::Next(next));
     Ok(())
