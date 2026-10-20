@@ -105,7 +105,7 @@ fn require_bound_to(listener: &UnixListener, path: &Path) -> io::Result<()> {
 mod tests {
     use std::{fs, io, os::unix::net::UnixListener};
 
-    use super::{claim_socket, machine_api_listener, require_bound_to};
+    use super::{MachineApiSocket, claim_socket, machine_api_listener, require_bound_to};
     use crate::test_dir::TestDir;
 
     #[tokio::test]
@@ -146,5 +146,64 @@ mod tests {
             message.contains(&expected.display().to_string()),
             "{message}"
         );
+    }
+
+    #[test]
+    fn a_second_daemon_refuses_the_socket_a_running_daemon_serves() {
+        let root = TestDir::new("ployzd-socket-second-daemon");
+        let path = root.0.join("run/ployz.sock");
+        let _running = MachineApiSocket::claim(&path).unwrap();
+
+        let error = MachineApiSocket::claim(&path)
+            .err()
+            .expect("a second daemon must not take the socket");
+
+        assert_eq!(error.kind(), io::ErrorKind::AddrInUse, "{error}");
+        std::os::unix::net::UnixStream::connect(&path).expect("the running daemon still serves");
+    }
+
+    #[test]
+    fn a_socket_another_process_still_serves_is_left_in_place() {
+        let root = TestDir::new("ployzd-socket-live");
+        fs::create_dir_all(&root.0).unwrap();
+        let path = root.0.join("ployz.sock");
+        let live = UnixListener::bind(&path).unwrap();
+
+        let error = MachineApiSocket::claim(&path)
+            .err()
+            .expect("a served socket must not be replaced");
+
+        assert_eq!(error.kind(), io::ErrorKind::AddrInUse, "{error}");
+        let _client = std::os::unix::net::UnixStream::connect(&path).unwrap();
+        live.set_nonblocking(true).unwrap();
+        live.accept()
+            .expect("the live listener still owns the path");
+    }
+
+    #[test]
+    fn a_stale_socket_nothing_serves_is_replaced() {
+        let root = TestDir::new("ployzd-socket-stale");
+        fs::create_dir_all(&root.0).unwrap();
+        let path = root.0.join("ployz.sock");
+        drop(UnixListener::bind(&path).unwrap());
+
+        let _claimed = MachineApiSocket::claim(&path).unwrap();
+
+        std::os::unix::net::UnixStream::connect(&path).expect("the daemon serves the path");
+    }
+
+    #[test]
+    fn a_non_socket_path_is_refused() {
+        let root = TestDir::new("ployzd-socket-not-socket");
+        fs::create_dir_all(&root.0).unwrap();
+        let path = root.0.join("ployz.sock");
+        fs::write(&path, "keep").unwrap();
+
+        let error = MachineApiSocket::claim(&path)
+            .err()
+            .expect("a regular file must not be replaced");
+
+        assert_eq!(error.kind(), io::ErrorKind::AlreadyExists, "{error}");
+        assert_eq!(fs::read_to_string(&path).unwrap(), "keep");
     }
 }
