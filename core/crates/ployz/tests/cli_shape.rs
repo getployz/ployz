@@ -508,6 +508,26 @@ fn a_column_flag_given_as_the_sort_value_keeps_claps_error() {
 }
 
 #[test]
+fn a_column_flag_after_the_option_terminator_keeps_claps_error() {
+    for args in [
+        &["ps", "--", "--wide"][..],
+        &["ps", "--sort", "service", "--", "--wide"],
+    ] {
+        let (code, stderr) = run_human(args);
+        assert_eq!(code, Some(2), "{args:?}: {stderr}");
+        assert!(
+            stderr.contains("unexpected argument '--wide'"),
+            "{args:?}: {stderr}"
+        );
+        assert!(!stderr.contains("container_id"), "{args:?}: {stderr}");
+    }
+
+    let (code, stderr) = run_human(&["ps", "--wide", "--", "--wide"]);
+    assert_eq!(code, Some(2), "{stderr}");
+    assert!(stderr.contains("container_id"), "{stderr}");
+}
+
+#[test]
 fn a_column_flag_on_another_command_keeps_its_error_when_a_global_took_ps_as_its_value() {
     let (code, stderr) = run_human(&["--connect", "ps", "server", "ls", "--wide"]);
     assert_eq!(code, Some(2), "{stderr}");

@@ -115,15 +115,34 @@ pub(super) fn container_column_asked(error: clap::Error, args: &[OsString]) -> c
     if !CONTAINER_COLUMN_ASKS.contains(&flag) {
         return error;
     }
+    let argv = |words: &mut dyn Iterator<Item = &OsString>| {
+        std::iter::once(OsString::from("ployz"))
+            .chain(words.cloned())
+            .collect::<Vec<_>>()
+    };
     let Ok(parsed) = crate::cli::compiled()
         .ignore_errors(true)
-        .try_get_matches_from(std::iter::once(OsString::from("ployz")).chain(args.iter().cloned()))
+        .try_get_matches_from(argv(&mut args.iter()))
     else {
         return error;
     };
     let Some(("ps", ps)) = parsed.subcommand() else {
         return error;
     };
+    // After `--` the flag is a positional word. Nothing before `ps` takes a hyphen value,
+    // so the first bare `--` is ps's own: keep clap's error unless clap still rejects the
+    // flag in the words before it.
+    if args.iter().any(|arg| arg == "--") {
+        let before = crate::cli::compiled()
+            .try_get_matches_from(argv(&mut args.iter().take_while(|arg| *arg != "--")));
+        let rejected_before = before.err().is_some_and(|before| {
+            before.kind() == ErrorKind::UnknownArgument
+                && before.get(ContextKind::InvalidArg) == error.get(ContextKind::InvalidArg)
+        });
+        if !rejected_before {
+            return error;
+        }
+    }
     let value_missing = ps.ids().any(|id| {
         ps.value_source(id.as_str()) == Some(ValueSource::CommandLine)
             && ps
