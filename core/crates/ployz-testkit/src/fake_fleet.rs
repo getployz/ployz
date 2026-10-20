@@ -860,7 +860,7 @@ impl Fleet {
                             newest: None,
                             resume_token: None,
                             pull: None,
-                            role: SlotRole::Mirror,
+                            role: Some(SlotRole::Mirror),
                         },
                         CopyRole::Writer | CopyRole::Switching => VolumeCopy::Root {
                             readonly: false,

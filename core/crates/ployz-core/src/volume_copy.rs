@@ -457,7 +457,7 @@ pub fn plan(
             // A cut carries no source, and the old copy it left is its want. A pull's want
             // is a mirror, so an old copy already at its target still takes the pull.
             if landed && pull.is_none() {
-                if *role == SlotRole::Mirror || from.is_none() {
+                if role.unwrap_or_default() == SlotRole::Mirror || from.is_none() {
                     return AtWant;
                 }
                 return Transition(MirrorToMirror);
@@ -513,7 +513,7 @@ fn expect_matches(copy: Option<&VolumeCopy>, expect: &ExpectedCopy) -> bool {
         ) => {
             newest.guid == *expected
                 && slot == expected_slot
-                && expected_role.is_none_or(|expected| expected == *role)
+                && expected_role.is_none_or(|expected| expected == role.unwrap_or_default())
         }
         (Some(VolumeCopy::Slot { newest: None, .. }) | None, ExpectedCopy::None) => true,
         _ => false,
@@ -558,7 +558,7 @@ mod tests {
             newest,
             resume_token: None,
             pull,
-            role: SlotRole::Mirror,
+            role: Some(SlotRole::Mirror),
         }
     }
 
@@ -569,7 +569,7 @@ mod tests {
             newest,
             resume_token: None,
             pull: None,
-            role: SlotRole::OldCopy,
+            role: Some(SlotRole::OldCopy),
         }
     }
 

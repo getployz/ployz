@@ -227,7 +227,7 @@ describe("plan_from_copies_table", () => {
 
   it("leaves a slot whose Server reports no role to that Server's own check", () => {
     const { role: _, ...unreported } = COPIES.mirror;
-    const silent: Member = { ...member("fsn-2", "mirror"), view: { copy: unreported } };
+    const silent: Member = { machine: member("fsn-2", "mirror").machine, address: "fdcc::1", answered: true, view: { copy: unreported }, floorless: false };
     const input: PlanInput = { kind: "delete_mirror", args: { slot: "fsn-2", confirmed_name: null, role: "old_copy" }, ...data };
     expect(outcome(input, [member("fsn-1", "writer"), silent])).toBe("delete fsn-2 forget fsn-1");
   });

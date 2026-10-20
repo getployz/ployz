@@ -27,13 +27,15 @@ export const MaximumBytes = Schema.Number.check(Schema.isInt(), Schema.isGreater
 export const VOLUME_RUN_BODIES = {
   mirror: Schema.Struct({ environment: RunEnvironment, kind: Schema.Literal("mirror"), to: Destination }),
   sync: Schema.Struct({ environment: RunEnvironment, kind: Schema.Literal("sync"), full: Schema.Literal(true) }),
+  /**
+   * `mirror rm --if-old-copy` sends `delete_old_copy`: the slot is deleted only while it is still an old copy. It is a
+   * kind of its own so a Cloud from before it refuses the body instead of dropping the restriction.
+   */
   delete_mirror: Schema.Struct({
     environment: RunEnvironment,
-    kind: Schema.Literal("delete_mirror"),
+    kind: Schema.Literals(["delete_mirror", "delete_old_copy"]),
     slot: Schema.optional(Destination),
     confirm: Schema.optional(Schema.String),
-    /** `--if-old-copy`: the slot is deleted only while it is still an old copy. */
-    role: Schema.optional(Schema.Literal("old_copy")),
   }),
   move: Schema.Struct({ environment: RunEnvironment, kind: Schema.Literal("move"), to: Destination }),
   release: Schema.Struct({ environment: RunEnvironment, kind: Schema.Literal("release") }),
@@ -51,7 +53,8 @@ export function volumeRunInput(body: typeof NewVolumeRun.Type): VolumeRunInput {
     case "sync":
       return { kind: "sync", args: { full: true } };
     case "delete_mirror":
-      return { kind: "delete_mirror", args: { slot: body.slot ?? null, confirmed_name: body.confirm ?? null, role: body.role ?? "any" } };
+    case "delete_old_copy":
+      return { kind: "delete_mirror", args: { slot: body.slot ?? null, confirmed_name: body.confirm ?? null, role: body.kind === "delete_old_copy" ? "old_copy" : "any" } };
     case "move":
       return { kind: "move", args: { to: body.to } };
     case "release":

@@ -327,7 +327,7 @@ export const OPERATIONS = {
       cli: {
         route: VOLUME_RUNS,
         body: VOLUME_RUN_BODIES.delete_mirror,
-        options: { volume: { via: ":id" }, environment: { via: "environment" }, slot: { via: "slot" }, confirmName: { via: "confirm" }, ifOldCopy: { via: "role" }, acceptLoss: CLI_APPROVAL },
+        options: { volume: { via: ":id" }, environment: { via: "environment" }, slot: { via: "slot" }, confirmName: { via: "confirm" }, ifOldCopy: { via: "kind" }, acceptLoss: CLI_APPROVAL },
       },
       agent: {
         tool: "volume_mirror_remove",

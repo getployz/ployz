@@ -355,7 +355,11 @@ fn a_removal_s_retry_line_keeps_if_old_copy() {
 fn cloud_before_if_old_copy() -> String {
     fake_cloud(|_, sent| {
         let sent: Value = serde_json::from_str(sent).unwrap();
-        let kind = sent["kind"].as_str().unwrap_or_default().to_owned();
+        let kind = sent
+            .get("kind")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned();
         let known = [
             "mirror",
             "sync",
@@ -394,8 +398,16 @@ async fn an_old_copy_delete_fails_closed_on_a_cloud_from_before_if_old_copy() {
         .expect("an older Cloud's refusal of --if-old-copy is named")
         .report();
     assert_eq!(refused.code, RpcErrorCode::Unsupported);
-    assert!(refused.message.contains("--if-old-copy"), "{}", refused.message);
-    assert!(refused.message.contains("nothing was deleted"), "{}", refused.message);
+    assert!(
+        refused.message.contains("--if-old-copy"),
+        "{}",
+        refused.message
+    );
+    assert!(
+        refused.message.contains("nothing was deleted"),
+        "{}",
+        refused.message
+    );
 
     let bare = RunRequest {
         environment: named(),

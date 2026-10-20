@@ -37,7 +37,8 @@ Details, and you drop it in Details. A deploy that removes a mirror asks you to 
   mirror is refused the same way when the copy changed. `ployz volume mirror rm` deletes the copy on
   that server either way. Add `--if-old-copy` to delete it only while it is still an old copy. Ployz
   adds it to every cleanup line it prints for an old copy, so a line you run late is refused with
-  "data-web-1 is no longer an old copy, so nothing was deleted" and the mirror stays.
+  "data-web-1 is no longer an old copy, so nothing was deleted" and the mirror stays. A Ployz Cloud
+  from before `--if-old-copy` refuses the line and deletes nothing.
 - A move or mirror deletes the old copies on other servers first. Details says so. An old copy on
   the server you move or mirror onto stays, so Ployz sends only what changed since.
 - When the primary's server stops answering, Copies says "web-1 is not answering" and when
