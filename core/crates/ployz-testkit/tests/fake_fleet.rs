@@ -47,8 +47,8 @@ fn start(scenario: Scenario) -> (FakeFleet, tempfile::TempDir) {
     (fleet, sockets)
 }
 
-async fn session(fleet: &FakeFleet, machine: &str) -> Result<sdk::Session, ployz_core::RpcError> {
-    sdk::connect_connections(
+async fn session(fleet: &FakeFleet, machine: &str) -> Result<sdk::Session, sdk::CallError> {
+    sdk::connect_answered(
         vec![Connection::unix(fleet.socket(&name(machine)).unwrap()).unwrap()],
         Arc::new(SystemConnector::default()),
     )
@@ -104,7 +104,10 @@ async fn online_machines_confirm_their_contract_and_offline_ones_have_no_socket(
         assert_eq!(about.daemon_version, "0.4.0");
     }
     assert!(!fleet.socket(&name("web-3")).unwrap().exists());
-    assert!(session(&fleet, "web-3").await.is_err());
+    let Err(offline) = session(&fleet, "web-3").await else {
+        panic!("an offline Machine has no socket to answer on");
+    };
+    assert!(offline.unanswered, "{offline}");
 
     fleet.online(&name("web-3")).unwrap();
     let about = session(&fleet, "web-3")

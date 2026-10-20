@@ -1,7 +1,8 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { CATALOG, GATED } from "#/modules/agent/agent-tools";
-import { inputSchema, manifest } from "#/modules/commands/commands.server";
+import { inputSchema } from "#/modules/commands/command.server";
+import { manifest } from "#/modules/commands/commands.server";
 import { COMMANDS } from "#/modules/commands/registry.server";
 
 const FIXTURE = new URL("../../../../core/crates/ployz/tests/fixtures/published-manifest.json", import.meta.url);
@@ -17,8 +18,8 @@ describe("published command manifest", () => {
   it("serves each command's own input schema, so ployz never builds flags for a different input", () => {
     const served = new Map(manifest().commands.map((entry) => [entry["name"], entry]));
     for (const command of COMMANDS) {
-      expect(served.get(command.name)?.["input"], command.name).toEqual(inputSchema(command));
-      expect(inputSchema(command)).toMatchObject({ type: "object", additionalProperties: false });
+      expect(served.get(command.name)?.["input"], command.name).toEqual(inputSchema(command.input));
+      expect(inputSchema(command.input)).toMatchObject({ type: "object", additionalProperties: false });
     }
   });
 

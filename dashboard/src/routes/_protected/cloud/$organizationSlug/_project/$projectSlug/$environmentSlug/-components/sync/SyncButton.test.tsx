@@ -136,7 +136,7 @@ it("reads In sync once nothing is left to sync", async () => {
 });
 
 it("shows a shutdown under way, and Off, ahead of the count", async () => {
-  const removal = { kind: "deployment" as const, id: "d", number: 3, status: "applied" as const, saved: 0, services: [], runner: null, upload: null, remove: true,
+  const removal = { kind: "deployment" as const, id: "d", number: 3, status: "applied" as const, saved: 0, services: [], ships: [], runner: null, upload: null, remove: true,
     admitted_by: null, admitted_at: 0, started_at: null, ended_at: null, message: null, push: null, ci: null, held: false, environment_id: "id-fix-api", in_flight: false, outcome: null };
   open({ branch: branchView({ pull_request: { repository_id: 1, number: 142 } }), environments: [
     listing("production", { default: true }), listing("fix-api", { parent: "production", removal }),

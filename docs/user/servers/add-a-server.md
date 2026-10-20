@@ -49,7 +49,7 @@ Before your first server, the **Servers** page shows one card instead of a list.
 under **Shown once. Expires in 7d.** Copy it now: Ployz can't show the token again. The card then
 says **Listening for servers…** until the first one checks in.
 
-Only an owner or admin can make a token. For a member, **Get install command** and **Add servers**
+Only an owner or admin, or [Ployz support](../account/organizations.md#let-ployz-support-in), can make a token. For a member, **Get install command** and **Add servers**
 say so instead.
 
 Once you have a server, or one is waiting, make more tokens with **Add servers**:
@@ -75,7 +75,8 @@ to the bottom of the list, and the list never reorders while you look at it. Whe
 server arrives ready, the tray names it and offers **Enroll** and **Reject** right in the header.
 
 Select a waiting server and click **Enroll** to choose its name, storage and what it runs.
-You can enroll while it prepares. Follow [Add many servers](add-many-servers.md) for the full
+You can enroll while it prepares. Only an owner or admin, or [Ployz support](../account/organizations.md#let-ployz-support-in), can enroll or reject servers. For a member,
+**Enroll** and **Reject** are disabled and say so. Follow [Add many servers](add-many-servers.md) for the full
 review and enrollment flow.
 
 Each row shows the server's name and operating system, the IP address Ployz Cloud saw it check in
@@ -215,6 +216,9 @@ it and still exit cleanly, with the service set up and checking in:
 - **Cloud holds the check-in back.** Cloud's own message follows `Cloud held this check-in back:`,
   for example `This Fleet Token already has 5 waiting servers.` The host isn't on the
   **Servers** page yet. It asks again when Cloud says to.
+
+When Cloud already has an enrollment ready for the host, as Enroll on arrival can on a rerun, the
+install ends with `Cloud is ready to enroll this server. The check-in loop runs it.` instead.
 
 - **Without ZFS.** Put `PLOYZ_SKIP_ZFS=1` after `sudo`, as
   `curl -fsSL https://ployz.sh | sudo PLOYZ_SKIP_ZFS=1 sh -s -- VERSION --enroll`. It does what

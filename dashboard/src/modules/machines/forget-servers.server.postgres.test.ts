@@ -31,12 +31,12 @@ const FOUNDER = "0".repeat(32);
 const here = { project: null, environment: null };
 const TOKEN = "pmet_fixture_forget";
 
-/** Cloud whose every connection attempt to a Server connects (`answers`) or fails. */
+/** Cloud whose every connection attempt to a Server connects (`answers`) or fails. One that answers is machine-1. */
 const cloud = (answers: boolean) => Effect.gen(function* () {
   const ployz = makePloyzLayer({
     connect: async () => {
       if (!answers) throw new Error("no route to the Server");
-      return asTestDouble<Client>()({ close: async () => undefined });
+      return asTestDouble<Client>()({ close: async () => undefined, inspect: async () => ({ machine: { name: "machine-1" } }) });
     },
   });
   return yield* Layer.build(Layer.merge(yield* storeTestCloud(), ployz));
@@ -69,8 +69,8 @@ it.live("Forget Servers refuses while a Server answers, and forgets nothing", ()
       ok: false,
       refusal: {
         code: "conflict",
-        message: `Your Servers are still reachable (${FOUNDER}). Remove them from the Servers page or with \`ployz server rm\` instead.`,
-        details: { answered: [FOUNDER] },
+        message: "Your Servers are still reachable (machine-1). Remove them from the Servers page or with `ployz server rm` instead.",
+        details: { answered: ["machine-1"] },
       },
     });
     const { drizzle } = yield* Database;

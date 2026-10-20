@@ -184,7 +184,7 @@ export const handleCliRequest = Effect.fn("Cli.handle")(function* (request: Requ
   const route = `${request.method} ${noun}${id === undefined ? "" : "/:id"}${rest.map((segment) => `/${segment}`).join("")}`;
   switch (route) {
     case "GET organizations":
-      return { organizations: yield* callerOrganizations(caller) };
+      return { organizations: yield* callerOrganizations(caller), via: caller.via };
     case "POST organizations": {
       if (caller.credential.kind !== "session") {
         return refusal({
