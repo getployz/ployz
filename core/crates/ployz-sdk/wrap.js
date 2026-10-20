@@ -1,12 +1,13 @@
 "use strict";
 
 class RpcError extends Error {
-  constructor({ code, message, details, unanswered }, options) {
+  constructor({ code, message, details, unanswered, targetUnreached }, options) {
     super(message, options);
     this.name = "RpcError";
     this.code = code;
     this.details = details;
     this.unanswered = unanswered === true;
+    this.targetUnreached = targetUnreached === true;
   }
 }
 
