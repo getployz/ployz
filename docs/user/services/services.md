@@ -43,7 +43,8 @@ source to its restart policy: [Service settings](settings.md) explains each fiel
 
 The rename is staged. Other services keep reaching it at its private name, which stays the same,
 and [references](variables.md#reference-another-services-variable) to it keep working. To change
-the private name, see [Private Networking](settings.md#private-networking).
+the private name, see [Private Networking](settings.md#private-networking). Once you deploy, deploy
+progress and `ployz ps` show the new name.
 
 If an older environment has a service named `configs`, rename it before editing its settings:
 
