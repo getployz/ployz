@@ -121,7 +121,7 @@ copies everything again as a run, and takes `--wait`.
 A server that doesn't answer the sync in time may still have taken it, so the sync says so instead
 of guessing. A server the sync never asked, because it ran out of time, couldn't reach the
 cluster, or the cluster couldn't connect to that server, is named as not asked, and no pull failure
-is recorded against it. If that server is a mirror, the sync can still ask the mirrors after it, as
+is recorded for the request that was never sent. If that server is a mirror, the sync can still ask the mirrors after it, as
 long as it has time left. If it is the writer, the sync stops there, since it has no snapshot to
 hand out. Whatever happens, the sync
 still lists the failed pulls it found first. Run `ployz volume sync data` again to see where each
