@@ -3307,13 +3307,22 @@ fn review_says_every_agent_deploy_asks_on_cloud_and_none_does_locally() {
 /// `server_show` for `web-1` when Cloud keeps `runs` on it, newest first,
 /// answering each read with as many as it asks for.
 fn shown_with_runs(runs: &[(&str, &str, Option<&str>)]) -> Value {
+    let runs = runs
+        .iter()
+        .map(|&(run, state, reason)| (run, state, None, reason))
+        .collect::<Vec<_>>();
+    shown_with_ends(&runs)
+}
+
+/// [`shown_with_runs`], where each run also carries the `end` Cloud names for it.
+fn shown_with_ends(runs: &[(&str, &str, Option<&str>, Option<&str>)]) -> Value {
     let operations = runs
         .iter()
         .enumerate()
-        .map(|(at, (run, state, reason))| {
+        .map(|(at, (run, state, end, reason))| {
             json!({
                 "attempt": format!("00000000-0000-4000-8000-{at:012}"), "run": run,
-                "state": state, "requested_at": 100 - at, "ended_at": 100 - at,
+                "state": state, "end": end, "requested_at": 100 - at, "ended_at": 100 - at,
                 "reason": reason, "servers": [], "kept": [], "unanswered": [],
             })
         })
@@ -3420,6 +3429,80 @@ fn server_show_keeps_a_failed_drain_a_later_superseded_drain_follows() {
     ]);
     assert_eq!(superseded["latest"]["state"], "superseded");
     assert_eq!(superseded["failed_drain"]["reason"], never, "{superseded}");
+}
+
+const LOST: &str = "Cloud lost track of the drain; some services may have moved.";
+const INTERRUPTED: &str = "The drain was cancelled while it ran; some services may have moved.";
+
+// Catches a Drain that Cloud lost, or that was cancelled while it ran, going
+// unseen under a later run, though it may have moved services.
+#[test]
+fn server_show_keeps_a_lost_or_interrupted_drain_a_later_run_hides() {
+    for (end, reason) in [("lost", LOST), ("interrupted", INTERRUPTED)] {
+        let hidden = shown_with_ends(&[
+            ("upgrade web-1", "done", None, None),
+            ("drain web-1", "unknown", Some(end), Some(reason)),
+            ("drain web-1", "done", None, None),
+        ]);
+        assert_eq!(hidden["failed_drain"]["run"], "drain web-1", "{hidden}");
+        assert_eq!(hidden["failed_drain"]["state"], "unknown");
+        assert_eq!(hidden["failed_drain"]["outcome"], end);
+        assert_eq!(hidden["failed_drain"]["reason"], reason);
+    }
+}
+
+// Catches a lost Drain outliving a later Drain that finished, or repeating the
+// one `latest` already shows.
+#[test]
+fn server_show_clears_a_lost_drain_a_later_drain_finished() {
+    let drained_since = shown_with_ends(&[
+        ("upgrade web-1", "done", None, None),
+        ("drain web-1", "done", None, None),
+        ("drain web-1", "unknown", Some("lost"), Some(LOST)),
+    ]);
+    assert_eq!(
+        drained_since["failed_drain"],
+        Value::Null,
+        "{drained_since}"
+    );
+
+    let latest = shown_with_ends(&[("drain web-1", "unknown", Some("lost"), Some(LOST))]);
+    assert_eq!(latest["latest"]["reason"], LOST);
+    assert_eq!(latest["failed_drain"], Value::Null, "{latest}");
+}
+
+// Catches an older failed Drain showing over a newer lost one.
+#[test]
+fn server_show_shows_a_lost_drain_over_an_older_failed_one() {
+    let lost = shown_with_ends(&[
+        ("upgrade web-1", "done", None, None),
+        ("drain web-1", "unknown", Some("lost"), Some(LOST)),
+        (
+            "drain web-1",
+            "failed",
+            None,
+            Some("The drain never started."),
+        ),
+    ]);
+    assert_eq!(lost["failed_drain"]["outcome"], "lost", "{lost}");
+    assert_eq!(lost["failed_drain"]["reason"], LOST);
+
+    let failed = shown_with_ends(&[
+        ("upgrade web-1", "done", None, None),
+        (
+            "drain web-1",
+            "failed",
+            None,
+            Some("The drain never started."),
+        ),
+        (
+            "drain web-1",
+            "unknown",
+            Some("interrupted"),
+            Some(INTERRUPTED),
+        ),
+    ]);
+    assert_eq!(failed["failed_drain"]["outcome"], "failed", "{failed}");
 }
 
 // Catches an older failure showing over a newer one.
