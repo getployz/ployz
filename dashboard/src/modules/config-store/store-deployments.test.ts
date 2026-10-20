@@ -290,6 +290,15 @@ it("keeps the deepest preparation failure cause in the Deployment banner", () =>
   expect(outcome.cause).toEqual(["could not pull the image", "registry denied access"]);
 });
 
+it("drops the header's reason when the Deployment's cancel stopped the work it names, and keeps a real failure's", () => {
+  const stopped = { type: "executed", summary: null, reason: "web: Cancelled", cause: [], services: [] } as const;
+  expect(outcomeReason({ ...stopped, cancelled: true })).toBeUndefined();
+  // A Store from before the marker sends none, so the line reads as it did.
+  expect(outcomeReason(stopped)).toBe("web: Cancelled");
+  expect(outcomeReason({ ...stopped, reason: "api: create Container failed", cause: ["no space left on device"] }))
+    .toBe("api: create Container failed: no space left on device");
+});
+
 it("preserves reasons without a cause and outcomes without a reason", () => {
   expect(outcomeReason(null)).toBeUndefined();
   expect(outcomeReason({ type: "never_ran" })).toBeUndefined();

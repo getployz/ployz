@@ -2448,6 +2448,68 @@ fn a_real_failure_after_a_cancel_on_the_same_service_reads_failed_on_its_row_and
     assert!(cancelled_nodes(&store, &who, 1).is_empty());
 }
 
+#[test]
+fn a_service_the_cancel_stopped_reads_cancelled_at_its_node_beside_a_real_failure() {
+    let (store, who) = shop();
+    admit(&store, &who, 1, &[], None).unwrap();
+    let a = runner("runner-a");
+    store.claim(&id(1), &a).unwrap();
+    store
+        .record(
+            &id(1),
+            &a,
+            RunEvidence::Prepared(preview(&["web", "web", "api"])),
+        )
+        .unwrap();
+    cancel(&store, &who, 1).unwrap();
+    let executed = RunEvidence::Executed {
+        progress: RowTracker::default().changes(&progress(&[
+            ("web", "alpha", json!({"type": "completed"})),
+            (
+                "web",
+                "alpha",
+                json!({"type": "failed", "error": {"type": "cancelled"}}),
+            ),
+            (
+                "api",
+                "alpha",
+                json!({"type": "failed", "error": create_error()}),
+            ),
+        ])),
+        outcome: Box::new(outcome(json!({
+            "type": "failed", "completed": [operation("web")],
+            "failed": {"type": "operation", "operation": operation("api"), "error": create_error()},
+            "unexecuted": [operation("web")]
+        }))),
+        removed: Vec::new(),
+    };
+    store.record(&id(1), &a, executed).unwrap();
+    assert_eq!(status(&store, &who, 1), DeploymentStatus::Cancelled);
+    let state = &web_row(&store, &who).state;
+    assert!(
+        matches!(
+            state,
+            RowState::Failed {
+                cancelled: true,
+                ..
+            }
+        ),
+        "{state:?}"
+    );
+    assert_eq!(
+        nodes(&store, &who, 1),
+        [
+            ("api".to_owned(), NodeStatus::Failed),
+            ("web".to_owned(), NodeStatus::Failed)
+        ]
+    );
+    assert_eq!(
+        cancelled_nodes(&store, &who, 1),
+        ["web"],
+        "the cancel, not api's failure, stopped web, so its node reads as its row does"
+    );
+}
+
 /// The row state and Node Outcome a Store from before Cancelled decodes, as it
 /// shipped them.
 mod before_cancelled {
