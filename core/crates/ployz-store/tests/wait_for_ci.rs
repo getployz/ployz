@@ -679,6 +679,8 @@ fn renamed_service_still_promotes() {
     set(&store, &who, "web.watchPaths", json!(["web/**"]));
     set(&store, &who, "api.watchPaths", json!(["api/**"]));
     publish(&store, &who);
+    // api runs what it saved, so the push has no Saved change of it to ship.
+    backend::deploy(&store, &who, "production", 1);
     system(&store, &push(None, Some(H1), None));
     system(
         &store,

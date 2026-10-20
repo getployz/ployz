@@ -293,12 +293,12 @@ fn deploy(
         id,
         environment.working.clone(),
         review.saved.as_ref(),
-        (admit.message.as_deref(), &review::lost(losses.clone())),
+        (admit.message.as_deref(), &losses),
     )?;
     let mut frozen = deployment::freeze(
         id,
         &saved_intent,
-        &review.head.applied,
+        &deployment::Landing::applied(&review.head.applied),
         deployment::Scope::of(&admit.services, &losses),
         namespace,
         cluster_domain,
