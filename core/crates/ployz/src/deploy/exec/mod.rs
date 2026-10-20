@@ -2300,7 +2300,7 @@ pub(in crate::deploy) async fn move_container<C: MachineOperations>(
     to: &MachineId,
     (from, old): (&MachineId, &ContainerId),
     cancellation: &CancellationToken,
-) -> Result<ContainerId, MoveContainerError> {
+) -> Result<(ContainerId, Option<DeploymentLogId>), MoveContainerError> {
     let client = RestartTolerant {
         inner: client,
         cancellation,
@@ -2337,7 +2337,7 @@ pub(in crate::deploy) async fn move_container<C: MachineOperations>(
     )
     .await;
     match started_container(started, spec, cancellation) {
-        Ok(new) => Ok(new),
+        Ok(new) => Ok((new, deploy)),
         Err(error) => {
             let keep = adopts || (global && !cancellation.is_cancelled());
             let replacement_removed = !keep && discard_attempt(&client, to, slot).await.is_ok();

@@ -20,6 +20,7 @@ async fn move_with(client: &Scripted) -> Result<ContainerId, MoveContainerError>
         &CancellationToken::new(),
     )
     .await
+    .map(|(id, _)| id)
 }
 
 fn moving(steps: Vec<Step>) -> Scripted {
@@ -195,6 +196,28 @@ async fn the_moved_copy_keeps_the_source_gen_and_deploy_label() {
         Some(Gen::new(3))
     );
     assert_eq!(*client.deploys.lock().unwrap(), vec![Some(deploy)]);
+    client.assert_done();
+}
+
+/// The daemon reuses the health it settled at creation only for an In under the same
+/// deploy, so the In names the deploy the replacement was created for.
+#[tokio::test]
+async fn the_new_copy_goes_in_under_the_deploy_it_was_created_for() {
+    let deploy = DeploymentLogId::parse("kept").unwrap();
+    let mut steps = served();
+    steps.push(ok(Call::Remove(machine(FROM), container('a'))));
+    let client = moving(steps)
+        .with_copy(&machine(FROM), &container('a'), CopyRotation::In)
+        .with_deploy(&container('a'), &deploy);
+    let end = relocate_with(&client, &CancellationToken::new())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(end, OldCopyEnd::Stopped);
+    assert_eq!(
+        *client.in_runs.lock().unwrap(),
+        vec![(container('b'), Some(deploy))]
+    );
     client.assert_done();
 }
 
