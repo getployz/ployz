@@ -1668,16 +1668,15 @@ impl<'a> Rows<'a> {
         let pending = join_all(
             old.iter()
                 .filter(|_| withdraws)
-                .filter_map(|(task, observed)| {
-                    let observed = observed.as_ref().ok()?.as_ref()?;
-                    (*observed.rotation() == CopyRotation::Pending
-                        && !crate::ingress::is_system_ingress(observed))
-                    .then(|| async move {
-                        let copy = cleanup::Copy::observed(observed);
-                        let removed =
-                            cleanup::remove(client, &copy, AnonymousVolumes::Remove).await;
-                        (*task, removed)
-                    })
+                .filter_map(|(task, observed)| Some((*task, observed.as_ref().ok()?.as_ref()?)))
+                .filter(|(_, observed)| {
+                    *observed.rotation() == CopyRotation::Pending
+                        && !crate::ingress::is_system_ingress(observed)
+                })
+                .map(|(task, observed)| async move {
+                    let copy = cleanup::Copy::observed(observed);
+                    let removed = cleanup::remove(client, &copy, AnonymousVolumes::Remove).await;
+                    (task, removed)
                 }),
         )
         .await;
