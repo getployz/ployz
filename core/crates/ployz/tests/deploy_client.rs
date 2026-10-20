@@ -1104,6 +1104,39 @@ async fn observing_a_server_that_fails_the_check_returns_without_asking_it_again
 }
 
 #[tokio::test]
+async fn observing_through_a_daemon_that_refuses_does_not_name_a_server_it_did_not_hear() {
+    use ployz_core::{DockerVolumeName, MachineId};
+    use ployz_store::ObservationStage;
+
+    let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let down = closed.local_addr().unwrap();
+    drop(closed);
+    let one = MachineId::parse("a".repeat(32)).unwrap();
+    let service = DeployService::new(machine('b', "two"));
+    *service.describe_refusal.lock().unwrap() = Some("denied by two".into());
+    let (address, server) = listening(service).await;
+    let sought = vec![DockerVolumeName::parse("shop-production_data").unwrap()];
+
+    let observed = ployz::sdk::observe_volumes(
+        vec![
+            ployz::context::Connection::tcp(down).with_machine_id(one),
+            ployz::context::Connection::tcp(address),
+        ],
+        sought,
+    )
+    .await
+    .unwrap();
+
+    let failure = observed.failure.unwrap();
+    assert_eq!(failure.stage, ObservationStage::Answered { server: None });
+    let said = std::iter::once(&failure.reason)
+        .chain(&failure.cause)
+        .any(|line| line.contains("denied by two"));
+    assert!(said, "{failure:?}");
+    server.abort();
+}
+
+#[tokio::test]
 async fn observing_a_server_that_answers_with_an_error_names_it_and_the_error() {
     use ployz_core::{DockerVolumeName, RpcError, RpcErrorCode};
     use ployz_store::ObservationStage;

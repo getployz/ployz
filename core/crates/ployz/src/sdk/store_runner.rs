@@ -185,7 +185,8 @@ pub async fn run_deployment(
 /// Which of `connections`' Servers hold each Docker Volume in `sought`: the
 /// evidence a Deploy that removes deployed Volumes is admitted with. A check that
 /// fails names each of `connections`' Servers unanswered, and says whether none
-/// could be reached or which one answered with an error.
+/// could be reached or one answered with an error, naming that one only once its
+/// daemon confirmed which Server it is.
 ///
 /// # Errors
 /// Returns `invalid_argument` when `connections` is empty.
@@ -209,12 +210,8 @@ pub async fn observe_volumes(
             let failure = if error.unreached() {
                 ObservationFailure::unreachable(error.into())
             } else {
-                // Which Server refused is known only when there was one to try.
-                let server = match servers.as_slice() {
-                    [server] => Some(*server),
-                    _ => None,
-                };
-                ObservationFailure::answered(server, error.into())
+                // The daemon that refused never confirmed which Server it is.
+                ObservationFailure::answered(None, error.into())
             };
             return Ok(VolumeObservation::failed(sought, servers, failure));
         }

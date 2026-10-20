@@ -73,6 +73,8 @@ pub(super) struct DeployService {
     /// Once set, counts `DescribeContract` calls and answers only the first; the rest
     /// never return.
     pub(super) describe_once: Option<Arc<AtomicUsize>>,
+    /// Once set, `DescribeContract` is refused as unauthenticated, with this message.
+    pub(super) describe_refusal: Arc<Mutex<Option<String>>>,
     /// Docker Volumes created and not yet removed.
     pub(super) volumes: Arc<Mutex<Vec<DockerVolume>>>,
     /// Volume copies every Machine reports from storage.
@@ -134,6 +136,7 @@ impl DeployService {
             listing_blocked: None,
             machines_error: Arc::new(Mutex::new(None)),
             describe_once: None,
+            describe_refusal: Arc::new(Mutex::new(None)),
             volumes: Arc::new(Mutex::new(Vec::new())),
             copies: Arc::new(Mutex::new(BTreeMap::new())),
             pointers: Arc::new(Mutex::new(BTreeMap::new())),
@@ -422,6 +425,9 @@ impl FakeMachine for DeployService {
             && described.fetch_add(1, Ordering::SeqCst) > 0
         {
             std::future::pending::<()>().await;
+        }
+        if let Some(refusal) = self.describe_refusal.lock().unwrap().clone() {
+            return Err(Status::unauthenticated(refusal));
         }
         let mut capabilities: BTreeSet<_> =
             [CapabilityName::parse(MACHINE_STORAGE_OBSERVATION_CAPABILITY).unwrap()].into();
