@@ -765,7 +765,7 @@ fn this_server() -> Option<LocalCheckin> {
 const UNCHECKED: &str = "Could not check which Servers picked up the new copies";
 
 /// The Services in `namespace` whose new copies some live Machine has not picked
-/// up. None, after one warning, when a Machine read fails.
+/// up. Empty when no Server is set up, and empty after one warning when a read fails.
 fn unrouted(root: &ArgMatches, namespace: &Namespace) -> Vec<Attention> {
     let found = Rc::new(RefCell::new(Vec::new()));
     let sink = Rc::clone(&found);
@@ -817,10 +817,10 @@ fn unrouted(root: &ArgMatches, namespace: &Namespace) -> Vec<Attention> {
         })
     });
     match read {
+        Ok(None) => found.take(),
         // Ployz Cloud's CLI never dials Machines for status, and Cloud has no acks query.
-        Ok(_) => found.take(),
-        // No Server is set up to reach, so there is no proxy to ask.
-        Err(error) if !reached.get() && error.report().code == RpcErrorCode::NotFound => Vec::new(),
+        Ok(Some(_)) => Vec::new(),
+        Err(error) if no_server_set_up(reached.get(), &error) => Vec::new(),
         Err(error) => {
             crate::ui::warn_cause(UNCHECKED, &error);
             Vec::new()
@@ -828,8 +828,10 @@ fn unrouted(root: &ArgMatches, namespace: &Namespace) -> Vec<Attention> {
     }
 }
 
-/// One row per Service naming each live Machine whose proxy acks no route, or a
-/// route that lacks a Serving Container on a Machine not reported Down.
+fn no_server_set_up(dialed: bool, error: &Error) -> bool {
+    !dialed && error.report().code == RpcErrorCode::NotFound
+}
+
 fn not_picked_up(
     reads: &[(ServiceObservation, RoutesRead)],
     names: &HashMap<MachineId, MachineName>,
@@ -1237,8 +1239,10 @@ mod tests {
             }
         }
 
-        /// As ployzd's `read_routes` answers: a row per Machine not reported Down.
-        fn read(acked: &[(&Machine, &[char])], down: &[&Machine]) -> RoutesRead {
+        fn routes_as_ployzd_answers(
+            acked: &[(&Machine, &[char])],
+            down: &[&Machine],
+        ) -> RoutesRead {
             RoutesRead {
                 routes: acked
                     .iter()
@@ -1288,7 +1292,7 @@ mod tests {
             let [one, two, three] = machines();
             let reads = [(
                 web([routed_on(&one, '1'), routed_on(&two, '2')]),
-                read(
+                routes_as_ployzd_answers(
                     &[
                         (&one, &['1', '2']),
                         (&two, &['1', '2']),
@@ -1306,7 +1310,7 @@ mod tests {
             let [one, two, three] = machines();
             let reads = [(
                 web([routed_on(&one, '1'), routed_on(&two, '2')]),
-                read(
+                routes_as_ployzd_answers(
                     &[(&one, &['1', '2']), (&two, &['1', '2']), (&three, &['0'])],
                     &[],
                 ),
@@ -1334,7 +1338,7 @@ mod tests {
             let [one, two, three] = machines();
             let reads = [(
                 web([routed_on(&one, '1'), routed_on(&three, '3')]),
-                read(&[(&one, &['1']), (&two, &['1'])], &[&three]),
+                routes_as_ployzd_answers(&[(&one, &['1']), (&two, &['1'])], &[&three]),
             )];
 
             assert!(not_picked_up(&reads, &names(&[one, two, three])).is_empty());
