@@ -269,6 +269,18 @@ can't serve again. Deploy the service instead:
 ployz deploy web
 ```
 
+## A started replica gets no requests
+
+`Container … is left Pending and not routed: no Deploy brought it In. Deploy the Service again to route it.`
+
+A deploy that failed left this replica behind before it ever served. `ployz service start` and
+`ployz service restart` run it, but never send it requests, because two versions would answer at
+once. The command exits 3. Deploy the service to put a replica in service:
+
+```sh
+ployz deploy web
+```
+
 ## My deployment stays Queued
 
 - Another deployment of the environment is running. Yours runs after it; cancel that one from

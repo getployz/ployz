@@ -87,6 +87,8 @@ Open the service and click **⋮** next to its name. A running service offers **
   wrappers like `npm start` do.
 - **Start** starts the same containers again and sends them requests once they're healthy. A
   container a deploy replaced can't come back this way; deploy the service instead.
+- Start and restart only send requests to containers a deploy put in service. A container a
+  failed deploy left behind runs but gets no requests. The command names it, and exits 3.
 
 The dashboard can't run a command in a service yet. The CLI does all four:
 

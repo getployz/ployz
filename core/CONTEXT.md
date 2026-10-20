@@ -522,7 +522,7 @@ The content identity of the Resolved Service Spec fields whose change requires a
 _Avoid_: current version, desired generation, Service ID as generation
 
 **Published Serving Shape**:
-The Serving Shape of a published observation, whose environment values and Config content are redacted. It hashes Config names in place of content, so Containers from an env-only or Config-only change share a shape and do not separate traffic ([#1419](https://github.com/getployz/ployz/issues/1419)).
+The Serving Shape of a published observation, whose environment values and Config content are redacted. It hashes Config names in place of content, so Containers from an env-only or Config-only change share a shape ([#1419](https://github.com/getployz/ployz/issues/1419)). Ployz compares shapes to match observed Containers to a wanted spec, in drift checks and Global catch-up. Routing follows each Container's `rotation`, not its shape.
 _Avoid_: Serving Shape for observation rows
 
 **Public Ingress**:
