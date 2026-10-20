@@ -258,7 +258,6 @@ impl MachineOperations for Cluster {
             routes,
             complete: true,
             down: self.down.clone(),
-            ..RoutesRead::default()
         })
     }
 }

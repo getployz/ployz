@@ -78,7 +78,6 @@ macro_rules! rpc_catalog {
                 MintBuildGrant: (mint_build_grant, "MintBuildGrant", MintBuildGrantRequest, "mint_build_grant", BuildGrantMinted, MINT_BUILD_GRANT_CAPABILITY, "ployz.build.grant.mint.v1", Container),
                 InspectBuildGrant: (inspect_build_grant, "InspectBuildGrant", InspectBuildGrantRequest, "inspect_build_grant", BuildGrantInspected, INSPECT_BUILD_GRANT_CAPABILITY, "ployz.build.grant.inspect.v1", Container),
                 PublishCertificateMaterial: (publish_certificate_material, "PublishCertificateMaterial", PublishCertificateMaterialRequest, "publish_certificate_material", CertificateMaterialPublished, PUBLISH_CERTIFICATE_MATERIAL_CAPABILITY, "ployz.certificates.publish.v1", Cluster),
-                PublishServingPointer: (publish_serving_pointer, "PublishServingPointer", PublishServingPointerRequest, "publish_serving_pointer", ServingPointerPublication, PUBLISH_SERVING_POINTER_CAPABILITY, "ployz.serving.publish.v1", Cluster),
                 ReadRoutes: (read_routes, "ReadRoutes", ReadRoutesRequest, "read_routes", RoutesRead, READ_ROUTES_CAPABILITY, "ployz.serving.routes.v1", Cluster),
                 MetricHistory: (metric_history, "MetricHistory", MetricHistoryRequest, "metric_history", MetricHistoryReply, METRIC_HISTORY_CAPABILITY, "ployz.metrics.history.v1", Container),
             }

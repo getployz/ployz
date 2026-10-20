@@ -1116,7 +1116,6 @@ impl MachineOperations for Scripted {
             routes,
             complete: !self.incomplete,
             down: self.down.clone(),
-            ..RoutesRead::default()
         })
     }
 

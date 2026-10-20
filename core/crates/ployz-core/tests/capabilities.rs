@@ -7,13 +7,12 @@ use ployz_core::{
     LIST_CONTAINERS_CAPABILITY, LIST_IMAGES_CAPABILITY, LIST_MACHINES_CAPABILITY,
     LIST_VOLUMES_CAPABILITY, LOG_HISTORY_CAPABILITY, MACHINE_STORAGE_OBSERVATION_CAPABILITY,
     METRIC_HISTORY_CAPABILITY, MINT_BUILD_GRANT_CAPABILITY, PREPARE_VOLUMES_CAPABILITY,
-    PRUNE_IMAGES_CAPABILITY, PUBLISH_CERTIFICATE_MATERIAL_CAPABILITY,
-    PUBLISH_SERVING_POINTER_CAPABILITY, PULL_IMAGE_CAPABILITY, PULL_IMAGE_FROM_MACHINE_CAPABILITY,
-    READ_ROUTES_CAPABILITY, REGISTER_MACHINE_CAPABILITY, REMOVE_VOLUME_CAPABILITY,
-    REQUEST_MACHINE_UPGRADE_CAPABILITY, RUNTIME_WATCH_CAPABILITY, Rpc, SEED_VOLUME_CAPABILITY,
-    SELECT_ENDPOINT_CAPABILITY, SET_MANAGEMENT_CLIENT_CAPABILITY, SET_PUSH_TARGET_CAPABILITY,
-    SET_VOLUME_COPY_CAPABILITY, TAIL_LOGS_CAPABILITY, UPDATE_MACHINE_CAPABILITY,
-    VOLUME_FLOOR_CAPABILITY, op,
+    PRUNE_IMAGES_CAPABILITY, PUBLISH_CERTIFICATE_MATERIAL_CAPABILITY, PULL_IMAGE_CAPABILITY,
+    PULL_IMAGE_FROM_MACHINE_CAPABILITY, READ_ROUTES_CAPABILITY, REGISTER_MACHINE_CAPABILITY,
+    REMOVE_VOLUME_CAPABILITY, REQUEST_MACHINE_UPGRADE_CAPABILITY, RUNTIME_WATCH_CAPABILITY, Rpc,
+    SEED_VOLUME_CAPABILITY, SELECT_ENDPOINT_CAPABILITY, SET_MANAGEMENT_CLIENT_CAPABILITY,
+    SET_PUSH_TARGET_CAPABILITY, SET_VOLUME_COPY_CAPABILITY, TAIL_LOGS_CAPABILITY,
+    UPDATE_MACHINE_CAPABILITY, VOLUME_FLOOR_CAPABILITY, op,
 };
 
 /// Capability constants are generated from the catalog, so a typo would stay
@@ -81,10 +80,6 @@ fn catalogued_capabilities_keep_stable_spellings() {
         (
             PUBLISH_CERTIFICATE_MATERIAL_CAPABILITY,
             "ployz.certificates.publish.v1",
-        ),
-        (
-            PUBLISH_SERVING_POINTER_CAPABILITY,
-            "ployz.serving.publish.v1",
         ),
         (READ_ROUTES_CAPABILITY, "ployz.serving.routes.v1"),
         (UPDATE_MACHINE_CAPABILITY, "ployz.machine.update.v1"),
@@ -160,7 +155,6 @@ fn advertised_capability_groups_match_the_frozen_catalog() {
         names(CapabilityAdvertisement::Cluster),
         [
             "ployz.certificates.publish.v1",
-            "ployz.serving.publish.v1",
             "ployz.serving.routes.v1",
             "ployz.runtime.watch.v1",
         ]
@@ -243,7 +237,6 @@ const FIELD_FLOOR: &[&str] = &[
     "ployz.metrics.history.v1",
     "ployz.rpc.describe-contract.v1",
     "ployz.runtime.watch.v1",
-    "ployz.serving.publish.v1",
     "ployz.serving.routes.v1",
     "ployz.storage.inspect.v1",
     "ployz.storage.prepare.v1",

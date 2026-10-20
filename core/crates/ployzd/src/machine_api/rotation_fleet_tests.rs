@@ -49,7 +49,7 @@ use crate::route_acks::{DownMachines, load_down};
 const SETTLE: Duration = Duration::from_secs(10);
 const CLUSTER_CONTAINERS: &str = "SELECT id, machine_id, container FROM containers ORDER BY id";
 const SERVICE_ROUTES: &str =
-    "SELECT machine_id, service_id, deploy, containers FROM ingress_routes WHERE service_id = ?";
+    "SELECT machine_id, service_id, containers FROM ingress_routes WHERE service_id = ?";
 
 struct Node {
     service: MachineService,
@@ -236,8 +236,7 @@ impl Fleet {
                 let acked = self.nodes.iter().all(|node| {
                     matches!(
                         rows.get(&(node.row.id, service.clone())),
-                        Some(IngressRouteRow::Acked(ack))
-                            if ack.deploy.as_str() == "rotation" && ack.containers == want
+                        Some(IngressRouteRow::Acked(ack)) if ack.containers == want
                     )
                 });
                 if acked {
@@ -257,7 +256,6 @@ impl Fleet {
                 &BTreeMap::from([(
                     service.clone(),
                     IngressRouteChange::Upsert(IngressRouteAck {
-                        deploy: run("d1"),
                         containers: containers.iter().copied().collect(),
                     }),
                 )]),
@@ -330,7 +328,6 @@ impl Fleet {
     async fn read_routes(&self, index: usize, service: &QualifiedService) -> RoutesRead {
         let request = op::ReadRoutes::into_request(ReadRoutesRequest {
             service: service.clone(),
-            routes_only: true,
         });
         self.node(index)
             .service
