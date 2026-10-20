@@ -287,11 +287,26 @@ async function mirrorVolume(steps: RunSteps, phase: PhaseOf<"mirror"> | PhaseOf<
   }
 }
 
+/** A slot's delete names the role the run saw, so its Machine refuses a slot that a late pull or a departure re-roled. */
+const deleteExpect = (copy: VolumeCopy | null): ExpectedCopy => {
+  const expect = expectOf(copy);
+  return expect.kind === "mirror" && copy?.kind === "slot" ? { ...expect, role: copy.role } : expect;
+};
+
+const ROLE_NOUN = { mirror: "a mirror", old_copy: "an old copy" } as const;
+
 async function deleteMirror(steps: RunSteps, phase: PhaseOf<"delete_mirror">) {
   const { run } = steps;
   try {
     for (const slot of phase.destroy) {
-      await mustSet(steps, `03-forget-${slot.machine.name}`, slot.machine, expectOf(slot.view.copy), { kind: "forget" }, `${slot.machine.name} is still busy with ${run.volumeName}`);
+      const expect = deleteExpect(slot.view.copy);
+      const answer = await setCopy(steps, `03-forget-${slot.machine.name}`, slot.machine, expect, { kind: "forget" }, `${slot.machine.name} is still busy with ${run.volumeName}`);
+      if (answer.ok) continue;
+      const seen = expect.kind === "mirror" ? expect.role : undefined;
+      const reroled = seen !== undefined && answer.reason === "mismatch" && answer.copy?.kind === "slot" && answer.copy.role !== seen;
+      throw new NonRetriableError(reroled
+        ? `${copyName(run.volumeName, slot.machine.name)} is no longer ${ROLE_NOUN[seen]}, so nothing was deleted`
+        : answer.message);
     }
     if (phase.forget !== null) {
       const writer = phase.forget;

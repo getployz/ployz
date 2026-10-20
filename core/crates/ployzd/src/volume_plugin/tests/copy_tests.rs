@@ -2539,6 +2539,7 @@ fn mirror_expect(copy: &Value) -> ployz_core::ExpectedCopy {
     ployz_core::ExpectedCopy::Mirror {
         newest: newest.guid,
         slot,
+        role: None,
     }
 }
 
