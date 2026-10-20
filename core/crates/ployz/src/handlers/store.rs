@@ -826,8 +826,13 @@ const SOURCE_PARTS: [(&str, &str); 4] = [
 /// or `None` when no part `set` names changed.
 fn source_changed(row: &ployz_core::config::ServiceSettingChange) -> Option<Vec<String>> {
     let service = row.path.strip_suffix(".source")?;
+    // No registry credential reads as unset, so a removed Service doesn't list one.
     let part = |value: &serde_json::Value, field: &str| {
-        value.get(field).cloned().unwrap_or(serde_json::Value::Null)
+        value
+            .get(field)
+            .filter(|part| **part != serde_json::Value::Bool(false))
+            .cloned()
+            .unwrap_or(serde_json::Value::Null)
     };
     let lines: Vec<String> = SOURCE_PARTS
         .iter()
@@ -1045,7 +1050,7 @@ mod tests {
 
     #[test]
     fn a_staged_image_change_reads_as_the_setting_set_names() {
-        let source = |image: &str| json!({ "type": "image", "credentials": { "type": "none" }, "image": image });
+        let source = |image: &str| json!({ "type": "image", "credentials": false, "image": image });
         assert_eq!(
             row(
                 "web.source",
@@ -1061,6 +1066,10 @@ mod tests {
                 json!({ "type": "git", "repository": "acme/web", "rootDir": "/api" })
             ),
             [r#"web.rootDir: "/" → "/api""#]
+        );
+        assert_eq!(
+            row("db.source", source("postgres:16"), json!(null)),
+            [r#"db.image: "postgres:16" → null"#]
         );
     }
 
