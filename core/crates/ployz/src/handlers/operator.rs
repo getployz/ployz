@@ -46,10 +46,13 @@ pub(super) fn exec_command(command: Command) -> Command {
         .arg(value("container", None).value_name("CONTAINER").help(
             "Which of the Service's Containers, by name or ID prefix [default: a running one]",
         ))
-        .arg(switch("detach", Some('d')))
-        .arg(switch("no-tty", Some('T')))
-        .arg(positional("service", true))
-        .arg(trailing("command"))
+        .arg(switch("detach", Some('d')).help("Start the command and return without waiting"))
+        .arg(switch("no-tty", Some('T')).help("Don't give the command a terminal"))
+        .arg(positional("service", true).help("Service name"))
+        .arg(
+            trailing("command")
+                .help("The command and its arguments [default: bash, or sh without it]"),
+        )
 }
 
 pub(super) fn logs_command(command: Command) -> Command {
@@ -61,7 +64,8 @@ pub(super) fn logs_command(command: Command) -> Command {
         Arg::new("service-or-container")
             .value_name("SERVICE[:CONTAINER]")
             .num_args(0..)
-            .action(ArgAction::Append),
+            .action(ArgAction::Append)
+            .help("A Service, or one of its Containers by name or ID prefix"),
     )
     .arg(
         value("deployment", None).value_name("ID").help(
@@ -83,7 +87,8 @@ pub(super) fn ps_command(command: Command) -> Command {
     .arg(
         value("sort", None)
             .default_value("service")
-            .value_parser(["service", "machine", "health"]),
+            .value_parser(["service", "machine", "health"])
+            .help("Order the rows by Service, Server or health"),
     )
 }
 

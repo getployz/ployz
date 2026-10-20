@@ -128,7 +128,11 @@ pub(super) fn redeploy_command(command: Command) -> Command {
          --accept-volume-loss.",
     )))
     .arg(id())
-    .arg(switch("yes", Some('y')).env(crate::cli::env::AUTO_CONFIRM))
+    .arg(
+        switch("yes", Some('y'))
+            .env(crate::cli::env::AUTO_CONFIRM)
+            .help("Roll back without asking"),
+    )
     .arg(crate::cli::volume_acceptance().help(format!(
         "{}; --yes cannot bypass this",
         crate::cli::VOLUME_ACCEPTANCE

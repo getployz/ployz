@@ -865,7 +865,7 @@ pub(super) fn clear_build_cache_command(command: Command) -> Command {
 pub(super) fn drain_command(command: Command) -> Command {
     base(command, "Stop placing Services on a Server and move its Services' Containers off it")
                 .long_about("Turn off the Server's services role, then move each replicated Service's Containers off it one at a time: a new Container starts on another Server from the same image and serves before the old one stops. No hooks run and no Deployment is recorded. Rerun to act on what remains. Turning the services role back on does not move anything back. Signed in to Cloud without --context or --connect, Cloud runs the drain, asking a human first when the Organization wants that.")
-                .arg(positional("server", true))
+                .arg(positional("server", true).help("Server name or ID"))
                 .arg(crate::cli::approval())
 }
 
@@ -874,12 +874,16 @@ pub(super) fn show_command(command: Command) -> Command {
         command,
         "Show a Server: telemetry, round-trip times and its latest upgrade attempt, or a server waiting to join",
     )
-    .arg(positional("server", true))
+    .arg(positional("server", true).help("Server name or ID, or a server waiting to join"))
 }
 
 pub(super) fn machine_logs_command(command: Command) -> Command {
-    log_flags(base(command, "Show Server daemon logs"))
-        .arg(Arg::new("service").num_args(0..).action(ArgAction::Append))
+    log_flags(base(command, "Show Server daemon logs")).arg(
+        Arg::new("service")
+            .num_args(0..)
+            .action(ArgAction::Append)
+            .help("ployz, docker or corrosion [default: ployz]"),
+    )
 }
 
 pub(super) fn list_command(command: Command) -> Command {
@@ -895,7 +899,7 @@ pub(super) fn remove_command(command: Command) -> Command {
     base(command, "Remove a Server")
                 .long_about("Remove a Server from the Cluster and reset it; for a Server that is gone or can't be reset, use ployz server forget. Type the Server's name with --confirm, or in a terminal when it asks; elsewhere it fails with confirmation_required, naming what goes and the exact command to retry. When Cloud manages the Server, Cloud removes it even with --context or --connect, asking a human first when the Organization wants that.")
                 .arg(value("confirm", None).value_name("SERVER").help("The Server's name, typed to confirm its removal"))
-                .arg(positional("server", true))
+                .arg(positional("server", true).help("Server name or ID"))
                 .arg(crate::cli::approval())
                 .arg(
                     volume_acceptance().help("Accept loss of Cluster access: repeat once per exact volume name; reset does not erase volume data on the host"),
@@ -905,9 +909,9 @@ pub(super) fn remove_command(command: Command) -> Command {
 pub(super) fn set_command(command: Command) -> Command {
     machine_policy_flags(base(command, "Change a Server's name, labels, roles, public IP or build concurrency")
                 .long_about("Change a Server's name, labels, roles, public IP or build concurrency. --accepts-ingress=true also starts the Ingress Proxy on that Server; rerun the same command to finish a start that failed. --accepts-ingress=false stops advertising the Server in Hosted DNS from the next sync, but its Ingress Proxy keeps serving until `ployz server rm`."))
-                .arg(many("label-rm", None).value_name("KEY"))
-                .arg(value("name", None))
-                .arg(value("public-ip", None).value_name("IP|none"))
+                .arg(many("label-rm", None).value_name("KEY").help("Remove the label KEY; repeat for more"))
+                .arg(value("name", None).help("Its new name"))
+                .arg(value("public-ip", None).value_name("IP|none").help("The public IP it advertises; none advertises none"))
                 .arg(
                     value("build-concurrency", None)
                         .value_name("N|auto")
@@ -917,7 +921,7 @@ pub(super) fn set_command(command: Command) -> Command {
                     "Where peers reach this Server over WireGuard; every other Server the command reaches dials the first one now, even if this Server is unreachable",
                 ))
                 .arg(ingress_image())
-                .arg(positional("server", true))
+                .arg(positional("server", true).help("Server name or ID"))
 }
 
 pub(super) fn upgrade_command(command: Command) -> Command {
@@ -927,7 +931,8 @@ pub(super) fn upgrade_command(command: Command) -> Command {
                 .arg(
                     positional("version", true)
                         .value_name("VERSION")
-                        .value_parser(clap::value_parser!(ployz_core::MachineRelease)),
+                        .value_parser(clap::value_parser!(ployz_core::MachineRelease))
+                        .help("stable, beta, or an exact version such as 0.3.0"),
                 )
                 .arg(
                     positional("server", true)
@@ -952,7 +957,7 @@ pub(super) fn provisioning_flags(command: Command) -> Command {
             value("name", None)
                 .help("Name the Server; it takes its hostname when omitted"),
         )
-        .arg(switch("no-install", None))
+        .arg(switch("no-install", None).help("Skip installing Ployz; the Server runs it already"))
         .arg(
             value("storage", None)
                 .value_parser(clap::value_parser!(ployz_core::StoragePreparation))
@@ -960,21 +965,39 @@ pub(super) fn provisioning_flags(command: Command) -> Command {
                     "zfs sets up Managed volumes [Cloud default]; zfs:<device> uses an empty disk; none is Docker only",
                 ),
         )
-        .arg(value("public-ip", None).default_value("auto"))
+        .arg(
+            value("public-ip", None)
+                .default_value("auto")
+                .help("The public IP it advertises; auto finds it, none advertises none"),
+        )
         .arg(
             value("ssh-key", Some('i'))
                 .default_value("~/.ssh/id_ed25519")
-                .value_hint(ValueHint::FilePath),
+                .value_hint(ValueHint::FilePath)
+                .help("SSH private key for DESTINATION"),
         )
         .arg(
             value("version", None)
                 .env(env::DAEMON_VERSION)
                 .default_value(env!("CARGO_PKG_VERSION"))
-                .value_parser(clap::value_parser!(ployz_core::MachineRelease)),
+                .value_parser(clap::value_parser!(ployz_core::MachineRelease))
+                .help("Daemon release to install: stable, beta, or an exact version"),
         )
-        .arg(many("wg-endpoint", None))
-        .arg(value("wg-mtu", None).value_parser(clap::value_parser!(u32).range(1..)))
-        .arg(switch("yes", Some('y')).env(env::AUTO_CONFIRM))
+        .arg(
+            many("wg-endpoint", None)
+                .value_name("IP[:PORT]")
+                .help("Where peers reach this Server over WireGuard"),
+        )
+        .arg(
+            value("wg-mtu", None)
+                .value_parser(clap::value_parser!(u32).range(1..))
+                .help("MTU of this Server's WireGuard interface"),
+        )
+        .arg(
+            switch("yes", Some('y'))
+                .env(env::AUTO_CONFIRM)
+                .help("Don't ask: reset an initialized Server, and take --storage none unless given"),
+        )
 }
 
 #[cfg(test)]

@@ -45,7 +45,7 @@ pub(super) fn set_command(command: Command) -> Command {
     storage_flags(store::scoped(command.about(
         "Change a Volume's storage before its first deployment, grow a deployed one (Ployz Cloud), or whether it allows shared writes",
     )))
-    .arg(positional("volume", true))
+    .arg(positional("volume", true).help("Volume name"))
     .arg(shared_writes_flag())
     .arg(run::wait_flag().conflicts_with_all(["docker", "shared-writes"]))
     .group(
@@ -57,7 +57,7 @@ pub(super) fn set_command(command: Command) -> Command {
 
 pub(super) fn inspect_command(command: Command) -> Command {
     store::scoped(command.about("Show a Volume and where it is mounted"))
-        .arg(positional("volume", true))
+        .arg(positional("volume", true).help("Volume name"))
 }
 
 pub(super) fn list_command(command: Command) -> Command {
@@ -66,15 +66,15 @@ pub(super) fn list_command(command: Command) -> Command {
 
 pub(super) fn rename_command(command: Command) -> Command {
     store::scoped(command.about("Rename a Volume: staged; its data and mounts stay"))
-        .arg(positional("volume", true))
-        .arg(positional("name", true))
+        .arg(positional("volume", true).help("Volume name"))
+        .arg(positional("name", true).help("Its new name"))
 }
 
 pub(super) fn remove_command(command: Command) -> Command {
     store::scoped(
         command.about("Remove a Volume and detach it; a Deploy of the removal deletes its data"),
     )
-    .arg(positional("volume", true))
+    .arg(positional("volume", true).help("Volume name"))
 }
 
 pub(super) fn add(root: &ArgMatches) -> Result<(), Error> {

@@ -32,7 +32,7 @@ pub(super) fn ls_command(command: Command) -> Command {
 pub(super) fn rename_command(command: Command) -> Command {
     command
         .about("Rename a Project; its running Environments keep their Namespaces")
-        .arg(positional("project", true))
+        .arg(positional("project", true).help("The Project to rename"))
         .arg(positional("name", true).help("Its new name, unique in the Organization"))
 }
 
@@ -49,7 +49,7 @@ pub(super) fn rm_command(command: Command) -> Command {
                  confirmation_required, naming what goes and the exact retry. If a removal doesn't apply, the \
                  same command finishes it.",
             )
-            .arg(positional("name", true))
+            .arg(positional("name", true).help("The Project to remove"))
             .arg(
                 value("confirm", None)
                     .value_name("PROJECT")
