@@ -252,6 +252,12 @@ impl ConfigOperation<'_> {
         Ok(())
     }
 
+    /// Republish observations as [`Self::set_rotation`] does, for a spec write a
+    /// Docker event may have raced.
+    pub fn republish(&self) {
+        self.store.rotations.send_replace(());
+    }
+
     pub async fn put(
         &mut self,
         container_id: &ContainerId,

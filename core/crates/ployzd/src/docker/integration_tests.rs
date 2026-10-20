@@ -279,10 +279,13 @@ async fn update_limits_changes_a_running_container_in_place() {
     let mut updated = spec.clone();
     updated.container.resources.memory_bytes = Some(ByteQuantity::try_from(128 << 20).unwrap());
     updated.container.resources.cpu_nanos = Some(CpuNanos::try_from(500_000_000).unwrap());
+    let mut republished = specs.subscribe_rotations();
+    republished.mark_unchanged();
     let outcome = runtime
         .update_limits(&container_id, &updated)
         .await
         .unwrap();
+    assert!(republished.has_changed().unwrap());
     assert_eq!(outcome.container_id, container_id);
     assert_eq!(outcome.limits, updated.container.resources.limits());
 

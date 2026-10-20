@@ -104,6 +104,8 @@ impl ContainerRuntime {
             .map_err(|error| docker_error(container_id, error))?;
         let observed = confirm(container_id, requested, &inspected)?;
         config_operation.put(container_id, spec).await?;
+        // Docker's `update` event can rescan before the spec is written.
+        config_operation.republish();
         Ok(ContainerLimitsUpdated {
             container_id: *container_id,
             limits: observed,
