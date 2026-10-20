@@ -64,7 +64,7 @@ valid: acme.com, web.ada.ployz.test
 No Server named "nosuch"; ployz server ls lists them
 
 === env copy of an unknown node  :: $ ployz env copy nosuch --env fix-api
-This Branch uses no node named nosuch live
+This Branch uses no node named nosuch live; it uses only what its copies use
 
 === env copy in a non-Branch  :: $ ployz env copy web
 production is not a Branch
@@ -138,7 +138,7 @@ WARNING: Live Observation is observer-relative and not globally complete
 {"error":{"code":"invalid_argument","details":null,"message":"No Server named \"nosuch\"; ployz server ls lists them"}}
 
 === env copy of an unknown node --json :: $ ployz --json env copy nosuch --env fix-api
-{"error":{"code":"not_found","details":{"did_you_mean":null,"valid_children":[]},"message":"This Branch uses no node named nosuch live"}}
+{"error":{"code":"not_found","details":{"did_you_mean":null,"valid_children":[]},"message":"This Branch uses no node named nosuch live; it uses only what its copies use"}}
 
 === env copy in a non-Branch --json :: $ ployz --json env copy web
 {"error":{"code":"invalid_argument","details":{"next":"ployz env branch NAME --from production --project shop"},"message":"production is not a Branch"}}

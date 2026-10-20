@@ -261,7 +261,7 @@ $ ployz --json env copy volumes.pg-data --env hotfix
 
 stdout:
 ```
-{"error":{"code":"invalid_argument","details":null,"message":"Expected a Service name: up to 63 lowercase letters, digits and -, like web"}}
+{"error":{"code":"invalid_argument","details":null,"message":"Expected a Service name: up to 63 lowercase letters, digits and -, starting and ending with a letter or digit, like web"}}
 ```
 
 ### env copy --json a Live Node, already copied

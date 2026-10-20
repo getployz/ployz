@@ -24,6 +24,8 @@ export function testConfigEnvironment() {
     GITHUB_CLIENT_ID: "github-client-id",
     GITHUB_CLIENT_SECRET: "github-client-secret",
     APP_ENCRYPTION_SECRET: "app-encryption-secret-at-least-32-characters",
+    // A closed port, never the real Hosted DNS: a test that reserves a Cluster Domain starts a fake one.
+    PLOYZ_HOSTED_DNS_URL: "http://127.0.0.1:9/",
     ...Object.fromEntries(SERVICE_VARIABLES.map(serviceVariable)),
   };
 }

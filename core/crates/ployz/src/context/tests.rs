@@ -57,6 +57,68 @@ fn rotation_updates_latest_contexts_and_preserves_other_connections() {
 }
 
 #[test]
+fn a_stale_config_update_keeps_a_rotation_saved_meanwhile() {
+    use super::*;
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    let old =
+        ManagementCapability::new(ployz_core::ManagementIdentity::from_bytes([1; 32]), [2; 32]);
+    let new = ManagementCapability::new(*old.machine(), [3; 32]);
+    let config = Config::new(
+        dir.path().join("config.yaml"),
+        Some("first".into()),
+        BTreeMap::from([(
+            "first".into(),
+            Context {
+                connections: vec![Connection::management(old.to_secret_string()).unwrap()],
+            },
+        )]),
+    );
+    config.save().unwrap();
+    // Server init loads the config, then enrolls while another command rotates.
+    let stale = Config::load(config.path()).unwrap();
+    config.save_management_capability(&new).unwrap();
+    let unix = Connection::unix("/tmp/ployz.sock").unwrap();
+    stale
+        .update(|latest| {
+            latest.contexts.insert(
+                "second".into(),
+                Context {
+                    connections: vec![unix.clone()],
+                },
+            );
+            Ok::<_, ConfigError>(latest.set_current_context(Some("second".into()))?)
+        })
+        .unwrap();
+    let saved = Config::load(config.path()).unwrap();
+    assert_eq!(
+        saved.contexts.get("first").unwrap().connections,
+        vec![Connection::management(new.to_secret_string()).unwrap()]
+    );
+    assert_eq!(
+        saved.contexts.get("second").unwrap().connections,
+        vec![unix]
+    );
+    assert_eq!(saved.current_context(), Some("second"));
+}
+
+#[test]
+fn update_founds_a_missing_config_and_its_directory() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("ployz").join("config.yaml");
+    Config::new(&path, None, BTreeMap::new())
+        .update(|latest| {
+            latest.contexts.insert("default".into(), Context::default());
+            Ok::<_, ConfigError>(latest.set_current_context(Some("default".into()))?)
+        })
+        .unwrap();
+    assert_eq!(
+        Config::load(&path).unwrap().current_context(),
+        Some("default")
+    );
+}
+
+#[test]
 fn connection_sources_are_plain_text() {
     use super::ConnectionSource;
     assert_eq!(
@@ -75,7 +137,7 @@ fn connection_sources_are_plain_text() {
 
 use std::{collections::BTreeMap, fs, path::PathBuf};
 
-use super::{Config, Context, ContextError, RemovedContext};
+use super::{Config, ConfigError, Context, ContextError, RemovedContext};
 
 #[test]
 fn removing_a_non_current_context_leaves_current_and_the_other_entry() {
