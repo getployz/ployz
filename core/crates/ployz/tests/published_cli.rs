@@ -375,7 +375,7 @@ fn unknown_command_evicts_the_entry_and_names_the_loss() {
 }
 
 #[test]
-fn a_typed_name_is_refused_without_a_terminal_before_cloud_is_asked() {
+fn a_typed_name_is_refused_without_a_terminal_before_anything_runs() {
     let cloud = Fixture::new("one");
     let entry = fixture_entries()
         .into_iter()
@@ -406,7 +406,6 @@ fn a_typed_name_is_refused_without_a_terminal_before_cloud_is_asked() {
 }
 
 /// The typed entry Cloud keeps from agents, with its positionals filled in.
-#[cfg(target_os = "linux")]
 fn typed_for_people() -> Vec<String> {
     let entry = fixture_entries()
         .into_iter()
@@ -437,6 +436,61 @@ fn an_agent_token_is_refused_before_it_is_asked_for_the_name() {
             args[..3].join(" ")
         )),
         "{screen}"
+    );
+    assert!(!cloud.ran(), "nothing ran");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn an_agent_token_is_forbidden_in_json_at_a_terminal() {
+    let cloud = Fixture::new("one");
+    cloud.heard_as("agent");
+    let mut args = typed_for_people();
+    args.push("--json".into());
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+
+    let (code, screen) = cloud.at_a_terminal(&args, "");
+
+    assert_ne!(code, Some(0), "{screen}");
+    assert!(screen.contains(r#""code":"forbidden""#), "{screen}");
+    assert!(!cloud.ran(), "nothing ran");
+}
+
+#[test]
+fn an_agent_token_without_a_terminal_is_forbidden() {
+    let cloud = Fixture::new("one");
+    cloud.heard_as("agent");
+    let args = typed_for_people();
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+
+    let output = cloud.ployz(&args);
+
+    assert!(!output.status.success());
+    let stderr = text(&output.stderr);
+    assert!(
+        stderr.contains(&format!(
+            "an agent token can't run ployz {}",
+            args[..3].join(" ")
+        )),
+        "{stderr}"
+    );
+    assert!(!cloud.ran(), "nothing ran");
+}
+
+#[test]
+fn a_person_without_a_terminal_still_needs_one() {
+    let cloud = Fixture::new("one");
+    cloud.heard_as("cli");
+    let mut args = typed_for_people();
+    args.push("--json".into());
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+
+    let output = cloud.ployz(&args);
+
+    assert!(!output.status.success());
+    assert_eq!(
+        stdout_json(&output)["error"]["code"],
+        "confirmation_required"
     );
     assert!(!cloud.ran(), "nothing ran");
 }

@@ -40,11 +40,16 @@ pub(crate) fn run(
         .ok_or_else(|| Failure::from(crate::cloud_login::LoginError::SignedOut))?;
     setup.acts_with(&credential).map_err(Failure::command)?;
     if command.typed == Some(Typed::Organization) {
-        if !ui::can_prompt() {
-            return Err(Failure::command(PublishError::NeedsTerminal {
+        let needs_terminal = || {
+            Failure::command(PublishError::NeedsTerminal {
                 path: command.path(),
             })
-            .hint(Hint::Next(format!("{}/", setup.cloud))));
+            .hint(Hint::Next(format!("{}/", setup.cloud)))
+        };
+        // A command agents may run needs no word from Cloud to refuse for want of a terminal.
+        // One kept for people asks first, so an agent hears `forbidden` in every mode.
+        if command.agents && !ui::can_prompt() {
+            return Err(needs_terminal());
         }
         let acting = runtime
             .block_on(cloud_account::acting_as(&credential))
@@ -57,11 +62,7 @@ pub(crate) fn run(
         }
         ui::confirm_name(
             &acting.organization.slug,
-            || {
-                Failure::command(PublishError::NeedsTerminal {
-                    path: command.path(),
-                })
-            },
+            needs_terminal,
             "Cancelled. Nothing changed.",
         )?;
     }
