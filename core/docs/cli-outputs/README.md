@@ -297,7 +297,7 @@ Each item was checked against the captures. Its status after the output PRs foll
 26. `env branch --live` reads `db can't be used live: the Branch copies it: nothing running can lend it`, with two colons. [store/env.md](store/env.md) **Fixed in P7.**
 27. `deploy --expect-version 1` is a clap parse error (exit 2); a stale but well-formed version exits 1. [cloud/deploy.md](cloud/deploy.md) **Fixed by an earlier output PR.**
 28. server add over SSH ends on `Waiting for … retrying for up to 299s` and exits 0 with no joined line. [cluster/server.md](cluster/server.md) **Fixed in P7.**
-29. `deployment start 1` with no Server follows forever after `queued:`; the capture had to kill it. [cloud/deploy.md](cloud/deploy.md) **Fixed in P7.**
+29. `deployment start 1` with no Server follows forever after `queued:`; the capture had to kill it. [cloud/deploy.md](cloud/deploy.md) **Fixed: with no Server enrolled, start refuses at once like a Deploy, `next: ployz server add`. The capture's seed enrolls a Server that never answers and runs no worker, so its start still waits in the queue and says so after 30s.**
 30. Human `service add`, `set`, `domain add` and `env branch` omit the `next` their JSON carries. [store/service.md](store/service.md) **Fixed in P7.**
 31. The `Docker only` prompt prints its WARNING on the prompt's own line. [cluster/server.md](cluster/server.md) **Fixed by an earlier output PR.**
 32. Bare `ployz org` prints help on stderr with exit 2; bare `ployz` uses stdout and 0. [cloud/org.md](cloud/org.md) **Fixed in P7.**

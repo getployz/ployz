@@ -226,7 +226,8 @@ their recorded outcomes.
 - **Cancel**, on a running deployment, stops it at its next step. What it already changed stays
   until your next deploy.
 - On a queued deployment, **Deploy now** starts it if nothing is running ahead of it, and **⋮ →
-  Cancel deployment…** takes it out of the queue.
+  Cancel deployment…** takes it out of the queue. With no server in your organization, it refuses
+  and says to add one, as a deploy does.
 
 The CLI does the same with `ployz deployment redeploy`, `start` and `cancel`. Before a rollback,
 `ployz deployment redeploy 4` asks in a terminal; outside one, or with `--json`, it needs `--yes`.
