@@ -450,9 +450,10 @@ pub(crate) enum Shipping<'a> {
 
 /// The Volume data shipping `target` would delete, each accepted by name in
 /// `accepted` under the reviewed `version`, or covered by `consent` saved with it.
-/// A full Deploy removes what Applied State holds and `target` dropped; publishing
-/// puts that removal in Saved State for the next Deploy, so it is reviewed then
-/// too, and the reviewed losses are saved as that Deploy's consent.
+/// A full Deploy removes what Applied State holds, or a Deployment in flight puts in
+/// place, and `target` dropped; publishing puts that removal in Saved State for the
+/// next Deploy, so it is reviewed then too, and the reviewed losses are saved as
+/// that Deploy's consent.
 ///
 /// # Errors
 /// `confirmation_required` until every loss is accepted; `unavailable` when the
@@ -481,7 +482,7 @@ pub(crate) fn destructive(
         }
     };
     let removed = match reviews {
-        true => crate::removal::removed(&review.head.applied, target, namespace)?,
+        true => crate::removal::removed(&approval::deployed(&review.head), target, namespace)?,
         false => Vec::new(),
     };
     crate::removal::review(
