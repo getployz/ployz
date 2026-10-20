@@ -1020,7 +1020,12 @@ pub(crate) fn land(
     picks: &BTreeSet<RowId>,
 ) -> Result<Vec<NodeName>, RpcError> {
     let before = std::mem::replace(&mut branch.working, next);
-    crate::volume::check_storage(tx, &branch.summary.id, &branch.working)?;
+    crate::volume::check_storage(
+        tx,
+        &branch.summary.id,
+        &branch.working,
+        crate::volume::StorageRule::Replay,
+    )?;
     // What arrives from `from` may bring a rule it already broke; that's not new.
     scope::save_working_from(tx, branch, Some(from))?;
     let id = branch.summary.id.clone();

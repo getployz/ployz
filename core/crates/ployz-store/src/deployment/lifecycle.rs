@@ -588,6 +588,16 @@ pub(crate) fn retry(
         }
         let environment = scope::load_by_id(tx, &stored.summary.environment_id)?;
         crate::removal::guard_removal(tx, &environment)?;
+    } else {
+        // Its revision asks a storage of each Volume it ships; a Volume resized since
+        // may no longer fit it.
+        let saved = saved_at(tx, &stored.summary.environment_id, stored.summary.saved)?;
+        crate::volume::check_storage(
+            tx,
+            &stored.summary.environment_id,
+            &saved,
+            crate::volume::StorageRule::Replay,
+        )?;
     }
     // What a rollback retires is frozen against Applied State now, which a newer
     // running Deployment may yet change. A queued one is superseded, as by a Deploy,
