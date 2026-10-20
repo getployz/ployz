@@ -80,6 +80,13 @@ prop() {{
   while [ -z "$value" ] && [ -e "$f" ]; do sleep 0.01; value=$(cat "$f" 2>/dev/null) || value=; done
   printf '%s\n' "${{value:-$3}}"
 }}
+# Sets property file $1 to $2 in one rename, so a test reading the file while a pull sets it
+# sees the old value or the new one, never an empty file.
+put() {{
+  mkdir -p "${{1%/*}}"
+  printf '%s\n' "$2" > '{props}'/.put.$$
+  mv '{props}'/.put.$$ "$1"
+}}
 # A dataset made by `create` gets a guid no earlier dataset had.
 new_guid() {{
   if [ -e '{next_guid}' ]; then guid=$(cat '{next_guid}'); else guid=100; fi
@@ -236,22 +243,20 @@ case "$*" in
   'set readonly=on tank/ployz-mirror/data/fs')
     if [ -e '{props}/fail-properties' ]; then echo 'property unavailable' >&2; exit 1; fi
     require tank/ployz-mirror/data/fs
-    [ -e '{readonly_lost}' ] || {{ mkdir -p '{props}/tank/ployz-mirror/data/fs'; echo on > '{props}/tank/ployz-mirror/data/fs/readonly'; }}
+    [ -e '{readonly_lost}' ] || put '{props}/tank/ployz-mirror/data/fs/readonly' on
     ;;
   'set readonly=on tank/ployz/data')
     require "$3"
     touch '{readonly_volume}'
-    mkdir -p '{props}/tank/ployz/data'; echo on > '{props}/tank/ployz/data/readonly' ;;
+    put '{props}/tank/ployz/data/readonly' on ;;
   'set readonly=off tank/ployz/data')
     require "$3"
     rm -f '{readonly_volume}'
-    mkdir -p '{props}/tank/ployz/data'; echo off > '{props}/tank/ployz/data/readonly' ;;
+    put '{props}/tank/ployz/data/readonly' off ;;
   'set '*)
     require "$3"
     check_property "${{2%%=*}}"
-    f='{props}'/"$3/${{2%%=*}}"
-    mkdir -p "${{f%/*}}"
-    printf '%s\n' "${{2#*=}}" > "$f"
+    put '{props}'/"$3/${{2%%=*}}" "${{2#*=}}"
     ;;
   'inherit '*)
     if [ -e '{inherit_fails}' ]; then echo 'property unavailable' >&2; exit 1; fi
@@ -438,7 +443,7 @@ case "$*" in
       if [ "$previous" = -o ]; then
         case "$option" in
           refquota=*|keylocation=*|sharesmb=*) ;;
-          *) printf '%s\n' "${{option#*=}}" > "$d/${{option%%=*}}" ;;
+          *) put "$d/${{option%%=*}}" "${{option#*=}}" ;;
         esac
       fi
       previous=$option
@@ -456,16 +461,14 @@ case "$*" in
         {{ printf '%s@%s\t%s\t%s\n' "$fs" "$arg" "$guid" "$((1700000000 + count))"; [ ! -e "$d/snapshots" ] || cat "$d/snapshots"; }} > "$d/snapshots.new"
         mv "$d/snapshots.new" "$d/snapshots"
         # A first receive lands the stream's properties; a lost connection loses them.
-        if [ -e '{readonly_lost}' ]; then echo off > "$d/readonly.new"; else echo on > "$d/readonly.new"; fi
-        mv "$d/readonly.new" "$d/readonly"
-        printf '%s\n' "${{7#refquota=}}" > "$d/refquota"
+        if [ -e '{readonly_lost}' ]; then put "$d/readonly" off; else put "$d/readonly" on; fi
+        put "$d/refquota" "${{7#refquota=}}"
         ;;
       break)
         cat >/dev/null
         echo 'cannot receive: connection reset' >&2
         echo 'token-1' > "$d/receive_resume_token"
-        echo off > "$d/readonly.new"
-        mv "$d/readonly.new" "$d/readonly"
+        put "$d/readonly" off
         exit 1
         ;;
       *) echo "fake zfs receive: unexpected stream $verb" >&2; exit 1 ;;

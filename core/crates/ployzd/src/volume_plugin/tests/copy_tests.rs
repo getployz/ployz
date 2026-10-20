@@ -731,7 +731,8 @@ async fn finished(socket: &Path, target: &str) -> Value {
 
 #[tokio::test]
 async fn a_pull_into_no_slot_sizes_the_slot_from_the_writer_and_lands_the_target() {
-    let source = Source::start(Some(BOUND), "snapshot w-1-1 77\n").await;
+    let source = Source::start(Some(BOUND), "").await;
+    source.hold("target=", "snapshot w-1-1 77\n");
     let test = TestDir::new();
     let (socket, server) = puller(&test, &["root"], source.port);
 
@@ -745,6 +746,7 @@ async fn a_pull_into_no_slot_sizes_the_slot_from_the_writer_and_lands_the_target
         "{:?}",
         source.requests()
     );
+    source.release();
     let copy = landed(&socket, "w-1-1").await;
     assert_eq!(copy.pointer("/Ok/newest/guid"), Some(&json!("77")));
     assert_eq!(copy.pointer("/Ok/pull/target"), Some(&json!("w-1-1")));
