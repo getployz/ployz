@@ -1,20 +1,27 @@
 import "@tanstack/react-start/server-only";
 import type { EnvironmentRef } from "@ployz/sdk";
 import { and, eq } from "drizzle-orm";
-import { Effect, Option } from "effect";
+import { Effect, Result } from "effect";
 import type { StoreRefusal } from "#/modules/config-store/store.contract";
-import { type CopyAsk, type MemberObserver, syncMirrors } from "#/modules/volume-placement/mirror-sync.server";
+import { withClusterBudget } from "#/modules/runtime/organization-runtime.server";
+import { type CopyAsk, failureLines, type MemberObserver, syncMirrors } from "#/modules/volume-placement/mirror-sync.server";
 import { type BlockerReader, placementRefusal, readPlacementBlockers, UNANSWERED } from "#/modules/volume-placement/volume-placement.deploy.server";
 import { volumeMirrorStatus } from "#/modules/volume-run/tables";
 import type { MirrorStatusView } from "#/modules/volume-copies/volume-copies.placement";
 import { askCopy, inspectVolumeCopies, observeVolumeMembers, resolveVolume } from "#/modules/volume-run/volume-run.server";
 import { Database } from "#/server/database.server";
 
-const silent = (names: readonly string[]): StoreRefusal => ({
+const silent = (names: readonly string[], failures: readonly string[] = []): StoreRefusal => ({
   code: "unanswered",
-  message: names.length === 1 ? `${names[0]} isn't answering` : `${names.join(", ")} aren't answering`,
+  message: [...failures, names.length === 1 ? `${names[0]} isn't answering` : `${names.join(", ")} aren't answering`].join("; "),
   details: null,
 });
+
+/**
+ * The Cluster time one sync may spend, its reads and SetVolumeCopy requests together. The CLI gives `volume sync` 60
+ * seconds: the placement check's own 5 and these 45 leave 10 for the SQL around them, which no bound cuts.
+ */
+export const SYNC_CLUSTER_BUDGET_MS = 45_000;
 
 /**
  * Refresh now and a user's sync: the one mirror sync, as the 15-minute cron runs it. It answers once the mirror has the
@@ -41,14 +48,18 @@ export const refreshMirror = Effect.fn("VolumeCopies.refreshMirror")(function* (
   if (refusal !== null) return { ok: false, refusal } as const;
   const volume = yield* resolveVolume(caller.organizationId, environment, volumeId);
   const answer = yield* syncMirrors(caller.organizationId, { volumeId, name: volume.volumeName, dockerVolume: volume.dockerVolume, environment }, observe, ask)
-    .pipe(Effect.option);
-  if (Option.isNone(answer)) return yield* named(UNANSWERED);
-  const { sync, lines } = answer.value;
+    .pipe(Effect.result);
+  if (Result.isFailure(answer)) return yield* named(UNANSWERED);
+  const { reported, sync, lines } = answer.success;
+  if (sync.kind === "failed" && reported.length === 0) return yield* named(UNANSWERED);
   const refused = sync.kind === "synced" && sync.mirrors.some((step) => step.kind === "refused");
-  if (!refused && (sync.kind === "synced" || sync.kind === "demoting")) return { ok: true, lines } as const;
-  if (sync.kind === "unanswered") return { ok: false, refusal: silent(sync.servers) } as const;
+  const unfinished = (kind: string) => kind === "unknown" || kind === "unasked" || kind === "failed";
+  const unknown = unfinished(sync.kind) || (sync.kind === "synced" && sync.mirrors.some((step) => unfinished(step.kind)));
+  if (!refused && !unknown && (sync.kind === "synced" || sync.kind === "demoting")) return { ok: true, lines } as const;
+  if (sync.kind === "unanswered") return { ok: false, refusal: silent(sync.servers, failureLines(reported)) } as const;
+  if (!refused && unknown) return { ok: false, refusal: { code: "unanswered", message: lines.join("; "), details: null } satisfies StoreRefusal } as const;
   return { ok: false, refusal: { code: "conflict", message: lines.join("; "), details: null } satisfies StoreRefusal } as const;
-});
+}, withClusterBudget(SYNC_CLUSTER_BUDGET_MS));
 
 /** What the mirror syncs saw of each of the Volume's mirrors. */
 export const mirrorStatuses = Effect.fn("VolumeCopies.mirrorStatuses")(function* (organizationId: string, volumeId: string) {

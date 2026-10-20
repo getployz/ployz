@@ -13,8 +13,10 @@ use ployz_core::{
 use thiserror::Error;
 
 mod apply;
+pub(crate) mod cleanup;
 mod convergence;
 mod exec;
+pub(crate) use exec::MachineOperations;
 pub(crate) mod pipeline;
 mod planning;
 mod progress;
@@ -23,8 +25,10 @@ mod report;
 mod schedule;
 
 pub(crate) use apply::{Outcome, apply_requested};
-pub(crate) use convergence::{Converged, OldCopy, Replacement, converge};
-pub use convergence::{DrainStop, MachineRef, Move, MoveFailure, StayReason};
+pub(crate) use convergence::{Converged, LastIn, Moving, can_move, converge, named};
+pub use convergence::{
+    DrainStop, MachineRef, Move, MoveFailure, OldCopyEnd, StayReason, Unconfirmed,
+};
 pub use pipeline::DeployError;
 pub(crate) use pipeline::plan_options;
 pub(crate) use planning::capacity::endpoint_capacity_error;
@@ -36,12 +40,12 @@ pub use ployz_core::{
     DeployEvent, DeployIntent, DeployOperation, DeployOutcome, DeployPreview, DeployWarning,
     ExecutionError, FailedOperation, HealthFailure, HookFailure, MachineAction, ObservationKind,
     OperationPhase, OperationRow, OperationStatus, PlanOptions, PruneRefusal,
-    ReplacementCompensation, ReplacementOperation, RestartAttempt, ServiceAttempt, StopAttempt,
+    ReplacementCompensation, ReplacementOperation, RestoreAttempt, ServiceAttempt, StopAttempt,
 };
 pub use schedule::{ServiceGroup, Step};
 
 pub(crate) use progress::pending_rows;
-pub(crate) use report::{Replica, service_row, starts};
+pub(crate) use report::{Replica, service_row, starts, updates};
 
 fn is_at_rest(runtime: &ContainerRuntimeObservation) -> bool {
     matches!(
@@ -671,6 +675,16 @@ pub enum PlanError {
         /// Each copy and its role, in Machine order.
         copies: Vec<ployz_core::KnownCopy>,
     },
+    /// No observed copy is a writer, and a silent Machine may hold it.
+    #[error(
+        "{machine} did not answer, so Volume {name}'s copies are unknown. Bring {machine} back, or deploy the other services by name"
+    )]
+    CopiesUnknown {
+        /// The Volume, as its owner named it.
+        name: String,
+        /// The Machine whose storage was not read.
+        machine: MachineName,
+    },
     /// The selected Machine has no usable ZFS storage preparation.
     #[error(
         "Server '{machine}' is Docker only and cannot host Managed volumes; pick a Server with Managed volumes, or keep this data in a Docker volume instead (ployz volume add NAME --docker)"
@@ -702,9 +716,9 @@ pub enum PlanError {
         /// Machine holding the existing Volume.
         machine: MachineName,
     },
-    /// A Ployz-driver Volume exists with a different bound or malformed options.
+    /// A Ployz-driver Volume exists with a bound below the request or different labels.
     #[error(
-        "Managed volume {name} on Server '{machine}' has a different size limit; a Volume's size is fixed once deployed, so its data is neither resized nor replaced (requested {maximum_bytes})"
+        "Managed volume {name} on Server '{machine}' is smaller than the requested {maximum_bytes} or has different labels; a Deploy neither grows nor replaces a Volume's data"
     )]
     ExistingProvisionedVolumeMismatch {
         name: DockerVolumeName,
@@ -783,6 +797,12 @@ impl PlanError {
             error @ Self::NoWriter { .. } => {
                 ployz_core::SwitchError::NoWriter.rpc_error(error.to_string())
             }
+            error @ Self::CopiesUnknown { .. } => RpcError {
+                code: RpcErrorCode::Unavailable,
+                message: error.to_string(),
+                details: serde_json::Value::Null,
+                cause: Vec::new(),
+            },
             error @ (Self::ConflictingHostPublications { .. }
             | Self::HostPortConflict { .. }
             | Self::CapacityUnknown

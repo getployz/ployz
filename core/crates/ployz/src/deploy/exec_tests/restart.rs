@@ -1,5 +1,42 @@
 use super::*;
 
+#[tokio::test(start_paused = true)]
+async fn a_machine_that_answered_then_went_silent_keeps_its_answer() {
+    let answered = RpcError {
+        code: RpcErrorCode::Unavailable,
+        message: "Docker is restarting".into(),
+        details: serde_json::Value::Null,
+        cause: Vec::new(),
+    };
+    let silent = || {
+        RpcError::unanswered_target(
+            RpcErrorCode::Unavailable,
+            "Machine did not answer: deadline has elapsed".into(),
+        )
+    };
+    let attempts = std::cell::Cell::new(0);
+    let error = wait_out_restart(&CancellationToken::new(), || {
+        attempts.set(attempts.get() + 1);
+        let error = if attempts.get() == 1 {
+            answered.clone()
+        } else {
+            silent()
+        };
+        async move { Err::<(), _>(error) }
+    })
+    .await
+    .unwrap_err();
+    assert!(attempts.get() > 2);
+    assert_eq!(error, answered);
+
+    let error = wait_out_restart(&CancellationToken::new(), || async {
+        Err::<(), _>(silent())
+    })
+    .await
+    .unwrap_err();
+    assert!(error.target_unanswered());
+}
+
 fn resent(machine: MachineId, id: &ContainerId) -> [Step; 2] {
     [
         failed_unavailable(

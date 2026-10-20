@@ -10,7 +10,7 @@ use super::step::{
     Action, Ask, CloudQuery, DashboardPage, Fix, OperationsQuery, RequestKey, ServerName, Subject,
 };
 use crate::error::did_you_mean;
-use ployz_core::RpcErrorCode;
+use ployz_core::{RpcError, RpcErrorCode};
 
 /// The ask for every Server.
 pub(crate) const fn servers() -> Ask {
@@ -24,6 +24,22 @@ pub(crate) fn server_show(server: Option<&ServerName>) -> Call {
         None => json!({}),
     };
     Call::new("server_show", input)
+}
+
+/// The Servers a name is checked against. Unread because no Server answers, the
+/// refusal says the name went unchecked. With no Servers at all, Cloud's `conflict`
+/// refusal already says so and passes through unchanged.
+pub(crate) fn roster(
+    cx: &Cx<'_>,
+    answer: Option<Result<Value, RpcError>>,
+) -> Result<ServersAnswer, Stop> {
+    cx.cloud(answer).map_err(|stop| match stop {
+        Stop::Refuse(mut refusal) if refusal.code == RpcErrorCode::Unavailable => {
+            refusal.message = format!("Can't check that name. {}", refusal.message);
+            Stop::Refuse(refusal)
+        }
+        stop @ (Stop::Step(..) | Stop::Refuse(_)) => stop,
+    })
 }
 
 /// The one Server `name` names. With `answering`, a Server that did not answer

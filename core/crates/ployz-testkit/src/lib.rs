@@ -5,6 +5,7 @@ pub mod fake_fleet;
 pub mod fake_machine;
 mod machine_admin;
 pub mod release_key;
+pub mod rotation;
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -135,6 +136,7 @@ pub fn join_request(first: &Machine, registration: &Registered) -> EnrollRequest
             },
         },
         wireguard_mtu: None,
+        pinned: Default::default(),
     }
 }
 
@@ -394,6 +396,7 @@ impl Cluster {
                     advertised_endpoints: vec![self.endpoint(0)?],
                 },
                 wireguard_mtu: None,
+                pinned: Default::default(),
             },
         )
         .await

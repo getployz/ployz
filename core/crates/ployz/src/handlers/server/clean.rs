@@ -70,7 +70,7 @@ pub(crate) fn clean(root: &ArgMatches) -> Result<(), Error> {
         .get_one::<String>("namespace")
         .map(|name| {
             Namespace::parse(name.as_str())
-                .map_err(|_| Error::usage("Expected a Namespace: lowercase letters, digits and -"))
+                .map_err(|_| Error::usage("Expected a Namespace: up to 63 lowercase letters, digits and -, starting and ending with a letter or digit"))
         })
         .transpose()?;
     if let Some(namespace) = &named {
@@ -266,7 +266,7 @@ fn confirm_in_cloud(
         "Namespace",
         next.clone(),
         || {
-            let Preview { volumes } = runtime.block_on(cloud_account::refusable(
+            let Preview { volumes } = runtime.block_on(cloud_account::refusable_operation(
                 credential,
                 Method::GET,
                 &format!("namespaces/{namespace}/clean"),

@@ -25,7 +25,7 @@ use ployz_core::{
     CapabilityAdvertisement, ContainerDetails, ContainerId, ContainerKind, ContainerList,
     ContainerLocator, ContainerNow, ContainerObservation, ContainerObservationParts,
     ContainerRefusal, ContainerRefusalReason, ContainerRuntimeObservation, ContainerWant,
-    ContractDescription, CopyRole, DockerVolume, DockerVolumeId, DockerVolumeName,
+    ContractDescription, CopyRole, CopyRotation, DockerVolume, DockerVolumeId, DockerVolumeName,
     DockerVolumeStorageObservation, EnsuredContainer, HealthObservation, HistoryContainer,
     HistoryContainerKind, HistoryRow, HistoryStream, LiveLogTarget, LocalMachinePhase, LogBody,
     LogDirection, LogEntry, LogHistoryRequest, LogMetadata, LogOrigin, MANAGED_LABEL, Machine,
@@ -33,15 +33,18 @@ use ployz_core::{
     MachineRelease, MachineRpc, MachineRpcServer, MachineRuntime, MachineUpgradeAttempt,
     MachineUpgradeOutcome, MachineVersion, MembershipObservation, NAMESPACE_LABEL, Namespace,
     OpaquePayload, PROTOCOL_MAJOR, ProvisionedCopy, ProvisionedVolumeMaximumBytes,
-    RUNTIME_WATCH_MESSAGE_SIZE_LIMIT, ResolvedServiceSpec, RoutingRequest, RpcError, RpcErrorCode,
-    RpcRequestBody, RpcResponse, RunTarget, RuntimeWatchFrame, ServiceId, ServiceName, SlotId,
-    StorageBacking, StorageCapacity, VolumeCopy, VolumeCopyView, VolumeInventory,
-    WireGuardPublicKey, WriterEpoch, encode_runtime_watch_frame,
+    QualifiedService, RUNTIME_WATCH_MESSAGE_SIZE_LIMIT, ResolvedServiceSpec, RotationEdge,
+    RoutesRead, RoutingRequest, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse, RunTarget,
+    RuntimeWatchFrame, ServiceId, ServiceName, SlotId, SlotRole, StorageBacking, StorageCapacity,
+    VolumeCopy, VolumeCopyView, VolumeInventory, WireGuardPublicKey, WriterEpoch,
+    encode_runtime_watch_frame,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
+
+use crate::rotation;
 use tokio::{net::UnixListener, sync::mpsc, task::JoinHandle};
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status, Streaming, codec::CompressionEncoding};
@@ -88,6 +91,8 @@ pub struct FleetContainer {
     pub deployment: Option<u64>,
     #[serde(default)]
     pub logs: Vec<String>,
+    #[serde(default)]
+    pub rotation: CopyRotation,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize)]
@@ -444,6 +449,7 @@ async fn accept_loop(
                 .add_service(
                     MachineRpcServer::new(service)
                         .send_compressed(CompressionEncoding::Gzip)
+                        .max_decoding_message_size(RUNTIME_WATCH_MESSAGE_SIZE_LIMIT)
                         .max_encoding_message_size(RUNTIME_WATCH_MESSAGE_SIZE_LIMIT),
                 )
                 .serve_with_incoming(tokio_stream::once(Ok::<_, io::Error>(stream)))
@@ -460,10 +466,12 @@ enum Received {
 
 /// An EnsureContainer reads, in the ledger and in faults, as the state it wants, so a
 /// stop and a start stay apart.
-const ENSURE_WANTS: [&str; 3] = [
+const ENSURE_WANTS: [&str; 5] = [
     "ensure_container:running",
     "ensure_container:stopped",
     "ensure_container:gone",
+    "ensure_container:out",
+    "ensure_container:held",
 ];
 
 impl Received {
@@ -477,6 +485,8 @@ impl Received {
                     ContainerWant::Running { .. } => "ensure_container:running",
                     ContainerWant::Stopped { .. } => "ensure_container:stopped",
                     ContainerWant::Gone { .. } => "ensure_container:gone",
+                    ContainerWant::Out { .. } => "ensure_container:out",
+                    ContainerWant::Held { .. } => "ensure_container:held",
                 }
             }
             Self::Bare(command) => command,
@@ -792,17 +802,29 @@ impl Fleet {
                 )
             }
             RpcRequestBody::EnsureContainer(request) => {
-                let (container_id, state) = match request.want {
-                    ContainerWant::Running {
-                        container: RunTarget::Existing(ContainerLocator::Id(id)),
-                    } => (id, RunState::Running),
-                    ContainerWant::Stopped {
-                        container: ContainerLocator::Id(id),
-                        ..
-                    } => (id, RunState::Exited),
-                    _ => return Err(unimplemented("ensure_container for this want")),
+                let (ContainerWant::Running {
+                    container: RunTarget::Existing(ContainerLocator::Id(container_id)),
+                    ..
+                }
+                | ContainerWant::Stopped {
+                    container: ContainerLocator::Id(container_id),
+                    ..
+                }
+                | ContainerWant::Out {
+                    container: ContainerLocator::Id(container_id),
+                    ..
+                }
+                | ContainerWant::Held {
+                    container: ContainerLocator::Id(container_id),
+                    ..
+                }) = request.want
+                else {
+                    return Err(unimplemented("ensure_container for this want"));
                 };
-                unary(self.set_state(target, container_id, state)?)
+                unary(self.ensure(target, container_id, &request.want)?)
+            }
+            RpcRequestBody::ReadRoutes(request) if request.routes_only => {
+                unary(self.routes(&request.service).into())
             }
             RpcRequestBody::InspectStorage(_) => unary(self.by_id(target)?.storage().into()),
             RpcRequestBody::ListVolumes(_) => unary(
@@ -838,6 +860,7 @@ impl Fleet {
                             newest: None,
                             resume_token: None,
                             pull: None,
+                            role: SlotRole::Mirror,
                         },
                         CopyRole::Writer | CopyRole::Switching => VolumeCopy::Root {
                             readonly: false,
@@ -915,11 +938,11 @@ impl Fleet {
         }
     }
 
-    fn set_state(
+    fn ensure(
         &mut self,
         target: MachineId,
         container_id: ContainerId,
-        state: RunState,
+        want: &ContainerWant,
     ) -> Result<RpcResponse, Status> {
         let machine = self.by_id_mut(target)?;
         let Some(container) = machine
@@ -938,16 +961,54 @@ impl Fleet {
             }
             .into());
         };
-        container.spec.state = state;
+        let decided = rotation::decide(&container.spec.rotation, want);
+        if let Ok(edge) = &decided {
+            if let RotationEdge::Write(to) = edge {
+                container.spec.rotation = to.clone();
+            }
+            match want {
+                ContainerWant::Running { .. } => container.spec.state = RunState::Running,
+                ContainerWant::Stopped { .. } => container.spec.state = RunState::Exited,
+                ContainerWant::Gone { .. }
+                | ContainerWant::Out { .. }
+                | ContainerWant::Held { .. } => {}
+            }
+        }
         let machine = self.by_id(target)?;
         let observed = machine
             .container(&container_id)
             .ok_or_else(|| Status::internal("the changed Container vanished"))?;
-        Ok(EnsuredContainer::Ensured {
-            now: ContainerNow::Present(machine.observe(observed)?),
-            health: None,
+        let now = ContainerNow::Present(machine.observe(observed)?);
+        Ok(match decided {
+            Ok(_) => EnsuredContainer::Ensured { now, health: None },
+            Err(refusal) => EnsuredContainer::Refused { now, refusal },
         }
         .into())
+    }
+
+    fn routes(&self, service: &QualifiedService) -> RoutesRead {
+        let routed: BTreeSet<ContainerId> = self
+            .machines
+            .iter()
+            .flat_map(|machine| &machine.containers)
+            .filter(|container| {
+                container.spec.rotation == CopyRotation::In
+                    && container.spec.namespace == service.namespace
+                    && container.spec.service == service.name
+            })
+            .map(|container| container.id)
+            .collect();
+        let (online, offline): (Vec<_>, Vec<_>) =
+            self.machines.iter().partition(|machine| machine.online);
+        RoutesRead {
+            routes: online
+                .iter()
+                .map(|machine| (machine.id, Some(routed.clone())))
+                .collect(),
+            complete: true,
+            down: offline.iter().map(|machine| machine.id).collect(),
+            ..RoutesRead::default()
+        }
     }
 
     fn observations(&self) -> Vec<MachineObservation> {
@@ -1068,6 +1129,8 @@ impl MachineState {
             labels.insert(DEPLOYMENT_LABEL.to_owned(), deployment.to_string());
         }
         ContainerObservation::try_from(ContainerObservationParts {
+            rotation: Some(spec.rotation.clone()),
+            r#gen: None,
             container_id: container.id,
             display_name: spec.name.clone(),
             created_at_unix_nanos: FIRST_LOG_NANOS,
@@ -1084,6 +1147,7 @@ impl MachineState {
             resolved_spec,
             address: None,
             labels,
+            stopped: false,
         })
         .map_err(internal)
     }
@@ -1118,6 +1182,7 @@ impl MachineState {
                         bound_bytes: VOLUME_BYTES,
                         used_bytes: USED_BYTES,
                         role: Some(copy.role),
+                        slot_role: None,
                     },
                 }
             })
@@ -1131,6 +1196,7 @@ impl MachineState {
                 pool_size_bytes: POOL_BYTES,
             },
             unmanaged_used_bytes: 0,
+            slot_bound_bytes: 0,
             volumes: self
                 .copies
                 .iter()
@@ -1147,6 +1213,7 @@ impl MachineState {
                             role: copy.role,
                             maximum_bytes: maximum,
                             used_bytes: USED_BYTES,
+                            slot_role: None,
                         },
                     )
                 })

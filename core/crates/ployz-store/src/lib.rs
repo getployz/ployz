@@ -41,6 +41,8 @@ mod typed_address;
 mod variables;
 mod volume;
 
+use std::collections::BTreeSet;
+
 use ployz_core::RpcError;
 
 pub use automation::{
@@ -63,10 +65,10 @@ pub use build::{
 pub use builders::{BuildOrder, BuildOrderQuery, BuildOrderView, Builder, SetBuildOrder};
 pub use command::*;
 pub use deployment::{
-    Claimed, DeployedNode, DeploymentStatus, DeploymentSummary, DeploymentView, DeploymentWarning,
-    FailedAt, Failure, IngressAction, IngressFailure, IngressRepair, NodeOutcome, NodeStatus,
-    Outcome, RowPhase, RowState, RowTracker, RowTransition, RunEvidence, ServerProgress, ServerRow,
-    Unclaimed, UploadBase, UploadedSource, starts_container,
+    CiVerdict, Claimed, DeployedNode, DeploymentStatus, DeploymentSummary, DeploymentView,
+    DeploymentWarning, FailedAt, Failure, GitPush, IngressAction, IngressFailure, IngressRepair,
+    NodeOutcome, NodeStatus, Outcome, RowPhase, RowState, RowTracker, RowTransition, RunEvidence,
+    ServerProgress, ServerRow, Unclaimed, UploadBase, UploadedSource, starts_container,
 };
 pub use domain::{
     AddDomain, ClusterDomain, ClusterDomainStatus, DnsLookup, DnsRecord, DnsRecordKind, Domain,
@@ -95,17 +97,25 @@ pub use removal::{
     Waiting, docker_volume,
 };
 pub use review::history::{HistoryAction, SavedRevision};
-pub use review::{DataEffect, DestructiveEffect, DestructiveKind, DiffView, NodeChange};
+pub use review::{
+    DataEffect, DestructiveEffect, DestructiveKind, DiffView, LostAfter, NodeChange,
+    introduced_source,
+};
+pub use rules::{BrokenReference, Missing, ReferenceAt};
 pub use scope::{EnvironmentRef, EnvironmentSummary};
 pub use sealing::SealingKey;
+pub use settings::size::memory_size;
 pub use settings::{Apply, NodeName, SettingPath};
 pub use storage::Converted;
 pub use teardown::{
-    AppliedVolume, EnvironmentListing, EnvironmentsQuery, EnvironmentsView, OrganizationRemoved,
-    ProjectListing, ProjectsQuery, ProjectsView, ProtectedView, SeenProtection,
-    SetDefaultEnvironment, SetEnvironmentProtected,
+    AppliedVolume, EnvironmentListing, EnvironmentRemoval, EnvironmentsQuery, EnvironmentsView,
+    OrganizationRemoved, ProjectListing, ProjectsQuery, ProjectsView, ProtectedView,
+    RemovedBecause, SeenProtection, SetDefaultEnvironment, SetEnvironmentProtected,
 };
-pub use trusted::{Approval, Asks, Trusted, VolumeObservation};
+pub use trusted::{
+    Approval, Asks, ObservationFailure, ObservationStage, Trusted, VolumeObservation,
+};
+pub use volume::size::VolumeResized;
 
 /// Who is asking, and in which Organization. Every read and write is scoped to it.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -211,6 +221,7 @@ impl ConfigStore {
     ) -> Result<C::Written, RpcError> {
         let trusted = trusted.held_by(who);
         self.acting(&trusted, |tx| {
+            let trusted = trusted.naming(tx, who)?;
             command.apply(&mut Call {
                 tx,
                 who,
@@ -244,6 +255,7 @@ impl ConfigStore {
     ) -> Result<Committed, RpcError> {
         let trusted = trusted.held_by(who);
         self.acting(&trusted, |tx| {
+            let trusted = trusted.naming(tx, who)?;
             let written = command.apply(&mut Call {
                 tx,
                 who,
@@ -268,6 +280,16 @@ impl ConfigStore {
             .read(|tx| pull_request::project_checks(tx, environment))
     }
 
+    /// Every name under which any Container of `environment`, present or past, may hold
+    /// a Sealed value, as of now. In-process only.
+    ///
+    /// # Errors
+    /// Returns a storage error.
+    pub fn sealed_names(&self, environment: &EnvironmentId) -> Result<BTreeSet<String>, RpcError> {
+        self.storage
+            .read(|tx| review::sealed::names(tx, environment.as_str()))
+    }
+
     /// Bind a queued Deployment to `runner` and return its frozen Deploy Intent, with
     /// its secrets unsealed: the only way plaintext leaves the Store. In-process only:
     /// never exposed over HTTPS. The same runner may claim again until it records a
@@ -275,8 +297,9 @@ impl ConfigStore {
     ///
     /// # Errors
     /// Returns `not_found` for an unknown Deployment, `conflict` when another runner
-    /// owns it, a newer one replaced it, it was cancelled or ended, or this runner
-    /// already prepared it, or a storage error.
+    /// owns it, a newer one replaced it, it was cancelled or ended, this runner
+    /// already prepared it, or its unsealed values can't deploy, which fails it with
+    /// why; or a storage error.
     pub fn claim(&self, deployment: &DeploymentId, runner: &RunnerId) -> Result<Claimed, RpcError> {
         self.storage
             .write(|tx| deployment::claim(tx, deployment, runner, &self.sealing))

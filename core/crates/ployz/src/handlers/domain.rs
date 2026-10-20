@@ -6,8 +6,8 @@
 use clap::{ArgMatches, Command};
 use ployz_core::DomainPrefix;
 use ployz_store::{
-    AddDomain, DomainAction, DomainQuery, DomainRow, DomainStaged, DomainStatus, DomainsQuery,
-    Hostname, RemoveDomain, SetGeneratedDomain,
+    AddDomain, DomainAction, DomainName, DomainQuery, DomainRow, DomainStaged, DomainStatus,
+    DomainsQuery, Hostname, RemoveDomain, SetGeneratedDomain,
 };
 
 use super::store::{self, Next};
@@ -95,14 +95,31 @@ pub(super) fn add(root: &ArgMatches) -> Result<(), Error> {
         prefix,
         port: matches.get_one::<u16>("port").copied(),
     };
-    let added = store::store(root)?.write(&add)?;
-    staged(
+    let store = store::store(root)?;
+    let added = store.write(&add)?;
+    let next = staged(
         matches,
         &added,
         &added.written,
         "Staged domain",
         "is already on",
     )?;
+    if let DomainName::Custom { .. } = &added.written.domain.name {
+        // The write already landed, so a read that fails only leaves the records to `domain ls`.
+        let query = DomainsQuery {
+            environment: add.environment.clone(),
+            service: Some(add.service.clone()),
+        };
+        if let Ok(view) = store.try_read(&query)
+            && let Some(row) = view
+                .domains
+                .iter()
+                .find(|row| row.domain.name == added.written.domain.name)
+        {
+            say_dns(row);
+        }
+    }
+    say_next(next);
     if let Some(free) = &added.free_prefix {
         let service = add.service.as_str();
         say_next(Some(store::next(
@@ -129,13 +146,15 @@ pub(super) fn set(root: &ArgMatches) -> Result<(), Error> {
         port: matches.get_one::<u16>("port").copied().map(Some),
     };
     let changed = store::store(root)?.write(&set)?;
-    staged(
+    let next = staged(
         matches,
         &changed,
         &changed,
         "Staged generated domain",
         "already reaches",
-    )
+    )?;
+    say_next(next);
+    Ok(())
 }
 
 pub(super) fn remove(root: &ArgMatches) -> Result<(), Error> {
@@ -145,13 +164,15 @@ pub(super) fn remove(root: &ArgMatches) -> Result<(), Error> {
         domain: required(matches, "domain")?,
     };
     let removed = store::store(root)?.write(&remove)?;
-    staged(
+    let next = staged(
         matches,
         &removed,
         &removed,
         "Staged removal of domain",
         "is already off",
-    )
+    )?;
+    say_next(next);
+    Ok(())
 }
 
 pub(super) fn list(root: &ArgMatches) -> Result<(), Error> {
@@ -215,9 +236,9 @@ pub(super) fn check(root: &ArgMatches) -> Result<(), Error> {
     Ok(())
 }
 
-/// A staged domain change and, when it changed anything, `ployz deploy` to ship it.
-/// A change that was already so says nothing changed: `already` joins the domain
-/// to its Service, as in `example.com is already on web`. `written` is what
+/// A staged domain change, answering `ployz deploy` to ship it when it changed
+/// anything. A change that was already so says nothing changed: `already` joins the
+/// domain to its Service, as in `example.com is already on web`. `written` is what
 /// `--json` prints.
 fn staged<T: serde::Serialize>(
     matches: &ArgMatches,
@@ -225,30 +246,29 @@ fn staged<T: serde::Serialize>(
     result: &DomainStaged,
     what: &str,
     already: &str,
-) -> Result<(), Error> {
+) -> Result<Option<String>, Error> {
     let where_ = format!("{}/{}", result.environment.project, result.environment.name);
     if result.staged.is_empty() {
-        return ui::done(
+        ui::done(
             &Next::new(written, None),
             format_args!(
                 "Nothing changed in {where_}; {} {already} {}.",
                 result.domain.shown(),
                 result.domain.service
             ),
-        );
+        )?;
+        return Ok(None);
     }
     let hint = store::next(matches, &["deploy"]);
     ui::done(
         &Next::new(written, Some(hint.clone())),
         format_args!(
-            "{what} {} on {} in {where_} (revision {}).",
+            "{what} {} on {} in {where_}.",
             result.domain.shown(),
-            result.domain.service,
-            result.environment.revision
+            result.domain.service
         ),
     )?;
-    say_next(Some(hint));
-    Ok(())
+    Ok(Some(hint))
 }
 
 fn say_next(next: Option<String>) {
@@ -286,10 +306,10 @@ fn cells(row: &DomainRow) -> [Cell; 5] {
     ]
 }
 
-/// The DNS records a domain still needs, one per stderr line.
+/// The records that point a domain here, one per stderr line, until it is ready.
 fn say_dns(row: &DomainRow) {
-    if let Some(DomainAction::Dns { records }) = &row.action {
-        for record in records {
+    if row.status != DomainStatus::Ready {
+        for record in &row.records {
             ui::note(format_args!(
                 "Add DNS for {}: {} {} {}",
                 row.domain.shown(),

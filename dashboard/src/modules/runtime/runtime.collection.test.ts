@@ -29,6 +29,7 @@ function observedSnapshot(): RuntimeSnapshot {
         runningBuilds: 0,
         daemonVersion: "0.2.1",
         capabilities: [],
+        poolCommittableBytes: null,
         membership: "up",
         observedContainerCount: 1,
         observedAt: "2026-07-01T00:00:00.000Z",
@@ -52,7 +53,7 @@ function observedSnapshot(): RuntimeSnapshot {
         observedAt: "2026-07-01T00:00:00.000Z",
       },
     ],
-    volumeCopies: [{ machineId: "m1", name: "app_vol-1", role: "slot" }],
+    volumeCopies: [{ machineId: "m1", name: "app_vol-1", role: "slot", slotRole: "mirror", boundBytes: 10_000_000_000 }],
     certificates: [
       {
         hostname: "api.example.test",
@@ -88,6 +89,7 @@ describe("projectRuntimeMachineRecord", () => {
         runningBuilds: 0,
         daemonVersion: "0.2.1",
         capabilities: [],
+        poolCommittableBytes: null,
         membership: "down",
         observedContainerCount: 0,
         observedAt: "2026-07-01T00:00:00.000Z",
@@ -104,6 +106,7 @@ describe("projectRuntimeMachineRecord", () => {
       runningBuilds: 0,
       daemonVersion: "0.2.1",
       capabilities: [],
+      poolCommittableBytes: null,
       membership: "down",
       observedContainerCount: 0,
       observedAt: "2026-07-01T00:00:00.000Z",

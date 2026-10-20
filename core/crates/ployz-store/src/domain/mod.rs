@@ -229,8 +229,8 @@ pub enum DomainName {
 
 impl Domain {
     /// Whether users mean it by `name`: its hostname, or a generated domain's prefix.
-    fn is_named(&self, name: &str) -> bool {
-        let name = name.trim().to_ascii_lowercase();
+    pub(crate) fn is_named(&self, name: &str) -> bool {
+        let name = crate::id::normalize_hostname(name.to_owned());
         match &self.name {
             DomainName::Generated { prefix, hostname } => {
                 *prefix == name || hostname.as_ref().is_some_and(|hostname| *hostname == name)
@@ -297,6 +297,11 @@ pub struct DomainRow {
     /// One short phrase on why, when it isn't plainly ready.
     pub reason: Option<String>,
     pub action: Option<DomainAction>,
+    /// The records that point a custom domain here, whatever its status; empty for a
+    /// generated one, or when Cloud can't name them yet.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[ts(optional, as = "Option<Vec<DnsRecord>>")]
+    pub records: Vec<DnsRecord>,
 }
 
 /// Where a domain is, from its user's side.

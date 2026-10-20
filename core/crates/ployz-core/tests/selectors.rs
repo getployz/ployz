@@ -341,8 +341,8 @@ fn container_selector_uses_exact_id_then_display_name_then_prefix() {
         ContainerSelector::parse("missing")
             .unwrap()
             .resolve(containers),
-        Err(ContainerSelectorError::NotFound { selector })
-            if selector.as_str() == "missing"
+        Err(ContainerSelectorError::NotFound { selector, valid })
+            if selector.as_str() == "missing" && !valid.is_empty()
     ));
     assert!(ContainerSelector::parse("").is_err());
 }
@@ -397,6 +397,8 @@ fn container(
     }))
     .unwrap();
     ployz_core::ContainerObservation::try_from(ployz_core::ContainerObservationParts {
+        rotation: None,
+        r#gen: None,
         container_id: ContainerId::parse(id).unwrap(),
         display_name: display_name.into(),
         created_at_unix_nanos: 0,
@@ -408,6 +410,7 @@ fn container(
         resolved_spec,
         address: None,
         labels: BTreeMap::new(),
+        stopped: false,
     })
     .unwrap()
 }

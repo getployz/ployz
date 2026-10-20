@@ -12,8 +12,8 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use crate::{
-    ContainerId, DockerVolumeName, ManagementAddress, Namespace, ResolvedServiceSpec, RpcError,
-    RpcErrorCode, SlotId, SnapshotGuid, SnapshotName, VolumeCopy,
+    ContainerId, DockerVolumeName, Gen, ManagementAddress, Namespace, ResolvedServiceSpec,
+    RpcError, RpcErrorCode, RunRotation, SlotId, SlotRole, SnapshotGuid, SnapshotName, VolumeCopy,
 };
 
 /// Which run of writes a Writer root belongs to. Cloud numbers it; the Machine stores it
@@ -182,8 +182,19 @@ pub struct SetVolumeCopyRequest {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ExpectedCopy {
-    Writer { epoch: WriterEpoch },
-    Mirror { newest: SnapshotGuid, slot: SlotId },
+    Writer {
+        epoch: WriterEpoch,
+    },
+    /// A slot at `newest`. With a `role`, only a slot this Machine still records in that
+    /// role matches: an old copy's delete names it, so a pull that made the slot the mirror
+    /// at the same snapshot refuses the delete. A Machine that predates it ignores it.
+    Mirror {
+        newest: SnapshotGuid,
+        slot: SlotId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        role: Option<SlotRole>,
+    },
     None,
 }
 
@@ -234,10 +245,14 @@ pub enum Start {
     Kept {
         container_id: ContainerId,
     },
+    /// A Move's destination copy, created at the source copy's `gen`. With `In`, the
+    /// owner routes it once healthy, as an In want does.
     Create {
         namespace: Namespace,
         resolved_spec: ResolvedServiceSpec,
         creation_key: CreationKey,
+        r#gen: Gen,
+        rotation: RunRotation,
     },
 }
 
@@ -348,7 +363,8 @@ pub enum CopyPlan {
 /// converges too. A slot whose pull for the want's target landed finishes that pull
 /// whatever `expect` says, since the landing itself moved `newest` past the expect. A
 /// slot pulling the want's target continues that pull when `expect` names the same
-/// slot, even after its `newest` moved or emptied.
+/// slot, even after its `newest` moved or emptied. An old copy already at a sourced
+/// Mirror want's target becomes the mirror whatever `expect` says.
 #[must_use]
 pub fn plan(
     copy: Option<&VolumeCopy>,
@@ -429,13 +445,22 @@ pub fn plan(
         }
         (
             Some(VolumeCopy::Slot {
-                slot, newest, pull, ..
+                slot,
+                newest,
+                pull,
+                role,
+                ..
             }),
             WantedCopy::Mirror { from, target, .. },
         ) => {
             let landed = newest.as_ref().is_some_and(|newest| newest.name == *target);
+            // A cut carries no source, and the old copy it left is its want. A pull's want
+            // is a mirror, so an old copy already at its target still takes the pull.
             if landed && pull.is_none() {
-                return AtWant;
+                if *role == SlotRole::Mirror || from.is_none() {
+                    return AtWant;
+                }
+                return Transition(MirrorToMirror);
             }
             // This request's own pull moves `newest` past its expect: it lands, or a Full
             // fallback empties the slot first. A resend continues it on the same slot.
@@ -477,13 +502,19 @@ fn expect_matches(copy: Option<&VolumeCopy>, expect: &ExpectedCopy) -> bool {
             Some(VolumeCopy::Slot {
                 slot,
                 newest: Some(newest),
+                role,
                 ..
             }),
             ExpectedCopy::Mirror {
                 newest: expected,
                 slot: expected_slot,
+                role: expected_role,
             },
-        ) => newest.guid == *expected && slot == expected_slot,
+        ) => {
+            newest.guid == *expected
+                && slot == expected_slot
+                && expected_role.is_none_or(|expected| expected == *role)
+        }
         (Some(VolumeCopy::Slot { newest: None, .. }) | None, ExpectedCopy::None) => true,
         _ => false,
     }
@@ -492,7 +523,7 @@ fn expect_matches(copy: Option<&VolumeCopy>, expect: &ExpectedCopy) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Pull, Snapshot};
+    use crate::{Pull, SlotRole, Snapshot};
 
     fn snapshot(name: &str, guid: u64) -> Snapshot {
         Snapshot {
@@ -527,6 +558,18 @@ mod tests {
             newest,
             resume_token: None,
             pull,
+            role: SlotRole::Mirror,
+        }
+    }
+
+    fn old_copy(newest: Option<Snapshot>) -> VolumeCopy {
+        VolumeCopy::Slot {
+            slot: SLOT,
+            readonly: true,
+            newest,
+            resume_token: None,
+            pull: None,
+            role: SlotRole::OldCopy,
         }
     }
 
@@ -561,6 +604,13 @@ mod tests {
     const MIRROR_AT_10: ExpectedCopy = ExpectedCopy::Mirror {
         newest: SnapshotGuid::new(10),
         slot: SLOT,
+        role: None,
+    };
+
+    const OLD_COPY_AT_10: ExpectedCopy = ExpectedCopy::Mirror {
+        newest: SnapshotGuid::new(10),
+        slot: SLOT,
+        role: Some(SlotRole::OldCopy),
     };
 
     type Row = (
@@ -681,6 +731,7 @@ mod tests {
                 ExpectedCopy::Mirror {
                     newest: SnapshotGuid::new(9),
                     slot: SLOT,
+                    role: None,
                 },
                 writer(10, 2, true),
                 Refuse(Behind),
@@ -692,6 +743,7 @@ mod tests {
                 ExpectedCopy::Mirror {
                     newest: SnapshotGuid::new(9),
                     slot: SLOT,
+                    role: None,
                 },
                 writer(10, 2, true),
                 Refuse(Mismatch),
@@ -745,6 +797,22 @@ mod tests {
                 AtWant,
             ),
             (
+                "old copy at the mirror's target becomes the mirror whatever expect",
+                Some(old_copy(Some(g.clone()))),
+                false,
+                ExpectedCopy::None,
+                mirror(true, "f-1"),
+                Transition(MirrorToMirror),
+            ),
+            (
+                "cut resent to the old copy it left",
+                Some(old_copy(Some(g.clone()))),
+                false,
+                WRITER_1,
+                mirror(false, "f-1"),
+                AtWant,
+            ),
+            (
                 "mirror landed but not pruned",
                 Some(slot(Some(g.clone()), Some(pull.clone()))),
                 false,
@@ -759,6 +827,7 @@ mod tests {
                 ExpectedCopy::Mirror {
                     newest: SnapshotGuid::new(9),
                     slot: SLOT,
+                    role: None,
                 },
                 mirror(true, "f-1"),
                 Transition(MirrorToMirror),
@@ -770,6 +839,7 @@ mod tests {
                 ExpectedCopy::Mirror {
                     newest: SnapshotGuid::new(9),
                     slot: SLOT,
+                    role: None,
                 },
                 mirror(true, "f-1"),
                 Transition(MirrorToMirror),
@@ -789,6 +859,7 @@ mod tests {
                 ExpectedCopy::Mirror {
                     newest: SnapshotGuid::new(9),
                     slot: SLOT,
+                    role: None,
                 },
                 mirror(false, "f-1"),
                 Refuse(NoSource),
@@ -932,6 +1003,22 @@ mod tests {
                 Transition(MirrorToForget),
             ),
             (
+                "destroy an old copy named by its role",
+                Some(old_copy(Some(g.clone()))),
+                false,
+                OLD_COPY_AT_10,
+                WantedCopy::Forget,
+                Transition(MirrorToForget),
+            ),
+            (
+                "destroy an old copy that became the mirror",
+                Some(slot(Some(g.clone()), None)),
+                false,
+                OLD_COPY_AT_10,
+                WantedCopy::Forget,
+                Refuse(Mismatch),
+            ),
+            (
                 "destroy an empty slot",
                 Some(slot(None, None)),
                 false,
@@ -963,6 +1050,18 @@ mod tests {
                 "{case}"
             );
         }
+    }
+
+    #[test]
+    fn a_mirror_expect_without_a_role_keeps_its_wire_shape() {
+        let wire = serde_json::to_value(MIRROR_AT_10).unwrap();
+        assert_eq!(wire.get("role"), None, "{wire}");
+        assert_eq!(
+            serde_json::from_value::<ExpectedCopy>(wire).unwrap(),
+            MIRROR_AT_10
+        );
+        let named = serde_json::to_value(OLD_COPY_AT_10).unwrap();
+        assert_eq!(named.get("role"), Some(&serde_json::json!("old_copy")));
     }
 
     #[test]

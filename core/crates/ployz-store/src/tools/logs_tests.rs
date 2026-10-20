@@ -1,38 +1,21 @@
-use std::collections::BTreeMap;
-
 use base64::Engine as _;
 use base64::engine::general_purpose::{STANDARD, STANDARD_NO_PAD};
 
 use super::*;
 
-fn secrets(pairs: &[(&str, &str)]) -> SecretSet {
-    let mut set = SecretSet::from_store(
-        pairs
-            .iter()
-            .map(|(name, value)| ((*name).to_owned(), (*value).to_owned())),
-        [],
-    );
-    set.add_machine_env(Some(&BTreeMap::new()));
-    set
-}
-
-fn shown(text: LogText) -> LogExcerpt {
-    match text {
-        LogText::Shown(excerpt) => excerpt,
-        LogText::Withheld { why } => panic!("expected shown text, got withheld {why:?}"),
-    }
+fn secrets(pairs: &[(&str, &str)]) -> SealedValues {
+    pairs
+        .iter()
+        .map(|(name, value)| ((*name).to_owned(), (*value).to_owned()))
+        .collect()
 }
 
 fn joined(excerpt: &LogExcerpt) -> String {
     excerpt.lines().join("\n")
 }
 
-fn scrub_text(text: &str, set: &SecretSet) -> LogExcerpt {
-    shown(LogExcerpt::scrub(
-        [text.to_owned()],
-        set,
-        LineCap::default(),
-    ))
+fn scrub_text(text: &str, set: &SealedValues) -> LogExcerpt {
+    LogExcerpt::scrub([text.to_owned()], set, LineCap::default())
 }
 
 /// xorshift64*: a fixed seed keeps failures reproducible without a property-test crate.
@@ -116,11 +99,11 @@ fn no_secret_form_survives_random_logs() {
                 String::from_utf8(head).unwrap(),
                 String::from_utf8(tail).unwrap(),
             ];
-            let out = joined(&shown(LogExcerpt::scrub(
+            let out = joined(&LogExcerpt::scrub(
                 frames,
                 &set,
                 LineCap::new(LineCap::MAX).unwrap(),
-            )));
+            ));
             for leaked in &forms {
                 assert!(
                     !out.contains(leaked.as_str()),
@@ -149,39 +132,10 @@ fn longer_secret_containing_a_shorter_one_is_replaced_whole() {
 }
 
 #[test]
-fn incomplete_secret_set_withholds_the_text() {
-    let raw = "DATABASE_URL=postgres://app:s3cr3t-pass@db/app";
-    let mut machine_unread = SecretSet::from_store([], []);
-    machine_unread.add_machine_env(None);
-    let mut no_store = SecretSet::unknown();
-    no_store.add_machine_env(Some(&BTreeMap::new()));
-    let mut one_unread = SecretSet::from_store([], []);
-    one_unread.add_machine_env(Some(&BTreeMap::new()));
-    one_unread.add_machine_env(None);
-    one_unread.add_machine_env(Some(&BTreeMap::new()));
-    for set in [machine_unread, no_store, one_unread, SecretSet::unknown()] {
-        let text = LogExcerpt::scrub([raw.to_owned()], &set, LineCap::default());
-        assert_eq!(
-            text,
-            LogText::Withheld {
-                why: Withheld::NoSecretContext
-            }
-        );
-        let json = serde_json::to_string(&text).unwrap();
-        assert!(!json.contains("s3cr3t"), "{json}");
-        assert!(!json.contains("DATABASE_URL"), "{json}");
-    }
-}
-
-#[test]
 fn a_cut_line_never_keeps_a_secret_prefix() {
     let value = "Zq8-straddling-secret-value-Zq8";
     let line = format!("{}{value}{}", "x".repeat(490), "y".repeat(100));
-    let out = shown(LogExcerpt::scrub(
-        [line],
-        &secrets(&[("TOKEN_A", value)]),
-        LineCap::default(),
-    ));
+    let out = LogExcerpt::scrub([line], &secrets(&[("TOKEN_A", value)]), LineCap::default());
     let text = joined(&out);
     for end in SHORT_VALUE..=value.len() {
         let prefix = value.get(..end).unwrap();
@@ -195,18 +149,18 @@ fn a_cut_line_never_keeps_a_secret_prefix() {
 fn dropped_lines_take_their_secrets_and_kept_lines_stay_readable() {
     let value = "multi-line-secret\nsecond-half-of-it";
     let text = format!("boot\n{value}\ncould not resolve host\n");
-    let out = shown(LogExcerpt::scrub(
+    let out = LogExcerpt::scrub(
         [text],
         &secrets(&[("CERT", value)]),
         LineCap::new(1).unwrap(),
-    ));
+    );
     assert_eq!(out.lines(), ["could not resolve host"]);
     assert!(out.cut());
-    let out = shown(LogExcerpt::scrub(
+    let out = LogExcerpt::scrub(
         [format!("{value}\ncould not resolve host")],
         &secrets(&[("CERT", value)]),
         LineCap::new(2).unwrap(),
-    ));
+    );
     let text = joined(&out);
     assert!(!text.contains("second-half"), "{text:?}");
     assert!(!text.contains("multi-line"), "{text:?}");
@@ -217,11 +171,7 @@ fn dropped_lines_take_their_secrets_and_kept_lines_stay_readable() {
 fn byte_cap_drops_oldest_lines() {
     let line = "z".repeat(400);
     let text: String = (0..100).map(|i| format!("{i:03}{line}\n")).collect();
-    let out = shown(LogExcerpt::scrub(
-        [text],
-        &secrets(&[]),
-        LineCap::new(LineCap::MAX).unwrap(),
-    ));
+    let out = LogExcerpt::scrub([text], &secrets(&[]), LineCap::new(LineCap::MAX).unwrap());
     let total: usize = out.lines().iter().map(String::len).sum();
     assert!(total <= TOTAL_BYTES);
     assert!(out.cut());
@@ -273,26 +223,18 @@ fn pem_block_is_redacted_across_lines() {
     assert_eq!(out.lines(), ["loading", "[redacted]", "done"]);
 }
 
+// Catches a value that is not Sealed, as image env like NODE_ENV, scrubbed from the text.
 #[test]
-fn machine_env_scrubs_what_the_store_does_not_know_as_plain() {
-    let mut set = SecretSet::from_store([], [("HOST".to_owned(), "db.internal".to_owned())]);
-    set.add_machine_env(Some(&BTreeMap::from([
-        ("HOST".to_owned(), "db.internal".to_owned()),
-        ("INJECTED".to_owned(), "machine-only-value".to_owned()),
-    ])));
-    let out = scrub_text("dial db.internal with machine-only-value", &set);
-    assert_eq!(joined(&out), "dial db.internal with [secret INJECTED]");
-}
-
-#[test]
-fn machine_env_overriding_a_plain_value_is_a_secret() {
-    let mut set = SecretSet::from_store([], [("HOST".to_owned(), "db.internal".to_owned())]);
-    set.add_machine_env(Some(&BTreeMap::from([(
-        "HOST".to_owned(),
-        "other.internal".to_owned(),
-    )])));
-    let out = scrub_text("dial other.internal", &set);
-    assert_eq!(joined(&out), "dial [secret HOST]");
+fn only_sealed_values_are_scrubbed() {
+    let out = scrub_text(
+        "npm warn config production Use `--omit=dev` instead. token sk-live-123456",
+        &secrets(&[("API_KEY", "sk-live-123456")]),
+    );
+    assert_eq!(
+        joined(&out),
+        "npm warn config production Use `--omit=dev` instead. token [secret API_KEY]"
+    );
+    assert_eq!(out.redacted(), 1);
 }
 
 #[test]
@@ -310,23 +252,195 @@ fn line_cap_bounds() {
     assert_eq!(LineCap::new(200).map(LineCap::get), Some(200));
 }
 
-// Catches a set covering several Containers that keeps only one value per name.
+// Catches a set covering several Services that keeps only one value per name.
 #[test]
-fn every_containers_value_under_a_shared_name_is_scrubbed() {
-    let mut set = SecretSet::from_store([], []);
-    for value in ["first-container-key", "second-container-key"] {
-        set.add_machine_env(Some(&BTreeMap::from([(
-            "KEY".to_owned(),
-            value.to_owned(),
-        )])));
+fn every_sealed_value_under_a_shared_name_is_scrubbed() {
+    let set = secrets(&[("KEY", "first-service-key"), ("KEY", "second-service-key")]);
+    let out = scrub_text("a first-service-key\nb second-service-key\n", &set);
+    assert_eq!(out.lines(), ["a [secret KEY]", "b [secret KEY]"]);
+}
+
+fn stream(frames: &[(Channel, &[u8])], forms: &SealedForms) -> Vec<(Channel, Vec<u8>)> {
+    let mut scrub = FrameScrub::new();
+    let mut out: BTreeMap<Channel, Vec<u8>> = BTreeMap::new();
+    for (channel, frame) in frames {
+        let released = scrub.push(*channel, frame, forms);
+        out.entry(*channel).or_default().extend(released);
     }
-    let text = LogExcerpt::scrub(
-        ["a first-container-key\nb second-container-key\n".to_owned()],
-        &set,
-        LineCap::default(),
+    for (channel, held) in scrub.finish(forms) {
+        out.entry(channel).or_default().extend(held);
+    }
+    out.into_iter().collect()
+}
+
+fn stdout_of(frames: &[&[u8]], forms: &SealedForms) -> Vec<u8> {
+    let frames: Vec<(Channel, &[u8])> = frames.iter().map(|f| (Channel::Stdout, *f)).collect();
+    stream(&frames, forms).swap_remove(0).1
+}
+
+#[test]
+fn a_value_split_across_frames_is_scrubbed() {
+    for value in ["abcdefghij0123456789", "héllo-日本-secret"] {
+        let forms = SealedForms::compile(&secrets(&[("TOKEN", value)]));
+        let text = format!("start {value} end");
+        for at in 0..=text.len() {
+            let (head, tail) = split_at_byte(&text, at);
+            let out = stdout_of(&[&head, &tail], &forms);
+            let shown = String::from_utf8(out).expect("released bytes keep UTF-8 whole");
+            assert!(shown.contains("[secret TOKEN]"), "split at {at}: {shown}");
+            assert!(!shown.contains(value), "split at {at}: {shown}");
+        }
+    }
+}
+
+#[test]
+fn random_frames_release_the_batch_scrub() {
+    let mut rng = Rng(0x2545_F491_4F6C_DD1D);
+    for _ in 0..300 {
+        let value = random_secret(&mut rng);
+        let forms = SealedForms::compile(&secrets(&[("API_KEY", &value)]));
+        let encoded = [
+            value.clone(),
+            STANDARD.encode(&value),
+            STANDARD_NO_PAD.encode(&value),
+            percent_encoded(&value, b"0123456789ABCDEF"),
+            percent_encoded(&value, b"0123456789abcdef"),
+        ];
+        let mut text = random_noise(&mut rng);
+        for _ in 0..1 + rng.below(4) {
+            text.push_str(encoded.get(rng.below(encoded.len())).unwrap());
+            text.push_str(&random_noise(&mut rng));
+        }
+        // A complete stream ends its line; a trailing form prefix is hidden instead.
+        text.push('\n');
+        let mut frames: Vec<Vec<u8>> = Vec::new();
+        let mut rest = text.as_bytes();
+        while !rest.is_empty() {
+            let (frame, tail) = rest.split_at(rest.len().min(1 + rng.below(12)));
+            frames.push(frame.to_vec());
+            rest = tail;
+        }
+        let frames: Vec<&[u8]> = frames.iter().map(Vec::as_slice).collect();
+        let out = stdout_of(&frames, &forms);
+        let batch = forms.scrub(&text, &mut 0);
+        assert_eq!(String::from_utf8(out).unwrap(), batch, "frames {frames:?}");
+    }
+}
+
+#[test]
+fn channels_do_not_mix() {
+    let value = "abcdefghij0123456789";
+    let forms = SealedForms::compile(&secrets(&[("TOKEN", value)]));
+    let (head, tail) = split_at_byte(value, 10);
+    let out = stream(
+        &[
+            (Channel::Stdout, b"x "),
+            (Channel::Stdout, &head),
+            (Channel::Stderr, &tail),
+        ],
+        &forms,
     );
-    let LogText::Shown(excerpt) = text else {
-        panic!("withheld: {text:?}");
-    };
-    assert_eq!(excerpt.lines(), ["a [secret KEY]", "b [secret KEY]"]);
+    let stdout = String::from_utf8(out.first().unwrap().1.clone()).unwrap();
+    let stderr = String::from_utf8(out.get(1).unwrap().1.clone()).unwrap();
+    assert_eq!(stdout, "x [secret TOKEN]");
+    assert_eq!(stderr, "0123456789");
+}
+
+#[test]
+fn discard_drops_one_channel_only() {
+    let value = "abcdefghij0123456789";
+    let forms = SealedForms::compile(&secrets(&[("TOKEN", value)]));
+    let (head, tail) = split_at_byte(value, 10);
+    let mut scrub = FrameScrub::new();
+    assert!(scrub.push(Channel::Stdout, &head, &forms).is_empty());
+    assert!(scrub.push(Channel::Stderr, &head, &forms).is_empty());
+    scrub.discard(Channel::Stdout);
+    assert!(scrub.push(Channel::Stdout, b"\n", &forms).is_empty());
+    assert!(scrub.push(Channel::Stderr, &tail, &forms).is_empty());
+    let out = scrub.finish(&forms);
+    assert_eq!(out, [(Channel::Stderr, b"[secret TOKEN]".to_vec())]);
+}
+
+#[test]
+fn finish_hides_a_proper_prefix_of_a_form() {
+    let value = "abcdefghij0123456789";
+    let forms = SealedForms::compile(&secrets(&[("TOKEN", value)]));
+    let out = stdout_of(&[b"plain abcdefghij"], &forms);
+    assert_eq!(out, b"plain [secret TOKEN]");
+    let out = stdout_of(&[b"b64 YWJjZGVm"], &forms);
+    assert_eq!(out, b"b64 [secret TOKEN]");
+    let out = stdout_of(&[b"plain text"], &forms);
+    assert_eq!(out, b"plain text");
+}
+
+// A label keeps its text held until the value arrives, since `\s*` between them is
+// unbounded; the cap is what stops that hold from growing without end.
+#[test]
+fn a_label_far_from_its_value_releases_at_the_cap() {
+    let forms = SealedForms::compile(&secrets(&[("TOKEN", "ab12")]));
+    let mut scrub = FrameScrub::new();
+    let mut frame = b"TOKEN=".to_vec();
+    frame.extend(vec![b' '; CARRY_CAP + 500]);
+    let released = scrub.push(Channel::Stdout, &frame, &forms);
+    assert_eq!(released.len(), frame.len() - CARRY_CAP);
+    assert!(released.starts_with(b"TOKEN="));
+    let released = scrub.push(Channel::Stdout, b"ab12 tail\n", &forms);
+    assert_eq!(released.len(), CARRY_CAP + 10);
+    assert!(scrub.finish(&forms).is_empty());
+    let mut scrub = FrameScrub::new();
+    let near = scrub.push(Channel::Stdout, b"TOKEN=      ", &forms);
+    assert!(near.is_empty());
+    let out = scrub.push(Channel::Stdout, b"  ab12 tail\n", &forms);
+    assert_eq!(out, b"TOKEN=        [secret TOKEN] tail\n");
+}
+
+#[test]
+fn each_line_of_a_multiline_value_is_scrubbed() {
+    let value = "line1-secret\nline2-secret";
+    let forms = SealedForms::compile(&secrets(&[("CERT", value)]));
+    assert!(forms.multiline());
+    let text = "a line1-secret b\nc line2-secret d\n";
+    let want = "a [secret CERT] b\nc [secret CERT] d\n";
+    assert_eq!(forms.scrub(text, &mut 0), want);
+    let out = stdout_of(&[b"a line1-sec", b"ret b\nc line2-", b"secret d\n"], &forms);
+    assert_eq!(String::from_utf8(out).unwrap(), want);
+}
+
+#[test]
+fn a_line_end_releases_beside_a_multiline_value() {
+    let forms = SealedForms::compile(&secrets(&[("CERT", "line1-secret\nline2-secret")]));
+    let mut scrub = FrameScrub::new();
+    assert_eq!(
+        scrub.push(Channel::Stdout, b"info line\n", &forms),
+        b"info line\n"
+    );
+    assert!(scrub.finish(&forms).is_empty());
+}
+
+#[test]
+fn a_multiline_value_split_across_frames_is_one_marker() {
+    let forms = SealedForms::compile(&secrets(&[("CERT", "line1-secret\nline2-secret")]));
+    // The second head ends at the value's own line break, which must not release its first line.
+    for (head, shown, tail) in [
+        (&b"a line1-sec"[..], &b""[..], &b"ret\nline2-secret b\n"[..]),
+        (b"a line1-secret\n", b"a ", b"line2-secret b\n"),
+    ] {
+        let mut scrub = FrameScrub::new();
+        let mut out = scrub.push(Channel::Stdout, head, &forms);
+        assert_eq!(out, shown);
+        out.extend(scrub.push(Channel::Stdout, tail, &forms));
+        assert_eq!(String::from_utf8(out).unwrap(), "a [secret CERT] b\n");
+        assert!(scrub.finish(&forms).is_empty());
+    }
+}
+
+#[test]
+fn a_discard_veils_a_multiline_value_begun_in_the_veiled_bytes() {
+    let forms = SealedForms::compile(&secrets(&[("TOKEN", "abcde\nfghij\nklmno")]));
+    let mut scrub = FrameScrub::new();
+    scrub.discard(Channel::Stdout);
+    let frame = format!("{}abcde\nfghij\nklmno\n", "x".repeat(18));
+    assert_eq!(scrub.push(Channel::Stdout, frame.as_bytes(), &forms), b"");
+    assert_eq!(scrub.push(Channel::Stdout, b"later\n", &forms), b"later\n");
+    assert!(scrub.finish(&forms).is_empty());
 }

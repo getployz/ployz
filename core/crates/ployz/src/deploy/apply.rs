@@ -68,19 +68,18 @@ pub(crate) async fn apply_requested(
     tokio::pin!(confirm);
     let outcome = loop {
         tokio::select! {
-            event = rx.recv(), if !rx.is_closed() || !rx.is_empty() => if let Some(DeployEvent::Progress { rows, .. }) = event {
-                evidence.observe(&rows);
-                progress.update(evidence.frame());
+            event = rx.recv(), if !rx.is_closed() || !rx.is_empty() => if let Some(event) = event {
+                show(event, &mut evidence, &mut progress);
             },
             outcome = &mut confirm => {
                 while let Ok(event) = rx.try_recv() {
-                    if let DeployEvent::Progress { rows, .. } = event { evidence.observe(&rows); progress.update(evidence.frame()); }
+                    show(event, &mut evidence, &mut progress);
                 }
                 break outcome;
             }
         }
     };
-    let tails = evidence.tails(client, requested).await;
+    let tails = evidence.tails(client).await;
     progress.finish(
         evidence.frame(),
         if signal.is_cancelled() {
@@ -106,7 +105,7 @@ pub(crate) async fn apply_requested(
             }
         }
         DeployOutcome::Failed { .. } => {
-            let mut failure = report::failure(&outcome, tails);
+            let mut failure = report::failure(&outcome, &evidence.operations, tails);
             if signal.is_cancelled() {
                 failure = failure.interrupted();
             }
@@ -125,6 +124,20 @@ pub(crate) async fn apply_requested(
         )
         .into()),
     }
+}
+
+/// Fold one live Deploy event into the progress display, recording any warning in
+/// the JSON result too.
+fn show(event: DeployEvent, evidence: &mut report::Direct, progress: &mut Progress) {
+    match event {
+        DeployEvent::Progress { rows, .. } => evidence.observe(&rows),
+        DeployEvent::Warning { warning } => {
+            ui::record_warning(warning.to_string());
+            evidence.notice(warning);
+        }
+        DeployEvent::Outcome { .. } | DeployEvent::ImagesPruned { .. } => return,
+    }
+    progress.update(evidence.frame());
 }
 
 /// A direct follow-up failure retains diagnostic evidence until the outer command adds context.
@@ -184,14 +197,16 @@ mod tests {
         let cluster = ["192.0.2.1".parse().unwrap()];
         let preview = DeployPreview::new(
             Vec::new(),
-            ingress_dns_warnings([&spec], &cluster, |hostname| match hostname.as_str() {
-                "app.example.com" => {
-                    ployz_core::HostnameVerdict::Refused(ployz_core::Refusal::ReachesElsewhere)
+            ingress_dns_warnings([&spec], &cluster, None, |hostname| {
+                match hostname.as_str() {
+                    "app.example.com" => {
+                        ployz_core::HostnameVerdict::Refused(ployz_core::Refusal::ReachesElsewhere)
+                    }
+                    "plain.example.com" => {
+                        ployz_core::HostnameVerdict::Refused(ployz_core::Refusal::DoesNotResolve)
+                    }
+                    other => panic!("unexpected {other}"),
                 }
-                "plain.example.com" => {
-                    ployz_core::HostnameVerdict::Refused(ployz_core::Refusal::DoesNotResolve)
-                }
-                other => panic!("unexpected {other}"),
             })
             .into_iter()
             .map(DeployWarning::from)

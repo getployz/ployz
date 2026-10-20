@@ -3,9 +3,9 @@ use std::collections::BTreeMap;
 use super::support::*;
 use ployz::deploy::preview_deploy;
 use ployz_core::{
-    ContainerKind, DependencyCondition, DockerVolumeId, MachineFailure, PruneRefusal,
-    QualifiedService, RpcError, RpcErrorCode, ServiceDependency, ServiceName, ServiceRemovals,
-    VolumeObservationFailure,
+    ContainerKind, ContainerRuntimeObservation, DependencyCondition, DockerVolumeId,
+    MachineFailure, PruneRefusal, QualifiedService, RpcError, RpcErrorCode, ServiceDependency,
+    ServiceName, ServiceRemovals, VolumeObservationFailure,
 };
 
 #[test]
@@ -370,6 +370,44 @@ fn prune_removes_hook_containers_of_an_obsolete_service() {
 }
 
 #[test]
+fn a_service_without_a_pre_deploy_command_removes_its_finished_hook_and_leaves_a_running_one() {
+    let web = spec("web");
+    let hook = |hex| {
+        let mut hook = container(hex, '1', &web, &service_id('b'));
+        hook.try_update(|parts| parts.kind = ContainerKind::PreDeployHook)
+            .unwrap();
+        hook
+    };
+    let mut finished = hook('8');
+    finished
+        .try_update(|parts| parts.runtime = ContainerRuntimeObservation::Exited { code: 3 })
+        .unwrap();
+    let plan = preview_deploy(
+        &DeployIntent::apply_all(
+            Namespace::parse("app").unwrap(),
+            [&web],
+            PlanOptions::default(),
+        ),
+        &DeploySnapshot {
+            machines: vec![machine('1', "first")],
+            containers: vec![
+                container('d', '1', &web, &service_id('b')),
+                finished,
+                hook('9'),
+            ],
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert!(removes(&plan, '8'), "the finished hook is removed");
+    assert!(
+        !removes(&plan, '9'),
+        "a running hook is left for a later deploy"
+    );
+    assert!(!removes(&plan, 'd'));
+}
+
+#[test]
 fn failed_desired_change_leaves_prune_in_the_unexecuted_suffix() {
     let web = spec("web");
     let debug = spec("debug");
@@ -572,4 +610,41 @@ fn removes(plan: &ployz::deploy::DeployPreview, hex: char) -> bool {
             DeployOperation::RemoveContainer { container_id, .. } if container_id == id
         )
     })
+}
+
+#[test]
+fn a_removal_retires_a_stray_pending_copy_before_any_routed_one() {
+    let debug = spec("debug");
+    let service = service_id('b');
+    let rotated = |hex, machine_hex, rotation| {
+        let mut copy = container(hex, machine_hex, &debug, &service);
+        copy.try_update(|parts| parts.rotation = Some(rotation))
+            .unwrap();
+        copy
+    };
+    let snapshot = DeploySnapshot {
+        machines: vec![machine('1', "first"), machine('2', "second")],
+        containers: vec![
+            rotated('a', '1', ployz_core::CopyRotation::In),
+            rotated('c', '2', ployz_core::CopyRotation::Pending),
+        ],
+        ..Default::default()
+    };
+    let intent =
+        DeployIntent::apply_all(Namespace::parse("app").unwrap(), [], PlanOptions::default());
+
+    let plan = preview_deploy(&intent, &snapshot).unwrap();
+
+    // While a Pending sibling remains, proxies keep the last routed copy, so
+    // its Out could never be confirmed unlisted.
+    let retired: Vec<ContainerId> = operations(&plan)
+        .iter()
+        .map(|operation| {
+            let DeployOperation::RemoveContainer { container_id, .. } = operation else {
+                panic!("only removals are planned: {operation:?}");
+            };
+            *container_id
+        })
+        .collect();
+    assert_eq!(retired, [container_id('c'), container_id('a')]);
 }

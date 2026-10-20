@@ -22,7 +22,7 @@ MAIL=1 scripts/verify/up.sh           # Cloud sends mail into a local Mailpit in
 
 With `SERVERS`, `up.sh` also starts an Inngest dev server and the worker for this checkout, then runs `../core/scripts/verify-cluster` (see [verify-server](../verify-server/SKILL.md)). That command enrolls the Machines through this dashboard with an Organization Token. Deploys and enrollment follow-ups then really run. `.verify/run/info` adds the Inngest UI URL for function runs and the `verify-cluster cli` line for the cluster. `DAEMON` is a space-separated list of `[machine-N=]SOURCE` choices passed to `verify-cluster up --daemon`, so `DAEMON="checkout machine-2=0.2.3"` runs machine-1 on this checkout and machine-2 on the 0.2.3 release. Every choice enrolls. A release Machine that cannot enroll with this checkout's CLI enrolls on the checkout daemon first and then gets its release, so `stable` off a release commit compiles the daemon. The Machines are Boat sandboxes by default; the first run of a new recipe bakes their snapshot, which takes a few minutes.
 
-A fresh worktree is fine: `up.sh` installs `node_modules` and builds the native SDK when either is missing or stale. The SDK build is shared across worktrees through `~/.cache/ployz/sdk`, keyed by the committed Rust sources, so only the first checkout of a given commit compiles it (about 2 minutes). A warm run takes about 40 seconds on a busy host. Rerunning it in the same mode reseeds in place, except with `SERVERS` or `FAKE_GITHUB`, which always restart: it empties the tables and seeds again while vite keeps running, and the cookie stays valid. `--fresh`, a different mode (`BILLING`, `FAKE_SERVERS`, `FAKE_GITHUB`, `MAIL`, `SERVERS`), a different port, new dependencies, an edited `up.sh` or a dead Hosted DNS restart vite and Postgres. It prints the URLs, the two `agent-browser` lines to run and an `as.sh` line, and saves them to `.verify/run/info`.
+A fresh worktree is fine: `up.sh` installs `node_modules` and builds the native SDK when either is missing or stale. The SDK build is shared across worktrees through `~/.cache/ployz/sdk`, keyed by the committed Rust sources, so only the first checkout of a given commit compiles it (about 2 minutes). A warm run takes about 40 seconds on a busy host. Rerunning it in the same mode reseeds in place, except with `SERVERS` or `FAKE_GITHUB`, which always restart: it empties the tables and seeds again while vite keeps running. Every cookie keeps its value, but an open page that asks for its session while the tables are empty, as an Environment page does, gets the cookie deleted, and its next load lands on `/auth`. Run the `cookies set` line again (or `as.sh`) to sign the browser back in. `--fresh`, a different mode (`BILLING`, `FAKE_SERVERS`, `FAKE_GITHUB`, `MAIL`, `SERVERS`), a different port, new dependencies, an edited `up.sh` or a dead Hosted DNS restart vite and Postgres. It prints the URLs, the two `agent-browser` lines to run and an `as.sh` line, and saves them to `.verify/run/info`.
 
 The seed (`scripts/verify/seed.ts`) writes through the app's own Config Store commands:
 
@@ -30,9 +30,9 @@ The seed (`scripts/verify/seed.ts`) writes through the app's own Config Store co
 | --- | --- |
 | organization `ada` | Ada Lovelace (ada@example.com) owns it, Grace Hopper (grace@example.com) is an admin and Linus Torvalds (linus@example.com) a member. Grace and Linus also own personal organizations `grace` and `linus`, as every sign-up does, but their sessions act in `ada`. `seed.json` holds each one's session cookie (`cookie`, `graceCookie`, `linusCookie`) and Organization Token for the CLI in `ada` (`cliToken`, `graceToken`, `linusToken`) |
 | organization `ada`, project `shop` | |
-| `production` | services web, api, postgres (with volume pg-data), worker, redis; config sentry (`config.yml` referencing redis and the secret `api.SECRET_KEY`, and `sentry.conf.py`) mounted on web and worker at `/etc/sentry`; domain acme.com on web; one queued Deploy "Ship everything", whose nodes (its Services, pg-data and sentry) the seed writes into Applied State as if it had finished (without `SERVERS`), so they read as deployed; unpublished api edits (image whoami v1.11.0, `FEATURE_SEARCH`) |
+| `production` | services web, api, postgres (with volume pg-data), worker, redis; config sentry (`config.yml` referencing redis and the secret `api.SECRET_KEY`, and `sentry.conf.py`) mounted on web and worker at `/etc/sentry`; on web, a generated domain on port 80 (`web.ada.ployz.test`) and the custom domain acme.com; redis checks with `redis-cli ping` and worker at `/health`, both passing on a real Server; one queued Deploy "Ship everything", whose nodes (its Services, pg-data and sentry) the seed writes into Applied State as if it had finished (without `SERVERS`), so they read as deployed; unpublished api edits (image whoami v1.11.0, `FEATURE_SEARCH`) |
 | `fix-api` | a Branch of production holding api and web, with 2 changes to save |
-| uptime (`scripts/verify/seed-uptime.ts`) | Monitoring tab states in `production`: web Up with 90 days and a closed incident, api Unreachable, worker Checking, redis Unreachable with a 404 at its healthcheck path `/health`, postgres Not checked. It seeds in the background, so `up.sh` returns before it ends. Before checking the Monitoring tab, wait for `.verify/run/uptime` to say `ok` (`until [ -s .verify/run/uptime ]; do sleep 1; done; cat .verify/run/uptime`); `failed` points at `.verify/run/seed-uptime.log` |
+| uptime (`scripts/verify/seed-uptime.ts`) | Monitoring tab states in `production`: web Up with 90 days and a closed incident, api Unreachable, worker Unreachable with a 404 at its healthcheck path `/health`, redis Checking, postgres Not checked. It seeds in the background, so `up.sh` returns before it ends. Before checking the Monitoring tab, wait for `.verify/run/uptime` to say `ok` (`until [ -s .verify/run/uptime ]; do sleep 1; done; cat .verify/run/uptime`); `failed` points at `.verify/run/seed-uptime.log` |
 | metrics (`src/modules/metrics/metrics.verify-fixture.ts`, without `SERVERS`) | Services: web normal on Servers `0123…` and `1111…`; api mixed (`0123…` answers, `2222…` needs upgrade, `3333…` not up); worker normal on `0123…`, with `1111…` answering as a Server without it does (no points, one gap over the range); redis needs upgrade on `1111…` and `2222…`; postgres normal on `0123…` (`1111…` answers without it) with a gap in the middle third, an OOM then a restart, and disk reads and writes; any other Service no readings (both Servers answer without it). Servers: `0123456789abcdef0123456789abcdef` normal with CPU, memory, eth0 (lo and docker0 hidden) and every disk field, with a short not-sampled gap mid-range; `2222…` needs upgrade; `4444…` answers with no readings; `1111…` and any other id not up |
 
 With `SERVERS`, the seed skips the fake Server and the queued Deploy, so it writes no Applied State, and `seed.json` lists them under `skipped`. To seed different state, add Config Store writes to `seed.ts`. It is typechecked with the app, so a domain refactor that breaks it fails `pnpm typecheck`.
@@ -59,11 +59,36 @@ agent-browser --session $S screenshot "$PWD/.verify/evidence/<name>.png"
 - If a click reports that an element is "covered by" another, a sheet or dialog is open. Close it first, with `press Escape` or its **Close** button.
 - Pass `screenshot` an **absolute** path. A relative path lands in agent-browser's temp dir.
 - Single-quote URLs that contain `~` or `$` (`'/cloud/ada/~/servers'`).
-- Inspector textboxes save on Enter, not on blur. A `fill` that you never commit is gone after a reload.
+- Inspector textboxes save on Enter or when focus leaves them (`press Tab`). A name, a new file name or a registry token waits for its ✓ (or Enter). A `fill` with focus still in the field is not saved yet.
 - After any write, `reload` and snapshot again. That proves the write persisted rather than living only in optimistic UI.
-- To see a page as another role, run `scripts/verify/as.sh ada|grace|linus`. It sets that person's cookie in the session and opens Ada's Projects page, `/cloud/ada/~`. Their cookies stay valid across reseeds, and Ada's `up.sh` lines still sign her back in. For the CLI, set `PLOYZ_TOKEN=$(jq -r .graceToken .verify/run/seed.json)` (or `.linusToken`, `.cliToken`) and `PLOYZ_CLOUD_URL` to the instance.
+- If a page never becomes interactive (a bar, sheet or button missing), read `.verify/run/vite.log` before you call it a UI bug. `Failed to fetch dynamically imported module` on a cold start's first page means vite was still bundling: reload once and check again. `dependencies optimized: …` then `reloading` mid-session means a dependency was found late: add it to `optimizeDeps.include` in `dashboard/vite.config.ts`. With neither line in the log, treat it as a real client error.
+- To see a page as another role, run `scripts/verify/as.sh ada|grace|linus`. It sets that person's cookie in the session and opens Ada's Projects page, `/cloud/ada/~`. Their cookies keep their values across reseeds, so after one, rerun `as.sh`, or Ada's `up.sh` lines, to sign the browser back in. For the CLI, set `PLOYZ_TOKEN=$(jq -r .graceToken .verify/run/seed.json)` (or `.linusToken`, `.cliToken`) and `PLOYZ_CLOUD_URL` to the instance.
 - Grace and Linus each belong to two organizations, their personal one and `ada`. A visit to their personal one makes it the session's active organization, and `/cloud` then lands there. Rerun `as.sh`, or pick "Ada Lovelace's Projects" in the switcher, before you trust what the page shows.
 - grace@example.com and linus@example.com are already members of `ada`. To test inviting someone new, use another address.
+
+## Fault injection
+
+To see how a screen handles a slow, failing or dropped write, wrap `fetch` in the page. Server functions post to `/_serverFn/`. Paste this with `agent-browser eval` or `preview_evaluate`:
+
+```js
+window.__fault = { mode: "delay", ms: 1500 }; // "delay", "error", "drop", or null for none
+window.__log ??= [];
+window.__fetch ??= window.fetch;
+window.fetch = async (input, init) => {
+  const url = typeof input === "string" ? input : input.url;
+  const method = (init?.method ?? (input instanceof Request ? input.method : "GET")).toUpperCase();
+  const fault = window.__fault;
+  if (fault && method === "POST" && url.includes("/_serverFn/")) {
+    window.__log.push({ url, mode: fault.mode, at: Date.now() });
+    if (fault.mode === "delay") await new Promise((done) => setTimeout(done, fault.ms));
+    if (fault.mode === "error") return new Response("injected", { status: 500 });
+    if (fault.mode === "drop") throw new TypeError("Failed to fetch");
+  }
+  return window.__fetch(input, init);
+};
+```
+
+`window.__log` counts the posts the page sent, so you can check whether a Retry posts again. A full page load drops the wrapper: reload, a typed URL, and back or forward. Paste it again after each, and check that `window.fetch !== window.__fetch` before you trust a result.
 
 ## Evidence
 

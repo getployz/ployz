@@ -123,7 +123,7 @@ export function ManagedDomainDialog({
                       description={
                         clusterDomain
                           ? `.${clusterDomain}`
-                          : "Your domain is assigned on your first deploy."
+                          : "Your domain is assigned when you generate this one."
                       }
                     />
                   )}
@@ -143,7 +143,11 @@ export function ManagedDomainDialog({
                         ? "Uses PORT"
                         : String(defaultTargetPort)
                     }
-                    description="Leave blank to use PORT."
+                    description={
+                      defaultTargetPort === null
+                        ? "Leave blank to use this service's PORT variable."
+                        : `Leave blank to use this service's PORT variable, ${defaultTargetPort}.`
+                    }
                   />
                 )}
               </form.Field>

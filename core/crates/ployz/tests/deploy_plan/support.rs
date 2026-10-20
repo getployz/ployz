@@ -265,6 +265,8 @@ pub(super) fn container(
     service_id: &ServiceId,
 ) -> ContainerObservation {
     ployz_core::ContainerObservation::try_from(ployz_core::ContainerObservationParts {
+        rotation: None,
+        r#gen: None,
         container_id: container_id(hex),
         display_name: format!("{}-{hex}", requested.name),
         created_at_unix_nanos: 0,
@@ -286,6 +288,7 @@ pub(super) fn container(
             .expect("volume graph is scoped"),
         address: None,
         labels: Default::default(),
+        stopped: false,
     })
     .unwrap()
 }

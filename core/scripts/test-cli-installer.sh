@@ -129,7 +129,7 @@ token=
 case " $* " in *" --token-stdin "*) token=$(cat) ;; esac
 {
     echo "argv=$*"
-    echo "enroll=${PLOYZ_ENROLL_TOKEN:-}"
+    echo "fleet=${PLOYZ_FLEET_TOKEN:-}"
     echo "skip_zfs=${PLOYZ_SKIP_ZFS:-}"
     echo "leaked=$(env | sed -n 's/^\(FLEET_TOKEN\|TTY\)=.*/\1 /p' | tr -d '\n')$(env | grep -c pflt_)"
     echo "token=$token"
@@ -177,30 +177,35 @@ installed_only() {
     [ ! -e "$CHECKIN_LOG" ]
 }
 checked_in_with() {
-    printf '%s\n' "argv=server checkin --install --token-file $FLEET_TOKEN_FILE --token-stdin" enroll= "skip_zfs=$1" \
+    printf '%s\n' "argv=server checkin --install --token-file $FLEET_TOKEN_FILE --token-stdin" fleet= "skip_zfs=$1" \
         leaked=0 "token=$TOKEN" | diff - "$CHECKIN_LOG"
 }
 
 for value in unset ''; do
-    if [ "$value" = unset ]; then enroll; else enroll PLOYZ_ENROLL_TOKEN="$value"; fi
+    if [ "$value" = unset ]; then enroll; else enroll PLOYZ_FLEET_TOKEN="$value"; fi
     installed_only
     [ ! -s "$TMP/err" ]
 done
-for value in cet_abc123 PFLT_abc123; do
-    enroll PLOYZ_ENROLL_TOKEN="$value"
-    installed_only
-    [ "$(cat "$TMP/err")" = "PLOYZ_ENROLL_TOKEN doesn't start with pflt_, so this installs only the CLI." ]
-done
+# PLOYZ_ENROLL_TOKEN is for the ployz server add that a pasted line runs next, so it installs only the CLI.
+enroll PLOYZ_ENROLL_TOKEN=pmet_abc123
+installed_only
+[ ! -s "$TMP/err" ]
+if enroll PLOYZ_ENROLL_TOKEN=$TOKEN; then
+    echo "a Fleet Token in PLOYZ_ENROLL_TOKEN was not refused" >&2
+    exit 1
+fi
+grep -Fq 'PLOYZ_ENROLL_TOKEN holds a Fleet Token. Set PLOYZ_FLEET_TOKEN instead' "$TMP/err"
+[ ! -e "$TMP/install/ployz" ]
 
-enroll PLOYZ_ENROLL_TOKEN=$TOKEN PLOYZ_SKIP_ZFS=1
-[ "$(head -n 1 "$TMP/out")" = "Installs Docker and Ployz. Nothing joins until you say so." ]
+enroll PLOYZ_FLEET_TOKEN=$TOKEN PLOYZ_SKIP_ZFS=1
+[ "$(head -n 1 "$TMP/out")" = "Installs Docker and Ployz." ]
 [ "$(tail -n 1 "$TMP/out")" = "Waiting for approval" ]
 [ "$(cat "$FLEET_TOKEN_FILE")" = $TOKEN ]
 checked_in_with 1
 [ ! -e "$STTY_LOG" ]
 
 # A FLEET_TOKEN or TTY the caller exported must not carry the token into ployz's environment.
-enroll PLOYZ_ENROLL_TOKEN=$TOKEN FLEET_TOKEN=exported TTY=exported
+enroll PLOYZ_FLEET_TOKEN=$TOKEN FLEET_TOKEN=exported TTY=exported
 checked_in_with ''
 
 mkdir -p "$TMP/dev"
@@ -210,7 +215,7 @@ for args in '--enroll 1.2.3' '1.2.3 --enroll'; do
     [ "$(tail -n 1 "$TMP/out")" = "Waiting for approval" ]
     checked_in_with ''
     printf '%s\n' -g -echo saved-mode | diff - "$STTY_LOG"
-    grep -Fq 'Fleet Token: ' "$TMP/dev/tty"
+    grep -Fq 'Fleet Token (from Servers in Ployz Cloud): ' "$TMP/dev/tty"
 done
 
 # With echo still on, the prompt never shows, so nothing is typed into an echoing terminal.
@@ -220,23 +225,23 @@ if ENROLL_FLAG=--enroll enroll FAKE_NO_ECHO_OFF=1; then
     exit 1
 fi
 grep -Fq 'Could not turn off echo' "$TMP/err"
-if grep -Fq 'Fleet Token: ' "$TMP/dev/tty"; then echo "prompted with echo on" >&2; exit 1; fi
+if grep -Fq 'Fleet Token (from Servers in Ployz Cloud): ' "$TMP/dev/tty"; then echo "prompted with echo on" >&2; exit 1; fi
 [ ! -e "$CHECKIN_LOG" ]
 
-if enroll PLOYZ_ENROLL_TOKEN=$TOKEN FAKE_UID=1000; then
+if enroll PLOYZ_FLEET_TOKEN=$TOKEN FAKE_UID=1000; then
     echo "enrolled without root" >&2
     exit 1
 fi
-grep -Fq 'Run it as root: curl -fsSL https://ployz.sh | sudo sh -s -- --enroll' "$TMP/err"
+grep -Fq 'Run it as root: curl -fsSL https://ployz.sh | sudo sh -s -- 1.2.3 --enroll' "$TMP/err"
 [ ! -e "$TMP/install/ployz" ]
 [ ! -e "$FLEET_TOKEN_FILE" ]
 
-for value in "${TOKEN%?}" "${TOKEN}0" "${TOKEN%?}!"; do
+for value in "${TOKEN%?}" "${TOKEN}0" "${TOKEN%?}!" cet_abc123 PFLT_abc123; do
     for flag in '' --enroll; do
         printf '%s\n' "$value" > "$TMP/dev/tty"
         if [ -n "$flag" ]; then
             if ENROLL_FLAG=$flag enroll; then echo "accepted $value from the terminal" >&2; exit 1; fi
-        elif enroll PLOYZ_ENROLL_TOKEN="$value"; then
+        elif enroll PLOYZ_FLEET_TOKEN="$value"; then
             echo "accepted $value" >&2
             exit 1
         fi
@@ -248,7 +253,7 @@ done
 
 # A refused token changes nothing: no token file on a first install, the old token on a rerun.
 for answer in expired refused; do
-    if enroll PLOYZ_ENROLL_TOKEN=$TOKEN FAKE_ANSWER=$answer; then
+    if enroll PLOYZ_FLEET_TOKEN=$TOKEN FAKE_ANSWER=$answer; then
         echo "$answer answer exited 0" >&2
         exit 1
     fi
@@ -256,7 +261,7 @@ for answer in expired refused; do
     [ ! -e "$FLEET_TOKEN_FILE" ]
     mkdir -p "${FLEET_TOKEN_FILE%/*}"
     printf '%s\n' "$OLD_TOKEN" > "$FLEET_TOKEN_FILE"
-    if KEEP_ETC=1 enroll PLOYZ_ENROLL_TOKEN=$TOKEN FAKE_ANSWER=$answer; then
+    if KEEP_ETC=1 enroll PLOYZ_FLEET_TOKEN=$TOKEN FAKE_ANSWER=$answer; then
         echo "$answer rerun exited 0" >&2
         exit 1
     fi

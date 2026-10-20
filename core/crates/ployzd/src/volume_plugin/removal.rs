@@ -15,7 +15,15 @@ use super::{
 impl VolumeStorage {
     async fn remove(&self, name: &DockerVolumeName) -> Result<()> {
         let _guard = self.admit_mutation().await?;
-        let Some(pool) = self.pool.one_usable().await? else {
+        let _pool_guard = self.pool.lock_mutation().await?;
+        let Some(pool) = self
+            .pool
+            .admit(super::pool::UnlabeledBacking::Preserve)
+            .await?
+        else {
+            if self.pool.has_held_a_pool()? {
+                return Err("this Machine has held a Pool that is not imported".into());
+            }
             return Ok(());
         };
         let datasets = self.datasets(&pool).await?;
@@ -80,7 +88,7 @@ impl VolumeStorage {
             mountpoint: String::new(),
             status: VolumePluginStatus {
                 bound_bytes: fs.refquota,
-                used_bytes: fs.used_bytes,
+                used_bytes: fs.referenced_bytes,
             },
         }))
     }
@@ -202,7 +210,7 @@ impl PluginVolume {
             mountpoint: dataset.mountpoint.clone(),
             status: VolumePluginStatus {
                 bound_bytes: dataset.refquota,
-                used_bytes: dataset.used_bytes,
+                used_bytes: dataset.referenced_bytes,
             },
         }
     }

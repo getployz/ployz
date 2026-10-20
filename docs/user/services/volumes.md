@@ -14,9 +14,10 @@ runs on that server.
 
 1. Open your environment and click **Create**, then **Volume**. Right-clicking the canvas
    works too.
-2. Enter a **Name**, like `uploads`, and a **Storage limit (GB)**. It's
-   [fixed once you deploy](#choose-the-storage-limit), so leave room to grow. Click
-   **Create volume**.
+2. Enter a **Name**, like `uploads`, and a **Storage limit (GB)**. Names use lowercase letters,
+   digits and hyphens. Anything else is converted, and the field shows the name it saves as. The
+   storage limit is [fixed once you deploy](#choose-the-storage-limit), so leave room to grow.
+   Click **Create volume**.
 3. Click the new volume, then **Mount on a service**. Pick the service, enter a **Directory** inside
    its containers, like `/app/uploads`, and click **Mount**.
 4. Click **Deploy**.
@@ -33,10 +34,26 @@ your entered directory if a write fails.
 The limit starts at 5 GB. A volume can't grow past it: once it's full, writes fail. The whole
 limit is set aside on the server's disk, so a deploy fails if no server has room for it.
 
-Choose with care. You can change the limit under **Storage** in the volume's panel until you
-deploy the volume; after that it's fixed, even if that deploy failed. Ployz can't resize a
-volume yet. To get more room, add a bigger volume, mount it in the same service at another
-path, copy the files across with `ployz exec`, then swap the mount paths.
+You can change the limit under **Storage** in the volume's panel until you deploy the volume.
+If that first deploy fails, the limit stays fixed in the panel. Once the volume deploys, you can
+grow it on Ployz Cloud while its service keeps running. Type a larger **Storage limit** in the
+panel and confirm **Grow volume**. The panel shows the resize until it ends. Before you confirm,
+it refuses a smaller limit, a server whose Ployz is too old to grow it or that isn't reporting to
+Cloud, and a size a server reports no room for. You can also grow it from the CLI:
+
+```sh
+# Grow the data volume to 20 GB on every server that holds a copy
+ployz volume set data --size 20 --wait
+```
+
+Ployz grows each mirror first and the copy your service writes to last. If one server holding
+a copy has no room, Ployz refuses the whole resize, names that server, and the volume keeps its
+old limit. `ployz volume runs data` shows how a resize went. The new limit isn't a staged
+change: `ployz diff` shows nothing, and your next deploy leaves the service's container alone.
+Shrinking a deployed volume isn't supported yet. A Docker volume has no limit to grow.
+
+If you restore an older revision that asked for a smaller limit, the servers keep the size they
+hold. The panel shows the smaller one; enter the held size to stage it back.
 
 The dashboard doesn't show how full a volume is yet:
 
@@ -80,8 +97,10 @@ see [When a server goes down](scaling.md#when-a-server-goes-down).
 A volume's copies are the places its data lives besides the server that writes it. With Ployz
 Cloud a volume can have a mirror, a read-only copy on a second server that refreshes on every
 deploy and every 15 minutes. A move leaves an old copy on the server it left. Open the volume and
-look under **Copies**. An old copy never refreshes, so it doesn't protect the data. A mirror's age
-turns amber with a **⚠** once it is more than an hour old.
+look under **Copies**. An old copy never refreshes, so it doesn't protect the data. Each server
+records which of its copies is a mirror and which is an old copy, so a mirror made with
+`ployz volume mirror` refreshes like any other, and a move from the CLI leaves an old copy too. A
+mirror's age turns amber with a **⚠** once it is more than an hour old.
 
 Copy changes, like a new mirror or a restore, go out with your next deploy. **Redeploy** on a past
 deployment ships what that deployment froze, so it leaves them staged and says **Copies wait for
@@ -109,6 +128,9 @@ Volume data has no writer; web-2 holds its only copy. Make it the writer: ployz 
 ```
 
 Run the `ployz volume restore` line it prints to make that copy the writer again, then deploy.
+While one of your servers is offline, the deploy can't tell whether that server holds the writer,
+so it names that server instead and suggests no restore. See
+[When a server goes down](scaling.md#when-a-server-goes-down).
 If several servers hold copies, keep the newest and remove the others with the `ployz volume mirror rm` lines it names. A volume
 that is [mid-move](move-a-volume.md#when-a-move-stops) refuses too, and names the
 `ployz volume release` line that stops the move. A move that stopped before its first snapshot
@@ -139,7 +161,13 @@ Deleting a deployed volume deletes its data from your servers for good.
 3. Ployz shows **Deletes data** with what goes. Type your `project/environment`, like
    `my-app/production`, and click **Deploy**.
 
+If that deploy fails, deploying again deletes the data without asking again, because your
+confirmation stays with the change. See
+[Confirm a deploy that deletes data](../deploy/deployments.md#confirm-a-deploy-that-deletes-data).
+
 A volume that was never deployed holds no data, so it goes on your next deploy without asking.
+A mounted volume whose first deploy is still running counts as deployed, since that deploy may
+already have created it. Saving or deploying its deletion asks first, the same way.
 
 ## Good to know
 

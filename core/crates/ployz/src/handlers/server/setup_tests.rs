@@ -93,6 +93,7 @@ fn founder_request(machine: &Machine) -> EnrollRequest {
             advertised_endpoints: Vec::new(),
         },
         wireguard_mtu: None,
+        pinned: Default::default(),
     }
 }
 
@@ -209,4 +210,90 @@ async fn leave_lost_to_a_daemon_restart_is_resent() {
     new.shutdown_background();
     result.unwrap();
     assert_eq!(resent.load(Ordering::SeqCst), 1);
+}
+
+/// Answers Inspect as Participating, and ListMachines with the restarting
+/// daemon's Unavailable refusal for the first `refusals` calls.
+async fn restarting_cluster_store(
+    machine: Machine,
+    refusals: usize,
+) -> (
+    Client,
+    Arc<AtomicUsize>,
+    tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
+) {
+    let lists = Arc::new(AtomicUsize::new(0));
+    let calls = lists.clone();
+    let rpc = move |request: Request<OpaquePayload>| {
+        let calls = calls.clone();
+        let machine = machine.clone();
+        async move {
+            #[expect(
+                clippy::wildcard_enum_match_arm,
+                reason = "this fixture accepts readiness RPCs and connection confirmation"
+            )]
+            let response = match request.into_inner().decode_request().unwrap().body {
+                RpcRequestBody::DescribeContract(_) => {
+                    RpcResponse::from(ployz_core::ContractDescription {
+                        machine_id: machine.id,
+                        protocol_major: ployz_core::PROTOCOL_MAJOR,
+                        daemon_version: "fixture".into(),
+                        capabilities: Default::default(),
+                    })
+                }
+                RpcRequestBody::Inspect(_) => RpcResponse::from(ployz_core::MachineDetails {
+                    id: machine.id,
+                    phase: LocalMachinePhase::Participating,
+                    machine: Some(machine.clone()),
+                    public_key: machine.public_key,
+                    advertised_endpoints: Vec::new(),
+                    store_version: Default::default(),
+                    rtts: Vec::new(),
+                    management_clients: Vec::new(),
+                    telemetry: None,
+                    storage: None,
+                    upgrade: None,
+                    token: None,
+                }),
+                RpcRequestBody::ListMachines(_) => {
+                    if calls.fetch_add(1, Ordering::SeqCst) < refusals {
+                        RpcResponse::from(RpcError {
+                            code: RpcErrorCode::Unavailable,
+                            message: "Cluster store is not available".into(),
+                            details: serde_json::Value::Null,
+                            cause: Vec::new(),
+                        })
+                    } else {
+                        RpcResponse::from(ployz_core::MachineList {
+                            enrollment: None,
+                            machines: vec![ployz_core::MachineObservation::new(
+                                machine,
+                                ployz_core::MembershipObservation::Up,
+                            )],
+                        })
+                    }
+                }
+                request => panic!("unexpected readiness request: {request:?}"),
+            };
+            Ok(Response::new(response.encode().unwrap()))
+        }
+    };
+    let (client, server) = crate::connect::test_support::rpc_client(rpc).await;
+    (client, lists, server)
+}
+
+#[tokio::test(start_paused = true)]
+async fn readiness_waits_out_a_cluster_store_that_is_still_opening() {
+    let (mut client, lists, server) = restarting_cluster_store(founder(), 3).await;
+    crate::setup_retry::run(
+        &mut client,
+        "Waiting for the participating phase",
+        ployz_core::MACHINE_START_WAIT,
+        crate::connect::ConnectError::is_setup_retryable,
+        async |client| super::check_listed(client).await,
+    )
+    .await
+    .unwrap();
+    assert_eq!(lists.load(Ordering::SeqCst), 4);
+    server.abort();
 }

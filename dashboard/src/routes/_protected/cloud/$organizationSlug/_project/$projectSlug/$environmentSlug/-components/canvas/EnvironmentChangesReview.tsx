@@ -25,7 +25,8 @@ export type EnvironmentChangesReviewProps = {
   /** Working State differs from Saved State: Save only saves it without deploying. */
   canSave: boolean;
   onSave: () => void;
-  onDiscardAll: () => void;
+  /** None when nothing is left to discard: the footer leaves Discard all out. */
+  onDiscardAll?: (() => void) | undefined;
   onClose: () => void;
   onDeploy: () => void;
   /** What the next Deploy ships, in the user's words; shown on its Deployment. */
@@ -153,7 +154,7 @@ export function ChangeGroups({ groups, onDiscardNode, onDiscardRow, noteFor, nev
                 discardNode={(!row.canDiscard || firstConfig) && discardNode ? { name: group.nodeName, run: discardNode } : undefined}
                 onNeverSync={neverSync}>
                 <p className="flex min-w-0 items-baseline gap-2">
-                  <span className="shrink-0 text-muted-foreground">{group.nodeName}</span>
+                  <span className="max-w-1/2 shrink-0 truncate text-muted-foreground">{group.nodeName}</span>
                   <span className={cn("truncate", row.variable && "font-mono")}>{row.name}</span>
                   {group.unreached ? <span className="shrink-0 text-muted-foreground">Not reached</span> : null}
                 </p>
@@ -284,7 +285,7 @@ function ConfigFileValue({ before, after }: NonNullable<ChangeRow["configFile"]>
 export function Value({ kind, before, after }: { kind: ChangeKind; before: string; after: string }) {
   const shown = kind === "remove" ? before : after;
   return (
-    <span className="ph-no-capture flex max-w-60 min-w-0 items-center justify-end gap-1.5 font-mono text-xs" title={shown}>
+    <span className="ph-no-capture flex max-w-[min(15rem,40vw)] min-w-0 items-center justify-end gap-1.5 font-mono text-xs" title={shown}>
       {kind === "update" && before ? (
         <><span className="truncate text-muted-foreground">{before}</span><ArrowRightIcon className="size-3 shrink-0 text-muted-foreground" /></>
       ) : null}
@@ -297,7 +298,7 @@ export function Value({ kind, before, after }: { kind: ChangeKind; before: strin
 function Footer({ groups, canDeploy, asks = false, canSave, onSave, onDiscardAll, onDeploy, busy = new Set() }: EnvironmentChangesReviewProps) {
   return (
     <DialogFooter>
-      {groups.some((group) => group.canDiscard) ? (
+      {onDiscardAll && groups.some((group) => group.canDiscard) ? (
         <Button variant="ghost" className="text-muted-foreground sm:mr-auto" disabled={busy.has("discarding")} onClick={onDiscardAll}>{busy.has("discarding") ? "Discarding…" : "Discard all"}</Button>
       ) : null}
       <Button variant={canDeploy ? "outline" : "default"} disabled={!canSave || busy.has("deploying")} onClick={onSave}>

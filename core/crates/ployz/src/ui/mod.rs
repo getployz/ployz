@@ -15,20 +15,20 @@ mod tree;
 #[cfg(test)]
 pub(crate) use error::chain_text;
 pub use error::{Hint, VALID_SHOWN, causes};
-pub(crate) use error::{retrying, row, rpc_error, warn_cause};
-#[cfg(test)]
-pub(crate) use exit::plain;
+pub(crate) use error::{retrying, row, rpc_error, sentence, warn_cause};
 pub use exit::{PARTIAL_EXIT, exit, exit_code};
+#[cfg(test)]
+pub(crate) use exit::{after_result, plain};
 pub use mode::{Mode, Surroundings, mode};
 pub(crate) use prompt::{can_prompt, confirm, confirm_name, secret, select};
 pub use result::json;
 pub(crate) use result::{
     Gaps, captured, done, emit, emit_committed, emit_line, emitted, fields, finish, finish_fanout,
-    hint, interactive, list, note, note_inline, record_warning, rows, show, stream, warn,
+    hint, interactive, list, note, note_inline, printed, record_warning, rows, show, stream, warn,
 };
 pub(crate) use stdout::{async_stdout, stdout, stdout_bytes, stdout_is_terminal};
 pub use table::{Cell, Fields, Table};
-pub(crate) use table::{REPLACED, printable, short_id, unprintable};
+pub(crate) use table::{REPLACED, escaped, printable, short_id, unprintable};
 pub use tone::{Painted, Tone, clap_styles};
 pub(crate) use tree::Tree;
 

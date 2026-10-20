@@ -105,11 +105,11 @@ A `pflt_` secret a signed-in member makes for one Organization so many hosts can
 _Avoid_: Enrollment token, join token, bootstrap token
 
 **Waiting Server**:
-A host that checked in with a Fleet Token and waits to be enrolled. Cloud keeps one row per Check-in Key in an Organization, holding the host's own report and the address the check-in came from; it is not a Server and holds no Management Identity. Revoking or expiring its token removes it, unless a Server Enrollment is open on it. Rejecting it leaves a tombstone that tells the same key to stop until a different token brings it back. Its status (waiting, preparing, blocked, offline) is read from the report and the last check-in, never stored.
+A host that checked in with a Fleet Token and waits to be enrolled. Cloud keeps one row per Check-in Key in an Organization, holding the host's own report and the address the check-in came from; it is not a Server and holds no Management Identity. Revoking or expiring its token removes it, unless a Server Enrollment is open on it. Rejecting it leaves a tombstone that tells the same key to stop until a different token brings it back. A Server Enrollment whose join Cloud knows is committed (its recorded stage, or a joining or publishing stage the host reported on its row for that attempt without a failure) finishes instead; a reject that lands before Cloud hears of the commit still cancels it. Its status (waiting, preparing, blocked, offline) is read from the report and the last check-in, never stored.
 _Avoid_: Pending server, candidate, unenrolled machine
 
 **Check-in Key**:
-The Ed25519 key a waiting host makes for itself and signs each check-in with, alongside its Fleet Token. It names the host while it waits and nothing after; enrollment issues the Management Identity separately.
+The Ed25519 key a waiting host makes for itself and signs each check-in with, alongside its Fleet Token. It names the host while it waits; enrollment issues the Management Identity separately. Cloud also keeps each (Fleet Token, Check-in Key) pair that ever had a Server Enrollment, after the Waiting Server is gone, so a token enrolls a host on arrival at most once.
 _Avoid_: Host key, machine key, enrollment key
 
 **Server Enrollment**:
@@ -117,7 +117,7 @@ One attempt to turn a Waiting Server into a Server, with its role (founder or jo
 _Avoid_: Join request, enrollment job, admission
 
 **Signed-in Device**:
-A `ployz` CLI session a member approved in the browser. It acts in its own active Organization, which `ployz org use` moves among the member's Organizations. Logout or `ployz token rm` ends it at once.
+A `ployz` CLI session a member approved in the browser. It acts in its own active Organization, which `ployz org use` moves among the member's Organizations and `ployz org new` moves into one it makes; the member's other sessions stay put. Logout or `ployz token rm` ends it at once.
 _Avoid_: CLI login, device token
 
 **Server Access**:

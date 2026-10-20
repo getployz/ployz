@@ -11,8 +11,8 @@ use ployz_core::{
     ContainerId, ContainerKind, ContainerLocator, ContainerObservation, ContainerPath,
     ContainerRuntimeObservation, ContainerWant, CreationKey, DockerVolumeName, Drain,
     EnsureContainerRequest, InspectContainerRequest, Machine, MachineId, MachineTarget, Namespace,
-    NewContainer, ResolvedServiceSpec, RunTarget, ServiceId, ServiceMount, ServiceVolume,
-    ServiceVolumeGraph, ServiceVolumeReference, SlotKey, UpdateOrder, op,
+    NewContainer, ResolvedServiceSpec, RunRotation, RunTarget, ServiceId, ServiceMount,
+    ServiceVolume, ServiceVolumeGraph, ServiceVolumeReference, SlotKey, UpdateOrder, op,
 };
 use ployz_testkit::{Cluster, ClusterPlan};
 use tokio_util::sync::CancellationToken;
@@ -275,13 +275,13 @@ async fn assert_replacement_health_compensation(
                 UpdateOrder::StopFirst,
                 ReplacementCompensation::OldStopped {
                     stop_new_container,
-                    restart_old_container,
+                    restore_old_container,
                 },
             ) => {
                 stop_new_container
                     .as_ref()
                     .is_some_and(StopAttempt::stopped)
-                    && restart_old_container.restarted()
+                    && restore_old_container.restored()
             }
             _ => false,
         });
@@ -579,6 +579,7 @@ async fn run_container(
         machine_id,
         ContainerWant::Running {
             container: RunTarget::New(NewContainer {
+                r#gen: ployz_core::Gen::FIRST,
                 slot,
                 resolved_spec,
                 deployment_id: None,
@@ -586,6 +587,7 @@ async fn run_container(
                 image_prepared: false,
                 answer: ployz_core::AnswerWhen::Started,
             }),
+            rotation: RunRotation::Pending,
         },
     )
     .await

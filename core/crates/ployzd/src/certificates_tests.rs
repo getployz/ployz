@@ -15,10 +15,12 @@ use serde_json::json;
 use super::{
     CHALLENGE_WAIT, IssuanceAction, RANK_STEP, challenge_probe_addresses, directory_from_env,
     ingress_challenge_ips, issuance_action, machine_jitter, machine_rank, material_validity,
-    order_certificate, poll_wait, probe_client, renewal_window, verify_answers, wait_for_http01,
-    wanted_certificate_hosts,
+    order_certificate, poll_wait, probe_client, renewal_window, run, verify_answers,
+    wait_for_http01, wanted_certificate_hosts,
 };
-use crate::corrosion::{CertificateChallenge, CertificateMaterial, CertificateRow};
+use crate::corrosion::{
+    CertificateChallenge, CertificateMaterial, CertificateRow, fake_cluster::FakeCluster,
+};
 
 fn policy_for(directory: &str) -> CertificatePolicy {
     CertificatePolicy::built_in(Some(directory.to_owned()))
@@ -34,6 +36,52 @@ fn policy_probe(seconds: u64) -> CertificatePolicy {
         &CertificatePolicy::built_in(None),
     )
     .unwrap()
+}
+
+#[tokio::test]
+async fn certificate_loop_outlives_corrosion_outages() {
+    let mut cluster = FakeCluster::start();
+    cluster.stop();
+    let shutdown = tokio_util::sync::CancellationToken::new();
+    let runner = tokio::spawn(run(
+        cluster.store(),
+        std::env::temp_dir().join(format!("ployz-cert-loop-{}", MachineId::random())),
+        None,
+        machine_id("a"),
+        shutdown.clone(),
+    ));
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(
+        !runner.is_finished(),
+        "Corrosion down at the first subscribe stopped the loop"
+    );
+    cluster.restart();
+    subscribed(&cluster, 1).await;
+    cluster.stop();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(
+        !runner.is_finished(),
+        "a closed subscription stopped the loop"
+    );
+    cluster.restart();
+    subscribed(&cluster, 2).await;
+
+    shutdown.cancel();
+    tokio::time::timeout(Duration::from_secs(1), runner)
+        .await
+        .expect("certificate loop ignored shutdown")
+        .unwrap();
+}
+
+async fn subscribed(cluster: &FakeCluster, count: usize) {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while cluster.subscription_tokens().len() < count {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("certificate loop did not subscribe");
 }
 
 #[test]
@@ -812,6 +860,8 @@ fn observation(
     }))
     .unwrap();
     ployz_core::ContainerObservation::try_from(ployz_core::ContainerObservationParts {
+        rotation: None,
+        r#gen: None,
         container_id: ContainerId::parse(format!("{suffix:x}").repeat(64)).unwrap(),
         display_name: format!("{service_name}-{suffix}"),
         created_at_unix_nanos: 0,
@@ -825,6 +875,7 @@ fn observation(
         resolved_spec,
         address: Some(ContainerAddress([10, 210, 1, 2].into())),
         labels: BTreeMap::new(),
+        stopped: false,
     })
     .unwrap()
 }

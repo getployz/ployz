@@ -1,6 +1,8 @@
 import { useLoaderData, useParams } from "@tanstack/react-router";
 import type { DiffView, FollowHint, RowId } from "@ployz/sdk";
+import { AlertTriangleIcon } from "lucide-react";
 import { Button } from "#/components/ui/button";
+import { brokenAt, brokenWhy } from "#/modules/config-store/store-broken";
 import { Item, ItemActions, ItemContent, ItemGroup, ItemTitle } from "#/components/ui/item";
 import { presentRow } from "#/modules/config-store/store-branches";
 import { hintNotes } from "#/modules/config-store/store-pull-requests";
@@ -14,7 +16,7 @@ import { ENVIRONMENT_ROUTE_FROM } from "../environment-route-paths";
  * - where a change came from, when Follow brought it from the Parent's deploy, and Never sync on such a setting;
  * - under a change, the Parent's deployed value where this Branch's own change stayed ("production has since set
  *   {value} · Use theirs").
- * Hints no change shows, such as a Parent's change discarded here, come after the changes.
+ * Hints no change shows, such as a Parent's change discarded here, come after the changes, then each broken reference.
  *
  * Each joins a change to them by the Sync row it falls in: a setting's, or without one, its node's.
  */
@@ -24,6 +26,7 @@ export function storeHintNotes(diff: DiffView, groups: readonly ChangeGroup[], n
   const incoming = (row: RowId | null) => diff.incoming.find((change) => change.row === row);
   const name = diff.environment.name;
   const rest = follows.rest.map((hint) => ({ key: `${hint.from}:${hint.row}`, hint, note: <FollowNote hint={hint} version={diff.version} /> }));
+  const broken = diff.broken ?? [];
   return {
     originFor: (row: RowId): ChangeOrigin | undefined => {
       const from = incoming(row)?.from;
@@ -45,20 +48,38 @@ export function storeHintNotes(diff: DiffView, groups: readonly ChangeGroup[], n
       const change = incoming(row.row);
       return change && change.name !== null ? () => neverSync(row.path, change.row) : undefined;
     },
-    after: rest.length ? (
-      <ItemGroup role="group" aria-label="Not among these changes">
-        {rest.map(({ key, hint, note }) => {
-          const shown = presentRow(hint);
-          return (
-            <Item key={key} variant="outline" size="sm">
-              <ItemContent className="min-w-0">
-                <ItemTitle>{shown.node} · {shown.label}</ItemTitle>
-              </ItemContent>
-              <ItemActions>{note}</ItemActions>
-            </Item>
-          );
-        })}
-      </ItemGroup>
+    after: rest.length || broken.length ? (
+      <>
+        {rest.length ? (
+          <ItemGroup role="group" aria-label="Not among these changes">
+            {rest.map(({ key, hint, note }) => {
+              const shown = presentRow(hint);
+              return (
+                <Item key={key} variant="outline" size="sm">
+                  <ItemContent className="min-w-0">
+                    <ItemTitle>{shown.node} · {shown.label}</ItemTitle>
+                  </ItemContent>
+                  <ItemActions>{note}</ItemActions>
+                </Item>
+              );
+            })}
+          </ItemGroup>
+        ) : null}
+        {broken.length ? (
+          <ItemGroup role="group" aria-label="Broken references">
+            {broken.map((reference) => (
+              <Item key={`${brokenAt(reference)}:${reference.reads}`} variant="outline" size="sm">
+                <ItemContent className="min-w-0">
+                  <ItemTitle>{brokenAt(reference)}</ItemTitle>
+                </ItemContent>
+                <ItemActions className="flex items-center gap-1 text-xs text-destructive">
+                  <AlertTriangleIcon className="size-3" />Broken reference: {brokenWhy(reference)}
+                </ItemActions>
+              </Item>
+            ))}
+          </ItemGroup>
+        ) : null}
+      </>
     ) : null,
   };
 }

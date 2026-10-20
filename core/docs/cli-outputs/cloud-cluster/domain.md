@@ -11,8 +11,13 @@ $ ployz domain ls
 
 stdout:
 ```
-acme.com	web → PORT	Needs attention · Port 80 is closed on 203.0.113.10
-web.ada.ployz.test	web → 80	Needs attention · Port 80 is closed on 203.0.113.10
+DOMAIN	SERVICE	PORT	STATUS	REASON
+acme.com	web	-	needs attention	DNS points to another server
+```
+
+stderr:
+```
+Add DNS for acme.com: AAAA @ 2001:db8::10
 ```
 
 ### domain ls --json
@@ -27,73 +32,68 @@ stdout:
 {
   "domains": [
     {
-      "action": null,
+      "action": {
+        "records": [
+          {
+            "name": "@",
+            "type": "AAAA",
+            "value": "2001:db8::10"
+          }
+        ],
+        "type": "dns"
+      },
       "hostname": "acme.com",
       "kind": "custom",
       "port": null,
-      "reason": "Port 80 is closed on 203.0.113.10",
-      "service": "web",
-      "status": "needs_attention"
-    },
-    {
-      "action": null,
-      "hostname": "web.ada.ployz.test",
-      "kind": "generated",
-      "port": 80,
-      "prefix": "web",
-      "reason": "Port 80 is closed on 203.0.113.10",
+      "reason": "DNS points to another server",
+      "records": [
+        {
+          "name": "@",
+          "type": "AAAA",
+          "value": "2001:db8::10"
+        }
+      ],
       "service": "web",
       "status": "needs_attention"
     }
   ],
   "environment": {
-    "id": "4b4e5354-8834-4aea-a807-e65f832680bc",
+    "id": "e3ff9fdc-d394-4a02-9195-f717984132db",
     "name": "production",
     "project": "shop",
-    "revision": 38
+    "revision": 26
   }
 }
+```
+
+stderr:
+```
+Add DNS for acme.com: AAAA @ 2001:db8::10
 ```
 
 ### domain check the generated domain
 
 ```console
 $ ployz domain check web.ada.ployz.test
-# exit 0
+# exit 1
 ```
 
-stdout:
+stderr:
 ```
-web.ada.ployz.test	web → 80	Needs attention · Port 80 is closed on 203.0.113.10
+error: No such domain in Environment production
+valid: acme.com
 ```
 
 ### domain check --json the generated domain
 
 ```console
 $ ployz --json domain check web.ada.ployz.test
-# exit 0
+# exit 1
 ```
 
 stdout:
 ```
-{
-  "domain": {
-    "action": null,
-    "hostname": "web.ada.ployz.test",
-    "kind": "generated",
-    "port": 80,
-    "prefix": "web",
-    "reason": "Port 80 is closed on 203.0.113.10",
-    "service": "web",
-    "status": "needs_attention"
-  },
-  "environment": {
-    "id": "4b4e5354-8834-4aea-a807-e65f832680bc",
-    "name": "production",
-    "project": "shop",
-    "revision": 38
-  }
-}
+{"error":{"cause":[],"code":"not_found","details":{"valid_children":["acme.com"]},"message":"No such domain in Environment production"}}
 ```
 
 ### domain check a custom domain
@@ -105,7 +105,16 @@ $ ployz domain check acme.com
 
 stdout:
 ```
-acme.com	web → PORT	Needs attention · Port 80 is closed on 203.0.113.10
+domain = acme.com
+service = web
+port = -
+status = needs attention
+reason = DNS points to another server
+```
+
+stderr:
+```
+Add DNS for acme.com: AAAA @ 2001:db8::10
 ```
 
 ### domain check --json a custom domain
@@ -119,21 +128,42 @@ stdout:
 ```
 {
   "domain": {
-    "action": null,
+    "action": {
+      "records": [
+        {
+          "name": "@",
+          "type": "AAAA",
+          "value": "2001:db8::10"
+        }
+      ],
+      "type": "dns"
+    },
     "hostname": "acme.com",
     "kind": "custom",
     "port": null,
-    "reason": "Port 80 is closed on 203.0.113.10",
+    "reason": "DNS points to another server",
+    "records": [
+      {
+        "name": "@",
+        "type": "AAAA",
+        "value": "2001:db8::10"
+      }
+    ],
     "service": "web",
     "status": "needs_attention"
   },
   "environment": {
-    "id": "4b4e5354-8834-4aea-a807-e65f832680bc",
+    "id": "e3ff9fdc-d394-4a02-9195-f717984132db",
     "name": "production",
     "project": "shop",
-    "revision": 38
+    "revision": 26
   }
 }
+```
+
+stderr:
+```
+Add DNS for acme.com: AAAA @ 2001:db8::10
 ```
 
 ## Change the generated domain
@@ -142,12 +172,13 @@ stdout:
 
 ```console
 $ ployz domain set web shopweb
-# exit 0
+# exit 1
 ```
 
-stdout:
+stderr:
 ```
-Staged generated domain shopweb.ada.ployz.test on web in shop/production (revision 39).
+error: web has no generated domain to change
+next: ployz domain add web
 ```
 
 ### domain ls with a staged change
@@ -159,8 +190,13 @@ $ ployz domain ls
 
 stdout:
 ```
-acme.com	web → PORT	Needs attention · Port 80 is closed on 203.0.113.10
-shopweb.ada.ployz.test	web → 80	Setting up · Live after your next deploy
+DOMAIN	SERVICE	PORT	STATUS	REASON
+acme.com	web	-	needs attention	DNS points to another server
+```
+
+stderr:
+```
+Add DNS for acme.com: AAAA @ 2001:db8::10
 ```
 
 ### diff
@@ -172,9 +208,12 @@ $ ployz diff
 
 stdout:
 ```
-web (update)
-  web.managedHostnames: [{"prefix":"web","targetPort":80}] -> [{"prefix":"shopweb","targetPort":80}]
-next: ployz deploy --expect-version 39:27:0.54
+sentry/config.yml references redis, which was removed; deploys skip it until you change it: ployz config put sentry config.yml --from PATH
+```
+
+stderr:
+```
+No staged changes in shop/production.
 ```
 
 ### deploy
@@ -184,19 +223,11 @@ $ ployz deploy
 # exit 0
 ```
 
-stdout:
+stderr:
 ```
-Following Deployment #61; stopping this leaves it running.
-queued: web pending, api pending, postgres pending, worker pending, pg-data pending
-running: web pending, api pending, postgres pending, worker pending, pg-data pending
-running: web pending, api unchanged, postgres unchanged, worker unchanged, pg-data unchanged
-applied: web deployed, api unchanged, postgres unchanged, worker unchanged, pg-data unchanged
-Deployment #61 of shop/production: applied
-  web: deployed
-  api: unchanged
-  postgres: unchanged
-  worker: unchanged
-  pg-data: unchanged
+Nothing changed on the Servers; Deployment #29 shipped version #13.
+! Left PLOYZ_PRIVATE_DOMAIN empty in sentry/config.yml: it is a broken reference.
+! Left PORT empty in sentry/config.yml: it is a broken reference.
 ```
 
 ### domain ls after deploy
@@ -208,38 +239,25 @@ $ ployz domain ls
 
 stdout:
 ```
-acme.com	web → PORT	Needs attention · Port 80 is closed on 203.0.113.10
-shopweb.ada.ployz.test	web → 80	Needs attention · Port 80 is closed on 203.0.113.10
+DOMAIN	SERVICE	PORT	STATUS	REASON
+acme.com	web	-	needs attention	DNS points to another server
+```
+
+stderr:
+```
+Add DNS for acme.com: AAAA @ 2001:db8::10
 ```
 
 ### domain set --json back
 
 ```console
 $ ployz --json domain set web web --port 80
-# exit 0
+# exit 1
 ```
 
 stdout:
 ```
-{
-  "domain": {
-    "hostname": "web.ada.ployz.test",
-    "kind": "generated",
-    "port": 80,
-    "prefix": "web",
-    "service": "web"
-  },
-  "environment": {
-    "id": "4b4e5354-8834-4aea-a807-e65f832680bc",
-    "name": "production",
-    "project": "shop",
-    "revision": 40
-  },
-  "next": "ployz deploy",
-  "staged": [
-    "web"
-  ]
-}
+{"error":{"cause":[],"code":"not_found","details":{"next":"ployz domain add web"},"message":"web has no generated domain to change"}}
 ```
 
 ### deploy
@@ -249,19 +267,11 @@ $ ployz deploy
 # exit 0
 ```
 
-stdout:
+stderr:
 ```
-Following Deployment #62; stopping this leaves it running.
-queued: web pending, api pending, postgres pending, worker pending, pg-data pending
-running: web pending, api pending, postgres pending, worker pending, pg-data pending
-running: web pending, api unchanged, postgres unchanged, worker unchanged, pg-data unchanged
-applied: web deployed, api unchanged, postgres unchanged, worker unchanged, pg-data unchanged
-Deployment #62 of shop/production: applied
-  web: deployed
-  api: unchanged
-  postgres: unchanged
-  worker: unchanged
-  pg-data: unchanged
+Nothing changed on the Servers; Deployment #30 shipped version #13.
+! Left PLOYZ_PRIVATE_DOMAIN empty in sentry/config.yml: it is a broken reference.
+! Left PORT empty in sentry/config.yml: it is a broken reference.
 ```
 
 ## Add and remove a generated domain
@@ -275,7 +285,12 @@ $ ployz domain add api
 
 stdout:
 ```
-Staged domain api.ada.ployz.test on api in shop/production (revision 41).
+Staged domain api.ada.ployz.test on api in shop/production.
+```
+
+stderr:
+```
+next: ployz deploy
 ```
 
 ### deploy
@@ -285,19 +300,24 @@ $ ployz deploy
 # exit 0
 ```
 
-stdout:
+stderr:
 ```
-Following Deployment #63; stopping this leaves it running.
-queued: web pending, api pending, postgres pending, worker pending, pg-data pending
-running: web pending, api pending, postgres pending, worker pending, pg-data pending
-running: web unchanged, api pending, postgres unchanged, worker unchanged, pg-data unchanged
-applied: web unchanged, api deployed, postgres unchanged, worker unchanged, pg-data unchanged
-Deployment #63 of shop/production: applied
-  web: unchanged
-  api: deployed
-  postgres: unchanged
-  worker: unchanged
-  pg-data: unchanged
+Deploying #31 of shop/production
+  api (depth 0): waiting 0/1
+  postgres (depth 0): unchanged
+  web (depth 1): unchanged
+  worker (depth 1): unchanged
+  Volume pg-data: unchanged
+  Config sentry: unchanged
+! api.ada.ployz.test is not published yet. Ployz Cloud publishes it once it reaches port 80 on 2001:db8::10.
+! api's image traefik/whoami:v1.11.0 exposes 80; its domains send to 8080. Set the domain port or PORT.
+  api (depth 0): booting 0/1
+  api (depth 0): switching 1/1
+  api (depth 0): switched 1/1
+──────────────────────────────────────────
+1 deployed · 5 unchanged · across 1 server
+! Left PLOYZ_PRIVATE_DOMAIN empty in sentry/config.yml: it is a broken reference.
+! Left PORT empty in sentry/config.yml: it is a broken reference.
 ```
 
 ### domain ls with two generated domains
@@ -309,9 +329,14 @@ $ ployz domain ls
 
 stdout:
 ```
-acme.com	web → PORT	Needs attention · Port 80 is closed on 203.0.113.10
-web.ada.ployz.test	web → 80	Needs attention · Port 80 is closed on 203.0.113.10
-api.ada.ployz.test	api → PORT	Needs attention · Port 80 is closed on 203.0.113.10
+DOMAIN	SERVICE	PORT	STATUS	REASON
+acme.com	web	-	needs attention	DNS points to another server
+api.ada.ployz.test	api	-	needs attention	Port 80 is closed on 2001:db8::10. Open port 80 in the Server's firewall (for example ufw allow 80/tcp)
+```
+
+stderr:
+```
+Add DNS for acme.com: AAAA @ 2001:db8::10
 ```
 
 ### domain rm
@@ -323,29 +348,29 @@ $ ployz domain rm api.ada.ployz.test
 
 stdout:
 ```
-Staged removal of domain api.ada.ployz.test on api in shop/production (revision 42).
+Staged removal of domain api.ada.ployz.test on api in shop/production.
+```
+
+stderr:
+```
+next: ployz deploy
 ```
 
 ### deploy
 
 ```console
 $ ployz deploy
-# exit 0
+# exit 124
 ```
 
-stdout:
+stderr:
 ```
-Following Deployment #64; stopping this leaves it running.
-queued: web pending, api pending, postgres pending, worker pending, pg-data pending
-running: web pending, api pending, postgres pending, worker pending, pg-data pending
-running: web unchanged, api pending, postgres unchanged, worker unchanged, pg-data unchanged
-applied: web unchanged, api deployed, postgres unchanged, worker unchanged, pg-data unchanged
-Deployment #64 of shop/production: applied
-  web: unchanged
-  api: deployed
-  postgres: unchanged
-  worker: unchanged
-  pg-data: unchanged
+This deploy destroys 1 thing:
+  ✕ removes domain api.ada.ployz.test
+Approve 1cb9386e-37cb-4b10-813a-610393a31110 in Ployz Cloud at http://localhost:38265
+next: ployz org approval approve 1cb9386e-37cb-4b10-813a-610393a31110
+Waiting for approval in Ployz Cloud… 
+Timed out after 300s
 ```
 
 ### domain add --json a generated domain
@@ -358,6 +383,7 @@ $ ployz --json domain add api
 stdout:
 ```
 {
+  "added": true,
   "domain": {
     "hostname": "api.ada.ployz.test",
     "kind": "generated",
@@ -366,11 +392,12 @@ stdout:
     "service": "api"
   },
   "environment": {
-    "id": "4b4e5354-8834-4aea-a807-e65f832680bc",
+    "id": "e3ff9fdc-d394-4a02-9195-f717984132db",
     "name": "production",
     "project": "shop",
-    "revision": 43
+    "revision": 29
   },
+  "free_prefix": null,
   "next": "ployz deploy",
   "staged": [
     "api"
@@ -396,10 +423,10 @@ stdout:
     "service": "api"
   },
   "environment": {
-    "id": "4b4e5354-8834-4aea-a807-e65f832680bc",
+    "id": "e3ff9fdc-d394-4a02-9195-f717984132db",
     "name": "production",
     "project": "shop",
-    "revision": 44
+    "revision": 30
   },
   "next": "ployz deploy",
   "staged": [
@@ -417,7 +444,12 @@ $ ployz discard
 
 stdout:
 ```
-Discarded every staged change in shop/production (revision 44).
+Discarded 1 staged change in shop/production: api.managedHostnames.
+```
+
+stderr:
+```
+inspect: ployz diff
 ```
 
 ## Remove a custom domain, then discard
@@ -431,7 +463,12 @@ $ ployz domain rm acme.com
 
 stdout:
 ```
-Staged removal of domain acme.com on web in shop/production (revision 45).
+Staged removal of domain acme.com on web in shop/production.
+```
+
+stderr:
+```
+next: ployz deploy
 ```
 
 ### domain ls with a staged removal
@@ -443,7 +480,8 @@ $ ployz domain ls
 
 stdout:
 ```
-web.ada.ployz.test	web → 80	Needs attention · Port 80 is closed on 203.0.113.10
+DOMAIN	SERVICE	PORT	STATUS	REASON
+api.ada.ployz.test	api	-	needs attention	Port 80 is closed on 2001:db8::10. Open port 80 in the Server's firewall (for example ufw allow 80/tcp)
 ```
 
 ### discard
@@ -455,7 +493,12 @@ $ ployz discard
 
 stdout:
 ```
-Discarded every staged change in shop/production (revision 46).
+Discarded 1 staged change in shop/production: web.routes.3e38d44d-322e-53af-97b6-6204849f6a5c.
+```
+
+stderr:
+```
+inspect: ployz diff
 ```
 
 ### domain add a custom domain that exists
@@ -467,6 +510,11 @@ $ ployz domain add web acme.com
 
 stdout:
 ```
-Staged domain acme.com on web in shop/production (revision 46).
+Nothing changed in shop/production; acme.com is already on web.
+```
+
+stderr:
+```
+Add DNS for acme.com: AAAA @ 2001:db8::10
 ```
 

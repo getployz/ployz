@@ -1,101 +1,118 @@
 === domain ls :: $ ployz domain ls
-acme.com	web → PORT	Needs attention · Port 80 is closed on 203.0.113.10
-web.ada.ployz.test	web → 80	Needs attention · Port 80 is closed on 203.0.113.10
+DOMAIN     SERVICE   PORT   STATUS              REASON
+acme.com   web       -      ✘ needs attention   DNS points to another server
+Add DNS for acme.com: AAAA @ 2001:db8::10
 
 === domain ls --json :: $ ployz --json domain ls
 {
   "domains": [
     {
-      "action": null,
+      "action": {
+        "records": [
+          {
+            "name": "@",
+            "type": "AAAA",
+            "value": "2001:db8::10"
+          }
+        ],
+        "type": "dns"
+      },
       "hostname": "acme.com",
       "kind": "custom",
       "port": null,
-      "reason": "Port 80 is closed on 203.0.113.10",
-      "service": "web",
-      "status": "needs_attention"
-    },
-    {
-      "action": null,
-      "hostname": "web.ada.ployz.test",
-      "kind": "generated",
-      "port": 80,
-      "prefix": "web",
-      "reason": "Port 80 is closed on 203.0.113.10",
+      "reason": "DNS points to another server",
+      "records": [
+        {
+          "name": "@",
+          "type": "AAAA",
+          "value": "2001:db8::10"
+        }
+      ],
       "service": "web",
       "status": "needs_attention"
     }
   ],
   "environment": {
-    "id": "4b4e5354-8834-4aea-a807-e65f832680bc",
+    "id": "e3ff9fdc-d394-4a02-9195-f717984132db",
     "name": "production",
     "project": "shop",
-    "revision": 38
+    "revision": 26
   }
 }
+Add DNS for acme.com: AAAA @ 2001:db8::10
 
 === domain check the generated domain :: $ ployz domain check web.ada.ployz.test
-web.ada.ployz.test	web → 80	Needs attention · Port 80 is closed on 203.0.113.10
+error: No such domain in Environment production
+valid: acme.com
 
 === domain check --json the generated domain :: $ ployz --json domain check web.ada.ployz.test
-{
-  "domain": {
-    "action": null,
-    "hostname": "web.ada.ployz.test",
-    "kind": "generated",
-    "port": 80,
-    "prefix": "web",
-    "reason": "Port 80 is closed on 203.0.113.10",
-    "service": "web",
-    "status": "needs_attention"
-  },
-  "environment": {
-    "id": "4b4e5354-8834-4aea-a807-e65f832680bc",
-    "name": "production",
-    "project": "shop",
-    "revision": 38
-  }
-}
+{"error":{"cause":[],"code":"not_found","details":{"valid_children":["acme.com"]},"message":"No such domain in Environment production"}}
 
 === domain check a custom domain :: $ ployz domain check acme.com
-acme.com	web → PORT	Needs attention · Port 80 is closed on 203.0.113.10
+domain   acme.com
+service  web
+port     -
+status   needs attention
+reason   DNS points to another server
+Add DNS for acme.com: AAAA @ 2001:db8::10
 
 === domain check --json a custom domain :: $ ployz --json domain check acme.com
 {
   "domain": {
-    "action": null,
+    "action": {
+      "records": [
+        {
+          "name": "@",
+          "type": "AAAA",
+          "value": "2001:db8::10"
+        }
+      ],
+      "type": "dns"
+    },
     "hostname": "acme.com",
     "kind": "custom",
     "port": null,
-    "reason": "Port 80 is closed on 203.0.113.10",
+    "reason": "DNS points to another server",
+    "records": [
+      {
+        "name": "@",
+        "type": "AAAA",
+        "value": "2001:db8::10"
+      }
+    ],
     "service": "web",
     "status": "needs_attention"
   },
   "environment": {
-    "id": "4b4e5354-8834-4aea-a807-e65f832680bc",
+    "id": "e3ff9fdc-d394-4a02-9195-f717984132db",
     "name": "production",
     "project": "shop",
-    "revision": 38
+    "revision": 26
   }
 }
+Add DNS for acme.com: AAAA @ 2001:db8::10
 
 === domain ls with a staged change :: $ ployz domain ls
-acme.com	web → PORT	Needs attention · Port 80 is closed on 203.0.113.10
-shopweb.ada.ployz.test	web → 80	Setting up · Live after your next deploy
+DOMAIN     SERVICE   PORT   STATUS              REASON
+acme.com   web       -      ✘ needs attention   DNS points to another server
+Add DNS for acme.com: AAAA @ 2001:db8::10
 
 === diff :: $ ployz diff
-web (update)
-  web.managedHostnames: [{"prefix":"web","targetPort":80}] -> [{"prefix":"shopweb","targetPort":80}]
-next: ployz deploy --expect-version 39:27:0.54
+No staged changes in shop/production.
+sentry/config.yml references redis, which was removed; deploys skip it until you change it: ployz config put sentry config.yml --from PATH
 
 === domain ls after deploy :: $ ployz domain ls
-acme.com	web → PORT	Needs attention · Port 80 is closed on 203.0.113.10
-shopweb.ada.ployz.test	web → 80	Needs attention · Port 80 is closed on 203.0.113.10
+DOMAIN     SERVICE   PORT   STATUS              REASON
+acme.com   web       -      ✘ needs attention   DNS points to another server
+Add DNS for acme.com: AAAA @ 2001:db8::10
 
 === domain ls with two generated domains :: $ ployz domain ls
-acme.com	web → PORT	Needs attention · Port 80 is closed on 203.0.113.10
-web.ada.ployz.test	web → 80	Needs attention · Port 80 is closed on 203.0.113.10
-api.ada.ployz.test	api → PORT	Needs attention · Port 80 is closed on 203.0.113.10
+DOMAIN               SERVICE   PORT   STATUS              REASON
+acme.com             web       -      ✘ needs attention   DNS points to another server
+api.ada.ployz.test   api       -      ✘ needs attention   Port 80 is closed on 2001:db8::10. Open port 80 in the Server's firewall (for example ufw allow 80/tcp)
+Add DNS for acme.com: AAAA @ 2001:db8::10
 
 === domain ls with a staged removal :: $ ployz domain ls
-web.ada.ployz.test	web → 80	Needs attention · Port 80 is closed on 203.0.113.10
+DOMAIN               SERVICE   PORT   STATUS              REASON
+api.ada.ployz.test   api       -      ✘ needs attention   Port 80 is closed on 2001:db8::10. Open port 80 in the Server's firewall (for example ufw allow 80/tcp)
 

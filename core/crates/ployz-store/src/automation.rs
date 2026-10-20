@@ -20,14 +20,15 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use ts_rs::TS;
 
-use crate::deployment::{self, DeploymentStatus, DeploymentSummary};
+use crate::deployment::{self, DeploymentStatus, DeploymentSummary, GitPush};
 use crate::error;
-use crate::id::{DeploymentId, EnvironmentId, Hostname, OrganizationId};
+use crate::id::{DeploymentId, EnvironmentId, Hostname, OrganizationId, ServiceLineageId};
 use crate::policy::{self, is_repository_path};
 use crate::pull_request::on_merge::{MergedServices, Merging};
 use crate::review;
 use crate::scope::{self, EnvironmentSummary};
 use crate::storage::{Row, Tx, name_of};
+use crate::volume::size::VolumeResized;
 use crate::{Actor, Trusted, build, registry};
 
 /// An observation Cloud made, of GitHub or of the Cluster. Never caller testimony: only Cloud's worker
@@ -51,6 +52,10 @@ pub enum SystemEvent {
     /// storage go too. Authored configuration and Deployment history stay. A later
     /// removal of an Environment completes as Forgotten.
     ClusterForgotten,
+    /// Cloud's resize run moved a deployed Managed Volume's size, in either
+    /// direction: the Store records it in the Volume's fixed storage, Applied State
+    /// and, where it still says the old size, Working State, at once.
+    VolumeResized(VolumeResized),
 }
 
 /// A branch's head as Cloud read it just now, and what changed since `base`.
@@ -120,9 +125,11 @@ pub enum CheckConclusion {
 }
 
 impl CheckConclusion {
-    /// Whether it lets a deploy waiting for CI go.
-    const fn passed(self) -> bool {
-        matches!(self, Self::Success | Self::Neutral | Self::Skipped)
+    /// The conclusions that let a Deployment waiting for CI go.
+    pub(crate) const PASSING: [Self; 3] = [Self::Success, Self::Neutral, Self::Skipped];
+
+    fn passed(self) -> bool {
+        Self::PASSING.contains(&self)
     }
 }
 
@@ -131,8 +138,6 @@ impl CheckConclusion {
 pub struct Automated {
     /// Deployments admitted: Cloud dispatches each to a runner.
     pub admitted: Vec<AutoDeployed>,
-    /// Environments whose deploy waits for the commit's CI.
-    pub waiting: Vec<EnvironmentId>,
     /// Environments that would have deployed but can't, and why.
     pub skipped: Vec<Skipped>,
     /// Branches whose removal is due: Cloud admits it from the Servers under the
@@ -183,6 +188,9 @@ pub(crate) fn system(
             cancelled: crate::teardown::forget_cluster(tx, &who)?,
             ..Automated::default()
         }),
+        SystemEvent::VolumeResized(resized) => {
+            crate::volume::size::record(tx, &who, resized).map(|()| Automated::default())
+        }
     }
 }
 
@@ -272,16 +280,8 @@ fn branch_head(
             json!({}),
         ));
     }
-    // A deploy still waiting for an older head's CI never ships now.
-    tx.execute(
-        "DELETE FROM config_waiting_deploy \
-         WHERE organization_id = ?1 AND repository_id = ?2 AND branch = ?3",
-        &[
-            organization.into(),
-            repository_id.into(),
-            branch.as_str().into(),
-        ],
-    )?;
+    // A Deployment still waiting for an older head's CI never ships now.
+    deployment::supersede_held(tx, who, (repository_id, branch), event.head.as_ref())?;
     let Some(head) = &event.head else {
         return Ok(Automated::default());
     };
@@ -295,10 +295,10 @@ fn branch_head(
     let mut automated = Automated::default();
     for row in environments {
         let environment = row.parse::<EnvironmentId>(0, "Environment ID")?;
-        let push = Push {
+        let push = GitPush {
             repository_id: event.repository_id,
-            branch,
-            head,
+            branch: branch.clone(),
+            head: head.clone(),
         };
         deploy(
             tx,
@@ -340,32 +340,18 @@ fn check_suite(
             event.updated.as_str().into(),
         ],
     )?;
-    let waiting = tx.query(
-        "SELECT environment_id, branch, services FROM config_waiting_deploy \
-         WHERE organization_id = ?1 AND repository_id = ?2 AND head = ?3 \
-         ORDER BY environment_id, branch",
-        &[
-            organization.into(),
-            repository_id.into(),
-            event.head.as_str().into(),
-        ],
-    )?;
     let mut automated = Automated::default();
-    for row in waiting {
-        let environment = row.parse::<EnvironmentId>(0, "Environment ID")?;
-        let services: Vec<String> = row.json(2, "waiting deploy")?;
-        let branch: BranchName = row.parse(1, "waiting deploy")?;
-        let push = Push {
-            repository_id: event.repository_id,
-            branch: &branch,
-            head: &event.head,
-        };
+    // Whether every suite passed is read under each Environment's lock (`admit`): two
+    // suites of the head completing at once each see the other's row committed there,
+    // where either read before the lock could find the other still pending.
+    for (held, environment, push) in deployment::held_for_head(tx, who, repository_id, &event.head)?
+    {
         deploy(
             tx,
             who,
             &environment,
             &push,
-            Select::Services(&services),
+            Select::Held(&held),
             trusted,
             &mut automated,
         )?;
@@ -373,19 +359,14 @@ fn check_suite(
     Ok(automated)
 }
 
-struct Push<'a> {
-    repository_id: RepositoryId,
-    branch: &'a BranchName,
-    head: &'a CommitSha,
-}
-
 /// Which of the Services that follow the branch deploy, besides those merges
 /// landed.
+#[derive(Clone, Copy)]
 enum Select<'a> {
     /// Those watching one of these changed paths (`None`: all of them).
     Changed(Option<&'a [String]>),
-    /// Those a push selected earlier, by ID, that still follow it.
-    Services(&'a [String]),
+    /// Those this Deployment waiting for CI selected, that still follow the branch.
+    Held(&'a DeploymentId),
 }
 
 /// How many of a branch's latest heads the Store remembers.
@@ -439,42 +420,51 @@ fn recent(
     .map_or_else(|| Ok(Vec::new()), |row| row.json(0, "recent heads"))
 }
 
-/// Deploy `environment`'s Services the push selects, wait for CI, or skip it.
+/// Deploy `environment`'s Services the push selects, hold them for CI, or skip it.
+/// A Deployment waiting for CI that can't deploy once it passed is cancelled, saying
+/// why.
 fn deploy(
     tx: &mut dyn Tx,
     who: &Actor,
     environment: &EnvironmentId,
-    push: &Push<'_>,
+    push: &GitPush,
     select: Select<'_>,
     trusted: &Trusted,
     automated: &mut Automated,
 ) -> Result<(), RpcError> {
-    match admit(tx, who, environment, push, select, trusted) {
-        Ok(Some(Deploy::Admitted(deployment))) => automated.admitted.push(AutoDeployed {
-            environment: environment.clone(),
-            deployment: *deployment,
-        }),
-        Ok(Some(Deploy::Waiting)) => automated.waiting.push(environment.clone()),
-        Ok(Some(Deploy::NoServers)) => automated.skipped.push(Skipped {
-            environment: environment.clone(),
-            reason: crate::trusted::NO_SERVERS.to_owned(),
-        }),
-        Ok(Some(Deploy::NeedsApproval)) => automated.skipped.push(Skipped {
-            environment: environment.clone(),
-            reason: crate::pull_request::NEEDS_APPROVAL.to_owned(),
-        }),
-        Ok(None) => {}
-        // One Environment that can't deploy never holds back the others.
-        Err(error) if skippable(&error) => {
-            automated.skipped.push(Skipped {
+    let skipped = match admit(tx, who, environment, push, select, trusted) {
+        Ok(Some(Deploy::Admitted(deployment))) => {
+            automated.admitted.push(AutoDeployed {
                 environment: environment.clone(),
-                reason: error.message,
+                deployment: *deployment,
             });
+            return Ok(());
         }
+        Ok(Some(Deploy::NoServers)) => crate::trusted::NO_SERVERS.to_owned(),
+        Ok(Some(Deploy::NeedsApproval)) => crate::pull_request::NEEDS_APPROVAL.to_owned(),
+        Ok(Some(Deploy::Idle)) => {
+            if let Select::Held(held) = select {
+                deployment::cancel_held(tx, held, IDLE.to_owned())?;
+            }
+            return Ok(());
+        }
+        Ok(None) => return Ok(()),
+        // One Environment that can't deploy never holds back the others.
+        Err(error) if skippable(&error) => error.message,
         Err(error) => return Err(error),
+    };
+    if let Select::Held(held) = select {
+        deployment::cancel_held(tx, held, skipped.clone())?;
     }
+    automated.skipped.push(Skipped {
+        environment: environment.clone(),
+        reason: skipped,
+    });
     Ok(())
 }
+
+/// Why a Deployment waiting for CI that nothing it deploys follows any more ends.
+const IDLE: &str = "Nothing it deploys follows this branch any more";
 
 /// Deploy pull request `event`'s head into its PR Environment `environment`, as a
 /// push of it would.
@@ -486,10 +476,10 @@ pub(crate) fn deploy_head(
     trusted: &Trusted,
     automated: &mut Automated,
 ) -> Result<(), RpcError> {
-    let push = Push {
+    let push = GitPush {
         repository_id: event.repository_id,
-        branch: &event.head_branch,
-        head: &event.head,
+        branch: event.head_branch.clone(),
+        head: event.head.clone(),
     };
     deploy(
         tx,
@@ -557,31 +547,24 @@ pub(crate) fn deploy_landed(
     if !reached(commit) && !merge.target_head.is_some_and(reached) {
         return Ok(());
     }
-    // What still waits for this head's CI keeps waiting with it.
-    let waiting: Vec<String> = tx
-        .query(
-            "SELECT services FROM config_waiting_deploy \
-             WHERE environment_id = ?1 AND repository_id = ?2 AND branch = ?3 AND head = ?4",
-            &[
-                environment.as_str().into(),
-                repository_id.into(),
-                branch.as_str().into(),
-                head.as_str().into(),
-            ],
-        )?
-        .first()
-        .map_or_else(|| Ok(Vec::new()), |row| row.json(0, "waiting deploy"))?;
-    let push = Push {
+    let push = GitPush {
         repository_id,
-        branch,
-        head: &head,
+        branch: branch.clone(),
+        head,
+    };
+    // What still waits for this head's CI keeps waiting with it; else no path changed,
+    // so only what the merges landed deploys.
+    let held = deployment::held_by_push(tx, environment, &push)?;
+    let select = match &held {
+        Some(held) => Select::Held(held),
+        None => Select::Changed(Some(&[])),
     };
     deploy(
         tx,
         who,
         environment,
         &push,
-        Select::Services(&waiting),
+        select,
         merge.trusted,
         automated,
     )
@@ -606,7 +589,7 @@ fn json_of(ids: &BTreeSet<impl Serialize>) -> String {
 fn landed(
     tx: &mut dyn Tx,
     environment: &EnvironmentId,
-    push: &Push<'_>,
+    push: &GitPush,
 ) -> Result<(Vec<String>, MergedServices), RpcError> {
     let rows = tx.query(
         "SELECT services, removed_services, commit_sha FROM config_merge_deploy \
@@ -648,7 +631,9 @@ pub(crate) fn skippable(error: &RpcError) -> bool {
 
 enum Deploy {
     Admitted(Box<DeploymentSummary>),
-    Waiting,
+    /// Nothing it would deploy: no Service it selects follows the branch, and no
+    /// merge landed.
+    Idle,
     /// It would deploy, but no Server could run it.
     NoServers,
     /// It would deploy a pull request's head no member approved.
@@ -659,11 +644,26 @@ fn admit(
     tx: &mut dyn Tx,
     who: &Actor,
     id: &EnvironmentId,
-    push: &Push<'_>,
+    push: &GitPush,
     select: Select<'_>,
     trusted: &Trusted,
 ) -> Result<Option<Deploy>, RpcError> {
     let environment = scope::lock_id(tx, who, id)?;
+    // Cancelled before its CI passed: nothing ships. Until every suite of its commit
+    // passed, it keeps waiting: read under the lock, so a suite that completed in
+    // another transaction is committed, or will promote the hold itself.
+    let (held, held_services) = match select {
+        Select::Held(held) => match deployment::load(tx, held)?.summary {
+            hold if hold.status == DeploymentStatus::WaitingForCi => {
+                if !passed(tx, who, push.repository_id, &push.head)? {
+                    return Ok(None);
+                }
+                (Some(hold), deployment::held_services(tx, held)?)
+            }
+            _ => return Ok(None),
+        },
+        Select::Changed(_) => (None, Vec::new()),
+    };
     // Being removed: a push leaves it be. A shut-down PR Environment (its removal
     // applied) comes back on: the push deploys all of it again.
     let removal = crate::removal::latest(tx, id)?.filter(|removal| {
@@ -690,7 +690,7 @@ fn admit(
     let mut selected: Vec<(&SavedServiceIntent, bool)> = Vec::new();
     let mut wait = false;
     for service in &saved.intent.services {
-        let tracks = crate::git::tracks(service, push.repository_id, push.branch);
+        let tracks = crate::git::tracks(service, push.repository_id, &push.branch);
         let merged = landed.updates.contains(&service.id);
         if !tracks && !merged {
             continue;
@@ -698,85 +698,98 @@ fn admit(
         let policy = policy::load(tx, id, &service.id)?;
         let follows = tracks && policy.auto_deploy;
         let pushed = follows
-            && match select {
-                Select::Changed(changed) => changed.is_none_or(|changed| policy.watches(changed)),
-                Select::Services(ids) => ids.contains(&service.id),
+            && match (select, &held) {
+                (Select::Changed(changed), _) => {
+                    changed.is_none_or(|changed| policy.watches(changed))
+                }
+                // None selected is a shut-down Environment's: all of it. By ID: a
+                // Service renamed while it waited is still the one it selected.
+                (Select::Held(_), Some(_)) => {
+                    held_services.is_empty() || held_services.contains(&service.id)
+                }
+                (Select::Held(_), None) => false,
             };
         if pushed || merged {
             wait |= tracks && policy.wait_for_ci;
             selected.push((service, follows));
         }
     }
-    let key: [crate::storage::Param<'_>; 3] = [
-        id.as_str().into(),
-        push.repository_id.into(),
-        push.branch.as_str().into(),
-    ];
-    let [environment_param, repository_param, branch_param] = key;
-    // What the merges removed goes with them, unless it never ran. A shut-down
-    // Environment deploys all of it, which tears every one down.
+    // A push ships every Saved change, so what the merges or a Save removed goes
+    // with it, unless it never ran. A shut-down Environment deploys all of it,
+    // which tears every one down.
     let retire = match shut_down {
         true => Vec::new(),
-        false => deployment::retirements(tx, id, &saved.intent, &landed.removals)?,
+        false => {
+            let head = deployment::head(tx, &environment)?;
+            let mut removed = landed.removals.clone();
+            for service in deployment::Landing::of(&head)
+                .dropped(&saved.intent)
+                .services
+            {
+                removed.insert(ServiceLineageId::parse(service.id.as_str())?);
+            }
+            deployment::retirements(tx, id, &saved.intent, &removed)?
+        }
     };
-    let idle = selected.is_empty() && retire.is_empty();
-    if !idle && !crate::pull_request::admits(tx, id, push.repository_id, push.head)? {
-        tx.execute(
-            "DELETE FROM config_waiting_deploy \
-             WHERE environment_id = ?1 AND repository_id = ?2 AND branch = ?3",
-            &key,
-        )?;
+    // Only what it selects or the merges removed makes a push deploy.
+    let merged_removal = retire.iter().any(|gone| landed.removals.contains(&gone.id));
+    if selected.is_empty() && !merged_removal {
+        forget_landed(tx, id, push, &merges)?;
+        return Ok(Some(Deploy::Idle));
+    }
+    if !crate::pull_request::admits(tx, id, push.repository_id, &push.head)? {
         return Ok(Some(Deploy::NeedsApproval));
     }
-    if idle || trusted.runnable().is_err() {
-        tx.execute(
-            "DELETE FROM config_waiting_deploy \
-             WHERE environment_id = ?1 AND repository_id = ?2 AND branch = ?3",
-            &key,
-        )?;
-        if idle {
-            forget_landed(tx, id, push, &merges)?;
-        }
-        return Ok((!idle).then_some(Deploy::NoServers));
+    if trusted.runnable().is_err() {
+        return Ok(Some(Deploy::NoServers));
     }
-    if wait && !passed(tx, who, push)? {
-        let services: Vec<&str> = selected
+    let names = match shut_down {
+        true => Vec::new(),
+        false => selected
             .iter()
-            .map(|(service, _)| service.id.as_str())
-            .collect();
-        tx.execute(
-            "INSERT INTO config_waiting_deploy \
-             (environment_id, repository_id, branch, organization_id, head, services) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6) \
-             ON CONFLICT (environment_id, repository_id, branch) \
-             DO UPDATE SET head = excluded.head, services = excluded.services",
-            &[
-                environment_param,
-                repository_param,
-                branch_param,
-                who.organization.as_str().into(),
-                push.head.as_str().into(),
-                serde_json::to_string(&services)
-                    .expect("Service IDs are JSON")
-                    .as_str()
-                    .into(),
-            ],
+            .map(|(service, _)| ServiceName::parse(service.slug.as_str()))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|_| error::corrupt("Service name"))?,
+    };
+    if wait && !passed(tx, who, push.repository_id, &push.head)? {
+        let ids: Vec<String> = match shut_down {
+            true => Vec::new(),
+            false => selected
+                .iter()
+                .map(|(service, _)| service.id.clone())
+                .collect(),
+        };
+        deployment::hold(
+            tx,
+            who,
+            &environment.summary,
+            push,
+            &names,
+            &ids,
+            saved.revision,
         )?;
-        return Ok(Some(Deploy::Waiting));
+        return Ok(None);
     }
-    tx.execute(
-        "DELETE FROM config_waiting_deploy \
-         WHERE environment_id = ?1 AND repository_id = ?2 AND branch = ?3",
-        &key,
-    )?;
-    // A Service that builds the head is pinned to it; another Git Service to the
-    // commit it last built here, or its branch's head when it never built.
+    // A Service that builds the head is pinned to it. Another Git Service the push
+    // ships for its Saved change stays on the commit it last built here; one that
+    // never built builds the head when it follows the branch, else its own head.
     let mut pins: BTreeMap<ServiceName, CommitSha> = BTreeMap::new();
-    for (service, follows) in &selected {
-        let pin = if *follows {
+    for service in &saved.intent.services {
+        let follows = selected
+            .iter()
+            .any(|(selected, follows)| *follows && selected.id == service.id);
+        let pin = if follows {
             Some(push.head.clone())
-        } else if crate::git::is_git(service) {
-            last_built(tx, id, service)?
+        } else if let ServiceSource::Git { repository_id, .. } = &service.config.source {
+            let repository = RepositoryId::parse(*repository_id)?;
+            match last_built(tx, id, service)? {
+                Some(commit) if crate::pull_request::admits(tx, id, repository, &commit)? => {
+                    Some(commit)
+                }
+                Some(_) => None,
+                None => crate::git::tracks(service, push.repository_id, &push.branch)
+                    .then(|| push.head.clone()),
+            }
         } else {
             None
         };
@@ -784,21 +797,17 @@ fn admit(
             pins.insert(service.config.private_dns.clone(), pin);
         }
     }
-    let selected: Vec<SavedServiceIntent> = selected
-        .into_iter()
-        .map(|(service, _)| service.clone())
-        .collect();
-    let names = match shut_down {
-        true => Vec::new(),
-        false => selected
-            .iter()
-            .map(|service| ServiceName::parse(service.slug.as_str()))
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|_| error::corrupt("Service name"))?,
-    };
     // Generated domains expand under the Cluster Domain Cloud reserved for the
     // Environment's last Deploy.
     let cluster_domain = deployment::cluster_domain(tx, id)?;
+    let fresh = DeploymentId::parse(uuid::Uuid::new_v4().to_string())?;
+    let admission = match &held {
+        Some(hold) => deployment::Admission::Promote(&hold.id),
+        None => deployment::Admission::New {
+            id: &fresh,
+            push: Some(push),
+        },
+    };
     // A skipped Deploy leaves nothing behind, such as a reserved Namespace.
     let summary = crate::storage::attempt(tx, |tx| {
         auto_admit(
@@ -807,6 +816,7 @@ fn admit(
             (&environment, &saved),
             (&names, &retire),
             (cluster_domain.as_ref(), &pins),
+            admission,
             trusted,
         )
     })?;
@@ -893,7 +903,7 @@ pub(crate) fn shipped_landed(
 fn forget_landed(
     tx: &mut dyn Tx,
     environment: &EnvironmentId,
-    push: &Push<'_>,
+    push: &GitPush,
     commits: &[String],
 ) -> Result<(), RpcError> {
     for commit in commits {
@@ -970,14 +980,16 @@ fn same_source(a: &ServiceSource, b: &ServiceSource) -> bool {
 /// Admit the Store's own Deployment of Saved revision `saved` of `environment`:
 /// `services` and the teardown of `retire`, from [`deployment::retirements`]
 /// (neither: every Service), with generated domains under `cluster_domain` and
-/// each Git Service of `pins` pinned to its commit. It deletes only the Volume
-/// data accepted when `saved` was saved, while the Servers still show the same.
+/// each Git Service of `pins` pinned to its commit, as `admission` queues it. It
+/// deletes only the Volume data accepted when `saved` was saved, while the Servers
+/// still show the same.
 pub(crate) fn auto_admit(
     tx: &mut dyn Tx,
     who: &Actor,
     (environment, saved): (&scope::Environment, &review::Saved),
     (services, retire): (&[ServiceName], &[deployment::Retire]),
     (cluster_domain, pins): (Option<&Hostname>, &BTreeMap<ServiceName, CommitSha>),
+    admission: deployment::Admission<'_>,
     trusted: &Trusted,
 ) -> Result<DeploymentSummary, RpcError> {
     let id = &environment.summary.id;
@@ -990,46 +1002,75 @@ pub(crate) fn auto_admit(
         trusted,
     )?;
     let head = deployment::head(tx, environment)?;
-    let losses = consented(&head.applied, saved, &namespace, trusted)?;
+    // Diffed against what may run once the Deployments in flight end, not Applied
+    // State alone: those may still add, change or remove any node.
+    let landing = deployment::Landing::of(&head);
+    let full = services.is_empty() && retire.is_empty();
+    let losses = consented(&landing.dropped(&saved.intent), saved, &namespace, trusted)?;
     let mut frozen = deployment::freeze(
         id,
         &saved.intent,
-        &head.applied,
-        if services.is_empty() && retire.is_empty() {
+        &landing,
+        if full {
             deployment::Scope::All { losses: &losses }
         } else {
             deployment::Scope::Narrow {
                 services,
                 retire,
                 losses: &losses,
+                every_saved: true,
             }
         },
         namespace,
         cluster_domain,
     )?;
     frozen.credentials = registry::freeze(tx, id, &saved.intent, &frozen)?;
-    let deployment = DeploymentId::parse(uuid::Uuid::new_v4().to_string())?;
+    let pins: BTreeMap<ServiceName, CommitSha> = pins
+        .iter()
+        .filter(|(name, _)| {
+            frozen.nodes.iter().any(|node| {
+                matches!(node, deployment::TargetNode::Service { runtime, .. } if runtime == *name)
+            })
+        })
+        .map(|(name, commit)| (name.clone(), commit.clone()))
+        .collect();
+    // Each Service it ships for a Saved change is a target too, so the planner runs it.
+    let targets: Vec<ServiceName> = match full {
+        true => Vec::new(),
+        false => frozen
+            .nodes
+            .iter()
+            .filter(|node| !node.retires())
+            .filter_map(|node| match node {
+                deployment::TargetNode::Service { name, .. } => Some(name.clone()),
+                deployment::TargetNode::Volume { .. } | deployment::TargetNode::Config { .. } => {
+                    None
+                }
+            })
+            .collect(),
+    };
     let summary = deployment::admit(
         tx,
         who,
-        (&deployment, services, None, None),
+        (admission, &targets, None, None),
         id,
         saved.revision,
         &frozen,
     )?;
-    build::pin(tx, &deployment, pins)?;
+    build::pin(tx, &summary.id, &pins)?;
     Ok(summary)
 }
 
-/// The losses `saved` holds consent for that the Servers still show unchanged.
-/// Without that evidence a push keeps the data, and the next Deploy asks again.
+/// The losses of the Volumes `dropped` that `saved` holds consent for, while the
+/// Servers still show them unchanged. Without that evidence a push keeps the data,
+/// and the next Deploy asks again.
 fn consented(
-    applied: &SavedEnvironmentIntent,
+    dropped: &SavedEnvironmentIntent,
     saved: &review::Saved,
     namespace: &ployz_core::Namespace,
     trusted: &Trusted,
 ) -> Result<Vec<crate::VolumeLoss>, RpcError> {
-    let removed: Vec<_> = crate::removal::removed(applied, &saved.intent, namespace)?
+    let removed: Vec<_> = crate::removal::removed(dropped, &saved.intent, namespace)?
         .into_iter()
         .filter(|volume| {
             saved
@@ -1050,16 +1091,21 @@ fn consented(
     }
 }
 
-/// Whether every check suite of the pushed commit completed and passed; false
-/// until GitHub reported one.
-fn passed(tx: &mut dyn Tx, who: &Actor, push: &Push<'_>) -> Result<bool, RpcError> {
+/// Whether every check suite of commit `head` of `repository_id` completed and
+/// passed; false until GitHub reported one.
+fn passed(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    repository_id: RepositoryId,
+    head: &CommitSha,
+) -> Result<bool, RpcError> {
     let suites = tx.query(
         "SELECT status, conclusion FROM config_check_suite \
          WHERE organization_id = ?1 AND repository_id = ?2 AND head = ?3",
         &[
             who.organization.as_str().into(),
-            push.repository_id.into(),
-            push.head.as_str().into(),
+            repository_id.into(),
+            head.as_str().into(),
         ],
     )?;
     let mut passed = !suites.is_empty();

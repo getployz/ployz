@@ -31,7 +31,7 @@ function statusCopy(status: ClusterDomainState) {
     case "no_public_ip":
       return { message: "None of your servers has a public IP address.", action: "servers" } as const;
     case "port_80":
-      return { message: `Traffic can’t reach ${status.addresses.join(", ")}. Make sure port 80 is open.`, action: "check" } as const;
+      return { message: `Traffic can’t reach ${status.addresses.join(", ")}. Open port 80 in the Server’s firewall (for example ufw allow 80/tcp).`, action: "check" } as const;
     case "port_80_taken":
       return { message: `Something else answers on port 80 of ${status.addresses.join(", ")}. Free the port for Ployz.`, action: "check" } as const;
     case "ingress_down":
@@ -76,7 +76,7 @@ export function ClusterDomainSection({ organizationSlug, domain, onCheck }: {
   }
 
   const status = domain === null ? null : clusterDomainStatus(domain, new Date());
-  const copy = status === null ? { message: "You’ll get one on your first deploy.", action: null } as const : statusCopy(status.state);
+  const copy = status === null ? { message: "You’ll get one when you generate your first domain.", action: null } as const : statusCopy(status.state);
   const excluded = status === null ? "" : excludedCopy(status.excluded);
 
   return (

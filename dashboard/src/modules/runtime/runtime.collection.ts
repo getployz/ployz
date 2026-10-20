@@ -21,6 +21,8 @@ export const runtimeContainerStateSchema = Schema.Struct({
   state: Schema.String,
   health: Schema.optionalKey(Schema.String),
   code: Schema.optionalKey(Schema.Int),
+  /** On an exited run its Server stopped on request, so its code is no crash. */
+  stopped: Schema.optionalKey(Schema.Literal(true)),
 });
 
 /** Direct container evidence, without historical specs or inferred Service state. */
@@ -61,6 +63,8 @@ export const runtimeMachineRecordSchema = Schema.Struct({
   daemonVersion: Schema.String,
   /** Every capability the Server's daemon serves; empty when its record predates the field, which claims nothing. */
   capabilities: Schema.Array(Schema.String),
+  /** Bytes of Volume bounds the Server's Pool could still take on, a hint below the edge; null when unobserved or from an older daemon. */
+  poolCommittableBytes: Schema.NullOr(Schema.Number),
   membership: Schema.String,
   observedContainerCount: NonnegativeInt,
   observedAt: Schema.String,
@@ -107,11 +111,17 @@ const runtimeIncompleteVolumeIdSchema = Schema.Struct({
   name: Schema.String,
 });
 
-/** A managed Volume's copy on one Machine, in the Engine's words: `slot` is a mirror, `switching` is a root a run holds or left read-only. */
+/**
+ * A managed Volume's copy on one Machine, in the Engine's words: `switching` is a root a run holds or left read-only, and
+ * a `slot`'s `slotRole` says whether its Machine holds it as a mirror or as the old copy a move left. `boundBytes` is
+ * the bound it holds there, null from a transport that predates it.
+ */
 export const runtimeVolumeCopySchema = Schema.Struct({
   machineId: Schema.String,
   name: Schema.String,
   role: Schema.Literals(["writer", "slot", "switching"]),
+  slotRole: Schema.NullOr(Schema.Literals(["mirror", "old_copy"])),
+  boundBytes: Schema.NullOr(Schema.Number),
 });
 export type RuntimeVolumeCopy = typeof runtimeVolumeCopySchema.Type;
 

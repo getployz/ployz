@@ -34,7 +34,15 @@ database, so staging gets its own copy of both and its own data. Use your own se
 
 Ployz never copies data, so staging's database starts empty. A setup command runs once, before
 `web` first starts, to fill it. To give every new branch of production the same commands, add
-them under **Branches of production** in production's **Settings → Environment**.
+them under **Branch setup** in production's **Settings → Environment**.
+
+From the CLI, add the command when you branch, with `ployz env branch staging --copy web --copy
+postgres --setup 'web=pnpm db:seed'`. In the branch, `ployz get setup.web` shows it, `ployz set
+setup.web='pnpm db:seed --small'` changes it, and `ployz unset setup.web` removes it. A change
+takes effect at once, with nothing to deploy first: the next deploy runs the new command if `web`
+hasn't deployed in staging yet, and until then `ployz diff` shows it. So when a setup command
+fails, fix it with `ployz set` and deploy again. Because `setup.` names these commands, no Service can be named
+`setup`, just as none can be named `volumes` or `configs`.
 
 ## Test staging at its own address
 
@@ -170,6 +178,13 @@ syncing** in the Sync dialog.
   Open the Sync button's ▾ menu, then **Close staging…**. Ployz lists what goes, including changes
   you haven't synced. Type `my-app/staging` and click **Close branch**.
 
+A branch that closes as you sync it starts coming off your servers right away. A branch idle for
+7 days closes at Ployz's next hourly sweep. If a removal can't start yet, for example because a
+deployment is still stopping, it waits for the next hourly sweep. Until it starts, the Sync button
+reads **Closing**, and `ployz env ls` shows `pending (synced)` or `pending (idle)` under REMOVAL.
+If its removal hasn't started, close it again from the ▾ menu or with `ployz env rm`. Once its
+removal runs, REMOVAL shows that deployment and its status, such as `#4 running`.
+
 ### Production's changes follow into staging
 
 When production deploys something new, the change arrives in staging as a staged change, marked
@@ -191,6 +206,7 @@ another under **Default environment** in **Settings → Project**.
 ### Protect an environment
 
 A new project's default environment starts Protected, and its header shows a **Protected** lock.
+On a phone, the lock shows without the word.
 In a Protected environment, only an owner or admin can connect a repository, change a service's
 deploy branch, or turn protection off. It can't be deleted until you unprotect it. Deleting the
 whole project still takes it. Environments that existed before Protected shipped start
@@ -199,7 +215,7 @@ unprotected.
 To change it, open the environment's **Settings → Environment** and flip **Protected**, or run
 `ployz env protect production --off` and `ployz env protect production`. Members see the switch
 disabled. `ployz env ls` shows which are Protected. Branches and preview environments can't be
-Protected. When an agent turns protection off, it waits for you to approve.
+Protected. Turning protection off from the CLI or an agent waits for you to approve.
 
 A member can still ask for changes in a Protected environment. Their buttons read **Request
 deploy**, **Request sync**, **Request restart** and **Request stop**, and clicking one shows
@@ -231,8 +247,19 @@ you make another one the default.
 
 Deleting returns at once. The environment stays listed until every server that ran it has taken it
 off, and then it's gone. A server that's offline holds its part until it answers or you remove the
-server, and Ployz names the server it waits on. A volume whose copies Ployz couldn't all check is
+server, and Ployz names the server it waits on. If the delete fails, settings name each offline
+server and link to its page, where you can forget it. Ployz tries again each hour, so it finishes within the
+hour after that. A volume whose copies Ployz couldn't all check is
 deleted only if you chose to delete every copy. Then a mirror of it made after the delete started
 goes too.
+
+### Delete a project
+
+1. Open **Settings → Project**.
+2. Click **Delete project**. Ployz lists what goes: every environment, with its services and data.
+3. Type `my-app` and click **Delete**.
+
+Only an owner or admin can delete a project. Like an environment, it stays listed until every
+server that ran it has taken it off.
 
 **Next:** [give every pull request its own copy of your app](preview-environments.md).

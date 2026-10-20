@@ -486,6 +486,7 @@ fn docker_volume(machine_id: &MachineId, volume: RawVolume) -> Result<DockerVolu
             bound_bytes,
             used_bytes: status.used_bytes,
             role: None,
+            slot_role: None,
         }
     } else {
         DockerVolumeStorageObservation::Plain {

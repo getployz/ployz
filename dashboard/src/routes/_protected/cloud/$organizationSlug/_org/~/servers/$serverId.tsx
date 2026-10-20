@@ -106,7 +106,7 @@ function RouteComponent() {
           <AlertDescription>Check that it’s powered on and online.</AlertDescription>
         </Alert>
       ) : null}
-      {server.status === "offline" ? null : <ServerResources organizationSlug={organizationSlug} server={{ id: machine.id, name: server.name }} />}
+      {server.status === "offline" ? null : <ServerResources organizationSlug={organizationSlug} server={{ id: machine.id, name: server.name, version: machine.daemonVersion }} />}
       <RunningHere organizationSlug={organizationSlug} server={server} servers={servers} stale={stale} />
       <Suspense fallback={null}>
         <ServerUpgradeSection machine={machine} status={server.status} organizationSlug={organizationSlug} />
@@ -144,6 +144,7 @@ function ServerSettings({ organizationSlug, server, servers, stale }: {
       <ServerServicesSection
         machine={machine}
         organizationSlug={organizationSlug}
+        lastToRunServices={!servers.some((other) => other.machine.id !== machine.id && other.machine.acceptsServices && !needsAttention(other.status))}
         view={drain.view}
         left={drainLeftRows(server.services, strays)}
         onDrain={drain.ask}

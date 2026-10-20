@@ -10,6 +10,7 @@ use ployz_core::{AdvertisedEndpoint, Machine, MachineId, SelectedEndpoint, WireG
 pub use ployz_core::{CORROSION_GOSSIP_PORT, MACHINE_API_PORT, UNREGISTRY_PORT, WIREGUARD_PORT};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+use tokio::sync::{mpsc, oneshot};
 
 mod endpoints;
 mod firewall;
@@ -126,6 +127,40 @@ impl MeshPeer {
     }
 }
 
+/// An operator's Selected Endpoint for one peer, sent from the Machine API to the
+/// running [`NetworkPlane`], which answers once WireGuard dials it.
+#[derive(Debug)]
+pub struct EndpointChoice {
+    pub peer: MachineId,
+    pub endpoint: SelectedEndpoint,
+    pub applied: oneshot::Sender<Result<(), ChoiceRefused>>,
+}
+
+#[derive(Clone, Copy, Debug, Error, Eq, PartialEq)]
+pub enum ChoiceRefused {
+    #[error("this Server has no peer {0}")]
+    UnknownPeer(MachineId),
+    #[error("WireGuard did not take the endpoint")]
+    WireGuard,
+}
+
+pub type EndpointChooser = mpsc::Sender<EndpointChoice>;
+
+/// The peer named `peer`, now dialing `endpoint` until a handshake proves it.
+fn choose_endpoint(
+    peers: &mut [MeshPeer],
+    peer: MachineId,
+    endpoint: SelectedEndpoint,
+    now: SystemTime,
+) -> Result<&MeshPeer, ChoiceRefused> {
+    let found = peers
+        .iter_mut()
+        .find(|candidate| candidate.machine_id == peer)
+        .ok_or(ChoiceRefused::UnknownPeer(peer))?;
+    found.selection.choose(endpoint, now);
+    Ok(found)
+}
+
 #[must_use]
 pub fn peers_for(observer_id: &MachineId, machines: &[Machine]) -> Vec<MeshPeer> {
     machines
@@ -201,6 +236,12 @@ enum EndpointState {
         since: SystemTime,
     },
     Established(SelectedEndpoint),
+    /// An operator's endpoint, which may lie outside the peer's stale advertised set.
+    /// Kept until a handshake after `since` establishes it or the device roams.
+    Chosen {
+        endpoint: SelectedEndpoint,
+        since: SystemTime,
+    },
 }
 
 impl EndpointSelection {
@@ -231,9 +272,9 @@ impl EndpointSelection {
     pub fn selected(&self) -> Option<SelectedEndpoint> {
         match self.state {
             EndpointState::Unselected => None,
-            EndpointState::Testing { endpoint, .. } | EndpointState::Established(endpoint) => {
-                Some(endpoint)
-            }
+            EndpointState::Testing { endpoint, .. }
+            | EndpointState::Chosen { endpoint, .. }
+            | EndpointState::Established(endpoint) => Some(endpoint),
         }
     }
 
@@ -263,7 +304,7 @@ impl EndpointSelection {
                     PeerStatus::Down
                 };
             }
-            EndpointState::Testing { since, .. } => since,
+            EndpointState::Testing { since, .. } | EndpointState::Chosen { since, .. } => since,
         };
         let since_change = now.duration_since(since).unwrap_or_default();
         let handshook_after_change = last_handshake.is_some_and(|time| time > since);
@@ -300,6 +341,13 @@ impl EndpointSelection {
             return Some(endpoint);
         }
 
+        if let EndpointState::Chosen { endpoint, since } = self.state {
+            if last_handshake.is_some_and(|handshake| handshake > since) {
+                self.state = EndpointState::Established(endpoint);
+            }
+            return None;
+        }
+
         let status = self.status(now, last_handshake);
         let changed = (status == PeerStatus::Down)
             .then(|| self.next_endpoint())
@@ -311,6 +359,13 @@ impl EndpointSelection {
             };
         }
         changed
+    }
+
+    fn choose(&mut self, endpoint: SelectedEndpoint, now: SystemTime) {
+        self.state = EndpointState::Chosen {
+            endpoint,
+            since: now,
+        };
     }
 
     fn next_endpoint(&self) -> Option<SelectedEndpoint> {
@@ -418,6 +473,90 @@ mod tests {
         assert_eq!(rebuilt_peer.machine_id, silent.id);
         assert_eq!(rebuilt_peer.selected(), None);
         assert!(rebuild_persist.is_empty());
+    }
+
+    #[test]
+    fn an_operator_endpoint_outside_the_candidates_holds_until_a_proven_one_replaces_it() {
+        let start = SystemTime::UNIX_EPOCH;
+        let observer = machine(1, vec![endpoint(1)]);
+        let stale = machine(2, vec![endpoint(2), endpoint(3)]);
+        let (mut peers, _) = attach_peer_selections(
+            peers_for(&observer.id, &[observer.clone(), stale.clone()]),
+            Vec::new(),
+            &BTreeMap::new(),
+            start,
+        );
+        let seed = SelectedEndpoint(SocketAddr::from(([198, 51, 100, 7], 51820)));
+        let chosen = choose_endpoint(&mut peers, stale.id, seed, start).unwrap();
+        assert_eq!(chosen.selected(), Some(seed));
+
+        let refreshed = start + PEER_DOWN_INTERVAL * 2;
+        let (mut peers, persist) = attach_peer_selections(
+            peers_for(&observer.id, &[observer.clone(), stale.clone()]),
+            peers,
+            &BTreeMap::new(),
+            refreshed,
+        );
+        assert!(persist.is_empty());
+        let peer = peers.first_mut().unwrap();
+        assert_eq!(
+            peer.selected(),
+            Some(seed),
+            "a candidates refresh keeps the seed"
+        );
+        assert_eq!(
+            peer.poll(refreshed, None, Some(seed.0)),
+            None,
+            "no handshake yet does not rotate back to the stale candidates"
+        );
+        assert_eq!(
+            peer.selection.state,
+            EndpointState::Chosen {
+                endpoint: seed,
+                since: start
+            }
+        );
+        assert_eq!(
+            peer.poll(refreshed, Some(start), Some(seed.0)),
+            None,
+            "a handshake from before the seed proves nothing"
+        );
+        assert!(matches!(peer.selection.state, EndpointState::Chosen { .. }));
+
+        let handshake = refreshed + Duration::from_secs(1);
+        assert_eq!(peer.poll(handshake, Some(handshake), Some(seed.0)), None);
+        assert_eq!(
+            peer.selection.state,
+            EndpointState::Established(seed),
+            "a handshake after the seed establishes it without a roam"
+        );
+        let quiet = handshake + PEER_DOWN_INTERVAL / 2;
+        assert_eq!(peer.poll(quiet, Some(handshake), Some(seed.0)), None);
+        assert_eq!(peer.selected(), Some(seed), "a handshaking seed stays");
+
+        let fresh = SocketAddr::from(([198, 51, 100, 8], 51820));
+        assert_eq!(
+            peer.poll(quiet, Some(quiet), Some(fresh)),
+            Some(SelectedEndpoint(fresh)),
+            "a proven roam replaces the seed"
+        );
+    }
+
+    #[test]
+    fn an_operator_endpoint_for_an_unknown_peer_is_refused() {
+        let now = SystemTime::UNIX_EPOCH;
+        let observer = machine(1, vec![endpoint(1)]);
+        let (mut peers, _) = attach_peer_selections(
+            peers_for(&observer.id, std::slice::from_ref(&observer)),
+            Vec::new(),
+            &BTreeMap::new(),
+            now,
+        );
+        let stranger = machine(9, Vec::new()).id;
+        assert_eq!(
+            choose_endpoint(&mut peers, stranger, SelectedEndpoint(endpoint(9).0), now).err(),
+            Some(ChoiceRefused::UnknownPeer(stranger))
+        );
     }
 
     #[test]

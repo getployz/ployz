@@ -31,13 +31,8 @@ fn storage_error(error: super::VolumeError) -> ployz_core::RpcError {
     }
 }
 
-struct ManagedStorage {
-    capacity: StorageCapacity,
-    slot_bound_bytes: u64,
-}
-
 impl VolumeStorage {
-    async fn capacity(&self) -> super::Result<ManagedStorage> {
+    async fn capacity(&self) -> super::Result<StorageCapacity> {
         let pool = self
             .pool
             .admit(super::pool::UnlabeledBacking::Preserve)
@@ -61,28 +56,37 @@ impl VolumeStorage {
                 };
                 let name = ployz_core::DockerVolumeName::parse(name)
                     .map_err(|error| ployz_core::error_chain::inline(&error))?;
-                let (role, maximum_bytes) = match place {
+                let (role, maximum_bytes, used_bytes, slot_role) = match place {
                     super::Place::Root(_) => (
-                        if dataset.readonly {
+                        if dataset.switching() {
                             CopyRole::Switching
                         } else {
                             CopyRole::Writer
                         },
                         dataset.refquota,
+                        dataset.referenced_bytes,
+                        None,
                     ),
                     super::Place::Slot(_) => {
                         let bound = super::storage::committed_bytes(dataset, pool.name());
                         if bound == 0 {
-                            if let Some(copy) = copies.get_mut(&name) {
-                                copy.used_bytes =
-                                    copy.used_bytes.saturating_add(dataset.active_used_bytes);
+                            if dataset.name
+                                == format!("{}/{}/{name}/fs", pool.name(), super::MIRROR_ROOT)
+                                && let Some(copy) = copies.get_mut(&name)
+                            {
+                                copy.used_bytes = dataset.referenced_bytes;
                             }
                             continue;
                         }
                         slot_bound_bytes = slot_bound_bytes
                             .checked_add(bound)
                             .ok_or("Volume commitments overflow u64")?;
-                        (CopyRole::Slot, bound)
+                        (
+                            CopyRole::Slot,
+                            bound,
+                            0,
+                            Some(self.slot_role(&dataset.name).await?),
+                        )
                     }
                     super::Place::Outside => continue,
                 };
@@ -97,20 +101,19 @@ impl VolumeStorage {
                     ProvisionedCopy {
                         role,
                         maximum_bytes: maximum,
-                        used_bytes: dataset.active_used_bytes,
+                        used_bytes,
+                        slot_role,
                     },
                 );
             }
         }
-        Ok(ManagedStorage {
-            capacity: StorageCapacity {
-                backing: self.pool.capacity_backing(pool.as_ref()).await?,
-                unmanaged_used_bytes: pool.as_ref().map_or(0, |pool| {
-                    pool.used_bytes().saturating_sub(managed_used_bytes)
-                }),
-                volumes,
-                copies,
-            },
+        Ok(StorageCapacity {
+            backing: self.pool.capacity_backing(pool.as_ref()).await?,
+            unmanaged_used_bytes: pool.as_ref().map_or(0, |pool| {
+                pool.used_bytes().saturating_sub(managed_used_bytes)
+            }),
+            volumes,
+            copies,
             slot_bound_bytes,
         })
     }
@@ -121,11 +124,7 @@ impl VolumeStorage {
         tokio::spawn(async move {
             let _admission = admission;
             let _pool_guard = storage.pool.lock_mutation().await.map_err(unknown)?;
-            storage
-                .capacity()
-                .await
-                .map(|managed| managed.capacity)
-                .map_err(unknown)
+            storage.capacity().await.map_err(unknown)
         })
         .await
         .unwrap_or_else(|error| Err(unknown(error)))
@@ -151,9 +150,8 @@ impl VolumeStorage {
         requested: &Volumes,
     ) -> Result<Vec<ployz_core::DockerVolumeName>, ployz_core::RpcError> {
         let _pool_guard = self.pool.lock_mutation().await.map_err(storage_error)?;
-        let managed = self.capacity().await.map_err(unknown)?;
-        let budget = managed
-            .capacity
+        let capacity = self.capacity().await.map_err(unknown)?;
+        let budget = capacity
             .budget(requested)
             .map_err(StorageCapacityError::into_rpc_error)?;
         if requested.is_empty() {
@@ -176,17 +174,16 @@ impl VolumeStorage {
                 }
             }
         }
-        let commitment = managed
-            .capacity
+        let commitment = capacity
             .volumes
             .values()
             .map(|maximum| maximum.get())
             .try_fold(budget.additional_commitment_bytes, u64::checked_add)
-            .and_then(|roots| roots.checked_add(managed.slot_bound_bytes))
+            .and_then(|roots| roots.checked_add(capacity.slot_bound_bytes))
             .ok_or_else(|| unknown("Volume commitments overflow u64"))?;
         match existing_pool {
             Some(pool) => {
-                self.ensure_pool_capacity(&pool, commitment, managed.capacity.unmanaged_used_bytes)
+                self.ensure_pool_capacity(&pool, commitment, capacity.unmanaged_used_bytes)
                     .await
                     .map_err(storage_error)?;
             }

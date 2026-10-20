@@ -20,7 +20,7 @@ struct RuntimeOutcomeEvidence {
 }
 
 /// Sanitized failure kinds; provider details remain inside encrypted evidence.
-#[derive(Debug, Serialize, TS)]
+#[derive(Clone, Copy, Debug, Serialize, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum RuntimeFailureKind {
     /// A Machine request failed.
@@ -40,7 +40,7 @@ pub enum RuntimeFailureKind {
 }
 
 /// Public counts contain no operation inputs or provider error messages.
-#[derive(Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize, TS)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum RuntimeOutcomeSummary {
     /// Every operation completed.
@@ -59,7 +59,7 @@ pub enum RuntimeOutcomeSummary {
 }
 
 /// Each planned Service by what this outcome did to it.
-#[derive(Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct RuntimeOutcomeProjection {
     /// Sanitized whole-attempt counts and disposition.
@@ -115,6 +115,7 @@ fn redact_operation(operation: &mut DeployOperation) {
     let spec = match operation {
         DeployOperation::RunContainer { spec, .. } | DeployOperation::RunHook { spec, .. } => spec,
         DeployOperation::ReplaceContainer(replacement) => &mut replacement.spec,
+        DeployOperation::UpdateContainer(update) => &mut update.spec,
         DeployOperation::PrepareVolumes { .. }
         | DeployOperation::WaitHealthy { .. }
         | DeployOperation::StopContainer { .. }

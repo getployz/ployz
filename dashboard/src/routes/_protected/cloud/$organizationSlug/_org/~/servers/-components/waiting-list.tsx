@@ -8,12 +8,12 @@ import { NativeSelect, NativeSelectOption } from "#/components/ui/native-select"
 import { Separator } from "#/components/ui/separator";
 import { useMediaQuery } from "#/hooks/use-media-query";
 import { cn } from "#/lib/utils";
-import { ENROLLMENT_STAGES } from "#/modules/machines/waiting/server-enrollment";
 import { SELECTION_MAX } from "#/modules/machines/waiting/probe";
 import type { WaitingServerView } from "#/modules/machines/waiting/waiting-servers.server";
+import { useRoleGate } from "#/modules/organization/members.queries";
 import { EnrollSheet } from "./enroll-sheet";
-import { EnrollingList, enrollingRows, STAGES } from "./enrolling-list";
-import { useCancelEnrollment, useEnrollmentStatus, useRejectWaiting, useSettledProbe, useWaitingServerDetail, useWaitingServers } from "./use-waiting";
+import { EnrollingList, enrollingRows } from "./enrolling-list";
+import { ENROLL_REFUSED, useCancelEnrollment, useEnrollmentStatus, useRejectWaiting, useSettledProbe, useWaitingServerDetail, useWaitingServers } from "./use-waiting";
 import { WaitingDetailSheet } from "./waiting-detail-sheet";
 import {
   hostnameOrIpMatcher,
@@ -83,6 +83,7 @@ export function WaitingList({ organizationSlug, servers, now, token, hasFirst = 
   const ordered = useMemo(() => [...servers].sort((a, b) => a.arrivalAt.localeCompare(b.arrivalAt) || a.firstSeenAt.localeCompare(b.firstSeenAt) || a.id.localeCompare(b.id)), [servers]);
   const statusContext = useMemo(() => ({ servers, now }), [servers, now]);
   const reject = useRejectWaiting(organizationSlug);
+  const gate = useRoleGate(organizationSlug, "servers:add", ENROLL_REFUSED);
 
   const counts = new Map<ReadinessFilter, number>([["all", servers.length]]);
   for (const server of servers) counts.set(readiness(server), (counts.get(readiness(server)) ?? 0) + 1);
@@ -138,6 +139,7 @@ export function WaitingList({ organizationSlug, servers, now, token, hasFirst = 
     setOpenId(null);
   };
 
+  const opened = openId === null ? undefined : servers.find((server) => server.id === openId);
   const sheets = <>
     {enroll ? <EnrollSheet organizationSlug={organizationSlug} servers={enroll} hasFirst={hasFirst} onClose={() => { setEnroll(null); setPicked(new Set()); }} /> : null}
     <WaitingDetailSheet
@@ -145,7 +147,9 @@ export function WaitingList({ organizationSlug, servers, now, token, hasFirst = 
       failed={detail.isError}
       server={openId === null ? null : detail.data ?? null}
       now={now}
+      gate={gate}
       onOpenChange={(next) => { if (!next) setOpenId(null); }}
+      onEnroll={opened !== undefined && selectable(opened) ? () => { setOpenId(null); setEnroll([opened]); } : null}
       onReject={(id) => rejectIds([id])}
     />
   </>;
@@ -171,11 +175,12 @@ export function WaitingList({ organizationSlug, servers, now, token, hasFirst = 
         <div className="flex flex-wrap items-center gap-2.5">
           <h2 id="waiting-heading" className="text-sm font-semibold">{arrived.report.hostname} is ready to enroll</h2>
           <div className="ml-auto flex items-center gap-2">
-            <Button size="sm" variant="outline" onClick={() => rejectIds([arrived.id])}>Reject</Button>
-            <Button size="sm" variant="ink" onClick={() => setEnroll([arrived])}>Enroll</Button>
+            <Button size="sm" variant="outline" disabled={!gate.allowed} title={gate.reason} onClick={() => rejectIds([arrived.id])}>Reject</Button>
+            <Button size="sm" variant="ink" disabled={!gate.allowed} title={gate.reason} onClick={() => setEnroll([arrived])}>Enroll</Button>
           </div>
         </div>
       )}
+      {hasFirst ? null : <p className="text-xs text-muted-foreground">No cluster yet. Enroll one server to start it.</p>}
       {filterable ? <div className="flex flex-wrap items-center gap-2.5">
         <div className="flex flex-wrap items-center gap-1">
           <div role="group" aria-label="Readiness" className="flex w-full items-center gap-1 overflow-x-auto sm:w-auto">
@@ -256,8 +261,8 @@ export function WaitingList({ organizationSlug, servers, now, token, hasFirst = 
           <span className="whitespace-nowrap tabular-nums">{chosen.length} selected</span>
           {full ? <span className="text-primary-foreground/70">{SELECTION_MAX} max</span> : null}
           <Button size="sm" variant="ghost" className="text-primary-foreground" onClick={() => setPicked(new Set())}>Clear</Button>
-          <Button size="sm" variant="destructive" onClick={() => rejectIds(chosen)}>Reject</Button>
-          <Button size="sm" variant="secondary" onClick={() => setEnroll(rows.filter((row) => pickedIds.has(row.id)))}>Enroll {chosen.length}</Button>
+          <Button size="sm" variant="destructive" disabled={!gate.allowed} title={gate.reason} onClick={() => rejectIds(chosen)}>Reject</Button>
+          <Button size="sm" variant="secondary" disabled={!gate.allowed} title={gate.reason} onClick={() => setEnroll(rows.filter((row) => pickedIds.has(row.id)))}>Enroll {chosen.length}</Button>
         </div>
       ) : null}
       {sheets}
@@ -316,11 +321,7 @@ function WaitingStatus({ id }: { id: string }) {
   const server = servers.find((row) => row.id === id);
   if (server === undefined) return null;
   const status = statusCell(server, now);
-  const returned = server.returned;
-  const stage = ENROLLMENT_STAGES.find((stage) => stage === returned?.stage);
-  const reason = returned === null ? null : returned.state === "cancelled" ? "Cancelled"
-    : stage === undefined ? "Failed" : `Failed at ${STAGES[stage]}`;
-  const detail = reason === null ? status.detail : `${status.detail} · ${reason}${returned?.message ? ` · ${returned.message}` : ""}`;
+  const detail = server.returned === null ? status.detail : `${status.detail} · Last enroll ${server.returned.state}`;
   return <TwoLineCell className="text-right sm:text-left">
     <span className={cn("font-medium", readiness(server) === "blocked" && "text-warning")}>{status.bold}</span>
     <span title={detail}>{detail}</span>

@@ -229,6 +229,11 @@ pub(crate) fn emit_line<T: Serialize + ?Sized>(value: &T) -> Result<(), Failure>
     Ok(())
 }
 
+/// Note that a human stream printed part of the result, so a later failure is partial.
+pub(crate) fn printed() {
+    EMITTED.set(true);
+}
+
 /// Whether the command already produced its result, so a later failure is partial.
 pub(crate) fn emitted() -> bool {
     EMITTED.get()
@@ -277,6 +282,22 @@ impl Gaps {
                 self.omitted.push(*machine_id);
             }
         }
+    }
+
+    /// Add a Machine that stopped answering partway, warning by name the first time.
+    pub(crate) fn stopped(&mut self, machine_id: MachineId) {
+        if self.omitted.contains(&machine_id) {
+            return;
+        }
+        self.omitted.push(machine_id);
+        flag(&self.stopped_answering(&machine_id));
+    }
+
+    pub(crate) fn stopped_answering(&self, machine_id: &MachineId) -> String {
+        format!(
+            "{} stopped answering; its lines are missing from here on.",
+            self.name(machine_id)
+        )
     }
 
     fn is_complete(&self) -> bool {

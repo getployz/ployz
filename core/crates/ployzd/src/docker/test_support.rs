@@ -17,6 +17,7 @@ use axum::{
     routing::any,
 };
 use bollard::Docker;
+use futures_util::StreamExt as _;
 
 use super::*;
 use ployz_core::{Machine, MachineGateway, MachineId, ResolvedServiceSpec, VolumeSource};
@@ -41,19 +42,39 @@ pub(crate) struct FakeDocker {
     /// A start waits here twice: once to announce it began, once to be released.
     pub(crate) start_barrier: Option<Arc<tokio::sync::Barrier>>,
     pub(crate) inspect_hold: Arc<Mutex<Option<Arc<tokio::sync::Barrier>>>>,
+    /// The next inspect reads the Container first, then its answer waits here twice.
+    pub(crate) answered_hold: Arc<Mutex<Option<Arc<tokio::sync::Barrier>>>>,
     pub(crate) reject_list: Arc<AtomicBool>,
     /// Named mode: every stop fails and leaves the Container as it was.
     pub(crate) refuse_stop: Arc<AtomicBool>,
     /// Named mode: a stop lands and the next inspect sees it, then a restart policy
     /// brings the Container back for every inspect after that.
     pub(crate) restart_after_stop: Arc<AtomicBool>,
+    /// Named mode: every start lands, then the process exits at once.
+    pub(crate) exit_on_start: Arc<AtomicBool>,
     pub(crate) stopped_once: Arc<Mutex<BTreeSet<String>>>,
+    /// Named mode: each start of a stopped Container stamps a new `StartedAt`, and a
+    /// stop keeps it and stamps `FinishedAt`, as Docker does.
+    pub(crate) stamp_starts: bool,
+    /// Named mode: the code a stopped process exits with, as an app that exits non-zero
+    /// on SIGTERM leaves it.
+    pub(crate) stop_exit_code: i64,
     /// Every stop waits while a test holds this for writing; the request is recorded first.
     pub(crate) stop_gate: Arc<tokio::sync::RwLock<()>>,
+    /// Every inspect of this Container waits while a test holds `inspect_gate` for writing.
+    pub(crate) gated_inspects: Arc<Mutex<Option<String>>>,
+    pub(crate) inspect_gate: Arc<tokio::sync::RwLock<()>>,
     pub(crate) on_stop: Arc<Mutex<Option<StopHook>>>,
     pub(crate) list_warnings: Arc<Mutex<Vec<String>>>,
     /// Another start attaches the network first, so this connect finds it attached.
     pub(crate) connect_raced: Arc<AtomicBool>,
+    /// Named mode: a list answers with the named Containers its label filters match,
+    /// as an observation publisher needs.
+    pub(crate) list_named: bool,
+    /// Named mode: once an inspect answers a Container Docker OOM-killed, every later
+    /// inspect sends its headers and then stalls inside its body.
+    pub(crate) stall_after_oom: Arc<AtomicBool>,
+    pub(crate) oom_answered: Arc<AtomicBool>,
 }
 
 async fn fake_docker(
@@ -62,6 +83,29 @@ async fn fake_docker(
     uri: Uri,
     body: Bytes,
 ) -> Response {
+    let hold = (method == Method::GET && is_inspect(uri.path()))
+        .then(|| fake.answered_hold.lock().unwrap().take())
+        .flatten();
+    let response = answer(fake, method, uri, body).await;
+    if let Some(hold) = hold {
+        hold.wait().await;
+        hold.wait().await;
+    }
+    response
+}
+
+/// A 200 whose body starts and never finishes.
+fn stalled_body() -> Response {
+    let body = futures_util::stream::once(async { Ok(Bytes::from_static(b"{")) })
+        .chain(futures_util::stream::pending::<Result<Bytes, std::io::Error>>());
+    axum::body::Body::from_stream(body).into_response()
+}
+
+fn is_inspect(path: &str) -> bool {
+    path.contains("/containers/") && path.ends_with("/json") && !path.ends_with("/containers/json")
+}
+
+async fn answer(fake: FakeDocker, method: Method, uri: Uri, body: Bytes) -> Response {
     let path = uri.path().to_owned();
     fake.requests
         .lock()
@@ -76,11 +120,24 @@ async fn fake_docker(
     if method == Method::POST && path.ends_with("/stop") {
         drop(fake.stop_gate.read().await);
     }
-    let inspect = method == Method::GET
-        && path.contains("/containers/")
-        && path.ends_with("/json")
-        && !path.ends_with("/containers/json");
-    let hold = inspect
+    if method == Method::GET && path.ends_with("/events") {
+        return axum::body::Body::from_stream(futures_util::stream::pending::<
+            Result<Bytes, std::io::Error>,
+        >())
+        .into_response();
+    }
+    let gated = method == Method::GET
+        && is_inspect(&path)
+        && fake
+            .gated_inspects
+            .lock()
+            .unwrap()
+            .as_ref()
+            .is_some_and(|container| path.contains(container.as_str()));
+    if gated {
+        drop(fake.inspect_gate.read().await);
+    }
+    let hold = (method == Method::GET && is_inspect(&path))
         .then(|| fake.inspect_hold.lock().unwrap().take())
         .flatten();
     if let Some(hold) = hold {
@@ -89,6 +146,9 @@ async fn fake_docker(
     }
     if let Some(containers) = &fake.named_containers {
         let mut containers = containers.lock().unwrap();
+        if fake.list_named && method == Method::GET && path.ends_with("/containers/json") {
+            return Json(listed_by_labels(&containers, uri.query())).into_response();
+        }
         if method == Method::POST && path.ends_with("/containers/create") {
             let name = uri
                 .query()
@@ -136,6 +196,14 @@ async fn fake_docker(
                     containers.get_mut(&name).unwrap()["State"] =
                         serde_json::json!({"Status": "running", "Running": true});
                 }
+                if fake.oom_answered.load(Ordering::SeqCst) {
+                    return stalled_body();
+                }
+                if fake.stall_after_oom.load(Ordering::SeqCst)
+                    && container.pointer("/State/OOMKilled") == Some(&serde_json::Value::Bool(true))
+                {
+                    fake.oom_answered.store(true, Ordering::SeqCst);
+                }
                 return Json(container).into_response();
             }
             if method == Method::DELETE {
@@ -161,6 +229,13 @@ async fn fake_docker(
                     )
                         .into_response();
                 }
+                // Docker leaves a Container whose process already exited as it was, and
+                // answers 304, which the client reads as success.
+                if path.ends_with("/stop")
+                    && container.pointer("/State/Status") != Some(&"running".into())
+                {
+                    return StatusCode::NOT_MODIFIED.into_response();
+                }
                 let status = if path.ends_with("/start") {
                     "running"
                 } else {
@@ -169,8 +244,37 @@ async fn fake_docker(
                     }
                     "exited"
                 };
+                let (status, code) =
+                    if status == "running" && fake.exit_on_start.load(Ordering::SeqCst) {
+                        ("exited", 1)
+                    } else if status == "exited" {
+                        (status, fake.stop_exit_code)
+                    } else {
+                        (status, 0)
+                    };
                 let container = containers.get_mut(&name).unwrap();
-                container["State"] = serde_json::json!({"Status": status, "ExitCode": 0});
+                let previous = container["State"].take();
+                let mut state = serde_json::json!({"Status": status, "ExitCode": code});
+                if fake.stamp_starts && (status == "running" || path.ends_with("/stop")) {
+                    let started_at = if path.ends_with("/stop")
+                        || previous.get("Status") == Some(&"running".into())
+                    {
+                        previous.get("StartedAt").cloned().unwrap_or_default()
+                    } else {
+                        chrono::Utc::now().to_rfc3339().into()
+                    };
+                    state
+                        .as_object_mut()
+                        .expect("a literal object")
+                        .insert("StartedAt".into(), started_at);
+                }
+                if fake.stamp_starts && path.ends_with("/stop") {
+                    state
+                        .as_object_mut()
+                        .expect("a literal object")
+                        .insert("FinishedAt".into(), chrono::Utc::now().to_rfc3339().into());
+                }
+                container["State"] = state;
                 return StatusCode::NO_CONTENT.into_response();
             }
             panic!("unexpected implicit lifecycle action: {method} {path}");
@@ -445,6 +549,41 @@ pub(super) async fn fake_runtime() -> (ContainerRuntime, FakeDocker) {
     fake_runtime_with(FakeDocker::default()).await
 }
 
+fn listed_by_labels(
+    containers: &BTreeMap<String, serde_json::Value>,
+    query: Option<&str>,
+) -> serde_json::Value {
+    let filters = url::form_urlencoded::parse(query.unwrap_or_default().as_bytes())
+        .find(|(key, _)| key == "filters")
+        .map(|(_, filters)| serde_json::from_str::<serde_json::Value>(&filters).unwrap())
+        .unwrap_or_default();
+    let wanted = filters
+        .get("label")
+        .and_then(serde_json::Value::as_array)
+        .map(|labels| {
+            labels
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    containers
+        .values()
+        .filter_map(|container| {
+            let labels = container.pointer("/Config/Labels")?;
+            wanted
+                .iter()
+                .all(|wanted| match wanted.split_once('=') {
+                    Some((key, value)) => {
+                        labels.get(key).and_then(serde_json::Value::as_str) == Some(value)
+                    }
+                    None => labels.get(*wanted).is_some(),
+                })
+                .then(|| serde_json::json!({"Id": container.get("Id"), "Labels": labels}))
+        })
+        .collect()
+}
+
 pub(crate) async fn fake_runtime_with(fake: FakeDocker) -> (ContainerRuntime, FakeDocker) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -475,6 +614,46 @@ pub(crate) async fn fake_runtime_with(fake: FakeDocker) -> (ContainerRuntime, Fa
     )
 }
 
+/// A running managed Container made by the real create path, so it carries the
+/// labels creation stamps.
+pub(super) async fn runtime_with_running_container() -> (ContainerRuntime, FakeDocker, ContainerId)
+{
+    let (runtime, fake) = fake_runtime_with(FakeDocker {
+        create_barrier: Some(Arc::new(tokio::sync::Barrier::new(1))),
+        ..Default::default()
+    })
+    .await;
+    let machine = machine();
+    let created = runtime
+        .create_for_test(
+            &machine.id,
+            machine.subnet.gateway(),
+            ContainerKind::ServiceContainer,
+            &Namespace::parse("app").unwrap(),
+            &spec_with_sources(vec![]),
+        )
+        .await
+        .unwrap();
+    let labels = fake
+        .request_bodies
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|(path, _)| path.ends_with("/containers/create"))
+        .unwrap()
+        .1
+        .get("Labels")
+        .unwrap()
+        .clone();
+    *fake.existing_container.lock().unwrap() = Some(serde_json::json!({
+        "Id": created.container_id,
+        "Name": format!("/{}", created.display_name),
+        "Config": {"Labels": labels},
+        "State": {"Status": "running", "Running": true},
+    }));
+    (runtime, fake, created.container_id)
+}
+
 pub(super) fn machine() -> Machine {
     crate::docker::lifecycle::test_machine(
         MachineId::random(),
@@ -490,6 +669,7 @@ pub(super) fn container_request<'spec, Storage>(
 ) -> ContainerRequest<'spec, Storage, std::future::Ready<Result<(), Error>>> {
     ContainerRequest {
         deployment_id: None,
+        r#gen: ployz_core::Gen::FIRST,
         image: crate::docker_image::ImagePull::Policy(None),
         creation_key: None,
         kind,

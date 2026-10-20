@@ -57,25 +57,109 @@ fn rotation_updates_latest_contexts_and_preserves_other_connections() {
 }
 
 #[test]
+fn a_stale_config_update_keeps_a_rotation_saved_meanwhile() {
+    use super::*;
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    let old =
+        ManagementCapability::new(ployz_core::ManagementIdentity::from_bytes([1; 32]), [2; 32]);
+    let new = ManagementCapability::new(*old.machine(), [3; 32]);
+    let config = Config::new(
+        dir.path().join("config.yaml"),
+        Some("first".into()),
+        BTreeMap::from([(
+            "first".into(),
+            Context {
+                connections: vec![Connection::management(old.to_secret_string()).unwrap()],
+            },
+        )]),
+    );
+    config.save().unwrap();
+    // Server init loads the config, then enrolls while another command rotates.
+    let stale = Config::load(config.path()).unwrap();
+    config.save_management_capability(&new).unwrap();
+    let unix = Connection::unix("/tmp/ployz.sock").unwrap();
+    stale
+        .update(|latest| {
+            latest.contexts.insert(
+                "second".into(),
+                Context {
+                    connections: vec![unix.clone()],
+                },
+            );
+            Ok::<_, ConfigError>(latest.set_current_context(Some("second".into()))?)
+        })
+        .unwrap();
+    let saved = Config::load(config.path()).unwrap();
+    assert_eq!(
+        saved.contexts.get("first").unwrap().connections,
+        vec![Connection::management(new.to_secret_string()).unwrap()]
+    );
+    assert_eq!(
+        saved.contexts.get("second").unwrap().connections,
+        vec![unix]
+    );
+    assert_eq!(saved.current_context(), Some("second"));
+}
+
+#[test]
+fn update_founds_a_missing_config_and_its_directory() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("ployz").join("config.yaml");
+    Config::new(&path, None, BTreeMap::new())
+        .update(|latest| {
+            latest.contexts.insert("default".into(), Context::default());
+            Ok::<_, ConfigError>(latest.set_current_context(Some("default".into()))?)
+        })
+        .unwrap();
+    assert_eq!(
+        Config::load(&path).unwrap().current_context(),
+        Some("default")
+    );
+}
+
+#[test]
 fn connection_sources_are_plain_text() {
     use super::ConnectionSource;
-    assert_eq!(
-        ConnectionSource::Direct.to_string(),
-        "the explicit connection"
-    );
+    assert_eq!(ConnectionSource::Direct.to_string(), "the given connection");
     assert_eq!(
         ConnectionSource::LocalSocket.to_string(),
         "the local socket"
     );
+    assert_eq!(ConnectionSource::Cloud.to_string(), "Cloud");
     assert_eq!(
         ConnectionSource::Context("prod".into()).to_string(),
         "context prod"
     );
 }
 
+#[test]
+fn a_connection_reads_the_servers_name_and_never_writes_it() {
+    use super::Connection;
+    let machine = "0123456789abcdef0123456789abcdef";
+    let named: Connection = serde_json::from_value(serde_json::json!({
+        "tcp": "127.0.0.1:1", "machine_id": machine, "name": "box-node-09c8",
+    }))
+    .unwrap();
+    assert_eq!(named.server().as_deref(), Some("box-node-09c8"));
+    // A config file never gets the field older CLIs refuse.
+    assert_eq!(
+        serde_json::to_value(&named).unwrap(),
+        serde_json::json!({ "tcp": "127.0.0.1:1", "machine_id": machine })
+    );
+
+    let unnamed: Connection =
+        serde_json::from_value(serde_json::json!({ "tcp": "127.0.0.1:1", "machine_id": machine }))
+            .unwrap();
+    assert_eq!(unnamed.server().as_deref(), Some(machine));
+    let bare: Connection =
+        serde_json::from_value(serde_json::json!({ "tcp": "127.0.0.1:1" })).unwrap();
+    assert_eq!(bare.server(), None);
+}
+
 use std::{collections::BTreeMap, fs, path::PathBuf};
 
-use super::{Config, Context, ContextError, RemovedContext};
+use super::{Config, ConfigError, Context, ContextError, RemovedContext};
 
 #[test]
 fn removing_a_non_current_context_leaves_current_and_the_other_entry() {
@@ -204,4 +288,18 @@ fn set_current_context_rejects_an_unknown_name() {
         })
     );
     assert_eq!(config.current_context(), Some("prod"));
+}
+
+#[test]
+fn config_path_follows_xdg_config_home() {
+    use super::config_path_under;
+    assert_eq!(
+        config_path_under(Some(std::ffi::OsStr::new("/tmp/x"))),
+        "/tmp/x/ployz/config.yaml"
+    );
+    assert_eq!(config_path_under(None), "~/.config/ployz/config.yaml");
+    assert_eq!(
+        config_path_under(Some(std::ffi::OsStr::new("relative"))),
+        "~/.config/ployz/config.yaml"
+    );
 }

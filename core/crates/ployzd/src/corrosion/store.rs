@@ -33,6 +33,12 @@ pub struct ReplicatedStore {
     machine_publication: Arc<tokio::sync::Mutex<()>>,
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct RuntimeOverlay {
+    pub(crate) running_builds: u32,
+    pub(crate) pool_committable_bytes: Option<u64>,
+}
+
 pub(crate) struct MachinePublicationGuard<'a> {
     store: &'a ReplicatedStore,
     _guard: tokio::sync::MutexGuard<'a, ()>,
@@ -62,17 +68,17 @@ impl MachinePublicationGuard<'_> {
         Ok(completed)
     }
 
-    /// This Machine as it publishes: its record with the Builds it runs now,
-    /// an observation the record itself never holds.
+    /// This Machine as it publishes: its record with what it observes of itself now.
     pub(crate) fn publishable_machine(
         &self,
         local: &LocalMachineRecord,
-        running_builds: u32,
+        overlay: RuntimeOverlay,
     ) -> Option<Machine> {
         match local.body() {
             LocalMachineBody::Participating { machine, .. } => {
                 let mut machine = machine.clone();
-                machine.runtime.running_builds = running_builds;
+                machine.runtime.running_builds = overlay.running_builds;
+                machine.runtime.pool_committable_bytes = overlay.pool_committable_bytes;
                 Some(machine)
             }
             LocalMachineBody::Uninitialized { .. }
@@ -686,13 +692,8 @@ impl ReplicatedStore {
                     let pointer = serde_json::from_str(encoded).map_err(|e| e.to_string())?;
                     Ok((service, pointer))
                 });
-            match decoded {
-                Ok((service, pointer)) => {
-                    pointers.by_service.insert(service, pointer);
-                }
-                Err(reason) => {
-                    pointers.malformed.insert(key.to_owned(), reason);
-                }
+            if let Ok((service, pointer)) = decoded {
+                pointers.by_service.insert(service, pointer);
             }
         }
         Ok(pointers)
@@ -771,7 +772,26 @@ impl ReplicatedStore {
     pub(crate) async fn ingress_routes(
         &self,
     ) -> Result<BTreeMap<(MachineId, QualifiedService), IngressRouteRow>, Error> {
-        let query = self.api.query(Statement::new(INGRESS_ROUTES, [])).await?;
+        self.ingress_route_rows(Statement::new(INGRESS_ROUTES, []))
+            .await
+    }
+
+    pub(crate) async fn service_ingress_routes(
+        &self,
+        service: &QualifiedService,
+    ) -> Result<BTreeMap<(MachineId, QualifiedService), IngressRouteRow>, Error> {
+        self.ingress_route_rows(Statement::new(
+            SERVICE_INGRESS_ROUTES,
+            [json!(service.to_string())],
+        ))
+        .await
+    }
+
+    async fn ingress_route_rows(
+        &self,
+        statement: Statement,
+    ) -> Result<BTreeMap<(MachineId, QualifiedService), IngressRouteRow>, Error> {
+        let query = self.api.query(statement).await?;
         Ok(query
             .rows(["machine_id", "service_id", "deploy", "containers"])?
             .into_iter()
@@ -935,6 +955,18 @@ impl ReplicatedStore {
         Ok(futures_util::stream::unfold(changes, |mut changes| async {
             Some((changes.changed().await, changes))
         }))
+    }
+
+    /// This Machine's own Corrosion actor, which only this Machine's writes advance.
+    pub(crate) async fn local_actor(&self) -> Result<String, Error> {
+        let query = self
+            .api
+            .query(Statement::new("SELECT crsql_site_id() AS site_id", []))
+            .await?;
+        match query.rows(["site_id"])?.as_slice() {
+            [[actor]] => actor_id(actor),
+            _ => Err(Error::Protocol("invalid local actor row".into())),
+        }
     }
 
     pub async fn version(&self) -> Result<BTreeMap<String, i64>, Error> {
@@ -1113,6 +1145,8 @@ const SERVING_POINTERS: &str =
     "SELECT key AS serving_key, value FROM cluster WHERE key LIKE 'serving/%'";
 const INGRESS_ROUTES: &str =
     "SELECT machine_id, service_id, deploy, containers FROM ingress_routes";
+const SERVICE_INGRESS_ROUTES: &str =
+    "SELECT machine_id, service_id, deploy, containers FROM ingress_routes WHERE service_id = ?";
 const INGRESS_ROUTE_UPSERT: &str = "INSERT INTO ingress_routes (machine_id, service_id, deploy, containers) VALUES (?, ?, ?, ?) ON CONFLICT (machine_id, service_id) DO UPDATE SET deploy = excluded.deploy, containers = excluded.containers";
 const INGRESS_ROUTE_DELETE: &str =
     "DELETE FROM ingress_routes WHERE machine_id = ? AND service_id = ?";
@@ -1140,7 +1174,6 @@ pub(crate) enum IngressRouteChange {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct ServingPointers {
     by_service: BTreeMap<QualifiedService, ServingPointer>,
-    malformed: BTreeMap<String, String>,
 }
 
 impl ServingPointers {
@@ -1152,31 +1185,12 @@ impl ServingPointers {
     pub(crate) fn iter(&self) -> impl Iterator<Item = (&QualifiedService, &ServingPointer)> {
         self.by_service.iter()
     }
-
-    pub(crate) fn warn_newly_malformed(&self, already_warned: &mut BTreeSet<String>) {
-        for (key, reason) in self.newly_malformed(already_warned) {
-            eprintln!("ignoring malformed Serving Pointer {key}: {reason}");
-        }
-    }
-
-    pub(super) fn newly_malformed<'a>(
-        &'a self,
-        already_warned: &mut BTreeSet<String>,
-    ) -> Vec<(&'a str, &'a str)> {
-        already_warned.retain(|key| self.malformed.contains_key(key));
-        self.malformed
-            .iter()
-            .filter(|(key, _)| already_warned.insert((*key).clone()))
-            .map(|(key, reason)| (key.as_str(), reason.as_str()))
-            .collect()
-    }
 }
 
 impl FromIterator<(QualifiedService, ServingPointer)> for ServingPointers {
     fn from_iter<I: IntoIterator<Item = (QualifiedService, ServingPointer)>>(pointers: I) -> Self {
         Self {
             by_service: pointers.into_iter().collect(),
-            malformed: BTreeMap::new(),
         }
     }
 }

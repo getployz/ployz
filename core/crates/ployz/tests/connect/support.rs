@@ -21,9 +21,9 @@ use ployz_core::{
     MANAGED_LABEL, Machine, MachineDetails, MachineId, MachineList, MachineName,
     MachineObservation, MachinePath, MachineRpcServer, MachineStorageObservation,
     MembershipObservation, NAMESPACE_LABEL, ObservedDataLoss, OpaquePayload, PROTOCOL_MAJOR,
-    QualifiedService, RUNTIME_WATCH_MESSAGE_SIZE_LIMIT, Registered, RpcError, RpcErrorCode,
-    RpcRequestBody, RpcResponse, RuntimeWatchFrame, RuntimeWatchRequest, ServingPointer,
-    ServingPointerPublication, ServingPointerRead, VolumeInventory, VolumeObservationFailure,
+    QualifiedService, RUNTIME_WATCH_MESSAGE_SIZE_LIMIT, Registered, RoutesRead, RpcError,
+    RpcErrorCode, RpcRequestBody, RpcResponse, RuntimeWatchFrame, RuntimeWatchRequest,
+    ServingPointer, ServingPointerPublication, VolumeInventory, VolumeObservationFailure,
     VolumeRemoved, WireGuardPublicKey, encode_runtime_watch_frame, op,
 };
 use ployz_testkit::fake_machine::{Fake, FakeMachine, FakeStream};
@@ -165,6 +165,8 @@ pub(super) struct DiscoveryService {
     pub(super) history_requests: Arc<Mutex<Vec<(MachineId, ployz_core::LogHistoryRequest)>>>,
     pub(super) history_failures: Arc<Mutex<BTreeMap<MachineId, Status>>>,
     pub(super) history_blocked: Option<Arc<tokio::sync::Notify>>,
+    /// The Services whose lines the Log Stores kept; every one when unset.
+    pub(super) kept_services: Option<std::collections::BTreeSet<String>>,
     pub(super) tail_failure: Option<Status>,
     pub(super) metric_replies: Arc<Mutex<MetricReplies>>,
     pub(super) metric_requests:
@@ -178,6 +180,9 @@ pub(super) struct DiscoveryService {
         Arc<Mutex<BTreeMap<MachineId, Vec<VolumeObservationFailure>>>>,
     pub(super) listed_containers: Arc<Mutex<Vec<ployz_core::ContainerObservation>>>,
     pub(super) exec_frames: Option<Vec<ployz_core::ExecResponseFrame>>,
+    /// The containers this Machine lists once an exec starts, as when a Deploy
+    /// replaces the exec's container while it runs.
+    pub(super) listed_after_exec: Option<Vec<ployz_core::ContainerObservation>>,
     pub(super) inspect_container_result: Option<ployz_core::ContainerDetails>,
     pub(super) create_container_error: Option<RpcError>,
     pub(super) create_container_blocked: Option<Arc<tokio::sync::Notify>>,
@@ -189,6 +194,11 @@ pub(super) struct DiscoveryService {
     pub(super) removed_machines: Arc<Mutex<Vec<MachineId>>>,
     /// Serving Pointers published so far; every Machine acks a pointer as soon as it lands.
     pointers: Arc<Mutex<BTreeMap<QualifiedService, ServingPointer>>>,
+    /// Copies a want touched, with their rotation; removed copies leave. A listed
+    /// Container no want touched keeps the rotation it was listed with.
+    copies: Arc<Mutex<BTreeMap<ContainerId, ployz_core::ContainerObservation>>>,
+    /// What each proxy last routed, kept by the real rule.
+    served: Arc<Mutex<BTreeMap<MachineId, ployz_core::ProxyRoutes>>>,
     pub(super) management_clients: Arc<Mutex<Vec<ployz_core::ManagementClientLabel>>>,
     /// Inspect fails, so who manages the Machine can't be read.
     pub(super) inspect_fails: bool,
@@ -208,6 +218,30 @@ pub(super) struct DiscoveryService {
     pub(super) upgrade_targets: Arc<Mutex<Vec<String>>>,
     /// Lose the next Upgrade request's reply after accepting it.
     pub(super) lose_upgrade_reply: Arc<AtomicBool>,
+    /// Every operator endpoint this entry took for a peer.
+    pub(super) selected_endpoints: Arc<Mutex<Vec<ployz_core::SelectEndpointRequest>>>,
+    /// UpdateMachine gets no answer from its target, as when the target is off the mesh.
+    pub(super) update_unavailable: bool,
+    /// The target refuses UpdateMachine before changing anything, as one without its Cluster store.
+    pub(super) update_refusal: Option<RpcError>,
+    /// SelectEndpoint is unimplemented, as on a daemon older than it.
+    pub(super) select_unimplemented: bool,
+    /// How SetVolumeCopy fails on these targets; every other target leaves it unimplemented.
+    pub(super) set_volume_copy_failures: BTreeMap<MachineId, SwitchFailure>,
+}
+
+#[derive(Clone)]
+pub(super) enum SwitchFailure {
+    /// The target refuses with this status itself.
+    Refused(Status),
+    /// The entry's router heard nothing back from the target.
+    Unanswered,
+    /// The entry's router could not dial the target, so the target never got the call.
+    Undialed,
+    /// No reply ever comes, so the caller's own deadline ends the call.
+    Hangs,
+    /// The target takes the request, signals it, and never replies.
+    Taken(Arc<tokio::sync::Notify>),
 }
 
 impl DiscoveryService {
@@ -234,6 +268,7 @@ impl DiscoveryService {
             history_requests: Arc::new(Mutex::new(Vec::new())),
             history_failures: Arc::new(Mutex::new(BTreeMap::new())),
             history_blocked: None,
+            kept_services: None,
             tail_failure: None,
             metric_replies: Arc::default(),
             metric_requests: Arc::default(),
@@ -245,6 +280,7 @@ impl DiscoveryService {
             volume_observation_failures: Arc::new(Mutex::new(BTreeMap::new())),
             listed_containers: Arc::new(Mutex::new(Vec::new())),
             exec_frames: None,
+            listed_after_exec: None,
             inspect_container_result: None,
             create_container_error: None,
             create_container_blocked: None,
@@ -255,6 +291,8 @@ impl DiscoveryService {
             reset_machines: Arc::new(Mutex::new(Vec::new())),
             removed_machines: Arc::new(Mutex::new(Vec::new())),
             pointers: Arc::new(Mutex::new(BTreeMap::new())),
+            copies: Arc::default(),
+            served: Arc::default(),
             management_clients: Arc::default(),
             inspect_fails: false,
             leave_unavailable: false,
@@ -267,6 +305,11 @@ impl DiscoveryService {
             upgrade_attempt: Arc::default(),
             upgrade_targets: Arc::default(),
             lose_upgrade_reply: Arc::default(),
+            selected_endpoints: Arc::default(),
+            update_unavailable: false,
+            update_refusal: None,
+            select_unimplemented: false,
+            set_volume_copy_failures: BTreeMap::new(),
         }
     }
 
@@ -303,6 +346,117 @@ impl DiscoveryService {
 
     pub(super) fn end_watch(&self) {
         self.watch.live.lock().unwrap().clear();
+    }
+
+    #[expect(clippy::result_large_err)] // tonic fixes the public RPC error type.
+    fn copy(
+        &self,
+        locator: &ployz_core::ContainerLocator,
+    ) -> Result<ployz_core::ContainerObservation, Status> {
+        let ployz_core::ContainerLocator::Id(container_id) = locator else {
+            return Err(Status::unimplemented("unused"));
+        };
+        if let Some(copy) = self.copies.lock().unwrap().get(container_id) {
+            return Ok(copy.clone());
+        }
+        self.listed_containers
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|listed| listed.container_id == *container_id)
+            .cloned()
+            .ok_or_else(|| Status::not_found("no such Container"))
+    }
+
+    /// Apply `want` to the copy by the edge table; a copy goes In as soon as asked,
+    /// since every copy here is healthy.
+    #[expect(
+        clippy::result_large_err,
+        reason = "the refusal is the wire's EnsuredContainer, returned as is"
+    )]
+    fn turn(
+        &self,
+        mut copy: ployz_core::ContainerObservation,
+        want: &ployz_core::ContainerWant,
+    ) -> Result<
+        (ployz_core::ContainerNow, Option<ployz_core::HealthVerdict>),
+        ployz_core::EnsuredContainer,
+    > {
+        let health = match ployz_testkit::rotation::decide(copy.rotation(), want) {
+            Err(refusal) => {
+                return Err(ployz_core::EnsuredContainer::Refused {
+                    now: ployz_core::ContainerNow::Present(copy),
+                    refusal,
+                });
+            }
+            Ok(ployz_core::RotationEdge::Write(rotation)) => {
+                let health = (rotation == ployz_core::CopyRotation::In)
+                    .then_some(ployz_core::HealthVerdict::Healthy);
+                copy.try_update(|parts| parts.rotation = Some(rotation))
+                    .unwrap();
+                self.copies
+                    .lock()
+                    .unwrap()
+                    .insert(copy.container_id, copy.clone());
+                health
+            }
+            Ok(
+                ployz_core::RotationEdge::Keep
+                | ployz_core::RotationEdge::Remove
+                | ployz_core::RotationEdge::Refused(_),
+            ) => None,
+        };
+        Ok((ployz_core::ContainerNow::Present(copy), health))
+    }
+
+    /// Each Machine's proxy routes by the real proxy rule, seeing every copy addressed.
+    fn routes(&self, service: &QualifiedService) -> RoutesRead {
+        let mut copies: BTreeMap<ContainerId, ployz_core::ContainerObservation> = self
+            .listed_containers
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|listed| (listed.container_id, listed.clone()))
+            .collect();
+        copies.extend(self.copies.lock().unwrap().clone());
+        let siblings = ployz_core::service_containers(
+            copies
+                .into_values()
+                .filter(|copy| copy.identity() == *service)
+                .map(|mut copy| {
+                    copy.try_update(|parts| {
+                        parts.address = parts.address.or(Some(ployz_core::ContainerAddress(
+                            "10.210.1.2".parse().unwrap(),
+                        )));
+                    })
+                    .unwrap();
+                    copy
+                }),
+        );
+        let mut served = self.served.lock().unwrap();
+        RoutesRead {
+            routes: self
+                .machines
+                .iter()
+                .map(|observed| {
+                    let current = served.entry(observed.machine.id).or_default();
+                    let next = ployz_core::proxy_routes(&siblings, |_| false, current);
+                    let route = next.get(service).cloned().unwrap_or_default();
+                    let listed = route
+                        .iter()
+                        .map(|serving| serving.as_observation().container_id)
+                        .collect();
+                    if next.contains_key(service) {
+                        current.insert(service.clone(), route);
+                    } else {
+                        current.remove(service);
+                    }
+                    (observed.machine.id, Some(listed))
+                })
+                .collect(),
+            complete: true,
+            ..RoutesRead::default()
+        }
     }
 }
 
@@ -895,16 +1049,25 @@ impl FakeMachine for DiscoveryService {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
+        let machine_id =
+            MachineId::parse(request.metadata().get("machine").unwrap().to_str().unwrap()).unwrap();
         let request = request.into_inner().decode_request().unwrap();
         let RpcRequestBody::EnsureContainer(ensure) = request.body else {
             return Err(Status::invalid_argument("expected ensure_container"));
         };
-        let now = match ensure.want {
+        let want = ensure.want.clone();
+        let (now, health) = match ensure.want {
             ployz_core::ContainerWant::Running {
                 container: ployz_core::RunTarget::New(new),
+                ..
             } => {
                 let resolved_spec = new.resolved_spec.clone();
-                self.created_containers.lock().unwrap().push(new);
+                let created = {
+                    let mut created = self.created_containers.lock().unwrap();
+                    created.push(new);
+                    created.len()
+                };
+                let container_id = ContainerId::parse(format!("{created:064x}")).unwrap();
                 if let Some(builds) = &self.builds
                     && builds.retain_images
                 {
@@ -927,18 +1090,41 @@ impl FakeMachine for DiscoveryService {
                         RpcResponse::from(error.clone()).encode().unwrap(),
                     ));
                 }
-                ployz_core::ContainerNow::Present(created_container(resolved_spec))
+                let copy = created_container(machine_id, container_id, resolved_spec);
+                self.copies
+                    .lock()
+                    .unwrap()
+                    .insert(container_id, copy.clone());
+                (ployz_core::ContainerNow::Present(copy), None)
+            }
+            ployz_core::ContainerWant::Running {
+                container: ployz_core::RunTarget::Existing(container),
+                ..
+            }
+            | ployz_core::ContainerWant::Stopped { container, .. }
+            | ployz_core::ContainerWant::Out { container, .. }
+            | ployz_core::ContainerWant::Held { container, .. } => {
+                let copy = self.copy(&container)?;
+                match self.turn(copy, &want) {
+                    Ok(turned) => turned,
+                    Err(refused) => {
+                        return Ok(Response::new(RpcResponse::from(refused).encode().unwrap()));
+                    }
+                }
             }
             ployz_core::ContainerWant::Gone { container, .. } => {
-                ployz_core::ContainerNow::Absent { of: container }
-            }
-            ployz_core::ContainerWant::Running { .. }
-            | ployz_core::ContainerWant::Stopped { .. } => {
-                return Err(Status::unimplemented("unused"));
+                if let Ok(copy) = self.copy(&container) {
+                    let container_id = copy.container_id;
+                    if let Err(refused) = self.turn(copy, &want) {
+                        return Ok(Response::new(RpcResponse::from(refused).encode().unwrap()));
+                    }
+                    self.copies.lock().unwrap().remove(&container_id);
+                }
+                (ployz_core::ContainerNow::Absent { of: container }, None)
             }
         };
         Ok(Response::new(
-            RpcResponse::from(ployz_core::EnsuredContainer::Ensured { now, health: None })
+            RpcResponse::from(ployz_core::EnsuredContainer::Ensured { now, health })
                 .encode()
                 .unwrap(),
         ))
@@ -958,6 +1144,9 @@ impl FakeMachine for DiscoveryService {
             .message()
             .await?
             .ok_or_else(|| Status::invalid_argument("missing exec config"))?;
+        if let Some(listed) = &self.listed_after_exec {
+            self.listed_containers.lock().unwrap().clone_from(listed);
+        }
         Ok(Response::new(Box::pin(tokio_stream::iter(
             frames
                 .iter()
@@ -978,6 +1167,7 @@ impl FakeMachine for DiscoveryService {
         else {
             return Err(Status::invalid_argument("expected log_history"));
         };
+        let asked = history.service.clone();
         self.history_requests
             .lock()
             .unwrap()
@@ -988,6 +1178,12 @@ impl FakeMachine for DiscoveryService {
         if let Some(received) = &self.history_blocked {
             received.notify_one();
             std::future::pending::<()>().await;
+        }
+        if let (Some(kept), Some(service)) = (&self.kept_services, &asked)
+            && !kept.contains(service)
+        {
+            let end = ployz_core::HistoryRow::End { next: None }.encode().unwrap();
+            return Ok(Response::new(Box::pin(tokio_stream::iter([Ok(end)]))));
         }
         let container_id = ContainerId::parse("9".repeat(64)).unwrap();
         let rows = [
@@ -1146,15 +1342,21 @@ impl FakeMachine for DiscoveryService {
             RpcResponse::from(publication).encode().unwrap(),
         ))
     }
-    async fn read_serving_pointer(
+    async fn read_routes(
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        let RpcRequestBody::ReadServingPointer(read) =
-            request.into_inner().decode_request().unwrap().body
+        let RpcRequestBody::ReadRoutes(read) = request.into_inner().decode_request().unwrap().body
         else {
             panic!("expected pointer read");
         };
+        if read.routes_only {
+            return Ok(Response::new(
+                RpcResponse::from(self.routes(&read.service))
+                    .encode()
+                    .unwrap(),
+            ));
+        }
         let pointer = self.pointers.lock().unwrap().get(&read.service).cloned();
         let acks = pointer
             .iter()
@@ -1165,10 +1367,11 @@ impl FakeMachine for DiscoveryService {
             })
             .collect();
         Ok(Response::new(
-            RpcResponse::from(ServingPointerRead {
+            RpcResponse::from(RoutesRead {
                 all_routed: pointer.is_some(),
                 pointer,
                 acks,
+                ..RoutesRead::default()
             })
             .encode()
             .unwrap(),
@@ -1179,7 +1382,7 @@ impl FakeMachine for DiscoveryService {
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         Ok(Response::new(
-            RpcResponse::from(ployz_core::ImagePulled {})
+            RpcResponse::from(ployz_core::ImagePulled::default())
                 .encode()
                 .unwrap(),
         ))
@@ -1207,9 +1410,34 @@ impl FakeMachine for DiscoveryService {
         }
         builds.delivered.store(true, Ordering::SeqCst);
         Ok(Response::new(
-            RpcResponse::from(ployz_core::ImagePulled {})
+            RpcResponse::from(ployz_core::ImagePulled::default())
                 .encode()
                 .unwrap(),
+        ))
+    }
+
+    async fn select_endpoint(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        if self.select_unimplemented {
+            return Err(Status::unimplemented("SelectEndpoint"));
+        }
+        let request = request.into_inner().decode_request().unwrap();
+        let RpcRequestBody::SelectEndpoint(request) = request.body else {
+            return Err(Status::invalid_argument("expected select_endpoint"));
+        };
+        self.selected_endpoints
+            .lock()
+            .unwrap()
+            .push(request.clone());
+        Ok(Response::new(
+            RpcResponse::from(ployz_core::EndpointSelected {
+                peer: request.peer,
+                endpoint: request.endpoint,
+            })
+            .encode()
+            .unwrap(),
         ))
     }
 
@@ -1217,6 +1445,16 @@ impl FakeMachine for DiscoveryService {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
+        if self.update_unavailable {
+            return Err(ployz_core::rpc::target_unanswered_status(
+                &std::io::Error::new(std::io::ErrorKind::TimedOut, "target Machine RPC timed out"),
+            ));
+        }
+        if let Some(error) = &self.update_refusal {
+            return Ok(Response::new(
+                RpcResponse::from(error.clone()).encode().unwrap(),
+            ));
+        }
         let target = ployz_core::MachineTarget::parse(
             request.metadata().get("machine").unwrap().to_str().unwrap(),
         )
@@ -1239,6 +1477,31 @@ impl FakeMachine for DiscoveryService {
                 .encode()
                 .unwrap(),
         ))
+    }
+
+    async fn set_volume_copy(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        let machine_id =
+            MachineId::parse(request.metadata().get("machine").unwrap().to_str().unwrap()).unwrap();
+        match self.set_volume_copy_failures.get(&machine_id) {
+            Some(SwitchFailure::Refused(status)) => Err(status.clone()),
+            Some(SwitchFailure::Unanswered) => Err(ployz_core::rpc::target_unanswered_status(
+                &std::io::Error::new(std::io::ErrorKind::ConnectionReset, "connection reset"),
+            )),
+            Some(SwitchFailure::Undialed) => Err(ployz_core::rpc::target_unreached_status(
+                &std::io::Error::new(std::io::ErrorKind::ConnectionRefused, "tcp connect error"),
+            )),
+            Some(SwitchFailure::Hangs) => std::future::pending().await,
+            Some(SwitchFailure::Taken(taken)) => {
+                taken.notify_one();
+                std::future::pending().await
+            }
+            None => Err(Status::unimplemented(
+                "SetVolumeCopy is not used by this fixture",
+            )),
+        }
     }
 
     async fn leave(
@@ -1319,6 +1582,7 @@ pub(super) fn created_volume(machine_id: MachineId, create: CreateVolumeRequest)
             bound_bytes: NonZeroU64::new(amount.parse::<u64>().unwrap() * multiplier).unwrap(),
             used_bytes: 0,
             role: None,
+            slot_role: None,
         }
     } else {
         DockerVolumeStorageObservation::Plain {
@@ -1337,13 +1601,17 @@ pub(super) fn created_volume(machine_id: MachineId, create: CreateVolumeRequest)
 }
 
 fn created_container(
+    machine_id: MachineId,
+    container_id: ContainerId,
     resolved_spec: ployz_core::ResolvedServiceSpec,
 ) -> ployz_core::ContainerObservation {
     ployz_core::ContainerObservation::try_from(ployz_core::ContainerObservationParts {
-        container_id: ContainerId::parse("1".repeat(64)).unwrap(),
+        rotation: Some(ployz_core::CopyRotation::Pending),
+        r#gen: None,
+        container_id,
         display_name: "web-1".into(),
         created_at_unix_nanos: 1,
-        machine_id: MachineId::random(),
+        machine_id,
         namespace: ployz_core::Namespace::parse("app").unwrap(),
         kind: ployz_core::ContainerKind::ServiceContainer,
         runtime: ployz_core::ContainerRuntimeObservation::Running {
@@ -1353,6 +1621,7 @@ fn created_container(
         resolved_spec,
         address: None,
         labels: BTreeMap::new(),
+        stopped: false,
     })
     .unwrap()
 }
@@ -1365,6 +1634,7 @@ pub(super) fn empty_storage() -> ployz_core::StorageCapacity {
             host_available_bytes: 90 * ployz_core::STORAGE_GIB,
         },
         unmanaged_used_bytes: 0,
+        slot_bound_bytes: 0,
         volumes: BTreeMap::new(),
         copies: BTreeMap::new(),
     }

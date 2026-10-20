@@ -64,6 +64,10 @@ pub struct SettingRow {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub row: Option<crate::RowId>,
+    /// Why its value may not act, such as push policy on a repository Ployz may not hear.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub note: Option<String>,
 }
 
 pub(crate) fn environment(
@@ -73,6 +77,10 @@ pub(crate) fn environment(
 ) -> Result<EnvironmentView, RpcError> {
     let environment = scope::environment(tx, who, &query.environment)?;
     let path = query.path.as_ref();
+    let only = path.and_then(SettingPath::target);
+    if only == Some(&Target::Setup) {
+        crate::branch::refuse_service_named_setup(&environment)?;
+    }
     let services = match path {
         Some(path) => vec![environment.service(path.settings_of()?)?],
         None => {
@@ -81,31 +89,38 @@ pub(crate) fn environment(
             services
         }
     };
-    let only = path.and_then(SettingPath::target);
     let values = path
         .filter(|path| path.target().is_none())
         .and_then(|_| services.first())
         .map(|service| values(tx, &environment, service))
         .transpose()?;
     let whole = path.is_none() && !query.all;
+    let setup = match only {
+        Some(Target::Setup) => Some(crate::branch::Own::of_branch(tx, &environment)?),
+        _ => crate::branch::Own::of(tx, &environment)?,
+    };
     let mut settings = Vec::new();
     for service in services {
         let name = ServiceName::parse(service.slug.as_str())
             .map_err(|_| crate::error::corrupt("Service name"))?;
         let mut row = |target: Target, value: Value, default: Value, apply: Apply| {
             if only.is_none_or(|only| *only == target) && !(whole && value == default) {
-                let row = match &target {
-                    Target::Variable(key) => Some(crate::branch::row_id(
-                        &service.lineage_id,
-                        &format!("variables.{key}"),
-                    )?),
-                    Target::Setting(_)
-                    | Target::Source
+                let (row, note) = match &target {
+                    Target::Variable(key) => (
+                        Some(crate::branch::row_id(
+                            &service.lineage_id,
+                            &format!("variables.{key}"),
+                        )?),
+                        None,
+                    ),
+                    Target::Setting(setting) => (None, setting.note(&service.config)),
+                    Target::Source
                     | Target::Domains
+                    | Target::Setup
                     | Target::Exported(_)
                     | Target::Description(_)
                     | Target::Mount(_)
-                    | Target::ConfigMount(_) => None,
+                    | Target::ConfigMount(_) => (None, None),
                 };
                 settings.push(SettingRow {
                     path: SettingPath::at(&name, target),
@@ -113,6 +128,7 @@ pub(crate) fn environment(
                     default,
                     apply,
                     row,
+                    note,
                 });
             }
             Ok::<_, RpcError>(())
@@ -138,7 +154,7 @@ pub(crate) fn environment(
                 VariableKey::parse(&variable.key).map_err(|_| crate::error::corrupt("variable"))?;
             row(
                 Target::Variable(key.clone()),
-                variables::shown(variable, &environment.names()),
+                variables::shown(variable, &environment.shown_names()),
                 Value::Null,
                 Apply::Staged,
             )?;
@@ -180,6 +196,19 @@ pub(crate) fn environment(
             };
             row(target, Value::String(dir), Value::Null, Apply::Staged)?;
         }
+        if let Some(setup) = &setup {
+            let value = setup.value(service);
+            if only.is_none_or(|only| *only == Target::Setup) && !(whole && value.is_null()) {
+                settings.push(SettingRow {
+                    path: SettingPath::at(&name, Target::Setup),
+                    value,
+                    default: Value::Null,
+                    apply: Apply::Immediate,
+                    row: None,
+                    note: setup.note(service),
+                });
+            }
+        }
     }
     Ok(EnvironmentView {
         never_synced: crate::branch::marked(tx, &environment.summary.id)?
@@ -211,7 +240,7 @@ pub(crate) fn values(
         })
         .filter(|(_, value)| !value.is_null())
         .collect();
-    let env = variables::patch_values(service, &environment.names());
+    let env = variables::patch_values(service, &environment.shown_names());
     if !env.is_empty() {
         values.insert("env".to_owned(), Value::Object(env));
     }

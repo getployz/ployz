@@ -42,6 +42,10 @@ fn run(state: &str, kind: &str, args: Value) -> Value {
     })
 }
 
+fn twenty_gb() -> ProvisionedVolumeMaximumBytes {
+    ProvisionedVolumeMaximumBytes::parse_gb("20").unwrap()
+}
+
 fn parsed(args: &[&str]) -> Result<ArgMatches, clap::Error> {
     crate::cli::command().try_get_matches_from(args.iter().copied())
 }
@@ -179,6 +183,56 @@ fn the_in_process_store_has_no_volume_runs() {
     );
 }
 
+#[test]
+fn a_deployed_volume_resizes_only_with_ployz_cloud() {
+    let root = parsed(&[
+        "ployz",
+        "volume",
+        "set",
+        "data",
+        "--size",
+        "20",
+        "--project",
+        "shop",
+    ])
+    .unwrap();
+    let matches = leaf_matches(&root);
+    assert!(parsed(&["ployz", "volume", "set", "data", "--wait"]).is_err());
+    assert!(
+        parsed(&["ployz", "volume", "set", "data", "--size", "20", "--wait"])
+            .is_ok_and(|root| leaf_matches(&root).get_flag("wait"))
+    );
+    let (store, _) = store::store_with_edits(matches);
+    store
+        .write(&ployz_store::CreateVolume {
+            id: VolumeId::parse(store::mint()).unwrap(),
+            environment: store::environment(matches).unwrap(),
+            name: VolumeName::parse("data").unwrap(),
+            storage: ployz_core::config::VolumeKind::provisioned_default(),
+            mounts: Vec::new(),
+            shared_writes: false,
+            storage_locked: true,
+            restored_from: None,
+        })
+        .unwrap();
+    let error = super::super::set_storage(
+        &root,
+        &store,
+        VolumeName::parse("data").unwrap(),
+        ployz_core::config::VolumeKind::Provisioned {
+            maximum_bytes: twenty_gb(),
+        },
+    )
+    .unwrap_err()
+    .report();
+    let Err(moving) = cloud(store.backend()) else {
+        panic!("the in-process Store has no Volume runs");
+    };
+    let moving = moving.report();
+    assert_eq!(error.code, RpcErrorCode::Unsupported);
+    assert_eq!((error.code, &error.message), (moving.code, &moving.message));
+}
+
 #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
 #[tokio::test]
 async fn each_kind_posts_only_its_own_fields() {
@@ -239,6 +293,16 @@ async fn each_kind_posts_only_its_own_fields() {
             },
             json!({ "environment": { "project": "shop", "environment": "production" }, "kind": "restore", "from": "web-2" }),
             json!({ "from": "web-2" }),
+        ),
+        (
+            RunRequest {
+                environment: named(),
+                ask: RunAsk::Resize {
+                    maximum_bytes: twenty_gb(),
+                },
+            },
+            json!({ "environment": { "project": "shop", "environment": "production" }, "kind": "resize", "maximum_bytes": 20_000_000_000_u64 }),
+            json!({ "maximum_bytes": 20_000_000_000_u64 }),
         ),
     ];
     for (request, body, args) in cases {
@@ -328,6 +392,46 @@ async fn wait_polls_the_run_until_it_ends() {
     assert_eq!(polls.load(Ordering::SeqCst), 2);
 }
 
+fn noted(state: &str, message: Option<&str>) -> VolumeRun {
+    let mut run: VolumeRun =
+        serde_json::from_value(run(state, "move", json!({ "to": "web-2" }))).unwrap();
+    run.message = message.map(str::to_owned);
+    run
+}
+
+#[test]
+fn a_wait_says_each_step_a_running_move_reaches_once() {
+    let requested = noted("requested", None);
+    let copying = noted("running", Some("Copying to web-2"));
+    let stopped = noted("running", Some("pg stopped for the final copy"));
+    let done = noted("done", Some("pg was stopped 26s"));
+
+    assert_eq!(
+        news(&requested, &copying),
+        [
+            format!("Run {RUN} is running."),
+            "Copying to web-2.".to_owned()
+        ]
+    );
+    assert!(news(&copying, &copying).is_empty());
+    assert_eq!(news(&copying, &stopped), ["pg stopped for the final copy."]);
+    assert!(news(&stopped, &done).is_empty());
+}
+
+#[test]
+fn a_running_run_shows_its_message_as_what_it_does_now() {
+    let shown = |run: &VolumeRun| {
+        let mut shown = Vec::new();
+        record(run).write(&mut shown, true).unwrap();
+        String::from_utf8(shown).unwrap()
+    };
+    let running = shown(&noted("running", Some("pg stopped for the final copy")));
+    assert!(running.contains("now"), "{running}");
+    assert!(!running.contains("message"), "{running}");
+    let done = shown(&noted("done", Some("pg was stopped 26s")));
+    assert!(done.contains("message"), "{done}");
+}
+
 #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
 #[test]
 fn a_run_that_did_not_finish_is_the_command_s_failure() {
@@ -349,6 +453,66 @@ fn a_run_that_did_not_finish_is_the_command_s_failure() {
     failed.state = MaybeKnown::Known(VolumeRunState::Lost);
     let error = ended(&failed, "Mirror", follow).unwrap_err().report();
     assert_eq!(error.code, RpcErrorCode::Unavailable);
+}
+
+#[test]
+fn a_resize_reads_back_its_size_and_names_it_when_it_fails() {
+    let mut failed: VolumeRun = serde_json::from_value(run(
+        "failed",
+        "resize",
+        json!({ "maximum_bytes": 20_000_000_000_u64 }),
+    ))
+    .unwrap();
+    assert_eq!(failed.kind, MaybeKnown::Known(VolumeRunKind::Resize));
+    assert_eq!(failed.args.maximum_bytes, Some(twenty_gb()));
+    assert_eq!(failed.args.to, None);
+    assert_eq!(asked(&failed.args), "to 20 GB");
+    failed.message = Some("db-1 has no room to grow data to 20 GB (it lacks 4 GB)".to_owned());
+    let error = ended(
+        &failed,
+        "resize of Volume data to 20 GB",
+        format!("ployz volume runs data {RUN}"),
+    )
+    .unwrap_err()
+    .report();
+    assert_eq!(error.code, RpcErrorCode::Conflict);
+    assert_eq!(
+        error.message,
+        "The resize of Volume data to 20 GB failed: db-1 has no room to grow data to 20 GB (it lacks 4 GB)"
+    );
+}
+
+#[test]
+fn only_a_resize_cloud_finds_already_done_is_no_failure() {
+    let refusal = |code, details| RpcError {
+        code,
+        message: "data is already 20 GB".to_owned(),
+        details,
+        cause: Vec::new(),
+    };
+    let resize = RunAsk::Resize {
+        maximum_bytes: twenty_gb(),
+    };
+    let moving = RunAsk::Move {
+        to: MachineName::parse("web-2").unwrap(),
+    };
+    let settled = json!({ "settled": true });
+    assert!(already(
+        &resize,
+        &refusal(RpcErrorCode::Conflict, settled.clone())
+    ));
+    assert!(!already(
+        &moving,
+        &refusal(RpcErrorCode::Conflict, settled.clone())
+    ));
+    assert!(!already(
+        &resize,
+        &refusal(RpcErrorCode::Conflict, Value::Null)
+    ));
+    assert!(!already(
+        &resize,
+        &refusal(RpcErrorCode::InvalidArgument, settled)
+    ));
 }
 
 #[test]

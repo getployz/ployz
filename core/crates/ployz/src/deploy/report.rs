@@ -10,10 +10,9 @@ use crate::{
 use ployz_core::{
     ContainerId, DeployOperation, DeployOutcome, ExecutionError, FailedOperation, MachineId,
     Namespace, OperationPhase, OperationRow, OperationStatus, QualifiedService,
-    ReplacementCompensation, RequestedServiceSpec, RestartAttempt, RpcError, RpcErrorCode,
-    ServiceName, StopAttempt,
+    ReplacementCompensation, RestoreAttempt, RpcError, RpcErrorCode, ServiceName, StopAttempt,
 };
-use ployz_store::tools::SecretSet;
+use ployz_store::tools::SealedValues;
 use ployz_store::{RowPhase, RowState, RowTracker, ServerProgress, starts_container};
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, SystemTime};
@@ -63,6 +62,8 @@ pub(crate) struct Replica<'a> {
     pub machine: MachineId,
     pub state: &'a RowState,
     pub starts: bool,
+    /// The copy keeps serving under its own id and takes new limits in place.
+    pub updates: bool,
     pub timing: Timing,
 }
 
@@ -75,6 +76,18 @@ pub(crate) fn starts(
         row.machine_id == machine
             && row.service_name() == Some(service)
             && starts_container(&row.operation)
+    })
+}
+
+pub(crate) fn updates(
+    operations: &[OperationRow],
+    service: &ServiceName,
+    machine: MachineId,
+) -> bool {
+    operations.iter().any(|row| {
+        row.machine_id == machine
+            && row.service_name() == Some(service)
+            && matches!(row.operation, DeployOperation::UpdateContainer(_))
     })
 }
 
@@ -99,7 +112,8 @@ pub(crate) fn service_row<'a>(
     replicas: impl IntoIterator<Item = Replica<'a>>,
 ) -> Row {
     let replicas: Vec<_> = replicas.into_iter().collect();
-    let removal = !replicas.is_empty() && replicas.iter().all(|replica| !replica.starts);
+    let removal =
+        depth.is_none() && !replicas.is_empty() && replicas.iter().all(|replica| !replica.starts);
     let served = !removal
         && replicas.iter().any(|replica| {
             replica.starts
@@ -110,32 +124,50 @@ pub(crate) fn service_row<'a>(
         });
     let failed = replicas
         .iter()
-        .filter(|replica| matches!(replica.state, RowState::Failed { .. }))
+        .filter(|replica| {
+            matches!(
+                replica.state,
+                RowState::Failed {
+                    cancelled: false,
+                    ..
+                }
+            )
+        })
         .count();
     let counted: Vec<_> = replicas
         .iter()
         .filter(|replica| removal || replica.starts)
         .collect();
     // A failure cancels the switch, so a copy waiting on it will never serve.
-    let ready = counted
+    // A copy under an in-place update serves throughout, and is ready once done.
+    let is_ready = |replica: &Replica<'_>| match replica.state {
+        RowState::Running {
+            phase: RowPhase::UpdatingContainer,
+            ..
+        } => false,
+        RowState::Completed | RowState::Running { serving: true, .. } => true,
+        RowState::Running {
+            phase: RowPhase::WaitingForSwitch,
+            ..
+        } => failed == 0,
+        RowState::Running { .. }
+        | RowState::Pending
+        | RowState::Failed { .. }
+        | RowState::NotAttempted
+        | RowState::Unknown => false,
+    };
+    let ready = counted.iter().filter(|replica| is_ready(replica)).count();
+    let in_place = counted.iter().filter(|replica| replica.updates).count();
+    let in_place_ready = counted
         .iter()
-        .filter(|replica| match replica.state {
-            RowState::Completed | RowState::Running { serving: true, .. } => true,
-            RowState::Running {
-                phase: RowPhase::WaitingForSwitch,
-                ..
-            } => failed == 0,
-            RowState::Running { .. }
-            | RowState::Pending
-            | RowState::Failed { .. }
-            | RowState::NotAttempted
-            | RowState::Unknown => false,
-        })
+        .filter(|replica| replica.updates && is_ready(replica))
         .count();
     let switching = failed == 0 && ready == counted.len();
     let work = |replica: &Replica<'_>| match replica.state {
         RowState::Running { phase, serving } => Some((
-            if *serving || (served && !replica.starts) {
+            if *phase == RowPhase::UpdatingContainer {
+                Step::Start
+            } else if *serving || (served && !replica.starts) {
                 Step::Retire
             } else if stops_or_removes(*phase) {
                 Step::Clear
@@ -164,6 +196,10 @@ pub(crate) fn service_row<'a>(
         .iter()
         .filter(|replica| match replica.state {
             RowState::Pending => served && !replica.starts,
+            RowState::Running {
+                phase: RowPhase::UpdatingContainer,
+                ..
+            } => false,
             RowState::Running { serving, .. } => *serving || (served && !replica.starts),
             RowState::Completed
             | RowState::Failed { .. }
@@ -187,6 +223,16 @@ pub(crate) fn service_row<'a>(
         State::Pending
     } else if all(|state| matches!(state, RowState::Completed)) {
         State::Completed
+    } else if replicas.iter().any(|replica| {
+        matches!(
+            replica.state,
+            RowState::Failed {
+                cancelled: true,
+                ..
+            }
+        )
+    }) {
+        State::Cancelled
     } else if replicas
         .iter()
         .any(|replica| matches!(replica.state, RowState::NotAttempted))
@@ -228,6 +274,8 @@ pub(crate) fn service_row<'a>(
             depth,
             ready,
             total: counted.len(),
+            in_place,
+            in_place_ready,
             draining,
             work: if removal {
                 Work::Remove
@@ -295,6 +343,13 @@ impl Direct {
         self.operations = operations.to_vec();
     }
 
+    /// Show `warning` with the deploy's other notices, once.
+    pub(super) fn notice(&mut self, warning: ployz_core::DeployWarning) {
+        if !self.notices.contains(&warning) {
+            self.notices.push(warning);
+        }
+    }
+
     pub(super) fn frame(&self) -> Frame {
         let services: BTreeSet<_> = self.rows.keys().map(|(service, _)| service).collect();
         let mut rows: Vec<_> = services
@@ -310,6 +365,7 @@ impl Direct {
                             machine: row.machine,
                             state: &row.state,
                             starts: starts(&self.operations, service, row.machine),
+                            updates: updates(&self.operations, service, row.machine),
                             timing: timing.clone(),
                         }),
                 )
@@ -348,13 +404,9 @@ impl Direct {
         }
     }
 
-    /// Each failed row's scrubbed Container tail. Every value of `requested`'s
-    /// environment counts as a secret: a direct apply has no Store to say otherwise.
-    pub(super) async fn tails(
-        &self,
-        client: &Client,
-        requested: &RequestedServiceSpec,
-    ) -> Vec<LogTail> {
+    /// Each failed row's Container tail with secret-shaped text redacted. A direct apply
+    /// has no Store, so it has no Sealed values to scrub.
+    pub(super) async fn tails(&self, client: &Client) -> Vec<LogTail> {
         let mut tails = Vec::new();
         for (row, _) in self
             .rows
@@ -363,17 +415,14 @@ impl Direct {
         {
             let log = match self.tracker.container(row) {
                 None => None,
-                Some(container) => {
-                    let secrets = if row.service == requested.name {
-                        SecretSet::from_store(requested.container.environment.clone(), [])
-                    } else {
-                        SecretSet::unknown()
-                    };
-                    Some(crate::sdk::failed_tail(client, row.machine, container, secrets).await)
-                }
+                Some(container) => Some(
+                    crate::sdk::failed_tail(client, row.machine, container, &SealedValues::none())
+                        .await,
+                ),
             };
             tails.push(LogTail {
                 service: QualifiedService::new(self.namespace.clone(), row.service.clone()),
+                name: row.service.clone(),
                 machine: row.machine,
                 server: row.server.clone(),
                 log,
@@ -383,7 +432,11 @@ impl Direct {
     }
 }
 
-pub(super) fn failure(outcome: &DeployOutcome<ExecutionError>, tails: Vec<LogTail>) -> Failure {
+pub(super) fn failure(
+    outcome: &DeployOutcome<ExecutionError>,
+    operations: &[OperationRow],
+    tails: Vec<LogTail>,
+) -> Failure {
     let DeployOutcome::Failed { failed, .. } = outcome else {
         return Failure::coded(
             RpcErrorCode::Internal,
@@ -398,48 +451,42 @@ pub(super) fn failure(outcome: &DeployOutcome<ExecutionError>, tails: Vec<LogTai
             operation, error, ..
         } => (Some(&operation.spec.name), operation.machine_id, error),
     };
-    let stored = ployz_store::Failure::of(error, &[]);
-    let message = service.map_or_else(
-        || "Deployment failed.".to_owned(),
-        |service| format!("Deployment of {service} failed."),
-    );
-    let mut causes = vec![stored.reason];
-    causes.extend(stored.cause);
+    let ployz_store::Failure { reason, cause } = ployz_store::Failure::of(error, operations);
+    let message = crate::ui::sentence(match service {
+        Some(service) => format!("{service}: {reason}"),
+        None => reason,
+    });
     let mut diagnostic = Diagnostic {
         failed_machine: Some(machine),
         logs: tails,
         ..Diagnostic::default()
     };
     if let FailedOperation::Replacement { compensation, .. } = failed {
-        let stop = |attempt: &StopAttempt<ExecutionError>| match attempt {
-            StopAttempt::Stopped => Detail {
-                message: "Stopped the new Container.".into(),
-                causes: Vec::new(),
-            },
-            StopAttempt::Failed { error } => Detail {
-                message: "Could not stop the new Container.".into(),
-                causes: failure_causes(error),
+        let stop = |attempt: &StopAttempt<ExecutionError>| Detail {
+            message: attempt.line().into(),
+            causes: match attempt {
+                StopAttempt::Stopped => Vec::new(),
+                StopAttempt::Failed { error } => failure_causes(error),
             },
         };
         match compensation {
             ReplacementCompensation::OldUntouched { stop_new_container } => {
-                diagnostic.compensation.push(stop(stop_new_container))
+                diagnostic.compensation.push(stop(stop_new_container));
             }
             ReplacementCompensation::OldStopped {
                 stop_new_container,
-                restart_old_container,
+                restore_old_container,
             } => {
                 diagnostic
                     .compensation
                     .extend(stop_new_container.iter().map(stop));
-                diagnostic.compensation.push(match restart_old_container {
-                    RestartAttempt::Restarted => Detail {
-                        message: "Restarted the old Container.".into(),
-                        causes: Vec::new(),
-                    },
-                    RestartAttempt::Failed { error } => Detail {
-                        message: "Could not restart the old Container.".into(),
-                        causes: failure_causes(error),
+                diagnostic.compensation.push(Detail {
+                    message: restore_old_container.line().into(),
+                    causes: match restore_old_container {
+                        RestoreAttempt::Failed { error } => failure_causes(error),
+                        RestoreAttempt::Restored
+                        | RestoreAttempt::LeftHeld
+                        | RestoreAttempt::NotServing => Vec::new(),
                     },
                 });
             }
@@ -448,7 +495,7 @@ pub(super) fn failure(outcome: &DeployOutcome<ExecutionError>, tails: Vec<LogTai
     Failure::from(RpcError {
         code: RpcErrorCode::Internal,
         message,
-        cause: causes,
+        cause,
         details: serde_json::json!({"outcome": outcome}),
     })
     .with_diagnostic(diagnostic)
@@ -484,6 +531,7 @@ fn visible_name(
             spec.name.to_string()
         }
         DeployOperation::ReplaceContainer(replacement) => replacement.spec.name.to_string(),
+        DeployOperation::UpdateContainer(update) => update.spec.name.to_string(),
         DeployOperation::RemoveVolume { id } => id.name.to_string(),
         DeployOperation::StopContainer { container_id, .. }
         | DeployOperation::RemoveContainer { container_id, .. }

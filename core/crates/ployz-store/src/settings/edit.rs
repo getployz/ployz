@@ -12,12 +12,12 @@ use ts_rs::TS;
 
 use crate::error;
 use crate::git::GitSetting;
-use crate::id::{Revision, VolumeName};
+use crate::id::{ConfigId, Revision, VolumeName};
 use crate::policy::{self, Policy};
 use crate::registry;
 use crate::scope::{self, Environment, EnvironmentRef, EnvironmentSummary};
 use crate::sealing::SealingKey;
-use crate::settings::{Apply, ServiceSetting, SettingPath, Target};
+use crate::settings::{self, Apply, ServiceSetting, SettingPath, Target};
 use crate::storage::Tx;
 use crate::typed_address::{Instead, Typed};
 use crate::variables::{self, VariableKey};
@@ -33,7 +33,8 @@ pub struct Edit {
     #[serde(default)]
     pub expect: Option<Revision>,
     /// The changes, applied in order, except that image and repository changes go first.
-    /// Every Setting set must apply to the source the whole edit leaves.
+    /// Every Setting set must apply to the source the whole edit leaves, and no path is
+    /// changed twice.
     pub changes: Vec<Change>,
 }
 
@@ -42,8 +43,9 @@ pub struct Edit {
 #[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Change {
     /// Set a value. Text is accepted for any Setting type. A variable
-    /// (`SERVICE.env.KEY`) takes text, `{"secret": true}` to keep its secret, or
-    /// `{"secret": "…"}` to seal a new one.
+    /// (`SERVICE.env.KEY`) takes text, `{"secret": true}` to keep its secret,
+    /// `{"secret": "…"}` to seal a new one, or `{"secret": {"generate": true}}` to
+    /// seal a random one the Store makes unless it holds a sealed one already.
     Set {
         /// The Setting.
         path: SettingPath,
@@ -105,6 +107,18 @@ pub struct Edited {
     // An older Cloud doesn't send it.
     #[serde(default)]
     pub typed_addresses: Vec<TypedAddresses>,
+    /// Settings this edit set whose value may not act, each with why.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[ts(as = "Option<Vec<SettingNote>>", optional)]
+    pub notes: Vec<SettingNote>,
+}
+
+/// Why a Setting an edit set may not act.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+pub struct SettingNote {
+    /// The Setting, as SERVICE.SETTING.
+    pub path: SettingPath,
+    pub note: String,
 }
 
 /// The Typed Addresses in one variable an edit set: whose they are, and what to set
@@ -131,15 +145,26 @@ pub(crate) fn edit(
             json!({}),
         ));
     }
+    let mut steps = expand(&edit.changes)?;
     let environment = scope::lock(tx, who, &edit.environment)?;
     environment.expect(edit.expect)?;
+    refuse_twice(&steps, &environment)?;
     let before = environment.working.clone();
-    let mut steps = expand(&edit.changes)?;
     // Each Setting set, judged against the source the whole edit leaves.
     let mut set = Vec::new();
     for (path, step) in &steps {
         if let (Step::Set(_), Some(Target::Setting(setting))) = (step, path.target()) {
             set.push((path.settings_of()?.clone(), *setting));
+        }
+    }
+    for (service, setting) in &set {
+        if *setting == ServiceSetting::Image
+            && set.contains(&(service.clone(), ServiceSetting::Git(GitSetting::Repository)))
+        {
+            return Err(error::invalid(
+                format!("Set {service}.image or {service}.repository, not both"),
+                json!({ "service": service }),
+            ));
         }
     }
     // The source changes go first, unsets before sets, so the order of keys never matters.
@@ -172,10 +197,17 @@ pub(crate) fn edit(
     // Every Setting set must mean something to the source the edit leaves; unsetting never
     // has to, and an empty Service takes build settings for the uploads it builds. Checked
     // last, so a value of the wrong shape is named for its shape first.
+    let mut notes = Vec::<SettingNote>::new();
     for (service, setting) in set {
         let config = &editing.environment.service(&service)?.config;
         if !setting.applies(config) {
             return Err(setting.not_for(&service, &config.source));
+        }
+        let path = SettingPath::at(&service, Target::Setting(setting));
+        if let Some(note) = setting.note(config)
+            && !notes.iter().any(|noted| noted.path == path)
+        {
+            notes.push(SettingNote { path, note });
         }
     }
     let Editing {
@@ -195,7 +227,59 @@ pub(crate) fn edit(
         staged,
         immediate,
         typed_addresses,
+        notes,
     })
+}
+
+/// Two changes to one path: only the last would land, without a word. A rename writes
+/// where it moves from and where it moves to, a variable set with `exported` writes
+/// its `.exported` too, and a Config by name and by ID is one Config.
+fn refuse_twice(steps: &[(SettingPath, Step)], environment: &Environment) -> Result<(), RpcError> {
+    let mut written: Vec<SettingPath> = Vec::new();
+    for (path, step) in steps {
+        let mut writes = vec![(identity(path, environment), path.clone())];
+        let also = match (step, path.target()) {
+            (Step::Rename { to, .. }, _) => Some(Target::Variable(to.clone())),
+            (Step::Set(Value::Object(fields)), Some(Target::Variable(key)))
+                if fields.contains_key("exported") =>
+            {
+                Some(Target::Exported(key.clone()))
+            }
+            _ => None,
+        };
+        if let Some(also) = also {
+            let also = SettingPath::at(path.settings_of()?, also);
+            if also != *path {
+                writes.push((also.clone(), also));
+            }
+        }
+        for (identity, named) in writes {
+            if written.contains(&identity) {
+                return Err(error::invalid(
+                    format!("{named} is changed twice in one edit; change it once"),
+                    json!({ "path": named }),
+                ));
+            }
+            written.push(identity);
+        }
+    }
+    Ok(())
+}
+
+/// `path`, with a Config it mounts named by ID. A Config no ID matches stays as named;
+/// applying the change refuses it.
+fn identity(path: &SettingPath, environment: &Environment) -> SettingPath {
+    let (Some(service), Some(Target::ConfigMount(config))) = (path.service(), path.target()) else {
+        return path.clone();
+    };
+    config
+        .resolve([&environment.working])
+        .ok()
+        .and_then(|config| ConfigId::parse(&config.resource_id).ok())
+        .map_or_else(
+            || path.clone(),
+            |id| SettingPath::at(service, Target::ConfigMount(id.into())),
+        )
 }
 
 /// Whether `setting` chooses the Service's source.
@@ -238,12 +322,6 @@ impl Editing<'_> {
                 let rewrote =
                     variables::rename(&mut self.environment, service, key, &to, update_references)?;
                 if let Some(rewrote) = rewrote {
-                    // What the variable types moves with it.
-                    for typed in &mut self.typed_addresses {
-                        if typed.path == path {
-                            typed.path = renamed.clone();
-                        }
-                    }
                     let rewrote = rewrote
                         .into_iter()
                         .map(|(service, key)| SettingPath::at(&service, Target::Variable(key)));
@@ -256,8 +334,6 @@ impl Editing<'_> {
                 return Ok(());
             }
         };
-        // Only the last change to a variable decides what it types.
-        self.typed_addresses.retain(|typed| typed.path != path);
         // A new credential applies at once; turning one on or off is staged.
         if let Some(Target::Setting(setting @ ServiceSetting::RegistryCredential)) = path.target() {
             let changed = match &value {
@@ -320,6 +396,11 @@ impl Editing<'_> {
                 config.private_dns = name;
                 (changed, Apply::Staged)
             }
+            (Some(Target::Setting(ServiceSetting::Healthcheck)), Some(value))
+                if settings::is_healthcheck_text(&value) =>
+            {
+                return Err(settings::healthcheck_text(service, &environment.summary));
+            }
             (Some(Target::Setting(setting)), value) => {
                 let config = &mut environment.service_mut(service)?.config;
                 let was = setting.value(config, &Policy::default());
@@ -335,6 +416,10 @@ impl Editing<'_> {
             (Some(Target::Domains), _) => {
                 return Err(super::domains_are_read_only(&path, service));
             }
+            (Some(Target::Setup), value) => (
+                crate::branch::set_own(&mut *self.tx, environment, service, value)?,
+                Apply::Immediate,
+            ),
             (Some(Target::Description(_)), _) => {
                 return Err(error::invalid(
                     "Variable descriptions are template metadata; use Discard to restore a description",

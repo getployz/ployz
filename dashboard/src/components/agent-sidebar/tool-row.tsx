@@ -8,13 +8,13 @@ import type { CollectionScope } from "#/collections/scope";
 import { DeploymentStatusIcon } from "#/components/deployment-status-icon";
 import { Spinner } from "#/components/ui/spinner";
 import { TraceDescription, TraceIcon, TraceLine, TraceTitle } from "#/components/ui/trace";
-import { type DeploymentLight, deploymentStatusIcons, deploymentStatusLabel, deploysLabel } from "#/modules/config-store/store-deployments";
+import { type DeploymentLight, deploymentLabel, deploymentLight, deploymentStatusLabel, deploysLabel } from "#/modules/config-store/store-deployments";
 import { deploymentQuery, storeViewOptions } from "#/modules/config-store/store-view.queries";
 import { deploymentDestination } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/deployments/run-search";
 import { formatDuration } from "#/utils/relative-time";
 
 const DEPLOYMENT_STATUSES = [
-  "queued", "superseded", "running", "applied", "failed", "unknown", "cancelling", "cancelled",
+  "waiting_for_ci", "queued", "superseded", "running", "applied", "failed", "unknown", "cancelling", "cancelled",
 ] as const satisfies readonly DeploymentStatus[];
 
 const Deployed = Schema.Struct({
@@ -22,9 +22,10 @@ const Deployed = Schema.Struct({
   value: Schema.Struct({
     written: Schema.Literal("deployment"),
     id: Schema.String,
-    number: Schema.Number,
+    number: Schema.NullOr(Schema.Number),
     status: Schema.Literals(DEPLOYMENT_STATUSES),
     services: Schema.Array(Schema.String),
+    ships: Schema.optional(Schema.Array(Schema.String)),
     remove: Schema.Boolean,
     started_at: Schema.NullOr(Schema.Number),
     ended_at: Schema.NullOr(Schema.Number),
@@ -123,12 +124,12 @@ export function ToolCard({ organizationSlug, scope, outcome }: { organizationSlu
 export function RunCard({ organizationSlug, scope, deployment }: { organizationSlug: string; scope: CollectionScope; deployment: Deployment }) {
   const { data } = useQuery(storeViewOptions(organizationSlug, scope, deploymentQuery(deployment.id)));
   const live = data?.ok ? data.value : null;
-  const shown = live ?? { ...deployment, services: [...deployment.services], outcome: null };
+  const shown = live ?? { ...deployment, services: [...deployment.services], ships: [...(deployment.ships ?? [])], outcome: null };
   const ran = shown.started_at !== null && shown.ended_at !== null ? formatDuration(shown.ended_at - shown.started_at) : null;
-  const title = `Deployment #${shown.number}`;
+  const title = `Deployment ${deploymentLabel(shown)}`;
   return (
     <div className="flex items-center gap-2 rounded-lg border px-2.5 py-1.5 text-xs [&_svg]:size-4 [&_svg]:shrink-0">
-      <DeploymentStatusIcon status={deploymentStatusIcons[shown.status]} />
+      <DeploymentStatusIcon status={deploymentLight(shown)} />
       <span className="min-w-0 flex-1 truncate">
         <span className="font-medium">{deploymentStatusLabel(shown)}</span>
         {" · "}

@@ -1,4 +1,4 @@
-//! Volume runs: a Mirror, full Sync, Mirror removal, Move, Release or Restore of one Volume,
+//! Volume runs: a Mirror, full Sync, Mirror removal, Move, Release, Restore or resize of one Volume,
 //! which Ployz Cloud runs across its Servers. The CLI starts one, reads them back, and with `--wait`
 //! follows one until it ends. A plain Sync is no run: Cloud hands the Mirror its pull and answers.
 //! Without Cloud there are none: Volumes stay put.
@@ -6,10 +6,10 @@
 use std::time::Duration;
 
 use clap::{ArgMatches, Command};
-use ployz_core::{MachineName, RpcErrorCode};
+use ployz_core::{MachineName, ProvisionedVolumeMaximumBytes, RpcError, RpcErrorCode};
 use ployz_store::{
     EnvironmentId, EnvironmentName, EnvironmentSummary, ProjectName, VolumeId, VolumeName,
-    VolumeQuery, VolumesQuery,
+    VolumeQuery, VolumeView, VolumesQuery,
 };
 use reqwest::Method;
 use serde::{Deserialize, Serialize};
@@ -60,6 +60,7 @@ pub(crate) enum VolumeRunKind {
     Move,
     Release,
     Restore,
+    Resize,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -124,6 +125,9 @@ pub(crate) struct VolumeRunArgs {
     /// Restore: the Server whose copy becomes the writer.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) from: Option<MachineName>,
+    /// Resize: the size every copy is asked to hold.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) maximum_bytes: Option<ProvisionedVolumeMaximumBytes>,
 }
 
 /// One Volume run as Cloud keeps it.
@@ -179,6 +183,9 @@ pub(crate) enum RunAsk {
     Release,
     Restore {
         from: MachineName,
+    },
+    Resize {
+        maximum_bytes: ProvisionedVolumeMaximumBytes,
     },
 }
 
@@ -248,26 +255,39 @@ pub(crate) async fn get(
     Ok(one.run)
 }
 
-/// Follow `run` until it ends, saying each state it moves to. It has no deadline:
-/// Cloud ends every run, marking one nobody finished as lost.
+/// Follow `run` until it ends, saying each state it moves to and each step Cloud notes on it.
+/// It has no deadline: Cloud ends every run, marking one nobody finished as lost.
 pub(crate) async fn settle(
     credential: &Credential,
     mut run: VolumeRun,
 ) -> Result<VolumeRun, StoreCallError> {
-    let mut said = run.state.clone();
     while !run.state.ended() {
         tokio::time::sleep(POLL).await;
-        run = get(credential, &run.id).await?;
-        if run.state != said && !run.state.ended() {
-            crate::ui::note(format_args!(
-                "Run {} is {}.",
-                run.id,
-                store::word(&run.state)
-            ));
+        let now = get(credential, &run.id).await?;
+        for line in news(&run, &now) {
+            crate::ui::note(format_args!("{line}"));
         }
-        said = run.state.clone();
+        run = now;
     }
     Ok(run)
+}
+
+/// What a wait says when a running run moves on from `said` to `now`. An ended run says
+/// nothing here: the command's last line reports it.
+fn news(said: &VolumeRun, now: &VolumeRun) -> Vec<String> {
+    let mut lines = Vec::new();
+    if now.state.ended() {
+        return lines;
+    }
+    if now.state != said.state {
+        lines.push(format!("Run {} is {}.", now.id, store::word(&now.state)));
+    }
+    if let Some(message) = &now.message
+        && now.message != said.message
+    {
+        lines.push(format!("{message}."));
+    }
+    lines
 }
 
 pub(super) fn wait_flag() -> clap::Arg {
@@ -308,7 +328,7 @@ pub(crate) fn remove_mirror_command(command: Command) -> Command {
 
 pub(crate) fn sync_command(command: Command) -> Command {
     store::scoped(command
-            .about("Hand a Volume's Mirror what changed since its last pull (Ployz Cloud); `volume show` follows the download"),
+            .about("Hand a Volume's Mirror what changed since its last pull (Ployz Cloud); the dashboard's Volume page follows the download"),
     )
     .arg(positional("volume", true))
     .arg(switch("full", None).help("Copy everything again as a run, for a Mirror that fell behind for good"))
@@ -425,7 +445,7 @@ pub(crate) async fn sync_mirror(
 ) -> Result<Synced, StoreCallError> {
     let body = serde_json::to_value(request)
         .map_err(|error| crate::cloud_login::LoginError::Reply(error.to_string()))?;
-    cloud_account::refusable(
+    cloud_account::refusable_operation(
         credential,
         Method::POST,
         &format!("volumes/{volume}/sync"),
@@ -448,12 +468,10 @@ fn hand_off(root: &ArgMatches, volume: &VolumeName) -> Result<(), Error> {
     let synced = runtime
         .block_on(sync_mirror(credential, &volume_id, &asked))
         .map_err(|error| store.fail(error))?;
-    let show = store::next(matches, &["volume", "show", volume.as_str()]);
-    crate::ui::finish(&Next::new(&synced, Some(show.clone())), || {
+    crate::ui::finish(&Next::new(&synced, None), || {
         for line in &synced.lines {
             crate::ui::stream(format_args!("{line}"));
         }
-        crate::ui::hint(&Hint::Next(show.clone()));
     })
 }
 
@@ -487,6 +505,30 @@ pub(crate) fn restore(root: &ArgMatches) -> Result<(), Error> {
         environment,
         ask: RunAsk::Restore { from: from.clone() },
     })
+}
+
+/// `volume set NAME --size N` on a deployed Volume: Cloud sets every copy's size, then records
+/// it. Without Cloud, `cloud()` refuses it as it refuses `volume move`.
+pub(crate) fn resize(
+    root: &ArgMatches,
+    store: &store::Store<'_>,
+    view: &VolumeView,
+    maximum_bytes: ProvisionedVolumeMaximumBytes,
+) -> Result<(), Error> {
+    let volume = &view.volume.volume.name;
+    let started = format!("resize of Volume {volume} to {maximum_bytes}");
+    request_located(
+        root,
+        store,
+        volume,
+        &view.volume.volume.id,
+        view.environment.clone(),
+        started,
+        |environment| RunRequest {
+            environment,
+            ask: RunAsk::Resize { maximum_bytes },
+        },
+    )
 }
 
 pub(crate) fn remove_mirror(root: &ArgMatches) -> Result<(), Error> {
@@ -541,17 +583,35 @@ fn request(
     started: String,
     ask: impl FnOnce(RunEnvironment) -> RunRequest,
 ) -> Result<(), Error> {
-    let matches = leaf_matches(root);
     let store = store::store(root)?;
+    cloud(store.backend())?;
+    let (volume_id, environment) = located(&store, leaf_matches(root), volume)?;
+    request_located(root, &store, volume, &volume_id, environment, started, ask)
+}
+
+fn request_located(
+    root: &ArgMatches,
+    store: &store::Store<'_>,
+    volume: &VolumeName,
+    volume_id: &VolumeId,
+    environment: EnvironmentSummary,
+    started: String,
+    ask: impl FnOnce(RunEnvironment) -> RunRequest,
+) -> Result<(), Error> {
+    let matches = leaf_matches(root);
     let (runtime, credential) = cloud(store.backend())?;
-    let (volume_id, environment) = located(&store, matches, volume)?;
     let asked = ask(RunEnvironment {
         project: environment.project,
         environment: environment.name,
     });
     let confirming = matches!(asked.ask, RunAsk::DeleteMirror { confirm: None, .. });
-    let run = approved(runtime, credential, matches, volume, &volume_id, &asked)?
-        .map_err(|error| refused(&store, matches, error, confirming, volume))?;
+    let run = match approved(runtime, credential, matches, volume, volume_id, &asked)? {
+        Ok(run) => run,
+        Err(StoreCallError::Refused(refusal)) if already(&asked.ask, &refusal) => {
+            return crate::ui::done(&refusal, format_args!("{}.", refusal.message));
+        }
+        Err(error) => return Err(refused(store, matches, error, confirming, volume)),
+    };
     let follow = store::next(
         matches,
         &["volume", "runs", volume.as_str(), run.id.as_str()],
@@ -605,7 +665,8 @@ fn approved(
         RunAsk::Mirror { .. }
         | RunAsk::Sync { .. }
         | RunAsk::Move { .. }
-        | RunAsk::Restore { .. } => {
+        | RunAsk::Restore { .. }
+        | RunAsk::Resize { .. } => {
             return Ok(runtime.block_on(start(credential, volume_id, asked, None)));
         }
     };
@@ -630,10 +691,20 @@ fn approved(
     )
 }
 
+/// A resize Cloud refuses because every copy already has that size: nothing to do.
+fn already(ask: &RunAsk, refusal: &RpcError) -> bool {
+    matches!(ask, RunAsk::Resize { .. })
+        && refusal.code == RpcErrorCode::Conflict
+        && refusal.details.get("settled") == Some(&serde_json::Value::Bool(true))
+}
+
 fn ended(run: &VolumeRun, started: &str, follow: String) -> Result<(), Error> {
     if run.state == MaybeKnown::Known(VolumeRunState::Done) {
         return crate::ui::finish(&OneRun { run: run.clone() }, || {
             crate::ui::stream(format_args!("The {started} is done: run {}.", run.id));
+            if let Some(message) = &run.message {
+                crate::ui::stream(format_args!("{message}."));
+            }
         });
     }
     let why = run.message.as_deref().unwrap_or("Cloud gave no reason");
@@ -759,7 +830,7 @@ fn record(run: &VolumeRun) -> Fields {
         record.push("started by", "Ployz Cloud, for a Volume no config holds");
     }
     if let Some(message) = &run.message {
-        record.push("message", message);
+        record.push(if run.state.ended() { "message" } else { "now" }, message);
     }
     record.push("started", &run.created_at);
     if let Some(finished) = &run.finished_at {
@@ -784,6 +855,9 @@ fn asked(args: &VolumeRunArgs) -> String {
     }
     if let Some(from) = &args.from {
         words.push(format!("from {from}"));
+    }
+    if let Some(maximum_bytes) = &args.maximum_bytes {
+        words.push(format!("to {maximum_bytes}"));
     }
     words.join(", ")
 }

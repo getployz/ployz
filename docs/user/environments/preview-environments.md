@@ -106,9 +106,10 @@ production's deploy skips it, and any variable that references it, and warns. Re
 and settings ride too. Replicas, CPU and memory limits, and custom domains never do.
 
 A service or config the preview removed reads **Removes db**. If production changed it since the
-preview started, the row adds **Changed there**; the merge removes it anyway. If something in
-production still uses it, like a variable that references `db`, the row reads **In use** with what
-uses it, and the merge leaves it in production while the rest lands. A removed volume reads
+preview started, the row adds **Changed there**; the merge removes it anyway. If a production
+service still mounts a removed config, the row reads **In use** with what mounts it, and the merge
+leaves it in production while the rest lands. A reference never holds a removal: a variable in
+production that references `db` becomes a **Broken reference** once `db` is gone. A removed volume reads
 **Kept**: the merge never removes a volume or its data, and production's services keep their mounts
 on it unless the preview removed the service too. Remove it in production yourself when
 you're sure. Only what the preview copied can be removed this way; a service the preview never

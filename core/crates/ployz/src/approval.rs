@@ -3,17 +3,23 @@
 //! operation's name, anyone else waits for a human to approve it in Ployz Cloud. Either way
 //! the request runs again with the approval.
 
+use std::fmt::Display;
 use std::time::Duration;
 
+use chrono::{Local, SecondsFormat, TimeZone};
 use ployz_core::{RpcError, RpcErrorCode};
 use ployz_store::{DestructiveEffect, DestructiveKind, DiffView};
 use reqwest::Method;
 use serde::Deserialize;
 
 use crate::cloud_account::{self, Credential, StoreCallError};
+use crate::cloud_login::LoginError;
 use crate::failure::Failure;
 
 const POLL: Duration = Duration::from_secs(1);
+
+/// The code of Cloud's refusal that waits for a person to approve the call.
+pub(crate) const APPROVAL_REQUIRED: &str = "approval_required";
 
 #[derive(Debug, Deserialize)]
 pub(crate) struct Asked {
@@ -68,7 +74,7 @@ impl Verb {
         match self {
             Self::Publish => "save",
             Self::Deploy => "deploy",
-            Self::Retry => "retry",
+            Self::Retry => "redeploy",
             Self::Drain => "drain",
             Self::Set => "change",
             Self::Clean => "cleanup",
@@ -122,7 +128,7 @@ impl Verb {
 
 impl Asked {
     pub(crate) fn of(error: &RpcError) -> Option<Self> {
-        if error.code.as_str() != "approval_required" {
+        if error.code.as_str() != APPROVAL_REQUIRED {
             return None;
         }
         serde_json::from_value(error.details.clone()).ok()
@@ -159,6 +165,13 @@ impl Asked {
     }
 
     pub(crate) fn review(&self, verb: Verb) -> Vec<String> {
+        self.review_in(verb, &Local)
+    }
+
+    fn review_in<Zone: TimeZone>(&self, verb: Verb, zone: &Zone) -> Vec<String>
+    where
+        Zone::Offset: Display,
+    {
         let within = match &self.organization {
             Some(organization) => format!(" in Organization {organization}"),
             None => String::new(),
@@ -180,10 +193,17 @@ impl Asked {
                 things(self.effects.len())
             )
         }];
-        lines.extend(self.effects.iter().map(|effect| {
+        for effect in &self.effects {
             let mark = if destroys(effect.kind) { "✕" } else { "~" };
-            format!("  {mark} {}", line(effect))
-        }));
+            lines.push(format!("  {mark} {}", line(effect)));
+            if let Some(lost) = &effect.lost_after {
+                lines.push(format!(
+                    "    Changes after {} are not in {}",
+                    moment(lost.at, zone),
+                    lost.restored
+                ));
+            }
+        }
         let others = match &self.subject {
             Subject::Diff(diff) => diff.total_count.saturating_sub(self.effects.len()),
             Subject::Operation(_) => 0,
@@ -209,11 +229,25 @@ fn destroys(kind: DestructiveKind) -> bool {
     )
 }
 
+/// Unix seconds as RFC 3339 in `zone`, the way `ployz logs` prints its times.
+fn moment<Zone: TimeZone>(at: u64, zone: &Zone) -> String
+where
+    Zone::Offset: Display,
+{
+    i64::try_from(at)
+        .ok()
+        .and_then(|seconds| zone.timestamp_opt(seconds, 0).single())
+        .map_or_else(
+            || at.to_string(),
+            |time| time.to_rfc3339_opts(SecondsFormat::Secs, false),
+        )
+}
+
 fn things(count: usize) -> String {
     format!("{count} thing{}", if count == 1 { "" } else { "s" })
 }
 
-fn line(effect: &DestructiveEffect) -> String {
+pub(crate) fn line(effect: &DestructiveEffect) -> String {
     let name = &effect.name;
     match effect.kind {
         DestructiveKind::RemovesService => format!("removes Service {name}"),
@@ -230,6 +264,7 @@ fn line(effect: &DestructiveEffect) -> String {
         DestructiveKind::StopsService => format!("stops Service {name} until started again"),
         DestructiveKind::RestartsService => format!("restarts Service {name}"),
         DestructiveKind::UnprotectsEnvironment => format!("unprotects Environment {name}"),
+        DestructiveKind::RemovesOrganization => format!("removes Organization {name}"),
     }
 }
 
@@ -266,27 +301,101 @@ pub(crate) fn settle(
     }
     let interrupted = crate::cancellation::interrupted()
         .map_err(|error| StoreCallError::Stopped(Failure::from(error)))?;
+    crate::ui::note(where_to_approve(
+        credential,
+        &asked.id,
+        asked.organization.as_deref(),
+    ));
+    crate::ui::hint(&crate::ui::Hint::Next(format!(
+        "ployz org approval approve {}",
+        asked.id
+    )));
     crate::ui::note_inline("Waiting for approval in Ployz Cloud… ");
     let settled = runtime.block_on(async {
         tokio::select! {
-            () = interrupted.cancelled() => Err(StoreCallError::Stopped(
-                Failure::coded(
-                    RpcErrorCode::Internal,
-                    "Stopped waiting; the approval stays pending in Ployz Cloud.",
-                )
-                .interrupted()
-                .hint(crate::ui::Hint::Retry(retry)),
-            )),
-            settled = decided(credential, &asked.id) => settled,
+            () = interrupted.cancelled() => None,
+            settled = decided(credential, &asked.id) => Some(settled),
         }
     });
     crate::ui::note(match &settled {
-        Ok(Status::Approved) => "approved.",
-        Ok(Status::Denied) => "denied.",
-        Ok(Status::Superseded) => "superseded; asking again.",
-        Ok(Status::Pending) | Err(_) => "",
+        Some(Ok(Status::Approved)) => "approved.",
+        Some(Ok(Status::Denied)) => "denied.",
+        Some(Ok(Status::Superseded)) => "superseded; asking again.",
+        Some(Ok(Status::Pending) | Err(_)) | None => "",
     });
-    settled.map(|_| asked.id.clone())
+    // Ctrl-C or losing Cloud ends the wait, not the approval: it is still there to answer.
+    let stopped = match settled {
+        Some(Ok(_)) => return Ok(asked.id.clone()),
+        Some(Err(StoreCallError::Cloud(error))) if unanswered(&error) => Failure::from(error)
+            .context(format!(
+                "Stopped waiting for approval {}; it stays pending in Ployz Cloud.",
+                asked.id
+            )),
+        // Cloud answered, but not with the approval: nothing says it is still pending.
+        Some(Err(StoreCallError::Cloud(error))) => {
+            let transient = matches!(error, LoginError::Status { status, .. } if status >= 500);
+            let failure =
+                Failure::from(error).context(format!("Couldn't check approval {}.", asked.id));
+            if !transient {
+                return Err(StoreCallError::Stopped(failure));
+            }
+            failure
+        }
+        Some(Err(error)) => return Err(error),
+        None => Failure::coded(
+            RpcErrorCode::Internal,
+            "Stopped waiting; the approval stays pending in Ployz Cloud.",
+        )
+        .interrupted(),
+    };
+    Err(StoreCallError::Stopped(
+        stopped.hint(crate::ui::Hint::Retry(retry)),
+    ))
+}
+
+/// Where a human answers approval `id`: the Ployz agent's panel, where it waits under
+/// Waiting on you, in the Organization the approval names, else the one this device acts
+/// in. A token's approval that names none points at Cloud itself.
+fn where_to_approve(credential: &Credential, id: &str, organization: Option<&str>) -> String {
+    let cloud = credential.cloud().trim_end_matches('/');
+    let organization = organization.or(match credential {
+        Credential::Device(signed_in) => Some(signed_in.organization.slug.as_str()),
+        Credential::Token { .. } => None,
+    });
+    match organization {
+        Some(organization) => format!(
+            "Approve {id} under Waiting on you in the Ployz agent at {cloud}/cloud/{organization}?chat={}",
+            uuid::Uuid::new_v4()
+        ),
+        None => format!("Approve {id} in Ployz Cloud at {cloud}"),
+    }
+}
+
+/// Whether Cloud never answered the approval's read: only then is the approval as it was.
+fn unanswered(error: &LoginError) -> bool {
+    match error {
+        LoginError::Unreachable { .. } | LoginError::Unanswered { .. } => true,
+        // Cloud refused the credential, so nothing says the approval is still pending, and
+        // a retry with that credential fails again. The local ones can't follow `settle()`
+        // having a credential, but would mean the same.
+        LoginError::Store { .. }
+        | LoginError::Corrupt { .. }
+        | LoginError::TokenCloudUnreadable(_)
+        | LoginError::OtherCloud { .. }
+        | LoginError::SignedOut
+        | LoginError::Ended
+        | LoginError::TokenRefused
+        | LoginError::NotMember(_)
+        | LoginError::Unsupported(_)
+        | LoginError::Status { .. }
+        | LoginError::Reply(_)
+        | LoginError::Expired
+        | LoginError::Denied
+        | LoginError::AwaitingApproval { .. }
+        | LoginError::TokenBound
+        | LoginError::UnknownOrganization(_)
+        | LoginError::UnknownCredential(_) => false,
+    }
 }
 
 /// Run `attempt` with `approval` until Cloud stops asking for one: each time it asks,
@@ -367,6 +476,8 @@ pub(crate) async fn decide(
 
 #[cfg(test)]
 mod tests {
+    use chrono::FixedOffset;
+
     use super::{Asked, Verb};
 
     fn asked(verb: &str, kind: &str) -> Asked {
@@ -440,6 +551,44 @@ mod tests {
         assert_eq!(
             asked.review(Verb::Deploy),
             ["This deploy:", "  + 2 other changes"]
+        );
+    }
+
+    #[test]
+    fn a_restores_detach_says_which_changes_it_leaves_behind_in_the_given_zone() {
+        let asked: Asked = serde_json::from_value(serde_json::json!({
+            "approval_id": "a1",
+            "approval": "d1",
+            "effects": [{
+                "kind": "detaches_volume",
+                "name": "pg-data",
+                "node": "s1",
+                "path": "postgres.mounts.pg-data",
+                "lost_after": { "at": 1_791_451_620_u64, "restored": "pg-data-0927" },
+            }],
+            "diff": {
+                "environment": {
+                    "id": "00000000-0000-4000-8000-000000000002",
+                    "project": "shop",
+                    "name": "production",
+                    "revision": 3,
+                },
+                "version": "3:2:0.1",
+                "saved": 2,
+                "holds_staged": false,
+                "changes": [],
+                "total_count": 1,
+            },
+        }))
+        .unwrap();
+        let berlin = FixedOffset::east_opt(2 * 3600).unwrap();
+        assert_eq!(
+            asked.review_in(Verb::Deploy, &berlin),
+            [
+                "This deploy destroys 1 thing:",
+                "  ✕ detaches Volume pg-data from postgres",
+                "    Changes after 2026-10-08T11:27:00+02:00 are not in pg-data-0927",
+            ]
         );
     }
 

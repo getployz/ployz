@@ -8,12 +8,15 @@ pub(crate) enum Scope<'a> {
     /// State holds and Saved does not, which deletes the Docker Volumes `losses` names.
     All { losses: &'a [VolumeLoss] },
     /// `services` and the Volumes and Configs they mount, and the teardown of the
-    /// Services `retire` names. It removes a Volume of `losses` once it ships
-    /// every Service Applied State mounts it on, at once when none does.
+    /// Services `retire` names. With `every_saved`, it ships every Saved change:
+    /// each Service, Volume and Config its [`Landing`] doesn't hold settled, and the
+    /// removal of each Config Saved drops. It removes a Volume of `losses` once it
+    /// ships every Service that may run mounting it, at once when none does.
     Narrow {
         services: &'a [ServiceName],
         retire: &'a [Retire],
         losses: &'a [VolumeLoss],
+        every_saved: bool,
     },
 }
 
@@ -27,6 +30,7 @@ impl<'a> Scope<'a> {
                 services,
                 retire: &[],
                 losses: &[],
+                every_saved: false,
             }
         }
     }
@@ -84,7 +88,8 @@ pub(crate) fn retirements(
         }
         let rows = tx.query(
             "SELECT nodes, run FROM config_deployment \
-             WHERE environment_id = ?1 AND (started IS NOT NULL OR status = 'queued') \
+             WHERE environment_id = ?1 AND number IS NOT NULL \
+             AND (started IS NOT NULL OR status = 'queued') \
              AND nodes LIKE ?2 \
              ORDER BY number DESC",
             &[
@@ -120,32 +125,77 @@ pub(crate) fn retirements(
     Ok(retire)
 }
 
-/// Freeze a Deployment of `saved` over `scope`: its target nodes, checked to lower
-/// to a Deploy Intent. Generated domains expand under `cluster_domain`;
-/// a plan, which has none, checks the rest.
+/// Freeze a Deployment of `saved` over `scope`, diffed against `landing`: its
+/// target nodes, checked to lower to a Deploy Intent. Generated domains expand
+/// under `cluster_domain`; a plan, which has none, checks the rest.
 pub(crate) fn freeze(
     environment: &EnvironmentId,
     saved: &SavedEnvironmentIntent,
-    applied: &SavedEnvironmentIntent,
+    landing: &Landing<'_>,
     scope: Scope<'_>,
     namespace: Namespace,
     cluster_domain: Option<&Hostname>,
 ) -> Result<Frozen, RpcError> {
-    let (full, services, retire, losses): (bool, &[ServiceName], &[Retire], &[VolumeLoss]) =
-        match scope {
-            Scope::All { losses } => (true, &[], &[], losses),
-            Scope::Narrow {
-                services,
-                retire,
-                losses,
-            } => (false, services, retire, losses),
-        };
+    let (full, services, retire, losses, every_saved): (
+        bool,
+        &[ServiceName],
+        &[Retire],
+        &[VolumeLoss],
+        bool,
+    ) = match scope {
+        Scope::All { losses } => (true, &[], &[], losses, false),
+        Scope::Narrow {
+            services,
+            retire,
+            losses,
+            every_saved,
+        } => (false, services, retire, losses, every_saved),
+    };
+    let dropped = landing.dropped(saved);
     if !full && services.is_empty() && retire.is_empty() {
         return Err(error::invalid(
             "A targeted Deployment names no Service",
             json!({}),
         ));
     }
+    // A changed Config or Volume ships with the Service that mounts it, and is
+    // recorded only once that Service is a node.
+    let changed = |service: &SavedServiceIntent| {
+        !landing.settled_service(service)
+            || service.config_attachments.iter().any(|mount| {
+                let id = &mount.config_resource_id;
+                match saved
+                    .configs
+                    .iter()
+                    .find(|config| config.resource_id == *id)
+                {
+                    Some(config) => !landing.settled_config(config),
+                    None => landing.configs().any(|config| config.resource_id == *id),
+                }
+            })
+            || service.volume_attachments.iter().any(|mount| {
+                let id = &mount.volume_resource_id;
+                match saved
+                    .volumes
+                    .iter()
+                    .find(|volume| volume.resource_id == *id)
+                {
+                    Some(volume) => !landing.settled_volume(volume),
+                    None => landing.volumes().any(|volume| volume.resource_id == *id),
+                }
+            })
+    };
+    let mut named = services.to_vec();
+    if every_saved {
+        for service in saved.services.iter().filter(|service| changed(service)) {
+            let name = ServiceName::parse(service.slug.as_str())
+                .map_err(|_| error::corrupt("Service name"))?;
+            if !named.contains(&name) {
+                named.push(name);
+            }
+        }
+    }
+    let services = named.as_slice();
     let mut removals = ServiceRemovals::default();
     for (at, gone) in retire.iter().enumerate() {
         let running = |name: &ServiceName| {
@@ -172,12 +222,7 @@ pub(crate) fn freeze(
         saved
             .services
             .iter()
-            .chain(
-                applied
-                    .services
-                    .iter()
-                    .filter(|old| !saved.services.iter().any(|new| new.id == old.id)),
-            )
+            .chain(&dropped.services)
             .map(TargetNode::service)
             .collect::<Result<_, _>>()?
     } else {
@@ -200,6 +245,30 @@ pub(crate) fn freeze(
             .chain(retire.iter().map(TargetNode::retire))
             .collect::<Result<Vec<_>, _>>()?
     };
+    // Live values and Setup Commands resolve at claim; checking without them is the same.
+    let lowered = lower(
+        environment,
+        saved,
+        (services, &removals),
+        (namespace.clone(), cluster_domain),
+        &crate::branch::Lowering::default(),
+        None,
+    )?;
+    if !full {
+        // The planner also ships, at its Saved snapshot, each Service the named ones reference.
+        let shipped = &lowered.shipped;
+        let referenced: Vec<TargetNode> = saved
+            .services
+            .iter()
+            .filter(|service| {
+                shipped.contains(&service.config.private_dns)
+                    && !nodes.iter().any(|node| node.id() == service.id)
+                    && changed(service)
+            })
+            .map(TargetNode::service)
+            .collect::<Result<_, _>>()?;
+        nodes.extend(referenced);
+    }
     // A full Deploy applies every Volume; a narrowed one those its Services mount.
     let mounted = |volume: &SavedVolumeIntent| {
         saved.services.iter().any(|service| {
@@ -210,10 +279,11 @@ pub(crate) fn freeze(
                     .any(|mount| mount.volume_resource_id == volume.resource_id)
         })
     };
+    // Shipping every Saved change, it also ships a changed one nothing mounts.
     let kept: Vec<TargetNode> = saved
         .volumes
         .iter()
-        .filter(|volume| full || mounted(volume))
+        .filter(|volume| full || mounted(volume) || every_saved && !landing.settled_volume(volume))
         .map(|volume| TargetNode::volume(volume, None))
         .collect::<Result<_, _>>()?;
     nodes.extend(kept);
@@ -229,34 +299,37 @@ pub(crate) fn freeze(
             })
             .map(|service| nodes.iter().any(|node| node.id() == service.id))
             .collect();
-        let fresh = !applied
-            .configs
-            .iter()
+        let fresh = !landing
+            .configs()
             .any(|old| old.resource_id == config.resource_id);
         targeted.contains(&true) && (fresh || !targeted.contains(&false))
     };
     let configs: Vec<TargetNode> = saved
         .configs
         .iter()
-        .filter(|config| full || applies(config))
-        .chain(applied.configs.iter().filter(|old| {
-            full && !saved
-                .configs
-                .iter()
-                .any(|new| new.resource_id == old.resource_id)
-        }))
+        .filter(|config| {
+            full || applies(config)
+                || every_saved
+                    && !saved.services.iter().any(|service| {
+                        service
+                            .config_attachments
+                            .iter()
+                            .any(|mount| mount.config_resource_id == config.resource_id)
+                    })
+                    && !landing.settled_config(config)
+        })
+        .chain(dropped.configs.iter().filter(|_| full || every_saved))
         .map(TargetNode::config)
         .collect::<Result<_, _>>()?;
     nodes.extend(configs);
     if !full {
-        let unmounted = unmounted(saved, applied, &nodes)?;
+        let unmounted = unmounted(saved, landing, &nodes)?;
         nodes.extend(unmounted);
     }
     let ships = |id: &str| nodes.iter().any(|node| node.id() == id);
     let unmounts = |loss: &&VolumeLoss| {
-        full || applied
-            .services
-            .iter()
+        full || landing
+            .services()
             .filter(|service| {
                 service
                     .volume_attachments
@@ -269,24 +342,14 @@ pub(crate) fn freeze(
         .iter()
         .filter(unmounts)
         .map(|loss| {
-            let volume = applied
-                .volumes
-                .iter()
+            let volume = landing
+                .volumes()
                 .find(|volume| volume.resource_id == loss.volume.id.as_str())
                 .ok_or_else(|| error::corrupt("Applied State"))?;
             TargetNode::volume(volume, Some(loss.deletes.clone()))
         })
         .collect::<Result<_, _>>()?;
     nodes.extend(removed);
-    // Live values and Setup Commands resolve at claim; checking without them is the same.
-    lower(
-        environment,
-        saved,
-        (services, &removals),
-        (namespace.clone(), cluster_domain),
-        &crate::branch::Lowering::default(),
-        None,
-    )?;
     let sourceless = saved
         .services
         .iter()
@@ -305,22 +368,22 @@ pub(crate) fn freeze(
     })
 }
 
-/// Each Config Applied State `applied` holds and `saved` lacks that `nodes` don't
-/// ship yet but leave with: a removed Config goes with the Services that mounted
-/// it, once `nodes` ship every one.
+/// Each Config `saved` drops of `landing` that `nodes` don't ship yet but leave
+/// with: a removed Config goes with the Services that may run mounting it, once
+/// `nodes` ship every one.
 pub(super) fn unmounted(
     saved: &SavedEnvironmentIntent,
-    applied: &SavedEnvironmentIntent,
+    landing: &Landing<'_>,
     nodes: &[TargetNode],
 ) -> Result<Vec<TargetNode>, RpcError> {
     let ships = |id: &str| nodes.iter().any(|node| node.id() == id);
-    applied
+    landing
+        .dropped(saved)
         .configs
         .iter()
         .filter(|old| {
-            let targeted: Vec<bool> = applied
-                .services
-                .iter()
+            let targeted: Vec<bool> = landing
+                .services()
                 .filter(|service| {
                     service
                         .config_attachments
@@ -329,13 +392,7 @@ pub(super) fn unmounted(
                 })
                 .map(|service| ships(&service.id))
                 .collect();
-            !saved
-                .configs
-                .iter()
-                .any(|new| new.resource_id == old.resource_id)
-                && !ships(&old.resource_id)
-                && targeted.contains(&true)
-                && !targeted.contains(&false)
+            !ships(&old.resource_id) && targeted.contains(&true) && !targeted.contains(&false)
         })
         .map(TargetNode::config)
         .collect()
@@ -346,11 +403,13 @@ pub(super) struct Lowered {
     /// The lowering input the runner lowers again once it built.
     pub(super) input: Value,
     pub(super) intent: DeployIntent,
-    /// The environment keys of each lowered Service that hold a secret, by runtime name.
-    pub(super) secret_env: BTreeMap<ServiceName, BTreeSet<String>>,
-    /// Service variables a secret without a value left out, then Config file
-    /// references whose resolved value may break the file. Only lowering with the
-    /// sealing key sees every value, so only it warns of those.
+    /// The Services a narrowed Deploy ships once its builds and uploads land: the
+    /// named ones and what they reference. Empty for a full Deploy.
+    pub(super) shipped: BTreeSet<ServiceName>,
+    /// Service variables a secret without a value or a broken reference left out,
+    /// then Config file references whose resolved value may break the file or is
+    /// left empty. Only lowering with the sealing key sees every value, so only it
+    /// warns of those.
     pub(super) warnings: Vec<DeploymentWarning>,
 }
 
@@ -415,13 +474,6 @@ pub(super) fn lower(
             CompiledNodeConfig::Volume(_) | CompiledNodeConfig::Config(_) => None,
         })
         .collect();
-    let secret_env = snapshots
-        .iter()
-        .filter_map(|(config, snapshot)| {
-            let keys = resolved.secret.remove(snapshot.service_id.as_deref()?)?;
-            Some((config.settings.private_dns.clone(), keys))
-        })
-        .collect();
     // Empty reconciles the whole Namespace; names deploy only those Services.
     let selected = saved
         .services
@@ -436,25 +488,41 @@ pub(super) fn lower(
         .iter()
         .map(|service| (service.lineage_id.as_str(), service.slug.as_str()))
         .collect();
-    // Only the Services this Deploy ships; the rest ride along unchanged.
-    let mut warnings: Vec<DeploymentWarning> = snapshots
+    // Each warning with the Services whose Deploy it concerns.
+    let mut warnings: Vec<(Vec<&ServiceName>, DeploymentWarning)> = snapshots
         .iter()
         .filter_map(|(config, snapshot)| {
             let id = snapshot.service_id.as_deref()?;
-            if narrowed && !targeted.contains(&id) {
-                return None;
-            }
-            let keys = resolved.not_set.remove(id)?;
-            Some(keys.into_iter().map(|variable| DeploymentWarning::NotSet {
-                service: config.settings.private_dns.clone(),
-                variable,
-            }))
+            let service = saved
+                .services
+                .iter()
+                .find(|service| service.id == id)
+                .and_then(|service| ServiceName::parse(service.slug.as_str()).ok())
+                .unwrap_or_else(|| config.settings.private_dns.clone());
+            let not_set = resolved.not_set.remove(id).unwrap_or_default();
+            let broken = resolved.broken.remove(id).unwrap_or_default();
+            let left_out = not_set
+                .into_iter()
+                .map(|variable| (variable, false))
+                .chain(broken.into_iter().map(|variable| (variable, true)))
+                .map(|(variable, broken)| {
+                    (
+                        vec![&config.settings.private_dns],
+                        DeploymentWarning::NotSet {
+                            service: service.clone(),
+                            variable,
+                            broken,
+                        },
+                    )
+                })
+                .collect::<Vec<_>>();
+            Some(left_out)
         })
         .flatten()
         .collect();
     let mut configs = Vec::new();
     for config in &saved.configs {
-        let mounting: Vec<&str> = saved
+        let mounting: Vec<&SavedServiceIntent> = saved
             .services
             .iter()
             .filter(|service| {
@@ -463,18 +531,19 @@ pub(super) fn lower(
                     .iter()
                     .any(|mount| mount.config_resource_id == config.resource_id)
             })
-            .map(|service| service.id.as_str())
             .collect();
         if !snapshots.iter().any(|(_, snapshot)| {
             snapshot
                 .service_id
                 .as_deref()
-                .is_some_and(|id| mounting.contains(&id))
+                .is_some_and(|id| mounting.iter().any(|service| service.id == id))
         }) {
             continue;
         }
-        let warns =
-            unseal.is_some() && mounting.iter().any(|id| !narrowed || targeted.contains(id));
+        let mounts: Vec<&ServiceName> = mounting
+            .iter()
+            .map(|service| &service.config.private_dns)
+            .collect();
         let mut files = resolved
             .configs
             .remove(&config.resource_id)
@@ -482,7 +551,7 @@ pub(super) fn lower(
         let mut lowered = BTreeMap::new();
         for (name, file) in &config.files {
             let resolved = files.remove(name).ok_or_else(|| error::corrupt("Config"))?;
-            if warns {
+            if unseal.is_some() {
                 let shown =
                     |reference: &ployz_core::config::FragileReference| match &reference.owner {
                         ValuePartOwner::Service { lineage_id } => {
@@ -494,18 +563,27 @@ pub(super) fn lower(
                         ValuePartOwner::Self_ => reference.key.clone(),
                     };
                 warnings.extend(resolved.fragile.iter().map(|reference| {
-                    DeploymentWarning::Fragile {
-                        config: config.name.clone(),
-                        file: name.clone(),
-                        variable: shown(reference),
-                    }
+                    (
+                        mounts.clone(),
+                        DeploymentWarning::Fragile {
+                            config: config.name.clone(),
+                            file: name.clone(),
+                            variable: shown(reference),
+                        },
+                    )
                 }));
-                warnings.extend(resolved.not_set.iter().map(|reference| {
-                    DeploymentWarning::NotSetInFile {
-                        config: config.name.clone(),
-                        file: name.clone(),
-                        secret: shown(reference),
-                    }
+                let not_set = resolved.not_set.iter().map(|reference| (reference, false));
+                let broken = resolved.broken.iter().map(|reference| (reference, true));
+                warnings.extend(not_set.chain(broken).map(|(reference, broken)| {
+                    (
+                        mounts.clone(),
+                        DeploymentWarning::NotSetInFile {
+                            config: config.name.clone(),
+                            file: name.clone(),
+                            secret: shown(reference),
+                            broken,
+                        },
+                    )
                 }));
             }
             lowered.insert(
@@ -530,6 +608,31 @@ pub(super) fn lower(
             files: lowered,
         });
     }
+    for service in &saved.services {
+        if narrowed && !targeted.contains(&service.id.as_str()) {
+            continue;
+        }
+        let mounted: Vec<&LowerDeploymentConfig> = configs
+            .iter()
+            .filter(|config| {
+                service
+                    .config_attachments
+                    .iter()
+                    .any(|mount| mount.config_resource_id == config.config_resource_id)
+            })
+            .collect();
+        let bytes = mounted
+            .iter()
+            .flat_map(|config| config.files.values())
+            .map(|file| file.content.len())
+            .sum();
+        let names: Vec<&ConfigName> = mounted.iter().map(|config| &config.name).collect();
+        let name =
+            ServiceName::parse(service.slug.as_str()).map_err(|_| error::corrupt("Service"))?;
+        if let Some(error) = crate::config_item::mounts_too_much(&name, &names, bytes) {
+            return Err(error);
+        }
+    }
     let input = |snapshots: Vec<LowerDeploymentSnapshot>| LowerDeploymentInput {
         namespace: namespace.clone(),
         snapshots,
@@ -545,13 +648,27 @@ pub(super) fn lower(
         selected: Some(selected.clone()),
         configs: configs.clone(),
         removals: removals.clone(),
+        cluster_domain: cluster_domain
+            .and_then(|cluster| ployz_core::IngressHost::parse(cluster.as_str()).ok()),
     };
-    let with = |built_later: bool| {
+    // `uploaded` also gives each named source-less Service the image its upload
+    // builds, as the SDK's preparation does.
+    let with = |built_later: bool, uploaded: bool| {
         snapshots
             .iter()
             .map(|(config, snapshot)| {
-                let build =
-                    built_later && matches!(config.settings.source, ServiceSource::Git { .. });
+                let build = built_later
+                    && match config.settings.source {
+                        ServiceSource::Git { .. } => true,
+                        ServiceSource::Empty { .. } => {
+                            uploaded
+                                && snapshot
+                                    .service_id
+                                    .as_deref()
+                                    .is_some_and(|id| targeted.contains(&id))
+                        }
+                        ServiceSource::Image { .. } => false,
+                    };
                 LowerDeploymentSnapshot {
                     config: json_value(&if build { built(config) } else { config.clone() }),
                     built_with: build.then_some(config.settings.build.build_method),
@@ -560,25 +677,47 @@ pub(super) fn lower(
             })
             .collect()
     };
-    let intent = lower_deployment(input(with(true))).map_err(|error| {
-        error::invalid(
-            format!("This Environment can't deploy: {}", error.message),
-            json!({ "path": error.path }),
-        )
-    })?;
+    let checked = |snapshots| {
+        lower_deployment(input(snapshots)).map_err(|error| {
+            error::invalid(
+                format!("This Environment can't deploy: {}", error.message),
+                json!({ "path": error.path }),
+            )
+        })
+    };
+    let intent = checked(with(true, false))?;
+    // Only the Services this Deploy ships, the named ones and what they reference;
+    // the rest ride along unchanged.
+    let shipped: BTreeSet<ServiceName> = if narrowed {
+        checked(with(true, true))?
+            .applied_names()
+            .into_iter()
+            .cloned()
+            .collect()
+    } else {
+        BTreeSet::new()
+    };
+    let warnings = warnings
+        .into_iter()
+        .filter(|(services, _)| !narrowed || services.iter().any(|name| shipped.contains(*name)))
+        .map(|(_, warning)| warning)
+        .collect();
     Ok(Lowered {
-        input: json_value(&input(with(false))),
+        input: json_value(&input(with(false, false))),
+        shipped,
         intent,
-        secret_env,
         warnings,
     })
 }
 
-/// `config` with a Git source replaced by the image its build will produce, as the
-/// SDK's preparation does once it built it.
+/// `config` with a Git or empty source replaced by the image its build or upload
+/// will produce, as the SDK's preparation does once it built it.
 pub(super) fn built(config: &ServiceConfig) -> ServiceConfig {
     let mut config = config.clone();
-    if matches!(config.settings.source, ServiceSource::Git { .. }) {
+    if matches!(
+        config.settings.source,
+        ServiceSource::Git { .. } | ServiceSource::Empty { .. }
+    ) {
         config.settings.source = ServiceSource::Image {
             version: 1,
             image: format!("ployz-build/{}:pending", config.settings.private_dns),

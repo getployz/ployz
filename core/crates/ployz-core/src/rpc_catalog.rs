@@ -54,6 +54,7 @@ macro_rules! rpc_catalog {
                 Register: (register, "Register", RegisterRequest, "register", Registered, REGISTER_MACHINE_CAPABILITY, "ployz.machine.register.v1", Always),
                 SetManagementClient: (set_management_client, "SetManagementClient", SetManagementClientRequest, "set_management_client", SetManagementClientResponse, SET_MANAGEMENT_CLIENT_CAPABILITY, "ployz.machine.set-management-client.v1", Always),
                 SetPushTarget: (set_push_target, "SetPushTarget", SetPushTargetRequest, "set_push_target", PushTargetSet, SET_PUSH_TARGET_CAPABILITY, "ployz.machine.set-push-target.v1", Always),
+                SelectEndpoint: (select_endpoint, "SelectEndpoint", SelectEndpointRequest, "select_endpoint", EndpointSelected, SELECT_ENDPOINT_CAPABILITY, "ployz.network.select-endpoint.v1", Always),
                 ListMachines: (list_machines, "ListMachines", ListMachinesRequest, "list_machines", MachineList, LIST_MACHINES_CAPABILITY, "ployz.machine.list.v1", Always),
                 UpdateMachine: (update_machine, "UpdateMachine", UpdateMachineRequest, "update_machine", MachineUpdated, UPDATE_MACHINE_CAPABILITY, "ployz.machine.update.v1", Always),
                 RequestMachineUpgrade: (request_machine_upgrade, "RequestMachineUpgrade", RequestMachineUpgradeRequest, "request_machine_upgrade", MachineUpgradeAttempt, REQUEST_MACHINE_UPGRADE_CAPABILITY, "ployz.machine.upgrade.request.v1", Always),
@@ -62,6 +63,7 @@ macro_rules! rpc_catalog {
                 ListContainers: (list_containers, "ListContainers", ListContainersRequest, "list_containers", ContainerList, LIST_CONTAINERS_CAPABILITY, "ployz.container.list.v1", Container),
                 InspectContainer: (inspect_container, "InspectContainer", InspectContainerRequest, "inspect_container", ContainerDetails, INSPECT_CONTAINER_CAPABILITY, "ployz.container.inspect.v1", Container),
                 EnsureContainer: (ensure_container, "EnsureContainer", EnsureContainerRequest, "ensure_container", EnsuredContainer, ENSURE_CONTAINER_CAPABILITY, "ployz.container.ensure.v1", Container),
+                UpdateContainerLimits: (update_container_limits, "UpdateContainerLimits", UpdateContainerLimitsRequest, "update_container_limits", ContainerLimitsUpdated, UPDATE_CONTAINER_LIMITS_CAPABILITY, "ployz.container.limits.update.v1", Container),
                 InspectStorage: (inspect_storage, "InspectStorage", InspectStorageRequest, "inspect_storage", StorageCapacity, INSPECT_STORAGE_CAPABILITY, "ployz.storage.inspect.v1", Container),
                 PrepareVolumes: (prepare_volumes, "PrepareVolumes", PrepareVolumesRequest, "prepare_volumes", PreparedVolumes, PREPARE_VOLUMES_CAPABILITY, "ployz.storage.prepare.v1", Container),
                 ListVolumes: (list_volumes, "ListVolumes", ListVolumesRequest, "list_volumes", VolumeInventory, LIST_VOLUMES_CAPABILITY, "ployz.volume.list.v1", Container),
@@ -69,6 +71,7 @@ macro_rules! rpc_catalog {
                 InspectVolumeCopy: (inspect_volume_copy, "InspectVolumeCopy", InspectVolumeCopyRequest, "inspect_volume_copy", VolumeCopyView, INSPECT_VOLUME_COPY_CAPABILITY, "ployz.volume.copy.inspect.v1", Container),
                 SeedVolume: (seed_volume, "SeedVolume", SeedVolumeRequest, "seed_volume", VolumeCopyView, SEED_VOLUME_CAPABILITY, "ployz.volume.seed.v1", Container),
                 SetVolumeCopy: (set_volume_copy, "SetVolumeCopy", SetVolumeCopyRequest, "set_volume_copy", SetVolumeCopyReply, SET_VOLUME_COPY_CAPABILITY, "ployz.volume.copy.set.v1", Container),
+                SetVolumeSize: (set_volume_size, "SetVolumeSize", SetVolumeSizeRequest, "set_volume_size", SetVolumeSizeReply, SET_VOLUME_SIZE_CAPABILITY, "ployz.volume.size.set.v1", Container),
                 ListImages: (list_images, "ListImages", ListImagesRequest, "list_images", MachineImages, LIST_IMAGES_CAPABILITY, "ployz.image.list.v1", Container),
                 PruneImages: (prune_images, "PruneImages", PruneImagesRequest, "prune_images", ImagesRemoved, PRUNE_IMAGES_CAPABILITY, "ployz.image.prune.v1", Container),
                 EnsureImageIngest: (ensure_image_ingest, "EnsureImageIngest", EnsureImageIngestRequest, "ensure_image_ingest", ImageIngestOpened, ENSURE_IMAGE_INGEST_CAPABILITY, "ployz.image.ingest.ensure.v1", Container),
@@ -78,7 +81,7 @@ macro_rules! rpc_catalog {
                 InspectBuildGrant: (inspect_build_grant, "InspectBuildGrant", InspectBuildGrantRequest, "inspect_build_grant", BuildGrantInspected, INSPECT_BUILD_GRANT_CAPABILITY, "ployz.build.grant.inspect.v1", Container),
                 PublishCertificateMaterial: (publish_certificate_material, "PublishCertificateMaterial", PublishCertificateMaterialRequest, "publish_certificate_material", CertificateMaterialPublished, PUBLISH_CERTIFICATE_MATERIAL_CAPABILITY, "ployz.certificates.publish.v1", Cluster),
                 PublishServingPointer: (publish_serving_pointer, "PublishServingPointer", PublishServingPointerRequest, "publish_serving_pointer", ServingPointerPublication, PUBLISH_SERVING_POINTER_CAPABILITY, "ployz.serving.publish.v1", Cluster),
-                ReadServingPointer: (read_serving_pointer, "ReadServingPointer", ReadServingPointerRequest, "read_serving_pointer", ServingPointerRead, READ_SERVING_POINTER_CAPABILITY, "ployz.serving.read.v1", Cluster),
+                ReadRoutes: (read_routes, "ReadRoutes", ReadRoutesRequest, "read_routes", RoutesRead, READ_ROUTES_CAPABILITY, "ployz.serving.routes.v1", Cluster),
                 MetricHistory: (metric_history, "MetricHistory", MetricHistoryRequest, "metric_history", MetricHistoryReply, METRIC_HISTORY_CAPABILITY, "ployz.metrics.history.v1", Container),
             }
             server_streaming {
@@ -93,6 +96,8 @@ macro_rules! rpc_catalog {
             capabilities {
                 /// `SetVolumeCopy` honours `gen`, takes the `floor` want and refuses `stale`.
                 VOLUME_FLOOR_CAPABILITY: ("ployz.volume.copy.floor.v1", Container),
+                /// `SetVolumeSize` takes `allow_shrink` and lowers a bound down to its floor.
+                VOLUME_SHRINK_CAPABILITY: ("ployz.volume.size.shrink.v1", Container),
                 /// The daemon can take a Certificate Policy from cluster state.
                 CERTIFICATE_POLICY_CAPABILITY: ("ployz.certificates.policy.v1", Always),
                 /// `Inspect` can report requested current local Machine storage evidence.

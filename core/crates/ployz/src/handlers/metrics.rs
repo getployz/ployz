@@ -53,7 +53,7 @@ pub fn metrics(root: &ArgMatches) -> Result<(), Error> {
         .expect("since has a default")
         .clone();
     let now = Utc::now();
-    let since_seconds = crate::operator::parse_log_time(&since, now.timestamp())?
+    let since_seconds = crate::operator::parse_log_time("since", &since, now.timestamp())?
         .ok_or_else(|| Error::usage("--since needs a time, such as 1h"))?;
     let until_nanos = now.timestamp_nanos_opt().unwrap_or(i64::MAX);
     let range = MetricRange {
@@ -74,21 +74,29 @@ pub fn metrics(root: &ArgMatches) -> Result<(), Error> {
             let named = leaf
                 .get_one::<String>("service")
                 .expect("the subject group requires a Service or a Server");
-            let service = qualified(root, named)?;
+            let (service, refusal) = qualified(root, named)?;
             (
                 Asked::Service {
                     service: service.clone(),
                     named: named.clone(),
+                    unknown: refusal(),
                 },
-                MetricsAsked::Service(service),
+                MetricsAsked::Service {
+                    service,
+                    unknown: refusal(),
+                },
             )
         }
     };
     let credential = with_reader(root, |client| {
         Box::pin(async move {
             let machines = client.machines().await?;
-            let (subject, name) = match asked {
-                Asked::Service { named, service } => (MetricSubject::Service { service }, named),
+            let (subject, name, unknown) = match asked {
+                Asked::Service {
+                    named,
+                    service,
+                    unknown,
+                } => (MetricSubject::Service { service }, named, unknown),
                 Asked::Server(target) => {
                     let machine = &crate::cluster::visible_machine(&target, &machines)?.machine;
                     (
@@ -96,6 +104,7 @@ pub fn metrics(root: &ArgMatches) -> Result<(), Error> {
                             machine_id: machine.id,
                         },
                         machine.name.to_string(),
+                        None,
                     )
                 }
             };
@@ -114,6 +123,12 @@ pub fn metrics(root: &ArgMatches) -> Result<(), Error> {
                     until_nanos,
                 },
             );
+            if let Some(refusal) = unknown
+                && shown.table.is_empty()
+                && gaps.outcome().is_ok()
+            {
+                return Err(refusal);
+            }
             ui::finish_fanout("metrics", &history, &gaps, || {
                 ui::stream(&shown.heading);
                 ui::rows(&shown.table);
@@ -133,16 +148,34 @@ enum Asked {
     Service {
         named: String,
         service: QualifiedService,
+        /// The refusal to give when nothing answers for a Service the Environment
+        /// does not have now.
+        unknown: Option<Error>,
     },
     Server(MachineTarget),
 }
 
-/// The Service `named` selects in the addressed Environment.
-fn qualified(root: &ArgMatches, named: &str) -> Result<QualifiedService, Error> {
-    let selector = in_scope(ServiceSelector::parse(named)?, scope(root)?.as_ref())?;
-    QualifiedService::parse(selector.as_str()).map_err(|_| {
+/// The Service `named` selects in the addressed Environment, and what gives the
+/// refusal for it if the Environment does not have it now.
+fn qualified(
+    root: &ArgMatches,
+    named: &str,
+) -> Result<(QualifiedService, impl Fn() -> Option<Error>), Error> {
+    let scoped = scope(root)?;
+    let selector = ServiceSelector::parse(named)?;
+    let resolved = in_scope(selector.clone(), scoped.as_ref())?;
+    let unknown = move || {
+        scoped.as_ref().and_then(|scoped| {
+            scoped
+                .unknown(&selector)
+                .map(|name| scoped.no_service(&name))
+        })
+    };
+    let selector = resolved;
+    let service = QualifiedService::parse(selector.as_str()).map_err(|_| {
         Error::usage(format!(
             "No Environment is linked, so {named:?} names no Service; add --project and --env"
         ))
-    })
+    })?;
+    Ok((service, unknown))
 }

@@ -7,6 +7,7 @@ import type { StoreRefused } from "#/modules/config-store/store.contract";
 import { pinStoreSources } from "#/modules/config-store/store-deployment.server";
 import { organizationAccess } from "#/modules/github/github-access";
 import { cancelGithubRun, checkGithubBuildWorkflow, dispatchGithubBuildWorkflow, githubRunCompleted } from "#/modules/github/github-build.server";
+import { githubBuildId } from "#/modules/github/github-build-workflow";
 import { verifyGithubOidcToken } from "#/modules/github/github-oidc.server";
 import { installationRefusal } from "#/modules/github/github-token.server";
 import { sendInngestEvent } from "#/modules/inngest/client";
@@ -86,7 +87,7 @@ export const planStoreGithubBuilds = Effect.fn("StoreGithub.plan")(function* (da
     const walk = servers ? source.builders : source.builders.filter((builder) => builder !== "servers");
     if (walk[0] !== "github") return [];
     return [{
-      build: `${data.deploymentId}.${source.service}`,
+      build: githubBuildId(data.deploymentId, source.service),
       service: source.service,
       repository: source.repository,
       repositoryId: source.repository_id,
@@ -100,9 +101,9 @@ export type StoreGithubStart = { kind: "dispatched"; runId: number } | { kind: "
 const done = { kind: "done" } as const;
 
 /**
- * Start a build on GitHub: skip GitHub at once when it can't take it (no GitHub App access, no build workflow, several
- * platforms, GitHub or the Cluster unreachable), reuse the Service's latest image when a Machine still holds it for
- * this commit, else dispatch the workflow on the runner native to its platform. Workflow inputs are visible on GitHub,
+ * Start a build on GitHub: reuse the Service's latest image when a Machine still holds it for this commit, skip GitHub
+ * when it can't take it (no GitHub App access, no build workflow, several platforms, GitHub or the Cluster
+ * unreachable), else dispatch the workflow on the runner native to its platform. Workflow inputs are visible on GitHub,
  * so they never carry secrets: the runner fetches those at check-in.
  */
 export const startStoreGithubBuild = Effect.fn("StoreGithub.start")(function* (organizationId: string, target: StoreGithubTarget) {
@@ -112,7 +113,15 @@ export const startStoreGithubBuild = Effect.fn("StoreGithub.start")(function* (o
     Effect.catchIf(refusedWith("conflict"), () => Effect.void),
     Effect.as<StoreGithubStart>(done),
   );
-  if (target.installationId === null) return yield* skip(`GitHub builds need the Ployz GitHub App on ${target.repository}`);
+  if (target.installationId === null) {
+    // A Service whose image a Server still holds reads as reused, not as waiting on an App it doesn't need.
+    const connections = yield* connectionsOf(organizationId);
+    const start = yield* storeTry(() => store.githubStart(target.build, connections)).pipe(
+      Effect.catchIf(refusedWith("conflict"), () => Effect.succeed(null)),
+    );
+    if (start === null || start.kind === "reused") return done;
+    return yield* skip(`GitHub builds need the Ployz GitHub App on ${target.repository}`);
+  }
   const installationId = target.installationId;
   const access = organizationAccess(organizationId, installationId);
   return yield* Effect.gen(function* () {

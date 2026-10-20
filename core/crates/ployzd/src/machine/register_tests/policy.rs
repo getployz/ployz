@@ -50,6 +50,7 @@ async fn registration_publishes_initial_policy_and_join_persists_it() {
         .enroll(ployz_core::EnrollRequest {
             role: ployz_core::EnrollAs::Member { registration },
             wireguard_mtu: None,
+            pinned: Default::default(),
         })
         .await
         .unwrap();

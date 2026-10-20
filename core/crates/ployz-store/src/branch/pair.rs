@@ -352,6 +352,10 @@ impl Checked<'_> {
             };
             arrive(tx, who, &into.summary.id, &arrived)?;
         }
+        let read = crate::rules::removed_lineages(&applied.next, &into.live);
+        let source_removed = scope::removed_of(tx, &of.source)?;
+        into.removed
+            .append(&source_removed, |lineage| read.contains(lineage));
         let staged = land(tx, who, into, (&of.from, &carried), applied.next, picks)?;
         share(tx, (&into.summary.id, &of.other), &applied.base)?;
         Ok(staged)
@@ -1016,7 +1020,12 @@ pub(crate) fn land(
     picks: &BTreeSet<RowId>,
 ) -> Result<Vec<NodeName>, RpcError> {
     let before = std::mem::replace(&mut branch.working, next);
-    crate::volume::check_storage(tx, &branch.summary.id, &branch.working)?;
+    crate::volume::check_storage(
+        tx,
+        &branch.summary.id,
+        &branch.working.volumes,
+        crate::volume::StorageRule::Replay,
+    )?;
     // What arrives from `from` may bring a rule it already broke; that's not new.
     scope::save_working_from(tx, branch, Some(from))?;
     let id = branch.summary.id.clone();

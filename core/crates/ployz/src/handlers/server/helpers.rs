@@ -4,7 +4,7 @@ use clap::ArgMatches;
 use ployz_core::{
     DOCKER_NETWORK_CONFLICT_RECOVERY, EnrollRequest, Enrolled, InspectRequest, LeaveRequest, Left,
     LocalMachinePhase, MACHINE_START_WAIT, Machine, MachineDetails, MachineName, MachineToken,
-    PublicIpDiscovery, RpcErrorCode, TokenRequest, op,
+    PinnedAddresses, PublicIpDiscovery, RpcErrorCode, TokenRequest, op,
 };
 
 use super::parse_endpoints;
@@ -34,6 +34,16 @@ pub(super) fn token_request(matches: &ArgMatches) -> Result<InspectRequest, Erro
         token: Some(TokenRequest { public_ip }),
         ..Default::default()
     })
+}
+
+pub(super) fn pinned(request: &InspectRequest) -> PinnedAddresses {
+    PinnedAddresses::chosen(
+        request
+            .token
+            .as_ref()
+            .map_or(&PublicIpDiscovery::Auto, |token| &token.public_ip),
+        &request.advertised_endpoints,
+    )
 }
 
 /// Inspect a newcomer for the token a Cluster registers it with.
@@ -145,12 +155,16 @@ pub(in crate::handlers) async fn check_listed(client: &mut Client) -> Result<(),
     }
     // The published row is the participating identity, not the local key's id.
     let id = details.machine.map_or(details.id, |machine| machine.id);
-    if !client
-        .machines()
-        .await?
-        .iter()
-        .any(|machine| machine.machine.id == id)
+    // A Participating daemon still opening its Cluster store, as after the
+    // post-enroll restart, answers Unavailable: not ready yet, not a refusal.
+    let machines = client.machines().await;
+    if let Err(ConnectError::Remote(error)) = &machines
+        && error.code == RpcErrorCode::Unavailable
     {
+        return Err(ConnectError::Attempt(error.message.clone().into()));
+    }
+    let machines = machines?;
+    if !machines.iter().any(|machine| machine.machine.id == id) {
         return Err(ConnectError::Attempt(
             "Server is not yet published in the Cluster store".into(),
         ));

@@ -4,15 +4,19 @@ import { expectOf, observedEpoch, type PlanInput, planForwardRelease, planFromCo
 import type { AnsweredMember, Member } from "#/modules/volume-run/volume-run";
 import { COPIES, type Copy, member } from "#/modules/volume-run/volume-run.test-fixture";
 
-const mirror = (to: string): PlanInput => ({ kind: "mirror", args: { to }, volumeName: "data", orphan: false });
-const sync = (full = false): PlanInput => ({ kind: "sync", args: { full }, volumeName: "data", orphan: false });
+const GB = 1_000_000_000;
+const data = { volumeName: "data", orphan: false } as const;
+const mirror = (to: string): PlanInput => ({ kind: "mirror", args: { to }, ...data });
+const sync = (full = false): PlanInput => ({ kind: "sync", args: { full }, ...data });
 const remove = (slot: string | null, confirmed: string | null = null): PlanInput =>
-  ({ kind: "delete_mirror", args: { slot, confirmed_name: confirmed }, volumeName: "data", orphan: false });
-const move = (to: string): PlanInput => ({ kind: "move", args: { to }, volumeName: "data", orphan: false });
-const release: PlanInput = { kind: "release", args: {}, volumeName: "data", orphan: false };
-const restore = (from: string): PlanInput => ({ kind: "restore", args: { from }, volumeName: "data", orphan: false });
-const seed: PlanInput = { kind: "seed", args: { into: { volumeId: "v2", dockerVolume: "ns_vol-v2", name: "data-1027" }, guid: "11", name: "w-1-4" }, volumeName: "data", orphan: false };
-const orphan: PlanInput = { kind: "delete_mirror", args: { slot: null, confirmed_name: null }, volumeName: "ns_vol-1", orphan: true };
+  ({ kind: "delete_mirror", args: { slot, confirmed_name: confirmed, role: "any" }, ...data });
+const move = (to: string): PlanInput => ({ kind: "move", args: { to }, ...data });
+const release: PlanInput = { kind: "release", args: {}, ...data };
+const restore = (from: string): PlanInput => ({ kind: "restore", args: { from }, ...data });
+const seed: PlanInput = { kind: "seed", args: { into: { volumeId: "v2", dockerVolume: "ns_vol-v2", name: "data-1027" }, guid: "11", name: "w-1-4" }, ...data };
+const resize = (gigabytes: number, size: { recordedBytes?: number; refquotaBytes?: number } = {}): PlanInput =>
+  ({ kind: "resize", args: { maximum_bytes: gigabytes * GB }, ...data, recordedBytes: 10 * GB, refquotaBytes: 10 * GB, ...size });
+const orphan: PlanInput = { kind: "delete_mirror", args: { slot: null, confirmed_name: null }, ...data, volumeName: "ns_vol-1", orphan: true };
 
 const bare = (server: string, epoch: number): Member =>
   ({ machine: member(server, "cut").machine, address: "fdcc::1", answered: true, view: { copy: { ...COPIES.cut, epoch, newest: null } }, floorless: false });
@@ -46,6 +50,8 @@ function outcome(input: PlanInput, members: Member[]) {
       return `demote ${phase.old.machine.name} below ${phase.writer.machine.name}`;
     case "seed":
       return `seed on ${phase.source.machine.name}`;
+    case "resize":
+      return `${phase.direction} ${phase.from / GB}->${phase.to / GB} GB: ${phase.steps.map((step) => (step.kind === "record" ? "record" : `${step.role} ${step.member.machine.name}`)).join(", ")}`;
   }
 }
 
@@ -90,7 +96,7 @@ describe("plan_from_copies_table", () => {
   it.each<[string, PlanInput, Member[], string]>([
     ["mirror onto an empty Server", mirror("b"), [member("a", "writer"), member("b", "empty")], "mirror a->b"],
     ["mirror onto its mirror", mirror("b"), [member("a", "writer"), member("b", "mirror")], "mirror a->b"],
-    ["mirror onto the writer", mirror("a"), [member("a", "writer"), member("b", "empty")], "refuse invalid"],
+    ["mirror onto the writer", mirror("a"), [member("a", "writer"), member("b", "empty")], "refuse already_on"],
     ["mirror onto a Server not in the cluster", mirror("z"), [member("a", "writer"), member("b", "empty")], "refuse invalid"],
     ["mirror with a mirror elsewhere", mirror("c"), [member("a", "writer"), member("b", "mirror"), member("c", "empty")], "refuse second_mirror"],
     ["mirror with a Server unanswered", mirror("b"), [member("a", "writer"), member("b", "empty"), member("c", "unanswered")], "refuse unanswered"],
@@ -139,8 +145,8 @@ describe("plan_from_copies_table", () => {
     ["move again once the target slot holds the source's newest starts", move("b"), [member("a", "mirror"), member("b", "mirror")], "move a->b at start"],
     ["move again once the target writes at the source's newest leaves the run to find the cut source", move("b"), [member("a", "final"), member("b", "writer")], "landed on b behind a"],
     ["move to the writer beside mirrors at its newest names them all, not only a final snapshot", move("b"), [member("a", "mirror"), member("b", "writer"), member("c", "final")], "landed on b behind a,c"],
-    ["move onto the writer with its mirror behind", move("a"), [member("a", "writer"), member("b", "behind")], "refuse invalid"],
-    ["move onto the writer alone", move("a"), [member("a", "writer")], "refuse invalid"],
+    ["move onto the writer with its mirror behind", move("a"), [member("a", "writer"), member("b", "behind")], "refuse already_on"],
+    ["move onto the writer alone", move("a"), [member("a", "writer")], "refuse already_on"],
     ["move onto a root mid-cut", move("a"), [member("a", "cut"), member("b", "mirror")], "refuse volume_switching"],
     ["move with a mirror elsewhere", move("c"), [member("a", "writer"), member("b", "mirror"), member("c", "empty")], "refuse second_mirror"],
     ["move a cut toward another Server", move("c"), [member("a", "cut"), member("b", "mirror"), member("c", "empty")], "refuse second_mirror"],
@@ -160,13 +166,13 @@ describe("plan_from_copies_table", () => {
     ["restore the only mirror", restore("b"), [member("a", "empty"), member("b", "mirror")], "restore b 11"],
     ["restore a slot mid-pull loses what it has not pulled", restore("b"), [member("b", "pulling")], "restore b 10"],
     ["restore a read-only root loses nothing", restore("a"), [member("a", "cut"), member("b", "empty")], "restore a"],
-    ["restore the writable writer", restore("a"), [member("a", "writer"), member("b", "empty")], "refuse invalid"],
+    ["restore the writable writer", restore("a"), [member("a", "writer"), member("b", "empty")], "refuse already_on"],
     ["restore while another Server holds the writer", restore("b"), [member("a", "writer"), member("b", "mirror")], "refuse another_copy"],
     ["restore while another Server holds a cut root", restore("b"), [member("a", "cut"), member("b", "mirror")], "refuse another_copy"],
     ["restore from a Server with no copy", restore("b"), [member("a", "empty"), member("b", "empty")], "refuse no_copy"],
     ["restore from a Server not in the cluster", restore("z"), [member("b", "mirror")], "refuse invalid"],
     ["restore with a Server unanswered", restore("b"), [member("a", "unanswered"), member("b", "mirror")], "refuse unanswered"],
-    ["a returning root does not block Restore's refusal", restore("b"), [member("a", "writer", { epoch: 3 }), member("b", "writer", { epoch: 8 })], "refuse invalid"],
+    ["a returning root does not block Restore's refusal", restore("b"), [member("a", "writer", { epoch: 3 }), member("b", "writer", { epoch: 8 })], "refuse already_on"],
 
     ["seed on the writer beside its mirror", seed, [member("a", "writer"), member("b", "mirror")], "seed on a"],
     ["seed with no writer", seed, [member("b", "mirror")], "refuse no_writer"],
@@ -191,6 +197,34 @@ describe("plan_from_copies_table", () => {
     expect(planFromCopies(remove("fsn-2"), [member("fsn-2", "mirror")])).toEqual({
       ok: false,
       refusal: { code: "confirm_required", message: "data-fsn-2 is data's only copy; volume mirror rm data-fsn-2 --confirm data" },
+    });
+  });
+
+  it.each([["move", move("fsn-3")], ["mirror", mirror("fsn-3")]])("names the copy on a third Server and its removal when a %s finds one", (_, input) => {
+    expect(planFromCopies(input, [member("fsn-1", "writer"), member("fsn-2", "mirror"), member("fsn-3", "empty")])).toEqual({
+      ok: false,
+      refusal: { code: "second_mirror", message: "data already has a copy on fsn-2, data-fsn-2", next: "ployz volume mirror rm data-fsn-2" },
+    });
+  });
+
+  it("names release, not the removal mirror rm refuses, when a move from a stopped cut finds a copy on a third Server", () => {
+    expect(planFromCopies(move("fsn-3"), [member("fsn-1", "cut"), member("fsn-2", "mirror"), member("fsn-3", "empty")])).toEqual({
+      ok: false,
+      refusal: { code: "second_mirror", message: "data already has a copy on fsn-2, data-fsn-2", next: "ployz volume release data" },
+    });
+  });
+
+  it("names the move onto the copy when a cut with no snapshot finds it on a third Server", () => {
+    expect(planFromCopies(move("fsn-3"), [bare("fsn-1", 9), member("fsn-2", "mirror"), member("fsn-3", "empty")])).toEqual({
+      ok: false,
+      refusal: { code: "second_mirror", message: "data already has a copy on fsn-2, data-fsn-2", next: "ployz volume move data --to fsn-2" },
+    });
+  });
+
+  it("names no next step when a cut with no snapshot has copies on the target and a third Server", () => {
+    expect(planFromCopies(move("fsn-3"), [bare("fsn-1", 9), member("fsn-2", "mirror"), member("fsn-3", "mirror")])).toEqual({
+      ok: false,
+      refusal: { code: "second_mirror", message: "data already has a copy on fsn-2, data-fsn-2" },
     });
   });
 
@@ -344,6 +378,48 @@ describe("plan_from_copies_table", () => {
   });
 });
 
+describe("plan a resize", () => {
+  const copies = [member("fsn-1", "writer"), member("fsn-2", "mirror"), member("fsn-3", "mirror")];
+
+  it("sets every mirror first, the primary last, then records", () => {
+    expect(outcome(resize(20), copies)).toBe("grow 10->20 GB: mirror fsn-2, mirror fsn-3, primary fsn-1, record");
+  });
+
+  it("sets a lone primary, then records", () => {
+    expect(outcome(resize(20), [member("fsn-1", "writer")])).toBe("grow 10->20 GB: primary fsn-1, record");
+  });
+
+  it("is the same plan on every replay from the same copies", () => {
+    const once = planFromCopies(resize(20), copies);
+    expect(planFromCopies(resize(20), copies)).toEqual(once);
+    expect(copies.map((each) => each.machine.name)).toEqual(["fsn-1", "fsn-2", "fsn-3"]);
+  });
+
+  it.each<[string, PlanInput, Member[], string]>([
+    ["a Server lacking the verb", resize(20), [...copies, { machine: member("fsn-4", "unanswered").machine, answered: false, lack: "Volume resize needs a newer Ployz on fsn-4." }], "refuse server_lacks"],
+    ["a Server that did not answer", resize(20), [...copies, member("fsn-4", "unanswered")], "refuse unanswered"],
+    ["no writer", resize(20), [member("fsn-2", "mirror")], "refuse no_writer"],
+    ["a cut in progress", resize(20), [member("fsn-1", "cut"), member("fsn-2", "pulling")], "refuse volume_switching"],
+    ["two writers", resize(20), [member("fsn-1", "writer"), member("fsn-2", "writer")], "refuse two_writers"],
+    ["an old copy beside the writer", resize(20), [member("fsn-1", "writer", { epoch: 2 }), member("fsn-2", "writer", { epoch: 1 })], "demote fsn-2 below fsn-1"],
+    ["a Docker Volume", resize(20, { recordedBytes: 0, refquotaBytes: 0 }), copies, "refuse invalid"],
+    ["a Volume no Deploy sized yet", resize(20, { recordedBytes: 0 }), copies, "refuse invalid"],
+    ["the size it already has", resize(10), copies, "refuse already_sized"],
+    ["a smaller size", resize(5), copies, "refuse invalid"],
+  ])("refuses or demotes with %s", (_, input, members, expected) => {
+    expect(outcome(input, members)).toBe(expected);
+  });
+
+  it("names the Server that lacks the verb, the size it already has and the size it cannot shrink to", () => {
+    const lacking: Member = { machine: member("fsn-4", "unanswered").machine, answered: false, lack: "Volume resize needs a newer Ployz on fsn-4." };
+    expect(planFromCopies(resize(20), [...copies, lacking])).toMatchObject({ ok: false, refusal: { message: "Volume resize needs a newer Ployz on fsn-4." } });
+    expect(planFromCopies(resize(10), copies)).toMatchObject({ ok: false, refusal: { code: "already_sized", message: "data already has 10 GB" } });
+    expect(planFromCopies(resize(5), copies)).toMatchObject({ ok: false, refusal: { message: "data has 10 GB; shrinking a deployed Volume isn't supported yet" } });
+    expect(planFromCopies(resize(20, { recordedBytes: 0, refquotaBytes: 0 }), copies)).toMatchObject({ ok: false, refusal: { message: "data uses Docker storage, which has no size to change; add a Managed Volume for a sized one" } });
+    expect(planFromCopies(resize(20, { recordedBytes: 0 }), copies)).toMatchObject({ ok: false, refusal: { message: "data has no deployed size to change yet; deploy it first" } });
+  });
+});
+
 const named = (members: readonly Member[], role: Role) => members.filter((each) => roleOf(each) === role).map((each) => each.machine.name).sort((a, b) => a.localeCompare(b));
 
 /** The cut every remedy keeps: highest epoch, then holds a snapshot, then first by Server name. */
@@ -435,7 +511,7 @@ describe("follow every next step a refusal names", () => {
   const newest = COPIES.mirror.newest;
   const earlier = { ...COPIES.behind.newest, created_unix_seconds: newest.created_unix_seconds - 60 };
   const slotA = twin("a", false, { ...COPIES.behind, newest: earlier });
-  const slotB = twin("b", true, { ...COPIES.mirror, slot: "2", resume_token: "tok", pull: { target: newest.name, failure: "no space" } });
+  const slotB = twin("b", true, { ...COPIES.mirror, slot: "2", resume_token: "tok", pull: { target: newest.name, failure: "no space" }, role: "old_copy" });
   const bareA = twin("c", false, { ...COPIES.cut, epoch: 9, newest: null });
   const bareB = twin("d", true, { ...COPIES.cut, epoch: 9, newest: null });
   const heldA = twin("c", false, { ...COPIES.cut, epoch: 9, newest: earlier });

@@ -13,6 +13,16 @@ use std::{
 use ployz_store::{DeploymentStatus, DeploymentView, DeploymentsView, View, Written};
 use serde_json::{Value, json};
 
+/// One `--events` line: each names its Deployment, so a replacement's lines say which.
+fn event(number: u32, status: &str) -> Value {
+    let id = if number == 7 {
+        "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+    } else {
+        "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+    };
+    json!({"type": "deployment", "id": id, "number": number, "status": status, "nodes": []})
+}
+
 fn view(number: u32, status: DeploymentStatus) -> DeploymentView {
     serde_json::from_value(json!({
         "id": if number == 7 { "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" } else { "cccccccc-cccc-4ccc-8ccc-cccccccccccc" },
@@ -36,6 +46,8 @@ struct Reply {
 enum Interrupt {
     DuringRead,
     AfterObserved(Duration),
+    /// Cloud takes the request and closes the connection without answering.
+    HangUp,
 }
 
 struct Exchange {
@@ -81,11 +93,13 @@ fn replacement() -> Reply {
         path: "/api/config/read",
         kind: "deployments",
         status: 200,
-        body: serde_json::to_value(View::Deployments(DeploymentsView {
+        body: serde_json::to_value(View::Deployments(Box::new(DeploymentsView {
             environment: newer.environment,
-            deployments: vec![newer.deployment],
+            deployments: vec![newer.deployment.clone()],
             next_cursor: None,
-        }))
+            latest: Some(newer.deployment.clone()),
+            in_flight: vec![newer.deployment],
+        })))
         .unwrap(),
         interrupt: None,
         delay: Duration::ZERO,
@@ -137,6 +151,15 @@ fn serve(
         .or_else(|| body.get("command"))
         .and_then(Value::as_str);
     assert_eq!(kind, Some(reply.kind), "{body}");
+    if matches!(reply.interrupt, Some(Interrupt::HangUp)) {
+        return (
+            Exchange {
+                requested,
+                responded: Instant::now(),
+            },
+            None,
+        );
+    }
     let mut sent = None;
     if matches!(reply.interrupt, Some(Interrupt::DuringRead)) {
         sent = Some(interrupt(pid));
@@ -150,7 +173,7 @@ fn serve(
     let responded = Instant::now();
     if let Some(Interrupt::AfterObserved(delay)) = reply.interrupt {
         let deadline = Instant::now() + Duration::from_secs(2);
-        while std::fs::metadata(events).unwrap().len() == 0 {
+        while std::fs::metadata(events).map_or(0, |events| events.len()) == 0 {
             assert!(Instant::now() < deadline, "CLI did not consume its view");
             std::thread::sleep(Duration::from_millis(1));
         }
@@ -178,6 +201,20 @@ fn run_at(replies: Vec<Reply>, root: &std::path::Path) -> (Output, Vec<Value>) {
 
 fn measured_run(replies: Vec<Reply>, root: &std::path::Path) -> Run {
     let events = root.join("events.ndjson");
+    let mut deploy = vec![
+        "deploy",
+        "--project",
+        "shop",
+        "--env",
+        "production",
+        "--events",
+    ];
+    deploy.push(events.to_str().unwrap());
+    cli_run(replies, root, &deploy)
+}
+
+fn cli_run(replies: Vec<Reply>, root: &std::path::Path, args: &[&str]) -> Run {
+    let events = root.join("events.ndjson");
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     listener.set_nonblocking(true).unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
@@ -191,17 +228,8 @@ fn measured_run(replies: Vec<Reply>, root: &std::path::Path) -> Run {
         .env("PLOYZ_CLOUD_URL", url)
         .arg("--ployz-config")
         .arg(root.join("selected team.yaml"))
-        .args([
-            "--json",
-            "--color=never",
-            "deploy",
-            "--project",
-            "shop",
-            "--env",
-            "production",
-            "--events",
-        ])
-        .arg(&events)
+        .args(["--json", "--color=never"])
+        .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -265,7 +293,7 @@ fn measured_run(replies: Vec<Reply>, root: &std::path::Path) -> Run {
         String::from_utf8_lossy(&output.stderr)
     );
     let events = std::fs::read_to_string(events)
-        .unwrap()
+        .unwrap_or_default()
         .lines()
         .map(|line| serde_json::from_str(line).unwrap())
         .collect();
@@ -335,9 +363,9 @@ fn cloud_replacement_resets_event_dedup_without_changing_the_ndjson_shape() {
     assert_eq!(
         events,
         vec![
-            json!({"type":"deployment", "status":"running", "nodes":[]}),
-            json!({"type":"deployment", "status":"running", "nodes":[]}),
-            json!({"type":"deployment", "status":"applied", "nodes":[]}),
+            event(7, "running"),
+            event(8, "running"),
+            event(8, "applied"),
         ]
     );
 }
@@ -367,10 +395,7 @@ fn cloud_interrupt_during_follow_wait_exits_without_another_read_or_remote_cance
         let result: Value = serde_json::from_slice(&output.stdout).unwrap();
         assert_eq!(result.get("number"), Some(&json!(7)));
         assert_eq!(result.get("status"), Some(&json!("running")));
-        assert_eq!(
-            events,
-            vec![json!({"type":"deployment", "status":"running", "nodes":[]})]
-        );
+        assert_eq!(events, vec![event(7, "running")]);
         assert!(
             String::from_utf8_lossy(&output.stderr).contains("The Cloud Deployment continues.")
         );
@@ -430,9 +455,9 @@ fn cloud_interrupt_before_wait_keeps_successful_read_evidence() {
         assert_eq!(result.get("status"), Some(&json!("running")));
         let mut expected = Vec::new();
         if !first_read {
-            expected.push(json!({"type":"deployment", "status":"queued", "nodes":[]}));
+            expected.push(event(7, "queued"));
         }
-        expected.push(json!({"type":"deployment", "status":"running", "nodes":[]}));
+        expected.push(event(7, "running"));
         assert_eq!(events, expected);
     }
     let mut late = replacement();
@@ -475,14 +500,14 @@ fn cloud_failure_recovery_keeps_selected_config_and_actual_runtime_identity() {
     *failed.get_mut("runtime_names").unwrap() = json!({"web": "private-web"});
     *failed.get_mut("outcome").unwrap() =
         json!({"type": "executed", "summary": {}, "reason": "web failed", "cause": ["denied"]});
-    *failed.get_mut("nodes").unwrap() = json!([{"type": "service", "id": "dddddddd-dddd-4ddd-8ddd-dddddddddddd", "name": "web", "outcome": "failed", "rows": [{"machine_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "server": "edge", "state": "failed", "reason": "CreateContainer failed", "cause": ["denied"], "step": null, "log": null, "history": null, "started_at": 1, "finished_at": 2}]}]);
+    *failed.get_mut("nodes").unwrap() = json!([{"type": "service", "id": "dddddddd-dddd-4ddd-8ddd-dddddddddddd", "name": "web", "outcome": "failed", "rows": [{"machine_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "server": "edge", "state": "failed", "reason": "StartContainer failed", "cause": ["denied"], "step": "start", "log": null, "history": null, "started_at": 1, "finished_at": 2}]}]);
     let mut reply = observed(7, DeploymentStatus::Failed);
     reply.body = serde_json::to_value(View::Deployment(Box::new(
         serde_json::from_value(failed.clone()).unwrap(),
     )))
     .unwrap();
     let (output, events) = run_at(vec![admitted(), reply], root.path());
-    assert_eq!(output.status.code(), Some(3), "{output:?}");
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
     let result: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(result.get("status"), Some(&json!("failed")));
     assert_eq!(result.get("nodes"), failed.get("nodes"));
@@ -526,4 +551,337 @@ fn cloud_failure_recovery_keeps_selected_config_and_actual_runtime_identity() {
         ],
         "{stderr}"
     );
+}
+
+fn hung_up(mut reply: Reply) -> Reply {
+    reply.interrupt = Some(Interrupt::HangUp);
+    reply
+}
+
+/// The one `inspect` command `error` names, without the `--ployz-config` every hint carries.
+fn inspected(error: &Value) -> String {
+    let [command] = error
+        .pointer("/details/inspect")
+        .and_then(Value::as_array)
+        .unwrap()
+        .as_slice()
+    else {
+        panic!("{error}");
+    };
+    let mut words = shell_words::split(command.as_str().unwrap()).unwrap();
+    if let Some(at) = words.iter().position(|word| word == "--ployz-config") {
+        words.drain(at..at + 2);
+    }
+    words.join(" ")
+}
+
+fn failure(output: &Output) -> Value {
+    let printed = if output.stdout.is_empty() {
+        &output.stderr
+    } else {
+        &output.stdout
+    };
+    serde_json::from_slice::<Value>(printed)
+        .unwrap_or_else(|error| panic!("{error}: {}", String::from_utf8_lossy(printed)))
+        .get("error")
+        .cloned()
+        .unwrap_or_else(|| panic!("{output:?}"))
+}
+
+#[test]
+fn a_write_cloud_took_but_never_answered_says_it_may_have_applied() {
+    let root = tempfile::tempdir().unwrap();
+    let add = Reply {
+        path: "/api/config/write",
+        kind: "create_service",
+        status: 200,
+        body: Value::Null,
+        interrupt: Some(Interrupt::HangUp),
+        delay: Duration::ZERO,
+    };
+    let Run { output, .. } = cli_run(
+        vec![add],
+        root.path(),
+        &[
+            "service",
+            "add",
+            "frz",
+            "--image",
+            "nginx:alpine",
+            "--project",
+            "shop",
+            "--env",
+            "production",
+        ],
+    );
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let error = failure(&output);
+    assert_eq!(error.get("code"), Some(&json!("unavailable")), "{error}");
+    assert!(
+        error
+            .get("message")
+            .and_then(Value::as_str)
+            .unwrap()
+            .ends_with("stopped answering after it got this change, so it may have applied."),
+        "{error}"
+    );
+    assert_eq!(
+        error.pointer("/details/writes"),
+        Some(&json!("unknown")),
+        "{error}"
+    );
+    assert_eq!(
+        inspected(&error),
+        "ployz diff --project shop --env production"
+    );
+}
+
+#[test]
+fn a_deploy_cloud_took_but_never_answered_points_at_its_deployments() {
+    let (output, _) = run(vec![hung_up(admitted())]);
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let error = failure(&output);
+    assert_eq!(
+        error.pointer("/details/writes"),
+        Some(&json!("unknown")),
+        "{error}"
+    );
+    assert_eq!(
+        inspected(&error),
+        "ployz deployment ls --project shop --env production"
+    );
+}
+
+#[test]
+fn losing_cloud_while_following_says_the_deployment_keeps_running() {
+    let (output, _) = run(vec![
+        admitted(),
+        hung_up(observed(7, DeploymentStatus::Running)),
+    ]);
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let error = failure(&output);
+    assert_eq!(
+        error.get("message"),
+        Some(&json!(
+            "Stopped following Deployment #7; it keeps running in Ployz Cloud."
+        )),
+        "{error}"
+    );
+    assert_eq!(
+        inspected(&error),
+        "ployz deployment show 7 --project shop --env production"
+    );
+}
+
+#[test]
+fn losing_cloud_while_looking_for_a_replacement_keeps_the_superseded_status() {
+    let (output, _) = run(vec![
+        admitted(),
+        observed(7, DeploymentStatus::Superseded),
+        hung_up(replacement()),
+    ]);
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let error = failure(&output);
+    assert_eq!(
+        error.get("message"),
+        Some(&json!(
+            "Deployment #7 was superseded, and Ployz Cloud stopped answering before its replacement could be read."
+        )),
+        "{error}"
+    );
+    assert_eq!(
+        inspected(&error),
+        "ployz deployment ls --project shop --env production"
+    );
+}
+
+#[test]
+fn losing_cloud_after_a_replacement_names_the_deployment_being_followed() {
+    let (output, _) = run(vec![
+        admitted(),
+        observed(7, DeploymentStatus::Superseded),
+        replacement(),
+        hung_up(observed(8, DeploymentStatus::Running)),
+    ]);
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let error = failure(&output);
+    assert_eq!(
+        error.get("message"),
+        Some(&json!(
+            "Stopped following Deployment #8; it keeps running in Ployz Cloud."
+        )),
+        "{error}"
+    );
+    assert_eq!(
+        inspected(&error),
+        "ployz deployment show 8 --project shop --env production"
+    );
+}
+
+/// Deployment `number` named `named`, with a Service node of each `(name, outcome)`.
+fn narrowed(
+    number: u32,
+    status: DeploymentStatus,
+    named: &str,
+    nodes: &[(&str, &str)],
+) -> DeploymentView {
+    let mut view = view(number, status);
+    view.deployment.services = serde_json::from_value(json!([named])).unwrap();
+    view.nodes = nodes
+        .iter()
+        .enumerate()
+        .map(|(n, (name, outcome))| {
+            serde_json::from_value(json!({
+                "type": "service", "id": format!("dddddddd-dddd-4ddd-8ddd-dddddddddd{n:02}"),
+                "name": name, "outcome": outcome,
+            }))
+            .unwrap()
+        })
+        .collect();
+    view
+}
+
+fn read(view: &DeploymentView) -> Reply {
+    Reply {
+        body: serde_json::to_value(View::Deployment(Box::new(view.clone()))).unwrap(),
+        ..observed(7, DeploymentStatus::Running)
+    }
+}
+
+fn listed(newer: &DeploymentView) -> Reply {
+    Reply {
+        body: serde_json::to_value(View::Deployments(Box::new(DeploymentsView {
+            environment: newer.environment.clone(),
+            deployments: vec![newer.deployment.clone()],
+            next_cursor: None,
+            latest: Some(newer.deployment.clone()),
+            in_flight: if newer.deployment.status.in_flight() {
+                vec![newer.deployment.clone()]
+            } else {
+                Vec::new()
+            },
+        })))
+        .unwrap(),
+        ..replacement()
+    }
+}
+
+/// `deploy web`, superseded by `newer`, which the CLI reads back as `candidate`;
+/// `follows` scripts the reads that follow `newer` to its end.
+fn superseded_by(newer: &DeploymentView, candidate: Reply, follows: bool) -> Output {
+    let root = tempfile::tempdir().unwrap();
+    let ours = narrowed(7, DeploymentStatus::Queued, "web", &[("web", "pending")]);
+    let superseded = narrowed(
+        7,
+        DeploymentStatus::Superseded,
+        "web",
+        &[("web", "pending")],
+    );
+    let mut replies = vec![
+        Reply {
+            body: serde_json::to_value(Written::Deployment(ours.deployment)).unwrap(),
+            ..admitted()
+        },
+        read(&superseded),
+        listed(newer),
+        candidate,
+    ];
+    if follows {
+        let mut applied = newer.clone();
+        applied.deployment.status = DeploymentStatus::Applied;
+        replies.extend([read(newer), read(&applied)]);
+    }
+    let events = root.path().join("events.ndjson");
+    let Run { output, .. } = cli_run(
+        replies,
+        root.path(),
+        &[
+            "deploy",
+            "web",
+            "--project",
+            "shop",
+            "--env",
+            "production",
+            "--events",
+            events.to_str().unwrap(),
+        ],
+    );
+    output
+}
+
+fn ended_superseded(output: &Output) {
+    assert_eq!(output.status.code(), Some(3), "{output:?}");
+    let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(result.get("number"), Some(&json!(7)), "{result}");
+    assert_eq!(result.get("status"), Some(&json!("superseded")), "{result}");
+}
+
+#[test]
+fn a_superseded_narrowed_deploy_follows_a_newer_one_that_ships_its_service_by_reference() {
+    let newer = narrowed(
+        8,
+        DeploymentStatus::Running,
+        "client",
+        &[("client", "pending"), ("web", "pending")],
+    );
+    let output = superseded_by(&newer, read(&newer), true);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(result.get("number"), Some(&json!(8)), "{result}");
+    assert_eq!(result.get("status"), Some(&json!("applied")), "{result}");
+}
+
+#[test]
+fn a_superseded_narrowed_deploy_stops_when_the_newer_one_leaves_its_service_out() {
+    let newer = narrowed(
+        8,
+        DeploymentStatus::Running,
+        "client",
+        &[("client", "pending")],
+    );
+    ended_superseded(&superseded_by(&newer, read(&newer), false));
+}
+
+#[test]
+fn a_superseded_narrowed_deploy_stops_when_the_newer_one_left_its_service_unchanged() {
+    for outcome in ["unchanged", "not_attempted"] {
+        let newer = narrowed(
+            8,
+            DeploymentStatus::Applied,
+            "client",
+            &[("client", "deployed"), ("web", outcome)],
+        );
+        ended_superseded(&superseded_by(&newer, read(&newer), false));
+    }
+}
+
+#[test]
+fn a_superseded_narrowed_deploy_keeps_its_result_when_reading_the_newer_one_fails() {
+    let newer = narrowed(
+        8,
+        DeploymentStatus::Running,
+        "client",
+        &[("client", "pending"), ("web", "pending")],
+    );
+    let failed = Reply {
+        status: 500,
+        body: json!({"error": {"code": "internal", "message": "boom"}}),
+        ..read(&newer)
+    };
+    ended_superseded(&superseded_by(&newer, failed, false));
+}
+
+#[test]
+fn a_superseded_narrowed_deploy_stops_when_the_newer_one_ships_none_of_its_nodes() {
+    for nodes in [
+        &[("client", "unchanged")][..],
+        &[("client", "unchanged"), ("web", "unchanged")][..],
+    ] {
+        let newer = narrowed(8, DeploymentStatus::Applied, "client", nodes);
+        ended_superseded(&superseded_by(&newer, read(&newer), false));
+    }
 }

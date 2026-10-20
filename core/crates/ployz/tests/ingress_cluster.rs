@@ -694,6 +694,7 @@ async fn deploy(
             ployz::deploy::DeployOperation::ReplaceContainer(replacement) => {
                 Some(replacement.spec.service_id)
             }
+            ployz::deploy::DeployOperation::UpdateContainer(update) => Some(update.spec.service_id),
             ployz::deploy::DeployOperation::PrepareVolumes { .. }
             | ployz::deploy::DeployOperation::WaitHealthy { .. }
             | ployz::deploy::DeployOperation::StopContainer { .. }
@@ -773,7 +774,9 @@ async fn change_container(
             .await
             .unwrap();
         }
-        ContainerAction::Remove => unreachable!("health transition only starts and stops"),
+        ContainerAction::Restart | ContainerAction::Remove => {
+            unreachable!("health transition only starts and stops")
+        }
     }
 }
 

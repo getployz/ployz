@@ -76,6 +76,9 @@ it.live("stages a restore as one Store write and a seeded row, and discards both
     { name, mounts: [{ service: "web", path: "/data" }], change: "create" },
   ]);
 
+  const { effects } = yield* Effect.promise(() => store.read(ORGANIZATION, { query: "diff", environment: shop }));
+  expect(effects).toEqual([expect.objectContaining({ kind: "detaches_volume", name: "data", lost_after: { at, restored: name } })]);
+
   members = [member("web-2", "mirror")];
   expect(yield* restore()).toMatchObject({ ok: false, refusal: { message: "data has no primary answering to restore from." } });
   expect((yield* listPlacements(ORGANIZATION).pipe(Effect.provide(services))).map((row) => row.volumeId)).toEqual([id]);
@@ -91,7 +94,7 @@ it.live("refuses a restore from a point on an old copy being deleted, and stages
     const { drizzle } = yield* Database;
     yield* drizzle.insert(volumeRun).values({
       organizationId: ORGANIZATION, environmentId: "env", volumeId: SOURCE, volumeName: "data", dockerVolume: "data",
-      kind: "delete_mirror", args: { slot: "web-3", confirmed_name: null }, state: "running",
+      kind: "delete_mirror", args: { slot: "web-3", confirmed_name: null, role: "any" }, state: "running",
     });
   }).pipe(Effect.provide(services));
   const members = [member("web-1", "writer"), member("web-3", "behind")];
@@ -241,9 +244,7 @@ it.live("names a restore within 63 characters, and past a Volume that already ha
   // An earlier restore holds that name: the same point restores again under a fresh one.
   const second = yield* restore();
   if (!second.ok) throw new Error(second.refusal.message);
-  const name = yield* nameOf(second.placement.volumeId);
-  expect(name).toMatch(/^d{58}-[a-z0-9]{4}$/u);
-  expect(name).not.toBe(`${"d".repeat(58)}-${time}`);
+  expect(yield* nameOf(second.placement.volumeId)).toBe(`${"d".repeat(56)}-${time}-2`);
 }));
 
 it.live("writes the restore's row before its Store write, so a Deploy admitted right after stamps it", () => Effect.gen(function* () {

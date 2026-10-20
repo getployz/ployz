@@ -13,7 +13,7 @@ use ployz_core::{
 };
 use ployz_store::{
     CreateVolume, Mount, RemoveVolume, SetVolumeSharedWrites, SetVolumeStorage, VolumeId,
-    VolumeQuery, VolumeStaged, VolumesQuery,
+    VolumeListing, VolumeName, VolumeQuery, VolumeStaged, VolumesQuery,
 };
 
 use super::store::{self, Next};
@@ -43,10 +43,11 @@ pub(super) fn add_command(command: Command) -> Command {
 
 pub(super) fn set_command(command: Command) -> Command {
     storage_flags(store::scoped(command.about(
-        "Change a Volume's storage before its first deployment, or whether it allows shared writes",
+        "Change a Volume's storage before its first deployment, grow a deployed one (Ployz Cloud), or whether it allows shared writes",
     )))
     .arg(positional("volume", true))
     .arg(shared_writes_flag())
+    .arg(run::wait_flag().conflicts_with_all(["docker", "shared-writes"]))
     .group(
         clap::ArgGroup::new("volume-change")
             .args(["size", "docker", "shared-writes"])
@@ -105,18 +106,20 @@ pub(super) fn add(root: &ArgMatches) -> Result<(), Error> {
         mounts,
         shared_writes: matches.get_one("shared-writes") == Some(&true),
         storage_locked: false,
+        restored_from: None,
     })?;
     warn_docker(storage);
     if matches!(storage, VolumeKind::Provisioned { .. }) && no_managed_host(matches) {
         crate::ui::warn(NO_MANAGED_HOST);
     }
-    staged(matches, &created, "Staged new Volume", true)
+    staged(matches, &created, "Staged new Volume", "", true)
 }
 
 const NO_MANAGED_HOST: &str = "No Server here can host Managed volumes yet, so a Deploy of this one fails until one can: add a Server with Managed volumes, or use --docker instead.";
 
 /// Why `--docker` is not recommended; said when a command asks for one.
 const DOCKER_VOLUME: &str = "Docker volume (not recommended): no size limit, and it stays out of backups and Server moves as they arrive.";
+const STAGED_NOT_WAITED: &str = "Nothing to wait for: this size is staged for the next Deploy, and only a deployed Volume resizes live.";
 
 /// Best effort, bounded: whether every Server this reaches reports it can't host
 /// managed Volumes. Unreachable or unknown answers `false`; the Deploy still checks.
@@ -201,14 +204,75 @@ pub(super) fn set(root: &ArgMatches) -> Result<(), Error> {
             ));
         });
     }
-    let storage = requested_storage(matches);
-    let changed = store::store(root)?.write(&SetVolumeStorage {
-        environment: store::environment(matches)?,
+    set_storage(
+        root,
+        &store::store(root)?,
+        volume,
+        requested_storage(matches),
+    )
+}
+
+/// What `volume set --size/--docker` does with the Volume, read off the Store's own listing.
+#[derive(Debug, PartialEq)]
+enum StorageChange {
+    /// A staged `SetVolumeStorage`: before the first Deploy, or a change of kind, which the
+    /// Store refuses on a deployed Volume with its own message.
+    Stage(VolumeKind),
+    /// A deployed Managed Volume asked for another Managed size: a resize run on Ployz Cloud.
+    /// Cloud, not the CLI, refuses a smaller size. The size it already has stages nothing, on
+    /// any backend, and the size its Servers hold stages back over a restore of an older size.
+    Resize(ProvisionedVolumeMaximumBytes),
+}
+
+fn storage_change(listing: &VolumeListing, asked: VolumeKind) -> StorageChange {
+    match (listing.storage_locked, listing.volume.storage, asked) {
+        (
+            true,
+            VolumeKind::Provisioned {
+                maximum_bytes: current,
+            },
+            VolumeKind::Provisioned { maximum_bytes },
+        ) if maximum_bytes != current && listing.recorded_storage != Some(maximum_bytes) => {
+            StorageChange::Resize(maximum_bytes)
+        }
+        _ => StorageChange::Stage(asked),
+    }
+}
+
+fn set_storage(
+    root: &ArgMatches,
+    store: &store::Store<'_>,
+    volume: VolumeName,
+    asked: VolumeKind,
+) -> Result<(), Error> {
+    let matches = leaf_matches(root);
+    let environment = store::environment(matches)?;
+    let view = store.read(&VolumeQuery {
+        environment: environment.clone(),
         volume: volume.clone(),
+    })?;
+    let storage = match storage_change(&view.volume, asked) {
+        StorageChange::Stage(storage) => storage,
+        StorageChange::Resize(maximum_bytes) => {
+            return run::resize(root, store, &view, maximum_bytes);
+        }
+    };
+    if matches.get_flag("wait") {
+        crate::ui::warn(STAGED_NOT_WAITED);
+    }
+    let changed = store.write(&SetVolumeStorage {
+        environment,
+        volume,
         storage,
     })?;
     warn_docker(storage);
-    staged(matches, &changed, "Staged Volume storage", true)
+    staged(
+        matches,
+        &changed,
+        "Staged Volume storage",
+        "already has that storage",
+        true,
+    )
 }
 
 /// Said once the store took a Docker volume, so a refused change stays quiet.
@@ -286,7 +350,12 @@ pub(super) fn inspect(root: &ArgMatches) -> Result<(), Error> {
         .field(
             "storage settings",
             if listing.storage_locked {
-                "locked after deployment was requested"
+                match listing.volume.storage {
+                    VolumeKind::Provisioned { .. } => {
+                        "deployed; ployz volume set --size grows it (Ployz Cloud)"
+                    }
+                    VolumeKind::Docker {} => "locked after deployment was requested",
+                }
             } else {
                 "editable before deployment"
             },
@@ -317,7 +386,13 @@ pub(super) fn rename(root: &ArgMatches) -> Result<(), Error> {
         volume: volume.clone(),
         name: name.clone(),
     })?;
-    staged(matches, &renamed, "Staged rename of Volume", false)
+    staged(
+        matches,
+        &renamed,
+        "Staged rename of Volume",
+        "already has that name",
+        false,
+    )
 }
 
 pub(super) fn remove(root: &ArgMatches) -> Result<(), Error> {
@@ -327,7 +402,7 @@ pub(super) fn remove(root: &ArgMatches) -> Result<(), Error> {
         environment: store::environment(matches)?,
         volume: volume.clone(),
     })?;
-    staged(matches, &removed, "Staged removal of Volume", false)
+    staged(matches, &removed, "Staged removal of Volume", "", false)
 }
 
 /// Servers were seen and each says it is Docker only; one not
@@ -339,22 +414,30 @@ fn none_hosts_managed(machines: &[MachineObservation]) -> bool {
             .all(|machine| machine.storage == Some(MachineStorageObservation::Stateless))
 }
 
-/// A staged Volume change and `ployz deploy` to ship it. `storage`: say the
-/// Volume's storage too, when the change set it.
+/// A staged Volume change and `ployz deploy` to ship it. A change that was already
+/// so says nothing changed: `already` follows the Volume, as in `Volume data already
+/// has that name`. `storage`: say the Volume's storage too, when the change set it.
 fn staged(
     matches: &ArgMatches,
     result: &VolumeStaged,
     what: &str,
+    already: &str,
     storage: bool,
 ) -> Result<(), Error> {
+    if result.staged.is_empty() {
+        return crate::ui::done(
+            &Next::new(result, None),
+            format_args!(
+                "Nothing changed in {}/{}; Volume {} {already}.",
+                result.environment.project, result.environment.name, result.volume.name
+            ),
+        );
+    }
     let hint = store::next(matches, &["deploy"]);
     crate::ui::finish(&Next::new(result, Some(hint.clone())), || {
         crate::ui::stream(format_args!(
-            "{what} {} in {}/{} (revision {}).",
-            result.volume.name,
-            result.environment.project,
-            result.environment.name,
-            result.environment.revision
+            "{what} {} in {}/{}.",
+            result.volume.name, result.environment.project, result.environment.name
         ));
         if storage {
             crate::ui::stream(format_args!(
@@ -397,6 +480,81 @@ mod tests {
         );
         observed.storage = storage;
         observed
+    }
+
+    #[test]
+    fn only_a_deployed_managed_volume_asked_for_a_size_resizes() {
+        let gb = |size| ProvisionedVolumeMaximumBytes::parse_gb(size).unwrap();
+        let listing = |storage_locked, storage, recorded_storage| VolumeListing {
+            volume: ployz_store::VolumeSummary {
+                id: VolumeId::parse(store::mint()).unwrap(),
+                name: VolumeName::parse("data").unwrap(),
+                storage,
+                shared_writes: false,
+            },
+            mounts: Vec::new(),
+            deployed: storage_locked,
+            storage_locked,
+            recorded_storage,
+            change: None,
+        };
+        let managed = VolumeKind::Provisioned {
+            maximum_bytes: gb("10"),
+        };
+        let twenty = VolumeKind::Provisioned {
+            maximum_bytes: gb("20"),
+        };
+        let docker = VolumeKind::Docker {};
+        let thirty = VolumeKind::Provisioned {
+            maximum_bytes: gb("30"),
+        };
+        for (locked, storage, recorded, asked, change) in [
+            (false, managed, None, twenty, StorageChange::Stage(twenty)),
+            (
+                true,
+                managed,
+                Some(gb("10")),
+                twenty,
+                StorageChange::Resize(gb("20")),
+            ),
+            (
+                true,
+                managed,
+                Some(gb("10")),
+                managed,
+                StorageChange::Stage(managed),
+            ),
+            (
+                true,
+                managed,
+                Some(gb("10")),
+                docker,
+                StorageChange::Stage(docker),
+            ),
+            (true, docker, None, twenty, StorageChange::Stage(twenty)),
+            // A restore staged the older size: the size the Servers hold stages back,
+            // another size resizes.
+            (
+                true,
+                managed,
+                Some(gb("20")),
+                twenty,
+                StorageChange::Stage(twenty),
+            ),
+            (
+                true,
+                managed,
+                Some(gb("20")),
+                thirty,
+                StorageChange::Resize(gb("30")),
+            ),
+        ] {
+            assert_eq!(
+                storage_change(&listing(locked, storage, recorded), asked),
+                change,
+                "locked {locked}, {storage:?} recorded {recorded:?} asked {asked:?}"
+            );
+        }
     }
 
     #[test]

@@ -25,6 +25,7 @@ use super::placement::PlacementReservations;
 /// Every selected location carries its full Volume definition. Locality, budget
 /// checks, and creation previews derive from those assignments; there is no
 /// independently mutable list of pins or missing Volume commitments.
+#[derive(Clone)]
 pub(super) struct VolumePlan<'snapshot> {
     snapshot: &'snapshot DeploySnapshot,
     namespace: Namespace,
@@ -168,6 +169,17 @@ impl<'snapshot> VolumePlan<'snapshot> {
                         || Namespace::declared_volume_name(name).unwrap_or(name.as_str()),
                         String::as_str,
                     );
+                    if let Some(silent) = self.snapshot.machines.iter().find(|machine| {
+                        !matches!(
+                            self.snapshot.storage_capacity.get(&machine.machine.id),
+                            Some(Ok(_))
+                        )
+                    }) {
+                        return Err(PlanError::CopiesUnknown {
+                            name: authored.to_owned(),
+                            machine: silent.machine.name.clone(),
+                        });
+                    }
                     return Err(PlanError::NoWriter {
                         name: authored.to_owned(),
                         copies,

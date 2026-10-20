@@ -20,8 +20,9 @@ use bollard::{
 };
 use futures_util::TryStreamExt;
 use ployz_core::{
-    AdvertisedEndpoint, CreateVolumeRequest, DockerVolumeId, ImageRemoval, ImageRemovalOutcome,
-    MachineGateway, MachineName, ManagementAddress, Namespace, PullPolicy, ResolvedServiceSpec,
+    AdvertisedEndpoint, ByteQuantity, CpuNanos, CreateVolumeRequest, DockerVolumeId, ImageRemoval,
+    ImageRemovalOutcome, MachineGateway, MachineName, ManagementAddress, Namespace, PullPolicy,
+    ResolvedServiceSpec,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -234,6 +235,171 @@ async fn l3_061_default_spec_creates_and_removes_from_docker_and_machine_db() {
         .await
         .unwrap();
     remove_container(&docker.client, &unmanaged).await;
+    cleanup_ployz_network(&docker.client, created_network).await;
+}
+
+#[tokio::test]
+#[ignore = "requires Docker and alpine:3.23.3"]
+async fn update_limits_changes_a_running_container_in_place() {
+    let _lock = DOCKER_NETWORK_LOCK.lock().await;
+    let root = TestDir::new("ployzd-docker-limits");
+    let specs = MachineSpecStore::open(root.0.join("machine.db"))
+        .await
+        .unwrap();
+    let docker = LocalDocker::connect().unwrap();
+    let runtime = ContainerRuntime::new(docker.clone(), specs.clone());
+    let created_network = ensure_ployz_network(&docker.client).await;
+    let machine_id = MachineId::random();
+    let service_id = ServiceId::random();
+    let service_name = ServiceName::parse("limited-api").unwrap();
+    let mut spec = fixture_spec(&service_id, &service_name);
+    spec.container.command = vec!["sleep".into(), "60".into()];
+    spec.container.resources.memory_bytes = Some(ByteQuantity::try_from(64 << 20).unwrap());
+
+    let created = runtime
+        .create_for_test(
+            &machine_id,
+            TEST_GATEWAY,
+            ContainerKind::ServiceContainer,
+            &Namespace::parse("app").unwrap(),
+            &spec,
+        )
+        .await
+        .unwrap();
+    let container_id = created.container_id;
+    runtime.start(&container_id).await.unwrap();
+    let before = docker
+        .client
+        .inspect_container(container_id.as_str(), None)
+        .await
+        .unwrap();
+    let before_state = before.state.clone().unwrap();
+    assert!(before_state.running.unwrap_or(false));
+
+    let mut updated = spec.clone();
+    updated.container.resources.memory_bytes = Some(ByteQuantity::try_from(128 << 20).unwrap());
+    updated.container.resources.cpu_nanos = Some(CpuNanos::try_from(500_000_000).unwrap());
+    let mut republished = specs.subscribe_rotations();
+    republished.mark_unchanged();
+    let outcome = runtime
+        .update_limits(&container_id, &updated)
+        .await
+        .unwrap();
+    assert!(republished.has_changed().unwrap());
+    assert_eq!(outcome.container_id, container_id);
+    assert_eq!(outcome.limits, updated.container.resources.limits());
+
+    let after = docker
+        .client
+        .inspect_container(container_id.as_str(), None)
+        .await
+        .unwrap();
+    assert_eq!(after.id, before.id);
+    let after_state = after.state.clone().unwrap();
+    assert!(after_state.running.unwrap_or(false));
+    assert_eq!(after_state.started_at, before_state.started_at);
+    let host_config = after.host_config.unwrap();
+    assert_eq!(host_config.memory, Some(128 << 20));
+    assert_eq!(host_config.memory_swap, Some(256 << 20));
+    assert_eq!(host_config.nano_cpus, Some(500_000_000));
+    let inspected = runtime
+        .inspect_managed(&container_id, &machine_id)
+        .await
+        .unwrap();
+    assert_eq!(inspected.resolved_spec, updated);
+    assert_eq!(
+        specs.get(&container_id).await.unwrap(),
+        Some(updated.clone())
+    );
+
+    // A resent request whose first attempt applied the limits answers as applied.
+    let resent = runtime
+        .update_limits(&container_id, &updated)
+        .await
+        .unwrap();
+    assert_eq!(resent.limits, updated.container.resources.limits());
+
+    let mut other_image = updated.clone();
+    other_image.container.image = "alpine:3.22".into();
+    let refused = runtime
+        .update_limits(&container_id, &other_image)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(
+            refused,
+            Error::LimitsRefused {
+                refusal: LimitsRefusal::NeedsRecreate,
+                ..
+            }
+        ),
+        "{refused:?}"
+    );
+    assert_eq!(
+        specs.get(&container_id).await.unwrap(),
+        Some(updated.clone())
+    );
+
+    // A spec restored below the live limit admits a raise against the spec that
+    // would lower what Docker runs; the live limit refuses it.
+    specs
+        .config_operation()
+        .await
+        .put(&container_id, &spec)
+        .await
+        .unwrap();
+    let mut below_live = spec.clone();
+    below_live.container.resources.memory_bytes = Some(ByteQuantity::try_from(96 << 20).unwrap());
+    let refused = runtime
+        .update_limits(&container_id, &below_live)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(
+            refused,
+            Error::LimitsRefused {
+                refusal: LimitsRefusal::WouldLowerMemory,
+                ..
+            }
+        ),
+        "{refused:?}"
+    );
+    assert_eq!(specs.get(&container_id).await.unwrap(), Some(spec.clone()));
+    let host_config = docker
+        .client
+        .inspect_container(container_id.as_str(), None)
+        .await
+        .unwrap()
+        .host_config
+        .unwrap();
+    assert_eq!(host_config.memory, Some(128 << 20));
+    specs
+        .config_operation()
+        .await
+        .put(&container_id, &updated)
+        .await
+        .unwrap();
+
+    runtime.stop(&container_id, None, Some(1)).await.unwrap();
+    let mut raised = updated.clone();
+    raised.container.resources.memory_bytes = Some(ByteQuantity::try_from(256 << 20).unwrap());
+    let refused = runtime
+        .update_limits(&container_id, &raised)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(
+            refused,
+            Error::LimitsRefused {
+                refusal: LimitsRefusal::NotRunning,
+                ..
+            }
+        ),
+        "{refused:?}"
+    );
+    assert_eq!(specs.get(&container_id).await.unwrap(), Some(updated));
+
+    runtime.remove(&container_id, true, true).await.unwrap();
     cleanup_ployz_network(&docker.client, created_network).await;
 }
 
@@ -845,6 +1011,7 @@ async fn docker_events_and_rescans_publish_redacted_local_observations() {
                 advertised_endpoints: vec![AdvertisedEndpoint("127.0.0.1:51820".parse().unwrap())],
             },
             wireguard_mtu: None,
+            pinned: Default::default(),
         })
         .unwrap();
     let machine_id = local.record().id();
@@ -1140,6 +1307,8 @@ fn fixture_observation(
     service_name: ServiceName,
 ) -> ContainerObservation {
     ContainerObservation::try_from(ployz_core::ContainerObservationParts {
+        rotation: None,
+        r#gen: None,
         display_name: format!("{service_name}-stale"),
         created_at_unix_nanos: 0,
         machine_id,
@@ -1151,6 +1320,7 @@ fn fixture_observation(
         address: None,
         labels: BTreeMap::new(),
         container_id,
+        stopped: false,
     })
     .unwrap()
 }

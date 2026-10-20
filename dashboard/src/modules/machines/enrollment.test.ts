@@ -21,7 +21,7 @@ const machineId = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const display = "XQhwYRG/2fpuX4+RlNuIsE5SfhGdsGpMVVvwu1y2Ak0=";
 
 describe("machine enrollment command", () => {
-  it("installs the stable release on hosted Cloud", () => {
+  it("pins its own version on hosted Cloud", () => {
     const minted = mintedEnrollment({
       origin: "https://ployz.dev",
       token: "pmet_secret",
@@ -30,7 +30,7 @@ describe("machine enrollment command", () => {
     });
 
     expect(minted.command).toBe(
-      "curl -fsSL https://ployz.sh/ | sh && sudo ployz server add",
+      "curl -fsSL https://ployz.sh/ | sh -s -- 1.2.3-beta.4 && sudo ployz server add",
     );
     expect(minted.command).not.toContain("pmet_secret");
     expect(minted.token).toBe("pmet_secret");

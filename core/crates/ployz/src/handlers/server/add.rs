@@ -23,6 +23,7 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
         .map(MachineName::parse)
         .transpose()?;
     let token_request = helpers::token_request(matches)?;
+    let pinned = helpers::pinned(&token_request);
     let wireguard_mtu = matches.get_one::<u32>("wg-mtu").copied();
     let yes = matches.get_flag("yes");
     let storage = crate::provisioning::resolve_storage(matches)?;
@@ -79,6 +80,7 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
             EnrollRequest {
                 role: EnrollAs::Member { registration },
                 wireguard_mtu,
+                pinned,
             },
         )
         .await?;

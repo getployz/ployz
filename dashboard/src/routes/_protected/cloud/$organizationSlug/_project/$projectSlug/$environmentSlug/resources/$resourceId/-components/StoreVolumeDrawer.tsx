@@ -21,7 +21,8 @@ import { serviceSettingRows } from "#/modules/config-store/store-services";
 import { SHARED_VOLUME_WHY } from "#/components/settings/row-warning";
 import { SettingsEmpty } from "#/components/settings/settings-list";
 import { SettingsDanger, SettingsRow, SettingsSection } from "#/components/settings/settings-section";
-import { useVolumeCopies, VolumeCopiesPanel } from "./StoreVolumeCopies";
+import { useVolumeCopies, type VolumeCopiesData, VolumeCopiesPanel } from "./StoreVolumeCopies";
+import { StoreVolumeSize } from "./StoreVolumeSize";
 import { mirrorResourceId } from "#/modules/volume-placement/volume-placement";
 import { useStagedPlacements } from "#/modules/volume-placement/volume-placement.hooks";
 import { VOLUME_PAGES, volumePageSchema } from "./volume-pages";
@@ -29,7 +30,7 @@ import { ServiceSettingInput } from "../../../services/$serviceId/-components/Se
 import { CanvasInspectorNotFound, CanvasInspectorPending } from "../../../-components/CanvasInspectorRouteStates";
 import { useStorePendingName, useStorePendingNodes } from "#/modules/config-store/store-pending";
 import { CanvasInspectorNameEditor } from "../../../-components/CanvasInspectorNameEditor";
-import { changedProps, dnsLabelError } from "#/modules/config-store/store-services";
+import { changedProps } from "#/modules/config-store/store-services";
 import { useStoreChangeActions } from "../../../-components/canvas/useStoreChangeActions";
 import { deploymentDestination } from "../../../-components/deployments/run-search";
 import { ENVIRONMENT_INDEX_ROUTE_TO, ENVIRONMENT_RESOURCE_ROUTE_TO, ENVIRONMENT_ROUTE_FROM } from "../../../-components/environment-route-paths";
@@ -88,8 +89,8 @@ function VolumeDrawer({ params, environment, volume, volumes, services, settings
   const shownName = useStorePendingName(organizationSlug, environment, "volume", volume.name);
   const renamed = diff.changes.find((change) => change.type === "volume" && change.id === volume.id)
     ?.settings.find((row) => row.path === "name" || row.path.endsWith(".name"));
-  const nameSchema = Schema.String.check(Schema.makeFilter<string>((name) => dnsLabelError(name)
-    ?? (volumes.some((other) => other.id !== volume.id && other.name === name) ? `A volume here is already named ${name}.` : undefined)));
+  const nameSchema = Schema.String.check(Schema.makeFilter<string>((name) =>
+    volumes.some((other) => other.id !== volume.id && other.name === name) ? `A volume here is already named ${name}.` : undefined));
   const managed = volume.deployed && volume.storage.kind === "provisioned" && !removing;
   // A mirror shows only in Copies, whatever tab the address carried in.
   const page = copy !== null || !Schema.is(volumePageSchema)(tab) ? "copies" : tab;
@@ -135,7 +136,7 @@ function VolumeDrawer({ params, environment, volume, volumes, services, settings
             <div className="h-full overflow-y-auto pr-1 pb-8">
               <div className="mx-auto flex w-full max-w-2xl flex-col gap-6">
                 <SettingsSection id="space" title="Space">
-                  <StoreVolumeStorage key={`${volume.id}:${JSON.stringify(volume.storage)}`} state={state} removing={removing} />
+                  <StoreVolumeStorage key={`${volume.id}:${JSON.stringify(volume.storage)}`} state={state} removing={removing} copies={data} />
                 </SettingsSection>
                 {removing ? <SettingsSection id="mounts" title="Mounts">
                     <SettingsEmpty title="Removed on next deploy." />
@@ -151,14 +152,24 @@ function VolumeDrawer({ params, environment, volume, volumes, services, settings
   );
 }
 
-function StoreVolumeStorage({ state, removing }: { state: StoreVolume; removing: boolean }) {
+function StoreVolumeStorage({ state, removing, copies }: { state: StoreVolume; removing: boolean; copies: Pick<VolumeCopiesData, "holders" | "running"> }) {
   const writer = useStoreWriter(state.organizationSlug);
-  const { storage, storage_locked } = state.volume;
+  const { storage, storage_locked, recorded_storage, deployed } = state.volume;
   const [managed, holdManaged] = useCommitHold(storage.kind === "provisioned");
   const sizeGB = managed && storage.kind === "provisioned" ? gigabytes(storage.maximumBytes) : DEFAULT_VOLUME_GB;
   const save = (next: NonNullable<ReturnType<typeof volumeStorage>>) =>
     writer.commit({ command: "set_volume_storage", environment: state.environment, volume: state.volume.name, storage: next });
 
+  const growable = storage_locked && deployed && !removing && storage.kind === "provisioned" && recorded_storage !== undefined;
+  if (growable) {
+    return (
+      <>
+        <StoreVolumeSize organizationSlug={state.organizationSlug} environment={state.environment} volume={state.volume}
+          recorded={recorded_storage} holders={copies.holders} running={copies.running} />
+        <StoreSharedWrites state={state} />
+      </>
+    );
+  }
   if (storage_locked || removing) {
     return (
       <>

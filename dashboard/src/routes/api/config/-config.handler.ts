@@ -1,7 +1,7 @@
 import "@tanstack/react-start/server-only";
 import { Effect, Option, Schema } from "effect";
 import { approvalAsks, approvalCommand, asksApproval } from "#/modules/approvals/approvals";
-import { gateOperation, hasApprover, requestApproval, trustedApproval } from "#/modules/approvals/approvals.server";
+import { gateOperation, hasApprover, redeemApproval, redeeming, requestApproval } from "#/modules/approvals/approvals.server";
 import { callStore, refusal } from "#/modules/config-store/config-store.server";
 import { protectorOnly, unprotectAsked } from "#/modules/config-store/protected.server";
 import { cloudStore } from "#/modules/config-store/store-sdk.server";
@@ -10,7 +10,11 @@ import { receiveUpload } from "#/modules/config-store/upload.server";
 import { callerEnvironments, callerPermissions } from "#/modules/identity/actor";
 import { resolveCaller } from "#/modules/identity/caller.server";
 import { lacks } from "#/modules/organization/access.server";
+import { readCappedBody } from "#/server/capped-body";
 import { NotFound, Validation } from "#/server/public-error";
+
+/** Room for one whole Config file (256 KiB), however JSON escapes it. */
+const MAX_REQUEST_BYTES = 4 * 1024 * 1024;
 
 /**
  * `POST /api/config/read` and `/api/config/write`: the Config Store's two public operations, as the calling
@@ -36,8 +40,12 @@ export const handleConfigRequest = Effect.fn("ConfigStore.handle")(function* (re
       ? Response.json({ uploaded: decodeURIComponent(upload) }, { headers: { "cache-control": "no-store" } })
       : refusal(refused);
   }
-  const input: unknown = yield* Effect.tryPromise({
-    try: () => request.json(),
+  const body = yield* Effect.tryPromise(() => readCappedBody(request, MAX_REQUEST_BYTES)).pipe(Effect.orElseSucceed(() => new Uint8Array(0)));
+  if (body === null) {
+    return refusal({ code: "invalid_argument", message: "The request is over 4 MiB.", details: { max_bytes: MAX_REQUEST_BYTES } });
+  }
+  const input: unknown = yield* Effect.try({
+    try: () => JSON.parse(new TextDecoder().decode(body)),
     catch: () => new Validation({ message: "Expected a JSON body.", userFacing: true }),
   });
   const query = operation === "read" ? Option.getOrUndefined(Schema.decodeUnknownOption(StoreQuery)(input)) : undefined;
@@ -47,16 +55,17 @@ export const handleConfigRequest = Effect.fn("ConfigStore.handle")(function* (re
   if (call === undefined) {
     return refusal({ code: "invalid_argument", message: `Expected a ${operation === "read" ? "query" : "command"}.`, details: null });
   }
-  // An approval the write names must be this Organization's, even where nobody is asked. A retry from `ployz` asks
-  // only into a Protected Environment, so it carries the approval it was given there.
+  // An approval the write names must be this Caller's, for this command, even where nobody is asked. A retry from
+  // `ployz` asks only into a Protected Environment, so it carries the approval it was given there.
   const named = request.headers.get("x-ployz-approval");
   const asks = call.operation === "write" && (asksApproval(caller.via, call.command) || (named !== null && approvalCommand(call.command) === "retry"));
-  const trusted = asks
-    ? yield* trustedApproval(caller.organization.id, named)
+  // Any write that carries one redeems it, even one that would ask no one or is already done.
+  const trusted = call.operation === "write" && (asks || named !== null)
+    ? yield* redeemApproval(caller, named, yield* redeeming(caller.organization.id, call.command, named))
     : { ok: true, approval: "not_required" } as const;
   if (!trusted.ok) return refusal(trusted.refusal);
-  // `ployz mcp` unprotecting an Environment waits for a human, as the sidebar does; a person at the CLI decided already.
-  const unprotect = call.operation === "write" && caller.via === "agent"
+  // Unprotecting an Environment from `ployz` or `ployz mcp` waits for a human, as the sidebar does.
+  const unprotect = call.operation === "write"
     ? yield* unprotectAsked(caller.organization.id, call.command).pipe(
       Effect.catchTag("StoreRefused", (error) => Effect.succeed({ refused: error.refusal })),
     )
@@ -74,7 +83,7 @@ export const handleConfigRequest = Effect.fn("ConfigStore.handle")(function* (re
   const result = yield* callStore(caller.organization.id, caller.userId, sent, { source: "cli", agent }, gate);
   if (result.ok) return Response.json(result.value, { headers: { "cache-control": "no-store" } });
   if (call.operation === "write" && result.refusal.code === "approval_required") {
-    return refusal(yield* requestApproval(caller, call.command, result.refusal));
+    return refusal(yield* requestApproval(caller, call.command, result.refusal, named));
   }
   return refusal(result.refusal);
 });

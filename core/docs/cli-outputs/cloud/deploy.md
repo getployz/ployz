@@ -13,7 +13,8 @@ $ ployz deployment ls
 
 stdout:
 ```
-#1 queued Saved revision 1 939f4f20-8e4a-40a5-a812-52c2c614d9f6
+DEPLOYMENT	STATUS	SAVED REVISION
+#1	queued	1
 ```
 
 ### deployment ls --json
@@ -28,29 +29,97 @@ stdout:
 {
   "deployments": [
     {
-      "admitted_at": 1791162709,
+      "admitted_at": 1792494100,
       "admitted_by": "Ada Lovelace",
+      "ci": null,
       "ended_at": null,
-      "environment_id": "9d524a17-4056-47c0-9fc8-c7329841a90b",
-      "id": "939f4f20-8e4a-40a5-a812-52c2c614d9f6",
+      "environment_id": "41cccaac-61fd-42f4-8429-3eba71af5b34",
+      "held": false,
+      "id": "05fd264c-552d-4cbc-89fa-d8b0106636a2",
       "in_flight": true,
       "message": "Ship everything",
       "number": 1,
       "outcome": null,
+      "push": null,
       "remove": false,
       "runner": null,
       "saved": 1,
       "services": [],
+      "ships": [
+        "redis",
+        "postgres",
+        "worker",
+        "api",
+        "web"
+      ],
       "started_at": null,
       "status": "queued",
       "upload": null
     }
   ],
   "environment": {
-    "id": "9d524a17-4056-47c0-9fc8-c7329841a90b",
+    "id": "41cccaac-61fd-42f4-8429-3eba71af5b34",
     "name": "production",
     "project": "shop",
-    "revision": 17
+    "revision": 21
+  },
+  "in_flight": [
+    {
+      "admitted_at": 1792494100,
+      "admitted_by": "Ada Lovelace",
+      "ci": null,
+      "ended_at": null,
+      "environment_id": "41cccaac-61fd-42f4-8429-3eba71af5b34",
+      "held": false,
+      "id": "05fd264c-552d-4cbc-89fa-d8b0106636a2",
+      "in_flight": true,
+      "message": "Ship everything",
+      "number": 1,
+      "outcome": null,
+      "push": null,
+      "remove": false,
+      "runner": null,
+      "saved": 1,
+      "services": [],
+      "ships": [
+        "redis",
+        "postgres",
+        "worker",
+        "api",
+        "web"
+      ],
+      "started_at": null,
+      "status": "queued",
+      "upload": null
+    }
+  ],
+  "latest": {
+    "admitted_at": 1792494100,
+    "admitted_by": "Ada Lovelace",
+    "ci": null,
+    "ended_at": null,
+    "environment_id": "41cccaac-61fd-42f4-8429-3eba71af5b34",
+    "held": false,
+    "id": "05fd264c-552d-4cbc-89fa-d8b0106636a2",
+    "in_flight": true,
+    "message": "Ship everything",
+    "number": 1,
+    "outcome": null,
+    "push": null,
+    "remove": false,
+    "runner": null,
+    "saved": 1,
+    "services": [],
+    "ships": [
+      "redis",
+      "postgres",
+      "worker",
+      "api",
+      "web"
+    ],
+    "started_at": null,
+    "status": "queued",
+    "upload": null
   },
   "next_cursor": null
 }
@@ -66,11 +135,13 @@ $ ployz deployment show 1
 stdout:
 ```
 Deployment #1 of shop/production: queued
-  web: pending
-  api: pending
-  worker: pending
+  redis: pending
   postgres: pending
+  worker: pending
+  api: pending
+  web: pending
   pg-data: pending
+  sentry: pending
 ```
 
 ### deployment show 1 --json
@@ -83,66 +154,97 @@ $ ployz deployment show 1 --json
 stdout:
 ```
 {
-  "admitted_at": 1791162709,
+  "admitted_at": 1792494100,
   "admitted_by": "Ada Lovelace",
   "builds": [],
+  "ci": null,
   "ended_at": null,
   "environment": {
-    "id": "9d524a17-4056-47c0-9fc8-c7329841a90b",
+    "id": "41cccaac-61fd-42f4-8429-3eba71af5b34",
     "name": "production",
     "project": "shop",
-    "revision": 17
+    "revision": 21
   },
-  "environment_id": "9d524a17-4056-47c0-9fc8-c7329841a90b",
-  "id": "939f4f20-8e4a-40a5-a812-52c2c614d9f6",
+  "environment_id": "41cccaac-61fd-42f4-8429-3eba71af5b34",
+  "held": false,
+  "id": "05fd264c-552d-4cbc-89fa-d8b0106636a2",
   "in_flight": true,
   "message": "Ship everything",
   "namespace": "shop-production",
   "nodes": [
     {
-      "id": "1cb6967d-ebfb-4cee-b91a-b75b7f75b4ca",
-      "name": "web",
+      "id": "030ddc04-33d9-4149-a489-ee4788da4aa6",
+      "name": "redis",
       "outcome": "pending",
+      "rows": [],
       "type": "service"
     },
     {
-      "id": "20379db8-85e1-4322-9a7b-d0463aa962a8",
-      "name": "api",
-      "outcome": "pending",
-      "type": "service"
-    },
-    {
-      "id": "5a4d8764-d60a-4029-8e8c-c3ab8c91f3c6",
-      "name": "worker",
-      "outcome": "pending",
-      "type": "service"
-    },
-    {
-      "id": "e2a9bbf3-849c-4173-98d6-274a7bf450df",
+      "id": "54b62342-54f6-46c0-aa79-eaa89c03f4bd",
       "name": "postgres",
       "outcome": "pending",
+      "rows": [],
       "type": "service"
     },
     {
-      "id": "49163a7c-9809-4325-8000-4d6a83f39bd6",
+      "id": "99e8f125-0dd3-4a14-baa8-8244c36e8cd9",
+      "name": "worker",
+      "outcome": "pending",
+      "rows": [],
+      "type": "service"
+    },
+    {
+      "id": "d25db7f1-82e7-4e78-ad08-a12f91c227d2",
+      "name": "api",
+      "outcome": "pending",
+      "rows": [],
+      "type": "service"
+    },
+    {
+      "id": "f59287b3-06ba-4d82-aa22-f3ff607bc95f",
+      "name": "web",
+      "outcome": "pending",
+      "rows": [],
+      "type": "service"
+    },
+    {
+      "id": "313a7879-5239-4f45-8d0a-978eb58a8994",
       "name": "pg-data",
       "outcome": "pending",
+      "rows": [],
       "type": "volume"
+    },
+    {
+      "id": "46b22ea1-47ad-4f35-baeb-4d044871c79c",
+      "name": "sentry",
+      "outcome": "pending",
+      "rows": [],
+      "type": "config"
     }
   ],
   "number": 1,
   "outcome": null,
   "preview": null,
+  "push": null,
   "remove": false,
+  "rolls_back": [],
   "runner": null,
   "runtime_names": {
     "api": "api",
     "postgres": "postgres",
+    "redis": "redis",
     "web": "web",
     "worker": "worker"
   },
   "saved": 1,
   "services": [],
+  "ships": [
+    "redis",
+    "postgres",
+    "worker",
+    "api",
+    "web"
+  ],
   "started_at": null,
   "status": "queued",
   "upload": null
@@ -158,7 +260,7 @@ $ ployz deployment show 99
 
 stderr:
 ```
-shop/production has no Deployment #99
+error: shop/production has no Deployment #99
 next: ployz deployment ls
 ```
 
@@ -171,7 +273,7 @@ $ ployz deployment show 99 --json
 
 stdout:
 ```
-{"error":{"code":"not_found","details":{"next":"ployz deployment ls"},"message":"shop/production has no Deployment #99"}}
+{"error":{"cause":[],"code":"not_found","details":{"next":"ployz deployment ls"},"message":"shop/production has no Deployment #99"}}
 ```
 
 ### deployment show garbage id
@@ -183,7 +285,7 @@ $ ployz deployment show not-an-id
 
 stderr:
 ```
-Expected a Deployment ID or number
+error: Expected a Deployment ID or number
 ```
 
 ### deployment start 1 --detach
@@ -196,11 +298,13 @@ $ ployz deployment start 1 --detach
 stdout:
 ```
 Deployment #1 of shop/production: queued
-  web: pending
-  api: pending
-  worker: pending
+  redis: pending
   postgres: pending
+  worker: pending
+  api: pending
+  web: pending
   pg-data: pending
+  sentry: pending
 ```
 
 ### deployment start 1 (follows; no Server)
@@ -208,12 +312,6 @@ Deployment #1 of shop/production: queued
 ```console
 $ ployz deployment start 1
 # exit 124
-```
-
-stdout:
-```
-Following Deployment #1; stopping this leaves it running.
-queued: web pending, api pending, worker pending, postgres pending, pg-data pending
 ```
 
 ### deployment cancel 1
@@ -226,11 +324,13 @@ $ ployz deployment cancel 1
 stdout:
 ```
 Deployment #1 of shop/production: cancelled
-  web: not attempted
-  api: not attempted
-  worker: not attempted
+  redis: not attempted
   postgres: not attempted
+  worker: not attempted
+  api: not attempted
+  web: not attempted
   pg-data: not attempted
+  sentry: not attempted
 ```
 
 ### deployment cancel 1 again --json
@@ -243,100 +343,133 @@ $ ployz deployment cancel 1 --json
 stdout:
 ```
 {
-  "admitted_at": 1791162709,
+  "admitted_at": 1792494100,
   "admitted_by": "Ada Lovelace",
   "builds": [],
-  "ended_at": 1791162787,
+  "ci": null,
+  "ended_at": 1792494283,
   "environment": {
-    "id": "9d524a17-4056-47c0-9fc8-c7329841a90b",
+    "id": "41cccaac-61fd-42f4-8429-3eba71af5b34",
     "name": "production",
     "project": "shop",
-    "revision": 17
+    "revision": 21
   },
-  "environment_id": "9d524a17-4056-47c0-9fc8-c7329841a90b",
-  "id": "939f4f20-8e4a-40a5-a812-52c2c614d9f6",
+  "environment_id": "41cccaac-61fd-42f4-8429-3eba71af5b34",
+  "held": false,
+  "id": "05fd264c-552d-4cbc-89fa-d8b0106636a2",
   "in_flight": false,
   "message": "Ship everything",
   "namespace": "shop-production",
-  "next": "ployz deployment show 939f4f20-8e4a-40a5-a812-52c2c614d9f6",
+  "next": "ployz deployment show 1 --project shop",
   "nodes": [
     {
-      "id": "1cb6967d-ebfb-4cee-b91a-b75b7f75b4ca",
-      "name": "web",
+      "id": "030ddc04-33d9-4149-a489-ee4788da4aa6",
+      "name": "redis",
       "outcome": "not_attempted",
+      "rows": [],
       "type": "service"
     },
     {
-      "id": "20379db8-85e1-4322-9a7b-d0463aa962a8",
-      "name": "api",
-      "outcome": "not_attempted",
-      "type": "service"
-    },
-    {
-      "id": "5a4d8764-d60a-4029-8e8c-c3ab8c91f3c6",
-      "name": "worker",
-      "outcome": "not_attempted",
-      "type": "service"
-    },
-    {
-      "id": "e2a9bbf3-849c-4173-98d6-274a7bf450df",
+      "id": "54b62342-54f6-46c0-aa79-eaa89c03f4bd",
       "name": "postgres",
       "outcome": "not_attempted",
+      "rows": [],
       "type": "service"
     },
     {
-      "id": "49163a7c-9809-4325-8000-4d6a83f39bd6",
+      "id": "99e8f125-0dd3-4a14-baa8-8244c36e8cd9",
+      "name": "worker",
+      "outcome": "not_attempted",
+      "rows": [],
+      "type": "service"
+    },
+    {
+      "id": "d25db7f1-82e7-4e78-ad08-a12f91c227d2",
+      "name": "api",
+      "outcome": "not_attempted",
+      "rows": [],
+      "type": "service"
+    },
+    {
+      "id": "f59287b3-06ba-4d82-aa22-f3ff607bc95f",
+      "name": "web",
+      "outcome": "not_attempted",
+      "rows": [],
+      "type": "service"
+    },
+    {
+      "id": "313a7879-5239-4f45-8d0a-978eb58a8994",
       "name": "pg-data",
       "outcome": "not_attempted",
+      "rows": [],
       "type": "volume"
+    },
+    {
+      "id": "46b22ea1-47ad-4f35-baeb-4d044871c79c",
+      "name": "sentry",
+      "outcome": "not_attempted",
+      "rows": [],
+      "type": "config"
     }
   ],
   "number": 1,
   "outcome": null,
   "preview": null,
+  "push": null,
   "remove": false,
+  "rolls_back": [],
   "runner": null,
   "runtime_names": {
     "api": "api",
     "postgres": "postgres",
+    "redis": "redis",
     "web": "web",
     "worker": "worker"
   },
   "saved": 1,
   "services": [],
+  "ships": [
+    "redis",
+    "postgres",
+    "worker",
+    "api",
+    "web"
+  ],
   "started_at": null,
   "status": "cancelled",
   "upload": null
 }
 ```
 
-### deployment retry 1 --detach
+### deployment redeploy 1 --detach
 
 ```console
-$ ployz deployment retry 1 --detach
+$ ployz deployment redeploy 1 --detach
 # exit 0
 ```
 
 stdout:
 ```
 Deployment #2 of shop/production: queued
-  web: pending
-  api: pending
-  worker: pending
+  redis: pending
   postgres: pending
+  worker: pending
+  api: pending
+  web: pending
   pg-data: pending
+  sentry: pending
 ```
 
-### deployment retry, unknown
+### deployment redeploy, unknown
 
 ```console
-$ ployz deployment retry 99
+$ ployz deployment redeploy 99
 # exit 1
 ```
 
 stderr:
 ```
-shop/production has no Deployment #99
+error: shop/production has no Deployment #99
 next: ployz deployment ls
 ```
 
@@ -351,14 +484,19 @@ $ ployz deploy --plan
 
 stdout:
 ```
-api (update)
-  api.source: {"credentials":false,"image":"ghcr.io/acme/api:1.4","type":"image"} -> {"credentials":false,"image":"ghcr.io/acme/api:1.5","type":"image"}
-  api.managedHostnames: [] -> [{"prefix":"myapi","targetPort":null}]
-  api.env.FEATURE_SEARCH: null -> "on"
 worker (update)
-  worker.managedHostnames: [] -> [{"prefix":"myworker","targetPort":null}]
-Decided by the Servers when it runs: operations.
-next: ployz deploy --expect-version 17:1:2.1
+  worker.domains: added myworker.ada.ployz.test
+api (update)
+  api.image: "traefik/whoami:v1.10.3" → "traefik/whoami:v1.11.0"
+  api.domains: added myapi.ada.ployz.test
+  api.env.FEATURE_SEARCH: null → "on"
+Couldn't check ingress: Server 0123456789abcdef0123456789abcdef couldn't give this command access: invalid management connections.
+Decided by the Servers when it runs: which containers start and stop.
+```
+
+stderr:
+```
+next: ployz deploy --expect-version 21:1:2.1 --project shop
 ```
 
 ### deploy --plan --json
@@ -375,58 +513,11 @@ stdout:
     {
       "comparison": "head",
       "data": null,
-      "id": "20379db8-85e1-4322-9a7b-d0463aa962a8",
-      "lifecycle": "update",
-      "name": "api",
-      "row": "20379db8-85e1-4322-9a7b-d0463aa962a8:node",
-      "settings": [
-        {
-          "after": {
-            "credentials": false,
-            "image": "ghcr.io/acme/api:1.5",
-            "type": "image"
-          },
-          "before": {
-            "credentials": false,
-            "image": "ghcr.io/acme/api:1.4",
-            "type": "image"
-          },
-          "canRestore": true,
-          "kind": "update",
-          "path": "api.source",
-          "row": "20379db8-85e1-4322-9a7b-d0463aa962a8:source"
-        },
-        {
-          "after": [
-            {
-              "prefix": "myapi",
-              "targetPort": null
-            }
-          ],
-          "before": [],
-          "canRestore": false,
-          "kind": "update",
-          "path": "api.managedHostnames",
-          "row": "20379db8-85e1-4322-9a7b-d0463aa962a8:managedHostnames"
-        },
-        {
-          "after": "on",
-          "before": null,
-          "canRestore": true,
-          "kind": "add",
-          "path": "api.env.FEATURE_SEARCH",
-          "row": "20379db8-85e1-4322-9a7b-d0463aa962a8:variables.FEATURE_SEARCH"
-        }
-      ],
-      "type": "service"
-    },
-    {
-      "comparison": "head",
-      "data": null,
-      "id": "5a4d8764-d60a-4029-8e8c-c3ab8c91f3c6",
+      "id": "99e8f125-0dd3-4a14-baa8-8244c36e8cd9",
       "lifecycle": "update",
       "name": "worker",
-      "row": "5a4d8764-d60a-4029-8e8c-c3ab8c91f3c6:node",
+      "restarts": [],
+      "row": "99e8f125-0dd3-4a14-baa8-8244c36e8cd9:node",
       "settings": [
         {
           "after": [
@@ -437,26 +528,94 @@ stdout:
           ],
           "before": [],
           "canRestore": false,
+          "hostnames": {
+            "myworker": "myworker.ada.ployz.test"
+          },
           "kind": "update",
           "path": "worker.managedHostnames",
-          "row": "5a4d8764-d60a-4029-8e8c-c3ab8c91f3c6:managedHostnames"
+          "row": "99e8f125-0dd3-4a14-baa8-8244c36e8cd9:managedHostnames"
+        }
+      ],
+      "type": "service"
+    },
+    {
+      "comparison": "head",
+      "data": null,
+      "id": "d25db7f1-82e7-4e78-ad08-a12f91c227d2",
+      "lifecycle": "update",
+      "name": "api",
+      "restarts": [],
+      "row": "d25db7f1-82e7-4e78-ad08-a12f91c227d2:node",
+      "settings": [
+        {
+          "after": {
+            "credentials": false,
+            "image": "traefik/whoami:v1.11.0",
+            "type": "image"
+          },
+          "before": {
+            "credentials": false,
+            "image": "traefik/whoami:v1.10.3",
+            "type": "image"
+          },
+          "canRestore": true,
+          "kind": "update",
+          "path": "api.source",
+          "row": "d25db7f1-82e7-4e78-ad08-a12f91c227d2:source"
+        },
+        {
+          "after": [
+            {
+              "prefix": "myapi",
+              "targetPort": null
+            }
+          ],
+          "before": [],
+          "canRestore": false,
+          "hostnames": {
+            "myapi": "myapi.ada.ployz.test"
+          },
+          "kind": "update",
+          "path": "api.managedHostnames",
+          "row": "d25db7f1-82e7-4e78-ad08-a12f91c227d2:managedHostnames"
+        },
+        {
+          "after": "on",
+          "before": null,
+          "canRestore": true,
+          "kind": "add",
+          "path": "api.env.FEATURE_SEARCH",
+          "row": "d25db7f1-82e7-4e78-ad08-a12f91c227d2:variables.FEATURE_SEARCH"
         }
       ],
       "type": "service"
     }
   ],
+  "domain_changes": [
+    {
+      "change": "added myworker.ada.ployz.test",
+      "path": "worker.domains"
+    },
+    {
+      "change": "added myapi.ada.ployz.test",
+      "path": "api.domains"
+    }
+  ],
   "environment": {
-    "id": "9d524a17-4056-47c0-9fc8-c7329841a90b",
+    "id": "41cccaac-61fd-42f4-8429-3eba71af5b34",
     "name": "production",
     "project": "shop",
-    "revision": 17
+    "revision": 21
   },
+  "ingress_unchecked": [
+    "Server 0123456789abcdef0123456789abcdef couldn't give this command access: invalid management connections"
+  ],
   "namespace": "shop-production",
-  "next": "ployz deploy --expect-version 17:1:2.1",
+  "next": "ployz deploy --expect-version 21:1:2.1 --project shop",
   "unresolved": [
     "operations"
   ],
-  "version": "17:1:2.1"
+  "version": "21:1:2.1"
 }
 ```
 
@@ -464,36 +623,134 @@ stdout:
 
 ```console
 $ ployz deploy --detach --message Ship\ it
-# exit 1
+# exit 0
 ```
 
-stderr:
+stdout:
 ```
-Cloud couldn't reserve the Cluster Domain; deploy again.
+Deployment #3 of shop/production: queued
+  redis: pending
+  postgres: pending
+  worker: pending
+  api: pending
+  web: pending
+  pg-data: pending
+  sentry: pending
 ```
 
 ### deploy --detach --json
 
 ```console
 $ ployz deploy --detach --json
-# exit 1
+# exit 0
 ```
 
 stdout:
 ```
-{"error":{"code":"unavailable","details":null,"message":"Cloud couldn't reserve the Cluster Domain; deploy again."}}
+{
+  "admitted_at": 1792494294,
+  "admitted_by": "Ada Lovelace",
+  "builds": [],
+  "ci": null,
+  "ended_at": null,
+  "environment": {
+    "id": "41cccaac-61fd-42f4-8429-3eba71af5b34",
+    "name": "production",
+    "project": "shop",
+    "revision": 21
+  },
+  "environment_id": "41cccaac-61fd-42f4-8429-3eba71af5b34",
+  "held": false,
+  "id": "7b32e974-9565-4da9-af04-d6047a95791f",
+  "in_flight": true,
+  "message": null,
+  "namespace": "shop-production",
+  "next": "ployz deployment show 4 --project shop",
+  "nodes": [
+    {
+      "id": "030ddc04-33d9-4149-a489-ee4788da4aa6",
+      "name": "redis",
+      "outcome": "pending",
+      "rows": [],
+      "type": "service"
+    },
+    {
+      "id": "54b62342-54f6-46c0-aa79-eaa89c03f4bd",
+      "name": "postgres",
+      "outcome": "pending",
+      "rows": [],
+      "type": "service"
+    },
+    {
+      "id": "99e8f125-0dd3-4a14-baa8-8244c36e8cd9",
+      "name": "worker",
+      "outcome": "pending",
+      "rows": [],
+      "type": "service"
+    },
+    {
+      "id": "d25db7f1-82e7-4e78-ad08-a12f91c227d2",
+      "name": "api",
+      "outcome": "pending",
+      "rows": [],
+      "type": "service"
+    },
+    {
+      "id": "f59287b3-06ba-4d82-aa22-f3ff607bc95f",
+      "name": "web",
+      "outcome": "pending",
+      "rows": [],
+      "type": "service"
+    },
+    {
+      "id": "313a7879-5239-4f45-8d0a-978eb58a8994",
+      "name": "pg-data",
+      "outcome": "pending",
+      "rows": [],
+      "type": "volume"
+    },
+    {
+      "id": "46b22ea1-47ad-4f35-baeb-4d044871c79c",
+      "name": "sentry",
+      "outcome": "pending",
+      "rows": [],
+      "type": "config"
+    }
+  ],
+  "number": 4,
+  "outcome": null,
+  "preview": null,
+  "push": null,
+  "remove": false,
+  "rolls_back": [],
+  "runner": null,
+  "runtime_names": {
+    "api": "api",
+    "postgres": "postgres",
+    "redis": "redis",
+    "web": "web",
+    "worker": "worker"
+  },
+  "saved": 2,
+  "services": [],
+  "ships": [
+    "redis",
+    "postgres",
+    "worker",
+    "api",
+    "web"
+  ],
+  "started_at": null,
+  "status": "queued",
+  "upload": null
+}
 ```
 
 ### deploy (follows; Cloud refuses the Cluster Domain)
 
 ```console
 $ ployz deploy
-# exit 1
-```
-
-stderr:
-```
-Cloud couldn't reserve the Cluster Domain; deploy again.
+# exit 124
 ```
 
 ### deploy unknown service
@@ -505,7 +762,7 @@ $ ployz deploy nosuch --plan
 
 stderr:
 ```
-No Service named nosuch to deploy
+error: No Service named nosuch to deploy
 ```
 
 ### deploy --expect-version malformed
@@ -531,8 +788,12 @@ $ ployz deployment ls
 
 stdout:
 ```
-#2 queued Saved revision 1 2cf9b89b-bf9c-45cb-a67f-8169844dcbea
-#1 cancelled Saved revision 1 939f4f20-8e4a-40a5-a812-52c2c614d9f6
+DEPLOYMENT	STATUS	SAVED REVISION
+#5	queued	2
+#4	superseded	2
+#3	superseded	2
+#2	superseded	1
+#1	cancelled	1
 ```
 
 ## logs / ps / link / up
@@ -546,7 +807,7 @@ $ ployz ps
 
 stderr:
 ```
-no Server of this Organization is reachable now: 0123456789abcdef0123456789abcdef
+error: Server 0123456789abcdef0123456789abcdef couldn't give this command access: invalid management connections
 ```
 
 ### ps --json
@@ -558,7 +819,7 @@ $ ployz ps --json
 
 stdout:
 ```
-{"error":{"code":"unavailable","details":{"unreachable":["0123456789abcdef0123456789abcdef"]},"message":"no Server of this Organization is reachable now: 0123456789abcdef0123456789abcdef"}}
+{"error":{"cause":[],"code":"unavailable","details":{"refused":[{"machine_id":"0123456789abcdef0123456789abcdef","message":"invalid management connections"}],"unreachable":[]},"message":"Server 0123456789abcdef0123456789abcdef couldn't give this command access: invalid management connections"}}
 ```
 
 ### logs
@@ -570,7 +831,7 @@ $ ployz logs
 
 stderr:
 ```
-no Server of this Organization is reachable now: 0123456789abcdef0123456789abcdef
+error: Server 0123456789abcdef0123456789abcdef couldn't give this command access: invalid management connections
 ```
 
 ### logs web --json
@@ -582,7 +843,7 @@ $ ployz logs web --json
 
 stdout:
 ```
-{"error":{"code":"unavailable","details":{"unreachable":["0123456789abcdef0123456789abcdef"]},"message":"no Server of this Organization is reachable now: 0123456789abcdef0123456789abcdef"}}
+{"error":{"cause":[],"code":"unavailable","details":{"refused":[{"machine_id":"0123456789abcdef0123456789abcdef","message":"invalid management connections"}],"unreachable":[]},"message":"Server 0123456789abcdef0123456789abcdef couldn't give this command access: invalid management connections"}}
 ```
 
 ### logs --deployment 1 --build
@@ -592,21 +853,26 @@ $ ployz logs --deployment 1 --build
 # exit 0
 ```
 
-stdout:
+stderr:
 ```
-Deployment 939f4f20-8e4a-40a5-a812-52c2c614d9f6 built nothing.
+That Deployment built nothing.
 ```
 
-### link (from a fresh directory)
+### link --project shop (from a fresh directory)
 
 ```console
-$ ployz link
+$ ployz link --project shop
 # exit 0
 ```
 
 stdout:
 ```
 Linked /tmp/pz-cloud-capture/app to shop/production.
+```
+
+stderr:
+```
+next: ployz status
 ```
 
 ### status after link
@@ -618,55 +884,121 @@ $ ployz status
 
 stdout:
 ```
-Cloud: http://localhost:34733
-Organization ada (ada@example.com).
-Environment shop/production.
-Linked from /tmp/pz-cloud-capture/app.
-4 staged changes.
-Deployment 2 is queued.
-next: ployz diff
+cloud = http://localhost:44553
+organization = ada
+signed in as = ada@example.com
+environment = shop/production
+linked from = /tmp/pz-cloud-capture/app
+staged = 0 changes
+deploying = #5 queued
+```
+
+stderr:
+```
+next: ployz deployment show 5
 ```
 
 ### up in an empty directory
 
 ```console
 $ ployz up
-# exit 1
-```
-
-stdout:
-```
-Created Project up-app.
-Added Service up-app.
+# exit 2
 ```
 
 stderr:
 ```
-Cloud couldn't reserve the Cluster Domain; deploy again.
+error: Nothing to deploy: /tmp/pz-cloud-capture/up-app is empty. Run ployz up in your app's directory.
 ```
 
 ### up in a directory with a Dockerfile --detach
 
 ```console
 $ ployz up --detach
-# exit 1
+# exit 0
+```
+
+stdout:
+```
+Deployment #1 of up-app/production: queued
+  uploaded by Ada Lovelace, sha256 d151b2ea8aab
+  up-app: pending
+Open https://up-app.ada.ployz.test
+Dashboard: http://localhost:44553/cloud/ada/up-app/production
 ```
 
 stderr:
 ```
-Cloud couldn't reserve the Cluster Domain; deploy again.
+Created Project up-app.
+Added Service up-app.
 ```
 
 ### up --json --detach
 
 ```console
 $ ployz up --json --detach
-# exit 1
+# exit 0
 ```
 
 stdout:
 ```
-{"error":{"code":"unavailable","details":null,"message":"Cloud couldn't reserve the Cluster Domain; deploy again."}}
+{
+  "dashboard": "http://localhost:44553/cloud/ada/up-app/production",
+  "deployment": {
+    "admitted_at": 1792494325,
+    "admitted_by": "Ada Lovelace",
+    "builds": [],
+    "ci": null,
+    "ended_at": null,
+    "environment": {
+      "id": "453ff61b-e090-4388-9e80-762ed7a44232",
+      "name": "production",
+      "project": "up-app",
+      "revision": 4
+    },
+    "environment_id": "453ff61b-e090-4388-9e80-762ed7a44232",
+    "held": false,
+    "id": "8c69c1b0-d35f-4aa0-9329-5742964e59ba",
+    "in_flight": true,
+    "message": null,
+    "namespace": "up-app-production",
+    "nodes": [
+      {
+        "id": "dc19b62d-3e42-427f-bbf2-f1b410dee162",
+        "name": "up-app",
+        "outcome": "pending",
+        "rows": [],
+        "type": "service"
+      }
+    ],
+    "number": 2,
+    "outcome": null,
+    "preview": null,
+    "push": null,
+    "remove": false,
+    "rolls_back": [],
+    "runner": null,
+    "runtime_names": {
+      "up-app": "up-app"
+    },
+    "saved": 1,
+    "services": [],
+    "ships": [
+      "up-app"
+    ],
+    "started_at": null,
+    "status": "queued",
+    "upload": {
+      "base": null,
+      "digest": "d151b2ea8aabd095f7069ad872414940751f51b6139be8400047d2e6e293a3bc",
+      "uploader": "Ada Lovelace"
+    }
+  },
+  "directory": "/tmp/pz-cloud-capture/up-app",
+  "next": "ployz deployment show 2",
+  "urls": [
+    "https://up-app.ada.ployz.test"
+  ]
+}
 ```
 
 ## cloud reset (no founding in progress)
@@ -675,13 +1007,13 @@ stdout:
 
 ```console
 $ ployz cloud reset
-# exit 1
+# exit 2
 ```
 
 stderr:
 ```
-cloud reset gives up the unfinished founding; stop or erase the founding Server, then confirm with --yes
-next: ployz cloud reset --yes
+error: cloud reset gives up the unfinished founding; stop or erase the founding Server, then confirm with --yes
+retry: ployz cloud reset --yes
 ```
 
 ### cloud reset -y
@@ -693,7 +1025,7 @@ $ ployz cloud reset -y
 
 stderr:
 ```
-Cloud answered HTTP 409: {"_tag":"PublicError","code":"CONFLICT","message":"The request conflicts with the current state."}
+error: The request conflicts with the current state.
 ```
 
 ### cloud reset -y --json
@@ -705,6 +1037,6 @@ $ ployz cloud reset -y --json
 
 stdout:
 ```
-{"error":{"code":"conflict","details":null,"message":"Cloud answered HTTP 409: {\"_tag\":\"PublicError\",\"code\":\"CONFLICT\",\"message\":\"The request conflicts with the current state.\"}"}}
+{"error":{"cause":[],"code":"conflict","details":null,"message":"The request conflicts with the current state."}}
 ```
 

@@ -1,8 +1,9 @@
 import "@tanstack/react-start/server-only";
 import type { AppliedVolume, MachineId } from "@ployz/sdk";
 import { eq } from "drizzle-orm";
-import { Effect, Schema } from "effect";
+import { Effect, Option, Schema } from "effect";
 import type { EncryptedSecretValue } from "#/db/tables";
+import type { Gate, OperationAsked } from "#/modules/approvals/approvals.server";
 import { cloudStore, storeTry } from "#/modules/config-store/store-sdk.server";
 import type { StoreRefusal, StoreResult } from "#/modules/config-store/store.contract";
 import type { Actor } from "#/modules/identity/actor";
@@ -11,6 +12,7 @@ import { RemovalEndpoints } from "#/modules/machines/pairing-removal";
 import { forgetCluster, seeCluster } from "#/modules/machines/pairing-removal.server";
 import { enrollmentAllocation, organizationMachine } from "#/modules/machines/tables";
 import { requireAccess, requireAccessById } from "#/modules/organization/access.server";
+import { clusterRead, withClusterBudget } from "#/modules/runtime/organization-runtime.server";
 import { Ployz } from "#/modules/runtime/ployz.server";
 import { Database } from "#/server/database.server";
 
@@ -65,20 +67,33 @@ const knownServers = Effect.fn("ForgetServers.known")(function* (organizationId:
   return { known, seen, joining: pairing !== undefined && foundingClaimFresh(pairing) };
 });
 
-/** One connection attempt to each known Server, all at once, each bounded by the timeout. */
+/** A Server that just answered says its name at once; one that doesn't still counts as answering. */
+const NAME_TIMEOUT_MS = 2_000;
+
+/**
+ * Cluster time the tries spend together: a reach and a name, then what's left for the sessions to close. Above the
+ * reach, so the budget never cuts a Server that would have answered. The CLI waits 60 seconds for the answer.
+ */
+export const FORGET_CLUSTER_BUDGET_MS = 15_000;
+
+/** One connection attempt to each known Server, all at once, each bounded by the timeout. One that answers says its name. */
 const reachServers = Effect.fn("ForgetServers.reach")(function* (known: ReadonlyArray<{ id: MachineId; name: string; management: string | null }>) {
   const ployz = yield* Ployz;
   type Reach = "answered" | ObservedServer["reach"];
   return yield* Effect.forEach(known, ({ id, name, management }): Effect.Effect<{ id: MachineId; name: string; reach: Reach }> => {
     if (management === null) return Effect.succeed({ id, name, reach: "no_connection" as const });
     const connection = { machine_id: id, management };
-    return Effect.scoped(ployz.connect({ connections: [connection], timeoutMs: SERVER_REACH_TIMEOUT_MS })).pipe(
-      Effect.as("answered" as const),
-      Effect.orElseSucceed(() => "didnt_answer" as const),
-      Effect.map((reach) => ({ id, name, reach })),
+    return Effect.scoped(Effect.gen(function* () {
+      const reach = { connections: [connection], timeoutMs: SERVER_REACH_TIMEOUT_MS };
+      const session = yield* ployz.connect(reach, { closeWithin: clusterRead }).pipe(clusterRead);
+      const details = yield* session.inspect().pipe(Effect.timeout(NAME_TIMEOUT_MS), clusterRead, Effect.option);
+      return Option.match(details, { onNone: () => name, onSome: ({ machine }) => machine?.name ?? name });
+    })).pipe(
+      Effect.map((answered) => ({ id, name: answered, reach: "answered" as const })),
+      Effect.orElseSucceed(() => ({ id, name, reach: "didnt_answer" as const })),
     );
   }, { concurrency: "unbounded" });
-});
+}, withClusterBudget(FORGET_CLUSTER_BUDGET_MS));
 
 /** Tries every Server; refuses while one is still joining or any answers, naming those that did. */
 const check = Effect.fn("ForgetServers.checkReach")(function* (forgetter: Forgetter) {
@@ -111,13 +126,38 @@ export const checkForgetServers = Effect.fn("ForgetServers.check")(function* (fo
 });
 
 /**
- * Forget Servers: the user says the Organization's Servers were deleted. Cloud tries each again and, when none answers
- * and nothing changed since, forgets its Cluster (`forgetCluster`). Cloud does this on its own in one case: a lapsed
- * anonymous sandbox whose Servers every probe for an hour since the last answer failed to reach.
+ * Forgetting Organization `organization`'s Servers as a human approves it, by its slug, which `ployz server forget`
+ * confirms: each Server leaves, and each Volume's data on them is lost.
  */
-export const forgetServers = Effect.fn("ForgetServers.forget")(function* (forgetter: Forgetter) {
+export const forgetServersAsked = (organization: { id: string; slug: string }, { servers, volumes }: ForgetServersCheck): OperationAsked => {
+  const lost = volumes.map(({ project, environment, volume }) => `${project}/${environment}/${volume}`).sort();
+  return {
+    subject: `servers:${organization.id}`,
+    verb: "forget",
+    name: organization.slug,
+    preview: { servers: servers.map((server) => server.id).sort(), volumes: lost },
+    effects: [
+      ...servers.map((server) => ({ kind: "removes_server" as const, name: server.name, node: server.id, path: `servers/${server.id}` })),
+      ...lost.map((name) => ({ kind: "deletes_volume" as const, name, node: name, path: `volumes/${name}` })),
+    ],
+  };
+};
+
+/**
+ * Forget Servers: the user says the Organization's Servers were deleted. Cloud tries each again and, when none answers
+ * and nothing changed since, forgets its Cluster (`forgetCluster`), once `gate` lets it. Cloud does this on its own in
+ * one case: a lapsed anonymous sandbox whose Servers every probe for an hour since the last answer failed to reach.
+ */
+export const forgetServers = Effect.fn("ForgetServers.forget")(function* (
+  forgetter: Forgetter,
+  gate?: (checked: ForgetServersCheck) => ReturnType<Gate>,
+) {
   const { result: checked, seen } = yield* check(forgetter);
   if (!checked.ok || seen === null) return checked;
+  if (gate !== undefined) {
+    const gated = yield* gate(checked.value);
+    if (!gated.ok) return refused(gated.refusal);
+  }
   const forgotten = yield* forgetCluster(forgetter.organizationId, seen);
   if (forgotten.kind === "changed") {
     return refused({ code: "conflict", message: "Your Servers changed while Cloud tried them. Try again.", details: null });

@@ -1,6 +1,6 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useMutation, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
-import { getRouteApi, useNavigate } from "@tanstack/react-router";
+import { useNavigate } from "@tanstack/react-router";
 import { LinkIcon, MailIcon, UserIcon } from "lucide-react";
 import { toast } from "sonner";
 import { CopyButton } from "#/components/copy-button";
@@ -22,6 +22,8 @@ import { Field, FieldGroup, FieldLabel } from "#/components/ui/field";
 import { Input } from "#/components/ui/input";
 import { NativeSelect, NativeSelectOption } from "#/components/ui/native-select";
 import { Spinner } from "#/components/ui/spinner";
+import { useExclusiveMutation } from "#/hooks/use-exclusive-mutation";
+import { distinctNames } from "#/lib/distinct-names";
 import { toErrorMessage } from "#/lib/error-message";
 import {
   inviteMemberServerFn,
@@ -31,6 +33,7 @@ import {
   setMemberRoleServerFn,
 } from "#/modules/organization/members.functions";
 import { membersKey, organizationMembersQueryOptions } from "#/modules/organization/members.queries";
+import { useOrganizationName } from "#/modules/organization/organization-state.queries";
 import { can } from "#/modules/organization/permissions";
 
 type Role = "owner" | "admin" | "member";
@@ -38,7 +41,6 @@ type InviteRole = Exclude<Role, "owner">;
 
 const ROLE_LABELS = { owner: "Owner", admin: "Admin", member: "Member" } satisfies Record<Role, string>;
 
-const organizationRoute = getRouteApi("/_protected/cloud/$organizationSlug");
 
 const formatDate = (iso: string) => new Date(iso).toLocaleDateString(undefined, { dateStyle: "medium" });
 
@@ -48,7 +50,7 @@ export function MembersSettings({ organizationSlug }: { organizationSlug: string
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const { data } = useSuspenseQuery(organizationMembersQueryOptions(organizationSlug));
-  const { organizationName } = organizationRoute.useLoaderData();
+  const organizationName = useOrganizationName(organizationSlug);
   const [inviting, setInviting] = useState(false);
   const [confirming, setConfirming] = useState<Pending>(null);
   const queryKey = membersKey(organizationSlug);
@@ -98,13 +100,15 @@ export function MembersSettings({ organizationSlug }: { organizationSlug: string
   const yourRole = data.members.find((row) => row.you)?.role ?? null;
   const manager = yourRole !== null && can(yourRole, "members:manage");
   const roles: readonly Role[] = yourRole === "owner" ? ["owner", "admin", "member"] : ["admin", "member"];
+  const memberNames = distinctNames(data.members.map((row) => [row.name, row.email]));
 
   return (
     <div className="flex flex-col gap-6">
       <SettingsSection id="members" title="Members">
         <SettingsList label="Members">
-          {data.members.map((row) => {
+          {data.members.map((row, index) => {
             const editable = manager && !row.you && (yourRole === "owner" || row.role !== "owner");
+            const name = memberNames[index] ?? row.name;
             return (
               <SettingsListItem
                 key={row.email}
@@ -118,7 +122,7 @@ export function MembersSettings({ organizationSlug }: { organizationSlug: string
                       <NativeSelect
                         size="sm"
                         className="w-32"
-                        aria-label={`Role of ${row.name}`}
+                        aria-label={`Role of ${name}`}
                         value={row.role}
                         onChange={(event) => {
                           const role = roles.find((candidate) => candidate === event.target.value);
@@ -131,7 +135,7 @@ export function MembersSettings({ organizationSlug }: { organizationSlug: string
                     {row.you ? (
                       <Button variant="ghost" size="sm" onClick={() => setConfirming({ kind: "leave" })}>Leave</Button>
                     ) : editable ? (
-                      <Button variant="ghost" size="sm" onClick={() => setConfirming({ kind: "remove", email: row.email, name: row.name })}>Remove</Button>
+                      <Button variant="ghost" size="sm" aria-label={`Remove ${name}`} onClick={() => setConfirming({ kind: "remove", email: row.email, name })}>Remove</Button>
                     ) : null}
                   </>
                 )}
@@ -140,31 +144,7 @@ export function MembersSettings({ organizationSlug }: { organizationSlug: string
           })}
         </SettingsList>
       </SettingsSection>
-      <SettingsSection id="invites" title="Pending invites">
-        {data.invites.length > 0 ? (
-          <SettingsList label="Pending invites">
-            {data.invites.map((invite) => (
-              <SettingsListItem
-                key={invite.id}
-                media={invite.email ? <MailIcon /> : <LinkIcon />}
-                label={invite.email ?? "Anyone with the link"}
-                hint={`From ${invite.invited_by} · ${ROLE_LABELS[invite.role]} · expires ${formatDate(invite.expires_at)}`}
-                commit="change"
-                actions={manager ? (
-                  <Button variant="ghost" size="sm" onClick={() => revoke.mutate(invite.id)}>Revoke</Button>
-                ) : undefined}
-              />
-            ))}
-          </SettingsList>
-        ) : (
-          <SettingsEmpty title="No pending invites">An invite is a link that lets one person join.</SettingsEmpty>
-        )}
-        {manager ? (
-          <SettingsFoot>
-            <SettingsAddButton onClick={() => setInviting(true)}>Invite</SettingsAddButton>
-          </SettingsFoot>
-        ) : null}
-      </SettingsSection>
+      <PendingInvites invites={data.invites} manager={manager} onRevoke={(invite) => revoke.mutate(invite)} onInvite={() => setInviting(true)} />
       {inviting ? <InviteDialog organizationName={organizationName} mail={data.mail} invite={(input) => inviteMemberServerFn({ data: { organizationSlug, ...input } })} onInvited={refresh} onOpenChange={setInviting} /> : null}
       <AlertDialog
         open={confirming !== null}
@@ -207,6 +187,62 @@ export function MembersSettings({ organizationSlug }: { organizationSlug: string
   );
 }
 
+type PendingInvite = { id: string; email: string | null; role: InviteRole; invited_by: string; expires_at: string };
+
+export function PendingInvites({ invites, manager, onRevoke, onInvite }: {
+  invites: readonly PendingInvite[];
+  manager: boolean;
+  onRevoke: (invite: string) => void;
+  onInvite: () => void;
+}) {
+  const revokeButtons = useRef(new Map<string, HTMLButtonElement>());
+  const inviteButton = useRef<HTMLButtonElement>(null);
+  const revokeNames = distinctNames(invites.map((invite) =>
+    [invite.email ?? `link expiring ${formatDate(invite.expires_at)}`, `from ${invite.invited_by}`, ROLE_LABELS[invite.role]]));
+  // The invite below takes the revoked one's place, so focus moves to it, or up, or to Invite when none is left.
+  function revoke(id: string) {
+    const index = invites.findIndex((row) => row.id === id);
+    const next = invites[index + 1] ?? invites[index - 1];
+    onRevoke(id);
+    (next ? revokeButtons.current.get(next.id) : inviteButton.current)?.focus();
+  }
+
+  return (
+    <SettingsSection id="invites" title="Pending invites">
+      {invites.length > 0 ? (
+        <SettingsList label="Pending invites">
+          {invites.map((invite, index) => (
+            <SettingsListItem
+              key={invite.id}
+              media={invite.email ? <MailIcon /> : <LinkIcon />}
+              label={invite.email ?? "Anyone with the link"}
+              hint={`From ${invite.invited_by} · ${ROLE_LABELS[invite.role]} · expires ${formatDate(invite.expires_at)}`}
+              commit="change"
+              actions={manager ? (
+                <Button variant="ghost" size="sm" onClick={() => revoke(invite.id)}
+                  aria-label={`Revoke ${revokeNames[index]}`}
+                  ref={(button) => {
+                    if (button) revokeButtons.current.set(invite.id, button);
+                    return () => { revokeButtons.current.delete(invite.id); };
+                  }}>
+                  Revoke
+                </Button>
+              ) : undefined}
+            />
+          ))}
+        </SettingsList>
+      ) : (
+        <SettingsEmpty title="No pending invites">An invite is a link that lets one person join.</SettingsEmpty>
+      )}
+      {manager ? (
+        <SettingsFoot>
+          <SettingsAddButton ref={inviteButton} onClick={onInvite}>Invite</SettingsAddButton>
+        </SettingsFoot>
+      ) : null}
+    </SettingsSection>
+  );
+}
+
 type InviteInput = { email: string | null; role: InviteRole };
 type Invited = Awaited<ReturnType<typeof inviteMemberServerFn>>;
 
@@ -219,7 +255,7 @@ export function InviteDialog({ organizationName, mail, invite: send, onInvited, 
 }) {
   const [email, setEmail] = useState("");
   const [role, setRole] = useState<InviteRole>("member");
-  const invite = useMutation({
+  const invite = useExclusiveMutation({
     mutationFn: () => send({ email: email.trim() || null, role }),
     onSuccess: onInvited,
   });
@@ -242,14 +278,14 @@ export function InviteDialog({ organizationName, mail, invite: send, onInvited, 
         {invite.data ? (
           <div className="flex items-center gap-2">
             <Input readOnly aria-label="Invite link" className="ph-no-capture font-mono text-xs" value={invite.data.link} onFocus={(event) => event.target.select()} />
-            <CopyButton value={invite.data.link} label="Copy link" />
+            <CopyButton value={invite.data.link} label="Copy link" autoFocus />
           </div>
         ) : (
           <form
             id="invite-form"
             onSubmit={(event) => {
               event.preventDefault();
-              if (!invite.isPending) invite.mutate();
+              invite.mutate();
             }}
           >
             <FieldGroup>

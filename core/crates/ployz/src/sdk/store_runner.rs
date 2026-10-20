@@ -3,29 +3,35 @@
 //! evidence, so the Deploy Intent with its unsealed secrets, the session and the raw
 //! SDK evidence never leave it: the caller gets only the Deployment's summary.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
 use ployz_core::{
-    DeployOperation, DeployOutcome, ExecutionError, FailedOperation, RpcError, RpcErrorCode,
+    AnonymousVolumes, ContainerId, DeployOperation, DeployOutcome, DeployWarning, ExecutionError,
+    FailedOperation, MachineId, MachineObservation, QualifiedService, RpcError, RpcErrorCode,
     ServiceName,
 };
-use ployz_store::tools::SecretSet;
+use ployz_store::tools::{LogText, SealedValues, Withheld};
 use ployz_store::{
-    BuildReport, BuildStatus, Builder, Claimed, CommitSha, ConfigStore, DeploymentId,
-    DeploymentStatus, DeploymentSummary, Failure, RowState, RowTracker, RunEvidence, RunnerId,
+    Actor, BuildReport, BuildStatus, Builder, Claimed, CommitSha, ConfigStore, DeployedNode,
+    DeploymentId, DeploymentQuery, DeploymentStatus, DeploymentSummary, DeploymentView,
+    DeploymentWarning, EnvironmentId, Failure, NodeStatus, ObservationFailure, RowState,
+    RowTracker, RunEvidence, RunnerId, VolumeObservation,
 };
-use serde::Deserialize as _;
+use serde::{Deserialize as _, Serialize};
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
+use ts_rs::TS;
 
 use super::build::BuildOutcome;
 use super::preparation::{BuildReceipt, PreparationInput, UploadDigest, needs_upload};
 use super::{ImageCleanup, PreparedDeploy, RunningBuild, Session, connect_connections};
-use crate::connect::SystemConnector;
+use crate::connect::{Client, SystemConnector};
 use crate::context::Connection;
+use crate::deploy::MachineOperations;
+use crate::deploy::cleanup::{self, Copy, Step};
 
 /// How often a running Deployment renews its lease and checks whether it was cancelled.
 const CANCEL_POLL: Duration = Duration::from_secs(2);
@@ -71,10 +77,13 @@ enum Build {
         /// The Server the build tries first.
         preferred_machine: Option<ployz_core::MachineId>,
     },
-    /// An uploaded Service, from the upload when Cloud still holds it.
+    /// An uploaded Service, from its upload when Cloud still holds it and extracted it.
     Upload {
         digest: UploadDigest,
         source: Option<PathBuf>,
+        /// It builds from an earlier upload than the one its Deployment carries,
+        /// which is the one Cloud extracts.
+        earlier: bool,
         /// Its Build Order has GitHub, which can't build it.
         github_skipped: bool,
     },
@@ -153,7 +162,7 @@ pub async fn run_deployment(
             .await;
     }
     let session = match run
-        .connecting(connect_connections(
+        .connecting(super::dial(
             connections,
             Arc::new(SystemConnector::default()),
         ))
@@ -161,17 +170,14 @@ pub async fn run_deployment(
     {
         Ok(Some(session)) => session,
         Ok(None) => return run.not_executed("Cancelled before connecting".into()).await,
-        // Users read it on the Deployment: plain words and one action first, then
-        // what the connection said.
+        // Users read it on the Deployment: the connection's own sentence first, naming the
+        // Server where it knows which and saying whether a daemon answered, then what the
+        // connection said.
         Err(error) => {
-            let Failure { reason, mut cause } = Failure::from(&error);
-            cause.insert(0, reason);
             return run
                 .not_executed(Failure {
-                    reason:
-                        "Ployz couldn't reach your Servers. Check that they're online, then retry."
-                            .into(),
-                    cause,
+                    reason: error.to_string(),
+                    cause: ployz_core::error_chain::causes(&error),
                 })
                 .await;
         }
@@ -182,19 +188,52 @@ pub async fn run_deployment(
 }
 
 /// Which of `connections`' Servers hold each Docker Volume in `sought`: the
-/// evidence a Deploy that removes deployed Volumes is admitted with.
+/// evidence a Deploy that removes deployed Volumes is admitted with. A check that
+/// fails names each of `connections`' Servers unanswered, and says whether none
+/// could be reached or one answered with an error, naming that one only once its
+/// daemon confirmed which Server it is.
 ///
 /// # Errors
-/// Returns the connection's error when no Server can be reached, or listing the
-/// Machines fails.
+/// Returns `invalid_argument` when `connections` is empty.
 pub async fn observe_volumes(
     connections: Vec<Connection>,
     sought: Vec<ployz_core::DockerVolumeName>,
 ) -> Result<ployz_store::VolumeObservation, RpcError> {
-    let session = connect_connections(connections, Arc::new(SystemConnector::default())).await?;
-    let observed = session.observe_volumes(sought).await;
+    if connections.is_empty() {
+        return Err(super::invalid_argument(
+            "connections must not be empty".into(),
+        ));
+    }
+    let servers: Vec<MachineId> = connections
+        .iter()
+        .filter_map(Connection::machine_id)
+        .copied()
+        .collect();
+    let session = match super::dial(connections, Arc::new(SystemConnector::default())).await {
+        Ok(session) => session,
+        Err(error) => {
+            let failure = if error.unreached() {
+                ObservationFailure::unreachable(error.into())
+            } else {
+                // The daemon that refused never confirmed which Server it is.
+                ObservationFailure::answered(None, error.into())
+            };
+            return Ok(VolumeObservation::failed(sought, servers, failure));
+        }
+    };
+    let observed = match session.observe_volumes(sought.clone()).await {
+        Ok(observed) => observed,
+        Err(error) => {
+            let server = session
+                .client()
+                .ok()
+                .and_then(|client| client.entry_machine());
+            let failure = ObservationFailure::answered(server, error);
+            VolumeObservation::failed(sought, servers, failure)
+        }
+    };
     session.close().await;
-    observed
+    Ok(observed)
 }
 
 /// Every copy of every Volume on `connections`' Servers, by role: what Cloud's sweep
@@ -212,40 +251,323 @@ pub async fn observe_copies(
     observed
 }
 
-/// Each Service's environment and which of its keys hold a secret: what its failed
-/// Container's log is scrubbed of.
+/// The old copies a Deployment's retire left running.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, TS)]
+pub struct RetireOutcome {
+    /// Copies it tried to retire and could not: a retry may still retire them.
+    pub left: Vec<RetireLeft>,
+    /// Copies it never retires, and Machines the Deploy could not reach: a retry
+    /// changes nothing.
+    pub kept: Vec<RetireLeft>,
+}
+
+/// One old copy still running.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, TS)]
+pub struct RetireLeft {
+    /// The Machine's name as the Deploy reported it, or its ID when the Deploy
+    /// did not know the name.
+    pub machine: String,
+    /// The Service as the Deployment names it, or none for a Machine the Deploy
+    /// could not reach, whose copies it never saw.
+    pub service: Option<ServiceName>,
+    /// Users read it.
+    pub reason: String,
+}
+
+/// Retire the old copies Deployment `deployment` of `who`'s Organization left
+/// running, on one of `connections`: each copy its Deploy reported left running,
+/// of a Service it deployed or removed. A failed or unattempted Service keeps its
+/// old copy, which may be the one serving, and is reported left. A copy already
+/// gone counts as retired, so a retry observes again and only retires what is
+/// still there. A Machine the Deploy could not reach is reported left, since a copy
+/// it never saw may run there.
+///
+/// # Errors
+/// Returns `not_found` for a Deployment of another Organization, the connection's
+/// error when no Server can be reached or listing the Machines fails, or a storage
+/// error.
+pub async fn retire_old(
+    store: Arc<ConfigStore>,
+    who: Actor,
+    deployment: DeploymentId,
+    connections: Vec<Connection>,
+) -> Result<RetireOutcome, RpcError> {
+    let view = super::store_call(&store, move |store| {
+        store.read(&who, &DeploymentQuery { id: deployment })
+    })
+    .await?;
+    let copies = left_copies(&view);
+    if copies.is_empty() {
+        return Ok(named_left(&view, Vec::new()));
+    }
+    let session = connect_connections(connections, Arc::new(SystemConnector::default())).await?;
+    let retired: Result<_, RpcError> = async {
+        let mut client = session.client()?;
+        let machines = client.machines().await.map_err(crate::connect::rpc_error)?;
+        Ok(retire_copies(&client, &machines, copies).await)
+    }
+    .await;
+    session.close().await;
+    Ok(named_left(&view, retired?))
+}
+
+/// The Deploy's warnings, wherever its runner recorded them: the planner's on the
+/// Deploy Preview, the executor's on the Deployment.
+fn deploy_warnings(view: &DeploymentView) -> impl Iterator<Item = &DeployWarning> {
+    let ran = view.deployment.warnings.iter().filter_map(|warning| {
+        let DeploymentWarning::Deploy { warning } = warning else {
+            return None;
+        };
+        Some(warning)
+    });
+    ran.chain(view.preview.iter().flat_map(|preview| &preview.warnings))
+}
+
+/// What `retired` left, plus every old copy the Deploy kept and every Machine it
+/// could not reach, so nothing that may still run goes unnamed.
+fn named_left(view: &DeploymentView, left: Vec<RetireLeft>) -> RetireOutcome {
+    let mut kept = kept_copies(view);
+    let reported: BTreeSet<&str> = deploy_warnings(view)
+        .filter_map(|warning| {
+            let DeployWarning::LeftRunning { machine, .. } = warning else {
+                return None;
+            };
+            Some(machine.as_str())
+        })
+        .collect();
+    for warning in deploy_warnings(view) {
+        let DeployWarning::MixedAfterReturn { machine } = warning else {
+            continue;
+        };
+        if reported.contains(machine.as_str())
+            || left
+                .iter()
+                .chain(&kept)
+                .any(|entry| entry.machine == *machine)
+        {
+            continue;
+        }
+        kept.push(RetireLeft {
+            machine: machine.clone(),
+            service: None,
+            reason: format!(
+                "{machine} was cut off during the Deploy, so a copy there may still run. \
+                 Deploy again once it is back."
+            ),
+        });
+    }
+    RetireOutcome { left, kept }
+}
+
+struct LeftCopy {
+    service: ServiceName,
+    container_id: ContainerId,
+    machine: String,
+    service_removed: bool,
+}
+
+/// Each copy the Deploy reported left running, with its Service's outcome.
+fn reported_copies(view: &DeploymentView) -> impl Iterator<Item = (LeftCopy, NodeStatus)> {
+    let services: BTreeMap<QualifiedService, (&ServiceName, NodeStatus)> = view
+        .nodes
+        .iter()
+        .filter_map(|node| {
+            let DeployedNode::Service { name, .. } = &node.node else {
+                return None;
+            };
+            let runtime = view.runtime_names.get(name)?;
+            let service = QualifiedService::new(view.namespace.clone(), runtime.clone());
+            Some((service, (name, node.outcome)))
+        })
+        .collect();
+    deploy_warnings(view).filter_map(move |warning| {
+        let DeployWarning::LeftRunning {
+            service,
+            container_id,
+            machine,
+            ..
+        } = warning
+        else {
+            return None;
+        };
+        let (name, outcome) = services
+            .get(service)
+            .map_or((&service.name, NodeStatus::Unknown), |(name, outcome)| {
+                (*name, *outcome)
+            });
+        let copy = LeftCopy {
+            service: name.clone(),
+            container_id: *container_id,
+            machine: machine.clone(),
+            service_removed: outcome == NodeStatus::Removed,
+        };
+        Some((copy, outcome))
+    })
+}
+
+fn advanced(outcome: NodeStatus) -> bool {
+    match outcome {
+        NodeStatus::Deployed | NodeStatus::Removed => true,
+        NodeStatus::Pending
+        | NodeStatus::Failed
+        | NodeStatus::NotAttempted
+        | NodeStatus::Unchanged
+        | NodeStatus::Unknown => false,
+    }
+}
+
+fn left_copies(view: &DeploymentView) -> Vec<LeftCopy> {
+    reported_copies(view)
+        .filter(|(_, outcome)| advanced(*outcome))
+        .map(|(copy, _)| copy)
+        .collect()
+}
+
+/// The copies of every other Service: the old copy may be the one serving, so it stays.
+fn kept_copies(view: &DeploymentView) -> Vec<RetireLeft> {
+    reported_copies(view)
+        .filter(|(_, outcome)| !advanced(*outcome))
+        .map(|(copy, _)| RetireLeft {
+            reason: format!(
+                "{} did not deploy, so its old copy stays. Deploy again to replace it.",
+                copy.service
+            ),
+            machine: copy.machine,
+            service: Some(copy.service),
+        })
+        .collect()
+}
+
+async fn retire_copies<C: MachineOperations>(
+    client: &C,
+    machines: &[MachineObservation],
+    copies: Vec<LeftCopy>,
+) -> Vec<RetireLeft> {
+    let names: BTreeMap<MachineId, String> = machines
+        .iter()
+        .map(|observed| (observed.machine.id, observed.machine.name.to_string()))
+        .collect();
+    let retired = futures_util::future::join_all(copies.iter().map(|copy| async {
+        // Names are not unique: every Machine of that name may hold the copy.
+        let held_by: Vec<MachineId> = machines
+            .iter()
+            .map(|observed| &observed.machine)
+            .filter(|machine| {
+                machine.name.as_str() == copy.machine || machine.id.to_string() == copy.machine
+            })
+            .map(|machine| machine.id)
+            .collect();
+        if held_by.is_empty() {
+            return vec![format!("{} is not in the Cluster", copy.machine)];
+        }
+        let mut reasons = Vec::new();
+        for machine_id in held_by {
+            if let Some(reason) = retire_copy(client, &names, machine_id, copy).await {
+                reasons.push(reason);
+            }
+        }
+        reasons
+    }))
+    .await;
+    copies
+        .iter()
+        .zip(retired)
+        .flat_map(|(copy, reasons)| {
+            reasons.into_iter().map(|reason| RetireLeft {
+                machine: copy.machine.clone(),
+                service: Some(copy.service.clone()),
+                reason,
+            })
+        })
+        .collect()
+}
+
+async fn retire_copy<C: MachineOperations>(
+    client: &C,
+    names: &BTreeMap<MachineId, String>,
+    machine_id: MachineId,
+    copy: &LeftCopy,
+) -> Option<String> {
+    let observed = match client
+        .inspect_container(&machine_id, &copy.container_id)
+        .await
+    {
+        Ok(details) => details.container,
+        Err(error) if error.code == RpcErrorCode::NotFound => return None,
+        Err(error) => return Some(machine_failure_reason(&copy.machine, error)),
+    };
+    let step = cleanup::retire(
+        client,
+        &Copy::observed(&observed),
+        copy.service_removed,
+        AnonymousVolumes::Remove,
+        &CancellationToken::new(),
+    )
+    .await;
+    match step {
+        Ok(Step::Done) => None,
+        Ok(Step::Refused(refusal)) => Some(refusal.message),
+        Ok(Step::NotConfirmed(unconfirmed)) if unconfirmed.machines.is_empty() => {
+            Some("the route set did not name every live Machine".into())
+        }
+        Ok(Step::NotConfirmed(unconfirmed)) => {
+            let proxies: Vec<String> = unconfirmed
+                .machines
+                .iter()
+                .map(|id| names.get(id).cloned().unwrap_or_else(|| id.to_string()))
+                .collect();
+            Some(format!("proxy on {} did not confirm", proxies.join(", ")))
+        }
+        Ok(Step::Cancelled) => Some("interrupted".into()),
+        Err(error) => Some(machine_failure_reason(&copy.machine, error)),
+    }
+}
+
+fn machine_failure_reason(machine: &str, error: RpcError) -> String {
+    if error.code == RpcErrorCode::Unavailable || error.target_unanswered() {
+        format!("{machine} did not answer")
+    } else {
+        error.message
+    }
+}
+
+/// Every claim pair is kept, under its name: a name sealed after the claim
+/// still names a value this Deploy shipped, and the names are read again at each tail.
+/// A Container's Machine reports the rest, so a failed tail is scrubbed of both.
 struct Scrub {
-    env: BTreeMap<ServiceName, BTreeMap<String, String>>,
-    secret: BTreeMap<ServiceName, std::collections::BTreeSet<String>>,
+    environment: EnvironmentId,
+    sealed_at_claim: BTreeSet<String>,
+    claim: BTreeSet<(String, String)>,
 }
 
 impl Scrub {
     fn new(claimed: &Claimed) -> Self {
         Self {
-            env: claimed
+            environment: claimed.deployment.environment_id.clone(),
+            sealed_at_claim: claimed.sealed_names.clone(),
+            claim: claimed
                 .intent
                 .target
                 .iter()
-                .map(|spec| (spec.name.clone(), spec.container.environment.clone()))
+                .flat_map(|spec| spec.container.environment.iter())
+                .map(|(key, value)| (key.clone(), value.clone()))
                 .collect(),
-            secret: claimed.secret_env.clone(),
         }
     }
 
-    /// `service`'s secret values, and its plain ones, which its Machine's env may
-    /// repeat. A Service the claim did not lower has no secret context.
-    fn secrets(&self, service: &ServiceName) -> SecretSet {
-        let Some(env) = self.env.get(service) else {
-            return SecretSet::unknown();
-        };
-        let keys = self.secret.get(service);
-        let (secrets, plain): (Vec<_>, Vec<_>) = env
+    /// The values under `names` from the claim and from `env`, what the Container's
+    /// Machine reports: an image can supply a variable the claim never named.
+    fn values(&self, names: &BTreeSet<String>, env: BTreeMap<String, String>) -> SealedValues {
+        self.claim
             .iter()
-            .map(|(key, value)| (key.clone(), value.clone()))
-            .partition(|(key, _)| keys.is_some_and(|keys| keys.contains(key)));
-        SecretSet::from_store(secrets, plain)
+            .filter(|(key, _)| names.contains(key))
+            .cloned()
+            .chain(env.into_iter().filter(|(key, _)| names.contains(key)))
+            .collect()
     }
 }
+
+const SEALED_REREADS: usize = 2;
 
 struct Run {
     store: Arc<ConfigStore>,
@@ -263,6 +585,7 @@ impl Run {
     ) -> Result<DeploymentSummary, RpcError> {
         let deletes = claimed.deletes.clone();
         let scrub = Scrub::new(&claimed);
+        let earlier = earlier(&targets);
         let prepared = if targets.is_empty() && built.is_empty() {
             self.renewing(session.preview(claimed.intent), || {
                 session.inner.cancel.cancel()
@@ -281,7 +604,7 @@ impl Run {
             Ok(prepared) => prepared,
             Err(error) => {
                 return match needs_upload(&error) {
-                    Some(services) => self.unbuilt(Unbuilt::UploadNeeded(services)).await,
+                    Some(services) => self.unbuilt(upload_needed(&earlier, services)).await,
                     None => self.not_executed(Failure::from(&error)).await,
                 };
             }
@@ -305,10 +628,12 @@ impl Run {
             })
             .await;
         match outcome {
-            Ok((outcome, progress)) => {
+            Ok((outcome, progress, mut warnings)) => {
                 if self.lost_to_another_runner().await {
                     return self.interrupted(outcome, progress).await;
                 }
+                // The last chance: the store takes warnings only while the Deployment runs.
+                self.record_warnings(&mut warnings).await;
                 let removed = if matches!(outcome, DeployOutcome::Success { .. }) {
                     // Deleting is never interrupted: a half-deleted set stays accepted.
                     self.renewing(remove_volumes(session, deletes), || ()).await
@@ -333,14 +658,15 @@ impl Run {
     async fn fill_ingress(&self, session: &Session) {
         let filled = match session.client() {
             Ok(mut client) => {
+                let server = client.server();
                 let stop = CancellationToken::new();
                 self.renewing(crate::ingress::fill_slots(&mut client, &stop), || {
                     stop.cancel()
                 })
                 .await
-                .map_err(|failure| failure.to_string())
+                .map_err(|failure| crate::ingress::unchecked(&failure, server))
             }
-            Err(error) => Err(error.to_string()),
+            Err(error) => Err(crate::ui::row(&error)),
         };
         let evidence: Vec<_> = match filled {
             Ok(check) => (!check.repairs.is_empty())
@@ -393,7 +719,7 @@ impl Run {
             };
             builds.push((target, running));
             if let Err(error) = self
-                .report(service, BuildStatus::Building, None, String::new())
+                .report(service, BuildStatus::Building, None, String::new(), None)
                 .await
             {
                 return Err(stop_builds(&builds, error).await);
@@ -427,7 +753,7 @@ impl Run {
         }
         // A new upload is the one fix a user can act on first.
         if !uploads.is_empty() {
-            return Ok(Err(Unbuilt::UploadNeeded(uploads)));
+            return Ok(Err(upload_needed(&earlier(targets), uploads)));
         }
         if !failed.is_empty() {
             return Ok(Err(Unbuilt::Failed(format!(
@@ -459,20 +785,36 @@ impl Run {
         } else {
             String::new()
         };
+        let mut server = None;
         let mut flushed = tokio::time::Instant::now();
-        while let Some(event) = running.next().await {
-            log.push_str(&log_line(&event));
-            if flushed.elapsed() >= LOG_FLUSH && !log.is_empty() {
-                // ponytail: a failed flush keeps the output for the next one.
-                if self
-                    .report(service, BuildStatus::Building, None, log.clone())
-                    .await
-                    .is_ok()
-                {
-                    log.clear();
+        loop {
+            let next = if log.is_empty() {
+                running.next().await
+            } else {
+                tokio::select! {
+                    next = running.next() => next,
+                    () = tokio::time::sleep_until(flushed + LOG_FLUSH) => {
+                        // ponytail: a failed flush keeps the output for the next one.
+                        if self
+                            .report(service, BuildStatus::Building, None, log.clone(), server.clone())
+                            .await
+                            .is_ok()
+                        {
+                            log.clear();
+                        }
+                        flushed = tokio::time::Instant::now();
+                        continue;
+                    }
                 }
-                flushed = tokio::time::Instant::now();
+            };
+            let Some(event) = next else { break };
+            if let Some(name) = event
+                .pointer("/Selected/machine/name")
+                .and_then(Value::as_str)
+            {
+                server = Some(name.to_owned());
             }
+            log.push_str(&log_line(&event));
         }
         let (status, message, ended) = match running.finished().await {
             Ok(BuildOutcome::Built { receipt, reused }) => {
@@ -497,7 +839,7 @@ impl Run {
                 Err(error),
             ),
         };
-        self.report(service, status, message, log).await?;
+        self.report(service, status, message, log, server).await?;
         let receipt = match ended {
             Ok(receipt) => receipt,
             Err(error) => return Ok(Err(error)),
@@ -559,23 +901,34 @@ impl Run {
         (
             DeployOutcome<ExecutionError>,
             Vec<ployz_store::ServerProgress>,
+            Vec<DeployWarning>,
         ),
         RpcError,
     > {
         let mut confirmed = std::collections::BTreeSet::new();
         let mut tracker = RowTracker::default();
         let mut pending = BTreeMap::new();
+        let mut warnings = Vec::new();
         while let Some(event) = running.next().await {
-            let ployz_core::DeployEvent::Progress { rows, .. } = event else {
-                continue;
+            let rows = match event {
+                ployz_core::DeployEvent::Progress { rows, .. } => rows,
+                ployz_core::DeployEvent::Warning { warning } => {
+                    warnings.push(warning);
+                    self.record_warnings(&mut warnings).await;
+                    continue;
+                }
+                ployz_core::DeployEvent::Outcome { .. }
+                | ployz_core::DeployEvent::ImagesPruned { .. } => continue,
             };
+            self.record_warnings(&mut warnings).await;
             for mut row in tracker.changes(&rows) {
                 let container = tracker.container(&row);
                 if let (RowState::Failed { log: Some(log), .. }, Some(container), Ok(client)) =
                     (&mut row.state, container, session.client())
                 {
-                    let secrets = scrub.secrets(&row.service);
-                    *log = super::failed_tail(&client, row.machine, container, secrets).await;
+                    *log = self
+                        .failed_log(&client, scrub, row.machine, container)
+                        .await;
                 }
                 pending.insert((row.service.clone(), row.machine), row);
             }
@@ -612,13 +965,26 @@ impl Run {
             }
         }
         let outcome = running.finished().await?;
-        Ok((outcome, pending.into_values().collect()))
+        Ok((outcome, pending.into_values().collect(), warnings))
     }
 
-    async fn connecting<T>(
+    /// Record each held warning, keeping the ones the store refused for the next try.
+    /// The store keeps a warning once, so a retry after a lost reply changes nothing.
+    async fn record_warnings(&self, warnings: &mut Vec<DeployWarning>) {
+        let mut unrecorded = Vec::new();
+        for warning in warnings.drain(..) {
+            if let Err(error) = self.record(RunEvidence::Warned(warning.clone())).await {
+                tracing::warn!(%error, "couldn't record a Deploy warning; retrying later");
+                unrecorded.push(warning);
+            }
+        }
+        *warnings = unrecorded;
+    }
+
+    async fn connecting<T, E>(
         &self,
-        work: impl std::future::Future<Output = Result<T, RpcError>>,
-    ) -> Result<Option<T>, RpcError> {
+        work: impl std::future::Future<Output = Result<T, E>>,
+    ) -> Result<Option<T>, E> {
         tokio::pin!(work);
         let mut poll = tokio::time::interval(CANCEL_POLL);
         loop {
@@ -661,12 +1027,14 @@ impl Run {
         status: BuildStatus,
         message: Option<String>,
         log: String,
+        server: Option<String>,
     ) -> Result<DeploymentSummary, RpcError> {
         self.record(RunEvidence::Build(BuildReport {
             service: service.clone(),
             status,
             message,
             log,
+            server,
         }))
         .await
     }
@@ -696,6 +1064,63 @@ impl Run {
 
     async fn not_executed(&self, failure: Failure) -> Result<DeploymentSummary, RpcError> {
         self.record(RunEvidence::NotExecuted(failure)).await
+    }
+
+    async fn failed_log(
+        &self,
+        client: &Client,
+        scrub: &Scrub,
+        machine: MachineId,
+        container: ContainerId,
+    ) -> LogText {
+        let Some(env) = super::container_env(client, machine, container).await else {
+            return LogText::Withheld {
+                why: Withheld::NoSecretContext,
+            };
+        };
+        let Ok(mut names) = self.sealed_names(&scrub.environment).await else {
+            return LogText::Withheld {
+                why: Withheld::NoSecretContext,
+            };
+        };
+        names.extend(scrub.sealed_at_claim.iter().cloned());
+        let Some(frames) = super::tail_frames(client, machine, container).await else {
+            return LogText::Withheld {
+                why: Withheld::Unanswered,
+            };
+        };
+        match self.settled_sealed_names(&scrub.environment, names).await {
+            Some(names) => super::tail_excerpt(frames, &scrub.values(&names, env)),
+            None => LogText::Withheld {
+                why: Withheld::NoSecretContext,
+            },
+        }
+    }
+
+    /// `names` grown by every name Sealed since they were read, once a read adds none.
+    /// None when the set still grows after `SEALED_REREADS` reads, or the Store does not
+    /// answer: the tail was read under names that may be stale, so it is withheld.
+    async fn settled_sealed_names(
+        &self,
+        environment: &EnvironmentId,
+        mut names: BTreeSet<String>,
+    ) -> Option<BTreeSet<String>> {
+        for _ in 0..=SEALED_REREADS {
+            let fresh = self.sealed_names(environment).await.ok()?;
+            if fresh.is_subset(&names) {
+                return Some(names);
+            }
+            names.extend(fresh);
+        }
+        None
+    }
+
+    async fn sealed_names(
+        &self,
+        environment: &EnvironmentId,
+    ) -> Result<BTreeSet<String>, RpcError> {
+        let environment = environment.clone();
+        super::store_call(&self.store, move |store| store.sealed_names(&environment)).await
     }
 
     async fn record(&self, evidence: RunEvidence) -> Result<DeploymentSummary, RpcError> {
@@ -856,22 +1281,75 @@ fn targets(
             failed.join("; ")
         )));
     }
-    if claimed.uploads.is_empty() {
-        return Ok((targets, built));
+    let missing: Vec<ServiceName> = claimed
+        .uploads
+        .iter()
+        .filter(|(_, digest)| digest.is_none())
+        .map(|(service, _)| service.clone())
+        .collect();
+    if !missing.is_empty() {
+        return Err(Unbuilt::UploadNeeded(missing));
     }
-    let Some(upload) = &claimed.deployment.upload else {
-        return Err(Unbuilt::UploadNeeded(claimed.uploads.clone()));
-    };
-    let digest = upload.digest.clone();
-    targets.extend(claimed.uploads.iter().map(|service| Target {
-        service: service.clone(),
-        build: Build::Upload {
-            digest: digest.clone(),
-            source: sources.upload.clone(),
-            github_skipped: claimed.build_order.contains(&Builder::Github),
-        },
+    let carried = claimed
+        .deployment
+        .upload
+        .as_ref()
+        .map(|upload| &upload.digest);
+    targets.extend(claimed.uploads.iter().filter_map(|(service, digest)| {
+        let digest = digest.as_ref()?;
+        let earlier = carried != Some(digest);
+        Some(Target {
+            service: service.clone(),
+            build: Build::Upload {
+                digest: digest.clone(),
+                source: if earlier {
+                    None
+                } else {
+                    sources.upload.clone()
+                },
+                earlier,
+                github_skipped: claimed.build_order.contains(&Builder::Github),
+            },
+        })
     }));
     Ok((targets, built))
+}
+
+/// The uploaded Services among `targets` that build from an earlier upload than
+/// their Deployment carries.
+fn earlier(targets: &[Target]) -> BTreeSet<ServiceName> {
+    targets
+        .iter()
+        .filter(|target| matches!(target.build, Build::Upload { earlier: true, .. }))
+        .map(|target| target.service.clone())
+        .collect()
+}
+
+/// Why `needed`, uploaded Services with neither their upload nor a usable image,
+/// didn't build. One that builds from an earlier upload than its Deployment's may
+/// still have it: Cloud extracts only the Deployment's, so it builds again on its
+/// own. The rest need a new upload, the fix a user acts on first.
+fn upload_needed(earlier: &BTreeSet<ServiceName>, needed: Vec<ServiceName>) -> Unbuilt {
+    let (alone, rest): (Vec<_>, Vec<_>) = needed
+        .into_iter()
+        .partition(|service| earlier.contains(service));
+    if !rest.is_empty() || alone.is_empty() {
+        return Unbuilt::UploadNeeded(rest);
+    }
+    let names = alone
+        .iter()
+        .map(ServiceName::as_str)
+        .collect::<Vec<_>>()
+        .join(", ");
+    let deploys = alone
+        .iter()
+        .map(|service| format!("ployz deploy {service}"))
+        .collect::<Vec<_>>()
+        .join(", then ");
+    Unbuilt::Failed(format!(
+        "{names} must build again from an earlier upload than this Deployment's, and a \
+         Deployment builds from one upload. Deploy it on its own: {deploys}"
+    ))
 }
 
 /// `value` as a one-entry map for `service`, or an empty one.
@@ -908,6 +1386,9 @@ pub(super) fn log_line(event: &Value) -> String {
     let text = |pointer: &str| event.pointer(pointer).and_then(Value::as_str);
     if let Some(machine) = text("/Selected/machine/name") {
         return format!("Building on {machine}\n");
+    }
+    if text("/Build/Stage") == Some("Queued") {
+        return "Waiting for a build slot\n".to_owned();
     }
     if let Some(output) = text("/Build/StepOutput/text") {
         return output.to_owned();

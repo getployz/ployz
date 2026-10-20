@@ -35,7 +35,11 @@ changed: every GitHub service moves to the newest commit on its Git branch, and 
 or lost a server, replicas spread over the servers you have now (if a service's volume was on a
 lost server, see [When a server goes down](../services/scaling.md#when-a-server-goes-down)).
 Everything else keeps running as it is. A secret that is **Not set** never stops a deploy: the
-deploy skips it, and any variable that references it, and warns.
+deploy skips it, and any variable that references it, and warns. A
+[broken reference](../services/variables.md#reference-another-services-variable), to a service or
+variable that isn't there, doesn't either: the deploy leaves that variable out the same way, or
+leaves the reference empty in a config file, along with any reference that reads it, and the
+deployment's page and `ployz deploy` name each one.
 
 **Save only** in **Details**, in the bottom bar's **⋮** menu, or on **Deploy** while you hold Alt,
 records your changes and optional message without deploying them. Ployz shows **Saved, not
@@ -45,12 +49,28 @@ behind. Saving again with no changes creates no new version. The CLI calls this
 `ployz deploy --skip-deploy`, and accepts `--message`.
 
 To undo, click **Discard** beside a change, or open **⋮** and choose **Discard all changes**.
-Discarding a service or volume you never deployed deletes it. Discard does not save a version.
+**Discard all changes** returns everything to your latest saved version, including a staged
+rollback. Discarding a service or volume you never deployed deletes it. Discard does not save a
+version. When your latest saved version is not running, for example because its deploy failed,
+the bottom bar shows **#4 not running** with **Deploy** instead of a change count. Neither its **⋮**
+menu nor Details offers **Discard all** then, since nothing is left to discard.
+A new service's change starts with what it runs, its image or its repository and branch, such as
+`web.image: null → "nginx:1"`. Those rows have no Discard of their own: discard the service.
+`ployz discard web.image` says so and names the command, `ployz discard web`.
 If you discard saved changes back to what is deployed, Details still shows the draft reversal.
 Saving records that reversal; Discard on its row returns it to the latest saved value.
+In the CLI, `ployz discard` with no path drops every staged change in the environment, including
+changes someone else staged from the dashboard or an agent, and lists each one it dropped. Pass a
+path, such as `ployz discard web.env.KEY`, to drop only that change. It also names each saved change
+it took out and the command that brings it back, such as `ployz discard web`. `ployz diff` lists
+those rows and `ployz status` counts them. Plain `ployz discard` returns each service to what is
+deployed, or, for a service a queued or running deploy is changing, to the value that deploy is
+bringing in. `ployz discard --target review` matches the dashboard's **Discard all changes** and
+goes back to your latest saved version.
 
-The dashboard's **Deploy** needs a staged change. Deploying again with nothing staged is
-CLI-only for now:
+The dashboard's **Deploy** needs a staged change. To ship the same commit and settings again,
+click **Redeploy** on the newest deployment. To move GitHub services to their branch's latest
+commit with nothing staged, use the CLI:
 
 ```sh
 ployz deploy
@@ -60,12 +80,18 @@ ployz deploy
 
 Open **Deployments** in the sidebar, then **Versions**, to see this environment's saved versions.
 Each version is titled from what it changed unless it was saved with a message, and lists its
-changes one per row, folding past three. The version's **⋮** menu:
+changes one per row, folding past three. The first version lists what it created. **Live** marks the version the latest fully applied
+deployment shipped. **Failed** marks the newest version when its
+latest deployment failed; a later deployment of it clears it. A version saved but
+not deployed yet has no badge. The version's **⋮** menu:
 
 - **Undo these N changes** reverses that version's changed fields and keeps the versions saved
   after it. The first recorded version has no earlier version to undo.
 - **Roll back to #N** stages that version's complete configuration, undoing every later version.
-  The current version has nothing to roll back to.
+  The newest version has nothing to roll back to. After a failed deploy, rolling back to the
+  **Live** version deploys too: **Deploy** saves it, and services that already match are left
+  running. Like every deploy, it moves GitHub services to the newest commit on their branch, so a
+  branch that moved on since ships its newer code.
 
 Each row's **⋮** undoes that one change. A change the same save tied to others undoes with them,
 and the menu says how many: adding a Service together with another Service's reference to it,
@@ -76,9 +102,10 @@ If an action would overwrite draft changes, the confirmation lists exactly which
 Cancel changes nothing. If someone edits the environment after your review, reopen the action
 to review the new draft. Save or Deploy makes the staged result a saved version.
 
-Undo and Roll back pass the same checks as an edit made by hand. One that would leave a
-reference to a deleted Service, reuse a name or hostname another Service took since, or break a
-rule is refused with the reason, and nothing is staged.
+Undo and Roll back pass the same checks as an edit made by hand. One that would reuse a name or
+hostname another Service took since, or break a rule, is refused with the reason, and nothing is
+staged. One that leaves a reference to a deleted Service stages, and shows it as a
+**Broken reference**.
 
 History restores configuration references. It never brings back a sealed value. A sealed
 variable that still exists keeps its current value, and one added since stays. A sealed variable
@@ -87,11 +114,13 @@ toast names those variables, the Service shows **· N not set**, and its Variabl
 **Set value** on each. Deploys leave a Not set variable out of the container until you set it.
 A variable that was ever sealed can't come back as plain text. A version that only set sealed
 values has nothing to undo, so its Undo is disabled and says **Sealed. Nothing to undo.** History does not recover deleted Volume data or undo private-image credential rotations.
-An accepted deployment and its retries keep their original snapshot while you edit the draft.
+An accepted deployment and its redeploys keep their original snapshot while you edit the draft.
 
-From the CLI, `ployz history` lists versions. `ployz history restore 2 --preview` reviews a
-Restore without writing. `ployz history undo 2` stages an Undo; use `--accept-overwrite` only
-after reviewing the named draft fields. Both list each variable that came back Not set, and
+From the CLI, `ployz history` lists versions with when and by whom each was saved, the settings
+it changed and its message; the live one says `(live)`. `ployz history restore 2 --preview`
+reviews a rollback without writing. `ployz history undo 2` stages an Undo. One that would overwrite
+draft changes refuses, names those fields and gives the same command with `--accept-overwrite`;
+run it only after reviewing them. Both list each variable that came back Not set, and
 `--json` carries them as `not_set`. The agent's `history` tool does the same by revision
 number; one that would overwrite draft changes refuses and names them first.
 
@@ -125,10 +154,29 @@ its new containers printed. A failed deployment opens on the card that failed.
 | **Deploying** | Building, then rolling out |
 | **Deployed** | Every change applied |
 | **Failed** | Something stopped it. A service marked **Not attempted** never started. |
-| **Cancelled** | Someone cancelled it |
+| **Cancelled** | Someone cancelled it. A service it stopped partway reads **Cancelled**, not **Failed**. |
 | **Unknown** | Ployz can't tell what applied. Redeploy it. |
 
-To inspect per-server progress from the CLI, run:
+### Cleanup
+
+After a deployment from the dashboard or GitHub ran, a **Cleanup** card appears after its last
+service. It stops the old replicas the deployment couldn't stop while it ran, for example because
+a server was cut off. Click it to see each old replica that is still running and why.
+
+| Cleanup | What it means |
+| --- | --- |
+| **Waiting** | Retrying the old replicas still running. The card updates without a reload. |
+| **Done** | Every old replica stopped |
+| **Left running on server-3** | After three tries over a few minutes, these old replicas still run. A server cut off before or during the deployment shows here too, since an old replica may still run on it. So does a service that failed to deploy: cleanup leaves its old replica, which may be the one serving. Cleanup names those at once, since trying again changes nothing. |
+| **A newer Deployment took over** | You deployed again before cleanup finished. The newer deployment's own cleanup takes over. |
+| **Failed** | Cleanup itself hit an error, shown on the card. A cleanup Cloud lost track of also ends here, after about an hour, and lists the old replicas it last saw running. |
+
+A replica left running keeps serving alongside the new ones once its server is back. Deploy again
+to stop it. CLI deployments clean up while they run, report a replica left running at the end, and
+show no **Cleanup** card.
+
+From the CLI, `ployz deployment ls` lists the environment's deployments, newest first, with
+each one's status and saved revision. To inspect per-server progress, run:
 
 ```sh
 ployz --json deployment show 37
@@ -138,26 +186,53 @@ Each service's `nodes[].rows[]` records the servers where work ran, its state, a
 and finish times. Each row identifies its server with `machine_id`. The `server` field is a
 display name and can repeat across servers. Volume rows use the same Machine IDs to group
 the work of services that mount them. A running row also names its phase. Failed rows retain
-the cause chain and up to ten final container log lines when available. These outcomes stay with that deployment
+the cause chain and up to ten final container log lines when available, with sealed variables
+and secret-shaped values such as `password=…` replaced. Other values, such as `NODE_ENV` from
+the image, show as the container printed them. These outcomes stay with that deployment
 when you deploy again. Unchanged services have no rows because no server work ran.
+
+Work your cancel stopped reads **Cancelled** in the dashboard and `cancelled` in the CLI. In
+`--json`, its row keeps `"state": "failed"` with `"cancelled": true`, and so does its service:
+`"outcome": "failed"` with `"cancelled": true`. Older Ployz versions ignore the marker and read
+it Failed. Work that failed on its own reads Failed, even in a cancelled deployment. So does work
+Ployz stopped for another reason, such as another service failing.
 
 If the runner stops reporting, unfinished rows read `unknown`. Completed and failed rows keep
 their recorded outcomes.
 
 ## Redeploy or cancel a deployment
 
-- **Redeploy**, on a failed, cancelled or unknown deployment, ships the same commit and settings
-  again. Your staged changes, volume changes included, wait for your next deploy, and **Copies wait
+- **Redeploy**, on any finished deployment, ships that deployment's commit and settings again.
+  Your staged changes, volume changes included, wait for your next deploy, and **Copies wait
   for Deploy** beside the button says so when volume changes are staged. To ship a fix, change it
   and deploy instead. A deployment whose restore failed can't be redeployed, because it would mount
   the new volume empty. Redeploy refuses with "Restore failed. Restore again."
+- **Roll back** by clicking **Redeploy** on a deployment older than one that ran, even one that
+  failed partway. Ployz asks first, in **Roll back to #4**, and names what it undoes, such as
+  **Undoes #5 and #6**. The rollback ships #4's commit and settings. Services added after #4 stop,
+  and they and the other settings saved after #4 show as staged changes again. A volume #4 deleted
+  that a later deployment brought back is deleted again only after you accept it. In **Deletes
+  data**, type the project and environment, such as `shop/production`. The CLI refuses and prints
+  the command that accepts it with `--accept-volume-loss`. If another deployment runs while you
+  confirm, Ployz asks again with the new list.
+  While a newer deployment is running, Redeploy on an older one refuses with "Wait for #5 to
+  finish, then redeploy." A queued one gives way, as when you deploy again, and so does one whose
+  runner stopped reporting.
+- An applied removal or shutdown can't be redeployed: there is nothing left to ship. One that
+  failed, was cancelled or reads `unknown` can.
+- **A rollback lasts until your next push or deploy**, which ships your saved settings again. A
+  deploy ships your latest commit too; a push, only to the services it builds. To keep the
+  rollback, revert the commit in Git and change the settings back.
 - **Cancel**, on a running deployment, stops it at its next step. What it already changed stays
   until your next deploy.
 - On a queued deployment, **Deploy now** starts it if nothing is running ahead of it, and **⋮ →
   Cancel deployment…** takes it out of the queue.
 
-The CLI does the same with `ployz deployment retry`, `start` and `cancel`, and
-[the agent](../account/agent-sidebar.md) can too, without asking you first.
+The CLI does the same with `ployz deployment redeploy`, `start` and `cancel`. Before a rollback,
+`ployz deployment redeploy 4` asks in a terminal; outside one, or with `--json`, it needs `--yes`.
+A rollback that deletes volume data also needs `--accept-volume-loss <volume>` and the
+`--expect-version` it prints.
+[The agent](../account/agent-sidebar.md) can too, and its redeploys wait for you to approve.
 
 ## Deploy without downtime
 
@@ -174,7 +249,8 @@ sending it requests, and the replica stops a few seconds later.
   fails the check. Without a health check, the old replica stops a few seconds after the new one
   starts, ready or not. The databases Ployz creates come with one.
 - **A service with a [volume](../services/volumes.md) has a short gap.** Its old replica stops
-  first, so two never write the same files.
+  first, so two never write the same files. To change that, see
+  [Choose how a deploy replaces replicas](#choose-how-a-deploy-replaces-replicas).
 - **Migrations run first.** A **Pre-deploy command**, like `npm run migrate`, runs once with the
   new code before any replica is replaced. If it fails or runs past 5 minutes, the deployment
   fails and the old version keeps running.
@@ -182,6 +258,24 @@ sending it requests, and the replica stops a few seconds later.
   [variables](../services/variables.md) reference `${{ postgres.DATABASE_URL }}`, `postgres`
   switches first, and passes its health check first if it has one. Services that don't depend on
   each other deploy at the same time.
+
+## Choose how a deploy replaces replicas
+
+Under **Settings → Deploy**, **Update order** picks how a deploy swaps old replicas for new ones.
+Whichever you choose, visitors reach the new version only once every new replica is ready.
+
+| Update order | What happens | Downtime |
+| --- | --- | --- |
+| **Start first** | New replicas start beside the old ones, and the old ones stop once the new ones are ready. Two copies run for a moment. | None |
+| **Stop first** | On every server at once, each old replica stops, then its replacement starts. Traffic moves to the new replicas when they're all ready. | From the stop until every new replica is ready |
+| **Rolling** | Stop first, one server at a time. The old replicas on the other servers keep serving until the last server's turn. If a server's new replica fails, the servers after it keep the old version. | From the last server's stop until every new replica is ready |
+| **Automatic** | **Stop first** for a service with a volume, **Start first** for the rest. | As above |
+
+**Automatic** is the default. A service with a volume can use **Start first** only when the volume
+allows shared writes, because both copies write to it at once. Otherwise Ployz refuses the change
+and says to choose **Stop first** or allow shared writes.
+
+If a new replica fails, Ployz starts the old replicas it stopped again, whichever order you chose.
 
 ## When a deploy fails
 
@@ -234,3 +328,9 @@ From the CLI, `ployz deploy` and `ployz deploy --skip-deploy` stop and print the
 instead. It names each volume that loses data, like
 `ployz deploy --skip-deploy --accept-volume-loss postgres-data --expect-version …`. Run it only if
 you mean it.
+
+If Ployz can't check your servers for that data, the deploy refuses and deletes nothing. It names
+the server it couldn't reach, or the server that answered with an error, and shows that error on the
+`cause:` line. When you passed `--connect` and Ployz doesn't know which server that is, it names the
+address you gave instead. With `--json`, the error's `cause` lists it. Try again once that server is back or
+the error is fixed.

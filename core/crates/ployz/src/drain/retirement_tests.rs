@@ -1,15 +1,574 @@
-//! Tests for retiring a Drain's chosen Globals on the drained Server.
+//! Tests for retiring a Drain's chosen Globals on the drained Server and letting go of
+//! the copies a move left Out there.
 
+use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Mutex;
+use std::time::Duration;
+
+use ployz_core::service::proxy_routes;
 use ployz_core::{
-    Machine, MachineId, MachineName, ObservedGlobalSlotSpec, Placement, QualifiedService,
-    ResolvedUpdateConfig, RpcError, RpcErrorCode, ServiceMode, ServiceObservation,
+    ContainerAddress, ContainerDetails, ContainerId, ContainerLimitsUpdated, ContainerLocator,
+    ContainerNow, ContainerObservation, ContainerRefusal, ContainerRefusalReason, ContainerWant,
+    CopyRotation, DockerVolumeId, EnsuredContainer, HealthVerdict, ImagePulled, Machine, MachineId,
+    MachineName, Namespace, ObservedGlobalSlotSpec, Placement, ProxyRoutes, QualifiedService,
+    ResolvedServiceSpec, ResolvedUpdateConfig, RoutesRead, RpcError, RpcErrorCode,
+    ServiceContainer, ServiceMode, ServiceName, ServiceObservation, SlotKey,
 };
 
 use super::*;
 use crate::global_fixtures::{
     global_service, grouped, machine, qualified, requested, running_on, service_id,
 };
-use crate::serving_publish::tests::{FakeRow, container, pointer, retired_from};
+
+struct Cluster {
+    containers: Mutex<Vec<ContainerObservation>>,
+    proxies: Vec<MachineId>,
+    down: BTreeSet<MachineId>,
+    frozen: BTreeSet<MachineId>,
+    routes: Mutex<BTreeMap<MachineId, ProxyRoutes>>,
+    wants: Mutex<Vec<(MachineId, ContainerWant)>>,
+    cancel_on_read: Option<CancellationToken>,
+}
+
+impl Cluster {
+    fn of(proxies: &[&Machine], containers: Vec<ContainerObservation>) -> Self {
+        let cluster = Self {
+            containers: Mutex::new(containers),
+            proxies: proxies.iter().map(|machine| machine.id).collect(),
+            down: BTreeSet::new(),
+            frozen: BTreeSet::new(),
+            routes: Mutex::new(BTreeMap::new()),
+            wants: Mutex::new(Vec::new()),
+            cancel_on_read: None,
+        };
+        for proxy in &cluster.proxies {
+            cluster.route(proxy);
+        }
+        cluster
+    }
+
+    fn frozen(mut self, proxy: &Machine) -> Self {
+        self.frozen.insert(proxy.id);
+        self
+    }
+
+    fn route(&self, proxy: &MachineId) -> ProxyRoutes {
+        let mut routes = self.routes.lock().unwrap();
+        if self.frozen.contains(proxy) {
+            return routes.get(proxy).cloned().unwrap_or_default();
+        }
+        let containers: Vec<ServiceContainer> = self
+            .containers
+            .lock()
+            .unwrap()
+            .iter()
+            .cloned()
+            .map(|observation| ServiceContainer::try_from(observation).unwrap())
+            .collect();
+        let current = routes.entry(*proxy).or_default();
+        *current = proxy_routes(&containers, |machine| self.down.contains(machine), current);
+        current.clone()
+    }
+
+    fn taken_out(&self, hex: char) -> Copy {
+        let mut containers = self.containers.lock().unwrap();
+        let copy = containers
+            .iter_mut()
+            .find(|observation| observation.container_id == container(hex))
+            .expect("the copy is on a Machine");
+        copy.try_update(|parts| parts.rotation = Some(CopyRotation::Out))
+            .unwrap();
+        Copy::observed(copy)
+    }
+
+    fn wants(&self) -> Vec<ContainerWant> {
+        self.wants
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(_, want)| want.clone())
+            .collect()
+    }
+
+    fn rotations(&self) -> Vec<(ContainerId, CopyRotation)> {
+        self.containers
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|observation| (observation.container_id, observation.rotation().clone()))
+            .collect()
+    }
+}
+
+fn id_of(locator: &ContainerLocator) -> ContainerId {
+    match locator {
+        ContainerLocator::Id(id) => *id,
+        other => panic!("drain locates copies by id, not {other:?}"),
+    }
+}
+
+impl MachineOperations for Cluster {
+    async fn prepare_volumes(
+        &self,
+        _machine_id: &MachineId,
+        _specs: &[ployz_core::ServiceStorageSpec],
+    ) -> Result<ployz_core::PreparedVolumes, RpcError> {
+        unreachable!("retirement prepares no volumes")
+    }
+
+    async fn service_containers(
+        &self,
+        service: &QualifiedService,
+    ) -> Result<Vec<ContainerObservation>, RpcError> {
+        Ok(self
+            .containers
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|observation| observation.identity() == *service)
+            .cloned()
+            .collect())
+    }
+
+    async fn ensure_container(
+        &self,
+        _machine_id: &MachineId,
+        want: ContainerWant,
+    ) -> Result<(ContainerNow, Option<HealthVerdict>), RpcError> {
+        unreachable!("retirement settles nothing: {want:?}")
+    }
+
+    async fn inspect_container(
+        &self,
+        _machine_id: &MachineId,
+        _container_id: &ContainerId,
+    ) -> Result<ContainerDetails, RpcError> {
+        unreachable!("retirement inspects nothing")
+    }
+
+    async fn remove_volume(&self, _id: &DockerVolumeId) -> Result<(), RpcError> {
+        unreachable!("retirement removes no volumes")
+    }
+
+    async fn update_container_limits(
+        &self,
+        _machine_id: &MachineId,
+        _container_id: &ContainerId,
+        _spec: &ResolvedServiceSpec,
+    ) -> Result<ContainerLimitsUpdated, RpcError> {
+        unreachable!("retirement changes no limits")
+    }
+
+    async fn runs_global(
+        &self,
+        _machine_id: &MachineId,
+        _slot: &SlotKey,
+        _spec: &ResolvedServiceSpec,
+    ) -> Result<bool, RpcError> {
+        unreachable!("retirement starts nothing")
+    }
+
+    async fn ensure_image(
+        &self,
+        _machine_id: &MachineId,
+        _spec: &ResolvedServiceSpec,
+    ) -> Result<ImagePulled, RpcError> {
+        unreachable!("retirement pulls nothing")
+    }
+
+    async fn ensure_unsettled(
+        &self,
+        machine_id: &MachineId,
+        want: ContainerWant,
+        _timeout: Option<Duration>,
+    ) -> Result<EnsuredContainer, RpcError> {
+        self.wants.lock().unwrap().push((*machine_id, want.clone()));
+        let mut containers = self.containers.lock().unwrap();
+        match want {
+            ContainerWant::Out {
+                container,
+                allow_empty,
+                expect,
+            } => {
+                let id = id_of(&container);
+                let service = containers
+                    .iter()
+                    .find(|observation| observation.container_id == id)
+                    .expect("an Out names a copy the Machine runs")
+                    .identity();
+                let another_in = containers.iter().any(|observation| {
+                    observation.container_id != id
+                        && observation.identity() == service
+                        && *observation.rotation() == CopyRotation::In
+                });
+                let copy = containers
+                    .iter_mut()
+                    .find(|observation| observation.container_id == id)
+                    .expect("an Out names a copy the Machine runs");
+                assert_eq!(expect.as_ref(), Some(copy.rotation()));
+                if !allow_empty && !another_in {
+                    return Ok(EnsuredContainer::Refused {
+                        now: ContainerNow::Present(copy.clone()),
+                        refusal: ContainerRefusal {
+                            reason: ContainerRefusalReason::LastIn,
+                            message: "it is the last copy in rotation".into(),
+                        },
+                    });
+                }
+                copy.try_update(|parts| parts.rotation = Some(CopyRotation::Out))
+                    .unwrap();
+                Ok(EnsuredContainer::Ensured {
+                    now: ContainerNow::Present(copy.clone()),
+                    health: None,
+                })
+            }
+            ContainerWant::Gone { container, .. } => {
+                let id = id_of(&container);
+                containers.retain(|observation| observation.container_id != id);
+                Ok(EnsuredContainer::Ensured {
+                    now: ContainerNow::Absent { of: container },
+                    health: None,
+                })
+            }
+            other @ (ContainerWant::Running { .. }
+            | ContainerWant::Stopped { .. }
+            | ContainerWant::Held { .. }) => {
+                unreachable!("retirement sends Out and Gone only, not {other:?}")
+            }
+        }
+    }
+
+    async fn read_routes(
+        &self,
+        _machine_id: &MachineId,
+        service: &QualifiedService,
+    ) -> Result<RoutesRead, RpcError> {
+        if let Some(cancellation) = &self.cancel_on_read {
+            cancellation.cancel();
+        }
+        let routes = self
+            .proxies
+            .iter()
+            .map(|proxy| {
+                let routed = self
+                    .route(proxy)
+                    .get(service)
+                    .map(|route| {
+                        route
+                            .iter()
+                            .map(|serving| serving.as_observation().container_id)
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                (*proxy, Some(routed))
+            })
+            .collect();
+        Ok(RoutesRead {
+            routes,
+            complete: true,
+            down: self.down.clone(),
+            ..RoutesRead::default()
+        })
+    }
+
+    async fn read_entry_routes(&self, _service: &QualifiedService) -> Result<RoutesRead, RpcError> {
+        unreachable!("retirement reads routes through the copy's own Machine")
+    }
+}
+
+fn copy_on(machine: &Machine, hex: char, rotation: CopyRotation) -> ContainerObservation {
+    let mut observation = running_on(machine, hex);
+    observation
+        .try_update(|parts| {
+            parts.rotation = Some(rotation);
+            parts.address = Some(ContainerAddress(
+                format!("10.210.{}.{}", hex.to_digit(16).unwrap(), 2)
+                    .parse()
+                    .unwrap(),
+            ));
+        })
+        .unwrap();
+    observation
+}
+
+fn ingress_on(machine: &Machine, hex: char) -> ContainerObservation {
+    let mut observation = running_on(machine, hex);
+    observation
+        .try_update(|parts| {
+            parts.namespace = Namespace::system();
+            parts.resolved_spec.name = ServiceName::parse("ingress").unwrap();
+        })
+        .unwrap();
+    observation
+}
+
+fn container(hex: char) -> ContainerId {
+    crate::global_fixtures::container_id(hex)
+}
+
+fn gone(hex: char) -> ContainerWant {
+    ContainerWant::Gone {
+        container: ContainerLocator::Id(container(hex)),
+        drain: ployz_core::Drain::DEFAULT,
+        anonymous_volumes: AnonymousVolumes::Remove,
+    }
+}
+
+fn out(hex: char, expect: CopyRotation) -> ContainerWant {
+    ContainerWant::Out {
+        container: ContainerLocator::Id(container(hex)),
+        allow_empty: false,
+        expect: Some(expect),
+    }
+}
+
+fn names(machines: Vec<Machine>) -> impl Fn(&MachineId) -> MachineRef {
+    move |id| {
+        machines
+            .iter()
+            .find(|machine| machine.id == *id)
+            .map(MachineRef::from)
+            .expect("every proxy is a named Machine")
+    }
+}
+
+#[tokio::test]
+async fn retire_copies_takes_an_in_copy_out_waits_it_unlisted_then_removes_it() {
+    let (drained, other, third) = (
+        machine('1', "drained"),
+        machine('2', "other"),
+        machine('3', "third"),
+    );
+    let cluster = Cluster::of(
+        &[&drained, &other, &third],
+        vec![
+            copy_on(&drained, 'a', CopyRotation::In),
+            copy_on(&other, 'b', CopyRotation::In),
+        ],
+    );
+    retire_copies(
+        &cluster,
+        &drained.id,
+        &qualified("app", "api"),
+        &Names::new(),
+        &CancellationToken::new(),
+    )
+    .await
+    .expect("another In copy lets the drained one go Out");
+    assert_eq!(cluster.wants(), [out('a', CopyRotation::In), gone('a')]);
+    assert_eq!(cluster.rotations(), [(container('b'), CopyRotation::In)]);
+}
+
+#[tokio::test]
+async fn retire_copies_refuses_the_last_in_copy_and_leaves_it_serving() {
+    let (drained, other) = (machine('1', "drained"), machine('2', "other"));
+    let cluster = Cluster::of(
+        &[&drained, &other],
+        vec![copy_on(&drained, 'a', CopyRotation::In)],
+    );
+    let error = retire_copies(
+        &cluster,
+        &drained.id,
+        &qualified("app", "api"),
+        &Names::new(),
+        &CancellationToken::new(),
+    )
+    .await
+    .expect_err("the last copy In refuses to go Out");
+    assert_eq!(error.code, RpcErrorCode::Conflict);
+    assert_eq!(error.message, "it is the last copy in rotation");
+    assert_eq!(cluster.wants(), [out('a', CopyRotation::In)]);
+    assert_eq!(cluster.rotations(), [(container('a'), CopyRotation::In)]);
+}
+
+#[tokio::test]
+async fn retire_copies_removes_pending_and_out_copies_with_a_plain_gone() {
+    let (drained, other) = (machine('1', "drained"), machine('2', "other"));
+    let cluster = Cluster::of(
+        &[&drained, &other],
+        vec![
+            copy_on(&drained, 'a', CopyRotation::Pending),
+            copy_on(&drained, 'b', CopyRotation::Out),
+            copy_on(&other, 'c', CopyRotation::In),
+        ],
+    );
+    retire_copies(
+        &cluster,
+        &drained.id,
+        &qualified("app", "api"),
+        &Names::new(),
+        &CancellationToken::new(),
+    )
+    .await
+    .expect("no copy was routed");
+    assert_eq!(cluster.wants(), [gone('a'), gone('b')]);
+    assert_eq!(cluster.rotations(), [(container('c'), CopyRotation::In)]);
+}
+
+#[tokio::test(start_paused = true)]
+async fn retire_copies_names_the_proxy_that_did_not_confirm_and_keeps_the_copy() {
+    let (drained, other, stuck) = (
+        machine('1', "drained"),
+        machine('2', "other"),
+        machine('3', "stuck"),
+    );
+    let cluster = Cluster::of(
+        &[&drained, &other, &stuck],
+        vec![
+            copy_on(&drained, 'a', CopyRotation::In),
+            copy_on(&other, 'b', CopyRotation::In),
+        ],
+    )
+    .frozen(&stuck);
+    let error = retire_copies(
+        &cluster,
+        &drained.id,
+        &qualified("app", "api"),
+        &vec![(stuck.id, stuck.name.clone())],
+        &CancellationToken::new(),
+    )
+    .await
+    .expect_err("a proxy still listing the copy keeps it");
+    assert_eq!(error.code, RpcErrorCode::Unavailable);
+    assert_eq!(
+        error.message,
+        format!(
+            "not unlisted after {} s; the proxies on {} did not confirm",
+            ACK_WAIT.as_secs(),
+            stuck.name
+        )
+    );
+    assert_eq!(cluster.wants(), [out('a', CopyRotation::In)]);
+    assert_eq!(
+        cluster.rotations(),
+        [
+            (container('a'), CopyRotation::Out),
+            (container('b'), CopyRotation::In),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn the_ingress_proxy_goes_with_a_plain_gone() {
+    let (drained, other) = (machine('1', "drained"), machine('2', "other"));
+    let cluster = Cluster::of(
+        &[&drained, &other],
+        vec![ingress_on(&drained, 'a'), ingress_on(&other, 'b')],
+    );
+    retire_ingress_proxy(&cluster, &drained.id, &CancellationToken::new())
+        .await
+        .expect("a Pending-for-life copy needs no rotation step");
+    assert_eq!(cluster.wants(), [gone('a')]);
+    assert_eq!(
+        cluster.rotations(),
+        [(container('b'), CopyRotation::Pending)]
+    );
+}
+
+#[tokio::test]
+async fn let_go_waits_an_out_copy_unlisted_then_removes_it() {
+    let (drained, other, third) = (
+        machine('1', "drained"),
+        machine('2', "other"),
+        machine('3', "third"),
+    );
+    let cluster = Cluster::of(
+        &[&drained, &other, &third],
+        vec![
+            copy_on(&drained, 'a', CopyRotation::Out),
+            copy_on(&other, 'b', CopyRotation::In),
+        ],
+    );
+    let copy = Copy::observed(&copy_on(&drained, 'a', CopyRotation::Out));
+    let end = let_go(
+        &cluster,
+        &copy,
+        &names(vec![drained.clone(), other.clone(), third.clone()]),
+        &CancellationToken::new(),
+    )
+    .await;
+    assert_eq!(end, OldCopyEnd::Stopped);
+    assert_eq!(cluster.wants(), [gone('a')], "an Out copy is never moved");
+    assert_eq!(cluster.rotations(), [(container('b'), CopyRotation::In)]);
+}
+
+#[tokio::test(start_paused = true)]
+async fn let_go_leaves_the_copy_running_when_a_proxy_does_not_confirm() {
+    let (drained, other, stuck) = (
+        machine('1', "drained"),
+        machine('2', "other"),
+        machine('3', "stuck"),
+    );
+    let cluster = Cluster::of(
+        &[&drained, &other, &stuck],
+        vec![
+            copy_on(&drained, 'a', CopyRotation::In),
+            copy_on(&other, 'b', CopyRotation::In),
+        ],
+    )
+    .frozen(&stuck);
+    let copy = cluster.taken_out('a');
+    let end = let_go(
+        &cluster,
+        &copy,
+        &names(vec![drained.clone(), other.clone(), stuck.clone()]),
+        &CancellationToken::new(),
+    )
+    .await;
+    assert_eq!(
+        end,
+        OldCopyEnd::Running {
+            unconfirmed: Unconfirmed::Proxies {
+                servers: vec![MachineRef::from(&stuck)],
+            },
+        }
+    );
+    assert!(
+        cluster.wants().is_empty(),
+        "nothing is sent while a proxy lists it"
+    );
+    assert_eq!(
+        cluster.rotations(),
+        [
+            (container('a'), CopyRotation::Out),
+            (container('b'), CopyRotation::In),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn let_go_leaves_the_copy_running_when_the_drain_is_cancelled() {
+    let (drained, other, stuck) = (
+        machine('1', "drained"),
+        machine('2', "other"),
+        machine('3', "stuck"),
+    );
+    let cancellation = CancellationToken::new();
+    let mut cluster = Cluster::of(
+        &[&drained, &other, &stuck],
+        vec![
+            copy_on(&drained, 'a', CopyRotation::In),
+            copy_on(&other, 'b', CopyRotation::In),
+        ],
+    )
+    .frozen(&stuck);
+    cluster.cancel_on_read = Some(cancellation.clone());
+    let copy = cluster.taken_out('a');
+    let end = let_go(
+        &cluster,
+        &copy,
+        &names(vec![drained.clone(), other.clone(), stuck.clone()]),
+        &cancellation,
+    )
+    .await;
+    assert_eq!(
+        end,
+        OldCopyEnd::Running {
+            unconfirmed: Unconfirmed::Cancelled,
+        }
+    );
+    assert!(cluster.wants().is_empty());
+}
 
 struct FakeRetireClient {
     machine_id: MachineId,
@@ -44,6 +603,7 @@ impl RetireClient for FakeRetireClient {
         &mut self,
         _machine_id: &MachineId,
         slot: &ObservedGlobalSlotSpec,
+        _names: &Names,
         _cancellation: &CancellationToken,
     ) -> Result<(), RpcError> {
         self.retire_calls.push(slot.identity().clone());
@@ -206,517 +766,4 @@ async fn a_global_whose_newest_container_is_not_global_is_reported_not_retired()
         )]
     );
     assert!(client.retire_calls.is_empty());
-}
-
-struct PointedServer {
-    row: FakeRow,
-    copies: Vec<ployz_core::ContainerId>,
-    polls_left: Option<u32>,
-    /// A newer deploy's pointer and the copy it names, both arriving at the second listing.
-    later: Option<(ployz_core::ServingPointer, ployz_core::ContainerId)>,
-    listings: u32,
-    listed: Vec<QualifiedService>,
-}
-
-impl PointerClient for PointedServer {
-    async fn pointer_publisher(&mut self) -> Result<ployz_core::MachineTarget, RpcError> {
-        self.row.pointer_publisher().await
-    }
-
-    async fn read_pointer_at(
-        &mut self,
-        at: &mut ployz_core::MachineTarget,
-        service: &QualifiedService,
-    ) -> Result<Option<ployz_core::ServingPointer>, RpcError> {
-        self.row.read_pointer_at(at, service).await
-    }
-
-    async fn publish_pointer_at(
-        &mut self,
-        at: &mut ployz_core::MachineTarget,
-        request: ployz_core::PublishServingPointerRequest,
-    ) -> Result<ployz_core::ServingPointerPublication, RpcError> {
-        self.row.publish_pointer_at(at, request).await
-    }
-}
-
-impl CopyLister for PointedServer {
-    async fn copies_on(
-        &mut self,
-        _machine_id: &MachineId,
-        service: &QualifiedService,
-    ) -> Result<Vec<ployz_core::ContainerId>, RpcError> {
-        self.listings += 1;
-        self.listed.push(service.clone());
-        if self.listings == 2
-            && let Some((row, copy)) = self.later.take()
-        {
-            *self.row.row.lock().unwrap() = Some(row);
-            self.copies.push(copy);
-        }
-        let copies = self.copies.clone();
-        match &mut self.polls_left {
-            Some(0) => self.copies.clear(),
-            Some(left) => *left -= 1,
-            None => {}
-        }
-        Ok(copies)
-    }
-
-    async fn remove_copy(
-        &mut self,
-        _machine_id: &MachineId,
-        copy: &ployz_core::ContainerId,
-    ) -> Result<(), RpcError> {
-        self.copies.retain(|listed| listed != copy);
-        Ok(())
-    }
-}
-
-fn pointed_server(row: &FakeRow, polls_left: Option<u32>) -> PointedServer {
-    PointedServer {
-        row: row.clone(),
-        copies: vec![container('2')],
-        polls_left,
-        later: None,
-        listings: 0,
-        listed: Vec::new(),
-    }
-}
-
-#[tokio::test(start_paused = true)]
-async fn a_newer_deploys_pointer_during_the_wait_ends_the_retirement_unretired() {
-    let row = FakeRow::default();
-    *row.row.lock().unwrap() = Some(pointer('a', &['1', '2'], &[]));
-    let mut server = pointed_server(&row, None);
-    let newer = pointer('b', &['5'], &['2']);
-    server.later = Some((newer.clone(), container('5')));
-    let error = retire_copies(
-        &mut server,
-        &MachineId::parse("b".repeat(32)).unwrap(),
-        &QualifiedService::parse("app/api").unwrap(),
-        Duration::from_secs(30),
-        &CancellationToken::new(),
-    )
-    .await
-    .unwrap_err();
-    assert_eq!(error.code, RpcErrorCode::Conflict, "{error:?}");
-    assert!(error.message.contains("newer deploy"), "{error:?}");
-    assert_eq!(
-        *row.row.lock().unwrap(),
-        Some(newer),
-        "the newer deploy's copy is not amended into retiring"
-    );
-    assert_eq!(
-        server.copies,
-        [container('2'), container('5')],
-        "the newer deploy's copy is not removed"
-    );
-}
-
-#[tokio::test(start_paused = true)]
-async fn a_newer_deploys_pointer_ends_a_retirement_that_began_on_a_retiring_copy() {
-    let row = FakeRow::default();
-    *row.row.lock().unwrap() = Some(pointer('a', &['1'], &['2']));
-    let mut server = pointed_server(&row, None);
-    let newer = pointer('b', &['5'], &['2']);
-    server.later = Some((newer.clone(), container('5')));
-    let error = retire_copies(
-        &mut server,
-        &MachineId::parse("b".repeat(32)).unwrap(),
-        &QualifiedService::parse("app/api").unwrap(),
-        Duration::from_secs(30),
-        &CancellationToken::new(),
-    )
-    .await
-    .unwrap_err();
-    assert_eq!(error.code, RpcErrorCode::Conflict, "{error:?}");
-    assert!(error.message.contains("newer deploy"), "{error:?}");
-    assert_eq!(
-        *row.row.lock().unwrap(),
-        Some(newer),
-        "the newer deploy's copy is not amended into retiring"
-    );
-    assert_eq!(
-        server.copies,
-        [container('2'), container('5')],
-        "the newer deploy's copy is not removed"
-    );
-}
-
-#[tokio::test(start_paused = true)]
-async fn a_pointed_global_retires_through_the_pointer_and_waits_for_its_copies_to_leave() {
-    let row = FakeRow::default();
-    *row.row.lock().unwrap() = Some(pointer('a', &['1', '2'], &[]));
-    let mut server = pointed_server(&row, Some(2));
-    let service = QualifiedService::parse("app/api").unwrap();
-    retire_copies(
-        &mut server,
-        &MachineId::parse("b".repeat(32)).unwrap(),
-        &service,
-        Duration::from_secs(30),
-        &CancellationToken::new(),
-    )
-    .await
-    .unwrap();
-    assert_eq!(
-        *row.row.lock().unwrap(),
-        Some(retired_from(pointer('a', &['1'], &['2']), 'a'))
-    );
-    assert!(server.copies.is_empty());
-}
-
-#[tokio::test(start_paused = true)]
-async fn a_pointed_global_still_there_after_the_wait_is_not_retired() {
-    let row = FakeRow::default();
-    *row.row.lock().unwrap() = Some(pointer('a', &['1', '2'], &[]));
-    let mut server = pointed_server(&row, None);
-    let error = retire_copies(
-        &mut server,
-        &MachineId::parse("b".repeat(32)).unwrap(),
-        &QualifiedService::parse("app/api").unwrap(),
-        LISTING + LISTING / 2,
-        &CancellationToken::new(),
-    )
-    .await
-    .unwrap_err();
-    assert!(error.message.contains("still retiring"), "{error:?}");
-}
-
-#[tokio::test]
-async fn an_unnamed_global_copy_is_removed_at_once() {
-    let row = FakeRow::default();
-    let mut server = pointed_server(&row, None);
-    retire_copies(
-        &mut server,
-        &MachineId::parse("b".repeat(32)).unwrap(),
-        &QualifiedService::parse("app/api").unwrap(),
-        Duration::from_secs(30),
-        &CancellationToken::new(),
-    )
-    .await
-    .unwrap();
-    assert_eq!(*row.row.lock().unwrap(), None);
-    assert!(server.copies.is_empty());
-}
-
-#[tokio::test]
-async fn stopping_ingress_removes_an_unpointed_ingress_proxy_at_once() {
-    let row = FakeRow::default();
-    let mut server = pointed_server(&row, None);
-    retire_ingress_proxy(
-        &mut server,
-        &MachineId::parse("b".repeat(32)).unwrap(),
-        &CancellationToken::new(),
-    )
-    .await
-    .unwrap();
-    assert!(server.copies.is_empty(), "the proxy copy is removed");
-    assert!(
-        server
-            .listed
-            .iter()
-            .all(|service| *service == QualifiedService::system_ingress()),
-        "only the system Ingress Proxy is listed: {:?}",
-        server.listed
-    );
-    assert_eq!(*row.row.lock().unwrap(), None, "no pointer is written");
-}
-
-#[tokio::test(start_paused = true)]
-async fn a_pointed_copy_is_never_removed_while_an_unnamed_one_beside_it_is() {
-    let row = FakeRow::default();
-    *row.row.lock().unwrap() = Some(pointer('a', &['1', '2'], &[]));
-    let mut server = pointed_server(&row, None);
-    server.copies.push(container('9'));
-    let error = retire_copies(
-        &mut server,
-        &MachineId::parse("b".repeat(32)).unwrap(),
-        &QualifiedService::parse("app/api").unwrap(),
-        Duration::from_secs(30),
-        &CancellationToken::new(),
-    )
-    .await
-    .unwrap_err();
-    assert!(error.message.contains("still retiring"), "{error:?}");
-    assert_eq!(
-        *row.row.lock().unwrap(),
-        Some(retired_from(pointer('a', &['1'], &['2']), 'a')),
-        "only the id the pointer named is amended into retiring"
-    );
-    assert_eq!(server.copies, [container('2')], "the pointed copy stays");
-}
-
-#[tokio::test(start_paused = true)]
-async fn a_cancelled_drain_stops_waiting_for_a_pointed_global_at_once() {
-    let row = FakeRow::default();
-    *row.row.lock().unwrap() = Some(pointer('a', &['1', '2'], &[]));
-    let mut server = pointed_server(&row, None);
-    let cancellation = CancellationToken::new();
-    let machine = MachineId::parse("b".repeat(32)).unwrap();
-    let service = QualifiedService::parse("app/api").unwrap();
-    let started = tokio::time::Instant::now();
-    let (outcome, ()) = tokio::join!(
-        retire_copies(
-            &mut server,
-            &machine,
-            &service,
-            POINTED_RETIRE_WAIT,
-            &cancellation,
-        ),
-        async {
-            tokio::time::sleep(Duration::from_secs(5)).await;
-            cancellation.cancel();
-        },
-    );
-    let error = outcome.unwrap_err();
-    assert!(error.message.contains("cancelled"), "{error:?}");
-    assert!(
-        started.elapsed() < Duration::from_secs(6),
-        "{:?}",
-        started.elapsed()
-    );
-}
-
-#[tokio::test(start_paused = true)]
-async fn a_pointed_global_lists_no_copies_past_its_deadline() {
-    let row = FakeRow::default();
-    *row.row.lock().unwrap() = Some(pointer('a', &['1', '2'], &[]));
-    let mut server = SlowLister {
-        server: pointed_server(&row, None),
-        listings: 0,
-    };
-    let error = retire_copies(
-        &mut server,
-        &MachineId::parse("b".repeat(32)).unwrap(),
-        &QualifiedService::parse("app/api").unwrap(),
-        Duration::from_secs(30),
-        &CancellationToken::new(),
-    )
-    .await
-    .unwrap_err();
-    assert!(error.message.contains("still retiring"), "{error:?}");
-    assert_eq!(
-        server.listings, 2,
-        "the first listing ran past the deadline"
-    );
-}
-
-const LISTING: Duration = Duration::from_secs(20);
-
-struct SlowLister {
-    server: PointedServer,
-    listings: u32,
-}
-
-impl PointerClient for SlowLister {
-    async fn pointer_publisher(&mut self) -> Result<ployz_core::MachineTarget, RpcError> {
-        self.server.pointer_publisher().await
-    }
-
-    async fn read_pointer_at(
-        &mut self,
-        at: &mut ployz_core::MachineTarget,
-        service: &QualifiedService,
-    ) -> Result<Option<ployz_core::ServingPointer>, RpcError> {
-        self.server.read_pointer_at(at, service).await
-    }
-
-    async fn publish_pointer_at(
-        &mut self,
-        at: &mut ployz_core::MachineTarget,
-        request: ployz_core::PublishServingPointerRequest,
-    ) -> Result<ployz_core::ServingPointerPublication, RpcError> {
-        self.server.publish_pointer_at(at, request).await
-    }
-}
-
-impl CopyLister for SlowLister {
-    async fn copies_on(
-        &mut self,
-        machine_id: &MachineId,
-        service: &QualifiedService,
-    ) -> Result<Vec<ployz_core::ContainerId>, RpcError> {
-        self.listings += 1;
-        tokio::time::sleep(LISTING).await;
-        self.server.copies_on(machine_id, service).await
-    }
-
-    async fn remove_copy(
-        &mut self,
-        machine_id: &MachineId,
-        copy: &ployz_core::ContainerId,
-    ) -> Result<(), RpcError> {
-        self.server.remove_copy(machine_id, copy).await
-    }
-}
-
-mod rpc {
-    use std::sync::{Arc, Mutex};
-
-    use ployz_core::{
-        ContainerList, ContainerLocator, ContainerNow, EnsuredContainer, LocalMachinePhase,
-        MachineDetails, MachineList, MachineObservation, MembershipObservation, OpaquePayload,
-        RpcRequestBody, RpcResponse, ServingPointer, ServingPointerPublication, ServingPointerRead,
-    };
-    use tonic::{Request, Response};
-
-    use super::*;
-
-    async fn retire_from_ineligible(
-        initial: Option<ServingPointer>,
-        published_after_first_listing: Option<ServingPointer>,
-    ) -> (Result<(), RpcError>, Option<ServingPointer>, u32) {
-        let mut drained = machine('1', "drained");
-        drained.accepts_services = false;
-        let service = global_on(&drained, "app", 'a');
-        let copy = running_on(&drained, 'a');
-        let row = Arc::new(Mutex::new(initial));
-        let published = Arc::new(Mutex::new(published_after_first_listing));
-        let removed = Arc::new(Mutex::new(false));
-        let ensured = Arc::new(Mutex::new(0_u32));
-        let observed = drained.clone();
-        let shared = row.clone();
-        let removals = ensured.clone();
-        let gone = removed.clone();
-        let (mut client, server) =
-            crate::connect::test_support::rpc_client(move |rpc: Request<OpaquePayload>| {
-                let drained = observed.clone();
-                let copy = copy.clone();
-                let row = shared.clone();
-                let published = published.clone();
-                let removals = removals.clone();
-                let removed = gone.clone();
-                async move {
-                    #[expect(
-                        clippy::wildcard_enum_match_arm,
-                        reason = "fixture answers only what pointed retirement sends"
-                    )]
-                    let response = match rpc.into_inner().decode_request().unwrap().body {
-                        RpcRequestBody::DescribeContract(_) => {
-                            RpcResponse::from(ployz_core::ContractDescription {
-                                machine_id: drained.id,
-                                protocol_major: ployz_core::PROTOCOL_MAJOR,
-                                daemon_version: "fixture".into(),
-                                capabilities: Default::default(),
-                            })
-                        }
-                        RpcRequestBody::Inspect(_) => RpcResponse::from(MachineDetails {
-                            id: drained.id,
-                            public_key: drained.public_key,
-                            machine: Some(drained.clone()),
-                            phase: LocalMachinePhase::Participating,
-                            advertised_endpoints: Vec::new(),
-                            store_version: Default::default(),
-                            rtts: Vec::new(),
-                            management_clients: Vec::new(),
-                            storage: None,
-                            upgrade: None,
-                            telemetry: None,
-                            token: None,
-                        }),
-                        RpcRequestBody::ListMachines(_) => RpcResponse::from(MachineList {
-                            enrollment: None,
-                            machines: vec![MachineObservation::new(
-                                drained,
-                                MembershipObservation::Up,
-                            )],
-                        }),
-                        RpcRequestBody::ListContainers(_) => {
-                            let mut row = row.lock().unwrap();
-                            let retired = row
-                                .as_ref()
-                                .is_some_and(|row| row.retiring.contains(&copy.container_id));
-                            let listed = if retired || *removed.lock().unwrap() {
-                                Vec::new()
-                            } else {
-                                vec![copy.clone()]
-                            };
-                            if let Some(first) = published.lock().unwrap().take() {
-                                *row = Some(first);
-                            }
-                            RpcResponse::from(ContainerList { containers: listed })
-                        }
-                        RpcRequestBody::ReadServingPointer(_) => {
-                            RpcResponse::from(ServingPointerRead {
-                                pointer: row.lock().unwrap().clone(),
-                                ..Default::default()
-                            })
-                        }
-                        RpcRequestBody::PublishServingPointer(request) => {
-                            let mut row = row.lock().unwrap();
-                            RpcResponse::from(if *row == request.read {
-                                *row = Some(request.pointer);
-                                ServingPointerPublication::Published
-                            } else {
-                                ServingPointerPublication::Superseded {
-                                    current: row.clone(),
-                                }
-                            })
-                        }
-                        RpcRequestBody::EnsureContainer(_) => {
-                            *removals.lock().unwrap() += 1;
-                            let pointed = row
-                                .lock()
-                                .unwrap()
-                                .as_ref()
-                                .is_some_and(|row| row.containers.contains(&copy.container_id));
-                            if pointed {
-                                RpcResponse::from(RpcError {
-                                    code: RpcErrorCode::Conflict,
-                                    message: "a pointed Global is not removed directly".into(),
-                                    details: serde_json::Value::Null,
-                                    cause: Vec::new(),
-                                })
-                            } else {
-                                *removed.lock().unwrap() = true;
-                                RpcResponse::from(EnsuredContainer::Ensured {
-                                    now: ContainerNow::Absent {
-                                        of: ContainerLocator::Id(copy.container_id),
-                                    },
-                                    health: None,
-                                })
-                            }
-                        }
-                        other => panic!("unexpected RPC: {other:?}"),
-                    };
-                    Ok(Response::new(response.encode().unwrap()))
-                }
-            })
-            .await;
-        let slot = service.observed_global_slot().unwrap();
-        let retired = client
-            .retire_slot(&drained.id, &slot, &CancellationToken::new())
-            .await;
-        server.abort();
-        let row = row.lock().unwrap().clone();
-        let ensured = *ensured.lock().unwrap();
-        (retired, row, ensured)
-    }
-
-    #[tokio::test]
-    async fn a_pointed_global_on_an_ineligible_server_retires_through_its_pointer() {
-        let (retired, row, ensured) =
-            retire_from_ineligible(Some(pointer('d', &['a'], &[])), None).await;
-        retired.unwrap();
-        assert_eq!(row, Some(retired_from(pointer('d', &[], &['a']), 'd')));
-        assert_eq!(ensured, 0);
-    }
-
-    #[tokio::test]
-    async fn a_first_pointer_published_after_the_listing_retires_the_global_through_it() {
-        let (retired, row, ensured) =
-            retire_from_ineligible(None, Some(pointer('d', &['a'], &[]))).await;
-        retired.unwrap();
-        assert_eq!(row, Some(retired_from(pointer('d', &[], &['a']), 'd')));
-        assert_eq!(ensured, 0, "the pointed copy is never removed directly");
-    }
-
-    #[tokio::test]
-    async fn an_unpointed_global_on_an_ineligible_server_is_removed() {
-        let (retired, row, ensured) = retire_from_ineligible(None, None).await;
-        retired.unwrap();
-        assert_eq!(row, None);
-        assert_eq!(ensured, 1);
-    }
 }

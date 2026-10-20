@@ -627,6 +627,38 @@ async fn a_later_slow_bind_does_not_extend_an_earlier_listener() {
 }
 
 #[tokio::test]
+async fn a_listener_greets_cloud_while_a_later_bind_stalls() {
+    let (first, second) = (free_port(), free_port());
+    STALL_PORT.set(Some(Port::Tcp(second)));
+    BIND_STALL.set(Duration::from_millis(1_500));
+    LEAD.set(Some(Duration::from_millis(1_000)));
+    let expected = greeting("stalled", key().public_hex(), first).into_bytes();
+    let cloud = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(200));
+        let mut stream = std::net::TcpStream::connect(("127.0.0.1", first)).unwrap();
+        stream.set_read_timeout(Some(CLOUD_READS_FOR)).unwrap();
+        let mut read = vec![0; GREETING_CHARS];
+        std::io::Read::read_exact(&mut stream, &mut read).map(|()| read)
+    });
+    let mut probes = Probes::default();
+    probes
+        .open(
+            handout(
+                "stalled",
+                3_000,
+                &[Port::Tcp(first), Port::Tcp(second)],
+                &[],
+            ),
+            &key(),
+            Instant::now(),
+        )
+        .await;
+    let read = cloud.join().unwrap();
+    probes.close().await;
+    assert_eq!(read.expect("no greeting inside Cloud's read"), expected);
+}
+
+#[tokio::test]
 async fn shorter_windows_still_greet_cloud_on_a_free_port() {
     for millis in [2_500, 3_000] {
         let port = free_port();
@@ -757,7 +789,7 @@ async fn a_dropped_owner_s_save_never_lands_over_a_newer_window() {
 #[test]
 fn a_wait_carries_the_handout_and_an_unreadable_one_leaves_the_wait() {
     let body = br#"{"kind":"wait","retryAfter":10,"probe":{"nonce":"n0nce-n0nce-n0nce-n0nc","handout":"h","windowMs":10000,"listen":["udp:51820","tcp:80","tcp:443"],"send":[{"target":"203.0.113.7","port":51820}]}}"#;
-    let Some(Answer::Probe(after, handout)) = wire::answer(body) else {
+    let Some(Answer::Probe(wire::Wait { after, .. }, handout)) = wire::answer(body) else {
         panic!("expected a probe");
     };
     assert_eq!(after, Duration::from_secs(10));
@@ -770,7 +802,10 @@ fn a_wait_carries_the_handout_and_an_unreadable_one_leaves_the_wait() {
         br#"{"kind":"wait","retryAfter":10,"probe":{"nonce":"n","listen":["sctp:1"]}}"#;
     assert_eq!(
         wire::answer(unreadable),
-        Some(Answer::Wait(Duration::from_secs(10)))
+        Some(Answer::Wait(wire::Wait {
+            after: Duration::from_secs(10),
+            no_cluster: false
+        }))
     );
 }
 

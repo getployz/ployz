@@ -60,6 +60,8 @@ up() {
   U=$(sed -n 's/^Ployz Cloud verify: \([^ ]*\).*/\1/p' "$DASH/.verify/run/info")
   cookie=$(jq -r .cookie "$DASH/.verify/run/seed.json")
   pg=$(sed -n 's/^  session \([^,]*\),.*/\1/p' "$DASH/.verify/run/info")
+  org=$(docker exec "$pg" psql -tA -U postgres -d ployz_cloud -c \
+    "SELECT id FROM organization WHERE slug = '$(jq -r .organizationSlug "$DASH/.verify/run/seed.json")'")
   export PLOYZ_CLOUD_URL=$U
   echo "Cloud at $U"
 }
@@ -67,7 +69,7 @@ sql() { docker exec "$pg" psql -q -v ON_ERROR_STOP=1 -U postgres -d ployz_cloud 
 api() { curl -sf -b "better-auth.session_token=$cookie" -H "Origin: $U" -H 'content-type: application/json' "$@"; }
 approve() {
   api "$U/api/auth/device?user_code=$1" >/dev/null || { echo "approve: device lookup failed for $1" >&2; exit 1; }
-  api -d "{\"userCode\":\"$1\"}" "$U/api/auth/device/approve" >/dev/null || { echo "approve: approving $1 failed" >&2; exit 1; }
+  api -d "{\"userCode\":\"$1\",\"organizationId\":\"$org\"}" "$U/api/auth/device/approve" >/dev/null || { echo "approve: approving $1 failed" >&2; exit 1; }
 }
 # Sign HOME in headlessly: start, approve as Ada, finish.
 signin() {
@@ -203,7 +205,9 @@ c github "github disconnect unknown" $P github disconnect 12345
 c github "github disconnect unknown --json" $P github disconnect 12345 --json
 c github "github ls REPO (unknown repository)" $P github ls acme/shop
 
-note domain "## domain (seed: acme.com on web; hosted DNS is dead in verify)"
+# The seed holds Projects blog and shop; every capture below acts in shop.
+export PLOYZ_PROJECT=shop
+note domain "## domain (seed: acme.com on web in Project shop, set by PLOYZ_PROJECT; hosted DNS is dead in verify)"
 c domain "domain ls" $P domain ls
 c domain "domain ls --json" $P domain ls --json
 need m domain "domain add api (generated)" $P domain add api
@@ -239,8 +243,8 @@ m deploy "deployment start 1 --detach" $P deployment start 1 --detach
 CAP_TIMEOUT=15 m deploy "deployment start 1 (follows; no Server)" $P deployment start 1
 m deploy "deployment cancel 1" $P deployment cancel 1
 m deploy "deployment cancel 1 again --json" $P deployment cancel 1 --json
-CAP_TIMEOUT=15 m deploy "deployment retry 1 --detach" $P deployment retry 1 --detach
-c deploy "deployment retry, unknown" $P deployment retry 99
+CAP_TIMEOUT=15 m deploy "deployment redeploy 1 --detach" $P deployment redeploy 1 --detach
+c deploy "deployment redeploy, unknown" $P deployment redeploy 99
 note deploy "## deploy"
 c deploy "deploy --plan" $P deploy --plan
 c deploy "deploy --plan --json" $P deploy --plan --json
@@ -256,7 +260,8 @@ c deploy "ps --json" $P ps --json
 CAP_TIMEOUT=10 c deploy "logs" $P logs
 CAP_TIMEOUT=10 c deploy "logs web --json" $P logs web --json
 CAP_TIMEOUT=10 c deploy "logs --deployment 1 --build" $P logs --deployment 1 --build
-need m deploy "link (from a fresh directory)" $P link
+unset PLOYZ_PROJECT
+need m deploy "link --project shop (from a fresh directory)" $P link --project shop
 c deploy "status after link" $P status
 cd "$WORK/up-app" || exit 1
 CAP_TIMEOUT=20 m deploy "up in an empty directory" $P up

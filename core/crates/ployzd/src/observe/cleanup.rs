@@ -20,8 +20,9 @@
 
 use std::{
     ffi::CString,
-    io,
+    fs, io,
     os::fd::{AsRawFd, RawFd},
+    path::Path,
     time::{Duration, SystemTime},
 };
 
@@ -35,12 +36,13 @@ use nix::{
 use ployz_core::ContainerId;
 
 use super::layout::{
-    CONTAINERS_DIR, FIRST_SET_FILE, FIRST_SET_TEMP_FILE, GAPS_FILE, LINKING_FILE, LogFileName,
-    META_FILE, META_TEMP_FILE, METRICS_DIR, RAW_DIR, ROLLUP_DIR, SCANNED_FILE, SCANNED_TEMP_FILE,
-    SegmentName, StoreRoot, VERSION_DIR,
+    CONTAINERS_DIR, EXITS_FILE, EXITS_TEMP_FILE, FIRST_SET_FILE, FIRST_SET_TEMP_FILE, GAPS_FILE,
+    LINKING_FILE, LogFileName, META_FILE, META_TEMP_FILE, METRICS_DIR, RAW_DIR, ROLLUP_DIR,
+    SCANNED_FILE, SCANNED_TEMP_FILE, SegmentName, StoreRoot, VERSION_DIR, run_exits,
 };
 
 const GIB: u64 = 1 << 30;
+const NANOS_PER_SEC: i64 = 1_000_000_000;
 const RAW_METRICS_AGE: Duration = Duration::from_secs(24 * 60 * 60);
 const ROLLUP_AGE: Duration = Duration::from_secs(90 * 24 * 60 * 60);
 
@@ -123,6 +125,8 @@ struct ContainerDir {
     id: ContainerId,
     log_files: usize,
     foreign: usize,
+    /// The newest mtime, in Unix seconds, of the log files this pass deleted.
+    deleted_through: Option<i64>,
 }
 
 const DIR_FLAGS: OFlag = OFlag::O_RDONLY
@@ -215,6 +219,7 @@ pub fn run(
                         report.files_deleted += 1;
                         if let Some(dir) = dirs.iter_mut().find(|dir| &dir.name == container) {
                             dir.log_files -= 1;
+                            dir.deleted_through = dir.deleted_through.max(Some(candidate.order.0));
                         }
                     }
                     Place::Segment(_) => report.segments_deleted += 1,
@@ -224,6 +229,20 @@ pub fn run(
             Err(error) => {
                 tracing::warn!(?candidate.name, %error, "could not delete a stored file")
             }
+        }
+    }
+
+    // An exit outlives neither the age limit nor the lines the cap took
+    // from its run.
+    for dir in &dirs {
+        let before = dir
+            .deleted_through
+            .map_or(age_limit, |through| {
+                through.saturating_add(1).max(age_limit)
+            })
+            .saturating_mul(NANOS_PER_SEC);
+        if let Err(error) = prune_exits(&store.container(&dir.id), before) {
+            tracing::warn!(container = %dir.id, %error, "could not prune a container's exits");
         }
     }
 
@@ -447,13 +466,16 @@ fn scan_container(
         id: *id,
         log_files,
         foreign,
+        deleted_through: None,
     })
 }
 
-const STORE_FILES: [&str; 8] = [
+const STORE_FILES: [&str; 10] = [
     META_FILE,
     META_TEMP_FILE,
     GAPS_FILE,
+    EXITS_FILE,
+    EXITS_TEMP_FILE,
     LINKING_FILE,
     SCANNED_FILE,
     SCANNED_TEMP_FILE,
@@ -464,6 +486,57 @@ const STORE_FILES: [&str; 8] = [
 fn is_store_file(name: &CString) -> bool {
     let name = name.to_bytes();
     name == b"." || name == b".." || STORE_FILES.iter().any(|file| file.as_bytes() == name)
+}
+
+/// Drops the exits in `dir` before `before`, in Unix nanoseconds, and any
+/// line that does not parse.
+fn prune_exits(dir: &Path, before: i64) -> io::Result<()> {
+    use std::{io::Write as _, os::unix::fs::OpenOptionsExt as _};
+    let path = dir.join(EXITS_FILE);
+    let bytes = match fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(OFlag::O_NOFOLLOW.bits())
+        .open(&path)
+    {
+        Ok(mut file) => {
+            let mut bytes = Vec::new();
+            io::Read::read_to_end(&mut file, &mut bytes)?;
+            bytes
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    let lines = bytes
+        .split(|&byte| byte == b'\n')
+        .filter(|line| !line.is_empty());
+    let kept: Vec<_> = run_exits(&bytes).filter(|exit| exit.ts >= before).collect();
+    if kept.len() == lines.count() {
+        return Ok(());
+    }
+    if kept.is_empty() {
+        return fs::remove_file(&path);
+    }
+    let mut kept_lines = Vec::new();
+    for exit in kept {
+        serde_json::to_writer(&mut kept_lines, &exit).map_err(io::Error::other)?;
+        kept_lines.push(b'\n');
+    }
+    let temp = dir.join(EXITS_TEMP_FILE);
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .custom_flags(OFlag::O_NOFOLLOW.bits())
+        .open(&temp)?;
+    file.write_all(&kept_lines)?;
+    file.sync_all()?;
+    fs::rename(&temp, &path)?;
+    fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(DIR_FLAGS.bits())
+        .open(dir)?
+        .sync_all()
 }
 
 fn delete_file(containers_fd: RawFd, candidate: &Candidate) -> nix::Result<()> {
@@ -537,10 +610,14 @@ mod tests {
         time::{Duration, SystemTime},
     };
 
+    use nix::errno::Errno;
     use ployz_core::ContainerId;
 
-    use super::{Disk, Limits, Report, discard, run};
-    use crate::{observe::layout::StoreRoot, test_dir::TestDir};
+    use super::{Disk, Limits, Report, discard, prune_exits, run};
+    use crate::{
+        observe::layout::{EXITS_FILE, RunExit, StoreRoot, run_exits},
+        test_dir::TestDir,
+    };
 
     const T0: u64 = 1_760_000_000;
 
@@ -678,6 +755,51 @@ mod tests {
         let report = run(&store.root, &limits, disk, now, |_| true).unwrap();
         assert_eq!(report.files_deleted, 2);
         assert_eq!(store.names(&cid(1)), ["3-12.log"]);
+    }
+
+    #[test]
+    fn exits_go_with_the_age_limit_and_the_logs_the_cap_deletes() {
+        let store = store();
+        let id = cid(1);
+        store.file(&id, "1-10.log", 100, 31 * 86_400);
+        store.file(&id, "2-11.log", 100, 100);
+        store.file(&id, "3-12.log", 100, 30);
+        let exit = |age_secs: u64| RunExit {
+            ts: i64::try_from((T0 - age_secs) * 1_000_000_000).unwrap(),
+            exit_code: Some(137),
+            oom_killed: true,
+        };
+        let jsonl: Vec<u8> = [31 * 86_400 + 5, 200, 50]
+            .map(|age| [serde_json::to_vec(&exit(age)).unwrap(), b"\n".to_vec()].concat())
+            .concat();
+        let path = store.root.container(&id).join("exits.jsonl");
+        fs::write(&path, jsonl).unwrap();
+
+        store.clean(150, u64::MAX, &[]);
+        assert_eq!(store.names(&id), ["3-12.log", "exits.jsonl"]);
+        let kept: Vec<RunExit> = run_exits(&fs::read(&path).unwrap()).collect();
+        assert_eq!(kept, [exit(50)]);
+    }
+
+    #[test]
+    fn the_exits_rewrite_never_syncs_a_dir_through_a_symlink() {
+        let store = store();
+        let target = store.docker.join("elsewhere");
+        fs::create_dir_all(&target).unwrap();
+        let exit = |ts: i64| RunExit {
+            ts,
+            exit_code: Some(1),
+            oom_killed: false,
+        };
+        let jsonl: Vec<u8> = [1, 3]
+            .map(|ts| [serde_json::to_vec(&exit(ts)).unwrap(), b"\n".to_vec()].concat())
+            .concat();
+        fs::write(target.join(EXITS_FILE), jsonl).unwrap();
+        let link = store.docker.join("swapped");
+        symlink(&target, &link).unwrap();
+
+        let error = prune_exits(&link, 2).unwrap_err();
+        assert_eq!(error.raw_os_error(), Some(Errno::ENOTDIR as i32));
     }
 
     #[test]

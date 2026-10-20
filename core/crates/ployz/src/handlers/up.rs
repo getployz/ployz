@@ -58,8 +58,9 @@ struct Up<'a> {
 pub(super) fn up(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let config = config_path(matches)?;
-    let events = open_events(matches)?;
     let directory = std::env::current_dir()?.canonicalize()?;
+    refuse_empty(&directory)?;
+    let events = open_events(matches)?;
     let server = matches
         .get_one::<String>("server")
         .map(|destination| add_server(matches, &config, destination))
@@ -135,7 +136,7 @@ pub(super) fn up(root: &ArgMatches) -> Result<(), Error> {
         if !shipped.presented {
             say_view(view);
         }
-        for url in &up.urls {
+        for url in opens(&up.urls, &shipped.ran) {
             crate::ui::stream(format_args!("Open {url}"));
         }
         if let Some(dashboard) = &up.dashboard {
@@ -143,6 +144,12 @@ pub(super) fn up(root: &ArgMatches) -> Result<(), Error> {
         }
     })?;
     shipped.ran
+}
+
+/// The URLs to say `Open` for: none when the Deployment failed, since it left the app as
+/// it was, or not running at all.
+fn opens<'u>(urls: &'u [String], ran: &Result<(), Error>) -> &'u [String] {
+    if ran.is_ok() { urls } else { &[] }
 }
 
 /// Run `ployz server add DESTINATION` as this command's first step.
@@ -244,6 +251,19 @@ fn add_service(
     Ok(())
 }
 
+/// Refuse a directory with nothing to upload before anything is created.
+fn refuse_empty(directory: &Path) -> Result<(), Error> {
+    let listing = crate::build::UploadListing::read(directory)
+        .map_err(super::deploy::unreadable(directory))?;
+    if listing.is_empty() {
+        return Err(Error::usage(format!(
+            "Nothing to deploy: {} is empty. Run ployz up in your app's directory.",
+            directory.display()
+        )));
+    }
+    Ok(())
+}
+
 /// The directory's name as a Project and Service name, else `app`.
 fn directory_name(directory: &Path) -> ServiceName {
     let lowered = directory
@@ -267,6 +287,13 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_failed_deployment_says_to_open_nothing() {
+        let urls = vec!["https://web.example.com".to_owned()];
+        assert_eq!(opens(&urls, &Ok(())), urls.as_slice());
+        assert!(opens(&urls, &Err(Error::cancelled())).is_empty());
+    }
+
+    #[test]
     fn a_directory_names_its_project_or_falls_back_to_app() {
         for (directory, name) in [
             ("/src/my_Shop.v2", "my-shop-v2"),
@@ -276,5 +303,18 @@ mod tests {
         ] {
             assert_eq!(directory_name(Path::new(directory)).as_str(), name);
         }
+    }
+
+    #[test]
+    fn an_empty_directory_is_refused_before_anything_is_created() {
+        let dir = tempfile::tempdir().unwrap();
+        let error = refuse_empty(dir.path()).unwrap_err();
+        assert_eq!(error.report().code, RpcErrorCode::InvalidArgument);
+        assert!(
+            error.to_string().starts_with("Nothing to deploy: "),
+            "{error}"
+        );
+        std::fs::write(dir.path().join("index.html"), "hi").unwrap();
+        refuse_empty(dir.path()).unwrap();
     }
 }

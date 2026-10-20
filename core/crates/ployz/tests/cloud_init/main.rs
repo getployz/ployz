@@ -338,6 +338,37 @@ async fn caddy_lookup_failure_happens_before_initialize() {
 }
 
 #[tokio::test]
+async fn an_unnamed_server_on_an_empty_hostname_fails_before_asking_cloud_to_enroll() {
+    let enroll = EnrollListen::script([]).await;
+    let daemon = JoinDaemon::new(registration());
+    let machine_addr = serve_machine(daemon.clone()).await;
+
+    let output = harness::cli()
+        .args([
+            "--connect",
+            &format!("ssh://root@{machine_addr}"),
+            "server",
+            "add",
+            "--token-file",
+            harness::token_file(),
+            "--cloud-url",
+            &enroll.url,
+            "--yes",
+        ])
+        .output()
+        .await
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("Server name is required because the remote hostname is empty"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("Asking Cloud"), "{stderr}");
+    assert!(enroll.posts().is_empty());
+}
+
+#[tokio::test]
 async fn cloud_init_retries_not_yet_then_joins() {
     let registration = registration();
     let machine_id = registration.assigned_machine.id;
@@ -388,11 +419,17 @@ async fn cloud_init_retries_not_yet_then_joins() {
         posts.first().and_then(|post| post.get("protocolVersion")),
         Some(&json!(1))
     );
+    let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        String::from_utf8_lossy(&output.stderr)
-            .contains("Another Machine is founding this Organization; waiting"),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
+        stderr.contains("Another Machine is founding this Organization; waiting"),
+        "{stderr}"
+    );
+    assert_eq!(
+        stderr
+            .matches("Asking Cloud to enroll this Server…")
+            .count(),
+        1,
+        "{stderr}"
     );
     assert_eq!(
         enroll.paths(),
@@ -531,6 +568,7 @@ async fn initialized_machine_yes_refuses_reset_without_explicit_reset() {
                     advertised_endpoints: founder.advertised_endpoints,
                 },
                 wireguard_mtu: None,
+                pinned: Default::default(),
             },
             None,
         )
@@ -585,6 +623,7 @@ async fn rerun_on_the_founded_machine_does_not_claim_to_found_it() {
                     advertised_endpoints: founder.advertised_endpoints.clone(),
                 },
                 wireguard_mtu: None,
+                pinned: Default::default(),
             },
             None,
         )
@@ -641,6 +680,7 @@ async fn invalid_cluster_network_does_not_reset_an_initialized_machine() {
                     advertised_endpoints: founder.advertised_endpoints,
                 },
                 wireguard_mtu: None,
+                pinned: Default::default(),
             },
             None,
         )
@@ -708,6 +748,7 @@ async fn reset_enroll_posts_the_rotated_public_key() {
                     advertised_endpoints: local.assigned_machine.advertised_endpoints,
                 },
                 wireguard_mtu: None,
+                pinned: Default::default(),
             },
             None,
         )
@@ -776,6 +817,7 @@ async fn reset_enroll_does_not_occupy_the_name_with_the_pre_reset_key() {
                     advertised_endpoints: local.assigned_machine.advertised_endpoints,
                 },
                 wireguard_mtu: None,
+                pinned: Default::default(),
             },
             None,
         )
@@ -908,7 +950,11 @@ async fn partial_peer_observation_reports_incomplete_catch_up_before_placement()
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("partial Service observations"), "{stderr}");
     assert!(stderr.contains("it remains a Cluster member"), "{stderr}");
-    assert!(stderr.contains(unreachable.id.as_str()), "{stderr}");
+    assert!(
+        stderr.contains("observations: unreachable: "),
+        "the unseen Server reads by name: {stderr}"
+    );
+    assert!(!stderr.contains(unreachable.id.as_str()), "{stderr}");
     assert!(daemon.ensure_requests().is_empty());
     daemon.join_request();
 }
@@ -1193,6 +1239,8 @@ fn container_on(
     hex: char,
 ) -> ployz_core::ContainerObservation {
     ployz_core::ContainerObservation::try_from(ployz_core::ContainerObservationParts {
+        rotation: None,
+        r#gen: None,
         container_id: ployz_core::ContainerId::parse(hex.to_string().repeat(64)).unwrap(),
         display_name: format!("{}-{hex}", spec.name),
         created_at_unix_nanos: 1,
@@ -1206,6 +1254,7 @@ fn container_on(
         resolved_spec: spec,
         address: None,
         labels: Default::default(),
+        stopped: false,
     })
     .unwrap()
 }
@@ -1228,5 +1277,66 @@ async fn enrollment_token_comes_from_exactly_one_source() {
         let stdout = String::from_utf8_lossy(&output.stdout);
         assert!(stdout.contains("PLOYZ_ENROLL_TOKEN"), "{extra:?}: {stdout}");
         assert!(!stdout.contains(TOKEN), "{extra:?}: {stdout}");
+    }
+}
+
+#[tokio::test]
+async fn a_token_of_another_kind_is_refused_before_any_request() {
+    const FLEET: &str = "pflt_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const ORGANIZATION: &str = "ployz_synthetic-organization-token";
+    let directory = tempfile::tempdir().unwrap();
+    let fleet_file = directory.path().join("token");
+    std::fs::write(&fleet_file, format!("{FLEET}\n")).unwrap();
+    let fleet_file = fleet_file.to_str().unwrap();
+    for (env, token, file, expected) in [
+        (
+            Some(FLEET),
+            FLEET,
+            None,
+            ["PLOYZ_ENROLL_TOKEN", "PLOYZ_FLEET_TOKEN"],
+        ),
+        (
+            Some(ORGANIZATION),
+            ORGANIZATION,
+            None,
+            ["PLOYZ_ENROLL_TOKEN", "PLOYZ_TOKEN"],
+        ),
+        (
+            None,
+            FLEET,
+            Some(fleet_file),
+            ["--token-file", "PLOYZ_FLEET_TOKEN"],
+        ),
+    ] {
+        let cloud = EnrollListen::script([]).await;
+        let mut command = harness::cli();
+        command.env_remove("PLOYZ_ENROLL_TOKEN");
+        if let Some(env) = env {
+            command.env("PLOYZ_ENROLL_TOKEN", env);
+        }
+        command.args([
+            "--json",
+            "server",
+            "add",
+            "ssh://root@127.0.0.1:1",
+            "--no-install",
+            "--cloud-url",
+            &cloud.url,
+            "--storage",
+            "none",
+        ]);
+        if let Some(file) = file {
+            command.args(["--token-file", file]);
+        }
+
+        let output = command.output().await.unwrap();
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert_eq!(output.status.code(), Some(2), "{expected:?}: {stdout}");
+        for name in expected {
+            assert!(stdout.contains(name), "{expected:?}: {stdout}");
+        }
+        assert!(!stdout.contains(token), "{expected:?}: {stdout}");
+        assert_eq!(cloud.paths(), Vec::<String>::new(), "{expected:?}");
     }
 }

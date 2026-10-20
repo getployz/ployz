@@ -1,5 +1,6 @@
 import { useState } from "react";
 import type { PersistableTransaction } from "./collection-field-resources";
+import { toErrorMessage } from "#/lib/error-message";
 
 /** Where a control's last write stands: running, refused with what it tried and why, or settled. */
 export type CommitState<T> = { phase: "idle" } | { phase: "saving"; to: T } | { phase: "failed"; to: T; reason: string };
@@ -7,8 +8,8 @@ export type CommitState<T> = { phase: "idle" } | { phase: "saving"; to: T } | { 
 const IDLE = { phase: "idle" } as const;
 
 /** A refusal's own words; a fetch that never reached Cloud says so instead of "Failed to fetch". */
-function failureReason<E>(error: E) {
-  return error instanceof Error && !(error instanceof TypeError) && error.message ? error.message : "Couldn't reach Ployz Cloud.";
+export function failureReason<E>(error: E) {
+  return toErrorMessage(error, "Couldn't save. Try again.");
 }
 
 /**

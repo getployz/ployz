@@ -7,7 +7,9 @@ Open a service on the canvas, then click **Settings**. Your changes are staged u
 [deploy](../deploy/deployments.md), except the few marked **Takes effect at once**.
 
 From the CLI, `ployz get web` prints each setting with its value and default, then the
-service's domains. Text prints in quotes, like `"nginx:1"`, and `-` means unset. `ployz get
+service's domains. Text prints in quotes, like `"nginx:1"`, and `-` means unset. An invisible
+character, such as a right-to-left override, prints as its code, like `\u{202e}`, so text
+reads as stored. `ployz get
 web.domains` prints only the domains; change them with the `ployz domain` commands, not
 `ployz set`. `ployz explain web` lists every setting a service takes, with its default.
 `ployz diff` shows what you staged, and `ployz discard` undoes it.
@@ -91,6 +93,8 @@ switches to an image loses its root directory and build settings, so they are ba
 defaults if it later builds a repository again. Like every change, the switch waits for your
 next deploy, and Discard undoes it.
 
+A service has one source at a time, so one `set` takes `image` or `repository`, not both.
+
 Each setting belongs to one kind of source. An image service refuses the repository settings:
 `branch`, `rootDir`, the build settings and the deploy-on-push settings. A repository service
 refuses the registry credential. Ployz checks every setting you set against the source the
@@ -102,6 +106,8 @@ ployz set web.branch=dev web.repository=acme/web            # works on an image 
 ployz set web.image=nginx:1.27 web.buildMethod=dockerfile   # refused: an image is not built
 ployz set web.image=nginx:1.27 web.repository=acme/web      # refused: one source at a time
 ```
+
+One edit changes each setting at most once, so an edit that sets and unsets `web.image` is refused.
 
 The source never blocks an unset. A setting the service's source does not have is already
 at its default, so unsetting it changes nothing. A repository service still refuses an unset
@@ -146,16 +152,29 @@ service with a volume runs one replica, and preview environments run one of each
 
 Empty by default, which means no limit. Set it in vCPUs, up to 64, to keep a busy service from
 slowing the others on its server. Ployz doesn't check that a server has room for it, so leave
-headroom. See [Scaling and multiple servers](scaling.md#run-more-replicas).
+headroom. Changes and `ployz diff` show it in vCPUs, such as `0.5 vCPUs → 2 vCPUs`. See
+[Scaling and multiple servers](scaling.md#run-more-replicas).
 
 ### Memory limit
 
-Empty by default, which means no limit. Set it in GB, up to 1024. From the CLI you can also give
+Empty by default, which means no limit. Set it in GB, from 0.01 (10 MB, since Docker refuses
+less than 6 MiB) up to 1024. From the CLI you can also give
 a unit: `ployz set web.memLimit=512MiB` or `ployz set web.memLimit=1GiB` (MB, GB, TB, MiB, GiB
 and TiB). A plain number is always GB, so `1073741824` is refused rather than read as bytes;
-write `1GiB`. A replica that goes over it is
+write `1GiB`. Changes and `ployz diff` show it in the unit it was likely given, such as
+`192 MiB`. A replica that goes over it is
 killed, and its [Restart policy](#restart-policy) decides whether it comes back. See
 [Scaling and multiple servers](scaling.md#run-more-replicas).
+
+### Changing a limit
+
+A deploy that only changes the CPU limit, or only raises the Memory limit, applies it to each
+running replica in place, with no restart. A replica replaces instead when the deploy lowers the
+Memory limit or sets its first one, clears a limit, or changes anything else. Every replica that
+needs the new limit replaces when the deploy also adds or replaces replicas of the service, or
+when any server running one of those replicas runs an older Ployz. If a server fails to apply the new
+limit, the deploy fails there and the replica keeps running with its old limit; deploying again
+retries.
 
 ## Build
 
@@ -207,7 +226,8 @@ and runs without a shell; wrap it in `sh -c '…'` to get one. See
 
 Off until you click **Pre-deploy command**. Use it for migrations, like `npm run migrate`: if it
 fails or runs past 5 minutes, the deploy fails and the old version keeps running, but Ployz
-doesn't undo what it changed. See
+doesn't undo what it changed. Turn it off and the next deploy removes the service's old pre-deploy
+containers once they have finished, so `ployz ps` stops listing them. See
 [Deploy without downtime](../deploy/deployments.md#deploy-without-downtime).
 
 ### Healthcheck
@@ -220,6 +240,13 @@ seconds after the new one starts, ready or not. Off also ignores a `HEALTHCHECK`
   different ports, it checks `PORT`.
 - **Command.** Enter a command like `pg_isready -h 127.0.0.1`. It runs in a shell inside the
   container and passes when it exits 0. The databases Ployz creates come with one.
+
+In the CLI, `ployz set web.healthcheck=/up` sets a path. A command, or a timeout, takes an object:
+
+```sh
+ployz set web --patch '{"healthcheck":{"command":"pg_isready -h 127.0.0.1","timeoutSeconds":60}}'
+ployz set web --patch '{"healthcheck":{"path":"/up","timeoutSeconds":60}}'
+```
 
 Services whose variables reference this one wait until it passes. Click **×** to turn it off. See
 [Deploy without downtime](../deploy/deployments.md#deploy-without-downtime).
@@ -245,6 +272,15 @@ to leave it down. **Always** restarts it whenever it stops. See
 
 Shown with **On failure**. 10 by default, from 0 to 100; after that many restarts, the replica
 stays stopped.
+
+### Update order
+
+How a deploy replaces this service's replicas. **Automatic** by default: **Stop first** for a
+service with a volume, **Start first** for the rest. Choose **Start first** for no downtime,
+**Stop first** when two copies must never run at once, or **Rolling** to replace one server at a
+time, so a failure leaves the later servers on the old version. A service with a volume takes
+**Start first** only when the volume allows shared writes. See
+[Choose how a deploy replaces replicas](../deploy/deployments.md#choose-how-a-deploy-replaces-replicas).
 
 ## Storage
 

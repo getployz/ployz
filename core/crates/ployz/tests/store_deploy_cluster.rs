@@ -205,12 +205,10 @@ async fn an_image_service_deploys_through_the_hidden_store() {
         &["env", "rm", "staging", "--confirm", "shop/staging"],
     );
     assert_eq!(code, Some(1), "{refused}");
-    let version = refused["error"]["details"]["version"].as_str().unwrap();
+    // The typed name confirms it: the retry accepts the lost Volume, no version.
     assert_eq!(
         refused["error"]["details"]["next"],
-        json!(format!(
-            "ployz env rm staging --confirm shop/staging --accept-volume-loss cache --expect-version {version}"
-        ))
+        json!("ployz env rm staging --confirm shop/staging --accept-volume-loss cache")
     );
     let removed = ployz(&[
         "env",
@@ -220,8 +218,6 @@ async fn an_image_service_deploys_through_the_hidden_store() {
         "shop/staging",
         "--accept-volume-loss",
         "cache",
-        "--expect-version",
-        version,
     ]);
     assert_eq!(removed["removal"], json!("removed"), "{removed}");
     assert_eq!(
@@ -252,26 +248,8 @@ async fn an_image_service_deploys_through_the_hidden_store() {
         ployz(&["deploy", "--env", "fix"])["status"],
         json!("applied")
     );
-    let (code, refused) = attempt(
-        address,
-        &store,
-        &["project", "rm", "shop", "--confirm", "shop"],
-    );
-    assert_eq!(
-        code,
-        Some(1),
-        "removing deployed Services asks first: {refused}"
-    );
-    let version = refused["error"]["details"]["version"].as_str().unwrap();
-    let removed = ployz(&[
-        "project",
-        "rm",
-        "shop",
-        "--confirm",
-        "shop",
-        "--expect-version",
-        version,
-    ]);
+    // The typed name alone removes deployed Services.
+    let removed = ployz(&["project", "rm", "shop", "--confirm", "shop"]);
     assert_eq!(
         removed["environments"],
         json!(["fix", "production"]),
@@ -370,7 +348,7 @@ async fn a_directory_without_git_builds_on_a_server_through_the_hidden_store() {
     // A changed build input needs a new upload.
     ployz(&["set", "app.dockerfilePath=Dockerfile.alt"]);
     let (code, refused) = attempt(address, &store, &["deploy"]);
-    assert_eq!(code, Some(3), "{refused}");
+    assert_eq!(code, Some(1), "{refused}");
     assert_eq!(refused["outcome"]["type"], json!("not_executed"));
     assert_eq!(
         refused["next"],

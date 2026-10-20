@@ -57,7 +57,7 @@ impl From<CpuNanos> for i64 {
 }
 
 /// Bytes in Docker's nonnegative signed integer range, including zero and i64::MAX.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize, TS)]
 #[serde(try_from = "i64", into = "i64")]
 pub struct ByteQuantity(i64);
 

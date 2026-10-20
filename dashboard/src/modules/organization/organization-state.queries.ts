@@ -1,5 +1,5 @@
 import { toast } from "sonner";
-import { environmentManager, queryOptions, type QueryClient } from "@tanstack/react-query";
+import { environmentManager, queryOptions, useSuspenseQuery, type QueryClient } from "@tanstack/react-query";
 import { getOrganizationStateServerFn, syncOrganizationSlugServerFn } from "./organization-state.functions";
 
 export const organizationKeys = {
@@ -21,6 +21,14 @@ export function organizationStateQueryOptions(organizationSlug?: string | null) 
         signal,
       }),
   });
+}
+
+/** An Organization's name, current after a rename here or in another tab. */
+export function useOrganizationName(organizationSlug: string) {
+  return useSuspenseQuery({
+    ...organizationStateQueryOptions(organizationSlug),
+    select: (state) => state.organizations.find((organization) => organization.slug === organizationSlug)?.name ?? organizationSlug,
+  }).data;
 }
 
 /** Route lifecycle runs on the server too. Only committed browser navigation stores preferences. */

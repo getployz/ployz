@@ -1,19 +1,24 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect } from "react";
 import { toast } from "sonner";
+import { useExclusiveMutation } from "#/hooks/use-exclusive-mutation";
 import { toErrorMessage } from "#/lib/error-message";
 import { PROBE_WINDOW_MS } from "#/modules/machines/waiting/checkin-wire";
 import type { FleetTokenLifetime } from "#/modules/machines/waiting/fleet-token";
 import { createFleetTokenServerFn } from "#/modules/machines/waiting/fleet-token.functions";
 import { cancelServerEnrollmentServerFn, openProbeSelectionServerFn, rejectWaitingServersServerFn } from "#/modules/machines/waiting/waiting.functions";
 import { waitingServerDetailQueryOptions, fleetTokenKeys, serverEnrollmentsQueryOptions, waitingServersQueryOptions } from "#/modules/machines/waiting/waiting.queries";
+import { useYouMay } from "#/modules/organization/members.queries";
 
 export type MintInput = { name: string | null; expiresIn: FleetTokenLifetime; autoEnroll: { readonly maxServers: number } | null };
+
+export const ADD_SERVERS_REFUSED = "Only an owner or admin can add servers.";
+export const ENROLL_REFUSED = "Only an owner or admin can enroll or reject servers.";
 
 /** Mints a fleet token. The secret lives only in the result, so it shows once. */
 export function useMintFleetToken(organizationSlug: string) {
   const queryClient = useQueryClient();
-  return useMutation({
+  return useExclusiveMutation({
     mutationFn: (input: MintInput) => createFleetTokenServerFn({ data: { organizationSlug, ...input } }),
     onError: (cause) => toast.error(toErrorMessage(cause, "Couldn't create the token.")),
     onSettled: () => queryClient.invalidateQueries({ queryKey: fleetTokenKeys.all }),
@@ -54,11 +59,13 @@ export const PROBE_RETRY_MS = PROBE_WINDOW_MS + 1_000;
 /**
  * Probes a selection once it stops changing. Cloud won't reopen over a host whose window is still running,
  * so a selection it turns away is asked again once that window has closed, if it is still the selection.
+ * Cloud opens probes only for a role that may add servers, so nothing is asked until your role says so.
  */
 export function useSettledProbe(organizationSlug: string, ids: readonly string[]) {
   const selection = [...ids].sort().join(",");
+  const may = useYouMay(organizationSlug, "servers:add");
   useEffect(() => {
-    if (selection === "") return;
+    if (selection === "" || may !== true) return;
     let current = true;
     let timer = setTimeout(async function ask(retry = true) {
       const opened = await openProbeSelectionServerFn({ data: { organizationSlug, ids: selection.split(",") } }).catch(() => null);
@@ -68,7 +75,7 @@ export function useSettledProbe(organizationSlug: string, ids: readonly string[]
       current = false;
       clearTimeout(timer);
     };
-  }, [organizationSlug, selection]);
+  }, [organizationSlug, selection, may]);
 }
 
 export function useEnrollmentStatus(organizationSlug: string) {

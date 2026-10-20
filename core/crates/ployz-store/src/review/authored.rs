@@ -13,7 +13,7 @@ use ployz_core::config::{
     SavedVariableIntent, SavedVariableValue, SavedVolumeIntent, ServiceBuildConfig,
     ServiceGitAccess, ServiceGitBranch, ServiceHealthcheck, ServiceManagedHostname,
     ServiceRestartPolicy, ServiceRoute, ServiceSettingChange, ServiceSource, ServiceTemplate,
-    Setting, ValuePart, VolumeAttachment, VolumeKind, compare_service_settings,
+    ServiceUpdateOrder, Setting, ValuePart, VolumeAttachment, VolumeKind, compare_service_settings,
     compile_environment_intent, render_variable_parts,
 };
 use ployz_core::{ConfigFileName, ConfigName, RpcError, ServiceName};
@@ -98,6 +98,7 @@ enum ServiceField {
     Healthcheck(Delta<ServiceHealthcheck>),
     RestartPolicy(Delta<ServiceRestartPolicy>),
     MaxRetries(Delta<u8>),
+    UpdateOrder(Delta<Option<ServiceUpdateOrder>>),
     Replicas(Delta<u8>),
     CpuLimit(Delta<Option<f64>>),
     MemLimit(Delta<Option<f64>>),
@@ -322,6 +323,7 @@ impl Plan {
             Target::Setting(_)
             | Target::Source
             | Target::Domains
+            | Target::Setup
             | Target::Mount(_)
             | Target::ConfigMount(_) => {
                 return None;
@@ -435,6 +437,8 @@ impl Plan {
                         name,
                         storage,
                         shared_writes,
+                        // Only creating a Volume sets it, so no edit changes it.
+                        restored_from: _,
                     } = after;
                     invariant(
                         *resource_lineage_id == before.resource_lineage_id,
@@ -675,6 +679,7 @@ fn service_changes(
         healthcheck,
         restart_policy,
         max_retries,
+        update_order,
         replicas,
         cpu_limit,
         mem_limit,
@@ -723,6 +728,13 @@ fn service_changes(
         &before.config.max_retries,
         max_retries,
         MaxRetries
+    );
+    field!(
+        effects,
+        id,
+        &before.config.update_order,
+        update_order,
+        UpdateOrder
     );
     field!(effects, id, &before.config.replicas, replicas, Replicas);
     field!(effects, id, &before.config.cpu_limit, cpu_limit, CpuLimit);
@@ -1004,6 +1016,17 @@ impl GitSelection {
 }
 
 impl Effect {
+    /// Shared Writes applies at once, so no row lists it; Discard and History
+    /// still carry it with its Volume.
+    fn listed(&self) -> bool {
+        !matches!(
+            self,
+            Self::Volume {
+                field: VolumeField::SharedWrites(_),
+                ..
+            }
+        )
+    }
     fn node(&self) -> ReviewNodeIdentity {
         let (node_type, id) = match self {
             Self::ServiceLifecycle(change) => (EnvironmentNodeType::Service, &change.record().id),
@@ -1706,6 +1729,7 @@ impl ServiceField {
             Self::Healthcheck(delta) => service.config.healthcheck.clone_from(&delta.before),
             Self::RestartPolicy(delta) => service.config.restart_policy = delta.before,
             Self::MaxRetries(delta) => service.config.max_retries = delta.before,
+            Self::UpdateOrder(delta) => service.config.update_order = delta.before,
             Self::Replicas(delta) => service.config.replicas = delta.before,
             Self::CpuLimit(delta) => service.config.cpu_limit = delta.before,
             Self::MemLimit(delta) => service.config.mem_limit = delta.before,
@@ -1736,6 +1760,9 @@ impl Plan {
         let mut rows: Vec<Row> = Vec::new();
         let names = crate::config_item::names_in(&[after, before]);
         for (index, effect) in self.effects.iter().enumerate() {
+            if !effect.listed() {
+                continue;
+            }
             let node = effect.node();
             let (name, lineage) = node_info(&node, after, before)?;
             if !changes.iter().any(|change| change.node == node) {
@@ -1849,12 +1876,7 @@ impl Plan {
                             json!(delta.before),
                             json!(delta.after),
                         ),
-                        VolumeField::SharedWrites(delta) => (
-                            "sharedWrites",
-                            None,
-                            json!(delta.before),
-                            json!(delta.after),
-                        ),
+                        VolumeField::SharedWrites(_) => unreachable!("Shared Writes is no row"),
                     };
                     (format!("volumes.{name}.{path}"), at, left, right, None)
                 }
@@ -1948,8 +1970,7 @@ impl Plan {
             });
         }
         for change in &mut changes {
-            change.data =
-                super::data_effect(&change.node, change.lifecycle, &change.settings, before);
+            change.data = super::data_effect(&change.node, change.lifecycle, before, after);
             change.restarts = super::restarts(&change.node, change.lifecycle, after, before)?;
         }
         let total_count = changes
@@ -2015,6 +2036,7 @@ impl ServiceField {
             Self::Healthcheck(delta) => setting!("healthcheck", Healthcheck, delta),
             Self::RestartPolicy(delta) => setting!("restartPolicy", RestartPolicy, delta),
             Self::MaxRetries(delta) => setting!("maxRetries", MaxRetries, delta),
+            Self::UpdateOrder(delta) => setting!("updateOrder", UpdateOrder, delta),
             Self::Replicas(delta) => setting!("replicas", Replicas, delta),
             Self::CpuLimit(delta) => setting!("cpuLimit", CpuLimit, delta),
             Self::MemLimit(delta) => setting!("memLimit", MemLimit, delta),
@@ -2144,10 +2166,17 @@ impl Prepared {
                 summary: environment.summary.clone(),
                 working: target,
                 live: environment.live.clone(),
+                removed: environment.removed.clone(),
+                inherited: environment.inherited.clone(),
             },
             from,
         )?;
-        crate::volume::check_storage(tx, &environment.summary.id, &working.environment().working)?;
+        crate::volume::check_storage(
+            tx,
+            &environment.summary.id,
+            &working.environment().working.volumes,
+            crate::volume::StorageRule::Replay,
+        )?;
         let actual = Plan::between(&environment.working, &working.environment().working)?;
         let (preview, _) = actual.render(&environment.working, &working.environment().working)?;
         let mut overwritten = BTreeSet::new();
@@ -2323,70 +2352,33 @@ pub(super) fn prepare_discard(
     tx: &mut dyn Tx,
     environment: &Environment,
     reviewed: &Review,
-    target: DiscardTarget,
+    target: Option<DiscardTarget>,
     path: Option<&SettingPath>,
 ) -> Result<Prepared, RpcError> {
     let saved = reviewed.saved.as_ref().map(|saved| &saved.intent);
+    let target = target.unwrap_or_else(|| {
+        path.map_or(DiscardTarget::Head, |path| {
+            row_baseline(path, environment, reviewed)
+        })
+    });
     let mut working = environment.working.clone();
     let mut baseline = match target {
         DiscardTarget::Saved => saved.unwrap_or(&environment.working).clone(),
-        DiscardTarget::Head | DiscardTarget::Review => reviewed.head.intent.clone(),
+        DiscardTarget::Review => saved.unwrap_or(&reviewed.head.intent).clone(),
+        DiscardTarget::Head => reviewed.head.intent.clone(),
     };
-    if target == DiscardTarget::Review {
-        if path.is_some() {
-            return Err(error::invalid(
-                "Review discard takes the whole reviewed list",
-                json!({}),
-            ));
-        }
-        let introductions = super::introductions(tx, environment)?;
-        for change in &reviewed.view.changes {
-            if change.lifecycle == ReviewLifecycleKind::Update && !has_node(&baseline, &change.node)
-            {
-                copy_node(&mut baseline, &introductions, &change.node);
-            }
-        }
-        let runtime = Plan::between(&baseline, &environment.working)?;
-        let (_, rows) = runtime.render(&baseline, &environment.working)?;
-        let mut selected = BTreeSet::new();
-        for change in &reviewed.view.changes {
-            for row in &rows {
-                if row.node == change.node
-                    && (change.lifecycle != ReviewLifecycleKind::Update
-                        || change
-                            .settings
-                            .iter()
-                            .any(|display| display.path == row.path))
-                {
-                    selected.extend(&row.effects);
-                }
-            }
-        }
-        let selected: Vec<usize> = selected.into_iter().collect();
-        runtime.reverse_into(&mut working, &selected)?;
-        if let Some(saved) = saved {
-            let draft = Plan::between(saved, &environment.working)?;
-            let chosen: Vec<_> = draft
-                .effects
-                .iter()
-                .enumerate()
-                .filter(|(_, effect)| {
-                    !selected.iter().any(|index| {
-                        effect.intersects(
-                            runtime
-                                .effects
-                                .get(*index)
-                                .expect("runtime selection belongs to plan"),
-                        )
-                    })
-                })
-                .map(|(index, _)| index)
-                .collect();
-            draft.reverse_into(&mut working, &chosen)?;
-        }
-    } else if let Some(path) = path {
+    if target == DiscardTarget::Review && path.is_some() {
+        return Err(error::invalid(
+            "Review discard takes the whole reviewed list",
+            json!({}),
+        ));
+    }
+    if let Some(path) = path {
         if let (Some(Target::Domains), Some(service)) = (path.target(), path.service()) {
             return Err(crate::settings::domains_are_read_only(path, service));
+        }
+        if let Some(Target::Setup) = path.target() {
+            return Err(crate::branch::setup_is_not_staged(path));
         }
         let node = resolve_node(path, environment, &baseline)?;
         if target == DiscardTarget::Head
@@ -2427,22 +2419,29 @@ pub(super) fn prepare_discard(
                 json!({ "path": path }),
             ));
         }
-        let selected: Vec<_> = rows
-            .iter()
-            .filter(|row| {
-                row.node == node
-                    && (whole
-                        || row.path == selected_path
-                            && row.effects.iter().all(|index| {
-                                plan.effects
-                                    .get(*index)
-                                    .expect("row belongs to plan")
-                                    .lifecycle()
-                                    .is_none()
-                            }))
-            })
-            .flat_map(|row| row.effects.iter().copied())
-            .collect();
+        let selected: Vec<_> = if whole {
+            plan.effects
+                .iter()
+                .enumerate()
+                .filter(|(_, effect)| effect.node() == node)
+                .map(|(index, _)| index)
+                .collect()
+        } else {
+            rows.iter()
+                .filter(|row| {
+                    row.node == node
+                        && row.path == selected_path
+                        && row.effects.iter().all(|index| {
+                            plan.effects
+                                .get(*index)
+                                .expect("row belongs to plan")
+                                .lifecycle()
+                                .is_none()
+                        })
+                })
+                .flat_map(|row| row.effects.iter().copied())
+                .collect()
+        };
         plan.reverse_into(&mut working, &selected)?;
     } else {
         working = baseline;
@@ -2463,6 +2462,51 @@ pub(super) fn prepare_discard(
         },
     )
 }
+
+/// The baseline a path's row discards to, as `diff` lists it: Saved when only a
+/// draft reversal lists the row, else Head.
+fn row_baseline(path: &SettingPath, environment: &Environment, reviewed: &Review) -> DiscardTarget {
+    let Some(saved) = reviewed.saved.as_ref().map(|saved| &saved.intent) else {
+        return DiscardTarget::Head;
+    };
+    let Ok(node) = resolve_node(path, environment, saved) else {
+        return DiscardTarget::Head;
+    };
+    let Some(draft) = reviewed
+        .view
+        .draft_changes
+        .iter()
+        .find(|change| change.node == node)
+    else {
+        return DiscardTarget::Head;
+    };
+    let runtime = reviewed
+        .view
+        .changes
+        .iter()
+        .find(|change| change.node == node);
+    let only_draft = if path.target().is_none() && path.node_field().is_none() {
+        runtime.is_none_or(|runtime| {
+            runtime.lifecycle == ReviewLifecycleKind::Update
+                && draft.lifecycle != ReviewLifecycleKind::Update
+        })
+    } else {
+        let Ok(selected) = selector_path(path, &node, &environment.working, saved) else {
+            return DiscardTarget::Head;
+        };
+        let lists = |change: &NodeChange| change.settings.iter().any(|row| row.path == selected);
+        lists(draft)
+            && runtime.is_none_or(|runtime| {
+                runtime.lifecycle == ReviewLifecycleKind::Update && !lists(runtime)
+            })
+    };
+    if only_draft {
+        DiscardTarget::Saved
+    } else {
+        DiscardTarget::Head
+    }
+}
+
 fn has_node(intent: &SavedEnvironmentIntent, node: &ReviewNodeIdentity) -> bool {
     match node.node_type {
         EnvironmentNodeType::Service => intent.services.iter().any(|owner| owner.id == node.id),
@@ -2570,11 +2614,13 @@ fn selector_path(
             | Target::Exported(_)
             | Target::Description(_)
             | Target::Domains
+            | Target::Setup
             | Target::Mount(_)
             | Target::ConfigMount(_) => unreachable!("setting covers a setting or source"),
         },
         Some(Target::Source) => format!("{name}.source"),
         Some(Target::Domains) => format!("{name}.domains"),
+        Some(Target::Setup) => format!("setup.{name}"),
         Some(Target::Variable(key)) => format!("{name}.env.{key}"),
         Some(Target::Exported(key)) => format!("{name}.env.{key}.exported"),
         Some(Target::Description(key)) => format!("{name}.env.{key}.description"),

@@ -18,11 +18,13 @@ pub use crate::project::{
     RenameProject,
 };
 pub use crate::review::history::{HistoryStaged, NotSetVariable, StageHistory};
-pub use crate::review::publish::{Discard, DiscardTarget, Discarded, Publish, Published};
+pub use crate::review::publish::{
+    Discard, DiscardTarget, Discarded, Publish, Published, Reversal, WayBack,
+};
 pub use crate::service::{
     CreateService, RemoveService, RenameService, ServiceStaged, ServiceSummary,
 };
-pub use crate::settings::edit::{Change, Edit, Edited, TypedAddresses};
+pub use crate::settings::edit::{Change, Edit, Edited, SettingNote, TypedAddresses};
 pub use crate::typed_address::Instead;
 pub use crate::volume::{
     CreateVolume, Mount, RemoveVolume, RenameVolume, SetVolumeSharedWrites, SetVolumeStorage,
@@ -277,7 +279,8 @@ commands! {
         needs ChangesStage
         agent [VolumeAdd]
         => crate::volume::create_volume(tx, who, c);
-    /// Change a Volume's storage before its first Deployment is requested.
+    /// Change a draft Volume's storage; a deployed Managed Volume resizes through
+    /// `ployz volume set --size` instead.
     SetVolumeStorage(SetVolumeStorage) -> Volume(VolumeStaged)
         needs ChangesStage
         agent [VolumeUpdate]
@@ -489,7 +492,19 @@ commands! {
             let mut at = Call { tx, who, sealing, trusted };
             c.commands
                 .iter()
-                .map(|command| command.apply(&c.environment, &mut at))
+                .enumerate()
+                .map(|(index, command)| {
+                    command.apply(&c.environment, &mut at).map_err(|mut refused| {
+                        // Its `next` reads what the commands before it wrote, and the
+                        // refusal rolls them back.
+                        if index > 0
+                            && let Some(details) = refused.details.as_object_mut()
+                        {
+                            details.remove("next");
+                        }
+                        refused
+                    })
+                })
                 .collect::<Result<_, _>>()
                 .map(|results| Batched { results })
         };
@@ -714,6 +729,10 @@ pub struct Batched {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "written", rename_all = "snake_case")]
 #[ts(rename = "ConfigWritten")]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "one per command, serialized at once: boxing a Deployment saves nothing"
+)]
 pub enum Written {
     /// A Project was created.
     Project(ProjectCreated),

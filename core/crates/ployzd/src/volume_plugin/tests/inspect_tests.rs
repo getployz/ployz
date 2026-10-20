@@ -67,6 +67,7 @@ async fn inspect_reports_a_slot_and_nothing_for_an_unknown_name() {
             "newest": null,
             "resume_token": null,
             "pull": null,
+            "role": "mirror",
         })
     );
     let response = post(&socket, "/Volume.Inspect", json!({"name": "missing"})).await;

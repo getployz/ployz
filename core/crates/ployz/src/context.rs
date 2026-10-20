@@ -14,7 +14,25 @@ use ployz_core::{MachineId, ManagementCapability};
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 use thiserror::Error;
 
-pub(crate) fn expand_home(path: &Path) -> PathBuf {
+/// Where the Ployz config lives when `PLOYZ_CONFIG` names nowhere: under
+/// `$XDG_CONFIG_HOME` when that is an absolute path, else `~/.config`.
+#[must_use]
+pub fn default_config_path() -> String {
+    config_path_under(std::env::var_os("XDG_CONFIG_HOME").as_deref())
+}
+
+fn config_path_under(xdg_config_home: Option<&std::ffi::OsStr>) -> String {
+    xdg_config_home
+        .map(Path::new)
+        .filter(|dir| dir.is_absolute())
+        .map_or_else(
+            || "~/.config/ployz/config.yaml".to_owned(),
+            |dir| dir.join("ployz/config.yaml").display().to_string(),
+        )
+}
+
+#[must_use]
+pub fn expand_home(path: &Path) -> PathBuf {
     path.strip_prefix("~").map_or_else(
         |_| path.to_owned(),
         |suffix| {
@@ -183,13 +201,18 @@ impl Config {
         })
     }
 
-    pub fn save(&self) -> Result<(), ConfigError> {
-        let yaml = serde_norway::to_string(self).map_err(ConfigError::Encode)?;
-        let parent = self
-            .path
+    fn parent(&self) -> &Path {
+        self.path
             .parent()
             .filter(|parent| !parent.as_os_str().is_empty())
-            .unwrap_or_else(|| Path::new("."));
+            .unwrap_or_else(|| Path::new("."))
+    }
+
+    /// Replace the saved file with this copy. A command that loaded the config
+    /// earlier and edits part of it uses [`Config::update`] instead.
+    pub fn save(&self) -> Result<(), ConfigError> {
+        let yaml = serde_norway::to_string(self).map_err(ConfigError::Encode)?;
+        let parent = self.parent();
         create_private_directories(parent)?;
         if self.has_capability() {
             require_private_parent(&self.path)?;
@@ -228,7 +251,7 @@ impl Config {
         context_name: &str,
         connection: Connection,
     ) -> Result<(), ConfigError> {
-        self.update_saved(|latest| {
+        self.update(|latest| {
             let context = latest.contexts.get_mut(context_name).ok_or_else(|| {
                 ContextError::ContextNotFound {
                     name: context_name.to_owned(),
@@ -250,7 +273,7 @@ impl Config {
         &self,
         capability: &ManagementCapability,
     ) -> Result<(), ConfigError> {
-        self.update_saved(|latest| {
+        self.update(|latest| {
             let mut replaced = false;
             for context in latest.contexts.values_mut() {
                 for connection in &mut context.connections {
@@ -269,14 +292,20 @@ impl Config {
         })
     }
 
-    fn update_saved(
+    /// Apply `update` to the latest saved config under the config lock, so
+    /// writes from other commands since this copy was loaded survive.
+    ///
+    /// # Errors
+    /// Returns lock, load or atomic save failures, or the error from `update`.
+    pub fn update<E: From<ConfigError>>(
         &self,
-        update: impl FnOnce(&mut Self) -> Result<(), ConfigError>,
-    ) -> Result<(), ConfigError> {
+        update: impl FnOnce(&mut Self) -> Result<(), E>,
+    ) -> Result<(), E> {
         let write_error = |source| ConfigError::Write {
             path: self.path.clone(),
             source,
         };
+        create_private_directories(self.parent())?;
         let lock = OpenOptions::new()
             .read(true)
             .write(true)
@@ -287,9 +316,9 @@ impl Config {
             .map_err(write_error)?;
         rustix::fs::flock(&lock, rustix::fs::FlockOperation::LockExclusive)
             .map_err(|error| write_error(error.into()))?;
-        let mut latest = Self::load(&self.path)?;
+        let mut latest = Self::load_or_empty(&self.path)?;
         update(&mut latest)?;
-        latest.save()
+        Ok(latest.save()?)
     }
 
     #[must_use]
@@ -394,10 +423,10 @@ pub enum ConnectionSource {
 impl fmt::Display for ConnectionSource {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Direct => f.write_str("the explicit connection"),
+            Self::Direct => f.write_str("the given connection"),
             Self::Context(name) => write!(f, "context {}", name.escape_debug()),
             Self::LocalSocket => f.write_str("the local socket"),
-            Self::Cloud => f.write_str("Cloud Server Access"),
+            Self::Cloud => f.write_str("Cloud"),
         }
     }
 }
@@ -455,6 +484,8 @@ pub fn select_connections(
 pub struct Connection {
     transport: Transport,
     machine_id: Option<MachineId>,
+    /// The Server's name, where Cloud knows it. Display only.
+    name: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -477,6 +508,10 @@ struct ConnectionFile {
     ssh_key_file: Option<PathBuf>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     machine_id: Option<MachineId>,
+    /// Read from Cloud's runner connections, never written: a config file with it would
+    /// stop older CLIs, which refuse unknown fields.
+    #[serde(default, skip_serializing)]
+    name: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -500,6 +535,7 @@ impl Connection {
                     .map_err(|_| ConnectionError::ManagementCapability)?,
             ),
             machine_id: None,
+            name: None,
         })
     }
 
@@ -511,6 +547,7 @@ impl Connection {
                 key_file: None,
             },
             machine_id: None,
+            name: None,
         }
     }
 
@@ -519,6 +556,7 @@ impl Connection {
         Self {
             transport: Transport::Tcp(address),
             machine_id: None,
+            name: None,
         }
     }
 
@@ -530,12 +568,19 @@ impl Connection {
         Ok(Self {
             transport: Transport::Unix(path),
             machine_id: None,
+            name: None,
         })
     }
 
     #[must_use]
     pub fn with_machine_id(mut self, machine_id: MachineId) -> Self {
         self.machine_id = Some(machine_id);
+        self
+    }
+
+    #[must_use]
+    pub fn with_name(mut self, name: impl Into<String>) -> Self {
+        self.name = Some(name.into());
         self
     }
 
@@ -563,6 +608,26 @@ impl Connection {
     #[must_use]
     pub fn machine_id(&self) -> Option<&MachineId> {
         self.machine_id.as_ref()
+    }
+
+    /// The Server this connection enters, as people read it: its name, else its Machine ID.
+    #[must_use]
+    pub fn server(&self) -> Option<String> {
+        self.name
+            .clone()
+            .or_else(|| self.machine_id.map(|id| id.to_string()))
+    }
+
+    /// Whether `other` is this connection, allowing for a rotated Management Capability.
+    #[must_use]
+    pub fn is_same(&self, other: &Self) -> bool {
+        self.machine_id == other.machine_id
+            && match (&self.transport, &other.transport) {
+                (Transport::Management(left), Transport::Management(right)) => {
+                    left.machine() == right.machine()
+                }
+                (left, right) => left == right,
+            }
     }
 }
 
@@ -627,6 +692,7 @@ impl Serialize for Connection {
             transport,
             ssh_key_file: self.ssh_key_file().map(Path::to_owned),
             machine_id: self.machine_id,
+            name: None,
         }
         .serialize(serializer)
     }
@@ -659,6 +725,7 @@ impl<'de> Deserialize<'de> for Connection {
         Ok(Self {
             transport,
             machine_id: file.machine_id,
+            name: file.name,
         })
     }
 }

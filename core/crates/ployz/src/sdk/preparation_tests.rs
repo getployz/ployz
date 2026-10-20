@@ -798,6 +798,51 @@ async fn builder_selection_reports_missing_capability() {
 }
 
 #[tokio::test]
+async fn failed_builder_selection_records_why_each_machine_was_rejected_without_command_output() {
+    let (root, service, builds) = fixture();
+    let checker = machine('a', "checker");
+    let mut disabled = machine('b', "disabled");
+    disabled.machine.accepts_builds = false;
+    builds.check_failures.lock().unwrap().insert(
+        checker.machine.id,
+        "buildx: failed to authorize: https://registry.example/token?secret=hunter2".into(),
+    );
+    let (mut client, server) = connected(service.with_machines(vec![checker, disabled])).await;
+    let visible = client.machines().await.unwrap();
+    let selection = crate::sdk::prepare::select_build_machine(
+        &mut client,
+        &build_targets(&["linux/amd64"]),
+        &visible,
+        Default::default(),
+        &Default::default(),
+    )
+    .await
+    .err()
+    .unwrap();
+    let error = crate::sdk::preparation_error(
+        crate::sdk::prepare::PreparationError::Selection(selection),
+        false,
+    );
+    let recorded = ployz_store::Failure::from(&error);
+    assert_eq!(
+        recorded.reason,
+        "No eligible Build Machine was selected; no build was started."
+    );
+    let cause = recorded.cause.last().expect("a cause names the rejections");
+    assert!(!cause.contains("hunter2"), "{cause}");
+    for reason in [
+        "Server checker",
+        "its build capability check failed",
+        "Server disabled",
+        "builds are turned off",
+    ] {
+        assert!(cause.contains(reason), "{cause}");
+    }
+    server.abort();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
 async fn builder_selection_requires_one_worker_for_every_command_target_before_upload() {
     let (root, service, builds) = fixture();
     let amd = machine('a', "amd");
@@ -1338,6 +1383,90 @@ async fn an_upload_without_its_source_is_served_only_by_a_usable_receipt() {
         assert_eq!(error.details["preparation"]["services"], json!(["one"]));
     }
     assert_eq!(builds.definitions.lock().unwrap().len(), 1);
+    session.close().await;
+    server.abort();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
+#[expect(clippy::indexing_slicing, reason = "A fixed fixture.")]
+async fn a_settings_only_deploy_of_an_upload_rebuilds_from_the_held_upload() {
+    let (root, service, builds) = fixture();
+    fs::remove_file(root.join("Dockerfile")).unwrap();
+    let railpack = |greeting: &str| {
+        let mut input = uploaded(&root, true);
+        let snapshot = &mut input.deployment["snapshots"][0];
+        snapshot["config"]["build"]["buildMethod"] = json!("railpack");
+        snapshot["resolvedEnv"] = json!({"GREETING": greeting});
+        input
+    };
+    let (session, server) = session(service).await;
+    let built = session
+        .prepare(railpack("hello"))
+        .unwrap()
+        .finished()
+        .await
+        .unwrap();
+    let receipts: BTreeMap<_, _> = built
+        .build_receipts()
+        .iter()
+        .map(|(service, receipt)| (service.clone(), vec![receipt.clone()]))
+        .collect();
+    built.close();
+    let name = ServiceName::parse("one").unwrap();
+
+    // Cloud still holds the upload, so the variable change rebuilds from it.
+    let mut changed = railpack("hello-staging");
+    changed.build_receipts = receipts.clone();
+    let deployed = session.prepare(changed).unwrap().finished().await.unwrap();
+    assert_eq!(
+        builds.definitions.lock().unwrap().len(),
+        2,
+        "a Railpack build reads every variable, so a new value rebuilds"
+    );
+    assert_ne!(
+        deployed.build_receipts()[&name].fingerprint,
+        receipts[&name][0].fingerprint,
+        "the new image's build inputs hold the new value"
+    );
+    assert!(deployed.preview().operations.iter().any(|row| {
+        row.operation.spec().is_some_and(|spec| {
+            spec.container
+                .environment
+                .get("GREETING")
+                .map(String::as_str)
+                == Some("hello-staging")
+        })
+    }));
+    deployed.close();
+
+    // Cloud released the upload before the run read it: an unchanged build still reuses
+    // its image, and a changed one needs a new upload, which the run records as such.
+    let mut unchanged = railpack("hello");
+    unchanged.sources.clear();
+    unchanged.build_receipts = receipts.clone();
+    session
+        .prepare(unchanged)
+        .unwrap()
+        .finished()
+        .await
+        .unwrap()
+        .close();
+    let mut released = railpack("hello-production");
+    released.sources.clear();
+    released.build_receipts = receipts;
+    let error = session
+        .prepare(released)
+        .unwrap()
+        .finished()
+        .await
+        .err()
+        .unwrap();
+    assert_eq!(
+        crate::sdk::preparation::needs_upload(&error),
+        Some(vec![name])
+    );
+    assert_eq!(builds.definitions.lock().unwrap().len(), 2, "nothing built");
     session.close().await;
     server.abort();
     fs::remove_dir_all(root).unwrap();

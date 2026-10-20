@@ -27,6 +27,17 @@ pub(crate) fn create_branch(
         None => Vec::new(),
     };
     let working = &parent.working;
+    if names(working).is_empty() {
+        return Err(error::invalid(
+            format!(
+                "{} is empty, so there is nothing to branch",
+                parent.summary.name
+            ),
+            json!({
+                "next": format!("ployz env new {} --project {}", create.name, project.name),
+            }),
+        ));
+    }
     let mut copy = create
         .copy
         .iter()
@@ -174,6 +185,8 @@ pub(crate) fn create_branch(
         summary,
         working: into,
         live: BTreeMap::new(),
+        removed: parent.removed.clone(),
+        inherited: crate::scope::RemovedServices::default(),
     };
     // A Branch first, so what it lands uses its Parent's nodes live. What it is made
     // with is what it and its Parent share.
@@ -230,7 +243,10 @@ pub(crate) fn copy_node(
         .ok_or_else(|| {
             let names: Vec<&str> = branch.live.values().map(String::as_str).collect();
             error::choices(
-                format!("This Branch uses no node named {} live", copy.node),
+                format!(
+                    "This Branch uses no node named {} live; it uses only what its copies use",
+                    copy.node
+                ),
                 copy.node.as_str(),
                 names.iter().copied(),
             )

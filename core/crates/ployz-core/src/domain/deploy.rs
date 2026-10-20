@@ -9,12 +9,12 @@ use ts_rs::TS;
 use serde::{Deserialize, Serialize};
 
 use super::{
-    ContainerRuntimeObservation, HealthObservation, LastHealthCheck, RequestedServiceSpec,
-    ResolvedServiceSpec,
+    ByteQuantity, ContainerRuntimeObservation, HealthObservation, LastHealthCheck,
+    RequestedServiceSpec, ResolvedServiceSpec,
 };
 use crate::{
-    ContainerId, DockerVolumeId, DockerVolumeName, MachineId, MachineName, Namespace,
-    ProvisionedVolumeMaximumBytes, QualifiedService, RpcError, ServiceName,
+    ContainerId, DockerVolumeId, DockerVolumeName, IngressHost, MachineId, MachineName, Namespace,
+    ProvisionedVolumeMaximumBytes, QualifiedService, RpcError, ServiceId, ServiceName,
 };
 use thiserror::Error;
 
@@ -100,6 +100,11 @@ pub struct DeployIntent {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     #[ts(as = "Option<BTreeMap<DockerVolumeName, String>>", optional)]
     pub volume_names: BTreeMap<DockerVolumeName, String>,
+    /// The Cluster Domain generated domains live under. Ployz Cloud publishes DNS for
+    /// every hostname one label under it, so messages never ask for a record there.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub cluster_domain: Option<IngressHost>,
 }
 
 /// Registry credentials for pulling one private image. Debug never prints them.
@@ -137,6 +142,7 @@ impl DeployIntent {
             dependencies: BTreeMap::new(),
             registry_auth: BTreeMap::new(),
             volume_names: BTreeMap::new(),
+            cluster_domain: None,
         }
     }
 
@@ -201,6 +207,13 @@ impl DeployIntent {
     #[must_use]
     pub fn with_volume_names(mut self, names: BTreeMap<DockerVolumeName, String>) -> Self {
         self.volume_names = names;
+        self
+    }
+
+    /// The Cluster Domain this Deploy's generated domains live under.
+    #[must_use]
+    pub fn with_cluster_domain(mut self, cluster_domain: Option<IngressHost>) -> Self {
+        self.cluster_domain = cluster_domain;
         self
     }
 
@@ -342,14 +355,16 @@ pub struct ServiceOutcome {
 }
 
 /// A Service ends a Deploy wholly on one side: every replica new, every
-/// replica old, or untouched because the Deploy stopped before it.
-/// `Unconfirmed` means its serving pointer write got no answer and could not be
-/// read back, so it may serve either side.
+/// replica old, every replica changed in place, or untouched because the Deploy
+/// stopped before it. `Unconfirmed` means its serving pointer write got no
+/// answer and could not be read back, so it may serve either side.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum ServiceResult {
     New,
     Old,
+    /// Its copies kept serving and took the new limits in place.
+    Updated,
     NotStarted,
     Unconfirmed,
 }
@@ -378,11 +393,12 @@ pub enum FailedOperation<E> {
 pub enum ReplacementCompensation<E> {
     /// The old container was left as it was; `stop_new_container` is the stop attempt on the new one.
     OldUntouched { stop_new_container: StopAttempt<E> },
-    /// Stop-first replacement stopped the old container; `restart_old_container` restores it.
-    /// `stop_new_container` is `None` when the new container never started.
+    /// Stop-first replacement withdrew and stopped the old container;
+    /// `restore_old_container` brings it back In. `stop_new_container` is
+    /// `None` when the new container never started.
     OldStopped {
         stop_new_container: Option<StopAttempt<E>>,
-        restart_old_container: RestartAttempt<E>,
+        restore_old_container: RestoreAttempt<E>,
     },
 }
 
@@ -402,6 +418,33 @@ impl<E> StopAttempt<E> {
     pub const fn stopped(&self) -> bool {
         matches!(self, Self::Stopped)
     }
+
+    /// The sentence a user reads; the error stays out of it.
+    #[must_use]
+    pub const fn line(&self) -> &'static str {
+        match self {
+            Self::Stopped => "Stopped the new Container.",
+            Self::Failed { .. } => "Could not stop the new Container.",
+        }
+    }
+}
+
+impl<E> ReplacementCompensation<E> {
+    /// What the compensation did, one sentence per attempt, in order.
+    #[must_use]
+    pub fn lines(&self) -> Vec<&'static str> {
+        match self {
+            Self::OldUntouched { stop_new_container } => vec![stop_new_container.line()],
+            Self::OldStopped {
+                stop_new_container,
+                restore_old_container,
+            } => stop_new_container
+                .iter()
+                .map(StopAttempt::line)
+                .chain([restore_old_container.line()])
+                .collect(),
+        }
+    }
 }
 
 impl<E> From<Result<(), E>> for StopAttempt<E> {
@@ -416,27 +459,46 @@ impl<E> From<Result<(), E>> for StopAttempt<E> {
 /// The attempt to restore the old container after a failed stop-first replacement.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "type", rename_all = "snake_case")]
-pub enum RestartAttempt<E> {
-    /// The old container restarted and serves again.
-    Restarted,
-    /// The restart, or the wait for the old container to serve, returned `error`.
+pub enum RestoreAttempt<E> {
+    /// The old container is In again and every live proxy routes it.
+    Restored,
+    /// Another Deploy holds the old container; it stays Held.
+    LeftHeld,
+    /// The old container was not serving before this Deploy; nothing to restore.
+    NotServing,
+    /// The restore, or the wait for the proxies to route the old container, returned `error`.
     Failed { error: E },
 }
 
-impl<E> From<Result<(), E>> for RestartAttempt<E> {
+impl<E> RestoreAttempt<E> {
+    /// The sentence a user reads; the error stays out of it.
+    #[must_use]
+    pub const fn line(&self) -> &'static str {
+        match self {
+            Self::Restored => "Restored the old Container; it serves again.",
+            Self::LeftHeld => "The old Container is left Held by another Deploy.",
+            Self::NotServing => {
+                "The old Container was not serving before this Deploy; nothing to restore."
+            }
+            Self::Failed { .. } => "Could not restore the old Container.",
+        }
+    }
+}
+
+impl<E> From<Result<(), E>> for RestoreAttempt<E> {
     fn from(result: Result<(), E>) -> Self {
         match result {
-            Ok(()) => Self::Restarted,
+            Ok(()) => Self::Restored,
             Err(error) => Self::Failed { error },
         }
     }
 }
 
-impl<E> RestartAttempt<E> {
+impl<E> RestoreAttempt<E> {
     /// Whether the old container serves again.
     #[must_use]
-    pub const fn restarted(&self) -> bool {
-        matches!(self, Self::Restarted)
+    pub const fn restored(&self) -> bool {
+        matches!(self, Self::Restored)
     }
 }
 
@@ -449,6 +511,15 @@ pub struct ReplacementOperation {
     pub spec: ResolvedServiceSpec,
     /// Skip waiting on container health after the replacement starts.
     pub skip_health_monitor: bool,
+}
+
+/// Change a running Container's CPU and memory limits to its new spec's, in place.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+pub struct LimitsUpdateOperation {
+    pub machine_id: MachineId,
+    pub container_id: ContainerId,
+    /// The spec the Container serves once its limits match.
+    pub spec: ResolvedServiceSpec,
 }
 
 /// Why a Deploy stops a Container.
@@ -512,6 +583,9 @@ pub enum DeployOperation {
     },
     /// Replace `old_container_id` with a new container from the replacement spec.
     ReplaceContainer(ReplacementOperation),
+    /// Apply the spec's CPU and memory limits to `container_id` in place. The
+    /// Container keeps its id whether the Machine applies the limits or not.
+    UpdateContainer(LimitsUpdateOperation),
     /// Stop a pre-deploy hook container that is still running, before [`Self::RunHook`]
     /// starts the next one.
     StopHook {
@@ -732,9 +806,45 @@ pub enum DeployWarning {
         dependent: QualifiedService,
         dependency: QualifiedService,
     },
+    /// On each of `machines`, the pulled image exposes TCP ports and none of them is
+    /// a port the Service's domains send traffic to. Each Machine is judged on what
+    /// it pulled; `exposed` joins the mismatching Machines' reports. The lists are
+    /// sorted without repeats. `service_id` outlives a rename of `service`.
+    ImagePortMismatch {
+        service: ServiceName,
+        service_id: ServiceId,
+        image: String,
+        machines: Vec<MachineId>,
+        exposed: Vec<u16>,
+        routed: Vec<u16>,
+    },
+    /// Cleanup could not withdraw this copy: it keeps running on `machine`
+    /// until a later Deploy or a user command removes it.
+    LeftRunning {
+        service: QualifiedService,
+        container_id: ContainerId,
+        /// The Machine's name when the plan knows it, else its id.
+        machine: String,
+        reason: String,
+    },
+    /// Cleanup could not reach or confirm `machine` (cut off or powered off).
+    /// Once it is back, a copy left running can answer beside the new copies.
+    MixedAfterReturn {
+        /// The Machine's name when the plan knows it, else its id.
+        machine: String,
+    },
 }
 
 impl DeployWarning {
+    /// Cleanup left a copy running, or its Machine may serve one once it returns.
+    #[must_use]
+    pub const fn leaves_a_copy_running(&self) -> bool {
+        matches!(
+            self,
+            Self::LeftRunning { .. } | Self::MixedAfterReturn { .. }
+        )
+    }
+
     /// A relevant, independently evidenced gap. Legacy and generic warnings have none.
     #[must_use]
     pub fn observation_gap(&self) -> Option<(MachineId, &ObservationGap)> {
@@ -750,7 +860,10 @@ impl DeployWarning {
             | Self::StorageObservationUnknown { .. }
             | Self::IngressHostname { .. }
             | Self::ObserverRelativeHostnameConflict
-            | Self::SkippedDependencyHealth { .. } => None,
+            | Self::SkippedDependencyHealth { .. }
+            | Self::ImagePortMismatch { .. }
+            | Self::LeftRunning { .. }
+            | Self::MixedAfterReturn { .. } => None,
         }
     }
 }
@@ -783,8 +896,41 @@ impl Display for DeployWarning {
                 f,
                 "--skip-health treats dependency {dependent} -> {dependency} as service_started"
             ),
+            Self::ImagePortMismatch {
+                service,
+                image,
+                exposed,
+                routed,
+                ..
+            } => write!(
+                f,
+                "{service}'s image {image} exposes {}; its domains send to {}. Set the domain port or PORT.",
+                join_ports(exposed),
+                join_ports(routed),
+            ),
+            Self::LeftRunning {
+                service,
+                machine,
+                reason,
+                ..
+            } => write!(
+                f,
+                "{service} left running on {machine} ({reason}). The next deploy cleans it up."
+            ),
+            Self::MixedAfterReturn { machine } => write!(
+                f,
+                "Once {machine} is back, a copy left running can answer beside the new copies, and a left worker still takes jobs, until the next deploy."
+            ),
         }
     }
+}
+
+fn join_ports(ports: &[u16]) -> String {
+    ports
+        .iter()
+        .map(u16::to_string)
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// Machine RPC invoked while executing one Deploy Operation.
@@ -798,10 +944,12 @@ pub enum MachineAction {
     StopContainer,
     RemoveContainer,
     RemoveVolume,
+    /// Change a running Container's CPU and memory limits in place.
+    UpdateContainerLimits,
     /// Make a Service image present before any Container changes.
     PullImage,
     ListContainers,
-    ReadServingPointer,
+    ReadRoutes,
     PublishServingPointer,
 }
 
@@ -815,9 +963,10 @@ impl Display for MachineAction {
             Self::StopContainer => "stop Container",
             Self::RemoveContainer => "remove Container",
             Self::RemoveVolume => "remove Volume",
+            Self::UpdateContainerLimits => "update Container limits",
             Self::PullImage => "pull image",
             Self::ListContainers => "list Containers",
-            Self::ReadServingPointer => "read Serving Pointer",
+            Self::ReadRoutes => "read routes",
             Self::PublishServingPointer => "publish Serving Pointer",
         })
     }
@@ -876,6 +1025,15 @@ impl Display for HealthFailure {
         }
         Ok(())
     }
+}
+
+/// Docker OOM-killed a process of a Container, which ran under this limit.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+pub struct OutOfMemory {
+    /// The Service's memLimit; `None` when it has none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub memory_bytes: Option<ByteQuantity>,
 }
 
 /// Why a `service_healthy` dependency gate failed.
@@ -944,6 +1102,10 @@ pub enum ExecutionError {
     Health {
         container_id: ContainerId,
         failure: HealthFailure,
+        /// Docker OOM-killed a process of the Container while it was checked.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        out_of_memory: Option<OutOfMemory>,
     },
     #[error("dependency {dependency} failed health gate: {failure}")]
     DependencyHealth {
@@ -957,6 +1119,35 @@ pub enum ExecutionError {
     },
     #[error("deploy cancelled")]
     Cancelled,
+}
+
+impl ExecutionError {
+    /// Whether a cancel stopped the work, rather than the work failing. The
+    /// cancel may be the Deployment's own, a takeover's or a failure elsewhere in
+    /// the run's. A hook whose stop also failed may still run, so that is a failure.
+    #[must_use]
+    pub const fn cancelled(&self) -> bool {
+        matches!(
+            self,
+            Self::Cancelled
+                | Self::Health {
+                    failure: HealthFailure::Cancelled,
+                    ..
+                }
+                | Self::DependencyHealth {
+                    failure: DependencyHealthFailure::Cancelled
+                        | DependencyHealthFailure::Container {
+                            failure: HealthFailure::Cancelled,
+                            ..
+                        },
+                    ..
+                }
+                | Self::Hook {
+                    failure: HookFailure::Cancelled { stop_error: None },
+                    ..
+                }
+        )
+    }
 }
 
 /// Live evidence of one in-flight Deploy. Not a Watch frame.
@@ -980,6 +1171,8 @@ pub enum DeployEvent {
     },
     /// Image Cleanup after the Outcome; only when the caller left cleanup automatic.
     ImagesPruned { report: super::ImageCleanupReport },
+    /// Something the Deploy found while executing that it does not stop for.
+    Warning { warning: DeployWarning },
 }
 
 /// One planned operation plus its current execution status.
@@ -1039,6 +1232,8 @@ pub enum OperationPhase {
     StoppingContainer,
     RemovingContainer,
     RemovingVolume,
+    /// Docker is changing the running Container's limits in place.
+    UpdatingContainer,
     Compensating,
 }
 
@@ -1086,6 +1281,7 @@ impl DeployOperation {
             | Self::StopHook { machine_id, .. }
             | Self::RunHook { machine_id, .. } => *machine_id,
             Self::ReplaceContainer(replacement) => replacement.machine_id,
+            Self::UpdateContainer(update) => update.machine_id,
             Self::RemoveVolume { id } => id.machine_id,
         }
     }
@@ -1097,6 +1293,7 @@ impl DeployOperation {
             Self::WaitHealthy { dependent, .. } => Some(&dependent.name),
             Self::RunContainer { spec, .. } | Self::RunHook { spec, .. } => Some(&spec.name),
             Self::ReplaceContainer(replacement) => Some(&replacement.spec.name),
+            Self::UpdateContainer(update) => Some(&update.spec.name),
             Self::StopContainer { .. }
             | Self::RemoveContainer { .. }
             | Self::StopHook { .. }
@@ -1113,6 +1310,7 @@ impl DeployOperation {
             | Self::RemoveContainer { container_id, .. }
             | Self::StopHook { container_id, .. } => Some(*container_id),
             Self::ReplaceContainer(replacement) => Some(replacement.old_container_id),
+            Self::UpdateContainer(update) => Some(update.container_id),
             Self::WaitHealthy { .. }
             | Self::RunContainer { .. }
             | Self::RunHook { .. }
@@ -1127,6 +1325,7 @@ impl DeployOperation {
         match self {
             Self::RunContainer { spec, .. } | Self::RunHook { spec, .. } => Some(spec),
             Self::ReplaceContainer(replacement) => Some(&replacement.spec),
+            Self::UpdateContainer(update) => Some(&update.spec),
             Self::WaitHealthy { .. }
             | Self::StopContainer { .. }
             | Self::RemoveContainer { .. }
@@ -1146,4 +1345,32 @@ pub struct MachineStorageBudget {
     pub machine_name: MachineName,
     /// Aggregate capacity for the selected provisioned Volumes on this Machine.
     pub budget: crate::StorageBudget,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn compensation_lines_say_what_became_of_each_container_in_order() {
+        let restored = ReplacementCompensation::<String>::OldStopped {
+            stop_new_container: Some(StopAttempt::Stopped),
+            restore_old_container: RestoreAttempt::Restored,
+        };
+        assert_eq!(
+            restored.lines(),
+            [
+                "Stopped the new Container.",
+                "Restored the old Container; it serves again."
+            ]
+        );
+        let held = ReplacementCompensation::<String>::OldStopped {
+            stop_new_container: None,
+            restore_old_container: RestoreAttempt::LeftHeld,
+        };
+        assert_eq!(
+            held.lines(),
+            ["The old Container is left Held by another Deploy."]
+        );
+    }
 }

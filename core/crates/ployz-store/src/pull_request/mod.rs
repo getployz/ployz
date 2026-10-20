@@ -1060,12 +1060,21 @@ fn create(
         .filter(|service| ours(&service.config.source))
         .map(|service| (service.config.private_dns.clone(), event.head.clone()))
         .collect();
+    let push = crate::deployment::GitPush {
+        repository_id: event.repository_id,
+        branch: event.head_branch.clone(),
+        head: event.head.clone(),
+    };
     let deployment = crate::automation::auto_admit(
         tx,
         who,
         (&environment, &saved),
         (&[], &[]),
         (cluster_domain.as_ref(), &pins),
+        crate::deployment::Admission::New {
+            id: &crate::id::DeploymentId::parse(uuid::Uuid::new_v4().to_string())?,
+            push: Some(&push),
+        },
         trusted,
     )?;
     Ok(Some(AutoDeployed {

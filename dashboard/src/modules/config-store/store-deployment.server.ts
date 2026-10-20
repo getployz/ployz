@@ -8,7 +8,7 @@ import { cloudStore, refusedWith, type CloudStore, storeTry } from "#/modules/co
 import { callStore, cancelStoreGithubBuilds, connectionsOf, readStore, requestChecks } from "#/modules/config-store/config-store.server";
 import { deploymentRun } from "#/modules/config-store/tables";
 import { discardFailedRestore, type FailedRestore, releasePlacementClaims } from "#/modules/volume-placement/volume-placement.deploy.server";
-import { extractUpload, releaseUpload } from "#/modules/config-store/upload.server";
+import { extractUpload, releaseUploads, uploadOwner } from "#/modules/config-store/upload.server";
 import { eq } from "drizzle-orm";
 import type { GithubApi } from "#/modules/github/github-observation.api";
 import { GithubDisconnected } from "#/modules/github/github-access";
@@ -79,9 +79,10 @@ const checkoutSources = Effect.fn("StoreDeployment.checkoutSources")(function* (
 
 /**
  * Run an admitted Deployment as `runner` on the Organization's Servers, all inside the Rust SDK, with its Git Services
- * checked out at their pinned commits and its upload, while Cloud holds it, extracted. Resolves to the Deployment's
+ * checked out at their pinned commits and its upload, while Cloud holds it, extracted. It claims first: a Deployment
+ * without an upload of its own takes the one its Services last ran as it starts. Resolves to the Deployment's
  * summary, or to what the Store said when there is nothing to run; a source Cloud can't read is recorded as why nothing
- * ran; any other failure is retried. Its upload goes once it has ended.
+ * ran; any other failure is retried. Once it has ended, the uploads it replaced go.
  */
 export const runStoreDeployment = Effect.fn("StoreDeployment.run")(function* (
   data: ConfigDeploymentAdmittedEventData,
@@ -92,7 +93,10 @@ export const runStoreDeployment = Effect.fn("StoreDeployment.run")(function* (
   return yield* Effect.gen(function* () {
     const sources = yield* Effect.all({
       checkouts: checkoutSources(store, data.organizationId, data.deploymentId),
-      upload: fromGithub(extractUpload(data.organizationId, data.deploymentId)),
+      upload: storeTry(() => store.claimDeployment(data.organizationId, data.deploymentId, runner)).pipe(
+        Effect.flatMap(() => uploadOwner(store, data.organizationId, data.deploymentId)),
+        Effect.flatMap((owner) => owner === undefined ? Effect.succeed(undefined) : fromGithub(extractUpload(data.organizationId, owner))),
+      ),
     }).pipe(Effect.catchTag("SourceUnreadable", (error) => Effect.succeed({ failure: error.message })));
     return yield* storeTry(async () => ({
       ran: await store.runDeployment(data.organizationId, data.deploymentId, runner, connections, sources),
@@ -101,7 +105,7 @@ export const runStoreDeployment = Effect.fn("StoreDeployment.run")(function* (
     Effect.scoped,
     // Its Deployment was replaced, cancelled or ended, another runner owns it, or this one lost track of it.
     Effect.catchIf(refusedWith("conflict"), (refused) => Effect.succeed({ nothingToRun: refused.message })),
-    Effect.ensuring(released(store, data.organizationId, data.deploymentId)),
+    Effect.ensuring(released(store, data.organizationId)),
     Effect.tap(() => recheck(store, data.organizationId, data.environmentId)),
   );
 });
@@ -113,9 +117,9 @@ const recheck = (store: ConfigStore, organizationId: string, environmentId: stri
     Effect.catch((error) => Effect.logWarning("The PR checks were not requested.", { organizationId, environmentId, error })),
   );
 
-/** Delete the Deployment's upload if it has ended; a failure leaves it for the next run or upload to find. */
-const released = (store: ConfigStore, organizationId: string, deploymentId: string) =>
-  releaseUpload(store, organizationId, deploymentId).pipe(
+/** Delete the uploads that can no longer build; a failure leaves them for the next run or upload to find. */
+const released = (store: ConfigStore, organizationId: string) =>
+  releaseUploads(store, organizationId).pipe(
     Effect.catchCause((cause) => Effect.logWarning("Keeping an upload Cloud couldn't release.", cause)),
   );
 
@@ -143,7 +147,7 @@ export const failStoreDeploymentUnrun = Effect.fn("StoreDeployment.failUnrun")(f
 ) {
   const store = yield* cloudStore;
   const failed = yield* failUnclaimed(store, organizationId, deploymentId, runId, failure, failure).pipe(
-    Effect.ensuring(released(store, organizationId, deploymentId)),
+    Effect.ensuring(released(store, organizationId)),
   );
   yield* recheck(store, organizationId, environmentId);
   if (restore !== undefined) yield* discardFailedRestore(organizationId, restore);
@@ -183,7 +187,7 @@ export const stopStoreDeploymentRun = Effect.fn("StoreDeployment.stopRun")(funct
   const stopped = yield* storeTry(async () => ({ abandoned: await store.abandonDeployment(deploymentId, storeDeploymentRunner(runId)) })).pipe(
     // It never claimed it, or another runner owns it now.
     Effect.catchIf(refusedWith("conflict"), (refused) => failUnclaimed(store, organizationId, deploymentId, runId, refused.message)),
-    Effect.ensuring(released(store, organizationId, deploymentId)),
+    Effect.ensuring(released(store, organizationId)),
   );
   yield* releasePlacementClaims(organizationId, deploymentId);
   yield* cancelled;
@@ -222,7 +226,8 @@ export const unclaimedStoreDeployments = Effect.fn("StoreDeployment.unclaimed")(
     if (Option.isSome(view) && view.value.in_flight) held.add(view.value.environment.id);
   }
   return unclaimed.filter((found) => !held.has(found.environment)).map((found): ConfigDeploymentAdmittedEventData => ({
-    organizationId: found.organization, environmentId: found.environment, deploymentId: found.deployment, trigger: "user",
+    organizationId: found.organization, environmentId: found.environment, deploymentId: found.deployment, number: found.number,
+    trigger: "user",
   }));
 });
 

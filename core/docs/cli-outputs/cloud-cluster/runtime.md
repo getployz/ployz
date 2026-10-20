@@ -11,10 +11,18 @@ $ ployz status
 
 stdout:
 ```
-Cloud: http://localhost:44581
-Organization ada (token).
-Environment shop/production.
-0 staged changes.
+cloud = http://localhost:38265
+organization = ada
+signed in as = token
+environment = shop/production
+linked from = <run-dir>/workspace
+staged = 0 changes
+needs attention = sentry/config.yml references redis, which was removed
+```
+
+stderr:
+```
+next: ployz config put sentry config.yml --from PATH
 ```
 
 ### status --json
@@ -27,31 +35,44 @@ $ ployz --json status
 stdout:
 ```
 {
-  "attention": [],
+  "attention": [
+    {
+      "message": "sentry/config.yml references redis, which was removed",
+      "next": "ployz config put sentry config.yml --from PATH",
+      "reason": "broken_reference"
+    }
+  ],
   "deploying": [],
   "environment": {
-    "id": "4b4e5354-8834-4aea-a807-e65f832680bc",
+    "id": "e3ff9fdc-d394-4a02-9195-f717984132db",
     "name": "production",
     "project": "shop",
-    "revision": 38
+    "revision": 26
   },
   "identity": {
-    "cloud": "http://localhost:44581",
+    "cloud": "http://localhost:38265",
     "credential": "token",
     "organization": {
-      "id": "eccc0cff-2641-4745-8dac-fdee92352300",
+      "id": "c5bb4022-ae5d-439a-b670-d567afb5f40a",
       "slug": "ada"
     }
   },
+  "next": "ployz config put sentry config.yml --from PATH",
   "scope": {
-    "environment": null,
-    "link": null,
-    "project": null
+    "environment": {
+      "name": "production",
+      "source": "link"
+    },
+    "link": "<run-dir>/workspace",
+    "project": {
+      "name": "shop",
+      "source": "link"
+    }
   },
   "staged": {
     "changes": 0,
     "saved": true,
-    "version": "38:27:0.54"
+    "version": "26:13:0.23"
   }
 }
 ```
@@ -67,16 +88,11 @@ $ ployz ps
 
 stdout:
 ```
-CONTAINER ID	SERVICE	KIND	MACHINE	STATE
-210f3849f314	api	service	7784f1a17df144728819cecf47282904	running
-bf055d4b5f1e	postgres	service	7784f1a17df144728819cecf47282904	running
-651ea4cdb25d	web	service	7784f1a17df144728819cecf47282904	running
-5e3a54fc5f3d	worker	service	7784f1a17df144728819cecf47282904	running
-```
-
-stderr:
-```
-WARNING: Live Observation is observer-relative and not globally complete
+SERVICE	KIND	SERVER	STATE
+api	service	machine-1	running
+postgres	service	machine-1	running
+web	service	machine-1	running
+worker	service	machine-1	running
 ```
 
 ### ps --json
@@ -91,14 +107,17 @@ stdout:
 {
   "containers": [
     {
-      "address": "10.210.0.4",
-      "container_id": "210f3849f314016fc3cedf845174206f152c716a443b9f3b2b88e0c6ce579082",
-      "created_at_unix_nanos": 1791166257674611449,
-      "display_name": "api-957e",
-      "effective_healthcheck": null,
+      "address": "10.210.0.3",
+      "container_id": "7561bf62883c4c087d895359a3b47c61c536366117fd8b5ebb29885538fad5a7",
+      "created_at_unix_nanos": 1792514779813926794,
+      "display_name": "ployz-create-99d54d331aaf8f4f72795e07d2691fea44d20fd6e06ee1d0bb1d5194de6088a3",
+      "effective_healthcheck": {
+        "state": "disabled"
+      },
+      "gen": 1,
       "kind": "service_container",
       "labels": {
-        "cloud.ployz.service.id": "a48be9de-5046-4ce1-ac09-736234a707d0",
+        "cloud.ployz.service.id": "254b1264-6d96-4e34-86d2-795920ddab60",
         "org.opencontainers.image.created": "2025-03-13T14:25:39Z",
         "org.opencontainers.image.description": "Tiny Go webserver that prints OS information and HTTP request to output",
         "org.opencontainers.image.documentation": "https://github.com/traefik/whoami",
@@ -107,13 +126,15 @@ stdout:
         "org.opencontainers.image.title": "whoami",
         "org.opencontainers.image.url": "https://github.com/traefik/whoami",
         "org.opencontainers.image.version": "1.11.0",
-        "ployz.deployment.id": "f9ef5d14-c944-4cd9-9501-4b89c5c9bdba",
+        "ployz.creation.key": "47daab3f-5f9c-4ced-86f9-702188c7b044:ea5692c0a16e2fc9:1",
+        "ployz.deployment.id": "47daab3f-5f9c-4ced-86f9-702188c7b044",
+        "ployz.gen": "1",
         "ployz.managed": "",
         "ployz.namespace": "shop-production",
-        "ployz.service.id": "c9679360c13b401c9148032026092739",
+        "ployz.service.id": "34a4b9e6931b4b8bb57920f343b4b784",
         "ployz.service.name": "api"
       },
-      "machine_id": "7784f1a17df144728819cecf47282904",
+      "machine_id": "c109917d492d460a994dbf4b43162146",
       "namespace": "shop-production",
       "resolved_spec": {
         "configs": [],
@@ -127,17 +148,19 @@ stdout:
             "DATABASE_URL": "<redacted>",
             "FEATURE_SEARCH": "<redacted>",
             "LOG_LEVEL": "<redacted>",
-            "PORT": "<redacted>"
+            "PORT": "<redacted>",
+            "SECRET_KEY": "<redacted>"
           },
           "extra_hosts": [],
-          "healthcheck": null,
+          "healthcheck": {
+            "state": "disabled"
+          },
           "hostname": null,
           "image": "traefik/whoami:v1.11.0",
           "init": null,
           "labels": {
-            "cloud.ployz.service.id": "a48be9de-5046-4ce1-ac09-736234a707d0"
+            "cloud.ployz.service.id": "254b1264-6d96-4e34-86d2-795920ddab60"
           },
-          "log_driver": null,
           "open_stdin": false,
           "pid_mode": null,
           "privileged": false,
@@ -171,13 +194,14 @@ stdout:
         },
         "ports": [],
         "pre_deploy": null,
-        "service_id": "c9679360c13b401c9148032026092739",
+        "service_id": "34a4b9e6931b4b8bb57920f343b4b784",
         "update": {
           "monitor_millis": null,
           "order": "start_first"
         },
         "volumes": []
       },
+      "rotation": "in",
       "runtime": {
         "health": "not_configured",
         "state": "running"
@@ -185,20 +209,25 @@ stdout:
     },
     {
       "address": "10.210.0.5",
-      "container_id": "bf055d4b5f1eb3cd686e069492368e17283ee9ed266342677c98ea7cc4c4d49d",
-      "created_at_unix_nanos": 1791166280637065069,
-      "display_name": "postgres-8e0f",
-      "effective_healthcheck": null,
+      "container_id": "3f99a088f735aa494b5f02a7d0dcf4dcecd6d9cadcf6afa02eea650c6584442a",
+      "created_at_unix_nanos": 1792514781942729773,
+      "display_name": "ployz-create-bdd81f7a0bd2d741c34fad08ddc06d7a5e124f1a8d7fcc99f41c3ff45b185ac7",
+      "effective_healthcheck": {
+        "state": "disabled"
+      },
+      "gen": 1,
       "kind": "service_container",
       "labels": {
-        "cloud.ployz.service.id": "bee1160e-e2bd-442a-b0ef-e98dc4debcdc",
-        "ployz.deployment.id": "f9ef5d14-c944-4cd9-9501-4b89c5c9bdba",
+        "cloud.ployz.service.id": "796ce242-5b1d-451d-8804-42de83e14920",
+        "ployz.creation.key": "47daab3f-5f9c-4ced-86f9-702188c7b044:ea5692c0a16e2fc9:3",
+        "ployz.deployment.id": "47daab3f-5f9c-4ced-86f9-702188c7b044",
+        "ployz.gen": "1",
         "ployz.managed": "",
         "ployz.namespace": "shop-production",
-        "ployz.service.id": "fbdae59eeafb4457adde06ad16e83658",
+        "ployz.service.id": "dcb21932452441cf9eaed62ec83650b6",
         "ployz.service.name": "postgres"
       },
-      "machine_id": "7784f1a17df144728819cecf47282904",
+      "machine_id": "c109917d492d460a994dbf4b43162146",
       "namespace": "shop-production",
       "resolved_spec": {
         "configs": [],
@@ -213,14 +242,15 @@ stdout:
             "POSTGRES_PASSWORD": "<redacted>"
           },
           "extra_hosts": [],
-          "healthcheck": null,
+          "healthcheck": {
+            "state": "disabled"
+          },
           "hostname": null,
           "image": "postgres:16",
           "init": null,
           "labels": {
-            "cloud.ployz.service.id": "bee1160e-e2bd-442a-b0ef-e98dc4debcdc"
+            "cloud.ployz.service.id": "796ce242-5b1d-451d-8804-42de83e14920"
           },
-          "log_driver": null,
           "open_stdin": false,
           "pid_mode": null,
           "privileged": false,
@@ -253,7 +283,7 @@ stdout:
             "read_only": false,
             "subpath": null,
             "target": "/var/lib/postgresql/data",
-            "volume": "vol-71802251-dbfa-42fa-9bc9-895e8385ece6"
+            "volume": "vol-2a748c8b-32bc-433a-be41-3420710e6b7c"
           }
         ],
         "name": "postgres",
@@ -262,71 +292,101 @@ stdout:
         },
         "ports": [],
         "pre_deploy": null,
-        "service_id": "fbdae59eeafb4457adde06ad16e83658",
+        "service_id": "dcb21932452441cf9eaed62ec83650b6",
         "update": {
           "monitor_millis": null,
           "order": "stop_first"
         },
         "volumes": [
           {
-            "reference": "vol-71802251-dbfa-42fa-9bc9-895e8385ece6",
+            "reference": "vol-2a748c8b-32bc-433a-be41-3420710e6b7c",
             "source": {
               "kind": "provisioned",
               "labels": {},
               "maximum_bytes": 5000000000,
-              "name": "shop-production_vol-71802251-dbfa-42fa-9bc9-895e8385ece6",
+              "name": "shop-production_vol-2a748c8b-32bc-433a-be41-3420710e6b7c",
               "scope": {
-                "logical_name": "vol-71802251-dbfa-42fa-9bc9-895e8385ece6",
+                "logical_name": "vol-2a748c8b-32bc-433a-be41-3420710e6b7c",
                 "namespace": "shop-production"
               }
             }
           }
         ]
       },
+      "rotation": "in",
       "runtime": {
         "health": "not_configured",
         "state": "running"
       }
     },
     {
-      "address": "10.210.0.3",
-      "container_id": "651ea4cdb25dc654dba5912af9d684704da30081db23120600d8db355982acd1",
-      "created_at_unix_nanos": 1791167005306093109,
-      "display_name": "web-88f3",
-      "effective_healthcheck": null,
+      "address": "10.210.0.4",
+      "container_id": "c8361accee66e39d0e17a6493a336223aa2a29f4efde6c6f4d9847bd226e2c72",
+      "created_at_unix_nanos": 1792515331545564368,
+      "display_name": "ployz-create-0d0630aa97722410328d4ced3cc36357ecccedb8c779bc363640cdf20da1d013",
+      "effective_healthcheck": {
+        "state": "disabled"
+      },
+      "gen": 9,
       "kind": "service_container",
       "labels": {
-        "cloud.ployz.service.id": "8cb17782-fd07-45b5-9009-992bb7f6f24d",
+        "cloud.ployz.service.id": "e358ac6a-560a-468f-9f9f-43fc58547dfd",
         "maintainer": "NGINX Docker Maintainers <docker-maint@nginx.com>",
-        "ployz.deployment.id": "2e8e2cfb-03ba-43d1-9f82-5f8fa3dfacd9",
+        "ployz.creation.key": "9f056dff-7720-4f2e-bbbb-724c39e92221:d2ff0324918f06c6:0",
+        "ployz.deployment.id": "9f056dff-7720-4f2e-bbbb-724c39e92221",
+        "ployz.gen": "9",
         "ployz.managed": "",
         "ployz.namespace": "shop-production",
-        "ployz.service.id": "6d5c9a3fb9d647d9a81bfe273e48dde6",
+        "ployz.service.id": "0bc3883482ba480298f83b694d408c4d",
         "ployz.service.name": "web"
       },
-      "machine_id": "7784f1a17df144728819cecf47282904",
+      "machine_id": "c109917d492d460a994dbf4b43162146",
       "namespace": "shop-production",
       "resolved_spec": {
-        "configs": [],
+        "configs": [
+          {
+            "content": [],
+            "name": "sentry/config.yml"
+          },
+          {
+            "content": [],
+            "name": "sentry/sentry.conf.py"
+          }
+        ],
         "container": {
           "cap_add": [],
           "cap_drop": [],
           "command": [],
-          "config_mounts": [],
+          "config_mounts": [
+            {
+              "config_name": "sentry/config.yml",
+              "gid": 0,
+              "mode": 292,
+              "target": "/etc/sentry/config.yml",
+              "uid": 0
+            },
+            {
+              "config_name": "sentry/sentry.conf.py",
+              "gid": 0,
+              "mode": 292,
+              "target": "/etc/sentry/sentry.conf.py",
+              "uid": 0
+            }
+          ],
           "entrypoint": [],
           "environment": {
-            "PORT": "<redacted>",
-            "X": "<redacted>"
+            "PORT": "<redacted>"
           },
           "extra_hosts": [],
-          "healthcheck": null,
+          "healthcheck": {
+            "state": "disabled"
+          },
           "hostname": null,
           "image": "nginx:1.27-alpine",
           "init": null,
           "labels": {
-            "cloud.ployz.service.id": "8cb17782-fd07-45b5-9009-992bb7f6f24d"
+            "cloud.ployz.service.id": "e358ac6a-560a-468f-9f9f-43fc58547dfd"
           },
-          "log_driver": null,
           "open_stdin": false,
           "pid_mode": null,
           "privileged": false,
@@ -365,23 +425,17 @@ stdout:
             "http_protocol": "https",
             "load_balancer_port": 443,
             "mode": "ingress"
-          },
-          {
-            "container_port": 80,
-            "hostname": "web.ada.ployz.test",
-            "http_protocol": "https",
-            "load_balancer_port": 443,
-            "mode": "ingress"
           }
         ],
         "pre_deploy": null,
-        "service_id": "6d5c9a3fb9d647d9a81bfe273e48dde6",
+        "service_id": "0bc3883482ba480298f83b694d408c4d",
         "update": {
           "monitor_millis": null,
           "order": "start_first"
         },
         "volumes": []
       },
+      "rotation": "in",
       "runtime": {
         "health": "not_configured",
         "state": "running"
@@ -389,13 +443,16 @@ stdout:
     },
     {
       "address": "10.210.0.6",
-      "container_id": "5e3a54fc5f3df78c04a03d5bd77d14908241dd0a1b928df895d1854959149878",
-      "created_at_unix_nanos": 1791166288272260059,
-      "display_name": "worker-949b",
-      "effective_healthcheck": null,
+      "container_id": "7dfd628663aeea6f3b1c5e43b411d2830025a329502895be70a72061404a9b45",
+      "created_at_unix_nanos": 1792514898935457246,
+      "display_name": "ployz-create-9b7dc528e04e7ac864f3e588153a9b6f541d7ed7dc8567995cc5e853e4b43946",
+      "effective_healthcheck": {
+        "state": "disabled"
+      },
+      "gen": 1,
       "kind": "service_container",
       "labels": {
-        "cloud.ployz.service.id": "e45be4e1-f130-4720-a996-db5c0aaa9e0e",
+        "cloud.ployz.service.id": "eb6735e8-bf91-4e42-9348-e465eaea151e",
         "org.opencontainers.image.created": "2024-08-22T08:05:56Z",
         "org.opencontainers.image.description": "Tiny Go webserver that prints OS information and HTTP request to output",
         "org.opencontainers.image.documentation": "https://github.com/traefik/whoami",
@@ -404,34 +461,61 @@ stdout:
         "org.opencontainers.image.title": "whoami",
         "org.opencontainers.image.url": "https://github.com/traefik/whoami",
         "org.opencontainers.image.version": "1.10.3",
-        "ployz.deployment.id": "f9ef5d14-c944-4cd9-9501-4b89c5c9bdba",
+        "ployz.creation.key": "af950c5d-77ac-4f26-8a8c-06af1018321a:a9d876b649f5f67a:1",
+        "ployz.deployment.id": "af950c5d-77ac-4f26-8a8c-06af1018321a",
+        "ployz.gen": "1",
         "ployz.managed": "",
         "ployz.namespace": "shop-production",
-        "ployz.service.id": "ec02437ef76a4d11a5af850934be313e",
+        "ployz.service.id": "b3b19a0846b2400d8920ccdb576dc8d0",
         "ployz.service.name": "worker"
       },
-      "machine_id": "7784f1a17df144728819cecf47282904",
+      "machine_id": "c109917d492d460a994dbf4b43162146",
       "namespace": "shop-production",
       "resolved_spec": {
-        "configs": [],
+        "configs": [
+          {
+            "content": [],
+            "name": "sentry/config.yml"
+          },
+          {
+            "content": [],
+            "name": "sentry/sentry.conf.py"
+          }
+        ],
         "container": {
           "cap_add": [],
           "cap_drop": [],
           "command": [],
-          "config_mounts": [],
+          "config_mounts": [
+            {
+              "config_name": "sentry/config.yml",
+              "gid": 0,
+              "mode": 292,
+              "target": "/etc/sentry/config.yml",
+              "uid": 0
+            },
+            {
+              "config_name": "sentry/sentry.conf.py",
+              "gid": 0,
+              "mode": 292,
+              "target": "/etc/sentry/sentry.conf.py",
+              "uid": 0
+            }
+          ],
           "entrypoint": [],
           "environment": {
             "PORT": "<redacted>"
           },
           "extra_hosts": [],
-          "healthcheck": null,
+          "healthcheck": {
+            "state": "disabled"
+          },
           "hostname": null,
           "image": "traefik/whoami:v1.10.3",
           "init": null,
           "labels": {
-            "cloud.ployz.service.id": "e45be4e1-f130-4720-a996-db5c0aaa9e0e"
+            "cloud.ployz.service.id": "eb6735e8-bf91-4e42-9348-e465eaea151e"
           },
-          "log_driver": null,
           "open_stdin": false,
           "pid_mode": null,
           "privileged": false,
@@ -465,13 +549,14 @@ stdout:
         },
         "ports": [],
         "pre_deploy": null,
-        "service_id": "ec02437ef76a4d11a5af850934be313e",
+        "service_id": "b3b19a0846b2400d8920ccdb576dc8d0",
         "update": {
           "monitor_millis": null,
           "order": "start_first"
         },
         "volumes": []
       },
+      "rotation": "in",
       "runtime": {
         "health": "not_configured",
         "state": "running"
@@ -481,11 +566,6 @@ stdout:
   "failures": [],
   "omitted": []
 }
-```
-
-stderr:
-```
-WARNING: Live Observation is observer-relative and not globally complete
 ```
 
 ## logs
@@ -499,11 +579,11 @@ $ ployz logs web --tail 5
 
 stderr:
 ```
-2026-10-05T02:24:35.849952814+00:00 machine-1 web/651ea4cdb25d | 2026/10/05 02:24:35 [notice] 1#1: OS: Linux 6.8.0-146-generic
-2026-10-05T02:24:35.850089081+00:00 machine-1 web/651ea4cdb25d | 2026/10/05 02:24:35 [notice] 1#1: getrlimit(RLIMIT_NOFILE): 1024:524288
-2026-10-05T02:24:35.850278657+00:00 machine-1 web/651ea4cdb25d | 2026/10/05 02:24:35 [notice] 1#1: start worker processes
-2026-10-05T02:24:35.850448487+00:00 machine-1 web/651ea4cdb25d | 2026/10/05 02:24:35 [notice] 1#1: start worker process 21
-2026-10-05T02:24:35.850771795+00:00 machine-1 web/651ea4cdb25d | 2026/10/05 02:24:35 [notice] 1#1: start worker process 22
+2026-10-20T16:55:43.649308042+00:00 machine-1 web/7093e0b04215 | 2026/10/20 16:55:43 [notice] 1#1: signal 17 (SIGCHLD) received from 32
+2026-10-20T16:55:43.649383283+00:00 machine-1 web/7093e0b04215 | 2026/10/20 16:55:43 [notice] 1#1: worker process 31 exited with code 0
+2026-10-20T16:55:43.649392290+00:00 machine-1 web/7093e0b04215 | 2026/10/20 16:55:43 [notice] 1#1: worker process 32 exited with code 0
+2026-10-20T16:55:43.649398812+00:00 machine-1 web/7093e0b04215 | 2026/10/20 16:55:43 [notice] 1#1: exit
+2026-10-20T16:55:43.711050504+00:00 machine-1 web/7093e0b04215 | exited with 0
 ```
 
 ### logs every Service
@@ -515,18 +595,9 @@ $ ployz logs --tail 3
 
 stderr:
 ```
-2026-10-05T02:10:58.091856127+00:00 machine-1 api/210f3849f314 | 2026/10/05 02:10:58 Starting up on port 80
-2026-10-05T02:11:23.270753526+00:00 machine-1 postgres/bf055d4b5f1e | 2026-10-05 02:11:23.270 UTC [1] LOG:  database system is ready to accept connections
-2026-10-05T02:16:23.340682262+00:00 machine-1 postgres/bf055d4b5f1e | 2026-10-05 02:16:23.338 UTC [60] LOG:  checkpoint starting: time
-2026-10-05T02:16:27.529925467+00:00 machine-1 postgres/bf055d4b5f1e | 2026-10-05 02:16:27.529 UTC [60] LOG:  checkpoint complete: wrote 44 buffers (0.3%); 0 WAL file(s) added, 0 removed, 0 recycled; write=4.146 s, sync=0.023 s, total=4.193 s; sync files=11, longest=0.004 s, average=0.003 s; distance=260 kB, estimate=260 kB; lsn=0/1533F08, redo lsn=0/1533ED0
-2026-10-05T02:19:42.861185182+00:00 machine-1 api/210f3849f314 | 2026/10/05 02:19:42 Starting up on port 80
-2026-10-05T02:24:35.850278657+00:00 machine-1 web/651ea4cdb25d | 2026/10/05 02:24:35 [notice] 1#1: start worker processes
-2026-10-05T02:24:35.850448487+00:00 machine-1 web/651ea4cdb25d | 2026/10/05 02:24:35 [notice] 1#1: start worker process 21
-2026-10-05T02:24:35.850771795+00:00 machine-1 web/651ea4cdb25d | 2026/10/05 02:24:35 [notice] 1#1: start worker process 22
-2026-10-05T02:24:42.527158057+00:00 machine-1 worker/5e3a54fc5f3d | 2026/10/05 02:24:42 Starting up on port 80
-2026-10-05T02:24:46.369475605+00:00 machine-1 worker/5e3a54fc5f3d | 2026/10/05 02:24:46 Starting up on port 80
-2026-10-05T02:24:50.121592889+00:00 machine-1 api/210f3849f314 | 2026/10/05 02:24:50 Starting up on port 80
-2026-10-05T02:24:51.502047623+00:00 machine-1 worker/5e3a54fc5f3d | 2026/10/05 02:24:51 Starting up on port 80
+2026-10-20T16:55:43.649392290+00:00 machine-1 web/7093e0b04215 | 2026/10/20 16:55:43 [notice] 1#1: worker process 32 exited with code 0
+2026-10-20T16:55:43.649398812+00:00 machine-1 web/7093e0b04215 | 2026/10/20 16:55:43 [notice] 1#1: exit
+2026-10-20T16:55:43.711050504+00:00 machine-1 web/7093e0b04215 | exited with 0
 ```
 
 ### logs --json one Service
@@ -538,9 +609,9 @@ $ ployz --json logs web --tail 3
 
 stdout:
 ```
-{"container_id":"651ea4cdb25dc654dba5912af9d684704da30081db23120600d8db355982acd1","hook":null,"machine":"machine-1","message":"2026/10/05 02:24:35 [notice] 1#1: start worker processes\n","service":"web","service_id":"6d5c9a3fb9d647d9a81bfe273e48dde6","stream":"stderr","timestamp":"2026-10-05T02:24:35.850278657+00:00"}
-{"container_id":"651ea4cdb25dc654dba5912af9d684704da30081db23120600d8db355982acd1","hook":null,"machine":"machine-1","message":"2026/10/05 02:24:35 [notice] 1#1: start worker process 21\n","service":"web","service_id":"6d5c9a3fb9d647d9a81bfe273e48dde6","stream":"stderr","timestamp":"2026-10-05T02:24:35.850448487+00:00"}
-{"container_id":"651ea4cdb25dc654dba5912af9d684704da30081db23120600d8db355982acd1","hook":null,"machine":"machine-1","message":"2026/10/05 02:24:35 [notice] 1#1: start worker process 22\n","service":"web","service_id":"6d5c9a3fb9d647d9a81bfe273e48dde6","stream":"stderr","timestamp":"2026-10-05T02:24:35.850771795+00:00"}
+{"container":"7093e0b04215246d38163ccd4812d30fccb026423cef07560f87d54b11c4c19b","container_id":"7093e0b04215246d38163ccd4812d30fccb026423cef07560f87d54b11c4c19b","deployment":"928a23ec-4852-48b4-b8be-d500434c02e5","hook":null,"level":"info","line":"2026/10/20 16:55:43 [notice] 1#1: worker process 32 exited with code 0","machine":"machine-1","message":"2026/10/20 16:55:43 [notice] 1#1: worker process 32 exited with code 0\n","namespace":"shop-production","replica":"ployz-create-f50bc49694062b4e617332172e8cf88a12b3d9e6bd18194cdd5937fdbd76e958","service":"web","stream":"stderr","timestamp":"2026-10-20T16:55:43.649392290+00:00","ts":"2026-10-20T16:55:43.649392290Z"}
+{"container":"7093e0b04215246d38163ccd4812d30fccb026423cef07560f87d54b11c4c19b","container_id":"7093e0b04215246d38163ccd4812d30fccb026423cef07560f87d54b11c4c19b","deployment":"928a23ec-4852-48b4-b8be-d500434c02e5","hook":null,"level":"info","line":"2026/10/20 16:55:43 [notice] 1#1: exit","machine":"machine-1","message":"2026/10/20 16:55:43 [notice] 1#1: exit\n","namespace":"shop-production","replica":"ployz-create-f50bc49694062b4e617332172e8cf88a12b3d9e6bd18194cdd5937fdbd76e958","service":"web","stream":"stderr","timestamp":"2026-10-20T16:55:43.649398812+00:00","ts":"2026-10-20T16:55:43.649398812Z"}
+{"container":"7093e0b04215246d38163ccd4812d30fccb026423cef07560f87d54b11c4c19b","container_id":"7093e0b04215246d38163ccd4812d30fccb026423cef07560f87d54b11c4c19b","deployment":"928a23ec-4852-48b4-b8be-d500434c02e5","exit":{"code":0,"oom_killed":false},"hook":null,"machine":"machine-1","namespace":"shop-production","replica":"ployz-create-f50bc49694062b4e617332172e8cf88a12b3d9e6bd18194cdd5937fdbd76e958","service":"web","timestamp":"2026-10-20T16:55:43.711050504+00:00","ts":"2026-10-20T16:55:43.711050504Z"}
 ```
 
 ### logs --json every Service
@@ -552,14 +623,8 @@ $ ployz --json logs --tail 2
 
 stdout:
 ```
-{"container_id":"bf055d4b5f1eb3cd686e069492368e17283ee9ed266342677c98ea7cc4c4d49d","hook":null,"machine":"machine-1","message":"2026-10-05 02:16:23.338 UTC [60] LOG:  checkpoint starting: time\n","service":"postgres","service_id":"fbdae59eeafb4457adde06ad16e83658","stream":"stderr","timestamp":"2026-10-05T02:16:23.340682262+00:00"}
-{"container_id":"bf055d4b5f1eb3cd686e069492368e17283ee9ed266342677c98ea7cc4c4d49d","hook":null,"machine":"machine-1","message":"2026-10-05 02:16:27.529 UTC [60] LOG:  checkpoint complete: wrote 44 buffers (0.3%); 0 WAL file(s) added, 0 removed, 0 recycled; write=4.146 s, sync=0.023 s, total=4.193 s; sync files=11, longest=0.004 s, average=0.003 s; distance=260 kB, estimate=260 kB; lsn=0/1533F08, redo lsn=0/1533ED0\n","service":"postgres","service_id":"fbdae59eeafb4457adde06ad16e83658","stream":"stderr","timestamp":"2026-10-05T02:16:27.529925467+00:00"}
-{"container_id":"210f3849f314016fc3cedf845174206f152c716a443b9f3b2b88e0c6ce579082","hook":null,"machine":"machine-1","message":"2026/10/05 02:19:42 Starting up on port 80\n","service":"api","service_id":"c9679360c13b401c9148032026092739","stream":"stderr","timestamp":"2026-10-05T02:19:42.861185182+00:00"}
-{"container_id":"651ea4cdb25dc654dba5912af9d684704da30081db23120600d8db355982acd1","hook":null,"machine":"machine-1","message":"2026/10/05 02:24:35 [notice] 1#1: start worker process 21\n","service":"web","service_id":"6d5c9a3fb9d647d9a81bfe273e48dde6","stream":"stderr","timestamp":"2026-10-05T02:24:35.850448487+00:00"}
-{"container_id":"651ea4cdb25dc654dba5912af9d684704da30081db23120600d8db355982acd1","hook":null,"machine":"machine-1","message":"2026/10/05 02:24:35 [notice] 1#1: start worker process 22\n","service":"web","service_id":"6d5c9a3fb9d647d9a81bfe273e48dde6","stream":"stderr","timestamp":"2026-10-05T02:24:35.850771795+00:00"}
-{"container_id":"5e3a54fc5f3df78c04a03d5bd77d14908241dd0a1b928df895d1854959149878","hook":null,"machine":"machine-1","message":"2026/10/05 02:24:46 Starting up on port 80\n","service":"worker","service_id":"ec02437ef76a4d11a5af850934be313e","stream":"stderr","timestamp":"2026-10-05T02:24:46.369475605+00:00"}
-{"container_id":"210f3849f314016fc3cedf845174206f152c716a443b9f3b2b88e0c6ce579082","hook":null,"machine":"machine-1","message":"2026/10/05 02:24:50 Starting up on port 80\n","service":"api","service_id":"c9679360c13b401c9148032026092739","stream":"stderr","timestamp":"2026-10-05T02:24:50.121592889+00:00"}
-{"container_id":"5e3a54fc5f3df78c04a03d5bd77d14908241dd0a1b928df895d1854959149878","hook":null,"machine":"machine-1","message":"2026/10/05 02:24:51 Starting up on port 80\n","service":"worker","service_id":"ec02437ef76a4d11a5af850934be313e","stream":"stderr","timestamp":"2026-10-05T02:24:51.502047623+00:00"}
+{"container":"7093e0b04215246d38163ccd4812d30fccb026423cef07560f87d54b11c4c19b","container_id":"7093e0b04215246d38163ccd4812d30fccb026423cef07560f87d54b11c4c19b","deployment":"928a23ec-4852-48b4-b8be-d500434c02e5","hook":null,"level":"info","line":"2026/10/20 16:55:43 [notice] 1#1: exit","machine":"machine-1","message":"2026/10/20 16:55:43 [notice] 1#1: exit\n","namespace":"shop-production","replica":"ployz-create-f50bc49694062b4e617332172e8cf88a12b3d9e6bd18194cdd5937fdbd76e958","service":"web","stream":"stderr","timestamp":"2026-10-20T16:55:43.649398812+00:00","ts":"2026-10-20T16:55:43.649398812Z"}
+{"container":"7093e0b04215246d38163ccd4812d30fccb026423cef07560f87d54b11c4c19b","container_id":"7093e0b04215246d38163ccd4812d30fccb026423cef07560f87d54b11c4c19b","deployment":"928a23ec-4852-48b4-b8be-d500434c02e5","exit":{"code":0,"oom_killed":false},"hook":null,"machine":"machine-1","namespace":"shop-production","replica":"ployz-create-f50bc49694062b4e617332172e8cf88a12b3d9e6bd18194cdd5937fdbd76e958","service":"web","timestamp":"2026-10-20T16:55:43.711050504+00:00","ts":"2026-10-20T16:55:43.711050504Z"}
 ```
 
 ### logs --utc --since
@@ -571,9 +636,7 @@ $ ployz logs api --utc --since 2h --tail 3
 
 stderr:
 ```
-2026-10-05T02:10:58.091856127+00:00 machine-1 api/210f3849f314 | 2026/10/05 02:10:58 Starting up on port 80
-2026-10-05T02:19:42.861185182+00:00 machine-1 api/210f3849f314 | 2026/10/05 02:19:42 Starting up on port 80
-2026-10-05T02:24:50.121592889+00:00 machine-1 api/210f3849f314 | 2026/10/05 02:24:50 Starting up on port 80
+2026-10-20T16:46:21.544183687+00:00 machine-1 api/7561bf62883c | 2026/10/20 16:46:21 Starting up on port 80
 ```
 
 ### logs --follow (stopped after 10s; exit 124 is that timeout)
@@ -585,14 +648,14 @@ $ ployz logs web --follow --tail 2
 
 stdout:
 ```
-2026-10-05T02:25:46.441713438+00:00 machine-1 web/651ea4cdb25d | ::1 - - [05/Oct/2026:02:25:46 +0000] "GET / HTTP/1.1" 200 615 "-" "Wget" "-"
-2026-10-05T02:25:48.072223859+00:00 machine-1 web/651ea4cdb25d | ::1 - - [05/Oct/2026:02:25:48 +0000] "GET / HTTP/1.1" 200 615 "-" "Wget" "-"
+2026-10-20T16:56:24.993412207+00:00 machine-1 web/c8361accee66 | ::1 - - [20/Oct/2026:16:56:24 +0000] "GET / HTTP/1.1" 200 615 "-" "Wget" "-"
+2026-10-20T16:56:27.427952019+00:00 machine-1 web/c8361accee66 | ::1 - - [20/Oct/2026:16:56:27 +0000] "GET / HTTP/1.1" 200 615 "-" "Wget" "-"
 ```
 
 stderr:
 ```
-2026-10-05T02:24:35.850448487+00:00 machine-1 web/651ea4cdb25d | 2026/10/05 02:24:35 [notice] 1#1: start worker process 21
-2026-10-05T02:24:35.850771795+00:00 machine-1 web/651ea4cdb25d | 2026/10/05 02:24:35 [notice] 1#1: start worker process 22
+2026-10-20T16:55:43.649398812+00:00 machine-1 web/7093e0b04215 | 2026/10/20 16:55:43 [notice] 1#1: exit
+2026-10-20T16:55:43.711050504+00:00 machine-1 web/7093e0b04215 | exited with 0
 
 Timed out after 10.0s
 ```
@@ -605,12 +668,11 @@ $ ployz logs web --follow --tail 2
 
 TTY rendering (ANSI stripped; carriage-return redraws shown as separate lines; raw in .ansi):
 ```
-2026-10-05T02:25:46.441713438+00:00 machine-1 web/651ea4cdb25d | ::1 - - [05/Oct/2026:02:25:46 +0000] "GET / HTTP/1.1" 200 615 "-" "Wget" "-"
-2026-10-05T02:25:48.072223859+00:00 machine-1 web/651ea4cdb25d | ::1 - - [05/Oct/2026:02:25:48 +0000] "GET / HTTP/1.1" 200 615 "-" "Wget" "-"
-2026-10-05T02:25:56.469902197+00:00 machine-1 web/651ea4cdb25d | ::1 - - [05/Oct/2026:02:25:56 +0000] "GET / HTTP/1.1" 200 615 "-" "Wget" "-"
-2026-10-05T02:25:58.087490349+00:00 machine-1 web/651ea4cdb25d | ::1 - - [05/Oct/2026:02:25:58 +0000] "GET / HTTP/1.1" 200 615 "-" "Wget" "-"
+2026-10-20T16:56:24.993412207+00:00 machine-1 web/c8361accee66 | ::1 - - [20/Oct/2026:16:56:24 +0000] "GET / HTTP/1.1" 200 615 "-" "Wget" "-"
+2026-10-20T16:56:27.427952019+00:00 machine-1 web/c8361accee66 | ::1 - - [20/Oct/2026:16:56:27 +0000] "GET / HTTP/1.1" 200 615 "-" "Wget" "-"
+2026-10-20T16:56:36.516028097+00:00 machine-1 web/c8361accee66 | ::1 - - [20/Oct/2026:16:56:36 +0000] "GET / HTTP/1.1" 200 615 "-" "Wget" "-"
+2026-10-20T16:56:38.961923106+00:00 machine-1 web/c8361accee66 | ::1 - - [20/Oct/2026:16:56:38 +0000] "GET / HTTP/1.1" 200 615 "-" "Wget" "-"
 # exit 124
-
 ```
 
 ### logs --follow --json (stopped after 10s)
@@ -622,10 +684,10 @@ $ ployz --json logs web --follow --tail 2
 
 stdout:
 ```
-{"container_id":"651ea4cdb25dc654dba5912af9d684704da30081db23120600d8db355982acd1","hook":null,"machine":"machine-1","message":"::1 - - [05/Oct/2026:02:25:56 +0000] \"GET / HTTP/1.1\" 200 615 \"-\" \"Wget\" \"-\"\n","service":"web","service_id":"6d5c9a3fb9d647d9a81bfe273e48dde6","stream":"stdout","timestamp":"2026-10-05T02:25:56.469902197+00:00"}
-{"container_id":"651ea4cdb25dc654dba5912af9d684704da30081db23120600d8db355982acd1","hook":null,"machine":"machine-1","message":"::1 - - [05/Oct/2026:02:25:58 +0000] \"GET / HTTP/1.1\" 200 615 \"-\" \"Wget\" \"-\"\n","service":"web","service_id":"6d5c9a3fb9d647d9a81bfe273e48dde6","stream":"stdout","timestamp":"2026-10-05T02:25:58.087490349+00:00"}
-{"container_id":"651ea4cdb25dc654dba5912af9d684704da30081db23120600d8db355982acd1","hook":null,"machine":"machine-1","message":"::1 - - [05/Oct/2026:02:26:06 +0000] \"GET / HTTP/1.1\" 200 615 \"-\" \"Wget\" \"-\"\n","service":"web","service_id":"6d5c9a3fb9d647d9a81bfe273e48dde6","stream":"stdout","timestamp":"2026-10-05T02:26:06.481100883+00:00"}
-{"container_id":"651ea4cdb25dc654dba5912af9d684704da30081db23120600d8db355982acd1","hook":null,"machine":"machine-1","message":"::1 - - [05/Oct/2026:02:26:07 +0000] \"GET / HTTP/1.1\" 200 615 \"-\" \"Wget\" \"-\"\n","service":"web","service_id":"6d5c9a3fb9d647d9a81bfe273e48dde6","stream":"stdout","timestamp":"2026-10-05T02:26:07.954093028+00:00"}
+{"container":"c8361accee66e39d0e17a6493a336223aa2a29f4efde6c6f4d9847bd226e2c72","container_id":"c8361accee66e39d0e17a6493a336223aa2a29f4efde6c6f4d9847bd226e2c72","deployment":"9f056dff-7720-4f2e-bbbb-724c39e92221","hook":null,"level":"info","line":"::1 - - [20/Oct/2026:16:56:36 +0000] \"GET / HTTP/1.1\" 200 615 \"-\" \"Wget\" \"-\"","machine":"machine-1","message":"::1 - - [20/Oct/2026:16:56:36 +0000] \"GET / HTTP/1.1\" 200 615 \"-\" \"Wget\" \"-\"\n","namespace":"shop-production","replica":"ployz-create-0d0630aa97722410328d4ced3cc36357ecccedb8c779bc363640cdf20da1d013","service":"web","stream":"stdout","timestamp":"2026-10-20T16:56:36.516028097+00:00","ts":"2026-10-20T16:56:36.516028097Z"}
+{"container":"c8361accee66e39d0e17a6493a336223aa2a29f4efde6c6f4d9847bd226e2c72","container_id":"c8361accee66e39d0e17a6493a336223aa2a29f4efde6c6f4d9847bd226e2c72","deployment":"9f056dff-7720-4f2e-bbbb-724c39e92221","hook":null,"level":"info","line":"::1 - - [20/Oct/2026:16:56:38 +0000] \"GET / HTTP/1.1\" 200 615 \"-\" \"Wget\" \"-\"","machine":"machine-1","message":"::1 - - [20/Oct/2026:16:56:38 +0000] \"GET / HTTP/1.1\" 200 615 \"-\" \"Wget\" \"-\"\n","namespace":"shop-production","replica":"ployz-create-0d0630aa97722410328d4ced3cc36357ecccedb8c779bc363640cdf20da1d013","service":"web","stream":"stdout","timestamp":"2026-10-20T16:56:38.961923106+00:00","ts":"2026-10-20T16:56:38.961923106Z"}
+{"container":"c8361accee66e39d0e17a6493a336223aa2a29f4efde6c6f4d9847bd226e2c72","container_id":"c8361accee66e39d0e17a6493a336223aa2a29f4efde6c6f4d9847bd226e2c72","deployment":"9f056dff-7720-4f2e-bbbb-724c39e92221","hook":null,"level":"info","line":"::1 - - [20/Oct/2026:16:56:45 +0000] \"GET / HTTP/1.1\" 200 615 \"-\" \"Wget\" \"-\"","machine":"machine-1","message":"::1 - - [20/Oct/2026:16:56:45 +0000] \"GET / HTTP/1.1\" 200 615 \"-\" \"Wget\" \"-\"\n","service":"web","service_id":"0bc3883482ba480298f83b694d408c4d","stream":"stdout","timestamp":"2026-10-20T16:56:45.860111844+00:00","ts":"2026-10-20T16:56:45.860111844Z"}
+{"container":"c8361accee66e39d0e17a6493a336223aa2a29f4efde6c6f4d9847bd226e2c72","container_id":"c8361accee66e39d0e17a6493a336223aa2a29f4efde6c6f4d9847bd226e2c72","deployment":"9f056dff-7720-4f2e-bbbb-724c39e92221","hook":null,"level":"info","line":"::1 - - [20/Oct/2026:16:56:48 +0000] \"GET / HTTP/1.1\" 200 615 \"-\" \"Wget\" \"-\"","machine":"machine-1","message":"::1 - - [20/Oct/2026:16:56:48 +0000] \"GET / HTTP/1.1\" 200 615 \"-\" \"Wget\" \"-\"\n","service":"web","service_id":"0bc3883482ba480298f83b694d408c4d","stream":"stdout","timestamp":"2026-10-20T16:56:48.366259835+00:00","ts":"2026-10-20T16:56:48.366259835Z"}
 ```
 
 stderr:
@@ -637,14 +699,14 @@ Timed out after 10.0s
 ### logs --deployment
 
 ```console
-$ ployz logs --deployment 2e8e2cfb-03ba-43d1-9f82-5f8fa3dfacd9 --tail 2
+$ ployz logs --deployment 9f056dff-7720-4f2e-bbbb-724c39e92221 --tail 2
 # exit 0
 ```
 
 stdout:
 ```
-2026-10-05T02:26:06.481100883+00:00 machine-1 web/651ea4cdb25d | ::1 - - [05/Oct/2026:02:26:06 +0000] "GET / HTTP/1.1" 200 615 "-" "Wget" "-"
-2026-10-05T02:26:07.954093028+00:00 machine-1 web/651ea4cdb25d | ::1 - - [05/Oct/2026:02:26:07 +0000] "GET / HTTP/1.1" 200 615 "-" "Wget" "-"
+2026-10-20T16:56:45.860111844+00:00 machine-1 web/c8361accee66 | ::1 - - [20/Oct/2026:16:56:45 +0000] "GET / HTTP/1.1" 200 615 "-" "Wget" "-"
+2026-10-20T16:56:48.366259835+00:00 machine-1 web/c8361accee66 | ::1 - - [20/Oct/2026:16:56:48 +0000] "GET / HTTP/1.1" 200 615 "-" "Wget" "-"
 ```
 
 ## exec
@@ -682,12 +744,12 @@ BUG_REPORT_URL="https://gitlab.alpinelinux.org/alpine/aports/-/issues"
 
 ```console
 $ ployz --json exec web -- nginx -v
-# exit 1
+# exit 2
 ```
 
 stdout:
 ```
-{"error":{"code":"invalid_argument","details":null,"message":"ployz exec does not support --json"}}
+{"error":{"cause":[],"code":"invalid_argument","details":null,"message":"ployz exec does not support --json"}}
 ```
 
 ### exec a failing command
@@ -713,15 +775,24 @@ $ ployz service inspect web
 
 stdout:
 ```
-Service web (8cb17782-fd07-45b5-9009-992bb7f6f24d)
-Private DNS: web
-Source: image
-env={"X":"1"}
-image="nginx:1.27-alpine"
-maxRetries=10
-privateDns="web"
-replicas=1
-restartPolicy="unless-stopped"
+service = web
+private dns = web
+source = image
+cpuLimit = - (default)
+healthcheck = - (default)
+image = "nginx:1.27-alpine" (default -)
+maxRetries = 10 (default)
+memLimit = - (default)
+preDeployCommand = - (default)
+privateDns = "web" (default)
+registryCredential = - (default)
+replicas = 1 (default)
+restartPolicy = "unless-stopped" (default)
+startCommand = - (default)
+template = - (default)
+updateOrder = - (default)
+configs.sentry = "/etc/sentry"
+domains = acme.com
 ```
 
 ### service inspect --json
@@ -736,22 +807,135 @@ stdout:
 {
   "change": null,
   "changes": [],
+  "domains": [
+    {
+      "action": {
+        "records": [
+          {
+            "name": "@",
+            "type": "AAAA",
+            "value": "2001:db8::10"
+          }
+        ],
+        "type": "dns"
+      },
+      "hostname": "acme.com",
+      "kind": "custom",
+      "port": null,
+      "reason": "DNS points to another server",
+      "records": [
+        {
+          "name": "@",
+          "type": "AAAA",
+          "value": "2001:db8::10"
+        }
+      ],
+      "service": "web",
+      "status": "needs_attention"
+    }
+  ],
   "environment": {
-    "id": "4b4e5354-8834-4aea-a807-e65f832680bc",
+    "id": "e3ff9fdc-d394-4a02-9195-f717984132db",
     "name": "production",
     "project": "shop",
-    "revision": 38
+    "revision": 26
   },
-  "id": "8cb17782-fd07-45b5-9009-992bb7f6f24d",
-  "lineage": "8cb17782-fd07-45b5-9009-992bb7f6f24d",
+  "id": "e358ac6a-560a-468f-9f9f-43fc58547dfd",
+  "lineage": "e358ac6a-560a-468f-9f9f-43fc58547dfd",
   "name": "web",
   "private_dns": "web",
-  "row": "8cb17782-fd07-45b5-9009-992bb7f6f24d:node",
+  "row": "e358ac6a-560a-468f-9f9f-43fc58547dfd:node",
+  "settings": [
+    {
+      "apply": "staged",
+      "default": null,
+      "path": "web.cpuLimit",
+      "value": null
+    },
+    {
+      "apply": "staged",
+      "default": null,
+      "path": "web.healthcheck",
+      "value": null
+    },
+    {
+      "apply": "staged",
+      "default": null,
+      "path": "web.image",
+      "value": "nginx:1.27-alpine"
+    },
+    {
+      "apply": "staged",
+      "default": 10,
+      "path": "web.maxRetries",
+      "value": 10
+    },
+    {
+      "apply": "staged",
+      "default": null,
+      "path": "web.memLimit",
+      "value": null
+    },
+    {
+      "apply": "staged",
+      "default": null,
+      "path": "web.preDeployCommand",
+      "value": null
+    },
+    {
+      "apply": "staged",
+      "default": "web",
+      "path": "web.privateDns",
+      "value": "web"
+    },
+    {
+      "apply": "immediate",
+      "default": null,
+      "path": "web.registryCredential",
+      "value": null
+    },
+    {
+      "apply": "staged",
+      "default": 1,
+      "path": "web.replicas",
+      "value": 1
+    },
+    {
+      "apply": "staged",
+      "default": "unless-stopped",
+      "path": "web.restartPolicy",
+      "value": "unless-stopped"
+    },
+    {
+      "apply": "staged",
+      "default": null,
+      "path": "web.startCommand",
+      "value": null
+    },
+    {
+      "apply": "immediate",
+      "default": null,
+      "path": "web.template",
+      "value": null
+    },
+    {
+      "apply": "staged",
+      "default": null,
+      "path": "web.updateOrder",
+      "value": null
+    },
+    {
+      "apply": "staged",
+      "default": null,
+      "path": "web.configs.sentry",
+      "value": "/etc/sentry"
+    }
+  ],
   "source": "image",
   "template": null,
   "values": {
-    "env": {
-      "X": "1"
+    "configs": {
+      "sentry": "/etc/sentry"
     },
     "image": "nginx:1.27-alpine",
     "maxRetries": 10,
@@ -789,13 +973,7 @@ $ ployz service restart web
 
 stdout:
 ```
-stop	shop-production/web	7784f1a17df144728819cecf47282904	651ea4cdb25dc654dba5912af9d684704da30081db23120600d8db355982acd1
-start	shop-production/web	7784f1a17df144728819cecf47282904	651ea4cdb25dc654dba5912af9d684704da30081db23120600d8db355982acd1
-```
-
-stderr:
-```
-WARNING: Live Observation is observer-relative and not globally complete
+Restarted shop-production/web on machine-1.
 ```
 
 ### service restart --json
@@ -811,15 +989,9 @@ stdout:
   "container_failures": [],
   "containers": [
     {
-      "action": "stop",
-      "container_id": "651ea4cdb25dc654dba5912af9d684704da30081db23120600d8db355982acd1",
-      "machine_id": "7784f1a17df144728819cecf47282904",
-      "service": "shop-production/web"
-    },
-    {
-      "action": "start",
-      "container_id": "651ea4cdb25dc654dba5912af9d684704da30081db23120600d8db355982acd1",
-      "machine_id": "7784f1a17df144728819cecf47282904",
+      "action": "restart",
+      "container_id": "c8361accee66e39d0e17a6493a336223aa2a29f4efde6c6f4d9847bd226e2c72",
+      "machine_id": "c109917d492d460a994dbf4b43162146",
       "service": "shop-production/web"
     }
   ],
@@ -830,9 +1002,7 @@ stdout:
 
 stderr:
 ```
-WARNING: Live Observation is observer-relative and not globally complete
-stop	shop-production/web	7784f1a17df144728819cecf47282904	651ea4cdb25dc654dba5912af9d684704da30081db23120600d8db355982acd1
-start	shop-production/web	7784f1a17df144728819cecf47282904	651ea4cdb25dc654dba5912af9d684704da30081db23120600d8db355982acd1
+Restarted shop-production/web on machine-1.
 ```
 
 ### service stop
@@ -844,12 +1014,7 @@ $ ployz service stop worker
 
 stdout:
 ```
-stop	shop-production/worker	7784f1a17df144728819cecf47282904	5e3a54fc5f3df78c04a03d5bd77d14908241dd0a1b928df895d1854959149878
-```
-
-stderr:
-```
-WARNING: Live Observation is observer-relative and not globally complete
+Stopped shop-production/worker on machine-1.
 ```
 
 ### ps with a stopped Service
@@ -861,16 +1026,11 @@ $ ployz ps
 
 stdout:
 ```
-CONTAINER ID	SERVICE	KIND	MACHINE	STATE
-210f3849f314	api	service	7784f1a17df144728819cecf47282904	running
-bf055d4b5f1e	postgres	service	7784f1a17df144728819cecf47282904	running
-651ea4cdb25d	web	service	7784f1a17df144728819cecf47282904	running
-5e3a54fc5f3d	worker	service	7784f1a17df144728819cecf47282904	exited with code 2
-```
-
-stderr:
-```
-WARNING: Live Observation is observer-relative and not globally complete
+SERVICE	KIND	SERVER	STATE
+api	service	machine-1	running
+postgres	service	machine-1	running
+web	service	machine-1	running
+worker	service	machine-1	exited with code 2
 ```
 
 ### service start
@@ -882,12 +1042,7 @@ $ ployz service start worker
 
 stdout:
 ```
-start	shop-production/worker	7784f1a17df144728819cecf47282904	5e3a54fc5f3df78c04a03d5bd77d14908241dd0a1b928df895d1854959149878
-```
-
-stderr:
-```
-WARNING: Live Observation is observer-relative and not globally complete
+Started shop-production/worker on machine-1.
 ```
 
 ### service stop --json
@@ -904,8 +1059,8 @@ stdout:
   "containers": [
     {
       "action": "stop",
-      "container_id": "5e3a54fc5f3df78c04a03d5bd77d14908241dd0a1b928df895d1854959149878",
-      "machine_id": "7784f1a17df144728819cecf47282904",
+      "container_id": "7dfd628663aeea6f3b1c5e43b411d2830025a329502895be70a72061404a9b45",
+      "machine_id": "c109917d492d460a994dbf4b43162146",
       "service": "shop-production/worker"
     }
   ],
@@ -916,8 +1071,7 @@ stdout:
 
 stderr:
 ```
-WARNING: Live Observation is observer-relative and not globally complete
-stop	shop-production/worker	7784f1a17df144728819cecf47282904	5e3a54fc5f3df78c04a03d5bd77d14908241dd0a1b928df895d1854959149878
+Stopped shop-production/worker on machine-1.
 ```
 
 ### service start --json
@@ -934,8 +1088,8 @@ stdout:
   "containers": [
     {
       "action": "start",
-      "container_id": "5e3a54fc5f3df78c04a03d5bd77d14908241dd0a1b928df895d1854959149878",
-      "machine_id": "7784f1a17df144728819cecf47282904",
+      "container_id": "7dfd628663aeea6f3b1c5e43b411d2830025a329502895be70a72061404a9b45",
+      "machine_id": "c109917d492d460a994dbf4b43162146",
       "service": "shop-production/worker"
     }
   ],
@@ -946,8 +1100,7 @@ stdout:
 
 stderr:
 ```
-WARNING: Live Observation is observer-relative and not globally complete
-start	shop-production/worker	7784f1a17df144728819cecf47282904	5e3a54fc5f3df78c04a03d5bd77d14908241dd0a1b928df895d1854959149878
+Started shop-production/worker on machine-1.
 ```
 
 ### service restart two Services
@@ -959,15 +1112,8 @@ $ ployz service restart api worker
 
 stdout:
 ```
-stop	shop-production/api	7784f1a17df144728819cecf47282904	210f3849f314016fc3cedf845174206f152c716a443b9f3b2b88e0c6ce579082
-start	shop-production/api	7784f1a17df144728819cecf47282904	210f3849f314016fc3cedf845174206f152c716a443b9f3b2b88e0c6ce579082
-stop	shop-production/worker	7784f1a17df144728819cecf47282904	5e3a54fc5f3df78c04a03d5bd77d14908241dd0a1b928df895d1854959149878
-start	shop-production/worker	7784f1a17df144728819cecf47282904	5e3a54fc5f3df78c04a03d5bd77d14908241dd0a1b928df895d1854959149878
-```
-
-stderr:
-```
-WARNING: Live Observation is observer-relative and not globally complete
+Restarted shop-production/api on machine-1.
+Restarted shop-production/worker on machine-1.
 ```
 
 ## server
@@ -981,8 +1127,8 @@ $ ployz server ls
 
 stdout:
 ```
-ID	NAME	MEMBERSHIP	STORAGE	SUBNET	GATEWAY	PUBLIC IP	ENDPOINTS	HOSTNAME	DAEMON	DOCKER	OS	KERNEL	ARCH
-7784f1a17df144728819cecf47282904	machine-1	up	Managed volumes available (7.0 GB, 10 MB used, 7.0 GB free)	10.210.0.0/24	10.210.0.1	203.0.113.10	10.223.175.62:51820,203.0.113.10:51820	machine-1	0.2.3	29.8.2	Ubuntu 24.04.5 LTS	6.8.0-146-generic	x86_64
+SERVER	MEMBERSHIP	STORAGE	PUBLIC IP	SUBNET	DAEMON	OS
+machine-1	up	Managed volumes available (7.0 GB, 10 MB used, 7.0 GB free)	2001:db8::10	10.210.0.0/24	0.3.0-beta.6	Ubuntu 24.04.4 LTS x86_64
 ```
 
 ### server ls --json
@@ -1005,23 +1151,69 @@ stdout:
         "accepts_ingress": true,
         "accepts_services": true,
         "advertised_endpoints": [
-          "10.223.175.62:51820",
+          "[2001:db8::10]:51820",
+          "192.168.122.39:51820",
+          "10.77.6.58:51820",
           "203.0.113.10:51820"
         ],
         "build_concurrency": null,
-        "id": "7784f1a17df144728819cecf47282904",
+        "id": "c109917d492d460a994dbf4b43162146",
         "labels": {},
         "name": "machine-1",
-        "public_ip": "203.0.113.10",
-        "public_key": "h5tDeQ1ZYY3KVUIstoGUKsC7KCw+6r/i9J9lYeXN3HQ=",
+        "public_ip": "2001:db8::10",
+        "public_key": "KXeXNAhNTeoeUvjPg+Elv3vCK5cgNtIgwMRVqzVQ5Ew=",
         "runtime": {
           "architecture": "x86_64",
-          "daemon_version": "0.2.3",
-          "docker_version": "29.8.2",
-          "hostname": "machine-1",
-          "kernel_version": "6.8.0-146-generic",
-          "memory_total_bytes": 2050584576,
-          "os_pretty_name": "Ubuntu 24.04.5 LTS",
+          "capabilities": [
+            "ployz.build.grant.inspect.v1",
+            "ployz.build.grant.mint.v1",
+            "ployz.build.v1",
+            "ployz.certificates.policy.v1",
+            "ployz.certificates.publish.v1",
+            "ployz.container.ensure.v1",
+            "ployz.container.exec.v1",
+            "ployz.container.inspect.v1",
+            "ployz.container.list.v1",
+            "ployz.image.ingest.ensure.v1",
+            "ployz.image.list.v1",
+            "ployz.image.prune.v1",
+            "ployz.image.pull-from-machine.v1",
+            "ployz.image.pull.v1",
+            "ployz.logs.history.v2",
+            "ployz.logs.tail.v1",
+            "ployz.machine.enroll.v1",
+            "ployz.machine.forget.v1",
+            "ployz.machine.inspect.v1",
+            "ployz.machine.leave.v1",
+            "ployz.machine.list.v1",
+            "ployz.machine.register.v1",
+            "ployz.machine.set-management-client.v1",
+            "ployz.machine.set-push-target.v1",
+            "ployz.machine.storage-observation.v1",
+            "ployz.machine.update.v1",
+            "ployz.machine.upgrade.request.v1",
+            "ployz.metrics.history.v1",
+            "ployz.network.select-endpoint.v1",
+            "ployz.rpc.describe-contract.v1",
+            "ployz.runtime.watch.v1",
+            "ployz.serving.publish.v1",
+            "ployz.serving.routes.v1",
+            "ployz.storage.inspect.v1",
+            "ployz.storage.prepare.v1",
+            "ployz.volume.copy.floor.v1",
+            "ployz.volume.copy.inspect.v1",
+            "ployz.volume.copy.set.v1",
+            "ployz.volume.list.v1",
+            "ployz.volume.remove.v1",
+            "ployz.volume.seed.v1",
+            "ployz.volume.size.set.v1"
+          ],
+          "daemon_version": "0.3.0-beta.6",
+          "docker_version": "29.7.0",
+          "hostname": "box-node-bb4121c3027ee229",
+          "kernel_version": "7.0.0-38-generic",
+          "memory_total_bytes": 4101672960,
+          "os_pretty_name": "Ubuntu 24.04.4 LTS",
           "running_builds": 0
         },
         "subnet": "10.210.0.0/24"
@@ -1030,10 +1222,10 @@ stdout:
       "rtt": null,
       "selected_endpoint": null,
       "storage": {
-        "free_bytes": 6969446400,
+        "free_bytes": 6969716736,
         "size_bytes": 6979321856,
         "state": "pool",
-        "used_bytes": 9875456
+        "used_bytes": 9605120
       }
     }
   ]
@@ -1049,76 +1241,25 @@ $ ployz server show machine-1
 
 stdout:
 ```
-{
-  "server": {
-    "advertised_endpoints": [
-      "10.223.175.62:51820",
-      "203.0.113.10:51820"
-    ],
-    "id": "7784f1a17df144728819cecf47282904",
-    "machine": {
-      "accepts_builds": true,
-      "accepts_ingress": true,
-      "accepts_services": true,
-      "advertised_endpoints": [
-        "10.223.175.62:51820",
-        "203.0.113.10:51820"
-      ],
-      "build_concurrency": null,
-      "id": "7784f1a17df144728819cecf47282904",
-      "labels": {},
-      "name": "machine-1",
-      "public_ip": "203.0.113.10",
-      "public_key": "h5tDeQ1ZYY3KVUIstoGUKsC7KCw+6r/i9J9lYeXN3HQ=",
-      "runtime": {
-        "architecture": "x86_64",
-        "daemon_version": "0.2.3",
-        "docker_version": "29.8.2",
-        "hostname": "machine-1",
-        "kernel_version": "6.8.0-146-generic",
-        "memory_total_bytes": 2050584576,
-        "os_pretty_name": "Ubuntu 24.04.5 LTS",
-        "running_builds": 0
-      },
-      "subnet": "10.210.0.0/24"
-    },
-    "management_clients": [
-      "cli-59a792d0b8904f2f9c93b6d8c620",
-      "cloud"
-    ],
-    "phase": "participating",
-    "public_key": "h5tDeQ1ZYY3KVUIstoGUKsC7KCw+6r/i9J9lYeXN3HQ=",
-    "rtts": [],
-    "storage": {
-      "free_bytes": 6969446400,
-      "size_bytes": 6979321856,
-      "state": "pool",
-      "used_bytes": 9875456
-    },
-    "store_version": {
-      "4388006ebd8542bb94d91959bf762650": 135
-    },
-    "telemetry": {
-      "bridge": {
-        "bridge_attached_endpoints": 5,
-        "bridge_free_endpoints": 248,
-        "bridge_usable_endpoints": 253
-      },
-      "host": {
-        "cpu_count": 2,
-        "docker_root_free_bytes": 14718599168,
-        "docker_root_total_bytes": 24797970432,
-        "load_average_milli": 490,
-        "managed_containers": 5,
-        "memory_available_bytes": 1493684224,
-        "memory_total_bytes": 2050584576,
-        "observed_at_unix_seconds": 1791167212
-      },
-      "scope": "full"
-    }
-  },
-  "upgrade": null
-}
+server = machine-1
+id = c109917d492d460a994dbf4b43162146
+phase = participating
+os = Ubuntu 24.04.4 LTS x86_64
+kernel = 7.0.0-38-generic
+hostname = box-node-bb4121c3027ee229
+daemon = 0.3.0-beta.6
+docker = 29.7.0
+public ip = 2001:db8::10
+subnet = 10.210.0.0/24
+accepts = services, builds, ingress
+labels = -
+endpoints = [2001:db8::10]:51820, 192.168.122.39:51820, 10.77.6.58:51820, 203.0.113.10:51820
+storage = Managed volumes available (7.0 GB, 10 MB used, 7.0 GB free)
+cpu = 2 CPUs, load 0.11
+memory = 3.1 GB available of 4.1 GB
+docker disk = 38.8 GB free of 73.6 GB
+containers = 5
+management = cli-b0d2e09a28af41d780a40e97aed6, cloud
 ```
 
 ### server show --json
@@ -1133,51 +1274,99 @@ stdout:
 {
   "server": {
     "advertised_endpoints": [
-      "10.223.175.62:51820",
+      "[2001:db8::10]:51820",
+      "192.168.122.39:51820",
+      "10.77.6.58:51820",
       "203.0.113.10:51820"
     ],
-    "id": "7784f1a17df144728819cecf47282904",
+    "id": "c109917d492d460a994dbf4b43162146",
     "machine": {
       "accepts_builds": true,
       "accepts_ingress": true,
       "accepts_services": true,
       "advertised_endpoints": [
-        "10.223.175.62:51820",
+        "[2001:db8::10]:51820",
+        "192.168.122.39:51820",
+        "10.77.6.58:51820",
         "203.0.113.10:51820"
       ],
       "build_concurrency": null,
-      "id": "7784f1a17df144728819cecf47282904",
+      "id": "c109917d492d460a994dbf4b43162146",
       "labels": {},
       "name": "machine-1",
-      "public_ip": "203.0.113.10",
-      "public_key": "h5tDeQ1ZYY3KVUIstoGUKsC7KCw+6r/i9J9lYeXN3HQ=",
+      "public_ip": "2001:db8::10",
+      "public_key": "KXeXNAhNTeoeUvjPg+Elv3vCK5cgNtIgwMRVqzVQ5Ew=",
       "runtime": {
         "architecture": "x86_64",
-        "daemon_version": "0.2.3",
-        "docker_version": "29.8.2",
-        "hostname": "machine-1",
-        "kernel_version": "6.8.0-146-generic",
-        "memory_total_bytes": 2050584576,
-        "os_pretty_name": "Ubuntu 24.04.5 LTS",
+        "capabilities": [
+          "ployz.build.grant.inspect.v1",
+          "ployz.build.grant.mint.v1",
+          "ployz.build.v1",
+          "ployz.certificates.policy.v1",
+          "ployz.certificates.publish.v1",
+          "ployz.container.ensure.v1",
+          "ployz.container.exec.v1",
+          "ployz.container.inspect.v1",
+          "ployz.container.list.v1",
+          "ployz.image.ingest.ensure.v1",
+          "ployz.image.list.v1",
+          "ployz.image.prune.v1",
+          "ployz.image.pull-from-machine.v1",
+          "ployz.image.pull.v1",
+          "ployz.logs.history.v2",
+          "ployz.logs.tail.v1",
+          "ployz.machine.enroll.v1",
+          "ployz.machine.forget.v1",
+          "ployz.machine.inspect.v1",
+          "ployz.machine.leave.v1",
+          "ployz.machine.list.v1",
+          "ployz.machine.register.v1",
+          "ployz.machine.set-management-client.v1",
+          "ployz.machine.set-push-target.v1",
+          "ployz.machine.storage-observation.v1",
+          "ployz.machine.update.v1",
+          "ployz.machine.upgrade.request.v1",
+          "ployz.metrics.history.v1",
+          "ployz.network.select-endpoint.v1",
+          "ployz.rpc.describe-contract.v1",
+          "ployz.runtime.watch.v1",
+          "ployz.serving.publish.v1",
+          "ployz.serving.routes.v1",
+          "ployz.storage.inspect.v1",
+          "ployz.storage.prepare.v1",
+          "ployz.volume.copy.floor.v1",
+          "ployz.volume.copy.inspect.v1",
+          "ployz.volume.copy.set.v1",
+          "ployz.volume.list.v1",
+          "ployz.volume.remove.v1",
+          "ployz.volume.seed.v1",
+          "ployz.volume.size.set.v1"
+        ],
+        "daemon_version": "0.3.0-beta.6",
+        "docker_version": "29.7.0",
+        "hostname": "box-node-bb4121c3027ee229",
+        "kernel_version": "7.0.0-38-generic",
+        "memory_total_bytes": 4101672960,
+        "os_pretty_name": "Ubuntu 24.04.4 LTS",
         "running_builds": 0
       },
       "subnet": "10.210.0.0/24"
     },
     "management_clients": [
-      "cli-59a792d0b8904f2f9c93b6d8c620",
+      "cli-b0d2e09a28af41d780a40e97aed6",
       "cloud"
     ],
     "phase": "participating",
-    "public_key": "h5tDeQ1ZYY3KVUIstoGUKsC7KCw+6r/i9J9lYeXN3HQ=",
+    "public_key": "KXeXNAhNTeoeUvjPg+Elv3vCK5cgNtIgwMRVqzVQ5Ew=",
     "rtts": [],
     "storage": {
-      "free_bytes": 6969446400,
+      "free_bytes": 6969716736,
       "size_bytes": 6979321856,
       "state": "pool",
-      "used_bytes": 9875456
+      "used_bytes": 9605120
     },
     "store_version": {
-      "4388006ebd8542bb94d91959bf762650": 135
+      "30e020e172464a95a9e21f9a2a465226": 143
     },
     "telemetry": {
       "bridge": {
@@ -1187,13 +1376,13 @@ stdout:
       },
       "host": {
         "cpu_count": 2,
-        "docker_root_free_bytes": 14718599168,
-        "docker_root_total_bytes": 24797970432,
-        "load_average_milli": 490,
+        "docker_root_free_bytes": 38758916096,
+        "docker_root_total_bytes": 73635184640,
+        "load_average_milli": 110,
         "managed_containers": 5,
-        "memory_available_bytes": 1491394560,
-        "memory_total_bytes": 2050584576,
-        "observed_at_unix_seconds": 1791167215
+        "memory_available_bytes": 3060064256,
+        "memory_total_bytes": 4101672960,
+        "observed_at_unix_seconds": 1792515567
       },
       "scope": "full"
     }
@@ -1211,11 +1400,11 @@ $ ployz server logs --tail 5
 
 stdout:
 ```
-2026-10-05T02:26:49.328899+00:00 machine-1 ployz | ployzd[1002]:  WARN failed closing path err=LastOpenPath
-2026-10-05T02:26:50.320233+00:00 machine-1 ployz | ployzd[1002]:  WARN failed closing path err=LastOpenPath
-2026-10-05T02:26:52.482447+00:00 machine-1 ployz | ployzd[1002]:  WARN failed closing path err=LastOpenPath
-2026-10-05T02:26:53.776577+00:00 machine-1 ployz | ployzd[1002]:  WARN failed closing path err=LastOpenPath
-2026-10-05T02:26:55.997450+00:00 machine-1 ployz | ployzd[1002]:  WARN failed closing path err=LastOpenPath
+2026-10-20T16:55:44.617186+00:00 machine-1 ployz | ployzd[5398]:  INFO ingress config routes= https://acme.com=[10.210.0.4:8080]
+2026-10-20T16:57:20.800617+00:00 machine-1 ployz | ployzd[5398]:  INFO ingress config routes= https://acme.com=[]
+2026-10-20T16:57:31.013256+00:00 machine-1 ployz | ployzd[5398]:  INFO ingress config routes= https://acme.com=[10.210.0.4:8080]
+2026-10-20T16:57:39.433521+00:00 machine-1 ployz | ployzd[5398]:  INFO ingress config routes= https://acme.com=[]
+2026-10-20T16:57:49.653851+00:00 machine-1 ployz | ployzd[5398]:  INFO ingress config routes= https://acme.com=[10.210.0.4:8080]
 ```
 
 ### server logs --json
@@ -1227,7 +1416,7 @@ $ ployz --json server logs --tail 2
 
 stdout:
 ```
-{"container_id":null,"hook":null,"machine":"machine-1","message":"ployzd[1002]:  WARN failed closing path err=LastOpenPath\n","service":"ployz","service_id":null,"stream":"stdout","timestamp":"2026-10-05T02:26:58.882654+00:00"}
-{"container_id":null,"hook":null,"machine":"machine-1","message":"systemd[1]: ployz.service: Got notification message from PID 8233, but reception only permitted for main PID 1002\n","service":"ployz","service_id":null,"stream":"stdout","timestamp":"2026-10-05T02:26:59.548388+00:00"}
+{"container":null,"container_id":null,"deployment":null,"hook":null,"level":"info","line":"systemd[1]: ployz.service: Got notification message from PID 30698, but reception only permitted for main PID 5398","machine":"machine-1","message":"systemd[1]: ployz.service: Got notification message from PID 30698, but reception only permitted for main PID 5398\n","service":"ployz","service_id":null,"stream":"stdout","timestamp":"2026-10-20T16:59:31.139342+00:00","ts":"2026-10-20T16:59:31.139342000Z"}
+{"container":null,"container_id":null,"deployment":null,"hook":null,"level":"info","line":"systemd[1]: ployz.service: Got notification message from PID 30738, but reception only permitted for main PID 5398","machine":"machine-1","message":"systemd[1]: ployz.service: Got notification message from PID 30738, but reception only permitted for main PID 5398\n","service":"ployz","service_id":null,"stream":"stdout","timestamp":"2026-10-20T16:59:33.247128+00:00","ts":"2026-10-20T16:59:33.247128000Z"}
 ```
 

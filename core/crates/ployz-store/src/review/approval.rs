@@ -5,13 +5,13 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::RpcError;
-use ployz_core::config::SavedEnvironmentIntent;
+use ployz_core::config::{SavedEnvironmentIntent, SavedServiceIntent, SavedVolumeIntent};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use ts_rs::TS;
 
 use crate::error;
-use crate::id::{ApprovalDigest, DeploymentId, EnvironmentId, Hostname};
+use crate::id::{ApprovalDigest, EnvironmentId, Hostname, VolumeName};
 use crate::review::{DiffView, Head, Review, Shipping};
 use crate::scope::{Environment, EnvironmentSummary};
 use crate::storage::Tx;
@@ -30,6 +30,22 @@ pub struct DestructiveEffect {
     pub node: String,
     /// The row it changes, as `diff` shows it.
     pub path: String,
+    /// A detach that moves the Service onto a Volume restored from the detached
+    /// one: the writes it leaves behind.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub lost_after: Option<LostAfter>,
+}
+
+/// What a restore leaves behind: the source's writes after `at` are not in
+/// `restored`.
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize, TS)]
+pub struct LostAfter {
+    /// The restore point's time, in Unix seconds.
+    #[ts(type = "number")]
+    pub at: u64,
+    /// The restored Volume's name.
+    pub restored: String,
 }
 
 /// What a Destructive Effect destroys.
@@ -58,6 +74,8 @@ pub enum DestructiveKind {
     RestartsService,
     /// A Protected Environment can be removed, and anyone who can stage can change its source.
     UnprotectsEnvironment,
+    /// An Organization is deleted, with its tokens, settings and Servers' pairing.
+    RemovesOrganization,
 }
 
 impl DestructiveEffect {
@@ -78,6 +96,7 @@ impl DestructiveEffect {
             DestructiveKind::StopsService => format!("stop Service {name}"),
             DestructiveKind::RestartsService => format!("restart Service {name}"),
             DestructiveKind::UnprotectsEnvironment => format!("unprotect Environment {name}"),
+            DestructiveKind::RemovesOrganization => format!("remove Organization {name}"),
         }
     }
 }
@@ -136,6 +155,32 @@ fn add_missing<'a, T: Clone + 'a, K: PartialEq + ?Sized>(
     }
 }
 
+/// The Volumes Service `id` mounts in `running` that `target` keeps, by identity,
+/// and the Service no longer mounts there, removed or not.
+pub(crate) fn detached<'a>(
+    running: &'a SavedEnvironmentIntent,
+    target: &'a SavedEnvironmentIntent,
+    id: &'a str,
+) -> impl Iterator<Item = &'a SavedVolumeIntent> {
+    let mounts = move |intent: &'a SavedEnvironmentIntent| {
+        intent
+            .services
+            .iter()
+            .filter(move |service| service.id == id)
+            .flat_map(|service| &service.volume_attachments)
+    };
+    mounts(running)
+        .filter(move |mount| {
+            mounts(target).all(|kept| kept.volume_resource_id != mount.volume_resource_id)
+        })
+        .filter_map(move |mount| {
+            target
+                .volumes
+                .iter()
+                .find(|volume| volume.resource_id == mount.volume_resource_id)
+        })
+}
+
 /// What publishing `target` destroys of what is `running`, naming each generated domain
 /// under its Cluster Domain in `cluster_domains`, by node ID and prefix.
 pub(crate) fn destructive_effects(
@@ -155,6 +200,7 @@ pub(crate) fn destructive_effects(
                 name: volume.name.clone(),
                 node: volume.resource_id.clone(),
                 path: format!("volumes.{}", volume.name),
+                lost_after: None,
             });
         }
     }
@@ -164,6 +210,7 @@ pub(crate) fn destructive_effects(
             name: name.to_owned(),
             node: deployed.id.clone(),
             path,
+            lost_after: None,
         };
         let Some(service) = target
             .services
@@ -175,22 +222,12 @@ pub(crate) fn destructive_effects(
             continue;
         };
         let slug = &service.slug;
-        for attachment in &deployed.volume_attachments {
-            let id = &attachment.volume_resource_id;
-            let mounted = service
-                .volume_attachments
-                .iter()
-                .any(|kept| kept.volume_resource_id == *id);
-            let kept = target
-                .volumes
-                .iter()
-                .find(|volume| volume.resource_id == *id);
-            if let Some(volume) = kept
-                && !mounted
-            {
-                let path = format!("{slug}.mounts.{}", volume.name);
-                effects.insert(effect(DestructiveKind::DetachesVolume, &volume.name, path));
-            }
+        for volume in detached(running, target, &deployed.id) {
+            let path = format!("{slug}.mounts.{}", volume.name);
+            effects.insert(DestructiveEffect {
+                lost_after: lost_after(running, target, service, &volume.resource_id),
+                ..effect(DestructiveKind::DetachesVolume, &volume.name, path)
+            });
         }
         let config = &service.config;
         for route in &deployed.config.routes {
@@ -225,22 +262,53 @@ pub(crate) fn destructive_effects(
     effects
 }
 
+/// What `service` loses by leaving Volume `source` for a Volume this publication
+/// restores from it.
+fn lost_after(
+    running: &SavedEnvironmentIntent,
+    target: &SavedEnvironmentIntent,
+    service: &SavedServiceIntent,
+    source: &str,
+) -> Option<LostAfter> {
+    target.volumes.iter().find_map(|restored| {
+        let from = restored.restored_from.as_ref()?;
+        let new = running
+            .volumes
+            .iter()
+            .all(|held| held.resource_id != restored.resource_id);
+        let mounts = service
+            .volume_attachments
+            .iter()
+            .any(|mount| mount.volume_resource_id == restored.resource_id);
+        (from.volume == source && new && mounts).then(|| LostAfter {
+            at: from.at,
+            restored: restored.name.clone(),
+        })
+    })
+}
+
+/// The digest a human approves for `command` (as Cloud names it: `publish`, `admit`,
+/// `retry`, `shut_down`, `remove`, `sync` or `take`) into `environment`.
 pub(crate) fn approval_digest(
     who: &Actor,
+    command: &str,
     environment: &EnvironmentId,
     version: &str,
     effects: &BTreeSet<DestructiveEffect>,
 ) -> ApprovalDigest {
-    digest(version, &bound(who, environment, effects))
+    digest(version, &bound(who, command, environment, effects))
 }
 
+/// What every approval binds: who asks, the command it runs, where, and what it destroys.
 fn bound(
     who: &Actor,
+    command: &str,
     environment: &EnvironmentId,
     effects: &BTreeSet<DestructiveEffect>,
 ) -> serde_json::Value {
     json!({
         "organization": who.organization,
+        "command": command,
         "environment": environment,
         "effects": effects,
     })
@@ -357,7 +425,11 @@ pub(crate) fn approve(
     if !effects.is_empty() {
         gate.trusted.admit(Permission::ChangesDestroy)?;
     }
-    let mut bound = bound(who, environment, effects);
+    let command = match shipping {
+        Shipping::Publish => "publish",
+        Shipping::Deploy { .. } => "admit",
+    };
+    let mut bound = bound(who, command, environment, effects);
     if let Shipping::Deploy { services, upload } = shipping
         && let Some(bound) = bound.as_object_mut()
     {
@@ -383,31 +455,75 @@ pub(crate) fn approve(
 /// Refuse retrying Deployment `source` unless Cloud holds a human's approval of this
 /// retry, when [`Gate::asks_retry`]: a retry ships nothing a review hasn't.
 /// `review` is taken before the retry queues, so its version moves once it does: one
-/// approval admits one retry.
+/// approval admits one retry. The approval binds the Deployments a rollback undoes,
+/// the Volumes it removes and the losses the caller accepted, and says so.
 ///
 /// # Errors
-/// `approval_required`, naming the `version:digest` to approve and the `diff`.
+/// `approval_required`, naming the `version:digest` to approve, the `diff` and the
+/// `redeploy`: its Deployment's number and what it rolls back.
 pub(crate) fn approve_retry(
     who: &Actor,
     review: &Review,
-    source: &DeploymentId,
+    (retry, rollback): (&crate::Retry, &crate::deployment::Rollback),
     gate: &Gate<'_>,
 ) -> Result<(), RpcError> {
+    // The Volumes a rollback removes, as a Deploy's card shows them.
+    let effects: BTreeSet<DestructiveEffect> = rollback
+        .removes
+        .iter()
+        .map(|loss| DestructiveEffect {
+            kind: DestructiveKind::DeletesVolume,
+            name: loss.volume.name.to_string(),
+            node: loss.volume.id.to_string(),
+            path: format!("volumes.{}", loss.volume.name),
+            lost_after: None,
+        })
+        .collect();
+    let accepted: BTreeSet<&VolumeName> = retry.accept_volume_loss.iter().collect();
     let bound = json!({
         "organization": who.organization,
+        "command": "retry",
         "environment": review.view.environment.id,
-        "retry": source,
+        "retry": retry.deployment,
+        "number": rollback.number,
+        "rolls_back": rollback.rolls_back,
+        "effects": effects,
+        "accept_volume_loss": accepted,
     });
     // The retry ships its source's frozen state: none of the staged changes, and it
-    // destroys only what its source's review already accepted.
+    // destroys only what its source's review or the caller's acceptance covered.
     let mut diff = review.view.clone();
     diff.effects.clear();
     diff.changes.clear();
     diff.total_count = 0;
-    let message = gate.message(&diff, "deploy", || {
-        "A human must approve this retry first.".to_owned()
+    let undoes = crate::deployment::numbered(&rollback.rolls_back);
+    let held: Vec<&str> = rollback
+        .removes
+        .iter()
+        .filter(|loss| !loss.deletes.is_empty())
+        .map(|loss| loss.volume.name.as_str())
+        .collect();
+    let deletes = match held.as_slice() {
+        [] => String::new(),
+        names => format!(" and deletes the data of {}", names.join(", ")),
+    };
+    let message = gate.message(&diff, "deploy", || match &undoes {
+        Some(undoes) => format!(
+            "A human must approve rolling back to #{} first: it undoes {undoes}{deletes}.",
+            rollback.number
+        ),
+        None => "A human must approve this redeploy first.".to_owned(),
     });
-    gate.require(bound, message, (&BTreeSet::new(), &diff))
+    gate.require(bound, message, (&effects, &diff))
+        .map_err(|mut refused| {
+            if let Some(details) = refused.details.as_object_mut() {
+                details.insert(
+                    "redeploy".to_owned(),
+                    json!({ "deployment": rollback.number, "rolls_back": rollback.rolls_back }),
+                );
+            }
+            refused
+        })
 }
 
 /// What a Sync or Take moves into an Environment: from which source, and the
@@ -467,6 +583,7 @@ pub(crate) fn approve_move(
     };
     let bound = json!({
         "organization": who.organization,
+        "command": what,
         "environment": into.summary.id,
         what: from.id,
         "from_revision": from.revision,

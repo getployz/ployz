@@ -21,7 +21,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "#/components/ui/tabs";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "#/components/ui/select";
 import { scalarSetting, serviceSetting, settingChange, settingError, type ServiceSettingName, type SettingSchema } from "#/modules/config-store/catalog";
 import { templateLabel } from "#/modules/config-store/database-presets";
-import { changedProps, deployedVcpuLimit, dnsLabelError, serviceChanges, serviceSettingRows, settingText } from "#/modules/config-store/store-services";
+import { changedProps, deployedVcpuLimit, serviceChanges, serviceSettingRows, settingText } from "#/modules/config-store/store-services";
 import { diffQuery, environmentSettingsQuery, namespaceQuery, requireView, servicesQuery, useStoreViews, volumesQuery } from "#/modules/config-store/store-view.queries";
 import type { Persistable } from "#/collections/query-collection";
 import { useStoreWriter } from "#/modules/config-store/store-write";
@@ -91,6 +91,9 @@ const OPTION_LABELS = new Map([
   ["no", "Never"],
   ["railpack", "Railpack"],
   ["dockerfile", "Dockerfile"],
+  ["start-first", "Start first"],
+  ["stop-first", "Stop first"],
+  ["rolling", "Rolling"],
 ]);
 
 const SERVICE_ROUTE_FROM = "/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas/services/$serviceId";
@@ -102,7 +105,7 @@ const taken = (service: ServiceListing, services: readonly ServiceListing[], nam
 
 function nameSchema(service: ServiceListing, services: readonly ServiceListing[]) {
   return Schema.String.check(Schema.makeFilter<string>((name) =>
-    dnsLabelError(name) ?? (taken(service, services, name) ? `A service here is already named ${name}.` : undefined)));
+    taken(service, services, name) ? `A service here is already named ${name}.` : undefined));
 }
 
 /**
@@ -196,6 +199,7 @@ export function StoreServiceDrawer({ params }: { params: { organizationSlug: str
       <HealthcheckSettings {...healthcheck} />
       {field("restartPolicy")}
       {(restartPolicy?.value ?? restartPolicy?.default) === "on-failure" ? field("maxRetries") : null}
+      {field("updateOrder")}
     </>,
     danger: <StoreDangerSection state={state} />,
   } satisfies Record<ServiceSettingsSectionId, ReactNode>;
@@ -208,7 +212,7 @@ export function StoreServiceDrawer({ params }: { params: { organizationSlug: str
           value={shownName}
           schema={nameSchema(service, services)}
           editTitle="Edit service name"
-          editDescription="Rename this service. Other services reach it at its Private DNS name, which stays."
+          editDescription="Other services keep reaching it at its old address."
           placeholder="Service name"
           {...changedProps(rename)}
           onRename={(name) => writer.commit({ command: "rename_service", environment: store, service: service.name, name })}
@@ -266,7 +270,7 @@ export function StoreServiceDrawer({ params }: { params: { organizationSlug: str
               </div>
             </div>
           </TabsContent>
-          <StoreServiceVariablesTab organizationSlug={organizationSlug} environment={store} service={service} services={services} settings={settings} changes={state.changes} />
+          <StoreServiceVariablesTab organizationSlug={organizationSlug} environment={store} service={service} services={services} settings={settings} changes={state.changes} broken={diff.broken ?? []} />
         </Tabs>
       </div>
     </div>
@@ -291,19 +295,26 @@ const HINTS = new Map<ServiceSettingName, string | undefined>([
   ["startCommand", undefined],
   ["preDeployCommand", undefined],
   ["restartPolicy", undefined],
+  ["updateOrder", undefined],
 ]);
 const hint = (name: ServiceSettingName, setting: SettingSchema) => HINTS.has(name) ? HINTS.get(name) : setting.description;
 /** What an unset limit means, shown in its empty field. */
-const UNSET = new Map<ServiceSettingName, string>([["cpuLimit", "No limit"], ["memLimit", "No limit"]]);
+const UNSET = new Map<ServiceSettingName, string>([["cpuLimit", "No limit"], ["memLimit", "No limit"], ["updateOrder", "Automatic"]]);
+/** The choice that unsets a Setting whose empty value means something, such as an automatic update order. */
+const UNSET_CHOICE = "unset";
 
 const SUFFIXES = new Map<ServiceSettingName, string>([["replicas", "replicas"], ["memLimit", "GB"], ["cpuLimit", "vCPUs"]]);
 
-/** What each restart policy does, shown under its choice. */
+/** What each choice does, shown under it. */
 const OPTION_HELP = new Map([
   ["unless-stopped", "Restart unless you stop it."],
   ["always", "Restart whenever it stops."],
   ["on-failure", "Restart when it exits with an error, up to Max retries."],
   ["no", "Never restart."],
+  [UNSET_CHOICE, "Stop first with a volume, else start first."],
+  ["start-first", "New copies start before old ones stop."],
+  ["stop-first", "Old copies stop first. Brief downtime."],
+  ["rolling", "Stop first, one server at a time."],
 ]);
 
 function ServiceMonitoring({ state, namespace, ...props }: Omit<ComponentProps<typeof MonitoringTab>, "placedOn"> & { state: StoreService; namespace: string | null }) {
@@ -347,8 +358,11 @@ function StoreSettingInput({ state, name, setting, row, onCommit }: {
   );
 }
 
-/** One scalar Setting as the catalog describes it: its title, help, bounds and choices. */
-function StoreSettingField({ state, name }: { state: StoreService; name: ServiceSettingName }) {
+/**
+ * One scalar Setting as the catalog describes it: its title, help, bounds and choices. With `noted`, the Store's note on
+ * the Setting, when it has one, replaces the help.
+ */
+function StoreSettingField({ state, name, noted = false }: { state: StoreService; name: ServiceSettingName; noted?: boolean }) {
   const { setting, refusal, edit } = useSettingEdit(state, name);
   const row = state.rows.get(name);
   const [current, hold] = useCommitHold(settingText(row?.value ?? row?.default));
@@ -358,7 +372,7 @@ function StoreSettingField({ state, name }: { state: StoreService; name: Service
 
   if (setting.type === "boolean") {
     return (
-      <SettingsRow label={setting.title} hint={hint(name, setting)} commit="change" control={
+      <SettingsRow label={setting.title} hint={(noted && row.note) || hint(name, setting)} commit="change" control={
         <Switch id={`setting-${name}`} aria-label={setting.title} checked={current === "true"}
           onCheckedChange={(next) => hold(String(next), state.set(name, next))} />
       } />
@@ -382,24 +396,33 @@ function StoreSettingField({ state, name }: { state: StoreService; name: Service
         control={<StoreSettingInput state={state} name={name} setting={setting} row={row} onCommit={edit} />} />
     );
   }
+  const unset = UNSET.get(name);
+  const options = unset ? [UNSET_CHOICE, ...setting.enum] : setting.enum;
+  const choice = (text: string) => unset && text === "" ? UNSET_CHOICE : text;
+  const label = (option: string) => option === UNSET_CHOICE && unset ? unset : OPTION_LABELS.get(option) ?? option;
+  const shown = choice(current);
   return (
     <SettingsRow label={setting.title} hint={hint(name, setting)} commit="change" control={
-      <Select value={current} onValueChange={(next) => { if (next !== null && next !== current) hold(next, edit(next)); }}>
-        <SelectTrigger aria-label={setting.title} className={OPTION_HELP.has(current) ? "py-1.5 data-[size=default]:h-auto" : undefined} data-changed={change ? true : undefined}
-          title={change ? `Deployed: ${settingText(change.before)}` : undefined}>
+      <Select value={shown} onValueChange={(next) => {
+        if (next === null || next === shown) return;
+        const raw = next === UNSET_CHOICE ? "" : next;
+        hold(raw, edit(raw));
+      }}>
+        <SelectTrigger aria-label={setting.title} className={OPTION_HELP.has(shown) ? "py-1.5 data-[size=default]:h-auto" : undefined} data-changed={change ? true : undefined}
+          title={change ? `Deployed: ${label(choice(settingText(change.before)))}` : undefined}>
           <SelectValue>
             <span className="flex flex-col items-start">
-              <span>{OPTION_LABELS.get(current) ?? current}</span>
-              {OPTION_HELP.has(current) ? <span className="text-xs text-muted-foreground">{OPTION_HELP.get(current)}</span> : null}
+              <span>{label(shown)}</span>
+              {OPTION_HELP.has(shown) ? <span className="text-xs text-muted-foreground">{OPTION_HELP.get(shown)}</span> : null}
             </span>
           </SelectValue>
         </SelectTrigger>
         <SelectContent>
           <SelectGroup>
-            {setting.enum.map((option) => (
-              <SelectItem key={option} value={option} label={OPTION_LABELS.get(option) ?? option}>
+            {options.map((option) => (
+              <SelectItem key={option} value={option} label={label(option)}>
                 <span className="flex flex-col">
-                  <span>{OPTION_LABELS.get(option) ?? option}</span>
+                  <span>{label(option)}</span>
                   {OPTION_HELP.has(option) ? <span className="text-xs text-muted-foreground">{OPTION_HELP.get(option)}</span> : null}
                 </span>
               </SelectItem>
@@ -564,7 +587,8 @@ export function StoreSourceSection({ state }: { state: StoreService }) {
     if (replacing) set(other(picked), null);
   };
   const dialogs = <>
-    <ImageSelectorDialog open={picking?.kind === "image"} onOpenChange={close} onSelectImage={(image) => pick("image", image)} />
+    <ImageSelectorDialog open={picking?.kind === "image"} initialImage={kind === "image" ? value : undefined} onOpenChange={close}
+      onSelectImage={(image) => pick("image", image)} />
     <GitRepoSelectorDialog open={picking?.kind === "repository"} onOpenChange={close} organizationSlug={state.organizationSlug}
       onSelectRepo={({ fullName }) => pick("repository", fullName)} />
   </>;
@@ -630,8 +654,8 @@ export function StoreSourceSection({ state }: { state: StoreService }) {
         <StoreBranchField organizationSlug={state.organizationSlug} repository={value} gitRef={gitRef} value={settingText(state.rows.get("branch")?.value)}
           change={state.changes.get("branch")} locked={locked} onSet={(branch) => set("branch", branch)} />
         <StoreOptionalField state={state} name="rootDir" addLabel="Root directory" unset="/" />
-        {/* Its Deployment Policy: when a push to the branch deploys. */}
-        <StoreSettingField state={state} name="autoDeploy" />
+        {/* Its Deployment Policy: when a push to the branch deploys. Both Settings share one note, said once. */}
+        <StoreSettingField state={state} name="autoDeploy" noted />
         <StoreSettingField state={state} name="waitForCi" />
         <StoreOptionalField state={state} name="watchPaths" addLabel="Watch paths" />
       </>

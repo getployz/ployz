@@ -384,6 +384,8 @@ fn container(id: &str, service_name: &str, kind: ContainerKind) -> ContainerObse
     }))
     .unwrap();
     ployz_core::ContainerObservation::try_from(ployz_core::ContainerObservationParts {
+        rotation: None,
+        r#gen: None,
         container_id: ContainerId::parse(id).unwrap(),
         display_name: "api-1".into(),
         created_at_unix_nanos: 1_700_000_000_000_000_000,
@@ -397,6 +399,7 @@ fn container(id: &str, service_name: &str, kind: ContainerKind) -> ContainerObse
         resolved_spec,
         address: None,
         labels: Default::default(),
+        stopped: false,
     })
     .unwrap()
 }

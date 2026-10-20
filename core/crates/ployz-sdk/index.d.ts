@@ -22,11 +22,13 @@ import type {
   RpcError as RpcErrorPayload,
   RpcErrorCode,
   RuntimeWatchView,
-  ContainerLogRecord,
+  LiveLogRecord,
   InspectVolumeCopyRequest,
   SeedVolumeRequest,
   SetVolumeCopyReply,
   SetVolumeCopyRequest,
+  SetVolumeSizeReply,
+  SetVolumeSizeRequest,
   VolumeCopyView,
 } from "./generated/payloads";
 export * from "./generated/payloads";
@@ -41,18 +43,23 @@ export {
   observeCopies,
   observeVolumes,
   ployzVersion,
+  SealedNames,
 } from "./generated/native";
+export type { NamesRead } from "./generated/native";
 
 /** One request `Client.volumeSwitch` sends: a Volume copy verb and its payload. */
 export type VolumeSwitchRequest =
   | { command: "inspect_volume_copy"; payload: InspectVolumeCopyRequest }
   | { command: "seed_volume"; payload: SeedVolumeRequest }
-  | { command: "set_volume_copy"; payload: SetVolumeCopyRequest };
+  | { command: "set_volume_copy"; payload: SetVolumeCopyRequest }
+  | { command: "set_volume_size"; payload: SetVolumeSizeRequest };
 
 /** The reply payload of one Volume copy verb. */
 export type VolumeSwitchReply<C extends VolumeSwitchRequest["command"]> = C extends "set_volume_copy"
   ? SetVolumeCopyReply
-  : VolumeCopyView;
+  : C extends "set_volume_size"
+    ? SetVolumeSizeReply
+    : VolumeCopyView;
 
 /** Same serialized descriptors as CLI contexts. Backend only: Management is an admin capability. */
 export type Connection = (
@@ -60,7 +67,11 @@ export type Connection = (
   | { readonly ssh: string; readonly ssh_key_file?: string }
   | { readonly tcp: string }
   | { readonly unix: string }
-) & { readonly machine_id?: MachineId };
+) & {
+  readonly machine_id?: MachineId;
+  /** The Server's name, where Cloud knows it: a failed connection names the Server by it. */
+  readonly name?: string;
+};
 export type ConnectOptions = {
   readonly connections: readonly Connection[];
   /** Cancels connection establishment and closes the resulting session. */
@@ -79,7 +90,8 @@ export type LogFilter = {
 };
 /** What a line says about itself; a line that says nothing is `info`, stderr included. */
 export type LogLevel = "error" | "warn" | "info" | "debug";
-export type LogRecord = ContainerLogRecord & { id: string; level: LogLevel };
+/** A line shows as text, or as `hidden` when it couldn't be checked for Sealed values. */
+export type LogRecord = LiveLogRecord & { id: string };
 /** `capability` names what the Server lacks. */
 export type LogSourceError = {
   type: "source_error"; machineId: string; containerId: string; message: string;
@@ -88,11 +100,12 @@ export type LogSourceError = {
 /** A container whose source failed has left the Runtime Watch; nothing more will come from it. */
 export type LogSourceGone = { type: "source_gone"; machineId: string; containerId: string };
 export type LogEvent = { type: "record"; record: LogRecord } | LogSourceError | LogSourceGone;
-export type LogOptions = WatchOptions & { filter?: LogFilter; tail?: number; follow?: boolean };
-/** A stretch of one container's output its Server's Log Store doesn't have. */
+/** `sealed` names the values every line is scrubbed of; one per request, fed from the Store. */
+export type LogOptions = WatchOptions & { sealed: native.SealedNames; filter?: LogFilter; tail?: number; follow?: boolean };
+/** A stretch of one container's output its Server's Log Store doesn't have, or that couldn't be checked for Sealed values. */
 export type LogGap = {
   machineId: string; machineName: string; containerId: string; serviceName: string;
-  fromNanos: string; toNanos: string; reason: "not_captured" | "corrupt";
+  fromNanos: string; toNanos: string; reason: "not_captured" | "corrupt" | "hidden";
 };
 /** A container stopping; `exitCode` is null when Docker didn't say. */
 export type LogExit = {
@@ -102,7 +115,7 @@ export type LogExit = {
 /** A Server whose Log Store didn't answer, and why. */
 export type LogMachineFailure = { machineId: string; machineName: string; message: string; code?: RpcErrorCode; capability?: string };
 /** Without `cursor`, the first page starts at each Server's newest row, or before `before` (Unix nanoseconds). */
-export type LogHistoryOptions = WatchOptions & { filter: LogFilter; cursor?: string; before?: string; limit?: number };
+export type LogHistoryOptions = WatchOptions & { sealed: native.SealedNames; filter: LogFilter; cursor?: string; before?: string; limit?: number };
 /** Newest first across every Server; `cursor` is null once none has anything older. */
 export type LogHistoryPage = { records: LogRecord[]; gaps: LogGap[]; exits: LogExit[]; failures: LogMachineFailure[]; cursor: string | null };
 
@@ -114,8 +127,16 @@ export type ConfirmOptions = WatchOptions & {
 
 export type RunOptions = WatchOptions;
 
+/**
+ * `unanswered` holds when no Machine sent the failure: the dial failed, or the call went out and no status came back.
+ * `targetUnreached` holds when the call's entry Machine could not dial its target, so the target never got it; such a call
+ * is not `unanswered`. An entry Machine too old to say so leaves `targetUnreached` false and `unanswered` true.
+ */
 export declare const RpcError: {
-  new (error: RpcErrorPayload, options?: ErrorOptions): Error & RpcErrorPayload;
+  new (
+    error: RpcErrorPayload & { unanswered?: boolean; targetUnreached?: boolean },
+    options?: ErrorOptions,
+  ): Error & RpcErrorPayload & { readonly unanswered: boolean; readonly targetUnreached: boolean };
 };
 
 /** Private build evidence; never proof that content still exists on a Machine. */
@@ -239,7 +260,7 @@ export interface Client extends Omit<native.Client, WrappedClientMethods> {
   build(input: PreparationInput, options?: BuildOptions): RunningBuild;
   readonly runtime: {
     watch(options?: WatchOptions): AsyncIterable<RuntimeWatchView>;
-    logs(options?: LogOptions): AsyncIterable<LogEvent>;
+    logs(options: LogOptions): AsyncIterable<LogEvent>;
     logHistory(options: LogHistoryOptions): Promise<LogHistoryPage>;
     /** Sums a Service across the Machines that answered; names each Machine that did not. */
     metricHistory(input: MetricHistoryInput): Promise<MetricHistory>;
@@ -247,7 +268,11 @@ export interface Client extends Omit<native.Client, WrappedClientMethods> {
   preview(intent: DeployIntent): Promise<PreparedDeploy>;
   previewNamespaceRemoval(namespace: Namespace, destroy_volumes: boolean): Promise<PreparedDeploy>;
   run(intent: DeployIntent, options?: RunOptions): Promise<DeployOutcome<ExecutionError>>;
-  /** A `set_volume_copy` refusal rejects with an `RpcError` whose `details` is a `SetVolumeCopyRefused`. */
+  /**
+   * A `set_volume_copy` refusal rejects with an `RpcError` whose `details` is a `SetVolumeCopyRefused`. A rejection no
+   * Machine sent is `unanswered`: the Machine may have taken the request. One whose entry Machine could not dial `machine`
+   * is `targetUnreached` and not `unanswered`, since `machine` never got it.
+   */
   volumeSwitch<R extends VolumeSwitchRequest>(machine: MachineTarget, request: R): Promise<VolumeSwitchReply<R["command"]>>;
   dataLossIfNamespaceDestroyed(namespace: Namespace, destroy_volumes?: boolean): Promise<ObservedDataLoss>;
   destroyNamespace(

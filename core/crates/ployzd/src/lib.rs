@@ -1,5 +1,6 @@
 //! Linux daemon runtime for one Ployz Machine.
 
+pub(crate) mod boot_pass;
 mod build;
 
 /// Numeric status returned by the Ployz Docker Volume plugin.
@@ -11,6 +12,10 @@ pub struct VolumePluginStatus {
     /// Current referenced ZFS dataset bytes.
     pub used_bytes: u64,
 }
+
+/// Where Docker finds the Ployz Volume plugin, and where the daemon reaches it.
+#[doc(hidden)]
+pub const VOLUME_PLUGIN_SOCKET: &str = "/run/docker/plugins/ployz.sock";
 
 mod docker_image;
 
@@ -36,6 +41,7 @@ pub mod mutation;
 pub mod network;
 pub mod observe;
 pub(crate) mod retire;
+pub(crate) mod route_acks;
 pub mod runtime_unit;
 pub(crate) mod runtime_watch;
 pub mod socket_activation;

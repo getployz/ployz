@@ -2,18 +2,13 @@
 //! the Servers instead, under the read permission each needs and the credential's
 //! Environment ceiling.
 
-use std::{collections::BTreeMap, time::Duration};
+use std::time::Duration;
 
 use chrono::Utc;
-use ployz_core::{MachineName, QualifiedService, ServiceName};
-use ployz_store::{
-    EnvironmentRef, ServiceQuery,
-    tools::{
-        CloudQuery, LineCap, LogText, LogsQuery, MetricsQuery, MetricsSince, MetricsSubject,
-        Timestamp,
-        cloud::{ContainersAnswer, LogsAnswer, MetricsAnswer, ServersAnswer},
-        plain_env,
-    },
+use ployz_core::{MachineName, QualifiedService, ServiceName, ServiceSelector};
+use ployz_store::tools::{
+    CloudQuery, LineCap, LogText, LogsQuery, MetricsQuery, MetricsSince, MetricsSubject, Timestamp,
+    cloud::{ContainersAnswer, LogsAnswer, MetricsAnswer, ServersAnswer},
 };
 use reqwest::Method;
 use serde::{Serialize, de::DeserializeOwned};
@@ -60,11 +55,7 @@ fn line_cap(tail: i32) -> LineCap {
     LineCap::new(lines).unwrap_or_default()
 }
 
-pub(super) fn logs(
-    root: &clap::ArgMatches,
-    credential: &Credential,
-    asked: LogsAsked<'_>,
-) -> Result<(), Error> {
+pub(super) fn logs(credential: &Credential, asked: LogsAsked<'_>) -> Result<(), Error> {
     if asked.unservable {
         return Err(Error::usage(
             "This token reads logs through Cloud, which serves the newest lines only; drop --follow, --until, --machine and container selectors",
@@ -85,11 +76,11 @@ pub(super) fn logs(
             })
             .collect::<Result<Vec<_>, Error>>()?
     };
-    let environment = EnvironmentRef {
-        project: Some(scoped.environment.project.clone()),
-        environment: Some(scoped.environment.name.clone()),
+    let unknown = |name: &ServiceName| {
+        ServiceSelector::parse(name.as_str())
+            .ok()
+            .and_then(|selector| scoped.unknown(&selector))
     };
-    let store = super::store::store(root)?;
     let now = Utc::now().timestamp_nanos_opt().unwrap_or(i64::MAX);
     let since = asked
         .since_nanos
@@ -97,27 +88,38 @@ pub(super) fn logs(
         .map(Duration::from_nanos);
     let mut read = Vec::new();
     for (name, runtime) in services {
-        // Unread variables leave nothing plain, so every env value is scrubbed.
-        let plain = store
-            .try_read(&ServiceQuery {
-                environment: environment.clone(),
-                service: name.clone(),
-            })
-            .map_or_else(|_| BTreeMap::new(), |view| plain_env(&view.values));
         let answer: LogsAnswer = ask(
             credential,
             CloudQuery::Logs(LogsQuery {
-                environment: scoped.environment.id.clone(),
                 namespace: scoped.namespace.clone(),
                 service: runtime,
                 deployment: asked.deployment.clone(),
                 server: None,
                 lines: line_cap(asked.tail),
                 since,
-                plain,
             }),
         )?;
         read.push((name, answer));
+    }
+    // A name the Environment lacks that no Server answered for, when every Server answered.
+    let refusal = read
+        .iter()
+        .find(|(name, answer)| {
+            answer.servers.is_empty()
+                && answer.seen.unanswered.is_empty()
+                && unknown(name).is_some()
+        })
+        .map(|(name, _)| scoped.no_service(name));
+    if read.iter().all(|(_, answer)| answer.servers.is_empty())
+        && let Some(refusal) = refusal
+    {
+        // Why another name's Servers did not answer still matters beside the refusal.
+        for (_, answer) in &read {
+            for note in &answer.notes {
+                ui::note(note);
+            }
+        }
+        return Err(refusal);
     }
     let shown = read
         .iter()
@@ -145,12 +147,18 @@ pub(super) fn logs(
                 ui::note(note);
             }
         }
-    })
+    })?;
+    refusal.map_or(Ok(()), Err)
 }
 
 /// `metrics` for a Service, by its runtime name, or a Server, by name.
 pub(super) enum MetricsAsked {
-    Service(QualifiedService),
+    Service {
+        service: QualifiedService,
+        /// The refusal to give when nothing answers for a Service the Environment
+        /// does not have now.
+        unknown: Option<Error>,
+    },
     Server(String),
 }
 
@@ -159,13 +167,14 @@ pub(super) fn metrics(
     asked: MetricsAsked,
     since_seconds: i64,
 ) -> Result<(), Error> {
-    let (subject, name) = match asked {
-        MetricsAsked::Service(service) => (
+    let (subject, name, unknown) = match asked {
+        MetricsAsked::Service { service, unknown } => (
             MetricsSubject::Service {
                 namespace: service.namespace.clone(),
                 service: service.name.clone(),
             },
             service.name.to_string(),
+            unknown,
         ),
         MetricsAsked::Server(named) => {
             let only = MachineName::parse(named.as_str())
@@ -180,6 +189,7 @@ pub(super) fn metrics(
                     server: server.reference(),
                 },
                 named,
+                None,
             )
         }
     };
@@ -193,6 +203,12 @@ pub(super) fn metrics(
             deployment: None,
         }),
     )?;
+    if let Some(refusal) = unknown
+        && answer.metrics.is_empty()
+        && answer.seen.unanswered.is_empty()
+    {
+        return Err(refusal);
+    }
     let mut table = Table::new(
         ["METRIC", "NOW", "AVG", "PEAK"],
         "No Server reported a reading in this range.",
@@ -228,12 +244,12 @@ pub(super) fn processes(
     let mut answer: ContainersAnswer = ask(
         credential,
         CloudQuery::Containers {
-            namespace: scoped.namespace,
+            namespace: scoped.namespace.clone(),
             service: None,
         },
     )?;
     answer.containers.sort_by_cached_key(|container| {
-        let service = container.service.to_string();
+        let service = scoped.service_name(&container.service).to_string();
         let server = container.server.to_string();
         match sort {
             "machine" => (server, service, String::new()),
@@ -247,7 +263,7 @@ pub(super) fn processes(
     );
     for container in &answer.containers {
         table.row([
-            container.service.to_string(),
+            scoped.service_name(&container.service).to_string(),
             container.server.to_string(),
             word(&container.state),
             container

@@ -46,6 +46,7 @@ impl Cluster {
             EnrollRequest {
                 role: EnrollAs::Member { registration },
                 wireguard_mtu: None,
+                pinned: Default::default(),
             },
         )
         .await?;

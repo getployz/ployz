@@ -39,6 +39,17 @@ describe("CustomDomainDialog", () => {
     );
   });
 
+  it("says a blank target uses the Service's PORT, and what it is when the dialog knows it", () => {
+    const { rerender } = render(
+      <CustomDomainDialog defaultTargetPort={null} onClose={vi.fn()} onSubmit={vi.fn()} />
+    );
+    expect(screen.getByText("Leave blank to use this service's PORT variable.")).toBeTruthy();
+    rerender(
+      <CustomDomainDialog defaultTargetPort={3000} onClose={vi.fn()} onSubmit={vi.fn()} />
+    );
+    expect(screen.getByText("Leave blank to use this service's PORT variable, 3000.")).toBeTruthy();
+  });
+
   it("saves a hostname typed in any case as the lowercase name", async () => {
     const onSubmit = vi.fn();
     render(
@@ -61,24 +72,85 @@ describe("CustomDomainDialog", () => {
     );
   });
 
-  it("refuses a hostname that only lowercases to ASCII through Unicode", async () => {
+  it.each(["Пример.рф", "\u1E9E.de", "\u212Acme.com"])("leaves %s to the Store as typed", async (value) => {
+    const onSubmit = vi.fn();
     render(
       <CustomDomainDialog
         defaultTargetPort={3000}
         onClose={vi.fn()}
-        onSubmit={vi.fn()}
+        onSubmit={onSubmit}
       />
     );
+    fireEvent.change(screen.getByLabelText("Domain"), {
+      target: { value: ` ${value} ` },
+    });
     const save = screen.getByRole("button", { name: "Save route" });
-    fireEvent.change(screen.getByLabelText("Domain"), {
-      target: { value: "acme.com" },
-    });
     await waitFor(() => expect(save.hasAttribute("disabled")).toBe(false));
-    fireEvent.change(screen.getByLabelText("Domain"), {
-      target: { value: "\u212Acme.com" },
-    });
-    await waitFor(() => expect(save.hasAttribute("disabled")).toBe(true));
+    fireEvent.click(save);
+    await waitFor(() =>
+      expect(onSubmit).toHaveBeenCalledWith(
+        expect.objectContaining({ hostname: value })
+      )
+    );
   });
+
+  it.each(["has space.com", "under_score.com", "*.example.com", "a.com/x", "user@a.com", "api.example.com\u0000", "\u1E9E.de/x", "\u1E9Ede"])(
+    "refuses %s",
+    async (value) => {
+      render(
+        <CustomDomainDialog
+          defaultTargetPort={3000}
+          onClose={vi.fn()}
+          onSubmit={vi.fn()}
+        />
+      );
+      const save = screen.getByRole("button", { name: "Save route" });
+      fireEvent.change(screen.getByLabelText("Domain"), {
+        target: { value: "acme.com" },
+      });
+      await waitFor(() => expect(save.hasAttribute("disabled")).toBe(false));
+      fireEvent.change(screen.getByLabelText("Domain"), {
+        target: { value },
+      });
+      await waitFor(() => expect(save.hasAttribute("disabled")).toBe(true));
+    }
+  );
+
+  it("refuses a domain this service already has, in any case", async () => {
+    const onSubmit = vi.fn();
+    render(
+      <CustomDomainDialog
+        takenHostnames={["soak-dash.example.com"]}
+        defaultTargetPort={3000}
+        onClose={vi.fn()}
+        onSubmit={onSubmit}
+      />
+    );
+    const input = screen.getByLabelText("Domain");
+    fireEvent.change(input, { target: { value: "Soak-Dash.example.com" } });
+    fireEvent.blur(input);
+    expect(await screen.findByText("Already on this service.")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Save route" }).hasAttribute("disabled")).toBe(true);
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
+  it.each(["bücher.example.com", "BÜCHER.example.com"])(
+    "refuses %s when the service has it in punycode, as the Store keeps it",
+    async (value) => {
+      render(
+        <CustomDomainDialog
+          takenHostnames={["xn--bcher-kva.example.com"]}
+          defaultTargetPort={3000}
+          onClose={vi.fn()}
+          onSubmit={vi.fn()}
+        />
+      );
+      const input = screen.getByLabelText("Domain");
+      fireEvent.change(input, { target: { value } });
+      fireEvent.blur(input);
+      expect(await screen.findByText("Already on this service.")).toBeTruthy();
+    }
+  );
 
   it("enables saving a corrected port without requiring blur", async () => {
     const onSubmit = vi.fn();

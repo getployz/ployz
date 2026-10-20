@@ -10,7 +10,7 @@ use ployz_core::{
     ConfigFileName, ConfigName, DeployOutcome, DeployPreview, ExecutionError, MachineId,
     OperationRow, RpcError, RpcErrorCode, ServiceName,
 };
-use ployz_store::tools::{LineCap, LogExcerpt, LogText, SecretSet, Withheld};
+use ployz_store::tools::{LineCap, LogExcerpt, LogText, SealedValues, Withheld};
 use ployz_store::{
     Actor, Admit, Approval, ApprovalDigest, Asks, AttachConfig, Cancel, Change, Command, ConfigId,
     ConfigMountAt, ConfigStore, ConfigsQuery, CreateConfig, CreateProject, CreateService,
@@ -182,6 +182,18 @@ fn code(result: Result<impl std::fmt::Debug, RpcError>) -> RpcErrorCode {
     result.unwrap_err().code
 }
 
+/// The nodes Deployment `n` marks cancelled: Failed, read Cancelled.
+fn cancelled_nodes(store: &ConfigStore, who: &Actor, n: u8) -> Vec<String> {
+    store
+        .read(who, &ployz_store::DeploymentQuery { id: id(n) })
+        .unwrap()
+        .nodes
+        .into_iter()
+        .filter(|node| node.cancelled)
+        .map(|node| node.node.name().to_owned())
+        .collect()
+}
+
 fn nodes(store: &ConfigStore, who: &Actor, n: u8) -> Vec<(String, NodeStatus)> {
     store
         .read(who, &ployz_store::DeploymentQuery { id: id(n) })
@@ -193,12 +205,93 @@ fn nodes(store: &ConfigStore, who: &Actor, n: u8) -> Vec<(String, NodeStatus)> {
 }
 
 #[test]
+fn diff_and_a_deployment_list_each_kind_of_node_by_name_not_by_id() {
+    let (store, who) = shop();
+    sentry(&store, &who);
+    // web's id sorts before api's.
+    assert_eq!(changed(&store, &who), ["api", "web", "sentry"]);
+    admit(&store, &who, 1, &[], None).unwrap();
+    assert_eq!(
+        nodes(&store, &who, 1)
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect::<Vec<_>>(),
+        ["api", "web", "sentry"]
+    );
+}
+
+#[test]
+fn a_recreated_service_lists_after_the_one_it_replaces_whichever_id_sorts_first() {
+    // The replacement's id sorts below the original's (…03) in one run, above it in the other.
+    for replacement in [
+        "00000000-0000-4000-8000-000000000000",
+        "00000000-0000-4000-8000-0000000000ff",
+    ] {
+        let (store, who) = shop();
+        backend::deploy(&store, &who, "production", 1);
+        store
+            .write(
+                &who,
+                &RemoveService {
+                    environment: EnvironmentRef::default(),
+                    service: ServiceName::parse("web").unwrap(),
+                },
+            )
+            .unwrap();
+        store
+            .write(
+                &who,
+                &CreateService {
+                    id: ServiceLineageId::parse(replacement).unwrap(),
+                    environment: EnvironmentRef::default(),
+                    name: ServiceName::parse("web").unwrap(),
+                    image: Some("nginx:2".into()),
+                    template: None,
+                },
+            )
+            .unwrap();
+        let view = diff(&store, &who);
+        for changes in [view.changes.clone(), view.review_changes()] {
+            let listed: Vec<_> = changes
+                .iter()
+                .map(|change| (change.name.as_str(), change.lifecycle))
+                .collect();
+            assert_eq!(
+                listed,
+                [
+                    ("web", ReviewLifecycleKind::Delete),
+                    ("web", ReviewLifecycleKind::Create)
+                ],
+                "replacement {replacement}"
+            );
+        }
+        admit(&store, &who, 2, &[], None).unwrap();
+        let ids: Vec<_> = store
+            .read(&who, &ployz_store::DeploymentQuery { id: id(2) })
+            .unwrap()
+            .nodes
+            .into_iter()
+            .map(|node| node.node.id().to_owned())
+            .collect();
+        assert_eq!(
+            ids,
+            [
+                "00000000-0000-4000-8000-000000000004",
+                "00000000-0000-4000-8000-000000000003",
+                replacement
+            ],
+            "replacement {replacement}"
+        );
+    }
+}
+
+#[test]
 fn a_deploy_publishes_then_its_runner_records_it_into_applied_state() {
     let (store, who) = shop();
     let admitted = admit(&store, &who, 1, &[], None).unwrap();
     assert_eq!(
         (admitted.status, admitted.saved, admitted.number),
-        (DeploymentStatus::Queued, Revision(1), 1)
+        (DeploymentStatus::Queued, Revision(1), Some(1))
     );
     // The submitted Deployment is Head now, so nothing is staged.
     assert!(changed(&store, &who).is_empty());
@@ -239,8 +332,8 @@ fn a_deploy_publishes_then_its_runner_records_it_into_applied_state() {
     assert_eq!(
         nodes(&store, &who, 1),
         [
-            ("web".to_owned(), NodeStatus::Deployed),
-            ("api".to_owned(), NodeStatus::Deployed)
+            ("api".to_owned(), NodeStatus::Deployed),
+            ("web".to_owned(), NodeStatus::Deployed)
         ]
     );
     assert!(
@@ -267,8 +360,8 @@ fn a_deploy_publishes_then_its_runner_records_it_into_applied_state() {
     assert_eq!(
         nodes(&store, &who, 2),
         [
-            ("web".to_owned(), NodeStatus::Pending),
-            ("api".to_owned(), NodeStatus::Unchanged)
+            ("api".to_owned(), NodeStatus::Unchanged),
+            ("web".to_owned(), NodeStatus::Pending)
         ]
     );
     // Ending without executing leaves what the preview settled: nothing ran on api either way.
@@ -278,8 +371,8 @@ fn a_deploy_publishes_then_its_runner_records_it_into_applied_state() {
     assert_eq!(
         nodes(&store, &who, 2),
         [
-            ("web".to_owned(), NodeStatus::NotAttempted),
-            ("api".to_owned(), NodeStatus::Unchanged)
+            ("api".to_owned(), NodeStatus::Unchanged),
+            ("web".to_owned(), NodeStatus::NotAttempted)
         ]
     );
 }
@@ -360,6 +453,54 @@ fn an_unchecked_ingress_leaves_the_deploy_applied_with_one_warning() {
     assert_eq!(read.warnings, [warning]);
 }
 
+#[test]
+fn a_deploy_warning_shows_once_on_the_applied_deploy() {
+    let (store, who) = shop();
+    admit(&store, &who, 1, &[], None).unwrap();
+    let a = runner("runner-a");
+    store.claim(&id(1), &a).unwrap();
+    store
+        .record(&id(1), &a, RunEvidence::Prepared(preview(&["web", "api"])))
+        .unwrap();
+    let mismatch = ployz_core::DeployWarning::ImagePortMismatch {
+        service: "web".parse().unwrap(),
+        service_id: ployz_core::ServiceId::parse("c".repeat(32)).unwrap(),
+        image: "nginx".into(),
+        machines: vec![MachineId::parse("a".repeat(32)).unwrap()],
+        exposed: vec![80],
+        routed: vec![8080],
+    };
+    for _ in 0..2 {
+        store
+            .record(&id(1), &a, RunEvidence::Warned(mismatch.clone()))
+            .unwrap();
+    }
+    let recorded = store
+        .record(&id(1), &a, succeeded(&["web", "api"]))
+        .unwrap();
+
+    let warning = DeploymentWarning::Deploy { warning: mismatch };
+    assert_eq!(recorded.status, DeploymentStatus::Applied);
+    assert_eq!(recorded.warnings, std::slice::from_ref(&warning));
+    assert_eq!(
+        serde_json::to_value(&warning).unwrap(),
+        serde_json::json!({"warning": {
+            "type": "image_port_mismatch",
+            "service": "web",
+            "service_id": "c".repeat(32),
+            "image": "nginx",
+            "machines": ["a".repeat(32)],
+            "exposed": [80],
+            "routed": [8080],
+        }})
+    );
+    let read = store
+        .read(&who, &ployz_store::DeploymentQuery { id: id(1) })
+        .unwrap()
+        .deployment;
+    assert_eq!(read.warnings, [warning]);
+}
+
 fn sentry(store: &ConfigStore, who: &Actor) {
     store
         .write(
@@ -393,6 +534,66 @@ fn put_sentry(store: &ConfigStore, who: &Actor, content: &str) {
             },
         )
         .unwrap();
+}
+
+// Catches a retried edit rotating a generated secret that its referrers and an
+// initialized database already use, and generate leaving a plain value unsealed.
+#[test]
+fn a_replayed_generate_keeps_its_secret_and_seals_over_plain_text() {
+    let (store, who) = shop();
+    let edit = |changes: Vec<Change>| {
+        store
+            .write(
+                &who,
+                &Edit {
+                    environment: EnvironmentRef::default(),
+                    expect: None,
+                    changes,
+                },
+            )
+            .unwrap();
+    };
+    let set = |path: &str, value: Value| Change::Set {
+        path: SettingPath::parse(path).unwrap(),
+        value,
+    };
+    edit(vec![set("web.env.TOKEN", json!("plain-token"))]);
+    let generate = || {
+        ["web.env.PASSWORD", "web.env.TOKEN"]
+            .map(|path| set(path, json!({ "secret": { "generate": true } })))
+            .to_vec()
+    };
+    let a = runner("a");
+    let mut claimed_env = Vec::new();
+    for n in 1..=2 {
+        edit(generate());
+        admit(&store, &who, n, &[], None).unwrap();
+        let claimed = store.claim(&id(n), &a).unwrap();
+        let web = claimed
+            .intent
+            .target
+            .iter()
+            .find(|spec| spec.name.as_str() == "web")
+            .unwrap();
+        let env = &web.container.environment;
+        claimed_env.push((env["PASSWORD"].clone(), env["TOKEN"].clone()));
+        store
+            .record(&id(n), &a, RunEvidence::Prepared(preview(&["web", "api"])))
+            .unwrap();
+        store
+            .record(&id(n), &a, succeeded(&["web", "api"]))
+            .unwrap();
+    }
+    let (password, token) = &claimed_env[0];
+    for secret in [password, token] {
+        assert_eq!(secret.len(), 32, "{secret}");
+        assert!(secret.chars().all(|c| c.is_ascii_alphabetic()), "{secret}");
+    }
+    assert_ne!(password, token);
+    assert_eq!(
+        claimed_env[0], claimed_env[1],
+        "a replayed generate rotated the secret"
+    );
 }
 
 #[test]
@@ -513,6 +714,36 @@ fn a_config_deploys_with_the_services_that_mount_it() {
 }
 
 #[test]
+fn a_deploy_refuses_config_that_expands_past_what_a_service_mounts() {
+    let (store, who) = shop();
+    store
+        .write(
+            &who,
+            &Edit {
+                environment: EnvironmentRef::default(),
+                expect: None,
+                changes: vec![Change::Set {
+                    path: SettingPath::parse("api.env.BIG").unwrap(),
+                    value: json!("x".repeat(64 * 1024)),
+                }],
+            },
+        )
+        .unwrap();
+    sentry(&store, &who);
+    put_sentry(&store, &who, &"${{ api.BIG }}\n".repeat(13));
+
+    let refused = admit(&store, &who, 1, &[], None).unwrap_err();
+    assert_eq!(refused.code, RpcErrorCode::InvalidArgument);
+    assert!(refused.message.contains("web"), "{}", refused.message);
+    assert!(
+        refused.message.contains("Config sentry"),
+        "{}",
+        refused.message
+    );
+    assert!(refused.message.contains("768 KB"), "{}", refused.message);
+}
+
+#[test]
 fn a_deployed_configs_rename_and_file_edits_discard_by_their_rows() {
     let (store, who) = shop();
     sentry(&store, &who);
@@ -585,7 +816,7 @@ fn a_deployed_configs_rename_and_file_edits_discard_by_their_rows() {
             &who,
             &Discard {
                 environment: EnvironmentRef::default(),
-                target: ployz_store::DiscardTarget::Head,
+                target: Some(ployz_store::DiscardTarget::Head),
                 path: Some(SettingPath::parse(path).unwrap()),
                 version: None,
             },
@@ -672,8 +903,8 @@ fn an_existing_shared_config_keeps_its_edit_after_a_mounter_fails() {
     assert_eq!(
         nodes(&store, &who, 2),
         [
-            ("web".to_owned(), NodeStatus::Deployed),
             ("api".to_owned(), NodeStatus::Failed),
+            ("web".to_owned(), NodeStatus::Deployed),
             ("sentry".to_owned(), NodeStatus::Failed),
         ]
     );
@@ -701,8 +932,8 @@ fn an_existing_shared_config_waits_for_pending_mounters() {
     assert_eq!(
         nodes(&store, &who, 2),
         [
-            ("web".to_owned(), NodeStatus::Deployed),
             ("api".to_owned(), NodeStatus::Pending),
+            ("web".to_owned(), NodeStatus::Deployed),
             ("sentry".to_owned(), NodeStatus::Pending),
         ]
     );
@@ -997,8 +1228,8 @@ fn a_partial_outcome_applies_only_confirmed_nodes() {
     assert_eq!(
         nodes(&store, &who, 1),
         [
-            ("web".to_owned(), NodeStatus::Deployed),
-            ("api".to_owned(), NodeStatus::Failed)
+            ("api".to_owned(), NodeStatus::Failed),
+            ("web".to_owned(), NodeStatus::Deployed)
         ]
     );
     // Only `api` is still to deploy; a different outcome can't overwrite this one.
@@ -1560,6 +1791,7 @@ fn a_failed_row_keeps_its_cause_chain_and_unfinished_rows_end_not_attempted() {
     assert_eq!(
         states,
         [
+            ("api".to_owned(), "beta".to_owned(), RowState::NotAttempted),
             (
                 "web".to_owned(),
                 "alpha".to_owned(),
@@ -1570,9 +1802,11 @@ fn a_failed_row_keeps_its_cause_chain_and_unfinished_rows_end_not_attempted() {
                     log: Some(LogText::Withheld {
                         why: Withheld::Unanswered
                     }),
+                    unanswered: false,
+                    out_of_memory: None,
+                    cancelled: false,
                 }
             ),
-            ("api".to_owned(), "beta".to_owned(), RowState::NotAttempted),
         ]
     );
 }
@@ -1601,6 +1835,7 @@ fn mounted_resource_rows_keep_distinct_machines_and_failed_mounting_services() {
                         storage: ployz_core::config::VolumeKind::Docker {},
                         shared_writes: true,
                         storage_locked: false,
+                        restored_from: None,
                         mounts: ["web", "api"]
                             .into_iter()
                             .map(|service| ployz_store::Mount {
@@ -1649,13 +1884,11 @@ fn mounted_resource_rows_keep_distinct_machines_and_failed_mounting_services() {
         let mut changes = RowTracker::default().changes(&snapshot);
         for row in &mut changes {
             if let RowState::Failed { log, .. } = &mut row.state {
-                let mut secrets = SecretSet::from_store([], []);
-                secrets.add_machine_env(Some(&Default::default()));
-                *log = Some(LogExcerpt::scrub(
+                *log = Some(LogText::Shown(LogExcerpt::scrub(
                     ["alpha disk log\n".to_owned()],
-                    &secrets,
+                    &SealedValues::none(),
                     LineCap::default(),
-                ));
+                )));
             }
         }
         store
@@ -1877,11 +2110,11 @@ fn nothing_executed_applies_nothing() {
     assert_eq!(
         nodes(&store, &who, 1),
         [
-            ("web".to_owned(), NodeStatus::NotAttempted),
-            ("api".to_owned(), NodeStatus::NotAttempted)
+            ("api".to_owned(), NodeStatus::NotAttempted),
+            ("web".to_owned(), NodeStatus::NotAttempted)
         ]
     );
-    assert_eq!(changed(&store, &who), ["web", "api"]);
+    assert_eq!(changed(&store, &who), ["api", "web"]);
 }
 
 #[test]
@@ -1901,7 +2134,7 @@ fn admission_replays_supersedes_and_checks_the_reviewed_version() {
     assert_eq!(stale.code, RpcErrorCode::Conflict);
     assert!(stale.details.get("diff").is_some());
     let second = admit(&store, &who, 2, &[], Some(diff(&store, &who).version)).unwrap();
-    assert_eq!((second.number, second.saved), (2, Revision(2)));
+    assert_eq!((second.number, second.saved), (Some(2), Revision(2)));
     assert_eq!(
         store
             .read(&who, &ployz_store::DeploymentQuery { id: id(1) })
@@ -2012,29 +2245,300 @@ fn a_cancelled_queued_deployment_never_runs() {
     assert_eq!(
         nodes(&store, &who, 1),
         [
-            ("web".to_owned(), NodeStatus::NotAttempted),
-            ("api".to_owned(), NodeStatus::NotAttempted)
+            ("api".to_owned(), NodeStatus::NotAttempted),
+            ("web".to_owned(), NodeStatus::NotAttempted)
         ]
     );
-    assert_eq!(changed(&store, &who), ["web", "api"]);
+    assert_eq!(changed(&store, &who), ["api", "web"]);
 }
 
 #[test]
 fn a_cancelled_running_deployment_keeps_its_confirmed_node_outcomes() {
     let (store, who) = shop();
+    let a = runner("runner-a");
+    let stopped_by = |n: u8, error: serde_json::Value| {
+        admit(&store, &who, n, &[], None).unwrap();
+        store.claim(&id(n), &a).unwrap();
+        store
+            .record(&id(n), &a, RunEvidence::Prepared(preview(&["web", "api"])))
+            .unwrap();
+        assert_eq!(
+            cancel(&store, &who, n).unwrap().status,
+            DeploymentStatus::Cancelling
+        );
+        // Its runner stops it partway and records what ran.
+        let stopped = RunEvidence::Executed {
+            progress: Vec::new(),
+            outcome: Box::new(outcome(json!({
+                "type": "failed", "completed": [operation("web")],
+                "failed": {"type": "operation", "operation": operation("api"), "error": error},
+                "unexecuted": []
+            }))),
+            removed: Vec::new(),
+        };
+        store.record(&id(n), &a, stopped).unwrap();
+        assert_eq!(status(&store, &who, n), DeploymentStatus::Cancelled);
+        assert_eq!(
+            nodes(&store, &who, n),
+            [
+                ("api".to_owned(), NodeStatus::Failed),
+                ("web".to_owned(), NodeStatus::Deployed)
+            ]
+        );
+        cancelled_nodes(&store, &who, n)
+    };
+    assert_eq!(stopped_by(1, json!({"type": "cancelled"})), ["api"]);
+    assert_eq!(changed(&store, &who), ["api"]);
+    assert_eq!(
+        stopped_by(
+            2,
+            json!({
+                "type": "machine", "action": "CreateContainer",
+                "error": {"code": "internal", "message": "no space left on device", "details": {}}
+            })
+        ),
+        Vec::<String>::new(),
+        "work that failed on its own stays failed, even once cancelled"
+    );
+}
+
+fn create_error() -> Value {
+    json!({
+        "type": "machine", "action": "CreateContainer",
+        "error": {"code": "internal", "message": "no space left on device", "details": {}}
+    })
+}
+
+#[test]
+fn a_copy_restored_after_another_service_failed_is_not_cancelled() {
+    let (store, who) = shop();
+    let a = runner("runner-a");
+    let restored_after = |n: u8, failed: &str| {
+        admit(&store, &who, n, &[], None).unwrap();
+        store.claim(&id(n), &a).unwrap();
+        store
+            .record(&id(n), &a, RunEvidence::Prepared(preview(&["web", "api"])))
+            .unwrap();
+        let error = |service: &str| {
+            if service == "api" {
+                create_error()
+            } else {
+                json!({"type": "cancelled"})
+            }
+        };
+        let unexecuted = if failed == "api" { "web" } else { "api" };
+        let executed = RunEvidence::Executed {
+            progress: RowTracker::default().changes(&progress(&[
+                (
+                    "web",
+                    "alpha",
+                    json!({"type": "failed", "error": error("web")}),
+                ),
+                (
+                    "api",
+                    "alpha",
+                    json!({"type": "failed", "error": error("api")}),
+                ),
+            ])),
+            outcome: Box::new(outcome(json!({
+                "type": "failed", "completed": [],
+                "failed": {"type": "operation", "operation": operation(failed), "error": error(failed)},
+                "unexecuted": [operation(unexecuted)]
+            }))),
+            removed: Vec::new(),
+        };
+        store.record(&id(n), &a, executed).unwrap();
+        assert_eq!(status(&store, &who, n), DeploymentStatus::Failed);
+        let web = rows(&store, &who, n)
+            .into_iter()
+            .find(|(node, _)| node == "web")
+            .unwrap();
+        assert!(
+            matches!(
+                web.1[0].state,
+                RowState::Failed {
+                    cancelled: false,
+                    ..
+                }
+            ),
+            "nobody cancelled it: {:?}",
+            web.1[0].state
+        );
+        cancelled_nodes(&store, &who, n)
+    };
+    for (n, failed) in [(1, "api"), (2, "web")] {
+        assert!(restored_after(n, failed).is_empty(), "{failed} first");
+    }
+}
+
+fn web_row(store: &ConfigStore, who: &Actor) -> ServerRow {
+    rows(store, who, 1)
+        .into_iter()
+        .find(|(node, _)| node == "web")
+        .unwrap()
+        .1
+        .remove(0)
+}
+
+#[test]
+fn a_real_failure_after_a_cancel_on_the_same_service_reads_failed_on_its_row_and_node() {
+    let (store, who) = shop();
+    admit(&store, &who, 1, &[], None).unwrap();
+    let a = runner("runner-a");
+    store.claim(&id(1), &a).unwrap();
+    store
+        .record(&id(1), &a, RunEvidence::Prepared(preview(&["web", "web"])))
+        .unwrap();
+    cancel(&store, &who, 1).unwrap();
+    let cancelled = json!({"type": "failed", "error": {"type": "cancelled"}});
+    let mut tracker = RowTracker::default();
+    let first = tracker.changes(&progress(&[
+        ("web", "alpha", cancelled.clone()),
+        ("web", "alpha", waiting(5_000)),
+    ]));
+    store
+        .record(&id(1), &a, RunEvidence::Progress(first))
+        .unwrap();
+    let state = &web_row(&store, &who).state;
+    assert!(
+        matches!(
+            state,
+            RowState::Failed {
+                cancelled: true,
+                ..
+            }
+        ),
+        "{state:?}"
+    );
+    let executed = RunEvidence::Executed {
+        progress: tracker.changes(&progress(&[
+            ("web", "alpha", cancelled),
+            (
+                "web",
+                "alpha",
+                json!({"type": "failed", "error": create_error()}),
+            ),
+        ])),
+        outcome: Box::new(outcome(json!({
+            "type": "failed", "completed": [],
+            "failed": {"type": "operation", "operation": operation("web"), "error": {"type": "cancelled"}},
+            "unexecuted": [operation("web")]
+        }))),
+        removed: Vec::new(),
+    };
+    store.record(&id(1), &a, executed).unwrap();
+    let state = &web_row(&store, &who).state;
+    assert!(
+        matches!(
+            state,
+            RowState::Failed {
+                cancelled: false,
+                ..
+            }
+        ),
+        "{state:?}"
+    );
+    assert_eq!(
+        nodes(&store, &who, 1),
+        [
+            ("api".to_owned(), NodeStatus::Unchanged),
+            ("web".to_owned(), NodeStatus::Failed)
+        ]
+    );
+    assert!(cancelled_nodes(&store, &who, 1).is_empty());
+}
+
+/// The row state and Node Outcome a Store from before Cancelled decodes, as it
+/// shipped them.
+mod before_cancelled {
+    use std::collections::BTreeMap;
+
+    use ployz_store::{FailedAt, RowPhase};
+    use serde::Deserialize;
+    use serde_json::Value;
+
+    #[derive(Debug, Deserialize)]
+    #[serde(tag = "state", rename_all = "snake_case")]
+    pub enum RowState {
+        Pending,
+        Running {
+            #[expect(dead_code, reason = "decoded as it shipped")]
+            phase: RowPhase,
+            #[serde(default)]
+            #[expect(dead_code, reason = "decoded as it shipped")]
+            serving: bool,
+        },
+        Completed,
+        Failed {
+            reason: String,
+            #[expect(dead_code, reason = "decoded as it shipped")]
+            cause: Vec<String>,
+            #[serde(default)]
+            #[expect(dead_code, reason = "decoded as it shipped")]
+            step: Option<FailedAt>,
+            #[serde(default)]
+            #[expect(dead_code, reason = "decoded as it shipped")]
+            log: Option<Value>,
+            #[serde(default)]
+            #[expect(dead_code, reason = "decoded as it shipped")]
+            unanswered: bool,
+            #[serde(default)]
+            #[expect(dead_code, reason = "decoded as it shipped")]
+            out_of_memory: Option<Value>,
+        },
+        NotAttempted,
+        Unknown,
+    }
+
+    #[derive(Debug, Deserialize)]
+    pub struct RowTransition {
+        #[expect(dead_code, reason = "decoded as it shipped")]
+        pub at: i64,
+        #[serde(flatten)]
+        pub state: RowState,
+    }
+
+    #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd)]
+    #[serde(rename_all = "snake_case")]
+    pub enum NodeStatus {
+        Pending,
+        Deployed,
+        Removed,
+        Failed,
+        NotAttempted,
+        Unchanged,
+        Unknown,
+    }
+
+    /// The run document, as far as its Node Outcomes.
+    #[derive(Debug, Deserialize)]
+    pub struct Run {
+        #[serde(default)]
+        pub nodes: BTreeMap<String, NodeStatus>,
+    }
+}
+
+#[test]
+fn a_store_from_before_cancelled_reads_the_work_a_cancel_stopped_as_failed() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("store.db");
+    let (store, who) =
+        shop_in(ConfigStore::open(&format!("sqlite:{}", path.display()), backend::key()).unwrap());
     admit(&store, &who, 1, &[], None).unwrap();
     let a = runner("runner-a");
     store.claim(&id(1), &a).unwrap();
     store
         .record(&id(1), &a, RunEvidence::Prepared(preview(&["web", "api"])))
         .unwrap();
-    assert_eq!(
-        cancel(&store, &who, 1).unwrap().status,
-        DeploymentStatus::Cancelling
-    );
-    // Its runner stops it partway and records what ran.
-    let stopped = RunEvidence::Executed {
-        progress: Vec::new(),
+    cancel(&store, &who, 1).unwrap();
+    let cancelled = json!({"type": "failed", "error": {"type": "cancelled"}});
+    let mut tracker = RowTracker::default();
+    let stopped = tracker.changes(&progress(&[
+        ("web", "alpha", json!({"type": "completed"})),
+        ("api", "alpha", cancelled),
+    ]));
+    let executed = RunEvidence::Executed {
+        progress: stopped,
         outcome: Box::new(outcome(json!({
             "type": "failed", "completed": [operation("web")],
             "failed": {"type": "operation", "operation": operation("api"), "error": {"type": "cancelled"}},
@@ -2042,16 +2546,60 @@ fn a_cancelled_running_deployment_keeps_its_confirmed_node_outcomes() {
         }))),
         removed: Vec::new(),
     };
-    store.record(&id(1), &a, stopped).unwrap();
+    store.record(&id(1), &a, executed).unwrap();
     assert_eq!(status(&store, &who, 1), DeploymentStatus::Cancelled);
+    assert_eq!(cancelled_nodes(&store, &who, 1), ["api"]);
+    let api = rows(&store, &who, 1)
+        .into_iter()
+        .find(|(node, _)| node == "api")
+        .unwrap();
+    assert!(
+        matches!(
+            api.1[0].state,
+            RowState::Failed {
+                cancelled: true,
+                ..
+            }
+        ),
+        "{:?}",
+        api.1[0].state
+    );
+
+    // A Store rolled back past Cancelled still reads this Deployment, as Failed.
+    let sql = rusqlite::Connection::open(&path).unwrap();
+    let run: String = sql
+        .query_row("SELECT run FROM config_deployment", [], |row| row.get(0))
+        .unwrap();
+    let run: before_cancelled::Run = serde_json::from_str(&run).unwrap();
+    let mut outcomes: Vec<_> = run.nodes.into_values().collect();
+    outcomes.sort();
     assert_eq!(
-        nodes(&store, &who, 1),
+        outcomes,
         [
-            ("web".to_owned(), NodeStatus::Deployed),
-            ("api".to_owned(), NodeStatus::Failed)
+            before_cancelled::NodeStatus::Deployed,
+            before_cancelled::NodeStatus::Failed
         ]
     );
-    assert_eq!(changed(&store, &who), ["api"]);
+    let (state, history): (String, String) = sql
+        .query_row(
+            "SELECT state, history FROM config_deployment_row WHERE service = 'api'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    let state: before_cancelled::RowState = serde_json::from_str(&state).unwrap();
+    assert!(
+        matches!(&state, before_cancelled::RowState::Failed { reason, .. } if reason == "Cancelled"),
+        "{state:?}"
+    );
+    let history: Vec<before_cancelled::RowTransition> = serde_json::from_str(&history).unwrap();
+    assert!(
+        matches!(
+            history.last().map(|entry| &entry.state),
+            Some(before_cancelled::RowState::Failed { .. })
+        ),
+        "{history:?}"
+    );
 }
 
 #[test]
@@ -2076,7 +2624,7 @@ fn a_runner_that_loses_track_after_preparing_leaves_the_outcome_unknown() {
         code(store.record(&id(1), &a, succeeded(&["web", "api"]))),
         RpcErrorCode::Conflict
     );
-    assert_eq!(changed(&store, &who), ["web", "api"]);
+    assert_eq!(changed(&store, &who), ["api", "web"]);
 
     // Abandoned after preparing: unknown too.
     admit(&store, &who, 2, &[], None).unwrap();
@@ -2136,6 +2684,9 @@ fn retry(
         &Admit::Retry(Retry {
             id: id(n),
             deployment: id(source),
+            rolls_back: None,
+            version: None,
+            accept_volume_loss: Vec::new(),
         }),
         &ployz_store::Trusted::default(),
     )
@@ -2183,17 +2734,22 @@ fn a_retry_ships_exactly_what_the_failed_deployment_froze() {
             retried.saved,
             retried.services
         ),
-        (3, DeploymentStatus::Queued, first.saved, first.services)
+        (
+            Some(3),
+            DeploymentStatus::Queued,
+            first.saved,
+            first.services
+        )
     );
     // Replaying it is idempotent; its ID with another source is not.
-    assert_eq!(retry(&store, &who, 3, 1).unwrap().number, 3);
+    assert_eq!(retry(&store, &who, 3, 1).unwrap().number, Some(3));
     assert_eq!(code(retry(&store, &who, 3, 2)), RpcErrorCode::Conflict);
     // The failed one keeps its Node Outcomes; the retry targets every node again.
     assert_eq!(
         nodes(&store, &who, 1),
         [
-            ("web".to_owned(), NodeStatus::Deployed),
-            ("api".to_owned(), NodeStatus::Failed)
+            ("api".to_owned(), NodeStatus::Failed),
+            ("web".to_owned(), NodeStatus::Deployed)
         ]
     );
     assert!(
@@ -2211,7 +2767,15 @@ fn a_retry_ships_exactly_what_the_failed_deployment_froze() {
             .as_str(),
         "shop-production"
     );
-    // A cancelled Deployment can be retried too, with its own Saved revision.
+    // A cancelled Deployment can be retried too, with its own Saved revision, once
+    // the newer #3 ends.
+    let b = runner("runner-b");
+    store
+        .record(&id(3), &b, RunEvidence::Prepared(preview(&["web", "api"])))
+        .unwrap();
+    store
+        .record(&id(3), &b, succeeded(&["web", "api"]))
+        .unwrap();
     let newer = store
         .read(&who, &ployz_store::DeploymentQuery { id: id(2) })
         .unwrap()
@@ -2221,29 +2785,62 @@ fn a_retry_ships_exactly_what_the_failed_deployment_froze() {
     assert_eq!(retry(&store, &who, 4, 2).unwrap().saved, newer);
 }
 
-#[test]
-fn a_retry_is_refused_once_a_newer_deployment_applied() {
-    let (store, who) = shop();
-    admit(&store, &who, 1, &[], None).unwrap();
-    fail_api(&store, 1);
-    admit(&store, &who, 2, &[], None).unwrap();
+/// Deployment `n` claimed by `runner-a` and applied; the Deploy Intent it ran.
+fn apply(store: &ConfigStore, n: u8) -> ployz_core::DeployIntent {
     let a = runner("runner-a");
-    store.claim(&id(2), &a).unwrap();
+    let intent = store.claim(&id(n), &a).unwrap().intent;
     store
-        .record(&id(2), &a, RunEvidence::Prepared(preview(&["web", "api"])))
+        .record(&id(n), &a, RunEvidence::Prepared(preview(&["web", "api"])))
         .unwrap();
     store
-        .record(&id(2), &a, succeeded(&["web", "api"]))
+        .record(&id(n), &a, succeeded(&["web", "api"]))
         .unwrap();
-    // Shipping #1's revision now would undo #2.
-    let refused = retry(&store, &who, 3, 1).unwrap_err();
-    assert_eq!(refused.code, RpcErrorCode::Conflict);
-    assert!(refused.message.contains("#2"), "{}", refused.message);
-    assert_eq!(code(start(&store, &who, 3)), RpcErrorCode::NotFound);
+    intent
+}
+
+fn rolls_back(store: &ConfigStore, who: &Actor, n: u8) -> Vec<u64> {
+    store
+        .read(who, &ployz_store::DeploymentQuery { id: id(n) })
+        .unwrap()
+        .rolls_back
 }
 
 #[test]
-fn a_retry_is_refused_unless_its_deployment_ended_without_applying() {
+fn redeploying_an_older_deployment_rolls_back_to_what_it_froze() {
+    let (store, who) = shop();
+    let first = admit(&store, &who, 1, &[], None).unwrap();
+    let frozen = apply(&store, 1);
+    set_replicas(&store, &who, "web", 3);
+    let second = admit(&store, &who, 2, &[], None).unwrap();
+    apply(&store, 2);
+    assert_ne!(second.saved, first.saved);
+    assert_eq!(rolls_back(&store, &who, 1), [2]);
+    assert!(rolls_back(&store, &who, 2).is_empty());
+
+    // #1 applied and #2 applied after it: redeploying #1 ships #1's revision again.
+    let rolled_back = retry(&store, &who, 3, 1).unwrap();
+    assert_eq!(
+        (rolled_back.number, rolled_back.status, rolled_back.saved),
+        (Some(3), DeploymentStatus::Queued, first.saved)
+    );
+    assert_eq!(apply(&store, 3), frozen);
+    assert_eq!(rolls_back(&store, &who, 1), [2, 3]);
+    // What #2 saved is still the latest Saved revision, so it shows as a change to
+    // deploy, and the next Deploy moves forward to it.
+    assert_eq!(changed(&store, &who), ["web"]);
+    assert_eq!(
+        admit(&store, &who, 4, &[], None).unwrap().saved,
+        second.saved
+    );
+
+    // The newest applied Deployment redeploys too, rolling nothing back.
+    apply(&store, 4);
+    assert!(rolls_back(&store, &who, 4).is_empty());
+    assert_eq!(retry(&store, &who, 5, 4).unwrap().saved, second.saved);
+}
+
+#[test]
+fn a_redeploy_is_refused_unless_its_deployment_ended() {
     let (store, who) = shop();
     let other = Actor::system(OrganizationId::parse("other").unwrap());
     admit(&store, &who, 1, &[], None).unwrap();
@@ -2259,25 +2856,154 @@ fn a_retry_is_refused_unless_its_deployment_ended_without_applying() {
         .unwrap();
     cancel(&store, &who, 1).unwrap();
     assert_eq!(code(retry(&store, &who, 9, 1)), RpcErrorCode::Conflict);
-    // Its runner finished before it saw the cancel: it applied, so nothing to retry.
+    // Its runner finished before it saw the cancel: it applied, and redeploys.
     store
         .record(&id(1), &a, succeeded(&["web", "api"]))
         .unwrap();
     assert_eq!(status(&store, &who, 1), DeploymentStatus::Applied);
-    assert_eq!(code(retry(&store, &who, 9, 1)), RpcErrorCode::Conflict);
     // A superseded one never ran: deploy again instead.
     admit(&store, &who, 2, &[], None).unwrap();
     admit(&store, &who, 3, &[], None).unwrap();
     assert_eq!(status(&store, &who, 2), DeploymentStatus::Superseded);
     assert_eq!(code(retry(&store, &who, 9, 2)), RpcErrorCode::Conflict);
-    // A refused retry queued nothing, and an accepted one supersedes what's queued.
+    // A refused redeploy queued nothing, and an accepted one supersedes what's queued.
     fail_api(&store, 3);
-    assert_eq!(retry(&store, &who, 9, 3).unwrap().number, 4);
+    assert_eq!(retry(&store, &who, 9, 3).unwrap().number, Some(4));
     assert_eq!(status(&store, &who, 3), DeploymentStatus::Failed);
     admit(&store, &who, 5, &[], None).unwrap();
     retry(&store, &who, 6, 3).unwrap();
     assert_eq!(status(&store, &who, 5), DeploymentStatus::Superseded);
     assert_eq!(status(&store, &who, 9), DeploymentStatus::Superseded);
+    assert_eq!(retry(&store, &who, 7, 1).unwrap().number, Some(7));
+    assert_eq!(status(&store, &who, 6), DeploymentStatus::Superseded);
+}
+
+/// Redeploy `source` as `n`, confirming that it rolls back `confirmed`.
+fn rollback(
+    store: &ConfigStore,
+    who: &Actor,
+    (n, source): (u8, u8),
+    confirmed: &[u64],
+) -> Result<DeploymentSummary, RpcError> {
+    store.write_trusted(
+        who,
+        &Admit::Retry(Retry {
+            id: id(n),
+            deployment: id(source),
+            rolls_back: Some(confirmed.to_vec()),
+            version: None,
+            accept_volume_loss: Vec::new(),
+        }),
+        &ployz_store::Trusted::default(),
+    )
+}
+
+#[test]
+fn a_redeploy_rolls_back_every_newer_deployment_that_may_have_changed_the_servers() {
+    let (store, who) = shop();
+    admit(&store, &who, 1, &[], None).unwrap();
+    apply(&store, 1);
+    // #2 lost track after preparing: it may have changed the Servers.
+    set_replicas(&store, &who, "web", 3);
+    admit(&store, &who, 2, &[], None).unwrap();
+    let a = runner("runner-a");
+    store.claim(&id(2), &a).unwrap();
+    store
+        .record(&id(2), &a, RunEvidence::Prepared(preview(&["web", "api"])))
+        .unwrap();
+    store.record(&id(2), &a, RunEvidence::Abandoned).unwrap();
+    assert_eq!(status(&store, &who, 2), DeploymentStatus::Unknown);
+    // #3 was cancelled before it started, #4 superseded and #5 still queued: none ran.
+    admit(&store, &who, 3, &[], None).unwrap();
+    cancel(&store, &who, 3).unwrap();
+    admit(&store, &who, 4, &[], None).unwrap();
+    admit(&store, &who, 5, &[], None).unwrap();
+    assert_eq!(rolls_back(&store, &who, 1), [2]);
+
+    // What the caller confirmed must still be what it rolls back.
+    let stale = rollback(&store, &who, (6, 1), &[]).unwrap_err();
+    assert_eq!(stale.code, RpcErrorCode::ConfirmationRequired);
+    assert_eq!(stale.details["rolls_back"], json!([2]));
+    assert_eq!(status(&store, &who, 5), DeploymentStatus::Queued);
+    assert_eq!(
+        rollback(&store, &who, (6, 1), &[2]).unwrap().number,
+        Some(6)
+    );
+}
+
+#[test]
+fn redeploying_an_older_deployment_waits_for_a_newer_one_in_flight() {
+    let (store, who) = shop();
+    admit(&store, &who, 1, &[], None).unwrap();
+    apply(&store, 1);
+    set_replicas(&store, &who, "web", 3);
+    admit(&store, &who, 2, &[], None).unwrap();
+    store.claim(&id(2), &runner("runner-a")).unwrap();
+    assert_eq!(status(&store, &who, 2), DeploymentStatus::Running);
+
+    // Applied State may yet change under #2, so nothing older redeploys meanwhile.
+    let waiting = retry(&store, &who, 3, 1).unwrap_err();
+    assert_eq!(waiting.code, RpcErrorCode::Conflict);
+    assert_eq!(waiting.message, "Wait for #2 to finish, then redeploy.");
+    assert_eq!(status(&store, &who, 2), DeploymentStatus::Running);
+}
+
+#[test]
+fn a_newer_deployment_whose_runner_is_gone_does_not_hold_up_a_redeploy() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = backend::fresh_url(&dir);
+    let (store, who) = shop_in(ConfigStore::open(&url, backend::key()).unwrap());
+    admit(&store, &who, 1, &[], None).unwrap();
+    apply(&store, 1);
+    set_replicas(&store, &who, "web", 3);
+    admit(&store, &who, 2, &[], None).unwrap();
+    store.claim(&id(2), &runner("runner-a")).unwrap();
+    backend::execute(&url, "UPDATE config_deployment SET lease = 0");
+    assert_eq!(status(&store, &who, 2), DeploymentStatus::Unknown);
+
+    assert_eq!(retry(&store, &who, 3, 1).unwrap().number, Some(3));
+}
+
+#[test]
+fn a_full_rollback_retires_the_services_added_since() {
+    let (store, who) = shop();
+    store
+        .write(
+            &who,
+            &RemoveService {
+                environment: EnvironmentRef::default(),
+                service: ServiceName::parse("api").unwrap(),
+            },
+        )
+        .unwrap();
+    admit(&store, &who, 1, &[], None).unwrap();
+    apply(&store, 1);
+    // #2 adds `cron`.
+    store
+        .write(
+            &who,
+            &CreateService {
+                id: ServiceLineageId::parse("00000000-0000-4000-8000-000000000005").unwrap(),
+                environment: EnvironmentRef::default(),
+                name: ServiceName::parse("cron").unwrap(),
+                image: Some("nginx:1".into()),
+                template: None,
+            },
+        )
+        .unwrap();
+    admit(&store, &who, 2, &[], None).unwrap();
+    apply(&store, 2);
+    assert!(changed(&store, &who).is_empty());
+
+    // Rolling back to #1 takes `cron` off, and its saved settings show as staged.
+    retry(&store, &who, 3, 1).unwrap();
+    assert!(
+        nodes(&store, &who, 3)
+            .iter()
+            .any(|(name, _)| name == "cron")
+    );
+    apply(&store, 3);
+    assert_eq!(changed(&store, &who), ["cron"]);
 }
 
 #[test]
@@ -2379,7 +3105,7 @@ fn deployments_page_newest_first_within_the_organization() {
             .iter()
             .map(|d| d.number)
             .collect::<Vec<_>>(),
-        [3, 2]
+        [Some(3), Some(2)]
     );
     let last = page(first.next_cursor.clone());
     assert_eq!(
@@ -2387,7 +3113,7 @@ fn deployments_page_newest_first_within_the_organization() {
             .iter()
             .map(|d| d.number)
             .collect::<Vec<_>>(),
-        [1]
+        [Some(1)]
     );
     assert_eq!(last.next_cursor, None);
     let bad_limit = store.read(
@@ -2427,8 +3153,8 @@ fn a_staged_removal_leaves_applied_state_until_its_deploy_confirms_it() {
     assert_eq!(
         nodes(&store, &who, 1),
         [
-            ("web".to_owned(), NodeStatus::Deployed),
-            ("api".to_owned(), NodeStatus::Deployed)
+            ("api".to_owned(), NodeStatus::Deployed),
+            ("web".to_owned(), NodeStatus::Deployed)
         ]
     );
     let listed = store.read(&who, &ServicesQuery::default()).unwrap();
@@ -2502,7 +3228,7 @@ fn renaming_a_deployed_service_is_a_staged_change_discard_undoes() {
             &who,
             &Discard {
                 environment: EnvironmentRef::default(),
-                target: ployz_store::DiscardTarget::Head,
+                target: Some(ployz_store::DiscardTarget::Head),
                 path: Some(SettingPath::parse("front").unwrap()),
                 version: None,
             },
@@ -2561,6 +3287,310 @@ fn an_environments_namespace_is_the_one_its_deployments_use() {
         code(store.read(&stranger, &NamespaceQuery::default())),
         RpcErrorCode::NotFound
     );
+}
+
+#[test]
+fn each_service_builds_from_its_own_upload_and_cloud_keeps_it() {
+    let (store, who) = shop();
+    for (n, name) in [(6, "front"), (7, "back")] {
+        store
+            .write(
+                &who,
+                &CreateService {
+                    id: ServiceLineageId::parse(format!("00000000-0000-4000-8000-00000000000{n}"))
+                        .unwrap(),
+                    environment: EnvironmentRef::default(),
+                    name: ServiceName::parse(name).unwrap(),
+                    image: None,
+                    template: None,
+                },
+            )
+            .unwrap();
+    }
+    let upload = |c: char| UploadedSource {
+        digest: ployz_core::UploadDigest::parse(c.to_string().repeat(64)).unwrap(),
+        base: None,
+        uploader: None,
+    };
+    let deploy = |n: u8, services: &[&str], upload: Option<UploadedSource>| {
+        store.write_trusted(
+            &who,
+            &Admit::Deploy(Deploy {
+                id: id(n),
+                environment: EnvironmentRef::default(),
+                services: services
+                    .iter()
+                    .map(|name| ServiceName::parse(*name).unwrap())
+                    .collect(),
+                version: None,
+                upload,
+                accept_volume_loss: Vec::new(),
+                message: None,
+            }),
+            &Trusted::default(),
+        )
+    };
+    let a = runner("cli-a");
+    let end = |n: u8| {
+        store.claim(&id(n), &a).unwrap();
+        store
+            .record(&id(n), &a, RunEvidence::NotExecuted("stopped".into()))
+            .unwrap();
+    };
+    let kept = |deployments: &[u8]| -> Vec<bool> {
+        store
+            .read(
+                &who,
+                &ployz_store::UploadsQuery {
+                    deployments: deployments.iter().map(|n| id(*n)).collect(),
+                },
+            )
+            .unwrap()
+            .uploads
+            .iter()
+            .map(|held| held.kept)
+            .collect()
+    };
+    deploy(1, &[], Some(upload('a'))).unwrap();
+    end(1);
+    // An upload for back alone leaves front's.
+    deploy(2, &["back"], Some(upload('b'))).unwrap();
+    end(2);
+    assert_eq!(kept(&[1, 2]), [true, true]);
+    // Without a new upload, front builds from its own.
+    assert_eq!(
+        deploy(3, &["front"], None).unwrap().upload,
+        Some(upload('a'))
+    );
+    end(3);
+    // A full Deploy builds each from its own upload, and carries the newer for Cloud to
+    // extract: back's, sent after front's. #3 failed, so it moved front onto nothing.
+    assert_eq!(deploy(4, &[], None).unwrap().upload, Some(upload('b')));
+    let own = |name: &str, c: char| (ServiceName::parse(name).unwrap(), Some(upload(c).digest));
+    assert_eq!(
+        store.claim(&id(4), &a).unwrap().uploads,
+        std::collections::BTreeMap::from([own("back", 'b'), own("front", 'a')])
+    );
+    store
+        .record(&id(4), &a, RunEvidence::NotExecuted("stopped".into()))
+        .unwrap();
+    // It doesn't make back's upload front's: back alone still builds from b.
+    assert_eq!(
+        deploy(40, &["back"], None).unwrap().upload,
+        Some(upload('b'))
+    );
+    end(40);
+    assert_eq!(kept(&[1, 2]), [true, true]);
+    // A retry of an older Deployment ships its upload, and back's latest upload stays.
+    assert_eq!(retry(&store, &who, 5, 1).unwrap().upload, Some(upload('a')));
+    end(5);
+    assert_eq!(kept(&[1, 2]), [true, true]);
+    // A Deployment that may still run keeps its upload, however many come after it.
+    deploy(6, &["back"], Some(upload('c'))).unwrap();
+    store.claim(&id(6), &a).unwrap();
+    for n in 7..=30 {
+        deploy(n, &["front"], None).unwrap();
+    }
+    deploy(31, &["back"], Some(upload('d'))).unwrap();
+    // A newer upload replaced back's b; Deployment 99 was never admitted.
+    assert_eq!(kept(&[1, 2, 6, 31, 99]), [true, false, true, true]);
+}
+
+/// The Store with an uploaded `app` Service.
+fn uploaded_app() -> (ConfigStore, Actor) {
+    let (store, who) = shop();
+    store
+        .write(
+            &who,
+            &CreateService {
+                id: ServiceLineageId::parse("00000000-0000-4000-8000-000000000005").unwrap(),
+                environment: EnvironmentRef::default(),
+                name: ServiceName::parse("app").unwrap(),
+                image: None,
+                template: None,
+            },
+        )
+        .unwrap();
+    (store, who)
+}
+
+/// Deploy `n` of every Service, sending `upload` if any.
+fn deploy_sent(store: &ConfigStore, who: &Actor, n: u8, upload: Option<char>) -> DeploymentSummary {
+    store
+        .write_trusted(
+            who,
+            &Admit::Deploy(Deploy {
+                id: id(n),
+                environment: EnvironmentRef::default(),
+                services: Vec::new(),
+                version: None,
+                upload: upload.map(digested),
+                accept_volume_loss: Vec::new(),
+                message: None,
+            }),
+            &Trusted::default(),
+        )
+        .unwrap()
+}
+
+fn digested(c: char) -> UploadedSource {
+    UploadedSource {
+        digest: ployz_core::UploadDigest::parse(c.to_string().repeat(64)).unwrap(),
+        base: None,
+        uploader: None,
+    }
+}
+
+fn fail(store: &ConfigStore, n: u8) {
+    let a = runner("cli-a");
+    store.claim(&id(n), &a).unwrap();
+    store
+        .record(&id(n), &a, RunEvidence::NotExecuted("stopped".into()))
+        .unwrap();
+}
+
+fn kept_of(store: &ConfigStore, who: &Actor, deployments: &[u8]) -> Vec<bool> {
+    store
+        .read(
+            who,
+            &ployz_store::UploadsQuery {
+                deployments: deployments.iter().map(|n| id(*n)).collect(),
+            },
+        )
+        .unwrap()
+        .uploads
+        .iter()
+        .map(|held| held.kept)
+        .collect()
+}
+
+#[test]
+fn a_failed_retry_of_a_released_upload_leaves_the_service_on_its_latest_upload() {
+    let (store, who) = uploaded_app();
+    let deploy = |n: u8, upload: Option<char>| deploy_sent(&store, &who, n, upload);
+    deploy(1, Some('a'));
+    fail(&store, 1);
+    deploy(2, Some('b'));
+    fail(&store, 2);
+    deploy(3, Some('a'));
+    fail(&store, 3);
+    // a sent again replaced b: Cloud releases b's chunks.
+    assert_eq!(kept_of(&store, &who, &[2, 3]), [false, true]);
+    // The retry of b finds no upload and fails.
+    retry(&store, &who, 4, 2).unwrap();
+    fail(&store, 4);
+    // The next settings-only Deploy builds from a, which Cloud still holds.
+    let next = deploy(5, None);
+    assert_eq!(next.upload, Some(digested('a')));
+    let claimed = store.claim(&id(5), &runner("cli-a")).unwrap();
+    assert_eq!(
+        claimed.uploads,
+        std::collections::BTreeMap::from([(
+            ServiceName::parse("app").unwrap(),
+            Some(digested('a').digest)
+        )])
+    );
+    assert_eq!(kept_of(&store, &who, &[3]), [true]);
+}
+
+#[test]
+fn the_same_upload_sent_again_keeps_one_copy() {
+    let (store, who) = uploaded_app();
+    let deploy = |n: u8, upload: Option<char>| deploy_sent(&store, &who, n, upload);
+    // `ployz up` twice with unchanged source: two Deployments send the same content.
+    deploy(1, Some('a'));
+    fail(&store, 1);
+    deploy(2, Some('a'));
+    fail(&store, 2);
+    assert_eq!(kept_of(&store, &who, &[1, 2]), [false, true]);
+    // A settings-only Deploy builds from it, and the one copy stays.
+    assert_eq!(deploy(3, None).upload, Some(digested('a')));
+    assert_eq!(kept_of(&store, &who, &[2]), [true]);
+}
+
+#[test]
+fn a_reupload_stays_kept_whether_a_retry_of_an_older_upload_comes_before_or_after_it() {
+    let upload = |c: char| UploadedSource {
+        digest: ployz_core::UploadDigest::parse(c.to_string().repeat(64)).unwrap(),
+        base: None,
+        uploader: None,
+    };
+    // Cloud holds chunks only for the Deployments that sent an upload, and asks about those.
+    for retry_first in [false, true] {
+        let (store, who) = shop();
+        store
+            .write(
+                &who,
+                &CreateService {
+                    id: ServiceLineageId::parse("00000000-0000-4000-8000-000000000005").unwrap(),
+                    environment: EnvironmentRef::default(),
+                    name: ServiceName::parse("app").unwrap(),
+                    image: None,
+                    template: None,
+                },
+            )
+            .unwrap();
+        let deploy = |n: u8, upload: Option<UploadedSource>| {
+            store
+                .write_trusted(
+                    &who,
+                    &Admit::Deploy(Deploy {
+                        id: id(n),
+                        environment: EnvironmentRef::default(),
+                        services: Vec::new(),
+                        version: None,
+                        upload,
+                        accept_volume_loss: Vec::new(),
+                        message: None,
+                    }),
+                    &Trusted::default(),
+                )
+                .unwrap()
+        };
+        let a = runner("cli-a");
+        let end = |n: u8| {
+            store.claim(&id(n), &a).unwrap();
+            store
+                .record(&id(n), &a, RunEvidence::NotExecuted("stopped".into()))
+                .unwrap();
+        };
+        let kept = |deployments: &[u8]| -> Vec<bool> {
+            store
+                .read(
+                    &who,
+                    &ployz_store::UploadsQuery {
+                        deployments: deployments.iter().map(|n| id(*n)).collect(),
+                    },
+                )
+                .unwrap()
+                .uploads
+                .iter()
+                .map(|held| held.kept)
+                .collect()
+        };
+        deploy(1, Some(upload('a')));
+        end(1);
+        // A second upload fails.
+        deploy(2, Some(upload('b')));
+        end(2);
+        if retry_first {
+            // Its retry builds b again, then the user uploads a again: the newest upload wins.
+            retry(&store, &who, 3, 2).unwrap();
+            end(3);
+            deploy(4, Some(upload('a')));
+            end(4);
+            // #4 sent a again: one copy of a stays.
+            assert_eq!(kept(&[1, 2, 4]), [false, false, true]);
+        } else {
+            // The user uploads a again, then retries the failed one: a is still the newest
+            // upload, kept once. The failed retry moved the Service onto nothing, so b goes.
+            deploy(3, Some(upload('a')));
+            end(3);
+            retry(&store, &who, 4, 2).unwrap();
+            end(4);
+            assert_eq!(kept(&[1, 2, 3]), [false, false, true]);
+        }
+    }
 }
 
 #[test]
@@ -2664,6 +3694,9 @@ fn an_upload_is_recorded_kept_for_later_deployments_and_its_receipts_come_back()
         Some(upload.clone())
     );
     // A retry ships the failed one's upload, not the Environment's latest.
+    store
+        .record(&id(2), &a, RunEvidence::NotExecuted("stopped".into()))
+        .unwrap();
     let mut newer = upload.clone();
     newer.digest = ployz_core::UploadDigest::parse("e".repeat(64)).unwrap();
     with(3, Some(newer)).unwrap();
@@ -2671,6 +3704,17 @@ fn an_upload_is_recorded_kept_for_later_deployments_and_its_receipts_come_back()
         retry(&store, &who, 4, 1).unwrap().upload,
         Some(upload.clone())
     );
+    // Once no Service builds from an upload, a Deployment carries none.
+    store
+        .write(
+            &who,
+            &RemoveService {
+                environment: EnvironmentRef::default(),
+                service: ServiceName::parse("app").unwrap(),
+            },
+        )
+        .unwrap();
+    assert_eq!(with(6, None).unwrap().upload, None);
     // Another Environment of the Project without its own receipt borrows this one;
     // preparation reuses it only if its fingerprint matches.
     let staging = EnvironmentRef {
@@ -2776,7 +3820,10 @@ fn cloud_names_the_uploader_and_uploaded_builds_report_like_git_ones() {
     assert_eq!(admit(2, &who).upload, Some(upload(None)));
     let a = runner("cloud-a");
     let claimed = store.claim(&id(2), &a).unwrap();
-    assert_eq!(claimed.uploads, vec![app.clone()]);
+    assert_eq!(
+        claimed.uploads,
+        std::collections::BTreeMap::from([(app.clone(), Some(upload(None).digest))])
+    );
     assert!(claimed.sources.is_empty());
     let report = |status| {
         RunEvidence::Build(ployz_store::BuildReport {
@@ -2784,6 +3831,7 @@ fn cloud_names_the_uploader_and_uploaded_builds_report_like_git_ones() {
             status,
             message: None,
             log: "GitHub can't build uploaded source\n".into(),
+            server: None,
         })
     };
     store
@@ -2844,6 +3892,9 @@ fn a_deploy_message_shows_on_the_deployment_and_its_retry() {
             &Admit::Retry(ployz_store::Retry {
                 id: id(2),
                 deployment: id(1),
+                rolls_back: None,
+                version: None,
+                accept_volume_loss: Vec::new(),
             }),
         )
         .unwrap();
@@ -2876,7 +3927,7 @@ fn deploying_a_service_with_nothing_to_run_is_refused_naming_it() {
     assert_eq!(refused.code, RpcErrorCode::InvalidArgument);
     assert_eq!(
         refused.message,
-        "blank has nothing to run yet: add an image or connect a repository"
+        "blank has nothing to run yet: add an image, connect a repository, or run ployz up in its directory"
     );
     assert_eq!(refused.details["service"], "blank");
     // Deploying other Services leaves it out.
@@ -2927,7 +3978,7 @@ fn a_deployment_is_found_by_its_number() {
             &who,
             &ployz_store::NumberedDeploymentQuery {
                 environment: EnvironmentRef::default(),
-                number,
+                number: Some(number),
             },
         )
     };
@@ -2944,9 +3995,9 @@ fn unclaimed_lists_queued_deployments_no_runner_took() {
     assert_eq!(
         unclaimed
             .iter()
-            .map(|unclaimed| &unclaimed.deployment)
+            .map(|unclaimed| (&unclaimed.deployment, unclaimed.number))
             .collect::<Vec<_>>(),
-        [&id(1)]
+        [(&id(1), 1)]
     );
     assert!(store.unclaimed(0).unwrap().is_empty());
     store.claim(&id(1), &runner("runner-a")).unwrap();
@@ -2979,16 +4030,16 @@ fn a_service_confirmed_mid_run_stays_deployed_when_the_runner_is_lost() {
     assert_eq!(
         nodes(&store, &who, 1),
         [
-            ("web".to_owned(), NodeStatus::Deployed),
-            ("api".to_owned(), NodeStatus::Pending)
+            ("api".to_owned(), NodeStatus::Pending),
+            ("web".to_owned(), NodeStatus::Deployed)
         ]
     );
     store.record(&id(1), &a, RunEvidence::Abandoned).unwrap();
     assert_eq!(
         nodes(&store, &who, 1),
         [
-            ("web".to_owned(), NodeStatus::Deployed),
-            ("api".to_owned(), NodeStatus::Unknown)
+            ("api".to_owned(), NodeStatus::Unknown),
+            ("web".to_owned(), NodeStatus::Deployed)
         ]
     );
     // web is in Applied State: only api is still to deploy.
@@ -3139,7 +4190,7 @@ fn deleted_config_discard_does_not_target_same_name_replacement() {
             &who,
             &Discard {
                 environment: EnvironmentRef::default(),
-                target: ployz_store::DiscardTarget::Head,
+                target: Some(ployz_store::DiscardTarget::Head),
                 path: Some(SettingPath::parse(path).unwrap()),
                 version: None,
             },
@@ -3238,7 +4289,7 @@ fn discard_config_mount_preserves_same_name_replacement() {
         &who,
         &Discard {
             environment: EnvironmentRef::default(),
-            target: ployz_store::DiscardTarget::Head,
+            target: Some(ployz_store::DiscardTarget::Head),
             path: Some(SettingPath::parse(&removed.path).unwrap()),
             version: Some(review.version.clone()),
         },
@@ -3250,7 +4301,7 @@ fn discard_config_mount_preserves_same_name_replacement() {
             &who,
             &Discard {
                 environment: EnvironmentRef::default(),
-                target: ployz_store::DiscardTarget::Head,
+                target: Some(ployz_store::DiscardTarget::Head),
                 path: Some(SettingPath::parse("web.configs.sentry").unwrap()),
                 version: None,
             },
@@ -3399,6 +4450,9 @@ fn deploying_or_retrying_saved_state_asks_nothing_again() {
             &Admit::Retry(Retry {
                 id: id(4),
                 deployment: id(2),
+                rolls_back: None,
+                version: None,
+                accept_volume_loss: Vec::new(),
             }),
             &Trusted {
                 approval: Approval::Required,
@@ -3546,6 +4600,9 @@ fn agent_retries(
         &Admit::Retry(Retry {
             id: id(n),
             deployment: id(source),
+            rolls_back: None,
+            version: None,
+            accept_volume_loss: Vec::new(),
         }),
         &Trusted {
             approval,
@@ -3576,6 +4633,9 @@ fn a_token_outside_its_environments_is_refused_before_a_human_is_asked() {
             &Admit::Retry(Retry {
                 id: id(3),
                 deployment: id(2),
+                rolls_back: None,
+                version: None,
+                accept_volume_loss: Vec::new(),
             }),
             &staging,
         )
@@ -3594,7 +4654,7 @@ fn an_agent_approval_admits_one_retry() {
     set_replicas(&store, &who, "web", 3);
     let refused = agent_retries(&store, &who, 3, 2, Approval::Required).unwrap_err();
     assert_eq!(refused.code.as_str(), "approval_required");
-    assert_eq!(refused.message, "A human must approve this retry first.");
+    assert_eq!(refused.message, "A human must approve this redeploy first.");
     assert_eq!(refused.details["effects"], json!([]));
     assert_eq!(
         refused.details["diff"]["changes"],
@@ -3719,16 +4779,19 @@ fn a_newer_queued_deployment_keeps_a_running_ones_creates_deployed() {
 #[test]
 fn a_queued_retry_keeps_a_running_deployments_creates_deployed() {
     let (store, who) = shop();
-    admit(&store, &who, 1, &["api"], None).unwrap();
-    cancel(&store, &who, 1).unwrap();
-    admit(&store, &who, 2, &[], None).unwrap();
-    store.claim(&id(2), &runner("runner-a")).unwrap();
+    admit(&store, &who, 1, &[], None).unwrap();
+    store.claim(&id(1), &runner("runner-a")).unwrap();
+    admit(&store, &who, 2, &["api"], None).unwrap();
+    cancel(&store, &who, 2).unwrap();
     store
         .write(
             &who,
             &Admit::Retry(Retry {
                 id: id(3),
-                deployment: id(1),
+                deployment: id(2),
+                rolls_back: None,
+                version: None,
+                accept_volume_loss: Vec::new(),
             }),
         )
         .unwrap();
@@ -3752,6 +4815,7 @@ fn removing_a_volume_no_service_mounts_asks_nothing_while_its_deployment_runs() 
                 shared_writes: false,
                 mounts: Vec::new(),
                 storage_locked: false,
+                restored_from: None,
             },
         )
         .unwrap();
@@ -3778,6 +4842,64 @@ fn failed_row(snapshots: &[Vec<OperationRow>]) -> RowState {
         }
     }
     last.unwrap()
+}
+
+#[test]
+fn a_missing_image_reads_as_one_sentence_at_the_pull_step() {
+    let docker = "Docker responded with status code 404: failed to resolve reference \"docker.io/library/nginx:doesnotexist-soak\": docker.io/library/nginx:doesnotexist-soak: not found";
+    let pull = json!({"type": "failed", "error": {
+        "type": "machine", "action": "PullImage",
+        "error": {
+            "code": "not_found",
+            "message": "image pull failed",
+            "details": {"missing_image": "nginx:doesnotexist-soak"},
+            "cause": [docker],
+        }
+    }});
+    let RowState::Failed {
+        reason,
+        cause,
+        step,
+        ..
+    } = failed_row(&[progress(&[("web", "alpha", pull)])])
+    else {
+        panic!("expected a failed row");
+    };
+    assert_eq!(
+        reason,
+        "Image nginx:doesnotexist-soak not found, or its registry needs credentials"
+    );
+    assert_eq!(cause, vec![docker.to_owned()]);
+    assert_eq!(step, Some(FailedAt::Pull));
+}
+
+#[test]
+fn a_full_disk_names_itself_at_the_pull_step_and_keeps_dockers_error() {
+    let docker = "Docker stream error: failed to extract layer: failed to Lchown \"/var/lib/containerd/tmpmounts/m/usr/share/locale/zh_CN/LC_MESSAGES/shadow.mo\" for UID 0, GID 0: no such file or directory";
+    let pull = json!({"type": "failed", "error": {
+        "type": "machine", "action": "PullImage",
+        "error": {
+            "code": "internal",
+            "message": "The Server's disk is full: 48 MB free under /var/lib/docker",
+            "details": {"disk_full": {"docker_root": "/var/lib/docker", "free_bytes": 48_000_000}},
+            "cause": [docker],
+        }
+    }});
+    let RowState::Failed {
+        reason,
+        cause,
+        step,
+        ..
+    } = failed_row(&[progress(&[("web", "alpha", pull)])])
+    else {
+        panic!("expected a failed row");
+    };
+    assert_eq!(
+        reason,
+        "The Server's disk is full: 48 MB free under /var/lib/docker"
+    );
+    assert_eq!(cause, vec![docker.to_owned()]);
+    assert_eq!(step, Some(FailedAt::Pull));
 }
 
 #[test]
@@ -3844,6 +4966,9 @@ fn a_raw_tail_stored_before_scrubbing_is_never_shown() {
             log: Some(LogText::Withheld {
                 why: Withheld::NoSecretContext
             }),
+            unanswered: false,
+            out_of_memory: None,
+            cancelled: false,
         }
     );
     let reserialized = serde_json::to_string(&state).unwrap();
@@ -3910,6 +5035,9 @@ fn a_retry_into_a_protected_environment_asks_an_admin() {
             &Admit::Retry(Retry {
                 id: id(3),
                 deployment: id(2),
+                rolls_back: None,
+                version: None,
+                accept_volume_loss: Vec::new(),
             }),
             &unprotecting(approval),
         )
@@ -3917,4 +5045,562 @@ fn a_retry_into_a_protected_environment_asks_an_admin() {
     let refused = retry(Approval::NotRequired).unwrap_err();
     assert_admin_asked(&refused);
     retry(approved(&refused)).unwrap();
+}
+
+/// History's (live, failed) marks.
+fn marks(store: &ConfigStore, who: &Actor) -> (Option<Revision>, Option<Revision>) {
+    let view = store
+        .read(who, &ployz_store::HistoryQuery::default())
+        .unwrap();
+    (view.live, view.failed)
+}
+
+fn save(store: &ConfigStore, who: &Actor) -> Revision {
+    store
+        .write_trusted(
+            who,
+            &ployz_store::Publish {
+                id: None,
+                environment: EnvironmentRef::default(),
+                version: None,
+                message: None,
+                accept_volume_loss: Vec::new(),
+            },
+            &Trusted::default(),
+        )
+        .unwrap()
+        .saved
+        .unwrap()
+}
+
+#[test]
+fn history_marks_the_last_applied_revision_live_and_a_newest_one_that_failed() {
+    let (store, who) = shop();
+    let first = save(&store, &who);
+    assert_eq!(marks(&store, &who), (None, None), "saved, never deployed");
+
+    apply_both(&store, &who, 1);
+    assert_eq!(marks(&store, &who), (Some(first), None));
+
+    set_replicas(&store, &who, "web", 3);
+    let second = admit(&store, &who, 2, &[], None).unwrap().saved;
+    fail_api(&store, 2);
+    assert_eq!(
+        marks(&store, &who),
+        (Some(first), Some(second)),
+        "the Servers still run the version before the failed one"
+    );
+
+    retry(&store, &who, 3, 2).unwrap();
+    assert_eq!(
+        marks(&store, &who),
+        (Some(first), None),
+        "a later run of the failed version clears Failed"
+    );
+    let a = runner("runner-a");
+    store.claim(&id(3), &a).unwrap();
+    store
+        .record(&id(3), &a, RunEvidence::Prepared(preview(&["web", "api"])))
+        .unwrap();
+    store
+        .record(&id(3), &a, succeeded(&["web", "api"]))
+        .unwrap();
+    assert_eq!(marks(&store, &who), (Some(second), None));
+
+    set_replicas(&store, &who, "web", 4);
+    let third = save(&store, &who);
+    assert_ne!(third, second);
+    assert_eq!(
+        marks(&store, &who),
+        (Some(second), None),
+        "a newer version not deployed yet has no mark"
+    );
+}
+
+#[test]
+fn a_superseded_retry_of_the_failed_version_clears_failed() {
+    let (store, who) = shop();
+    admit(&store, &who, 1, &[], None).unwrap();
+    fail_api(&store, 1);
+    set_replicas(&store, &who, "web", 3);
+    let second = admit(&store, &who, 2, &[], None).unwrap().saved;
+    fail_api(&store, 2);
+    assert_eq!(marks(&store, &who).1, Some(second));
+
+    retry(&store, &who, 3, 2).unwrap();
+    retry(&store, &who, 4, 1).unwrap();
+    assert_eq!(status(&store, &who, 3), DeploymentStatus::Superseded);
+    assert_eq!(
+        marks(&store, &who).1,
+        None,
+        "the newest version's latest attempt was superseded, not failed"
+    );
+}
+
+#[test]
+fn verifier_partial_retry_keeps_successfully_applied_service_upload() {
+    let (store, who) = shop();
+    for name in ["web", "api"] {
+        store
+            .write(
+                &who,
+                &Edit {
+                    environment: EnvironmentRef::default(),
+                    expect: None,
+                    changes: vec![Change::Unset {
+                        path: SettingPath::parse(&format!("{name}.image")).unwrap(),
+                    }],
+                },
+            )
+            .unwrap();
+    }
+    let a = runner("cli-a");
+    for (n, digest) in [(1, 'a'), (2, 'b')] {
+        deploy_sent(&store, &who, n, Some(digest));
+        store.claim(&id(n), &a).unwrap();
+        store
+            .record(&id(n), &a, RunEvidence::Prepared(preview(&["web", "api"])))
+            .unwrap();
+        store
+            .record(&id(n), &a, succeeded(&["web", "api"]))
+            .unwrap();
+    }
+    retry(&store, &who, 3, 1).unwrap();
+    store.claim(&id(3), &a).unwrap();
+    store
+        .record(&id(3), &a, RunEvidence::Prepared(preview(&["web", "api"])))
+        .unwrap();
+    store
+        .record(
+            &id(3),
+            &a,
+            RunEvidence::Executed {
+                progress: Vec::new(),
+                outcome: Box::new(outcome(json!({
+                    "type": "failed",
+                    "completed": [operation("web")],
+                    "failed": {"type": "operation", "operation": operation("api"), "error": {
+                        "type": "machine", "action": "RemoveContainer",
+                        "error": {"code": "internal", "message": "disk failure", "details": {}}
+                    }},
+                    "unexecuted": []
+                }))),
+                removed: Vec::new(),
+            },
+        )
+        .unwrap();
+    assert_eq!(status(&store, &who, 3), DeploymentStatus::Failed);
+    assert!(nodes(&store, &who, 3).contains(&("web".to_owned(), NodeStatus::Deployed)));
+    assert_eq!(
+        kept_of(&store, &who, &[1, 2, 3]),
+        [false, true, true],
+        "web runs a, so its newest copy stays"
+    );
+    admit(&store, &who, 4, &["web"], None).unwrap();
+    assert_eq!(
+        store.claim(&id(4), &a).unwrap().uploads,
+        std::collections::BTreeMap::from([(
+            ServiceName::parse("web").unwrap(),
+            Some(digested('a').digest)
+        )])
+    );
+}
+
+#[test]
+fn verifier_superseding_a_queued_retry_keeps_latest_sent_upload() {
+    let (store, who) = uploaded_app();
+    deploy_sent(&store, &who, 1, Some('a'));
+    fail(&store, 1);
+    deploy_sent(&store, &who, 2, Some('b'));
+    fail(&store, 2);
+    deploy_sent(&store, &who, 3, Some('a'));
+    fail(&store, 3);
+    assert_eq!(kept_of(&store, &who, &[2, 3]), [false, true]);
+    retry(&store, &who, 4, 2).unwrap();
+    let next = deploy_sent(&store, &who, 5, None);
+    assert_eq!(status(&store, &who, 4), DeploymentStatus::Superseded);
+    assert_eq!(next.upload, Some(digested('a')));
+}
+
+#[test]
+fn a_deploy_admitted_behind_a_running_retry_builds_from_the_retried_upload() {
+    let (store, who) = shop();
+    for name in ["web", "api"] {
+        store
+            .write(
+                &who,
+                &Edit {
+                    environment: EnvironmentRef::default(),
+                    expect: None,
+                    changes: vec![Change::Unset {
+                        path: SettingPath::parse(&format!("{name}.image")).unwrap(),
+                    }],
+                },
+            )
+            .unwrap();
+    }
+    let a = runner("cli-a");
+    for (n, digest) in [(1, 'a'), (2, 'b')] {
+        deploy_sent(&store, &who, n, Some(digest));
+        store.claim(&id(n), &a).unwrap();
+        store
+            .record(&id(n), &a, RunEvidence::Prepared(preview(&["web", "api"])))
+            .unwrap();
+        store
+            .record(&id(n), &a, succeeded(&["web", "api"]))
+            .unwrap();
+    }
+    retry(&store, &who, 3, 1).unwrap();
+    store.claim(&id(3), &a).unwrap();
+    admit(&store, &who, 4, &["web"], None).unwrap();
+    assert_eq!(status(&store, &who, 3), DeploymentStatus::Running);
+    assert_eq!(
+        kept_of(&store, &who, &[1, 2, 3]),
+        [false, true, true],
+        "web runs b until the retry lands"
+    );
+    store
+        .record(&id(3), &a, RunEvidence::Prepared(preview(&["web", "api"])))
+        .unwrap();
+    store
+        .record(&id(3), &a, succeeded(&["web", "api"]))
+        .unwrap();
+    assert_eq!(
+        store.claim(&id(4), &a).unwrap().uploads,
+        std::collections::BTreeMap::from([(
+            ServiceName::parse("web").unwrap(),
+            Some(digested('a').digest)
+        )])
+    );
+}
+
+/// `web` and `api` without a source, each deployed from `a` then from `b`.
+fn uploaded_twice(store: &ConfigStore, who: &Actor) {
+    for name in ["web", "api"] {
+        store
+            .write(
+                who,
+                &Edit {
+                    environment: EnvironmentRef::default(),
+                    expect: None,
+                    changes: vec![Change::Unset {
+                        path: SettingPath::parse(&format!("{name}.image")).unwrap(),
+                    }],
+                },
+            )
+            .unwrap();
+    }
+    let a = runner("cli-a");
+    for (n, digest) in [(1, 'a'), (2, 'b')] {
+        deploy_sent(store, who, n, Some(digest));
+        store.claim(&id(n), &a).unwrap();
+        store
+            .record(&id(n), &a, RunEvidence::Prepared(preview(&["web", "api"])))
+            .unwrap();
+        store
+            .record(&id(n), &a, succeeded(&["web", "api"]))
+            .unwrap();
+    }
+}
+
+/// Deployment `n`, claimed, applies `completed` and fails on `failed`.
+fn partly(store: &ConfigStore, n: u8, completed: &str, failed: &str) {
+    let a = runner("cli-a");
+    store
+        .record(&id(n), &a, RunEvidence::Prepared(preview(&["web", "api"])))
+        .unwrap();
+    store
+        .record(
+            &id(n),
+            &a,
+            RunEvidence::Executed {
+                progress: Vec::new(),
+                outcome: Box::new(outcome(json!({
+                    "type": "failed",
+                    "completed": [operation(completed)],
+                    "failed": {"type": "operation", "operation": operation(failed), "error": {
+                        "type": "machine", "action": "RemoveContainer",
+                        "error": {"code": "internal", "message": "disk failure", "details": {}}
+                    }},
+                    "unexecuted": []
+                }))),
+                removed: Vec::new(),
+            },
+        )
+        .unwrap();
+}
+
+#[test]
+fn verifier_a_running_retry_that_fails_a_service_leaves_its_queued_deploy_on_its_confirmed_upload()
+{
+    let (store, who) = shop();
+    uploaded_twice(&store, &who);
+    let a = runner("cli-a");
+    retry(&store, &who, 3, 1).unwrap();
+    store.claim(&id(3), &a).unwrap();
+    admit(&store, &who, 4, &["web"], None).unwrap();
+    partly(&store, 3, "api", "web");
+    assert!(nodes(&store, &who, 3).contains(&("web".to_owned(), NodeStatus::Failed)));
+    let claimed = store.claim(&id(4), &a).unwrap();
+    assert_eq!(
+        claimed.uploads,
+        std::collections::BTreeMap::from([(
+            ServiceName::parse("web").unwrap(),
+            Some(digested('b').digest)
+        )])
+    );
+    assert_eq!(claimed.deployment.upload, Some(digested('b')));
+    assert_eq!(
+        store
+            .read(&who, &ployz_store::DeploymentQuery { id: id(4) })
+            .unwrap()
+            .deployment
+            .upload,
+        Some(digested('b')),
+        "the Deployment shows the upload it runs"
+    );
+}
+
+#[test]
+fn a_running_retry_that_applies_a_service_moves_its_queued_deploy_onto_the_retried_upload() {
+    let (store, who) = shop();
+    uploaded_twice(&store, &who);
+    let a = runner("cli-a");
+    retry(&store, &who, 3, 1).unwrap();
+    store.claim(&id(3), &a).unwrap();
+    admit(&store, &who, 4, &["web"], None).unwrap();
+    partly(&store, 3, "web", "api");
+    let claimed = store.claim(&id(4), &a).unwrap();
+    assert_eq!(
+        claimed.uploads,
+        std::collections::BTreeMap::from([(
+            ServiceName::parse("web").unwrap(),
+            Some(digested('a').digest)
+        )])
+    );
+    assert_eq!(claimed.deployment.upload, Some(digested('a')));
+}
+
+#[test]
+fn a_cancelled_queued_deploy_no_longer_chooses_its_upload_as_it_starts() {
+    let (store, who) = shop();
+    uploaded_twice(&store, &who);
+    retry(&store, &who, 3, 1).unwrap();
+    store.claim(&id(3), &runner("cli-a")).unwrap();
+    let queued = admit(&store, &who, 4, &["web"], None).unwrap();
+    assert!(queued.chooses_upload_at_start);
+    let cancelled = cancel(&store, &who, 4).unwrap();
+    assert!(
+        !cancelled.chooses_upload_at_start,
+        "a Deployment that will never start chooses nothing as it starts"
+    );
+    assert_eq!(
+        cancelled,
+        store
+            .read(&who, &ployz_store::DeploymentQuery { id: id(4) })
+            .unwrap()
+            .deployment,
+        "the cancel answers what a later read shows"
+    );
+}
+
+#[test]
+fn cloud_keeps_every_upload_a_queued_deploy_may_start_from_until_it_ends() {
+    let (store, who) = shop();
+    store
+        .write(
+            &who,
+            &Edit {
+                environment: EnvironmentRef::default(),
+                expect: None,
+                changes: vec![Change::Unset {
+                    path: SettingPath::parse("web.image").unwrap(),
+                }],
+            },
+        )
+        .unwrap();
+    let a = runner("cli-a");
+    let only_web = |n: u8, upload: Option<char>| {
+        store
+            .write_trusted(
+                &who,
+                &Admit::Deploy(Deploy {
+                    id: id(n),
+                    environment: EnvironmentRef::default(),
+                    services: vec![ServiceName::parse("web").unwrap()],
+                    version: None,
+                    upload: upload.map(digested),
+                    accept_volume_loss: Vec::new(),
+                    message: None,
+                }),
+                &Trusted::default(),
+            )
+            .unwrap()
+    };
+    for (n, digest) in [(1, 'a'), (2, 'b')] {
+        only_web(n, Some(digest));
+        store.claim(&id(n), &a).unwrap();
+        store
+            .record(&id(n), &a, RunEvidence::Prepared(preview(&["web"])))
+            .unwrap();
+        store.record(&id(n), &a, succeeded(&["web"])).unwrap();
+    }
+    retry(&store, &who, 3, 1).unwrap();
+    store.claim(&id(3), &a).unwrap();
+    only_web(4, None);
+    // web takes an image while #4 waits, so no Service without a source keeps b.
+    store
+        .write(
+            &who,
+            &Edit {
+                environment: EnvironmentRef::default(),
+                expect: None,
+                changes: vec![Change::Set {
+                    path: SettingPath::parse("web.image").unwrap(),
+                    value: json!("nginx:1"),
+                }],
+            },
+        )
+        .unwrap();
+    save(&store, &who);
+    store
+        .record(&id(3), &a, RunEvidence::NotExecuted("stopped".into()))
+        .unwrap();
+    assert_eq!(
+        kept_of(&store, &who, &[1, 2]),
+        [true, true],
+        "#4 starts from b now, and a while it may still change"
+    );
+    assert_eq!(
+        store.claim(&id(4), &a).unwrap().deployment.upload,
+        Some(digested('b'))
+    );
+    store
+        .record(&id(4), &a, RunEvidence::NotExecuted("stopped".into()))
+        .unwrap();
+    assert_eq!(
+        kept_of(&store, &who, &[1, 2]),
+        [false, false],
+        "nothing builds from either once #4 ended"
+    );
+}
+
+#[test]
+fn verifier_a_failed_upload_keeps_the_upload_a_partial_retry_applied() {
+    let (store, who) = shop();
+    uploaded_twice(&store, &who);
+    retry(&store, &who, 3, 1).unwrap();
+    store.claim(&id(3), &runner("cli-a")).unwrap();
+    partly(&store, 3, "web", "api");
+    store
+        .write_trusted(
+            &who,
+            &Admit::Deploy(Deploy {
+                id: id(4),
+                environment: EnvironmentRef::default(),
+                services: vec![ServiceName::parse("web").unwrap()],
+                version: None,
+                upload: Some(digested('c')),
+                accept_volume_loss: Vec::new(),
+                message: None,
+            }),
+            &Trusted::default(),
+        )
+        .unwrap();
+    fail(&store, 4);
+    assert_eq!(
+        kept_of(&store, &who, &[1, 2, 4]),
+        [true, true, true],
+        "web still runs a, api b, and c is web's latest sent"
+    );
+}
+
+#[test]
+fn verifier_a_successful_no_op_retry_keeps_the_service_on_the_retried_upload() {
+    let (store, who) = shop();
+    store
+        .write(
+            &who,
+            &Edit {
+                environment: EnvironmentRef::default(),
+                expect: None,
+                changes: vec![Change::Unset {
+                    path: SettingPath::parse("web.image").unwrap(),
+                }],
+            },
+        )
+        .unwrap();
+    let a = runner("cli-a");
+    let only_web = |n: u8, upload: Option<char>| {
+        store
+            .write_trusted(
+                &who,
+                &Admit::Deploy(Deploy {
+                    id: id(n),
+                    environment: EnvironmentRef::default(),
+                    services: vec![ServiceName::parse("web").unwrap()],
+                    version: None,
+                    upload: upload.map(digested),
+                    accept_volume_loss: Vec::new(),
+                    message: None,
+                }),
+                &Trusted::default(),
+            )
+            .unwrap();
+    };
+    only_web(1, Some('b'));
+    store.claim(&id(1), &a).unwrap();
+    store
+        .record(&id(1), &a, RunEvidence::Prepared(preview(&["web"])))
+        .unwrap();
+    store.record(&id(1), &a, succeeded(&["web"])).unwrap();
+    only_web(2, Some('c'));
+    fail(&store, 2);
+    retry(&store, &who, 3, 1).unwrap();
+    store.claim(&id(3), &a).unwrap();
+    store
+        .record(&id(3), &a, RunEvidence::Prepared(preview(&[])))
+        .unwrap();
+    store.record(&id(3), &a, succeeded(&[])).unwrap();
+    assert_eq!(status(&store, &who, 3), DeploymentStatus::Applied);
+    assert!(nodes(&store, &who, 3).contains(&("web".to_owned(), NodeStatus::Unchanged)));
+    only_web(4, None);
+    assert_eq!(
+        store.claim(&id(4), &a).unwrap().uploads,
+        std::collections::BTreeMap::from([(
+            ServiceName::parse("web").unwrap(),
+            Some(digested('b').digest)
+        )])
+    );
+}
+
+#[test]
+fn verifier_failed_retry_of_a_pre_0022_upload_does_not_replace_current_upload() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = backend::fresh_url(&dir);
+    let (store, who) = shop_in(ConfigStore::open(&url, backend::key()).unwrap());
+    store
+        .write(
+            &who,
+            &CreateService {
+                id: ServiceLineageId::parse("00000000-0000-4000-8000-000000000005").unwrap(),
+                environment: EnvironmentRef::default(),
+                name: ServiceName::parse("app").unwrap(),
+                image: None,
+                template: None,
+            },
+        )
+        .unwrap();
+    deploy_sent(&store, &who, 1, Some('b'));
+    fail(&store, 1);
+    backend::execute(&url, "UPDATE config_deployment SET service_uploads = NULL");
+    deploy_sent(&store, &who, 2, Some('a'));
+    fail(&store, 2);
+    assert_eq!(kept_of(&store, &who, &[1, 2]), [false, true]);
+    retry(&store, &who, 3, 1).unwrap();
+    fail(&store, 3);
+    assert_eq!(
+        deploy_sent(&store, &who, 4, None).upload,
+        Some(digested('a'))
+    );
 }

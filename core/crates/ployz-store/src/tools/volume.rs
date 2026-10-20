@@ -45,10 +45,22 @@ fn bytes(size: &str, field: &str) -> Result<VolumeKind, Stop> {
     Ok(VolumeKind::Provisioned { maximum_bytes })
 }
 
+/// `maximum_bytes` in the unit it was most likely given in: `1 GiB`, `2 TiB`, `1.5 GB`.
+fn size(maximum_bytes: ProvisionedVolumeMaximumBytes) -> String {
+    let bytes = maximum_bytes.get();
+    match [(1_u64 << 40, "TiB"), (1 << 30, "GiB")]
+        .into_iter()
+        .find(|(unit, _)| bytes.is_multiple_of(*unit))
+    {
+        Some((unit, name)) => format!("{} {name}", bytes / unit),
+        None => maximum_bytes.to_string(),
+    }
+}
+
 /// A Volume as a result shows it.
 fn volume(volume: &VolumeSummary) -> Value {
     let size = match &volume.storage {
-        VolumeKind::Provisioned { maximum_bytes } => Some(maximum_bytes.to_string()),
+        VolumeKind::Provisioned { maximum_bytes } => Some(size(*maximum_bytes)),
         VolumeKind::Docker {} => None,
     };
     json!({ "name": volume.name, "size": size, "shared_writes": volume.shared_writes })
@@ -116,6 +128,7 @@ impl Tool for VolumeAdd {
             mounts: mounts.clone(),
             shared_writes: false,
             storage_locked: false,
+            restored_from: None,
         };
         let results = cx.batch(
             &scope,
@@ -143,7 +156,7 @@ impl Tool for VolumeAdd {
 pub(crate) struct VolumeUpdate {
     #[schemars(with = "String", pattern(NODE_NAME))]
     volume: VolumeName,
-    /// New storage limit. Only before its first Deploy.
+    /// New storage limit. Only before its first Deploy; a deployed Volume resizes through a Volume resize on Ployz Cloud.
     #[serde(default)]
     #[schemars(pattern(SIZE), example = &"10GiB")]
     size: Option<String>,

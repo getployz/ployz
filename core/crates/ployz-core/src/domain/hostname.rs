@@ -162,6 +162,8 @@ mod tests {
         }))
         .unwrap();
         ContainerObservation::try_from(crate::ContainerObservationParts {
+            rotation: None,
+            r#gen: None,
             container_id: ContainerId::parse(container.to_string().repeat(64)).unwrap(),
             display_name: format!("{name}-{container}"),
             created_at_unix_nanos: created_at,
@@ -173,6 +175,7 @@ mod tests {
             resolved_spec,
             address: None,
             labels: BTreeMap::new(),
+            stopped: false,
         })
         .unwrap()
     }

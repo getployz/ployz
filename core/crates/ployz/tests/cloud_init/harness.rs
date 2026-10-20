@@ -11,13 +11,13 @@ use std::{
 use ployz_core::{
     AdvertisedEndpoint, ContainerDetails, ContainerId, ContainerKind, ContainerList,
     ContainerLocator, ContainerNow, ContainerObservation, ContainerRuntimeObservation,
-    ContainerWant, ContractDescription, CreationKey, DESCRIBE_CONTRACT_CAPABILITY, EnrollAs,
-    EnrollRequest, Enrolled, EnsuredContainer, HealthObservation, Left, LeftPhase,
+    ContainerWant, ContractDescription, CopyRotation, CreationKey, DESCRIBE_CONTRACT_CAPABILITY,
+    EnrollAs, EnrollRequest, Enrolled, EnsuredContainer, HealthObservation, Left, LeftPhase,
     LocalMachinePhase, Machine, MachineDetails, MachineId, MachineImages, MachineList, MachineName,
     MachineNow, MachineObservation, MachineToken, MembershipObservation, NewContainer,
-    OpaquePayload, PROTOCOL_MAJOR, QualifiedService, Registered, RpcError, RpcErrorCode,
-    RpcRequestBody, RpcResponse, RunTarget, ServingPointer, ServingPointerPublication,
-    ServingPointerRead, SetManagementClientResponse, VolumeInventory, WireGuardPublicKey,
+    OpaquePayload, PROTOCOL_MAJOR, QualifiedService, Registered, RoutesRead, RpcError,
+    RpcErrorCode, RpcRequestBody, RpcResponse, RunRotation, RunTarget, ServingPointer,
+    ServingPointerPublication, SetManagementClientResponse, VolumeInventory, WireGuardPublicKey,
 };
 
 /// The Management Capability the fake daemon mints for any Management Client Set.
@@ -368,13 +368,15 @@ impl JoinDaemon {
             .get(&new.slot.creation_key)
             .copied();
         let container = match existing {
-            Some(container_id) => self.set_running(container_id)?,
+            Some(container_id) => self.set_running(container_id, &RunRotation::Pending)?,
             None => {
                 let mut containers = self.inner.containers.lock().unwrap();
                 let n = containers.len() + 1;
                 let container_id = ContainerId::parse(format!("{n:064x}")).unwrap();
                 let container =
                     ContainerObservation::try_from(ployz_core::ContainerObservationParts {
+                        rotation: None,
+                        r#gen: None,
                         container_id,
                         display_name: format!("{}-{n}", new.resolved_spec.name),
                         created_at_unix_nanos: n as i64,
@@ -388,6 +390,7 @@ impl JoinDaemon {
                         resolved_spec: new.resolved_spec,
                         address: None,
                         labels: Default::default(),
+                        stopped: false,
                     })
                     .unwrap();
                 containers.push(container.clone());
@@ -411,7 +414,11 @@ impl JoinDaemon {
         clippy::result_large_err,
         reason = "MachineRpc uses tonic::Status as the error type"
     )]
-    fn set_running(&self, container_id: ContainerId) -> Result<ContainerObservation, Status> {
+    fn set_running(
+        &self,
+        container_id: ContainerId,
+        rotation: &RunRotation,
+    ) -> Result<ContainerObservation, Status> {
         let mut containers = self.inner.containers.lock().unwrap();
         let container = containers
             .iter_mut()
@@ -429,6 +436,11 @@ impl JoinDaemon {
                 })
                 .unwrap();
             self.record("deploy_ingress");
+        }
+        if matches!(rotation, RunRotation::In { .. }) {
+            container
+                .try_update(|parts| parts.rotation = Some(CopyRotation::In))
+                .unwrap();
         }
         Ok(container.clone())
     }
@@ -872,11 +884,13 @@ impl FakeMachine for JoinDaemon {
         match ensure.want {
             ContainerWant::Running {
                 container: RunTarget::New(new),
+                ..
             } => self.run_new(new),
             ContainerWant::Running {
                 container: RunTarget::Existing(ContainerLocator::Id(container_id)),
+                rotation,
             } => {
-                let container = self.set_running(container_id)?;
+                let container = self.set_running(container_id, &rotation)?;
                 ensured(ContainerNow::Present(container))
             }
             ContainerWant::Gone {
@@ -894,12 +908,15 @@ impl FakeMachine for JoinDaemon {
             }
             ContainerWant::Running {
                 container: RunTarget::Existing(ContainerLocator::Key(_)),
+                ..
             }
             | ContainerWant::Gone {
                 container: ContainerLocator::Key(_),
                 ..
             }
-            | ContainerWant::Stopped { .. } => unused(),
+            | ContainerWant::Stopped { .. }
+            | ContainerWant::Out { .. }
+            | ContainerWant::Held { .. } => unused(),
         }
     }
     async fn list_images(
@@ -933,7 +950,7 @@ impl FakeMachine for JoinDaemon {
         };
         rpc_ok(publication)
     }
-    async fn read_serving_pointer(
+    async fn read_routes(
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
@@ -941,8 +958,8 @@ impl FakeMachine for JoinDaemon {
             .into_inner()
             .decode_request()
             .map_err(|error| Status::invalid_argument(error.to_string()))?;
-        let RpcRequestBody::ReadServingPointer(read) = request.body else {
-            return Err(Status::invalid_argument("expected ReadServingPointer"));
+        let RpcRequestBody::ReadRoutes(read) = request.body else {
+            return Err(Status::invalid_argument("expected ReadRoutes"));
         };
         let pointer = self
             .inner
@@ -956,17 +973,18 @@ impl FakeMachine for JoinDaemon {
             .iter()
             .map(|pointer| (machine, pointer.deploy.clone()))
             .collect();
-        rpc_ok(ServingPointerRead {
+        rpc_ok(RoutesRead {
             all_routed: pointer.is_some(),
             pointer,
             acks,
+            ..RoutesRead::default()
         })
     }
     async fn pull_image(
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        rpc_ok(ployz_core::ImagePulled {})
+        rpc_ok(ployz_core::ImagePulled::default())
     }
     async fn leave(
         &self,
@@ -1016,6 +1034,8 @@ pub fn ingress_on(machine: &Machine) -> ContainerObservation {
         )
         .expect("volume graph is scoped");
     ployz_core::ContainerObservation::try_from(ployz_core::ContainerObservationParts {
+        rotation: None,
+        r#gen: None,
         container_id: ContainerId::parse("a".repeat(64)).unwrap(),
         display_name: "ingress-a".into(),
         created_at_unix_nanos: 1,
@@ -1029,6 +1049,7 @@ pub fn ingress_on(machine: &Machine) -> ContainerObservation {
         resolved_spec: spec,
         address: None,
         labels: Default::default(),
+        stopped: false,
     })
     .unwrap()
 }

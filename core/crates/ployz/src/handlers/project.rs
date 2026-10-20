@@ -22,7 +22,7 @@ pub(super) fn group(command: Command) -> Command {
 pub(super) fn new_command(command: Command) -> Command {
     command
         .about("Create a Project with its Default Environment, production")
-        .arg(positional("name", true))
+        .arg(positional("name", true).help("The new Project's name, unique in the Organization"))
 }
 
 pub(super) fn ls_command(command: Command) -> Command {
@@ -109,6 +109,15 @@ pub(super) fn rename(root: &ArgMatches) -> Result<(), Error> {
     // Resolved before the write, so a failed lookup cannot strand a done rename.
     let acting = super::link::identity(&store)?.organization;
     let renamed = store.write(&rename)?;
+    if renamed.name == rename.project {
+        return crate::ui::done(
+            &json!({ "project": renamed, "links": 0 }),
+            format_args!(
+                "Nothing changed; Project {} already has that name.",
+                renamed.name
+            ),
+        );
+    }
     crate::ui::stream(format_args!(
         "Renamed Project {} to {}.",
         rename.project, renamed.name
@@ -148,8 +157,12 @@ pub(super) fn rm(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let name = ProjectName::parse(required(matches, "name")?)?;
     let store = store(root)?.args([name.as_str(), "--confirm", name.as_str()]);
+    let mut shown = None;
     confirm(matches, name.as_str(), "Project", store.again(&[]), || {
-        unconfirmed(&store, &name)
+        unconfirmed(&store, &name).map(|(refusal, loss, listed)| {
+            shown = Some(listed);
+            (refusal, loss)
+        })
     })?;
     let listed = store.read(&ployz_store::ProjectsQuery {})?;
     let environments = listed
@@ -159,7 +172,8 @@ pub(super) fn rm(root: &ArgMatches) -> Result<(), Error> {
         .map(|listing| listing.environments)
         .unwrap_or_default();
     let events = deploy::open_events(matches)?;
-    let Some(removed) = teardown::remove(matches, &store, (&name, None), events)? else {
+    let Some(removed) = teardown::remove(matches, &store, (&name, None), shown.as_ref(), events)?
+    else {
         return Ok(());
     };
     let removal = Removal {
@@ -178,7 +192,10 @@ pub(super) fn rm(root: &ArgMatches) -> Result<(), Error> {
 
 /// Refuse an unconfirmed `project rm`, naming every Environment with what goes
 /// with it, and the exact retry; and the same as a tree for the prompt.
-fn unconfirmed(store: &Store, project: &ProjectName) -> Result<(Error, Tree), Error> {
+fn unconfirmed(
+    store: &Store,
+    project: &ProjectName,
+) -> Result<(Error, Tree, teardown::Shown), Error> {
     let listed = store.read(&ployz_store::ProjectsQuery {})?;
     let Some(listing) = listed
         .projects
@@ -220,5 +237,5 @@ fn unconfirmed(store: &Store, project: &ProjectName) -> Result<(Error, Tree), Er
         json!({ "project": project, "environments": environments }),
     )
     .hint(Hint::Retry(retry));
-    Ok((refusal, loss))
+    Ok((refusal, loss, teardown::Shown::of(&environments)))
 }

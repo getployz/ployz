@@ -8,7 +8,10 @@ use serde_json::Value;
 use thiserror::Error;
 use ts_rs::TS;
 
-use super::spec::{HealthcheckSpec, ResolvedServiceSpec};
+use super::{
+    rotation::{CopyRotation, Gen},
+    spec::{HealthcheckSpec, ResolvedServiceSpec},
+};
 use crate::{
     ContainerAddress, ContainerId, DEPLOYMENT_ID_LABEL, DeploymentLogId, MachineId, Namespace,
     QualifiedService, ServiceId, ServiceName,
@@ -243,6 +246,19 @@ pub struct ContainerObservationParts {
     pub address: Option<ContainerAddress>,
     #[serde(default)]
     pub labels: BTreeMap<String, String>,
+    /// Written only by the owning Machine. `None` reads `Pending`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional = nullable)]
+    pub rotation: Option<CopyRotation>,
+    /// From the `ployz.gen` label. `None` reads [`Gen::FIRST`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional = nullable)]
+    pub r#gen: Option<Gen>,
+    /// The owning Machine ended this exited run for a `Stopped` want, so its exit
+    /// code is no crash. Never set on a later run, nor by older daemons.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[ts(optional, as = "Option<bool>")]
+    pub stopped: bool,
 }
 
 /// A coherent observation of one managed Container, retaining its historical spec.
@@ -308,6 +324,17 @@ impl From<ContainerObservation> for ContainerObservationParts {
 }
 
 impl ContainerObservationParts {
+    #[must_use]
+    pub fn rotation(&self) -> &CopyRotation {
+        const PENDING: &CopyRotation = &CopyRotation::Pending;
+        self.rotation.as_ref().unwrap_or(PENDING)
+    }
+
+    #[must_use]
+    pub fn copy_gen(&self) -> Gen {
+        self.r#gen.unwrap_or(Gen::FIRST)
+    }
+
     /// The Deploy this Container was created under, from its `DEPLOYMENT_ID_LABEL`.
     #[must_use]
     pub fn deploy_label(&self) -> Option<DeploymentLogId> {
@@ -676,6 +703,36 @@ mod tests {
     }
 
     #[test]
+    fn the_stop_mark_is_on_the_wire_only_when_set_and_absent_reads_unstopped() {
+        let mut stopped = observation(ContainerKind::ServiceContainer);
+        stopped
+            .try_update(|parts| {
+                parts.runtime = ContainerRuntimeObservation::Exited { code: 1 };
+                parts.stopped = true;
+            })
+            .unwrap();
+        let wire = serde_json::to_value(&stopped).unwrap();
+        assert_eq!(
+            wire.get("runtime"),
+            Some(&json!({"state": "exited", "code": 1}))
+        );
+        assert_eq!(wire.get("stopped"), Some(&json!(true)));
+
+        let mut older = wire;
+        older.as_object_mut().unwrap().remove("stopped");
+        let decoded: ContainerObservation = serde_json::from_value(older).unwrap();
+        assert!(
+            !decoded.stopped,
+            "an older daemon's observation never says stopped"
+        );
+        assert_eq!(
+            serde_json::to_value(&decoded).unwrap().get("stopped"),
+            None,
+            "nor does an unstopped one"
+        );
+    }
+
+    #[test]
     fn mixed_observation_converts_to_exactly_one_role_proven_view() {
         let service = observation(ContainerKind::ServiceContainer);
         let hook = observation(ContainerKind::PreDeployHook);
@@ -969,6 +1026,8 @@ mod tests {
         }))
         .unwrap();
         ContainerObservation::try_from(crate::ContainerObservationParts {
+            rotation: None,
+            r#gen: None,
             container_id: ContainerId::parse(id.to_string().repeat(64)).unwrap(),
             display_name: format!("api-{id}"),
             created_at_unix_nanos: 0,
@@ -980,6 +1039,7 @@ mod tests {
             resolved_spec,
             address: None,
             labels: BTreeMap::new(),
+            stopped: false,
         })
         .unwrap()
     }

@@ -19,6 +19,13 @@ a queued one now, and cancel one, like the
 [deployment page](../deploy/deployments.md#redeploy-or-cancel-a-deployment)'s buttons. It can also
 read your GitHub repositories and work on your servers. It doesn't create environments.
 
+The agent never sees or sends a secret's value. It can ask Ployz to give a variable a new
+random secret, such as a database password that other services then reference. Ployz makes the
+value and seals it in the same step, so it never appears in the agent's chat, its tool calls or
+their results. A secret you already have, like an API key, you set yourself under **Variables**
+or with `printf %s "$VALUE" | ployz set web.env.API_KEY --secret`; the agent names the exact
+command.
+
 ## What it can do on your servers
 
 The agent asks your servers and Cloud directly, so its answers are as fresh as the servers that
@@ -26,8 +33,8 @@ replied. It can:
 
 - Show a server, a service's containers, and where each volume's copies live
   (**server show**, **service status**, **volume show**).
-- Read a service's recent logs from each server that ran it, with secrets from the container's
-  environment replaced (**service logs**). Ployz support sees them only if your organization
+- Read a service's recent logs from each server that ran it, with sealed variables and
+  secret-shaped values replaced (**service logs**). Ployz support sees them only if your organization
   shows its logs to support. It reads the latest lines and doesn't follow new ones.
 - Read a server's own recent logs from the Ployz daemon, Docker or Corrosion, up to 200 lines,
   with secret-shaped values replaced (**server logs**). Ployz support can't read them.
@@ -92,15 +99,17 @@ changes, because it ships exactly what that deployment did.
 
 When a deploy or save would remove a running service, delete a volume, detach a volume from a
 service or remove a domain, the agent stops and shows a card. It does the same before it removes
-a server, cleans up after one, drains the last copy of a volume off one, or runs a volume
+a server, cleans up after one, drains a server whose global service runs on no other server, or runs a volume
 command that deletes data. The card leads with what would be
-destroyed. Everything else the change does is folded under a count, like **2 other changes**;
-click it to see them.
+destroyed. A detach that a [restore](../services/restore-a-volume.md) makes also says what the
+new volume leaves out, like "Changes after 10:27 are not in pg-data-1027", with the date as well
+for a point from an earlier day. Everything else the change does is folded under a count, like **2 other changes**;
+click it to see them. Under its name the card says when it was asked, like **9 minutes ago**.
 
 1. Read the list of what gets destroyed.
-2. Click **Approve** (or press ⌘↵) to let the deploy go ahead.
-3. Or click **Deny** (or press Esc) to stop it. To tell the agent why, click
-   **Deny with a reason…**, type the reason, and press ⌘↵.
+2. Click **Approve** to let the deploy go ahead.
+3. Or click **Deny** to stop it. To tell the agent why, click
+   **Deny with a reason…**, type the reason, and click **Deny**.
 
 <!-- screenshot: an approval card for Deploy production that deletes the postgres-data volume -->
 

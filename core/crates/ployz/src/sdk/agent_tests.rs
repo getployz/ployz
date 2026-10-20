@@ -1,20 +1,27 @@
-use std::{collections::BTreeMap, sync::Arc, time::Duration};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+    time::Duration,
+};
 
 use ployz_core::metrics::{
     HostPoint, MarkerKind, MetricHistoryReply, MetricMarker, MetricPoints, ServicePoint,
 };
 use ployz_core::{
-    ConfiguredHealthcheck, ContainerId, ContainerKind, HealthcheckCommand, HealthcheckSpec,
-    MachineFailure, MachineSuccess, Namespace, QualifiedService, RpcError, RpcErrorCode, ServiceId,
-    ServiceName,
+    ConfiguredHealthcheck, ContainerId, ContainerKind, ContainerRuntimeObservation, CopyRotation,
+    DeploymentLogId, HealthcheckCommand, HealthcheckSpec, MachineFailure, MachineSuccess,
+    Namespace, QualifiedService, RpcError, RpcErrorCode, ServiceId, ServiceName,
 };
+use ployz_store::DeploymentId;
 use ployz_store::tools::cloud::{ContainerState, LogsAnswer, MetricRow};
-use ployz_store::tools::{LineCap, LogText, LogsQuery, ServerName, ServerRef, Timestamp, Withheld};
-use ployz_store::{DeploymentId, EnvironmentId};
+use ployz_store::tools::{
+    LineCap, LogText, LogsQuery, SealedValues, ServerName, ServerRef, Timestamp, Withheld,
+};
 use tokio::time::Instant;
 
 use super::{
-    NANOS_PER_SECOND, Readable, ServiceCopy, Started, copies_of, logs, start_one, summarize,
+    NANOS_PER_SECOND, Readable, ServiceCopy, Started, copies_of, logs, remove_one, report,
+    start_one, stop_one, summarize,
 };
 use crate::global_fixtures::{container_id, machine, running_on};
 use crate::sdk::test_support as support;
@@ -43,6 +50,73 @@ fn a_services_copies_include_its_hook_containers_marked_as_hooks() {
         hook,
     };
     assert_eq!(copies, [copy('1', false), copy('2', true)]);
+}
+
+#[test]
+fn a_copy_its_server_stopped_reads_stopped_and_one_that_exited_alone_reads_exited() {
+    let server = machine('a', "alpha");
+    let exited = |hex| {
+        let mut copy = running_on(&server, hex);
+        copy.try_update(|parts| parts.runtime = ContainerRuntimeObservation::Exited { code: 1 })
+            .unwrap();
+        copy
+    };
+    let crashed = report(&exited('1'), &server.name);
+    let mut stopped = exited('2');
+    stopped.try_update(|parts| parts.stopped = true).unwrap();
+    let stopped = report(&stopped, &server.name);
+
+    for report in [&crashed, &stopped] {
+        assert_eq!(
+            (report.state, report.exit_code),
+            (ContainerState::Exited, Some(1))
+        );
+    }
+    assert!(!crashed.stopped);
+    assert!(stopped.stopped);
+}
+
+/// A containers answer as a reader from before the stop mark decodes it: the
+/// states `ployz mcp` knew then, and no `stopped`.
+#[derive(Debug, PartialEq, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum OldContainerState {
+    Created,
+    Running,
+    Restarting,
+    Paused,
+    Exited,
+    Dead,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct OldContainerReport {
+    state: OldContainerState,
+    exit_code: Option<i64>,
+}
+
+#[test]
+fn a_reader_older_than_the_stop_mark_reads_a_stopped_copy_as_exited_with_its_code() {
+    let server = machine('a', "alpha");
+    let mut stopped = running_on(&server, '2');
+    stopped
+        .try_update(|parts| {
+            parts.runtime = ContainerRuntimeObservation::Exited { code: 1 };
+            parts.stopped = true;
+        })
+        .unwrap();
+
+    let wire = serde_json::to_value(report(&stopped, &server.name)).unwrap();
+    assert_eq!(
+        wire.get("stopped"),
+        Some(&serde_json::json!(true)),
+        "a newer reader sees the stop"
+    );
+    let old: OldContainerReport =
+        serde_json::from_value(wire).expect("an older ployz mcp decodes a newer Cloud's answer");
+
+    assert_eq!(old.state, OldContainerState::Exited);
+    assert_eq!(old.exit_code, Some(1));
 }
 
 const SECOND: i64 = NANOS_PER_SECOND;
@@ -295,7 +369,10 @@ fn a_server_answer_describes_only_the_readable_namespaces_and_keeps_host_totals(
     );
 }
 
-async fn started(service: support::DeployService) -> Started {
+async fn acted<T, F: std::future::Future<Output = Result<T, RpcError>>>(
+    service: support::DeployService,
+    act: impl FnOnce(crate::sdk::Session, ployz_core::MachineId) -> F,
+) -> Result<T, RpcError> {
     let machine = support::machine('a', "one").machine.id;
     let (address, server) = support::listening(service).await;
     let session = crate::sdk::connect_connections(
@@ -304,25 +381,146 @@ async fn started(service: support::DeployService) -> Started {
     )
     .await
     .unwrap();
-    let started = start_one(&session, machine, container_id('1'))
-        .await
-        .unwrap();
+    let acted = act(session.clone(), machine).await;
     session.close().await;
     server.abort();
-    started
+    acted
+}
+
+async fn started(service: support::DeployService) -> Started {
+    acted(service, |session, machine| async move {
+        start_one(&session, machine, container_id('1')).await
+    })
+    .await
+    .unwrap()
+}
+
+fn run() -> DeploymentLogId {
+    DeploymentLogId::parse("stopped-by-you").unwrap()
 }
 
 #[tokio::test]
-async fn a_start_is_serving_once_its_health_wait_passes() {
+async fn a_start_never_routes_a_copy_no_deploy_brought_in() {
     let service = support::DeployService::new(support::machine('a', "one"));
+    let rotations = service.rotations();
+    let error = acted(service, |session, machine| async move {
+        start_one(&session, machine, container_id('1')).await
+    })
+    .await
+    .unwrap_err();
+    assert!(
+        error.message.contains("left Pending and not routed"),
+        "{error:?}"
+    );
+    assert_ne!(
+        rotations
+            .lock()
+            .unwrap()
+            .get(&container_id('1'))
+            .map(|rotated| &rotated.rotation),
+        Some(&CopyRotation::In)
+    );
+}
+
+#[tokio::test]
+async fn a_start_of_a_held_copy_brings_it_back_in() {
+    let service = support::DeployService::new(support::machine('a', "one"))
+        .with_rotation(container_id('1'), CopyRotation::Held(run()));
+    let rotations = service.rotations();
     assert_eq!(started(service).await, Started::Serving);
+    assert_eq!(
+        rotations
+            .lock()
+            .unwrap()
+            .get(&container_id('1'))
+            .map(|rotated| &rotated.rotation),
+        Some(&CopyRotation::In)
+    );
 }
 
 #[tokio::test]
 async fn a_start_whose_health_cannot_be_read_is_unconfirmed() {
+    let service = support::DeployService::new(support::machine('a', "one"))
+        .with_rotation(container_id('1'), CopyRotation::Held(run()))
+        .unread_health();
+    assert_eq!(started(service).await, Started::Unconfirmed);
+}
+
+#[tokio::test]
+async fn a_start_whose_copy_cannot_be_read_starts_nothing() {
     let service =
         support::DeployService::new(support::machine('a', "one")).fail_inspects("inspect failed");
-    assert_eq!(started(service).await, Started::Unconfirmed);
+    let mutations = service.mutating_rpcs();
+    let error = acted(service, |session, machine| async move {
+        start_one(&session, machine, container_id('1')).await
+    })
+    .await
+    .unwrap_err();
+    assert_eq!(error.code, RpcErrorCode::Unavailable, "{error:?}");
+    assert_eq!(mutations.load(std::sync::atomic::Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn a_start_of_an_out_copy_is_refused_and_says_to_deploy_again() {
+    let service = support::DeployService::new(support::machine('a', "one"))
+        .with_rotation(container_id('1'), CopyRotation::Out);
+    let mutations = service.mutating_rpcs();
+    let error = acted(service, |session, machine| async move {
+        start_one(&session, machine, container_id('1')).await
+    })
+    .await
+    .unwrap_err();
+    assert_eq!(error.code, RpcErrorCode::Conflict, "{error:?}");
+    assert!(
+        error.message.contains("Deploy the Service again"),
+        "{error:?}"
+    );
+    assert_eq!(mutations.load(std::sync::atomic::Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn a_stop_of_an_in_copy_holds_it_so_a_start_can_bring_it_back() {
+    let service = support::DeployService::new(support::machine('a', "one"))
+        .with_rotation(container_id('1'), CopyRotation::In);
+    let rotations = service.rotations();
+    let removed = service.removed_containers();
+    acted(service, |session, machine| async move {
+        stop_one(&session, machine, container_id('1')).await
+    })
+    .await
+    .unwrap();
+    assert!(matches!(
+        rotations
+            .lock()
+            .unwrap()
+            .get(&container_id('1'))
+            .map(|rotated| &rotated.rotation),
+        Some(CopyRotation::Held(_))
+    ));
+    assert!(removed.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn a_removal_of_a_stopped_in_copy_takes_it_out_then_removes_it() {
+    let service = support::DeployService::new(support::machine('a', "one"))
+        .crash_containers()
+        .with_rotation(container_id('1'), CopyRotation::In);
+    let rotations = service.rotations();
+    let removed = service.removed_containers();
+    acted(service, |session, machine| async move {
+        remove_one(&session, machine, container_id('1')).await
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        rotations
+            .lock()
+            .unwrap()
+            .get(&container_id('1'))
+            .map(|rotated| &rotated.rotation),
+        Some(&CopyRotation::Out)
+    );
+    assert!(removed.lock().unwrap().contains(&container_id('1')));
 }
 
 // Real Machines are on the network, so these wait in real time with short healthchecks.
@@ -330,6 +528,7 @@ async fn a_start_whose_health_cannot_be_read_is_unconfirmed() {
 #[tokio::test]
 async fn a_start_returns_only_once_its_healthcheck_passes() {
     let service = support::DeployService::new(support::machine('a', "one"))
+        .with_rotation(container_id('1'), CopyRotation::Held(run()))
         .turn_healthy_after(Duration::from_millis(1_500));
     let begun = Instant::now();
     assert_eq!(started(service).await, Started::Serving);
@@ -339,6 +538,7 @@ async fn a_start_returns_only_once_its_healthcheck_passes() {
 #[tokio::test]
 async fn a_start_that_never_passes_its_healthcheck_is_unhealthy_at_its_deadline() {
     let service = support::DeployService::new(support::machine('a', "one"))
+        .with_rotation(container_id('1'), CopyRotation::Held(run()))
         .hold_health()
         .with_effective_healthcheck(HealthcheckSpec::Configured(ConfiguredHealthcheck {
             test: HealthcheckCommand::parse(["CMD", "true"]).unwrap(),
@@ -358,21 +558,20 @@ async fn a_start_that_never_passes_its_healthcheck_is_unhealthy_at_its_deadline(
     );
 }
 
-fn logs_query(server: Option<ServerRef>, plain: &[(&str, &str)]) -> LogsQuery {
-    LogsQuery {
-        environment: EnvironmentId::parse("cccccccc-cccc-4ccc-8ccc-cccccccccccc").unwrap(),
+fn logs_query(server: Option<ServerRef>, sealed: Option<&[&str]>) -> LogsAsk {
+    let query = LogsQuery {
         namespace: Namespace::parse("app").unwrap(),
         service: ServiceName::parse("web").unwrap(),
         deployment: None,
         server,
         lines: LineCap::new(3).unwrap(),
         since: Some(Duration::from_secs(600)),
-        plain: plain
-            .iter()
-            .map(|(name, value)| ((*name).to_owned(), (*value).to_owned()))
-            .collect(),
-    }
+    };
+    let sealed = sealed.map(|names| names.iter().map(|name| (*name).to_owned()).collect());
+    (query, sealed)
 }
+
+type LogsAsk = (LogsQuery, Option<BTreeSet<String>>);
 
 fn shown(answer: &LogsAnswer) -> Vec<(String, Vec<String>)> {
     answer
@@ -387,7 +586,7 @@ fn shown(answer: &LogsAnswer) -> Vec<(String, Vec<String>)> {
         .collect()
 }
 
-async fn ask_logs(service: support::DeployService, queries: Vec<LogsQuery>) -> Vec<LogsAnswer> {
+async fn ask_logs(service: support::DeployService, queries: Vec<LogsAsk>) -> Vec<LogsAnswer> {
     let (address, server) = support::listening(service).await;
     let session = crate::sdk::connect_connections(
         vec![crate::context::Connection::tcp(address)],
@@ -396,24 +595,24 @@ async fn ask_logs(service: support::DeployService, queries: Vec<LogsQuery>) -> V
     .await
     .unwrap();
     let mut answers = Vec::new();
-    for query in queries {
-        answers.push(logs(&session, query).await.unwrap());
+    for (query, sealed) in queries {
+        answers.push(logs(&session, query, sealed.as_ref()).await.unwrap());
     }
     session.close().await;
     server.abort();
     answers
 }
 
-// Catches a logs ask that leaks a Container's env value, scrubs one the Store shows as
-// plain, caps lines per Container rather than per Server, ignores `lines`, `since` or the
-// Service, or reads Servers the ask didn't name.
+// Catches a logs ask that leaks a Sealed value, scrubs a value that is not Sealed, caps
+// lines per Container rather than per Server, ignores `lines`, `since` or the Service, or
+// reads Servers the ask didn't name.
 #[tokio::test]
 async fn a_logs_ask_returns_each_servers_scrubbed_tail_of_the_service() {
     let one = support::machine('a', "one");
     let two = support::machine('b', "two");
     let service = support::DeployService::new(one.clone()).with_machines(vec![one.clone(), two]);
     let requests = Arc::clone(&service.history_requests);
-    let plain = [("PLAIN", "from-docker")];
+    let sealed: Option<&[&str]> = Some(&["TOKEN"]);
     let only = ServerRef {
         machine: one.machine.id,
         name: one.machine.name.clone(),
@@ -421,7 +620,7 @@ async fn a_logs_ask_returns_each_servers_scrubbed_tail_of_the_service() {
 
     let [every, only] = ask_logs(
         service,
-        vec![logs_query(None, &plain), logs_query(Some(only), &plain)],
+        vec![logs_query(None, sealed), logs_query(Some(only), sealed)],
     )
     .await
     .try_into()
@@ -430,7 +629,7 @@ async fn a_logs_ask_returns_each_servers_scrubbed_tail_of_the_service() {
     let tail = vec![
         "line 10".to_owned(),
         "plain from-docker".to_owned(),
-        "token [secret TOKEN]".to_owned(),
+        "token=[secret TOKEN]".to_owned(),
     ];
     assert_eq!(
         shown(&every),
@@ -462,35 +661,101 @@ async fn a_logs_ask_returns_each_servers_scrubbed_tail_of_the_service() {
     }
 }
 
-// Catches a logs ask that shows an env value the Store does not show as plain with that
-// same value.
+// Catches a logs ask that scrubs env values when the Store names nothing Sealed, drops the
+// secret-shaped pass, or shows any env value when the Store could not say what is Sealed.
 #[tokio::test]
-async fn a_logs_ask_scrubs_env_values_the_store_does_not_show_as_plain() {
+async fn a_logs_ask_scrubs_only_sealed_values_unless_the_store_could_not_say() {
     let one = support::machine('a', "one");
     let service = support::DeployService::new(one.clone());
 
-    let answers = ask_logs(
+    let [nothing_sealed, unknown] = ask_logs(
         service,
-        vec![
-            logs_query(None, &[]),
-            logs_query(None, &[("PLAIN", "staged-value")]),
-        ],
+        vec![logs_query(None, Some(&[])), logs_query(None, None)],
+    )
+    .await
+    .try_into()
+    .unwrap();
+
+    let tail = |plain: &str, token: &str| {
+        vec![(
+            "one".to_owned(),
+            vec!["line 10".to_owned(), plain.to_owned(), token.to_owned()],
+        )]
+    };
+    assert_eq!(
+        shown(&nothing_sealed),
+        tail("plain from-docker", "token=[redacted]")
+    );
+    assert_eq!(
+        shown(&unknown),
+        tail("plain [secret PLAIN]", "token=[secret TOKEN]")
+    );
+}
+
+#[tokio::test]
+async fn a_logs_ask_scrubs_every_name_the_store_holds_sealed_whatever_the_ask_says() {
+    let one = support::machine('a', "one");
+    let service = support::DeployService::new(one.clone());
+    let decoded: Result<LogsQuery, _> = serde_json::from_value(serde_json::json!({
+        "namespace": "app",
+        "service": "web",
+        "lines": 3,
+        "sealed": [],
+    }));
+    assert!(decoded.is_err(), "an ask cannot carry its own scrub set");
+
+    let [answer] = ask_logs(service, vec![logs_query(None, Some(&["PLAIN", "TOKEN"]))])
+        .await
+        .try_into()
+        .unwrap();
+
+    assert_eq!(
+        shown(&answer),
+        [(
+            "one".to_owned(),
+            vec![
+                "line 10".to_owned(),
+                "plain [secret PLAIN]".to_owned(),
+                "token=[secret TOKEN]".to_owned(),
+            ]
+        )]
+    );
+}
+
+// Catches a direct apply's failed tail scrubbing env values it has no Sealed reason to,
+// or showing secret-shaped text.
+#[tokio::test]
+async fn a_failed_tail_without_sealed_values_shows_env_values_and_redacts_secret_shaped_text() {
+    let one = support::machine('a', "one");
+    let (address, server) = support::listening(support::DeployService::new(one.clone())).await;
+    let session = crate::sdk::connect_connections(
+        vec![crate::context::Connection::tcp(address)],
+        Arc::new(crate::connect::SystemConnector::default()),
+    )
+    .await
+    .unwrap();
+
+    let log = crate::sdk::failed_tail(
+        &session.client().unwrap(),
+        one.machine.id,
+        container_id('c'),
+        &SealedValues::none(),
     )
     .await;
+    session.close().await;
+    server.abort();
 
-    for answer in &answers {
-        assert_eq!(
-            shown(answer),
-            [(
-                "one".to_owned(),
-                vec![
-                    "line 10".to_owned(),
-                    "plain [secret PLAIN]".to_owned(),
-                    "token [secret TOKEN]".to_owned(),
-                ]
-            )]
-        );
-    }
+    let LogText::Shown(excerpt) = log else {
+        panic!("a read tail is shown: {log:?}");
+    };
+    assert!(
+        excerpt.lines().ends_with(&[
+            "plain from-docker".to_owned(),
+            "token=[redacted]".to_owned()
+        ]),
+        "{:?}",
+        excerpt.lines()
+    );
 }
 
 // Catches a logs ask that drops why a Server's Log Store did not answer, or that lets the
@@ -505,7 +770,7 @@ async fn a_server_whose_log_store_fails_is_unanswered_with_its_reason() {
         .history_failures
         .insert(two.machine.id, "log store is rebuilding".to_owned());
 
-    let [answer] = ask_logs(service, vec![logs_query(None, &[("PLAIN", "from-docker")])])
+    let [answer] = ask_logs(service, vec![logs_query(None, Some(&["TOKEN"]))])
         .await
         .try_into()
         .unwrap();
@@ -535,7 +800,7 @@ async fn a_removed_containers_lines_are_left_out_and_the_rest_still_shown() {
         .uninspectable
         .insert(ContainerId::parse("d".repeat(64)).unwrap());
 
-    let [answer] = ask_logs(service, vec![logs_query(None, &[("PLAIN", "from-docker")])])
+    let [answer] = ask_logs(service, vec![logs_query(None, Some(&["TOKEN"]))])
         .await
         .try_into()
         .unwrap();
@@ -547,28 +812,35 @@ async fn a_removed_containers_lines_are_left_out_and_the_rest_still_shown() {
             vec![
                 "line 8".to_owned(),
                 "line 10".to_owned(),
-                "token [secret TOKEN]".to_owned(),
+                "token=[secret TOKEN]".to_owned(),
             ]
         )]
     );
 }
 
-// Catches a logs ask that shows lines when no Container's env could be read to scrub them.
+// Catches a logs ask that shows lines when no Container's env could be read to scrub its
+// Sealed values, or withholds them from a Service with none.
 #[tokio::test]
-async fn a_server_whose_containers_cannot_be_inspected_withholds_its_lines() {
+async fn a_server_whose_containers_cannot_be_inspected_withholds_only_sealed_lines() {
     let one = support::machine('a', "one");
     let mut service = support::DeployService::new(one.clone());
     service
         .uninspectable
         .extend(["c", "d"].map(|id| ContainerId::parse(id.repeat(64)).unwrap()));
 
-    let [answer] = ask_logs(service, vec![logs_query(None, &[("PLAIN", "from-docker")])])
-        .await
-        .try_into()
-        .unwrap();
+    let [sealed, nothing_sealed] = ask_logs(
+        service,
+        vec![
+            logs_query(None, Some(&["TOKEN"])),
+            logs_query(None, Some(&[])),
+        ],
+    )
+    .await
+    .try_into()
+    .unwrap();
 
     assert_eq!(
-        answer
+        sealed
             .servers
             .iter()
             .map(|log| (log.server.to_string(), log.text.clone()))
@@ -580,4 +852,5 @@ async fn a_server_whose_containers_cannot_be_inspected_withholds_its_lines() {
             }
         )]
     );
+    assert_eq!(shown(&nothing_sealed).len(), 1);
 }

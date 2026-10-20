@@ -35,6 +35,12 @@ class CiTest(unittest.TestCase):
             (["core/scripts/build-cloud-sdk.sh"], {"contracts", "cloud"}),
             (["core/scripts/check-sdk-types.sh"], {"contracts", "cloud"}),
             (["core/scripts/pack-release.sh"], {"contracts", "release-contracts"}),
+            (["core/scripts/verify/boat.py", "core/scripts/verify/test_boat.py"], {"contracts"}),
+            (["core/scripts/verify-cluster", "core/scripts/verify/releases.py"], {"contracts"}),
+            (["core/scripts/verify/dns-soak.sh"], {"contracts", "rust-lint", "rust-tests", "macos-cli"}),
+            (["dashboard/scripts/verify/up.sh", "dashboard/scripts/verify/runner.mjs"], {"contracts"}),
+            (["dashboard/scripts/verify/up.sh", "dashboard/scripts/verify/seed.ts"], {"contracts", "cloud"}),
+            (["dashboard/scripts/pr-check.sh"], {"contracts", "cloud"}),
         ]
         for paths, expected in cases:
             with self.subTest(paths=paths):
@@ -45,8 +51,36 @@ class CiTest(unittest.TestCase):
         for path in ["core/Cargo.lock", "core/Cargo.toml", "core/crates/ployzd/Cargo.toml", "core/.cargo/config.toml", ".github/workflows/release.yml", ".github/workflows/release-contracts.yml"]:
             with self.subTest(path=path):
                 self.assertEqual(ci["select"]([path]), ci["JOBS"])
+        for path in ["core/Cargo.lock", "core/Cargo.toml", "core/crates/ployzd/Cargo.toml", "core/.cargo/config.toml"]:
+            with self.subTest(path=path, pull_request=True):
+                self.assertNotIn("release-contracts", ci["select"]([path], pull_request=True))
+        for path in [".github/workflows/release-contracts.yml", "core/.goreleaser.yaml"]:
+            with self.subTest(path=path, pull_request=True):
+                self.assertIn("release-contracts", ci["select"]([path], pull_request=True))
         self.assertIn("release-contracts", ci["select"]([".github/workflows/ci.yml", "core/.goreleaser.yaml"]))
         self.assertIn("cloud", ci["select"](["core/crates/ployz-sdk/tests/config-contract.mjs"]))
+        for path in ["core/crates/ployz/src/main.rs", ".github/workflows/ci.yml"]:
+            with self.subTest(path=path, pull_request=True):
+                self.assertNotIn("macos-cli", ci["select"]([path], pull_request=True))
+
+    def test_store_postgres_reruns_only_when_its_inputs_change(self):
+        for paths in [["core/crates/ployz-store/src/lib.rs"], ["core/crates/ployz-core/src/rpc.rs"], ["docs/user/services/domains.md"],
+                      ["core/crates/ployz/tests/fixtures/published-manifest.json"], ["core/Cargo.lock"], [".github/workflows/ci.yml"], ["unknown.config"]]:
+            with self.subTest(paths=paths):
+                self.assertTrue(ci["store_postgres"](paths, pull_request=True))
+        for paths in [["core/crates/ployz/src/main.rs"], ["core/crates/ployzd/src/main.rs"], ["dashboard/src/app.tsx"]]:
+            with self.subTest(paths=paths):
+                self.assertFalse(ci["store_postgres"](paths, pull_request=True))
+                self.assertTrue(ci["store_postgres"](paths))
+        # STORE_INPUTS names ployz-store's path dependencies by hand; a new one must join it.
+        metadata = json.loads(subprocess.check_output(["cargo", "metadata", "--no-deps", "--format-version", "1"], cwd=SCRIPT.parent.parent / "core"))
+        path_deps = {p["name"]: {d["name"] for d in p["dependencies"] if d.get("path")} for p in metadata["packages"]}
+        self.assertEqual(path_deps["ployz-store"] | path_deps["ployz-core"], {"ployz-core"})
+
+    def test_only_dns_soak_reaches_rust_from_the_verify_harness(self):
+        # select runs no Rust check for core/scripts/verify/; a crate that reads another of its files must join dns-soak.sh.
+        read = subprocess.check_output(["git", "grep", "-ho", "scripts/verify/[A-Za-z0-9_.-]*", "--", "core/crates"], cwd=SCRIPT.parent.parent, text=True)
+        self.assertEqual(read.split(), ["scripts/verify/dns-soak.sh"])
 
     def test_sdk_and_config_wasm_crates_follow_their_path_dependencies(self):
         self.assertEqual(

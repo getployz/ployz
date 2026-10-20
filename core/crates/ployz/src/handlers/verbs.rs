@@ -269,17 +269,18 @@ pub(crate) const DEPLOYMENT_CANCEL: Verb = Verb::cloud(
 )
 .needs(Permission::ChangesDeploy);
 pub(crate) const DEPLOYMENT_LS: Verb =
-    Verb::cloud("deployment ls", Never, deploy::ls_command, deploy::ls);
-pub(crate) const DEPLOYMENT_RETRY: Verb = Verb::cloud(
-    "deployment retry",
-    Never,
-    deploy::retry_command,
-    deploy::retry,
+    Verb::cloud("deployment ls", Never, deploy::ls_command, deploy::ls).docs("cli/overview.md");
+pub(crate) const DEPLOYMENT_REDEPLOY: Verb = Verb::cloud(
+    "deployment redeploy",
+    Depends,
+    deploy::redeploy_command,
+    deploy::redeploy,
 )
 .docs("deploy/deployments.md")
 .needs(Permission::ChangesDeploy);
 pub(crate) const DEPLOYMENT_SHOW: Verb =
-    Verb::cloud("deployment show", Never, deploy::show_command, deploy::show);
+    Verb::cloud("deployment show", Never, deploy::show_command, deploy::show)
+        .docs("troubleshooting/deployments.md");
 pub(crate) const DEPLOYMENT_START: Verb = Verb::cloud(
     "deployment start",
     Never,
@@ -297,9 +298,10 @@ pub(crate) const DOCS: Verb =
 pub(crate) const DOMAIN_ADD: Verb =
     Verb::cloud("domain add", Never, domain::add_command, domain::add).docs("services/domains.md");
 pub(crate) const DOMAIN_CHECK: Verb =
-    Verb::cloud("domain check", Never, domain::check_command, domain::check);
+    Verb::cloud("domain check", Never, domain::check_command, domain::check)
+        .docs("services/domains.md");
 pub(crate) const DOMAIN_LS: Verb =
-    Verb::cloud("domain ls", Never, domain::list_command, domain::list);
+    Verb::cloud("domain ls", Never, domain::list_command, domain::list).docs("services/domains.md");
 pub(crate) const DOMAIN_RM: Verb =
     Verb::cloud("domain rm", Never, domain::remove_command, domain::remove);
 pub(crate) const DOMAIN_SET: Verb =
@@ -310,7 +312,8 @@ pub(crate) const ENV_BRANCH: Verb = Verb::cloud(
     env::branch_command,
     env::branch::branch,
 )
-.needs(Permission::EnvironmentCreate);
+.needs(Permission::EnvironmentCreate)
+.docs("environments/environments.md");
 pub(crate) const ENV_COPY: Verb =
     Verb::cloud("env copy", Never, env::copy_command, env::branch::copy);
 pub(crate) const ENV_DEFAULT: Verb =
@@ -359,7 +362,8 @@ pub(crate) const ENV_SHUTDOWN: Verb = Verb::cloud(
     Always,
     env::shutdown_command,
     env::pr::shutdown,
-);
+)
+.docs("account/organizations.md");
 pub(crate) const ENV_SYNC: Verb =
     Verb::cloud("env sync", Depends, env::sync_command, env::branch::sync)
         .stdin(&[("--value", Stdin::Only)])
@@ -441,6 +445,9 @@ pub(crate) const ORG_LS: Verb = Verb::cloud(
     account::org_list_command,
     account::org_list,
 );
+pub(crate) const ORG_NEW: Verb =
+    Verb::cloud("org new", Never, account::org_new_command, account::org_new)
+        .docs("account/organizations.md");
 pub(crate) const ORG_RM: Verb = Verb::cloud(
     "org rm",
     Always,
@@ -635,7 +642,8 @@ pub(crate) const SERVICE_RM: Verb = Verb::cloud(
     Never,
     service::authored::remove_command,
     service::authored::remove,
-);
+)
+.docs("services/services.md");
 pub(crate) const SERVICE_START: Verb = Verb::cloud(
     "service start",
     Never,
@@ -678,7 +686,8 @@ pub(crate) const TOKEN_RM: Verb = Verb::cloud(
     account::token_remove,
 )
 .docs("cli/overview.md");
-pub(crate) const UNSET: Verb = Verb::cloud("unset", Never, config::unset_command, config::unset);
+pub(crate) const UNSET: Verb = Verb::cloud("unset", Never, config::unset_command, config::unset)
+    .docs("environments/environments.md");
 pub(crate) const UP: Verb = Verb::cloud("up", Depends, up::command, up::up).docs("cli/overview.md");
 pub(crate) const VOLUME_ADD: Verb =
     Verb::cloud("volume add", Never, volume::add_command, volume::add);
@@ -751,7 +760,9 @@ pub(crate) const VOLUME_RUNS: Verb = Verb::cloud(
 )
 .docs("services/move-a-volume.md");
 pub(crate) const VOLUME_SET: Verb =
-    Verb::cloud("volume set", Never, volume::set_command, volume::set).docs("services/volumes.md");
+    Verb::cloud("volume set", Never, volume::set_command, volume::set)
+        .keeps_running(KeepsRunning::With("--wait"))
+        .docs("services/volumes.md");
 pub(crate) const VOLUME_SYNC: Verb = Verb::cloud(
     "volume sync",
     Never,
@@ -786,7 +797,7 @@ pub(crate) const VERBS: &[Verb] = &[
     DEPLOY,
     DEPLOYMENT_CANCEL,
     DEPLOYMENT_LS,
-    DEPLOYMENT_RETRY,
+    DEPLOYMENT_REDEPLOY,
     DEPLOYMENT_SHOW,
     DEPLOYMENT_START,
     DIFF,
@@ -833,6 +844,7 @@ pub(crate) const VERBS: &[Verb] = &[
     ORG_BUILD_ORDER,
     ORG_LEAVE,
     ORG_LS,
+    ORG_NEW,
     ORG_RM,
     ORG_USE,
     PROJECT_LS,
@@ -957,14 +969,20 @@ pub(crate) fn find(path: &str) -> Option<&'static Verb> {
 pub(crate) fn tree(root: Command) -> Command {
     let groups = GROUPS
         .iter()
-        .map(|group| (group.path, group.command, Vec::new(), None));
-    let verbs = VERBS
-        .iter()
-        .map(|verb| (verb.path, verb.command, verb.marked_flags(), verb.help()));
+        .map(|group| (group.path, group.command, Vec::new(), None, Json::Result));
+    let verbs = VERBS.iter().map(|verb| {
+        (
+            verb.path,
+            verb.command,
+            verb.marked_flags(),
+            verb.help(),
+            verb.json,
+        )
+    });
     groups
         .chain(verbs)
-        .fold(root, |root, (path, command, flags, help)| {
-            insert(root, path, path, command, &flags, help)
+        .fold(root, |root, (path, command, flags, help, json)| {
+            insert(root, path, path, command, &flags, help, json)
         })
 }
 
@@ -997,10 +1015,15 @@ fn insert(
     command: fn(Command) -> Command,
     flags: &[&'static str],
     added: Option<String>,
+    json: Json,
 ) -> Command {
     match rest.split_once(' ') {
         None => {
             let mut leaf = command(Command::new(rest));
+            if json == Json::Refused {
+                // The global `--json` stays parsed, so `dispatch` still refuses it.
+                leaf = leaf.arg(crate::cli::switch("json", None).global(true).hide(true));
+            }
             if let Some(added) = added {
                 let help = match leaf.get_after_help() {
                     Some(help) => format!("{help}\n\n{added}"),
@@ -1023,7 +1046,7 @@ fn insert(
                 "`{path}` needs its parent `{head}` listed first"
             );
             parent.mut_subcommand(head, |child| {
-                insert(child, path, rest, command, flags, added)
+                insert(child, path, rest, command, flags, added, json)
             })
         }
     }
@@ -1035,6 +1058,20 @@ mod tests {
     use ployz_store::{Claim, Command};
 
     use super::*;
+
+    #[test]
+    fn help_leaves_out_json_where_the_command_refuses_it() {
+        let mut tree = crate::cli::compiled();
+        tree.build();
+        let exec = tree.find_subcommand_mut("exec").unwrap();
+        assert!(!exec.render_help().to_string().contains("--json"));
+        let ps = tree.find_subcommand_mut("ps").unwrap();
+        assert!(ps.render_help().to_string().contains("--json"));
+        let matches = crate::cli::compiled()
+            .try_get_matches_from(["ployz", "exec", "web", "--json", "--", "true"])
+            .unwrap();
+        assert!(matches.get_flag("json"));
+    }
 
     fn names(content: &str, path: &str) -> bool {
         let call = format!("ployz {path}");

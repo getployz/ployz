@@ -9,6 +9,7 @@ use super::{Error, config_path, leaf_matches, runtime};
 use crate::cli::{positional, switch, value};
 use ployz_core::RpcErrorCode;
 
+use crate::approval;
 use crate::cloud_account::{self, Credential, ServerClears, TokenKind, TokenPreset};
 use crate::cloud_login::{CredentialStore, LoginError};
 use crate::ui::{self, Cell, Hint, Table, Tone};
@@ -35,12 +36,12 @@ pub(super) fn token_new_command(command: Command) -> Command {
                 .help("What it may do: full acts as you, read only reads, deploy stages and deploys one Environment"),
         )
         .arg(
-            value("environment", None)
+            value("env", None)
                 .value_name("ENVIRONMENT")
                 .required_if_eq("preset", "deploy")
                 .help("The one Environment a deploy token may change, by name"),
         )
-        .after_help("Examples:\n  ployz token new ci\n  ployz token new ci --preset deploy --environment staging")
+        .after_help("Examples:\n  ployz token new ci\n  ployz token new ci --preset deploy --env staging")
 }
 
 pub(super) fn token_list_command(command: Command) -> Command {
@@ -54,7 +55,24 @@ pub(super) fn token_remove_command(command: Command) -> Command {
 }
 
 pub(super) fn org_group(command: Command) -> Command {
-    command.about("List or switch Organizations")
+    command.about("List, make or switch Organizations")
+}
+
+pub(super) fn org_new_command(command: Command) -> Command {
+    command
+        .about("Make an Organization you own; this device moves to it")
+        .long_about(
+            "Make an Organization you own. Its slug comes from --slug, else the name; \
+             when another Organization has it, Cloud adds a suffix and prints the slug it picked. \
+             This device then acts in the new Organization. Your other sign-ins stay where they are.",
+        )
+        .arg(positional("name", true).help("Its name, up to 64 characters"))
+        .arg(
+            value("slug", None)
+                .value_name("SLUG")
+                .help("Its slug, from which its dashboard URL is made; defaults to the name"),
+        )
+        .after_help("Examples:\n  ployz org new \"Acme Corp\"\n  ployz org new \"Acme Corp\" --slug acme")
 }
 
 pub(super) fn org_list_command(command: Command) -> Command {
@@ -64,7 +82,7 @@ pub(super) fn org_list_command(command: Command) -> Command {
 pub(super) fn org_use_command(command: Command) -> Command {
     command
         .about("Act in another of your Organizations from this device")
-        .arg(positional("organization", true).help("Organization slug"))
+        .arg(positional("organization", true).help("Organization, from ployz org ls"))
 }
 
 pub(super) fn org_build_order_command(command: Command) -> Command {
@@ -99,14 +117,15 @@ pub(super) fn org_remove_command(command: Command) -> Command {
                      (ployz project rm). Every Server is unpaired: Cloud's key and every \
                      device key are cleared on it. A Server that doesn't confirm keeps the \
                      Organization, disabled, until the same command confirms it. Type its \
-                     slug with --confirm.",
+                     slug with --confirm. A human approves it in Ployz Cloud first.",
         )
-        .arg(positional("organization", true).help("Organization slug"))
+        .arg(positional("organization", true).help("Organization, from ployz org ls"))
         .arg(
             value("confirm", None)
                 .value_name("ORGANIZATION")
                 .help("The Organization's slug, typed to confirm its removal"),
         )
+        .arg(crate::cli::approval())
 }
 
 /// Run `work` with `PLOYZ_TOKEN` or this device's sign-in.
@@ -129,12 +148,12 @@ pub(super) fn token_new(root: &ArgMatches) -> Result<(), Error> {
         .expect("expires-in has a default");
     let preset = match (
         matches.get_one::<String>("preset").map(String::as_str),
-        matches.get_one::<String>("environment").cloned(),
+        matches.get_one::<String>("env").cloned(),
     ) {
         (Some("deploy"), Some(environment)) => TokenPreset::Deploy { environment },
         (Some("read"), None) => TokenPreset::Read,
         (Some("full") | None, None) => TokenPreset::Full,
-        _ => return Err(Error::usage("only --preset deploy takes --environment")),
+        _ => return Err(Error::usage("only --preset deploy takes --env")),
     };
     let token = in_cloud(root, async |_, credential| {
         cloud_account::new_token(credential, name, TokenKind::Cli, &preset, days).await
@@ -184,8 +203,11 @@ pub(super) fn token_list(root: &ArgMatches) -> Result<(), Error> {
         table.row([
             Cell::from("device"),
             Cell::from(&device.id),
-            Cell::from(""),
-            Cell::from(""),
+            Cell::from(format!(
+                "ployz login {}",
+                device.created_at.get(..10).unwrap_or(&device.created_at)
+            )),
+            Cell::from("Full as you"),
             Cell::from(device.expires_at.to_string()),
             current(device.current),
         ]);
@@ -336,11 +358,45 @@ pub(super) fn org_use(root: &ArgMatches) -> Result<(), Error> {
         .get_one::<String>("organization")
         .expect("organization is required");
     let organization = in_cloud(root, async |store, credential| {
-        cloud_account::use_organization(store, credential, slug).await
+        cloud_account::use_organization(store, credential, cloud_account::Target::Slug(slug)).await
     })?;
     crate::ui::finish(&serde_json::json!({ "organization": organization }), || {
         crate::ui::stream(format_args!(
             "This device now acts in Organization {}.",
+            organization.slug
+        ))
+    })
+}
+
+pub(super) fn org_new(root: &ArgMatches) -> Result<(), Error> {
+    let matches = leaf_matches(root);
+    let name = matches.get_one::<String>("name").expect("name is required");
+    let slug = matches.get_one::<String>("slug").map(String::as_str);
+    let store = CredentialStore::beside(&config_path(matches)?);
+    let organization = runtime()?.block_on(async {
+        let credential = cloud_account::from_env(&store).await?;
+        cloud_account::new_organization(&store, &credential, name, slug)
+            .await
+            .map_err(|error| {
+                // Connected, so the request may have landed and only the reply was lost
+                // or unreadable.
+                let reply_lost = matches!(
+                    &error,
+                    LoginError::Unreachable { error: cause, .. } if !cause.is_connect()
+                ) || matches!(error, LoginError::Reply(_));
+                let error = Error::from(error);
+                if reply_lost {
+                    error
+                        .context("Cloud may have made the Organization; check before retrying.")
+                        .hint(Hint::Inspect("ployz org ls".to_owned()))
+                } else {
+                    error
+                }
+            })
+    })?;
+    crate::ui::finish(&serde_json::json!({ "organization": organization }), || {
+        crate::ui::stream(format_args!(
+            "Made Organization {}. This device now acts in it.",
             organization.slug
         ))
     })
@@ -376,14 +432,14 @@ pub(super) fn org_leave(root: &ArgMatches) -> Result<(), Error> {
             Credential::Device(_) => cloud_account::organizations(&credential)
                 .await?
                 .into_iter()
-                .filter(|other| other.slug != organization.slug)
+                .filter(|other| other.id != organization.id)
                 .collect(),
             Credential::Token { .. } => Vec::new(),
         };
         let key = uuid::Uuid::new_v4().to_string();
         // Cloud leaves the Organization named here, not the session's active one, which a
         // browser may have moved since this device last acted.
-        let input = serde_json::json!({ "organization": organization.slug });
+        let input = serde_json::json!({ "organization": organization.id });
         crate::published::run_on(
             &credential,
             cloud_account::Via::Cli,
@@ -396,10 +452,14 @@ pub(super) fn org_leave(root: &ArgMatches) -> Result<(), Error> {
         .0?;
         let acting = match others.first() {
             Some(other) => Some(
-                cloud_account::use_organization(&store, &credential, &other.slug)
-                    .await
-                    .map(|organization| organization.slug)
-                    .map_err(|error| (other.slug.clone(), error)),
+                cloud_account::use_organization(
+                    &store,
+                    &credential,
+                    cloud_account::Target::Listed(other),
+                )
+                .await
+                .map(|organization| organization.slug)
+                .map_err(|error| (other.slug.clone(), error)),
             ),
             None => None,
         };
@@ -456,40 +516,81 @@ pub(super) fn org_remove(root: &ArgMatches) -> Result<(), Error> {
         Ok((refusal, loss))
     })?;
     let store = CredentialStore::beside(&config_path(matches)?);
-    let (removal, acting) = runtime()?.block_on(async {
+    let runtime = runtime()?;
+    let (credential, removing, others) = runtime.block_on(async {
         let credential = cloud_account::from_env(&store).await?;
+        let list = cloud_account::organizations(&credential).await?;
+        let Some(removing) = list.iter().find(|organization| organization.current) else {
+            return Err(match &credential {
+                Credential::Device(signed_in) => {
+                    LoginError::NotMember(signed_in.organization.slug.clone())
+                }
+                Credential::Token { .. } => LoginError::TokenRefused,
+            }
+            .into());
+        };
+        // Cloud removes by ID, which a slug rename never moves; the slug only names it here.
+        if removing.slug != *slug {
+            return Err(if list.iter().any(|other| other.slug == *slug) {
+                Error::coded(
+                    RpcErrorCode::InvalidArgument,
+                    format!(
+                        "This credential acts in Organization {}, not {slug}. No changes made.",
+                        removing.slug
+                    ),
+                )
+                .hint(Hint::Next(format!("ployz org use {slug}")))
+            } else {
+                LoginError::UnknownOrganization(slug.clone()).into()
+            });
+        }
         // A device acts in the Organization it removes; afterwards Cloud refuses it
         // everything, `org ls` included, so it moves to another of the user's first.
-        let others: Vec<cloud_account::OrganizationEntry> = match &credential {
-            Credential::Device(signed_in) if signed_in.organization.slug == *slug => {
-                cloud_account::organizations(&credential)
-                    .await?
-                    .into_iter()
-                    .filter(|organization| organization.slug != *slug)
-                    .collect()
-            }
-            Credential::Device(_) | Credential::Token { .. } => Vec::new(),
+        let removing = removing.id.clone();
+        let others: Vec<_> = match &credential {
+            Credential::Device(_) => list.into_iter().filter(|other| !other.current).collect(),
+            Credential::Token { .. } => Vec::new(),
         };
-        let removal = cloud_account::remove_organization(&credential, slug).await?;
-        let acting = match others.first() {
+        Ok::<_, Error>((credential, removing, others))
+    })?;
+    let mut approved = None;
+    let removal = approval::approved(
+        &runtime,
+        &credential,
+        approval::Verb::Remove,
+        matches.get_one::<String>("approval").cloned(),
+        |id| super::server::approved_rerun(matches, &again, id),
+        async |approval| {
+            approved = approval.map(str::to_owned);
+            cloud_account::remove_organization(&credential, &removing, approval).await
+        },
+    )?;
+    let acting = runtime.block_on(async {
+        match others.first() {
             Some(other) if removal.removed => Some(
-                cloud_account::use_organization(&store, &credential, &other.slug)
-                    .await
-                    .map(|organization| organization.slug)
-                    .map_err(|error| (other.slug.clone(), error)),
+                cloud_account::use_organization(
+                    &store,
+                    &credential,
+                    cloud_account::Target::Listed(other),
+                )
+                .await
+                .map(|organization| organization.slug)
+                .map_err(|error| (other.slug.clone(), error)),
             ),
             _ => None,
-        };
-        Ok::<_, Error>((removal, acting))
-    })?;
-    let next = (!removal.removed).then_some(retry.as_str());
+        }
+    });
+    let next = (!removal.removed).then(|| match &approved {
+        Some(id) => super::server::approved_rerun(matches, &again, id),
+        None => retry,
+    });
     let value = serde_json::json!({
             "organization": removal.organization,
             "removed": removal.removed,
             "servers": removal.servers,
         "acting": acting.as_ref().and_then(|acting| acting.as_ref().ok()),
     });
-    let report = Next::new(&value, next.map(str::to_owned));
+    let report = Next::new(&value, next.clone());
     ui::finish(&report, || {
         if !removal.servers.confirmed.is_empty() {
             ui::note(format_args!(
@@ -497,7 +598,7 @@ pub(super) fn org_remove(root: &ArgMatches) -> Result<(), Error> {
                 removal.servers.confirmed.len()
             ));
         }
-        match next {
+        match &next {
             None => {
                 ui::stream(format_args!(
                     "Removed Organization {}.",
@@ -526,7 +627,7 @@ pub(super) fn org_remove(root: &ArgMatches) -> Result<(), Error> {
                     "{} did not confirm unpairing.",
                     super::joined(&removal.servers.unconfirmed)
                 ));
-                ui::hint(&Hint::Retry(next.to_owned()));
+                ui::hint(&Hint::Retry(next.clone()));
             }
         }
     })?;

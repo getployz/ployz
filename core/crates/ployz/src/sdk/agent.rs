@@ -6,10 +6,10 @@ use futures_util::future::join_all;
 use ployz_core::QualifiedService;
 use ployz_core::metrics::{MarkerKind, MetricMarker, MetricRange};
 use ployz_core::{
-    ContainerId, ContainerKind, ContainerLocator, ContainerObservation,
-    ContainerRuntimeObservation, ContainerWant, Drain, EnvironmentValues, HealthObservation,
-    LogHistoryRequest, MachineId, MachineObservation, MachineStorageObservation, Namespace,
-    RpcError, RpcErrorCode, RunTarget, ServiceName, StopOptions,
+    ContainerId, ContainerKind, ContainerObservation, ContainerRuntimeObservation,
+    EnvironmentValues, HealthObservation, HealthVerdict, LogHistoryRequest, MachineId,
+    MachineObservation, MachineStorageObservation, Namespace, RpcError, RpcErrorCode, ServiceName,
+    StopOptions,
 };
 use ployz_store::DeploymentId;
 use ployz_store::tools::cloud::{
@@ -25,7 +25,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::Session;
 use crate::cluster::HealthWaitError;
-use crate::connect::TARGET_RPC_TIMEOUT;
+use crate::deploy::cleanup::{self, UserStarted};
 use crate::operator::DEPLOYMENT_LABEL;
 
 /// The Namespaces whose Services an answer may describe. A Server answer keeps its host
@@ -48,7 +48,9 @@ impl Readable {
 
 /// Answer `query` from the Servers behind `session`, describing only the Services
 /// `readable` admits. A Server that did not answer is named in `seen.unanswered`,
-/// never guessed.
+/// never guessed. A logs answer is scrubbed of each Container's values under the
+/// `sealed` names, which the caller takes from the Store, never from the asker; None
+/// says the caller could not, and scrubs every env value.
 ///
 /// # Errors
 /// Returns `unsupported` for a query only Cloud answers, and
@@ -57,13 +59,14 @@ pub async fn ask(
     session: &Session,
     query: CloudQuery,
     readable: &Readable,
+    sealed: Option<&BTreeSet<String>>,
 ) -> Result<Value, RpcError> {
     match query {
         CloudQuery::Servers { only } => encode(&servers(session, only.as_ref(), readable).await?),
         CloudQuery::Containers { namespace, service } => {
             encode(&containers(session, &namespace, service.as_ref()).await?)
         }
-        CloudQuery::Logs(query) => encode(&logs(session, query).await?),
+        CloudQuery::Logs(query) => encode(&logs(session, query, sealed).await?),
         CloudQuery::ServerLogs(query) => encode(&server_logs(session, query).await?),
         CloudQuery::Metrics(query) => encode(&metrics(session, query, readable).await?),
         CloudQuery::Copies { .. } => Err(unsupported(
@@ -222,9 +225,11 @@ async fn containers(
         .await
 }
 
-/// The newest lines of `query`'s Service on each Server, or on the one it names, as
-/// [`super::service_tail`] scrubs them. A Server with no lines in range has no entry.
-async fn logs(session: &Session, query: LogsQuery) -> Result<LogsAnswer, RpcError> {
+async fn logs(
+    session: &Session,
+    query: LogsQuery,
+    sealed: Option<&BTreeSet<String>>,
+) -> Result<LogsAnswer, RpcError> {
     let mut client = session.client()?;
     session
         .until_closed(async {
@@ -237,13 +242,7 @@ async fn logs(session: &Session, query: LogsQuery) -> Result<LogsAnswer, RpcErro
                 ..LogHistoryRequest::default()
             };
             Ok(tail_each(machines, query.server.as_ref(), |machine| {
-                super::service_tail(
-                    &client,
-                    machine,
-                    selector.clone(),
-                    query.lines,
-                    &query.plain,
-                )
+                super::service_tail(&client, machine, selector.clone(), query.lines, sealed)
             })
             .await)
         })
@@ -536,12 +535,13 @@ fn copies_of<'a>(
         .collect()
 }
 
-/// Stop Container `container` on `machine`, after its Servers' proxies stop routing to
-/// it or the default drain ends. An answer is the Machine's; a lost one is the
-/// transport's error, and the stop may have happened.
+/// Stop Container `container` on `machine` once no proxy routes to it. A copy that
+/// serves leaves rotation first and stays startable. An answer is the Machine's; a lost
+/// one is the transport's error, and the stop may have happened.
 ///
 /// # Errors
-/// Returns the Machine's refusal, or the transport's error when it did not answer.
+/// Returns the Machine's refusal, a copy proxies kept routing (left running), or the
+/// transport's error when it did not answer.
 pub async fn stop_one(
     session: &Session,
     machine: MachineId,
@@ -549,28 +549,28 @@ pub async fn stop_one(
 ) -> Result<(), RpcError> {
     let client = session.client()?;
     session
-        .until_closed(client.ensure_container(
+        .until_closed(cleanup::user_stop(
+            &client,
             &machine,
-            ContainerWant::Stopped {
-                container: ContainerLocator::Id(container),
-                drain: Drain::DEFAULT,
-                stop: StopOptions {
-                    signal: None,
-                    grace_period_seconds: None,
-                },
+            &container,
+            StopOptions {
+                signal: None,
+                grace_period_seconds: None,
             },
-            None,
+            1,
+            &CancellationToken::new(),
         ))
         .await
-        .map(|_| ())
 }
 
 /// Remove Container `container` from `machine` with its anonymous Volumes, keeping its
-/// named Volumes. A Container the Machine no longer has answers Ok, so a resend after a
-/// crash converges.
+/// named Volumes. A copy that serves leaves rotation and is removed once no proxy routes
+/// to it. A Container the Machine no longer has answers Ok, so a resend after a crash
+/// converges.
 ///
 /// # Errors
-/// Returns the Machine's refusal, or the transport's error when it did not answer.
+/// Returns the Machine's refusal, a copy proxies kept routing (left running), or the
+/// transport's error when it did not answer.
 pub async fn remove_one(
     session: &Session,
     machine: MachineId,
@@ -578,17 +578,13 @@ pub async fn remove_one(
 ) -> Result<(), RpcError> {
     let client = session.client()?;
     session
-        .until_closed(client.ensure_container(
+        .until_closed(cleanup::user_remove(
+            &client,
             &machine,
-            ContainerWant::Gone {
-                container: ContainerLocator::Id(container),
-                drain: Drain::DEFAULT,
-                anonymous_volumes: ployz_core::AnonymousVolumes::Remove,
-            },
-            None,
+            &container,
+            &CancellationToken::new(),
         ))
         .await
-        .map(|_| ())
 }
 
 /// What a committed start reached, waiting for it the way a Deploy does.
@@ -615,10 +611,11 @@ impl Started {
 }
 
 /// Start Container `container` on `machine`, then wait until it is healthy or past its
-/// healthcheck deadline.
+/// healthcheck deadline. A copy that serves is brought back into rotation once healthy.
 ///
 /// # Errors
-/// Returns the Machine's refusal, or the transport's error when it did not answer.
+/// Returns the Machine's refusal, a Conflict for a copy out of rotation (deploy again),
+/// or the transport's error when it did not answer.
 pub async fn start_one(
     session: &Session,
     machine: MachineId,
@@ -627,24 +624,24 @@ pub async fn start_one(
     let client = session.client()?;
     session
         .until_closed(async {
-            client
-                .ensure_container(
-                    &machine,
-                    ContainerWant::Running {
-                        container: RunTarget::Existing(ContainerLocator::Id(container)),
-                    },
-                    Some(TARGET_RPC_TIMEOUT),
-                )
-                .await?;
-            let cancellation = CancellationToken::new();
             Ok(
-                match client
-                    .wait_until_ready(&machine, &container, &cancellation)
-                    .await
-                {
-                    Ok(()) => Started::Serving,
-                    Err(HealthWaitError::Health(_)) => Started::Unhealthy,
-                    Err(HealthWaitError::Inspect(_)) => Started::Unconfirmed,
+                match cleanup::user_start(&client, &machine, &container).await? {
+                    UserStarted::In => Started::Serving,
+                    UserStarted::NotIn(Some(verdict)) if verdict != HealthVerdict::Healthy => {
+                        Started::Unhealthy
+                    }
+                    UserStarted::NotIn(_) => Started::Unconfirmed,
+                    UserStarted::Running => {
+                        let cancellation = CancellationToken::new();
+                        match client
+                            .wait_until_ready(&machine, &container, &cancellation)
+                            .await
+                        {
+                            Ok(()) => Started::Serving,
+                            Err(HealthWaitError::Health(_)) => Started::Unhealthy,
+                            Err(HealthWaitError::Inspect(_)) => Started::Unconfirmed,
+                        }
+                    }
                 },
             )
         })
@@ -670,6 +667,7 @@ fn report(container: &ContainerObservation, server: &ServerName) -> ContainerRep
         service: container.service_name().clone(),
         state,
         exit_code,
+        stopped: container.stopped,
         health,
         restarts: None,
         image: container.resolved_spec.container.image.clone(),

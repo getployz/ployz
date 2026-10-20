@@ -23,13 +23,13 @@ These scripts are dev tooling that an operator runs on their own checkout. They 
 - [store/run.sh](store/run.sh): needs only the debug binary `core/target/debug/ployz`; it runs against the hidden SQLite Store (`PLOYZ_STORE=sqlite:…`) under an isolated HOME.
 - [cloud/run.sh](cloud/run.sh): starts its own seeded local Cloud with `dashboard/scripts/verify/up.sh` and stops only that one at the end (`KEEP=1` leaves it running). It refuses to run while this checkout already has a verify Cloud (`dashboard/.verify/run`), because `up.sh` would wipe it, including the one `verify-cluster up --cloud` uses.
 - [cluster/run.sh](cluster/run.sh): needs privileged Docker, `cargo build -p ployz -p ployzd`, and `docker pull ghcr.io/getployz/ployz-testkit:main`; it builds alpha, beta, gamma plus a lone `solo`, then tears them down. Its Cluster, image and HOME carry a random per-run id, so runs from two checkouts never collide. It stops when a setup capture that later captures depend on fails, such as `server add`.
-- [cloud-cluster/run.sh](cloud-cluster/run.sh): needs a paired run from `scripts/verify-cluster up --machines 1 --daemon stable --cloud`; call it as `MANIFEST=…/cluster.json SECTIONS="deploy runtime domain env errors up" run.sh [PARENT]`. Without `MANIFEST` it takes the newest run, and without `SECTIONS` it runs all six. `up` appends to `deploy.md`, so it needs `deploy` earlier in the same run. It refuses a run whose manifest lacks a `.cloud` block or whose `state` is not `ready` (a torn-down run keeps its manifest as `removed`), and one that does not answer.
+- [cloud-cluster/run.sh](cloud-cluster/run.sh): needs a paired run from `scripts/verify-cluster up --machines 1 --daemon checkout --cloud`, linked to `shop` and deployed as its header says; call it as `MANIFEST=…/cluster.json SECTIONS="deploy runtime domain env errors up" run.sh [PARENT]`. Without `MANIFEST` it takes the newest run, and without `SECTIONS` it runs all six. `up` appends to `deploy.md`, so it needs `deploy` earlier in the same run. It refuses a run whose manifest lacks a `.cloud` block or whose `state` is not `ready` (a torn-down run keeps its manifest as `removed`), and one that does not answer.
 
 - [record.py](record.py): runs one command in a PTY and writes an asciicast, a GIF (`agg`) and a last-frame PNG (`ffmpeg`), as in `record.py --gif out.gif --png out.png -- 'ployz deploy'`. It writes nothing unless the command exits with `--expect-exit` (default 0), and replaces each output through a temp file and a rename. [prototype-media/make.sh](prototype-media/make.sh) uses it to re-record the prototype GIFs.
 - [cap.sh](cap.sh): appends one command's capture to a `.md` and its terminal rendering to the matching `.ansi`. Every driver captures through it.
 - [capture-dir.sh](capture-dir.sh): creates a driver's fresh output directory under PARENT, so two drivers never share one, and refuses a PARENT inside a git checkout.
 - [publish.sh](publish.sh): copies a finished driver run over the tracked captures, as drawn above.
-- [scrub.sh](scrub.sh): the scrub `publish.sh` runs. Public IPv4 addresses become `203.0.113.10`, because Servers report the capturing host's public IP, and secrets (`ployz_` tokens, `pmet_` enrollment tokens, `ppair_` pairing secrets) keep their prefix and become `<prefix>_<redacted>`.
+- [scrub.sh](scrub.sh): the scrub `publish.sh` runs. Public IPv4 addresses become `203.0.113.10` and global IPv6 addresses `2001:db8::10`, because Servers report their public IP, and secrets (`ployz_` tokens, `pmet_` enrollment tokens, `ppair_` pairing secrets) keep their prefix and become `<prefix>_<redacted>`. `bash scrub.test.sh` checks it after a change.
 
 Each `.md` holds one block per command with its exit code, stdout and stderr. Each `.ansi` holds the same commands run under a terminal. Exit 124 means the capture's own timeout killed the command.
 
@@ -52,7 +52,7 @@ prompts           only on a TTY (stdin+out)  never
 - `finish` prints the JSON value or runs the human closure. `show` prints pretty JSON in both modes (inspect-style commands).
 - `warn` prints `WARNING: …` on stderr and adds the text to the next JSON result's `warnings`.
 - Fan-outs print `{…, failures, omitted}` and exit 3 if either is non-empty.
-- After a result is printed, any later error goes to stderr and the exit becomes 3.
+- After a result is printed, any later error goes to stderr and the exit becomes 3, unless the printed result is itself the failure: a failed deploy exits 1.
 - Human errors print the message, then `valid: a, b` from `details.valid_children`, then `next: X` from `details.next` unless the message already holds that command.
 - Exit codes: 0 success; 1 any command failure; 2 a rejected command line (`USAGE_EXIT`, "as clap exits"); 3 partial (`PARTIAL_EXIT`, "The result is printed, but some targets failed or never answered"). `ployz exec` passes through the remote exit code.
 
@@ -79,7 +79,7 @@ Empty lists vary:
 
 Dominant: one past-tense sentence naming the object and its scope. Of 297 sentence-like success lines, 157 end with a period and 140 do not.
 
-- Staged. `Staged web.replicas in shop/production (revision 10).` 38 lines take this shape ([store/settings.md](store/settings.md)). Multi-object forms print `Staged: db, web, volumes.pgdata` on a second line (6 times, [store/env.md](store/env.md)).
+- Staged. `Staged web.replicas in shop/production.` 38 lines take this shape ([store/settings.md](store/settings.md)). Multi-object forms print `Staged: db, web, volumes.pgdata` on a second line (6 times, [store/env.md](store/env.md)).
 - Made or removed. `Created Project shop with Environment production.` ([store/project.md](store/project.md)), `Revoked token a261eda1-8592-433b-b55f-21aaad1f75cf.` ([cloud/token.md](cloud/token.md)).
 - No period. `Updated Server gamma (0523a6681d894d128f69ea28b7ed62d5)` ([cluster/server.md](cluster/server.md)), `Switched context to 'default'` (single quotes, [cluster/server.md](cluster/server.md)).
 - Two phrasings for the same removal. project rm: `Took an Environment off the Servers (Deployment #4).` env rm: `Removed shop/hotfix from the Servers (Deployment #3).` ([cloud-cluster/deploy.md](cloud-cluster/deploy.md), [cloud-cluster/env.md](cloud-cluster/env.md)).
@@ -105,7 +105,7 @@ Deployment #36 of shop/production: applied
   web: unchanged
 ```
 
-([cloud-cluster/deploy.md](cloud-cluster/deploy.md)). The output is the same on a TTY. Under `--json` the progress lines move to stderr. `--events FILE` writes NDJSON like `{"nodes":[…],"status":"queued","type":"deployment"}` ([cluster/deploy.md](cluster/deploy.md)). The local Store prints no `Following` line. `up` adds `  uploaded by Ada Lovelace, base 5a3ec95`, `Open https://workspace.ada.ployz.test` and `Dashboard: http://localhost:…` ([cloud-cluster/deploy.md](cloud-cluster/deploy.md)).
+([cloud-cluster/deploy.md](cloud-cluster/deploy.md)). The output is the same on a TTY. Under `--json` the progress lines move to stderr. `--events FILE` writes NDJSON like `{"id":"…","nodes":[…],"number":1,"status":"queued","type":"deployment"}` ([cluster/deploy.md](cluster/deploy.md)). The local Store prints no `Following` line. `up` adds `  uploaded by Ada Lovelace, base 5a3ec95`, `Open https://workspace.ada.ployz.test` and `Dashboard: http://localhost:…` ([cloud-cluster/deploy.md](cloud-cluster/deploy.md)).
 
 A redrawing renderer (server add, for the ingress). It is the only output with ANSI escapes: cursor-up, clear, bold, cyan and green ([cluster/server.ansi](cluster/server.ansi)). Its last frame:
 
@@ -133,16 +133,14 @@ Retry: ployz project rm scratch1 --confirm scratch1
 - Volume loss. `This permanently deletes the data of store. Accept each by name.` then `Retry: ployz deploy --accept-volume-loss store --expect-version 16:7:0.10:3d1ac37da6e0cfb1` ([cluster/volume.md](cluster/volume.md)).
 - `--yes`. cloud reset refuses with `…then confirm with --yes` and `next: ployz cloud reset --yes` ([cloud/deploy.md](cloud/deploy.md)).
 - Numbered picker on a TTY. `Select a context:` / `  1. dev` / `  2. prod (current)` / `> 1`. A bad choice prints `invalid selection` ([store/context.md](store/context.md)). Without a TTY: `cannot Select a context interactively without a terminal; pass the context name: ployz ctx use <context-name>`.
-- Inline prompt. `Storage preparation [zfs/none] (none is Docker only, not recommended): ` with the next WARNING printed on the same line ([cluster/server.md](cluster/server.md)).
 
 ## 5. Warnings
 
-Dominant: `WARNING: <sentence>.` on stderr. 38 lines, 9 distinct texts.
+Dominant: `WARNING: <sentence>.` on stderr. 35 lines, 8 distinct texts. `server add` prints its Docker only warning as `! Docker only (not recommended): Volumes on this Server get no size limits, …` instead (5 lines, [cluster/server.md](cluster/server.md)).
 
 | Count | Text (start) | Capture |
 |---|---|---|
 | 23 | `WARNING: Live Observation is observer-relative and not globally complete` | [cluster/ps-logs-exec.md](cluster/ps-logs-exec.md) |
-| 5 | `WARNING: Docker only (not recommended): Volumes on this Server get no size limits, …` | [cluster/server.md](cluster/server.md) |
 | 3 | `WARNING: Docker volume (not recommended): no size limit, …` | [cluster/volume.md](cluster/volume.md) |
 | 2 | `WARNING: Server gamma is running Services: … Move them off first: ployz server drain gamma` | [cluster/errors.md](cluster/errors.md) |
 | 2 | `WARNING: Machine … was omitted` | [cluster/errors.md](cluster/errors.md) |
@@ -173,13 +171,14 @@ Not-found wording varies for the same idea:
 
 Raw upstream errors pass through:
 
-- `Cloud answered HTTP 409: {"_tag":"PublicError","code":"CONFLICT",…}` ([cloud/deploy.md](cloud/deploy.md))
 - `Cloud answered HTTP 405: <!doctype html>…` as `invalid_argument` ([cloud/errors.md](cloud/errors.md))
 - `could not reach Cloud at http://127.0.0.1:9: error sending request: client error (Connect): tcp connect error: Connection refused (os error 111)` ([cloud/errors.md](cloud/errors.md))
 - `Machine RPC failed: Docker operation failed: Docker responded with status code 409: container … is not running` ([cloud-cluster/errors.md](cloud-cluster/errors.md))
 - `create Container failed: Docker operation failed: Docker responded with status code 500: error from registry: denied` ([cloud-cluster/deploy.md](cloud-cluster/deploy.md))
 - `inspect Machine upgrade worker: No such file or directory (os error 2)` ([cluster/server.md](cluster/server.md))
-- `all 1 connections from the explicit connection failed: connection attempt failed: SSH connection to root@10.255.255.1 timed out after 3 seconds; …` ([cluster/server.md](cluster/server.md))
+- `error: Ployz couldn't reach your Server's daemon.` with `cause: SSH connection to root@10.255.255.1 timed out after 3 seconds; …` ([cluster/server.md](cluster/server.md))
+- `error: Server box-node-09c8 isn't answering. Check that its Ployz daemon is running, then retry.` with the connection's `cause:`, when a connection Cloud handed over fails; by Machine ID when Cloud holds no name. No capture yet: pinned by `cli_shape::a_server_cloud_handed_a_connection_for_that_does_not_answer_is_named`
+- `Couldn't check ingress: Server 0123456789abcdef0123456789abcdef isn't answering (Connection refused (os error 111)).` on `deploy --plan`, and as the deploy's `! Couldn't check ingress: … Deploy again to retry.` warning, when the Server the check goes through doesn't answer. A connection that names no Server keeps the whole line. No capture yet: pinned by `config_cli::an_agent_adds_checks_and_removes_domains` and `ingress::tests::an_unchecked_ingress_names_the_server_and_why`
 
 ## 7. Follow-up hints
 
@@ -195,7 +194,7 @@ Dominant: a trailing `next: <command>` line.
 | inline `Next:` | 1 | `No repositories yet. Next: ployz github connect` | [cloud/github.md](cloud/github.md) |
 | inline `Create one:` | 1 | `No Projects yet. Create one: ployz project new NAME` | [store/project.md](store/project.md) |
 
-- `next:` targets vary in scope: `ployz diff --project shop`, `ployz diff`, `ployz deploy --expect-version 21:0:0.0 --project shop`.
+- `next:` targets vary in scope: `ployz diff --project shop`, `ployz diff`, `ployz deploy --project shop`.
 - Human output drops many hints the JSON carries. 48 of 120 JSON success objects have a top-level `next`. Only 25 of 250 human successes print `next:`. service add, set, domain add and env branch carry `next` in JSON only ([store/service.md](store/service.md)).
 - `valid:` can be very long. The never-sync error lists about 40 rows; the unknown Setting error lists 24 names ([store/settings.md](store/settings.md)).
 
@@ -224,7 +223,7 @@ Captured with gamma stopped ([cluster/errors.md](cluster/errors.md)) unless note
 | logs, server logs | 0 | Nothing; gamma's lines are just missing |
 | server show gamma | 1 | `target Machine RPC timed out` |
 
-A failed Deployment also exits 3, with the result on stdout and nothing on stderr: `Deployment #1 of shop/production: failed` / `  No Server is enrolled in this Organization` ([store/errors.md](store/errors.md)).
+A failed Deployment exits 1, with its progress and the error on stderr: `Deploying #1 of shop/production`, a line per node such as `db: not started` and `Volume pgdata: not attempted`, then `error: No Server is enrolled in this Organization.` ([store/errors.md](store/errors.md)). A Deployment that applied but could not see every Server, or that a newer one superseded or someone cancelled, exits 3.
 
 ## 10. Human output that is really JSON
 
@@ -259,11 +258,11 @@ Exit 2 is applied by hand in about ten handlers through `.with_exit(USAGE_EXIT)`
 ## 13. Help text
 
 - Bare `ployz` prints help on stdout and exits 0. Bare `ployz org` and `ployz github` print help on stderr and exit 2 ([cloud/org.md](cloud/org.md), [cloud/github.md](cloud/github.md)).
-- Summaries mix casing: `server      Manage Servers` but `service     Manage services`; the tagline is `Manage Ployz machines, services, and volumes` ([store/help.md](store/help.md)).
+- Summaries mix casing: `server      Manage Servers` but `service     Manage services` ([store/help.md](store/help.md)).
 - Commands are mostly alphabetical, but `link`, `github`, `token` and `project` are out of place.
 - Every subcommand repeats the globals. `--connect <connect>` has no description. `--ployz-config` shows the env path.
 - Placeholders mix casing: `<name>`, `<context>`, `<SECONDS>`, `<PROJECT>`, `<VERSION>`, `<FILE>`.
-- project rm help leaves `<name>` blank and says `--yes cannot bypass this` on a command that has no `--yes`.
+- project rm help leaves `<name>` blank.
 - Top-level help ends with a `Settings catalog: …` line. `--version` prints `0.2.3`.
 
 ## Likely bugs

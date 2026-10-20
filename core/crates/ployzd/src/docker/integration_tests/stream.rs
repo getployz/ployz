@@ -172,6 +172,7 @@ async fn l3_015_through_l3_024_exec_and_l3_069_logs_cross_the_real_docker_endpoi
                 advertised_endpoints: vec![ployz_core::AdvertisedEndpoint(address)],
             },
             wireguard_mtu: None,
+            pinned: Default::default(),
         })
         .unwrap();
     let machine = machine_store.record().machine().unwrap().clone();

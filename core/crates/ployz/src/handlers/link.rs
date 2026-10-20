@@ -9,6 +9,7 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use clap::parser::ValueSource;
 use clap::{ArgMatches, Command};
@@ -16,11 +17,14 @@ use ployz_core::RpcErrorCode;
 use ployz_store::{
     DeploymentId, DeploymentStatus, DeploymentSummary, DeploymentsQuery, DiffQuery,
     EnvironmentName, EnvironmentQuery, EnvironmentRef, EnvironmentSummary, ProjectName,
+    ProjectsQuery,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use super::store::{Backend, LOCAL_ORGANIZATION, Next, Store, next, reachable, scoped, store};
+use super::store::{
+    Backend, LOCAL_ORGANIZATION, Next, Store, backend_at, next, reachable, scoped, store,
+};
 use super::{Error, config_path, leaf_matches};
 use crate::checkin::{LocalCheckin, Paths};
 use crate::cli::env;
@@ -94,6 +98,14 @@ impl Scope {
         let Some((directory, link)) = find(config)? else {
             return Ok(self);
         };
+        // Another Project leaves the link nothing to supply, so its Organization doesn't matter.
+        if self
+            .project
+            .as_ref()
+            .is_some_and(|named| named.name != link.project)
+        {
+            return Ok(self);
+        }
         check(&directory, &link)?;
         let project = self.project.get_or_insert(Named {
             name: link.project.clone(),
@@ -131,6 +143,35 @@ pub(crate) fn scope_from_env(config: &Path) -> Result<Scope, Error> {
     })
 }
 
+/// The scope of a Cloud-published command: the `project` and `environment` it was
+/// given, then `PLOYZ_PROJECT`/`PLOYZ_ENV`, then the directory link.
+pub(crate) fn scope_given(
+    config: &Path,
+    project: Option<&str>,
+    environment: Option<&str>,
+) -> Result<Scope, Error> {
+    Scope {
+        project: given_or_env(project, env::PROJECT, ProjectName::parse)?,
+        environment: given_or_env(environment, env::ENVIRONMENT, EnvironmentName::parse)?,
+        link: None,
+    }
+    .linked(config, |directory, link| {
+        check_organization(config, directory, link)
+    })
+}
+
+/// Refuse a `PLOYZ_PROJECT` or `PLOYZ_ENV` that names nothing, as [`scope_given`]
+/// would, before the command it scopes is known. A typed name skips its variable.
+pub(crate) fn check_env(typed_project: bool, typed_environment: bool) -> Result<(), Error> {
+    if !typed_project {
+        env_named(env::PROJECT, ProjectName::parse)?;
+    }
+    if !typed_environment {
+        env_named(env::ENVIRONMENT, EnvironmentName::parse)?;
+    }
+    Ok(())
+}
+
 /// [`scope_from_env`] for a caller whose credential acts in the Organization with ID
 /// `acting`, such as `ployz mcp`'s agent token, rather than in this device's sign-in.
 pub(crate) fn scope_from_env_in(config: &Path, acting: &str) -> Result<Scope, Error> {
@@ -140,23 +181,42 @@ pub(crate) fn scope_from_env_in(config: &Path, acting: &str) -> Result<Scope, Er
 }
 
 fn from_env() -> Result<Scope, Error> {
-    let named = |name: &str| std::env::var(name).ok();
     Ok(Scope {
-        project: named(env::PROJECT)
-            .map(|name| ProjectName::parse(name).map(env_named))
-            .transpose()?,
-        environment: named(env::ENVIRONMENT)
-            .map(|name| EnvironmentName::parse(name).map(env_named))
-            .transpose()?,
+        project: env_named(env::PROJECT, ProjectName::parse)?,
+        environment: env_named(env::ENVIRONMENT, EnvironmentName::parse)?,
         link: None,
     })
 }
 
-fn env_named<T>(name: T) -> Named<T> {
-    Named {
-        name,
+/// `given`, else the environment variable `var`, read only when nothing was given so
+/// a bad variable never blocks a typed name.
+fn given_or_env<T>(
+    given: Option<&str>,
+    var: &str,
+    parse: fn(String) -> Result<T, ployz_core::RpcError>,
+) -> Result<Option<Named<T>>, Error> {
+    let Some(name) = given else {
+        return env_named(var, parse);
+    };
+    Ok(Some(Named {
+        name: parse(name.to_owned())?,
+        source: Source::Flag,
+    }))
+}
+
+fn env_named<T>(
+    var: &str,
+    parse: fn(String) -> Result<T, ployz_core::RpcError>,
+) -> Result<Option<Named<T>>, Error> {
+    let Some(name) = std::env::var_os(var) else {
+        return Ok(None);
+    };
+    // A set name that isn't UTF-8 names nothing, so it is refused as an empty one is.
+    let name = name.into_string().unwrap_or_default();
+    Ok(Some(Named {
+        name: parse(name)?,
         source: Source::Env,
-    }
+    }))
 }
 
 /// `--project`/`--env` and their environment variables, without the link.
@@ -208,9 +268,16 @@ fn load(config: &Path) -> Result<BTreeMap<String, Link>, Error> {
         Ok(bytes) => serde_json::from_slice(&bytes).map_err(|error| {
             Error::caused(
                 RpcErrorCode::Internal,
-                format!("Could not read directory links {}.", path.display()),
+                format!(
+                    "Could not read directory links {}. Delete it, then run ployz link again in each directory you linked.",
+                    path.display()
+                ),
                 error,
             )
+            .hint(Hint::Next(format!(
+                "rm {}",
+                shell_words::quote(&path.to_string_lossy())
+            )))
         }),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(BTreeMap::new()),
         Err(error) => Err(error.into()),
@@ -284,21 +351,40 @@ fn check_organization(config: &Path, directory: &str, link: &Link) -> Result<(),
     let (Some(linked), Some(acting)) = (&link.organization, acting_organization(config)?) else {
         return Ok(());
     };
+    linked_in_acting(directory, linked, &acting)
+}
+
+/// Refuse a link made in another Organization than `acting`. One with the same
+/// name but another ID was replaced, so switching to it by name never helps.
+fn linked_in_acting(
+    directory: &str,
+    linked: &Organization,
+    acting: &Organization,
+) -> Result<(), Error> {
     if linked.id == acting.id {
         return Ok(());
     }
     let local = |organization: &Organization| organization.id == LOCAL_ORGANIZATION;
-    let next = if local(linked) || local(&acting) {
+    let replaced = linked.slug == acting.slug;
+    let next = if local(linked) || local(acting) || replaced {
         "ployz link".to_owned()
     } else {
         format!("ployz org use {}", linked.slug)
     };
-    Err(Error::detailed(
-        RpcErrorCode::Conflict,
+    let message = if replaced {
+        format!(
+            "{directory} is linked in an earlier Organization {}, which another Organization of that name replaced. Link it again",
+            linked.slug
+        )
+    } else {
         format!(
             "{directory} is linked in Organization {}, but you are acting in {}",
             linked.slug, acting.slug
-        ),
+        )
+    };
+    Err(Error::detailed(
+        RpcErrorCode::Conflict,
+        message,
         json!({ "link": directory, "linked": linked.slug, "acting": acting.slug }),
     )
     .hint(Hint::Next(next)))
@@ -558,14 +644,23 @@ pub(super) fn status(root: &ArgMatches) -> Result<(), Error> {
             limit: Some(RECENT),
             cursor: None,
         })?;
-        let ended = page.deployments.iter().find(|deployment| {
-            !deployment.status.in_flight() && deployment.status != DeploymentStatus::Superseded
-        });
+        // The latest numbered one, when it ended; else, behind work queued since, the
+        // first numbered one on the page that ended, as numbered ones list in number order.
+        let ended = page
+            .latest
+            .as_ref()
+            .filter(|latest| latest.status.ended())
+            .or_else(|| {
+                page.deployments
+                    .iter()
+                    .find(|deployment| deployment.number.is_some() && deployment.status.ended())
+            });
         if let Some(ended) = ended {
             let reason = match ended.status {
                 DeploymentStatus::Failed => Some("deployment_failed"),
                 DeploymentStatus::Unknown => Some("deployment_unknown"),
-                DeploymentStatus::Queued
+                DeploymentStatus::WaitingForCi
+                | DeploymentStatus::Queued
                 | DeploymentStatus::Superseded
                 | DeploymentStatus::Running
                 | DeploymentStatus::Applied
@@ -575,20 +670,24 @@ pub(super) fn status(root: &ArgMatches) -> Result<(), Error> {
             if let Some(reason) = reason {
                 attention.push(Attention {
                     reason: reason.to_owned(),
-                    message: format!("Deployment #{} did not complete", ended.number),
+                    message: format!("Deployment {} did not complete", ended.label()),
                     deployment: Some(ended.id.clone()),
-                    next: Some(super::deploy::show_hint(matches, ended.number)),
+                    next: Some(super::deploy::hint_for(matches, ended)),
                 });
             }
         }
-        deploying = page
-            .deployments
-            .into_iter()
-            .filter(|deployment| deployment.status.in_flight())
-            .collect();
+        deploying = page.in_flight;
+    }
+    for reference in diff.iter().flat_map(|diff| &diff.broken) {
+        attention.push(Attention {
+            reason: "broken_reference".to_owned(),
+            message: reference.to_string(),
+            deployment: None,
+            next: Some(super::store::fix_broken(matches, reference)),
+        });
     }
     let staged = diff.as_ref().map(|diff| Staged {
-        changes: diff.total_count,
+        changes: diff.review_count(),
         saved: diff.published,
         version: diff.version.clone(),
     });
@@ -604,7 +703,7 @@ pub(super) fn status(root: &ArgMatches) -> Result<(), Error> {
         .or_else(|| {
             deploying
                 .first()
-                .map(|deployment| super::deploy::show_hint(matches, deployment.number))
+                .map(|deployment| super::deploy::hint_for(matches, deployment))
         })
         .or_else(|| {
             (identity.is_none() && this_server.is_none()).then(|| "ployz login".to_owned())
@@ -707,8 +806,8 @@ fn status_record(status: &Status) -> Fields {
         record.push(
             "deploying",
             format_args!(
-                "#{} {}",
-                deployment.number,
+                "{} {}",
+                deployment.label(),
                 super::store::word(&deployment.status)
             ),
         );
@@ -722,23 +821,68 @@ fn status_record(status: &Status) -> Fields {
     record
 }
 
-/// The scope, the acting Organization and how Servers are reached, without asking
-/// the Store or Cloud: `ployz ctx`.
+/// How long `ployz ctx` waits for the Store to list the Projects.
+const LISTING: Duration = Duration::from_secs(2);
+
+/// The scope, the acting Organization and how Servers are reached: `ployz ctx`.
+/// Only with no Project named does it ask the Store, once, what the Projects are.
 pub(super) fn show(root: &ArgMatches) -> Result<(), Error> {
     #[derive(Serialize)]
     struct Context<'a> {
         organization: Option<Organization>,
         #[serde(flatten)]
         scope: &'a Scope,
+        /// What an unnamed Project falls back to, when the Store said.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        default: Option<Fallback>,
         servers: Servers,
     }
     let matches = leaf_matches(root);
     let config = config_path(matches)?;
     let scope = scope(matches)?;
+    let default = scope.project.is_none().then(|| fallback(&config)).flatten();
     let context = Context {
         organization: acting_organization(&config)?,
         scope: &scope,
+        default,
         servers: servers(matches, &config)?,
+    };
+    let only = context
+        .default
+        .as_ref()
+        .and_then(|default| default.project.as_ref().zip(default.environment.as_ref()));
+    let hint = match (&scope.project, &context.default, only) {
+        (Some(_), ..) | (None, _, Some(_)) => None,
+        (None, Some(Fallback { projects: 0, .. }), None) => Some("ployz project new NAME"),
+        (None, _, None) => Some("ployz link --project PROJECT"),
+    }
+    .map(str::to_owned);
+    let project = match (&scope.project, &context.default) {
+        (Some(project), _) => format!("{} ({})", project.name, project.source.as_str()),
+        (
+            None,
+            Some(Fallback {
+                project: Some(project),
+                ..
+            }),
+        ) => {
+            format!("{project} (the only Project)")
+        }
+        (None, Some(Fallback { projects: 0, .. })) => {
+            "(none: this Organization has no Project yet)".to_owned()
+        }
+        (None, Some(Fallback { projects, .. })) => {
+            format!("(none: this Organization has {projects} Projects)")
+        }
+        (None, None) => "(none)".to_owned(),
+    };
+    let environment = match (&scope.environment, &scope.project, only) {
+        (Some(environment), ..) => {
+            format!("{} ({})", environment.name, environment.source.as_str())
+        }
+        (None, Some(_), _) => "the Default Environment".to_owned(),
+        (None, None, Some((_, environment))) => format!("{environment} (the Default Environment)"),
+        (None, None, None) => "(none)".to_owned(),
     };
     let record = Fields::new()
         .field(
@@ -748,20 +892,8 @@ pub(super) fn show(root: &ArgMatches) -> Result<(), Error> {
                 .as_ref()
                 .map_or("(the token's)", |organization| organization.slug.as_str()),
         )
-        .field(
-            "project",
-            scope.project.as_ref().map_or_else(
-                || "the only Project".to_owned(),
-                |project| format!("{} ({})", project.name, project.source.as_str()),
-            ),
-        )
-        .field(
-            "environment",
-            scope.environment.as_ref().map_or_else(
-                || "the Default Environment".to_owned(),
-                |environment| format!("{} ({})", environment.name, environment.source.as_str()),
-            ),
-        )
+        .field("project", project)
+        .field("environment", environment)
         .field(
             "servers",
             context.servers.context.as_ref().map_or_else(
@@ -769,7 +901,38 @@ pub(super) fn show(root: &ArgMatches) -> Result<(), Error> {
                 |name| format!("via context {name}"),
             ),
         );
-    crate::ui::fields(&context, &record)
+    crate::ui::fields(&Next::new(&context, hint.clone()), &record)?;
+    if let Some(hint) = hint {
+        crate::ui::hint(&Hint::Next(hint));
+    }
+    Ok(())
+}
+
+/// The Projects the Store holds, and with just one its Default Environment.
+#[derive(Serialize)]
+struct Fallback {
+    projects: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    project: Option<ProjectName>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    environment: Option<EnvironmentName>,
+}
+
+/// What an unnamed Project falls back to, or `None` when the Store can't say:
+/// signed out, offline, or not answering within [`LISTING`].
+fn fallback(config: &Path) -> Option<Fallback> {
+    let listed = backend_at(config)
+        .ok()??
+        .read_within(&ProjectsQuery {}, LISTING)?;
+    let only = match listed.projects.as_slice() {
+        [only] => Some(only),
+        _ => None,
+    };
+    Some(Fallback {
+        projects: listed.projects.len(),
+        project: only.map(|only| only.name.clone()),
+        environment: only.map(|only| only.default_environment.clone()),
+    })
 }
 
 /// How live commands reach Servers.
@@ -819,6 +982,27 @@ mod tests {
     }
 
     #[test]
+    fn unreadable_links_name_the_file_and_how_to_start_over() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("config.yaml");
+        std::fs::write(links_path(&config), "[[[").unwrap();
+        let error = load(&config).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .ends_with("Delete it, then run ployz link again in each directory you linked."),
+            "{error}"
+        );
+        assert_eq!(
+            error.hints(),
+            [Hint::Next(format!(
+                "rm {}",
+                shell_words::quote(&links_path(&config).to_string_lossy())
+            ))]
+        );
+    }
+
+    #[test]
     fn a_link_from_another_organization_than_the_credential_s_stops_the_call() {
         let link = linked_in("org_globex", "globex");
         let refused = check_acting_in("org_acme", "/src/shop", &link).unwrap_err();
@@ -829,6 +1013,32 @@ mod tests {
         );
         assert!(message.contains("ployz org use globex"), "{message}");
         check_acting_in("org_globex", "/src/shop", &link).unwrap();
+    }
+
+    #[test]
+    fn a_link_to_a_replaced_organization_of_the_same_name_says_link_again() {
+        let acting = Organization {
+            id: "org_new".to_owned(),
+            slug: "ada".to_owned(),
+        };
+        let linked = Organization {
+            id: "org_old".to_owned(),
+            ..acting.clone()
+        };
+        let refused = linked_in_acting("/src/shop", &linked, &acting).unwrap_err();
+        let message = refused.to_string();
+        assert!(message.contains("earlier Organization ada"), "{message}");
+        assert_eq!(refused.hints(), [Hint::Next("ployz link".to_owned())]);
+        let other = Organization {
+            id: "org_globex".to_owned(),
+            slug: "globex".to_owned(),
+        };
+        let refused = linked_in_acting("/src/shop", &other, &acting).unwrap_err();
+        assert_eq!(
+            refused.hints(),
+            [Hint::Next("ployz org use globex".to_owned())]
+        );
+        linked_in_acting("/src/shop", &acting, &acting).unwrap();
     }
 
     #[test]

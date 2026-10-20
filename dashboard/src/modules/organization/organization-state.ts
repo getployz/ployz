@@ -22,14 +22,23 @@ export const SyncOrganizationSlug = Schema.Struct({
 });
 export type SyncOrganizationSlug = typeof SyncOrganizationSlug.Type;
 
+/** What people call an Organization. Only its slug is in addresses and URLs. */
+export const OrganizationName = Schema.Trim.check(Schema.isNonEmpty(), Schema.isMaxLength(64));
+
 export const CreateOrganization = Schema.Struct({
-  name: Schema.Trim.check(Schema.isNonEmpty(), Schema.isMaxLength(64)),
+  name: OrganizationName,
   slug: Schema.String.pipe(Schema.decodeTo(Schema.String.check(Schema.isNonEmpty(), Schema.isMaxLength(64)), {
     decode: SchemaGetter.transform(slugifySegment),
     encode: SchemaGetter.transform((slug) => slug),
   })),
 });
 export type CreateOrganization = typeof CreateOrganization.Type;
+
+export const RenameOrganization = Schema.Struct({
+  organizationSlug: OrganizationSlug,
+  name: OrganizationName,
+});
+export type RenameOrganization = typeof RenameOrganization.Type;
 
 export interface PersonalOrganizationUser {
   readonly id: string;

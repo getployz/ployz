@@ -1,4 +1,5 @@
-"""Runs install.sh --enroll on a real terminal and types the Fleet Token the instant the prompt shows."""
+"""Runs the Shell install line's `sh -s -- VERSION --enroll` with the script on a pipe, as `curl | sh` does,
+on a real terminal that types the Fleet Token the instant the prompt shows, and with no terminal at all."""
 
 import hashlib
 import os
@@ -6,6 +7,7 @@ import pty
 import select
 import shutil
 import signal
+import subprocess
 import sys
 import tarfile
 import tempfile
@@ -15,6 +17,7 @@ from pathlib import Path
 
 SOURCE = Path(sys.argv[1]).read_bytes()
 TOKEN = 'pflt_' + 'a' * 43
+ARGS = ['-s', '--', '1.2.3', '--enroll']
 
 
 def stub(path, text):
@@ -29,13 +32,13 @@ def run(shell, env, mode):
         os.close(script_write)
         os.dup2(script_read, 0)
         os.close(script_read)
-        os.execve(shell, [shell, '-s', '--', '--enroll'], env)
+        os.execve(shell, [shell, *ARGS], env)
     os.close(script_read)
     os.write(script_write, SOURCE)
     os.close(script_write)
     output = b''
     deadline = time.monotonic() + 10
-    while b'Fleet Token: ' not in output:
+    while b'Fleet Token (from Servers in Ployz Cloud): ' not in output:
         assert time.monotonic() < deadline, (shell, mode, output)
         if select.select([master], [], [], .01)[0]:
             output += os.read(master, 65536)
@@ -90,8 +93,9 @@ cp "$FAKE_RELEASE/${url##*/}" "$output"
     stub(root / 'bin/id', '#!/bin/sh\necho 0\n')
     stub(root / 'bin/uname', '#!/bin/sh\ncase "$1" in -s) echo Linux ;; -m) echo x86_64 ;; esac\n')
     stub(root / 'bin/systemctl', '#!/bin/sh\n')
-    env = {key: value for key, value in os.environ.items() if key != 'PLOYZ_ENROLL_TOKEN'}
-    env.update(PATH=f'{root}/bin:{env["PATH"]}', PLOYZ_TEST_ROOT=tmp, PLOYZ_VERSION='1.2.3',
+    env = {key: value for key, value in os.environ.items() if key not in ('PLOYZ_ENROLL_TOKEN', 'PLOYZ_FLEET_TOKEN')}
+    env.pop('PLOYZ_VERSION', None)
+    env.update(PATH=f'{root}/bin:{env["PATH"]}', PLOYZ_TEST_ROOT=tmp,
                INSTALL_BIN_DIR=str(root / 'install'), FAKE_RELEASE=str(root / 'release'),
                PLOYZ_GITHUB_URL='https://example.invalid', PROBE_ENV=str(root / 'env'),
                PROBE_ARGV=str(root / 'argv'), PROBE_STDIN=str(root / 'stdin'))
@@ -105,4 +109,16 @@ cp "$FAKE_RELEASE/${url##*/}" "$output"
             assert TOKEN not in (root / 'argv').read_text(), shell
         assert run(shell, env, 'ctrl-c') == 130, shell
         assert run(shell, env, 'term') == 130, shell
+        (root / 'install/ployz').unlink()
+        detached = subprocess.run([shell, *ARGS], input=SOURCE, env=env, capture_output=True, start_new_session=True)
+        assert detached.returncode == 1, (shell, detached)
+        assert b'No terminal to read the Fleet Token from.' in detached.stderr, (shell, detached.stderr)
+        assert not (root / 'install/ployz').exists(), shell
+        (root / 'stdin').unlink()
+        headless = subprocess.run([shell, *ARGS], input=SOURCE, env={**env, 'PLOYZ_FLEET_TOKEN': TOKEN},
+                                  capture_output=True, start_new_session=True)
+        assert headless.returncode == 0, (shell, headless)
+        assert b'Fleet Token (from Servers in Ployz Cloud)' not in headless.stdout + headless.stderr, shell
+        assert (root / 'stdin').read_text() == TOKEN + '\n', shell
+        assert TOKEN not in (root / 'argv').read_text(), shell
     print('install.sh keeps the Fleet Token off the terminal in', ', '.join(dict.fromkeys(shells)))

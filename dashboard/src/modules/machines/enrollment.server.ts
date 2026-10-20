@@ -2,7 +2,7 @@ import "@tanstack/react-start/server-only";
 import crypto from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import type { EncryptedSecretValue } from "#/db/tables";
-import { allocateEnrollment, type EnrollmentSnapshot, type MachineId, type RegisterRequest } from "@ployz/sdk";
+import { allocateEnrollment, type EnrollmentSnapshot, type MachineId, type MachineName, type RegisterRequest } from "@ployz/sdk";
 import { and, eq, gt, isNull, lt, ne, or, type SQL, sql } from "drizzle-orm";
 import { Effect, Option, Schema } from "effect";
 import {
@@ -12,9 +12,9 @@ import {
 } from "#/modules/machines/tables";
 import { organizationPairing as schemaOrganizationPairing } from "#/modules/runtime/tables";
 import type { Actor } from "#/modules/identity/actor";
-import { requireAccess } from "#/modules/organization/access.server";
-import { Ployz, PloyzProviderError, ployzVersion } from "#/modules/runtime/ployz.server";
-import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
+import { requireAccess, requireAccessById } from "#/modules/organization/access.server";
+import { Ployz, ployzVersion } from "#/modules/runtime/ployz.server";
+import { ClusterOutOfTime, clusterRead, OrganizationRuntime, SESSION_CLOSE_CLUSTER_MS, withClusterBudget } from "#/modules/runtime/organization-runtime.server";
 import { PostHog } from "#/modules/analytics/posthog.server";
 import {
   enrollmentExpiry,
@@ -29,6 +29,8 @@ import {
   waitForJoinSlot,
   type EnrollmentIdentity,
   type EnrollmentCallback,
+  type CliMintMachineEnrollmentInput,
+  type CliResetPendingEnrollmentInput,
   type MintMachineEnrollmentInput,
   type ReadMachineEnrollmentInput,
   type ResetPendingEnrollmentInput,
@@ -45,7 +47,7 @@ import type { EnrollmentRole } from "#/modules/machines/waiting/server-enrollmen
 import { serverEnrollment, waitingServer } from "#/modules/machines/waiting/tables";
 import { AppConfig } from "#/server/config.server";
 import { Database } from "#/server/database.server";
-import { Conflict, NotFound, Unauthorized, Validation } from "#/server/public-error";
+import { Conflict, NotFound, Unauthorized, Unavailable, Validation } from "#/server/public-error";
 import { lockOrganizationEnrollment, revokeOrganizationPairing } from "#/modules/machines/pairing-removal.server";
 import { managementIdentity as managementIdentityOf } from "#/modules/machines/management-identity";
 import {
@@ -73,10 +75,15 @@ function credentialsMatch(expected: string, actual: string) {
   return crypto.timingSafeEqual(digest(expected), digest(actual));
 }
 
+/** The dashboard names an Organization by its URL's slug, the CLI by its ID. */
+type OrganizationRef = { readonly organizationSlug: string } | { readonly organizationId: string };
+
 const authorizeEnrollmentOrganization = Effect.fn(
   "MachineEnrollment.authorizeOrganization",
-)(function* (actor: Actor, organizationSlug: string) {
-  const { organization } = yield* requireAccess(actor, organizationSlug, "servers:add");
+)(function* (actor: Actor, named: OrganizationRef) {
+  const { organization } = "organizationId" in named
+    ? yield* requireAccessById(actor, named.organizationId, "servers:add")
+    : yield* requireAccess(actor, named.organizationSlug, "servers:add");
   return { organization, userId: actor.userId };
 });
 
@@ -105,11 +112,8 @@ export const insertEnrollmentToken = Effect.fn("MachineEnrollment.insertToken")(
 );
 
 const issueEnrollmentToken = Effect.fn("MachineEnrollment.issue")(
-  function* (actor: Actor, organizationSlug: string, source: "dashboard" | "cli") {
-    const authorization = yield* authorizeEnrollmentOrganization(
-      actor,
-      organizationSlug,
-    );
+  function* (actor: Actor, named: OrganizationRef, source: "dashboard" | "cli") {
+    const authorization = yield* authorizeEnrollmentOrganization(actor, named);
     const issued = yield* insertEnrollmentToken({
       organizationId: authorization.organization.id,
       userId: authorization.userId,
@@ -127,7 +131,7 @@ const issueEnrollmentToken = Effect.fn("MachineEnrollment.issue")(
 export const mintMachineEnrollment = Effect.fn("MachineEnrollment.mint")(
   function* (actor: Actor, input: MintMachineEnrollmentInput) {
     const config = yield* AppConfig;
-    const { token, expiresAt } = yield* issueEnrollmentToken(actor, input.organizationSlug, "dashboard");
+    const { token, expiresAt } = yield* issueEnrollmentToken(actor, input, "dashboard");
     return mintedEnrollment({
       origin: config.app.url.origin,
       token,
@@ -139,8 +143,8 @@ export const mintMachineEnrollment = Effect.fn("MachineEnrollment.mint")(
 
 /** The CLI builds its own pasted command, pinned to its own release. */
 export const mintCliMachineEnrollment = Effect.fn("MachineEnrollment.mintForCli")(
-  function* (actor: Actor, input: MintMachineEnrollmentInput) {
-    const { id, token, expiresAt } = yield* issueEnrollmentToken(actor, input.organizationSlug, "cli");
+  function* (actor: Actor, input: CliMintMachineEnrollmentInput) {
+    const { id, token, expiresAt } = yield* issueEnrollmentToken(actor, input, "cli");
     return { id, token, expiresAt: expiresAt.toISOString() };
   },
 );
@@ -149,7 +153,7 @@ export const mintCliMachineEnrollment = Effect.fn("MachineEnrollment.mintForCli"
 export const readMachineEnrollment = Effect.fn("MachineEnrollment.read")(
   function* (actor: Actor, input: ReadMachineEnrollmentInput) {
     const { drizzle } = yield* Database;
-    const { organization } = yield* requireAccess(actor, input.organizationSlug, "servers:read");
+    const { organization } = yield* requireAccessById(actor, input.organizationId, "servers:read");
     const [row] = yield* drizzle
       .select({
         joinedMachineId: schemaMachineEnrollmentToken.joinedMachineId,
@@ -219,11 +223,8 @@ export const recordMachineSetupReport = Effect.fn("MachineEnrollment.recordSetup
 
 export const resetPendingOrganizationEnrollment = Effect.fn(
   "MachineEnrollment.resetPending",
-)(function* (actor: Actor, input: ResetPendingEnrollmentInput) {
-  const authorization = yield* authorizeEnrollmentOrganization(
-    actor,
-    input.organizationSlug,
-  );
+)(function* (actor: Actor, input: ResetPendingEnrollmentInput | CliResetPendingEnrollmentInput) {
+  const authorization = yield* authorizeEnrollmentOrganization(actor, input);
   return yield* resetPendingEnrollment(authorization.organization.id);
 });
 
@@ -236,6 +237,7 @@ const loadEnrollmentToken = Effect.fn("MachineEnrollment.loadToken")(
         organizationId: schemaMachineEnrollmentToken.organizationId,
         claimedMachineId: schemaMachineEnrollmentToken.claimedMachineId,
         claimedPublicKey: schemaMachineEnrollmentToken.claimedPublicKey,
+        claimedName: schemaMachineEnrollmentToken.claimedName,
         joinedMachineId: schemaMachineEnrollmentToken.joinedMachineId,
         enrollmentRole: schemaMachineEnrollmentToken.enrollmentRole,
         serverEnrollmentId: schemaMachineEnrollmentToken.serverEnrollmentId,
@@ -265,6 +267,7 @@ const requireTokenClaimedBy = Effect.fn("MachineEnrollment.requireTokenClaim")(
     return {
       organizationId: row.organizationId,
       claimedPublicKey: row.claimedPublicKey,
+      claimedName: row.claimedName,
       spent: row.joinedMachineId !== null,
       serverEnrollmentId: row.serverEnrollmentId,
     };
@@ -294,12 +297,13 @@ const claimHoldsSlot = sql`${schemaMachineEnrollmentToken.claimedAt} > clock_tim
  * Claiming takes a join slot, and renews a claim whose slot lapsed.
  */
 const claimEnrollmentToken = Effect.fn("MachineEnrollment.claimToken")(
-  function* (token: string, identity: { readonly machineId: MachineId; readonly publicKey: string }) {
+  function* (token: string, identity: { readonly machineId: MachineId; readonly publicKey: string; readonly name: MachineName }) {
     const { drizzle } = yield* Database;
     const [claimed] = yield* drizzle.update(schemaMachineEnrollmentToken)
       .set({
         claimedMachineId: identity.machineId,
         claimedPublicKey: identity.publicKey,
+        claimedName: identity.name,
         claimedAt: sql`case when ${claimHoldsSlot} then ${schemaMachineEnrollmentToken.claimedAt} else now() end`,
         updatedAt: new Date(),
       })
@@ -516,6 +520,7 @@ const claimOrLoadEnrollment = Effect.fn("MachineEnrollment.claimOrLoad")(
     organizationId: string;
     publicKey: string;
     machineId: MachineId;
+    name: MachineName;
     role: EnrollmentRole | null;
     joinSlots: number;
   }) {
@@ -581,6 +586,19 @@ const claimOrLoadEnrollment = Effect.fn("MachineEnrollment.claimOrLoad")(
   },
 );
 
+/**
+ * A session to the Organization's Cluster and its enrollment snapshot. Its Cluster time is bounded well inside the CLI's
+ * request timeout, so a Cluster that never answers is reported, not waited on. Only a connection that fails or doesn't
+ * come in time reads unreachable; anything else fails as itself.
+ */
+export const observeClusterEnrollment = Effect.fn("MachineEnrollment.observeCluster")(function* (organizationId: string) {
+  const opened = yield* (yield* OrganizationRuntime).open(organizationId);
+  if (opened.status === "unreachable") return { kind: "unreachable" as const };
+  if (opened.status === "no_connection") return { kind: "no_connection" as const };
+  return { kind: "joined" as const, session: opened.connected, snapshot: yield* opened.connected.observeEnrollment().pipe(clusterRead) };
+}, Effect.catchIf((error) => error instanceof ClusterOutOfTime, () => Effect.succeed({ kind: "unreachable" as const })),
+withClusterBudget(SERVER_REACH_TIMEOUT_MS));
+
 export const enrollMachine = Effect.fn("MachineEnrollment.enrollMachine")(
   function* (input: { token: string; identity: EnrollmentIdentity; joinSlots?: number }) {
     const request = registerRequestFromEnrollmentIdentity(input.identity);
@@ -594,6 +612,7 @@ export const enrollMachine = Effect.fn("MachineEnrollment.enrollMachine")(
       organizationId: token.organizationId,
       publicKey: input.identity.publicKey,
       machineId: input.identity.machineId,
+      name: input.identity.name,
       role: token.enrollmentRole,
       joinSlots: input.joinSlots ?? JOIN_SLOTS,
     };
@@ -626,18 +645,7 @@ export const enrollMachine = Effect.fn("MachineEnrollment.enrollMachine")(
       if (access.generation !== hashEnrollmentToken(pairing.secret)) {
         return yield* new Conflict({ message: "The enrollment attempt is no longer current." });
       }
-      const runtime = yield* OrganizationRuntime;
-      // Bounded well inside the CLI's request timeout, so a Cluster that never answers is reported, not waited on.
-      // Only a connection that fails or doesn't come in time reads unreachable; anything else fails as itself.
-      const joined = yield* Effect.gen(function* () {
-        const opened = yield* runtime.open(token.organizationId);
-        if (opened.status === "unreachable") return { kind: "unreachable" as const };
-        if (opened.status === "no_connection") return { kind: "no_connection" as const };
-        return { kind: "joined" as const, session: opened.connected, snapshot: yield* opened.connected.observeEnrollment() };
-      }).pipe(Effect.timeoutOrElse({
-        duration: SERVER_REACH_TIMEOUT_MS,
-        orElse: () => Effect.succeed({ kind: "unreachable" as const }),
-      }));
+      const joined = yield* observeClusterEnrollment(token.organizationId);
       // The pairing went while connecting: Cloud access was removed.
       if (joined.kind === "no_connection") return yield* new Conflict({ message: "The enrollment attempt is no longer current." });
       if (joined.kind === "unreachable") return yield* unreachable();
@@ -734,16 +742,18 @@ export const publishMachineEnrollment = Effect.fn("MachineEnrollment.publishCand
         }
         if (expectedIv === undefined) return saved.encryptedCapability.iv;
         yield* drizzle.update(organizationMachine).set({
-          encryptedCapability: encryption.encrypt(input.capability), managementIdentity, pushTarget: null, updatedAt: new Date(),
+          encryptedCapability: encryption.encrypt(input.capability), managementIdentity, pushTarget: null,
+          machineName: token.claimedName ?? saved.machineName, updatedAt: new Date(),
         }).where(scope);
       } else {
         yield* drizzle.insert(organizationMachine).values({
           organizationId: token.organizationId, machineId: input.machineId,
           clusterKey, encryptedCapability: encryption.encrypt(input.capability), managementIdentity, pushTarget: null,
-          isDialEntry: pairing.founderClaimMachineId === input.machineId,
+          machineName: token.claimedName, isDialEntry: pairing.founderClaimMachineId === input.machineId,
         }).onConflictDoUpdate({ target: [organizationMachine.organizationId, organizationMachine.machineId],
           set: {
             clusterKey, encryptedCapability: encryption.encrypt(input.capability), managementIdentity, pushTarget: null,
+            machineName: sql`coalesce(excluded.machine_name, ${organizationMachine.machineName})`,
             isDialEntry: pairing.founderClaimMachineId === input.machineId, updatedAt: new Date(),
           },
         });
@@ -756,9 +766,9 @@ export const publishMachineEnrollment = Effect.fn("MachineEnrollment.publishCand
       yield* Effect.scoped(Effect.gen(function* () {
         yield* (yield* Ployz).connect({
           connections: [{ machine_id: input.machineId, management: input.capability }], timeoutMs: 10_000,
-        });
+        }, { closeWithin: clusterRead });
         yield* publish(expectedIv);
-      }));
+      })).pipe(withClusterBudget(SESSION_CLOSE_CLUSTER_MS));
     }
     yield* sendInngestEvent(createObservePushTargetRequestedEvent()).pipe(
       Effect.catch((error) => Effect.logWarning("Push target request failed; the 5-minute sweep sets it.", error)),
@@ -806,7 +816,9 @@ export const completeMachineEnrollment = Effect.fn(
     // Shared negotiation verifies machine_id before this transaction can make it ready.
     yield* Effect.scoped(Effect.gen(function* () {
       const opened = yield* (yield* OrganizationRuntime).open(token.organizationId, machineId);
-      if (opened.status !== "connected") return yield* new PloyzProviderError({ operation: "confirm enrollment", cause: opened });
+      if (opened.status !== "connected") {
+        return yield* new Unavailable({ message: "Cloud can't reach this Server yet.", userFacing: true, cause: opened });
+      }
     }));
 
     const database = yield* Database;

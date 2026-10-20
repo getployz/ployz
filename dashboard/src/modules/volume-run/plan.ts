@@ -1,4 +1,5 @@
-import type { ExpectedCopy, MachineName, Snapshot, SnapshotGuid, VolumeCopy } from "@ployz/sdk";
+import type { ExpectedCopy, MachineName, SlotRole, Snapshot, SnapshotGuid, VolumeCopy } from "@ployz/sdk";
+import { planResize, type ResizePhase } from "#/modules/volume-run/resize";
 import { type AnsweredMember, copyName, type Member, type ReleasePlan, type VolumeRunArgs, type VolumeRunInput } from "#/modules/volume-run/volume-run";
 
 /** `cutting` is a read-only root: a cut began on it and has not renamed it to a slot yet. */
@@ -12,6 +13,8 @@ export type RefusalCode =
   | "volume_switching"
   | "second_mirror"
   | "invalid"
+  | "already_on"
+  | "already_sized"
   | "no_mirror"
   | "no_copy"
   | "another_copy"
@@ -23,7 +26,8 @@ export type RefusalCode =
  */
 export type MoveStart = "rounds" | "cut" | "final" | "start";
 
-export type Refusal = { readonly code: RefusalCode; readonly message: string };
+/** `next` is the one command that clears the refusal; the CLI prints it on its own line. */
+export type Refusal = { readonly code: RefusalCode; readonly message: string; readonly next?: string };
 
 /**
  * What a Release finds in flight: a cut that stopped on a read-only root, a writer that may still keep the moved-off
@@ -37,16 +41,22 @@ export type ReleaseFrom =
 export type Planned =
   | { readonly ok: true; readonly phase: { readonly kind: "mirror"; readonly writer: AnsweredMember; readonly target: AnsweredMember } }
   | { readonly ok: true; readonly phase: { readonly kind: "sync"; readonly writer: AnsweredMember; readonly mirror: AnsweredMember; readonly full: boolean } }
-  | { readonly ok: true; readonly phase: { readonly kind: "delete_mirror"; readonly destroy: readonly AnsweredMember[]; readonly forget: AnsweredMember | null } }
+  | { readonly ok: true; readonly phase: { readonly kind: "delete_mirror"; readonly destroy: readonly AnsweredMember[]; readonly forget: AnsweredMember | null; readonly role: SlotRole | null } }
   | { readonly ok: true; readonly phase: { readonly kind: "move"; readonly writer: AnsweredMember; readonly target: AnsweredMember; readonly start: MoveStart } }
   | { readonly ok: true; readonly phase: { readonly kind: "landed"; readonly target: AnsweredMember; readonly behind: readonly AnsweredMember[] } }
   | { readonly ok: true; readonly phase: { readonly kind: "release"; readonly from: ReleaseFrom } }
   | { readonly ok: true; readonly phase: { readonly kind: "restore"; readonly from: AnsweredMember; readonly lostAfter: Snapshot | null } }
   | { readonly ok: true; readonly phase: { readonly kind: "demote"; readonly old: AnsweredMember; readonly writer: AnsweredMember } }
   | { readonly ok: true; readonly phase: { readonly kind: "seed"; readonly source: AnsweredMember; readonly args: VolumeRunArgs["seed"] } }
+  | { readonly ok: true; readonly phase: ResizePhase }
   | { readonly ok: false; readonly refusal: Refusal };
 
-export type PlanInput = VolumeRunInput & { readonly volumeName: string; readonly orphan: boolean };
+/**
+ * A resize also carries the sizes the Store holds for the Volume: `recordedBytes`, the one its copies hold, 0 before
+ * the first Deploy, and `refquotaBytes`, the Working one, 0 for a Docker Volume.
+ */
+export type PlanInput = (Exclude<VolumeRunInput, { kind: "resize" }> | (Extract<VolumeRunInput, { kind: "resize" }> & { readonly recordedBytes: number; readonly refquotaBytes: number }))
+  & { readonly volumeName: string; readonly orphan: boolean };
 
 export function roleOf(member: Member): Role {
   if (!member.answered) return "unanswered";
@@ -118,7 +128,11 @@ export function planFromCopies(input: PlanInput, members: readonly Member[]): Pl
       if (writers.length > 0) return refuse("invalid", `${name} still has a writer on ${writers.map(named).join(", ")}`);
       const destroy = [...roots, ...mirrors];
       if (destroy.length === 0) return refuse("no_mirror", `${name} has no mirror`);
-      return { ok: true, phase: { kind: "delete_mirror", destroy, forget: null } };
+      return { ok: true, phase: { kind: "delete_mirror", destroy, forget: null, role: null } };
+    }
+    const { role } = input.args;
+    if (role === undefined) {
+      return refuse("invalid", `${name}'s delete was requested before Ployz recorded which copy it deletes, so nothing was deleted. Delete the copy again.`);
     }
     if (unanswered !== undefined) return unknown(unanswered);
     const writers = withRole("writer");
@@ -132,7 +146,7 @@ export function planFromCopies(input: PlanInput, members: readonly Member[]): Pl
       return refuse("confirm_required", `${only} is ${name}'s only copy; volume mirror rm ${only} --confirm ${name}`);
     }
     const [writer] = roots;
-    return { ok: true, phase: { kind: "delete_mirror", destroy, forget: roots.length === 1 && writer !== undefined ? writer : null } };
+    return { ok: true, phase: { kind: "delete_mirror", destroy, forget: roots.length === 1 && writer !== undefined ? writer : null, role: role === "any" ? null : role } };
   }
 
   if (unanswered !== undefined) return unknown(unanswered);
@@ -169,6 +183,8 @@ export function planFromCopies(input: PlanInput, members: readonly Member[]): Pl
   }
   if (roleOf(root) === "cutting") return midRun(name, mirrors, root);
 
+  if (input.kind === "resize") return planResize(name, input.args, { recorded: input.recordedBytes, working: input.refquotaBytes }, root, mirrors);
+
   if (input.kind === "sync") {
     const [mirror, second] = mirrors;
     if (mirror === undefined) return refuse("no_mirror", `${name} has no mirror; volume mirror ${name} --to <server>`);
@@ -179,7 +195,7 @@ export function planFromCopies(input: PlanInput, members: readonly Member[]): Pl
   const { to } = input.args;
   if (isDestination(input.args, root)) return { ok: false, refusal: alreadyOn(name, to) };
   const elsewhere = mirrors.find((member) => !isDestination(input.args, member));
-  if (elsewhere !== undefined) return refuse("second_mirror", `${name} already has a mirror, ${named(elsewhere)}`);
+  if (elsewhere !== undefined) return { ok: false, refusal: copyElsewhere(name, elsewhere) };
   const target = answered.find((member) => isDestination(input.args, member));
   if (target === undefined) return refuse("invalid", `${to} is not a Server of this cluster`);
   return { ok: true, phase: { kind: "mirror", writer: root, target } };
@@ -227,7 +243,10 @@ function planMove(name: string, args: VolumeRunArgs["move"], answered: readonly 
   }
   const elsewhere = others.find((member) => member !== root);
   if (root !== null) {
-    if (elsewhere !== undefined) return refuse("second_mirror", `${name} already has a mirror, ${named(elsewhere)}`);
+    if (elsewhere !== undefined) {
+      const refusal = copyElsewhere(name, elsewhere);
+      return { ok: false, refusal: roleOf(root) === "cutting" ? { ...refusal, next: cutStep(name, root, answered.filter((member) => member.view.copy?.kind === "slot")) } : refusal };
+    }
     return move(root, roleOf(root) === "cutting" ? "cut" : "rounds");
   }
 
@@ -239,7 +258,19 @@ function planMove(name: string, args: VolumeRunArgs["move"], answered: readonly 
   return move(source, newestGuid(target.view.copy) === at ? "start" : "final");
 }
 
-export const alreadyOn = (name: string, server: string): Refusal => ({ code: "invalid", message: `${name}'s writer is already on ${server}` });
+/** mirror rm refuses beside a stopped cut, so its step goes first; a step that needs server rm too is no one command. */
+function cutStep(name: string, cut: AnsweredMember, slots: readonly AnsweredMember[]): string | undefined {
+  const { remove, step } = releaseOrMoveOntoSlot(name, cut, slots);
+  return remove.length === 0 ? step : undefined;
+}
+
+/** A Server cannot tell a mirror from the copy a move left, so this names it a copy. */
+function copyElsewhere(name: string, copy: Member): Refusal {
+  const slot = copyName(name, copy.machine.name);
+  return { code: "second_mirror", message: `${name} already has a copy on ${copy.machine.name}, ${slot}`, next: `ployz volume mirror rm ${slot}` };
+}
+
+export const alreadyOn = (name: string, server: string): Refusal => ({ code: "already_on", message: `${name}'s writer is already on ${server}` });
 
 /** Restore makes the one copy left the writer, so any copy elsewhere, answering or not, would become a second writer. */
 function planRestore(name: string, { from, machine }: VolumeRunArgs["restore"], answered: readonly AnsweredMember[]): Planned {

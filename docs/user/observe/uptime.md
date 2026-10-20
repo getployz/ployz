@@ -4,7 +4,7 @@ description: See whether visitors can reach each service, check it after a deplo
 ---
 
 Ployz checks every service with a public address from outside your servers, the way a visitor
-reaches it. When the check can't get through, the service shows a red ⚠ and an incident opens.
+reaches it. When the check can't get through, the service shows a red **⚠ Unreachable** and an incident opens.
 
 ## See a service's uptime
 
@@ -34,10 +34,13 @@ error, and the incidents in the range.
 
 ```sh
 ployz uptime show web
-ployz uptime show web --project shop --environment staging --from 6h
+ployz uptime show web --project shop --env staging --from 6h
 ```
 
-`--project` and `--environment` default to your default Project and its default Environment.
+`--project` and `--env` default to `PLOYZ_PROJECT` and `PLOYZ_ENV`, then to where the
+directory is linked with `ployz link`, else to your default Project and its default Environment.
+A Project other than the linked one, typed or from `PLOYZ_PROJECT`, leaves the linked Environment
+out, so you get that Project's default Environment unless you name one.
 `--from` and `--to` take an offset back from now such as `15m`, `6h` or `7d`, or a UTC instant.
 The range is the last hour when you leave them out.
 

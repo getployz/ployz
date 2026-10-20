@@ -227,6 +227,9 @@ fn a_new_secret_applies_at_once_and_admission_freezes_what_a_deployment_pulls_wi
             &Admit::Retry(Retry {
                 id: retried.clone(),
                 deployment: one.clone(),
+                rolls_back: None,
+                version: None,
+                accept_volume_loss: Vec::new(),
             }),
             &ployz_store::Trusted::default(),
         )
@@ -299,7 +302,7 @@ fn unset_keeps_the_stored_secret_and_discard_returns_to_the_introduction() {
             &who(),
             &Discard {
                 environment: EnvironmentRef::default(),
-                target: ployz_store::DiscardTarget::Head,
+                target: Some(ployz_store::DiscardTarget::Head),
                 path: Some(SettingPath::parse(PATH).unwrap()),
                 version: None,
             },

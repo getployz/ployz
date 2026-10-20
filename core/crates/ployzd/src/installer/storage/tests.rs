@@ -397,7 +397,7 @@ struct DebianCase {
     failed_step: Option<&'static str>,
 }
 
-const DEBIAN_CASES: [DebianCase; 4] = [
+const DEBIAN_CASES: [DebianCase; 5] = [
     DebianCase {
         name: "debian-12",
         version: "12",
@@ -433,6 +433,16 @@ const DEBIAN_CASES: [DebianCase; 4] = [
         kernel: "6.12.43+deb13-cloud-amd64",
         flavour: "cloud-amd64",
         failed_step: Some("the ZFS module check"),
+    },
+    // zfs-dkms is already installed, so apt-get builds nothing for the running kernel.
+    DebianCase {
+        name: "packaged-unbuilt",
+        version: "12",
+        codename: "bookworm",
+        keyring: "debian-archive-keyring.gpg",
+        kernel: "6.1.0-28-amd64",
+        flavour: "amd64",
+        failed_step: None,
     },
 ];
 
@@ -484,8 +494,19 @@ fn zfs_debian_contract() {
 case "$*" in
   *zfs-dkms*)
     if [ "$PLOYZ_ZFS_DEBIAN_CONTRACT" = build-failed ]; then echo "dkms build failed" >&2; exit 100; fi
-    if [ "$PLOYZ_ZFS_DEBIAN_CONTRACT" != no-module ]; then : > "$PLOYZ_INSTALLER_CONTRACT_ROOT/module"; fi ;;
+    case "$PLOYZ_ZFS_DEBIAN_CONTRACT" in no-module|packaged-unbuilt) ;; *) : > "$PLOYZ_INSTALLER_CONTRACT_ROOT/module" ;; esac ;;
 esac"#,
+        );
+        // zfs-dkms lists its source even when its install already built the module, which
+        // leaves nothing for `dkms install` to do.
+        write_script(
+            &commands.join("dpkg"),
+            r#"[ "$PLOYZ_ZFS_DEBIAN_CONTRACT" != no-module ] && [ "$*" = '-L zfs-dkms' ] && printf '/.\n/usr/src\n/usr/src/zfs-2.1.11\n/usr/src/zfs-2.1.11/dkms.conf\n'"#,
+        );
+        write_script(
+            &commands.join("dkms"),
+            r#"echo "$*" >> "$PLOYZ_INSTALLER_CONTRACT_ROOT/dkms.log"
+[ "$1" = install ] && : > "$PLOYZ_INSTALLER_CONTRACT_ROOT/module""#,
         );
         write_zfs_probes(&commands);
         run_contract_child_with_environment(
@@ -529,6 +550,16 @@ esac"#,
         ]);
         let zfs = installs(&["zfs-dkms", "zfsutils-linux"]);
         assert!(headers < zfs, "{name}: headers after zfs-dkms\n{apt}");
+        let dkms = read_log(root, "dkms.log");
+        if name == "packaged-unbuilt" {
+            assert_eq!(
+                dkms,
+                format!("install -m zfs -v 2.1.11 -k {}\n", case.kernel),
+                "{name}"
+            );
+        } else {
+            assert_eq!(dkms, "", "{name}");
+        }
         assert!(
             read_log(root, "modinfo.log")
                 .lines()
@@ -567,6 +598,8 @@ fn zfs_install_takes_over_a_prepared_build_contract() {
         "contended",
         "unprepared",
         "built",
+        "built-unknown",
+        "unknown",
     ] {
         let fixture = fixture(name);
         let root = fixture.path();
@@ -591,14 +624,16 @@ esac"#,
         );
         write_script(
             &commands.join("dpkg"),
-            r#"[ "$1" = -S ] && [ -f "$PLOYZ_INSTALLER_CONTRACT_ROOT/zfs-dkms" ] && [ "$PLOYZ_ZFS_TAKEOVER_CONTRACT" != mismatch ]"#,
+            r#"[ "$1" = -S ] && [ "$2" = "$PLOYZ_INSTALLER_CONTRACT_ROOT/usr/src/zfs-2.3.2" ] || exit 2
+case "$PLOYZ_ZFS_TAKEOVER_CONTRACT" in *unknown) echo 'dpkg-query: error: unexpected end of file in diversions' >&2; exit 2 ;; esac
+[ -f "$PLOYZ_INSTALLER_CONTRACT_ROOT/zfs-dkms" ] && [ "$PLOYZ_ZFS_TAKEOVER_CONTRACT" != mismatch ]"#,
         );
         write_script(
             &commands.join("dkms"),
             r#"echo "$*" >> "$PLOYZ_INSTALLER_CONTRACT_ROOT/dkms.log"
 case "$1" in
   status)
-    if [ "$PLOYZ_ZFS_TAKEOVER_CONTRACT" != built ]; then echo "zfs/2.3.2: added"
+    if [ "${PLOYZ_ZFS_TAKEOVER_CONTRACT#built}" = "$PLOYZ_ZFS_TAKEOVER_CONTRACT" ]; then echo "zfs/2.3.2: added"
     elif [ -f "$PLOYZ_INSTALLER_CONTRACT_ROOT/module" ]; then echo "zfs/2.3.2, 6.12.43+deb13-cloud-amd64, x86_64: installed"
     else echo "zfs/2.3.2, 6.12.43+deb13-cloud-amd64, x86_64: built"; fi ;;
   install) : > "$PLOYZ_INSTALLER_CONTRACT_ROOT/module" ;;
@@ -688,7 +723,12 @@ esac"#,
         }
         let state: PrepState =
             serde_json::from_slice(&fs::read(prepare.join("state.json")).unwrap()).unwrap();
-        assert_eq!(state.zfs_build, None, "{name}");
+        // An installed build is released whoever owns it; an unknown owner keeps any other.
+        if name == "unknown" {
+            assert_eq!(state.zfs_build, claim.zfs_build, "{name}");
+        } else {
+            assert_eq!(state.zfs_build, None, "{name}");
+        }
         assert!(state.added_packages.is_empty(), "{name}");
         assert!(!state.added_contrib_source, "{name}");
         let dkms = read_log(root, "dkms.log");
@@ -703,7 +743,7 @@ esac"#,
             assert!(source.exists(), "{name}");
         }
         let conf = fs::read_to_string(source.join("dkms.conf")).unwrap_or_default();
-        if name == "built" {
+        if name.starts_with("built") {
             assert!(
                 dkms.contains(&format!("install -m zfs -v 2.3.2 -k {KERNEL}")),
                 "{name}: {dkms}"
@@ -735,9 +775,15 @@ struct AmazonCase {
     expected: Option<&'static str>,
 }
 
-const AMAZON_CASES: [AmazonCase; 4] = [
+const AMAZON_CASES: [AmazonCase; 5] = [
     AmazonCase {
         name: "success",
+        via_storage: false,
+        expected: None,
+    },
+    // zfs-dkms is already installed, so dnf builds nothing for the running kernel.
+    AmazonCase {
+        name: "packaged-unbuilt",
         via_storage: false,
         expected: None,
     },
@@ -820,8 +866,17 @@ fn zfs_amazon_linux_contract() {
             r#"echo "$*" >> "$PLOYZ_INSTALLER_CONTRACT_ROOT/dnf.log"
 case "$*" in
   *repoquery*) [ "$PLOYZ_ZFS_AMAZON_CONTRACT" = no-kernel-devel ] || echo kernel-devel-1:6.1.186-228.376.amzn2023.x86_64 ;;
-  *zfs-dkms-*.rpm*) : > "$PLOYZ_INSTALLER_CONTRACT_ROOT/module" ;;
+  *zfs-dkms-*.rpm*) [ "$PLOYZ_ZFS_AMAZON_CONTRACT" = packaged-unbuilt ] || : > "$PLOYZ_INSTALLER_CONTRACT_ROOT/module" ;;
 esac"#,
+        );
+        write_script(
+            &commands.join("rpm"),
+            r#"[ "$*" = '-ql zfs-dkms' ] && printf '/usr/src/zfs-2.4.4\n/usr/src/zfs-2.4.4/dkms.conf\n'"#,
+        );
+        write_script(
+            &commands.join("dkms"),
+            r#"echo "$*" >> "$PLOYZ_INSTALLER_CONTRACT_ROOT/dkms.log"
+[ "$1" = install ] && : > "$PLOYZ_INSTALLER_CONTRACT_ROOT/module""#,
         );
         write_script(
             &commands.join("curl"),
@@ -871,6 +926,15 @@ done"#,
             continue;
         }
         assert_eq!(boot_load.as_deref(), Some("zfs\n"));
+        let dkms = read_log(root, "dkms.log");
+        if name == "packaged-unbuilt" {
+            assert_eq!(
+                dkms,
+                format!("install -m zfs -v 2.4.4 -k {AMAZON_KERNEL}\n")
+            );
+        } else {
+            assert_eq!(dkms, "", "{name}");
+        }
         let packages = if name == "prepared" {
             assert_eq!(
                 read_log(root, "curl.log"),

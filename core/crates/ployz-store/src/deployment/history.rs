@@ -2,16 +2,25 @@
 
 use super::*;
 
-/// `environment`'s latest `limit` Deployments that weren't superseded, newest first.
+/// The rule every reading of "the Deployment history" shares: only numbered rows
+/// count, in number order. A hold that never promoted (waiting, superseded or
+/// cancelled while waiting) has no number and is not history. Postgres sorts
+/// NULLs first under `DESC`, so the filter is never left to the sort order.
+pub(crate) const NUMBERED: &str = "number IS NOT NULL";
+
+/// `environment`'s latest `limit` Deployments that were admitted and weren't
+/// superseded, newest first: none waiting for CI.
 pub(crate) fn history(
     tx: &mut dyn Tx,
     environment: &EnvironmentId,
     limit: i64,
 ) -> Result<Vec<DeploymentSummary>, RpcError> {
+    let columns = COLUMNS.as_str();
     tx.query(
         &format!(
-            "SELECT {COLUMNS} FROM config_deployment \
-             WHERE environment_id = ?1 AND status <> 'superseded' ORDER BY number DESC LIMIT ?2"
+            "SELECT {columns} FROM config_deployment \
+             WHERE environment_id = ?1 AND {NUMBERED} AND status NOT IN ('superseded') \
+             ORDER BY number DESC LIMIT ?2"
         ),
         &[environment.as_str().into(), limit.into()],
     )?
@@ -45,7 +54,8 @@ pub(crate) fn head(tx: &mut dyn Tx, environment: &Environment) -> Result<Head, R
         .query(
             &format!(
                 "SELECT COUNT(*) FROM config_deployment \
-                 WHERE environment_id = ?1 AND status <> 'superseded' AND NOT {in_flight}"
+                 WHERE environment_id = ?1 AND {NUMBERED} AND status NOT IN ('superseded') \
+                 AND NOT {in_flight}"
             ),
             &[id.as_str().into()],
         )?
@@ -55,7 +65,7 @@ pub(crate) fn head(tx: &mut dyn Tx, environment: &Environment) -> Result<Head, R
     let rows = tx.query(
         &format!(
             "SELECT number, saved_revision, nodes, cluster_domain FROM config_deployment \
-             WHERE environment_id = ?1 AND {in_flight} ORDER BY number DESC"
+             WHERE environment_id = ?1 AND {NUMBERED} AND {in_flight} ORDER BY number DESC"
         ),
         &[id.as_str().into()],
     )?;
@@ -68,7 +78,7 @@ pub(crate) fn head(tx: &mut dyn Tx, environment: &Environment) -> Result<Head, R
     for row in &rows {
         let saved = saved_at(tx, id, row.number(1, "revision")?)?;
         let nodes: Vec<TargetNode> = row.json(2, "Deployment")?;
-        let target = InFlight {
+        let mut target = InFlight {
             cluster_domain: row.parse_optional(3, "Cluster Domain")?,
             services: nodes
                 .iter()
@@ -97,7 +107,36 @@ pub(crate) fn head(tx: &mut dyn Tx, environment: &Environment) -> Result<Head, R
                 })
                 .cloned()
                 .collect(),
+            configs: nodes
+                .iter()
+                .filter_map(|node| match node {
+                    TargetNode::Config { .. } => saved
+                        .configs
+                        .iter()
+                        .find(|config| config.resource_id == node.id()),
+                    TargetNode::Service { .. } | TargetNode::Volume { .. } => None,
+                })
+                .cloned()
+                .collect(),
+            removes: BTreeSet::new(),
         };
+        crate::volume::size::held(tx, id, &mut target.volumes)?;
+        target.removes = nodes
+            .iter()
+            .map(TargetNode::id)
+            .filter(|id| {
+                !target.services.iter().any(|service| service.id == *id)
+                    && !target
+                        .volumes
+                        .iter()
+                        .any(|volume| volume.resource_id == *id)
+                    && !target
+                        .configs
+                        .iter()
+                        .any(|config| config.resource_id == *id)
+            })
+            .map(str::to_owned)
+            .collect();
         if head.in_flight.is_empty() {
             head.token = format!("{}.{ended}", row.int(0)?);
             let intent = &mut head.intent;
@@ -110,18 +149,7 @@ pub(crate) fn head(tx: &mut dyn Tx, environment: &Environment) -> Result<Head, R
             intent
                 .configs
                 .retain(|config| nodes.iter().all(|node| node.id() != config.resource_id));
-            intent.configs.extend(
-                nodes
-                    .iter()
-                    .filter_map(|node| match node {
-                        TargetNode::Config { .. } => saved
-                            .configs
-                            .iter()
-                            .find(|config| config.resource_id == node.id()),
-                        TargetNode::Service { .. } | TargetNode::Volume { .. } => None,
-                    })
-                    .cloned(),
-            );
+            intent.configs.extend(target.configs.iter().cloned());
             intent.services.extend(target.services.iter().cloned());
             intent.volumes.extend(target.volumes.iter().cloned());
         }
@@ -192,15 +220,41 @@ pub(crate) fn last_ran(
     )
 }
 
+/// The Saved revision `environment`'s latest applied Deployment shipped: what its
+/// Servers run. None before one applied, or once a removal applied.
+pub(crate) fn live(
+    tx: &mut dyn Tx,
+    environment: &EnvironmentId,
+) -> Result<Option<Revision>, RpcError> {
+    Ok(latest_where(tx, environment, "status = 'applied'")?
+        .map(|deployment| deployment.saved)
+        .filter(|saved| *saved != NOTHING))
+}
+
+/// Whether the latest Deployment of Saved `revision` failed. Any later attempt
+/// at it clears it, even one superseded before it ran.
+pub(crate) fn failed(
+    tx: &mut dyn Tx,
+    environment: &EnvironmentId,
+    revision: Revision,
+) -> Result<bool, RpcError> {
+    let condition = format!("saved_revision = {}", revision_param(revision)?);
+    Ok(latest_where(tx, environment, &condition)?
+        .is_some_and(|deployment| deployment.status == DeploymentStatus::Failed))
+}
+
+/// `environment`'s latest numbered Deployment matching `condition`.
 pub(super) fn latest_where(
     tx: &mut dyn Tx,
     environment: &EnvironmentId,
     condition: &str,
 ) -> Result<Option<DeploymentSummary>, RpcError> {
+    let columns = COLUMNS.as_str();
     tx.query(
         &format!(
-            "SELECT {COLUMNS} FROM config_deployment \
-             WHERE environment_id = ?1 AND {condition} ORDER BY number DESC LIMIT 1"
+            "SELECT {columns} FROM config_deployment \
+             WHERE environment_id = ?1 AND {NUMBERED} AND {condition} \
+             ORDER BY number DESC LIMIT 1"
         ),
         &[environment.as_str().into()],
     )?
@@ -209,11 +263,80 @@ pub(super) fn latest_where(
     .transpose()
 }
 
+/// Every Deployment of `who`'s Organization waiting for CI of commit `head` of
+/// `repository_id`, with its Environment and push, by Environment.
+pub(crate) fn held_for_head(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    repository_id: RepositoryId,
+    head: &CommitSha,
+) -> Result<Vec<(DeploymentId, EnvironmentId, GitPush)>, RpcError> {
+    tx.query(
+        "SELECT id, environment_id, push_branch FROM config_deployment \
+         WHERE organization_id = ?1 AND push_repository_id = ?2 AND push_head = ?3 \
+         AND status = 'waiting_for_ci' ORDER BY environment_id, admitted, id",
+        &[
+            who.organization.as_str().into(),
+            repository_id.into(),
+            head.as_str().into(),
+        ],
+    )?
+    .iter()
+    .map(|row| {
+        Ok((
+            row.parse(0, "identity")?,
+            row.parse(1, "identity")?,
+            GitPush {
+                repository_id,
+                branch: row.parse(2, "Deployment push")?,
+                head: head.clone(),
+            },
+        ))
+    })
+    .collect()
+}
+
+/// `environment`'s Deployment waiting for CI of `push`, if any.
+pub(crate) fn held_by_push(
+    tx: &mut dyn Tx,
+    environment: &EnvironmentId,
+    push: &GitPush,
+) -> Result<Option<DeploymentId>, RpcError> {
+    tx.query(
+        "SELECT id FROM config_deployment WHERE environment_id = ?1 AND push_repository_id = ?2 \
+         AND push_branch = ?3 AND push_head = ?4 AND status = 'waiting_for_ci'",
+        &[
+            environment.as_str().into(),
+            push.repository_id.into(),
+            push.branch.as_str().into(),
+            push.head.as_str().into(),
+        ],
+    )?
+    .first()
+    .map(|row| row.parse(0, "identity"))
+    .transpose()
+}
+
+/// The Services a Deployment waiting for CI selected, by ID; none selects every one.
+pub(crate) fn held_services(tx: &mut dyn Tx, id: &DeploymentId) -> Result<Vec<String>, RpcError> {
+    tx.query(
+        "SELECT push_services FROM config_deployment WHERE id = ?1",
+        &[id.as_str().into()],
+    )?
+    .first()
+    .map(|row| match row.optional_text(0)? {
+        Some(_) => row.json(0, "Deployment"),
+        None => Ok(Vec::new()),
+    })
+    .transpose()
+    .map(Option::unwrap_or_default)
+}
+
 /// Every queued Deployment no runner claimed that was admitted before `before`
 /// (Unix seconds), oldest first: those whose dispatch may have been lost.
 pub(crate) fn unclaimed(tx: &mut dyn Tx, before: i64) -> Result<Vec<Unclaimed>, RpcError> {
     tx.query(
-        "SELECT organization_id, environment_id, id, admitted FROM config_deployment \
+        "SELECT organization_id, environment_id, id, admitted, number FROM config_deployment \
          WHERE status = 'queued' AND runner IS NULL AND admitted < ?1 ORDER BY admitted, id",
         &[before.into()],
     )?
@@ -224,6 +347,7 @@ pub(crate) fn unclaimed(tx: &mut dyn Tx, before: i64) -> Result<Vec<Unclaimed>, 
             environment: row.parse(1, "identity")?,
             deployment: row.parse(2, "identity")?,
             admitted_at: row.int(3)?,
+            number: row.number(4, "Deployment number")?,
         })
     })
     .collect()
@@ -237,13 +361,28 @@ pub(crate) fn view(
 ) -> Result<DeploymentView, RpcError> {
     let stored = owned(tx, who, id)?;
     let environment = scope::load_by_id(tx, &stored.summary.environment_id)?;
-    let mut rows = super::rows::of_nodes(tx, &stored)?;
-    let nodes = stored
-        .nodes
-        .iter()
+    let mut saved = None;
+    let mut rows = super::rows::of_nodes(tx, &stored, &mut saved)?;
+    let mut targets: Vec<&TargetNode> = stored.nodes.iter().collect();
+    targets.sort_by(|a, b| a.listed().cmp(&b.listed()));
+    // Only nodes sharing a kind and name need Saved State to order, which is rare.
+    if targets
+        .windows(2)
+        .any(|pair| matches!(pair, [a, b] if a.listed() == b.listed()))
+    {
+        let saved = match saved.take() {
+            Some(saved) => saved,
+            None => saved_at(tx, &stored.summary.environment_id, stored.summary.saved)?,
+        };
+        targets.sort_by(|a, b| a.order(&saved).cmp(&b.order(&saved)));
+    }
+    let nodes: Vec<NodeOutcome> = targets
+        .into_iter()
         .map(|node| NodeOutcome {
             node: node.shown(),
             rows: rows.remove(node.id()).unwrap_or_default(),
+            cancelled: stored.run.nodes.get(node.id()) == Some(&NodeStatus::Failed)
+                && stored.run.cancelled.contains(node.id()),
             outcome: match (stored.run.nodes.get(node.id()), stored.summary.status) {
                 (Some(status), _) => *status,
                 (None, DeploymentStatus::Unknown) => NodeStatus::Unknown,
@@ -255,7 +394,8 @@ pub(crate) fn view(
                 ) => NodeStatus::Pending,
                 (
                     None,
-                    DeploymentStatus::Superseded
+                    DeploymentStatus::WaitingForCi
+                    | DeploymentStatus::Superseded
                     | DeploymentStatus::Applied
                     | DeploymentStatus::Failed
                     | DeploymentStatus::Cancelled,
@@ -272,9 +412,11 @@ pub(crate) fn view(
         })
         .collect();
     let builds = build::views(tx, &stored)?;
+    let rolls_back = undone(tx, &stored.summary)?;
     Ok(DeploymentView {
         builds,
         runtime_names,
+        rolls_back,
         deployment: stored.summary,
         environment: environment.summary,
         namespace: stored.namespace,
@@ -293,46 +435,179 @@ pub(crate) fn build_log(
     build::log(tx, &stored, &query.service)
 }
 
-/// One page of `environment`'s Deployments, newest first, before `cursor`.
+/// The rows a list of an Environment's Deployments shows: every numbered one, a
+/// hold still waiting for CI, and a hold cancelled while waiting. A hold a newer
+/// push replaced before CI answered is left out: it never got a number, and a
+/// burst of them would push real Deployments off the first page.
+const LISTED: &str = "(number IS NOT NULL OR status <> 'superseded')";
+
+/// Where a page ended: the list position of its last row. A position is taken once,
+/// at insert, and never moves, so the next page starts below it whatever became of
+/// the row since: superseded, it leaves the list; promoted, it keeps its place, and
+/// the page that showed it as a hold stays the only one that shows it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Cursor(i64);
+
+impl Cursor {
+    /// An opaque word for the API: the position, base64 without padding.
+    pub(crate) fn encode(&self) -> String {
+        use base64::Engine as _;
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(self.0.to_string())
+    }
+
+    /// The position an [`encode`](Self::encode)d word carries; none for any other text.
+    pub(crate) fn decode(word: &str) -> Option<Self> {
+        use base64::Engine as _;
+        let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(word)
+            .ok()?;
+        let text = String::from_utf8(bytes).ok()?;
+        let listed: i64 = text.parse().ok()?;
+        (listed > 0 && listed.to_string() == text).then_some(Self(listed))
+    }
+}
+
+/// One page of `environment`'s [`LISTED`] Deployments, newest position first, after
+/// the position `after` carries: where the previous page ended. The second element
+/// says where this page ended when another follows.
 pub(crate) fn page(
     tx: &mut dyn Tx,
     environment: &EnvironmentId,
     limit: usize,
-    before: Option<u64>,
-) -> Result<(Vec<DeploymentSummary>, Option<u64>), RpcError> {
-    let before = i64::try_from(before.unwrap_or(u64::MAX >> 1)).unwrap_or(i64::MAX);
+    after: Option<&Cursor>,
+) -> Result<(Vec<DeploymentSummary>, Option<Cursor>), RpcError> {
+    let columns = COLUMNS.as_str();
+    let mut params: Vec<crate::storage::Param<'_>> = vec![
+        environment.as_str().into(),
+        i64::try_from(limit + 1).unwrap_or(i64::MAX).into(),
+    ];
+    let mut after_sql = "";
+    if let Some(after) = after {
+        params.push(after.0.into());
+        after_sql = " AND listed < ?3";
+    }
     let rows = tx.query(
         &format!(
-            "SELECT {COLUMNS} FROM config_deployment WHERE environment_id = ?1 AND number < ?2 \
-             ORDER BY number DESC LIMIT ?3"
+            "SELECT {columns} FROM config_deployment \
+             WHERE environment_id = ?1 AND {LISTED}{after_sql} \
+             ORDER BY listed DESC LIMIT ?2"
         ),
-        &[
-            environment.as_str().into(),
-            before.into(),
-            i64::try_from(limit + 1).unwrap_or(i64::MAX).into(),
-        ],
+        &params,
     )?;
     let mut page = rows
         .iter()
-        .map(|row| stored(row).map(|stored| stored.summary))
+        .map(|row| stored(row).map(|stored| (stored.summary, Cursor(stored.listed))))
         .collect::<Result<Vec<_>, _>>()?;
     let next = (page.len() > limit).then(|| {
         page.truncate(limit);
-        page.last().map_or(0, |last| last.number)
+        page.last().map(|(_, cursor)| cursor.clone())
     });
-    Ok((page, next))
+    let page = page.into_iter().map(|(summary, _)| summary).collect();
+    Ok((page, next.flatten()))
+}
+
+/// `environment`'s newest numbered Deployment, whatever page of its list it falls
+/// on: holds take no number, so a burst of them never hides it.
+pub(crate) fn latest_numbered(
+    tx: &mut dyn Tx,
+    environment: &EnvironmentId,
+) -> Result<Option<DeploymentSummary>, RpcError> {
+    let columns = COLUMNS.as_str();
+    let rows = tx.query(
+        &format!(
+            "SELECT {columns} FROM config_deployment \
+             WHERE environment_id = ?1 AND number IS NOT NULL ORDER BY number DESC LIMIT 1"
+        ),
+        &[environment.as_str().into()],
+    )?;
+    rows.first()
+        .map(|row| stored(row).map(|stored| stored.summary))
+        .transpose()
+}
+
+/// Every Deployment of `environment` in flight, newest number first: queued, or
+/// claimed by a runner whose lease holds. A bounded set, however long the list.
+pub(crate) fn all_in_flight(
+    tx: &mut dyn Tx,
+    environment: &EnvironmentId,
+) -> Result<Vec<DeploymentSummary>, RpcError> {
+    let columns = COLUMNS.as_str();
+    let in_flight = in_flight_sql();
+    let rows = tx.query(
+        &format!(
+            "SELECT {columns} FROM config_deployment \
+             WHERE environment_id = ?1 AND {NUMBERED} AND {in_flight} ORDER BY number DESC"
+        ),
+        &[environment.as_str().into()],
+    )?;
+    rows.iter()
+        .map(|row| stored(row).map(|stored| stored.summary))
+        .collect()
 }
 
 /// The Servers Deployment `id` failed on, by name, sorted.
 pub(crate) fn failed_on(tx: &mut dyn Tx, id: &DeploymentId) -> Result<Vec<String>, RpcError> {
     let stored = load(tx, id)?;
-    let mut servers: Vec<String> = super::rows::of_nodes(tx, &stored)?
+    let mut servers: Vec<String> = super::rows::of_nodes(tx, &stored, &mut None)?
         .into_values()
         .flatten()
-        .filter(|row| matches!(row.state, super::RowState::Failed { .. }))
+        .filter(|row| {
+            matches!(
+                row.state,
+                super::RowState::Failed {
+                    cancelled: false,
+                    ..
+                }
+            )
+        })
         .map(|row| row.server)
         .collect();
     servers.sort();
     servers.dedup();
     Ok(servers)
+}
+
+/// The name each of `machines` last ran a Deployment row under in `who`'s
+/// Organization. One no row named is left out.
+pub(crate) fn server_names(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    machines: impl IntoIterator<Item = ployz_core::MachineId>,
+) -> Result<BTreeMap<ployz_core::MachineId, String>, RpcError> {
+    let mut names = BTreeMap::new();
+    for machine in machines.into_iter().collect::<BTreeSet<_>>() {
+        let id = machine.to_string();
+        let named = tx.query(
+            "SELECT server FROM config_deployment_row \
+             WHERE organization_id = ?1 AND machine = ?2 AND server <> machine \
+             ORDER BY COALESCE(finished, started, 0) DESC LIMIT 1",
+            &[who.organization.as_str().into(), id.as_str().into()],
+        )?;
+        if let Some(row) = named.first() {
+            names.insert(machine, row.text(0)?.to_owned());
+        }
+    }
+    Ok(names)
+}
+
+/// The Machines Deployment `id` failed on because they didn't answer.
+pub(crate) fn unanswered_on(
+    tx: &mut dyn Tx,
+    id: &DeploymentId,
+) -> Result<BTreeSet<ployz_core::MachineId>, RpcError> {
+    let stored = load(tx, id)?;
+    Ok(super::rows::of_nodes(tx, &stored, &mut None)?
+        .into_values()
+        .flatten()
+        .filter(|row| {
+            matches!(
+                row.state,
+                super::RowState::Failed {
+                    unanswered: true,
+                    ..
+                }
+            )
+        })
+        .map(|row| row.machine_id)
+        .collect())
 }

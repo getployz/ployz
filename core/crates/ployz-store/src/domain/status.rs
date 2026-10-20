@@ -43,11 +43,16 @@ pub(super) fn row(
         Deployed::No
     };
     let (status, reason, action) = status(&domain, deployed, &trusted.domains);
+    let records = match &domain.name {
+        DomainName::Custom { hostname } => dns_records(hostname, &trusted.domains),
+        DomainName::Generated { .. } => Vec::new(),
+    };
     DomainRow {
         domain,
         status,
         reason,
         action,
+        records,
     }
 }
 
@@ -59,6 +64,8 @@ enum Deployed {
     Deploying,
     No,
 }
+
+const PORT_80_HINT: &str = "Open port 80 in the Server's firewall (for example ufw allow 80/tcp)";
 
 type Status = (DomainStatus, Option<String>, Option<DomainAction>);
 
@@ -85,11 +92,11 @@ fn status(domain: &Domain, deployed: Deployed, evidence: &DomainEvidence) -> Sta
         }
     }
     // Every domain lands on the same ingress Servers.
-    match evidence
+    let cluster = evidence
         .cluster_domain
         .as_ref()
-        .map(|cluster| &cluster.status)
-    {
+        .map(|cluster| &cluster.status);
+    match cluster {
         Some(ClusterDomainStatus::NoServers) => {
             return attention("No Server receives traffic", Some(DomainAction::AddServer));
         }
@@ -105,30 +112,31 @@ fn status(domain: &Domain, deployed: Deployed, evidence: &DomainEvidence) -> Sta
                 Some(DomainAction::Deploy),
             );
         }
-        Some(ClusterDomainStatus::Port80 { addresses }) => {
-            return attention(
-                format!("Port 80 is closed on {}", addresses.join(", ")),
-                None,
-            );
-        }
-        Some(ClusterDomainStatus::Port80Taken { addresses }) => {
-            return attention(
-                format!(
-                    "Something else answers on port 80 of {}",
-                    addresses.join(", ")
-                ),
-                None,
-            );
-        }
         _ => {}
     }
+    let port_80 = match cluster {
+        Some(ClusterDomainStatus::Port80 { addresses }) => Some(attention(
+            format!(
+                "Port 80 is closed on {}. {PORT_80_HINT}",
+                addresses.join(", ")
+            ),
+            None,
+        )),
+        Some(ClusterDomainStatus::Port80Taken { addresses }) => Some(attention(
+            format!(
+                "Something else answers on port 80 of {}",
+                addresses.join(", ")
+            ),
+            None,
+        )),
+        _ => None,
+    };
     let hostname = match &domain.name {
         DomainName::Generated { .. } => {
-            return match evidence
-                .cluster_domain
-                .as_ref()
-                .map(|cluster| &cluster.status)
-            {
+            if let Some(blocked) = port_80 {
+                return blocked;
+            }
+            return match cluster {
                 Some(ClusterDomainStatus::Ready) => (DomainStatus::Ready, None, None),
                 Some(ClusterDomainStatus::HttpsDown) => {
                     setting_up("HTTPS is down; Ployz is fixing it")
@@ -138,13 +146,45 @@ fn status(domain: &Domain, deployed: Deployed, evidence: &DomainEvidence) -> Sta
         }
         DomainName::Custom { hostname } => hostname,
     };
-    let Some(certificates) = &evidence.certificates else {
-        return setting_up("Cloud can't see the Servers right now");
+    let certificate = evidence
+        .certificates
+        .as_deref()
+        .and_then(|certificates| certificate_for(hostname, certificates));
+    let ready = certificate
+        .is_some_and(|certificate| certificate.status == CertificateAvailability::Available);
+    let lookup = evidence
+        .lookups
+        .iter()
+        .find(|lookup| lookup.hostname == *hostname);
+    let points_here = lookup.and_then(|lookup| points_here(lookup, evidence));
+    let failure = certificate
+        .filter(|certificate| certificate.status == CertificateAvailability::Failure)
+        .and_then(|certificate| certificate.backoff.as_ref())
+        .map(|backoff| &backoff.failure_kind);
+    // DNS sent elsewhere comes before the Servers' port 80: that port is not what fails.
+    let misdirected = match (points_here, failure) {
+        _ if ready => None,
+        (Some(false), _) if lookup.is_some_and(|lookup| !lookup.addresses.is_empty()) => {
+            Some("DNS points to another server")
+        }
+        (Some(false), _) => Some("DNS doesn't point here yet"),
+        (Some(true), _) => None,
+        (None, Some(CertificateFailureKind::DoesNotResolve)) => Some("Waiting for DNS"),
+        (None, Some(CertificateFailureKind::ReachesElsewhere)) => {
+            Some("DNS points to another server")
+        }
+        (None, _) => None,
     };
-    let certificate = certificate_for(hostname, certificates);
-    if certificate
-        .is_some_and(|certificate| certificate.status == CertificateAvailability::Available)
-    {
+    if let Some(reason) = misdirected {
+        return attention(reason, dns_action(hostname, evidence));
+    }
+    if let Some(blocked) = port_80 {
+        return blocked;
+    }
+    if evidence.certificates.is_none() {
+        return setting_up("Cloud can't see the Servers right now");
+    }
+    if ready {
         let proxy = certificate.is_some_and(|certificate| certificate.via_proxy);
         return (
             DomainStatus::Ready,
@@ -152,53 +192,45 @@ fn status(domain: &Domain, deployed: Deployed, evidence: &DomainEvidence) -> Sta
             None,
         );
     }
-    let points_here = evidence
-        .lookups
-        .iter()
-        .find(|lookup| lookup.hostname == *hostname)
-        .and_then(|lookup| points_here(lookup, evidence));
-    let dns = || {
-        let records = dns_records(hostname, evidence);
-        (!records.is_empty()).then_some(DomainAction::Dns { records })
-    };
-    if points_here == Some(false) {
-        return attention("DNS doesn't point here yet", dns());
-    }
     let retry = || {
         certificate
             .and_then(|certificate| certificate.backoff.as_ref())
             .map(|backoff| backoff.next_attempt_at.as_str())
             .map_or_else(|| "shortly".to_owned(), |at| format!("at {at}"))
     };
-    let Some(certificate) =
-        certificate.filter(|certificate| certificate.status == CertificateAvailability::Failure)
-    else {
-        return setting_up("Issuing certificate");
-    };
-    let failure = certificate
-        .backoff
-        .as_ref()
-        .map(|backoff| &backoff.failure_kind);
-    match failure {
-        Some(CertificateFailureKind::DoesNotResolve | CertificateFailureKind::ReachesElsewhere)
-            if points_here == Some(true) =>
+    let Some(failure) = failure else {
+        return if certificate
+            .is_some_and(|certificate| certificate.status == CertificateAvailability::Failure)
         {
+            setting_up(format!("Certificate failed; retrying {}", retry()))
+        } else {
+            setting_up("Issuing certificate")
+        };
+    };
+    match failure {
+        CertificateFailureKind::DoesNotResolve | CertificateFailureKind::ReachesElsewhere => {
             setting_up(format!(
                 "DNS points here now; the certificate is retried {}",
                 retry()
             ))
         }
-        Some(CertificateFailureKind::DoesNotResolve) => attention("Waiting for DNS", dns()),
-        Some(CertificateFailureKind::ReachesElsewhere) => {
-            attention("DNS points to another server", dns())
+        CertificateFailureKind::Unreachable => {
+            attention(format!("Port 80 is closed. {PORT_80_HINT}"), None)
         }
-        Some(CertificateFailureKind::Unreachable) => attention("Port 80 is closed", None),
-        Some(CertificateFailureKind::RedirectsToHttps) => attention(
+        CertificateFailureKind::RedirectsToHttps => attention(
             "Your proxy redirects to HTTPS: exempt /.well-known/acme-challenge/* from it",
             None,
         ),
-        _ => setting_up(format!("Certificate failed; retrying {}", retry())),
+        CertificateFailureKind::Authority | CertificateFailureKind::Unrecognized(_) => {
+            setting_up(format!("Certificate failed; retrying {}", retry()))
+        }
     }
+}
+
+/// Show the records that point a custom domain here, when the evidence names them.
+fn dns_action(hostname: &Hostname, evidence: &DomainEvidence) -> Option<DomainAction> {
+    let records = dns_records(hostname, evidence);
+    (!records.is_empty()).then_some(DomainAction::Dns { records })
 }
 
 /// A custom hostname's certificate: its own, else the `*.parent` wildcard that serves it.
@@ -414,6 +446,18 @@ mod tests {
             status(&domain, Deployed::Yes, &authority).0,
             DomainStatus::SettingUp
         );
+        let unreachable = evidence(Some(("failure", Some("unreachable"))));
+        assert_eq!(
+            status(&domain, Deployed::Yes, &unreachable),
+            (
+                DomainStatus::NeedsAttention,
+                Some(
+                    "Port 80 is closed. Open port 80 in the Server's firewall (for example ufw allow 80/tcp)"
+                        .into()
+                ),
+                None
+            )
+        );
         let mut offline = ready.clone();
         offline.cluster_domain = offline.cluster_domain.map(|cluster| ClusterDomain {
             status: ClusterDomainStatus::NoServers,
@@ -432,7 +476,7 @@ mod tests {
                 ClusterDomainStatus::Port80 {
                     addresses: vec!["203.0.113.7".into()],
                 },
-                "Port 80 is closed on 203.0.113.7",
+                "Port 80 is closed on 203.0.113.7. Open port 80 in the Server's firewall (for example ufw allow 80/tcp)",
             ),
             (
                 ClusterDomainStatus::Port80Taken {
@@ -464,6 +508,58 @@ mod tests {
                 DomainStatus::NeedsAttention,
                 Some("Ingress isn't running on web-1. Deploy to bring it back.".into()),
                 Some(DomainAction::Deploy)
+            )
+        );
+    }
+
+    #[test]
+    fn dns_sent_elsewhere_shows_before_a_closed_port_80_with_its_records() {
+        let domain = custom("app.example.com");
+        let records = Some(DomainAction::Dns {
+            records: vec![DnsRecord {
+                kind: DnsRecordKind::Cname,
+                name: "app".into(),
+                value: "acme.ployz.app".into(),
+            }],
+        });
+        let closed = |certificate| {
+            let mut evidence = evidence(certificate);
+            evidence.cluster_domain = evidence.cluster_domain.map(|cluster| ClusterDomain {
+                status: ClusterDomainStatus::Port80 {
+                    addresses: vec!["203.0.113.7".into()],
+                },
+                ..cluster
+            });
+            evidence
+        };
+        let mut looked_up = closed(None);
+        looked_up.lookups.push(DnsLookup {
+            hostname: host("app.example.com"),
+            cname: Some("redirect.example.net.".into()),
+            addresses: vec!["202.58.206.59".into()],
+        });
+        assert_eq!(
+            status(&domain, Deployed::Yes, &looked_up),
+            (
+                DomainStatus::NeedsAttention,
+                Some("DNS points to another server".into()),
+                records.clone()
+            )
+        );
+        let refused = closed(Some(("failure", Some("reaches_elsewhere"))));
+        assert_eq!(
+            status(&domain, Deployed::Yes, &refused),
+            (
+                DomainStatus::NeedsAttention,
+                Some("DNS points to another server".into()),
+                records
+            )
+        );
+        let pending = closed(Some(("pending", None)));
+        assert_eq!(
+            status(&domain, Deployed::Yes, &pending).1.as_deref(),
+            Some(
+                "Port 80 is closed on 203.0.113.7. Open port 80 in the Server's firewall (for example ufw allow 80/tcp)"
             )
         );
     }

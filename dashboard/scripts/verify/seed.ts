@@ -26,7 +26,7 @@ import { readFileSync } from "node:fs";
 import { eq, sql } from "drizzle-orm";
 import { hashPassword } from "better-auth/crypto";
 import { Effect } from "effect";
-import type { Change, ConfigCommand, PullRequest } from "@ployz/sdk";
+import type { Change, ConfigCommand, PullRequest, SystemEvent } from "@ployz/sdk";
 import { callStore, storeSystem } from "#/modules/config-store/config-store.server";
 import { cloudStore, storeTry } from "#/modules/config-store/store-sdk.server";
 import { linkGithubInstallation, upsertCachedGithubRepositories, upsertGithubInstallation } from "#/modules/github/github.repository";
@@ -126,7 +126,7 @@ const seed = Effect.gen(function* () {
   const token = env("VERIFY_SESSION_TOKEN");
   const { cookie, cliToken } = yield* signIn(ada.id, "owner", token);
   // Colleagues sign up with their own personal organization, then join Ada's. Their session tokens derive from Ada's, so
-  // their cookies also survive a reseed.
+  // their cookies also keep their values across a reseed.
   const colleague = (name: string, email: string, role: "admin" | "member") => Effect.gen(function* () {
     const [person] = yield* drizzle.insert(user).values({ email, emailVerified: true, name }).returning();
     if (!person) return yield* Effect.die("No user.");
@@ -155,12 +155,17 @@ const seed = Effect.gen(function* () {
     command: "create_volume", id: randomUUID(), environment: at(null), name: "pg-data",
     storage: { kind: "provisioned", maximumBytes: 5_000_000_000 }, mounts: [{ service: "postgres", path: "/var/lib/postgresql/data" }],
   });
+  // nginx listens on 80, not PORT's 8080.
+  yield* write("generated domain web", { command: "add_domain", environment: at(null), service: "web", hostname: null, port: 80 });
   yield* write("domain web", { command: "add_domain", environment: at(null), service: "web", hostname: "acme.com", port: null });
   yield* edit("production env", "production", [
     { op: "set", path: "api.env.LOG_LEVEL", value: "warn" },
     { op: "set", path: "api.env.DATABASE_URL", value: "postgres://postgres@postgres:5432/shop" },
     { op: "set", path: "postgres.env.POSTGRES_PASSWORD", value: "postgres" },
-    { op: "set", path: "redis.healthcheck", value: { path: "/health", timeoutSeconds: 30 } },
+    { op: "set", path: "redis.healthcheck", value: { command: "redis-cli -h 127.0.0.1 ping | grep -q PONG", timeoutSeconds: 30 } },
+    // whoami answers every path on 80, so the path passes on a Server while seed-uptime's 404 shows the Monitoring tab's field.
+    { op: "set", path: "worker.env.PORT", value: "80" },
+    { op: "set", path: "worker.healthcheck", value: { path: "/health", timeoutSeconds: 30 } },
     { op: "set", path: "api.env.SECRET_KEY", value: { secret: "verify-secret-key" } },
     { op: "set", path: "api.env.SECRET_KEY.exported", value: true },
   ]);
@@ -313,6 +318,36 @@ const seed = Effect.gen(function* () {
       { op: "set", path: "web.env.TOKEN", value: { secret: "preview-token" } },
     ] });
     yield* write("blog pr-146 excludes LOG_LEVEL", { command: "never_sync", environment: blog("pr-146"), rows: ["web.env.LOG_LEVEL"] });
+
+    // Wait for CI: production holds a push to main whose checks haven't reported, pr-141 one whose checks failed.
+    const system = (label: string, event: SystemEvent) => storeSystem(organizationId, event).pipe(
+      Effect.as("ok"), Effect.catchTag("StoreRefused", (refused) => Effect.succeed(`refused: ${refused.code} ${refused.message}`)),
+      Effect.tap((outcome) => Effect.sync(() => { writes[label] = outcome; })),
+    );
+    // Compared from the head the Store holds, which the conflict hands back when it isn't none.
+    const push = (label: string, branch: string, head: string) => {
+      const pushed = (base: string | null): SystemEvent => ({ event: "branch_head", repository_id: 4242, branch, base, head, changed: null });
+      return storeSystem(organizationId, pushed(null)).pipe(
+        Effect.catchTag("StoreRefused", (refused) => {
+          const stored = (refused.details as { head?: unknown } | null)?.head;
+          return refused.code === "conflict" && typeof stored === "string" ? storeSystem(organizationId, pushed(stored)) : Effect.fail(refused);
+        }),
+        Effect.as("ok"), Effect.catchTag("StoreRefused", (refused) => Effect.succeed(`refused: ${refused.code} ${refused.message}`)),
+        Effect.tap((outcome) => Effect.sync(() => { writes[label] = outcome; })),
+      );
+    };
+    for (const environment of ["production", "pr-141"]) {
+      yield* write(`blog ${environment} waits for CI`, {
+        command: "edit", environment: blog(environment), expect: null, changes: [{ op: "set", path: "web.waitForCi", value: true }],
+      });
+    }
+    yield* push("blog main push waits for CI", "main", "a1b2c3d".repeat(6).slice(0, 40));
+    const failing = "f00dfeed".repeat(5);
+    yield* push("blog change-141 push waits for CI", "change-141", failing);
+    yield* system("blog change-141 CI fails", {
+      event: "check_suite", repository_id: 4242, suite: 9001, head: failing, status: "completed", conclusion: "failure",
+      updated: "2026-10-01T11:00:00Z",
+    });
   }
 
   return {

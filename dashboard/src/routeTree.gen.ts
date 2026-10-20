@@ -28,6 +28,7 @@ import { Route as ClaimSecretRouteImport } from './routes/claim/$secret'
 import { Route as DevSettingsRowsRouteImport } from './routes/dev.settings-rows'
 import { Route as InviteTokenRouteImport } from './routes/invite/$token'
 import { Route as DotwellKnownOauthAuthorizationServerIndexRouteImport } from './routes/[.]well-known/oauth-authorization-server/index'
+import { Route as DotwellKnownOauthProtectedResourceIndexRouteImport } from './routes/[.]well-known/oauth-protected-resource/index'
 import { Route as DotwellKnownOauthProtectedResourceMcpRouteImport } from './routes/[.]well-known/oauth-protected-resource/mcp'
 import { Route as ProtectedCloudIndexRouteImport } from './routes/_protected/cloud/index'
 import { Route as ProtectedCloudOrganizationSlugRouteRouteImport } from './routes/_protected/cloud/$organizationSlug/route'
@@ -48,6 +49,7 @@ import { Route as ApiOrgChangesRouteImport } from './routes/api/org/changes'
 import { Route as ApiRuntimeEventsRouteImport } from './routes/api/runtime/events'
 import { Route as ApiRuntimeLogsRouteImport } from './routes/api/runtime/logs'
 import { Route as DotwellKnownOauthAuthorizationServerApiAuthRouteImport } from './routes/[.]well-known/oauth-authorization-server/api/auth'
+import { Route as ProtectedCloudOrganizationSlugIndexRouteImport } from './routes/_protected/cloud/$organizationSlug/index'
 import { Route as ProtectedCloudOrganizationSlugOrgRouteRouteImport } from './routes/_protected/cloud/$organizationSlug/_org/route'
 import { Route as ProtectedCloudOrganizationSlugProjectRouteRouteImport } from './routes/_protected/cloud/$organizationSlug/_project/route'
 import { Route as ProtectedCloudAccountIndexRouteImport } from './routes/_protected/cloud/account/index'
@@ -183,6 +185,12 @@ const DotwellKnownOauthAuthorizationServerIndexRoute =
     path: '/.well-known/oauth-authorization-server/',
     getParentRoute: () => rootRouteImport,
   } as any)
+const DotwellKnownOauthProtectedResourceIndexRoute =
+  DotwellKnownOauthProtectedResourceIndexRouteImport.update({
+    id: '/.well-known/oauth-protected-resource/',
+    path: '/.well-known/oauth-protected-resource/',
+    getParentRoute: () => rootRouteImport,
+  } as any)
 const DotwellKnownOauthProtectedResourceMcpRoute =
   DotwellKnownOauthProtectedResourceMcpRouteImport.update({
     id: '/.well-known/oauth-protected-resource/mcp',
@@ -285,6 +293,12 @@ const DotwellKnownOauthAuthorizationServerApiAuthRoute =
     id: '/.well-known/oauth-authorization-server/api/auth',
     path: '/.well-known/oauth-authorization-server/api/auth',
     getParentRoute: () => rootRouteImport,
+  } as any)
+const ProtectedCloudOrganizationSlugIndexRoute =
+  ProtectedCloudOrganizationSlugIndexRouteImport.update({
+    id: '/',
+    path: '/',
+    getParentRoute: () => ProtectedCloudOrganizationSlugRouteRoute,
   } as any)
 const ProtectedCloudOrganizationSlugOrgRouteRoute =
   ProtectedCloudOrganizationSlugOrgRouteRouteImport.update({
@@ -593,6 +607,7 @@ export interface FileRoutesByFullPath {
   '/api/runtime/events': typeof ApiRuntimeEventsRoute
   '/api/runtime/logs': typeof ApiRuntimeLogsRoute
   '/.well-known/oauth-authorization-server/': typeof DotwellKnownOauthAuthorizationServerIndexRoute
+  '/.well-known/oauth-protected-resource/': typeof DotwellKnownOauthProtectedResourceIndexRoute
   '/cloud/': typeof ProtectedCloudIndexRoute
   '/api/checkin/': typeof ApiCheckinIndexRoute
   '/api/enroll/': typeof ApiEnrollIndexRoute
@@ -607,6 +622,7 @@ export interface FileRoutesByFullPath {
   '/api/cli/servers/enroll': typeof ApiCliServersEnrollRoute
   '/api/cli/servers/enrollment': typeof ApiCliServersEnrollmentRoute
   '/api/machines/$machine/observe': typeof ApiMachinesMachineObserveRoute
+  '/cloud/$organizationSlug/': typeof ProtectedCloudOrganizationSlugIndexRoute
   '/cloud/account/': typeof ProtectedCloudAccountIndexRoute
   '/cloud/$organizationSlug/$projectSlug': typeof ProtectedCloudOrganizationSlugProjectProjectSlugRouteRouteWithChildren
   '/cloud/$organizationSlug/new': typeof ProtectedCloudOrganizationSlugProjectNewRoute
@@ -650,7 +666,6 @@ export interface FileRoutesByTo {
   '/claim/$secret': typeof ClaimSecretRoute
   '/dev/settings-rows': typeof DevSettingsRowsRoute
   '/invite/$token': typeof InviteTokenRoute
-  '/cloud/$organizationSlug': typeof ProtectedCloudOrganizationSlugRouteRouteWithChildren
   '/.well-known/oauth-protected-resource/mcp': typeof DotwellKnownOauthProtectedResourceMcpRoute
   '/api/agent/signup': typeof ApiAgentSignupRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
@@ -667,9 +682,11 @@ export interface FileRoutesByTo {
   '/api/runtime/events': typeof ApiRuntimeEventsRoute
   '/api/runtime/logs': typeof ApiRuntimeLogsRoute
   '/.well-known/oauth-authorization-server': typeof DotwellKnownOauthAuthorizationServerIndexRoute
+  '/.well-known/oauth-protected-resource': typeof DotwellKnownOauthProtectedResourceIndexRoute
   '/cloud': typeof ProtectedCloudIndexRoute
   '/api/checkin': typeof ApiCheckinIndexRoute
   '/api/enroll': typeof ApiEnrollIndexRoute
+  '/cloud/$organizationSlug': typeof ProtectedCloudOrganizationSlugIndexRoute
   '/.well-known/oauth-authorization-server/api/auth': typeof DotwellKnownOauthAuthorizationServerApiAuthRoute
   '/api/agent/$organizationSlug/chat': typeof ApiAgentOrganizationSlugChatRoute
   '/api/builds/$build/check-in': typeof ApiBuildsBuildCheckInRoute
@@ -742,6 +759,7 @@ export interface FileRoutesById {
   '/api/runtime/events': typeof ApiRuntimeEventsRoute
   '/api/runtime/logs': typeof ApiRuntimeLogsRoute
   '/.well-known/oauth-authorization-server/': typeof DotwellKnownOauthAuthorizationServerIndexRoute
+  '/.well-known/oauth-protected-resource/': typeof DotwellKnownOauthProtectedResourceIndexRoute
   '/_protected/cloud/': typeof ProtectedCloudIndexRoute
   '/api/checkin/': typeof ApiCheckinIndexRoute
   '/api/enroll/': typeof ApiEnrollIndexRoute
@@ -758,6 +776,7 @@ export interface FileRoutesById {
   '/api/cli/servers/enroll': typeof ApiCliServersEnrollRoute
   '/api/cli/servers/enrollment': typeof ApiCliServersEnrollmentRoute
   '/api/machines/$machine/observe': typeof ApiMachinesMachineObserveRoute
+  '/_protected/cloud/$organizationSlug/': typeof ProtectedCloudOrganizationSlugIndexRoute
   '/_protected/cloud/account/': typeof ProtectedCloudAccountIndexRoute
   '/_protected/cloud/$organizationSlug/_project/$projectSlug': typeof ProtectedCloudOrganizationSlugProjectProjectSlugRouteRouteWithChildren
   '/_protected/cloud/$organizationSlug/_project/new': typeof ProtectedCloudOrganizationSlugProjectNewRoute
@@ -822,6 +841,7 @@ export interface FileRouteTypes {
     | '/api/runtime/events'
     | '/api/runtime/logs'
     | '/.well-known/oauth-authorization-server/'
+    | '/.well-known/oauth-protected-resource/'
     | '/cloud/'
     | '/api/checkin/'
     | '/api/enroll/'
@@ -836,6 +856,7 @@ export interface FileRouteTypes {
     | '/api/cli/servers/enroll'
     | '/api/cli/servers/enrollment'
     | '/api/machines/$machine/observe'
+    | '/cloud/$organizationSlug/'
     | '/cloud/account/'
     | '/cloud/$organizationSlug/$projectSlug'
     | '/cloud/$organizationSlug/new'
@@ -879,7 +900,6 @@ export interface FileRouteTypes {
     | '/claim/$secret'
     | '/dev/settings-rows'
     | '/invite/$token'
-    | '/cloud/$organizationSlug'
     | '/.well-known/oauth-protected-resource/mcp'
     | '/api/agent/signup'
     | '/api/auth/$'
@@ -896,9 +916,11 @@ export interface FileRouteTypes {
     | '/api/runtime/events'
     | '/api/runtime/logs'
     | '/.well-known/oauth-authorization-server'
+    | '/.well-known/oauth-protected-resource'
     | '/cloud'
     | '/api/checkin'
     | '/api/enroll'
+    | '/cloud/$organizationSlug'
     | '/.well-known/oauth-authorization-server/api/auth'
     | '/api/agent/$organizationSlug/chat'
     | '/api/builds/$build/check-in'
@@ -970,6 +992,7 @@ export interface FileRouteTypes {
     | '/api/runtime/events'
     | '/api/runtime/logs'
     | '/.well-known/oauth-authorization-server/'
+    | '/.well-known/oauth-protected-resource/'
     | '/_protected/cloud/'
     | '/api/checkin/'
     | '/api/enroll/'
@@ -986,6 +1009,7 @@ export interface FileRouteTypes {
     | '/api/cli/servers/enroll'
     | '/api/cli/servers/enrollment'
     | '/api/machines/$machine/observe'
+    | '/_protected/cloud/$organizationSlug/'
     | '/_protected/cloud/account/'
     | '/_protected/cloud/$organizationSlug/_project/$projectSlug'
     | '/_protected/cloud/$organizationSlug/_project/new'
@@ -1047,6 +1071,7 @@ export interface RootRouteChildren {
   ApiRuntimeEventsRoute: typeof ApiRuntimeEventsRoute
   ApiRuntimeLogsRoute: typeof ApiRuntimeLogsRoute
   DotwellKnownOauthAuthorizationServerIndexRoute: typeof DotwellKnownOauthAuthorizationServerIndexRoute
+  DotwellKnownOauthProtectedResourceIndexRoute: typeof DotwellKnownOauthProtectedResourceIndexRoute
   ApiCheckinIndexRoute: typeof ApiCheckinIndexRoute
   ApiEnrollIndexRoute: typeof ApiEnrollIndexRoute
   DotwellKnownOauthAuthorizationServerApiAuthRoute: typeof DotwellKnownOauthAuthorizationServerApiAuthRoute
@@ -1197,6 +1222,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof DotwellKnownOauthAuthorizationServerIndexRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/.well-known/oauth-protected-resource/': {
+      id: '/.well-known/oauth-protected-resource/'
+      path: '/.well-known/oauth-protected-resource'
+      fullPath: '/.well-known/oauth-protected-resource/'
+      preLoaderRoute: typeof DotwellKnownOauthProtectedResourceIndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/.well-known/oauth-protected-resource/mcp': {
       id: '/.well-known/oauth-protected-resource/mcp'
       path: '/.well-known/oauth-protected-resource/mcp'
@@ -1336,6 +1368,13 @@ declare module '@tanstack/react-router' {
       fullPath: '/.well-known/oauth-authorization-server/api/auth'
       preLoaderRoute: typeof DotwellKnownOauthAuthorizationServerApiAuthRouteImport
       parentRoute: typeof rootRouteImport
+    }
+    '/_protected/cloud/$organizationSlug/': {
+      id: '/_protected/cloud/$organizationSlug/'
+      path: '/'
+      fullPath: '/cloud/$organizationSlug/'
+      preLoaderRoute: typeof ProtectedCloudOrganizationSlugIndexRouteImport
+      parentRoute: typeof ProtectedCloudOrganizationSlugRouteRoute
     }
     '/_protected/cloud/$organizationSlug/_org': {
       id: '/_protected/cloud/$organizationSlug/_org'
@@ -1766,6 +1805,7 @@ const ProtectedCloudOrganizationSlugProjectRouteRouteWithChildren =
 interface ProtectedCloudOrganizationSlugRouteRouteChildren {
   ProtectedCloudOrganizationSlugOrgRouteRoute: typeof ProtectedCloudOrganizationSlugOrgRouteRouteWithChildren
   ProtectedCloudOrganizationSlugProjectRouteRoute: typeof ProtectedCloudOrganizationSlugProjectRouteRouteWithChildren
+  ProtectedCloudOrganizationSlugIndexRoute: typeof ProtectedCloudOrganizationSlugIndexRoute
 }
 
 const ProtectedCloudOrganizationSlugRouteRouteChildren: ProtectedCloudOrganizationSlugRouteRouteChildren =
@@ -1774,6 +1814,8 @@ const ProtectedCloudOrganizationSlugRouteRouteChildren: ProtectedCloudOrganizati
       ProtectedCloudOrganizationSlugOrgRouteRouteWithChildren,
     ProtectedCloudOrganizationSlugProjectRouteRoute:
       ProtectedCloudOrganizationSlugProjectRouteRouteWithChildren,
+    ProtectedCloudOrganizationSlugIndexRoute:
+      ProtectedCloudOrganizationSlugIndexRoute,
   }
 
 const ProtectedCloudOrganizationSlugRouteRouteWithChildren =
@@ -1857,6 +1899,8 @@ const rootRouteChildren: RootRouteChildren = {
   ApiRuntimeLogsRoute: ApiRuntimeLogsRoute,
   DotwellKnownOauthAuthorizationServerIndexRoute:
     DotwellKnownOauthAuthorizationServerIndexRoute,
+  DotwellKnownOauthProtectedResourceIndexRoute:
+    DotwellKnownOauthProtectedResourceIndexRoute,
   ApiCheckinIndexRoute: ApiCheckinIndexRoute,
   ApiEnrollIndexRoute: ApiEnrollIndexRoute,
   DotwellKnownOauthAuthorizationServerApiAuthRoute:

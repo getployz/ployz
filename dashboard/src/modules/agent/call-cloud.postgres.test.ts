@@ -1,5 +1,6 @@
+import { createHash } from "node:crypto";
 import { it } from "@effect/vitest";
-import type { Act, CloudQuery, LogsAnswer, MachineId, RuntimeWatchView, ServerRef, ServiceVerb, VolumeId, VolumeRun } from "@ployz/sdk";
+import type { Act, CloudQuery, LogsAnswer, MachineId, MachineName, RuntimeWatchView, ServerRef, ServiceVerb, VolumeId, VolumeRun } from "@ployz/sdk";
 import { sql } from "drizzle-orm";
 import { Effect, Layer, Schema } from "effect";
 import { Inngest } from "inngest";
@@ -10,17 +11,23 @@ import { decideApproval, operationDigest } from "#/modules/approvals/approvals.s
 import type { Caller } from "#/modules/identity/actor";
 import { presetGrant } from "#/modules/identity/token-grant";
 import { freshApproval, freshOperationDigest, UNREACHABLE_MESSAGE } from "#/modules/machines/server-operations.server";
-import { serverDrainAttempt } from "#/modules/machines/tables";
+import { dropRemovedServer } from "#/modules/machines/pairing-removal.server";
+import { machineEnrollmentToken, machineRemoveAttempt, organizationMachine, serverDrainAttempt } from "#/modules/machines/tables";
 import { attemptIdOf } from "#/modules/operations/keyed.server";
+import { operationsOn } from "#/modules/operations/operation-history.server";
 import { serviceAct } from "#/modules/service-act/tables";
+import { operationApprovals } from "#/modules/approvals/tables";
 import { cloudStore } from "#/modules/config-store/store-sdk.server";
 import { OrganizationRuntime, type ScopedRuntimeClientSession } from "#/modules/runtime/organization-runtime.server";
 import type { PloyzSession } from "#/modules/runtime/ployz.server";
 import { Database } from "#/server/database.server";
+import { SecretEncryption } from "#/utils/encrypted-secret.server";
 import { acmeWeb, enrollStoreServer, seedStoreGitService, seedStoreOrganization, storeTestCloud } from "#/test/store-cloud";
 
 const ORGANIZATION = "00000000-0000-4000-8000-00000000c101";
 const DRAIN = "00000000-0000-4000-8000-00000000c102";
+const OTHER_DRAIN = "00000000-0000-4000-8000-00000000c103";
+const APPROVAL = "00000000-0000-4000-8000-00000000c10a";
 const PROJECT = "00000000-0000-4000-8000-00000000c104";
 const ENVIRONMENT = "00000000-0000-4000-8000-00000000c105";
 const SERVICE = "00000000-0000-4000-8000-00000000c106";
@@ -48,16 +55,46 @@ describe("callCloud", () => {
       });
     }));
 
+  it.live("names a Server run by the name its act resolved when the runtime has no frame", () =>
+    Effect.gen(function* () {
+      const services = yield* Layer.build(yield* storeTestCloud());
+      const userId = yield* seedStoreOrganization(ORGANIZATION).pipe(Effect.provide(services));
+      const { drizzle } = yield* Database.pipe(Effect.provide(services));
+      yield* drizzle.insert(serverDrainAttempt).values({ id: DRAIN, organizationId: ORGANIZATION, machineId: MACHINE, requestedByUserId: userId });
+
+      const [run] = yield* operationsOn(ORGANIZATION, { kind: "server", machine: MACHINE }, DRAIN, 1, "machine-1").pipe(Effect.provide(services));
+
+      expect(run).toEqual(expect.objectContaining({ attempt: DRAIN, run: "drain machine-1" }));
+    }));
+
+  it.live("says why a Server's Drain ended without a report", () =>
+    Effect.gen(function* () {
+      const services = yield* Layer.build(yield* storeTestCloud());
+      const userId = yield* seedStoreOrganization(ORGANIZATION).pipe(Effect.provide(services));
+      const { drizzle } = yield* Database.pipe(Effect.provide(services));
+      const endedAt = new Date();
+      yield* drizzle.insert(serverDrainAttempt).values([
+        { id: DRAIN, organizationId: ORGANIZATION, machineId: MACHINE, requestedByUserId: userId, state: "failed", endCode: "not_started", endedAt },
+        {
+          id: OTHER_DRAIN, organizationId: ORGANIZATION, machineId: MACHINE, requestedByUserId: userId,
+          state: "failed", endCode: "refused", refusalMessage: "Drains need a newer Ployz on machine-1.", endedAt,
+        },
+      ]);
+      const read = (attempt: string) =>
+        operationsOn(ORGANIZATION, { kind: "server", machine: MACHINE }, attempt, 1, "machine-1").pipe(Effect.provide(services));
+
+      expect(yield* read(DRAIN)).toEqual([expect.objectContaining({ state: "failed", reason: "The drain never started." })]);
+      expect(yield* read(OTHER_DRAIN)).toEqual([expect.objectContaining({ state: "failed", reason: "Drains need a newer Ployz on machine-1." })]);
+    }));
+
   const LOGS: CloudQuery = {
     query: "logs",
-    environment: "00000000-0000-4000-8000-00000000c103",
     namespace: "shop-production",
     service: "web",
     deployment: null,
     server: null,
     lines: 50,
     since: { secs: 600, nanos: 0 },
-    plain: { PORT: "8080" },
   };
   const TAIL: LogsAnswer = {
     servers: [{ server: "server-1", text: { status: "shown", lines: ["listening on :8080\n", "token [secret TOKEN]\n"], cut: false, redacted: 1 } }],
@@ -74,12 +111,127 @@ describe("callCloud", () => {
     }),
   });
 
-  const connected = (asked: Array<CloudQuery>, readables: Array<ReadonlyArray<string> | null> = []): ScopedRuntimeClientSession => ({
+  // Catches a polled Server run named by its raw id whenever the runtime has no frame to name it.
+  it.live("names a polled Server run by the name Cloud keeps when the runtime has no frame", () =>
+    Effect.gen(function* () {
+      const services = yield* Layer.build(yield* storeTestCloud());
+      const userId = yield* seedStoreOrganization(ORGANIZATION).pipe(Effect.provide(services));
+      yield* enrollStoreServer(ORGANIZATION, { secret: "ppair_fixture_store", server: MACHINE }).pipe(Effect.provide(services));
+      const { drizzle } = yield* Database.pipe(Effect.provide(services));
+      yield* drizzle.update(organizationMachine).set({ machineName: "machine-1" as MachineName });
+      yield* drizzle.insert(serverDrainAttempt).values({ id: DRAIN, organizationId: ORGANIZATION, machineId: MACHINE, requestedByUserId: userId });
+      yield* drizzle.insert(machineRemoveAttempt).values({ organizationId: ORGANIZATION, machineId: MACHINE, requestedByUserId: userId, confirmDataLoss: [] });
+      const caller: Caller = { ...member, userId };
+
+      const heard = yield* callCloud(caller, { ask: { query: "operations", subject: { kind: "server", machine: MACHINE }, attempt: null, limit: 5 } })
+        .pipe(runtime({ status: "unreachable", error: null }, []), Effect.provide(services));
+
+      expect(heard).toEqual({
+        ok: true,
+        value: { operations: expect.arrayContaining([
+          expect.objectContaining({ attempt: DRAIN, run: "drain machine-1" }),
+          expect.objectContaining({ run: "remove machine-1" }),
+        ]) },
+      });
+    }));
+
+  // Catches an act's reply naming its Server by a name Cloud kept before a rename reached it.
+  it.live("names an act's Server by the name the act resolved, over a stale one Cloud kept", () =>
+    Effect.gen(function* () {
+      const services = yield* Layer.build(yield* storeTestCloud());
+      const userId = yield* seedStoreOrganization(ORGANIZATION).pipe(Effect.provide(services));
+      yield* enrollStoreServer(ORGANIZATION, { secret: "ppair_fixture_store", server: MACHINE }).pipe(Effect.provide(services));
+      const { drizzle } = yield* Database.pipe(Effect.provide(services));
+      yield* drizzle.update(organizationMachine).set({ machineName: "old-name" as MachineName });
+      // Asked for from this session, for exactly this forget, and already spent on the removal below.
+      yield* drizzle.insert(operationApprovals).values({
+        id: APPROVAL, organizationId: ORGANIZATION, subject: `server:${MACHINE}`, requestedByUserId: userId, via: "agent", credentialKind: "session", credentialId: "session-1",
+        command: "forget", digest: `forget:server:${MACHINE}`, status: "approved", decidedByUserId: userId, decidedAt: new Date(), usedAt: new Date(),
+        review: asTestDouble<typeof operationApprovals.$inferInsert.review>()({ effects: [], operation: { verb: "forget", name: MACHINE, preview: null } }),
+      });
+      const [removal] = yield* drizzle.insert(machineRemoveAttempt).values({
+        organizationId: ORGANIZATION, machineId: MACHINE, requestedByUserId: userId, confirmDataLoss: [], noReset: true, approvalId: APPROVAL,
+      }).returning();
+      const forget: Act = { attempt: "c".repeat(32), digest: "d".repeat(64), action: { action: "forget_server", server: { machine: MACHINE, name: "machine-1" } } };
+      const unreachable = runtime({ status: "unreachable", error: null }, []);
+
+      const acted = yield* callCloud({ ...member, userId }, { act: forget }, APPROVAL).pipe(unreachable, Effect.provide(services));
+      const polled = yield* callCloud({ ...member, userId }, { ask: { query: "operations", subject: { kind: "server", machine: MACHINE }, attempt: null, limit: 5 } })
+        .pipe(unreachable, Effect.provide(services));
+
+      expect(acted).toEqual({ ok: true, value: expect.objectContaining({ attempt: removal?.id, run: "remove machine-1" }) });
+      // A poll carries no name of its own, so the one Cloud kept is the best it has.
+      expect(polled).toEqual({ ok: true, value: { operations: [expect.objectContaining({ attempt: removal?.id, run: "remove old-name" })] } });
+    }));
+
+  // Catches a removed Server's runs named by its raw id once Cloud drops its row.
+  it.live("names a removed Server's runs by the name it enrolled with while another Server stays", () =>
+    Effect.gen(function* () {
+      const services = yield* Layer.build(yield* storeTestCloud());
+      const userId = yield* seedStoreOrganization(ORGANIZATION).pipe(Effect.provide(services));
+      yield* enrollStoreServer(ORGANIZATION, { secret: "ppair_fixture_store", server: MACHINE }).pipe(Effect.provide(services));
+      const generation = createHash("sha256").update("ppair_fixture_store").digest("hex");
+      const { drizzle } = yield* Database.pipe(Effect.provide(services));
+      const encryption = yield* SecretEncryption.pipe(Effect.provide(services));
+      yield* drizzle.update(organizationMachine).set({ machineName: "machine-1" as MachineName });
+      yield* drizzle.insert(organizationMachine).values({
+        organizationId: ORGANIZATION, machineId: OTHER_MACHINE, clusterKey: generation,
+        encryptedCapability: encryption.encrypt(`ployz1:cloud:${OTHER_MACHINE}`), machineName: "machine-2" as MachineName,
+      });
+      yield* drizzle.insert(machineEnrollmentToken).values({
+        organizationId: ORGANIZATION, tokenHash: "f".repeat(64), createdByUserId: userId, expiresAt: new Date(Date.now() + 60_000),
+        joinedMachineId: MACHINE, claimedMachineId: MACHINE, claimedPublicKey: "machine-key", claimedName: "machine-1" as MachineName, claimedAt: new Date(),
+      });
+      yield* drizzle.insert(serverDrainAttempt).values({ id: DRAIN, organizationId: ORGANIZATION, machineId: MACHINE, requestedByUserId: userId });
+      yield* drizzle.insert(machineRemoveAttempt).values({ organizationId: ORGANIZATION, machineId: MACHINE, requestedByUserId: userId, confirmDataLoss: [] });
+      expect(yield* dropRemovedServer({ organizationId: ORGANIZATION, machineId: MACHINE, generation, removal: "reset" }).pipe(Effect.provide(services)))
+        .toEqual({ kind: "others_remain" });
+
+      const heard = yield* callCloud({ ...member, userId }, { ask: { query: "operations", subject: { kind: "server", machine: MACHINE }, attempt: null, limit: 5 } })
+        .pipe(runtime({ status: "unreachable", error: null }, []), Effect.provide(services));
+
+      expect(heard).toEqual({
+        ok: true,
+        value: { operations: expect.arrayContaining([
+          expect.objectContaining({ attempt: DRAIN, run: "drain machine-1" }),
+          expect.objectContaining({ run: "remove machine-1" }),
+        ]) },
+      });
+    }));
+
+  // Catches a Server the frame reports with no name read as `drain ` over the name Cloud kept.
+  it.live("names a polled Server run by the name Cloud keeps when the frame reports it nameless", () =>
+    Effect.gen(function* () {
+      const services = yield* Layer.build(yield* storeTestCloud());
+      const userId = yield* seedStoreOrganization(ORGANIZATION).pipe(Effect.provide(services));
+      yield* enrollStoreServer(ORGANIZATION, { secret: "ppair_fixture_store", server: MACHINE }).pipe(Effect.provide(services));
+      const { drizzle } = yield* Database.pipe(Effect.provide(services));
+      yield* drizzle.update(organizationMachine).set({ machineName: "machine-1" as MachineName });
+      yield* drizzle.insert(serverDrainAttempt).values({ id: DRAIN, organizationId: ORGANIZATION, machineId: MACHINE, requestedByUserId: userId });
+      const nameless: ScopedRuntimeClientSession = {
+        status: "connected",
+        connected: asTestDouble<PloyzSession>()({
+          watchFirstFrame: () => Effect.succeed(asTestDouble<RuntimeWatchView>()({
+            machines: [{ membership: "up", machine: { id: MACHINE, name: "", accepts_ingress: true, public_ip: "203.0.113.2", runtime: { running_builds: 0 } } }],
+          })),
+        }),
+      };
+
+      const heard = yield* callCloud({ ...member, userId }, { ask: { query: "operations", subject: { kind: "server", machine: MACHINE }, attempt: null, limit: 5 } })
+        .pipe(runtime(nameless, []), Effect.provide(services));
+
+      expect(heard).toEqual({ ok: true, value: { operations: [expect.objectContaining({ attempt: DRAIN, run: "drain machine-1" })] } });
+    }));
+
+  const connected = (
+    asked: Array<CloudQuery>, readables: Array<ReadonlyArray<string> | null> = [], sealeds: Array<ReadonlyArray<string> | null> = [],
+  ): ScopedRuntimeClientSession => ({
     status: "connected",
     connected: asTestDouble<PloyzSession>()({
-      agentAsk: (query: CloudQuery, readable: ReadonlyArray<string> | null) => Effect.sync(() => {
+      agentAsk: (query: CloudQuery, readable: ReadonlyArray<string> | null, sealed: ReadonlyArray<string> | null) => Effect.sync(() => {
         asked.push(query);
         readables.push(readable);
+        sealeds.push(sealed);
         return TAIL;
       }),
     }),
@@ -108,6 +260,81 @@ describe("callCloud", () => {
       expect(heard).toEqual({ ok: true, value: TAIL });
       expect(asked).toEqual([LOGS]);
       expect(opens).toEqual([ORGANIZATION]);
+    }));
+
+  it.live("scrubs a logs ask under every name the Store holds Sealed, whatever the ask carries", () =>
+    Effect.gen(function* () {
+      const services = yield* Layer.build(yield* storeTestCloud());
+      yield* seedStoreOrganization(ORGANIZATION).pipe(Effect.provide(services));
+      const store = yield* cloudStore.pipe(Effect.provide(services));
+      const production = { project: "shop", environment: null };
+      yield* Effect.promise(async () => {
+        await store.write(ORGANIZATION, { command: "create_project", id: PROJECT, name: "shop", default_environment: ENVIRONMENT });
+        await store.write(ORGANIZATION, { command: "create_service", id: SERVICE, environment: production, name: "web", image: "whoami:1" });
+        await store.write(ORGANIZATION, { command: "edit", environment: production, expect: null, changes: [
+          { op: "set", path: "web.env.TOKEN", value: { secret: "hunter2-long" } },
+          { op: "set", path: "web.env.OLD", value: { secret: "retired-value" } },
+          { op: "set", path: "web.env.PLAIN", value: "hello-plain" },
+        ] });
+        await store.write(ORGANIZATION, { command: "edit", environment: production, expect: null, changes: [{ op: "unset", path: "web.env.OLD" }] });
+      });
+      yield* Effect.gen(function* () {
+        const { drizzle } = yield* Database;
+        yield* drizzle.execute(sql`insert into config_namespace (organization_id, namespace, environment_id) values (${ORGANIZATION}, 'shop-production', ${ENVIRONMENT})`);
+      }).pipe(Effect.provide(services), Effect.orDie);
+      const asked: Array<CloudQuery> = [];
+      const sealeds: Array<ReadonlyArray<string> | null> = [];
+      const heard = (query: CloudQuery) => callCloud(member, { ask: query }).pipe(runtime(connected(asked, [], sealeds), []), Effect.provide(services));
+
+      const weakened = { ...LOGS, sealed: ["PLAIN"] } as CloudQuery;
+      expect(yield* heard(LOGS)).toEqual({ ok: true, value: TAIL });
+      expect(yield* heard(weakened)).toEqual({ ok: true, value: TAIL });
+      expect(yield* heard({ ...LOGS, namespace: "someone-elses" })).toEqual({ ok: true, value: TAIL });
+      expect(sealeds).toEqual([["OLD", "TOKEN"], ["OLD", "TOKEN"], null]);
+      expect(asked).toHaveLength(3);
+    }));
+
+  it.live("reruns a logs ask under a name sealed while the runtime was being read, and withholds one that never settles", () =>
+    Effect.gen(function* () {
+      const services = yield* Layer.build(yield* storeTestCloud());
+      yield* seedStoreOrganization(ORGANIZATION).pipe(Effect.provide(services));
+      const store = yield* cloudStore.pipe(Effect.provide(services));
+      const production = { project: "shop", environment: null };
+      const seal = (name: string) => store.write(ORGANIZATION, {
+        command: "edit", environment: production, expect: null, changes: [{ op: "set", path: `web.env.${name}`, value: { secret: `${name}-value-long` } }],
+      });
+      yield* Effect.promise(async () => {
+        await store.write(ORGANIZATION, { command: "create_project", id: PROJECT, name: "shop", default_environment: ENVIRONMENT });
+        await store.write(ORGANIZATION, { command: "create_service", id: SERVICE, environment: production, name: "web", image: "whoami:1" });
+        await seal("TOKEN");
+      });
+      yield* Effect.gen(function* () {
+        const { drizzle } = yield* Database;
+        yield* drizzle.execute(sql`insert into config_namespace (organization_id, namespace, environment_id) values (${ORGANIZATION}, 'shop-production', ${ENVIRONMENT})`);
+      }).pipe(Effect.provide(services), Effect.orDie);
+      const sealeds: Array<ReadonlyArray<string> | null> = [];
+      const racing = (sealing: Array<string | null>): ScopedRuntimeClientSession => ({
+        status: "connected",
+        connected: asTestDouble<PloyzSession>()({
+          agentAsk: (_query: CloudQuery, _readable: ReadonlyArray<string> | null, sealed: ReadonlyArray<string> | null) => Effect.promise(async () => {
+            sealeds.push(sealed);
+            const name = sealing.shift();
+            if (name !== undefined && name !== null) await seal(name);
+            return TAIL;
+          }),
+        }),
+      });
+      const heard = (sealing: Array<string | null>) => callCloud(member, { ask: LOGS }).pipe(runtime(racing(sealing), []), Effect.provide(services));
+
+      expect(yield* heard(["DURING", null])).toEqual({ ok: true, value: TAIL });
+      expect(sealeds).toEqual([["TOKEN"], ["DURING", "TOKEN"]]);
+
+      sealeds.length = 0;
+      expect(yield* heard(["ONE", "TWO", "THREE"])).toEqual({
+        ok: false,
+        refusal: { code: "unavailable", message: "Sealed variables kept changing while the logs were read. Ask again.", details: null },
+      });
+      expect(sealeds).toEqual([["DURING", "TOKEN"], ["DURING", "ONE", "TOKEN"], ["DURING", "ONE", "TOKEN", "TWO"]]);
     }));
 
   // Catches support reading logs the Organization keeps from it, which the Logs tab refuses.
@@ -192,16 +419,20 @@ describe("callCloud", () => {
     action: { action: "remove_server", server: { machine: MACHINE, name: "web-2" }, loss: null },
   };
 
-  // Catches an Organization that never added a Server told its Servers aren't answering.
-  it.live("tells an Organization with no Servers to add one, for a logs ask and a removal", () =>
+  // Catches an Organization that never added a Server told its Servers aren't answering, or its Server list refused.
+  it.live("lists no Servers for an Organization with none, and tells it to add one for a logs ask and a removal", () =>
     Effect.gen(function* () {
       const services = yield* Layer.build(yield* storeTestCloud());
       yield* seedStoreOrganization(ORGANIZATION).pipe(Effect.provide(services));
       const noServers = {
         ok: false,
-        refusal: { code: "unavailable", message: NO_SERVERS_MESSAGE, details: { fix: { fix: "connect_servers" } } },
+        refusal: { code: "conflict", message: NO_SERVERS_MESSAGE, details: { fix: { fix: "connect_servers" } } },
       };
       for (const opened of [{ status: "unreachable", error: null }, { status: "no_connection" }] as const) {
+        expect(yield* callCloud(member, { ask: { query: "servers", only: null } }).pipe(runtime(opened, []), Effect.provide(services))).toEqual({
+          ok: true,
+          value: { servers: [], seen: expect.objectContaining({ from: "cloud_cache", unanswered: [] }) },
+        });
         expect(yield* callCloud(member, { ask: LOGS }).pipe(runtime(opened, []), Effect.provide(services))).toEqual(noServers);
         expect(yield* callCloud(member, { act: REMOVE }).pipe(runtime(opened, []), Effect.provide(services))).toEqual(noServers);
       }
@@ -384,6 +615,29 @@ describe("callCloud", () => {
       expect(send).toHaveBeenCalledTimes(1);
     }));
 
+  // Catches a quick mirror sync, which asks no one, running under any approval carried into it.
+  it.live("a quick mirror sync refuses an approval carried into it for another operation, target or session, and takes one for exactly it", () =>
+    Effect.gen(function* () {
+      const { services, drizzle, caller } = yield* deployedWeb;
+      const approved = (command: string, subject: string, credentialId: string) => drizzle.insert(operationApprovals).values({
+        organizationId: ORGANIZATION, subject, requestedByUserId: caller.userId, via: "agent", credentialKind: "session", credentialId,
+        command, digest: `${command}:${subject}`, status: "approved", decidedByUserId: caller.userId, decidedAt: new Date(),
+        review: asTestDouble<typeof operationApprovals.$inferInsert.review>()({ effects: [], operation: { verb: command, name: "data", preview: null } }),
+      }).returning({ id: operationApprovals.id }).pipe(Effect.map(([row]) => row?.id ?? expect.fail("no approval")));
+      const sync: Act = { attempt: "9".repeat(32), digest: "d".repeat(64), action: { action: "volume", volume: VOLUME, run: { run: "sync", full: false } } };
+      const synced = (approvalId: string) => callCloud(caller, { act: sync }, approvalId).pipe(Effect.provide(services));
+      const forbidden = (approval_id: string) => ({ ok: false, refusal: expect.objectContaining({ code: "forbidden", details: { approval_id } }) });
+
+      for (const id of [
+        yield* approved("release", `volume:${VOLUME}`, "session-1"),
+        yield* approved("sync", "volume:00000000-0000-4000-8000-00000000c1ff", "session-1"),
+        yield* approved("sync", `volume:${VOLUME}`, "session-2"),
+      ]) expect(yield* synced(id)).toEqual(forbidden(id));
+      // Its own approval passes, and the sync goes on to look for the Volume, which this test never made.
+      const own = yield* synced(yield* approved("sync", `volume:${VOLUME}`, "session-1"));
+      expect(own).toEqual({ ok: false, refusal: expect.objectContaining({ code: "not_found" }) });
+    }));
+
   // Catches one approved stop authorizing every later stop of the Service, or a dashboard Stop made to wait for a human.
   it.live("one approval runs one stop: a retry with its key replays it, a later stop asks again, and the dashboard never asks", () =>
     Effect.gen(function* () {
@@ -401,6 +655,9 @@ describe("callCloud", () => {
       expect(ran).toEqual({ ok: true, value: expect.objectContaining({ run: "stop web", state: "accepted" }) });
       const retried = yield* callCloud(caller, { act: stop("2") }, approval_id).pipe(Effect.provide(services));
       expect(retried).toEqual(ran);
+      // Its key replays the stop only for the credential that asked: another one is refused, even on a replay.
+      const elsewhere = yield* callCloud({ ...caller, credential: { kind: "session", id: "session-2" } }, { act: stop("2") }, approval_id).pipe(Effect.provide(services));
+      expect(elsewhere).toEqual({ ok: false, refusal: expect.objectContaining({ code: "forbidden", details: { approval_id } }) });
       yield* drizzle.execute(sql`update service_act set state = 'done', ended_at = now()`);
 
       const again = yield* callCloud(caller, { act: stop("3") }, approval_id).pipe(Effect.provide(services));
@@ -409,8 +666,32 @@ describe("callCloud", () => {
       expect(fresh.approval_id).not.toBe(approval_id);
       expect((yield* drizzle.select().from(serviceAct)).map((row) => row.state)).toEqual(["done"]);
 
+      // A start asks no one, and still refuses the stop's approval carried into it.
+      const start: Act = { ...stop("5"), action: { action: "service", environment: ENVIRONMENT, service: "web", only: null, verb: "start" } };
+      const carried = yield* callCloud(caller, { act: start }, fresh.approval_id).pipe(Effect.provide(services));
+      expect(carried).toEqual({ ok: false, refusal: expect.objectContaining({ code: "forbidden", details: { approval_id: fresh.approval_id } }) });
+
       const clicked = yield* callCloud({ ...caller, via: "dashboard" }, { act: stop("4") }).pipe(Effect.provide(services));
       expect(clicked).toEqual({ ok: true, value: expect.objectContaining({ run: "stop web", state: "accepted" }) });
+    }));
+
+  // Catches a human asked to approve a restart that can only be refused because another run holds the Service.
+  it.live("a stop or restart while the Service is busy is refused before anyone is asked", () =>
+    Effect.gen(function* () {
+      const { services, drizzle, caller } = yield* deployedWeb;
+      const act = (verb: ServiceVerb, attempt: string): Act => ({
+        attempt: attempt.repeat(32),
+        digest: "d".repeat(64),
+        action: { action: "service", environment: ENVIRONMENT, service: "web", only: null, verb },
+      });
+      const stopped = yield* callCloud({ ...caller, via: "dashboard" }, { act: act("stop", "1") }).pipe(Effect.provide(services));
+      expect(stopped).toEqual({ ok: true, value: expect.objectContaining({ run: "stop web", state: "accepted" }) });
+
+      for (const [verb, attempt] of [["restart", "2"], ["stop", "3"]] as const) {
+        const busy = yield* callCloud(caller, { act: act(verb, attempt) }).pipe(Effect.provide(services));
+        expect(busy).toEqual({ ok: false, refusal: expect.objectContaining({ code: "conflict", message: "web is busy: stop web is still running." }) });
+      }
+      expect((yield* drizzle.select().from(serviceAct)).map((row) => row.verb)).toEqual(["stop"]);
     }));
 
   it.live("a member's stop approved before production was protected asks a protector once it is", () =>
@@ -474,6 +755,7 @@ describe("callCloud", () => {
       const asked = yield* callCloud(caller, { act: stop("1", { machine: MACHINE, name: OTHER_MACHINE }) }).pipe(Effect.provide(services));
       const { approval_id } = Schema.decodeUnknownSync(Asked)(asked.ok ? null : asked.refusal.details);
       const byName = operationDigest({
+        subject: `service:${ENVIRONMENT}/web`,
         verb: "stop",
         preview: { environment: ENVIRONMENT, service: "web", only: OTHER_MACHINE },
         effects: [{ kind: "stops_service", name: "web", node: `${ENVIRONMENT}/web`, path: "services.web" }],

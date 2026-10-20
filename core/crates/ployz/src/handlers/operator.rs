@@ -4,6 +4,7 @@ use std::{
 };
 
 use std::collections::HashMap;
+use std::ffi::OsString;
 
 use chrono::{DateTime, Local, SecondsFormat, Utc};
 use clap::{Arg, ArgAction, Command};
@@ -13,7 +14,8 @@ use futures_util::StreamExt;
 use ployz_core::{
     ContainerId, ContainerSelector, EnvironmentValues, ExecRequestFrame, ExecResponseFrame,
     FanoutSelector, HistoryContainerKind, HistoryGapReason, HistoryStream, LogBody, LogEntry,
-    LogOrigin, LogsOptions, Namespace, RpcErrorCode, ServiceSelector, log_level, select_service,
+    LogOrigin, LogsOptions, Namespace, OpaquePayload, RpcErrorCode, ServiceSelector, log_level,
+    select_service,
 };
 use ployz_store::{DeploymentId, NamespaceQuery};
 use tokio::io::copy_bidirectional;
@@ -25,12 +27,13 @@ use crate::{
     context::Transport,
     operator::{
         ExecMode, OperatorError, PreparedHistory, ProxyPorts, ServiceArg, asked_machines,
-        exec_options,
+        exec_container_stopped, exec_options,
         history::{HistoryEvent, HistoryRecord, HistoryWindow, read_history},
         history_selectors, merge_logs, observe_service_logs, open_exec, open_machine_logs,
         open_service_logs, parse_log_time, parse_proxy_ports, parse_service_args, parse_tail,
         prepare_service_history, select_proxy_container,
     },
+    ui::Hint,
 };
 
 use super::{
@@ -40,7 +43,9 @@ use super::{
 
 pub(super) fn exec_command(command: Command) -> Command {
     scoped(base(command, "Run a command in a Service's container"))
-        .arg(value("container", None))
+        .arg(value("container", None).value_name("CONTAINER").help(
+            "Which of the Service's Containers, by name or ID prefix [default: a running one]",
+        ))
         .arg(switch("detach", Some('d')))
         .arg(switch("no-tty", Some('T')))
         .arg(positional("service", true))
@@ -82,6 +87,82 @@ pub(super) fn ps_command(command: Command) -> Command {
     )
 }
 
+/// Flags other tools take for a container ID column. `ps` shows one only where two rows
+/// would read the same, so an ask for it names where every ID is instead.
+const CONTAINER_COLUMN_ASKS: [&str; 11] = [
+    "--container",
+    "--containers",
+    "--wide",
+    "-w",
+    "--output",
+    "-o",
+    "--format",
+    "--columns",
+    "--no-trunc",
+    "--quiet",
+    "-q",
+];
+
+/// `error` for `ployz ps` asked for a CONTAINER column, rewritten to say where the IDs are.
+/// clap's partial parse of `args` names the command that rejected the flag, and keeps
+/// clap's error when the flag stood where an option's value was due (`--sort --wide`).
+pub(super) fn container_column_asked(error: clap::Error, args: &[OsString]) -> clap::Error {
+    use clap::error::{ContextKind, ContextValue, ErrorKind};
+    if error.kind() != ErrorKind::UnknownArgument {
+        return error;
+    }
+    let Some(ContextValue::String(invalid)) = error.get(ContextKind::InvalidArg) else {
+        return error;
+    };
+    let flag = invalid.split('=').next().unwrap_or_default();
+    if !CONTAINER_COLUMN_ASKS.contains(&flag) {
+        return error;
+    }
+    let argv = |words: &mut dyn Iterator<Item = &OsString>| {
+        std::iter::once(OsString::from("ployz"))
+            .chain(words.cloned())
+            .collect::<Vec<_>>()
+    };
+    let Ok(parsed) = crate::cli::compiled()
+        .ignore_errors(true)
+        .try_get_matches_from(argv(&mut args.iter()))
+    else {
+        return error;
+    };
+    let Some(("ps", ps)) = parsed.subcommand() else {
+        return error;
+    };
+    // After `--` the flag is a positional word. Nothing before `ps` takes a hyphen value,
+    // so the first bare `--` is ps's own: keep clap's error unless clap still rejects the
+    // flag in the words before it.
+    if args.iter().any(|arg| arg == "--") {
+        let before = crate::cli::compiled()
+            .try_get_matches_from(argv(&mut args.iter().take_while(|arg| *arg != "--")));
+        let rejected_before = before.err().is_some_and(|before| {
+            before.kind() == ErrorKind::UnknownArgument
+                && before.get(ContextKind::InvalidArg) == error.get(ContextKind::InvalidArg)
+        });
+        if !rejected_before {
+            return error;
+        }
+    }
+    let value_missing = ps.ids().any(|id| {
+        ps.value_source(id.as_str()) == Some(ValueSource::CommandLine)
+            && ps
+                .get_raw(id.as_str())
+                .is_some_and(|values| values.len() == 0)
+    });
+    if value_missing {
+        return error;
+    }
+    clap::Error::raw(
+        ErrorKind::UnknownArgument,
+        format!(
+            "ployz ps has no '{flag}': it shows a CONTAINER column only where two rows would read the same\n\n  tip: with server access, 'ployz ps --json' lists each container's container_id, which 'ployz exec --container' takes\n"
+        ),
+    )
+}
+
 /// The Namespace the addressed Project and Environment run in, so a bare Service name
 /// means that Environment's Service. `None` keeps the whole Cluster in view: nothing
 /// was asked for, and no Config Store is reachable, it has no Project yet, or
@@ -104,11 +185,7 @@ pub(super) fn scope(root: &ArgMatches) -> Result<Option<Scoped>, Error> {
         };
     };
     match store.try_read(&NamespaceQuery { environment }) {
-        Ok(view) => Ok(Some(Scoped {
-            environment: view.environment,
-            namespace: view.namespace,
-            services: view.services,
-        })),
+        Ok(view) => Ok(Some(view.into())),
         Err(StoreCallError::Refused(error)) if !asked && error.code == RpcErrorCode::NotFound => {
             Ok(None)
         }
@@ -120,10 +197,63 @@ pub(super) fn scope(root: &ArgMatches) -> Result<Option<Scoped>, Error> {
 /// names they have now.
 #[derive(Clone)]
 pub(super) struct Scoped {
-    pub(super) environment: ployz_store::EnvironmentSummary,
+    /// The Environment's name, for a refusal that names it.
+    pub(super) environment: ployz_store::EnvironmentName,
     pub(super) namespace: Namespace,
     pub(super) services:
         std::collections::BTreeMap<ployz_core::ServiceName, ployz_core::ServiceName>,
+    /// Every Service in Working State, deployed or not; `None` when the Store did
+    /// not say, so no name is known to be wrong.
+    pub(super) authored: Option<std::collections::BTreeSet<ployz_core::ServiceName>>,
+}
+
+impl From<ployz_store::NamespaceView> for Scoped {
+    fn from(view: ployz_store::NamespaceView) -> Self {
+        Self {
+            environment: view.environment.name,
+            namespace: view.namespace,
+            services: view.services,
+            authored: view.authored,
+        }
+    }
+}
+
+impl Scoped {
+    /// The name a Service has now, for the runtime name its Containers carry.
+    pub(super) fn service_name<'a>(
+        &'a self,
+        runtime: &'a ployz_core::ServiceName,
+    ) -> &'a ployz_core::ServiceName {
+        self.services
+            .iter()
+            .find_map(|(name, other)| (other == runtime).then_some(name))
+            .unwrap_or(runtime)
+    }
+
+    /// The bare Service Name in `selector` this Environment has neither deployed nor
+    /// authored. A removed Service is one, and may still have retained logs.
+    pub(super) fn unknown(&self, selector: &ServiceSelector) -> Option<ployz_core::ServiceName> {
+        let authored = self.authored.as_ref()?;
+        if ployz_core::ServiceId::parse(selector.as_str()).is_ok() {
+            return None;
+        }
+        let name = ployz_core::ServiceName::parse(selector.as_str()).ok()?;
+        (!self.services.contains_key(&name) && !authored.contains(&name)).then_some(name)
+    }
+
+    pub(super) fn no_service(&self, name: &ployz_core::ServiceName) -> Error {
+        let valid = self
+            .services
+            .keys()
+            .chain(self.authored.iter().flatten())
+            .map(ToString::to_string)
+            .collect::<std::collections::BTreeSet<_>>();
+        Error::not_found(format!(
+            "No Service named {name} in Environment {}",
+            self.environment
+        ))
+        .hint((!valid.is_empty()).then(|| Hint::valid(valid)))
+    }
 }
 
 /// `selector` in `scoped`: a bare Service Name becomes that Namespace's Service, by
@@ -145,14 +275,35 @@ pub(super) fn in_scope(
         .with_namespace(&scoped.namespace)?)
 }
 
+/// [`in_scope`] for a command that acts on what runs now, which a Service the
+/// Environment does not have cannot be.
+pub(super) fn current(
+    selector: ServiceSelector,
+    scoped: Option<&Scoped>,
+) -> Result<ServiceSelector, Error> {
+    if let Some(scoped) = scoped
+        && let Some(name) = scoped.unknown(&selector)
+    {
+        return Err(scoped.no_service(&name));
+    }
+    in_scope(selector, scoped)
+}
+
 pub fn exec(root: &ArgMatches) -> Result<(), Error> {
     let leaf = leaf_matches(root);
-    let service = ServiceSelector::parse(
-        leaf.get_one::<String>("service")
-            .cloned()
-            .ok_or_else(|| Error::usage("Service selector is required"))?,
+    let typed = leaf
+        .get_one::<String>("service")
+        .cloned()
+        .ok_or_else(|| Error::usage("Service selector is required"))?;
+    let service = current(
+        ServiceSelector::parse(typed.clone())?,
+        scope(root)?.as_ref(),
     )?;
-    let service = in_scope(service, scope(root)?.as_ref())?;
+    let scope_flags: String = ["project", "env"]
+        .into_iter()
+        .filter(|id| leaf.value_source(id) == Some(ValueSource::CommandLine))
+        .filter_map(|id| Some(format!("--{id} {} ", leaf.get_one::<String>(id)?)))
+        .collect();
     let container = leaf
         .get_one::<String>("container")
         .filter(|selector| !selector.is_empty())
@@ -184,44 +335,70 @@ pub fn exec(root: &ArgMatches) -> Result<(), Error> {
                 (!detach && stdin_is_readable()).then(|| spawn_stdin(session.input.clone()));
             let resize_task = tty.then(|| spawn_resize(session.input.clone()));
             drop(session.input);
-            let mut exit = None;
-            while let Some(payload) = session.output.next().await {
-                match ExecResponseFrame::decode(&payload?)? {
-                    ExecResponseFrame::ExecId(_) => {
-                        if detach {
-                            exit = Some(0);
-                        }
-                    }
-                    ExecResponseFrame::Stdout(bytes) => {
-                        write_stdout_frame(&mut crate::ui::stdout_bytes(), &bytes)?
-                    }
-                    ExecResponseFrame::Stderr(bytes) => std::io::stderr().write_all(&bytes)?,
-                    ExecResponseFrame::Exit(code) => {
-                        exit = Some(code);
-                        break;
-                    }
-                    ExecResponseFrame::Error(error) => return Err(error.into()),
-                }
-            }
+            let ended = forward_exec(&mut session.output, detach).await;
             if let Some(task) = resize_task {
                 task.abort();
             }
-            let exit = exit.ok_or_else(|| {
-                Error::coded(
-                    RpcErrorCode::Unavailable,
-                    if detach {
-                        "Exec stream ended before command start was confirmed"
-                    } else {
-                        "Exec stream ended without an exit status"
-                    },
-                )
-            })?;
-            if !detach && exit != 0 {
-                return Err(Error::exit(u8::try_from(exit).unwrap_or(1)));
+            if detach {
+                return ended.map(drop);
             }
-            Ok(())
+            if !matches!(ended, Ok(0))
+                && let Ok(Ok(Some(stopped))) = tokio::time::timeout(
+                    EXEC_STOPPED_CHECK,
+                    exec_container_stopped(client, &session.target),
+                )
+                .await
+            {
+                let hint = if stopped.another_runs {
+                    Hint::Retry(format!(
+                        "ployz exec {scope_flags}{}",
+                        session.target.identity
+                    ))
+                } else {
+                    Hint::Inspect("ployz ps".into())
+                };
+                return Err(
+                    Error::from(OperatorError::ExecContainerStopped { service: typed }).hint(hint),
+                );
+            }
+            match ended? {
+                0 => Ok(()),
+                exit => Err(Error::exit(u8::try_from(exit).unwrap_or(1))),
+            }
         })
     })
+}
+
+/// How long a failed exec waits to learn whether its container stopped before it
+/// reports the command's own ending instead.
+const EXEC_STOPPED_CHECK: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// Print an exec's output until it ends, and return its exit code; 0 once a
+/// detached command is confirmed started.
+async fn forward_exec(
+    output: &mut tonic::Streaming<OpaquePayload>,
+    detach: bool,
+) -> Result<i32, Error> {
+    while let Some(payload) = output.next().await {
+        match ExecResponseFrame::decode(&payload?)? {
+            ExecResponseFrame::ExecId(_) if detach => return Ok(0),
+            ExecResponseFrame::ExecId(_) => {}
+            ExecResponseFrame::Stdout(bytes) => {
+                write_stdout_frame(&mut crate::ui::stdout_bytes(), &bytes)?
+            }
+            ExecResponseFrame::Stderr(bytes) => std::io::stderr().write_all(&bytes)?,
+            ExecResponseFrame::Exit(code) => return Ok(code),
+            ExecResponseFrame::Error(error) => return Err(error.into()),
+        }
+    }
+    Err(Error::coded(
+        RpcErrorCode::Unavailable,
+        if detach {
+            "Exec stream ended before command start was confirmed"
+        } else {
+            "Exec stream ended without an exit status"
+        },
+    ))
 }
 
 /// Stream Service logs; every Service of the Environment when none is named.
@@ -246,14 +423,28 @@ pub fn logs(root: &ArgMatches) -> Result<(), Error> {
         (Some(id), Some(store)) => {
             let view = store.read(&ployz_store::DeploymentQuery { id: id.clone() })?;
             Some(Scoped {
-                environment: view.environment,
+                environment: view.environment.name,
                 namespace: view.namespace,
                 services: view.runtime_names,
+                authored: None,
             })
         }
         _ => scope(root)?,
     };
-    let args = parse_service_args(&named)?
+    let args = parse_service_args(&named)?;
+    // Unknown now, but a removed Service's retained lines may still read; a stream
+    // of one would never end, so --follow refuses it here.
+    let mut unknown = Vec::new();
+    if let Some(scoped) = &namespace {
+        for name in args.iter().filter_map(|arg| scoped.unknown(&arg.service)) {
+            let refusal = scoped.no_service(&name);
+            if options.follow {
+                return Err(refusal);
+            }
+            unknown.push((name.to_string(), refusal));
+        }
+    }
+    let args = args
         .into_iter()
         .map(|arg| {
             Ok(ServiceArg {
@@ -290,7 +481,10 @@ pub fn logs(root: &ArgMatches) -> Result<(), Error> {
             )
             .await?
             {
-                return print_prepared_history(client, &prepared, window, &cancellation, utc).await;
+                let mut read = std::collections::BTreeSet::new();
+                print_prepared_history(client, &prepared, window, &cancellation, utc, &mut read)
+                    .await?;
+                return refuse_unread(unknown, &read);
             }
             let scope = observe_service_logs(client, &machines).await?;
             let names = &scope.unanswered.names;
@@ -303,6 +497,7 @@ pub fn logs(root: &ArgMatches) -> Result<(), Error> {
             let deployment = deployment.as_ref().map(DeploymentId::as_str);
             let selectors = history_selectors(&scope, &args, namespace, deployment)?;
             let mut printed = Printed::default();
+            let mut read = std::collections::BTreeSet::new();
             let failures = read_history(
                 client,
                 &scope.answered(),
@@ -311,6 +506,7 @@ pub fn logs(root: &ArgMatches) -> Result<(), Error> {
                 &cancellation,
                 |record| {
                     printed.record(&record);
+                    read.extend(record.container.service.clone());
                     print_history(&record, utc)
                 },
             )
@@ -345,8 +541,10 @@ pub fn logs(root: &ArgMatches) -> Result<(), Error> {
                 {
                     Ok(inputs) => {
                         let entries = merge_logs(inputs, cancellation);
-                        print_logs(entries, utc, &deployments, |entry| printed.covers(entry))
-                            .await?;
+                        print_logs(entries, utc, &deployments, &mut gaps, |entry| {
+                            printed.covers(entry)
+                        })
+                        .await?;
                     }
                     // Nothing runs to follow; the history above is the whole log.
                     Err(
@@ -358,12 +556,25 @@ pub fn logs(root: &ArgMatches) -> Result<(), Error> {
                     Err(error) => return Err(error.into()),
                 }
             }
-            gaps.outcome()
+            gaps.outcome()?;
+            refuse_unread(unknown, &read)
         })
     })?;
     credential.map_or(Ok(()), |credential| {
-        super::cloud_read::logs(root, &credential, fallback)
+        super::cloud_read::logs(&credential, fallback)
     })
+}
+
+/// The first refusal whose Service no read line came from: the Environment does
+/// not have it and nothing retained says it ever ran.
+fn refuse_unread(
+    unknown: Vec<(String, Error)>,
+    read: &std::collections::BTreeSet<String>,
+) -> Result<(), Error> {
+    unknown
+        .into_iter()
+        .find(|(name, _)| !read.contains(name))
+        .map_or(Ok(()), |(_, refusal)| Err(refusal))
 }
 
 async fn print_prepared_history(
@@ -372,6 +583,7 @@ async fn print_prepared_history(
     window: HistoryWindow,
     cancellation: &tokio_util::sync::CancellationToken,
     utc: bool,
+    read: &mut std::collections::BTreeSet<String>,
 ) -> Result<(), Error> {
     let named = || {
         prepared
@@ -394,7 +606,10 @@ async fn print_prepared_history(
         &prepared.selectors,
         window,
         cancellation,
-        |record| print_history(&record, utc),
+        |record| {
+            read.extend(record.container.service.clone());
+            print_history(&record, utc)
+        },
     )
     .await?;
     let mut missed = crate::ui::Gaps::default().named(named());
@@ -484,6 +699,7 @@ pub fn machine_logs(root: &ArgMatches) -> Result<(), Error> {
                 merge_logs(inputs, cancellation),
                 utc,
                 &HashMap::new(),
+                &mut gaps,
                 |_| false,
             )
             .await?;
@@ -500,7 +716,7 @@ pub fn port_forward(root: &ArgMatches) -> Result<(), Error> {
             .cloned()
             .ok_or_else(|| Error::usage("Service selector is required"))?,
     )?;
-    let service = in_scope(service, scope(root)?.as_ref())?;
+    let service = current(service, scope(root)?.as_ref())?;
     let ports = parse_proxy_ports(
         leaf.get_one::<String>("port")
             .ok_or_else(|| Error::usage("port is required"))?,
@@ -532,11 +748,7 @@ async fn run_port_forward(
         ))
     })?;
     let remote = SocketAddr::new(IpAddr::V4(address.0), ports.remote);
-    let listener = tokio::net::TcpListener::bind(SocketAddr::new(
-        IpAddr::V4(Ipv4Addr::LOCALHOST),
-        ports.local,
-    ))
-    .await?;
+    let listener = listen(ports.local).await?;
     let local = listener.local_addr()?;
     if crate::ui::json() {
         crate::ui::emit_line(&serde_json::json!({
@@ -580,6 +792,19 @@ async fn run_port_forward(
     }
 }
 
+async fn listen(port: u16) -> Result<tokio::net::TcpListener, Error> {
+    let address = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port);
+    tokio::net::TcpListener::bind(address)
+        .await
+        .map_err(|error| {
+            if error.kind() == std::io::ErrorKind::AddrInUse {
+                Error::conflict(format!("{address} is in use; pick another local port"))
+            } else {
+                error.into()
+            }
+        })
+}
+
 fn parse_fanout_selectors(values: Vec<String>) -> Result<Vec<FanoutSelector>, Error> {
     Ok(values
         .iter()
@@ -606,8 +831,9 @@ fn log_options(matches: &ArgMatches) -> Result<LogsOptions, Error> {
 const NANOS: i64 = 1_000_000_000;
 
 fn log_window(matches: &ArgMatches, now: i64) -> Result<LogsOptions, Error> {
-    let time = |name: &str| {
+    let time = |name: &'static str| {
         parse_log_time(
+            name,
             matches
                 .get_one::<String>(name)
                 .map(String::as_str)
@@ -677,6 +903,7 @@ fn print_history(record: &HistoryRecord, utc: bool) -> Result<(), Error> {
             output.write_all(prefix.as_bytes())?;
             output.write_all(text)?;
             output.write_all(b"\n")?;
+            crate::ui::printed();
         }
         HistoryEvent::Gap { to, reason, .. } => {
             let why = match reason {
@@ -787,13 +1014,24 @@ impl Printed {
 }
 
 async fn print_logs(
-    mut entries: tokio::sync::mpsc::Receiver<Result<LogEntry, String>>,
+    mut entries: tokio::sync::mpsc::Receiver<Result<LogEntry, crate::operator::LogFault>>,
     utc: bool,
     deployments: &HashMap<ContainerId, String>,
+    gaps: &mut crate::ui::Gaps,
     printed: impl Fn(&LogEntry) -> bool,
 ) -> Result<(), Error> {
     while let Some(entry) = entries.recv().await {
-        let entry = entry.map_err(Error::unavailable)?;
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(crate::operator::LogFault::Error(error)) => return Err(Error::unavailable(error)),
+            Err(crate::operator::LogFault::Stalled(machine_id)) => {
+                gaps.stopped(machine_id);
+                if crate::ui::json() {
+                    crate::ui::emit_line(&*gaps)?;
+                }
+                continue;
+            }
+        };
         if printed(&entry) {
             continue;
         }
@@ -840,6 +1078,7 @@ async fn print_logs(
         output
             .write_all(prefix.as_bytes())
             .and_then(|()| output.write_all(message))?;
+        crate::ui::printed();
     }
     Ok(())
 }
@@ -1044,6 +1283,20 @@ mod tests {
     use super::*;
 
     #[tokio::test]
+    async fn a_local_port_in_use_is_named_in_the_refusal() {
+        let taken = tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+            .await
+            .unwrap();
+        let port = taken.local_addr().unwrap().port();
+        let refused = listen(port).await.unwrap_err().report();
+        assert_eq!(refused.code, RpcErrorCode::Conflict);
+        assert_eq!(
+            refused.message,
+            format!("127.0.0.1:{port} is in use; pick another local port")
+        );
+    }
+
+    #[tokio::test]
     async fn redirected_regular_file_stdin_is_framed() {
         let input = include_bytes!("../../Cargo.toml");
         let file = std::fs::File::open(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml")).unwrap();
@@ -1237,6 +1490,31 @@ mod scope_tests {
         assert_eq!(partial.printed_exit(), Some(crate::ui::PARTIAL_EXIT));
     }
 
+    #[tokio::test(start_paused = true)]
+    async fn a_followed_server_that_stops_answering_is_named_and_makes_the_follow_partial() {
+        let machine = ployz_core::MachineId::parse("1".repeat(32)).unwrap();
+        let name = ployz_core::MachineName::parse("web-1").unwrap();
+        let mut gaps = crate::ui::Gaps::default().named([(machine, &name)]);
+        let silent = crate::operator::LogInput {
+            identity: format!("dtest-production/web/ployz-create-{}", "06d0".repeat(16)),
+            machine,
+            stream: Box::pin(futures_util::stream::pending()),
+        };
+        let entries = merge_logs(vec![silent], tokio_util::sync::CancellationToken::new());
+        print_logs(entries, true, &HashMap::new(), &mut gaps, |_| false)
+            .await
+            .unwrap();
+        assert_eq!(gaps.omitted, [machine]);
+        assert_eq!(
+            gaps.stopped_answering(&machine),
+            "web-1 stopped answering; its lines are missing from here on."
+        );
+        assert_eq!(
+            gaps.outcome().unwrap_err().printed_exit(),
+            Some(crate::ui::PARTIAL_EXIT)
+        );
+    }
+
     #[test]
     fn follow_resumes_each_container_after_its_own_last_printed_line() {
         let container = |c: char| ContainerId::parse(c.to_string().repeat(64)).unwrap();
@@ -1286,27 +1564,62 @@ mod scope_tests {
         assert!(!printed.covers(&live('c', 90)));
     }
 
-    #[test]
-    fn a_renamed_service_is_found_by_its_runtime_name() {
-        let name = |text: &str| ployz_core::ServiceName::parse(text).unwrap();
-        let scoped = Scoped {
-            environment: ployz_store::EnvironmentSummary {
-                id: ployz_store::EnvironmentId::parse("00000000-0000-4000-8000-000000000002")
-                    .unwrap(),
-                project: ployz_store::ProjectName::parse("shop").unwrap(),
-                name: ployz_store::EnvironmentName::parse("production").unwrap(),
-                revision: ployz_store::Revision(1),
+    /// The Namespace view a Store answers, as JSON, so an older Store's reply can
+    /// leave out `authored`.
+    fn scoped(authored: Option<&[&str]>) -> Scoped {
+        let mut view = serde_json::json!({
+            "environment": {
+                "id": "00000000-0000-4000-8000-000000000002",
+                "project": "shop",
+                "name": "production",
+                "revision": 1,
             },
-            namespace: Namespace::parse("shop-production").unwrap(),
-            services: [(name("api2"), name("api"))].into(),
-        };
-        let resolve = |selector: &str| {
-            in_scope(ServiceSelector::parse(selector).unwrap(), Some(&scoped))
+            "namespace": "shop-production",
+            "services": { "api2": "api" },
+        });
+        if let (Some(authored), Some(fields)) = (authored, view.as_object_mut()) {
+            fields.insert("authored".into(), serde_json::json!(authored));
+        }
+        serde_json::from_value::<ployz_store::NamespaceView>(view)
+            .unwrap()
+            .into()
+    }
+
+    fn resolve(scoped: &Scoped, selector: &str) -> Result<String, Error> {
+        current(ServiceSelector::parse(selector).unwrap(), Some(scoped))
+            .map(|selector| selector.to_string())
+    }
+
+    #[test]
+    fn a_service_is_found_by_its_runtime_name_and_a_typo_is_refused() {
+        let scoped = scoped(Some(&["api2", "worker"]));
+        assert_eq!(resolve(&scoped, "api2").unwrap(), "shop-production/api");
+        assert_eq!(
+            resolve(&scoped, "worker").unwrap(),
+            "shop-production/worker"
+        );
+        assert_eq!(resolve(&scoped, "other-ns/api2").unwrap(), "other-ns/api2");
+        let id = "a".repeat(32);
+        assert_eq!(resolve(&scoped, &id).unwrap(), id);
+        let typo = resolve(&scoped, "web").unwrap_err();
+        assert_eq!(
+            typo.to_string(),
+            "No Service named web in Environment production"
+        );
+        assert_eq!(typo.hints(), [Hint::valid(["api2", "worker"])]);
+        // A removed Service's retained logs still read under its bare name.
+        assert_eq!(
+            in_scope(ServiceSelector::parse("web").unwrap(), Some(&scoped))
                 .unwrap()
-                .to_string()
-        };
-        assert_eq!(resolve("api2"), "shop-production/api");
-        assert_eq!(resolve("web"), "shop-production/web");
-        assert_eq!(resolve("other-ns/api2"), "other-ns/api2");
+                .to_string(),
+            "shop-production/web"
+        );
+    }
+
+    #[test]
+    fn an_older_store_that_does_not_list_authored_services_refuses_no_name() {
+        let scoped = scoped(None);
+        assert_eq!(resolve(&scoped, "web").unwrap(), "shop-production/web");
+        assert_eq!(resolve(&scoped, "api2").unwrap(), "shop-production/api");
     }
 }

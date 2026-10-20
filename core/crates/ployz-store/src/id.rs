@@ -139,7 +139,7 @@ store_string!(
 );
 store_string!(
     /// A Volume's name, unique in its Environment: a lowercase DNS label.
-    VolumeName, "a Volume name: up to 63 lowercase letters, digits and -", is_name
+    VolumeName, "a Volume name: up to 63 lowercase letters, digits and -, starting and ending with a letter or digit", is_name
 );
 store_string!(
     /// A Sync's identity, minted by the Store when it lands: what Undo names.
@@ -165,11 +165,11 @@ store_string!(
 );
 store_string!(
     /// A Project's name, unique in its Organization: a lowercase DNS label.
-    ProjectName, "a Project name: up to 63 lowercase letters, digits and -", is_name
+    ProjectName, "a Project name: up to 63 lowercase letters, digits and -, starting and ending with a letter or digit", is_name
 );
 store_string!(
     /// An Environment's name, unique in its Project: a lowercase DNS label.
-    EnvironmentName, "an Environment name: up to 63 lowercase letters, digits and -", is_name
+    EnvironmentName, "an Environment name: up to 63 lowercase letters, digits and -, starting and ending with a letter or digit", is_name
 );
 
 store_string!(
@@ -180,13 +180,18 @@ store_string!(
 
 store_string!(
     /// A public hostname, like `app.example.com`: at least two labels, stored
-    /// lowercase and trimmed whatever case the member typed.
+    /// trimmed, lowercase and in punycode whatever form the member typed.
     Hostname, "a hostname like app.example.com", is_hostname, normalize = normalize_hostname
 );
 
-/// DNS ignores case, so `Acme.COM ` names the same host as `acme.com`.
-fn normalize_hostname(value: String) -> String {
-    value.trim().to_ascii_lowercase()
+/// DNS ignores case and carries Unicode names as punycode, so `Acme.COM ` names
+/// `acme.com` and `пример.рф` names `xn--e1afmkfd.xn--p1ai`. A name IDNA refuses
+/// keeps the ASCII-lowercase form it had before IDNA: saved routes and prefixes
+/// like `xn--zz` stay addressable, and `is_hostname` still refuses anything
+/// that is not a DNS name.
+pub(crate) fn normalize_hostname(value: String) -> String {
+    let value = value.trim();
+    idna::domain_to_ascii(value).unwrap_or_else(|_| value.to_ascii_lowercase())
 }
 
 /// A full lowercase Git commit.

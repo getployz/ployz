@@ -11,8 +11,8 @@ use ts_rs::TS;
 use super::mark::{self, Accepted, Closed, Evidence, Mark, State};
 use super::review::held;
 use super::{
-    Fix, Left, LeftStatus, Removal, Residual, Target, Waiting, guard, guard_removal, latest,
-    members, next, on_servers, purge, teardown_order,
+    Left, LeftStatus, Removal, Residual, Target, Waiting, guard, guard_removal, latest, members,
+    next, on_servers, purge, teardown_order,
 };
 use crate::automation::{Automated, Skipped};
 use crate::deployment::admit::{AdmitRemoval, ShutDown};
@@ -147,7 +147,7 @@ pub(super) fn go_on(
             Standing::InFlight(running) => (
                 None,
                 LeftStatus::WaitingTurn,
-                Some(format!("Deployment #{} goes first", running.number)),
+                Some(format!("Deployment {} goes first", running.label())),
             ),
             Standing::Unknown => (None, LeftStatus::Stalled, Some(unknown(&environment))),
             Standing::Blocked(error) => (None, LeftStatus::WaitingTurn, Some(error.message)),
@@ -307,6 +307,8 @@ pub(crate) fn close(
     }) {
         deployment::cancel(tx, who, &running.id)?;
     }
+    // A push held for CI here would otherwise wait forever.
+    deployment::cancel_held_in(tx, id)?;
     settle(tx, who, &mut mark, automated)
 }
 
@@ -347,6 +349,29 @@ pub(crate) fn admit(
             json!({ "next": next("remove", json!({ "project": summary.project, "environment": summary.name })) }),
         ));
     };
+    // Two sweeps can find it due at once: the mark admits its removal once. A
+    // removal whose row is gone neither runs nor ran.
+    let before = match mark
+        .evidence
+        .get(&summary.id)
+        .map(|before| deployment::load(tx, &before.deployment))
+    {
+        Some(Err(error)) if error.code == RpcErrorCode::NotFound => None,
+        loaded => loaded.transpose()?,
+    };
+    if let Some(removal) = before.map(|before| before.summary) {
+        let already = if removal.status == DeploymentStatus::Applied {
+            Some("removed")
+        } else {
+            removal.status.in_flight().then_some("is removing")
+        };
+        if let Some(already) = already {
+            return Err(error::conflict(
+                format!("Deployment {} {already} {}", removal.label(), summary.name),
+                json!({ "deployment": removal.id }),
+            ));
+        }
+    }
     if let Standing::Unknown = standing(tx, &mark, &environment)? {
         return Err(error::conflict(unknown(&environment), json!({})));
     }
@@ -387,13 +412,20 @@ fn admit_member(
         Some(_) => Vec::new(),
         None => {
             let removed = super::removed(&review.head.applied, &empty, &namespace)?;
-            losses(environment, removed, mark.accepted.get(id), trusted)?
+            losses(
+                tx,
+                who,
+                environment,
+                removed,
+                mark.accepted.get(id),
+                trusted,
+            )?
         }
     };
     let frozen = deployment::freeze(
         id,
         &empty,
-        &review.head.applied,
+        &deployment::Landing::applied(&review.head.applied),
         deployment::Scope::All { losses: &losses },
         namespace,
         None,
@@ -401,7 +433,15 @@ fn admit_member(
     let admitted = deployment::admit(
         tx,
         who,
-        (deployment_id, &[], None, None),
+        (
+            deployment::Admission::New {
+                id: deployment_id,
+                push: None,
+            },
+            &[],
+            None,
+            None,
+        ),
         id,
         deployment::NOTHING,
         &frozen,
@@ -411,7 +451,13 @@ fn admit_member(
         Evidence {
             deployment: admitted.id.clone(),
             servers: trusted.servers,
-            unanswered: unanswered(trusted),
+            // Unseen, the Servers that didn't answer last time still count.
+            unanswered: unanswered(trusted).unwrap_or_else(|| {
+                mark.evidence
+                    .get(id)
+                    .map(|before| before.unanswered.clone())
+                    .unwrap_or_default()
+            }),
         },
     );
     mark::save(tx, who, mark)?;
@@ -421,12 +467,24 @@ fn admit_member(
     Ok(admitted)
 }
 
-fn unanswered(trusted: &Trusted) -> BTreeSet<ployz_core::MachineId> {
-    trusted
+/// The Servers that didn't answer Cloud now, or None when Cloud didn't look. A
+/// failed observation that names no Server didn't look either.
+fn unanswered(trusted: &Trusted) -> Option<BTreeSet<ployz_core::MachineId>> {
+    let volumes = trusted
         .volumes
-        .iter()
-        .flat_map(|observed| observed.unanswered.iter().cloned())
-        .collect()
+        .as_ref()
+        .filter(|observed| observed.failure.is_none() || !observed.unanswered.is_empty());
+    if volumes.is_none() && trusted.unanswered.is_none() {
+        return None;
+    }
+    Some(
+        volumes
+            .iter()
+            .flat_map(|observed| &observed.unanswered)
+            .chain(trusted.unanswered.iter().flatten())
+            .cloned()
+            .collect(),
+    )
 }
 
 fn refuse_running(tx: &mut dyn Tx, environment: &Environment) -> Result<(), RpcError> {
@@ -440,8 +498,9 @@ fn refuse_running(tx: &mut dyn Tx, environment: &Environment) -> Result<(), RpcE
     };
     Err(error::conflict(
         format!(
-            "Deployment #{} is running: wait for it or cancel it before removing {}",
-            running.number, environment.summary.name
+            "Deployment {} is running: wait for it or cancel it before removing {}",
+            running.label(),
+            environment.summary.name
         ),
         json!({ "deployment": running.id }),
     ))
@@ -461,14 +520,20 @@ fn stalled(
     else {
         return Ok(());
     };
-    let fresh = unanswered(trusted);
-    let changed = mark.evidence.get(id).is_some_and(|before| {
-        before
-            .unanswered
-            .iter()
-            .any(|server| !fresh.contains(server))
-            || matches!((before.servers, trusted.servers), (Some(then), Some(now)) if now < then)
-    });
+    let before = mark.evidence.get(id);
+    // Silent before it was admitted, or when it ran: a Server silent since admission
+    // is in the failure, not the evidence.
+    let silent: BTreeSet<_> = before
+        .iter()
+        .flat_map(|before| before.unanswered.iter().copied())
+        .chain(deployment::unanswered_on(tx, &failed.id)?)
+        .collect();
+    let answers = unanswered(trusted)
+        .is_some_and(|fresh| silent.iter().any(|server| !fresh.contains(server)));
+    let left = before.is_some_and(
+        |before| matches!((before.servers, trusted.servers), (Some(then), Some(now)) if now < then),
+    );
+    let changed = answers || left;
     if mark.retried > failed.ended_at.unwrap_or(i64::MAX) || changed {
         return Ok(());
     }
@@ -492,6 +557,8 @@ fn stalled(
 /// The Docker Volumes this member's removal deletes, held to what its remover
 /// accepted against what the Servers report now.
 fn losses(
+    tx: &mut dyn Tx,
+    who: &Actor,
     environment: &Environment,
     removed: Vec<super::RemovedVolume>,
     accepted: Option<&Accepted>,
@@ -522,7 +589,7 @@ fn losses(
             let (losses, unanswered) = held(removed, observed)?;
             refuse_unaccepted(name, &losses, |loss| names.contains(&loss.volume.name))?;
             if !unanswered.is_empty() {
-                return Err(unobserved(&unanswered));
+                return Err(unobserved(tx, who, &unanswered)?);
             }
             Ok(losses)
         }
@@ -534,7 +601,7 @@ fn losses(
             };
             let (losses, unanswered) = held(removed, observed)?;
             if !unanswered.is_empty() {
-                return Err(unobserved(&unanswered));
+                return Err(unobserved(tx, who, &unanswered)?);
             }
             refuse_unaccepted(name, &losses, |loss| {
                 loss.deletes.iter().all(|delete| confirmed.contains(delete))
@@ -566,21 +633,26 @@ fn refuse_unaccepted(
     ))
 }
 
-fn unobserved(unanswered: &[ployz_core::MachineId]) -> RpcError {
+fn unobserved(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    unanswered: &[ployz_core::MachineId],
+) -> Result<RpcError, RpcError> {
+    let names = deployment::server_names(tx, who, unanswered.iter().copied())?;
     let waiting_on: Vec<Waiting> = unanswered
         .iter()
-        .map(|server| Waiting {
-            server: server.to_string(),
-            why: "It didn't answer whether it holds this data".to_owned(),
-            fix: Fix::ServerRemove {
-                server: server.to_string(),
-            },
+        .map(|server| {
+            Waiting::on(
+                &names,
+                *server,
+                "It didn't answer whether it holds this data".to_owned(),
+            )
         })
         .collect();
-    error::unobserved(
+    Ok(error::unobserved(
         "Some Servers didn't answer whether they hold this data",
         json!({ "waiting_on": waiting_on }),
-    )
+    ))
 }
 
 /// Take an Environment off the Servers and keep it: a Server's shutdown. It
@@ -630,6 +702,7 @@ pub(crate) fn shut_down(
         };
         super::gate(
             who,
+            "shut_down",
             &Target::Environment(id.clone()),
             &review.view.version,
             approval::destructive_effects(&deployed, &empty, &cluster_domains),
@@ -640,7 +713,7 @@ pub(crate) fn shut_down(
     let frozen = deployment::freeze(
         id,
         &empty,
-        &review.head.applied,
+        &deployment::Landing::applied(&review.head.applied),
         deployment::Scope::All { losses: &losses },
         namespace,
         None,
@@ -648,7 +721,15 @@ pub(crate) fn shut_down(
     let admitted = deployment::admit(
         tx,
         who,
-        (&admit.id, &[], None, None),
+        (
+            deployment::Admission::New {
+                id: &admit.id,
+                push: None,
+            },
+            &[],
+            None,
+            None,
+        ),
         id,
         deployment::NOTHING,
         &frozen,

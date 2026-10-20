@@ -3,7 +3,9 @@
 //! stale version; neither rebases.
 
 use ployz_core::RpcError;
-use ployz_core::config::canonicalize_environment_intent;
+use ployz_core::config::{
+    EnvironmentNodeType, ReviewLifecycleKind, ServiceSettingChange, canonicalize_environment_intent,
+};
 
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -62,10 +64,13 @@ pub struct Discard {
     #[serde(default)]
     pub environment: EnvironmentRef,
     /// The comparison to return to. Head preserves the deployment baseline; Saved
-    /// abandons a draft reversal; Review discards the server-derived visible rows.
-    #[serde(default)]
-    #[ts(as = "Option<DiscardTarget>", optional)]
-    pub target: DiscardTarget,
+    /// abandons a draft reversal; Review returns everything to Saved, or to Head
+    /// before the first Save.
+    /// `None` returns everything to Head, and a path to its row's baseline: Saved
+    /// when only a draft reversal lists it, else Head.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub target: Option<DiscardTarget>,
     /// `SERVICE`, `volumes.VOLUME`, `configs.CONFIG`, `SERVICE.SETTING`,
     /// `SERVICE.env.KEY`, `SERVICE.mounts.VOLUME` or `SERVICE.configs.CONFIG`; none
     /// discards everything.
@@ -94,6 +99,55 @@ pub struct Discarded {
     pub saved: Option<Revision>,
     /// False when nothing it names was staged.
     pub changed: bool,
+    /// The draft reversals left after it, each with the discard that brings it back.
+    #[serde(default)]
+    #[ts(as = "Option<Vec<Reversal>>", optional)]
+    pub reversed: Vec<Reversal>,
+    /// Each staged change it dropped, by path: a Service, Volume or Config it no
+    /// longer makes or removes, or a changed Setting.
+    #[serde(default)]
+    #[ts(as = "Option<Vec<String>>", optional)]
+    pub dropped: Vec<String>,
+}
+
+/// A Saved change the draft no longer holds.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
+pub struct Reversal {
+    #[serde(flatten)]
+    pub change: super::NodeChange,
+    pub way_back: WayBack,
+}
+
+/// The discard that brings a [`Reversal`] back.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
+pub struct WayBack {
+    /// The path to discard. `None` when another node in the draft has its type and
+    /// name, so its path names that node too: only a discard to Saved brings it back.
+    pub path: Option<SettingPath>,
+    /// True when it also drops the draft's other unsaved changes.
+    pub drops_unsaved: bool,
+}
+
+impl WayBack {
+    fn of(change: &super::NodeChange, draft: &[super::NodeChange]) -> Self {
+        // A same-named node in the draft is never in Saved, so it is a draft change.
+        let named_twice = draft.iter().any(|other| {
+            other.node != change.node
+                && other.node.node_type == change.node.node_type
+                && other.name == change.name
+        });
+        let path = (!named_twice)
+            .then(|| match change.node.node_type {
+                EnvironmentNodeType::Service => change.name.clone(),
+                EnvironmentNodeType::Volume => format!("volumes.{}", change.name),
+                EnvironmentNodeType::Config => format!("configs.@{}", change.node.id),
+            })
+            .and_then(|path| SettingPath::parse(&path).ok());
+        Self {
+            drops_unsaved: path.is_none(),
+            path,
+        }
+    }
 }
 
 pub(crate) fn publish(
@@ -152,7 +206,9 @@ pub(crate) fn publish(
     review::guard_saving(tx, &environment.summary.id, review.saved.as_ref(), &target)?;
     let gate = review::Gate::new(tx, &environment.summary.id, trusted)?;
     review::approve(who, &review, (&target, review::Shipping::Publish), &gate)?;
-    let lost = review::lost(losses);
+    // Saved as the next Deploy's consent, a loss that deletes nothing too: the
+    // Servers held no data, so a push removes it while they still hold none.
+    let lost = losses;
     let (saved, created) = review::publish(
         tx,
         who,
@@ -204,9 +260,82 @@ pub(crate) fn discard(
         scope::persist_working(tx, &mut whole)?;
         environment = whole.summary;
     }
+    let before = reviewed.view.review_changes();
+    let view = if changed {
+        let after = scope::load_by_id(tx, &environment.id)?;
+        review::review(tx, &after)?.view
+    } else {
+        reviewed.view
+    };
+    let reversed = view
+        .reversals()
+        .into_iter()
+        .map(|change| Reversal {
+            way_back: WayBack::of(&change, &view.draft_changes),
+            change,
+        })
+        .collect();
     Ok(Discarded {
         environment,
         saved: reviewed.saved.as_ref().map(|saved| saved.revision),
         changed,
+        reversed,
+        dropped: dropped(&before, &view),
     })
+}
+
+/// Core names a source that changed since its introduction `web.source`; `set`, and
+/// the review of a Service never deployed (see `sources`), name it by its kind. So a
+/// dropped one on such a Service is named by the kind the discard threw away,
+/// `web.image` or `web.repository`; a deployed Service's stays `web.source`.
+fn source_named(row: &ServiceSettingChange, never_deployed: bool) -> String {
+    let set = match row.after.get("type").and_then(|kind| kind.as_str()) {
+        Some("image") => "image",
+        Some("git") => "repository",
+        _ => return row.path.clone(),
+    };
+    match row.path.strip_suffix(".source") {
+        Some(service) if never_deployed => format!("{service}.{set}"),
+        _ => row.path.clone(),
+    }
+}
+
+/// The paths of `before`'s changes that `view` no longer holds: a changed
+/// Setting, or a node it no longer makes or removes.
+fn dropped(before: &[super::NodeChange], view: &super::DiffView) -> Vec<String> {
+    let after = view.review_changes();
+    before
+        .iter()
+        .flat_map(|change| {
+            let now = after
+                .iter()
+                .find(|now| now.node == change.node && now.lifecycle == change.lifecycle);
+            // A create among the deploy changes has no Applied State, as `sources` reads it.
+            let never_deployed = view.changes.iter().any(|deploy| {
+                deploy.node == change.node && deploy.lifecycle == ReviewLifecycleKind::Create
+            });
+            match (change.lifecycle, now) {
+                (ReviewLifecycleKind::Update, None) => {
+                    change.settings.iter().map(|row| row.path.clone()).collect()
+                }
+                (_, Some(now)) => change
+                    .settings
+                    .iter()
+                    .filter(|row| {
+                        !now.settings.iter().any(|kept| {
+                            kept.path == row.path
+                                && kept.before == row.before
+                                && kept.after == row.after
+                        })
+                    })
+                    .map(|row| source_named(row, never_deployed))
+                    .collect(),
+                (_, None) => vec![match change.node.node_type {
+                    EnvironmentNodeType::Service => change.name.clone(),
+                    EnvironmentNodeType::Volume => format!("volumes.{}", change.name),
+                    EnvironmentNodeType::Config => format!("configs.{}", change.name),
+                }],
+            }
+        })
+        .collect()
 }

@@ -49,6 +49,8 @@ type FieldChromeProps = {
   description?: ReactNode;
   disabled?: boolean;
   htmlFor?: string;
+  /** An error from outside the form, such as the Store refusing what it saved. */
+  error?: string;
   children: ReactNode;
 };
 
@@ -58,9 +60,10 @@ function FieldChrome({
   description,
   disabled,
   htmlFor,
+  error,
   children,
 }: FieldChromeProps) {
-  const invalid = field.meta.isInvalid;
+  const invalid = field.meta.isInvalid || error !== undefined;
 
   return (
     <Field
@@ -70,7 +73,7 @@ function FieldChrome({
       {label ? <FieldLabel htmlFor={htmlFor}>{label}</FieldLabel> : null}
       {description ? <FieldDescription>{description}</FieldDescription> : null}
       {children}
-      <FieldError errors={field.errors} />
+      <FieldError errors={error === undefined ? field.errors : [...field.errors, { message: error }]} />
     </Field>
   );
 }
@@ -79,6 +82,7 @@ type TextProps = {
   field: FieldWithValue<string>;
   label?: ReactNode;
   description?: ReactNode;
+  error?: string;
 } & Omit<
   ComponentProps<typeof Input>,
   "aria-invalid" | "defaultValue" | "name" | "onBlur" | "onChange" | "value"
@@ -90,6 +94,7 @@ function Text({
   description,
   id,
   disabled,
+  error,
   ...props
 }: TextProps) {
   const inputId = id ?? String(field.name);
@@ -102,13 +107,14 @@ function Text({
       description={description}
       disabled={isDisabled}
       htmlFor={inputId}
+      error={error}
     >
       <Input
         {...props}
         id={inputId}
         name={String(field.name)}
         value={field.value}
-        aria-invalid={field.meta.isInvalid || undefined}
+        aria-invalid={field.meta.isInvalid || error !== undefined || undefined}
         disabled={isDisabled}
         onBlur={field.handleBlur}
         onChange={(event) => field.handleChange(event.target.value)}

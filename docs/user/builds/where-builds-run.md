@@ -85,7 +85,8 @@ When GitHub can't take a build, the build log says why, and the next builder tak
 ## Choose the build order
 
 1. Go to **Organization → Builds**.
-2. Pick an order under **Where builds run**.
+2. Pick an order under **Where builds run**. Only an owner or admin, or [Ployz support](../account/organizations.md#let-ployz-support-in), can change it. For a
+   member it is disabled and says so.
 
 ![Organization → Builds: Where builds run, and the servers that run builds](../images/organization-builds.png)
 
@@ -103,9 +104,22 @@ When GitHub can't take a build, the build log says why, and the next builder tak
 
 ![Settings → Build: Build method, Build command and Preferred Builder](../images/service-settings-build.png)
 
+From the CLI or an agent, give `github`, or the server's name as `ployz server ls` lists it,
+or its ID. Any member can give a name, and `--patch` takes one too. Ployz saves the server's
+ID. A name two servers share is refused with both IDs, so give the ID instead:
+
+```bash
+ployz set web.preferredBuilder=machine-1
+ployz set web --patch '{"preferredBuilder":"machine-1"}'
+```
+
 The service tries that builder first, then follows the build order. A preferred server keeps
 the build on your servers, even with **GitHub only**. **Auto** follows the build order alone.
 **Preferred Builder** applies at once, from the next build.
+
+A deploy names the server each service built on. When GitHub came first and couldn't take
+the build, for example because the repository has no Ployz build workflow, the deploy says so
+and why.
 
 ## When a build fails
 

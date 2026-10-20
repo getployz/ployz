@@ -110,7 +110,7 @@ pub(crate) fn create(root: &ArgMatches) -> Result<(), Error> {
         Ok((credential.cloud().to_owned(), reply))
     })?;
     let created = reply?.fleet_token;
-    let install = install_line(&cloud, &created.token);
+    let install = install_line(&cloud);
     let lasts = lasts(expires);
     if matches.get_flag("auto") {
         ui::warn("Anyone with this token can add servers. Keep it secret.");
@@ -120,7 +120,9 @@ pub(crate) fn create(root: &ArgMatches) -> Result<(), Error> {
         || {
             ui::note(format_args!("Created {}", created.name));
             ui::stream(&created.token);
-            ui::note(format_args!("Run on each host:\n  {install}"));
+            ui::note(format_args!(
+                "Run on each host, and paste the token when it asks:\n  {install}"
+            ));
             ui::note(format_args!("Shown once. Expires in {lasts}."));
         },
     )
@@ -232,14 +234,16 @@ fn lasts(expires: &str) -> &str {
     }
 }
 
-/// The line a host runs to install Ployz and ask to join with `token`.
-fn install_line(cloud: &str, token: &str) -> String {
+/// The line a host runs to install this release of Ployz and ask to join. It carries no token:
+/// install.sh asks for it on the terminal, so it stays out of shell history and `ps`.
+fn install_line(cloud: &str) -> String {
     let cloud_env = if cloud == crate::cloud_enroll::cloud_origin(DEFAULT_CLOUD) {
         String::new()
     } else {
         format!("PLOYZ_CLOUD_URL='{cloud}' ")
     };
-    format!("curl -fsSL {INSTALLER_URL} | sudo {cloud_env}PLOYZ_ENROLL_TOKEN={token} sh")
+    let version = env!("CARGO_PKG_VERSION");
+    format!("curl -fsSL {INSTALLER_URL} | sudo {cloud_env}sh -s -- {version} --enroll")
 }
 
 #[cfg(test)]
@@ -247,14 +251,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn install_line_carries_the_token_and_names_a_non_default_cloud() {
+    fn install_line_pins_this_release_asks_for_the_token_and_names_a_non_default_cloud() {
+        let version = env!("CARGO_PKG_VERSION");
         assert_eq!(
-            install_line("https://ployz.dev", "pflt_abc"),
-            "curl -fsSL https://ployz.sh | sudo PLOYZ_ENROLL_TOKEN=pflt_abc sh"
+            install_line("https://ployz.dev"),
+            format!("curl -fsSL https://ployz.sh | sudo sh -s -- {version} --enroll")
         );
         assert_eq!(
-            install_line("http://localhost:3000", "pflt_abc"),
-            "curl -fsSL https://ployz.sh | sudo PLOYZ_CLOUD_URL='http://localhost:3000' PLOYZ_ENROLL_TOKEN=pflt_abc sh"
+            install_line("http://localhost:3000"),
+            format!(
+                "curl -fsSL https://ployz.sh | sudo PLOYZ_CLOUD_URL='http://localhost:3000' sh -s -- {version} --enroll"
+            )
         );
     }
 

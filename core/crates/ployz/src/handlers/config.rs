@@ -11,6 +11,7 @@ use crate::ui::{self, Hint};
 use clap::{Arg, ArgAction, ArgMatches, Command};
 use std::collections::BTreeSet;
 
+use ployz_core::{MachineId, MachineObservation, MachineTarget, RpcErrorCode};
 use ployz_store::{
     Change, DomainRow, DomainsQuery, DomainsView, Edit, EnvironmentQuery, EnvironmentView, Instead,
     NodeName, Revision, SettingPath, SettingRow, TypedAddresses,
@@ -26,7 +27,7 @@ pub(super) fn get_command(command: Command) -> Command {
     scoped(command.about("Show Settings: every Service, one Service, or one Setting"))
         .arg(
             positional("path", false)
-                .help("SERVICE, SERVICE.SETTING or SERVICE.env.KEY")
+                .help("SERVICE, SERVICE.SETTING, SERVICE.env.KEY, or setup.SERVICE for a Branch's Setup Command")
                 .add(super::catalog::setting_paths()),
         )
         .arg(switch("all", None).help("Include Settings at their default across the Environment"))
@@ -38,7 +39,7 @@ pub(super) fn set_command(command: Command) -> Command {
             positional("assignment", true)
                 .action(ArgAction::Append)
                 .value_name("PATH=VALUE")
-                .help("For example web.replicas=3 or web.env.LOG_LEVEL=info; the SERVICE a --patch or --from-env-file applies to; web.env.KEY or web.registryCredential for --secret")
+                .help("For example web.replicas=3, web.env.LOG_LEVEL=info, or setup.web='pnpm db:seed' for a Branch's Setup Command; the SERVICE a --patch or --from-env-file applies to; web.env.KEY or web.registryCredential for --secret")
                 .add(super::catalog::setting_paths()),
         )
         .arg(
@@ -75,7 +76,7 @@ pub(super) fn unset_command(command: Command) -> Command {
         .arg(
             positional("path", true)
                 .action(ArgAction::Append)
-                .help("SERVICE.SETTING, or SERVICE.env.KEY to delete a variable")
+                .help("SERVICE.SETTING, SERVICE.env.KEY to delete a variable, or setup.SERVICE to remove a Branch's Setup Command")
                 .add(super::catalog::setting_paths()),
         )
         .arg(expect())
@@ -160,7 +161,21 @@ pub(super) fn get(root: &ArgMatches) -> Result<(), Error> {
         for line in &lines {
             crate::ui::stream(line);
         }
+        for note in noted(view.settings.iter().filter_map(|row| row.note.as_ref())) {
+            ui::note(note);
+        }
     })
+}
+
+/// Each distinct note once, in order: Settings that share a caveat say it once.
+fn noted<'a>(notes: impl Iterator<Item = &'a String>) -> Vec<&'a String> {
+    let mut seen = Vec::new();
+    for note in notes {
+        if !seen.contains(&note) {
+            seen.push(note);
+        }
+    }
+    seen
 }
 
 /// Whether the domains were read in another Environment or at another revision than
@@ -303,33 +318,64 @@ pub(super) fn set(root: &ArgMatches) -> Result<(), Error> {
             }],
         );
     }
-    let changes = matches
+    let assignments = matches
         .get_many::<String>("assignment")
         .into_iter()
         .flatten()
         .map(|assignment| {
-            let (path, value) = assignment
+            assignment
                 .split_once('=')
-                .ok_or_else(|| Error::usage("Expected PATH=VALUE, for example web.replicas=3"))?;
+                .ok_or_else(|| Error::usage("Expected PATH=VALUE, for example web.replicas=3"))
+        })
+        .collect::<Result<Vec<_>, Error>>()?;
+    let naming = assignments
+        .iter()
+        .any(|(path, value)| names_a_server(path, value));
+    // Without Server access the values go as typed: Cloud resolves a name from the
+    // Servers it keeps, for every role.
+    let servers = naming
+        .then(|| super::server::servers(matches).ok())
+        .flatten();
+    let changes = assignments
+        .into_iter()
+        .map(|(path, value)| {
             Ok(Change::Set {
                 path: SettingPath::parse(path)?,
-                value: Value::String(value.to_owned()),
+                value: Value::String(resolved(path, value, servers.as_deref())?),
             })
         })
         .collect::<Result<Vec<_>, Error>>()?;
-    if let Some(path) = repeated(&changes) {
-        return Err(Error::usage(format!("{path} is given twice; set it once")));
-    }
     edit(root, changes)
 }
 
-/// A path two of `changes` set: only the last would land, without a word.
-fn repeated(changes: &[Change]) -> Option<String> {
-    let mut seen = std::collections::BTreeSet::new();
-    changes.iter().find_map(|change| match change {
-        Change::Set { path, .. } => (!seen.insert(path.to_string())).then(|| path.to_string()),
-        Change::Unset { .. } | Change::Patch { .. } | Change::Rename { .. } => None,
-    })
+/// `value` as `set` sends it for `path`: a Server named as a Preferred Builder becomes
+/// its Machine ID, which is all the Store takes, by the names the Servers report.
+/// It resolves as the `server` commands do: an exact Machine ID first, then a name. An
+/// ID no Server lists, or any value without `servers`, goes as given: a preference needs
+/// no live Server.
+fn resolved(
+    path: &str,
+    value: &str,
+    servers: Option<&[MachineObservation]>,
+) -> Result<String, Error> {
+    let Some(servers) = servers.filter(|_| names_a_server(path, value)) else {
+        return Ok(value.to_owned());
+    };
+    // The Store trims a Preferred Builder before it reads one.
+    let value = value.trim();
+    match crate::cluster::visible_machine(&MachineTarget::parse(value)?, servers) {
+        Ok(server) => Ok(server.machine.id.to_string()),
+        Err(error) if error.code == RpcErrorCode::NotFound && MachineId::parse(value).is_ok() => {
+            Ok(value.to_owned())
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
+/// Whether `value` names a Server, by ID or name, as `path`'s Preferred Builder.
+fn names_a_server(path: &str, value: &str) -> bool {
+    matches!(path.split_once('.'), Some((service, "preferredBuilder")) if !service.contains('.'))
+        && value != "github"
 }
 
 /// The one positional a flag applies to.
@@ -356,7 +402,18 @@ fn set_from_env_file(root: &ArgMatches, file: &str) -> Result<(), Error> {
     } else {
         std::fs::read_to_string(file).map_err(|_| Error::usage("Can't read the env file"))?
     };
-    let variables = env_file(&text)?;
+    // A key the file repeats takes its last value, in its first place; variables are
+    // uppercase, so case doesn't make a new key.
+    let mut variables: Vec<(String, String)> = Vec::new();
+    for (key, value) in env_file(&text)? {
+        match variables
+            .iter_mut()
+            .find(|(seen, _)| seen.eq_ignore_ascii_case(&key))
+        {
+            Some((_, seen)) => *seen = value,
+            None => variables.push((key, value)),
+        }
+    }
     let seal_all = matches.get_flag("secret");
     let secret = if seal_all {
         Vec::new()
@@ -448,9 +505,8 @@ fn edit(root: &ArgMatches, changes: Vec<Change>) -> Result<(), Error> {
         let where_ = format!("{}/{}", edited.environment.project, edited.environment.name);
         if !edited.staged.is_empty() {
             crate::ui::stream(format_args!(
-                "Staged {} in {where_} (revision {}).",
-                super::joined(&edited.staged),
-                edited.environment.revision
+                "Staged {} in {where_}.",
+                super::joined(&edited.staged)
             ));
         }
         if !edited.immediate.is_empty() {
@@ -465,6 +521,9 @@ fn edit(root: &ArgMatches, changes: Vec<Change>) -> Result<(), Error> {
         }
         for typed in &edited.typed_addresses {
             say_typed_addresses(matches, typed);
+        }
+        for note in noted(edited.notes.iter().map(|noted| &noted.note)) {
+            ui::note(note);
         }
         if let Some(hint) = hint {
             ui::hint(&Hint::Next(hint));
@@ -526,6 +585,109 @@ fn say_typed_addresses(matches: &ArgMatches, typed: &TypedAddresses) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn server(seed: u8, name: &str) -> MachineObservation {
+        MachineObservation::new(
+            ployz_core::Machine {
+                labels: Default::default(),
+                accepts_builds: true,
+                accepts_services: true,
+                accepts_ingress: true,
+                id: ployz_core::MachineId::parse(format!("{seed:032x}")).unwrap(),
+                name: ployz_core::MachineName::parse(name).unwrap(),
+                subnet: format!("10.210.{seed}.0/24").parse().unwrap(),
+                public_key: ployz_core::WireGuardPublicKey([seed; 32]),
+                public_ip: None,
+                advertised_endpoints: Vec::new(),
+                runtime: Default::default(),
+                build_concurrency: None,
+            },
+            ployz_core::MembershipObservation::Up,
+        )
+    }
+
+    #[test]
+    fn a_preferred_builder_named_by_its_server_is_sent_as_its_machine_id() {
+        let servers = [server(1, "machine-1"), server(2, "machine-2")];
+        let id = format!("{:032x}", 2);
+        assert_eq!(
+            resolved("web.preferredBuilder", "machine-2", Some(&servers)).unwrap(),
+            id
+        );
+        for (path, value) in [
+            ("web.preferredBuilder", "github"),
+            ("web.preferredBuilder", id.as_str()),
+            ("web.env.preferredBuilder", "machine-2"),
+            ("web.image", "machine-2"),
+        ] {
+            assert_eq!(
+                resolved(path, value, None).unwrap(),
+                value,
+                "{path}={value}"
+            );
+        }
+        let missing = resolved("web.preferredBuilder", "machine-9", Some(&servers)).unwrap_err();
+        assert!(missing.to_string().contains("machine-9"), "{missing}");
+    }
+
+    #[test]
+    fn a_value_resolves_without_its_surrounding_whitespace_as_the_store_reads_it() {
+        let servers = [server(1, "machine-1")];
+        for (value, id) in [
+            (format!(" {:032x}", 7), format!("{:032x}", 7)),
+            (format!("{:032x} ", 1), format!("{:032x}", 1)),
+            (" machine-1 ".to_owned(), format!("{:032x}", 1)),
+        ] {
+            assert_eq!(
+                resolved("web.preferredBuilder", &value, Some(&servers)).unwrap(),
+                id,
+                "{value:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_id_the_servers_dont_list_is_sent_as_typed() {
+        let servers = [server(1, "machine-1")];
+        let unlisted = format!("{:032x}", 7);
+        assert_eq!(
+            resolved("web.preferredBuilder", &unlisted, Some(&servers)).unwrap(),
+            unlisted,
+            "a preference needs no live Server; build selection falls back without it"
+        );
+    }
+
+    #[test]
+    fn an_id_shaped_value_resolves_as_server_commands_do_an_exact_id_first() {
+        let named_like_an_id = "a".repeat(32);
+        let servers = [server(1, &named_like_an_id), server(0xaa, "machine-aa")];
+        assert_eq!(
+            resolved(
+                "web.preferredBuilder",
+                &format!("{:032x}", 0xaa),
+                Some(&servers)
+            )
+            .unwrap(),
+            format!("{:032x}", 0xaa),
+            "an exact Machine ID wins"
+        );
+        assert_eq!(
+            resolved(
+                "web.preferredBuilder",
+                &named_like_an_id,
+                Some(&servers[..1])
+            )
+            .unwrap(),
+            format!("{:032x}", 1),
+            "a Server named like an ID resolves to its own ID"
+        );
+        let both = [server(1, &format!("{:032x}", 2)), server(2, "machine-2")];
+        assert_eq!(
+            resolved("web.preferredBuilder", &format!("{:032x}", 2), Some(&both)).unwrap(),
+            format!("{:032x}", 2),
+            "one Server's ID beats another's name"
+        );
+    }
 
     fn row(path: &str, value: Value, default: Value) -> SettingRow {
         serde_json::from_value(json!({
@@ -591,22 +753,6 @@ mod tests {
         elsewhere.environment.id =
             ployz_store::EnvironmentId::parse("cccccccc-cccc-4ccc-8ccc-cccccccccccc").unwrap();
         assert!(torn(&(view, Some(elsewhere))));
-    }
-
-    #[test]
-    fn a_path_set_twice_is_named() {
-        let set = |path: &str, value: &str| Change::Set {
-            path: SettingPath::parse(path).unwrap(),
-            value: json!(value),
-        };
-        assert_eq!(
-            repeated(&[set("web.replicas", "2"), set("web.image", "a")]),
-            None
-        );
-        assert_eq!(
-            repeated(&[set("web.replicas", "2"), set("WEB.replicas", "3")]).as_deref(),
-            Some("web.replicas")
-        );
     }
 
     #[test]

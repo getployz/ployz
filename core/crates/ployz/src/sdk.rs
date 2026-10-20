@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde::Serialize;
 use serde_json::Value;
@@ -33,6 +33,7 @@ mod payloads;
 pub(crate) mod preparation;
 pub(crate) mod prepare;
 mod running;
+mod sealed;
 mod store_call;
 mod store_runner;
 pub use build::{BuildOutcome, OutsideBuild};
@@ -43,7 +44,9 @@ pub use github_build::{
 };
 pub use running::Running;
 pub use store_call::store_call;
-pub use store_runner::{Sources, observe_copies, observe_volumes, run_deployment};
+pub use store_runner::{
+    RetireLeft, RetireOutcome, Sources, observe_copies, observe_volumes, retire_old, run_deployment,
+};
 
 /// Cancellable preparation whose progress is retained until read, within a byte budget.
 pub type RunningPreparation = Running<PreparedDeploy>;
@@ -54,11 +57,16 @@ pub use logs::{
     ContainerLogInput, ContainerLogRecord, ContainerLogStream, LogHistoryInput, LogHistoryRecord,
     LogHistoryStream,
 };
-pub(crate) use logs::{failed_tail, process_tail, service_tail};
+pub(crate) use logs::{
+    container_env, failed_tail, process_tail, service_tail, tail_excerpt, tail_frames,
+};
 pub use metrics::{MetricHistory, MetricHistoryInput, MetricSubject, metric_history};
 pub use preparation::{
     BuildReceipt, BuildVariables, OutsideBuildInput, PreparationInput, UploadDigest, VERSION,
     expected_fingerprints,
+};
+pub use sealed::{
+    LiveLogRecord, LogLine, PendingNames, ScrubbedHistoryStream, ScrubbedLogStream, SealedNames,
 };
 
 /// The public SDK Watch frame: the RPC frame plus what this observer derives
@@ -121,7 +129,10 @@ pub struct ObservedCopy {
 fn volume_switch_path(body: &RpcRequestBody) -> Result<&'static str, RpcError> {
     use RpcRequestBody as Body;
     match body {
-        Body::InspectVolumeCopy(_) | Body::SeedVolume(_) | Body::SetVolumeCopy(_) => body
+        Body::InspectVolumeCopy(_)
+        | Body::SeedVolume(_)
+        | Body::SetVolumeCopy(_)
+        | Body::SetVolumeSize(_) => body
             .unary_path()
             .ok_or_else(|| invalid_argument(format!("{} is not a unary RPC", body.command()))),
         _ => Err(invalid_argument(format!(
@@ -134,12 +145,13 @@ fn volume_switch_path(body: &RpcRequestBody) -> Result<&'static str, RpcError> {
 /// The JSON a Volume switch verb's answer carries, or the Machine's error as it sent it.
 #[expect(
     clippy::wildcard_enum_match_arm,
-    reason = "the volume copy verbs answer with two reply kinds; any other kind is a Machine fault"
+    reason = "the Volume switch verbs answer with three reply kinds; any other kind is a Machine fault"
 )]
 fn volume_switch_payload(command: &str, body: RpcResponseBody) -> Result<Value, RpcError> {
     let payload = match body {
         RpcResponseBody::VolumeCopyView(view) => serde_json::to_value(view),
         RpcResponseBody::SetVolumeCopyReply(reply) => serde_json::to_value(reply),
+        RpcResponseBody::SetVolumeSizeReply(reply) => serde_json::to_value(reply),
         RpcResponseBody::Error(error) => return Err(error),
         other => {
             return Err(RpcError {
@@ -197,6 +209,55 @@ pub struct RunningDeploy {
     join: Mutex<Option<DeployTask>>,
 }
 
+/// A failure, and whether no Machine sent it: the dial failed, or the call went out and
+/// no status came back. A Machine's own refusal is `unanswered: false`, and so is a call
+/// the entry Machine says it could not dial its target for, since no Machine got it.
+#[derive(Debug)]
+pub struct CallError {
+    pub error: RpcError,
+    pub unanswered: bool,
+    /// The entry Machine says it could not dial the call's target.
+    pub target_unreached: bool,
+}
+
+impl std::fmt::Display for CallError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.error.fmt(f)
+    }
+}
+
+impl std::error::Error for CallError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.error.source()
+    }
+}
+
+impl From<ConnectError> for CallError {
+    fn from(error: ConnectError) -> Self {
+        Self {
+            unanswered: (error.unreached() || error.unreplied()) && !error.target_unreached(),
+            target_unreached: error.target_unreached(),
+            error: error.into(),
+        }
+    }
+}
+
+impl From<RpcError> for CallError {
+    fn from(error: RpcError) -> Self {
+        Self {
+            error,
+            unanswered: false,
+            target_unreached: false,
+        }
+    }
+}
+
+impl From<CallError> for RpcError {
+    fn from(failure: CallError) -> Self {
+        failure.error
+    }
+}
+
 /// Select the first confirmed connection before any operation is dispatched.
 ///
 /// # Errors
@@ -205,9 +266,28 @@ pub async fn connect_connections(
     connections: Vec<Connection>,
     connector: Arc<dyn Connector>,
 ) -> Result<Session, RpcError> {
+    Ok(connect_answered(connections, connector).await?)
+}
+
+/// [`connect_connections`], keeping whether a Machine refused or none answered.
+///
+/// # Errors
+/// As [`connect_connections`].
+pub async fn connect_answered(
+    connections: Vec<Connection>,
+    connector: Arc<dyn Connector>,
+) -> Result<Session, CallError> {
     if connections.is_empty() {
-        return Err(invalid_argument("connections must not be empty".into()));
+        return Err(invalid_argument("connections must not be empty".into()).into());
     }
+    Ok(dial(connections, connector).await?)
+}
+
+/// [`connect_connections`] to nonempty `connections`, keeping the connection error.
+async fn dial(
+    connections: Vec<Connection>,
+    connector: Arc<dyn Connector>,
+) -> Result<Session, ConnectError> {
     let client = connect_selected_with(
         SelectedConnections {
             source: ConnectionSource::Direct,
@@ -235,24 +315,50 @@ impl Session {
             .cloned()
     }
 
-    async fn until_closed<T>(
+    async fn until_closed<T, E: From<RpcError>>(
         &self,
-        work: impl std::future::Future<Output = Result<T, RpcError>>,
-    ) -> Result<T, RpcError> {
+        work: impl std::future::Future<Output = Result<T, E>>,
+    ) -> Result<T, E> {
         tokio::select! {
             biased;
-            () = self.inner.cancel.cancelled() => Err(closed()),
+            () = self.inner.cancel.cancelled() => Err(closed().into()),
             result = work => result,
         }
     }
 
+    /// [`Self::until_closed`] for a call the Machine may take: a close once the call has
+    /// started ends the wait, not the call, so it is `unanswered`. A close seen before the
+    /// call starts sends nothing.
+    async fn until_closed_answered<T>(
+        &self,
+        work: impl std::future::Future<Output = Result<T, CallError>>,
+    ) -> Result<T, CallError> {
+        let started = AtomicBool::new(false);
+        tokio::select! {
+            biased;
+            () = self.inner.cancel.cancelled() => Err(CallError {
+                error: closed(),
+                unanswered: started.load(Ordering::Relaxed),
+                target_unreached: false,
+            }),
+            result = async {
+                started.store(true, Ordering::Relaxed);
+                work.await
+            } => result,
+        }
+    }
+
     async fn unary<T: Rpc>(&self, request: T::Request) -> Result<T::Response, RpcError> {
+        Ok(self.unary_answered::<T>(request).await?)
+    }
+
+    async fn unary_answered<T: Rpc>(&self, request: T::Request) -> Result<T::Response, CallError> {
         let mut client = self.client()?;
-        self.until_closed(async {
+        self.until_closed_answered(async {
             client
                 .call::<T>(request, None)
                 .await
-                .map_err(RpcError::from)
+                .map_err(CallError::from)
         })
         .await
     }
@@ -348,15 +454,20 @@ impl Session {
     pub async fn set_management_client(
         &self,
         label: ployz_core::ManagementClientLabel,
-    ) -> Result<ployz_core::ManagementCapability, RpcError> {
+    ) -> Result<ployz_core::ManagementCapability, CallError> {
         let response = self
-            .unary::<op::SetManagementClient>(ployz_core::SetManagementClientRequest::Set { label })
+            .unary_answered::<op::SetManagementClient>(
+                ployz_core::SetManagementClientRequest::Set { label },
+            )
             .await?;
-        response.capability.ok_or_else(|| RpcError {
-            code: RpcErrorCode::Internal,
-            message: "Machine set a Management Client without a Management Capability".into(),
-            details: Value::Null,
-            cause: Vec::new(),
+        response.capability.ok_or_else(|| {
+            RpcError {
+                code: RpcErrorCode::Internal,
+                message: "Machine set a Management Client without a Management Capability".into(),
+                details: Value::Null,
+                cause: Vec::new(),
+            }
+            .into()
         })
     }
 
@@ -702,8 +813,10 @@ impl Session {
     /// Returns `invalid_argument` when `request` is not one of the Volume switch
     /// commands or `machine` is not a Machine Target, and the Machine's [`RpcError`]
     /// otherwise, its `details` a `SwitchError` when the fence refused or a
-    /// `SetVolumeCopyRefused` when SetVolumeCopy refused.
-    pub async fn volume_switch(&self, machine: &str, request: Value) -> Result<Value, RpcError> {
+    /// `SetVolumeCopyRefused` when SetVolumeCopy refused. A failure no Machine sent is
+    /// `unanswered`: the Machine may have taken the request. One whose entry Machine
+    /// could not dial `machine` is not, since `machine` never got it.
+    pub async fn volume_switch(&self, machine: &str, request: Value) -> Result<Value, CallError> {
         let target =
             MachineTarget::parse(machine).map_err(|error| invalid_argument(error.to_string()))?;
         let body: RpcRequestBody =
@@ -712,14 +825,22 @@ impl Session {
         let request = ployz_core::RpcRequest::from(body);
         let client = self.client()?;
         let response = self
-            .until_closed(client.invoke_raw(
-                &request,
-                path,
-                Some(&target),
-                Some(crate::connect::TARGET_RPC_TIMEOUT),
-            ))
+            .until_closed_answered(async {
+                client
+                    .invoke_raw(
+                        &request,
+                        path,
+                        Some(&target),
+                        Some(crate::connect::TARGET_RPC_TIMEOUT),
+                    )
+                    .await
+                    .map_err(CallError::from)
+            })
             .await?;
-        volume_switch_payload(request.body.command(), response.body)
+        Ok(volume_switch_payload(
+            request.body.command(),
+            response.body,
+        )?)
     }
 
     /// Live Observation of Data Loss that removing `machine` would cause.
@@ -870,7 +991,7 @@ impl Session {
                 error @ (crate::cluster::RoleWaitError::NotObserved(_)
                 | crate::cluster::RoleWaitError::Cancelled) => unavailable(error.to_string()),
             })?;
-            crate::drain::retirement::retire_ingress_proxy(&mut client, &id, cancel).await
+            crate::drain::retirement::retire_ingress_proxy(&client, &id, cancel).await
         })
         .await
     }
@@ -1293,21 +1414,29 @@ pub(crate) fn preparation_error(
     let message = crate::ui::rpc_error(RpcErrorCode::Internal, &error).message;
     match error {
         PreparationError::Selection(error) => {
-            let rejections = if let ConnectError::Remote(error) = &error {
-                error
-                    .details
-                    .get("rejections")
-                    .cloned()
-                    .unwrap_or(Value::Null)
+            let details = if let ConnectError::Remote(error) = &error {
+                &error.details
             } else {
-                Value::Null
+                &Value::Null
             };
+            let rejections = details.get("rejections").cloned().unwrap_or(Value::Null);
+            let reasons = details
+                .get("reasons")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .collect::<Vec<_>>();
             RpcError {
                 code: RpcErrorCode::Unavailable,
                 message: "No eligible Build Machine was selected; no build was started.".into(),
                 details: serde_json::json!({"preparation":{"kind":"failed", "stage":"Selection",
                     "message":"No eligible Build Machine was selected; no build was started.", "rejections":rejections}}),
-                cause: Vec::new(),
+                cause: if reasons.is_empty() {
+                    Vec::new()
+                } else {
+                    vec![reasons.join("; ")]
+                },
             }
         }
         PreparationError::Connect(_) => RpcError {

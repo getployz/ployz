@@ -4,10 +4,11 @@ import { and, eq } from "drizzle-orm";
 import { Effect } from "effect";
 import { gatherDomainEvidence, systemDomainEvidence } from "#/modules/config-store/domain-evidence.server";
 import { gatherGitEvidence } from "#/modules/config-store/git-evidence.server";
-import { gatherVolumeEvidence, systemVolumeEvidence } from "#/modules/config-store/volume-evidence.server";
+import { gatherUnanswered, gatherVolumeEvidence, systemVolumeEvidence } from "#/modules/config-store/volume-evidence.server";
 import type { Actor } from "#/modules/identity/actor";
 import { account, member, user } from "#/modules/identity/tables";
 import { guardProtected } from "#/modules/config-store/protected.server";
+import { resolvePreferredBuilders } from "#/modules/config-store/preferred-builder.server";
 import { cloudStore, refusedWith, storeTry } from "#/modules/config-store/store-sdk.server";
 import { commandEnvironments, MAX_SHOWN_VIEWS, StoreRefused } from "#/modules/config-store/store.contract";
 import { deploymentRun } from "#/modules/config-store/tables";
@@ -30,7 +31,7 @@ import { installationAccess } from "#/modules/github/github-access";
 import { cancelGithubRun } from "#/modules/github/github-build.server";
 import { countOrganizationMachines, loadOrganizationConnections } from "#/modules/machines/connections.server";
 import { writeAdmitted } from "#/modules/volume-placement/volume-placement.server";
-import type { StoreAnswer, StoreWriteResult, StoreCall, StoreRead, StoreRefusal, StoreResult, ViewAnswer } from "./store.contract";
+import type { CommandRefusal, StoreAnswer, StoreWriteResult, StoreCall, StoreRead, StoreRefusal, StoreResult, ViewAnswer } from "./store.contract";
 
 /** One view Cloud reads for itself, with no evidence: its own lookups, such as a Deployment's Namespace for its logs. */
 export const readStore = <Q extends ConfigQuery>(organizationId: string, query: Q) =>
@@ -126,7 +127,7 @@ function admittedBy(written: ConfigWritten): DeploymentSummary[] {
  */
 export function admittedEvents(organizationId: string, written: ConfigWritten, trigger: DeploymentTrigger): ConfigDeploymentAdmittedEventData[] {
   return admittedBy(written).filter((summary) => summary.status !== "applied")
-    .map((summary) => ({ organizationId, environmentId: summary.environment_id, deploymentId: summary.id, trigger }));
+    .map((summary) => ({ organizationId, environmentId: summary.environment_id, deploymentId: summary.id, number: summary.number, trigger }));
 }
 
 /**
@@ -144,7 +145,6 @@ export const requestChecks = Effect.fn("ConfigStore.requestChecks")(function* (o
 function statusFor(code: string) {
   switch (code) {
     case "invalid_argument":
-    case "invalid_input":
       return 422;
     case "not_found":
     case "unknown_command":
@@ -170,9 +170,11 @@ function statusFor(code: string) {
   }
 }
 
-export function refusal(error: StoreRefusal) {
+/** A Cloud command's refusal also names its `field`, what fits there and whether it wrote, as Store tools refuse. */
+export function refusal(error: StoreRefusal | CommandRefusal) {
   const { code, message, details } = error;
-  return Response.json({ error: { code, message, details } }, {
+  const told = "writes" in error ? { field: error.field, expected: error.expected, writes: error.writes } : {};
+  return Response.json({ error: { code, message, details, ...told } }, {
     status: statusFor(code),
     headers: { "cache-control": "no-store" },
   });
@@ -203,7 +205,7 @@ const githubMembers = Effect.fn("ConfigStore.githubMembers")(function* (organiza
 
 /** Which events can admit a Deployment, and so need to know which Servers hold the data a Save accepted losing. */
 const deploys = {
-  branch_head: true, check_suite: true, pull_request: true, sweep: false, cluster_forgotten: false,
+  branch_head: true, check_suite: true, pull_request: true, sweep: false, cluster_forgotten: false, volume_resized: false,
 } satisfies Record<SystemEvent["event"], boolean>;
 
 /**
@@ -225,8 +227,8 @@ export const storeSystem = Effect.fn("ConfigStore.system")(function* (organizati
 
 /**
  * The trusted evidence `call` needs, as Cloud observes it itself: GitHub's for repository Services, what Cloud observes
- * of domains, for a Save or Deploy that removes deployed Volumes what the Servers hold of them, and for an admission how many
- * Servers could run it. Nothing here comes from the caller. Refused `unavailable` when GitHub or the Cluster Domain
+ * of domains, for a Save or Deploy that removes deployed Volumes what the Servers hold of them, for a removal which Servers
+ * didn't answer, and for an admission how many Servers could run it. Nothing here comes from the caller. Refused `unavailable` when GitHub or the Cluster Domain
  * can't answer.
  */
 export const gatherTrusted = Effect.fn("ConfigStore.gatherTrusted")(function* (
@@ -238,16 +240,18 @@ export const gatherTrusted = Effect.fn("ConfigStore.gatherTrusted")(function* (
   );
   const domains = yield* gatherDomainEvidence(organizationId, call, read).pipe(
     Effect.catchTag("HostedDnsError", () => Effect.fail(new StoreRefused({
-      code: "unavailable", message: "Cloud couldn't reserve the Cluster Domain; deploy again.", details: null,
+      code: "unavailable", message: "Cloud couldn't reserve the Cluster Domain; try again.", details: null,
     }))),
   );
   const volumes = yield* gatherVolumeEvidence(organizationId, call, read);
+  const unanswered = yield* gatherUnanswered(organizationId, call, volumes);
   // An admission carries how many Servers the Organization has enrolled, so the Store refuses one nothing could run.
   const admits = call.operation === "write" && (call.command.command === "admit" || call.command.command === "remove"
     || call.command.command === "approve_pull_request");
   const servers = admits ? yield* countOrganizationMachines(organizationId) : undefined;
   const trusted: ConfigTrusted = { ...git, domains };
   if (volumes !== undefined) trusted.volumes = volumes;
+  if (unanswered !== undefined) trusted.unanswered = unanswered;
   if (servers !== undefined) trusted.servers = servers;
   return trusted;
 });
@@ -268,9 +272,10 @@ const afterWrite = Effect.fn("ConfigStore.afterWrite")(function* (
     yield* dispatchAdmitted(organizationId, written, command.command === "start");
   }
   // A removal that applied at admission (nothing on a Server) is deleted by the next sweep, and admits what is due
-  // after it: no worker will ask for that sweep, so ask now.
+  // after it, as is the removal a Sync's close marked: no worker will ask for that sweep, so ask now.
   const removed = written.written === "deployment" ? written.remove && written.status === "applied"
-    : written.written === "removal" && written.removal === "removing" && written.left.some((left) => left.deployment?.status === "applied");
+    : written.written === "removal" ? written.removal === "removing" && written.left.some((left) => left.deployment?.status === "applied")
+    : written.written === "synced" && written.closing;
   if (removed) yield* sendInngestEvent(createConfigSweepRequestedEvent({ organizationId }));
   yield* requestChecks(organizationId, written.checks);
 });
@@ -291,13 +296,17 @@ export type StoreSource =
 export const callStore = <C extends StoreCall>(
   organizationId: string,
   userId: string | null,
-  call: C,
+  asked: C,
   source: StoreSource = { source: "dashboard" },
   gate: Pick<ConfigTrusted, "approval" | "asks" | "permissions" | "environments"> = { approval: "not_required" },
 ) => Effect.gen(function* () {
   const store = yield* cloudStore;
   const read: StoreRead = (query) => store.read(organizationId, query);
   return yield* Effect.gen(function* () {
+    // Every surface's edit passes here, so a Server named as a Preferred Builder reaches the Store as its Machine ID.
+    const call: StoreCall = asked.operation === "write"
+      ? { operation: "write", command: yield* resolvePreferredBuilders(organizationId, asked.command) }
+      : asked;
     if (call.operation === "write") yield* guardProtected(gate.permissions, call.command, read);
     const trusted = { ...yield* gatherTrusted(organizationId, call, read), ...gate };
     if (call.operation === "read") return { ok: true, value: yield* storeTry(() => store.read(organizationId, call.query, trusted)) };
@@ -368,9 +377,13 @@ export const writeStoreAsMember = (actor: Actor, organizationSlug: string, comma
   return { ...result, answers: answers.flat() } satisfies StoreWriteResult;
 }).pipe(Effect.map((answer): StoreWriteResult => answer), Effect.withSpan("ConfigStore.writeAsMember"));
 
-/** Deleting an Environment or a Project takes its delete permission, protecting one its own; every other write only staging. */
+/**
+ * Deleting an Environment or a Project takes its delete permission, protecting one its own, and the Build Order the
+ * Organization's settings, as the Store asks; every other write only staging.
+ */
 export const writePermission = (command: ConfigCommand): Permission => {
   if (command.command === "set_environment_protected") return "environments:protect";
+  if (command.command === "set_build_order") return "org:settings";
   if (command.command !== "remove") return "changes:stage";
   return command.environment == null ? "project:delete" : "environment:delete";
 };

@@ -19,10 +19,16 @@ export type ConfirmStatus =
 
 export type ConfirmableInputProps = Omit<
   React.ComponentProps<"input"> & React.ComponentProps<"textarea">,
-  "defaultValue" | "onChange" | "onKeyDown" | "onSubmit" | "value"
+  "defaultValue" | "onBlur" | "onChange" | "onKeyDown" | "onSubmit" | "value"
 > & {
   value: string
+  /**
+   * When a draft saves. `blur` saves on Enter or when focus leaves the field, the way Settings autosave. `check` waits
+   * for Enter or its ✓, for a rename or a create, which shouldn't happen just because focus moved.
+   */
+  commit?: "blur" | "check"
   onKeyDown?: React.KeyboardEventHandler<HTMLInputElement | HTMLTextAreaElement>
+  onBlur?: React.FocusEventHandler<HTMLInputElement | HTMLTextAreaElement>
   onValueChange: (value: string) => void
   onConfirm?: () => void
   onCancel?: () => void
@@ -41,6 +47,7 @@ export type ConfirmableInputProps = Omit<
 
 function ConfirmableInput({
   value,
+  commit = "blur",
   onValueChange,
   onConfirm,
   onCancel,
@@ -55,6 +62,7 @@ function ConfirmableInput({
   endAddon,
   renderInput,
   onKeyDown,
+  onBlur,
   ...props
 }: ConfirmableInputProps) {
   function updateDraftValue(
@@ -77,6 +85,12 @@ function ConfirmableInput({
     }
 
     onCancel?.()
+  }
+
+  function handleBlur(e: React.FocusEvent<HTMLInputElement | HTMLTextAreaElement>) {
+    onBlur?.(e)
+    const group = e.currentTarget.closest('[data-slot="input-group"]')
+    if (commit === "blur" && !group?.contains(e.relatedTarget)) handleConfirm()
   }
 
   function handleKeyDown(
@@ -103,6 +117,7 @@ function ConfirmableInput({
 
   const saving = status?.phase === "saving" && !isDirty
   const failed = !error && status?.phase === "failed" ? status : undefined
+  const checking = commit === "check" && isDirty
 
   return (
     <div className={cn("flex flex-col gap-1", className)}>
@@ -115,6 +130,7 @@ function ConfirmableInput({
             aria-invalid={props["aria-invalid"] ?? !!error}
             disabled={props.disabled}
             onChange={updateDraftValue}
+            onBlur={handleBlur}
             onKeyDown={handleKeyDown}
           />
         ) : renderInput ? (
@@ -122,6 +138,7 @@ function ConfirmableInput({
             ...props,
             "aria-invalid": props["aria-invalid"] ?? !!error,
             disabled: props.disabled,
+            onBlur: handleBlur,
             onKeyDown: handleKeyDown,
           })
         ) : (
@@ -131,15 +148,16 @@ function ConfirmableInput({
             aria-invalid={props["aria-invalid"] ?? !!error}
             disabled={props.disabled}
             onChange={updateDraftValue}
+            onBlur={handleBlur}
             onKeyDown={handleKeyDown}
           />
         )}
-        {suffix || endAddon || isDirty || saving ? (
+        {suffix || endAddon || checking || saving ? (
           <InputGroupAddon align="inline-end">
             {suffix ? <InputGroupText>{suffix}</InputGroupText> : null}
             {endAddon}
             {saving ? <Spinner aria-label="Saving" className="mx-1 size-3.5 text-muted-foreground" /> : null}
-            {isDirty ? (
+            {checking ? (
               <span className={cn("-mr-1 flex items-center gap-0.5", (suffix || endAddon) && "border-l pl-1.5")}>
                 <InputGroupButton
                   size="icon-xs"

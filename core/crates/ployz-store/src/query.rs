@@ -7,14 +7,16 @@ use serde_json::Value;
 use ts_rs::TS;
 
 pub use crate::config_item::query::{
-    ConfigItemQuery, ConfigItemView, ConfigListing, ConfigsQuery, ConfigsView,
+    ConfigItemQuery, ConfigItemView, ConfigListing, ConfigMountChange, ConfigsQuery, ConfigsView,
 };
 pub use crate::deployment::query::{
     DeploymentQuery, DeploymentsQuery, DeploymentsView, NamespaceQuery, NamespaceView,
     NamespacesQuery, NamespacesView, NumberedDeploymentQuery, OwnedNamespace, PlanQuery, PlanView,
 };
+pub use crate::deployment::uploads::{HeldUpload, UploadsQuery, UploadsView};
 pub use crate::review::diff::DiffQuery;
 pub use crate::review::history::{HistoryPreview, HistoryPreviewQuery, HistoryQuery, HistoryView};
+pub use crate::review::sealed::{SealedNamesQuery, SealedNamesView};
 pub use crate::service::query::{
     ServiceListing, ServiceQuery, ServiceView, ServicesQuery, ServicesView, SourceKind,
 };
@@ -169,16 +171,20 @@ queries! {
     History(HistoryQuery) -> HistoryView => crate::review::history::history(tx, who, q);
     /// What Restore or Undo would stage and overwrite in the draft.
     HistoryPreview(HistoryPreviewQuery) -> HistoryPreview => crate::review::history::preview(tx, who, q);
+    /// The variable names under which an Environment's Containers may hold Sealed values.
+    SealedNames(SealedNamesQuery) -> SealedNamesView => crate::review::sealed::names_view(tx, who, q);
     /// What a Deploy would ship, from authored state alone.
     Plan(PlanQuery) -> PlanView => crate::deployment::query::plan(tx, who, trusted, q);
     /// One page of an Environment's Deployments.
-    Deployments(DeploymentsQuery) -> DeploymentsView
+    Deployments(DeploymentsQuery) -> DeploymentsView as *
         => crate::deployment::query::page(tx, who, q);
     Deployment(DeploymentQuery) -> crate::DeploymentView as *
         => crate::deployment::view(tx, who, &q.id);
     /// One Deployment, by its number in an Environment.
     NumberedDeployment(NumberedDeploymentQuery) -> crate::DeploymentView as *
         => crate::deployment::query::numbered(tx, who, q);
+    /// Which uploads Cloud holds still build something.
+    Uploads(UploadsQuery) -> UploadsView => crate::deployment::uploads::uploads(tx, who, q);
     /// One Git build of a Deployment, with its log.
     BuildLog(crate::BuildLogQuery) -> crate::BuildLogView
         => crate::deployment::build_log(tx, who, q);

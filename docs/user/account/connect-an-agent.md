@@ -22,7 +22,8 @@ an approval.
 
    In other apps, look for **Add custom connector** or **Remote MCP server** and paste the link.
 2. The app opens Ployz in your browser. Sign in if you aren't already.
-3. Pick the **Organization** the agent works in and click **Allow**.
+3. Pick the **Organization** the agent works in and click **Allow**. The one you're working in now
+   is picked to start with.
 
 <!-- screenshot: the Connect an agent to Ployz page with the Organization picker -->
 
@@ -54,7 +55,8 @@ with `approval_required`, anything it would remove, and a link to your organizat
 
 Until you answer, trying again only asks again, and nothing changes. A denied approval stays
 denied. Only you approve, in the dashboard. The agent can't approve its own request, and
-`ployz org approval approve` refuses it too.
+`ployz org approval approve` refuses it too with `forbidden`, before it asks for the
+Organization's name, with or without a terminal and in `--json`.
 
 ## Disconnect
 

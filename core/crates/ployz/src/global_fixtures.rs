@@ -145,6 +145,8 @@ fn container_on(
     runtime: ContainerRuntimeObservation,
 ) -> ContainerObservation {
     ployz_core::ContainerObservation::try_from(ployz_core::ContainerObservationParts {
+        rotation: None,
+        r#gen: None,
         container_id: container_id(hex),
         display_name: format!("slot-{hex}"),
         created_at_unix_nanos: 0,
@@ -158,6 +160,7 @@ fn container_on(
             .expect("volume graph is scoped"),
         address: None,
         labels: Default::default(),
+        stopped: false,
     })
     .unwrap()
 }

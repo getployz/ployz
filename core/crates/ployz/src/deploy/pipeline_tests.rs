@@ -23,7 +23,7 @@ fn deploy_warning_display_is_the_cli_line_body() {
     }))
     .unwrap();
     let warning =
-        crate::dns::ingress_dns_warnings([&spec], &["192.0.2.1".parse().unwrap()], |_| {
+        crate::dns::ingress_dns_warnings([&spec], &["192.0.2.1".parse().unwrap()], None, |_| {
             ployz_core::HostnameVerdict::Refused(ployz_core::Refusal::DoesNotResolve)
         })
         .into_iter()

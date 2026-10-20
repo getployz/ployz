@@ -2,7 +2,7 @@ import type { BuildView, DeploymentView, NodeOutcome, RowPhase, ServerRow } from
 import { describe, expect, it } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
 import { machineId } from "#/test/ids";
-import { makeRunGraph, orderRows, rowLabel, rowPhaseLabel, selectRunNode } from "./run-graph";
+import { cleanupLabel, makeRunGraph, orderRows, rowLabel, rowLight, rowPhaseLabel, selectRunNode } from "./run-graph";
 
 const deployment = (fields: Partial<DeploymentView>) => asTestDouble<DeploymentView>()({
   id: "d1", status: "running", in_flight: true, builds: [], nodes: [], runtime_names: {}, preview: null, ...fields,
@@ -10,7 +10,7 @@ const deployment = (fields: Partial<DeploymentView>) => asTestDouble<DeploymentV
 const preview = (fields: Partial<NonNullable<DeploymentView["preview"]>>) =>
   asTestDouble<NonNullable<DeploymentView["preview"]>>()({ depths: {}, dependencies: [], ...fields });
 const build = (service: string, fields: Partial<BuildView> = {}): BuildView =>
-  ({ service, commit: null, status: "built", message: null, started_at: null, finished_at: null, ...fields });
+  ({ service, commit: null, status: "built", message: null, started_at: null, finished_at: null, server: null, github_skipped: null, ...fields });
 const at = { machine_id: machineId("1"), server: "fsn-1", started_at: 10, finished_at: null, history: null };
 const running = (phase: RowPhase): ServerRow => ({ ...at, state: "running", phase, serving: false });
 const completed = (server = "fsn-1", started_at = 10, finished_at = 20): ServerRow =>
@@ -59,8 +59,35 @@ describe("run graph", () => {
     expect(rowPhaseLabel("compensating")).toBe("Rolling back");
     expect(rowLabel(running("waiting_for_health"))).toBe("Waiting for health");
     expect(rowLabel({ ...at, state: "failed", reason: "r", cause: [], step: "health", log: null })).toBe("Failed at health check");
+    expect(rowLabel({ ...at, state: "failed", reason: "r", cause: [], step: "pull", log: null })).toBe("Failed at pull");
     expect(rowLabel({ ...at, state: "failed", reason: "r", cause: [], step: null, log: null })).toBe("Failed");
     expect(rowLabel(completed())).toBe("Done");
+  });
+
+  const stoppedAtCreate = (fields: { reason?: string; cancelled?: boolean } = {}): ServerRow =>
+    ({ ...at, state: "failed", reason: "Cancelled", cause: [], step: "create", log: null, finished_at: 20, ...fields });
+
+  it("reads work the Deployment's cancel stopped as Cancelled with a grey light, on its row and its node", () => {
+    const stopped = stoppedAtCreate({ cancelled: true });
+    expect(rowLabel(stopped)).toBe("Cancelled");
+    expect(rowLight(stopped)).toBe("not_applied");
+    const view = deployment({
+      status: "cancelled", in_flight: false,
+      nodes: [{ ...service("web", [stopped], "failed"), cancelled: true }, service("api", [stoppedAtCreate({ reason: "No space left" })], "failed")],
+    });
+    const graph = makeRunGraph(view);
+    expect(graph.nodes.map(({ id, light }) => ({ id, light }))).toEqual([
+      { id: "web-id", light: "not_applied" }, { id: "api-id", light: "failed" },
+    ]);
+    expect(selectRunNode(graph, {})?.id).toBe("api-id");
+  });
+
+  it("reads a failed row and node without the cancelled marker as Failed, as a Store from before Cancelled sends them", () => {
+    const failed = stoppedAtCreate();
+    expect(rowLabel(failed)).toBe("Failed at create");
+    expect(rowLight(failed)).toBe("failed");
+    const view = deployment({ status: "cancelled", in_flight: false, nodes: [service("web", [failed], "failed")] });
+    expect(makeRunGraph(view).nodes[0]?.light).toBe("failed");
   });
 
   it("opens the picked node, then the origin's, then the first failed, running, or Service", () => {
@@ -167,5 +194,28 @@ describe("run graph", () => {
     const graph = makeRunGraph(deployment({ nodes: [volume] }));
     expect(graph.nodes[0]?.light).toBe("deployed");
     expect(graph.done).toBe(1);
+  });
+
+  it("shows Cloud's cleanup after the last Service only when Cloud ran one", () => {
+    expect(makeRunGraph(chain).nodes.some((node) => node.type === "cleanup")).toBe(false);
+    const cleanup = makeRunGraph(chain, { state: "done", left: [], message: null }).nodes.find((node) => node.type === "cleanup");
+    expect(cleanup).toMatchObject({ id: "cleanup", name: "Cleanup", column: 4, row: 0, light: "deployed" });
+  });
+
+  it("words and lights each way a cleanup goes, naming each Machine a copy was left running on once", () => {
+    const left = (machine: string) => ({ machine, service: "web", reason: "did not answer" });
+    const light = (state: "waiting" | "done" | "left_running" | "cancelled" | "failed") =>
+      makeRunGraph(deployment({}), { state, left: [], message: null }).nodes[0]?.light;
+    expect([light("waiting"), light("done"), light("left_running"), light("cancelled"), light("failed")])
+      .toEqual(["deploying", "deployed", "unknown", "not_applied", "failed"]);
+    expect(cleanupLabel({ state: "waiting", left: [left("machine-3")], message: null })).toBe("Waiting");
+    expect(cleanupLabel({ state: "done", left: [], message: null })).toBe("Done");
+    expect(cleanupLabel({ state: "left_running", left: [left("machine-3")], message: null })).toBe("Left running on machine-3");
+    expect(cleanupLabel({ state: "left_running", left: [left("machine-3"), { ...left("machine-1"), service: "api" }, left("machine-1")], message: null }))
+      .toBe("Left running on machine-3, machine-1");
+    expect(cleanupLabel({ state: "left_running", left: [{ ...left("machine-3"), service: null }], message: null }))
+      .toBe("Left running on machine-3");
+    expect(cleanupLabel({ state: "cancelled", left: [], message: null })).toBe("A newer Deployment took over");
+    expect(cleanupLabel({ state: "failed", left: [], message: "boom" })).toBe("Failed");
   });
 });

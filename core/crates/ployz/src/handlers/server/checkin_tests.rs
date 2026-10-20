@@ -245,8 +245,8 @@ impl Host for Chosen {
         unreachable!("the check-in never enrolls here")
     }
 
-    async fn participating(&self) -> bool {
-        false
+    async fn participating(&self) -> Option<String> {
+        None
     }
 
     async fn discard_zfs_build(&self) -> Result<(), String> {
@@ -329,8 +329,8 @@ impl Host for Stopper {
         unreachable!("the check-in never enrolls here")
     }
 
-    async fn participating(&self) -> bool {
-        false
+    async fn participating(&self) -> Option<String> {
+        None
     }
 
     async fn discard_zfs_build(&self) -> Result<(), String> {
@@ -465,7 +465,7 @@ fn an_install_stopped_by_its_token_says_to_run_it_again_with_a_new_one() {
 fn an_install_says_waiting_only_when_cloud_answered_the_token() {
     let after = std::time::Duration::from_secs(60);
     assert_eq!(
-        install_outcome(Next::Wait { after, log: None }, PIPED).unwrap(),
+        install_outcome(Next::Wait { after }, PIPED).unwrap(),
         Answered::Waiting
     );
     let why = "Cloud held this check-in back: This Fleet Token already has 5 waiting servers.";
@@ -583,13 +583,7 @@ fn a_token_from_stdin_replaces_the_old_one_only_once_cloud_answers_it() {
             format!("{OLD_TOKEN}\n")
         );
     }
-    keep_answered_token(
-        Next::Wait { after, log: None },
-        &candidate,
-        &token_file,
-        PIPED,
-    )
-    .unwrap();
+    keep_answered_token(Next::Wait { after }, &candidate, &token_file, PIPED).unwrap();
     assert_eq!(
         fs::read_to_string(&token_file).unwrap(),
         format!("{NEW_TOKEN}\n")
@@ -751,7 +745,7 @@ fn a_rerun_over_a_file_that_isnt_a_token_swaps_it_only_once_cloud_takes_the_new_
         assert_eq!(fs::read_to_string(&token_file).unwrap(), "not a token\n");
     }
     keep_answered_token(
-        Next::Wait { after, log: None },
+        Next::Wait { after },
         &sending(NEW_TOKEN),
         &token_file,
         PIPED,
@@ -852,6 +846,31 @@ async fn an_install_records_what_cloud_said_only_for_the_token_it_keeps() {
     }
 }
 
+const ENROLL: &str = r#"{"kind":"enroll","attemptId":"att_1","token":"pmet_never_written_down","role":"join","name":"web-1","storage":{"kind":"none"},"policy":{"labels":{},"acceptsBuilds":true,"acceptsServices":true,"acceptsIngress":true}}"#;
+
+#[tokio::test]
+async fn an_install_cloud_already_enrolls_does_not_say_it_waits_for_approval() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = temp_paths(&dir);
+    let ployzd = dir.path().join("bin/ployzd");
+    probing_daemon(&ployzd, "0.0.1");
+    let host = Chosen(System {
+        ployzd,
+        stale: Some("Older.".to_owned()),
+        cloud: String::new(),
+    });
+    let key = CheckinKey::load_or_create(&paths.key()).unwrap();
+    fs::create_dir_all(paths.status().parent().unwrap()).unwrap();
+    let (url, server) = answering_once("200 OK", ENROLL, || {}).await;
+    let mut client = CheckinClient::new(&url, FleetToken::parse(NEW_TOKEN).unwrap()).unwrap();
+
+    let pass = checkin::install_pass(&host, &mut client, &key, &paths, Utc::now()).await;
+    server.await.unwrap();
+    let answered = answer_install(pass, &client, &paths, PIPED).unwrap();
+
+    assert_eq!(answered, Answered::Enrolling);
+}
+
 #[test]
 fn an_install_waits_for_another_to_finish_writing_the_token_before_it_reads_it() {
     let dir = tempfile::tempdir().unwrap();
@@ -914,7 +933,7 @@ fn a_token_read_from_its_file_stays_where_it_is() {
     let client = sending(OLD_TOKEN);
     let after = std::time::Duration::from_secs(60);
     for next in [
-        Next::Wait { after, log: None },
+        Next::Wait { after },
         Next::Retry {
             after,
             why: "Could not reach Ployz Cloud: refused.".to_owned(),

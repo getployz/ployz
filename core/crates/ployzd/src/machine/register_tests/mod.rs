@@ -67,6 +67,7 @@ async fn register_rpc_exact_replay_returns_the_original_joinable_assignment() {
                 registration: replay,
             },
             wireguard_mtu: None,
+            pinned: Default::default(),
         })
         .await
         .unwrap();
@@ -99,6 +100,7 @@ async fn register_does_not_reconstruct_membership_while_joining() {
                 registration: registered,
             },
             wireguard_mtu: None,
+            pinned: Default::default(),
         })
         .await
         .unwrap();
@@ -213,6 +215,7 @@ async fn replayed_enroll_republishes_runtime_over_a_register_row() {
     let enroll = |registration| ployz_core::EnrollRequest {
         role: ployz_core::EnrollAs::Member { registration },
         wireguard_mtu: None,
+        pinned: Default::default(),
     };
     target
         .enroll(enroll(entry.register(identity.clone()).await.unwrap()))
@@ -223,7 +226,7 @@ async fn replayed_enroll_republishes_runtime_over_a_register_row() {
     let publisher = tokio::spawn(run_machine_publisher(
         Some((replicated.clone(), view.clone())),
         target_store,
-        tokio::sync::watch::channel(0).1,
+        crate::corrosion::LiveRuntime::unobserved(),
         shutdown.clone(),
     ));
     // The founder publishes the Cluster network; a Machines view change for
@@ -231,7 +234,7 @@ async fn replayed_enroll_republishes_runtime_over_a_register_row() {
     let entry_publisher = tokio::spawn(run_machine_publisher(
         Some((replicated.clone(), view.clone())),
         entry_store,
-        tokio::sync::watch::channel(0).1,
+        crate::corrosion::LiveRuntime::unobserved(),
         shutdown.clone(),
     ));
     let network: ipnet::Ipv4Net = "10.210.0.0/16".parse().unwrap();

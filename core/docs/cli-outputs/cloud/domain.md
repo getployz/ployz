@@ -2,7 +2,7 @@
 
 Captured by cloud/run.sh against a seeded local Ployz Cloud (dashboard verify), signed in as ada@example.com unless noted. Cloud URL varies per run.
 
-## domain (seed: acme.com on web; hosted DNS is dead in verify)
+## domain (seed: acme.com on web in Project shop, set by PLOYZ_PROJECT; hosted DNS is dead in verify)
 
 ### domain ls
 
@@ -13,7 +13,8 @@ $ ployz domain ls
 
 stdout:
 ```
-acme.com	web → PORT	Setting up · Deploying
+DOMAIN	SERVICE	PORT	STATUS	REASON
+acme.com	web	-	setting up	Cloud can't see the Servers right now
 ```
 
 ### domain ls --json
@@ -32,16 +33,16 @@ stdout:
       "hostname": "acme.com",
       "kind": "custom",
       "port": null,
-      "reason": "Deploying",
+      "reason": "Cloud can't see the Servers right now",
       "service": "web",
       "status": "setting_up"
     }
   ],
   "environment": {
-    "id": "9d524a17-4056-47c0-9fc8-c7329841a90b",
+    "id": "2aff4644-5322-460a-97ec-ec5a24b95fef",
     "name": "production",
     "project": "shop",
-    "revision": 9
+    "revision": 13
   }
 }
 ```
@@ -55,7 +56,12 @@ $ ployz domain add api
 
 stdout:
 ```
-Staged domain api on api in shop/production (revision 10).
+Staged domain api.ada.ployz.test on api in shop/production.
+```
+
+stderr:
+```
+next: ployz deploy --project shop
 ```
 
 ### domain add worker --json (generated)
@@ -68,20 +74,22 @@ $ ployz domain add worker --json
 stdout:
 ```
 {
+  "added": true,
   "domain": {
-    "hostname": null,
+    "hostname": "worker.ada.ployz.test",
     "kind": "generated",
     "port": null,
     "prefix": "worker",
     "service": "worker"
   },
   "environment": {
-    "id": "9d524a17-4056-47c0-9fc8-c7329841a90b",
+    "id": "2aff4644-5322-460a-97ec-ec5a24b95fef",
     "name": "production",
     "project": "shop",
-    "revision": 11
+    "revision": 15
   },
-  "next": "ployz deploy",
+  "free_prefix": null,
+  "next": "ployz deploy --project shop",
   "staged": [
     "worker"
   ]
@@ -97,7 +105,12 @@ $ ployz domain add web shop.example.org
 
 stdout:
 ```
-Staged domain shop.example.org on web in shop/production (revision 12).
+Staged domain shop.example.org on web in shop/production.
+```
+
+stderr:
+```
+next: ployz deploy --project shop
 ```
 
 ### domain add web docs.example.org --port 8080 --json
@@ -110,6 +123,7 @@ $ ployz domain add web docs.example.org --port 8080 --json
 stdout:
 ```
 {
+  "added": true,
   "domain": {
     "hostname": "docs.example.org",
     "kind": "custom",
@@ -117,12 +131,13 @@ stdout:
     "service": "web"
   },
   "environment": {
-    "id": "9d524a17-4056-47c0-9fc8-c7329841a90b",
+    "id": "2aff4644-5322-460a-97ec-ec5a24b95fef",
     "name": "production",
     "project": "shop",
-    "revision": 13
+    "revision": 17
   },
-  "next": "ployz deploy",
+  "free_prefix": null,
+  "next": "ployz deploy --project shop",
   "staged": [
     "web"
   ]
@@ -138,7 +153,7 @@ $ ployz domain add web shop.example.org
 
 stdout:
 ```
-Staged domain shop.example.org on web in shop/production (revision 13).
+Nothing changed in shop/production; shop.example.org is already on web.
 ```
 
 ### domain add, unknown service
@@ -150,8 +165,8 @@ $ ployz domain add nosuch
 
 stderr:
 ```
-No Service named nosuch in Environment production
-valid: web, api, postgres, worker
+error: No Service named nosuch in Environment production
+valid: web, api, postgres, worker, redis
 ```
 
 ### domain add, unknown service --json
@@ -163,7 +178,7 @@ $ ployz domain add nosuch --json
 
 stdout:
 ```
-{"error":{"code":"not_found","details":{"did_you_mean":null,"valid_children":["web","api","postgres","worker"]},"message":"No Service named nosuch in Environment production"}}
+{"error":{"cause":[],"code":"not_found","details":{"valid_children":["web","api","postgres","worker","redis"]},"message":"No Service named nosuch in Environment production"}}
 ```
 
 ### domain add, bad host
@@ -175,7 +190,7 @@ $ ployz domain add web not\ a\ host
 
 stderr:
 ```
-Expected a hostname like app.example.com
+error: Expected a hostname like app.example.com
 ```
 
 ### domain set api myapi
@@ -187,7 +202,12 @@ $ ployz domain set api myapi
 
 stdout:
 ```
-Staged generated domain myapi on api in shop/production (revision 14).
+Staged generated domain myapi.ada.ployz.test on api in shop/production.
+```
+
+stderr:
+```
+next: ployz deploy --project shop
 ```
 
 ### domain set worker myworker --json
@@ -201,19 +221,19 @@ stdout:
 ```
 {
   "domain": {
-    "hostname": null,
+    "hostname": "myworker.ada.ployz.test",
     "kind": "generated",
     "port": null,
     "prefix": "myworker",
     "service": "worker"
   },
   "environment": {
-    "id": "9d524a17-4056-47c0-9fc8-c7329841a90b",
+    "id": "2aff4644-5322-460a-97ec-ec5a24b95fef",
     "name": "production",
     "project": "shop",
-    "revision": 15
+    "revision": 19
   },
-  "next": "ployz deploy",
+  "next": "ployz deploy --project shop",
   "staged": [
     "worker"
   ]
@@ -229,7 +249,7 @@ $ ployz domain set api my.api
 
 stderr:
 ```
-Expected one DNS label, like shop
+error: Expected one DNS label, like shop
 ```
 
 ### domain ls after changes
@@ -241,11 +261,17 @@ $ ployz domain ls
 
 stdout:
 ```
-acme.com	web → PORT	Setting up · Deploying
-shop.example.org	web → PORT	Setting up · Live after your next deploy
-docs.example.org	web → 8080	Setting up · Live after your next deploy
-myapi	api → PORT	Setting up · Live after your next deploy
-myworker	worker → PORT	Setting up · Live after your next deploy
+DOMAIN	SERVICE	PORT	STATUS	REASON
+acme.com	web	-	setting up	Cloud can't see the Servers right now
+shop.example.org	web	-	setting up	Live after your next deploy
+docs.example.org	web	8080	setting up	Live after your next deploy
+myapi.ada.ployz.test	api	-	setting up	Live after your next deploy
+myworker.ada.ployz.test	worker	-	setting up	Live after your next deploy
+```
+
+stderr:
+```
+next: ployz deploy --project shop
 ```
 
 ### domain check acme.com
@@ -257,7 +283,11 @@ $ ployz domain check acme.com
 
 stdout:
 ```
-acme.com	web → PORT	Setting up · Deploying
+domain = acme.com
+service = web
+port = -
+status = setting up
+reason = Cloud can't see the Servers right now
 ```
 
 ### domain check acme.com --json
@@ -275,15 +305,15 @@ stdout:
     "hostname": "acme.com",
     "kind": "custom",
     "port": null,
-    "reason": "Deploying",
+    "reason": "Cloud can't see the Servers right now",
     "service": "web",
     "status": "setting_up"
   },
   "environment": {
-    "id": "9d524a17-4056-47c0-9fc8-c7329841a90b",
+    "id": "2aff4644-5322-460a-97ec-ec5a24b95fef",
     "name": "production",
     "project": "shop",
-    "revision": 15
+    "revision": 19
   }
 }
 ```
@@ -297,8 +327,8 @@ $ ployz domain check nope.example.org
 
 stderr:
 ```
-No such domain in Environment production
-valid: acme.com, shop.example.org, docs.example.org, myapi, myworker
+error: No such domain in Environment production
+valid: acme.com, shop.example.org, docs.example.org, myapi.ada.ployz.test, myworker.ada.ployz.test
 ```
 
 ### domain rm shop.example.org
@@ -310,7 +340,12 @@ $ ployz domain rm shop.example.org
 
 stdout:
 ```
-Staged removal of domain shop.example.org on web in shop/production (revision 16).
+Staged removal of domain shop.example.org on web in shop/production.
+```
+
+stderr:
+```
+next: ployz deploy --project shop
 ```
 
 ### domain rm docs.example.org --json
@@ -330,12 +365,12 @@ stdout:
     "service": "web"
   },
   "environment": {
-    "id": "9d524a17-4056-47c0-9fc8-c7329841a90b",
+    "id": "2aff4644-5322-460a-97ec-ec5a24b95fef",
     "name": "production",
     "project": "shop",
-    "revision": 17
+    "revision": 21
   },
-  "next": "ployz deploy",
+  "next": "ployz deploy --project shop",
   "staged": [
     "web"
   ]
@@ -351,8 +386,8 @@ $ ployz domain rm nope.example.org
 
 stderr:
 ```
-No such domain in Environment production
-valid: acme.com, myapi, myworker
+error: No such domain in Environment production
+valid: acme.com, myapi.ada.ployz.test, myworker.ada.ployz.test
 ```
 
 ### domain rm unknown --json
@@ -364,7 +399,7 @@ $ ployz domain rm nope.example.org --json
 
 stdout:
 ```
-{"error":{"code":"not_found","details":{"valid_children":["acme.com","myapi","myworker"]},"message":"No such domain in Environment production"}}
+{"error":{"cause":[],"code":"not_found","details":{"valid_children":["acme.com","myapi.ada.ployz.test","myworker.ada.ployz.test"]},"message":"No such domain in Environment production"}}
 ```
 
 ### domain ls --project nosuch
@@ -376,6 +411,6 @@ $ ployz domain ls --project nosuch
 
 stderr:
 ```
-No Project named nosuch
+error: No Project named nosuch
 ```
 

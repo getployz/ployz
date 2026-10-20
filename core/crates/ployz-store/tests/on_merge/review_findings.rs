@@ -254,6 +254,8 @@ fn a_deploy_warns_only_about_the_services_it_ships() {
         );
         save(store, who, "production");
     });
+    // Production runs what it saved, so only what lands is a Saved change.
+    backend::deploy(&store, &who, "production", 1);
     watching(&store, &who);
     set(
         &store,
@@ -276,14 +278,15 @@ fn a_deploy_warns_only_about_the_services_it_ships() {
     let not_set = json!([{ "service": "db", "variable": "TOKEN" }]);
     assert_eq!(warnings(&landed), not_set);
 
-    // A push under web/ ships web alone: db's Not set secret isn't its to warn about.
+    // A push under web/ selects web, and ships db's Saved change, which the queued
+    // merge Deploy it supersedes held, and warns of its Not set secret.
     let pushed = system(
         &store,
         &who,
         &push(Some(MERGE), LATER, Some(&["web/app.rs"])),
     );
-    assert_eq!(deployed_services(&pushed), ["web"]);
-    assert_eq!(warnings(&pushed), json!([]));
+    assert_eq!(deployed_services(&pushed), ["db", "web"]);
+    assert_eq!(warnings(&pushed), not_set);
 }
 
 #[test]
@@ -298,15 +301,15 @@ fn what_landed_waits_for_ci_on_the_newest_head() {
     );
     set(&store, &who, "pr-5", &[("web.env.A", json!("2"))]);
     merged(&store, &who, "2026-09-29T11:00:00Z", MERGE);
-    let pushed = system(&store, &who, &push(Some(HEAD), MERGE, Some(&["README.md"])));
-    assert_eq!(pushed.waiting.len(), 1, "{pushed:?}");
+    system(&store, &who, &push(Some(HEAD), MERGE, Some(&["README.md"])));
+    assert_eq!(crate::support::held(&store, &who, "production"), [MERGE]);
     // Another push before CI passed: what landed waits on it instead.
-    let later = system(
+    system(
         &store,
         &who,
         &push(Some(MERGE), LATER, Some(&["README.md"])),
     );
-    assert_eq!(later.waiting.len(), 1, "{later:?}");
+    assert_eq!(crate::support::held(&store, &who, "production"), [LATER]);
 
     assert_eq!(deployed(&passed(&store, &who, LATER)), [["web"]]);
 }
@@ -397,6 +400,8 @@ fn merges_from_two_branches_into_one_environment_each_deploy() {
         "production",
         &[("worker.watchPaths", json!(["worker/**"]))],
     );
+    // Production runs what it saved, so only what lands is a Saved change.
+    backend::deploy(&store, &who, "production", 1);
     watching(&store, &who);
     system(&store, &who, &push_on("release", None, HEAD, &[]));
     system(
@@ -421,13 +426,15 @@ fn merges_from_two_branches_into_one_environment_each_deploy() {
         ),
     );
     let main = system(&store, &who, &push(Some(HEAD), MERGE, Some(&["README.md"])));
-    assert_eq!(deployed(&main), [["web"]]);
+    // A push ships every Saved change, so release's merge goes out with main's.
+    assert_eq!(deployed(&main), [["web", "worker"]]);
     let release = system(
         &store,
         &who,
         &push_on("release", Some(HEAD), LATER, &["README.md"]),
     );
-    assert_eq!(deployed(&release), [["worker"]]);
+    // It supersedes main's, still queued, so it ships what that one would.
+    assert_eq!(deployed(&release), [["worker", "web"]]);
 }
 
 #[test]
@@ -554,26 +561,14 @@ fn a_config_file_reading_a_secret_the_merge_left_not_set_warns() {
 fn a_merge_reported_after_newer_facts_still_reads_merged_on_the_check() {
     let (store, who) = shop();
     keep(&store, &who);
-    // A rides naming api, which stays here: production can't take the merge.
-    store
-        .write(
-            &who,
-            &ployz_store::CreateService {
-                id: ServiceLineageId::parse(uuid(9)).unwrap(),
-                environment: at("pr-5"),
-                name: ServiceName::parse("api").unwrap(),
-                image: Some("api:1".into()),
-                template: None,
-            },
-        )
-        .unwrap();
+    // A reads B, which production made read A since: the merge would close a cycle.
+    set(&store, &who, "pr-5", &[("web.env.A", json!("${{ B }}"))]);
     set(
         &store,
         &who,
-        "pr-5",
-        &[("web.env.A", json!("${{ api.PLOYZ_PRIVATE_DOMAIN }}"))],
+        "production",
+        &[("web.env.B", json!("${{ A }}"))],
     );
-    exclude(&store, &who, "api", false);
     system(
         &store,
         &who,
@@ -765,13 +760,15 @@ fn two_merges_before_their_pushes_each_deploy_with_their_own_commit() {
         &pull_request(6, "fix", "main", Some(LATER), false, "2026-09-29T11:00:00Z"),
     );
     let first = system(&store, &who, &push(Some(HEAD), MERGE, Some(&["README.md"])));
-    assert_eq!(deployed_services(&first), ["api"]);
+    // A push ships every Saved change: both merges, and web, which never ran.
+    assert_eq!(deployed_services(&first), ["api", "db", "web"]);
     let second = system(
         &store,
         &who,
         &push(Some(MERGE), LATER, Some(&["README.md"])),
     );
-    assert_eq!(deployed_services(&second), ["db"]);
+    // It supersedes the first, still queued, so it ships what that one would.
+    assert_eq!(deployed_services(&second), ["api", "db", "web"]);
 }
 
 #[test]
@@ -819,6 +816,7 @@ fn a_merge_that_renames_a_git_service_keeps_it_on_the_commit_it_last_built() {
                 status: ployz_store::BuildStatus::Built,
                 message: None,
                 log: String::new(),
+                server: None,
             }),
         )
         .unwrap();
@@ -885,6 +883,7 @@ fn a_merge_that_moves_a_git_service_to_another_repository_never_pins_the_old_bui
                 status: ployz_store::BuildStatus::Built,
                 message: None,
                 log: String::new(),
+                server: None,
             }),
         )
         .unwrap();
@@ -925,5 +924,236 @@ fn a_merge_that_moves_a_git_service_to_another_repository_never_pins_the_old_bui
             .map(|source| (source.service.as_str(), source.commit.clone()))
             .collect::<Vec<_>>(),
         [("web", None)]
+    );
+}
+
+#[test]
+fn an_edit_dropping_one_of_two_removed_services_keeps_the_other() {
+    let (store, who) = shop();
+    for (n, name) in [(9, "redis"), (10, "cache")] {
+        store
+            .write(
+                &who,
+                &ployz_store::CreateService {
+                    id: ServiceLineageId::parse(uuid(n)).unwrap(),
+                    environment: at("pr-5"),
+                    name: ServiceName::parse(name).unwrap(),
+                    image: Some("redis:7".into()),
+                    template: None,
+                },
+            )
+            .unwrap();
+    }
+    set(
+        &store,
+        &who,
+        "pr-5",
+        &[
+            ("redis.env.URL", json!("r")),
+            ("cache.env.URL", json!("c")),
+            ("web.env.HOSTS", json!("${{ redis.URL }},${{ cache.URL }}")),
+        ],
+    );
+    for gone in ["redis", "cache"] {
+        store
+            .write(
+                &who,
+                &ployz_store::RemoveService {
+                    environment: at("pr-5"),
+                    service: ServiceName::parse(gone).unwrap(),
+                },
+            )
+            .unwrap();
+    }
+    assert_eq!(
+        row(&store, &who, "web.env.HOSTS").lands,
+        json!("${{ <deleted redis>.URL }},${{ <deleted cache>.URL }}")
+    );
+
+    store
+        .write(
+            &who,
+            &merge_value("web.env.HOSTS", Some("${{ <deleted cache>.URL }}")),
+        )
+        .unwrap();
+    let hosts = row(&store, &who, "web.env.HOSTS");
+    assert_eq!(
+        (hosts.lands, hosts.ride),
+        (json!("${{ <deleted cache>.URL }}"), Ride::Edited)
+    );
+}
+
+#[test]
+fn an_edit_reads_a_removed_service_by_the_name_both_sides_share() {
+    let (store, who) = shop();
+    for (n, environment) in [(9, "pr-5"), (10, "production")] {
+        store
+            .write(
+                &who,
+                &ployz_store::CreateService {
+                    id: ServiceLineageId::parse(uuid(n)).unwrap(),
+                    environment: at(environment),
+                    name: ServiceName::parse("redis").unwrap(),
+                    image: Some("redis:7".into()),
+                    template: None,
+                },
+            )
+            .unwrap();
+        set(
+            &store,
+            &who,
+            environment,
+            &[
+                ("redis.env.URL", json!("r")),
+                ("web.env.HOSTS", json!("${{ redis.URL }}")),
+            ],
+        );
+        store
+            .write(
+                &who,
+                &ployz_store::RemoveService {
+                    environment: at(environment),
+                    service: ServiceName::parse("redis").unwrap(),
+                },
+            )
+            .unwrap();
+        save(&store, &who, environment);
+    }
+    let hosts = row(&store, &who, "web.env.HOSTS");
+    assert_eq!(
+        (hosts.production, hosts.preview),
+        (
+            json!("${{ <deleted redis>.URL }}"),
+            json!("${{ <deleted redis#2>.URL }}")
+        )
+    );
+
+    store
+        .write(
+            &who,
+            &merge_value("web.env.HOSTS", Some("${{ <deleted redis#2>.URL }}!")),
+        )
+        .unwrap();
+    assert_eq!(
+        row(&store, &who, "web.env.HOSTS").lands,
+        json!("${{ <deleted redis#2>.URL }}!")
+    );
+}
+
+#[test]
+fn a_merge_only_saved_names_the_removed_service_its_values_read() {
+    let (store, who) = shop();
+    store
+        .write(
+            &who,
+            &ployz_store::CreateService {
+                id: ServiceLineageId::parse(uuid(9)).unwrap(),
+                environment: at("pr-5"),
+                name: ServiceName::parse("redis").unwrap(),
+                image: Some("redis:7".into()),
+                template: None,
+            },
+        )
+        .unwrap();
+    set(
+        &store,
+        &who,
+        "pr-5",
+        &[
+            ("redis.env.URL", json!("r")),
+            ("web.env.HOSTS", json!("${{ redis.URL }}")),
+        ],
+    );
+    store
+        .write(
+            &who,
+            &ployz_store::RemoveService {
+                environment: at("pr-5"),
+                service: ServiceName::parse("redis").unwrap(),
+            },
+        )
+        .unwrap();
+    set(
+        &store,
+        &who,
+        "production",
+        &[("web.env.HOSTS", json!("draft"))],
+    );
+
+    merged(&store, &who, "2026-09-29T11:00:00Z", MERGE);
+    assert_eq!(
+        value(&store, &who, "production", "web.env.HOSTS"),
+        Some(json!("draft"))
+    );
+    store
+        .write(
+            &who,
+            &ployz_store::Discard {
+                environment: at("production"),
+                target: Some(ployz_store::DiscardTarget::Saved),
+                path: None,
+                version: None,
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        value(&store, &who, "production", "web.env.HOSTS"),
+        Some(json!("${{ <deleted redis>.URL }}"))
+    );
+}
+
+#[test]
+fn a_merge_keeps_the_label_the_list_showed_for_a_service_left_behind() {
+    let (store, who) = shop();
+    let db = |environment: &str, n: u8| {
+        store
+            .write(
+                &who,
+                &ployz_store::CreateService {
+                    id: ServiceLineageId::parse(uuid(n)).unwrap(),
+                    environment: at(environment),
+                    name: ServiceName::parse("db").unwrap(),
+                    image: Some("postgres:17".into()),
+                    template: None,
+                },
+            )
+            .unwrap();
+    };
+    db("pr-5", 9);
+    set(
+        &store,
+        &who,
+        "pr-5",
+        &[
+            ("db.env.URL", json!("d")),
+            ("web.env.HOSTS", json!("${{ db.URL }}")),
+        ],
+    );
+    db("production", 10);
+    set(
+        &store,
+        &who,
+        "production",
+        &[("web.env.HOSTS", json!("draft"))],
+    );
+    exclude(&store, &who, "db", false);
+    let shown = json!("${{ <deleted db>.URL }}");
+    assert_eq!(row(&store, &who, "web.env.HOSTS").lands, shown);
+
+    merged(&store, &who, "2026-09-29T11:00:00Z", MERGE);
+    store
+        .write(
+            &who,
+            &ployz_store::Discard {
+                environment: at("production"),
+                target: Some(ployz_store::DiscardTarget::Saved),
+                path: None,
+                version: None,
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        value(&store, &who, "production", "web.env.HOSTS"),
+        Some(shown)
     );
 }

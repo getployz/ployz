@@ -18,14 +18,16 @@ use hyper_util::{
     service::TowerToHyperService,
 };
 use iroh::{
-    Endpoint, RelayMode, RelayUrl, SecretKey,
+    Endpoint, PublicKey, RelayMode, RelayUrl, SecretKey, Signature,
     endpoint::{
-        BindError, Connection, IdleTimeout, Incoming, QuicTransportConfig, VarInt, presets,
+        BindError, Connection, IdleTimeout, Incoming, QuicTransportConfig, RecvStream, SendStream,
+        VarInt, presets,
     },
     tls::CaTlsConfig,
 };
 use ployz_core::{
-    BUILD_GRANT_ALPN, DEFAULT_RELAY_URL, MANAGEMENT_ALPN, MANAGEMENT_PORT, Rpc, TUNNEL_ALPN, op,
+    BUILD_GRANT_ALPN, DEFAULT_RELAY_URL, MANAGEMENT_ALPN, MANAGEMENT_PORT, MANAGEMENT_PROOF_LABEL,
+    ManagementProof, Rpc, TUNNEL_ALPN, op,
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, watch};
@@ -50,6 +52,8 @@ pub const CLIENT_CLEARED: VarInt = VarInt::from_u32(0x52);
 
 const MAX_CONCURRENT_HANDSHAKES: usize = 64;
 const IDLE_TIMEOUT: Duration = Duration::from_secs(60);
+/// How long a client may take to open its first stream and prove its key.
+const PROOF_TIMEOUT: Duration = Duration::from_secs(10);
 /// How long a revoked connection may take to drain and acknowledge before it closes.
 const REVOCATION_DELIVERY_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -147,9 +151,16 @@ pub async fn bind(
         .await
 }
 
+/// The Management Client key a connection proved with its [`ManagementProof`]. Each
+/// management request carries it; the connection's own transport key is never trusted.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ProvenClient(pub [u8; 32]);
+
 /// Serve `api` over `endpoint` until `shutdown`, then drain every connection.
 ///
-/// Keys other than a Management Client slot's accepted or pending key are closed with
+/// A connection proves its Management Client key first; see [`ManagementProof`]. A
+/// connection without a valid proof is closed with [`CLIENT_REFUSED`]. Proven keys
+/// other than a Management Client slot's accepted or pending key are closed with
 /// [`CLIENT_CLEARED`] when a Cleared tombstone holds them, otherwise [`CLIENT_REFUSED`].
 /// Authenticating with a pending key permits read-only identity negotiation. Its first
 /// operational RPC activates it. A record change that removes a key from every slot
@@ -234,18 +245,61 @@ async fn serve_connection<S>(
         tunnel::serve(connection, records, shutdown).await;
         return;
     }
-    let remote = *connection.remote_id().as_bytes();
-    // Marking this version seen before waiting for peer input means any later
-    // change wakes `revoked`: a delayed first stream cannot escape key rotation.
+    let Some((remote, streams)) = (tokio::select! {
+        () = shutdown.cancelled() => return,
+        proven = authenticate(&connection) => proven,
+    }) else {
+        connection.close(CLIENT_REFUSED, b"management access refused");
+        return;
+    };
+    drop(permit);
+    // Marking this version seen before serving means any later change wakes `revoked`.
     let refused = refusal(&records.borrow_and_update(), &remote);
     if let Some(code) = refused {
         connection.close(code, b"management access refused");
         return;
     }
-    match serve_admitted(&connection, permit, revoked(records, remote), api, shutdown).await {
+    match serve_admitted(
+        &connection,
+        ProvenClient(remote),
+        streams,
+        revoked(records, remote),
+        api,
+        shutdown,
+    )
+    .await
+    {
         Ended::Closed => {}
         Ended::Revoked => connection.close(REVOKED, b"revoked"),
     }
+}
+
+/// Accept the connection's first stream and read the client's proof from its head.
+/// Returns the client key it proves with the stream, or `None` when the proof is missing,
+/// late, malformed, or signed for another connection.
+async fn authenticate(connection: &Connection) -> Option<([u8; 32], (SendStream, RecvStream))> {
+    let proven = async {
+        let (send, mut recv) = connection.accept_bi().await.ok()?;
+        let mut frame = [0; ManagementProof::LEN];
+        recv.read_exact(&mut frame).await.ok()?;
+        let proof = ManagementProof::from_bytes(&frame);
+        let mut exporter = [0; ManagementProof::EXPORTER_LEN];
+        connection
+            .export_keying_material(&mut exporter, MANAGEMENT_PROOF_LABEL, &[])
+            .ok()?;
+        PublicKey::from_bytes(&proof.client)
+            .ok()?
+            .verify(
+                &ManagementProof::message(&exporter),
+                &Signature::from_bytes(&proof.signature),
+            )
+            .ok()?;
+        Some((proof.client, (send, recv)))
+    };
+    tokio::time::timeout(PROOF_TIMEOUT, proven)
+        .await
+        .ok()
+        .flatten()
 }
 
 /// The close code refusing `remote`, or `None` when a slot admits it.
@@ -270,7 +324,8 @@ enum Ended {
 
 async fn serve_admitted<S>(
     connection: &Connection,
-    permit: OwnedSemaphorePermit,
+    client: ProvenClient,
+    (send, recv): (SendStream, RecvStream),
     revoked: impl Future<Output = ()>,
     api: S,
     shutdown: CancellationToken,
@@ -283,24 +338,13 @@ where
     S::Future: Send,
 {
     tokio::pin!(revoked);
-    let (send, recv) = tokio::select! {
-        () = &mut revoked => return Ended::Revoked,
-        () = shutdown.cancelled() => return Ended::Closed,
-        streams = connection.accept_bi() => match streams {
-            Ok(streams) => streams,
-            Err(error) => {
-                tracing::debug!(error = %ployz_core::error_chain::inline(&error), "management client opened no RPC stream");
-                return Ended::Closed;
-            }
-        },
-    };
-    drop(permit);
     // Created before serving so the acknowledgement of the final bytes cannot be missed.
     let acknowledged = send.stopped();
     let drain = CancellationToken::new();
     let service = ConnectionApi {
         api,
         connection: connection.clone(),
+        client,
         drain: drain.clone(),
     };
     let serving = http2::Builder::new(TokioExecutor::new()).serve_connection(
@@ -372,6 +416,7 @@ async fn revoked(mut records: watch::Receiver<Arc<LocalMachineRecord>>, remote: 
 struct ConnectionApi<S> {
     api: S,
     connection: Connection,
+    client: ProvenClient,
     drain: CancellationToken,
 }
 
@@ -398,6 +443,7 @@ where
         request
             .extensions_mut()
             .insert(self.connection.weak_handle());
+        request.extensions_mut().insert(self.client);
         let response = self.api.call(request);
         if drain_exempt {
             return Box::pin(response);

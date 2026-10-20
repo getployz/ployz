@@ -1,4 +1,4 @@
-import type { ChangeKind, MachineId, MachineName } from "@ployz/sdk";
+import type { ChangeKind, MachineId, MachineName, SlotRole, VolumeCopy } from "@ployz/sdk";
 import { Option, Schema } from "effect";
 import type { DeletionItem } from "#/components/deletion-dialog";
 import type { ChangeGroup } from "#/modules/config-store/store-deployments";
@@ -12,8 +12,13 @@ import { type AnsweredMember, type Member, parseDockerVolumeName, type VolumeRun
 export type MachineRef = { readonly id: MachineId; readonly name: MachineName };
 export type PlacementVolume = { readonly id: string; readonly name: string };
 
-/** A copy other than the primary, as its Server reports it. A `root` is an old primary that came back. */
-export type ObservedCopy = { readonly server: MachineRef; readonly kind: "slot" | "root"; readonly newest: Date | null };
+/**
+ * A copy other than the primary, as its Server reports it. A `root` is an old primary that came back. A slot's `role` is
+ * what its Server recorded: a pull made it a mirror, a move or departure left it as an old copy.
+ */
+export type ObservedCopy =
+  | { readonly server: MachineRef; readonly kind: "slot"; readonly role: SlotRole; readonly newest: Date | null }
+  | { readonly server: MachineRef; readonly kind: "root"; readonly newest: Date | null };
 
 /** What the Servers report, in the user's words: the primary is the writer, every other copy is a copy. */
 export type ObservedPlacement = {
@@ -50,8 +55,9 @@ export type Placement = {
 export type StoredPlacement = Placement & { readonly unreached?: true };
 
 /**
- * The dashboard's record of a Volume's placement. `mirrors` are the copies that refresh; a copy on any other Server is
- * a detached volume. Null `mirrors` means no record yet, so every copy counts as a mirror, as the CLI made them.
+ * The dashboard's record of a Volume's placement. Which copies are mirrors is each Server's to say. `mirrors` is only
+ * the last Deploy's record of them: it stands in for a Server that does not answer, and still lists the mirror a move is
+ * promoting until the move's last run lands.
  */
 export type PlacementRow = {
   readonly volumeId: string;
@@ -93,6 +99,9 @@ export type PlacementChange =
     readonly point: Seed["point"];
   };
 
+/** What a slot's Server recorded it as. A slot no step marked, as an older daemon made it, is a mirror. */
+export const slotRole = (copy: Extract<VolumeCopy, { kind: "slot" }>): SlotRole => copy.role ?? "mirror";
+
 const toDate = (seconds: number | undefined) => (seconds === undefined ? null : new Date(seconds * 1000));
 const isRoot = (member: AnsweredMember) => member.view.copy?.kind === "root";
 
@@ -104,7 +113,8 @@ export function observePlacement(members: readonly Member[]): ObservedPlacement 
   const copies = answered.flatMap((member): ObservedCopy[] => {
     const copy = member.view.copy;
     if (member === primary || copy === null) return [];
-    return [{ server: member.machine, kind: copy.kind, newest: toDate(copy.newest?.created_unix_seconds) }];
+    const newest = toDate(copy.newest?.created_unix_seconds);
+    return [copy.kind === "slot" ? { server: member.machine, kind: "slot", role: slotRole(copy), newest } : { server: member.machine, kind: "root", newest }];
   });
   return {
     primary: primary?.machine ?? null,
@@ -114,10 +124,13 @@ export function observePlacement(members: readonly Member[]): ObservedPlacement 
   };
 }
 
-/** The copies that refresh, by Server. A removed Server's reset deleted its mirror, so a recorded one drops out. */
+/**
+ * The copies that refresh, by Server: the slots their Servers record as mirrors. A Server that does not answer says
+ * nothing, so the mirror the row last recorded there stands until it answers.
+ */
 export function appliedMirrors(observed: ObservedPlacement, row: PlacementRow | null): readonly MachineId[] {
-  if (row?.mirrors != null) return row.mirrors.filter((id) => observed.members.includes(id));
-  return observed.copies.filter((copy) => copy.kind === "slot").map((copy) => copy.server.id);
+  const silent = (row?.mirrors ?? []).filter((id) => observed.unanswered.some((server) => server.id === id));
+  return [...observed.copies.filter((copy) => copy.kind === "slot" && copy.role === "mirror").map((copy) => copy.server.id), ...silent];
 }
 
 /** The staged placement among the members: a removed Server's reset deleted its mirror, so a staged one drops out too. */
@@ -126,15 +139,14 @@ const stagedPlacement = (observed: ObservedPlacement, staged: Placement): Placem
 
 export const detachedName = (volume: PlacementVolume) => `${volume.name}-old`;
 
-/** Copies the dashboard does not list as mirrors: the old primary after a move, kept until the user deletes it. */
-export function detachedCopies(observed: ObservedPlacement, row: PlacementRow | null): readonly ObservedCopy[] {
-  const mirrors = appliedMirrors(observed, row);
-  return observed.copies.filter((copy) => copy.kind === "slot" && !mirrors.includes(copy.server.id));
+/** The old copies their Servers record: the old primary after a move, kept until the user deletes it. */
+export function detachedCopies(observed: ObservedPlacement): readonly ObservedCopy[] {
+  return observed.copies.filter((copy) => copy.kind === "slot" && copy.role === "old_copy");
 }
 
 export function oldCopies(observed: ObservedPlacement, row: PlacementRow | null): readonly ObservedCopy[] {
   const target = targetPlacement(observed, row);
-  return detachedCopies(observed, row).filter((copy) => copy.server.id !== target?.primary && !target?.mirrors.includes(copy.server.id));
+  return detachedCopies(observed).filter((copy) => copy.server.id !== target?.primary && !target?.mirrors.includes(copy.server.id));
 }
 
 /**
@@ -187,14 +199,14 @@ export function placementChanges(volume: PlacementVolume, members: readonly Memb
   }
   const copyOn = (id: MachineId) => observed.copies.find((copy) => copy.server.id === id && copy.kind === "slot");
   const applied = appliedMirrors(observed, row);
-  const detached = detachedCopies(observed, row).filter((copy) => !staged.deletes.includes(copy.server.id));
+  const detached = detachedCopies(observed).filter((copy) => !staged.deletes.includes(copy.server.id));
   const clearing = (keep: MachineId) => detached.filter((copy) => copy.server.id !== keep).map((copy) => copy.server);
   const changes: PlacementChange[] = staged.deletes
     .filter((id) => copyOn(id) !== undefined && !applied.includes(id))
     .map((id) => ({ kind: "delete_copy", volume, server: machine(id) }));
-  // A move to a mirror is unfinished while that mirror is still listed: once the target writes it holds the root,
-  // yet the next Deploy must finish the same move, not take the mirror away.
-  const handing = observed.primary?.id === staged.primary && applied.includes(staged.primary);
+  // A move to a mirror is unfinished while the row still lists that mirror, as only the move's last run takes it out:
+  // once the target writes it holds the root, yet the next Deploy must finish the same move.
+  const handing = observed.primary?.id === staged.primary && (row.mirrors ?? []).includes(staged.primary);
   // With no primary answering, a silent Server presumed to hold the Volume is no move: the staged one when it is silent,
   // since a failed move returns there, else the first, as targetPlacement presumes.
   const holder = observed.primary ?? observed.unanswered.find((server) => server.id === staged.primary) ?? observed.unanswered[0] ?? null;
@@ -206,7 +218,7 @@ export function placementChanges(volume: PlacementVolume, members: readonly Memb
   }
   if (moving) {
     const target = copyOn(staged.primary);
-    const how: MoveHow = target !== undefined && observed.primary === null ? "restore" : applied.includes(staged.primary) ? "promote" : "copy";
+    const how: MoveHow = target !== undefined && observed.primary === null ? "restore" : handing || applied.includes(staged.primary) ? "promote" : "copy";
     const from = handing
       ? observed.copies.find((copy) => copy.kind === "slot" && copy.server.id !== staged.primary)?.server ?? null
       : observed.primary ?? (how === "restore" ? observed.unanswered[0] ?? null : null);
@@ -229,17 +241,22 @@ export function placementChanges(volume: PlacementVolume, members: readonly Memb
 
 const clock = new Intl.DateTimeFormat("en-GB", { hour: "2-digit", minute: "2-digit" });
 export const lossTime = (at: Date) => clock.format(at);
+const dated = new Intl.DateTimeFormat("en-GB", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+/** The time alone for a point from today, the date as well for an older one. */
+export const lossMoment = (at: Date, now = new Date()) => (at.toDateString() === now.toDateString() ? lossTime(at) : dated.format(at));
 
-const deleteSlot = (server: MachineRef): VolumeRunInput => ({ kind: "delete_mirror", args: { slot: server.name, confirmed_name: null, machine: server.id } });
+const deleteSlot = (role: SlotRole) => (server: MachineRef): VolumeRunInput =>
+  ({ kind: "delete_mirror", args: { slot: server.name, confirmed_name: null, machine: server.id, role } });
+const deleteOld = deleteSlot("old_copy");
 
 /** Each change's runs; deletions free the one copy slot before a move or a mirror fills it. */
 const STEPS = {
-  delete_copy: { order: 0, runs: (change) => [deleteSlot(change.server)] },
-  remove_mirror: { order: 1, runs: (change) => [deleteSlot(change.server)] },
+  delete_copy: { order: 0, runs: (change) => [deleteOld(change.server)] },
+  remove_mirror: { order: 1, runs: (change) => [deleteSlot("mirror")(change.server)] },
   move: {
     order: 2,
     runs: (change) => [
-      ...change.clears.map(deleteSlot),
+      ...change.clears.map(deleteOld),
       change.how === "restore" ? { kind: "restore", args: { from: change.to.name } } : { kind: "move", args: { to: change.to.name } },
     ],
   },
@@ -250,7 +267,7 @@ const STEPS = {
       args: { into: { volumeId: change.volume.id, dockerVolume: change.dockerVolume, name: change.volume.name }, guid: change.point.guid, name: change.point.name },
     }],
   },
-  add_mirror: { order: 3, runs: (change) => [...change.clears.map(deleteSlot), { kind: "mirror", args: { to: change.server.name } }] },
+  add_mirror: { order: 3, runs: (change) => [...change.clears.map(deleteOld), { kind: "mirror", args: { to: change.server.name } }] },
 } satisfies { [K in PlacementChange["kind"]]: { order: number; runs: (change: Extract<PlacementChange, { kind: K }>) => VolumeRunInput[] } };
 
 function runsOf(change: PlacementChange): VolumeRunInput[] {
@@ -340,7 +357,7 @@ export function placementTargets(
 ): PlacementTargets {
   if (owed) return { move: [], mirror: [] };
   const observed = observePlacement(members);
-  const detached = new Set(detachedCopies(observed, row).map((copy) => copy.server.id));
+  const detached = new Set(detachedCopies(observed).map((copy) => copy.server.id));
   const cleared = members.map((member): Member =>
     member.answered && detached.has(member.machine.id) ? { ...member, view: { ...member.view, copy: null } } : member);
   const accepts = (kind: "move" | "mirror", member: Member) => {
@@ -425,15 +442,14 @@ export function parseMirrorResourceId(resourceId: string): { readonly volumeId: 
 }
 
 /**
- * The Volumes of `environmentId` worth asking the Servers about for the canvas: one the dashboard lists a mirror or a
- * staged placement for, or one with a mirror the Runtime Watch reports, as the CLI makes them. The rest have no mirror node.
+ * The Volumes of `environmentId` worth asking the Servers about for the canvas: one with a staged placement, or one with
+ * a mirror the Runtime Watch reports. The rest have no mirror node.
  */
 export function mirroredVolumes(
   volumeIds: readonly string[], rows: readonly PlacementRow[], environmentId: string, copies: readonly RuntimeVolumeCopy[],
 ): string[] {
-  const placed = new Set(rows.filter((row) => row.environmentId === environmentId && (row.staged !== null || (row.mirrors?.length ?? 0) > 0))
-    .map((row) => row.volumeId));
-  const slots = new Set(copies.filter((copy) => copy.role === "slot").flatMap((copy) => parseDockerVolumeName(copy.name)?.volumeId ?? []));
+  const placed = new Set(rows.filter((row) => row.environmentId === environmentId && row.staged !== null).map((row) => row.volumeId));
+  const slots = new Set(copies.filter((copy) => copy.slotRole === "mirror").flatMap((copy) => parseDockerVolumeName(copy.name)?.volumeId ?? []));
   return volumeIds.filter((id) => placed.has(id) || slots.has(id));
 }
 
@@ -559,8 +575,10 @@ export function volumeLossItems(
 ): DeletionItem[] {
   return volumes.map((volume) => {
     const servers = volume.deletes.flatMap((held) => machineName(held.machine_id) ?? []).join(", ");
-    const writes = volume.after !== undefined ? `changes after ${lossTime(new Date(volume.after * 1000))}` : volume.loss === "writes" ? "recent changes" : "";
-    return { kind: "volume", name: volume.name, detail: [servers, writes].filter(Boolean).join(" · ") || undefined };
+    const writes = volume.after === undefined && volume.loss === "writes" ? "recent changes" : "";
+    const item: DeletionItem = { kind: "volume", name: volume.name, detail: [servers, writes].filter(Boolean).join(" · ") || undefined };
+    if (volume.after !== undefined) item.lostAfter = new Date(volume.after * 1000);
+    return item;
   });
 }
 
@@ -608,14 +626,14 @@ export function placementLoss(changes: readonly PlacementChange[]): PlacementLos
   };
 }
 
-function detailsRow(volume: PlacementVolume, change: PlacementChange) {
+function detailsRow(volume: PlacementVolume, change: PlacementChange, now: Date) {
   const clears = "clears" in change && change.clears.length > 0 ? `Deletes ${detachedName(volume)} first` : undefined;
   switch (change.kind) {
     case "move":
       if (change.how !== "restore") return { name: "Primary", currentValue: change.from?.name ?? "", newValue: change.to.name, detail: clears };
       return {
         name: "Primary", currentValue: change.from?.name ?? "", newValue: change.to.name,
-        loss: change.lostAfter === null ? "Recent changes lost" : `Changes after ${lossTime(change.lostAfter)} lost`,
+        loss: change.lostAfter === null ? "Recent changes lost" : `Changes after ${lossMoment(change.lostAfter, now)} lost`,
       };
     case "add_mirror":
       return { name: "Mirror", currentValue: "", newValue: change.server.name, detail: clears };
@@ -624,7 +642,7 @@ function detailsRow(volume: PlacementVolume, change: PlacementChange) {
     case "delete_copy":
       return { name: "Detached copy", currentValue: change.server.name, newValue: "" };
     case "seed": {
-      const at = lossTime(new Date(change.point.at * 1000));
+      const at = lossMoment(new Date(change.point.at * 1000), now);
       return {
         name: "From", currentValue: "", newValue: `${change.source.name} · ${at}`,
         loss: `Changes after ${at} are not in ${volume.name}`,
@@ -648,7 +666,7 @@ export function placementGroup(volume: PlacementVolume, changes: readonly Placem
     canDiscard: true,
     unreached,
     rows: changes.map((change, index) => {
-      const words = detailsRow(volume, change);
+      const words = detailsRow(volume, change, now);
       return {
         changeKey: `${volume.id}:placement:${index}`,
         label: words.name,

@@ -57,13 +57,13 @@ stdout:
 ```
 {
   "environment": {
-    "id": "b9630f8d-f49f-48a2-83c6-84a89a333e90",
+    "id": "4c6af2ad-a3a0-453b-b067-41b1e6fc641c",
     "name": "production",
     "project": "blog",
     "revision": 1
   },
   "project": {
-    "id": "4ae082eb-8add-4c50-86c5-e3704a7b885d",
+    "id": "493587ed-745f-4f20-9a1c-ea1238d53890",
     "name": "blog"
   }
 }
@@ -102,7 +102,7 @@ $ ployz project new Bad\ Name\!
 
 stderr:
 ```
-error: Expected a Project name: up to 63 lowercase letters, digits and -
+error: Expected a Project name: up to 63 lowercase letters, digits and -, starting and ending with a letter or digit
 ```
 
 ### project new --json: invalid name
@@ -114,7 +114,7 @@ $ ployz --json project new Bad\ Name\!
 
 stdout:
 ```
-{"error":{"cause":[],"code":"invalid_argument","details":null,"message":"Expected a Project name: up to 63 lowercase letters, digits and -"}}
+{"error":{"cause":[],"code":"invalid_argument","details":null,"message":"Expected a Project name: up to 63 lowercase letters, digits and -, starting and ending with a letter or digit"}}
 ```
 
 ### project ls
@@ -147,7 +147,7 @@ stdout:
       "environments": [
         "production"
       ],
-      "id": "4ae082eb-8add-4c50-86c5-e3704a7b885d",
+      "id": "493587ed-745f-4f20-9a1c-ea1238d53890",
       "name": "blog"
     },
     {
@@ -155,7 +155,7 @@ stdout:
       "environments": [
         "production"
       ],
-      "id": "06367cee-8aa3-42b0-b526-c1f03ba8ecca",
+      "id": "1ceecd8e-9202-4c12-8856-3a081b1bbeea",
       "name": "shop"
     }
   ]
@@ -186,7 +186,7 @@ stdout:
 {
   "links": 0,
   "project": {
-    "id": "4ae082eb-8add-4c50-86c5-e3704a7b885d",
+    "id": "493587ed-745f-4f20-9a1c-ea1238d53890",
     "name": "blog"
   }
 }
@@ -243,7 +243,7 @@ $ ployz --json project rm scratch1
 
 stdout:
 ```
-{"error":{"cause":[],"code":"confirmation_required","details":{"environments":[{"environment":{"id":"8fd49816-17ee-43b0-bbe1-2dae6667489c","name":"production","project":"scratch1","revision":1},"services":[],"volumes":[]}],"project":"scratch1","retry":"ployz project rm scratch1 --confirm scratch1"},"message":"Removing Project scratch1 deletes every Environment in it (production) with its configuration, history, Services and Volumes; this can't be undone. No changes made."}}
+{"error":{"cause":[],"code":"confirmation_required","details":{"environments":[{"environment":{"id":"0f443a50-33ab-4b3d-8711-62e24f55c294","name":"production","project":"scratch1","revision":1},"services":[],"volumes":[]}],"project":"scratch1","retry":"ployz project rm scratch1 --confirm scratch1"},"message":"Removing Project scratch1 deletes every Environment in it (production) with its configuration, history, Services and Volumes; this can't be undone. No changes made."}}
 ```
 
 ### project rm: --confirm mismatch
@@ -286,9 +286,10 @@ stdout:
     "production"
   ],
   "project": {
-    "id": "8736ad92-8833-4dbe-9f34-0f16d2892b11",
     "name": "scratch2"
-  }
+  },
+  "removal": "removed",
+  "residuals": []
 }
 ```
 
@@ -310,7 +311,7 @@ error: No Project named nope
 $ ployz project rm blog
 Removing Project blog deletes, for good:
 └─ production
-Type blog to confirm: [2KType blog to confirm: 
+Type blog to continue: [2KType blog to continue: 
 Cancelled. Nothing was removed.
 ```
 

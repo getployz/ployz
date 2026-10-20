@@ -100,7 +100,9 @@ export function changeGroups(diff: DiffView, services: readonly ServiceListing[]
         : setting === "name" ? "Name" : setting === "source.branch" ? "Branch" : title ?? untitledLabel(node.type, setting);
       const variable = node.type === "service" && setting.startsWith("env.");
       const [before, after] = setting === "source" ? sourceChange(row.before, row.after)
-        : setting === "source.branch" ? [branchText(row.before), branchText(row.after)] : [shownValue(row.before), shownValue(row.after)];
+        : setting === "source.branch" ? [branchText(row.before), branchText(row.after)]
+        : setting === "memLimit" ? [memorySize(row.before), memorySize(row.after)]
+        : setting === "cpuLimit" ? [cpuCount(row.before), cpuCount(row.after)] : [shownValue(row.before), shownValue(row.after)];
       const file = (value: JsonValue) => value === null ? null : Option.getOrThrowWith(decodeFile(value),
         () => new Error(`Could not read Config file comparison for ${row.path}.`));
       const configFile = node.type === "config" && setting.startsWith("files.") ? { before: file(row.before), after: file(row.after) } : undefined;
@@ -143,8 +145,17 @@ export function reviewGroups(diff: DiffView, services: readonly ServiceListing[]
     }
     runtime.changeCount = runtime.rows.length + (runtime.lifecycle === "update" ? 0 : 1);
   }
-  return groups;
+  return groups.sort(reviewOrder);
 }
+
+const kindRank = { service: 0, volume: 1, config: 2 } satisfies Record<NodeChange["type"], number>;
+const stepRank = { delete: 0, update: 1, create: 2 } satisfies Record<NodeChange["lifecycle"], number>;
+const ascending = (a: number | string, b: number | string) => (a < b ? -1 : a > b ? 1 : 0);
+
+/** The Store's review order: Services, Volumes, then Configs, each by name; a removal before what took its name. */
+const reviewOrder = (a: ChangeGroup, b: ChangeGroup) =>
+  ascending(kindRank[a.nodeType], kindRank[b.nodeType]) || ascending(a.nodeName, b.nodeName)
+  || ascending(stepRank[a.lifecycle], stepRank[b.lifecycle]) || ascending(a.nodeId, b.nodeId);
 
 function sameReviewRow(left: ChangeRow, right: ChangeRow): boolean {
   if (!left.row || !right.row) return left.path === right.path;
@@ -165,6 +176,20 @@ const decodeShown = Schema.decodeUnknownOption(Schema.Union([
   // A Volume's storage.
   Schema.Struct({ kind: Schema.Literal("provisioned"), maximumBytes: Schema.Number }), Schema.Struct({ kind: Schema.Literal("docker") }),
 ]));
+
+/** A memory limit in GB as people read it, in the unit it was likely given: `192 MiB`, `1 GiB`, `0.5 GB`. */
+function memorySize(value: JsonValue): string {
+  if (!Schema.is(Schema.Number)(value)) return shownValue(value);
+  const bytes = Math.round(value * 1e9);
+  const [amount, unit] = bytes % 2 ** 30 === 0 ? [bytes / 2 ** 30, "GiB"] : bytes % 2 ** 20 === 0 ? [bytes / 2 ** 20, "MiB"] : [bytes / 1e9, "GB"];
+  return `${amount} ${unit}`;
+}
+
+/** A CPU limit in vCPUs, as the drawer's field takes it: `0.5 vCPUs`, `1 vCPU`. */
+function cpuCount(value: JsonValue): string {
+  if (!Schema.is(Schema.Number)(value)) return shownValue(value);
+  return `${value} ${value === 1 ? "vCPU" : "vCPUs"}`;
+}
 
 /**
  * A diff value as a cell shows it: text as is, a sealed one as Sealed or needing a value, a route by its hostname, a
@@ -192,7 +217,7 @@ export const showCancelling = <D extends Pick<DeploymentSummary, "status" | "in_
   cancelling && deployment.in_flight ? { ...deployment, status: "cancelling" } : deployment;
 
 const deploymentStatusLabels = {
-  queued: "Queued", running: "Deploying", cancelling: "Cancelling", applied: "Deployed", failed: "Failed",
+  waiting_for_ci: "Waiting for CI", queued: "Queued", running: "Deploying", cancelling: "Cancelling", applied: "Deployed", failed: "Failed",
   unknown: "Unknown", cancelled: "Cancelled", superseded: "Superseded",
 } satisfies Record<DeploymentStatus, string>;
 
@@ -209,21 +234,37 @@ export const buildNodeId = (service: string) => `build:${service}`;
 export type NodeLight = "queued" | "deploying" | "deployed" | "failed" | "unknown" | "not_applied";
 
 /** Each status in the icons' vocabulary. */
-export const deploymentStatusIcons = {
-  queued: "queued", running: "deploying", cancelling: "deploying", applied: "deployed", failed: "failed",
+const deploymentStatusIcons = {
+  waiting_for_ci: "queued", queued: "queued", running: "deploying", cancelling: "deploying", applied: "deployed", failed: "failed",
   unknown: "unknown", cancelled: "cancelled", superseded: "cancelled",
 } satisfies Record<DeploymentStatus, DeploymentLight>;
 
+/** What a Deployment's CI says while it waits for it; a summary the Store wrote before it said so has none. */
+type WaitingCi = Partial<Pick<DeploymentSummary, "ci">>;
+
+/** A Deployment as its icon shows it: one waiting for CI that failed reads as failed. */
+export const deploymentLight = ({ status, ci }: Pick<DeploymentSummary, "status"> & WaitingCi): DeploymentLight =>
+  ci === "failed" ? "failed" : deploymentStatusIcons[status];
+
+/**
+ * A node's outcome as users read it: Failed work the Deployment's cancel stopped reads Cancelled. The Store marks it
+ * rather than giving it a status of its own, so a reader from before Cancelled reads Failed.
+ */
+export type ShownNodeStatus = NodeStatus | "cancelled";
+
+export const shownNodeStatus = ({ outcome, cancelled }: Pick<NodeOutcome, "outcome" | "cancelled">): ShownNodeStatus =>
+  outcome === "failed" && cancelled ? "cancelled" : outcome;
+
 export const nodeStatusLabels = {
-  pending: "Pending", deployed: "Deployed", removed: "Removed", failed: "Failed", not_attempted: "Not attempted",
-  unchanged: "Unchanged", unknown: "Unknown",
-} satisfies Record<NodeStatus, string>;
+  pending: "Pending", deployed: "Deployed", removed: "Removed", failed: "Failed", cancelled: "Cancelled",
+  not_attempted: "Not attempted", unchanged: "Unchanged", unknown: "Unknown",
+} satisfies Record<ShownNodeStatus, string>;
 
 /** Whether the Deployment left the node as intended: deployed, removed, or nothing it had to change. */
-export const nodeApplied = (outcome: NodeStatus) => outcome === "deployed" || outcome === "removed" || outcome === "unchanged";
+export const nodeApplied = (outcome: ShownNodeStatus) => outcome === "deployed" || outcome === "removed" || outcome === "unchanged";
 
 /** A node's outcome as the badges and canvas lighting show it; a pending node reads as its Deployment does. */
-export function nodeLight(outcome: NodeStatus, deployment: Pick<DeploymentSummary, "status" | "in_flight">): NodeLight {
+export function nodeLight(outcome: ShownNodeStatus, deployment: Pick<DeploymentSummary, "status" | "in_flight">): NodeLight {
   if (nodeApplied(outcome)) return "deployed";
   if (outcome === "failed") return "failed";
   if (outcome === "unknown") return "unknown";
@@ -235,9 +276,12 @@ export function nodeLight(outcome: NodeStatus, deployment: Pick<DeploymentSummar
 /**
  * A Deployment's status in words. One that takes its Environment off the Servers reads as the Branch panel says it:
  * Coming off the servers, then Off the servers; one that completed with no Server left to take it off (`forgotten`)
- * says what it left.
+ * says what it left. One waiting for CI says so, or that its CI failed.
  */
-export function deploymentStatusLabel({ status, remove, outcome }: Pick<DeploymentSummary, "status" | "remove" | "outcome">) {
+export function deploymentStatusLabel(
+  { status, remove, outcome, ci }: Pick<DeploymentSummary, "status" | "remove" | "outcome"> & WaitingCi,
+) {
+  if (ci === "failed") return "CI failed";
   if (outcome?.type === "forgotten") return "Left on old servers";
   if (remove && status === "running") return "Coming off the servers";
   if (remove && status === "applied") return "Off the servers";
@@ -245,11 +289,26 @@ export function deploymentStatusLabel({ status, remove, outcome }: Pick<Deployme
 }
 
 /**
- * What a Deployment ships, for its row: "Deploys every service", or the Services a targeted Deploy named; nothing for one
- * that takes its Environment off the Servers.
+ * How a Deployment is named: "#N" once it queued; while it waits for CI it has no number yet, so the push's short sha
+ * stands in, and the ID's first 8 characters when no push is known.
  */
-export const deploysLabel = ({ services, remove }: Pick<DeploymentSummary, "services" | "remove">) =>
-  remove ? null : `Deploys ${services.length === 0 ? "every service" : services.join(", ")}`;
+export const deploymentLabel = ({ number, push, id }: Pick<DeploymentSummary, "number" | "id"> & { push?: { head: string } | null }) =>
+  number !== null ? `#${number}` : (push?.head.slice(0, 7) ?? id.slice(0, 8));
+
+/** Whether a Deployment ships Service `name`: a full Deploy ships every one, a narrowed one those it names and those they reference. */
+export const shippedService = ({ services, ships }: Pick<DeploymentSummary, "services" | "ships">, name: string) =>
+  services.length === 0 || services.includes(name) || ships.includes(name);
+
+/**
+ * What a Deployment ships, for its row: "Deploys every service", or the Services a targeted Deploy named followed by the
+ * others it ships by reference, "Deploys web (+ api, postgres)"; nothing for one that takes its Environment off the Servers.
+ */
+export function deploysLabel({ services, ships, remove }: Pick<DeploymentSummary, "services" | "ships" | "remove">) {
+  if (remove) return null;
+  if (services.length === 0) return "Deploys every service";
+  const referenced = ships.filter((name) => !services.includes(name)).sort();
+  return `Deploys ${services.join(", ")}${referenced.length > 0 ? ` (+ ${referenced.join(", ")})` : ""}`;
+}
 
 const time = (seconds: number | null) => seconds === null ? null : new Date(seconds * 1000);
 
@@ -289,17 +348,43 @@ export function deploymentByline(deployment: DeploymentView, service: string | u
 export const canFixOnBranch = (deployment: DeploymentView, node: NodeOutcome, noServers: boolean) =>
   !noServers && deployment.status === "failed" && deployment.outcome?.type === "executed" && !nodeApplied(node.outcome);
 
-/** What a Deployment shipped despite, in words: "TOKEN not set", where a Config file left one empty, a Server left without ingress, or ingress it couldn't check. */
-export function deploymentWarningText(warning: DeploymentWarning) {
+/**
+ * What a Deployment shipped despite, in words: "TOKEN not set", a broken reference left out, where a Config file left
+ * one empty, a Server left without ingress, ingress it couldn't check, or an image exposing a port its domains don't
+ * send to.
+ */
+export function deploymentWarningText(warning: DeploymentWarning, service?: string) {
+  if ("warning" in warning) {
+    const found = warning.warning;
+    return found.type === "image_port_mismatch"
+      ? `${service ?? found.service}'s image ${found.image} exposes ${found.exposed.join(", ")}; its domains send to ${found.routed.join(", ")}`
+      : "The deployment found something to check";
+  }
   if ("cause" in warning) return `Couldn't check ingress: ${warning.cause.replace(/\.$/, "")}. Deploy again to retry`;
   if ("ingress" in warning) {
     return warning.ingress.type === "port_taken"
       ? `Ingress isn't running on ${warning.server}: something else holds port 80 or 443`
       : `Ingress isn't running on ${warning.server}: ${warning.ingress.cause}`;
   }
-  if ("service" in warning) return `${warning.variable} not set in ${warning.service}`;
-  if ("secret" in warning) return `${warning.secret} not set in ${warning.config}/${warning.file}`;
+  if ("service" in warning) {
+    return warning.broken ? `Broken reference: ${warning.variable} in ${warning.service}` : `${warning.variable} not set in ${warning.service}`;
+  }
+  if ("secret" in warning) {
+    const at = `${warning.config}/${warning.file}`;
+    return warning.broken ? `Broken reference: ${warning.secret} in ${at}` : `${warning.secret} not set in ${at}`;
+  }
   return `${warning.variable} may break ${warning.config}/${warning.file}`;
+}
+
+/**
+ * The Service node a deploy warning is about. The engine names Services by their runtime (Private DNS) name, which
+ * outlives a rename, so the match goes through `runtime_names` rather than the node's shown name: a Service renamed
+ * since keeps its link, and another one that took its old name is never chosen.
+ */
+export function warnedService(deployment: Pick<DeploymentView, "nodes" | "runtime_names">, warning: DeploymentWarning) {
+  if (!("warning" in warning) || warning.warning.type !== "image_port_mismatch") return undefined;
+  const runtime = warning.warning.service;
+  return deployment.nodes.find((node) => node.type === "service" && (deployment.runtime_names[node.name] ?? node.name) === runtime);
 }
 
 /** Why a Deployment ended: its reason and deepest cause, or what a forgotten removal left. */
@@ -322,22 +407,48 @@ export function missingDeployLogs(deployment: DeploymentView, node: NodeOutcome)
 }
 
 /** The one action a Deployment page shows by itself. */
-export type DeploymentAction = "add_server" | "retry" | "start" | "cancel";
+export type DeploymentAction = "add_server" | "redeploy" | "start" | "cancel";
 
 /**
- * Retry an ended Deployment that didn't apply, start a queued one, cancel one before it ends; with no Server, adding
- * one comes first.
+ * Redeploy an ended Deployment, start a queued one, cancel one before it ends; with no Server, adding one comes first.
+ * One waiting for CI only cancels: passing CI queues it. Cancelled while it waited, it froze nothing to redeploy.
  */
-function primaryAction(status: DeploymentStatus, noServers: boolean): DeploymentAction | null {
-  const retry = status === "failed" || status === "unknown" || status === "cancelled";
-  if (noServers && (retry || status === "queued")) return "add_server";
-  if (retry) return "retry";
+function primaryAction(status: DeploymentStatus, held: boolean, noServers: boolean): DeploymentAction | null {
+  const redeploy = status === "applied" || status === "failed" || status === "unknown" || (status === "cancelled" && !held);
+  if (noServers && (redeploy || status === "queued")) return "add_server";
+  if (redeploy) return "redeploy";
   if (status === "queued") return "start";
-  return status === "running" ? "cancel" : null;
+  return status === "running" || status === "waiting_for_ci" ? "cancel" : null;
 }
 
-/** The action a Deployment page shows, and whether Cancel waits in its menu beside another one. */
-export function deploymentActions(status: DeploymentStatus, noServers: boolean) {
-  const primary = primaryAction(status, noServers);
+/**
+ * The confirm Redeploy opens when it rolls back Deployments that ran after this one; null when it rolls nothing back
+ * and redeploys in one click.
+ */
+export function rollbackConfirm(deployment: Pick<DeploymentView, "number" | "rolls_back">) {
+  const undone = deployment.rolls_back.map((number) => `#${number}`);
+  if (undone.length === 0) return null;
+  const list = undone.length === 1 ? undone[0] : `${undone.slice(0, -1).join(", ")} and ${undone.at(-1)}`;
+  return { title: `Roll back to #${deployment.number}`, body: `Undoes ${list}` };
+}
+
+/**
+ * What a redeploy rolls back now, from the Store's refusal when it changed after the person confirmed; null for any
+ * other refusal.
+ */
+export function freshRollback(refusal: { code: string; details: unknown }): readonly number[] | null {
+  if (refusal.code !== "confirmation_required") return null;
+  return Option.getOrNull(decodeRollback(refusal.details))?.rolls_back ?? null;
+}
+
+const decodeRollback = Schema.decodeUnknownOption(Schema.Struct({ rolls_back: Schema.Array(Schema.Number) }));
+
+/**
+ * The action a Deployment page shows, and whether Cancel waits in its menu beside another one. A removal that applied
+ * left nothing to redeploy.
+ */
+export function deploymentActions(deployment: Pick<DeploymentSummary, "status" | "remove" | "held">, noServers: boolean) {
+  const { status } = deployment;
+  const primary = deployment.remove && status === "applied" ? null : primaryAction(status, deployment.held, noServers);
   return { primary, cancelInMenu: (status === "queued" || status === "running") && primary !== "cancel" };
 }

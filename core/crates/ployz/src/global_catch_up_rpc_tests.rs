@@ -13,6 +13,7 @@ fn global_slot(key: &str) -> SlotKey {
 
 fn new_container(key: &str, resolved_spec: ployz_core::ResolvedServiceSpec) -> NewContainer {
     NewContainer {
+        r#gen: ployz_core::Gen::FIRST,
         slot: global_slot(key),
         resolved_spec,
         deployment_id: None,
@@ -123,6 +124,7 @@ async fn real_catch_up_client_retries_readiness_and_placement_to_their_budget() 
                                 assert!(placement);
                                 let ContainerWant::Running {
                                     container: RunTarget::New(new),
+                                    ..
                                 } = ensure.want
                                 else {
                                     panic!("catch-up runs a new Container: {:?}", ensure.want);
@@ -177,8 +179,7 @@ async fn real_catch_up_client_retries_readiness_and_placement_to_their_budget() 
 async fn catch_up_uses_primitives_and_never_replaces_a_key_conflict_or_unknown_slot() {
     use ployz_core::{
         ContainerList, ContainerLocator, ContainerWant, Drain, LocalMachinePhase, MachineDetails,
-        MachineList, MachineObservation, MembershipObservation, OpaquePayload, RpcRequestBody,
-        RunTarget,
+        OpaquePayload, RpcRequestBody, RunTarget,
     };
     use std::sync::{Arc, Mutex};
     use tonic::{Request, Response};
@@ -214,28 +215,12 @@ async fn catch_up_uses_primitives_and_never_replaces_a_key_conflict_or_unknown_s
                 async move {
                     let one_target = rpc.metadata().get(ployz_core::ONE_TARGET_HEADER).cloned();
                     let body = rpc.into_inner().decode_request().unwrap().body;
-                    if !matches!(body, RpcRequestBody::ListMachines(_)) {
-                        assert_eq!(one_target.unwrap(), target.id.as_str());
-                    }
+                    assert_eq!(one_target.unwrap(), target.id.as_str());
                     #[expect(
                         clippy::wildcard_enum_match_arm,
                         reason = "fixture rejects unrelated RPCs"
                     )]
                     let response = match body {
-                        RpcRequestBody::ListMachines(_) => {
-                            recorded.lock().unwrap().push("machines");
-                            RpcResponse::from(MachineList {
-                                enrollment: None,
-                                machines: vec![MachineObservation::new(
-                                    target.clone(),
-                                    MembershipObservation::Up,
-                                )],
-                            })
-                        }
-                        RpcRequestBody::ReadServingPointer(_) => {
-                            recorded.lock().unwrap().push("read pointer");
-                            RpcResponse::from(ployz_core::ServingPointerRead::default())
-                        }
                         RpcRequestBody::Inspect(inspect) => {
                             recorded.lock().unwrap().push(if inspect.include_storage {
                                 "inspect"
@@ -265,6 +250,7 @@ async fn catch_up_uses_primitives_and_never_replaces_a_key_conflict_or_unknown_s
                         RpcRequestBody::EnsureContainer(ensure) => match ensure.want {
                             ContainerWant::Running {
                                 container: RunTarget::New(new),
+                                ..
                             } => {
                                 recorded.lock().unwrap().push("run new");
                                 assert_eq!(new, expected);
@@ -285,6 +271,7 @@ async fn catch_up_uses_primitives_and_never_replaces_a_key_conflict_or_unknown_s
                             }
                             ContainerWant::Running {
                                 container: RunTarget::Existing(ContainerLocator::Id(id)),
+                                ..
                             } => {
                                 recorded.lock().unwrap().push("run existing");
                                 assert_eq!(id, container_id('a'));
@@ -359,7 +346,7 @@ async fn catch_up_uses_primitives_and_never_replaces_a_key_conflict_or_unknown_s
         )
         .await;
         assert_eq!(
-            ran.ok(),
+            ran.ok().map(|copy| copy.map(|copy| copy.container_id)),
             match outcome {
                 "new" | "matching" => Some(Some(container_id('a'))),
                 "revision" => Some(Some(container_id('b'))),
@@ -371,7 +358,7 @@ async fn catch_up_uses_primitives_and_never_replaces_a_key_conflict_or_unknown_s
             "new" | "revision" => &["inspect", "list", "capacity", "run new"],
             "matching" => &["inspect", "list", "run existing"],
             "conflict" => &["inspect", "list", "capacity", "run new"],
-            "ineligible" => &["inspect", "list", "machines", "read pointer", "gone"],
+            "ineligible" => &["inspect", "list", "gone"],
             "capacity" => &["inspect", "list", "capacity"],
             _ => &["inspect"],
         };
@@ -385,7 +372,7 @@ async fn top_level_catch_up_uses_fresh_target_eligibility_and_reuses_hidden_full
     use ployz_core::{
         ContainerList, ContainerLocator, ContainerWant, LocalMachinePhase, MachineDetails,
         MachineList, MachineObservation, MembershipObservation, OpaquePayload, RpcRequestBody,
-        RunTarget, TelemetryObservation,
+        RunRotation, RunTarget, TelemetryObservation,
     };
     use std::sync::{
         Arc, Mutex,
@@ -471,6 +458,7 @@ async fn top_level_catch_up_uses_fresh_target_eligibility_and_reuses_hidden_full
                         RpcRequestBody::EnsureContainer(ensure) => match ensure.want {
                             ContainerWant::Running {
                                 container: RunTarget::Existing(ContainerLocator::Id(id)),
+                                rotation,
                             } => {
                                 assert!(eligible);
                                 let mut current = current.lock().unwrap();
@@ -479,6 +467,10 @@ async fn top_level_catch_up_uses_fresh_target_eligibility_and_reuses_hidden_full
                                 slot.try_update(|parts| {
                                     parts.runtime = ContainerRuntimeObservation::Running {
                                         health: HealthObservation::Healthy,
+                                    };
+                                    if let RunRotation::In { expect, .. } = rotation {
+                                        assert_eq!(expect, Some(CopyRotation::Pending));
+                                        parts.rotation = Some(CopyRotation::In);
                                     }
                                 })
                                 .unwrap();
@@ -497,9 +489,6 @@ async fn top_level_catch_up_uses_fresh_target_eligibility_and_reuses_hidden_full
                             }
                             other => panic!("unexpected want: {other:?}"),
                         },
-                        RpcRequestBody::ReadServingPointer(_) => {
-                            RpcResponse::from(ployz_core::ServingPointerRead::default())
-                        }
                         other => {
                             panic!("unexpected RPC (existing slot needs no endpoint): {other:?}")
                         }
@@ -522,69 +511,85 @@ async fn top_level_catch_up_uses_fresh_target_eligibility_and_reuses_hidden_full
 }
 
 #[tokio::test]
-async fn an_ineligible_target_removes_a_copy_the_pointer_does_not_prove() {
+async fn an_ineligible_target_retires_its_own_in_copy() {
     use ployz_core::{
-        ContainerList, ContainerLocator, ContainerWant, DeploymentLogId, LocalMachinePhase,
-        MachineDetails, MachineList, MachineObservation, MembershipObservation, OpaquePayload,
-        RpcRequestBody, ServingPointer, ServingPointerRead,
+        ContainerList, ContainerLocator, ContainerWant, LocalMachinePhase, MachineDetails,
+        MachineList, MachineObservation, MembershipObservation, OpaquePayload, RotationTarget,
+        RoutesRead, RpcRequestBody,
     };
+    use std::collections::{BTreeMap, BTreeSet};
     use std::sync::{Arc, Mutex};
     use tonic::{Request, Response};
-    for eligible in [false, true] {
+    // `replaced`: another Machine already runs an In copy, so this one may go Out
+    // without emptying the Service.
+    for (eligible, replaced) in [(false, true), (false, false), (true, true)] {
         let mut stale = machine('1', "joiner");
         stale.accepts_services = true;
         let mut fresh = stale.clone();
         fresh.accepts_services = eligible;
+        let founder = machine('f', "founder");
         let spec = requested(ServiceMode::Global)
             .to_resolved(service_id('a'), ResolvedUpdateConfig::default())
             .unwrap();
-        let mut old = grouped(qualified("app", "api"), spec, running_on(&fresh, 'a'))
-            .containers
-            .remove(0)
-            .into_observation();
-        old.try_update(|parts| {
-            parts
-                .labels
-                .insert(ployz_core::DEPLOYMENT_ID_LABEL.into(), "dep-a".into());
-        })
-        .unwrap();
-        let pointer = ServingPointer {
-            deploy: DeploymentLogId::parse("dep-b").unwrap(),
-            containers: vec![container_id('b')],
-            previous: Some(DeploymentLogId::parse("dep-a").unwrap()),
-            retiring: Vec::new(),
-            deciding: None,
+        let in_copy = |on: &Machine, hex| {
+            let mut copy = grouped(qualified("app", "api"), spec.clone(), running_on(on, hex))
+                .containers
+                .remove(0)
+                .into_observation();
+            copy.try_update(|parts| parts.rotation = Some(CopyRotation::In))
+                .unwrap();
+            copy
         };
-        let local = Arc::new(Mutex::new(vec![old]));
+        let old = in_copy(&fresh, 'a');
+        let peer = replaced.then(|| in_copy(&founder, 'b'));
+        let local = Arc::new(Mutex::new(vec![old.clone()]));
         let calls = Arc::new(Mutex::new(Vec::new()));
         let (current, recorded, observed) = (local.clone(), calls.clone(), fresh.clone());
         let (mut client, server) =
             crate::connect::test_support::rpc_client(move |rpc: Request<OpaquePayload>| {
-                let (target, current, recorded, pointer) = (
-                    observed.clone(),
-                    current.clone(),
-                    recorded.clone(),
-                    pointer.clone(),
-                );
+                let (target, founder, peer) = (observed.clone(), founder.clone(), peer.clone());
+                let (current, recorded) = (current.clone(), recorded.clone());
+                let selected = rpc
+                    .metadata()
+                    .get(ployz_core::ONE_TARGET_HEADER)
+                    .and_then(|v| v.to_str().ok())
+                    .map(str::to_owned);
                 async move {
+                    let on_founder = selected.as_deref() == Some(founder.id.as_str());
+                    let mut machines = vec![MachineObservation::new(
+                        target.clone(),
+                        MembershipObservation::Up,
+                    )];
+                    if peer.is_some() {
+                        machines.push(MachineObservation::new(
+                            founder.clone(),
+                            MembershipObservation::Up,
+                        ));
+                    }
                     #[expect(
                         clippy::wildcard_enum_match_arm,
-                        reason = "fixture rejects every RPC that would create, run or publish"
+                        reason = "fixture rejects every RPC that would create or run"
                     )]
                     let response = match rpc.into_inner().decode_request().unwrap().body {
                         RpcRequestBody::ListMachines(_) => RpcResponse::from(MachineList {
                             enrollment: None,
-                            machines: vec![MachineObservation::new(
-                                target.clone(),
-                                MembershipObservation::Up,
-                            )],
+                            machines,
                         }),
                         RpcRequestBody::ListContainers(_) => RpcResponse::from(ContainerList {
-                            containers: current.lock().unwrap().clone(),
+                            containers: if on_founder {
+                                peer.into_iter().collect()
+                            } else {
+                                current.lock().unwrap().clone()
+                            },
                         }),
-                        RpcRequestBody::ReadServingPointer(_) => {
-                            RpcResponse::from(ServingPointerRead {
-                                pointer: Some(pointer),
+                        RpcRequestBody::ReadRoutes(_) => {
+                            recorded.lock().unwrap().push("routes");
+                            RpcResponse::from(RoutesRead {
+                                routes: machines
+                                    .iter()
+                                    .map(|machine| (machine.machine.id, Some(BTreeSet::new())))
+                                    .collect::<BTreeMap<_, _>>(),
+                                complete: true,
                                 ..Default::default()
                             })
                         }
@@ -606,18 +611,45 @@ async fn an_ineligible_target_removes_a_copy_the_pointer_does_not_prove() {
                             })
                         }
                         RpcRequestBody::EnsureContainer(ensure) => match ensure.want {
+                            ContainerWant::Out {
+                                container: ContainerLocator::Id(id),
+                                allow_empty,
+                                expect,
+                            } => {
+                                recorded.lock().unwrap().push("out");
+                                assert_eq!(id, container_id('a'));
+                                assert!(!allow_empty, "Global retirement never allows empty");
+                                let mut current = current.lock().unwrap();
+                                let copy = current.first_mut().unwrap();
+                                match owner_decides(
+                                    copy,
+                                    &RotationTarget::Out,
+                                    expect.as_ref(),
+                                    peer.is_none(),
+                                ) {
+                                    Some(refusal) => refused_with(copy.clone(), refusal),
+                                    None => ensured(ContainerNow::Present(copy.clone())),
+                                }
+                            }
                             ContainerWant::Gone {
                                 container: ContainerLocator::Id(id),
                                 ..
                             } => {
                                 recorded.lock().unwrap().push("gone");
                                 assert_eq!(id, container_id('a'));
-                                current.lock().unwrap().clear();
-                                ensured(ContainerNow::Absent {
-                                    of: ContainerLocator::Id(id),
-                                })
+                                let mut current = current.lock().unwrap();
+                                let copy = current.first_mut().unwrap();
+                                match owner_decides(copy, &RotationTarget::Gone, None, false) {
+                                    Some(refusal) => refused_with(copy.clone(), refusal),
+                                    None => {
+                                        current.clear();
+                                        ensured(ContainerNow::Absent {
+                                            of: ContainerLocator::Id(id),
+                                        })
+                                    }
+                                }
                             }
-                            other => panic!("an unproven copy is never run: {other:?}"),
+                            other => panic!("an ineligible target never runs a copy: {other:?}"),
                         },
                         other => panic!("unexpected RPC: {other:?}"),
                     };
@@ -637,20 +669,350 @@ async fn an_ineligible_target_removes_a_copy_the_pointer_does_not_prove() {
             },
         )
         .await;
+        let calls = calls.lock().unwrap().clone();
+        let local = local.lock().unwrap().clone();
         if eligible {
             let error = result.unwrap_err();
             assert_eq!(error.unresolved, [qualified("app", "api")]);
             assert!(excluded.is_empty());
-            assert!(!calls.lock().unwrap().contains(&"gone"));
-            assert_eq!(local.lock().unwrap().len(), 1, "an eligible copy stays put");
-        } else {
+            assert!(!calls.contains(&"gone"));
+            assert_eq!(local.len(), 1, "an eligible copy stays put");
+        } else if replaced {
             result.unwrap();
             assert_eq!(excluded, [qualified("app", "api")]);
-            assert_eq!(calls.lock().unwrap().as_slice(), ["inspect", "gone"]);
-            assert!(local.lock().unwrap().is_empty());
+            assert_eq!(
+                calls,
+                ["inspect", "out", "routes", "gone"],
+                "an In copy goes Out, waits for the proxies, then goes"
+            );
+            assert!(local.is_empty());
+        } else {
+            let error = result.unwrap_err();
+            assert_eq!(error.unresolved, [qualified("app", "api")]);
+            assert!(excluded.is_empty());
+            let message = message(error, &stale);
+            assert!(message.contains("no other copy is In"), "{message}");
+            assert_eq!(
+                calls,
+                ["inspect", "out"],
+                "the owner refuses to take the last In copy Out"
+            );
+            assert_eq!(local, [old], "the only In copy stays");
         }
         server.abort();
     }
+}
+
+/// Decides a rotation want on `copy` the way its owner does: the `expect`
+/// check, then the shared edge table, then the LastIn guard on In to Out.
+fn owner_decides(
+    copy: &mut ContainerObservation,
+    target: &ployz_core::RotationTarget,
+    expect: Option<&CopyRotation>,
+    last_in: bool,
+) -> Option<ContainerRefusal> {
+    use ployz_core::{RotationEdge, RotationRefusal, RotationTarget};
+    let rotation = copy.rotation().clone();
+    let refused = |reason, message: String| Some(ContainerRefusal { reason, message });
+    if matches!(
+        (&rotation, target),
+        (CopyRotation::In, RotationTarget::In { .. }) | (CopyRotation::Out, RotationTarget::Out)
+    ) {
+        return None;
+    }
+    if let Some(expect) = expect
+        && *expect != rotation
+    {
+        return refused(
+            ContainerRefusalReason::RotationMismatch,
+            format!("the copy is {rotation:?}, not {expect:?} as expected"),
+        );
+    }
+    match rotation.edge(target) {
+        RotationEdge::Write(CopyRotation::Out) if rotation == CopyRotation::In && last_in => {
+            refused(
+                ContainerRefusalReason::LastIn,
+                "no other copy is In and routed; send allow_empty to empty the Service".into(),
+            )
+        }
+        RotationEdge::Write(to) => {
+            copy.try_update(|parts| parts.rotation = Some(to)).unwrap();
+            None
+        }
+        RotationEdge::Keep | RotationEdge::Remove => None,
+        RotationEdge::Refused(refusal) => refused(
+            match refusal {
+                RotationRefusal::HeldByOtherRun => ContainerRefusalReason::HeldByOtherRun,
+                RotationRefusal::InRotation => ContainerRefusalReason::InRotation,
+                RotationRefusal::OutIsFinal | RotationRefusal::NoEdge => {
+                    ContainerRefusalReason::RotationMismatch
+                }
+            },
+            format!("{refusal:?}"),
+        ),
+    }
+}
+
+fn refused_with(now: ContainerObservation, refusal: ContainerRefusal) -> RpcResponse {
+    RpcResponse::from(EnsuredContainer::Refused {
+        now: ContainerNow::Present(now),
+        refusal,
+    })
+}
+
+struct OverMatching {
+    result: Result<(), CatchUpError>,
+    calls: Vec<&'static str>,
+    local: Vec<ContainerObservation>,
+    old: ContainerObservation,
+    joiner: Machine,
+}
+
+/// Catches up a joiner that already holds a copy matching the founder's In
+/// copy, rotated `rotation`, against an owner that decides like the real one.
+async fn catch_up_over_matching_copy(rotation: CopyRotation) -> OverMatching {
+    use ployz_core::{
+        ContainerList, ContainerLocator, ContainerWant, LocalMachinePhase, MachineDetails,
+        MachineList, MachineObservation, MembershipObservation, OpaquePayload, RotationTarget,
+        RoutesRead, RpcRequestBody, RunRotation, RunTarget, TelemetryObservation,
+    };
+    use std::collections::{BTreeMap, BTreeSet};
+    use std::sync::{Arc, Mutex};
+    use tonic::{Request, Response};
+    let joiner = machine('1', "joiner");
+    let founder = machine('f', "founder");
+    let spec = requested(ServiceMode::Global)
+        .to_resolved(service_id('a'), ResolvedUpdateConfig::default())
+        .unwrap();
+    let mut peer = grouped(
+        qualified("app", "api"),
+        spec.clone(),
+        running_on(&founder, 'a'),
+    )
+    .containers
+    .remove(0)
+    .into_observation();
+    peer.try_update(|parts| parts.rotation = Some(CopyRotation::In))
+        .unwrap();
+    let mut old = grouped(
+        qualified("app", "api"),
+        spec.clone(),
+        if rotation == CopyRotation::Out {
+            running_on(&joiner, 'b')
+        } else {
+            created_on(&joiner, 'b')
+        },
+    )
+    .containers
+    .remove(0)
+    .into_observation();
+    old.try_update(|parts| parts.rotation = Some(rotation.clone()))
+        .unwrap();
+    let fresh = grouped(qualified("app", "api"), spec, running_on(&joiner, 'c'))
+        .containers
+        .remove(0)
+        .into_observation();
+    let local = Arc::new(Mutex::new(vec![old.clone()]));
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let (current, recorded, target) = (local.clone(), calls.clone(), joiner.clone());
+    let (mut client, server) =
+        crate::connect::test_support::rpc_client(move |rpc: Request<OpaquePayload>| {
+            let (target, founder, peer, fresh) =
+                (target.clone(), founder.clone(), peer.clone(), fresh.clone());
+            let (current, recorded) = (current.clone(), recorded.clone());
+            let selected = rpc
+                .metadata()
+                .get(ployz_core::ONE_TARGET_HEADER)
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_owned);
+            async move {
+                #[expect(
+                    clippy::wildcard_enum_match_arm,
+                    reason = "fixture rejects unrelated operations"
+                )]
+                let response = match rpc.into_inner().decode_request().unwrap().body {
+                    RpcRequestBody::ListMachines(_) => RpcResponse::from(MachineList {
+                        enrollment: None,
+                        machines: vec![
+                            MachineObservation::new(target.clone(), MembershipObservation::Up),
+                            MachineObservation::new(founder.clone(), MembershipObservation::Up),
+                        ],
+                    }),
+                    RpcRequestBody::ListContainers(_) => {
+                        let containers = if selected.as_deref() == Some(founder.id.as_str()) {
+                            vec![peer]
+                        } else {
+                            current.lock().unwrap().clone()
+                        };
+                        RpcResponse::from(ContainerList { containers })
+                    }
+                    RpcRequestBody::ReadRoutes(_) => {
+                        recorded.lock().unwrap().push("routes");
+                        RpcResponse::from(RoutesRead {
+                            routes: BTreeMap::from([
+                                (target.id, Some(BTreeSet::new())),
+                                (founder.id, Some(BTreeSet::new())),
+                            ]),
+                            complete: true,
+                            ..Default::default()
+                        })
+                    }
+                    RpcRequestBody::Inspect(_) => RpcResponse::from(MachineDetails {
+                        id: target.id,
+                        public_key: target.public_key,
+                        machine: Some(target),
+                        phase: LocalMachinePhase::Participating,
+                        advertised_endpoints: Vec::new(),
+                        store_version: Default::default(),
+                        rtts: Vec::new(),
+                        management_clients: Vec::new(),
+                        storage: None,
+                        upgrade: None,
+                        telemetry: Some(TelemetryObservation::BridgeCapacity {
+                            bridge: BridgeEndpointCapacity::new(4, 0),
+                        }),
+                        token: None,
+                    }),
+                    RpcRequestBody::EnsureContainer(ensure) => {
+                        let mut current = current.lock().unwrap();
+                        match ensure.want {
+                            ContainerWant::Running {
+                                container: RunTarget::New(_),
+                                ..
+                            } => {
+                                recorded.lock().unwrap().push("create");
+                                // A keyed create answers with the Container
+                                // already holding the key's name.
+                                if current.is_empty() {
+                                    current.push(fresh);
+                                }
+                                ensured(ContainerNow::Present(current.first().unwrap().clone()))
+                            }
+                            ContainerWant::Running {
+                                container: RunTarget::Existing(ContainerLocator::Id(id)),
+                                rotation,
+                            } => {
+                                let copy = current
+                                    .iter_mut()
+                                    .find(|copy| copy.container_id == id)
+                                    .unwrap();
+                                let refusal = match rotation {
+                                    RunRotation::Pending => {
+                                        recorded.lock().unwrap().push("start");
+                                        None
+                                    }
+                                    RunRotation::In { run, expect } => {
+                                        recorded.lock().unwrap().push("in");
+                                        owner_decides(
+                                            copy,
+                                            &RotationTarget::In { run },
+                                            expect.as_ref(),
+                                            false,
+                                        )
+                                    }
+                                };
+                                match refusal {
+                                    Some(refusal) => refused_with(copy.clone(), refusal),
+                                    None => {
+                                        copy.try_update(|parts| {
+                                            parts.runtime = ContainerRuntimeObservation::Running {
+                                                health: HealthObservation::Healthy,
+                                            };
+                                        })
+                                        .unwrap();
+                                        ensured(ContainerNow::Present(copy.clone()))
+                                    }
+                                }
+                            }
+                            ContainerWant::Gone {
+                                container: ContainerLocator::Id(id),
+                                ..
+                            } => {
+                                recorded.lock().unwrap().push("gone");
+                                let at = current
+                                    .iter()
+                                    .position(|copy| copy.container_id == id)
+                                    .unwrap();
+                                let copy = current.get_mut(at).unwrap();
+                                match owner_decides(copy, &RotationTarget::Gone, None, false) {
+                                    Some(refusal) => refused_with(copy.clone(), refusal),
+                                    None => {
+                                        current.remove(at);
+                                        ensured(ContainerNow::Absent {
+                                            of: ContainerLocator::Id(id),
+                                        })
+                                    }
+                                }
+                            }
+                            other => panic!("unexpected want: {other:?}"),
+                        }
+                    }
+                    other => panic!("unexpected RPC: {other:?}"),
+                };
+                Ok(Response::new(response.encode().unwrap()))
+            }
+        })
+        .await;
+    let result = catch_up_globals(
+        &mut client,
+        &joiner,
+        &tokio_util::sync::CancellationToken::new(),
+        |_| {},
+    )
+    .await;
+    let calls = calls.lock().unwrap().clone();
+    let local = local.lock().unwrap().clone();
+    server.abort();
+    OverMatching {
+        result,
+        calls,
+        local,
+        old,
+        joiner,
+    }
+}
+
+#[tokio::test]
+async fn a_matching_out_copy_is_retired_before_a_new_copy_comes_in() {
+    let run = catch_up_over_matching_copy(CopyRotation::Out).await;
+    run.result.unwrap();
+    assert_eq!(
+        run.calls,
+        ["routes", "gone", "create", "in"],
+        "the Out copy leaves the routes and goes before a new copy is made"
+    );
+    let local = run
+        .local
+        .iter()
+        .map(|copy| (copy.container_id, copy.rotation().clone()))
+        .collect::<Vec<_>>();
+    assert_eq!(local, [(container_id('c'), CopyRotation::In)]);
+}
+
+#[tokio::test]
+async fn a_matching_held_copy_is_left_as_the_user_stopped_it() {
+    let held = CopyRotation::Held(ployz_core::DeploymentLogId::parse("dep-stop").unwrap());
+    let run = catch_up_over_matching_copy(held).await;
+    let error = run.result.unwrap_err();
+    assert_eq!(error.unresolved, [qualified("app", "api")]);
+    let message = message(error, &run.joiner);
+    assert!(
+        message.contains(&format!(
+            "copy {} is stopped on this Machine by a user",
+            container_id('b').as_str()
+        )),
+        "{message}"
+    );
+    assert!(
+        run.calls.is_empty(),
+        "a Held copy is not touched: {:?}",
+        run.calls
+    );
+    assert_eq!(
+        run.local,
+        [run.old],
+        "the user's stopped copy stays as it is"
+    );
 }
 
 #[tokio::test]

@@ -14,7 +14,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { Tooltip, TooltipContent, TooltipTrigger } from "#/components/ui/tooltip";
 import type { DeploymentSummary, Included } from "@ployz/sdk";
 import { DeploymentStatusIcon } from "#/components/deployment-status-icon";
-import { deploymentStatusIcons, deploymentStatusLabel, deploysLabel, uploadLabel, type ChangeGroup } from "#/modules/config-store/store-deployments";
+import { deploymentLabel, deploymentLight, deploymentStatusLabel, deploysLabel, uploadLabel, type ChangeGroup } from "#/modules/config-store/store-deployments";
 import { listNames, plural } from "#/lib/plural";
 import { cn } from "#/lib/utils";
 import { deploymentDestination } from "../deployments/run-search";
@@ -42,7 +42,10 @@ const subscribeStorage = (onChange: () => void) => {
 type BottomBarProps = {
   groups: ChangeGroup[];
   totalChanges: number;
-  runtimeChanges?: number;
+  /** What the bar counts as changes: edits not yet saved. Defaults to `totalChanges`. */
+  stagedChanges?: number;
+  /** The latest Save when it is all there is to deploy: the Servers don't run it yet. */
+  notRunning?: number | null;
   canSave: boolean;
   /** Deploys, with the user's Deploy message (blank for none). */
   onDeploy: (message: string) => void;
@@ -54,10 +57,11 @@ type BottomBarProps = {
   /** The Environment's in-flight Deployments, newest first, whoever admitted them. */
   active: DeploymentSummary[];
   /**
-   * Its latest ended Deployments, newest first, or undefined until they load. The newest shows Failed until dismissed;
-   * one seen in flight here shows how it ended.
+   * Its newest numbered Deployment, whatever page it fell on; null before the first Deploy, undefined until it loads.
+   * Ended, it shows Failed until dismissed, or how it ended if seen in flight here. Holds that never ran take no
+   * number, so a burst of them never hides it.
    */
-  ended?: DeploymentSummary[];
+  latest?: DeploymentSummary | null;
   /** A running Deploy's storage step, in words, while it moves or copies a Volume before its Services. */
   storage?: (deploymentId: string) => string | null;
   /** Details' notes: where changes came from, and the Parent's deployed values. */
@@ -86,7 +90,8 @@ type ReviewProps = Parameters<typeof EnvironmentChangesReview>[0];
 export function BottomBar({
   groups,
   totalChanges,
-  runtimeChanges = totalChanges,
+  stagedChanges = totalChanges,
+  notRunning = null,
   canSave,
   onDeploy,
   onSave,
@@ -94,7 +99,7 @@ export function BottomBar({
   onDiscardNode,
   onDiscardRow,
   active: newestFirst,
-  ended,
+  latest: newest,
   storage = () => null,
   notes,
   proposals,
@@ -120,7 +125,8 @@ export function BottomBar({
   const saveable = canSave && !busy.has("saving") && !busy.has("deploying");
   // A double click admits one Deploy: Deploy waits until the Store answers.
   const admitting = busy.has("saving") || busy.has("deploying");
-  const deployable = runtimeChanges > 0 && !noServers;
+  // A rollback to what the Servers already run still deploys: it saves, and its Deployment ends up to date.
+  const deployable = hasChanges && !noServers;
   const shown = hasChanges ? undefined : active[0];
   // Seen in flight here: how a Deployment ends shows only when this bar watched it run. A failure shows from any tab, so a reload keeps it.
   const watched = useRef(new Set<string>());
@@ -132,7 +138,7 @@ export function BottomBar({
     for (const deployment of active) seen.add(deployment.id);
     for (const id of seen) if (seen.size > WATCHED_LIMIT) seen.delete(id);
   }, [active]);
-  const latest = active.length > 0 ? undefined : ended?.[0];
+  const latest = active.length > 0 || newest?.in_flight ? undefined : newest ?? undefined;
   const showsLatest = latest !== undefined && (latest.status === "failed" ? latest.id !== dismissedFailure : watched.current.has(latest.id));
   const outcome = shown || !showsLatest || dismissed.has(latest.id) ? undefined : latest;
   const dismiss = (deployment: DeploymentSummary) => {
@@ -170,10 +176,13 @@ export function BottomBar({
   const created = groups.filter((group) => group.lifecycle === "create" && group.canDiscard).map((group) => group.nodeName);
 
   function discardAll() {
-    if (created.length > 0 && !confirmingDiscard) {
-      setConfirmingDiscard(true);
-      return;
-    }
+    if (created.length > 0) setConfirmingDiscard(true);
+    else onDiscardAll();
+  }
+
+  // The dialog stays up through its exit animation: a second click there neither reopens it nor discards again.
+  function confirmDiscard() {
+    if (!confirmingDiscard) return;
     setConfirmingDiscard(false);
     onDiscardAll();
   }
@@ -203,9 +212,12 @@ export function BottomBar({
     return () => document.removeEventListener("keydown", deployOnShiftEnter);
   });
 
+  // With only a Save left to deploy, Discard all returns to that Save: nothing would change.
+  const nothingToDiscard = stagedChanges === 0 && notRunning !== null;
+  const counted = stagedChanges > 0 ? plural(stagedChanges, "change") : notRunning === null ? null : `#${notRunning} not running`;
   const staged = hasChanges ? (
-    <Row staged title={busy.has("discarding") ? "Discarding…" : ((totalChanges > 0 ? plural(totalChanges, "change") : "Changes to save") + (notSet > 0 ? ` · ${notSet} not set` : ""))}
-      shortTitle={totalChanges > 0 ? plural(totalChanges, "change") : "To save"} detail={null}>
+    <Row staged title={busy.has("discarding") ? "Discarding…" : ((counted ?? "Changes to save") + (notSet > 0 ? ` · ${notSet} not set` : ""))}
+      shortTitle={counted ?? "To save"} detail={null}>
       <Button ref={triggerRef} variant="outline" aria-expanded={open} onClick={openReview}>Details</Button>
       {/* Deploying behind a running or queued attempt queues. */}
       {noServers ? (
@@ -226,9 +238,11 @@ export function BottomBar({
           <DropdownMenuItem disabled={!saveable} onClick={save}>
             {busy.has("saving") ? <><Spinner />Saving…</> : "Save only"}
           </DropdownMenuItem>
-          <DropdownMenuItem variant="destructive" disabled={busy.has("discarding") || !groups.some((group) => group.canDiscard)} onClick={discardAll}>
-            Discard all changes
-          </DropdownMenuItem>
+          {nothingToDiscard ? null : (
+            <DropdownMenuItem variant="destructive" disabled={busy.has("discarding") || !groups.some((group) => group.canDiscard)} onClick={discardAll}>
+              Discard all changes
+            </DropdownMenuItem>
+          )}
         </DropdownMenuContent>
       </DropdownMenu>
     </Row>
@@ -247,7 +261,7 @@ export function BottomBar({
     environment: params.environmentSlug, groups, totalChanges, canDeploy: deployable, asks, canSave: saveable,
     onClose: () => setOpen(false), onDeploy: deploy, message, onMessageChange: setMessage, busy, discarding,
     onSave: save,
-    onDiscardAll: discardAll,
+    onDiscardAll: nothingToDiscard ? undefined : discardAll,
     onDiscardNode, onDiscardRow,
     ...notes,
     ...proposals,
@@ -261,8 +275,8 @@ export function BottomBar({
       {bar && host ? createPortal(bar, host) : null}
       {open ? <EnvironmentChangesReview {...reviewProps} /> : null}
       <ConfirmDialog open={confirmingDiscard} onOpenChange={setConfirmingDiscard} title="Discard all changes?"
-        description={`${listNames(created)} ${created.length === 1 ? "is" : "are"} new and will be deleted. Other changes return to their reviewed baseline.`}
-        actionLabel="Discard all" variant="destructive" onConfirm={discardAll} />
+        description={`${listNames(created)} ${created.length === 1 ? "is" : "are"} new and will be deleted. Other changes return to the latest saved version.`}
+        actionLabel="Discard all" variant="destructive" onConfirm={confirmDiscard} />
     </>
   );
 }
@@ -290,8 +304,8 @@ function AttemptState({ deployment, storage, onDismiss }: { deployment: Deployme
   const deploys = deploysLabel(deployment);
   const detail = storage ?? (deploys && deployment.upload ? `${deploys} · ${uploadLabel(deployment.upload)}` : deploys);
   return (
-    <Row icon={<DeploymentStatusIcon status={deploymentStatusIcons[deployment.status]} />}
-      title={`${deploymentStatusLabel(deployment)} · Deployment #${deployment.number}`} detail={detail}>
+    <Row icon={<DeploymentStatusIcon status={deploymentLight(deployment)} />}
+      title={`${deploymentStatusLabel(deployment)} · Deployment ${deploymentLabel(deployment)}`} detail={detail}>
       <Link {...deploymentDestination(params, deployment.id)} className={buttonVariants({ variant: "outline" })}>
         Logs
       </Link>

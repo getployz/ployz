@@ -17,8 +17,7 @@ use serde::Serialize;
 use thiserror::Error;
 
 use inputs::BuildInputs;
-pub use inputs::content_digest;
-pub(crate) use inputs::upload_archive;
+pub use inputs::{UploadListing, content_digest};
 
 mod ignore;
 mod inputs;
@@ -52,8 +51,9 @@ pub enum Recipe {
 #[derive(Clone, Debug, Eq, Error, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum RemoteBuildFailure {
-    /// The Build Machine confirmed the attempt ended without an image.
-    #[error("Build failed: {message}")]
+    /// The Build Machine confirmed the attempt ended without an image. The
+    /// caller says the Build failed; this is why.
+    #[error("{message}")]
     Failed {
         stage: Stage,
         message: String,

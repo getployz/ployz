@@ -16,7 +16,7 @@ mod review;
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use ployz_core::{MachineId, RpcError, ServiceName};
+use ployz_core::{MachineId, RpcError, RpcErrorCode, ServiceName};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use ts_rs::TS;
@@ -24,7 +24,7 @@ use ts_rs::TS;
 pub use self::due::{Due, DueQuery};
 pub(crate) use self::due::{admit, close, sweep};
 pub(crate) use self::due::{due, shut_down};
-use self::mark::{Accepted, Mark, State};
+use self::mark::{Accepted, Closed, Mark, State};
 pub use self::review::{ConsentedQuery, ConsentedView, RemovedVolume, VolumeLoss, docker_volume};
 pub(crate) use self::review::{
     consented, covered, held, removed, review, short_digest, still_removed,
@@ -38,6 +38,7 @@ use crate::id::{
 use crate::review::{DestructiveEffect, approval};
 use crate::scope::{self, Environment, EnvironmentRef, EnvironmentSummary};
 use crate::storage::Tx;
+use crate::teardown::{EnvironmentRemoval, RemovedBecause};
 use crate::trusted::Approval;
 use crate::{Actor, Trusted};
 
@@ -139,9 +140,31 @@ pub enum LeftStatus {
 /// A Server a removal waits on, and what fixes that.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct Waiting {
+    /// The Server's name, or its Machine ID when no Deployment here named it.
     pub server: String,
+    /// None from a Store older than this field, whose `server` is the Machine ID.
+    #[serde(default)]
+    #[ts(optional = nullable)]
+    pub server_id: Option<MachineId>,
     pub why: String,
     pub fix: Fix,
+}
+
+impl Waiting {
+    /// Waiting on `machine`, by the name `names` has for it, because of `why`.
+    pub(crate) fn on(names: &BTreeMap<MachineId, String>, machine: MachineId, why: String) -> Self {
+        Self {
+            server: names
+                .get(&machine)
+                .cloned()
+                .unwrap_or_else(|| machine.to_string()),
+            server_id: Some(machine),
+            why,
+            fix: Fix::ServerRemove {
+                server: machine.to_string(),
+            },
+        }
+    }
 }
 
 /// What a caller does about a refusal or a wait.
@@ -229,6 +252,24 @@ impl Reviewed {
         )
     }
 
+    /// Whether `given` already accepts everything this member's removal deletes,
+    /// and every copy the caller now gives up.
+    fn within(&self, given: &Accepted) -> bool {
+        match given {
+            Accepted::Everything { .. } => true,
+            Accepted::EveryCopy(names) => {
+                self.every_copy.is_subset(names)
+                    && self.lost().all(|loss| names.contains(&loss.volume.name))
+            }
+            Accepted::Confirmed(deletes) => {
+                self.every_copy.is_empty()
+                    && self
+                        .lost()
+                        .all(|loss| loss.deletes.iter().all(|delete| deletes.contains(delete)))
+            }
+        }
+    }
+
     fn accepted(&self) -> Accepted {
         if self.every_copy.is_empty() {
             Accepted::Confirmed(self.lost().flat_map(|loss| loss.deletes.clone()).collect())
@@ -244,7 +285,12 @@ pub(crate) fn remove(
     remove: &Remove,
     trusted: &Trusted,
 ) -> Result<Removal, RpcError> {
-    let project = scope::project(tx, who, Some(&remove.project))?;
+    let project = scope::project(tx, who, Some(&remove.project)).map_err(|refused| {
+        match refused.code == RpcErrorCode::NotFound {
+            true => error::not_found(refused.message, json!({ "next": "ployz project ls" })),
+            false => refused,
+        }
+    })?;
     lock_project(tx, &project.id)?;
     let (target, target_name, members) = match &remove.environment {
         Some(name) => {
@@ -315,13 +361,28 @@ pub(crate) fn remove(
             trusted,
         )?);
     }
-    refuse_unanswered(who, remove, &reviews, &target)?;
+    refuse_unanswered(tx, who, remove, &reviews, &target)?;
+    // A removal under way holds its remover's consent, and nothing deploys
+    // meanwhile: running it again needs no new version unless it now deletes
+    // more or gives up more copies. Each run still waits on a human's approval
+    // when Cloud asks for one.
+    let held = mark::of(tx, &target)?.is_some_and(|live| {
+        live.state == State::Removing
+            && reviews.iter().all(|reviewed| {
+                live.accepted
+                    .get(&reviewed.environment.summary.id)
+                    .is_some_and(|accepted| reviewed.within(accepted))
+            })
+    });
     let version = version(who, &target, &reviews, |reviewed| {
         reviewed.every_copy.clone()
     });
-    confirm(remove, &reviews, &version)?;
+    if !held {
+        confirm(remove, &reviews, &version)?;
+    }
     gate(
         who,
+        "remove",
         &target,
         &version,
         reviews
@@ -347,7 +408,9 @@ pub(crate) fn remove(
     mark::clear_tombstone(tx, &target)?;
     let mut mark = match mark::of(tx, &target)? {
         Some(mut live) => {
-            live.accepted = accepted;
+            if !held {
+                live.accepted = accepted;
+            }
             live.retried = deployment::now();
             live
         }
@@ -363,7 +426,27 @@ pub(crate) fn remove(
         }
     };
     mark::save(tx, who, &mark)?;
-    let waiting_on = reviews
+    let waiting_on = waiting_on(tx, who, &reviews, trusted, &mark.target_name)?;
+    due::go_on(tx, who, &mut mark, trusted, waiting_on)
+}
+
+/// The Servers a removal waits on: each one that didn't answer whether it holds a
+/// Volume it deletes, then, while any of it is still on the Servers, each one that
+/// didn't answer Cloud, since a removal Deployment fails while one is silent.
+fn waiting_on(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    reviews: &[Reviewed],
+    trusted: &Trusted,
+    target: &str,
+) -> Result<Vec<Waiting>, RpcError> {
+    let silent = match reviews.is_empty() {
+        true => &[][..],
+        false => trusted.unanswered.as_deref().unwrap_or_default(),
+    };
+    let unanswered = reviews.iter().flat_map(|reviewed| &reviewed.unanswered);
+    let names = &deployment::server_names(tx, who, unanswered.chain(silent).copied())?;
+    let mut waiting: Vec<Waiting> = reviews
         .iter()
         .flat_map(|reviewed| {
             let holds = reviewed
@@ -372,16 +455,28 @@ pub(crate) fn remove(
                 .map(|loss| loss.volume.name.as_str())
                 .collect::<Vec<_>>()
                 .join(", ");
-            reviewed.unanswered.iter().map(move |machine| Waiting {
-                server: machine.to_string(),
-                why: format!("It didn't answer whether it holds {holds}"),
-                fix: Fix::ServerRemove {
-                    server: machine.to_string(),
-                },
+            reviewed.unanswered.iter().map(move |machine| {
+                Waiting::on(
+                    names,
+                    *machine,
+                    format!("It didn't answer whether it holds {holds}"),
+                )
             })
         })
         .collect();
-    due::go_on(tx, who, &mut mark, trusted, waiting_on)
+    for machine in silent {
+        if waiting
+            .iter()
+            .all(|waiting| waiting.server_id != Some(*machine))
+        {
+            waiting.push(Waiting::on(
+                names,
+                *machine,
+                format!("It didn't answer, so {target} can't come off it yet"),
+            ));
+        }
+    }
+    Ok(waiting)
 }
 
 fn review_member(
@@ -433,6 +528,7 @@ fn review_member(
 /// Refuse, writing nothing, while a Server that didn't answer may hold a Volume
 /// the caller didn't give up every copy of.
 fn refuse_unanswered(
+    tx: &mut dyn Tx,
     who: &Actor,
     remove: &Remove,
     reviews: &[Reviewed],
@@ -446,6 +542,10 @@ fn refuse_unanswered(
     if uncovered.is_empty() {
         return Ok(());
     }
+    let unanswered = uncovered
+        .iter()
+        .flat_map(|(reviewed, _)| &reviewed.unanswered);
+    let names = &deployment::server_names(tx, who, unanswered.copied())?;
     let waiting_on: Vec<Waiting> = uncovered
         .iter()
         .flat_map(|(reviewed, volumes)| {
@@ -454,15 +554,15 @@ fn refuse_unanswered(
                 .map(VolumeName::as_str)
                 .collect::<Vec<_>>()
                 .join(", ");
-            reviewed.unanswered.iter().map(move |machine| Waiting {
-                server: machine.to_string(),
-                why: format!(
-                    "It didn't answer whether it holds {volumes} of {}",
-                    reviewed.environment.summary.name
-                ),
-                fix: Fix::ServerRemove {
-                    server: machine.to_string(),
-                },
+            reviewed.unanswered.iter().map(move |machine| {
+                Waiting::on(
+                    names,
+                    *machine,
+                    format!(
+                        "It didn't answer whether it holds {volumes} of {}",
+                        reviewed.environment.summary.name
+                    ),
+                )
             })
         })
         .collect();
@@ -592,25 +692,43 @@ fn confirm(remove: &Remove, reviews: &[Reviewed], version: &str) -> Result<(), R
         .into_iter()
         .collect::<Vec<_>>()
         .join(", ");
+    let by_environment: BTreeMap<&EnvironmentName, &BTreeSet<DestructiveEffect>> = reviews
+        .iter()
+        .filter(|reviewed| !reviewed.effects.is_empty())
+        .map(|reviewed| (&reviewed.environment.summary.name, &reviewed.effects))
+        .collect();
+    let stale = remove
+        .version
+        .as_deref()
+        .is_some_and(|given| given != version);
+    let (changed, pass) = match stale {
+        true => (
+            "This changed since that version, so nothing was removed. ",
+            "Pass the new version",
+        ),
+        false => ("", "Pass the version"),
+    };
     let ask = match lost.is_empty() {
-        true => "Pass the version to go ahead",
-        false => "Pass the version and accept each lost Volume by name to go ahead",
+        true => format!("{pass} to go ahead"),
+        false => format!("{pass} and accept each lost Volume by name to go ahead"),
     };
     Err(error::confirmation_required(
-        format!("Removing this will {deletes}. {ask}"),
+        format!("{changed}Removing this will {deletes}. {ask}"),
         json!({
             "volumes": lost,
             "accept": accept,
             "effects": effects,
+            "effects_by_environment": by_environment,
             "version": version,
         }),
     ))
 }
 
-/// Ask a human once for everything a removal deletes: the same digest whether
-/// `remove` or `Admit::ShutDown` asks.
+/// Ask a human once for everything a removal deletes, bound to `command`: `remove`
+/// or `shut_down`, so an approval for one never runs the other.
 pub(crate) fn gate(
     who: &Actor,
+    command: &str,
     target: &Target,
     version: &str,
     effects: BTreeSet<DestructiveEffect>,
@@ -621,8 +739,8 @@ pub(crate) fn gate(
         return Ok(());
     }
     let digest = match target {
-        Target::Environment(id) => approval::approval_digest(who, id, version, &effects),
-        Target::Project(id) => project_digest(who, id, version, &effects),
+        Target::Environment(id) => approval::approval_digest(who, command, id, version, &effects),
+        Target::Project(id) => project_digest(who, command, id, version, &effects),
     };
     if matches!(approval, Approval::Approved(approved) if *approved == digest) {
         return Ok(());
@@ -638,14 +756,20 @@ pub(crate) fn gate(
     ))
 }
 
+#[cfg(test)]
+#[path = "gate_tests.rs"]
+mod gate_tests;
+
 fn project_digest(
     who: &Actor,
+    command: &str,
     project: &ProjectId,
     version: &str,
     effects: &BTreeSet<DestructiveEffect>,
 ) -> ApprovalDigest {
     let bound = json!({
         "organization": who.organization,
+        "command": command,
         "project": project,
         "effects": effects,
     });
@@ -805,6 +929,30 @@ pub(crate) fn latest(
         .into_iter()
         .next()
         .filter(|latest| latest.remove))
+}
+
+/// Where `environment`'s removal stands, as `env ls` shows it: its latest
+/// Deployment when that removes it, else a live mark waiting for the sweep.
+pub(crate) fn listed(
+    tx: &mut dyn Tx,
+    environment: &EnvironmentId,
+) -> Result<Option<EnvironmentRemoval>, RpcError> {
+    if let Some(removal) = latest(tx, environment)? {
+        return Ok(Some(EnvironmentRemoval::Deployment(Box::new(removal))));
+    }
+    Ok(
+        mark::naming(tx, environment)?.map(|mark| EnvironmentRemoval::Pending {
+            because: match mark.accepted.get(environment) {
+                Some(Accepted::Everything { because }) => match because {
+                    Closed::PullRequest => RemovedBecause::PullRequest,
+                    Closed::Idle => RemovedBecause::Idle,
+                    Closed::Synced => RemovedBecause::Synced,
+                },
+                _ => RemovedBecause::Removed,
+            },
+            since: mark.at,
+        }),
+    )
 }
 
 /// Refuse to take an Environment off the Servers while a Branch of it may still

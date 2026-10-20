@@ -29,7 +29,7 @@ pub(super) struct Row {
     status: Status,
     observed_ip: String,
     pub(super) fleet_token: String,
-    report: Report,
+    report: Summary,
     first_seen_at: String,
     last_check_in_at: String,
 }
@@ -46,10 +46,20 @@ enum Status {
 }
 
 #[derive(Deserialize)]
+struct Summary {
+    provider: Option<String>,
+    prep: Option<Prep>,
+}
+
+pub(super) struct Detail {
+    waiting: Waiting,
+    report: Report,
+}
+
+#[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Report {
     public_ip: Option<String>,
-    provider: Option<String>,
     os: Os,
     arch: String,
     virt: String,
@@ -60,7 +70,6 @@ struct Report {
     zfs: Zfs,
     blockers: Vec<Issue>,
     warnings: Vec<Issue>,
-    prep: Option<Prep>,
 }
 
 #[derive(Deserialize)]
@@ -139,6 +148,21 @@ pub(super) async fn fetch(credential: &Credential) -> Result<Vec<Waiting>, Error
             Ok(Waiting { raw, row })
         })
         .collect()
+}
+
+pub(super) async fn detail(credential: &Credential, id: &str) -> Result<Detail, Error> {
+    #[derive(Deserialize)]
+    struct Reply {
+        waiting_server: Value,
+    }
+    let Reply { waiting_server } = cloud_account::refusable(
+        credential,
+        Method::GET,
+        &format!("waiting-servers/{id}"),
+        None,
+    )
+    .await?;
+    Ok(Detail::read(waiting_server)?)
 }
 
 /// Cloud takes at most this many ids in one reject.
@@ -221,12 +245,15 @@ pub(super) fn may_have_acted(error: &StoreCallError) -> bool {
             )
         }
         StoreCallError::Cloud(LoginError::Status { status, .. }) => *status >= 500,
-        StoreCallError::Cloud(LoginError::Unreachable { .. } | LoginError::Reply(_))
+        StoreCallError::Cloud(
+            LoginError::Unreachable { .. } | LoginError::Unanswered { .. } | LoginError::Reply(_),
+        )
         | StoreCallError::Stopped(_) => true,
         StoreCallError::Cloud(
             LoginError::Unsupported(_)
             | LoginError::Store { .. }
             | LoginError::Corrupt { .. }
+            | LoginError::TokenCloudUnreadable(_)
             | LoginError::OtherCloud { .. }
             | LoginError::SignedOut
             | LoginError::Expired
@@ -352,9 +379,9 @@ pub(super) fn list(matches: &ArgMatches) -> Result<(), Error> {
 }
 
 /// `server show` for a waiting server: its facts, then what keeps it from joining.
-pub(super) fn show(waiting: &Waiting) -> Result<(), Error> {
+pub(super) fn show(detail: &Detail) -> Result<(), Error> {
+    let Detail { waiting, report } = detail;
     let row = &waiting.row;
-    let report = &row.report;
     let now = Utc::now();
     let (status, _) = row.readiness();
     let mut lines = vec![
@@ -372,12 +399,17 @@ pub(super) fn show(waiting: &Waiting) -> Result<(), Error> {
                 report.virt
             ),
         ),
-        ("disks", row.disks()),
-        ("docker", row.docker()),
-        ("storage", row.storage()),
+        ("disks", detail.disks()),
+        ("docker", detail.docker()),
+        ("storage", detail.storage()),
         (
             "from",
-            format!("{} · {} · {}", row.from(), row.provider(), row.fleet_token),
+            format!(
+                "{} · {} · {}",
+                detail.addresses(),
+                row.provider(),
+                row.fleet_token
+            ),
         ),
         (
             "first seen",
@@ -418,16 +450,6 @@ impl Row {
         &self.observed_ip
     }
 
-    /// The observed address, and the one the host reports when it differs.
-    fn from(&self) -> String {
-        match self.report.public_ip.as_deref() {
-            Some(reported) if reported != self.observed_ip => {
-                format!("{} (reports {reported})", self.observed_ip)
-            }
-            _ => self.observed_ip.clone(),
-        }
-    }
-
     fn readiness(&self) -> (&'static str, Tone) {
         let prep = self.report.prep.as_ref();
         let docker_failed = prep.is_some_and(|prep| prep.docker == "failed");
@@ -443,6 +465,29 @@ impl Row {
             }
             Status::Waiting => ("Ready", Tone::Good),
             Status::Unknown => ("Unknown", Tone::Muted),
+        }
+    }
+}
+
+impl Detail {
+    fn read(raw: Value) -> Result<Self, serde_json::Error> {
+        #[derive(Deserialize)]
+        struct Full {
+            report: Report,
+        }
+        let row = serde_json::from_value(raw.clone())?;
+        let Full { report } = serde_json::from_value(raw.clone())?;
+        Ok(Self {
+            waiting: Waiting { raw, row },
+            report,
+        })
+    }
+
+    fn addresses(&self) -> String {
+        let observed = &self.waiting.row.observed_ip;
+        match self.report.public_ip.as_deref() {
+            Some(reported) if reported != observed => format!("{observed} (reports {reported})"),
+            _ => observed.clone(),
         }
     }
 
@@ -465,6 +510,8 @@ impl Row {
 
     fn storage(&self) -> String {
         if self
+            .waiting
+            .row
             .report
             .prep
             .as_ref()
@@ -515,40 +562,45 @@ fn size(bytes: u64) -> String {
 pub(super) mod tests {
     use super::*;
 
+    const FIXTURE: &str = include_str!("../../../tests/fixtures/waiting-servers.json");
+
+    fn served(pointer: &str) -> Value {
+        let fixture: Value = serde_json::from_str(FIXTURE).unwrap();
+        fixture.pointer(pointer).unwrap().clone()
+    }
+
     pub(crate) fn waiting(status: &str, prep: Option<Value>) -> Waiting {
-        let mut report = json!({
-            "hostname": "web-1",
-            "provider": "hetzner",
-            "os": { "id": "ubuntu", "version": "24.04" },
-            "kernel": "6.8.0",
-            "arch": "x86_64",
-            "virt": "kvm",
-            "cpuCount": 4,
-            "memoryTotalBytes": 8_000_000_000_u64,
-            "disks": [{ "path": "/dev/sda", "sizeBytes": 40_000_000_000_u64, "role": "root" }],
-            "docker": { "kind": "absent" },
-            "cgroup": "v2",
-            "zfs": { "kind": "eligible", "targets": [{ "kind": "main_disk" }] },
-            "blockers": [],
-            "warnings": [],
-        });
-        if let (Some(prep), Some(fields)) = (prep, report.as_object_mut()) {
-            fields.insert("prep".into(), prep);
-        }
-        let raw = json!({
-            "id": "6b0f3c1e-0000-4000-8000-000000000001",
-            "name": "web-1",
-            "status": status,
-            "observed_ip": "203.0.113.9",
-            "fleet_token": "amber-falcon",
-            "report": report,
-            "first_seen_at": "2026-10-16T00:00:00.000Z",
-            "last_check_in_at": "2026-10-16T00:05:00.000Z",
-        });
+        let mut raw = served("/list/waiting_servers/0");
+        *raw.get_mut("status").unwrap() = json!(status);
+        let report = raw.pointer_mut("/report").unwrap().as_object_mut().unwrap();
+        match prep {
+            Some(prep) => report.insert("prep".into(), prep),
+            None => report.remove("prep"),
+        };
         Waiting {
             row: serde_json::from_value(raw.clone()).unwrap(),
             raw,
         }
+    }
+
+    fn shown(prep: Option<Value>) -> Detail {
+        let mut raw = served("/detail/waiting_server");
+        let report = raw.pointer_mut("/report").unwrap().as_object_mut().unwrap();
+        match prep {
+            Some(prep) => report.insert("prep".into(), prep),
+            None => report.remove("prep"),
+        };
+        Detail::read(raw).unwrap()
+    }
+
+    #[test]
+    fn the_list_and_the_detail_read_what_cloud_serves() {
+        let listed = waiting("waiting", None);
+        assert_eq!(listed.row.name, "web-1");
+        assert_eq!(listed.row.provider(), "hetzner");
+        let detail = shown(None);
+        assert_eq!(detail.disks(), "/dev/sda 40 GB root, /dev/sdb 100 GB empty");
+        assert_eq!(detail.docker(), "27.3.1");
     }
 
     #[test]
@@ -580,24 +632,23 @@ pub(super) mod tests {
 
     #[test]
     fn the_ip_is_where_cloud_saw_the_host() {
-        let mut host = waiting("waiting", None);
-        assert_eq!(host.row.from(), "203.0.113.9");
-        host.row.report.public_ip = Some("203.0.113.9".into());
-        assert_eq!(host.row.from(), "203.0.113.9");
-        host.row.report.public_ip = Some("198.51.100.4".into());
-        assert_eq!(host.row.ip(), "203.0.113.9");
-        assert_eq!(host.row.from(), "203.0.113.9 (reports 198.51.100.4)");
+        let mut host = shown(None);
+        assert_eq!(host.waiting.row.ip(), "203.0.113.9");
+        assert_eq!(host.addresses(), "203.0.113.9 (reports 198.51.100.4)");
+        host.report.public_ip = Some("203.0.113.9".into());
+        assert_eq!(host.addresses(), "203.0.113.9");
+        host.report.public_ip = None;
+        assert_eq!(host.addresses(), "203.0.113.9");
     }
 
     #[test]
     fn storage_says_why_a_host_gets_docker_volumes() {
-        let host = waiting("waiting", None);
-        assert_eq!(host.row.storage(), "ZFS on the main disk");
-        let failed = waiting(
-            "waiting",
-            Some(json!({ "docker": "ready", "zfs": "failed" })),
+        assert_eq!(
+            shown(None).storage(),
+            "ZFS on the main disk or /dev/disk/by-id/scsi-0HC_Volume_1"
         );
-        assert_eq!(failed.row.storage(), "Docker volumes; the ZFS build failed");
+        let failed = shown(Some(json!({ "docker": "ready", "zfs": "failed" })));
+        assert_eq!(failed.storage(), "Docker volumes; the ZFS build failed");
     }
 
     #[test]

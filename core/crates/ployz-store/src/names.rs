@@ -43,19 +43,7 @@ fn refuse_taken_among(
     let working = &environment.working;
     let (kind, name, taken) = match name {
         Name::Service(name) => {
-            if name == "volumes" || name == "configs" {
-                return Err(error::invalid(
-                    format!(
-                        "{name} is reserved: paths name {} as {name}.NAME",
-                        if name == "volumes" {
-                            "Volumes"
-                        } else {
-                            "Configs"
-                        }
-                    ),
-                    json!({ "service": name }),
-                ));
-            }
+            refuse_reserved(name)?;
             let taken = working.services.iter().any(|service| {
                 other(&service.id)
                     && (service.slug == name || service.config.private_dns.as_str() == name)
@@ -127,6 +115,39 @@ fn refuse_taken_among(
     Ok(())
 }
 
+/// Refuse a Service name that a path prefix means.
+fn refuse_reserved(name: &str) -> Result<(), RpcError> {
+    let paths = match name {
+        "volumes" => "Volumes as volumes.NAME",
+        "configs" => "Configs as configs.NAME",
+        "setup" => "a Branch's Setup Commands as setup.SERVICE",
+        _ => return Ok(()),
+    };
+    Err(error::invalid(
+        format!("{name} is reserved: paths name {paths}"),
+        json!({ "service": name }),
+    ))
+}
+
+/// Refuse a reserved Service name `target` gives a Service that doesn't have it
+/// as its name in `now`. No write of Working State brings one in, but a Service
+/// named so from before keeps its name.
+pub(crate) fn refuse_new_reserved(
+    now: &SavedEnvironmentIntent,
+    target: &SavedEnvironmentIntent,
+) -> Result<(), RpcError> {
+    for service in &target.services {
+        if !now
+            .services
+            .iter()
+            .any(|held| held.id == service.id && held.slug == service.slug)
+        {
+            refuse_reserved(&service.slug)?;
+        }
+    }
+    Ok(())
+}
+
 /// Refuse each name `target` gives a node that the node doesn't hold in
 /// `environment` now, when another node holds it.
 pub(crate) fn refuse_new_taken(
@@ -190,6 +211,8 @@ pub(crate) fn refuse_new_taken(
         summary: environment.summary.clone(),
         working: target.clone(),
         live: environment.live.clone(),
+        removed: environment.removed.clone(),
+        inherited: environment.inherited.clone(),
     };
     let mut others = None;
     for (owner, name) in claims {

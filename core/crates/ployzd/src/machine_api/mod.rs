@@ -95,6 +95,16 @@ impl MachineApiBuilder {
         self
     }
 
+    /// Where an operator's Selected Endpoint goes: the running WireGuard mesh.
+    #[must_use]
+    pub(crate) fn with_endpoint_chooser(
+        mut self,
+        chooser: crate::network::EndpointChooser,
+    ) -> Self {
+        self.service.endpoint_chooser = Some(chooser);
+        self
+    }
+
     #[must_use]
     pub(crate) fn with_image_ingest(mut self, ingest: Arc<ImageIngest>) -> Self {
         self.service = self.service.with_image_ingest(ingest);
@@ -125,6 +135,7 @@ fn routes(service: local::MachineService) -> Routes {
     Routes::new(
         MachineRpcServer::new(service)
             .send_compressed(CompressionEncoding::Gzip)
+            .max_decoding_message_size(RUNTIME_WATCH_MESSAGE_SIZE_LIMIT)
             .max_encoding_message_size(RUNTIME_WATCH_MESSAGE_SIZE_LIMIT),
     )
 }
@@ -148,9 +159,12 @@ impl Service<http::Request<Body>> for MachineApi {
         else {
             return self.proxy.call(request);
         };
-        let remote = connection
-            .upgrade()
-            .map(|connection| *connection.remote_id().as_bytes());
+        let remote = connection.upgrade().and(
+            request
+                .extensions()
+                .get::<crate::management::ProvenClient>()
+                .map(|client| client.0),
+        );
         let service = self.service.clone();
         let proxy = self.proxy.clone();
         Box::pin(async move {

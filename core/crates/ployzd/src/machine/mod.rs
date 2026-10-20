@@ -14,7 +14,7 @@ use std::{
 use ipnet::Ipv4Net;
 use ployz_core::{
     LocalMachinePhase, Machine, MachineId, MachineRuntime, MachineStorageObservation,
-    ManagementClientLabel, SelectedEndpoint,
+    ManagementClientLabel, PinnedAddresses, SelectedEndpoint,
 };
 use reqwest::Url;
 use serde::{Deserialize, Serialize};
@@ -150,6 +150,8 @@ pub struct LocalMachineRecord {
     pub wireguard_mtu: Option<u32>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub selected_endpoints: BTreeMap<MachineId, SelectedEndpoint>,
+    #[serde(default, skip_serializing_if = "PinnedAddresses::is_empty")]
+    pinned_addresses: PinnedAddresses,
     /// Where the observe process pushes crash events. Absent means buffer only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     push_target: Option<Url>,
@@ -446,8 +448,14 @@ impl LocalMachineRecord {
             management_clients: BTreeMap::new(),
             wireguard_mtu: None,
             selected_endpoints: BTreeMap::new(),
+            pinned_addresses: PinnedAddresses::default(),
             push_target: None,
         })
+    }
+
+    #[must_use]
+    pub fn pinned_addresses(&self) -> PinnedAddresses {
+        self.pinned_addresses
     }
 
     /// Where the observe process pushes crash events, if Cloud set one.
@@ -530,6 +538,7 @@ impl LocalMachineRecord {
             management_clients: self.management_clients,
             wireguard_mtu: self.wireguard_mtu,
             selected_endpoints: self.selected_endpoints,
+            pinned_addresses: self.pinned_addresses,
             push_target: self.push_target,
         }
     }
@@ -559,8 +568,8 @@ pub fn local_runtime() -> MachineRuntime {
         memory_total_bytes: crate::host_capacity::memory_capacity()
             .ok()
             .map(|(total, _)| total),
-        // Publication overlays the live count; the record never holds one.
         running_builds: 0,
+        pool_committable_bytes: None,
         capabilities: ployz_core::served_capabilities(),
     }
 }

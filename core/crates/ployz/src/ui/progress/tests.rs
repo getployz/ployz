@@ -98,7 +98,42 @@ fn completion_at_deadline_wins_over_stale_heartbeat() {
         vec![(30_000, Message::Finish(done, Disposition::Settled))],
     );
     assert!(!text.contains("still waiting:"), "{text}");
-    assert!(text.contains("1 updated · across 1 server"), "{text}");
+    assert!(text.contains("1 deployed · across 1 server"), "{text}");
+}
+
+#[test]
+fn a_removed_service_counts_as_removed_in_the_summary() {
+    let removal = |state| {
+        crate::deploy::service_row(
+            QualifiedService::parse("shop/web").unwrap(),
+            None,
+            [crate::deploy::Replica {
+                machine: MachineId::random(),
+                state,
+                timing: Timing::Unavailable,
+                starts: false,
+                updates: false,
+            }],
+        )
+    };
+    let frame = |row| Frame {
+        run: Run::Direct(Namespace::parse("shop").unwrap()),
+        title: "Deploying shop".into(),
+        rows: vec![row],
+        notices: Vec::new(),
+    };
+    let text = plain(
+        frame(removal(&ployz_store::RowState::Pending)),
+        vec![(
+            1,
+            Message::Finish(
+                frame(removal(&ployz_store::RowState::Completed)),
+                Disposition::Settled,
+            ),
+        )],
+    );
+    assert!(text.contains("1 removed · across 1 server"), "{text}");
+    assert!(!text.contains("deployed"), "{text}");
 }
 
 #[test]
@@ -133,7 +168,7 @@ fn replacement_run_resets_row_deduplication() {
         vec![(1, Message::Update(replacement)), (2, Message::Abandon)],
     );
     assert_eq!(text.matches("alpha: pending").count(), 2);
-    assert!(!text.contains("updated"));
+    assert!(!text.contains("deployed"));
 }
 
 #[test]
@@ -275,10 +310,42 @@ fn interactive_finish_retains_full_frame_once_and_preserves_earlier_output() {
         "{visible}"
     );
     assert!(
-        visible.ends_with("1 updated · across 1 server"),
+        visible.ends_with("1 deployed · across 1 server"),
         "{visible}"
     );
     assert!(!visible.contains("starting"), "{visible}");
+}
+
+fn unsized_pty() -> (usize, usize) {
+    window(Ok((0, 0)))
+}
+
+#[test]
+fn an_unsized_terminal_still_names_each_row() {
+    let terminal = InMemoryTerm::new(20, 90);
+    let initial = frame(State::Running(RowPhase::Starting));
+    let mut failed = initial.clone();
+    failed.rows.first_mut().unwrap().state = State::Failed;
+    let backend = Backend::new(
+        Mode::Interactive,
+        ProgressDrawTarget::term_like(Box::new(terminal.clone())),
+        unsized_pty,
+    );
+    drive(
+        Script {
+            now: Duration::ZERO,
+            events: VecDeque::from([(
+                Duration::from_millis(250),
+                Message::Finish(failed, Disposition::Settled),
+            )]),
+        },
+        initial,
+        backend,
+        &mut TerminalWriter(terminal.clone()),
+        false,
+    );
+    let visible = terminal.contents();
+    assert!(visible.contains("✘ web on alpha  failed"), "{visible}");
 }
 
 #[test]
@@ -421,7 +488,7 @@ fn producer_does_not_wait_for_slow_sink_and_finish_joins_after_all_transitions()
     progress.finish(next, Disposition::Settled);
     let text = String::from_utf8(bytes.lock().unwrap().clone()).unwrap();
     assert_eq!(text.matches("alpha:").count(), 6, "{text}");
-    assert!(text.ends_with("1 updated · across 1 server\n"));
+    assert!(text.ends_with("1 deployed · across 1 server\n"));
 }
 
 #[test]
@@ -470,7 +537,7 @@ fn progress_drop_joins_its_worker_without_a_summary() {
     drop(progress);
     let text = String::from_utf8(bytes.lock().unwrap().clone()).unwrap();
     assert!(text.ends_with("alpha: starting\n"), "{text}");
-    assert!(!text.contains("updated"));
+    assert!(!text.contains("deployed"));
 }
 
 #[test]
@@ -582,6 +649,7 @@ fn service(name: &str, depth: u32, servers: usize, state: &ployz_store::RowState
             state,
             timing: Timing::Finished(Duration::from_secs(5)),
             starts: true,
+            updates: false,
         }),
     )
 }
@@ -593,6 +661,9 @@ fn an_overflowing_view_drops_switched_rows_before_a_deeper_failure() {
         cause: Vec::new(),
         step: None,
         log: None,
+        unanswered: false,
+        out_of_memory: None,
+        cancelled: false,
     };
     let mut rows: Vec<_> = (0..12)
         .map(|i| service(&format!("svc{i}"), 0, 1, &ployz_store::RowState::Completed))
@@ -626,6 +697,9 @@ fn an_overflowing_view_puts_finished_ingress_repairs_after_a_failure() {
         cause: Vec::new(),
         step: None,
         log: None,
+        unanswered: false,
+        out_of_memory: None,
+        cancelled: false,
     };
     let mut rows: Vec<_> = (0..12)
         .map(|n| Row {
@@ -697,4 +771,97 @@ fn a_retained_row_fits_the_terminal_with_its_count_whole() {
     assert!(row.ends_with("switched 10/10  5.0s"), "{visible}");
     assert!(row.contains('…'), "{visible}");
     assert!(row.width() < 80, "{visible}");
+}
+
+#[test]
+fn a_notice_raised_mid_deploy_shows_under_the_live_rows_and_in_plain_output() {
+    let warning = DeployWarning::ImagePortMismatch {
+        service: ployz_core::ServiceName::parse("web").unwrap(),
+        service_id: ployz_core::ServiceId::parse("c".repeat(32)).unwrap(),
+        image: "nginx".into(),
+        machines: vec![ployz_core::MachineId::parse("a".repeat(32)).unwrap()],
+        exposed: vec![80],
+        routed: vec![8080],
+    };
+    let line =
+        "! web's image nginx exposes 80; its domains send to 8080. Set the domain port or PORT.";
+    let initial = frame(State::Running(RowPhase::Starting));
+    let mut warned = initial.clone();
+    warned.notices.push(warning);
+
+    let lines = live_lines(&warned, 0, 200, 10, false);
+    assert_eq!(lines.last().map(String::as_str), Some(line), "{lines:?}");
+    assert!(
+        live_lines(&warned, 0, 200, 2, false)
+            .iter()
+            .all(|row| row != line)
+    );
+
+    let mut done = warned.clone();
+    done.rows.first_mut().unwrap().state = State::Completed;
+    let text = plain(
+        initial,
+        vec![
+            (1, Message::Update(warned)),
+            (2, Message::Finish(done, Disposition::Settled)),
+        ],
+    );
+    assert_eq!(text.matches(line).count(), 1, "{text}");
+}
+
+#[test]
+fn heartbeat_pairs_each_waiting_row_with_its_state() {
+    let mut initial = frame(State::Pending);
+    let mut api = initial.rows.first().unwrap().clone();
+    api.subject = Subject::ServiceOnServer {
+        service: QualifiedService::parse("shop/api").unwrap(),
+        machine: MachineId::random(),
+        server: "beta".into(),
+    };
+    api.state = State::Running(RowPhase::WaitingForHealth);
+    initial.rows.push(api);
+    let text = plain(initial, vec![(30_001, Message::Abandon)]);
+    assert!(
+        text.contains("still waiting: web on alpha (pending), api on beta (waiting for health)\n"),
+        "{text}"
+    );
+}
+
+#[test]
+fn copies_left_running_take_the_check_mark_off_the_switched_row_and_count_in_the_summary() {
+    let web = QualifiedService::parse("shop/web").unwrap();
+    let left = |container: char, reason: &str| DeployWarning::LeftRunning {
+        service: web.clone(),
+        container_id: ployz_core::ContainerId::parse(container.to_string().repeat(64)).unwrap(),
+        machine: "alpha".into(),
+        reason: reason.into(),
+    };
+    let frame = Frame {
+        run: Run::Direct(Namespace::parse("shop").unwrap()),
+        title: "Deploying shop".into(),
+        rows: vec![service("web", 0, 3, &ployz_store::RowState::Completed)],
+        notices: vec![left('a', "interrupted"), left('b', "interrupted")],
+    };
+    let mut written = Vec::new();
+    finish(
+        &mut written,
+        &frame,
+        &frame,
+        Disposition::LocalInterrupted,
+        true,
+        80,
+        false,
+    )
+    .unwrap();
+    let text = String::from_utf8(written).unwrap();
+    let row = text
+        .lines()
+        .find(|line| line.contains("switched"))
+        .unwrap_or_else(|| panic!("{text}"));
+    assert!(!row.contains('✔'), "{text}");
+    assert!(row.contains("switched 3/3, 2 left running"), "{text}");
+    assert!(
+        text.contains("1 deployed · 2 copies left running · across 3 servers"),
+        "{text}"
+    );
 }

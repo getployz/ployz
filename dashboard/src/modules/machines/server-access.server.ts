@@ -1,15 +1,16 @@
 import "@tanstack/react-start/server-only";
 import type { Connection } from "@ployz/sdk";
 import { and, eq, isNotNull, isNull, not, sql } from "drizzle-orm";
-import { Effect } from "effect";
+import { Cause, Effect, Schema } from "effect";
 import type { MachineId } from "#/db/tables";
 import type { StoreRefusal } from "#/modules/config-store/store.contract";
 import { type Caller, callerCan } from "#/modules/identity/actor";
 import { member, organizationToken, session } from "#/modules/identity/tables";
 import { decryptPairingSecret, loadOrganizationConnections } from "#/modules/machines/connections.server";
 import { lacks } from "#/modules/organization/access.server";
-import { organizationMachine, serverAccess } from "#/modules/machines/tables";
-import { Ployz } from "#/modules/runtime/ployz.server";
+import { enrollmentAllocation, organizationMachine, serverAccess } from "#/modules/machines/tables";
+import { clusterRead, SESSION_CLOSE_CLUSTER_MS, withClusterBudget } from "#/modules/runtime/organization-runtime.server";
+import { type PloyzSdkError, Ployz, RpcError, rpcErrorMessage, sdkFailureMessage } from "#/modules/runtime/ployz.server";
 import { Database } from "#/server/database.server";
 import { Unauthorized } from "#/server/public-error";
 import { SecretEncryption } from "#/utils/encrypted-secret.server";
@@ -17,6 +18,8 @@ import { SecretEncryption } from "#/utils/encrypted-secret.server";
 /** One dial or Clear per Server; a Server that doesn't answer in time is unreachable or unconfirmed. */
 const SERVER_TIMEOUT_MS = 10_000;
 const SERVER_CONCURRENCY = 4;
+/** The column's check admits any array, so an assignment without a text name is left out of `names`. */
+const isNamed = Schema.is(Schema.Struct({ machine: Schema.Struct({ id: Schema.String, name: Schema.String }) }));
 
 /** A credential's Management Client label on every Server: `cli-` and the first 28 hex digits of its id. */
 export function serverAccessLabel(credentialId: string) {
@@ -29,20 +32,31 @@ const lockCredential = (credentialId: string) => Effect.gen(function* () {
   yield* drizzle.execute(sql`select pg_advisory_xact_lock(hashtext(${`server-access:${credentialId}`}))`);
 });
 
-/** Set `label` on one Server through Cloud's own `cloud` slot. */
+/** Set `label` on one Server through Cloud's own `cloud` slot, dial and Set within one timeout. */
 const setHolder = (connection: Connection, label: string) =>
   Effect.scoped(Effect.gen(function* () {
     const ployz = yield* Ployz;
-    const client = yield* ployz.connect({ connections: [connection], timeoutMs: SERVER_TIMEOUT_MS });
+    const client = yield* ployz.connect({ connections: [connection], timeoutMs: SERVER_TIMEOUT_MS }, { closeWithin: clusterRead });
     return yield* client.setManagementClient(label);
-  })).pipe(Effect.timeout(SERVER_TIMEOUT_MS * 2));
+  })).pipe(Effect.timeout(SERVER_TIMEOUT_MS), withClusterBudget(SESSION_CLOSE_CLUSTER_MS));
+
+/**
+ * Why a Server gave no holder, or null when it sent no reply: Cloud's timeout ran out, or the SDK says the dial failed
+ * or the call got no status back. Only those are unreachable; a Server that refused may well be running.
+ */
+function refusal(error: PloyzSdkError | Cause.TimeoutError) {
+  if (Cause.isTimeoutError(error)) return null;
+  if ("cause" in error && error.cause instanceof RpcError && error.cause.unanswered) return null;
+  return rpcErrorMessage(error) ?? sdkFailureMessage(error);
+}
 
 /** Only `ployz` credentials hold a Server slot; a remote agent reaches Servers through Cloud. */
 type ServerAccessCaller = Caller & { readonly credential: { readonly kind: "session" | "token" } };
 
 /**
  * The Caller's own capability on every Server of its Organization, provisioning a missing `cli-<id>` holder on
- * first use, including on Servers enrolled after login. A Server that can't be reached now is listed as unreachable.
+ * first use, including on Servers enrolled after login. A Server that doesn't answer now is listed as unreachable, and
+ * one that refused, with what it said.
  * Only an owner or admin gets one: a holder is full control of the Server.
  */
 export const provideServerAccess = Effect.fn("ServerAccess.provide")(function* (caller: ServerAccessCaller) {
@@ -56,7 +70,7 @@ export const provideServerAccess = Effect.fn("ServerAccess.provide")(function* (
     } satisfies StoreRefusal };
   }
   const loaded = yield* loadOrganizationConnections(caller.organization.id);
-  if (loaded.kind === "missing") return { ok: true as const, value: { connections: [], unreachable: [] } };
+  if (loaded.kind === "missing") return { ok: true as const, value: { connections: [], unreachable: [], refused: [], names: {} } };
   const database = yield* Database;
   const { drizzle } = database;
   const encryption = yield* SecretEncryption;
@@ -69,17 +83,22 @@ export const provideServerAccess = Effect.fn("ServerAccess.provide")(function* (
     isNull(serverAccess.revokedAt),
   ))).map((row) => [row.machineId, row.encryptedCapability]));
   const label = serverAccessLabel(caller.credential.id);
+  // Every Server at once, so the Cluster time is one dial and Set plus one close (12 s) inside the CLI's 15 s request.
+  // The SQL around it has no bound of its own.
   const results = yield* Effect.forEach(loaded.connections, (cloud) => Effect.gen(function* () {
     const machineId = cloud.machine_id;
     if (machineId === undefined) return yield* Effect.die("an Organization connection names its Machine");
     const stored = held.get(machineId);
-    if (stored != null) return { machine_id: machineId, management: yield* decryptPairingSecret(stored) };
-    const management = yield* setHolder(cloud, label).pipe(Effect.option);
-    if (management._tag === "None") return { machine_id: machineId, management: null };
+    if (stored != null) return { machine_id: machineId, management: yield* decryptPairingSecret(stored), refused: null };
+    const management = yield* setHolder(cloud, label).pipe(
+      Effect.map((capability) => ({ capability, refused: null })),
+      Effect.catch((error) => Effect.succeed({ capability: null, refused: refusal(error) })),
+    );
+    if (management.capability === null) return { machine_id: machineId, management: null, refused: management.refused };
     // ponytail: two first uses racing both Set; the later key wins and the earlier command may need a rerun.
     // Recorded, then checked, under the credential's lock: a revocation that finished meanwhile revokes it at once,
     // and the Clear below (or the next retry) takes it off the Server.
-    const encryptedCapability = encryption.encrypt(management.value);
+    const encryptedCapability = encryption.encrypt(management.capability);
     const revoked = yield* database.transaction(Effect.gen(function* () {
       const { drizzle: tx } = yield* Database;
       yield* lockCredential(caller.credential.id);
@@ -107,11 +126,20 @@ export const provideServerAccess = Effect.fn("ServerAccess.provide")(function* (
       yield* retireServerAccess(caller.credential.id);
       return yield* new Unauthorized();
     }
-    return { machine_id: machineId, management: management.value };
-  }), { concurrency: SERVER_CONCURRENCY });
+    return { machine_id: machineId, management: management.capability, refused: null };
+  }), { concurrency: "unbounded" });
+  const [allocation] = yield* drizzle.select({ assignments: enrollmentAllocation.assignments }).from(enrollmentAllocation)
+    .where(and(eq(enrollmentAllocation.organizationId, caller.organization.id), eq(enrollmentAllocation.clusterKey, loaded.generation)));
   return { ok: true as const, value: {
     connections: results.flatMap(({ machine_id, management }) => management === null ? [] : [{ machine_id, management }]),
-    unreachable: results.flatMap(({ machine_id, management }) => management === null ? [machine_id] : []),
+    unreachable: results.flatMap(({ machine_id, management, refused }) => management === null && refused === null ? [machine_id] : []),
+    refused: results.flatMap(({ machine_id, refused }) => refused === null ? [] : [{ machine_id, message: refused }]),
+    // A Server the CLI can't reach shows by name where Cloud holds one: the last its Cluster reported, else the one
+    // enrollment gave. One Cloud never learned a name for is left out.
+    names: Object.fromEntries([
+      ...(allocation?.assignments ?? []).filter(isNamed).map(({ machine }) => [machine.id, machine.name]),
+      ...loaded.connections.flatMap(({ machine_id, name }) => name === undefined ? [] : [[machine_id, name]]),
+    ]),
   } };
 });
 
@@ -160,10 +188,10 @@ export const retireServerAccess = Effect.fn("ServerAccess.retire")(function* (
     const management = yield* decryptPairingSecret(row.cloud);
     yield* Effect.scoped(Effect.gen(function* () {
       const ployz = yield* Ployz;
-      const client = yield* ployz.connect({ connections: [{ machine_id: row.machineId, management }], timeoutMs: SERVER_TIMEOUT_MS });
+      const client = yield* ployz.connect({ connections: [{ machine_id: row.machineId, management }], timeoutMs: SERVER_TIMEOUT_MS }, { closeWithin: clusterRead });
       // Clearing an absent or already-cleared slot succeeds, so a retry after a lost reply confirms.
       yield* client.clearManagementClient(serverAccessLabel(row.credentialId));
-    })).pipe(Effect.timeout(SERVER_TIMEOUT_MS * 2));
+    })).pipe(Effect.timeout(SERVER_TIMEOUT_MS * 2), withClusterBudget(SESSION_CLOSE_CLUSTER_MS));
     yield* drizzle.delete(serverAccess).where(and(
       eq(serverAccess.organizationId, row.organizationId),
       eq(serverAccess.credentialId, row.credentialId),

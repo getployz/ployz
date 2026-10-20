@@ -3,8 +3,10 @@
 //! mounts and what the next Deploy does to it. And the Volumes a full Deploy
 //! removes, which callers observe the Servers for before admitting it.
 
-use ployz_core::config::{ReviewLifecycleKind, SavedEnvironmentIntent, SavedVolumeIntent};
-use ployz_core::{Namespace, RpcError, ServiceName};
+use ployz_core::config::{
+    ReviewLifecycleKind, SavedEnvironmentIntent, SavedVolumeIntent, VolumeKind,
+};
+use ployz_core::{Namespace, ProvisionedVolumeMaximumBytes, RpcError, ServiceName};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
@@ -46,6 +48,12 @@ pub struct VolumeListing {
     pub deployed: bool,
     /// An admitted attempt fixes the storage choice, even if it fails.
     pub storage_locked: bool,
+    /// The size its Servers hold, for a deployed Managed Volume: what a resize moves
+    /// and a Deploy accepts at most. Absent for a Docker Volume or before the first
+    /// Deploy; `storage` is Working State's, which a staged restore may set lower.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub recorded_storage: Option<ProvisionedVolumeMaximumBytes>,
     /// What the next Deploy does to it; none when it is deployed as it is.
     pub change: Option<ReviewLifecycleKind>,
 }
@@ -82,6 +90,11 @@ pub struct RemovalsQuery {
     /// deletes every deployed Volume.
     #[serde(default)]
     pub remove: bool,
+    /// Ask about redeploying this Deployment instead: what rolling back to it
+    /// removes. Redeploying one that rolls nothing back reviews nothing.
+    #[serde(default)]
+    #[ts(optional = nullable)]
+    pub deployment: Option<crate::id::DeploymentId>,
 }
 
 /// What a full Deploy would remove from the Servers: observe these Docker Volumes
@@ -140,20 +153,42 @@ pub(crate) fn removals(
     who: &Actor,
     query: &RemovalsQuery,
 ) -> Result<RemovalsView, RpcError> {
+    if let Some(deployment) = &query.deployment {
+        let stored = crate::deployment::owned(tx, who, deployment)?;
+        let environment = scope::load_by_id(tx, &stored.summary.environment_id)?;
+        let volumes = match crate::deployment::undone(tx, &stored.summary)?.is_empty() {
+            true => Vec::new(),
+            false => {
+                let review = review::review(tx, &environment)?;
+                crate::deployment::rollback_removed(tx, &stored, &review.head.applied)?
+            }
+        };
+        return Ok(RemovalsView {
+            environment: environment.summary,
+            volumes,
+        });
+    }
     let environment = scope::environment(tx, who, &query.environment)?;
     let review = review::review(tx, &environment)?;
-    let volumes = if review.head.applied.volumes.is_empty() {
+    // Removing the Environment reviews Applied State alone.
+    let (held, target) = if query.remove {
+        (
+            review.head.applied.clone(),
+            crate::scope::empty(&environment.working.environment_slug),
+        )
+    } else {
+        (
+            review::approval::deployed(&review.head),
+            environment.working.clone(),
+        )
+    };
+    let volumes = if held.volumes.is_empty() {
         Vec::new()
     } else {
-        // Applied Volumes mean a Deployment was admitted, which fixed the Namespace.
+        // Deployed Volumes mean a Deployment was admitted, which fixed the Namespace.
         let namespace: Namespace =
             crate::deployment::namespace(tx, who, &environment.summary, false)?;
-        let target = if query.remove {
-            crate::scope::empty(&environment.working.environment_slug)
-        } else {
-            environment.working.clone()
-        };
-        removal::removed(&review.head.applied, &target, &namespace)?
+        removal::removed(&held, &target, &namespace)?
     };
     Ok(RemovalsView {
         environment: environment.summary,
@@ -190,6 +225,10 @@ fn listed(
             let listing = VolumeListing {
                 volume: volume_summary(&node)?,
                 storage_locked: locked.contains_key(&node.resource_id),
+                recorded_storage: match locked.get(&node.resource_id) {
+                    Some(VolumeKind::Provisioned { maximum_bytes }) => Some(*maximum_bytes),
+                    Some(VolumeKind::Docker {}) | None => None,
+                },
                 mounts: mounts(working, &node.resource_id)?,
                 deployed: review
                     .head

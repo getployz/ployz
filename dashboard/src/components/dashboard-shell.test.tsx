@@ -15,6 +15,7 @@ import { authClient } from "#/auth/auth-client";
 import type { AuthSession } from "#/auth/auth";
 import { Route as RootRoute } from "#/routes/__root";
 import { organizationKeys } from "#/modules/organization/organization-state.queries";
+import { failOnMountedStore, failOnRenderAfterTest } from "#/test/window-teardown";
 
 // Better Auth captures fetch when the client is created.
 const transport = vi.hoisted(() => {
@@ -45,9 +46,11 @@ beforeEach(() => {
     value({ top = 0, left = 0 }: ScrollToOptions) { this.scrollTop = top; this.scrollLeft = left; },
   });
 });
+failOnMountedStore("Better Auth session", () => authClient.$store.atoms["session"]);
+failOnRenderAfterTest();
 afterEach(() => {
   cleanup();
-  cleanStores(...Object.values(authClient.$store.atoms));
+  cleanStores(authClient.$store.atoms["session"]);
   document.cookie = "theme=; path=/; max-age=0";
   document.documentElement.classList.remove("light", "dark", "system");
   document.documentElement.style.removeProperty("color-scheme");
@@ -105,6 +108,7 @@ async function show({ orgStore = "ready", scope = "environment", billingEnabled 
   await router.load();
   const view = render(<QueryClientProvider client={client}><RouterProvider router={router} /></QueryClientProvider>);
   const rail = await screen.findByRole("navigation", { name: "Dashboard navigation" });
+  await waitFor(() => expect(router.state.status).toBe("idle"));
   if (orgStore === "ready" && scope === "environment") {
     await waitFor(() => expect(screen.getAllByRole("button", { name: "Environment: production" }).length).toBeGreaterThan(0));
   }
@@ -217,6 +221,8 @@ it("holds only Account, organization switching, Theme, Home and Log out in the a
   fireEvent.click(within(menu).getByRole("menuitemradio", { name: "Dark" }));
   expect(document.documentElement.classList.contains("dark")).toBe(true);
   expect(document.cookie).toContain("theme=dark");
+  fireEvent.keyDown(menu, { key: "Escape" });
+  await waitFor(() => expect(screen.queryByRole("menu")).toBeNull());
 });
 
 it("gives organization pages their three places in the rail and the phone tab bar", async () => {
@@ -248,4 +254,9 @@ it("keeps the agent closed, with its button in the top bar outside the page", as
   expect(screen.getByRole("main").contains(button)).toBe(false);
   expect(button.getAttribute("aria-pressed")).toBe("false");
   expect(screen.queryByRole("region", { name: "Ployz agent" })).toBeNull();
+});
+
+it("names no place in the top bar on an organization page no place claims, such as a mistyped URL", async () => {
+  await show({ scope: "all", path: "/cloud/acme/servers" });
+  expect(screen.queryByRole("heading", { name: "Architecture" })).toBeNull();
 });

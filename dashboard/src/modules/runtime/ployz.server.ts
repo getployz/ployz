@@ -29,8 +29,8 @@ import type {
   VolumeSwitchRequest,
   WatchOptions,
 } from "@ployz/sdk";
-import { connect as connectSdk, machineUpgradeAttemptId, observeCopies, ployzVersion, setVolumeCopyRefusal } from "@ployz/sdk";
-import { Context, Data, Effect, Layer, Option, Schema, type Scope } from "effect";
+import { connect as connectSdk, machineUpgradeAttemptId, observeCopies, ployzVersion, SealedNames, setVolumeCopyRefusal } from "@ployz/sdk";
+import { Context, Data, Effect, Fiber, Layer, Option, Schema, type Scope } from "effect";
 import type { JsonValue } from "#/db/tables";
 import { describeFailureCause } from "#/lib/error-message";
 import { projectJsonValue } from "#/lib/json";
@@ -42,7 +42,10 @@ import { RuntimeConnectionFailure } from "#/modules/runtime/runtime-connection-e
 /** The release this SDK speaks; it needs no Machine. */
 export { ployzVersion };
 
-export { machineUpgradeAttemptId, setVolumeCopyRefusal };
+export { machineUpgradeAttemptId, SealedNames, setVolumeCopyRefusal };
+
+/** The error an SDK call rejects with when a Machine or the Store refuses it. */
+export { RpcError } from "@ployz/sdk";
 
 export const observeVolumeCopies = (connections: Parameters<typeof observeCopies>[0]) =>
   sdkPromise("observe copies", () => observeCopies(connections));
@@ -124,8 +127,11 @@ export interface PloyzSession {
     machine: MachineTarget,
     container: string,
   ) => Effect.Effect<{ readonly container: ContainerObservation }, PloyzSdkError>;
-  /** Describes only the Services in `readable` Namespaces, or every Service when null. */
-  readonly agentAsk: (query: CloudQuery, readable: ReadonlyArray<string> | null) => Effect.Effect<unknown, PloyzSdkError>;
+  /**
+   * Describes only the Services in `readable` Namespaces, or every Service when null. A logs ask scrubs Container
+   * values under the `sealed` names, or every value when null.
+   */
+  readonly agentAsk: (query: CloudQuery, readable: ReadonlyArray<string> | null, sealed: ReadonlyArray<string> | null) => Effect.Effect<unknown, PloyzSdkError>;
   readonly observeService: (namespace: string, service: string) => Effect.Effect<ServiceCopies, PloyzSdkError>;
   readonly stopContainer: (machine: string, container: string) => Effect.Effect<void, PloyzSdkError>;
   /** How a started Container ended up: past its healthcheck and serving, unconfirmed, or failing its healthcheck. */
@@ -162,9 +168,22 @@ type PloyzBindings = {
   readonly connect: (options: ConnectOptions) => Promise<Client>;
 };
 
+/** Why a bound cut a close, such as `ClusterOutOfTime`, or a plain error a bound failed with. */
+export type CloseCut = { readonly _tag: string } | Error;
+
+/**
+ * How a session closes when its scope does. `closeWithin` bounds the close for a short-lived caller (pass `clusterRead`
+ * to spend Cluster time on it): a close it cuts aborts the connection and goes on in the background. Without it, the
+ * scope waits for the close.
+ */
+export type PloyzSessionClose = {
+  readonly closeWithin?: (close: Effect.Effect<void>) => Effect.Effect<void, CloseCut>;
+};
+
 export interface PloyzService {
   readonly connect: (
     options: SharedConnectOptions,
+    close?: PloyzSessionClose,
   ) => Effect.Effect<PloyzSession, PloyzProviderError, Scope.Scope>;
 }
 
@@ -311,7 +330,7 @@ function wrapClient(client: Client): PloyzSession {
       sdkPromise("volume switch", () => client.volumeSwitch(machine, request)),
     inspectContainer: (machine, container) =>
       sdkPromise("inspect container", () => client.inspectContainer(machine, container)),
-    agentAsk: (query, readable) => sdkPromise("agent ask", () => client.agentAsk(query, readable)),
+    agentAsk: (query, readable, sealed) => sdkPromise("agent ask", () => client.agentAsk(query, readable, sealed)),
     observeService: (namespace, service) => sdkPromise("observe service", () => client.observeService(namespace, service)),
     stopContainer: (machine, container) => sdkPromise("stop container", () => client.stopContainer(machine, container)),
     startContainer: (machine, container) => sdkPromise("start container", () => client.startContainer(machine, container)),
@@ -361,9 +380,29 @@ function closeSession(session: Client) {
   );
 }
 
+/** The warning for a close its bound cut: only running out of Cluster time is "in time". */
+export function closeCutWarning(cut: CloseCut) {
+  if ("_tag" in cut && cut._tag === "ClusterOutOfTime") return "The Ployz session didn't close in time, so its connection was aborted.";
+  const failure = "_tag" in cut ? cut._tag : cut.message || cut.name;
+  return `The Ployz session's close failed with ${failure}, so its connection was aborted.`;
+}
+
+function closeSessionWithin(
+  session: Client,
+  controller: AbortController,
+  closeWithin: NonNullable<PloyzSessionClose["closeWithin"]>,
+) {
+  return Effect.forkDetach(closeSession(session)).pipe(
+    Effect.flatMap((closing) => closeWithin(Fiber.join(closing))),
+    Effect.catch((error) => Effect.sync(() => controller.abort()).pipe(
+      Effect.andThen(Effect.logWarning(closeCutWarning(error))),
+    )),
+  );
+}
+
 export function makePloyzLayer(bindings: PloyzBindings) {
   return Layer.succeed(Ployz, {
-    connect: (options) =>
+    connect: (options, { closeWithin } = {}) =>
       Effect.gen(function* () {
         const controller = yield* Effect.acquireRelease(
           Effect.sync(() => new AbortController()),
@@ -378,7 +417,7 @@ export function makePloyzLayer(bindings: PloyzBindings) {
             catch: (cause) =>
               new PloyzProviderError({ operation: "connect", cause }),
           }),
-          closeSession,
+          (session) => closeWithin === undefined ? closeSession(session) : closeSessionWithin(session, controller, closeWithin),
           { interruptible: true },
         ).pipe(Effect.map(wrapClient));
       }),

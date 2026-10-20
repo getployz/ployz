@@ -10,7 +10,9 @@ Several services can share the same config.
 ## Create a config
 
 1. Open your environment and choose **Create** → **Config**.
-2. Enter a **Name**, such as `app-settings`, and click **Create config**.
+2. Enter a **Name**, such as `app-settings`, and click **Create config**. Names use lowercase
+   letters, digits and hyphens. Anything else is converted, and the field shows the name it saves
+   as.
 3. In **Files**, click **Add file**, enter a **File name**, such as `app.conf`, and click **Add**.
 4. Write the file's text and click **Save**.
 
@@ -18,9 +20,9 @@ Several services can share the same config.
 
 **Save** stages your file changes. Your running services keep their current files until you deploy.
 **Save** writes every edited file together. Each file's options menu shows its size and permissions;
-each file holds up to 256 KB. Unsaved edits stay visible if a save fails.
+each file holds up to 256 KB, and a service mounts up to 768 KB across all its configs. Unsaved edits stay visible if a save fails.
 
-File names can include folders, such as `conf.d/site.conf`, with up to four path segments.
+File names can include folders, such as `conf.d/site.conf`, with up to four path segments of up to 255 bytes each.
 Use relative paths without `..`.
 
 ## Mount it into a service
@@ -33,7 +35,8 @@ Use relative paths without `..`.
 ![The same config mounted on web and worker at /etc/app](../images/config-mounts.png)
 
 The service reads `app.conf` at `/etc/app/app.conf`. Each directory holds one config or volume,
-so choose another directory if one is already mounted there.
+so choose another directory if one is already mounted there. A config can't mount under `/proc`,
+`/sys` or `/dev`, which the kernel fills.
 
 The config's panel shows each mount's actual directory. Open the menu at the end of its row and choose
 **Edit directory** to move it, or **Unmount** to detach it on the next deploy.
@@ -91,8 +94,10 @@ ployz config put app-settings app.conf --from ./app.conf --mode 0440 --uid 1000 
 
 ## Good to know
 
-- **Small text files.** Each file holds up to 256 KB of UTF-8 text. Keep larger files in your
-  image or a [volume](volumes.md).
+- **Small text files.** Each file holds up to 256 KB of UTF-8 text, and one service mounts up to
+  768 KB across all its configs. A deploy counts the files with their variables filled in, so it
+  refuses a config whose variables push it past that. Keep larger files in your image or a
+  [volume](volumes.md).
 - **Shared changes.** Editing one config affects every service that mounts it. Create another
   config when a service needs different files.
 - **Remove or unmount.** **Remove file** removes a file after deployment. **Unmount**

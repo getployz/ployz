@@ -69,7 +69,7 @@ stdout:
 organization = local
 signed in as = local
 environment = shop/production
-staged = 11 changes
+staged = 13 changes
 ```
 
 stderr:
@@ -90,7 +90,7 @@ stdout:
   "attention": [],
   "deploying": [],
   "environment": {
-    "id": "32ce0e3e-844a-4be1-95f6-9bfebd3f696f",
+    "id": "c30e5c01-12b4-4a10-85d6-1fbf469f25b6",
     "name": "production",
     "project": "shop",
     "revision": 21
@@ -112,7 +112,7 @@ stdout:
     }
   },
   "staged": {
-    "changes": 11,
+    "changes": 13,
     "saved": false,
     "version": "21:0:0.0"
   }
@@ -181,7 +181,7 @@ organization = local
 signed in as = local
 environment = shop/production
 linked from = /tmp/ployz-cli-outputs-store/work
-staged = 10 changes
+staged = 11 changes
 ```
 
 stderr:
@@ -202,7 +202,7 @@ stdout:
   "attention": [],
   "deploying": [],
   "environment": {
-    "id": "32ce0e3e-844a-4be1-95f6-9bfebd3f696f",
+    "id": "c30e5c01-12b4-4a10-85d6-1fbf469f25b6",
     "name": "production",
     "project": "shop",
     "revision": 34
@@ -227,7 +227,7 @@ stdout:
     }
   },
   "staged": {
-    "changes": 10,
+    "changes": 11,
     "saved": false,
     "version": "34:3:0.0"
   }
@@ -265,7 +265,8 @@ $ ployz link --project shop --env nope
 stderr:
 ```
 error: No Environment named nope in Project shop
-next: ployz env new nope --project shop
+next: ployz env ls --project shop
+valid: fix-web, long, production, staging
 ```
 
 ### status with --env override
@@ -297,7 +298,7 @@ organization = local
 signed in as = local
 environment = shop/fix-web
 linked from = /tmp/ployz-cli-outputs-store/work
-staged = 6 changes
+staged = 7 changes
 ```
 
 stderr:
@@ -363,7 +364,8 @@ NAME	CURRENT	DEFAULT	CONNECTIONS
 
 stderr:
 ```
-No contexts yet.
+No contexts yet. Contexts reach Clusters outside Ployz Cloud; your Cloud Servers need none.
+next: ployz login
 ```
 
 ### ctx ls --json (no contexts)
@@ -376,7 +378,8 @@ $ ployz --json ctx ls
 stdout:
 ```
 {
-  "contexts": []
+  "contexts": [],
+  "next": "ployz login"
 }
 ```
 
@@ -601,7 +604,8 @@ NAME	CURRENT	DEFAULT	CONNECTIONS
 
 stderr:
 ```
-No contexts yet.
+No contexts yet. Contexts reach Clusters outside Ployz Cloud; your Cloud Servers need none.
+next: ployz login
 ```
 
 ### status (with a context removed)
@@ -617,7 +621,7 @@ organization = local
 signed in as = local
 environment = shop/production
 linked from = /tmp/ployz-cli-outputs-store/work
-staged = 10 changes
+staged = 11 changes
 ```
 
 stderr:

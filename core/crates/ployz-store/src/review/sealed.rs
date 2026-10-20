@@ -5,8 +5,12 @@ use std::collections::BTreeSet;
 
 use ployz_core::RpcError;
 use ployz_core::config::{SavedEnvironmentIntent, SavedVariableIntent, SavedVariableValue};
+use serde::{Deserialize, Serialize};
+use ts_rs::TS;
 
+use crate::scope::{self, EnvironmentRef};
 use crate::storage::Tx;
+use crate::{Actor, EnvironmentSummary};
 
 pub(crate) fn sealed(value: &SavedVariableValue) -> bool {
     match value {
@@ -16,6 +20,71 @@ pub(crate) fn sealed(value: &SavedVariableValue) -> bool {
             false
         }
     }
+}
+
+fn may_carry_sealed(value: &SavedVariableValue) -> bool {
+    sealed(value) || matches!(value, SavedVariableValue::Template { parts: _ })
+}
+
+pub(crate) fn names(tx: &mut dyn Tx, environment: &str) -> Result<BTreeSet<String>, RpcError> {
+    let mut names = BTreeSet::new();
+    for row in tx.query(
+        "SELECT key FROM config_sealed_variable WHERE environment_id = ?1",
+        &[environment.into()],
+    )? {
+        names.insert(row.text(0)?.to_owned());
+    }
+    let mut intents = Vec::new();
+    for row in tx.query(
+        "SELECT intent FROM config_saved WHERE environment_id = ?1",
+        &[environment.into()],
+    )? {
+        intents.push(row.intent(0, "Saved State")?);
+    }
+    for row in tx.query(
+        "SELECT working FROM config_environment WHERE id = ?1",
+        &[environment.into()],
+    )? {
+        intents.push(row.intent(0, "Working State")?);
+    }
+    names.extend(
+        intents
+            .iter()
+            .flat_map(|intent| &intent.services)
+            .flat_map(|service| &service.variables)
+            .filter(|variable| may_carry_sealed(&variable.value))
+            .map(|variable| variable.key.clone()),
+    );
+    Ok(names)
+}
+
+/// The variable names under which an Environment's Containers may hold Sealed values.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct SealedNamesQuery {
+    #[serde(default)]
+    pub environment: EnvironmentRef,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
+pub struct SealedNamesView {
+    /// The Environment, at the revision read.
+    pub environment: EnvironmentSummary,
+    /// Every name ever Sealed or templated in it, across its Services.
+    pub names: BTreeSet<String>,
+}
+
+pub(crate) fn names_view(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    q: &SealedNamesQuery,
+) -> Result<SealedNamesView, RpcError> {
+    let environment = scope::environment(tx, who, &q.environment)?;
+    let names = names(tx, environment.summary.id.as_str())?;
+    Ok(SealedNamesView {
+        environment: environment.summary,
+        names,
+    })
 }
 
 /// Every variable an Environment ever held sealed, per Service: by stable ID, so

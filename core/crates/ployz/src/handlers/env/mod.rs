@@ -13,8 +13,9 @@ pub(super) mod pr;
 use clap::{ArgMatches, Command};
 use ployz_core::RpcErrorCode;
 use ployz_store::{
-    CreateEnvironment, EnvironmentId, EnvironmentName, EnvironmentRef, EnvironmentSummary,
-    EnvironmentsQuery, EnvironmentsView, NeverSync, SetDefaultEnvironment, SetEnvironmentProtected,
+    CreateEnvironment, EnvironmentId, EnvironmentName, EnvironmentRef, EnvironmentRemoval,
+    EnvironmentSummary, EnvironmentsQuery, EnvironmentsView, NeverSync, SetDefaultEnvironment,
+    SetEnvironmentProtected,
 };
 use serde_json::json;
 
@@ -106,7 +107,7 @@ pub(super) fn rm_command(command: Command) -> Command {
 
 pub(super) fn branch_command(command: Command) -> Command {
     command
-        .about("Make a Branch: copies of the nodes picked, the rest used live")
+        .about("Make a Branch: copies of the nodes picked; what they use stays the Parent's")
         .arg(positional("name", true).help("Branch name, unique in the Project"))
         .arg(project_arg())
         .arg(
@@ -127,7 +128,7 @@ pub(super) fn branch_command(command: Command) -> Command {
         .arg(
             repeated("setup")
                 .value_name("SERVICE=COMMAND")
-                .help("Run COMMAND in a copied Service before it first deploys"),
+                .help("Run COMMAND in a copied Service before it first deploys; get, set or unset it later at setup.SERVICE"),
         )
         .arg(switch("keep", None).help("Keep it after syncing into its Parent"))
         .arg(
@@ -453,7 +454,14 @@ fn environments(listed: &EnvironmentsView) -> crate::ui::Table {
                 environment
                     .removal
                     .as_ref()
-                    .map(|removal| format!("#{} {}", removal.number, store::word(&removal.status)))
+                    .map(|removal| match removal {
+                        EnvironmentRemoval::Pending { because, .. } => {
+                            format!("pending ({})", store::word(because))
+                        }
+                        EnvironmentRemoval::Deployment(removal) => {
+                            format!("{} {}", removal.label(), store::word(&removal.status))
+                        }
+                    })
                     .unwrap_or_default(),
             ),
             Cell::from(
@@ -496,12 +504,14 @@ pub(super) fn rm(root: &ArgMatches) -> Result<(), Error> {
     // command finishes it once the removal applied, or queues it again.
     let store = store.args(["--confirm", typed.as_str()]);
     let environment = inventory.environment.clone();
+    let mut shown = None;
     confirm(matches, &typed, "Environment", store.again(&[]), || {
+        shown = Some(teardown::Shown::of([&inventory]));
         Ok(unconfirmed(inventory, &store.again(&[])))
     })?;
     let events = deploy::open_events(matches)?;
     let target = (&environment.project, Some(&name));
-    let Some(removed) = teardown::remove(matches, &store, target, events)? else {
+    let Some(removed) = teardown::remove(matches, &store, target, shown.as_ref(), events)? else {
         return Ok(());
     };
     crate::ui::finish(
@@ -577,4 +587,36 @@ pub(super) fn never_sync(root: &ArgMatches) -> Result<(), Error> {
             )),
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::environments;
+
+    #[test]
+    fn a_close_waiting_for_the_sweep_lists_as_pending() {
+        let listed = serde_json::from_value(json!({
+            "project": { "id": "00000000-0000-4000-8000-000000000001", "name": "shop" },
+            "environments": [{
+                "id": "00000000-0000-4000-8000-000000000009",
+                "name": "feat3",
+                "default": false,
+                "parent": "production",
+                "removal": { "kind": "pending", "because": "synced", "since": 1_760_000_000 },
+                "merged": false,
+                "branch_setup": [],
+                "protected": false,
+                "protections": 0,
+            }],
+        }))
+        .unwrap();
+        let mut out = Vec::new();
+        environments(&listed).write(&mut out, false).unwrap();
+        assert_eq!(
+            String::from_utf8(out).unwrap().lines().nth(1),
+            Some("feat3\t-\t-\tproduction\tpending (synced)\t-")
+        );
+    }
 }

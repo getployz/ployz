@@ -90,7 +90,7 @@ fn exec_mapping_and_container_selection_match_the_operator_contract() {
     ));
     assert!(matches!(
         select_exec_container(&service, Some(&container_selector("api-hook"))),
-        Err(OperatorError::Container(ployz_core::ContainerSelectorError::NotFound { selector }))
+        Err(OperatorError::Container(ployz_core::ContainerSelectorError::NotFound { selector, .. }))
             if selector.as_str() == "api-hook"
     ));
     assert_eq!(
@@ -235,17 +235,17 @@ fn parse_log_time_accepts_documented_formats_and_rejects_garbage() {
     use chrono::TimeZone as _;
 
     let now = 1_800_000_000;
-    assert_eq!(parse_log_time("", now).unwrap(), None);
+    assert_eq!(parse_log_time("since", "", now).unwrap(), None);
     assert_eq!(
-        parse_log_time("1763953966", now).unwrap(),
+        parse_log_time("since", "1763953966", now).unwrap(),
         Some(1_763_953_966)
     );
     assert_eq!(
-        parse_log_time("2024-01-31T10:30:00+02:00", now).unwrap(),
+        parse_log_time("since", "2024-01-31T10:30:00+02:00", now).unwrap(),
         Some(1_706_689_800)
     );
     assert_eq!(
-        parse_log_time("2024-05-14T22:50:00", now).unwrap(),
+        parse_log_time("since", "2024-05-14T22:50:00", now).unwrap(),
         Some(
             chrono::Local
                 .with_ymd_and_hms(2024, 5, 14, 22, 50, 0)
@@ -254,13 +254,21 @@ fn parse_log_time_accepts_documented_formats_and_rejects_garbage() {
                 .timestamp()
         )
     );
-    assert_eq!(parse_log_time("2m30s", now).unwrap(), Some(1_799_999_850));
-    assert_eq!(parse_log_time("30d", now).unwrap(), Some(1_797_408_000));
-    // A duration past the timestamp range is refused, not wrapped into the future.
-    assert!(parse_log_time("10000000000000000000s", now).is_err());
     assert_eq!(
-        parse_log_time("notatime", now).unwrap_err().to_string(),
-        "invalid log time \"notatime\": expected a relative duration, RFC 3339 date, or Unix timestamp"
+        parse_log_time("since", "2m30s", now).unwrap(),
+        Some(1_799_999_850)
+    );
+    assert_eq!(
+        parse_log_time("since", "30d", now).unwrap(),
+        Some(1_797_408_000)
+    );
+    // A duration past the timestamp range is refused, not wrapped into the future.
+    assert!(parse_log_time("since", "10000000000000000000s", now).is_err());
+    assert_eq!(
+        parse_log_time("since", "notatime", now)
+            .unwrap_err()
+            .to_string(),
+        "invalid time \"notatime\" for --since: expected a relative duration, RFC 3339 date, or Unix timestamp"
     );
     assert_eq!(
         parse_tail("abc").unwrap_err().to_string(),
@@ -312,10 +320,12 @@ async fn log_merger_orders_after_watermarks_and_surfaces_zero_errors_and_stalls(
         vec![
             LogInput {
                 identity: "quiet".into(),
+                machine: machine_id('c'),
                 stream: Box::pin(stream::pending()),
             },
             LogInput {
                 identity: "buffered".into(),
+                machine: machine_id('b'),
                 stream: Box::pin(stream::once(async {
                     tokio::time::sleep(Duration::from_millis(5)).await;
                     Ok(log(metadata("buffered"), 7, b"released"))
@@ -326,7 +336,10 @@ async fn log_merger_orders_after_watermarks_and_surfaces_zero_errors_and_stalls(
         Duration::from_millis(15),
         Duration::from_millis(2),
     );
-    assert!(stalled.recv().await.unwrap().unwrap_err().contains("quiet"));
+    assert_eq!(
+        stalled.recv().await.unwrap().unwrap_err(),
+        LogFault::Stalled(machine_id('c'))
+    );
     assert_eq!(
         output_bytes(&stalled.recv().await.unwrap().unwrap()),
         b"released"
@@ -337,6 +350,7 @@ async fn log_merger_orders_after_watermarks_and_surfaces_zero_errors_and_stalls(
         vec![
             LogInput {
                 identity: "quiet".into(),
+                machine: machine_id('c'),
                 stream: Box::pin(stream::unfold((), |()| async {
                     tokio::time::sleep(Duration::from_millis(40)).await;
                     None::<(Result<LogEntry, LogError>, ())>
@@ -348,13 +362,9 @@ async fn log_merger_orders_after_watermarks_and_surfaces_zero_errors_and_stalls(
         Duration::from_millis(15),
         Duration::from_millis(2),
     );
-    assert!(
-        stalled_then_closed
-            .recv()
-            .await
-            .unwrap()
-            .unwrap_err()
-            .contains("quiet")
+    assert_eq!(
+        stalled_then_closed.recv().await.unwrap().unwrap_err(),
+        LogFault::Stalled(machine_id('c'))
     );
     assert_eq!(
         output_bytes(&stalled_then_closed.recv().await.unwrap().unwrap()),
@@ -378,22 +388,14 @@ async fn log_merger_closes_empty_flushes_and_surfaces_stream_errors() {
         )],
         CancellationToken::new(),
     );
-    assert!(
-        errors
-            .recv()
-            .await
-            .unwrap()
-            .unwrap_err()
-            .contains("transport failed")
-    );
-    assert!(
-        errors
-            .recv()
-            .await
-            .unwrap()
-            .unwrap_err()
-            .contains("remote failed")
-    );
+    let Err(LogFault::Error(transport)) = errors.recv().await.unwrap() else {
+        panic!("expected the transport error")
+    };
+    assert!(transport.contains("transport failed"));
+    let Err(LogFault::Error(remote)) = errors.recv().await.unwrap() else {
+        panic!("expected the remote error")
+    };
+    assert!(remote.contains("remote failed"));
 
     let mut empty_error = merge_logs(
         vec![input(
@@ -402,7 +404,10 @@ async fn log_merger_closes_empty_flushes_and_surfaces_stream_errors() {
         )],
         CancellationToken::new(),
     );
-    assert_eq!(empty_error.recv().await.unwrap().unwrap_err(), "broken: ");
+    assert_eq!(
+        empty_error.recv().await.unwrap().unwrap_err(),
+        LogFault::Error("broken: ".into())
+    );
 
     let mut closing = merge_logs(
         vec![
@@ -427,6 +432,7 @@ async fn partial_open_streams_survive_until_parent_cancellation() {
         open_log_input(&mut inputs, &cancellation, async {
             Ok(LogInput {
                 identity: boundary.into(),
+                machine: machine_id('a'),
                 stream: Box::pin(TrackedPending(dropped.clone())),
             })
         })
@@ -476,8 +482,13 @@ impl Drop for TrackedPending {
 fn input(identity: &str, entries: Vec<Result<LogEntry, LogError>>) -> LogInput {
     LogInput {
         identity: identity.into(),
+        machine: machine_id('a'),
         stream: Box::pin(stream::iter(entries)),
     }
+}
+
+fn machine_id(seed: char) -> MachineId {
+    MachineId::parse(seed.to_string().repeat(32)).unwrap()
 }
 
 fn log(metadata: LogMetadata, timestamp: i64, message: &[u8]) -> LogEntry {
@@ -675,6 +686,79 @@ fn history_reads_a_removed_service_and_skips_a_server_that_did_not_answer() {
     assert!(history_selectors(&scope, &[arg("gone")], None, None).is_err());
 }
 
+#[test]
+fn every_service_logs_skip_a_service_with_nothing_on_the_asked_servers() {
+    let edge = machine_observation(1, "edge");
+    let core = machine_observation(2, "core");
+    let placed = |id: char, service: &str, seed: u8, machine: &MachineObservation| {
+        let container = container_on(
+            &id.to_string().repeat(64),
+            service,
+            ServiceId::parse(seed.to_string().repeat(32)).unwrap(),
+            ContainerKind::ServiceContainer,
+            machine.machine.id,
+            service,
+        );
+        ployz_core::MachineSuccess {
+            machine_id: machine.machine.id,
+            value: vec![container],
+        }
+    };
+    let live =
+        ployz_core::derive_live_services::<ployz_core::RpcError>(ployz_core::PartialResult {
+            successes: vec![placed('a', "api", 3, &edge), placed('b', "web", 4, &core)],
+            failures: Vec::new(),
+            omissions: Vec::new(),
+        });
+    let services = live.services();
+    let asked = HashSet::from([edge.machine.id]);
+
+    let summary =
+        |targets: Vec<Result<(ServiceSelector, Vec<ContainerRef<'_>>), OperatorError>>| {
+            targets
+                .into_iter()
+                .map(|target| {
+                    target.map(|(service, containers)| (service.to_string(), containers.len()))
+                })
+                .collect::<Vec<_>>()
+        };
+    let named = |names: &[&str]| {
+        names
+            .iter()
+            .map(|name| ServiceArg {
+                service: service_selector(name),
+                containers: Vec::new(),
+            })
+            .collect::<Vec<_>>()
+    };
+
+    assert!(matches!(
+        summary(log_targets(&services, &asked, &[], None, None)).as_slice(),
+        [Ok((service, 1))] if service == "app/api"
+    ));
+    assert!(matches!(
+        summary(log_targets(&services, &asked, &named(&["app/api", "app/web"]), None, None))
+            .as_slice(),
+        [Ok((service, 1)), Err(OperatorError::NoContainersOnMachines { .. })]
+            if service == "app/api"
+    ));
+    assert!(matches!(
+        summary(log_targets(&services, &HashSet::new(), &[], None, None)).as_slice(),
+        [Err(OperatorError::NoServices)]
+    ));
+    assert!(matches!(
+        summary(log_targets(
+            &services,
+            &HashSet::new(),
+            &[],
+            None,
+            Some("d1")
+        ))
+        .as_slice(),
+        [Err(OperatorError::NoDeploymentContainers)]
+    ));
+}
+
 fn strings<const N: usize>(values: [&str; N]) -> Vec<String> {
     values.into_iter().map(ToOwned::to_owned).collect()
 }
@@ -752,11 +836,31 @@ fn container(
     service_id: ServiceId,
     kind: ContainerKind,
 ) -> ContainerObservation {
+    container_on(
+        id,
+        name,
+        service_id,
+        kind,
+        MachineId::parse("2".repeat(32)).unwrap(),
+        "api",
+    )
+}
+
+fn container_on(
+    id: &str,
+    name: &str,
+    service_id: ServiceId,
+    kind: ContainerKind,
+    machine_id: MachineId,
+    service: &str,
+) -> ContainerObservation {
     ployz_core::ContainerObservation::try_from(ployz_core::ContainerObservationParts {
+        rotation: None,
+        r#gen: None,
         container_id: ContainerId::parse(id).unwrap(),
         display_name: name.into(),
         created_at_unix_nanos: 0,
-        machine_id: MachineId::parse("2".repeat(32)).unwrap(),
+        machine_id,
         namespace: Namespace::parse("app").unwrap(),
         kind,
         runtime: ContainerRuntimeObservation::Running {
@@ -765,7 +869,7 @@ fn container(
         effective_healthcheck: None,
         resolved_spec: ResolvedServiceSpec {
             service_id,
-            name: ServiceName::parse("api").unwrap(),
+            name: ServiceName::parse(service).unwrap(),
             mode: ployz_core::ServiceMode::Replicated {
                 replicas: std::num::NonZeroU32::new(1).unwrap(),
             },
@@ -801,6 +905,7 @@ fn container(
         },
         address: None,
         labels: Default::default(),
+        stopped: false,
     })
     .unwrap()
 }

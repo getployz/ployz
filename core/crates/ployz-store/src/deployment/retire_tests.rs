@@ -78,6 +78,7 @@ fn retiring_api() -> (ConfigStore, Actor) {
                 }],
                 shared_writes: false,
                 storage_locked: false,
+                restored_from: None,
             },
         )
         .unwrap();
@@ -158,6 +159,10 @@ fn retire_api(store: &ConfigStore, who: &Actor, services: &[&str]) -> Deployment
                 (&environment, &saved),
                 (&services, &retire),
                 (None, &BTreeMap::new()),
+                super::Admission::New {
+                    id: &crate::id::DeploymentId::parse(uuid::Uuid::new_v4().to_string())?,
+                    push: None,
+                },
                 &Trusted::default(),
             )
         })
@@ -342,6 +347,9 @@ fn a_snapshot_missing_a_machine_keeps_the_service_in_applied_state() {
             &Admit::Retry(Retry {
                 id: deployment(3),
                 deployment: admitted.id.clone(),
+                rolls_back: None,
+                version: None,
+                accept_volume_loss: Vec::new(),
             }),
         )
         .unwrap();
@@ -401,11 +409,12 @@ fn a_narrowed_deployment_never_tears_down_a_service_saved_state_runs() {
                 super::freeze(
                     &environment.summary.id,
                     &saved.intent,
-                    &saved.intent,
+                    &super::Landing::applied(&saved.intent),
                     Scope::Narrow {
                         services: &[],
                         retire: &[retire],
                         losses: &[],
+                        every_saved: false,
                     },
                     ployz_core::Namespace::parse("shop-production").unwrap(),
                     None,
@@ -453,4 +462,54 @@ fn a_narrowed_deployment_never_tears_down_a_service_saved_state_runs() {
         })
         .unwrap();
     assert!(resolved.is_empty());
+}
+
+/// How many Saved revisions reading Deployment `id` loads.
+fn saved_reads(store: &ConfigStore, who: &Actor, id: &DeploymentId) -> usize {
+    let before = super::SAVED_READS.get();
+    store
+        .read(who, &crate::DeploymentQuery { id: id.clone() })
+        .unwrap();
+    super::SAVED_READS.get() - before
+}
+
+#[test]
+fn reading_a_deployment_loads_saved_state_only_for_what_its_rows_mount() {
+    let (store, who) = retiring_api();
+    // A queued teardown of one Service: no rows, so no Saved read.
+    let teardown = retire_api(&store, &who, &[]);
+    assert_eq!(saved_reads(&store, &who, &teardown.id), 0);
+
+    // A running Deployment with rows and a Volume: the mounted rows read Saved State once.
+    let (store, who) = retiring_api();
+    deploy(&store, &who, 2, &[]).unwrap();
+    store.claim(&deployment(2), &runner()).unwrap();
+    store
+        .record(
+            &deployment(2),
+            &runner(),
+            RunEvidence::Prepared(preview(&["web"], true)),
+        )
+        .unwrap();
+    let snapshot: Vec<ployz_core::OperationRow> = serde_json::from_value(json!([{
+        "index": 0, "machine_id": "a".repeat(32), "machine_name": "alpha", "service_name": "web",
+        "operation": operation("web"), "status": {"type": "pending"}
+    }]))
+    .unwrap();
+    store
+        .record(
+            &deployment(2),
+            &runner(),
+            RunEvidence::Progress(crate::RowTracker::default().changes(&snapshot)),
+        )
+        .unwrap();
+    let read = store
+        .read(&who, &crate::DeploymentQuery { id: deployment(2) })
+        .unwrap();
+    assert!(
+        read.nodes.iter().any(|node| node.node.name() == "data"),
+        "the Deployment ships the mounted Volume"
+    );
+    assert!(read.nodes.iter().any(|node| !node.rows.is_empty()));
+    assert_eq!(saved_reads(&store, &who, &deployment(2)), 1);
 }

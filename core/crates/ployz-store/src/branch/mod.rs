@@ -25,7 +25,9 @@ pub use proposal::{Included, ProposalSource, RemoveProposal, Removed};
 pub(crate) use proposal::{Owners, release_changed};
 pub(crate) use proposal::{end_included, included};
 pub use setup::SetBranchSetup;
-pub(crate) use setup::{branch_setup, set_branch_setup};
+pub(crate) use setup::{
+    Own, branch_setup, refuse_service_named_setup, set_branch_setup, set_own, setup_is_not_staged,
+};
 pub use sync::{
     Mark, NeverSyncedRow, SecretRow, SyncChange, SyncChanges, SyncQuery, SyncRow, SyncView, Synced,
     UndoSync, Undone,
@@ -157,6 +159,12 @@ impl NamedRow {
     #[must_use]
     pub const fn node(&self) -> &NodeName {
         &self.node
+    }
+
+    /// Where in the node it is; `None` for the node itself.
+    #[must_use]
+    pub fn name(&self) -> Option<&str> {
+        self.name.as_deref()
     }
 }
 
@@ -389,7 +397,7 @@ pub struct BranchPlanView {
     pub from: EnvironmentSummary,
     /// The preset this plan is, if any.
     pub preset: Option<BranchPreset>,
-    /// The presets worth offering: "uses" only when it copies more than "only".
+    /// The presets worth offering: each only when it copies more than the one before it.
     pub presets: Vec<BranchPreset>,
     /// Each node, as the Branch would have it.
     pub nodes: Vec<PlannedNode>,

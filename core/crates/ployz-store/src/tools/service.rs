@@ -10,11 +10,12 @@ use super::environment::{REPOSITORY, source};
 use super::machine::{Cx, Effect, Stop, Tool, at, written};
 use super::refusal::{Call, Refusal, Writes, from_store, not_setting, not_setting_sentence};
 use super::schema;
+use super::step::{DashboardPage, Fix};
 use crate::catalog::{NODE_NAME, VARIABLE_KEY};
 use crate::{
     BatchCommand, BranchName, Change, CreateGitService, CreateService, DomainsQuery, Edit,
-    EnvironmentName, ProjectName, RemoveService, RenameService, RepositoryName, ServiceQuery,
-    ServicesQuery, SettingPath, Written,
+    EnvironmentName, EnvironmentRef, ProjectName, RemoveService, RenameService, RepositoryName,
+    ServiceQuery, ServicesQuery, SettingPath, Written,
 };
 use ployz_core::config::ReviewLifecycleKind;
 use ployz_core::{RpcError, RpcErrorCode, ServiceName};
@@ -135,8 +136,15 @@ impl Tool for ServiceAdd {
     fn plan(self, cx: &mut Cx<'_>) -> Result<Value, Stop> {
         let scope = cx.scope(self.project.as_ref(), self.environment.as_ref());
         let staged = match (self.image, self.repository) {
-            (Some(_), Some(_)) | (None, None) => {
-                return Err(Refusal::invalid("Give image or repository, not both", "image").into());
+            (None, None) => {
+                return Err(Refusal::invalid("Give an image or a repository", "image").into());
+            }
+            (Some(_), Some(_)) => {
+                return Err(Refusal::invalid(
+                    "Give an image or a repository, not both",
+                    "repository",
+                )
+                .into());
             }
             (Some(image), None) => {
                 if self.branch.is_some() {
@@ -207,6 +215,9 @@ pub(crate) struct ServiceUpdate {
     /// With rename_env, also switch the variables that reference a renamed one to its new name.
     #[serde(default)]
     update_references: bool,
+    #[serde(default)]
+    #[schemars(schema_with = "generate_secret_schema")]
+    generate_secret: Vec<String>,
     /// Writes only if the place is still at this revision.
     #[serde(default)]
     expect_revision: Option<u64>,
@@ -282,9 +293,19 @@ fn rename_schema(_: &mut SchemaGenerator) -> Schema {
     .unwrap_or_default()
 }
 
+fn generate_secret_schema(_: &mut SchemaGenerator) -> Schema {
+    let variable = VARIABLE_KEY.trim_start_matches('^');
+    Schema::try_from(json!({
+        "type": "array",
+        "description": "Variables to give a new random sealed secret, as env.KEY. No one sees its value.",
+        "items": { "type": "string", "pattern": format!("^env\\.{variable}") },
+    }))
+    .unwrap_or_default()
+}
+
 impl Tool for ServiceUpdate {
     const NAME: &'static str = "service_update";
-    const DESCRIPTION: &'static str = "Change one Service's Settings and variables in one step. set changes the Settings it names and keeps the rest; env inside set sets the variables it names. unset returns Settings to their default, deletes variables (env.KEY), or unmounts (mounts.VOLUME, configs.CONFIG). rename_env renames variables and keeps their values, secret or not. Domains are not Settings and are not changed here. Most changes are Staged until the next deploy and can be undone before it. template, autoDeploy, waitForCi, watchPaths and preferredBuilder take effect at once and cannot be undone that way; the result lists them under immediate. Secrets and registry credentials cannot be set here: the member sets them in the dashboard or terminal.";
+    const DESCRIPTION: &'static str = "Change one Service's Settings and variables in one step. set changes the Settings it names and keeps the rest; env inside set sets the variables it names. Domains are not Settings and are not changed here. Most changes are Staged until the next deploy and can be undone before it. template, autoDeploy, waitForCi, watchPaths and preferredBuilder take effect at once and cannot be undone that way; the result lists them under immediate. A secret's value never passes through here; generate_secret makes a random one.";
     const EFFECT: Effect = Effect::Change;
 
     fn example() -> Value {
@@ -293,16 +314,32 @@ impl Tool for ServiceUpdate {
 
     fn plan(self, cx: &mut Cx<'_>) -> Result<Value, Stop> {
         let scope = cx.scope(self.project.as_ref(), self.environment.as_ref());
+        if let Some(path) = self.set.as_ref().and_then(secret_value) {
+            return Err(self.plaintext_secret(cx, scope, &path));
+        }
         let changes = self.changes(cx.call())?;
+        let mut sealed = None;
         let edited = cx.write_expecting(
             &Edit {
-                environment: scope,
+                environment: scope.clone(),
                 expect: self.expect_revision.map(crate::Revision),
                 changes,
             },
             self.expect_revision,
-            refuse_referenced_rename,
-        )?;
+            |error, call, writes| match self.sealed_key(&error) {
+                Some(key) => {
+                    sealed = Some(key);
+                    from_store(error, call, writes)
+                }
+                None => refuse_referenced_rename(error, call, writes),
+            },
+        );
+        let edited = match (edited, sealed) {
+            (Err(_), Some(key)) => {
+                return Err(self.plaintext_secret(cx, scope, &format!("env.{key}")));
+            }
+            (edited, _) => edited?,
+        };
         let name = self.service.as_str();
         let paths = |paths: &[SettingPath]| {
             paths
@@ -361,23 +398,101 @@ impl ServiceUpdate {
         }
         for (from, to) in &self.rename_env {
             let Some(to) = to.as_str() else {
-                return Err(Refusal::invalid(
-                    "A new variable name is text",
-                    &format!("rename_env.{from}"),
-                )
-                .into());
+                return Err(Refusal::invalid("A new variable name is text", "rename_env").into());
             };
             changes.push(Change::Rename {
-                path: path(&format!("rename_env.{from}"), &format!("env.{from}"))?,
+                path: path("rename_env", &format!("env.{from}"))?,
                 to: to.to_owned(),
                 update_references: self.update_references,
             });
         }
+        let given = self.set.as_ref().and_then(|set| set.get("env"));
+        for (index, generate) in self.generate_secret.iter().enumerate() {
+            let field = format!("generate_secret.{index}");
+            let Some(key) = generate.strip_prefix("env.") else {
+                return Err(Refusal::invalid(
+                    "A secret is generated for a variable, env.KEY",
+                    &field,
+                )
+                .into());
+            };
+            if given.and_then(|env| env.get(key)).is_some() || self.unset.contains(generate) {
+                return Err(Refusal::invalid(
+                    format!("{generate} is also in set or unset; give each variable once"),
+                    &field,
+                )
+                .into());
+            }
+            changes.push(Change::Set {
+                path: path(&field, generate)?,
+                value: json!({ "secret": { "generate": true } }),
+            });
+        }
         if changes.is_empty() {
-            return Err(Refusal::invalid("Give set, unset or rename_env", "set").into());
+            return Err(
+                Refusal::invalid("Give set, unset, rename_env or generate_secret", "set").into(),
+            );
         }
         Ok(changes)
     }
+
+    /// The variable the Store refused text for because it holds a secret.
+    fn sealed_key(&self, error: &RpcError) -> Option<String> {
+        let key = match error.code == RpcErrorCode::Conflict {
+            true => error.details.get("variable").and_then(Value::as_str)?,
+            false => return None,
+        };
+        let given = self.set.as_ref().and_then(|set| set.get("env"));
+        let renamed_onto = self.rename_env.values().any(|to| to.as_str() == Some(key));
+        (given.and_then(|env| env.get(key)).is_some() && !renamed_onto).then(|| key.to_owned())
+    }
+
+    /// A secret's value sent by an agent: the member sets it, and this names how, in the
+    /// Environment the call resolved to even when it named none.
+    fn plaintext_secret(&self, cx: &mut Cx<'_>, scope: EnvironmentRef, path: &str) -> Stop {
+        let view = match cx.one(&ServicesQuery { environment: scope }) {
+            Ok(view) => view,
+            Err(stop) => return stop,
+        };
+        let service = self.service.as_str();
+        let (project, environment) = (&view.environment.project, &view.environment.name);
+        let command = format!(
+            "printf %s \"$VALUE\" | ployz set {service}.{path} --secret --env {environment} --project {project}"
+        );
+        let random = match path.starts_with("env.") {
+            true => format!(" For a random one, send generate_secret: [\"{path}\"] instead."),
+            false => String::new(),
+        };
+        Refusal::invalid(
+            format!(
+                "{service}.{path} is a secret, and its value never passes through an agent. The member sets it in the dashboard under Variables, or runs: {command}.{random}"
+            ),
+            &format!("set.{path}"),
+        )
+        .with_fix(&Fix::OpenDashboard {
+            page: DashboardPage::Variables,
+        })
+        .into()
+    }
+}
+
+/// The Setting path, such as `env.KEY`, of the first secret value `set` gives.
+fn secret_value(set: &Map<String, Value>) -> Option<String> {
+    let sealing = |value: &Value| {
+        value.get("secret").is_some_and(Value::is_string)
+            || value
+                .get("value")
+                .and_then(|value| value.get("secret"))
+                .is_some_and(Value::is_string)
+    };
+    if set.get("registryCredential").is_some_and(sealing) {
+        return Some("registryCredential".to_owned());
+    }
+    set.get("env")?
+        .as_object()?
+        .iter()
+        .find(|(_, value)| sealing(value))
+        .map(|(key, _)| format!("env.{key}"))
 }
 
 /// A rename the variables referencing it block, retried with `update_references`.
@@ -478,7 +593,7 @@ pub(crate) struct ServiceRemove {
 
 impl Tool for ServiceRemove {
     const NAME: &'static str = "service_remove";
-    const DESCRIPTION: &'static str = "Remove a Service. Staged, and undoable until the next deploy, which asks a human to approve.";
+    const DESCRIPTION: &'static str = "Remove a Service, staged until a deploy a human approves. `broken`: references deploys skip.";
     const EFFECT: Effect = Effect::Change;
 
     fn example() -> Value {
@@ -510,6 +625,7 @@ impl Tool for ServiceRemove {
             "at": at(&staged.environment),
             "removed": staged.service.name,
             "asks_approval": asks_approval,
+            "broken": staged.broken.iter().map(ToString::to_string).collect::<Vec<_>>(),
         }))
     }
 }

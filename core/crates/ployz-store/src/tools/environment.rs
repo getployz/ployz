@@ -32,7 +32,7 @@ pub(crate) struct EnvironmentShow {
 
 impl Tool for EnvironmentShow {
     const NAME: &'static str = "environment_show";
-    const DESCRIPTION: &'static str = "Where you are: Projects and Environments, Services with source and domains, Volumes, Configs, how many changes are Staged, and the latest Deployment.";
+    const DESCRIPTION: &'static str = "Where you are: Projects and Environments, Services with source and domains, Volumes, Configs, the Staged count, broken references, and the latest Deployment.";
     const EFFECT: Effect = Effect::Read;
 
     fn example() -> Value {
@@ -67,6 +67,20 @@ impl Tool for EnvironmentShow {
         ];
         let mut answers = cx.read(asks)?.into_iter();
         let projects = cx.view::<ProjectsQuery>(answers.next())?;
+        // An Organization with no Project yet is an empty list, not a refusal; its scoped reads all failed for it.
+        if projects.projects.is_empty() && self.project.is_none() {
+            return Ok(json!({
+                "at": null,
+                "revision": null,
+                "projects": [],
+                "services": [],
+                "volumes": [],
+                "configs": [],
+                "staged": 0,
+                "latest_deployment": null,
+                "next": Call::new("project_create", json!({})),
+            }));
+        }
         let services = cx.view::<ServicesQuery>(answers.next())?;
         let volumes = cx.view::<VolumesQuery>(answers.next())?;
         let configs = cx.view::<ConfigsQuery>(answers.next())?;
@@ -80,8 +94,8 @@ impl Tool for EnvironmentShow {
             .collect::<Vec<_>>();
         let services = services_with_domains(&services.services, &domains.domains);
         let latest = deployments
-            .deployments
-            .first()
+            .latest
+            .as_ref()
             .map(|deployment| json!({ "number": deployment.number, "status": deployment.status }));
         Ok(json!({
             "at": at(&diff.environment),
@@ -90,7 +104,8 @@ impl Tool for EnvironmentShow {
             "services": services,
             "volumes": volumes.volumes.iter().map(|volume| &volume.volume.name).collect::<Vec<_>>(),
             "configs": configs.configs.iter().map(|config| &config.config.name).collect::<Vec<_>>(),
-            "staged": diff.total_count,
+            "staged": diff.review_count(),
+            "broken": diff.broken.iter().map(ToString::to_string).collect::<Vec<_>>(),
             "latest_deployment": latest,
         }))
     }
@@ -187,6 +202,12 @@ impl Tool for EnvironmentPr {
         let repository = match (self.repository, plans.plans.as_slice()) {
             (Some(repository), _) => repository,
             (None, [only]) => only.repository.clone(),
+            (None, []) if !self.enabled => {
+                return Ok(json!({
+                    "at": at(&services.environment),
+                    "pull_request_environments": false,
+                }));
+            }
             (None, []) => {
                 return Err(Refusal::invalid(
                     "No repository is connected to this Project yet",

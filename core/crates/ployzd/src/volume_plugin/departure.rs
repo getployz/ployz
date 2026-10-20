@@ -19,7 +19,7 @@
 use std::collections::BTreeSet;
 
 use axum::{Json, extract::State};
-use ployz_core::{DepartureFailure, RpcError, StorageDeparture};
+use ployz_core::{DepartureFailure, RpcError, SlotRole, StorageDeparture};
 use ployzd::machine_pool::MachinePool;
 
 use super::{
@@ -141,13 +141,16 @@ impl VolumeStorage {
             Departure::Root(root) => {
                 self.freeze_root(root, name, now_unix_seconds).await?;
                 self.ensure_mirror_root(pool, datasets).await?;
-                self.create_slot_parent(&slot_parent(pool, name), root.refquota)
-                    .await?;
+                let parent = slot_parent(pool, name);
+                self.create_slot_parent(&parent, root.refquota).await?;
+                self.mark_slot_role(&parent, SlotRole::OldCopy).await?;
                 self.move_into_slot(pool, root, name).await?;
                 true
             }
             Departure::RootBesideEmptySlot(root) => {
                 self.freeze_root(root, name, now_unix_seconds).await?;
+                self.mark_slot_role(&slot_parent(pool, name), SlotRole::OldCopy)
+                    .await?;
                 self.move_into_slot(pool, root, name).await?;
                 true
             }
@@ -202,13 +205,25 @@ impl VolumeStorage {
 
     /// Whether the slot's copy may be the only one. Only a mirror pull marks a slot
     /// pulled, once its receive made a snapshot a writer elsewhere had made, and that is
-    /// the only evidence the departure destroys on: every slot without it is kept, so a
-    /// state no release before the mark could tell apart leaks rather than loses data. A
-    /// departure snapshot or a seed, promote, cut or epoch mark keeps a slot even so, as
-    /// each describes a point this Machine may alone hold. A slot with no snapshot at all
-    /// holds only a receive that never completed, which every receive makes resumable with
-    /// `-s`, so it holds no point at all.
-    async fn written_here(&self, fs: &str) -> super::Result<bool> {
+    /// the only evidence a departure or a seed destroys on: every slot without it is
+    /// kept, so a state no release before the mark could tell apart leaks rather than
+    /// loses data. A departure snapshot or a seed, promote, cut or epoch mark keeps a slot
+    /// even so, as each describes a point this Machine may alone hold. A slot with no
+    /// snapshot at all holds only a receive that never completed, which every receive
+    /// makes resumable with `-s`, so it holds no point at all.
+    pub(super) async fn written_here(&self, fs: &str) -> super::Result<bool> {
+        if self.marked_written_here(fs).await? {
+            return Ok(true);
+        }
+        let Some(newest) = self.newest_guid(fs).await? else {
+            return Ok(false);
+        };
+        Ok(self.local_property(fs, PULLED_PROPERTY).await? != Some(newest))
+    }
+
+    /// Whether a departure snapshot or a seed, promote, cut or epoch mark says the slot
+    /// holds a point this Machine may alone hold.
+    async fn marked_written_here(&self, fs: &str) -> super::Result<bool> {
         if self
             .snapshot_names(fs)
             .await?
@@ -228,10 +243,7 @@ impl VolumeStorage {
                 return Ok(true);
             }
         }
-        let Some(newest) = self.newest_guid(fs).await? else {
-            return Ok(false);
-        };
-        Ok(self.local_property(fs, PULLED_PROPERTY).await? != Some(newest))
+        Ok(false)
     }
 
     async fn freeze_root(

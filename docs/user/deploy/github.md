@@ -12,7 +12,9 @@ its Git branch. [How builds work](../builds/overview.md) covers what happens in 
    project you already have, click **Create** on that project's canvas instead.) The first time,
    click **Connect GitHub**, pick the account or organization, choose the repositories Ployz may
    use, and install the Ployz GitHub App. GitHub sends you back to **Settings → GitHub**, which
-   lists the account.
+   lists the account. It says "Repositories appear in a moment" until Ployz has listed them.
+   If the app is already installed on that account, for another Ployz organization, click
+   **Use existing** instead.
 2. Search for the repository, or paste its URL, and pick it.
 3. Before you deploy, set what your app needs to start:
    - To make it public, open **Settings → Networking** and click
@@ -46,6 +48,16 @@ the dashboard's **Deploy** needs a staged change:
 ployz deploy
 ```
 
+**Auto-deploy** and **Wait for CI** keep their values on such a service, so they work as soon as
+the app is installed. Until then, the dashboard shows a line under **Auto-deploy**, and `ployz get`
+and `ployz set` print the same note:
+
+```text
+$ ployz set web.waitForCi=true
+Applied web.waitForCi in shop/production.
+Pushes reach Ployz only once the GitHub App is installed on owner/repo.
+```
+
 ## Choose the Git branch
 
 1. Open the service and go to **Settings → Source**.
@@ -76,18 +88,32 @@ changes whether the check passes.
 every environment that follows that Git branch. Turn **Auto-deploy** off under **Settings →
 Source** to deploy only when you choose. It applies at once, with no deploy.
 
-A push ships the new commit with the settings you last deployed or
-[saved](deployments.md#deploy-your-changes). Staged changes you haven't saved stay
-behind, and services the push doesn't touch keep running as they are.
+A push deploys like **Deploy**: it ships every change you
+[saved](deployments.md#deploy-your-changes) in the environment, and staged changes you haven't
+saved stay behind. The services that follow its repository and Git branch, have **Auto-deploy**
+on and match their [watch paths](#deploy-only-when-certain-files-change) build the new commit.
+Every other service keeps the commit it last built, and one with nothing new to ship keeps
+running as it is.
+
+A volume deletion you confirmed when you saved goes out with the push without asking again. If
+the data changed since, the push keeps it and your next deploy asks; see
+[Confirm a deploy that deletes data](deployments.md#confirm-a-deploy-that-deletes-data).
 
 ## Wait for CI
 
 Turn on **Wait for CI** under **Settings → Source** to hold a push's deploy until its GitHub
 checks pass, from GitHub Actions or any other app that reports checks. It applies at once.
 
-- If a check fails, the commit doesn't deploy. Re-run it on GitHub and the commit deploys once it
-  passes, or push a fix.
-- A newer push replaces a commit that's still waiting.
+A held push shows in **Runs** and in `ployz deployment ls` as a deployment that reads **Waiting
+for CI**, named by its commit rather than a number. It deploys as that same deployment once
+every check passes, and takes the next deployment number then, so deployments stay numbered in
+the order they ran, whichever branch passed CI first. Cancel it there to drop the push. Nothing
+was frozen for it, so it can't be redeployed: push again instead.
+
+- If a check fails, the deployment reads **CI failed** and the commit doesn't deploy. Re-run the
+  check on GitHub and the commit deploys once it passes, or push a fix.
+- A newer push replaces a commit that's still waiting, and so does a deploy you start yourself.
+  A replaced commit leaves the list; one you cancelled stays, so you can see you dropped it.
 - If no checks run for a commit, it waits until your next push. CI that reports commit statuses
   instead of checks counts as no checks.
 
@@ -138,8 +164,8 @@ repositories, who connected it, and when. Only an owner or admin can connect or 
 members see the list.
 
 One installation can be connected to more than one organization. To connect one you already
-installed, open **Settings → GitHub** in the other organization and click **Use existing
-installation**. Ployz connects only GitHub accounts you own: your own user account, or a GitHub
+installed, click **Use existing** in the repository picker or in **Settings → GitHub** of the
+other organization. Ployz connects only GitHub accounts you own: your own user account, or a GitHub
 organization where you are an owner. Collaborating on one of its repositories is not enough. When
 you own several new ones, Ployz asks which to connect.
 
@@ -177,7 +203,8 @@ ployz github cat acme/web apps/web/package.json
 `--match` matches the whole path from the top of the repository, so `*.toml` finds only files at
 the top, and `**/*.toml` finds them in every folder. Quote the glob so your shell doesn't expand
 it. A listing stops at 500 files. When it's cut short, name a folder or a narrower `--match` to
-see the rest.
+see the rest. A folder or file the repository doesn't have fails with `No path` and exit code 1, as
+`github cat` does for a missing file.
 
 `github cat` prints text files up to 64 KiB. For a larger file or a binary one, it says so
 instead of printing it. Pass `--ref` to read a branch, tag or commit other than the default.

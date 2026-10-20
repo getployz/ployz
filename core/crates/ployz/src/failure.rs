@@ -27,7 +27,11 @@ use crate::{
 pub struct Failure {
     inner: Inner,
     interrupted: bool,
+    /// The printed result is itself the failure, not a partial one.
+    outcome: bool,
     diagnostic: Option<Box<ui::progress::Diagnostic>>,
+    /// Data its `--json` error carries in `details` beside what the error says.
+    added: serde_json::Map<String, Value>,
 }
 
 #[derive(Debug)]
@@ -70,7 +74,9 @@ impl Failure {
     pub(crate) fn command(error: impl Error + Send + Sync + 'static) -> Self {
         Self {
             interrupted: false,
+            outcome: false,
             diagnostic: None,
+            added: serde_json::Map::new(),
             inner: Inner::Command {
                 error: Box::new(error),
                 hints: Vec::new(),
@@ -87,13 +93,26 @@ impl Failure {
         self
     }
 
-    /// End the process with the remote command's exit code. Only `ployz exec` uses it.
+    /// Whether a command failed because the Ployz config has no contexts.
+    pub(crate) fn has_no_contexts(&self) -> bool {
+        std::iter::successors(self.source(), |&link| link.source()).any(|link| {
+            matches!(
+                link.downcast_ref::<ContextError>(),
+                Some(ContextError::NoContexts(_))
+            )
+        })
+    }
+
+    /// End the process with `code`, whatever it printed already said: the remote
+    /// command's exit code, a cancelled prompt, or clap's help.
     #[must_use]
     pub fn exit(code: u8) -> Self {
         Self {
             inner: Inner::Exit(code),
             interrupted: false,
+            outcome: false,
             diagnostic: None,
+            added: serde_json::Map::new(),
         }
     }
 
@@ -103,7 +122,9 @@ impl Failure {
         Self {
             inner: Inner::Partial,
             interrupted: false,
+            outcome: false,
             diagnostic: None,
+            added: serde_json::Map::new(),
         }
     }
 
@@ -122,9 +143,48 @@ impl Failure {
         self.interrupted
     }
 
+    /// The result already printed is this failure, such as a Deployment that failed:
+    /// it exits by its code rather than as a partial result.
+    pub(crate) fn outcome(mut self) -> Self {
+        self.outcome = true;
+        self
+    }
+
+    pub(crate) const fn is_outcome(&self) -> bool {
+        self.outcome
+    }
+
     pub(crate) fn with_diagnostic(mut self, diagnostic: ui::progress::Diagnostic) -> Self {
         self.diagnostic = Some(Box::new(diagnostic));
         self
+    }
+
+    /// Carry `value` as `key` in the `--json` error's `details`.
+    #[must_use]
+    pub(crate) fn with_detail(mut self, key: &str, value: Value) -> Self {
+        self.added.insert(key.to_owned(), value);
+        self
+    }
+
+    /// A Server's daemon answered before this connection failed: a refusal, not an
+    /// unreachable Server.
+    pub(crate) fn daemon_answered(&self) -> bool {
+        self.connect_error().is_some_and(|error| !error.unreached())
+    }
+
+    /// The connection failure this failure carries, if any.
+    pub(crate) fn connect_error(&self) -> Option<&ConnectError> {
+        let Inner::Command { error, .. } = &self.inner else {
+            return None;
+        };
+        let mut next: Option<&(dyn Error + 'static)> = Some(error.as_ref());
+        while let Some(error) = next {
+            if let Some(error) = error.downcast_ref::<ConnectError>() {
+                return Some(error);
+            }
+            next = error.source();
+        }
+        None
     }
 
     pub(crate) fn diagnostic(&self) -> Option<&ui::progress::Diagnostic> {
@@ -175,6 +235,21 @@ impl Failure {
         })
     }
 
+    /// [`Self::detailed`] over `cause`, when there is one, which prints as its `cause:` line.
+    pub(crate) fn detailed_caused(
+        code: RpcErrorCode,
+        message: impl Into<Cow<'static, str>>,
+        details: Value,
+        cause: Option<impl Error + Send + Sync + 'static>,
+    ) -> Self {
+        Self::command(Message {
+            code,
+            text: message.into(),
+            details,
+            source: cause.map(|cause| Box::new(cause) as Box<dyn Error + Send + Sync>),
+        })
+    }
+
     /// Our sentence over `cause`, which prints as its `cause:` line.
     pub fn caused(
         code: RpcErrorCode,
@@ -193,6 +268,7 @@ impl Failure {
     pub(crate) fn context(mut self, message: impl Into<Cow<'static, str>>) -> Self {
         let RpcError { code, details, .. } = self.report();
         let interrupted = self.interrupted;
+        let outcome = self.outcome;
         let diagnostic = self.diagnostic.take();
         let mut contextual = Self::command(Message {
             code,
@@ -201,6 +277,7 @@ impl Failure {
             source: Some(Box::new(self)),
         });
         contextual.interrupted = interrupted;
+        contextual.outcome = outcome;
         contextual.diagnostic = diagnostic;
         contextual
     }
@@ -269,6 +346,15 @@ impl Failure {
                 .expect("error details object")
                 .insert("progress".into(), diagnostic.json());
         }
+        if !self.added.is_empty() {
+            if !details.is_object() {
+                details = serde_json::json!({});
+            }
+            details
+                .as_object_mut()
+                .expect("error details object")
+                .extend(self.added.clone());
+        }
         RpcError {
             code,
             message: self.to_string(),
@@ -315,10 +401,28 @@ fn classify(error: &(dyn Error + 'static)) -> (RpcErrorCode, Value) {
         let RpcError { code, details, .. } = error.to_rpc_error();
         return (code, details);
     }
+    if let Some(LoginError::Unanswered { .. }) = error.downcast_ref::<LoginError>() {
+        return (
+            RpcErrorCode::Unavailable,
+            serde_json::json!({ "writes": "unknown" }),
+        );
+    }
     if let Some(MachineSelectorError::NotFound(_)) = error.downcast_ref::<MachineSelectorError>() {
         return (
             RpcErrorCode::NotFound,
             serde_json::json!({ "inspect": ["ployz server ls"] }),
+        );
+    }
+    let container = error
+        .downcast_ref::<ContainerSelectorError>()
+        .or_else(|| match error.downcast_ref::<OperatorError>() {
+            Some(OperatorError::Container(container)) => Some(container),
+            _ => None,
+        });
+    if let Some(ContainerSelectorError::NotFound { valid, .. }) = container {
+        return (
+            RpcErrorCode::NotFound,
+            serde_json::json!({ "valid_children": valid }),
         );
     }
     if let Some(OperatorError::NotRunning {
@@ -445,6 +549,7 @@ fn connect_code(error: &ConnectError) -> RpcErrorCode {
         ConnectError::Remote(error) => error.code.clone(),
         ConnectError::Rpc(error) => error.to_rpc_error().code,
         ConnectError::ClientRefused | ConnectError::ClientCleared => RpcErrorCode::Unauthenticated,
+        ConnectError::OlderMachine => RpcErrorCode::Unsupported,
         ConnectError::ProxyUnsupported(_) | ConnectError::UnsupportedNetwork(_) => {
             RpcErrorCode::Unsupported
         }
@@ -500,7 +605,7 @@ fn operator_code(error: &OperatorError) -> RpcErrorCode {
         | OperatorError::TtyRequiresStdin
         | OperatorError::InvalidServiceSelector(_)
         | OperatorError::InvalidTail(_)
-        | OperatorError::InvalidLogTime(_)
+        | OperatorError::InvalidTime { .. }
         | OperatorError::InvalidProxyPort
         | OperatorError::InvalidLocalPort(_)
         | OperatorError::InvalidRemotePort(_)
@@ -511,6 +616,7 @@ fn operator_code(error: &OperatorError) -> RpcErrorCode {
         | OperatorError::NoServices
         | OperatorError::NoDeploymentContainers => RpcErrorCode::NotFound,
         OperatorError::StreamClosed
+        | OperatorError::ExecContainerStopped { .. }
         | OperatorError::NoServableContainer
         | OperatorError::SnapshotStale => RpcErrorCode::Unavailable,
         OperatorError::Protocol(_) => RpcErrorCode::Internal,
@@ -540,6 +646,7 @@ fn plan_code(error: &PlanError) -> RpcErrorCode {
         | PlanError::NoWriter { .. }
         | PlanError::HostnameConflict { .. } => RpcErrorCode::Conflict,
         PlanError::CapacityUnknown
+        | PlanError::CopiesUnknown { .. }
         | PlanError::ProvisionedVolumeStorageUnknown { .. }
         | PlanError::DockerVolumeUnavailable { .. } => RpcErrorCode::Unavailable,
     }
@@ -628,6 +735,7 @@ fn cloud_enroll_code(error: &cloud_enroll::Error) -> RpcErrorCode {
         | cloud_enroll::Error::RetrySameCommand { .. }
         | cloud_enroll::Error::FounderWait => RpcErrorCode::Unavailable,
         cloud_enroll::Error::Json(_) => RpcErrorCode::Internal,
+        cloud_enroll::Error::TokenRefused => RpcErrorCode::Unauthenticated,
         cloud_enroll::Error::Status { status, .. } => http_status_code(*status),
     }
 }
@@ -875,17 +983,26 @@ impl From<DeployError> for Failure {
 
 impl From<LoginError> for Failure {
     /// Sign-in failures name the command that fixes them. A refusal Cloud sent in the
-    /// RPC error vocabulary, such as `claim_required`, keeps its code, details and next step.
+    /// RPC error vocabulary, such as `claim_required`, keeps its code, details and next step;
+    /// a route's `PublicError` keeps its sentence.
     fn from(error: LoginError) -> Self {
         if let LoginError::Status { body, .. } = &error
             && let Some(refused) = crate::cloud_account::refusal(body.as_bytes())
+                .or_else(|| crate::cloud_account::public_error(body.as_bytes()))
         {
             return Self::command(refused);
+        }
+        if let LoginError::Store { path, source } = &error
+            && source.kind() == io::ErrorKind::PermissionDenied
+        {
+            let next = format!("chmod 600 {}", shell_words::quote(&path.to_string_lossy()));
+            return Self::command(error).hint(Hint::Next(next));
         }
         let next = match &error {
             // Cloud binds every call to the acting Organization, `org ls` included: a
             // sign-in left outside it can only start over.
             LoginError::Corrupt { .. }
+            | LoginError::TokenCloudUnreadable(_)
             | LoginError::OtherCloud { .. }
             | LoginError::NotMember(_) => Some("ployz logout"),
             LoginError::SignedOut
@@ -893,10 +1010,11 @@ impl From<LoginError> for Failure {
             | LoginError::Denied
             | LoginError::Ended => Some("ployz login"),
             LoginError::AwaitingApproval { .. } => Some("ployz login --wait"),
-            LoginError::TokenRefused => Some("ployz token new"),
+            LoginError::TokenRefused => Some(crate::cloud_account::SIGN_IN_PAST_TOKEN),
             LoginError::UnknownOrganization(_) => Some("ployz org ls"),
             LoginError::UnknownCredential(_) => Some("ployz token ls"),
             LoginError::Unreachable { .. }
+            | LoginError::Unanswered { .. }
             | LoginError::Unsupported(_)
             | LoginError::Status { .. }
             | LoginError::Reply(_)
@@ -909,13 +1027,14 @@ impl From<LoginError> for Failure {
 
 pub(crate) fn login_code(error: &LoginError) -> RpcErrorCode {
     match error {
-        LoginError::Unreachable { .. } => RpcErrorCode::Unavailable,
+        LoginError::Unreachable { .. } | LoginError::Unanswered { .. } => RpcErrorCode::Unavailable,
         LoginError::Unsupported(_) => RpcErrorCode::Unsupported,
         LoginError::TokenBound => RpcErrorCode::InvalidArgument,
         LoginError::Status { status, .. } => http_status_code(*status),
-        LoginError::Reply(_) | LoginError::Store { .. } | LoginError::Corrupt { .. } => {
-            RpcErrorCode::Internal
-        }
+        LoginError::Reply(_)
+        | LoginError::Store { .. }
+        | LoginError::Corrupt { .. }
+        | LoginError::TokenCloudUnreadable(_) => RpcErrorCode::Internal,
         LoginError::OtherCloud { .. } => RpcErrorCode::Conflict,
         LoginError::SignedOut
         | LoginError::Expired
@@ -1130,6 +1249,7 @@ mod tests {
         let failure = Failure::from(ConnectError::AllFailed {
             selection: crate::context::ConnectionSource::Context("prod".into()),
             attempts: 3,
+            server: None,
             retry: ployz_core::Retry::AfterRestart,
             reached: false,
             last: Some(Box::new(ConnectError::Io(io::Error::from(
@@ -1137,13 +1257,67 @@ mod tests {
             )))),
         });
         let display = failure.to_string();
-        assert!(
-            display.contains("3 connections from context prod"),
-            "{display}"
+        assert_eq!(
+            display,
+            "Ployz couldn't reach a Server's daemon through any of the 3 connections from context prod."
         );
         assert!(
             !display.contains("Os {") && !display.contains("code: 111"),
             "{display}"
+        );
+    }
+
+    #[test]
+    fn exhausted_connections_name_the_server_tried_last() {
+        let failure = Failure::from(ConnectError::AllFailed {
+            selection: crate::context::ConnectionSource::Cloud,
+            attempts: 3,
+            server: Some("box-node-09c8".into()),
+            retry: ployz_core::Retry::AfterRestart,
+            reached: false,
+            last: None,
+        });
+        assert_eq!(
+            failure.to_string(),
+            "Ployz couldn't reach a Server's daemon through any of the 3 connections from Cloud. \
+             Server box-node-09c8, tried last, isn't answering. Check that its Ployz daemon is running, then retry."
+        );
+    }
+
+    #[test]
+    fn exhausted_connections_say_a_daemon_answered_when_one_did() {
+        let failure = Failure::from(ConnectError::AllFailed {
+            selection: crate::context::ConnectionSource::Context("prod".into()),
+            attempts: 2,
+            server: None,
+            retry: ployz_core::Retry::Never,
+            reached: true,
+            last: Some(Box::new(ConnectError::Io(io::Error::from(
+                io::ErrorKind::ConnectionRefused,
+            )))),
+        });
+        assert_eq!(
+            failure.to_string(),
+            "A Server's daemon answered, but the 2 connections from context prod all failed."
+        );
+    }
+
+    #[test]
+    fn exhausted_connections_say_the_server_tried_last_did_not_answer_after_one_refused() {
+        let failure = Failure::from(ConnectError::AllFailed {
+            selection: crate::context::ConnectionSource::Cloud,
+            attempts: 2,
+            server: Some("web-2".into()),
+            retry: ployz_core::Retry::AfterRestart,
+            reached: true,
+            last: Some(Box::new(ConnectError::Io(io::Error::from(
+                io::ErrorKind::ConnectionRefused,
+            )))),
+        });
+        assert_eq!(
+            failure.to_string(),
+            "A Server's daemon answered, but the 2 connections from Cloud all failed. \
+             Server web-2, tried last, isn't answering. Check that its Ployz daemon is running, then retry."
         );
     }
 
@@ -1262,6 +1436,25 @@ mod tests {
     }
 
     #[test]
+    fn a_missing_container_lists_the_service_containers() {
+        let missing = ContainerSelectorError::NotFound {
+            selector: ployz_core::ContainerSelector::parse("bogus").unwrap(),
+            valid: vec!["web-1".into(), "web-2".into()],
+        };
+        for failure in [
+            Failure::from(missing.clone()),
+            Failure::from(OperatorError::Container(missing)),
+        ] {
+            assert_eq!(failure.report().code, RpcErrorCode::NotFound);
+            assert_eq!(
+                failure.report().message,
+                "Container \"bogus\" was not found"
+            );
+            assert_eq!(failure.hints(), [Hint::valid(["web-1", "web-2"])]);
+        }
+    }
+
+    #[test]
     fn a_missing_server_points_at_server_ls_locally_and_over_the_wire() {
         let missing =
             MachineSelectorError::NotFound(vec![ployz_core::MachineTarget::parse("nope").unwrap()]);
@@ -1309,5 +1502,33 @@ mod tests {
         assert_eq!(report.details.get("action").unwrap(), "mint_token");
         assert_eq!(report.details.get("next").unwrap(), next);
         assert_eq!(failure.hints(), [Hint::Next(next.into())]);
+    }
+
+    #[test]
+    fn a_sign_in_this_user_cannot_read_names_the_chmod_that_fixes_it() {
+        let failure = Failure::from(LoginError::Store {
+            path: "/home/dev/.config/ployz/cloud.json".into(),
+            source: io::Error::from(io::ErrorKind::PermissionDenied),
+        });
+        assert_eq!(
+            failure.hints(),
+            [Hint::Next(
+                "chmod 600 /home/dev/.config/ployz/cloud.json".into()
+            )]
+        );
+    }
+
+    #[test]
+    fn a_cloud_public_error_reads_as_its_sentence_not_its_json() {
+        let failure = Failure::from(LoginError::Status {
+            status: 422,
+            body: r#"{"_tag":"PublicError","code":"VALIDATION_FAILED","message":"Only a signed-in person can make or revoke tokens; run `ployz login`."}"#.into(),
+        });
+        let report = failure.report();
+        assert_eq!(report.code, RpcErrorCode::InvalidArgument);
+        assert_eq!(
+            report.message,
+            "Only a signed-in person can make or revoke tokens; run `ployz login`."
+        );
     }
 }

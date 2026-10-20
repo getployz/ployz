@@ -24,7 +24,7 @@ export function attemptLifecycle<Result, More extends object, Triggering = never
     readonly concurrency?: RunConcurrency;
     readonly cancelOn?: RunCancelOn;
     readonly handler: (
-      ctx: { event: { data: unknown }; step: PloyzStepTools; runId: string },
+      ctx: { event: { data: unknown }; step: PloyzStepTools; runId: string; attempt: number },
       runEffect: EffectRunner,
     ) => Promise<Result>;
   };
@@ -32,7 +32,7 @@ export function attemptLifecycle<Result, More extends object, Triggering = never
   readonly triggeringEvent?: Schema.ConstraintDecoder<Triggering>;
   /** Hand a failed run's triggering event to `closeRun` too, so it can close a row the run never bound. Off, a failed run closes only rows it bound. */
   readonly triggeringOnFailure?: boolean;
-  readonly closeRun: (runId: string, end: RunEnd, triggering: Option.Option<Triggering>) => Activity<number>;
+  readonly closeRun: (runId: string, end: RunEnd, triggering: Option.Option<Triggering>, error?: Error) => Activity<number>;
   readonly sweep: {
     readonly id: string;
     readonly closeStale: () => Activity<Readonly<Record<string, number>>>;
@@ -49,16 +49,16 @@ export function attemptLifecycle<Result, More extends object, Triggering = never
         triggers: run.triggers,
         concurrency: run.concurrency,
         cancelOn: run.cancelOn,
-        onFailure: async ({ event }) => {
+        onFailure: async ({ event, error }) => {
           // `inngest/function.failed` names the failed run.
           const failed = decodeFailedRun(event);
           if (Option.isSome(failed)) {
             const { run_id: runId, event: triggering } = failed.value.data;
-            await runEffect(closeRun(runId, "failure", triggeringOnFailure ? decodeTriggering(triggering) : Option.none()));
+            await runEffect(closeRun(runId, "failure", triggeringOnFailure ? decodeTriggering(triggering) : Option.none(), error));
           }
         },
       },
-      async ({ event, step, runId }) => run.handler({ event, step, runId }, runEffect),
+      async ({ event, step, runId, attempt }) => run.handler({ event, step, runId, attempt }, runEffect),
     );
 
   const createCancel = (inngest: PloyzInngest, runEffect: EffectRunner = runInngestEffect) => {

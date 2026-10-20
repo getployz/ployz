@@ -82,6 +82,7 @@ const COMMAND_READ_FILES = {
 const NETWORK = /\bfetch\(|new EventSource\(/;
 /** Raw network access outside data files and server code. */
 const NETWORK_FILES = {
+  "lib/server-fn-fetch.ts": "the transport under every server function call from the browser",
   "modules/github/github-observation.api.ts": "server-only GitHub API client",
   "modules/inngest/client.ts": "server-only Inngest REST lookup of one run's status for the volume run sweep",
 };
@@ -133,6 +134,7 @@ const COMMAND_FILES = {
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/pr-environments/StorePrPlanPanel.tsx": "a new Start from shows at once; the panel watches its answer only to move back over the canvas it was on when refused",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/new-branch/StoreNewBranchPanel.tsx": "the page opens a new Branch's canvas once the Store has it and Cloud knows its route",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/canvas/useConfigCreator.ts": "creates the canvas node at once, then opens its files once the Store can serve the new Config",
+  "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/resources/$resourceId/-components/StoreVolumeSize.tsx": "a grow is a Volume Run on the Servers, not a Store write; the row shows the Run's progress once Cloud admits it, and its refusal if it doesn't",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/resources/$resourceId/-components/StoreConfigDrawer.tsx": "saves optimistically and retains submitted file drafts through queued refreshes until their own save succeeds",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/canvas/useServiceCreator.ts": "hands a new Project's Service save to service-create-command, whose next page can't show it before the Store has it",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/services/$serviceId/-components/useDeleteService.ts": "a Database Preset's removal shows at once; its Volume's data goes only once the Store accepts the Service's removal",
@@ -149,7 +151,7 @@ function walk(dir: string): string[] {
 
 const sources = walk(SRC)
   .map((path) => relative(SRC, path))
-  .filter((path) => /\.tsx?$/.test(path) && !/\.test\.tsx?$/.test(path) && path !== "routeTree.gen.ts")
+  .filter((path) => /\.tsx?$/.test(path) && !/\.test\.tsx?$/.test(path) && !path.startsWith("test/") && path !== "routeTree.gen.ts")
   .map((path) => ({ path, text: readFileSync(join(SRC, path), "utf8") }));
 
 function filesMatching(pattern: RegExp) {

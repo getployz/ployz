@@ -5,8 +5,8 @@ import { ConfirmableInput } from "#/components/stageable/confirmable-input";
 import { useCommitHold } from "#/components/stageable/use-commit-hold";
 
 /**
- * An optional command: an input with a placeholder, blank while unset. Confirming saves it (blank unsets it); Escape
- * puts back what's saved. A staged change shows pink, titled with what's deployed.
+ * An optional command: an input with a placeholder, blank while unset. Enter or leaving the field saves it (blank
+ * unsets it); Escape puts back what's saved. A staged change shows pink, titled with what's deployed.
  */
 export function ServiceCommandField({ label, description, placeholder, value: stored, baselineValue, isChanged, validate, onCommit }: {
   label: string;

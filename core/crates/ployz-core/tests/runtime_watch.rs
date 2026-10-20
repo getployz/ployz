@@ -228,6 +228,7 @@ fn expected_frame() -> RuntimeWatchFrame {
                     kernel_version: "6.1.0".into(),
                     memory_total_bytes: None,
                     running_builds: 0,
+                    pool_committable_bytes: None,
                     capabilities: BTreeSet::new(),
                 },
                 build_concurrency: None,
@@ -308,6 +309,8 @@ fn container_observation() -> ContainerObservation {
     }))
     .unwrap();
     ployz_core::ContainerObservation::try_from(ployz_core::ContainerObservationParts {
+        rotation: None,
+        r#gen: None,
         container_id: ContainerId::parse(CONTAINER_ID).unwrap(),
         display_name: "api-1".into(),
         created_at_unix_nanos: 1_700_000_000_000_000_000,
@@ -321,6 +324,7 @@ fn container_observation() -> ContainerObservation {
         resolved_spec,
         address: None,
         labels: Default::default(),
+        stopped: false,
     })
     .unwrap()
 }

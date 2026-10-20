@@ -1,7 +1,10 @@
 import { Schema } from "effect";
 
-/** An xid8 horizon from the Organization change log: every change before it has been read. */
-export const changeCursorSchema = Schema.String.check(Schema.isPattern(/^\d{1,20}$/u));
+/**
+ * An Organization's id and an xid8 horizon from its change log: every change before it has been read. A cursor read
+ * against another Organization, as a reused slug names after a delete, reads in full.
+ */
+export const changeCursorSchema = Schema.String.check(Schema.isMaxLength(64));
 
 export const collectionNames = [
   "environment_canvas_node_position", "organization_enrollment", "organization_cluster_domain", "organization_server_upgrades",
@@ -19,7 +22,7 @@ export type CollectionReadInput = typeof collectionReadInput.Type;
 export type CollectionName = CollectionReadInput["table"];
 
 /** The Config Store's table families: each refreshes the Store views its tables back (`store-view.queries.ts`). */
-export const storeViewNames = ["store_project", "store_environment", "store_deployment", "store_organization", "store_pull_request"] as const;
+export const storeViewNames = ["store_project", "store_environment", "store_deployment", "store_organization", "store_pull_request", "store_check_suite"] as const;
 export type StoreViewName = (typeof storeViewNames)[number];
 
 /**

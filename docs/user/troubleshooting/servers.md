@@ -80,7 +80,7 @@ only**; see [Start without ZFS](../servers/add-a-server.md#start-without-zfs) fo
 - `Host root has ... bytes available; ZFS validation needs ...`
 
   Free disk space, or give the server a bigger disk. Ployz keeps a quarter of the disk, at least
-  10 GB, free for the system, so use a main disk of 30 GB or more.
+  10 GiB, free for the system, so use a main disk of 30 GiB or more.
 
 ## The install stops while checking Docker
 
@@ -162,9 +162,10 @@ the kernel is newer than ZFS supports. Either:
 
 ## The command was rejected
 
-You'll see `enroll HTTP 401`.
+You'll see `Cloud no longer takes this enrollment token`.
 
-The enrollment token expired or was mistyped. It works for 24 hours. Run
+The enrollment token expired or was mistyped, or the organization's servers were forgotten,
+which voids every token made before. A token works for 24 hours. Run
 `ployz server add --command` on your machine for a new one and run its line again.
 
 ## The server's name is invalid
@@ -233,9 +234,10 @@ prepares Docker and ZFS meanwhile.
    before if Cloud accepts it. A new token in the file starts over with its own two chances. A
    refusal during the install itself ends it with an error instead, since the token was only just
    given, and starts nothing.
-10. `Rejected`, `Token expired` or `Token revoked` are final: the loop stops, deletes
-   `/etc/ployz/fleet-token` if it still holds the token Cloud answered, and won't start again at
-   boot. A token Cloud refuses twice in a row, at least a minute apart by Cloud's clock, because you revoked or
+10. `Rejected`, `Token expired` or `Token revoked` are final. The running check-in loop stops,
+   deletes `/etc/ployz/fleet-token`, or the file you named with `--token-file`, if it still holds
+   the token Cloud answered, and won't start again at boot. If the answer comes during
+   `ployz server checkin --install`, the install ends with an error and keeps the file. A token Cloud refuses twice in a row, at least a minute apart by Cloud's clock, because you revoked or
    deleted it, reads `Token revoked`. If you put a new token in the file as the loop stops, it
    keeps it and restarts with it, unless Cloud rejected the server. Put a new Fleet Token in that file and run `sudo ployz server checkin --install`
    again to start a new check-in attempt. A non-rejection response clears the local rejection
@@ -250,8 +252,8 @@ prepares Docker and ZFS meanwhile.
 12. Once you approve the server, the loop enrolls it and the **this server** line walks through
     `Installing`, `Enrolling`, `Queued to join`, `Setting up ZFS`, `Joining` and `Publishing`,
     the same stages Ployz Cloud shows. `Queued to join` means other servers are joining the
-    fleet first. When it reads `Joined`, the loop turns itself off and deletes
-    `/etc/ployz/fleet-token`.
+    fleet first. When it reads `Joined`, the running check-in loop turns itself off and deletes
+    `/etc/ployz/fleet-token`, or the file you named with `--token-file`.
 13. `Enroll failed` means a stage failed, and the line after it names the stage and why, for
     example `Enroll failed at enrolling: Docker is not running`. The server goes back to waiting
     and Ployz Cloud shows the same failure. Fix the cause, then approve the server again in Ployz
@@ -321,7 +323,13 @@ No other server can join until the first one finishes.
 
 The **Servers** page shows **Can't reach your servers right now**, with what your servers last
 reported or nothing at all. Adding a server can fail with `This Organization's Servers can't be
-reached`.
+reached`. A CLI command, or a deployment that couldn't run, says `Server web-1 isn't answering`,
+naming each server it couldn't reach by the name it last reported, or by its ID if Ployz never
+learned one. When a server answered but refused every connection, the error names the server
+tried last, as in `Server web-2, tried last, refused the connection`. A deploy whose ingress check
+couldn't reach a server warns `Couldn't check ingress: Server web-1 isn't answering`, with what the
+connection said in parentheses. A server that just joined or restarted answers within a minute; try
+again then.
 
 1. Check at your provider that the servers are running.
 2. On a server, run `sudo systemctl status ployz`. If Ployz is stopped, start it with
@@ -329,6 +337,22 @@ reached`.
 3. If your servers' outgoing traffic is filtered, allow https to `relay.ployz.dev`.
 4. If you deleted the servers, see
    [Forget servers you deleted](../servers/manage-servers.md#forget-servers-you-deleted).
+5. If the servers run Ployz 0.3.0-beta.6 or earlier, Cloud can't reach them through the relay.
+   Upgrade each one over SSH, as in
+   [Servers on 0.3.0-beta.6 or earlier](../servers/manage-servers.md#servers-on-030-beta6-or-earlier).
+
+## The CLI says a server runs 0.3.0-beta.6 or earlier
+
+```text
+This Server runs Ployz 0.3.0-beta.6 or earlier, which this release can't reach through the relay.
+```
+
+Upgrade that server over SSH, as in
+[Servers on 0.3.0-beta.6 or earlier](../servers/manage-servers.md#servers-on-030-beta6-or-earlier).
+
+A server that answers but refuses says so instead, with its own reason:
+`Server web-1 couldn't give this command access: Cluster store is not available`. It is running, so
+don't forget it. Read why in its logs with `sudo journalctl -u ployz -n 200`.
 
 ## A server shows Offline
 
@@ -348,6 +372,52 @@ cluster until it reboots or you remove it.
 
    See [When a server goes down](../services/scaling.md#when-a-server-goes-down) for which
    services come back.
+
+## A server's address changed
+
+Ployz reads a server's public IP and network addresses again each time Ployz starts on it. When a
+server comes back from a stop with a new address, the other servers learn it, and it shows in
+`ployz server ls`. If the public IP lookup fails, the server keeps its old address and logs a
+warning; restart Ployz on it with `sudo systemctl restart ployz` to try again.
+
+An address you chose yourself never changes on its own. That means `--public-ip` or `--wg-endpoint`
+given to `ployz server init`, `ployz server add` or `ployz server set`. To change it, run
+`ployz server set` again.
+
+If every server's address changed at once, the servers can't reach each other to share the new
+addresses, and each one shows the others as unreachable. [Tell them where one of them
+is](#servers-lost-each-other-after-their-ips-changed).
+
+## Servers lost each other after their IPs changed
+
+Every server got a new public IP address at once, for example after a provider moved or restarted
+them. Each server shows itself running and the others as not answering, in `ployz server ls` and in
+Ployz Cloud, because each one still dials the others at their old addresses.
+
+Tell the servers where one of them is now. Run this once, with that server's name and its new
+public IP address:
+
+```sh
+ployz server set web-2 --wg-endpoint 203.0.113.20
+```
+
+Every other server the command reaches starts dialing `web-2` at that address right away; WireGuard
+uses port 51820 unless you name another, as in `203.0.113.20:51821`. Once one of them reaches
+`web-2`, `web-2` answers from its own new address and the two find each other, usually within
+seconds. The command says which servers took the address, then saves it on `web-2`:
+
+```text
+web-1 now dials web-2 at 203.0.113.20:51820.
+Updated Server web-2.
+```
+
+If `web-2` still can't be reached, the second line reads `! web-2 didn't answer, so its record may
+or may not have changed.` and the command still succeeds. Run it again once both servers show up in `ployz server
+ls` to save the address on `web-2` too. With more than two servers, repeat the command for any
+server that still shows as not answering.
+
+Run it from your machine with Ployz Cloud or a context that reaches the other servers, or on one of
+the other servers itself. Run on `web-2`, it only saves the address on `web-2`.
 
 ## Services can't resolve each other's names
 

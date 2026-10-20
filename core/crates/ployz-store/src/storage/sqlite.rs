@@ -27,6 +27,15 @@ impl Sqlite {
         Ok(Self(Mutex::new(connection)))
     }
 
+    /// Enforce foreign keys, or not, from the next transaction on.
+    pub(super) fn foreign_keys(&self, on: bool) -> Result<(), RpcError> {
+        self.0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .pragma_update(None, "foreign_keys", on)
+            .map_err(storage_error)
+    }
+
     pub(super) fn transaction<T>(
         &self,
         write: bool,
