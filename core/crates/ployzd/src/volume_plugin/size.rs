@@ -4,8 +4,8 @@
 //! reads it back, with the Container on the Volume still running. A slot's landed copy
 //! carries the same bound, and a promote renames that copy into the writer root, so a
 //! grow raises the copy too, with nothing more committed. A shrink the request allows
-//! lowers both, down to the floor above what the copy references, and so releases the
-//! difference.
+//! lowers the bound, and a slot's copy with it, no lower than [`shrink_floor`] of what
+//! the Volume references, and so releases the difference.
 
 use axum::{Json, extract::State};
 use ployz_core::{

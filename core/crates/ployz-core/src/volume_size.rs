@@ -14,7 +14,7 @@ use crate::{DockerVolumeName, ProvisionedVolumeMaximumBytes, RpcError, RpcErrorC
 /// Set the bound of this Machine's copy of Volume `name` to `maximum_bytes`, whether
 /// it is the writer's root or a Mirror's slot. A copy already at `maximum_bytes` answers
 /// that bound without a write, so a resend converges. A copy above it is refused as a
-/// `Shrink` unless the request allows one.
+/// `Shrink` unless it sets `allow_shrink`.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct SetVolumeSizeRequest {
     pub name: DockerVolumeName,
@@ -27,7 +27,7 @@ pub struct SetVolumeSizeRequest {
 }
 
 /// The smallest bound a shrink accepts for a Volume that references `referenced_bytes`:
-/// what it holds plus a tenth of that, and at least 1 GB, so its Container keeps room to
+/// that plus a tenth of it or 1 GB, whichever is larger, so its Container keeps room to
 /// write while the bound comes down.
 #[must_use]
 pub fn shrink_floor(referenced_bytes: u64) -> ProvisionedVolumeMaximumBytes {
@@ -53,10 +53,9 @@ pub enum SizeRefusal {
     Switching,
     /// The Pool cannot grow by the difference.
     NoCapacity,
-    /// The request is below the bound the Volume holds.
+    /// The request is below the bound the Volume holds and does not allow a shrink.
     Shrink,
-    /// The request is below the smallest bound this Machine accepts: what the Volume
-    /// references plus headroom.
+    /// The request is below [`shrink_floor`] of what the Volume references.
     BelowFloor,
 }
 
