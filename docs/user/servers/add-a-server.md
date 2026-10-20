@@ -45,9 +45,10 @@ you deploy; see [Scaling](../services/scaling.md#add-a-server).
 ## Add servers from the dashboard
 
 Before your first server, the **Servers** page shows one card instead of a list. Click
-**Get install command** and it makes a token that works for 7 days and shows the install line,
-under **Shown once. Expires in 7d.** Copy it now: Ployz can't show the token again. The card then
-says **Listening for servers…** until the first one checks in.
+**Get install command** and it makes a token that works for 7 days and shows the install line
+with the token under it, then **Shown once. Expires in 7d.** Copy the token now: Ployz can't show
+it again. Paste the line in a shell on the server, as root or as a user with `sudo`, and paste the
+token when it asks. The card then says **Listening for servers…** until the first one checks in.
 
 Only an owner or admin can make a token. For a member, **Get install command** and **Add servers**
 say so instead.
@@ -58,17 +59,18 @@ Once you have a server, or one is waiting, make more tokens with **Add servers**
    environment offers it too.
 2. Name the token, or leave the name blank and Ployz picks one. Choose how long it works: 1 day,
    7 days or 30 days.
-3. Click **Create**. The dialog shows the install line with the token in it, under
-   **Shown once. Expires in 24h.** Copy it now: Ployz can't show the token again.
-4. Open a shell on the server, as root or as a user with `sudo`, and paste the line. To put it in
-   user data instead, take it from the **cloud-init** or **Terraform** tab; each holds the same
-   token. Not on Ubuntu, Debian or Amazon Linux, or can't run ZFS? See
-   [Start without ZFS](#start-without-zfs).
+3. Click **Create**. The **Shell** tab shows the install line and the token under it, then
+   **Shown once. Expires in 24h.** Copy the token now: Ployz can't show it again.
+4. Open a shell on the server, as root or as a user with `sudo`, and paste the line. When it asks
+   for the Fleet Token, paste the token. The prompt doesn't show what you paste, so the token stays
+   out of shell history and the process list. To put it in user data instead, take it from the
+   **cloud-init** or **Terraform** tab; each holds the same token. Not on Ubuntu, Debian or Amazon
+   Linux, or can't run ZFS? See [Start without ZFS](#start-without-zfs).
 
 ![The Add servers dialog with its install line](../images/add-servers-dialog.png)
 
-Run the same line on as many servers as you like while the token works. Each one installs Docker
-and Ployz and shows up under **Waiting to join** on the **Servers** page within seconds, in a tray
+Run the same line, and paste the same token, on as many servers as you like while the token
+works. Each one installs Docker and Ployz and shows up under **Waiting to join** on the **Servers** page within seconds, in a tray
 above your other servers. The tray shows only while a server waits or enrolls. Its header counts
 the servers that are ready, preparing, blocked and offline, with a bar for the mix. New ones go
 to the bottom of the list, and the list never reorders while you look at it. When your very first
@@ -111,17 +113,16 @@ See [Add many servers](add-many-servers.md). You can also make a token from your
 ployz server token create --expires 7d
 ```
 
-It prints the token once, and an install line with the token in it, for the release of the
-`ployz` CLI you ran. Run that line on each host:
+It prints the token once, and an install line for the release of the `ployz` CLI you ran. Run
+that line on each host and paste the token when it asks:
 
 ```sh
-curl -fsSL https://ployz.sh | sudo PLOYZ_ENROLL_TOKEN=pflt_… sh -s -- VERSION
+curl -fsSL https://ployz.sh | sudo sh -s -- VERSION --enroll
 ```
 
 Keep the version it names. Without one, the script installs the stable release, which may not
-match your Ployz Cloud. The token in the line lands in the host's shell history. To keep it out,
-leave out `PLOYZ_ENROLL_TOKEN=…`, add `--enroll` after the version, and paste the token at the
-prompt.
+match your Ployz Cloud. With `--json`, the token is in `fleet_token.token` and the line in
+`install`.
 
 - **Hosts wait for you.** A host that runs the line checks in under **Waiting** until you enroll it from **Servers**.
 - **It lasts 24 hours by default.** `--expires` takes `1d`, `7d` or `30d`.
