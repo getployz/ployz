@@ -95,7 +95,7 @@ fn ps_names_servers_and_shows_container_ids_on_every_row_once_two_rows_read_the_
     let name = MachineName::parse("machine-1").unwrap();
     let names = HashMap::from([(MachineId::parse("b".repeat(32)).unwrap(), &name)]);
     let mut out = Vec::new();
-    process_table(&containers, true, &names, &HashSet::new())
+    process_table(&containers, Some(&scoped(&[])), &names, &HashSet::new())
         .write(&mut out, false)
         .unwrap();
     assert_eq!(
@@ -110,9 +110,14 @@ fn ps_names_servers_and_shows_container_ids_on_every_row_once_two_rows_read_the_
     );
 
     let mut out = Vec::new();
-    process_table(&containers[1..], true, &names, &HashSet::new())
-        .write(&mut out, false)
-        .unwrap();
+    process_table(
+        &containers[1..],
+        Some(&scoped(&[])),
+        &names,
+        &HashSet::new(),
+    )
+    .write(&mut out, false)
+    .unwrap();
     assert_eq!(
         String::from_utf8(out).unwrap(),
         format!(
@@ -121,6 +126,33 @@ fn ps_names_servers_and_shows_container_ids_on_every_row_once_two_rows_read_the_
              api\tservice\t{}\trunning\n",
             "e".repeat(12)
         )
+    );
+}
+
+#[test]
+fn ps_names_a_renamed_service_by_its_name_now_not_its_private_name() {
+    let running = || ContainerRuntimeObservation::Running {
+        health: HealthObservation::NotConfigured,
+    };
+    let box_ = ServiceContainer::try_from(observation('a', 'b', "box", running())).unwrap();
+    let web = ServiceContainer::try_from(observation('c', 'b', "web", running())).unwrap();
+    let containers = [ContainerRef::Service(&box_), ContainerRef::Service(&web)];
+    let name = MachineName::parse("machine-1").unwrap();
+    let names = HashMap::from([(MachineId::parse("b".repeat(32)).unwrap(), &name)]);
+    let mut out = Vec::new();
+    process_table(
+        &containers,
+        Some(&scoped(&[("box2", "box"), ("web", "web")])),
+        &names,
+        &HashSet::new(),
+    )
+    .write(&mut out, false)
+    .unwrap();
+    assert_eq!(
+        String::from_utf8(out).unwrap(),
+        "SERVICE\tKIND\tSERVER\tSTATE\n\
+         box2\tservice\tmachine-1\trunning\n\
+         web\tservice\tmachine-1\trunning\n"
     );
 }
 
@@ -149,7 +181,7 @@ fn ps_folds_a_services_superseded_containers_into_one_draining_row() {
     };
     let render = |retiring: &HashSet<ContainerId>| {
         let mut out = Vec::new();
-        process_table(&containers, true, &names, retiring)
+        process_table(&containers, Some(&scoped(&[])), &names, retiring)
             .write(&mut out, false)
             .unwrap();
         let json = serde_json::to_value(process_rows(&containers, retiring)).unwrap();
@@ -241,6 +273,19 @@ fn hook_observation(
         .try_update(|parts| parts.kind = ployz_core::ContainerKind::PreDeployHook)
         .unwrap();
     observation
+}
+
+/// The `app` Namespace, with each Service's name now and its runtime name.
+fn scoped(services: &[(&str, &str)]) -> crate::handlers::operator::Scoped {
+    crate::handlers::operator::Scoped {
+        environment: ployz_store::EnvironmentName::parse("production").unwrap(),
+        namespace: ployz_core::Namespace::parse("app").unwrap(),
+        services: services
+            .iter()
+            .map(|(name, runtime)| (name.parse().unwrap(), runtime.parse().unwrap()))
+            .collect(),
+        authored: None,
+    }
 }
 
 fn observation(

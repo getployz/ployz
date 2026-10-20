@@ -1,7 +1,9 @@
 name: Fast CI
 
 on:
+  # Draft PRs run nothing. Marking a PR ready starts CI, and later pushes run it again.
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
   push:
     branches: [main]
   workflow_dispatch:
@@ -42,6 +44,7 @@ jobs:
   # offline every pick is GitHub's, so each run picks at once in its own group.
   pool:
     name: Check runner pool
+    if: ${{ !github.event.pull_request.draft }}
     runs-on: ubuntu-24.04
     timeout-minutes: 2
     outputs:
@@ -84,7 +87,7 @@ jobs:
         run: |
           runner=ubuntu-24.04
           if [ "$ONLINE" = true ]; then
-            sleep 15
+            sleep 5
             if idle=$(gh api "repos/$GITHUB_REPOSITORY/actions/runners?per_page=100" --jq '[.runners[] | select(.status == "online" and (.busy | not) and any(.labels[]; .name == "ployz-omarchy"))] | length'); then
               echo "Idle ployz-omarchy runners: $idle"
               [ "$idle" -ge 1 ] && runner=ployz-omarchy
@@ -367,7 +370,7 @@ jobs:
 
   ready:
     name: CI ready
-    if: always()
+    if: ${{ always() && !github.event.pull_request.draft }}
     needs: [changes, contracts, rust-lint, rust-tests, uptime, macos-cli, cloud, release-contracts]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
