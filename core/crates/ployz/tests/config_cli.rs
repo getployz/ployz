@@ -132,13 +132,15 @@ fn fake_cloud() -> String {
 }
 
 fn fake_cloud_with_dispatch(worker: fn(&std::sync::Arc<ConfigStore>, &Written)) -> String {
-    cloud(worker, std::sync::Arc::default())
+    cloud(worker, std::sync::Arc::default(), |_| evidence())
 }
 
-fn cloud(
-    worker: fn(&std::sync::Arc<ConfigStore>, &Written),
-    approvals: std::sync::Arc<Approvals>,
-) -> String {
+/// What Cloud's worker does with each write the Store took.
+type Worker = fn(&std::sync::Arc<ConfigStore>, &Written);
+/// What Cloud observed before it sent a write.
+type Observe = fn(&StoreCommand) -> Trusted;
+
+fn cloud(worker: Worker, approvals: std::sync::Arc<Approvals>, observe: Observe) -> String {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
     let store = std::sync::Arc::new(
@@ -146,7 +148,7 @@ fn cloud(
     );
     std::thread::spawn(move || {
         for stream in listener.incoming() {
-            match serve(&store, &approvals, stream.unwrap(), worker) {
+            match serve(&store, &approvals, stream.unwrap(), worker, observe) {
                 Ok(()) => {}
                 // A CLI stopped by Ctrl-C hangs up mid-request.
                 Err(error) if error.kind() == std::io::ErrorKind::BrokenPipe => {}
@@ -181,7 +183,8 @@ fn serve(
     store: &std::sync::Arc<ConfigStore>,
     approvals: &Approvals,
     mut stream: TcpStream,
-    worker: fn(&std::sync::Arc<ConfigStore>, &Written),
+    worker: Worker,
+    observe: Observe,
 ) -> std::io::Result<()> {
     let mut reader = BufReader::new(stream.try_clone()?);
     let mut request = String::new();
@@ -230,7 +233,7 @@ fn serve(
         }
         (Some(who), "/api/config/write") => {
             let command: StoreCommand = serde_json::from_slice(&body).unwrap();
-            let written = store.write_trusted(&who, &command, &evidence());
+            let written = store.write_trusted(&who, &command, &observe(&command));
             if let (
                 StoreCommand::Admit(_) | StoreCommand::Start(_) | StoreCommand::Remove(_),
                 Ok(written),
@@ -642,7 +645,7 @@ fn approving(rows: &[(&'static str, &'static str)]) -> (Target, std::sync::Arc<A
 fn serving(approvals: Approvals) -> (Target, std::sync::Arc<Approvals>) {
     let approvals = std::sync::Arc::new(approvals);
     let target = Target::Cloud {
-        url: cloud(dispatch, std::sync::Arc::clone(&approvals)),
+        url: cloud(dispatch, std::sync::Arc::clone(&approvals), |_| evidence()),
         token: "ployz_alice",
     };
     ok(&target, &["project", "new", "shop"]);
@@ -719,7 +722,7 @@ fn cloud_server() -> ployz_core::Machine {
 fn running(rows: &[(&'static str, &'static str)]) -> (Target, std::sync::Arc<Approvals>) {
     let approvals = std::sync::Arc::new(Approvals::of(rows));
     let target = Target::Cloud {
-        url: cloud(dispatch, std::sync::Arc::clone(&approvals)),
+        url: cloud(dispatch, std::sync::Arc::clone(&approvals), |_| evidence()),
         token: "ployz_alice",
     };
     (target, approvals)
@@ -3589,6 +3592,117 @@ fn missing_ambiguous_and_foreign_scope_name_the_fix() {
     );
 }
 
+/// `ployz ctx` in an unlinked directory, as humans read it, and its JSON.
+fn ctx(store: &Target, home: &std::path::Path, dir: &std::path::Path) -> (String, String, Value) {
+    let human = store
+        .command(home)
+        .current_dir(dir)
+        .arg("ctx")
+        .output()
+        .unwrap();
+    assert!(human.status.success(), "{human:?}");
+    let (_, json) = in_dir(store, home, dir, &["ctx"], &[]);
+    (
+        String::from_utf8(human.stdout).unwrap(),
+        String::from_utf8(human.stderr).unwrap(),
+        json,
+    )
+}
+
+#[test]
+fn ctx_asks_the_store_what_an_unlinked_directory_acts_on() {
+    for store in &targets() {
+        let home = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+
+        ok(store, &["project", "new", "shop"]);
+        let (stdout, stderr, json) = ctx(store, home.path(), dir.path());
+        assert!(
+            stdout.contains("project = shop (the only Project)"),
+            "{stdout}"
+        );
+        assert!(
+            stdout.contains("environment = production (the Default Environment)"),
+            "{stdout}"
+        );
+        assert!(!stderr.contains("next:"), "{stderr}");
+        assert_eq!(json.get("project"), Some(&Value::Null));
+        assert_eq!(
+            json.get("default"),
+            Some(&json!({ "projects": 1, "project": "shop", "environment": "production" }))
+        );
+        assert_eq!(json.get("next"), None);
+
+        ok(store, &["project", "new", "blog"]);
+        let (stdout, stderr, json) = ctx(store, home.path(), dir.path());
+        assert!(
+            stdout.contains("project = (none: this Organization has 2 Projects)"),
+            "{stdout}"
+        );
+        assert!(stdout.contains("environment = (none)"), "{stdout}");
+        assert!(
+            stderr.contains("next: ployz link --project PROJECT"),
+            "{stderr}"
+        );
+        assert_eq!(json.get("default"), Some(&json!({ "projects": 2 })));
+        assert_eq!(
+            json.get("next"),
+            Some(&json!("ployz link --project PROJECT"))
+        );
+
+        // A linked Project needs no listing.
+        let (code, _) = in_dir(
+            store,
+            home.path(),
+            dir.path(),
+            &["link", "--project", "blog"],
+            &[],
+        );
+        assert_eq!(code, Some(0));
+        let (code, json) = in_dir(store, home.path(), dir.path(), &["ctx"], &[]);
+        assert_eq!(code, Some(0));
+        assert_eq!(json.get("default"), None);
+        assert_eq!(json.get("next"), None);
+    }
+}
+
+/// Offline, or when Cloud is slow to answer, `ployz ctx` says nothing is linked.
+#[test]
+fn ctx_offline_says_nothing_is_linked() {
+    let silent = TcpListener::bind("127.0.0.1:0").unwrap();
+    let held = format!("http://{}", silent.local_addr().unwrap());
+    std::thread::spawn(move || {
+        let held: Vec<TcpStream> = silent.incoming().map_while(Result::ok).collect();
+        drop(held);
+    });
+    for url in ["http://127.0.0.1:9".to_owned(), held] {
+        let store = Target::Cloud {
+            url,
+            token: "ployz_alice",
+        };
+        let home = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let started = std::time::Instant::now();
+        let (stdout, stderr, json) = ctx(&store, home.path(), dir.path());
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(10),
+            "{:?}",
+            started.elapsed()
+        );
+        assert!(stdout.contains("project = (none)\n"), "{stdout}");
+        assert!(stdout.contains("environment = (none)\n"), "{stdout}");
+        assert!(
+            stderr.contains("next: ployz link --project PROJECT"),
+            "{stderr}"
+        );
+        assert_eq!(json.get("default"), None);
+        assert_eq!(
+            json.get("next"),
+            Some(&json!("ployz link --project PROJECT"))
+        );
+    }
+}
+
 #[test]
 fn a_repository_service_is_checked_by_cloud() {
     for store in &targets() {
@@ -5227,4 +5341,182 @@ fn with_a_context_a_signed_in_command_dials_directly() {
         assert_ne!(code, Some(0), "{args:?}: no context lab to dial: {json}");
     }
     assert!(approvals.runs().is_empty(), "{:?}", approvals.runs());
+}
+
+#[test]
+fn a_removal_no_server_answers_is_still_removing_and_retries_with_the_same_rm() {
+    fn worker(store: &std::sync::Arc<ConfigStore>, written: &Written) {
+        dispatch(store, written);
+        if let Written::Removal(Removal::Removing { left, .. }) = written {
+            for deployment in left.iter().filter_map(|left| left.deployment.clone()) {
+                dispatch(store, &Written::Deployment(deployment));
+            }
+        }
+    }
+    let cloud = Target::Cloud {
+        url: fake_cloud_with_dispatch(worker),
+        token: "ployz_alice",
+    };
+    ok(&cloud, &["project", "new", "shop"]);
+    ok(&cloud, &["env", "new", "staging"]);
+    let web = ["service", "add", "web", "--image", "nginx:alpine"];
+    ok(&cloud, &[&web[..], &["--env", "staging"]].concat());
+    assert_eq!(
+        ployz(Some(&cloud), &["deploy", "--env", "staging"]).0,
+        Some(1)
+    );
+
+    let removing = |args: &[&str]| {
+        let home = tempfile::tempdir().unwrap();
+        let output = cloud.command(home.path()).args(args).output().unwrap();
+        let stderr = String::from_utf8(output.stderr).unwrap();
+        assert_eq!(output.status.code(), Some(3), "{args:?}: {stderr}");
+        let retry = stderr
+            .lines()
+            .find_map(|line| line.strip_prefix("retry: "))
+            .unwrap_or_else(|| panic!("{args:?} names no retry: {stderr}"))
+            .to_owned();
+        (output.stdout, retry)
+    };
+    let (stdout, retry) = removing(&[
+        "--json",
+        "env",
+        "rm",
+        "staging",
+        "--confirm",
+        "shop/staging",
+    ]);
+    let removed: Value = serde_json::from_slice(&stdout).unwrap();
+    assert_eq!(removed["removal"], "removing", "{removed}");
+    assert_eq!(removed["environment"]["name"], "staging", "{removed}");
+    assert_eq!(removed["deployments"][0]["status"], "failed", "{removed}");
+    assert_eq!(
+        removed["left"][0]["deployment"]["status"], "failed",
+        "{removed}"
+    );
+    assert_eq!(retry, "ployz env rm staging --confirm shop/staging");
+
+    // The retry it names runs the removal again rather than refusing.
+    let rerun: Vec<&str> = retry.split(' ').skip(1).collect();
+    let (stdout, retry) = removing(&rerun);
+    let said = String::from_utf8(stdout).unwrap();
+    assert!(
+        said.contains("Deployment #3 of shop/staging: failed"),
+        "{said}"
+    );
+    assert!(!said.contains("Cloud goes on"), "{said}");
+    assert_eq!(retry, "ployz env rm staging --confirm shop/staging");
+
+    let (stdout, retry) = removing(&["--json", "project", "rm", "shop", "--confirm", "shop"]);
+    let removed: Value = serde_json::from_slice(&stdout).unwrap();
+    assert_eq!(removed["removal"], "removing", "{removed}");
+    assert_eq!(removed["project"]["name"], "shop", "{removed}");
+    assert_eq!(retry, "ployz project rm shop --confirm shop");
+}
+
+#[test]
+fn a_removal_without_volumes_names_the_server_that_did_not_answer_cloud() {
+    /// The deploy fails on `web-1`, so the Store records its name; Cloud's runner
+    /// takes each removal Deployment to the Server, which never answers.
+    fn worker(store: &std::sync::Arc<ConfigStore>, written: &Written) {
+        let Written::Deployment(admitted) = written else {
+            if let Written::Removal(Removal::Removing { left, .. }) = written {
+                for deployment in left.iter().filter_map(|left| left.deployment.clone()) {
+                    dispatch(store, &Written::Deployment(deployment));
+                }
+            }
+            return;
+        };
+        if admitted.remove {
+            return dispatch(store, written);
+        }
+        let runner = RunnerId::parse("cloud-worker").unwrap();
+        let claimed = store.claim(&admitted.id, &runner).unwrap();
+        let operation = json!({
+            "type": "remove_container", "machine_id": CLOUD_SERVER, "container_id": "b".repeat(64)
+        });
+        let row = |status: Value| {
+            json!({
+                "index": 0, "machine_id": CLOUD_SERVER, "machine_name": "web-1",
+                "service_name": "web", "operation": operation, "status": status
+            })
+        };
+        let preview = serde_json::from_value(json!({
+            "namespace": claimed.intent.namespace,
+            "operations": [row(json!({"type": "pending"}))],
+            "warnings": [], "would_remove": [], "preserved_volumes": []
+        }))
+        .unwrap();
+        store
+            .record(
+                &admitted.id,
+                &runner,
+                ployz_store::RunEvidence::Prepared(preview),
+            )
+            .unwrap();
+        let error = json!({"type": "machine", "action": "RemoveContainer", "error": {
+            "code": "internal", "message": "busy", "details": {}, "cause": []
+        }});
+        let rows: Vec<ployz_core::OperationRow> =
+            serde_json::from_value(json!([row(json!({"type": "failed", "error": error}))]))
+                .unwrap();
+        let outcome = serde_json::from_value(json!({
+            "type": "failed", "completed": [], "unexecuted": [],
+            "failed": {"type": "operation", "operation": operation, "error": error}
+        }))
+        .unwrap();
+        let executed = ployz_store::RunEvidence::Executed {
+            outcome: Box::new(outcome),
+            progress: ployz_store::RowTracker::default().changes(&rows),
+            removed: Vec::new(),
+        };
+        store.record(&admitted.id, &runner, executed).unwrap();
+    }
+    /// Cloud asks its Servers before it sends a removal: its one Server is silent.
+    fn silent(command: &StoreCommand) -> Trusted {
+        let unanswered = vec![ployz_core::MachineId::parse(CLOUD_SERVER).unwrap()];
+        Trusted {
+            unanswered: matches!(command, StoreCommand::Remove(_)).then_some(unanswered),
+            ..evidence()
+        }
+    }
+    let cloud = Target::Cloud {
+        url: cloud(worker, std::sync::Arc::default(), silent),
+        token: "ployz_alice",
+    };
+    ok(&cloud, &["project", "new", "shop"]);
+    ok(&cloud, &["env", "new", "staging"]);
+    let web = ["service", "add", "web", "--image", "nginx:alpine"];
+    ok(&cloud, &[&web[..], &["--env", "staging"]].concat());
+    assert_eq!(
+        ployz(Some(&cloud), &["deploy", "--env", "staging"]).0,
+        Some(1)
+    );
+
+    let why = "It didn't answer, so shop/staging can't come off it yet";
+    let (code, removed) = ployz(
+        Some(&cloud),
+        &["env", "rm", "staging", "--confirm", "shop/staging"],
+    );
+    assert_eq!(code, Some(3), "{removed}");
+    assert_eq!(removed["removal"], "removing", "{removed}");
+    assert_eq!(
+        removed["waiting_on"],
+        json!([{
+            "server": "web-1", "server_id": CLOUD_SERVER, "why": why,
+            "fix": { "server_remove": { "server": CLOUD_SERVER } },
+        }]),
+        "{removed}"
+    );
+
+    let home = tempfile::tempdir().unwrap();
+    let output = cloud
+        .command(home.path())
+        .args(["env", "rm", "staging", "--confirm", "shop/staging"])
+        .output()
+        .unwrap();
+    let said = String::from_utf8(output.stdout).unwrap();
+    assert_eq!(output.status.code(), Some(3), "{said}");
+    assert!(said.contains(&format!("Waiting on web-1: {why}")), "{said}");
+    assert!(!said.contains(CLOUD_SERVER), "ids are machinery: {said}");
 }

@@ -34,6 +34,7 @@ pub fn processes(root: &ArgMatches) -> Result<(), Error> {
         .ok_or_else(|| Error::usage("sort order is required"))?;
     let scoped = super::operator::scope(root)?;
     let namespace = scoped.as_ref().map(|scoped| scoped.namespace.clone());
+    let labels = scoped.clone();
     let order = sort.clone();
     let credential = with_reader(root, |client| {
         Box::pin(async move {
@@ -63,7 +64,7 @@ pub fn processes(root: &ArgMatches) -> Result<(), Error> {
             let observations = process_rows(&containers, &retiring);
             let gaps = Gaps::of(&live.containers)
                 .named(names.iter().map(|(machine_id, name)| (*machine_id, *name)));
-            let table = process_table(&containers, namespace.is_some(), &names, &retiring);
+            let table = process_table(&containers, labels.as_ref(), &names, &retiring);
             crate::ui::finish_fanout("containers", &observations, &gaps, || {
                 crate::ui::rows(&table);
             })
@@ -186,7 +187,7 @@ fn collapse_draining<'a>(
 
 fn process_table(
     containers: &[ContainerRef<'_>],
-    scoped: bool,
+    scoped: Option<&super::operator::Scoped>,
     names: &HashMap<MachineId, &MachineName>,
     retiring: &HashSet<ContainerId>,
 ) -> Table {
@@ -197,11 +198,10 @@ fn process_table(
             let container = entry.container();
             let observation = container.as_observation();
             // Scoped to one Environment, its Namespace on every row says nothing.
-            let service = if scoped {
-                observation.service_name().to_string()
-            } else {
-                observation.identity().to_string()
-            };
+            let service = scoped.map_or_else(
+                || observation.identity().to_string(),
+                |scoped| scoped.service_name(observation.service_name()).to_string(),
+            );
             [
                 service,
                 process_kind(container).to_owned(),
