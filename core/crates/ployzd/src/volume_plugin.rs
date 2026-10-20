@@ -608,41 +608,31 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn create_is_idempotent_but_does_not_resize() {
+    async fn create_of_an_existing_volume_at_or_below_its_bound_is_idempotent_and_never_resizes() {
         let test = TestDir::new();
         let (zpool, zfs) = fake_zfs(&test.0, USABLE_POOL);
         let socket = test.0.join("plugin.sock");
         let listener = UnixListener::bind(&socket).unwrap();
         let server = tokio::spawn(serve(listener, VolumeStorage::with_programs(zpool, zfs)));
-        let request = json!({"Name":"data","Opts":{"size":"1g"}});
+        let create = |size: &str| json!({"Name":"data","Opts":{"size":size}});
 
+        for size in ["1g", "1024m", "512m"] {
+            assert_eq!(
+                post(&socket, "/VolumeDriver.Create", create(size)).await,
+                json!({"Err":""}),
+                "{size}"
+            );
+        }
+        let larger = post(&socket, "/VolumeDriver.Create", create("2g")).await;
+        assert!(error(&larger).contains("never grows its bound"), "{larger}");
+        let commands = fs::read_to_string(test.0.join("commands")).unwrap();
         assert_eq!(
-            post(&socket, "/VolumeDriver.Create", request.clone()).await,
-            json!({"Err":""})
-        );
-        assert_eq!(
-            post(
-                &socket,
-                "/VolumeDriver.Create",
-                json!({"Name":"data","Opts":{"size":"1024m"}}),
-            )
-            .await,
-            json!({"Err":""})
-        );
-        let resized = post(
-            &socket,
-            "/VolumeDriver.Create",
-            json!({"Name":"data","Opts":{"size":"2g"}}),
-        )
-        .await;
-        assert!(error(&resized).contains("size is fixed once deployed"));
-        assert_eq!(
-            fs::read_to_string(test.0.join("commands"))
-                .unwrap()
+            commands
                 .matches("zfs create -o refquota=1073741824 tank/ployz/data")
                 .count(),
             1
         );
+        assert_eq!(commands.matches("refquota=").count(), 1, "{commands}");
         server.abort();
     }
 

@@ -434,6 +434,37 @@ fn existing_matching_provisioned_volume_is_reused_without_creation() {
 }
 
 #[test]
+fn a_grown_provisioned_volume_is_reused_despite_the_size_docker_froze_at_create() {
+    let mut existing = observed_volume(machine_id('1'), "data");
+    existing.options = BTreeMap::from([("size".into(), "536870912b".into())]);
+    existing.storage = DockerVolumeStorageObservation::Provisioned {
+        mountpoint: MachinePath::parse("/var/lib/ployz-volumes/app_data").unwrap(),
+        bound_bytes: NonZeroU64::new(1_073_741_824).unwrap(),
+        used_bytes: 0,
+        role: None,
+    };
+
+    let preview = explicitly_targeted_provisioned_deploy(
+        Some(MachineStorageObservation::Pool {
+            size_bytes: NonZeroU64::new(10 * 1024_u64.pow(3)).unwrap(),
+            used_bytes: 0,
+            free_bytes: 10 * 1024_u64.pow(3),
+        }),
+        vec![existing],
+    )
+    .unwrap();
+
+    assert!(
+        preview
+            .volumes_to_create
+            .iter()
+            .all(|volume| volume.name.as_str() != "app_data"),
+        "{:?}",
+        preview.volumes_to_create
+    );
+}
+
+#[test]
 fn provisioned_volume_requires_requested_labels() {
     let mut existing = observed_volume(machine_id('1'), "data");
     existing.options = BTreeMap::from([("size".into(), "1073741824b".into())]);
@@ -458,19 +489,17 @@ fn provisioned_volume_requires_requested_labels() {
     ));
 }
 
-#[test]
-fn existing_provisioned_volume_is_not_implicitly_resized() {
+fn deploy_over_live_bound(bound_bytes: u64) -> Result<DeployPreview, PlanError> {
     let mut existing = observed_volume(machine_id('1'), "data");
     existing.options = BTreeMap::from([("size".into(), "1073741824b".into())]);
     existing.storage = DockerVolumeStorageObservation::Provisioned {
         mountpoint: MachinePath::parse("/var/lib/ployz-volumes/app_data").unwrap(),
-        bound_bytes: NonZeroU64::new(2_147_483_648).unwrap(),
+        bound_bytes: NonZeroU64::new(bound_bytes).unwrap(),
         used_bytes: 0,
         role: None,
         slot_role: None,
     };
-
-    let error = explicitly_targeted_provisioned_deploy(
+    explicitly_targeted_provisioned_deploy(
         Some(MachineStorageObservation::Pool {
             size_bytes: NonZeroU64::new(10 * 1024_u64.pow(3)).unwrap(),
             used_bytes: 0,
@@ -478,10 +507,34 @@ fn existing_provisioned_volume_is_not_implicitly_resized() {
         }),
         vec![existing],
     )
-    .unwrap_err()
-    .to_string();
+}
 
-    assert!(error.contains("size is fixed once deployed"), "{error}");
+#[test]
+fn a_volume_grown_above_its_requested_size_is_reused_by_a_later_deploy() {
+    let preview = deploy_over_live_bound(2_147_483_648).unwrap();
+
+    assert!(
+        preview
+            .volumes_to_create
+            .iter()
+            .all(|volume| volume.name.as_str() != "app_data"),
+        "{:?}",
+        preview.volumes_to_create
+    );
+}
+
+#[test]
+fn a_volume_whose_live_bound_is_below_the_request_is_refused_not_grown() {
+    let error = deploy_over_live_bound(536_870_912).unwrap_err();
+
+    assert!(
+        matches!(error, PlanError::ExistingProvisionedVolumeMismatch { .. }),
+        "{error}"
+    );
+    assert!(
+        error.to_string().contains("neither grows nor replaces"),
+        "{error}"
+    );
 }
 
 #[test]

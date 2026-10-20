@@ -215,6 +215,8 @@ impl VolumeSource {
     ///
     /// Requested labels must match; extra observed labels are accepted. External
     /// Volumes, Bind Mounts, and Tmpfs are not managed shapes and return false.
+    /// A Provisioned Volume's limit is its live ZFS bound, not the `size` option
+    /// Docker froze at create. A bound grown above the request still holds it.
     #[must_use]
     pub fn matches_managed_volume(&self, observed: &DockerVolume) -> bool {
         let Some(expected) = self.to_create_volume_request() else {
@@ -222,7 +224,6 @@ impl VolumeSource {
         };
         observed.id.name == expected.name
             && observed.driver() == expected.driver
-            && observed.options == expected.options
             && expected
                 .labels
                 .iter()
@@ -231,11 +232,11 @@ impl VolumeSource {
                 (
                     RawVolumeSource::Ordinary { .. },
                     DockerVolumeStorageObservation::Plain { .. },
-                ) => true,
+                ) => observed.options == expected.options,
                 (
                     RawVolumeSource::Provisioned { maximum_bytes, .. },
                     DockerVolumeStorageObservation::Provisioned { bound_bytes, .. },
-                ) => bound_bytes.get() == maximum_bytes.get(),
+                ) => bound_bytes.get() >= maximum_bytes.get(),
                 _ => false,
             }
     }
@@ -600,6 +601,71 @@ pub enum VolumeRemovalOutcome {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::MachineId;
+
+    fn scoped(source: RawVolumeSource) -> VolumeSource {
+        let mut source = source.admit().unwrap();
+        source.scope_to_namespace(&Namespace::parse("app").unwrap());
+        source
+    }
+
+    fn observed(source: &VolumeSource, storage: DockerVolumeStorageObservation) -> DockerVolume {
+        let request = source.to_create_volume_request().unwrap();
+        DockerVolume {
+            id: DockerVolumeId {
+                machine_id: MachineId::random(),
+                name: request.name,
+            },
+            options: request.options,
+            labels: request.labels,
+            storage,
+        }
+    }
+
+    fn bound(bytes: u64) -> DockerVolumeStorageObservation {
+        DockerVolumeStorageObservation::Provisioned {
+            mountpoint: MachinePath::parse("/var/lib/ployz-volumes/app_data").unwrap(),
+            bound_bytes: NonZeroU64::new(bytes).unwrap(),
+            used_bytes: 0,
+            role: None,
+        }
+    }
+
+    #[test]
+    fn a_provisioned_volume_matches_a_live_bound_at_or_above_its_request_whatever_docker_froze() {
+        let source = scoped(RawVolumeSource::Provisioned {
+            name: DockerVolumeName::parse("data").unwrap(),
+            maximum_bytes: ProvisionedVolumeMaximumBytes::new(NonZeroU64::new(2_000).unwrap()),
+            labels: BTreeMap::new(),
+        });
+
+        let mut grown = observed(&source, bound(2_000));
+        grown.options = BTreeMap::from([("size".into(), "1000b".into())]);
+        assert!(source.matches_managed_volume(&grown));
+        assert!(source.matches_managed_volume(&observed(&source, bound(3_000))));
+
+        let smaller = observed(&source, bound(1_000));
+        assert!(!source.matches_managed_volume(&smaller));
+    }
+
+    #[test]
+    fn an_ordinary_volume_still_matches_on_its_driver_options() {
+        let source = scoped(RawVolumeSource::Ordinary {
+            name: DockerVolumeName::parse("data").unwrap(),
+            driver: VolumeDriver::parse("local", BTreeMap::from([("o".into(), "size=1g".into())]))
+                .unwrap(),
+            labels: BTreeMap::new(),
+        });
+        let plain = DockerVolumeStorageObservation::Plain {
+            driver: "local".into(),
+        };
+
+        assert!(source.matches_managed_volume(&observed(&source, plain.clone())));
+
+        let mut changed = observed(&source, plain);
+        changed.options.insert("o".into(), "size=2g".into());
+        assert!(!source.matches_managed_volume(&changed));
+    }
 
     #[test]
     fn a_storage_limit_is_written_and_read_in_exact_gb() {

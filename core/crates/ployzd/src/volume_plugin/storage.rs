@@ -464,11 +464,11 @@ impl Dataset {
     pub(super) fn require_requested(&self, name: &DockerVolumeName, requested: u64) -> Result<()> {
         self.require_mountpoint(&name.mountpoint())?;
         self.require_writable()?;
-        if self.refquota == requested {
+        if self.refquota >= requested {
             return Ok(());
         }
         Err(format!(
-            "Volume {name} already has a {}-byte bound; a Volume's size is fixed once deployed, so it can't become {requested} bytes",
+            "Volume {name} already has a {}-byte bound, below the {requested} bytes requested; creating a Volume never grows its bound",
             self.refquota
         )
         .into())
