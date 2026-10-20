@@ -3,7 +3,7 @@
 //! stops the run with the step that gets them. Replay keeps a plan straight-line
 //! code while [`State`] stays plain data a host can store between steps.
 
-use ployz_core::decode::decode;
+use ployz_core::decode::{DecodeError, decode};
 use ployz_core::{RpcError, RpcErrorCode};
 use schemars::JsonSchema;
 use serde::de::DeserializeOwned;
@@ -525,14 +525,110 @@ fn def<T: Tool>() -> ToolDef {
 }
 
 fn run<T: Tool>(cx: &mut Cx<'_>, input: &Value) -> Result<Value, Stop> {
-    let input = decode::<T>(input).map_err(|error| {
-        let field = error.path().unwrap_or_default();
-        Refusal::invalid(
-            format!("This input does not fit: {}", error.reason()),
-            field,
-        )
-    })?;
-    input.plan(cx)
+    if let Some((field, reason)) = schema::out_of_range(&schema::input::<T>(), input) {
+        return Err(Refusal::invalid(format!("This input does not fit: {reason}"), &field).into());
+    }
+    let decoded =
+        decode::<T>(input).map_err(|error| match unknown_tool_key::<T>(&error, input) {
+            Some(key) => {
+                let named = format!("unknown field {key}");
+                let reason = error.reason().replacen("unknown field", &named, 1);
+                Refusal::invalid(format!("This input does not fit: {reason}"), &key)
+            }
+            None => Refusal::invalid(
+                format!("This input does not fit: {}", error.reason()),
+                &declared(&schema::input::<T>(), error.path().unwrap_or_default()),
+            ),
+        })?;
+    decoded.plan(cx)
+}
+
+/// The longest start of `path` that `schema` names, so a map key, which is the
+/// caller's text, leaves only its map: `files.<name>` is `files`.
+fn declared(schema: &Value, path: &str) -> String {
+    let mut named = String::new();
+    let mut node = schema;
+    let mut rest = path;
+    while !rest.is_empty() {
+        if let Some(index) = rest.strip_prefix('[') {
+            let Some((digits, after)) = index.split_once(']') else {
+                break;
+            };
+            let Some(items) = node.get("items") else {
+                break;
+            };
+            if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+                break;
+            }
+            named.push_str(&format!("[{digits}]"));
+            (node, rest) = (items, after);
+            continue;
+        }
+        let key = match named.is_empty() {
+            true => rest,
+            false => match rest.strip_prefix('.') {
+                Some(key) => key,
+                None => break,
+            },
+        };
+        let found = properties(node)
+            .into_iter()
+            .filter(|(name, _)| {
+                key.strip_prefix(name.as_str())
+                    .is_some_and(|after| after.is_empty() || after.starts_with(['.', '[']))
+            })
+            .max_by_key(|(name, _)| name.len());
+        let Some((name, inner)) = found else {
+            break;
+        };
+        if !named.is_empty() {
+            named.push('.');
+        }
+        named.push_str(name);
+        (node, rest) = (inner, &key[name.len()..]);
+    }
+    named
+}
+
+/// The properties `schema` declares, in it or any of its alternatives.
+fn properties(schema: &Value) -> Vec<(&String, &Value)> {
+    let mut found: Vec<_> = schema
+        .get("properties")
+        .and_then(Value::as_object)
+        .into_iter()
+        .flatten()
+        .collect();
+    for alternatives in ["anyOf", "oneOf", "allOf"] {
+        for alternative in schema
+            .get(alternatives)
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            found.extend(properties(alternative));
+        }
+    }
+    found
+}
+
+/// The top-level key `T` refused as unknown, when another tool takes a key by that
+/// name. Any other key is the caller's own text and is never echoed.
+fn unknown_tool_key<T: Tool>(error: &DecodeError, input: &Value) -> Option<String> {
+    if error.path().is_some() || !error.reason().starts_with("unknown field") {
+        return None;
+    }
+    let own = schema::input::<T>();
+    let takes = |schema: &Value, key: &str| {
+        schema
+            .get("properties")
+            .and_then(Value::as_object)
+            .is_some_and(|properties| properties.contains_key(key))
+    };
+    let catalog = super::catalog();
+    input.as_object()?.keys().find_map(|key| {
+        let elsewhere = catalog.iter().any(|tool| takes(&tool.input_schema, key));
+        (!takes(&own, key) && elsewhere).then(|| key.clone())
+    })
 }
 
 /// Start `tool` on `input` at `place`. `call_key` is the transport's ID for this

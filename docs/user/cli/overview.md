@@ -27,6 +27,9 @@ again, or `brew upgrade ployz`.
 
 This computer starts in the organization the page names. Switching organization in the dashboard
 later doesn't move it, and `ployz org use ORG` does. `ployz logout` signs this computer out.
+If Cloud can't be reached, `ployz logout` still forgets the sign-in here and warns that Cloud may
+still honour it until you remove it with `ployz token rm`. An unreadable sign-in is forgotten too,
+and `ployz login` replaces it. While it is unreadable, `PLOYZ_TOKEN` also needs `PLOYZ_CLOUD_URL`.
 
 Commands act on your only project and its default environment. With more than one, add
 `--project my-app --env production`, or run `ployz link --project my-app --env production` once in
@@ -259,8 +262,11 @@ offline, run it again once that server is back. Owners and admins see and can re
 organization token in the organization, not only their own. Members see only theirs.
 
 Only your login can make or revoke tokens. A token can't do either, so a leaked one can't make
-another that outlives it, or revoke the rest. `ployz token ls` shows each token's SCOPE, such as `Deploy staging`, and its KIND: `cli` for
-one made with `ployz token new`, `agent` for the one `ployz mcp login` made. An agent token can't
+another that outlives it, or revoke the rest. While `PLOYZ_TOKEN` is set, Ployz acts with the token
+even after `ployz login`: run `unset PLOYZ_TOKEN && ployz login` before you make or revoke one. `ployz token ls` shows each token's SCOPE, such as `Deploy staging`, and its KIND: `cli` for
+one made with `ployz token new`, `agent` for the one `ployz mcp login` made. It also lists each
+computer where you ran `ployz login` as KIND `device`, named for the day it signed in, such as
+`ployz login 2026-10-18`. `ployz token rm ID` signs that computer out. An agent token can't
 answer approvals, and a token's kind never changes. A token you make outlives the login you made it
 with: `ployz logout` doesn't revoke it.
 
@@ -278,7 +284,7 @@ A single record, such as
 
 `ployz status` works signed out too. It shows what it can and says `signed in as no one`. On a
 server waiting for approval, it leads with a **this server** line: `Installing Docker`,
-`Building ZFS`, `Waiting for approval`, `Blocked`, `Rejected`, `Token expired`, `Token revoked`,
+`Building ZFS`, `Waiting for approval`, `No cluster yet`, `Blocked`, `Rejected`, `Token expired`, `Token revoked`,
 `Can't reach Cloud`, `Clock is off` or `Needs a newer ployz`. Then it says when the server last checked in and lists anything that blocks
 it as `blocked` lines. With `--json` this is the `this_server` object.
 
@@ -331,7 +337,11 @@ and exits 3. Ployz Cloud tries again each hour, so it finishes within the hour a
 answers or you remove it with `ployz server rm`. To finish it sooner, run the same `ployz env rm`
 or `ployz project rm` again: it needs no new `--expect-version`, but still asks for approval as
 the first run did. With `--json` it reports `removal: removed` only once the environment is gone
-from `ployz env ls`, or for `project rm` the project from `ployz project ls`.
+from `ployz env ls`, or for `project rm` the project from `ployz project ls`. Until then it reports
+`removal: removing`, with the removal's `id` and the removal deployments it ran in `deployments`.
+When one of them didn't apply, it also reports that deployment in full under `deployment` (its
+`status`, `outcome` and `nodes`) and `next`: the command that finishes it, with the same
+`--ployz-config` when you passed one.
 
 Ployz colors its output in a terminal. With `CI` set or `TERM=dumb`, it prints plain text even in
 one. Set `NO_COLOR=1` or pass `--color never` to turn color off, or `--color always` to keep it

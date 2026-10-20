@@ -93,32 +93,32 @@ could not reach Cloud at http://127.0.0.1:9: error sending request: client error
 {"error":{"code":"invalid_argument","details":null,"message":"Cloud answered HTTP 405: <!doctype html><html lang=\"en\"><head><title>Example Domain</title><link rel=\"icon\" href=\"data:,\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><style>body{background:#eee;width:60vw;margin:15vh auto;font-family:system-ui,sans-serif}h1{font-size:1.5em}div{opacity:0.8}a:link,a:visited{color:#348}</style></head><body><div><h1>Example Domain</h1><p>This domain is for use in documentation examples without needing permission. Avoid use in operations.</p><p><a href=\"https://iana.org/domains/example\">Learn more</a></p></div></body></html>"}}
 
 === bogus PLOYZ_TOKEN: status :: $ ployz status
-Cloud refused PLOYZ_TOKEN: it is unknown, revoked or expired, or its maker left its Organization
+Cloud refused PLOYZ_TOKEN: it is unknown, revoked or expired, its maker left its Organization, or its Organization was deleted
 next: ployz token new
 
 === bogus PLOYZ_TOKEN: status --json :: $ ployz status --json
-{"error":{"code":"unauthenticated","details":{"next":"ployz token new"},"message":"Cloud refused PLOYZ_TOKEN: it is unknown, revoked or expired, or its maker left its Organization"}}
+{"error":{"code":"unauthenticated","details":{"next":"unset PLOYZ_TOKEN && ployz login"},"message":"Cloud refused PLOYZ_TOKEN: it is unknown, revoked or expired, its maker left its Organization, or its Organization was deleted"}}
 
 === bogus PLOYZ_TOKEN: token ls :: $ ployz token ls
-Cloud refused PLOYZ_TOKEN: it is unknown, revoked or expired, or its maker left its Organization
+Cloud refused PLOYZ_TOKEN: it is unknown, revoked or expired, its maker left its Organization, or its Organization was deleted
 next: ployz token new
 
 === bogus PLOYZ_TOKEN: token ls --json :: $ ployz token ls --json
-{"error":{"code":"unauthenticated","details":{"next":"ployz token new"},"message":"Cloud refused PLOYZ_TOKEN: it is unknown, revoked or expired, or its maker left its Organization"}}
+{"error":{"code":"unauthenticated","details":{"next":"unset PLOYZ_TOKEN && ployz login"},"message":"Cloud refused PLOYZ_TOKEN: it is unknown, revoked or expired, its maker left its Organization, or its Organization was deleted"}}
 
 === bogus PLOYZ_TOKEN: org ls :: $ ployz org ls
-Cloud refused PLOYZ_TOKEN: it is unknown, revoked or expired, or its maker left its Organization
+Cloud refused PLOYZ_TOKEN: it is unknown, revoked or expired, its maker left its Organization, or its Organization was deleted
 next: ployz token new
 
 === bogus PLOYZ_TOKEN: org ls --json :: $ ployz org ls --json
-{"error":{"code":"unauthenticated","details":{"next":"ployz token new"},"message":"Cloud refused PLOYZ_TOKEN: it is unknown, revoked or expired, or its maker left its Organization"}}
+{"error":{"code":"unauthenticated","details":{"next":"unset PLOYZ_TOKEN && ployz login"},"message":"Cloud refused PLOYZ_TOKEN: it is unknown, revoked or expired, its maker left its Organization, or its Organization was deleted"}}
 
 === bogus PLOYZ_TOKEN: deployment ls :: $ ployz deployment ls
-Cloud refused PLOYZ_TOKEN: it is unknown, revoked or expired, or its maker left its Organization
+Cloud refused PLOYZ_TOKEN: it is unknown, revoked or expired, its maker left its Organization, or its Organization was deleted
 next: ployz token new
 
 === bogus PLOYZ_TOKEN: deployment ls --json :: $ ployz deployment ls --json
-{"error":{"code":"unauthenticated","details":{"next":"ployz token new"},"message":"Cloud refused PLOYZ_TOKEN: it is unknown, revoked or expired, or its maker left its Organization"}}
+{"error":{"code":"unauthenticated","details":{"next":"unset PLOYZ_TOKEN && ployz login"},"message":"Cloud refused PLOYZ_TOKEN: it is unknown, revoked or expired, its maker left its Organization, or its Organization was deleted"}}
 
 === token new without a name :: $ ployz token new
 error: the following required arguments were not provided:

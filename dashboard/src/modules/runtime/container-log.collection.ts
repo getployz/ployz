@@ -18,12 +18,12 @@ export const containerLogLineSchema = Schema.Struct({
   level: Schema.Literals(["error", "warn", "info", "debug"]),
   message: Schema.String,
 });
-/** A stretch of one container's output the Log Store doesn't have; `timestamp` is where it starts. */
+/** A stretch of one container's output the Log Store doesn't have, or that couldn't be checked for Sealed values; `timestamp` is where it starts. */
 export const containerLogGapSchema = Schema.Struct({
   kind: Schema.Literal("gap"),
   ...source,
   until: timestamp,
-  reason: Schema.Literals(["not_captured", "corrupt"]),
+  reason: Schema.Literals(["not_captured", "corrupt", "hidden"]),
 });
 export const containerLogRowSchema = Schema.Union([containerLogLineSchema, containerLogGapSchema]);
 export type ContainerLogLine = typeof containerLogLineSchema.Type;
@@ -33,7 +33,7 @@ export const logSourceErrorSchema = Schema.Struct({
   type: Schema.Literal("source_error"), machineId: Schema.String, containerId: Schema.String, ...why,
 });
 export const containerLogEventSchema = Schema.Union([
-  Schema.Struct({ type: Schema.Literal("record"), record: containerLogLineSchema }),
+  Schema.Struct({ type: Schema.Literal("record"), record: containerLogRowSchema }),
   logSourceErrorSchema,
   Schema.Struct({ type: Schema.Literal("source_gone"), machineId: Schema.String, containerId: Schema.String }),
 ]);
@@ -44,14 +44,16 @@ export const containerLogPageSchema = Schema.Struct({
   rows: Schema.Array(containerLogRowSchema), failures: Schema.Array(missingServerSchema), cursor: Schema.NullOr(Schema.String),
 });
 
-export function projectContainerLog(record: LogRecord): ContainerLogLine {
+/** A line the reader couldn't check for Sealed values arrives as a gap of its own, without its text. */
+export function projectContainerLog(record: LogRecord): ContainerLogRow {
   if (record.source.origin.origin !== "service" || record.channel === "error") throw new Error("Expected container output");
-  return {
-    kind: "line", id: record.id, timestamp: record.timestamp_nanos,
+  const source = {
+    id: record.id, timestamp: record.timestamp_nanos,
     machineId: record.source.machine_id, machineName: record.source.machine_name,
     containerId: record.source.origin.container_id, serviceName: record.source.origin.service_name,
-    channel: record.channel, level: record.level, message: record.message,
   };
+  if (record.text === "hidden") return { kind: "gap", ...source, until: record.timestamp_nanos, reason: "hidden" };
+  return { kind: "line", ...source, channel: record.channel, level: record.level, message: record.message };
 }
 
 export function projectLogGap(gap: LogGap): ContainerLogRow {

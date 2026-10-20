@@ -1,4 +1,5 @@
 import { createCsrfMiddleware, createIsomorphicFn, createMiddleware, createStart } from "@tanstack/react-start";
+import { serverFnFetch } from "./lib/server-fn-fetch";
 import { negotiatePageResponse } from "./server/content-negotiation";
 import { installWebShutdown } from "./server/web-shutdown.server";
 
@@ -16,4 +17,5 @@ export const startInstance = createStart(() => ({
     createCsrfMiddleware({ filter: (ctx) => ctx.handlerType === "serverFn" }),
     negotiationMiddleware,
   ],
+  serverFns: { fetch: serverFnFetch },
 }));
