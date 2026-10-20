@@ -183,7 +183,7 @@ impl PolicySetting {
     }
 
     /// Write `value` into `policy`, or the default when none. Text is accepted, as
-    /// `set PATH=VALUE` sends it: `true`/`false`, or one watch path.
+    /// `set PATH=VALUE` sends it: `true`/`false`, a JSON list of watch paths, or one.
     fn write(self, policy: &mut Policy, value: Option<Value>) -> Result<(), RpcError> {
         let setting = ServiceSetting::Policy(self);
         if self == Self::PreferredBuilder {
@@ -215,7 +215,9 @@ impl PolicySetting {
             }
             Self::WatchPaths => {
                 let paths = match value {
-                    Value::String(text) => vec![text],
+                    Value::String(text) => {
+                        serde_json::from_str::<Vec<String>>(&text).unwrap_or_else(|_| vec![text])
+                    }
                     value @ (Value::Null
                     | Value::Bool(_)
                     | Value::Number(_)
@@ -469,6 +471,8 @@ fn glob_segment(glob: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    use serde_json::json;
+
     use super::Policy;
 
     fn watches(paths: &[&str], changed: &[&str]) -> bool {
@@ -513,6 +517,33 @@ mod tests {
         assert!(watches(&["*.{ts,tsx}"], &["app/page.tsx"]));
         assert!(watches(&["src/[ab]*.rs"], &["src/b1.rs"]));
         assert!(!watches(&["src/[!ab]*.rs"], &["src/b1.rs"]));
+    }
+
+    fn set_text(text: &str) -> Result<Vec<String>, ployz_core::RpcError> {
+        let mut policy = Policy {
+            watch_paths: vec!["old/**".to_owned()],
+            ..Policy::default()
+        };
+        super::PolicySetting::WatchPaths.write(&mut policy, Some(json!(text)))?;
+        Ok(policy.watch_paths)
+    }
+
+    #[test]
+    fn watch_paths_set_as_text_take_a_json_list_or_one_pattern() {
+        let example = super::PolicySetting::WatchPaths
+            .examples()
+            .get(0)
+            .cloned()
+            .unwrap();
+        assert_eq!(
+            set_text(&example.to_string()).unwrap(),
+            serde_json::from_value::<Vec<String>>(example).unwrap()
+        );
+        assert_eq!(set_text("[]").unwrap(), Vec::<String>::new());
+        assert_eq!(set_text(r#"[ "**" ]"#).unwrap(), ["**"]);
+        assert_eq!(set_text("apps/api/**").unwrap(), ["apps/api/**"]);
+        assert_eq!(set_text("[ab]*.rs").unwrap(), ["[ab]*.rs"]);
+        assert!(set_text(r#"["../secret"]"#).is_err());
     }
 
     #[test]

@@ -100,7 +100,9 @@ export function changeGroups(diff: DiffView, services: readonly ServiceListing[]
         : setting === "name" ? "Name" : setting === "source.branch" ? "Branch" : title ?? untitledLabel(node.type, setting);
       const variable = node.type === "service" && setting.startsWith("env.");
       const [before, after] = setting === "source" ? sourceChange(row.before, row.after)
-        : setting === "source.branch" ? [branchText(row.before), branchText(row.after)] : [shownValue(row.before), shownValue(row.after)];
+        : setting === "source.branch" ? [branchText(row.before), branchText(row.after)]
+        : setting === "memLimit" ? [memorySize(row.before), memorySize(row.after)]
+        : setting === "cpuLimit" ? [cpuCount(row.before), cpuCount(row.after)] : [shownValue(row.before), shownValue(row.after)];
       const file = (value: JsonValue) => value === null ? null : Option.getOrThrowWith(decodeFile(value),
         () => new Error(`Could not read Config file comparison for ${row.path}.`));
       const configFile = node.type === "config" && setting.startsWith("files.") ? { before: file(row.before), after: file(row.after) } : undefined;
@@ -165,6 +167,20 @@ const decodeShown = Schema.decodeUnknownOption(Schema.Union([
   // A Volume's storage.
   Schema.Struct({ kind: Schema.Literal("provisioned"), maximumBytes: Schema.Number }), Schema.Struct({ kind: Schema.Literal("docker") }),
 ]));
+
+/** A memory limit in GB as people read it, in the unit it was likely given: `192 MiB`, `1 GiB`, `0.5 GB`. */
+function memorySize(value: JsonValue): string {
+  if (!Schema.is(Schema.Number)(value)) return shownValue(value);
+  const bytes = Math.round(value * 1e9);
+  const [amount, unit] = bytes % 2 ** 30 === 0 ? [bytes / 2 ** 30, "GiB"] : bytes % 2 ** 20 === 0 ? [bytes / 2 ** 20, "MiB"] : [bytes / 1e9, "GB"];
+  return `${amount} ${unit}`;
+}
+
+/** A CPU limit in vCPUs, as the drawer's field takes it: `0.5 vCPUs`, `1 vCPU`. */
+function cpuCount(value: JsonValue): string {
+  if (!Schema.is(Schema.Number)(value)) return shownValue(value);
+  return `${value} ${value === 1 ? "vCPU" : "vCPUs"}`;
+}
 
 /**
  * A diff value as a cell shows it: text as is, a sealed one as Sealed or needing a value, a route by its hostname, a

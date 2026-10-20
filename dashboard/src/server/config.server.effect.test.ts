@@ -16,6 +16,7 @@ const requiredEnvironment = {
   GITHUB_APP_WEBHOOK_SECRET: "github-app-webhook-secret",
   INNGEST_EVENT_KEY: "inngest-event-key",
   INNGEST_SIGNING_KEY: "inngest-signing-key",
+  PLOYZ_HOSTED_DNS_URL: "http://127.0.0.1:9/",
   APP_ENCRYPTION_SECRET: "app-encryption-secret-at-least-32-characters",
 };
 
@@ -55,6 +56,7 @@ describe("AppConfig", () => {
       assert.deepStrictEqual(config.polar, { mode: "self_hosted" });
       assert.strictEqual(config.posthog, null);
       assert.strictEqual(config.mail, null);
+      assert.strictEqual(config.ployz.hostedDnsUrl.href, "http://127.0.0.1:9/");
     }),
   );
 

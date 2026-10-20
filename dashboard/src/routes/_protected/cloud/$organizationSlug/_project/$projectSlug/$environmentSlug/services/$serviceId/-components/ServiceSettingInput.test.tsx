@@ -157,6 +157,16 @@ describe("ServiceSettingInput commit", () => {
     expect(screen.queryByRole("alert")).toBeNull();
   });
 
+  it("says Cloud had a problem, not that it couldn't be reached, when Cloud fails the save", async () => {
+    const failed = { _tag: "PublicError", code: "UNAVAILABLE", message: "Ployz Cloud had a problem. Try again." };
+    render(<ServiceSettingInput ariaLabel="Replicas" value="1" isChanged={false} onCommit={() => ({ isPersisted: { promise: Promise.reject(failed) } })} />);
+    const input = screen.getByLabelText("Replicas");
+    fireEvent.change(input, { target: { value: "2" } });
+    await act(async () => { fireEvent.keyDown(input, { key: "Enter" }); });
+
+    expect(screen.getByRole("alert").textContent).toBe("Ployz Cloud had a problem. Try again.Retry");
+  });
+
   it("holds the typed value over a reread, then follows the Store once the write lands", async () => {
     let land!: () => void;
     const write = { promise: new Promise<void>((resolve) => { land = resolve; }) };
