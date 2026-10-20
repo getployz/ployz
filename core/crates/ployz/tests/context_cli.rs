@@ -647,6 +647,59 @@ fn with_no_contexts_ls_and_use_point_signed_in_users_at_their_cloud_servers() {
 }
 
 #[test]
+fn every_command_that_finds_no_contexts_prints_the_line_ctx_ls_prints() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("config.yaml");
+    Config::new(&path, None, BTreeMap::new()).save().unwrap();
+    let ployz = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_ployz"))
+            .args(["--ployz-config", path.to_str().unwrap()])
+            .args(args)
+            .env("HOME", root.path())
+            .env("XDG_CONFIG_HOME", root.path())
+            .env_remove("PLOYZ_TOKEN")
+            .env_remove("PLOYZ_CLOUD_URL")
+            .env_remove("PLOYZ_CONTEXT")
+            .env_remove("PLOYZ_CONNECT")
+            .output()
+            .unwrap()
+    };
+    let listed = ployz(&["ctx", "ls"]);
+    let listed = String::from_utf8_lossy(&listed.stderr);
+    let next = listed
+        .lines()
+        .find(|line| line.starts_with("next: "))
+        .unwrap_or_else(|| panic!("ctx ls prints a next line: {listed}"));
+
+    for args in [
+        &["ps"][..],
+        &["logs", "web"],
+        &["service", "restart", "web"],
+        &["exec", "web", "--", "true"],
+        &["ctx", "use", "dev"],
+    ] {
+        let failed = ployz(args);
+        assert_eq!(failed.status.code(), Some(1), "{args:?}: {failed:?}");
+        let stderr = String::from_utf8_lossy(&failed.stderr);
+        assert!(stderr.contains("no contexts found"), "{args:?}: {stderr}");
+        assert!(
+            stderr.lines().any(|line| line == next),
+            "{args:?}: {stderr}"
+        );
+    }
+
+    let failed = ployz(&["ps", "--json"]);
+    let error: serde_json::Value = serde_json::from_slice(&failed.stdout).unwrap();
+    assert_eq!(
+        error
+            .pointer("/error/details/next")
+            .and_then(serde_json::Value::as_str),
+        next.strip_prefix("next: "),
+        "{error}"
+    );
+}
+
+#[test]
 fn ctx_rm_rejects_a_direct_connection() {
     let root = std::env::temp_dir().join(format!("ployz-ctx-rm-connect-{}", std::process::id()));
     let path = root.join("config.yaml");

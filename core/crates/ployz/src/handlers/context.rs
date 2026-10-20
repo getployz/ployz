@@ -8,7 +8,7 @@ use serde::Serialize;
 use serde_json::json;
 
 use crate::context::{
-    Config, ConnectionError, RemovedContext, expand_home, is_management_capability,
+    Config, ConnectionError, ContextError, RemovedContext, expand_home, is_management_capability,
 };
 
 use super::{Error, leaf_matches, required};
@@ -24,6 +24,14 @@ fn no_contexts_next(leaf: &ArgMatches) -> String {
     }
     args.extend(["server", "ls"]);
     shell_words::join(args)
+}
+
+/// Whatever command failed for want of a context gets the line `ctx ls` prints.
+pub(super) fn with_no_contexts_next(failure: Error, leaf: &ArgMatches) -> Error {
+    if !failure.has_no_contexts() {
+        return failure;
+    }
+    failure.hint(Hint::Next(no_contexts_next(leaf)))
 }
 
 fn config(matches: &ArgMatches) -> Result<Config, Error> {
@@ -108,11 +116,7 @@ pub(super) fn select(matches: &ArgMatches) -> Result<(), Error> {
     let leaf = leaf_matches(matches);
     let mut config = config(matches)?;
     if config.contexts.is_empty() {
-        return Err(Error::not_found(format!(
-            "no contexts found in Ployz config {}",
-            config.path().display()
-        ))
-        .hint(Hint::Next(no_contexts_next(leaf))));
+        return Err(ContextError::NoContexts(config.path().to_owned()).into());
     }
     let requested_connection = leaf.get_one::<String>("connection");
     let selected = match leaf.get_one::<String>("context-name") {
