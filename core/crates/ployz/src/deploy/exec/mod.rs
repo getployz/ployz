@@ -1249,7 +1249,7 @@ async fn publish_group<C: MachineOperations>(
             }
             Ok(cleanup::Wait::Cancelled) => (Some(Left::Interrupted), None),
             Err(error) => (
-                Some(Left::Failed(error.clone())),
+                Some(Left::FailedOn(first.machine_id, error.clone())),
                 Some(machine_error(MachineAction::ReadRoutes, error)),
             ),
         };
@@ -1912,11 +1912,8 @@ impl<'a> Rows<'a> {
                 Vec::new(),
             ),
             Left::Refused(refusal) => (refusal.message, Vec::new()),
-            Left::Failed(error) if unanswered(&error) => (
-                format!("{} did not answer", self.machine_name(&copy.machine_id)),
-                vec![copy.machine_id],
-            ),
-            Left::Failed(error) => (error.message, Vec::new()),
+            Left::Failed(error) => self.failed_on(copy.machine_id, error),
+            Left::FailedOn(machine_id, error) => self.failed_on(machine_id, error),
             Left::NotRestored(left, why) => {
                 let (reason, away) = self.explain(copy, *left);
                 (
@@ -1926,10 +1923,19 @@ impl<'a> Rows<'a> {
             }
         }
     }
-}
 
-fn unanswered(error: &RpcError) -> bool {
-    error.code == RpcErrorCode::Unavailable || error.target_unanswered()
+    /// Only a call the client saw go unanswered names its target as away; an
+    /// error a Machine answered with says nothing about which one is cut off.
+    fn failed_on(&self, machine_id: MachineId, error: RpcError) -> (String, Vec<MachineId>) {
+        if error.target_unanswered() {
+            (
+                format!("{} did not answer", self.machine_name(&machine_id)),
+                vec![machine_id],
+            )
+        } else {
+            (error.message, Vec::new())
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -1939,7 +1945,10 @@ enum Left {
     /// The owner's view never listed a new copy, so it would refuse the Out.
     NotListed,
     Refused(ContainerRefusal),
+    /// A call to the copy's owner failed.
     Failed(RpcError),
+    /// A call to this Machine, not the copy's owner, failed.
+    FailedOn(MachineId, RpcError),
     /// This run Held the copy and could not bring it back In, for this reason.
     NotRestored(Box<Left>, String),
     DeployFailed,

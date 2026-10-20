@@ -1419,7 +1419,7 @@ async fn an_owner_powered_off_during_cleanup_is_named_with_the_copy_left_on_it()
     )];
     steps.extend(
         std::iter::repeat_with(|| {
-            failed_unavailable(Call::Inspect(machine, old), "no route to the machine")
+            failed_unanswered(Call::Inspect(machine, old), "no route to the machine")
         })
         .take(1000),
     );
@@ -2175,15 +2175,69 @@ async fn a_failed_route_read_after_the_outs_leaves_every_old_copy_of_the_group_r
         Some(CopyRotation::Out),
         "no copy is removed while its unlisting could not be read"
     );
-    for machine in ["machine-1", "machine-2"] {
-        assert!(
-            warnings
-                .iter()
-                .any(|warning| warning.starts_with(&format!("app/api left running on {machine} "))),
-            "{warnings:?}"
-        );
-    }
+    assert_eq!(
+        warnings,
+        [
+            left_running("machine-1", "the route read failed"),
+            left_running("machine-2", "the route read failed"),
+        ]
+    );
     client.assert_done();
+}
+
+#[tokio::test(start_paused = true)]
+async fn only_the_machine_that_did_not_answer_is_named_away() {
+    let [first, second, third] = [machine('1'), machine('2'), machine('3')];
+    let olds = [container('a'), container('b'), container('e')];
+    let news = [container('c'), container('d'), container('f')];
+    let [one, two, three] = olds;
+    let plan = [first, second, third]
+        .iter()
+        .zip(&olds)
+        .map(|(owner, old)| global_replacement(owner, old, UpdateOrder::StartFirst))
+        .collect::<Vec<_>>();
+    let mut steps = [first, second, third]
+        .iter()
+        .zip(&news)
+        .map(|(owner, new)| created(Call::Run(*owner, ContainerKind::ServiceContainer), new))
+        .collect::<Vec<_>>();
+    steps.extend([
+        observed(Call::Inspect(first, one), running()),
+        observed(Call::Inspect(second, two), running()),
+    ]);
+    // Machine-3 is cut off, so every inspect of its copy goes unanswered.
+    steps.extend(
+        std::iter::repeat_with(|| {
+            failed_unanswered(Call::Inspect(third, three), "no route to machine-3")
+        })
+        .take(1000),
+    );
+    let client = Scripted {
+        reads_fail_after: Some(Move::To(one, CopyRotation::Out)),
+        ..Scripted::new(steps)
+    }
+    .with_copy(&first, &one, CopyRotation::In)
+    .with_copy(&second, &two, CopyRotation::In)
+    .with_copy(&third, &three, CopyRotation::In);
+
+    let (_, warnings) = execute_reported(
+        &plan,
+        &[first, second, third],
+        &client,
+        &CancellationToken::new(),
+    )
+    .await;
+
+    assert_eq!(
+        warnings,
+        [
+            left_running("machine-3", "machine-3 did not answer"),
+            mixed_after_return("machine-3"),
+            left_running("machine-1", "the route read failed"),
+            left_running("machine-2", "the route read failed"),
+        ],
+        "the route read failed on no Machine the run can name"
+    );
 }
 
 #[tokio::test(start_paused = true)]

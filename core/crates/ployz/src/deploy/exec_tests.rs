@@ -1479,6 +1479,17 @@ fn failed_unavailable(call: Call, message: &str) -> Step {
     Step(call, Reply::Error(unavailable(message)))
 }
 
+/// The client heard nothing back from the call's target Machine.
+fn failed_unanswered(call: Call, message: &str) -> Step {
+    Step(
+        call,
+        Reply::Error(RpcError::unanswered_target(
+            RpcErrorCode::Unavailable,
+            message.into(),
+        )),
+    )
+}
+
 #[tokio::test]
 async fn storage_preparation_failure_leaves_all_application_operations_unexecuted() {
     let first = machine('1');
