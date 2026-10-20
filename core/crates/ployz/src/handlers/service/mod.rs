@@ -440,14 +440,10 @@ fn lifecycle(root: &ArgMatches, actions: &'static [ContainerAction]) -> Result<(
             })
             .await?;
             crate::ui::emit(&ServiceActionResult {
-                next: outcome.partial.then_some(hint.as_str()),
+                next: outcome.finish().is_err().then_some(hint.as_str()),
                 ..outcome.result(&live)
             })?;
-            if outcome.partial {
-                Err(Error::partial())
-            } else {
-                Ok(())
-            }
+            outcome.finish()
         })
     })
 }
@@ -524,6 +520,14 @@ impl ServiceActionOutcome {
             failures: &live.containers.failures,
             omitted: &live.containers.omissions,
             next: None,
+        }
+    }
+
+    fn finish(&self) -> Result<(), Error> {
+        if self.partial {
+            Err(Error::partial())
+        } else {
+            Ok(())
         }
     }
 

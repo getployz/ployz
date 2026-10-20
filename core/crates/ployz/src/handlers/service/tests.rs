@@ -515,3 +515,36 @@ async fn a_lifecycle_cancelled_between_batches_is_partial() {
     assert_eq!(steps, 1);
     assert!(outcome.partial);
 }
+
+/// `apply_service_action` marks a step partial for each copy it could not restart,
+/// or left Held or unrouted. One such step among later successes still exits partial.
+#[tokio::test]
+async fn a_restart_that_fails_a_copy_exits_partial() {
+    let failed = || ServiceActionOutcome {
+        container_failures: vec![ContainerFailure {
+            machine_id: MachineId::parse("a".repeat(32)).unwrap(),
+            container_id: ContainerId::parse("c".repeat(64)).unwrap(),
+            error: RpcError {
+                code: RpcErrorCode::Conflict,
+                message: "Container c is left Held and not routed".into(),
+                details: serde_json::Value::Null,
+                cause: Vec::new(),
+            },
+        }],
+        ..changed(true)
+    };
+    let mut steps = vec![failed(), changed(false), changed(false)].into_iter();
+    let outcome = run_batches(
+        &[(), (), ()],
+        &[ContainerAction::Restart],
+        &CancellationToken::new(),
+        |(), _| {
+            let step = steps.next().unwrap();
+            async { Ok(step) }
+        },
+    )
+    .await
+    .unwrap();
+    let error = outcome.finish().unwrap_err();
+    assert_eq!(error.printed_exit(), Some(crate::ui::PARTIAL_EXIT));
+}
