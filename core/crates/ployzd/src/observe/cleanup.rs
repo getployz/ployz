@@ -541,7 +541,10 @@ mod tests {
     use ployz_core::ContainerId;
 
     use super::{Disk, Limits, Report, discard, run};
-    use crate::{observe::layout::StoreRoot, test_dir::TestDir};
+    use crate::{
+        observe::layout::{RunExit, StoreRoot, run_exits},
+        test_dir::TestDir,
+    };
 
     const T0: u64 = 1_760_000_000;
 
@@ -679,6 +682,30 @@ mod tests {
         let report = run(&store.root, &limits, disk, now, |_| true).unwrap();
         assert_eq!(report.files_deleted, 2);
         assert_eq!(store.names(&cid(1)), ["3-12.log"]);
+    }
+
+    #[test]
+    fn exits_go_with_the_age_limit_and_the_logs_the_cap_deletes() {
+        let store = store();
+        let id = cid(1);
+        store.file(&id, "1-10.log", 100, 31 * 86_400);
+        store.file(&id, "2-11.log", 100, 100);
+        store.file(&id, "3-12.log", 100, 30);
+        let exit = |age_secs: u64| RunExit {
+            ts: i64::try_from((T0 - age_secs) * 1_000_000_000).unwrap(),
+            exit_code: Some(137),
+            oom_killed: true,
+        };
+        let jsonl: Vec<u8> = [31 * 86_400 + 5, 200, 50]
+            .map(|age| [serde_json::to_vec(&exit(age)).unwrap(), b"\n".to_vec()].concat())
+            .concat();
+        let path = store.root.container(&id).join("exits.jsonl");
+        fs::write(&path, jsonl).unwrap();
+
+        store.clean(150, u64::MAX, &[]);
+        assert_eq!(store.names(&id), ["3-12.log", "exits.jsonl"]);
+        let kept: Vec<RunExit> = run_exits(&fs::read(&path).unwrap()).collect();
+        assert_eq!(kept, [exit(50)]);
     }
 
     #[test]
