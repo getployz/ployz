@@ -151,7 +151,7 @@ async fn each_ready_start_waits_for_the_switch_before_it_completes() {
 }
 
 #[tokio::test]
-async fn a_newer_in_copy_fails_the_deploy_naming_the_newer_deploy_and_removes_the_new_copies() {
+async fn a_newer_in_copy_fails_the_deploy_naming_its_service_and_removes_the_new_copies() {
     let machine = machine('1');
     let plan = vec![run(&machine, spec(None, None, None), true)];
     let (newer, new) = (container('a'), container('b'));
