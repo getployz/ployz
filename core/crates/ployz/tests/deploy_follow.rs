@@ -13,6 +13,16 @@ use std::{
 use ployz_store::{DeploymentStatus, DeploymentView, DeploymentsView, View, Written};
 use serde_json::{Value, json};
 
+/// One `--events` line: each names its Deployment, so a replacement's lines say which.
+fn event(number: u32, status: &str) -> Value {
+    let id = if number == 7 {
+        "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+    } else {
+        "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+    };
+    json!({"type": "deployment", "id": id, "number": number, "status": status, "nodes": []})
+}
+
 fn view(number: u32, status: DeploymentStatus) -> DeploymentView {
     serde_json::from_value(json!({
         "id": if number == 7 { "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" } else { "cccccccc-cccc-4ccc-8ccc-cccccccccccc" },
@@ -353,9 +363,9 @@ fn cloud_replacement_resets_event_dedup_without_changing_the_ndjson_shape() {
     assert_eq!(
         events,
         vec![
-            json!({"type":"deployment", "status":"running", "nodes":[]}),
-            json!({"type":"deployment", "status":"running", "nodes":[]}),
-            json!({"type":"deployment", "status":"applied", "nodes":[]}),
+            event(7, "running"),
+            event(8, "running"),
+            event(8, "applied"),
         ]
     );
 }
@@ -385,10 +395,7 @@ fn cloud_interrupt_during_follow_wait_exits_without_another_read_or_remote_cance
         let result: Value = serde_json::from_slice(&output.stdout).unwrap();
         assert_eq!(result.get("number"), Some(&json!(7)));
         assert_eq!(result.get("status"), Some(&json!("running")));
-        assert_eq!(
-            events,
-            vec![json!({"type":"deployment", "status":"running", "nodes":[]})]
-        );
+        assert_eq!(events, vec![event(7, "running")]);
         assert!(
             String::from_utf8_lossy(&output.stderr).contains("The Cloud Deployment continues.")
         );
@@ -448,9 +455,9 @@ fn cloud_interrupt_before_wait_keeps_successful_read_evidence() {
         assert_eq!(result.get("status"), Some(&json!("running")));
         let mut expected = Vec::new();
         if !first_read {
-            expected.push(json!({"type":"deployment", "status":"queued", "nodes":[]}));
+            expected.push(event(7, "queued"));
         }
-        expected.push(json!({"type":"deployment", "status":"running", "nodes":[]}));
+        expected.push(event(7, "running"));
         assert_eq!(events, expected);
     }
     let mut late = replacement();
