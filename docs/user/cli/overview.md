@@ -35,9 +35,10 @@ curl -fsSL https://ployz.sh | INSTALL_BIN_DIR="$HOME/.local/bin" sh
 
 This computer starts in the organization the page names. Switching organization in the dashboard
 later doesn't move it, and `ployz org use ORG` does. `ployz logout` signs this computer out.
-If Cloud can't be reached, `ployz logout` still forgets the sign-in here and warns that Cloud may
-still honour it until you remove it with `ployz token rm`. An unreadable sign-in is forgotten too,
-and `ployz login` replaces it. While it is unreadable, `PLOYZ_TOKEN` also needs `PLOYZ_CLOUD_URL`.
+If Cloud can't be reached, or refuses because you've left the sign-in's organization, `ployz logout`
+still forgets the sign-in here and warns that Cloud may still honour it until you remove it with
+`ployz token rm`. An unreadable sign-in is forgotten too, and `ployz login` replaces it. While it
+is unreadable, `PLOYZ_TOKEN` also needs `PLOYZ_CLOUD_URL`.
 
 Commands act on your only project and its default environment. With more than one, add
 `--project my-app --env production`, or run `ployz link --project my-app --env production` once in

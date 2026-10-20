@@ -94,7 +94,9 @@ fn fake_cloud_answering(seen: Seen, confirms: bool, answer: Answer) -> String {
                 "GET /api/cli/approvals/apr_9" if matches!(answer, Answer::Unauthorized) => {
                     ("401 Unauthorized", "{}".to_owned())
                 }
-                "GET /api/cli/approvals/apr_9" if matches!(answer, Answer::Forbidden) => {
+                "GET /api/cli/approvals/apr_9" | "POST /api/cli/logout"
+                    if matches!(answer, Answer::Forbidden) =>
+                {
                     ("403 Forbidden", "{}".to_owned())
                 }
                 "GET /api/cli/approvals/apr_9" => (
@@ -424,5 +426,26 @@ fn leaving_the_organization_while_waiting_leaves_the_approval_unchecked_without_
         &signed_in(&cloud, dir.path(), &ORG_RM),
         "Organization acme is no longer one of yours",
         "next: ployz logout",
+    );
+
+    // The `next:` step works though Cloud refuses this sign-in's logout too.
+    let config = dir.path().join("config.yaml");
+    let logout = run(&config, &["logout"]).output().unwrap();
+    assert!(logout.status.success(), "{logout:?}");
+    let stderr = String::from_utf8_lossy(&logout.stderr);
+    assert!(
+        stderr.contains("Cloud refused to sign this device out: this sign-in's Organization acme is no longer one of yours. Signed out here only:"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("Could not reach"), "{stderr}");
+    assert!(!dir.path().join("cloud.json").exists());
+
+    let again = run(&config, &ORG_RM).output().unwrap();
+    assert_eq!(again.status.code(), Some(1), "{again:?}");
+    let stderr = String::from_utf8_lossy(&again.stderr);
+    assert!(!stderr.contains("no longer one of yours"), "{stderr}");
+    assert!(
+        stderr.lines().any(|line| line == "next: ployz login"),
+        "{stderr}"
     );
 }
