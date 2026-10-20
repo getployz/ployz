@@ -29,6 +29,7 @@ function youMay(members: UseQueryResult<Members>, permission: Permission) {
 
 export const ROLE_CHECKING = "Checking your role…";
 export const ROLE_UNCHECKED = "Couldn't check your role. Reload to try again.";
+export const NO_LONGER_MEMBER = "You're no longer a member of this organization.";
 
 /** A control gated on `useYouMay`, and why it is closed: `refusal` once your role says no, or that your role is still unknown. */
 export interface RoleGate {
@@ -40,7 +41,9 @@ export function useRoleGate(organizationSlug: string, permission: Permission, re
   const members = useQuery(organizationMembersQueryOptions(organizationSlug));
   const may = youMay(members, permission);
   if (may === true) return { allowed: true, reason: undefined };
-  return { allowed: false, reason: members.status === "pending" ? ROLE_CHECKING : members.status === "error" ? ROLE_UNCHECKED : refusal };
+  if (members.status === "pending") return { allowed: false, reason: ROLE_CHECKING };
+  if (members.status === "error") return { allowed: false, reason: ROLE_UNCHECKED };
+  return { allowed: false, reason: may === undefined ? NO_LONGER_MEMBER : refusal };
 }
 
 type Members = Awaited<ReturnType<typeof listMembersServerFn>>;
