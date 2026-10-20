@@ -406,7 +406,7 @@ pub(super) fn failure(outcome: &DeployOutcome<ExecutionError>, tails: Vec<LogTai
     let lost_to_newer = matches!(error, ExecutionError::NewerServing { .. });
     let mut diagnostic = Diagnostic {
         failed_machine: (!lost_to_newer).then_some(machine),
-        logs: tails,
+        logs: if lost_to_newer { Vec::new() } else { tails },
         ..Diagnostic::default()
     };
     if let FailedOperation::Replacement { compensation, .. } = failed {
