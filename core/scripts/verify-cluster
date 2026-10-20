@@ -100,8 +100,9 @@ def build(run, commands, *, daemon):
     names = [*([] if run.get("cli") else ["ployz"]), *(["ployzd"] if daemon == "checkout" else [])]
     artifacts.binaries(destination, names, cargo_args, commands)
     if daemon == "main":
-        if not artifacts.fetch_main(artifacts.key("ployzd", shlex.join(cargo_args)), destination, "--daemon checkout to build"):
-            raise RuntimeError("--daemon main: no CI build of ployzd on main near this checkout's fork point")
+        if not artifacts.fetch_main(artifacts.key("ployzd", shlex.join(cargo_args)), destination, "--daemon checkout to build",
+                                    deep=True):
+            raise RuntimeError("--daemon main: no live CI build of ployzd on main at or before this checkout's fork point")
         names.append("ployzd")
     if daemon:
         shutil.copy2(CORE / "scripts" / "uninstall.sh", destination / "ployz-uninstall")

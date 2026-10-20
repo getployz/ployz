@@ -9,9 +9,10 @@ on:
   workflow_dispatch:
 
 concurrency:
-  # Main pushes share one group, so a newer one cancels older ones. Only the latest main run writes builds
-  # to kache, and an older main commit may have no finished run. A manual run of main groups by commit and
-  # runs to the end; it neither cancels nor is cancelled by a push.
+  # Main pushes share one group, so a newer one cancels older ones. Kache's main builds come mostly from the
+  # latest main run, though a cancelled run keeps what it wrote first, and an older main commit may have no
+  # finished run. A manual run of main groups by commit and runs to the end; it neither cancels nor is
+  # cancelled by a push.
   group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.event_name }}-${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.sha || github.ref }}
   cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' || github.ref != 'refs/heads/main' }}
 
@@ -324,7 +325,8 @@ jobs:
       actions: write
     secrets: inherit
 
-  # The binaries the verify harness runs, built once per change on main so local runs download them.
+  # The binaries the verify harness runs, built on main so local runs download them. A cancelled main run may
+  # upload none, so a commit's nearest build can be several commits back.
   # Not a check: no PR waits on it, so it stays out of ready.
   verify-binaries:
     needs: [changes, runner]
