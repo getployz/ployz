@@ -485,8 +485,8 @@ async fn stop_first_publishes_the_new_copies_and_retires_the_stopped_ones() {
             &new_second,
         ),
         observed(Call::Inspect(first, old_first), running()),
-        ok(Call::Remove(first, old_first)),
         observed(Call::Inspect(second, old_second), running()),
+        ok(Call::Remove(first, old_first)),
         ok(Call::Remove(second, old_second)),
     ])
     .with_copy(&first, &old_first, CopyRotation::In)
@@ -986,8 +986,8 @@ async fn a_rolling_step_brings_its_new_copy_in_before_the_next_machine_withdraws
             &new_second,
         ),
         observed(Call::Inspect(first, old_first), running()),
-        ok(Call::Remove(first, old_first)),
         observed(Call::Inspect(second, old_second), running()),
+        ok(Call::Remove(first, old_first)),
         ok(Call::Remove(second, old_second)),
     ])
     .with_copy(&first, &old_first, CopyRotation::In)
@@ -1121,6 +1121,8 @@ async fn a_stop_first_task_the_machine_window_delays_is_withdrawn_with_its_step(
     }
     for (owner, old) in owners.iter().zip(&olds) {
         steps.push(observed(Call::Inspect(*owner, *old), running()));
+    }
+    for (owner, old) in owners.iter().zip(&olds) {
         steps.push(ok(Call::Remove(*owner, *old)));
     }
     let client = owners

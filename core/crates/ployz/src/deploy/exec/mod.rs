@@ -1127,9 +1127,7 @@ async fn publish_group<C: MachineOperations>(
         .map(|(_, machine, _)| *machine)
         .into_iter()
         .collect();
-    // After an Out that is not confirmed unlisted, a proxy may still list that
-    // copy, and the next Out could leave the Service with nothing routed.
-    let mut halted: Option<Left> = None;
+    let (mut outs, mut gone) = (Vec::new(), Vec::new());
     for (machine_id, container_id) in &old {
         let copy = match inspect(client, machine_id, container_id).await {
             Ok(details) => cleanup::Copy::observed(&details.container),
@@ -1157,20 +1155,12 @@ async fn publish_group<C: MachineOperations>(
             }
         };
         if copy.rotation == CopyRotation::Pending {
-            if let Some(left) =
-                retired(cleanup::remove(client, &copy, AnonymousVolumes::Remove).await)
-            {
-                rows.leave_running(progress, &copy, left);
-            }
-            continue;
-        }
-        if let Some(left) = &halted {
-            rows.leave_running(progress, &copy, left.clone());
+            gone.push(copy);
             continue;
         }
         // The owner refuses this Out (LastIn) until its own view lists a new copy.
         if routed && copy.rotation == CopyRotation::In && !listed_on.contains(&copy.machine_id) {
-            match cleanup::wait_listed(
+            let left = match cleanup::wait_listed(
                 client,
                 &copy.machine_id,
                 service,
@@ -1180,44 +1170,73 @@ async fn publish_group<C: MachineOperations>(
             )
             .await
             {
-                Ok(cleanup::Wait::Done) => {
-                    listed_on.insert(copy.machine_id);
-                }
-                Ok(cleanup::Wait::TimedOut(_)) => {
-                    rows.leave_running(progress, &copy, Left::NotListed);
-                    continue;
-                }
-                Ok(cleanup::Wait::Cancelled) => {
-                    rows.leave_running(progress, &copy, Left::Interrupted);
-                    halted = Some(Left::Interrupted);
-                    continue;
-                }
-                Err(error) => {
-                    rows.leave_running(progress, &copy, Left::Failed(error));
-                    continue;
-                }
+                Ok(cleanup::Wait::Done) => None,
+                Ok(cleanup::Wait::TimedOut(_)) => Some(Left::NotListed),
+                Ok(cleanup::Wait::Cancelled) => Some(Left::Interrupted),
+                Err(error) => Some(Left::Failed(error)),
+            };
+            if let Some(left) = left {
+                rows.leave_running(progress, &copy, left);
+                continue;
             }
+            listed_on.insert(copy.machine_id);
         }
-        let left = match cleanup::take_out(client, &copy, false, cancellation).await {
+        outs.push(copy);
+    }
+    // Every Out goes together and one wait covers the set, so a group's
+    // retirement costs one unlisting, not one per copy.
+    let sent = join_all(
+        outs.iter()
+            .map(|copy| cleanup::send_out(client, copy, false)),
+    )
+    .await;
+    let mut unlisting = Vec::new();
+    for (copy, sent) in outs.into_iter().zip(sent) {
+        let left = match sent {
             Ok(cleanup::Step::Done) => {
-                retired(cleanup::remove(client, &copy, AnonymousVolumes::Remove).await)
+                unlisting.push(copy);
+                continue;
             }
-            Ok(step @ cleanup::Step::Refused(_)) => step.into(),
-            Ok(step @ cleanup::Step::Cancelled) => {
-                halted = Some(Left::Interrupted);
-                step.into()
-            }
-            Ok(step @ cleanup::Step::NotConfirmed(_)) => {
-                halted = Some(Left::AfterUnconfirmedOut);
-                step.into()
-            }
-            Err(error) => {
-                halted = Some(Left::AfterUnconfirmedOut);
-                Some(Left::Failed(error))
-            }
+            Ok(
+                step @ (cleanup::Step::Refused(_)
+                | cleanup::Step::NotConfirmed(_)
+                | cleanup::Step::Cancelled),
+            ) => Option::<Left>::from(step),
+            Err(error) => Some(Left::Failed(error)),
         };
         if let Some(left) = left {
             rows.leave_running(progress, &copy, left);
+        }
+    }
+    if let Some(first) = unlisting.first() {
+        let ids: BTreeSet<ContainerId> = unlisting.iter().map(|copy| copy.container_id).collect();
+        let left =
+            match cleanup::wait_none_listed(client, &first.machine_id, service, &ids, cancellation)
+                .await
+            {
+                Ok(cleanup::Wait::Done) => None,
+                Ok(cleanup::Wait::TimedOut(machines)) => Some(Left::NotConfirmed(machines)),
+                Ok(cleanup::Wait::Cancelled) => Some(Left::Interrupted),
+                Err(error) => Some(Left::Failed(error)),
+            };
+        match left {
+            None => gone.append(&mut unlisting),
+            Some(left) => {
+                for copy in &unlisting {
+                    rows.leave_running(progress, copy, left.clone());
+                }
+            }
+        }
+    }
+    // Each Gone drains on its own Machine; they overlap and are all reported.
+    let removed = join_all(
+        gone.iter()
+            .map(|copy| cleanup::remove(client, copy, AnonymousVolumes::Remove)),
+    )
+    .await;
+    for (copy, removed) in gone.iter().zip(removed) {
+        if let Some(left) = retired(removed) {
+            rows.leave_running(progress, copy, left);
         }
     }
     Published::Listed
@@ -1791,9 +1810,6 @@ impl<'a> Rows<'a> {
             Left::NotConfirmed(machines) => (self.not_confirmed(&machines), machines),
             Left::Interrupted => ("interrupted".into(), Vec::new()),
             Left::DeployFailed => ("the Deploy failed".into(), Vec::new()),
-            Left::AfterUnconfirmedOut => {
-                ("an earlier copy's Out was not confirmed".into(), Vec::new())
-            }
             Left::NotListed => (
                 format!(
                     "{} did not see the new copies listed",
@@ -1826,8 +1842,6 @@ fn unanswered(error: &RpcError) -> bool {
 enum Left {
     NotConfirmed(Vec<MachineId>),
     Interrupted,
-    /// An earlier Out on this Service was not confirmed unlisted.
-    AfterUnconfirmedOut,
     /// The owner's view never listed a new copy, so it would refuse the Out.
     NotListed,
     Refused(ContainerRefusal),
