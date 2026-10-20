@@ -3,7 +3,7 @@ import type { MachineId, Operation, RunState, Subject } from "@ployz/sdk";
 import { and, desc, eq } from "drizzle-orm";
 import { Effect, Schema } from "effect";
 import { Uuid } from "#/lib/schema";
-import { machineRemoveAttempt, namespaceCleanup, serverDrainAttempt } from "#/modules/machines/tables";
+import { machineRemoveAttempt, namespaceCleanup, organizationMachine, serverDrainAttempt } from "#/modules/machines/tables";
 import { firstRuntimeFrame } from "#/modules/runtime/organization-runtime.server";
 import { serviceOperations } from "#/modules/service-act/service-act.server";
 import { outlivedObservation } from "#/modules/server-upgrade/server-upgrade";
@@ -47,11 +47,17 @@ export const dashedAttempt = (hex: string) =>
 
 const isUuid = Schema.is(Uuid);
 
-export const serverNames = (organizationId: string) =>
-  firstRuntimeFrame(organizationId).pipe(
-    Effect.map((frame) => new Map((frame?.machines ?? []).map(({ machine }) => [machine.id, machine.name]))),
-    Effect.orElseSucceed(() => new Map()),
+/** Each Server's name as the Cluster reports it now, else as Cloud last kept it, so a missed frame still names it. */
+export const serverNames = Effect.fn("OperationHistory.serverNames")(function* (organizationId: string) {
+  const { drizzle } = yield* Database;
+  const kept = yield* drizzle.select({ machine: organizationMachine.machineId, name: organizationMachine.machineName })
+    .from(organizationMachine).where(eq(organizationMachine.organizationId, organizationId));
+  const reported = yield* firstRuntimeFrame(organizationId).pipe(
+    Effect.map((frame) => (frame?.machines ?? []).map(({ machine }) => [machine.id, machine.name] as const)),
+    Effect.orElseSucceed(() => []),
   );
+  return new Map<MachineId, string>([...kept.flatMap(({ machine, name }) => name === null ? [] : [[machine, name] as const]), ...reported]);
+});
 
 const serverOperations = Effect.fn("OperationHistory.server")(function* (
   organizationId: string, machine: MachineId, attempt: string | null, limit: number, known: string | null,

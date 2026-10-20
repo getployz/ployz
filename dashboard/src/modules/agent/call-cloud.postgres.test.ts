@@ -1,5 +1,5 @@
 import { it } from "@effect/vitest";
-import type { Act, CloudQuery, LogsAnswer, MachineId, RuntimeWatchView, ServerRef, ServiceVerb, VolumeId, VolumeRun } from "@ployz/sdk";
+import type { Act, CloudQuery, LogsAnswer, MachineId, MachineName, RuntimeWatchView, ServerRef, ServiceVerb, VolumeId, VolumeRun } from "@ployz/sdk";
 import { sql } from "drizzle-orm";
 import { Effect, Layer, Schema } from "effect";
 import { Inngest } from "inngest";
@@ -10,7 +10,7 @@ import { decideApproval, operationDigest } from "#/modules/approvals/approvals.s
 import type { Caller } from "#/modules/identity/actor";
 import { presetGrant } from "#/modules/identity/token-grant";
 import { freshApproval, freshOperationDigest, UNREACHABLE_MESSAGE } from "#/modules/machines/server-operations.server";
-import { serverDrainAttempt } from "#/modules/machines/tables";
+import { machineRemoveAttempt, organizationMachine, serverDrainAttempt } from "#/modules/machines/tables";
 import { attemptIdOf } from "#/modules/operations/keyed.server";
 import { operationsOn } from "#/modules/operations/operation-history.server";
 import { serviceAct } from "#/modules/service-act/tables";
@@ -84,6 +84,30 @@ describe("callCloud", () => {
       return opened;
     }),
   });
+
+  // Catches a polled Server run named by its raw id whenever the runtime has no frame to name it.
+  it.live("names a polled Server run by the name Cloud keeps when the runtime has no frame", () =>
+    Effect.gen(function* () {
+      const services = yield* Layer.build(yield* storeTestCloud());
+      const userId = yield* seedStoreOrganization(ORGANIZATION).pipe(Effect.provide(services));
+      yield* enrollStoreServer(ORGANIZATION, { secret: "ppair_fixture_store", server: MACHINE }).pipe(Effect.provide(services));
+      const { drizzle } = yield* Database.pipe(Effect.provide(services));
+      yield* drizzle.update(organizationMachine).set({ machineName: "machine-1" as MachineName });
+      yield* drizzle.insert(serverDrainAttempt).values({ id: DRAIN, organizationId: ORGANIZATION, machineId: MACHINE, requestedByUserId: userId });
+      yield* drizzle.insert(machineRemoveAttempt).values({ organizationId: ORGANIZATION, machineId: MACHINE, requestedByUserId: userId, confirmDataLoss: [] });
+      const caller: Caller = { ...member, userId };
+
+      const heard = yield* callCloud(caller, { ask: { query: "operations", subject: { kind: "server", machine: MACHINE }, attempt: null, limit: 5 } })
+        .pipe(runtime({ status: "unreachable", error: null }, []), Effect.provide(services));
+
+      expect(heard).toEqual({
+        ok: true,
+        value: { operations: expect.arrayContaining([
+          expect.objectContaining({ attempt: DRAIN, run: "drain machine-1" }),
+          expect.objectContaining({ run: "remove machine-1" }),
+        ]) },
+      });
+    }));
 
   const connected = (
     asked: Array<CloudQuery>, readables: Array<ReadonlyArray<string> | null> = [], sealeds: Array<ReadonlyArray<string> | null> = [],
