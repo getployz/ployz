@@ -1266,7 +1266,6 @@ fn pre_deploy_operations(
     hook_machine: Option<&MachineId>,
 ) -> Vec<DeployOperation> {
     if requested.pre_deploy.is_none() {
-        // A hook left from a pre-deploy command the Service no longer has.
         return hooks
             .iter()
             .map(|container| {
