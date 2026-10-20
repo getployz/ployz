@@ -805,27 +805,36 @@ pub(super) fn record(
     Ok(())
 }
 
-/// The runtime Services one of whose rows failed on its own, then those one of
-/// whose rows the Deployment's cancel stopped.
+/// Each row that failed on its own, by runtime Service and first to finish first,
+/// then the runtime Services one of whose rows the Deployment's cancel stopped.
 pub(super) fn failed_or_cancelled(
     tx: &mut dyn Tx,
     stored: &Stored,
-) -> Result<(BTreeSet<ServiceName>, BTreeSet<ServiceName>), RpcError> {
+) -> Result<(Vec<(ServiceName, Failure)>, BTreeSet<ServiceName>), RpcError> {
     let found = tx.query(
-        "SELECT service, state FROM config_deployment_row WHERE deployment_id = ?1",
+        "SELECT service, state FROM config_deployment_row WHERE deployment_id = ?1 \
+         ORDER BY finished, service, machine",
         &[stored.summary.id.as_str().into()],
     )?;
-    let (mut failed, mut cancelled) = (BTreeSet::new(), BTreeSet::new());
+    let (mut failed, mut cancelled) = (Vec::new(), BTreeSet::new());
     for row in &found {
-        let RowState::Failed { stopped_by, .. } = row.json(1, "Deployment row")? else {
+        let RowState::Failed {
+            reason,
+            cause,
+            stopped_by,
+            ..
+        } = row.json(1, "Deployment row")?
+        else {
             continue;
         };
-        let services = match stopped_by {
-            StoppedBy::NOTHING => &mut failed,
-            StoppedBy::CANCEL => &mut cancelled,
-            _ => continue,
-        };
-        services.insert(row.parse(0, "Deployment row")?);
+        let service = row.parse(0, "Deployment row")?;
+        match stopped_by {
+            StoppedBy::NOTHING => failed.push((service, Failure { reason, cause })),
+            StoppedBy::CANCEL => {
+                cancelled.insert(service);
+            }
+            _ => {}
+        }
     }
     Ok((failed, cancelled))
 }

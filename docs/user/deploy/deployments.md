@@ -141,9 +141,10 @@ after a reload and in other tabs, as long as the failed deployment is the newest
 
 **Runs**, under **Deployments** in the sidebar, lists every deployment, newest first. A
 deployment's page shows its status, who started it and, if it failed, the reason in red under the
-header. A cancelled deployment shows no reason when the work it names was stopped by your cancel.
-A service that failed on its own still reads Failed, with its reason on its card. Below that is one card for each build, service, volume and config it touched, laid out left
-to right in the order they deploy. Click a card to see each server's progress and its
+header. A service that failed on its own reads Failed, and its failure is the reason, even when
+you cancelled the deployment while it ran. A cancelled deployment shows no reason when nothing in
+it failed on its own. Below that is one card for each build, service, volume and config it
+touched, laid out left to right in the order they deploy. Click a card to see each server's progress and its
 [logs](../observe/logs.md). A build's card shows the build output, and a service's card shows what
 its new containers printed. A failed deployment opens on the card that failed.
 

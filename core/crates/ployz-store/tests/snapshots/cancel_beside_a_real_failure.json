@@ -1,0 +1,28 @@
+{
+  "nodes": [
+    {
+      "cancelled": false,
+      "name": "api",
+      "outcome": "failed"
+    },
+    {
+      "cancelled": true,
+      "name": "web",
+      "outcome": "failed"
+    }
+  ],
+  "outcome": {
+    "cause": [
+      "no space left on device"
+    ],
+    "reason": "api: create Container failed",
+    "services": [],
+    "summary": {
+      "completed": 0,
+      "reason": "cancelled",
+      "type": "failed",
+      "unexecuted": 1
+    },
+    "type": "executed"
+  }
+}
