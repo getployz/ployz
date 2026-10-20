@@ -409,12 +409,8 @@ fn compare(
                     .collect();
                 let data =
                     data_effect(&group.node, group.lifecycle, deployed, &environment.working);
-                let restarts = restarts(
-                    &group.node,
-                    group.lifecycle,
-                    &environment.working,
-                    &head.applied,
-                )?;
+                let restarts =
+                    restarts(&group.node, group.lifecycle, &environment.working, deployed)?;
                 Ok(NodeChange {
                     node: group.node,
                     name,
@@ -662,11 +658,13 @@ fn data_effect(
     }
 }
 
+/// The Services of `working` that mount Config `node`, updated, and already run in
+/// `deployed`.
 fn restarts(
     node: &ReviewNodeIdentity,
     lifecycle: ReviewLifecycleKind,
     working: &SavedEnvironmentIntent,
-    applied: &SavedEnvironmentIntent,
+    deployed: &SavedEnvironmentIntent,
 ) -> Result<Vec<ployz_core::ServiceName>, RpcError> {
     if node.node_type != EnvironmentNodeType::Config || lifecycle != ReviewLifecycleKind::Update {
         return Ok(Vec::new());
@@ -679,7 +677,7 @@ fn restarts(
                 .config_attachments
                 .iter()
                 .any(|mount| mount.config_resource_id == node.id)
-                && applied.services.iter().any(|old| old.id == service.id)
+                && deployed.services.iter().any(|old| old.id == service.id)
         })
         .map(|service| {
             ployz_core::ServiceName::parse(service.slug.as_str())
