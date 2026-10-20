@@ -354,3 +354,20 @@ fn a_stopped_drain_leaves_what_remains_unchecked() {
     );
     assert!(!report.complete());
 }
+
+#[test]
+fn an_old_copy_refused_out_as_the_last_in_is_a_conflict() {
+    let value = report(
+        vec![entry(
+            "web",
+            DrainOutcome::Failed {
+                moves: Vec::new(),
+                failure: MoveFailure::Refused {
+                    reason: StayReason::LastIn,
+                },
+            },
+        )],
+        observed(&["web"]),
+    );
+    assert_eq!(incomplete(&value).report().code, RpcErrorCode::Conflict);
+}

@@ -719,14 +719,22 @@ impl Behind {
             let mut last_in = false;
             let moves = moves
                 .into_iter()
-                .filter_map(|Step { from, to, old }| {
-                    match old.expect("flushed once every old copy ended") {
-                        Ok(old) => Some(Move { from, to, old }),
+                .map(|Step { from, to, old }| {
+                    let old = match old.expect("flushed once every old copy ended") {
+                        Ok(old) => old,
                         Err(LastIn) => {
                             last_in = true;
-                            None
+                            OldCopyEnd::In {
+                                unconfirmed: Unconfirmed::Failed {
+                                    detail: format!(
+                                        "{} still counted it as the last copy serving",
+                                        from.name
+                                    ),
+                                },
+                            }
                         }
-                    }
+                    };
+                    Move { from, to, old }
                 })
                 .collect::<Vec<_>>();
             let refused = || MoveFailure::Refused {

@@ -790,7 +790,7 @@ async fn old_copy_retires_overlap_the_next_move() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn an_old_copy_refused_out_after_the_next_move_still_stays() {
+async fn an_old_copy_refused_out_keeps_its_move_and_stays() {
     let mut client = Scripted {
         observations: [Ok(vec![qualified("web")])].into(),
         convergences: [
@@ -809,7 +809,20 @@ async fn an_old_copy_refused_out_after_the_next_move_still_stays() {
             entry(
                 "web",
                 DrainOutcome::Failed {
-                    moves: Vec::new(),
+                    moves: one_move()
+                        .into_iter()
+                        .map(|step| Move {
+                            old: OldCopyEnd::In {
+                                unconfirmed: Unconfirmed::Failed {
+                                    detail: format!(
+                                        "{} still counted it as the last copy serving",
+                                        step.from.name
+                                    ),
+                                },
+                            },
+                            ..step
+                        })
+                        .collect(),
                     failure: MoveFailure::Refused {
                         reason: StayReason::LastIn,
                     },

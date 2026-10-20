@@ -14,8 +14,8 @@ use super::target;
 use crate::approval::{self, Verb};
 use crate::cloud_account::{self, Credential};
 use crate::drain::{
-    DrainError, DrainOutcome, DrainReport, DrainScope, DrainStep, Move, OldCopyEnd, Remaining,
-    ServiceDrain, ServicesRole, StayReason, Unconfirmed,
+    DrainError, DrainOutcome, DrainReport, DrainScope, DrainStep, Move, MoveFailure, OldCopyEnd,
+    Remaining, ServiceDrain, ServicesRole, StayReason, Unconfirmed,
 };
 use crate::handlers::{Error, leaf_matches, runtime, store, with_client};
 
@@ -131,6 +131,13 @@ fn incomplete(report: &DrainReport) -> Error {
         match &entry.outcome {
             DrainOutcome::Stays {
                 reason: StayReason::LastIn,
+            }
+            | DrainOutcome::Failed {
+                failure:
+                    MoveFailure::Refused {
+                        reason: StayReason::LastIn,
+                    },
+                ..
             }
             | DrainOutcome::Held => stays.push(entry.service.to_string()),
             DrainOutcome::Moved { moves }
