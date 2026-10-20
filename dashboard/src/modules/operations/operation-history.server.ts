@@ -3,6 +3,7 @@ import type { MachineId, Operation, RunState, Subject } from "@ployz/sdk";
 import { and, desc, eq } from "drizzle-orm";
 import { Effect, Schema } from "effect";
 import { Uuid } from "#/lib/schema";
+import { drainEndMessage } from "#/modules/machines/server-drain.server";
 import { machineRemoveAttempt, namespaceCleanup, serverDrainAttempt } from "#/modules/machines/tables";
 import { firstRuntimeFrame } from "#/modules/runtime/organization-runtime.server";
 import { serviceOperations } from "#/modules/service-act/service-act.server";
@@ -78,7 +79,7 @@ const serverOperations = Effect.fn("OperationHistory.server")(function* (
   const now = Date.now();
   return [
     ...drains.map((row) => operation({
-      attempt: row.id, run: `drain ${name}`, state: row.state, requestedAt: row.requestedAt, endedAt: row.endedAt, reason: row.refusalMessage,
+      attempt: row.id, run: `drain ${name}`, state: row.state, requestedAt: row.requestedAt, endedAt: row.endedAt, reason: drainEndMessage(row),
     })),
     ...removals.map((row) => operation({
       attempt: row.id, run: `remove ${name}`, state: row.state, requestedAt: row.createdAt, endedAt: row.terminalAt, reason: row.failureMessage,
