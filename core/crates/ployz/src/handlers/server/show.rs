@@ -147,8 +147,7 @@ pub(in crate::handlers) fn show(root: &ArgMatches) -> Result<(), Error> {
     };
     let report = error.report();
     let missing = report.code == RpcErrorCode::NotFound;
-    let unreachable =
-        report.code == RpcErrorCode::Unavailable && report.details.get("unreachable").is_some();
+    let unreachable = super::servers_unanswered(&report);
     // An inherited PLOYZ_CONNECT or PLOYZ_CONTEXT that reached no daemon was never asked.
     let unasked = unconnected && waiting::inherits_a_connection(leaf);
     if !(missing || unreachable || unasked) || waiting::points_elsewhere(leaf) {

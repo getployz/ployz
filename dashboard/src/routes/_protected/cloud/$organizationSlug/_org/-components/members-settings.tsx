@@ -100,13 +100,15 @@ export function MembersSettings({ organizationSlug }: { organizationSlug: string
   const yourRole = data.members.find((row) => row.you)?.role ?? null;
   const manager = yourRole !== null && can(yourRole, "members:manage");
   const roles: readonly Role[] = yourRole === "owner" ? ["owner", "admin", "member"] : ["admin", "member"];
+  const memberNames = distinctNames(data.members.map((row) => [row.name, row.email]));
 
   return (
     <div className="flex flex-col gap-6">
       <SettingsSection id="members" title="Members">
         <SettingsList label="Members">
-          {data.members.map((row) => {
+          {data.members.map((row, index) => {
             const editable = manager && !row.you && (yourRole === "owner" || row.role !== "owner");
+            const name = memberNames[index] ?? row.name;
             return (
               <SettingsListItem
                 key={row.email}
@@ -120,7 +122,7 @@ export function MembersSettings({ organizationSlug }: { organizationSlug: string
                       <NativeSelect
                         size="sm"
                         className="w-32"
-                        aria-label={`Role of ${row.name}`}
+                        aria-label={`Role of ${name}`}
                         value={row.role}
                         onChange={(event) => {
                           const role = roles.find((candidate) => candidate === event.target.value);
@@ -133,7 +135,7 @@ export function MembersSettings({ organizationSlug }: { organizationSlug: string
                     {row.you ? (
                       <Button variant="ghost" size="sm" onClick={() => setConfirming({ kind: "leave" })}>Leave</Button>
                     ) : editable ? (
-                      <Button variant="ghost" size="sm" onClick={() => setConfirming({ kind: "remove", email: row.email, name: row.name })}>Remove</Button>
+                      <Button variant="ghost" size="sm" aria-label={`Remove ${name}`} onClick={() => setConfirming({ kind: "remove", email: row.email, name })}>Remove</Button>
                     ) : null}
                   </>
                 )}

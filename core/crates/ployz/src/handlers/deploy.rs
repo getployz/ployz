@@ -18,9 +18,9 @@ use std::time::Duration;
 use clap::{ArgAction, ArgMatches, Command, ValueHint};
 use ployz_core::{RpcErrorCode, ServiceName};
 use ployz_store::{
-    Admit, Cancel, CiVerdict, ConfigStore, Deploy, DeploymentId, DeploymentStatus,
-    DeploymentSummary, DeploymentView, DeploymentsQuery, EnvironmentRef, PlanQuery, Publish,
-    RunnerId, Start, UploadBase, UploadedSource, VolumeName,
+    Admit, Cancel, CiVerdict, ConfigStore, Deploy, DeployedNode, DeploymentId, DeploymentStatus,
+    DeploymentSummary, DeploymentView, DeploymentsQuery, EnvironmentRef, NodeStatus, PlanQuery,
+    Publish, RunnerId, Start, UploadBase, UploadedSource, VolumeName,
 };
 
 use super::store::{Next, Store, environment, mint, next, scoped, store};
@@ -781,7 +781,7 @@ fn follow(
 
 /// What took superseded `view`'s place, among the latest and those in flight.
 enum Replacement {
-    /// The newest newer Deployment that targets every Service `view` did: follow it.
+    /// The newest newer Deployment that ships every Service `view` targeted: follow it.
     Follow(DeploymentSummary),
     /// Else the newest newer one: name it.
     Name(DeploymentSummary),
@@ -796,19 +796,57 @@ fn replacement(store: &Store, view: &DeploymentView) -> Result<Option<Replacemen
         limit: None,
         cursor: None,
     })?;
+    let ours = &view.deployment.services;
     // The latest may ship other Services while an older one in flight ships ours:
     // the latest, then the in-flight ones newest first, whatever page they fall on.
-    let mut newer = page
-        .latest
+    let latest = page.latest.as_ref().map(|latest| latest.id.clone());
+    let in_flight = page
+        .in_flight
         .into_iter()
-        .chain(page.in_flight)
-        .filter(|newer| newer.number > view.deployment.number)
-        .peekable();
-    let newest = newer.peek().cloned();
-    Ok(newer
-        .find(|newer| ships_all(&view.deployment.services, &newer.services))
-        .map(Replacement::Follow)
-        .or(newest.map(Replacement::Name)))
+        .filter(|newer| latest.as_ref() != Some(&newer.id));
+    let mut newest = None;
+    for newer in page.latest.into_iter().chain(in_flight) {
+        if newer.number <= view.deployment.number {
+            continue;
+        }
+        if newest.is_none() {
+            newest = Some(newer.clone());
+        }
+        // A narrowed one also ships, as Service nodes, the Services its named ones
+        // reference; a node it left unchanged or never reached ships nothing.
+        let carries = if newer.services.is_empty() || ours.is_empty() {
+            ships_all(ours, &newer.services)
+        } else {
+            let Ok(read) = store.read(&ployz_store::DeploymentQuery {
+                id: newer.id.clone(),
+            }) else {
+                continue;
+            };
+            let shipped: Vec<ServiceName> = read
+                .nodes
+                .into_iter()
+                .filter_map(|node| match (node.node, node.outcome) {
+                    (
+                        DeployedNode::Service { name, .. },
+                        NodeStatus::Pending
+                        | NodeStatus::Deployed
+                        | NodeStatus::Failed
+                        | NodeStatus::Unknown,
+                    ) => Some(name),
+                    (
+                        DeployedNode::Service { .. },
+                        NodeStatus::Unchanged | NodeStatus::NotAttempted | NodeStatus::Removed,
+                    )
+                    | (DeployedNode::Volume { .. } | DeployedNode::Config { .. }, _) => None,
+                })
+                .collect();
+            ours.iter().all(|service| shipped.contains(service))
+        };
+        if carries {
+            return Ok(Some(Replacement::Follow(newer)));
+        }
+    }
+    Ok(newest.map(Replacement::Name))
 }
 
 /// Whether a Deployment targeting `newer` ships every Service one targeting `ours` would; empty targets every Service.

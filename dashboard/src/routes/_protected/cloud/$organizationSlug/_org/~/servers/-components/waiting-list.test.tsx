@@ -271,7 +271,7 @@ it("selects at most the cap, says so, and rejects no more than that", async () =
 const planFor = (ids: readonly string[]) => ({
   rows: ids.map((id) => ({ waitingServerId: id, fleetTokenId: "fleet", hostname: id.replace("id-", ""), role: "joiner" as const,
     instruction: { name: id.replace("id-", ""), storage: { kind: "zfs" as const }, policy: { labels: {}, acceptsBuilds: true, acceptsServices: true, acceptsIngress: true } } })),
-  skipped: [], spread: { providers: 1, networks: 1 },
+  skipped: [], spread: { providers: 1, networks: 1 }, serversOffline: false,
 });
 function deferred<T>() {
   let resolve: (value: T) => void = () => {};
@@ -454,7 +454,7 @@ it("enrolls the server its detail sheet shows", async () => {
   await vi.waitFor(() => expect(preview.mock.calls.at(-1)?.[0]?.data.ids).toEqual([one.id]));
 });
 
-it.each([["failed", "Failed at Setting up ZFS"], ["cancelled", "Cancelled"]] as const)("shows a %s attempt's stage and message in the detail sheet", async (state, reason) => {
+it.each([["failed", "Failed at Setting up ZFS"], ["cancelled", "Cancelled"]] as const)("shows how a %s attempt ended and its message in the detail sheet", async (state, reason) => {
   const one: WaitingServerView = { ...host("one"), returned: { state, stage: "storage", message: "Disk missing" } };
   vi.spyOn(waitingFunctions, "showWaitingServerServerFn").mockResolvedValue({ ...one, report, probe: null } as never);
   renderList([one]);

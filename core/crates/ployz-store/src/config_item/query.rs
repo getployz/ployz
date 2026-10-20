@@ -2,7 +2,7 @@
 //! State, and every deployed one a staged delete dropped from it, each with its
 //! files, its mounts and what the next Deploy does to it.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::config::{ReviewLifecycleKind, SavedConfigIntent, SavedEnvironmentIntent};
 use ployz_core::{ConfigFileName, RpcError, ServiceName};
@@ -46,6 +46,20 @@ pub struct ConfigListing {
     pub deployed: bool,
     /// What the next Deploy does to it; none when it is deployed as it is.
     pub change: Option<ReviewLifecycleKind>,
+    /// Each Service whose mount of it the next Deploy changes, as `diff` shows it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[ts(as = "Option<Vec<ConfigMountChange>>", optional)]
+    pub mount_changes: Vec<ConfigMountChange>,
+}
+
+/// A Service's mount of a Config that the next Deploy adds, moves or removes.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+pub struct ConfigMountChange {
+    pub service: ServiceName,
+    /// Where the last Deploy mounted it; none when it was not mounted.
+    pub before: Option<String>,
+    /// Where the next Deploy mounts it; none when it unmounts it.
+    pub after: Option<String>,
 }
 
 /// One Config by name or exact `@UUID`, with its files' text.
@@ -168,12 +182,50 @@ fn listed(
                     .iter()
                     .find(|change| change.node.id == node.resource_id)
                     .map(|change| change.lifecycle),
+                mount_changes: mount_changes(working, &review.head.intent, &node.resource_id)?,
             };
             Ok((listing, node))
         })
         .collect::<Result<Vec<_>, RpcError>>()?;
     listed.sort_by(|a, b| a.0.config.name.cmp(&b.0.config.name));
     Ok(listed)
+}
+
+/// Each Service whose mount of Config `config` differs between `head`, what the
+/// last Deploy asked for, and `working`.
+fn mount_changes(
+    working: &SavedEnvironmentIntent,
+    head: &SavedEnvironmentIntent,
+    config: &str,
+) -> Result<Vec<ConfigMountChange>, RpcError> {
+    let mut seen = BTreeSet::new();
+    let mut changes = Vec::new();
+    for service in working.services.iter().chain(&head.services) {
+        if !seen.insert(service.lineage_id.as_str()) {
+            continue;
+        }
+        let dir = |intent: &SavedEnvironmentIntent| {
+            intent
+                .services
+                .iter()
+                .find(|other| other.lineage_id == service.lineage_id)?
+                .config_attachments
+                .iter()
+                .find(|mount| mount.config_resource_id == config)
+                .map(|mount| mount.mount_dir.to_string())
+        };
+        let (before, after) = (dir(head), dir(working));
+        if before != after {
+            changes.push(ConfigMountChange {
+                service: ServiceName::parse(service.slug.as_str())
+                    .map_err(|_| error::corrupt("Service name"))?,
+                before,
+                after,
+            });
+        }
+    }
+    changes.sort_by(|a, b| a.service.cmp(&b.service));
+    Ok(changes)
 }
 
 fn mounts(working: &SavedEnvironmentIntent, config: &str) -> Result<Vec<ConfigMountAt>, RpcError> {
