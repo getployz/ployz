@@ -115,9 +115,11 @@ jobs:
             exit 1
           fi
 
-  # One build pulls the compiler cache once. Shards that each built pulled it once per shard at
-  # the same time, and a shard whose downloads lagged compiled a third of the workspace again.
-  rust-build:
+  # Each shard builds one group of crates on its own runner and runs half of their tests:
+  # the job is bound by the runner's 4 cores. Groups build without workspace-wide feature
+  # unification, so a group sees only the features its own crates turn on.
+  rust-tests:
+    name: rust-tests (${{ matrix.group }}-${{ matrix.half }})
     defaults:
       run:
         working-directory: core
@@ -128,68 +130,26 @@ jobs:
     permissions:
       contents: read
       actions: write
-    steps:
-      - uses: actions/checkout@v4
-      - uses: ./.github/actions/setup-rust
-        with:
-          cache-key: workspace-tests
-      - uses: taiki-e/install-action@c3ec0de9ae7f1019cea21aa96aa0a895b9552063 # v2
-        with:
-          tool: cargo-nextest@0.9.143
-      - name: Build native SDK and Rust tests together
-        run: cargo build --workspace --all-targets --all-features --profile test --locked --timings
-      # The SDK tests load this addon, built above with `eval`; they would otherwise rebuild it with other features.
-      - name: Archive the tests for the shards
-        run: |
-          mkdir -p "$RUNNER_TEMP/rust-tests"
-          cargo nextest archive --workspace --all-features --locked --archive-file "$RUNNER_TEMP/rust-tests/tests.tar.zst"
-          cp target/debug/libployz_sdk.so "$RUNNER_TEMP/rust-tests/"
-      - uses: actions/upload-artifact@v4
-        with:
-          name: rust-tests-archive
-          path: ${{ runner.temp }}/rust-tests
-          compression-level: 0
-          retention-days: 1
-          if-no-files-found: error
-      - name: Doc tests with a hostile ambient Ployz context
-        env:
-          PLOYZ_CONFIG: ${{ runner.temp }}/hostile-ployz-config.yaml
-        run: |
-          printf 'current_context: hostile\ncontexts:\n  hostile:\n    connections:\n      - tcp: 127.0.0.1:1\n' > "$PLOYZ_CONFIG"
-          cargo test --doc --workspace --all-features --locked
-      - name: Check the missing SSH prerequisite
-        env:
-          PLOYZ_BIN: ${{ github.workspace }}/core/target/debug/ployz
-        run: bash scripts/test-missing-ssh-client.sh
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: rust-build-timings
-          path: core/target/cargo-timings/*.html
-          retention-days: 7
-          if-no-files-found: ignore
-
-  rust-tests:
-    defaults:
-      run:
-        working-directory: core
-    needs: [changes, rust-build]
-    if: contains(fromJSON(needs.changes.outputs.jobs), 'rust-tests')
-    name: rust-tests (${{ matrix.shard }}/6)
-    runs-on: ubuntu-24.04
-    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4, 5, 6]
-    # Extracting into the checkout keeps the paths the binaries were built with, such as CARGO_BIN_EXE_*.
-    # cargo-nextest is called directly: `cargo` would make rustup install the pinned toolchain first.
-    env:
-      NEXTEST: cargo-nextest nextest run --archive-file ${{ github.workspace }}/.rust-tests/tests.tar.zst --workspace-remap . --extract-to . --extract-overwrite --partition count:${{ matrix.shard }}/6
-      PLOYZ_SDK_ADDON: ${{ github.workspace }}/.rust-tests/libployz_sdk.so
+        group: [cli, daemon, store]
+        half: [1, 2]
+        include:
+          # Every crate the other groups leave out, so a new crate's tests run here.
+          - group: cli
+            packages: --workspace --exclude ployzd --exclude ployz-store
+            node: true
+          - group: daemon
+            packages: -p ployzd
+          # The Store suites on SQLite, then on Postgres.
+          - group: store
+            packages: -p ployz-store
+            postgres: true
     services:
       postgres:
-        image: postgres:16-alpine
+        # An empty image starts no service.
+        image: ${{ matrix.postgres && needs.changes.outputs.postgres == 'true' && 'postgres:16-alpine' || '' }}
         env:
           POSTGRES_PASSWORD: postgres
         ports: ["5432:5432"]
@@ -197,33 +157,42 @@ jobs:
         options: --health-cmd pg_isready --health-interval 2s --health-retries 15 --shm-size=256m
     steps:
       - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-rust
+        with:
+          # Both halves of a group build the same crates, so they share one cache manifest.
+          cache-key: tests-${{ matrix.group }}
       - uses: actions/setup-node@v4
+        if: matrix.node
         with:
           node-version: 22
       - uses: taiki-e/install-action@c3ec0de9ae7f1019cea21aa96aa0a895b9552063 # v2
         with:
           tool: cargo-nextest@0.9.143
-      - uses: actions/download-artifact@v4
-        with:
-          name: rust-tests-archive
-          path: ${{ github.workspace }}/.rust-tests
-      - name: Test with a hostile ambient Ployz context
-        env:
-          PLOYZ_CONFIG: ${{ runner.temp }}/hostile-ployz-config.yaml
+      - name: Build the group's tests
+        run: cargo build ${{ matrix.packages }} --all-targets --all-features --profile test --locked --timings
+      - name: Write a hostile ambient Ployz context
         run: |
-          cat > "$PLOYZ_CONFIG" <<'EOF'
+          cat > "$RUNNER_TEMP/hostile-ployz-config.yaml" <<'EOF'
           current_context: hostile
           contexts:
             hostile:
               connections:
                 - tcp: 127.0.0.1:1
           EOF
-          # Cargo creates CARGO_TARGET_TMPDIR while building; the archive leaves the empty directory out.
-          mkdir -p target/tmp
-          $NEXTEST --no-fail-fast
+      - name: Test with a hostile ambient Ployz context
+        env:
+          PLOYZ_CONFIG: ${{ runner.temp }}/hostile-ployz-config.yaml
+          # Built above with `eval`; the SDK tests would otherwise rebuild it with other features.
+          PLOYZ_SDK_ADDON: ${{ github.workspace }}/core/target/debug/libployz_sdk.so
+        run: cargo nextest run ${{ matrix.packages }} --partition hash:${{ matrix.half }}/2 --all-features --locked --no-fail-fast
+      - name: Doc tests with a hostile ambient Ployz context
+        if: matrix.half == 1 && !cancelled()
+        env:
+          PLOYZ_CONFIG: ${{ runner.temp }}/hostile-ployz-config.yaml
+        run: cargo test --doc ${{ matrix.packages }} --all-features --locked
       # A throwaway server: durability only slows each test's new database.
       - name: Stop the test Postgres syncing to disk
-        if: needs.changes.outputs.postgres == 'true'
+        if: matrix.postgres && needs.changes.outputs.postgres == 'true'
         run: >-
           docker exec ${{ job.services.postgres.id }} psql -U postgres -q
           -c 'ALTER SYSTEM SET fsync = off'
@@ -231,21 +200,32 @@ jobs:
           -c 'ALTER SYSTEM SET full_page_writes = off'
           -c 'SELECT pg_reload_conf()'
       - name: ployz-store tests on Postgres
-        if: needs.changes.outputs.postgres == 'true'
+        if: matrix.postgres && needs.changes.outputs.postgres == 'true'
         env:
           PLOYZ_STORE_TEST_POSTGRES: postgres://postgres:postgres@127.0.0.1:5432
-        run: $NEXTEST -E 'package(ployz-store)'
-      # Last: installing Docker restarts dockerd, which stops the Postgres service.
+        run: cargo nextest run ${{ matrix.packages }} --partition hash:${{ matrix.half }}/2 --all-features --locked
+      - name: Check the missing SSH prerequisite
+        if: matrix.group == 'cli' && matrix.half == 1 && !cancelled()
+        env:
+          PLOYZ_BIN: ${{ github.workspace }}/core/target/debug/ployz
+        run: bash scripts/test-missing-ssh-client.sh
       # Main pushes only: it mostly catches drift in the newest Docker release, and costs 2 minutes per run.
       - name: Decode the latest Docker's local log files as docker logs prints them
-        if: github.event_name == 'push' && matrix.shard == 6
+        if: matrix.group == 'daemon' && matrix.half == 1 && github.event_name == 'push'
         env:
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER: sudo -E
         run: |
           curl -fsSL https://get.docker.com | sudo sh >/dev/null
           docker version --format 'Docker {{.Server.Version}}'
           docker pull --quiet alpine:3.23.3
-          cargo-nextest nextest run --archive-file "$GITHUB_WORKSPACE/.rust-tests/tests.tar.zst" --workspace-remap . --extract-to . --extract-overwrite --run-ignored only -E 'package(ployzd) and test(observe::integration_tests::decoding_matches_docker_logs_byte_for_byte)'
+          cargo nextest run --package ployzd --all-features --locked --run-ignored only -E 'test(observe::integration_tests::decoding_matches_docker_logs_byte_for_byte)'
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: rust-build-timings-${{ matrix.group }}-${{ matrix.half }}
+          path: core/target/cargo-timings/*.html
+          retention-days: 7
+          if-no-files-found: ignore
 
   uptime:
     defaults:

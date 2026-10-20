@@ -13,7 +13,8 @@ use ployz_core::{
     REQUEST_MACHINE_UPGRADE_CAPABILITY, RUNTIME_WATCH_CAPABILITY, Rpc, SEED_VOLUME_CAPABILITY,
     SELECT_ENDPOINT_CAPABILITY, SET_MANAGEMENT_CLIENT_CAPABILITY, SET_PUSH_TARGET_CAPABILITY,
     SET_VOLUME_COPY_CAPABILITY, SET_VOLUME_SIZE_CAPABILITY, TAIL_LOGS_CAPABILITY,
-    UPDATE_MACHINE_CAPABILITY, VOLUME_FLOOR_CAPABILITY, VOLUME_SHRINK_CAPABILITY, op,
+    UPDATE_CONTAINER_LIMITS_CAPABILITY, UPDATE_MACHINE_CAPABILITY, VOLUME_FLOOR_CAPABILITY,
+    VOLUME_SHRINK_CAPABILITY, op,
 };
 
 /// Capability constants are generated from the catalog, so a typo would stay
@@ -56,6 +57,10 @@ fn catalogued_capabilities_keep_stable_spellings() {
         (PREPARE_VOLUMES_CAPABILITY, "ployz.storage.prepare.v1"),
         (LIST_VOLUMES_CAPABILITY, "ployz.volume.list.v1"),
         (REMOVE_VOLUME_CAPABILITY, "ployz.volume.remove.v1"),
+        (
+            UPDATE_CONTAINER_LIMITS_CAPABILITY,
+            "ployz.container.limits.update.v1",
+        ),
         (
             INSPECT_VOLUME_COPY_CAPABILITY,
             "ployz.volume.copy.inspect.v1",
@@ -136,6 +141,7 @@ fn advertised_capability_groups_match_the_frozen_catalog() {
             "ployz.container.list.v1",
             "ployz.container.inspect.v1",
             "ployz.container.ensure.v1",
+            "ployz.container.limits.update.v1",
             "ployz.storage.inspect.v1",
             "ployz.storage.prepare.v1",
             "ployz.volume.list.v1",
@@ -280,6 +286,10 @@ const ABOVE_FLOOR: &[(&str, &str)] = &[
     (
         "ployz.volume.size.shrink.v1",
         "gated: a caller checks the contract on every Machine holding a copy and refuses the shrink, naming the Server whose daemon lacks it",
+    ),
+    (
+        "ployz.container.limits.update.v1",
+        "gated: the planner updates in place only on a Machine advertising it, and replaces the Container on any other",
     ),
 ];
 

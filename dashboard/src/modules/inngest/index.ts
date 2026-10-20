@@ -25,6 +25,7 @@ import { createSweepExpiredVerifications } from "#/modules/identity/verification
 import {
   createCancelStoreDeployment, createDeployToFirstServer, createRedispatchStoreDeployments, createRunStoreDeployment,
 } from "#/modules/config-store/store-deployment.inngest";
+import { createRetireOldFunctions } from "#/modules/config-store/retire-old.inngest";
 import {
   createStoreGithubCheckSuite, createStoreGithubPush, createStorePrCheck, createStorePullRequest, createStoreSweep,
   createStoreSweepRequested,
@@ -61,6 +62,7 @@ export function createInngestFunctions(inngest: PloyzInngest) {
     createScheduleClusterDomainSync(inngest),
     ...createServerUpgradeFunctions(inngest),
     createRunStoreDeployment(inngest),
+    ...createRetireOldFunctions(inngest),
     createCancelStoreDeployment(inngest),
     createRedispatchStoreDeployments(inngest),
     createDeployToFirstServer(inngest),

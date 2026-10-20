@@ -1,6 +1,7 @@
 //! Runtime planning impact of a requested spec against an observed one.
 
 use super::*;
+use crate::ByteQuantity;
 
 /// Return the runtime action needed to reconcile the requested serving shape.
 #[must_use]
@@ -19,6 +20,9 @@ pub fn compare_specs(
     }
 }
 
+/// Docker applies a raised, lowered or newly set CPU or memory limit to a running
+/// Container in place. It cannot clear one: zero means "unchanged" on update, and
+/// shm size, devices and ulimits are fixed at creation.
 fn resource_change(current: &ContainerResources, requested: &ContainerResources) -> SpecChange {
     let ContainerResources {
         cpu_nanos: current_cpu_nanos,
@@ -41,17 +45,57 @@ fn resource_change(current: &ContainerResources, requested: &ContainerResources)
     if current_devices != requested_devices
         || current_device_reservations != requested_device_reservations
         || current_ulimits != requested_ulimits
+        || current_shared_memory_bytes != requested_shared_memory_bytes
     {
         return SpecChange::NeedsRecreate;
     }
-    if current_cpu_nanos != requested_cpu_nanos
-        || current_memory_bytes != requested_memory_bytes
-        || current_memory_reservation_bytes != requested_memory_reservation_bytes
-        || current_shared_memory_bytes != requested_shared_memory_bytes
-    {
+    let limits = [
+        limit_change(current_cpu_nanos.as_ref(), requested_cpu_nanos.as_ref()),
+        memory_change(
+            current_memory_bytes.as_ref(),
+            requested_memory_bytes.as_ref(),
+        ),
+        limit_change(
+            current_memory_reservation_bytes.as_ref(),
+            requested_memory_reservation_bytes.as_ref(),
+        ),
+    ];
+    if limits.contains(&LimitChange::Recreate) {
+        return SpecChange::NeedsRecreate;
+    }
+    if limits.contains(&LimitChange::InPlace) {
         return SpecChange::NeedsUpdate;
     }
     SpecChange::UpToDate
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum LimitChange {
+    Same,
+    /// Docker applies the new value to the running Container.
+    InPlace,
+    /// Only a new Container runs with the requested value.
+    Recreate,
+}
+
+/// A limit appears or takes any new value in place; only its removal recreates.
+fn limit_change<T: PartialEq>(current: Option<&T>, requested: Option<&T>) -> LimitChange {
+    match (current, requested) {
+        (Some(_), None) => LimitChange::Recreate,
+        (current, requested) if current == requested => LimitChange::Same,
+        (_, _) => LimitChange::InPlace,
+    }
+}
+
+/// A memory limit only rises in place. Lowering it below what the Container
+/// already uses would have the kernel kill it at once, and a Container that
+/// never had one can hold more than any limit set afterwards.
+fn memory_change(current: Option<&ByteQuantity>, requested: Option<&ByteQuantity>) -> LimitChange {
+    match (current, requested) {
+        (current, requested) if current == requested => LimitChange::Same,
+        (Some(current), Some(requested)) if requested > current => LimitChange::InPlace,
+        (_, _) => LimitChange::Recreate,
+    }
 }
 
 #[cfg(test)]
@@ -81,9 +125,16 @@ mod tests {
             SpecChange::NeedsRecreate
         );
         candidate = current.to_requested();
-        candidate.container.resources.memory_bytes =
-            Some(crate::ByteQuantity::try_from(64).unwrap());
+        candidate.container.resources.cpu_nanos =
+            Some(crate::CpuNanos::try_from(500_000_000).unwrap());
         assert_eq!(compare_specs(&current, &candidate), SpecChange::NeedsUpdate);
+        candidate = current.to_requested();
+        candidate.container.resources.shared_memory_bytes =
+            Some(crate::ByteQuantity::try_from(64).unwrap());
+        assert_eq!(
+            compare_specs(&current, &candidate),
+            SpecChange::NeedsRecreate
+        );
         candidate = current.to_requested();
         candidate.pre_deploy =
             Some(serde_json::from_value(json!({"command": ["migrate"]})).unwrap());
@@ -114,6 +165,55 @@ mod tests {
                 &mounting(8_000_000_000).to_requested()
             ),
             SpecChange::UpToDate
+        );
+    }
+
+    fn limited() -> ResolvedServiceSpec {
+        serde_json::from_value(json!({
+            "service_id": "a".repeat(32), "name": "api",
+            "mode": {"mode": "replicated", "replicas": 1},
+            "container": {
+                "image": "api:1", "pull_policy": "missing",
+                "resources": {"cpu_nanos": 500_000_000, "memory_bytes": 64}
+            }
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn clearing_a_limit_recreates_because_docker_update_cannot_remove_one() {
+        let limited = limited();
+        let mut raised = limited.to_requested();
+        raised.container.resources.memory_bytes = Some(crate::ByteQuantity::try_from(128).unwrap());
+        assert_eq!(compare_specs(&limited, &raised), SpecChange::NeedsUpdate);
+        let mut cleared = limited.to_requested();
+        cleared.container.resources.cpu_nanos = None;
+        assert_eq!(compare_specs(&limited, &cleared), SpecChange::NeedsRecreate);
+        let mut cleared_and_raised = raised;
+        cleared_and_raised.container.resources.cpu_nanos = None;
+        assert_eq!(
+            compare_specs(&limited, &cleared_and_raised),
+            SpecChange::NeedsRecreate
+        );
+    }
+
+    #[test]
+    fn memory_only_rises_in_place_while_cpu_moves_both_ways() {
+        let limited = limited();
+        let mut lowered = limited.to_requested();
+        lowered.container.resources.memory_bytes = Some(crate::ByteQuantity::try_from(32).unwrap());
+        assert_eq!(compare_specs(&limited, &lowered), SpecChange::NeedsRecreate);
+        let mut less_cpu = limited.to_requested();
+        less_cpu.container.resources.cpu_nanos =
+            Some(crate::CpuNanos::try_from(250_000_000).unwrap());
+        assert_eq!(compare_specs(&limited, &less_cpu), SpecChange::NeedsUpdate);
+        let mut unlimited = limited.clone();
+        unlimited.container.resources.memory_bytes = None;
+        let first_limit = limited.to_requested();
+        assert_eq!(
+            compare_specs(&unlimited, &first_limit),
+            SpecChange::NeedsRecreate,
+            "a first memory limit may sit below what the Container already holds"
         );
     }
 }

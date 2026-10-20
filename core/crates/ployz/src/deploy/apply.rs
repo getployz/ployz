@@ -105,7 +105,7 @@ pub(crate) async fn apply_requested(
             }
         }
         DeployOutcome::Failed { .. } => {
-            let mut failure = report::failure(&outcome, tails);
+            let mut failure = report::failure(&outcome, &evidence.operations, tails);
             if signal.is_cancelled() {
                 failure = failure.interrupted();
             }

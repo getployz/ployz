@@ -11,17 +11,18 @@ use futures_util::{
 };
 use ployz_core::labels::CREATION_KEY;
 use ployz_core::{
-    AnonymousVolumes, AnswerWhen, ContainerDetails, ContainerId, ContainerKind, ContainerLocator,
-    ContainerNow, ContainerObservation, ContainerRefusal, ContainerRefusalReason,
-    ContainerRuntimeObservation, ContainerWant, CopyRotation, CreationKey, DependencyHealthFailure,
-    DeployEvent, DeployWarning, DeploymentLogId, DockerVolumeId, Drain, EnsuredContainer,
-    ExecutionError, ExposedPort, FailedOperation, Gen, HEALTH_POLL_INTERVAL, HealthFailure,
-    HealthVerdict, HookFailure, ImagePulled, InspectContainerRequest, ListContainersRequest,
-    MachineAction, MachineId, MachineName, MachineTarget, MembershipObservation, Namespace,
-    NewContainer, OperationPhase, OutOfMemory, PortPublication, PullPolicy, QualifiedService,
-    ReadRoutesRequest, RemoveContainerPurpose, RemoveVolumeRequest, ResolvedServiceSpec, Retry,
-    RoutesRead, RpcError, RpcErrorCode, RunRotation, RunTarget, ServiceId, ServiceName,
-    ServiceOutcome, SlotKey, StopOptions, TransportProtocol, UpdateOrder, op,
+    AnonymousVolumes, AnswerWhen, ContainerDetails, ContainerId, ContainerKind,
+    ContainerLimitsUpdated, ContainerLocator, ContainerNow, ContainerObservation, ContainerRefusal,
+    ContainerRefusalReason, ContainerRuntimeObservation, ContainerWant, CopyRotation, CreationKey,
+    DependencyHealthFailure, DeployEvent, DeployWarning, DeploymentLogId, DockerVolumeId, Drain,
+    EnsuredContainer, ExecutionError, ExposedPort, FailedOperation, Gen, HEALTH_POLL_INTERVAL,
+    HealthFailure, HealthVerdict, HookFailure, ImagePulled, InspectContainerRequest,
+    ListContainersRequest, MachineAction, MachineId, MachineName, MachineTarget,
+    MembershipObservation, Namespace, NewContainer, OperationPhase, OutOfMemory, PortPublication,
+    PullPolicy, QualifiedService, ReadRoutesRequest, RemoveContainerPurpose, RemoveVolumeRequest,
+    ResolvedServiceSpec, Retry, RoutesRead, RpcError, RpcErrorCode, RunRotation, RunTarget,
+    ServiceId, ServiceName, ServiceOutcome, SlotKey, StopOptions, TransportProtocol,
+    UpdateContainerLimitsRequest, UpdateOrder, op,
 };
 use sha2::{Digest, Sha256};
 use tokio::sync::mpsc::UnboundedSender;
@@ -101,15 +102,16 @@ fn outcome_from(
             error,
             compensation,
         }) => {
-            let failed = match (operation_at(operations, index), compensation) {
-                (DeployOperation::ReplaceContainer(operation), Some(compensation)) => {
+            let operation = operation_at(operations, index);
+            let failed = match (operation, compensation) {
+                (DeployOperation::ReplaceContainer(replacement), Some(compensation)) => {
                     FailedOperation::Replacement {
-                        operation: operation.clone(),
+                        operation: replacement.clone(),
                         error,
                         compensation,
                     }
                 }
-                (operation, _) => FailedOperation::Operation {
+                (_, _) => FailedOperation::Operation {
                     operation: operation.clone(),
                     error,
                 },
@@ -151,6 +153,13 @@ pub(crate) trait MachineOperations {
         container_id: &ContainerId,
     ) -> Result<ContainerDetails, RpcError>;
     async fn remove_volume(&self, id: &DockerVolumeId) -> Result<(), RpcError>;
+    /// Apply `spec`'s CPU and memory limits to the running `container_id` in place.
+    async fn update_container_limits(
+        &self,
+        machine_id: &MachineId,
+        container_id: &ContainerId,
+        spec: &ResolvedServiceSpec,
+    ) -> Result<ContainerLimitsUpdated, RpcError>;
     /// Whether `machine_id` already runs a Container of this Global spec, which a
     /// start into `slot` adopts instead of creating.
     async fn runs_global(
@@ -350,6 +359,23 @@ impl MachineOperations for Client {
         .map(|_| ())
     }
 
+    async fn update_container_limits(
+        &self,
+        machine_id: &MachineId,
+        container_id: &ContainerId,
+        spec: &ResolvedServiceSpec,
+    ) -> Result<ContainerLimitsUpdated, RpcError> {
+        self.invoke::<op::UpdateContainerLimits>(
+            UpdateContainerLimitsRequest {
+                container_id: *container_id,
+                spec: spec.clone(),
+            },
+            &MachineTarget::from(machine_id),
+            Some(TARGET_RPC_TIMEOUT),
+        )
+        .await
+    }
+
     async fn runs_global(
         &self,
         machine_id: &MachineId,
@@ -380,7 +406,7 @@ impl Ran {
     fn started(id: ContainerId) -> Self {
         Self {
             started: Some(id),
-            held_old: None,
+            ..Self::default()
         }
     }
 }
@@ -480,6 +506,7 @@ restart_policy! {
     wait fn ensure_container(&self, machine_id: &MachineId, want: ContainerWant) -> Result<(ContainerNow, Option<HealthVerdict>), RpcError>;
     wait fn inspect_container(&self, machine_id: &MachineId, container_id: &ContainerId) -> Result<ContainerDetails, RpcError>;
     wait fn remove_volume(&self, id: &DockerVolumeId) -> Result<(), RpcError>;
+    wait fn update_container_limits(&self, machine_id: &MachineId, container_id: &ContainerId, spec: &ResolvedServiceSpec) -> Result<ContainerLimitsUpdated, RpcError>;
     wait fn runs_global(&self, machine_id: &MachineId, slot: &SlotKey, spec: &ResolvedServiceSpec) -> Result<bool, RpcError>;
     wait fn ensure_image(&self, machine_id: &MachineId, spec: &ResolvedServiceSpec) -> Result<ImagePulled, RpcError>;
     wait fn ensure_unsettled(&self, machine_id: &MachineId, want: ContainerWant, timeout: Option<Duration>) -> Result<EnsuredContainer, RpcError>;
@@ -708,13 +735,13 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
                         if let Some(old) = ran.held_old {
                             stopped.entry(group).or_default().push(*old);
                         }
-                        if schedule.group(group).publish && starts_container(operation) {
-                            if let Some(container_id) = ran.started {
-                                progress.set_running(
-                                    index,
-                                    OperationPhase::WaitingForSwitch { container_id },
-                                );
-                            }
+                        if let (true, Some(container_id)) =
+                            (schedule.group(group).publish, ran.started)
+                        {
+                            progress.set_running(
+                                index,
+                                OperationPhase::WaitingForSwitch { container_id },
+                            );
                             awaiting_flip.entry(group).or_default().push(index);
                         } else {
                             completed.insert(index);
@@ -1373,6 +1400,8 @@ async fn route_new<C: MachineOperations>(
     Ok(())
 }
 
+/// The copies the group's publish retires. A copy updated in place is one of
+/// the Service's serving copies and stays.
 fn old_copies(
     group: &ServiceGroup,
     operations: &[DeployOperation],
@@ -1393,6 +1422,7 @@ fn old_copies(
             | DeployOperation::RunContainer { .. }
             | DeployOperation::StopContainer { .. }
             | DeployOperation::RemoveContainer { .. }
+            | DeployOperation::UpdateContainer(_)
             | DeployOperation::StopHook { .. }
             | DeployOperation::RunHook { .. }
             | DeployOperation::RemoveVolume { .. } => None,
@@ -2027,22 +2057,26 @@ async fn execute_operation<C: MachineOperations>(
     slots: &Slots<'_>,
     rows: &Rows<'_>,
 ) -> Result<Ran, OperationFailure> {
-    progress.set_running(index, OperationPhase::Starting);
+    // An in-place update starts nothing, so its row never reads as starting.
+    progress.set_running(
+        index,
+        if matches!(operation, DeployOperation::UpdateContainer(_)) {
+            OperationPhase::UpdatingContainer
+        } else {
+            OperationPhase::Starting
+        },
+    );
     match operation {
         DeployOperation::PrepareVolumes { machine_id, specs } => client
             .prepare_volumes(machine_id, specs)
             .await
             .map(|_| Ran::default())
-            .map_err(|mut error| {
-                if !error.details.is_object() {
-                    error.details = serde_json::json!({});
-                }
-                error
-                    .details
-                    .as_object_mut()
-                    .expect("details normalized to object")
-                    .insert("machine_id".into(), serde_json::json!(machine_id));
-                machine_error(MachineAction::PrepareVolumes, error).into()
+            .map_err(|error| {
+                machine_error(
+                    MachineAction::PrepareVolumes,
+                    naming_machine(error, machine_id),
+                )
+                .into()
             }),
         DeployOperation::WaitHealthy { dependency, .. } => {
             wait_healthy(client, index, progress, dependency, rows.run, cancellation)
@@ -2087,9 +2121,9 @@ async fn execute_operation<C: MachineOperations>(
             )
             .await
             .map(|copy| Ran {
-                started: None,
                 held_old: (copy.rotation == CopyRotation::Held(rows.run.clone()))
                     .then(|| Box::new((details.container.resolved_spec.clone(), copy))),
+                ..Ran::default()
             })
             .map_err(Into::into),
             Err(ExecutionError::Machine { error, .. }) if error.code == RpcErrorCode::NotFound => {
@@ -2201,6 +2235,18 @@ async fn execute_operation<C: MachineOperations>(
             .map(Ran::started)
             .map_err(Into::into)
         }
+        // The copy stays In under its own id whether the update succeeds or fails.
+        DeployOperation::UpdateContainer(update) => client
+            .update_container_limits(&update.machine_id, &update.container_id, &update.spec)
+            .await
+            .map(|_| Ran::default())
+            .map_err(|error| {
+                machine_error(
+                    MachineAction::UpdateContainerLimits,
+                    naming_machine(error, &update.machine_id),
+                )
+                .into()
+            }),
         DeployOperation::StopHook {
             machine_id,
             container_id,
@@ -3121,6 +3167,16 @@ pub(super) async fn inspect<C: MachineOperations>(
 
 fn machine_error(action: MachineAction, error: RpcError) -> ExecutionError {
     ExecutionError::Machine { action, error }
+}
+
+/// The Machine that answered `error`, for a failure sentence that names the Server.
+fn naming_machine(mut error: RpcError, machine_id: &MachineId) -> RpcError {
+    if let serde_json::Value::Object(details) = &mut error.details {
+        details.insert("machine_id".into(), serde_json::json!(machine_id));
+    } else {
+        error.details = serde_json::json!({ "machine_id": machine_id });
+    }
+    error
 }
 
 fn ignore_not_found(result: Result<(), RpcError>) -> Result<(), RpcError> {

@@ -5,8 +5,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use ployz_core::config::{SavedEnvironmentIntent, SavedServiceIntent};
 use ployz_core::{
     ContainerId, ContainerRuntimeObservation, DependencyHealthFailure, DeployOperation,
-    ExecutionError, HealthFailure, HookFailure, MachineAction, MachineId, OperationPhase,
-    OperationRow, OperationStatus, OutOfMemory, PullPolicy, RpcError, ServiceName,
+    ExecutionError, HealthFailure, HookFailure, LimitsRefusal, MachineAction, MachineId,
+    OperationPhase, OperationRow, OperationStatus, OutOfMemory, PullPolicy, RpcError, ServiceName,
 };
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -23,7 +23,8 @@ use crate::tools::{LogText, Withheld};
 pub enum RowState {
     Pending,
     /// `serving` is true once every new Container this Server starts serves,
-    /// so stop and remove phases then work on old ones.
+    /// so stop and remove phases then work on old ones. A Container updated
+    /// in place serves throughout.
     Running {
         phase: RowPhase,
         #[serde(default)]
@@ -108,6 +109,7 @@ impl FailedAt {
                 MachineAction::RemoveContainer => Some(Self::Remove),
                 MachineAction::PullImage => Some(Self::Pull),
                 MachineAction::InspectContainer
+                | MachineAction::UpdateContainerLimits
                 | MachineAction::ListContainers
                 | MachineAction::ReadRoutes
                 | MachineAction::PublishServingPointer => from_phase(),
@@ -153,6 +155,7 @@ pub enum RowPhase {
     StoppingContainer,
     RemovingContainer,
     RemovingVolume,
+    UpdatingContainer,
     Compensating,
 }
 
@@ -166,7 +169,10 @@ impl RowPhase {
             Self::StoppingContainer => Some(FailedAt::Stop),
             Self::RemovingContainer => Some(FailedAt::Remove),
             Self::RemovingVolume => Some(FailedAt::Volume),
-            Self::Starting | Self::WaitingForSwitch | Self::Compensating => None,
+            Self::Starting
+            | Self::WaitingForSwitch
+            | Self::UpdatingContainer
+            | Self::Compensating => None,
         }
     }
 }
@@ -183,6 +189,7 @@ impl From<&OperationPhase> for RowPhase {
             OperationPhase::StoppingContainer => Self::StoppingContainer,
             OperationPhase::RemovingContainer => Self::RemovingContainer,
             OperationPhase::RemovingVolume => Self::RemovingVolume,
+            OperationPhase::UpdatingContainer => Self::UpdatingContainer,
             OperationPhase::Compensating => Self::Compensating,
         }
     }
@@ -330,6 +337,46 @@ impl Failure {
             } if let Some(full) = error.disk_full() => {
                 (full.to_string(), ployz_core::error_chain::causes(error))
             }
+            ExecutionError::Machine {
+                action: MachineAction::UpdateContainerLimits,
+                error,
+            } => {
+                let server = error
+                    .details
+                    .get("machine_id")
+                    .and_then(serde_json::Value::as_str)
+                    .map(|id| {
+                        operations
+                            .iter()
+                            .find(|row| row.machine_id.to_string() == id)
+                            .and_then(|row| row.machine_name.as_ref())
+                            .map_or_else(|| id.to_owned(), ToString::to_string)
+                    });
+                let mut cause = vec![error.message.clone()];
+                cause.extend(ployz_core::error_chain::causes(error));
+                // A refusal comes before any Docker change, so the old limits hold.
+                // Anything else, such as a Docker error, an unapplied read-back or a
+                // lost answer, leaves the live limits unknown.
+                let outcome = match LimitsRefusal::from_details(&error.details) {
+                    Some(LimitsRefusal::NotRunning) => {
+                        "found the Container not running, so the new limits do not apply"
+                    }
+                    Some(_) => {
+                        "did not apply the new limits. The Container keeps its previous limits"
+                    }
+                    None => "could not confirm the new limits",
+                };
+                (
+                    format!(
+                        "{} {outcome}",
+                        server.map_or_else(
+                            || "The Server".to_owned(),
+                            |name| format!("Server {name}")
+                        )
+                    ),
+                    cause,
+                )
+            }
             ExecutionError::Machine { action, error } => {
                 let mut cause = vec![error.message.clone()];
                 cause.extend(ployz_core::error_chain::causes(error));
@@ -437,12 +484,15 @@ impl Failure {
 
 type Key = (ServiceName, MachineId);
 
-/// Whether `operation` starts a new Service Container.
+/// Whether `operation` leaves a Service Container serving the new spec: a fresh
+/// start, or a running Container updated in place.
 #[must_use]
 pub const fn starts_container(operation: &DeployOperation) -> bool {
     matches!(
         operation,
-        DeployOperation::RunContainer { .. } | DeployOperation::ReplaceContainer(_)
+        DeployOperation::RunContainer { .. }
+            | DeployOperation::ReplaceContainer(_)
+            | DeployOperation::UpdateContainer(_)
     )
 }
 
@@ -487,8 +537,9 @@ impl RowTracker {
                 .or_insert_with(|| (server, Vec::new(), None));
             statuses.push((&row.status, starts_container(&row.operation)));
             if starts_container(&row.operation) {
-                let done = matches!(row.status, OperationStatus::Completed);
-                *serving = Some(serving.unwrap_or(true) && done);
+                let serves = matches!(row.operation, DeployOperation::UpdateContainer(_))
+                    || matches!(row.status, OperationStatus::Completed);
+                *serving = Some(serving.unwrap_or(true) && serves);
             }
         }
         let mut changes = Vec::new();
@@ -536,9 +587,9 @@ fn container(row: &OperationRow, last: Option<ContainerId>) -> Option<ContainerI
             OperationPhase::WaitingForHealth { container_id, .. }
             | OperationPhase::WaitingForHook { container_id, .. }
             | OperationPhase::WaitingForSwitch { container_id } => Some(*container_id),
-            OperationPhase::StoppingContainer | OperationPhase::RemovingContainer => {
-                row.operation.container_id()
-            }
+            OperationPhase::StoppingContainer
+            | OperationPhase::RemovingContainer
+            | OperationPhase::UpdatingContainer => row.operation.container_id(),
             OperationPhase::Starting
             | OperationPhase::CreatingContainer
             | OperationPhase::StartingContainer
@@ -549,9 +600,9 @@ fn container(row: &OperationRow, last: Option<ContainerId>) -> Option<ContainerI
             ExecutionError::Health { container_id, .. }
             | ExecutionError::Hook { container_id, .. } => Some(*container_id),
             ExecutionError::Machine { action, .. } => match action {
-                MachineAction::StopContainer | MachineAction::RemoveContainer => {
-                    row.operation.container_id()
-                }
+                MachineAction::StopContainer
+                | MachineAction::RemoveContainer
+                | MachineAction::UpdateContainerLimits => row.operation.container_id(),
                 MachineAction::InspectContainer => last,
                 MachineAction::CreateContainer
                 | MachineAction::StartContainer
@@ -1082,6 +1133,104 @@ mod tests {
             format!(
                 "Server {machine_id} needs a newer Ployz. It cannot serve ployz.serving.routes.v1."
             )
+        );
+    }
+
+    #[test]
+    fn a_container_updated_in_place_serves_throughout() {
+        let machine_id = "a".repeat(32);
+        let tracked = |status: serde_json::Value| {
+            let rows: Vec<OperationRow> = serde_json::from_value(serde_json::json!([{
+                "index": 0, "machine_id": machine_id, "service_name": "web",
+                "operation": {
+                    "type": "update_container", "machine_id": machine_id, "container_id": "c".repeat(64),
+                    "spec": {
+                        "service_id": "b".repeat(32), "name": "web",
+                        "mode": {"mode": "replicated", "replicas": 1},
+                        "container": {"image": "web:1", "pull_policy": "missing", "resources": {"memory_bytes": 64}}
+                    }
+                },
+                "status": status
+            }]))
+            .unwrap();
+            super::RowTracker::default().changes(&rows).remove(0).state
+        };
+        assert_eq!(
+            tracked(
+                serde_json::json!({"type": "running", "phase": {"type": "updating_container"}})
+            ),
+            RowState::Running {
+                phase: RowPhase::UpdatingContainer,
+                serving: true,
+            }
+        );
+        assert_eq!(
+            tracked(serde_json::json!({"type": "completed"})),
+            RowState::Completed
+        );
+    }
+
+    #[test]
+    fn a_failed_limits_update_names_the_server_and_keeps_dockers_words() {
+        let machine_id = "a".repeat(32);
+        let operations: Vec<OperationRow> = serde_json::from_value(serde_json::json!([{
+            "index": 0, "machine_id": machine_id, "machine_name": "prod-1",
+            "operation": {"type": "remove_container", "machine_id": machine_id, "container_id": "c".repeat(64)},
+            "status": {"type": "pending"}
+        }]))
+        .unwrap();
+        let docker = "Docker responded with status code 400: Conflicting options: Nano CPUs and CPU Period cannot both be set";
+        let error = ExecutionError::Machine {
+            action: MachineAction::UpdateContainerLimits,
+            error: RpcError {
+                code: RpcErrorCode::Internal,
+                message: "Docker operation failed".into(),
+                details: serde_json::json!({"machine_id": machine_id}),
+                cause: vec![docker.into()],
+            },
+        };
+        let named = Failure::of(&error, &operations);
+        assert_eq!(
+            named.reason,
+            "Server prod-1 could not confirm the new limits"
+        );
+        assert_eq!(named.cause, ["Docker operation failed", docker]);
+        assert_eq!(
+            Failure::of(&error, &[]).reason,
+            format!("Server {machine_id} could not confirm the new limits")
+        );
+    }
+
+    #[test]
+    fn a_refused_limits_update_says_which_limits_hold() {
+        let machine_id = "a".repeat(32);
+        let refused = |reason: &str, message: &str| ExecutionError::Machine {
+            action: MachineAction::UpdateContainerLimits,
+            error: RpcError {
+                code: RpcErrorCode::Conflict,
+                message: message.into(),
+                details: serde_json::json!({"machine_id": machine_id, "reason": reason}),
+                cause: Vec::new(),
+            },
+        };
+        let message = "container c cannot take these limits in place: the Container runs with a higher memory limit";
+        let before_any_change = Failure::of(&refused("would_lower_memory", message), &[]);
+        assert_eq!(
+            before_any_change.reason,
+            format!(
+                "Server {machine_id} did not apply the new limits. The Container keeps its previous limits"
+            )
+        );
+        assert_eq!(before_any_change.cause, [message]);
+        assert_eq!(
+            Failure::of(&refused("not_running", "stopped"), &[]).reason,
+            format!(
+                "Server {machine_id} found the Container not running, so the new limits do not apply"
+            )
+        );
+        assert_eq!(
+            Failure::of(&refused("some_future_reason", "later"), &[]).reason,
+            format!("Server {machine_id} could not confirm the new limits")
         );
     }
 
