@@ -1202,6 +1202,42 @@ fn discard_review_names_a_staged_image_on_a_saved_repository_as_the_image() {
     );
 }
 
+#[test]
+fn discard_review_names_a_staged_image_on_a_saved_empty_source_as_the_image() {
+    let (store, who) = shop();
+    store
+        .write(
+            &who,
+            &CreateService {
+                id: ServiceLineageId::parse("00000000-0000-4000-8000-000000000006").unwrap(),
+                environment: EnvironmentRef::default(),
+                name: ServiceName::parse("blank").unwrap(),
+                image: None,
+                template: None,
+            },
+        )
+        .unwrap();
+    publish(&store, &who, None).unwrap();
+    set(&store, &who, "blank.image", json!("nginx:2"));
+    // The saved empty source leaves blank no source row to keep after the discard.
+    assert_eq!(discard_review(&store, &who).dropped, ["blank.image"]);
+    assert_eq!(value(&store, &who, "blank.image"), None);
+}
+
+#[test]
+fn discard_review_names_a_deployed_services_source_as_core_does() {
+    let (store, who) = shop();
+    git_edit(&store, &who, "web.repository", json!("acme/web"));
+    apply_all(&store, &who, &Trusted::default());
+    set(&store, &who, "web.rootDir", json!("/one"));
+    publish(&store, &who, None).unwrap();
+    set(&store, &who, "web.rootDir", json!("/two"));
+    // The saved `/one` keeps a `web.source` row, but web is deployed: only the
+    // rootDir went, and `web.source` is how its review names that.
+    assert_eq!(discard_review(&store, &who).dropped, ["web.source"]);
+    assert_eq!(value(&store, &who, "web.rootDir"), Some(json!("/one")));
+}
+
 fn diff_rows(store: &ConfigStore, who: &Actor) -> Vec<String> {
     diff(store, who)
         .review_changes()

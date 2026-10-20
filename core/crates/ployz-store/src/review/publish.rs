@@ -280,38 +280,40 @@ pub(crate) fn discard(
         saved: reviewed.saved.as_ref().map(|saved| saved.revision),
         changed,
         reversed,
-        dropped: dropped(&before, &view.review_changes()),
+        dropped: dropped(&before, &view),
     })
 }
 
-/// Core names a source that changed since its introduction `web.source`; once that
-/// change goes, a new Service's row is the one `set` names. Name it by the kind the
-/// discard threw away, `web.image` or `web.repository`, since one RowId holds both.
-fn source_named(row: &ServiceSettingChange, now: &super::NodeChange) -> String {
-    let kept = now
-        .settings
-        .iter()
-        .any(|kept| kept.row.is_some() && kept.row == row.row);
+/// Core names a source that changed since its introduction `web.source`; `set`, and
+/// the review of a Service never deployed (see `sources`), name it by its kind. So a
+/// dropped one on such a Service is named by the kind the discard threw away,
+/// `web.image` or `web.repository`; a deployed Service's stays `web.source`.
+fn source_named(row: &ServiceSettingChange, never_deployed: bool) -> String {
     let set = match row.after.get("type").and_then(|kind| kind.as_str()) {
         Some("image") => "image",
         Some("git") => "repository",
         _ => return row.path.clone(),
     };
     match row.path.strip_suffix(".source") {
-        Some(service) if kept => format!("{service}.{set}"),
+        Some(service) if never_deployed => format!("{service}.{set}"),
         _ => row.path.clone(),
     }
 }
 
-/// The paths of `before`'s changes that `after` no longer holds: a changed
+/// The paths of `before`'s changes that `view` no longer holds: a changed
 /// Setting, or a node it no longer makes or removes.
-fn dropped(before: &[super::NodeChange], after: &[super::NodeChange]) -> Vec<String> {
+fn dropped(before: &[super::NodeChange], view: &super::DiffView) -> Vec<String> {
+    let after = view.review_changes();
     before
         .iter()
         .flat_map(|change| {
             let now = after
                 .iter()
                 .find(|now| now.node == change.node && now.lifecycle == change.lifecycle);
+            // A create among the deploy changes has no Applied State, as `sources` reads it.
+            let never_deployed = view.changes.iter().any(|deploy| {
+                deploy.node == change.node && deploy.lifecycle == ReviewLifecycleKind::Create
+            });
             match (change.lifecycle, now) {
                 (ReviewLifecycleKind::Update, None) => {
                     change.settings.iter().map(|row| row.path.clone()).collect()
@@ -326,7 +328,7 @@ fn dropped(before: &[super::NodeChange], after: &[super::NodeChange]) -> Vec<Str
                                 && kept.after == row.after
                         })
                     })
-                    .map(|row| source_named(row, now))
+                    .map(|row| source_named(row, never_deployed))
                     .collect(),
                 (_, None) => vec![match change.node.node_type {
                     EnvironmentNodeType::Service => change.name.clone(),
