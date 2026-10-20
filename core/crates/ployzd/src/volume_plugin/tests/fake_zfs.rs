@@ -443,7 +443,7 @@ case "$*" in
       if [ "$previous" = -o ]; then
         case "$option" in
           refquota=*|keylocation=*|sharesmb=*) ;;
-          *) put "$d/${{option%%=*}}" "${{option#*=}}" ;;
+          *) printf '%s\n' "${{option#*=}}" > "$d/${{option%%=*}}" ;;
         esac
       fi
       previous=$option
@@ -461,14 +461,16 @@ case "$*" in
         {{ printf '%s@%s\t%s\t%s\n' "$fs" "$arg" "$guid" "$((1700000000 + count))"; [ ! -e "$d/snapshots" ] || cat "$d/snapshots"; }} > "$d/snapshots.new"
         mv "$d/snapshots.new" "$d/snapshots"
         # A first receive lands the stream's properties; a lost connection loses them.
-        if [ -e '{readonly_lost}' ]; then put "$d/readonly" off; else put "$d/readonly" on; fi
-        put "$d/refquota" "${{7#refquota=}}"
+        if [ -e '{readonly_lost}' ]; then echo off > "$d/readonly.new"; else echo on > "$d/readonly.new"; fi
+        mv "$d/readonly.new" "$d/readonly"
+        printf '%s\n' "${{7#refquota=}}" > "$d/refquota"
         ;;
       break)
         cat >/dev/null
         echo 'cannot receive: connection reset' >&2
         echo 'token-1' > "$d/receive_resume_token"
-        put "$d/readonly" off
+        echo off > "$d/readonly.new"
+        mv "$d/readonly.new" "$d/readonly"
         exit 1
         ;;
       *) echo "fake zfs receive: unexpected stream $verb" >&2; exit 1 ;;
