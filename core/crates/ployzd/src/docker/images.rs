@@ -27,8 +27,16 @@ const KEEP_UNDER_PRESSURE: usize = 1;
 const IDLE_SECONDS: i64 = 7 * 24 * 60 * 60;
 /// Below this free share of the Docker root, keep only [`KEEP_UNDER_PRESSURE`].
 const PRESSURE_FREE_PERCENT: u64 = 20;
-/// Below this free under the Docker root, a failed pull is a full disk.
+/// Below this free under the Docker root, a failed layer write is a full disk.
 const DISK_FULL_FREE_BYTES: u64 = 1_000_000_000;
+/// ENOSPC, as Docker words it.
+const OUT_OF_SPACE: &str = "no space left on device";
+/// The steps in which containerd writes a pulled layer to disk.
+const LAYER_WRITES: [&str; 3] = [
+    "failed to extract layer",
+    "failed to register layer",
+    "failed commit on ref",
+];
 /// How long a failed pull waits on `docker info` before reporting the failure as is.
 const DISK_READ_BOUND: std::time::Duration = std::time::Duration::from_secs(3);
 
@@ -190,15 +198,18 @@ fn superseded(images: &[ImageSummary], repository: &str, pressure: bool, now: i6
         .collect()
 }
 
-/// A registry's answer stays itself; any other failure with `free` under
-/// [`DISK_FULL_FREE_BYTES`] is the full disk, with Docker's error as its cause.
+/// A pull is the full disk, with Docker's error as its cause, when Docker says the
+/// device is out of space, or when containerd failed writing a layer with `free`
+/// under [`DISK_FULL_FREE_BYTES`]: it then fails with whatever call ran out. Any
+/// other failure, a registry's answer among them, stays itself.
 fn pull_failure(error: DockerError, free: Option<(String, u64)>) -> Error {
-    let answered = matches!(
-        &error,
-        DockerError::DockerResponseServerError { status_code, .. } if (400..500).contains(status_code)
-    );
+    let message = error.to_string();
+    let out_of_space = message.contains(OUT_OF_SPACE);
+    let layer_write = LAYER_WRITES.iter().any(|write| message.contains(write));
     match free {
-        Some((docker_root, free_bytes)) if free_bytes < DISK_FULL_FREE_BYTES && !answered => {
+        Some((docker_root, free_bytes))
+            if out_of_space || (layer_write && free_bytes < DISK_FULL_FREE_BYTES) =>
+        {
             Error::DiskFull {
                 full: DiskFull {
                     docker_root,
@@ -397,6 +408,70 @@ mod tests {
             Some(("/var/lib/docker".into(), 0)),
         );
         assert!(matches!(error, Error::ImagePull(_)));
+    }
+
+    fn reason(error: DockerError, free_bytes: u64) -> String {
+        let error = pull_failure(error, Some(("/var/lib/docker".into(), free_bytes)));
+        ployz_store::Failure::of(
+            &ployz_core::ExecutionError::Machine {
+                action: ployz_core::MachineAction::PullImage,
+                error: ployz_core::RpcError::from(&error),
+            },
+            &[],
+        )
+        .reason
+    }
+
+    fn streamed(error: &str) -> DockerError {
+        DockerError::DockerStreamError {
+            error: error.into(),
+        }
+    }
+
+    #[test]
+    fn a_streamed_registry_error_stays_itself_on_a_full_disk() {
+        assert_eq!(
+            reason(streamed(MANIFEST_UNKNOWN), 48_000_000),
+            "pull image failed"
+        );
+    }
+
+    #[test]
+    fn an_unnamed_failure_stays_itself_on_a_full_disk() {
+        assert_eq!(
+            reason(streamed("unexpected EOF"), 48_000_000),
+            "pull image failed"
+        );
+    }
+
+    #[test]
+    fn docker_saying_the_disk_is_out_of_space_names_the_disk() {
+        let out_of_space = "write /var/lib/docker/tmp/GetImageBlob1: no space left on device";
+        let full = "The Server's disk is full: 48 MB free under /var/lib/docker";
+        assert_eq!(reason(streamed(out_of_space), 48_000_000), full);
+        assert_eq!(
+            reason(
+                DockerError::DockerResponseServerError {
+                    status_code: 500,
+                    message: out_of_space.into(),
+                },
+                48_000_000
+            ),
+            full
+        );
+    }
+
+    #[test]
+    fn a_failed_layer_commit_on_a_full_disk_names_the_disk() {
+        assert_eq!(
+            reason(
+                streamed(
+                    "failed commit on ref \"layer-sha256:fd04\": commit failed: rename /var/lib/containerd/ingest/fd04/data: no such file or directory"
+                ),
+                74_000_000
+            ),
+            "The Server's disk is full: 74 MB free under /var/lib/docker"
+        );
     }
 
     /// A Docker that refuses the pull with a registry error in the pull's stream, as
