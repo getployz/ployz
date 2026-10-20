@@ -201,8 +201,12 @@ fn superseded(images: &[ImageSummary], repository: &str, pressure: bool, now: i6
 /// A pull is the full disk, with Docker's error as its cause, when Docker says the
 /// device is out of space, or when containerd failed writing a layer with `free`
 /// under [`DISK_FULL_FREE_BYTES`]: it then fails with whatever call ran out. Any
-/// other failure, a registry's answer among them, stays itself.
+/// other failure, a registry's answer among them, stays itself. A not-found answer
+/// stays itself whatever its text says, so the CLI names the missing image.
 fn pull_failure(error: DockerError, free: Option<(String, u64)>) -> Error {
+    if crate::docker_image::is_not_found(&error) {
+        return Error::ImagePull(error);
+    }
     let message = error.to_string();
     let out_of_space = message.contains(OUT_OF_SPACE);
     let layer_write = LAYER_WRITES.iter().any(|write| message.contains(write));
@@ -399,23 +403,39 @@ mod tests {
     }
 
     #[test]
-    fn a_registry_answer_stays_itself_on_a_full_disk() {
-        let error = pull_failure(
-            DockerError::DockerResponseServerError {
-                status_code: 404,
-                message: "not found".into(),
-            },
-            Some(("/var/lib/docker".into(), 0)),
+    fn a_missing_image_stays_missing_and_out_of_space_stays_a_full_disk() {
+        let both = format!("{MANIFEST_UNKNOWN}: no space left on device");
+        assert_eq!(
+            reason(
+                DockerError::DockerResponseServerError {
+                    status_code: 404,
+                    message: both,
+                },
+                0
+            ),
+            "Image ghcr.io/acme/missing:1 not found, or its registry needs credentials"
         );
-        assert!(matches!(error, Error::ImagePull(_)));
+        assert_eq!(
+            reason(
+                DockerError::DockerResponseServerError {
+                    status_code: 500,
+                    message: "write /var/lib/docker/tmp/GetImageBlob1: no space left on device"
+                        .into(),
+                },
+                48_000_000
+            ),
+            "The Server's disk is full: 48 MB free under /var/lib/docker"
+        );
     }
 
+    /// The reason a deploy shows for `error`, carried as the CLI carries a failed pull.
     fn reason(error: DockerError, free_bytes: u64) -> String {
         let error = pull_failure(error, Some(("/var/lib/docker".into(), free_bytes)));
         ployz_store::Failure::of(
             &ployz_core::ExecutionError::Machine {
                 action: ployz_core::MachineAction::PullImage,
-                error: ployz_core::RpcError::from(&error),
+                error: ployz_core::RpcError::from(&error)
+                    .pulling("ghcr.io/acme/missing:1", PullPolicy::Always),
             },
             &[],
         )
