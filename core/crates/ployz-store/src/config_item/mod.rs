@@ -425,6 +425,18 @@ pub(crate) fn attach(
                 json!({ "example": "/etc/app" }),
             )
         })?;
+    if let Some(kernel) = ["/proc", "/sys", "/dev"]
+        .into_iter()
+        .find(|kernel| dir.as_str() == *kernel || dir.as_str().starts_with(&format!("{kernel}/")))
+    {
+        return Err(error::invalid(
+            format!(
+                "{service}.configs.{config}: {} is under {kernel}, which the kernel fills, so it can't hold a Config",
+                dir.as_str()
+            ),
+            json!({ "example": "/etc/app" }),
+        ));
+    }
     let id = environment.config(config)?.resource_id.clone();
     let names = environment.names();
     let volumes = environment.working.volumes.clone();

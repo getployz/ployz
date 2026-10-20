@@ -16,9 +16,9 @@ use crate::cloud_login::{
     self, CredentialStore, DEFAULT_CLOUD, LoginError, Organization, Secret, SignedIn,
 };
 
-/// How long a call that can start an operation waits for Cloud's answer. Cloud plans
-/// before it answers, asking the Servers for their copies (up to about 20s when one is
-/// slow), so the client's 15s default would give up on a run Cloud goes on to start.
+/// How long a call Cloud answers only after reading the Servers waits for that answer.
+/// Cloud may spend up to 50s reading them to plan a clean, so the client's 15s default
+/// would give up on a run Cloud goes on to start.
 const OPERATION_TIMEOUT: Duration = Duration::from_secs(60);
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -1046,6 +1046,36 @@ pub(crate) async fn refusable<T: DeserializeOwned>(
     .await
 }
 
+/// [`refusable`] for a call Cloud answers only once it has read the Servers, so it waits
+/// [`OPERATION_TIMEOUT`] rather than the client's 15s default.
+///
+/// # Errors
+///
+/// Returns Cloud's refusal, or a Cloud failure; a Cloud without the route is
+/// [`LoginError::Unsupported`].
+pub(crate) async fn refusable_operation<T: DeserializeOwned>(
+    credential: &Credential,
+    method: Method,
+    path: &str,
+    body: Option<&serde_json::Value>,
+) -> Result<T, StoreCallError> {
+    let response = operation_request(credential, method, path, body)?
+        .send()
+        .await
+        .map_err(|error| cloud_login::unreachable(credential.cloud(), error))?;
+    store_answer(credential, response, cloud_login::unreachable).await
+}
+
+fn operation_request(
+    credential: &Credential,
+    method: Method,
+    path: &str,
+    body: Option<&serde_json::Value>,
+) -> Result<reqwest::RequestBuilder, LoginError> {
+    let url = format!("{}/api/cli/{path}", credential.cloud());
+    Ok(request(credential, method, &url, body)?.timeout(OPERATION_TIMEOUT))
+}
+
 /// The most compressed source one upload may hold, the same as Cloud's cap. It stays
 /// under the 100 MB request body Cloudflare passes, in front of ployz.dev or a Tunnel.
 pub(crate) const UPLOAD_LIMIT: usize = 95 * 1024 * 1024;
@@ -1645,6 +1675,28 @@ mod tests {
         assert_eq!(
             refused.details,
             serde_json::json!({ "valid_children": ["acme/web"] })
+        );
+    }
+
+    #[test]
+    fn a_clean_preview_waits_past_the_cluster_time_cloud_may_spend_on_it() {
+        // Cloud's clean plan may spend a connect (30s), a Data Loss read (10s) and a frame (10s).
+        let cloud_bound = Duration::from_secs(50);
+        let preview = operation_request(
+            &token("https://cloud.test"),
+            Method::GET,
+            "namespaces/app/clean",
+            None,
+        )
+        .unwrap()
+        .build()
+        .unwrap();
+        assert!(
+            preview
+                .timeout()
+                .is_some_and(|waits| *waits >= cloud_bound + Duration::from_secs(5)),
+            "{:?}",
+            preview.timeout()
         );
     }
 

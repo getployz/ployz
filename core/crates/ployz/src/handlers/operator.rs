@@ -42,7 +42,9 @@ use super::{
 
 pub(super) fn exec_command(command: Command) -> Command {
     scoped(base(command, "Run a command in a Service's container"))
-        .arg(value("container", None))
+        .arg(value("container", None).value_name("CONTAINER").help(
+            "Which of the Service's Containers, by name or ID prefix [default: a running one]",
+        ))
         .arg(switch("detach", Some('d')))
         .arg(switch("no-tty", Some('T')))
         .arg(positional("service", true))
@@ -505,8 +507,10 @@ pub fn logs(root: &ArgMatches) -> Result<(), Error> {
                 {
                     Ok(inputs) => {
                         let entries = merge_logs(inputs, cancellation);
-                        print_logs(entries, utc, &deployments, |entry| printed.covers(entry))
-                            .await?;
+                        print_logs(entries, utc, &deployments, &mut gaps, |entry| {
+                            printed.covers(entry)
+                        })
+                        .await?;
                     }
                     // Nothing runs to follow; the history above is the whole log.
                     Err(
@@ -661,6 +665,7 @@ pub fn machine_logs(root: &ArgMatches) -> Result<(), Error> {
                 merge_logs(inputs, cancellation),
                 utc,
                 &HashMap::new(),
+                &mut gaps,
                 |_| false,
             )
             .await?;
@@ -975,13 +980,24 @@ impl Printed {
 }
 
 async fn print_logs(
-    mut entries: tokio::sync::mpsc::Receiver<Result<LogEntry, String>>,
+    mut entries: tokio::sync::mpsc::Receiver<Result<LogEntry, crate::operator::LogFault>>,
     utc: bool,
     deployments: &HashMap<ContainerId, String>,
+    gaps: &mut crate::ui::Gaps,
     printed: impl Fn(&LogEntry) -> bool,
 ) -> Result<(), Error> {
     while let Some(entry) = entries.recv().await {
-        let entry = entry.map_err(Error::unavailable)?;
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(crate::operator::LogFault::Error(error)) => return Err(Error::unavailable(error)),
+            Err(crate::operator::LogFault::Stalled(machine_id)) => {
+                gaps.stopped(machine_id);
+                if crate::ui::json() {
+                    crate::ui::emit_line(&*gaps)?;
+                }
+                continue;
+            }
+        };
         if printed(&entry) {
             continue;
         }
@@ -1438,6 +1454,31 @@ mod scope_tests {
         assert_eq!(gaps.failures.len(), 1);
         let partial = gaps.outcome().unwrap_err();
         assert_eq!(partial.printed_exit(), Some(crate::ui::PARTIAL_EXIT));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_followed_server_that_stops_answering_is_named_and_makes_the_follow_partial() {
+        let machine = ployz_core::MachineId::parse("1".repeat(32)).unwrap();
+        let name = ployz_core::MachineName::parse("web-1").unwrap();
+        let mut gaps = crate::ui::Gaps::default().named([(machine, &name)]);
+        let silent = crate::operator::LogInput {
+            identity: format!("dtest-production/web/ployz-create-{}", "06d0".repeat(16)),
+            machine,
+            stream: Box::pin(futures_util::stream::pending()),
+        };
+        let entries = merge_logs(vec![silent], tokio_util::sync::CancellationToken::new());
+        print_logs(entries, true, &HashMap::new(), &mut gaps, |_| false)
+            .await
+            .unwrap();
+        assert_eq!(gaps.omitted, [machine]);
+        assert_eq!(
+            gaps.stopped_answering(&machine),
+            "web-1 stopped answering; its lines are missing from here on."
+        );
+        assert_eq!(
+            gaps.outcome().unwrap_err().printed_exit(),
+            Some(crate::ui::PARTIAL_EXIT)
+        );
     }
 
     #[test]

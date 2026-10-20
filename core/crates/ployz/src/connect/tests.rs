@@ -186,7 +186,7 @@ fn machine_rpc_status_prints_the_message_not_transport_metadata() {
     assert_eq!(error.to_string(), "invalid log time \"notatime\"");
     assert_eq!(
         crate::ui::chain_text(&ConnectError::Rpc(error)),
-        "Machine RPC failed: invalid log time \"notatime\""
+        "Ployz's call to your Server's daemon failed: invalid log time \"notatime\""
     );
 }
 
@@ -290,6 +290,7 @@ fn each_connect_failure_names_one_retry_class() {
         (ConnectError::EntryNotReady, Retry::AfterRestart),
         (remote(RpcErrorCode::Unavailable), Retry::Never),
         (ConnectError::ClientRefused, Retry::Never),
+        (ConnectError::OlderMachine, Retry::Never),
         (ConnectError::SshClientMissing, Retry::Never),
     ] {
         assert_eq!(error.retry(), retry, "{error}");

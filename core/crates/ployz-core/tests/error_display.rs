@@ -71,6 +71,7 @@ fn deploy_failures_keep_runtime_exit_and_secondary_stop_causes() {
             observation: ContainerRuntimeObservation::Exited { code: 137 },
             last_check: None,
         },
+        out_of_memory: None,
     }
     .to_string();
     assert!(

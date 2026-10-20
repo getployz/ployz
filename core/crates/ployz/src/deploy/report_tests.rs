@@ -221,6 +221,7 @@ fn row_state(state: &str) -> RowState {
             step: None,
             log: None,
             unanswered: false,
+            out_of_memory: None,
         },
         "not_attempted" => RowState::NotAttempted,
         other => panic!("unknown row state {other}"),

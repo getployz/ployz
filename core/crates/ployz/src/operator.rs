@@ -127,7 +127,7 @@ pub enum OperatorError {
     Container(#[from] ployz_core::ContainerSelectorError),
     #[error("Service has no regular containers")]
     NoRegularContainer,
-    #[error("Machine RPC failed.")]
+    #[error("Ployz's call to your Server's daemon failed.")]
     Rpc(#[source] TransportError),
     #[error("Stream protocol failed.")]
     Protocol(#[from] StreamProtocolError),
@@ -411,7 +411,18 @@ pub struct ExecSession {
 
 pub struct LogInput {
     pub identity: String,
+    /// The Server the stream comes from.
+    pub machine: ployz_core::MachineId,
     pub stream: LogSource,
+}
+
+/// Why the follow merger could not deliver a line.
+#[derive(Debug, PartialEq, Eq)]
+pub enum LogFault {
+    /// A stream failed, or its Server sent an error.
+    Error(String),
+    /// A Server stopped answering; its stream sent nothing for the stall timeout.
+    Stalled(ployz_core::MachineId),
 }
 
 pub async fn open_exec(
@@ -632,7 +643,7 @@ pub async fn open_service_logs(
                 client
                     .tail_logs_stream(&target, request)
                     .await
-                    .map(|stream| stream_input(identity, stream))
+                    .map(|stream| stream_input(identity, observation.machine_id, stream))
             })
             .await
             {
@@ -925,7 +936,7 @@ pub async fn open_machine_logs(
                 client
                     .tail_logs_stream(&target, request)
                     .await
-                    .map(|stream| stream_input(identity, stream))
+                    .map(|stream| stream_input(identity, machine.machine.id, stream))
             })
             .await
             {
@@ -940,9 +951,14 @@ pub async fn open_machine_logs(
     Ok(inputs)
 }
 
-pub(crate) fn stream_input(identity: String, stream: Streaming<OpaquePayload>) -> LogInput {
+pub(crate) fn stream_input(
+    identity: String,
+    machine: ployz_core::MachineId,
+    stream: Streaming<OpaquePayload>,
+) -> LogInput {
     LogInput {
         identity,
+        machine,
         stream: Box::pin(stream.map(|result| {
             result
                 .map_err(LogError::from)
@@ -1045,6 +1061,7 @@ enum LogState {
 
 struct LogInputState {
     identity: String,
+    machine: ployz_core::MachineId,
     watermark: i64,
     last_activity: tokio::time::Instant,
     state: LogState,
@@ -1083,7 +1100,7 @@ impl PartialOrd for QueuedLog {
 pub fn merge_logs(
     inputs: Vec<LogInput>,
     cancellation: CancellationToken,
-) -> mpsc::Receiver<Result<LogEntry, String>> {
+) -> mpsc::Receiver<Result<LogEntry, LogFault>> {
     merge_logs_with_options(inputs, cancellation, LOG_STALL_TIMEOUT, LOG_STALL_CHECK)
 }
 
@@ -1092,7 +1109,7 @@ fn merge_logs_with_options(
     cancellation: CancellationToken,
     stall_timeout: Duration,
     stall_check: Duration,
-) -> mpsc::Receiver<Result<LogEntry, String>> {
+) -> mpsc::Receiver<Result<LogEntry, LogFault>> {
     let (output_sender, output) = mpsc::channel(100);
     if inputs.is_empty() {
         return output;
@@ -1104,6 +1121,7 @@ fn merge_logs_with_options(
     for (index, input) in inputs.into_iter().enumerate() {
         sources.push(LogInputState {
             identity: input.identity,
+            machine: input.machine,
             watermark: 0,
             last_activity: now,
             state: LogState::Live,
@@ -1135,9 +1153,9 @@ fn merge_logs_with_options(
                             LogState::Live | LogState::Stalled => source.state = LogState::Live,
                         }
                         match entry {
-                            Err(error) => if output_sender.send(Err(format!("{}: {error}", source.identity))).await.is_err() { return },
+                            Err(error) => if output_sender.send(Err(LogFault::Error(format!("{}: {error}", source.identity)))).await.is_err() { return },
                             Ok(entry) => match &entry.body {
-                                LogBody::Error(error) => if output_sender.send(Err(format!("{}: {error}", source.identity))).await.is_err() { return },
+                                LogBody::Error(error) => if output_sender.send(Err(LogFault::Error(format!("{}: {error}", source.identity)))).await.is_err() { return },
                                 LogBody::Heartbeat => {
                                     source.watermark = source.watermark.max(entry.timestamp_unix_nanos);
                                 }
@@ -1156,16 +1174,7 @@ fn merge_logs_with_options(
                     }
                     Some(LogEvent { index, entry: None }) => {
                         if let Some(source) = sources.get_mut(index) { source.state = LogState::Closed; }
-                        if flush_ready(&sources, &mut queue, &output_sender).await.is_err() { return }
-                        if sources.iter().all(|source| match source.state {
-                            LogState::Closed => true,
-                            LogState::Live | LogState::Stalled => false,
-                        }) {
-                            while let Some(queued) = queue.pop() {
-                                if output_sender.send(Ok(queued.entry)).await.is_err() { return }
-                            }
-                            return;
-                        }
+                        if flush_ready(&sources, &mut queue, &output_sender).await.is_err() || !any_live(&sources) { return }
                     }
                     None => return,
                 },
@@ -1175,10 +1184,11 @@ fn merge_logs_with_options(
                             && now.duration_since(source.last_activity) > stall_timeout
                         {
                             source.state = LogState::Stalled;
-                            if output_sender.send(Err(format!("log stream {} stalled", source.identity))).await.is_err() { return }
+                            if output_sender.send(Err(LogFault::Stalled(source.machine))).await.is_err() { return }
                         }
                     }
-                    if flush_ready(&sources, &mut queue, &output_sender).await.is_err() { return }
+                    // Resuming a stalled stream is not supported, so with none live the follow is over.
+                    if flush_ready(&sources, &mut queue, &output_sender).await.is_err() || !any_live(&sources) { return }
                 }
             }
         }
@@ -1186,10 +1196,17 @@ fn merge_logs_with_options(
     output
 }
 
+fn any_live(sources: &[LogInputState]) -> bool {
+    sources.iter().any(|source| match source.state {
+        LogState::Live => true,
+        LogState::Stalled | LogState::Closed => false,
+    })
+}
+
 async fn flush_ready(
     sources: &[LogInputState],
     queue: &mut BinaryHeap<QueuedLog>,
-    output: &mpsc::Sender<Result<LogEntry, String>>,
+    output: &mpsc::Sender<Result<LogEntry, LogFault>>,
 ) -> Result<(), ()> {
     let watermark = sources
         .iter()

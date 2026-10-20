@@ -245,8 +245,8 @@ impl Host for Chosen {
         unreachable!("the check-in never enrolls here")
     }
 
-    async fn participating(&self) -> bool {
-        false
+    async fn participating(&self) -> Option<String> {
+        None
     }
 
     async fn discard_zfs_build(&self) -> Result<(), String> {
@@ -329,8 +329,8 @@ impl Host for Stopper {
         unreachable!("the check-in never enrolls here")
     }
 
-    async fn participating(&self) -> bool {
-        false
+    async fn participating(&self) -> Option<String> {
+        None
     }
 
     async fn discard_zfs_build(&self) -> Result<(), String> {

@@ -25,6 +25,7 @@ const Deployed = Schema.Struct({
     number: Schema.NullOr(Schema.Number),
     status: Schema.Literals(DEPLOYMENT_STATUSES),
     services: Schema.Array(Schema.String),
+    ships: Schema.optional(Schema.Array(Schema.String)),
     remove: Schema.Boolean,
     started_at: Schema.NullOr(Schema.Number),
     ended_at: Schema.NullOr(Schema.Number),
@@ -123,7 +124,7 @@ export function ToolCard({ organizationSlug, scope, outcome }: { organizationSlu
 export function RunCard({ organizationSlug, scope, deployment }: { organizationSlug: string; scope: CollectionScope; deployment: Deployment }) {
   const { data } = useQuery(storeViewOptions(organizationSlug, scope, deploymentQuery(deployment.id)));
   const live = data?.ok ? data.value : null;
-  const shown = live ?? { ...deployment, services: [...deployment.services], outcome: null };
+  const shown = live ?? { ...deployment, services: [...deployment.services], ships: [...(deployment.ships ?? [])], outcome: null };
   const ran = shown.started_at !== null && shown.ended_at !== null ? formatDuration(shown.ended_at - shown.started_at) : null;
   const title = `Deployment ${deploymentLabel(shown)}`;
   return (

@@ -185,26 +185,26 @@ pub(super) enum Reach {
     Ask(Credential),
 }
 
-/// Reach the Cluster for a read Cloud can also answer, the way [`connect`] does, except
-/// that a credential Cloud refuses Server access, such as a Read only or Deploy token,
-/// comes back to ask Cloud instead.
-pub(super) async fn reach(matches: &ArgMatches, context: Option<&str>) -> Result<Reach, Error> {
+/// Reach the Cluster for a read Cloud can also answer, the way [`connect_or_none`] does,
+/// except that a credential Cloud refuses Server access, such as a Read only or Deploy
+/// token, comes back to ask Cloud instead.
+pub(super) async fn reach(
+    matches: &ArgMatches,
+    context: Option<&str>,
+) -> Result<Option<Reach>, Error> {
     if matches.get_one::<String>("connect").is_none() && context.is_none() {
         let store = CredentialStore::beside(&super::config_path(matches)?);
         if let Ok(credential) = cloud_account::from_env(&store).await {
             return match cloud_account::server_access(&credential).await {
-                Ok(access) => dial(matches, access)
-                    .await?
-                    .map(Reach::Dial)
-                    .ok_or_else(no_servers),
+                Ok(access) => Ok(dial(matches, access).await?.map(Reach::Dial)),
                 Err(StoreCallError::Refused(error)) if error.code.as_str() == "forbidden" => {
-                    Ok(Reach::Ask(credential))
+                    Ok(Some(Reach::Ask(credential)))
                 }
                 Err(error) => Err(error.into()),
             };
         }
     }
-    connect(matches, context).await.map(Reach::Dial)
+    Ok(connect_or_none(matches, context).await?.map(Reach::Dial))
 }
 
 /// What a forget reaches.
@@ -350,8 +350,15 @@ async fn dial_connections(
     crate::connect::connect_selected_with(selected, Arc::new(connector)).await
 }
 
-fn no_servers() -> Error {
-    Error::not_found("this Organization has no Servers").hint(Hint::Next("ployz server add".into()))
+const NO_SERVERS: &str = "this Organization has no Servers";
+
+pub(super) fn no_servers() -> Error {
+    Error::conflict(NO_SERVERS).hint(Hint::Next("ployz server add".into()))
+}
+
+/// Whether `report` is [`no_servers`]: Cloud knows no Server to look in.
+fn has_no_servers(report: &RpcError) -> bool {
+    report.code == RpcErrorCode::Conflict && report.message == NO_SERVERS
 }
 
 /// No Server of `access` gave this command access: the `unanswered` ones it held a
@@ -909,7 +916,10 @@ fn ingress_image() -> Arg {
 
 pub(super) fn provisioning_flags(command: Command) -> Command {
     machine_policy_flags(command)
-        .arg(value("name", None))
+        .arg(
+            value("name", None)
+                .help("Name the Server; it takes its hostname when omitted"),
+        )
         .arg(switch("no-install", None))
         .arg(
             value("storage", None)

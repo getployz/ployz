@@ -280,7 +280,7 @@ upgrading reads **Upgrading**.
 ### Turn on automatic upgrades
 
 Automatic upgrades are off until you turn them on. Click the **Upgrade settings** icon at the top
-of the **Servers** page and turn on **Upgrade automatically**. Any member can change it. Ployz
+of the **Servers** page and turn on **Upgrade automatically**. Only an owner or admin, or [Ployz support](../account/organizations.md#let-ployz-support-in), can change it. Ployz
 starts upgrading right away, then checks every hour. Turn the switch off to go back to upgrading by
 hand.
 
@@ -299,14 +299,15 @@ whether it went back to the release it ran before. Members who set **Failed auto
 ### Upgrade one server
 
 To upgrade one server, open it: its **Ployz** section reads **`0.2.2` is out**. Click **Upgrade**.
-Any member can upgrade servers while they're online and not building. One upgrade runs at a time
+Only an owner or admin, or [Ployz support](../account/organizations.md#let-ployz-support-in), can upgrade servers, and only while they're online and not building. For a
+member, **Upgrade** and **Try again** are disabled and say so. One upgrade runs at a time
 per organization, so **Upgrade** and **Try again** wait while one is running.
 
 ### Choose Stable or Beta releases
 
 Click the **Upgrade settings** icon at the top of the **Servers** page and set **Releases** to
-**Stable** or **Beta**. Stable is the default; Beta gets fixes early, as prereleases like `0.2.3-beta.1`. Any
-member can change it, and it applies to every upgrade, automatic or by hand. The **Servers** page
+**Stable** or **Beta**. Stable is the default; Beta gets fixes early, as prereleases like `0.2.3-beta.1`. Only an
+owner or admin, or [Ployz support](../account/organizations.md#let-ployz-support-in), can change it, and it applies to every upgrade, automatic or by hand. The **Servers** page
 and each server's page then show the newest release on that channel.
 
 Switching back to Stable never downgrades a server. A server on a beta ahead of Stable reads as
@@ -368,9 +369,10 @@ the command follows the upgrade that's running.
 
 ## Servers on different versions
 
-Ployz Cloud and the CLI keep working with servers that run an older Ployz release. The
-**Servers** page shows each one and offers its upgrade, as in
-[Upgrade Ployz on a server](#upgrade-ployz-on-a-server).
+Ployz Cloud and the CLI keep working with servers that run an older Ployz release, back to the
+first release after 0.3.0-beta.6. The **Servers** page shows each one and offers its upgrade, as in
+[Upgrade Ployz on a server](#upgrade-ployz-on-a-server). A server on 0.3.0-beta.6 or earlier is the
+exception: see [Servers on 0.3.0-beta.6 or earlier](#servers-on-030-beta6-or-earlier).
 
 When a server's release can't serve a feature, the feature names that server:
 
@@ -423,6 +425,35 @@ Server web-2 needs a newer Ployz. It cannot serve ployz.container.ensure.v1.
 Upgrade the server and run `ployz drain` again. The rerun finds services already off and carries
 on.
 
+### Servers on 0.3.0-beta.6 or earlier
+
+Starting with the first release after 0.3.0-beta.6, Ployz Cloud and the CLI prove their access in a
+new way on every connection, and servers on 0.3.0-beta.6 or earlier don't understand it. Through
+Ployz's relay, Cloud and a newer CLI can't manage such a server at all, and that includes starting
+its upgrade from the **Servers** page or with `ployz server upgrade`. The server keeps running your
+apps. The CLI stops with:
+
+```text
+This Server runs Ployz 0.3.0-beta.6 or earlier, which this release can't reach through the relay.
+```
+
+Upgrade each such server over SSH from your computer, one at a time. Install the CLI from the beta
+channel; the stable channel is still on a release before the change. Then run it with `--connect`
+and the server's SSH address:
+
+```sh
+curl -fsSL https://ployz.sh | sh -s -- beta
+ployz server upgrade beta web-1 --connect ssh://root@203.0.113.10
+```
+
+The server installs the newest release on the channel you name. Then Cloud and the CLI reach it
+through the relay again. If the upgrade fails, the server goes back to the release it ran before
+and keeps running; run the command again.
+
+The same boundary holds the other way: a CLI on 0.3.0-beta.6 or earlier can't reach a server on a
+later release. Install the newer CLI from the beta channel with
+`curl -fsSL https://ployz.sh | sh -s -- beta`.
+
 ## Remove a server
 
 > [!WARNING]
@@ -444,7 +475,10 @@ needs a newer Ployz on web-1". Upgrade that server, then remove again.
 run there, **Remove server** says how many, next to a **Drain** button. If only services whose
 volume is on the server are left, it names them: draining won't move them. It also names services
 no project owns, which draining leaves. `ployz server rm`
-warns about services still running there and prints the drain command.
+warns about services a drain could still move off it and prints the drain command. It leaves out
+what a drain won't move: services with a volume or bind mount on the server, global services, and
+Ployz's own ingress. On your last server it skips that warning.
+Ployz's build cache isn't one of the volumes you confirm losing.
 Otherwise services that ran only on that server stop. Your next deploy replaces its replicas on your other
 servers, except for services whose volume was on it (see
 [When a server goes down](../services/scaling.md#when-a-server-goes-down)). Removing your last
@@ -549,7 +583,8 @@ If you deleted all your servers at your provider, forget them:
 
 1. Go to **Organization** and, under **Danger**, click **Forget servers**. When the **Servers**
    page can't reach your servers, **Forget them and start over.** opens the same dialog. Only an
-   owner or admin can forget servers. For anyone else the button is disabled.
+   owner or admin, or [Ployz support](../account/organizations.md#let-ployz-support-in), can forget
+   servers. For a member the button is disabled.
 2. Ployz lists the servers and their volumes. Type your organization's slug and click **Forget
    servers**.
 

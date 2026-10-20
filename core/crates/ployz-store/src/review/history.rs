@@ -157,21 +157,19 @@ pub(crate) fn history(
         scrub.apply(revision, &mut intent);
         if index >= first {
             environment.working = intent.clone();
-            let changes = previous
-                .as_ref()
-                .map(|(_, baseline)| review::saved_comparison(&environment, baseline))
-                .transpose()?;
+            // The first revision is what it created, against an empty Environment.
+            let empty = crate::scope::empty(environment.summary.name.as_str());
+            let baseline = previous.as_ref().map_or(&empty, |(_, baseline)| baseline);
+            let changes = review::saved_comparison(&environment, baseline)?;
             revisions.push(SavedRevision {
                 revision,
                 message: row.optional_text(2)?.map(str::to_owned),
                 saved_by: row.parse_optional(3, "saved actor")?,
                 saved_at: row.optional_int(4)?,
                 predecessor: previous.as_ref().map(|(revision, _)| *revision),
-                changes: changes
-                    .as_ref()
-                    .map_or_else(Vec::new, |changes| changes.changes.clone()),
-                total_count: changes.as_ref().map_or(0, |changes| changes.total_count),
-                linked: changes.map(|changes| changes.linked).unwrap_or_default(),
+                changes: changes.changes,
+                total_count: changes.total_count,
+                linked: changes.linked,
             });
         }
         previous = Some((revision, intent));
@@ -241,7 +239,10 @@ pub(crate) fn stage(
             change: command.change.clone(),
         };
         return Err(error::confirmation_required(
-            "This History action overwrites draft changes",
+            format!(
+                "This History action overwrites draft changes to {}",
+                prepared.overwritten().join(", ")
+            ),
             json!({ "history_preview": preview_of(&environment, &reviewed, &prepared, &query) }),
         ));
     }
