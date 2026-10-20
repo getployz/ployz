@@ -202,7 +202,7 @@ it.live(
           operation: "read", query: { query: "environment", environment: here, path: "web", all: false },
         });
         const values = read.ok && read.value.view === "environment" ? read.value.values : assert.fail("no Settings");
-        assert.deepInclude(values?.env, { PREFERREDBUILDER: "machine-1", PREFERRED: "machine-2" });
+        assert.deepInclude(values?.["env"], { PREFERREDBUILDER: "machine-1", PREFERRED: "machine-2" });
       }).pipe(Effect.provide(layer));
     }),
   60_000,
