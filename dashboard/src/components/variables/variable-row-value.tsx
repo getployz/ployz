@@ -10,6 +10,7 @@ import type { ReferenceTarget } from "#/modules/variables/variable-autocomplete"
 const MASK = "*******";
 
 export function VariableRowValue({
+  variableKey,
   editing,
   editValue,
   isSealed,
@@ -24,6 +25,7 @@ export function VariableRowValue({
   onSetValue,
   onToggleReveal,
 }: {
+  variableKey: string;
   editing: boolean;
   editValue: string;
   isSealed: boolean;
@@ -52,11 +54,12 @@ export function VariableRowValue({
     };
     // A secret's value is typed blind and stored as-is.
     return isSealed ? (
-      <Input autoFocus type="password" autoComplete="off" aria-label="Secret value" value={editValue}
+      <Input autoFocus type="password" autoComplete="off" aria-label={`Value of ${variableKey}`} value={editValue}
         onChange={(event) => onChangeEditValue(event.target.value)} onKeyDown={onKeyDown} />
     ) : (
       <VariableValueInput
         autoFocus
+        aria-label={`Value of ${variableKey}`}
         value={editValue}
         onValueChange={onChangeEditValue}
         targets={valueTargets ?? []}
@@ -95,12 +98,12 @@ export function VariableRowValue({
         >
           {revealed ? <EyeOffIcon /> : <EyeIcon />}
           <span className="sr-only">
-            {revealed ? "Hide value" : "Show value"}
+            {revealed ? "Hide" : "Show"} {variableKey}
           </span>
         </Button>
       ) : null}
       {!isSealed ? (
-        <CopyButton value={plainValue} label="Copy value" />
+        <CopyButton value={plainValue} label={`Copy ${variableKey}`} />
       ) : null}
       {isSealed ? (
         <Popover>

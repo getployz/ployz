@@ -90,6 +90,7 @@ export function VariableRow({
 
       <div className="flex min-w-0 items-center gap-1.5">
       <VariableRowValue
+        variableKey={variable.key}
         editing={state.editing}
         editValue={state.editValue}
         isSealed={isSealed}
@@ -108,7 +109,9 @@ export function VariableRow({
       />
 
       <VariableRowActions
+        variableKey={variable.key}
         editing={state.editing}
+        refocus={state.refocusActions}
         exported={variable.exported}
         isSealed={isSealed}
         plainValue={plainValue}

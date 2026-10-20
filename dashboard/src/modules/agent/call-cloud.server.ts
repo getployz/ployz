@@ -252,11 +252,11 @@ const policyChangeOf = (set: Extract<Act["action"], { action: "set_server" }>): 
 const act = Effect.fn("CallCloud.act")(function* (caller: Caller, { attempt, digest, action }: Act, approvalId: string | null) {
   const organizationId = caller.organization.id;
   const call: OperationCall = { key: attempt, approvalId, loss: lossOf(action) };
-  const admitted = (admission: Admission | null, subject: Subject, what: string) => Effect.gen(function* () {
+  const admitted = (admission: Admission | null, subject: Subject, what: string, serverName: string | null = null) => Effect.gen(function* () {
     if (admission === null) return noSuch(what);
     if (!admission.ok) return { ok: false, refusal: admission.refusal } as const;
     const id = dashedAttempt(admission.id);
-    const [run] = yield* operationsOn(organizationId, subject, id, 1);
+    const [run] = yield* operationsOn(organizationId, subject, id, 1, serverName);
     const requested = run === undefined ? yield* admittedAt(organizationId, attempt) : null;
     return answer<Operation>(run ?? {
       attempt: id, run: what, state: "accepted", requested_at: Math.floor((requested ?? new Date()).getTime() / 1000), ended_at: null, reason: null, servers: [], kept: [], unanswered: [],
@@ -272,12 +272,13 @@ const act = Effect.fn("CallCloud.act")(function* (caller: Caller, { attempt, dig
       return yield* admitted(admission, { kind: "service", environment: action.environment, service: action.service }, "Service");
     }
     case "drain":
-      return yield* admitted(yield* drainServer(caller, action.server.machine, call), { kind: "server", machine: action.server.machine }, "Server");
+      return yield* admitted(yield* drainServer(caller, action.server.machine, call), { kind: "server", machine: action.server.machine }, "Server", action.server.name);
     case "upgrade":
       return yield* admitted(
         yield* upgradeServer(caller, { machineId: action.server.machine, channel: undefined }, call),
         { kind: "server", machine: action.server.machine },
         "Server",
+        action.server.name,
       );
     case "set_server": {
       if (action.accepts_ingress === true) return refusal("invalid_argument", "Turn web traffic on from the Server page or the terminal.");
@@ -285,6 +286,7 @@ const act = Effect.fn("CallCloud.act")(function* (caller: Caller, { attempt, dig
         yield* setServer(caller, action.server.machine, policyChangeOf(action), call),
         { kind: "server", machine: action.server.machine },
         `set ${action.server.name}`,
+        action.server.name,
       );
     }
     case "clean":
@@ -300,6 +302,7 @@ const act = Effect.fn("CallCloud.act")(function* (caller: Caller, { attempt, dig
         yield* removeServer(caller, action.server.machine, data_loss, call),
         { kind: "server", machine: action.server.machine },
         "Server",
+        action.server.name,
       );
     }
     case "forget_server":
@@ -307,6 +310,7 @@ const act = Effect.fn("CallCloud.act")(function* (caller: Caller, { attempt, dig
         yield* forgetServer(caller, action.server.machine, call),
         { kind: "server", machine: action.server.machine },
         "Server",
+        action.server.name,
       );
     case "volume": {
       // Its Environment is known only once found; the permission is known now, so a token without it never waits on Servers.

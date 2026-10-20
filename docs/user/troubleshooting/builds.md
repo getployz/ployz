@@ -73,14 +73,15 @@ The build ran out of memory.
   [Build resources and cache](../builds/build-resources-and-cache.md#cap-cpu-memory-and-cache).
 - For Node, add a variable like `NODE_OPTIONS=--max-old-space-size=2048`.
 
-## My build shows "No output yet." for a long time
+## My build waits with no output
 
 The build is waiting its turn.
 
+- If the log shows `Waiting for a build slot`, the server named above it is already running as
+  many builds as it allows, maybe for another project. Raise its **Builds at once** on the
+  server's page, or let more servers run builds.
 - If the log shows `Building on GitHub Actions:`, follow its link: the run is waiting for a
   runner.
-- If the server's page shows **Building N now**, raise its **Builds at once**, or let more
-  servers run builds.
 - Another deployment in the environment may still be rolling out.
 
 To stop waiting, click **Cancel** on the deployment's page.

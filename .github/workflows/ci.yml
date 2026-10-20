@@ -36,14 +36,41 @@ env:
 jobs:
   # Linux jobs run on the self-hosted pool when CI_SELF_HOSTED is on, the run is a push or a same-repo PR
   # (fork PRs never), and a ployz-omarchy runner is online and idle. Otherwise, or on any error, GitHub's.
-  # Ported from mikehardy/runner-fallback-action: picks happen one at a time, each after a pause that lets
-  # the previous pick's jobs claim their runners. queue: max keeps every waiting pick instead of cancelling it.
+  # pool answers whether any ployz-omarchy runner is online. Only then do picks share one group:
+  # ported from mikehardy/runner-fallback-action, they happen one at a time, each after a pause that lets
+  # the previous pick's jobs claim their runners, and queue: max keeps every waiting pick. With the pool
+  # offline every pick is GitHub's, so each run picks at once in its own group.
+  pool:
+    name: Check runner pool
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    outputs:
+      online: ${{ steps.check.outputs.online }}
+    steps:
+      - id: check
+        env:
+          TRUSTED: ${{ vars.CI_SELF_HOSTED == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+          # Fine-grained PAT with Administration: Read on this repo; GITHUB_TOKEN cannot list runners.
+          GH_TOKEN: ${{ secrets.RUNNER_STATUS_TOKEN }}
+        run: |
+          online=false
+          if [ "$TRUSTED" = true ]; then
+            if count=$(gh api "repos/$GITHUB_REPOSITORY/actions/runners?per_page=100" --jq '[.runners[] | select(.status == "online" and any(.labels[]; .name == "ployz-omarchy"))] | length'); then
+              echo "Online ployz-omarchy runners: $count"
+              [ "$count" -ge 1 ] && online=true
+            else
+              echo "::warning::Could not list self-hosted runners; using GitHub's"
+            fi
+          fi
+          echo "online=$online" >> "$GITHUB_OUTPUT"
+
   runner:
     name: Pick runner
+    needs: pool
     runs-on: ubuntu-24.04
     timeout-minutes: 2
     concurrency:
-      group: ${{ vars.CI_SELF_HOSTED == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && 'ci-runner-pick' || format('ci-runner-pick-{0}', github.run_id) }}
+      group: ${{ needs.pool.outputs.online == 'true' && 'ci-runner-pick' || format('ci-runner-pick-{0}', github.run_id) }}
       cancel-in-progress: false
       queue: max
     outputs:
@@ -51,12 +78,12 @@ jobs:
     steps:
       - id: pick
         env:
-          TRUSTED: ${{ vars.CI_SELF_HOSTED == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+          ONLINE: ${{ needs.pool.outputs.online }}
           # Fine-grained PAT with Administration: Read on this repo; GITHUB_TOKEN cannot list runners.
           GH_TOKEN: ${{ secrets.RUNNER_STATUS_TOKEN }}
         run: |
           runner=ubuntu-24.04
-          if [ "$TRUSTED" = true ]; then
+          if [ "$ONLINE" = true ]; then
             sleep 15
             if idle=$(gh api "repos/$GITHUB_REPOSITORY/actions/runners?per_page=100" --jq '[.runners[] | select(.status == "online" and (.busy | not) and any(.labels[]; .name == "ployz-omarchy"))] | length'); then
               echo "Idle ployz-omarchy runners: $idle"
@@ -185,7 +212,7 @@ jobs:
               connections:
                 - tcp: 127.0.0.1:1
           EOF
-          cargo nextest run --workspace --all-features --locked
+          cargo nextest run --workspace --all-features --locked --no-fail-fast
           cargo test --doc --workspace --all-features --locked
       # The workspace's features, as built above: `--package ployz-store` alone resolves other features and recompiles.
       - name: ployz-store tests on Postgres

@@ -1,6 +1,7 @@
 import { useMutationState, type Mutation, type MutationFilters, type QueryClient } from "@tanstack/react-query";
 import type { BatchCommand, Change, ConfigCommand, ConfigView, DiscardTarget, EnvironmentRef, EnvironmentView, RowId, SetPrPlan } from "@ployz/sdk";
 import { Schema } from "effect";
+import { storedHostname } from "./store-hostname";
 import { commandEnvironments } from "./store.contract";
 
 /** The mutation key of an Environment's pending writes; `store-write.ts` files each with its command. */
@@ -71,8 +72,8 @@ export function marksOf(command: ConfigCommand | BatchCommand): Mark[] {
     case "batch": return command.commands.flatMap(marksOf);
     case "never_sync": return [{ mark: "never_sync", environment: command.environment, rows: command.rows, off: command.off ?? false }];
     case "add_domain": {
-      const name = command.hostname ?? command.prefix ?? null;
-      return [{ mark: "domain", environment: command.environment, service: command.service, name: name !== null && /^\p{ASCII}*$/u.test(name) ? name : null }];
+      const name = command.hostname ? storedHostname(command.hostname) : command.prefix ?? null;
+      return [{ mark: "domain", environment: command.environment, service: command.service, name }];
     }
     case "set_generated_domain": return [{ mark: "domain", environment: command.environment, service: command.service, name: command.domain ?? command.prefix }];
     case "set_merge_value": return [{ mark: "merge_value", environment: command.environment, row: command.row }];
