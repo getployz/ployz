@@ -220,8 +220,8 @@ The dashboard then opens another of your organizations. With none left, it offer
 organization**.
 
 Once it's gone, its slug is free, and a new organization can take it. Old links and emails that
-name the slug open the new organization only for its members. Its **Domain** never comes back: a
-new organization gets a different one.
+name the slug open the new organization only for its members, and for Ployz support if it allows
+support access. Once its **Domain** has served your services, no organization gets it again.
 
 From the CLI, `ployz org rm ORGANIZATION` does the same. If this device was signed in to that
 organization, it moves to another of yours and says which. With none left, run `ployz logout`,
