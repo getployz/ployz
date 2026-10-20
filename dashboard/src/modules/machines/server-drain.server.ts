@@ -278,16 +278,6 @@ export const bindDrainRun = Effect.fn("ServerDrain.bind")(function* (request: Dr
   return { kind: "settled", state: row.state } as const;
 });
 
-/**
- * When a pending Drain's `DRAIN_PENDING_LIMIT_MS` starts: its request, or the end of the Organization's last Drain when
- * that is later. The sweep and a run waiting for its Server both time it from here, so they agree on when it expires.
- * Spelled out: an update renders its columns unqualified, which inside a subquery would name the alias's.
- */
-const pendingSince = sql`greatest(server_drain_attempt.requested_at, (
-  select max(before.ended_at) from server_drain_attempt as before
-  where before.organization_id = server_drain_attempt.organization_id
-))`;
-
 /** The Cluster as the Drain finds it when its turn comes: the session it drains through, and the frame it plans from. */
 const reachCluster = Effect.fn("ServerDrain.reachCluster")(function* (organizationId: string) {
   const session = yield* (yield* OrganizationRuntime).open(organizationId);
@@ -343,9 +333,9 @@ const stillCovered = Effect.fn("ServerDrain.stillCovered")(function* (
  * know what moved) but never another answer, and a Drain with no answer in a day ends lost here.
  *
  * A Cluster that doesn't answer before the claim leaves the row pending, for the run to try again after a wait, until
- * the sweep's deadline (`pendingSince`). A try after a wait that finds the deadline passed ends the row `not_started`
- * without asking, even if the Cluster would answer now. A first try past it drains if the Cluster answers, as a
- * Drain that waited its turn always has, and otherwise fails the step as before, and the run ends `not_started`.
+ * `DRAIN_PENDING_LIMIT_MS` after the request. Past that, a silent Cluster ends the row `not_started` here, so no retry
+ * can drain it later, and a try after a wait ends it without asking. A first try past it still drains if the Cluster
+ * answers, as a Drain whose turn came late always has.
  */
 export const executeDrainOnce = Effect.fn("ServerDrain.execute")(function* (
   request: DrainRequest,
@@ -365,21 +355,19 @@ export const executeDrainOnce = Effect.fn("ServerDrain.execute")(function* (
   const [row] = yield* drizzle.select({
     targets: serverDrainAttempt.targets,
     planDigest: serverDrainAttempt.planDigest,
-    since: sql<Date>`${pendingSince}`.mapWith(serverDrainAttempt.requestedAt),
+    requestedAt: serverDrainAttempt.requestedAt,
   }).from(serverDrainAttempt).where(eq(serverDrainAttempt.id, request.attemptId));
-  const expired = row === undefined || (yield* Clock.currentTimeMillis) >= row.since.getTime() + DRAIN_PENDING_LIMIT_MS;
-  if (waited && expired) {
+  const expired = row === undefined || (yield* Clock.currentTimeMillis) > row.requestedAt.getTime() + DRAIN_PENDING_LIMIT_MS;
+  const notStarted = Effect.gen(function* () {
     yield* drizzle.update(serverDrainAttempt).set(ended("not_started")).where(and(owned, eq(serverDrainAttempt.state, "pending")));
     return yield* stateOf(request.attemptId);
-  }
+  });
+  if (waited && expired) return yield* notStarted;
   const reached = yield* reachCluster(request.organizationId).pipe(
     Effect.map(Option.some),
-    Effect.catchIf(
-      (error) => error instanceof ServerDrainUnreachable,
-      (unreachable) => expired ? Effect.fail(unreachable) : Effect.succeedNone,
-    ),
+    Effect.catchIf((error) => error instanceof ServerDrainUnreachable, () => Effect.succeedNone),
   );
-  if (Option.isNone(reached)) return current;
+  if (Option.isNone(reached)) return expired ? yield* notStarted : current;
   const { session, frame } = reached.value;
   const { covered, moves } = yield* stillCovered(request, frame, row?.planDigest ?? null);
   if (!covered) {
@@ -454,7 +442,7 @@ export const closeDrainRun = Effect.fn("ServerDrain.closeRun")(function* (
 /**
  * The hourly sweep: a request no run picked up in time never starts; a Drain running for a day lost its run. Drains in
  * an Organization run one at a time, so a request waits its turn while one runs there or an earlier request is ahead
- * of it, and its time runs from when the Drain before it ended (`pendingSince`).
+ * of it, and its time runs from when the Drain before it ended.
  */
 export const closeStaleDrains = Effect.fn("ServerDrain.closeStale")(function* () {
   const { drizzle } = yield* Database;
@@ -473,7 +461,10 @@ export const closeStaleDrains = Effect.fn("ServerDrain.closeStale")(function* ()
         where ahead.organization_id = server_drain_attempt.organization_id
           and (ahead.state = 'running' or (ahead.state = 'pending' and ahead.requested_at < server_drain_attempt.requested_at))
       )`,
-      sql`${pendingSince} < ${new Date(now - DRAIN_PENDING_LIMIT_MS)}`,
+      sql`greatest(server_drain_attempt.requested_at, (
+        select max(before.ended_at) from server_drain_attempt as before
+        where before.organization_id = server_drain_attempt.organization_id
+      )) < ${new Date(now - DRAIN_PENDING_LIMIT_MS)}`,
     ))
     .returning({ id: serverDrainAttempt.id });
   return { failed: failed.length, unknown: unknown.length };
