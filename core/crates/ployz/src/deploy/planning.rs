@@ -1,12 +1,12 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::{
-    ContainerAction, ContainerId, ContainerKind, DataLoss, DependencyCondition, HookContainer,
-    IngressHost, MachineId, MachineObservation, MembershipObservation, Namespace, ObservedDataLoss,
-    PreservedVolume, PruneRefusal, QualifiedService, RequestedServiceSpec, ServiceId, ServiceMode,
-    ServiceName, ServiceObservation, ServicePlacementEligibility, ServicePlacementIneligibleReason,
-    UpdateOrder, VolumeToCreate, explicit_ingress_hosts, hostname_owners,
-    machine_matches_placement, same_service_mode_kind,
+    ContainerAction, ContainerId, ContainerKind, CopyRotation, DataLoss, DependencyCondition,
+    HookContainer, IngressHost, MachineId, MachineObservation, MembershipObservation, Namespace,
+    ObservedDataLoss, PreservedVolume, PruneRefusal, QualifiedService, RequestedServiceSpec,
+    ServiceId, ServiceMode, ServiceName, ServiceObservation, ServicePlacementEligibility,
+    ServicePlacementIneligibleReason, UpdateOrder, VolumeToCreate, explicit_ingress_hosts,
+    hostname_owners, machine_matches_placement, same_service_mode_kind,
 };
 
 use super::{
@@ -915,10 +915,17 @@ fn removal_operations(
     obsolete: &[QualifiedService],
 ) -> Vec<DeployOperation> {
     let obsolete = obsolete.iter().collect::<BTreeSet<_>>();
-    services
+    let mut retiring: Vec<_> = services
         .iter()
         .filter(|service| obsolete.contains(&service.identity))
         .flat_map(|service| service.containers_for(ContainerAction::Remove))
+        .collect();
+    // A Pending sibling keeps proxies on the last routed copy, whose Out then
+    // never confirms, so Pending copies go first.
+    retiring
+        .sort_by_key(|container| *container.as_observation().rotation() != CopyRotation::Pending);
+    retiring
+        .into_iter()
         .map(|container| {
             let observation = container.as_observation();
             DeployOperation::RemoveContainer {
