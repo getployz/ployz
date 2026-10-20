@@ -2186,6 +2186,47 @@ async fn a_failed_route_read_after_the_outs_leaves_every_old_copy_of_the_group_r
 }
 
 #[tokio::test(start_paused = true)]
+async fn an_add_only_repair_on_one_machine_keeps_every_other_copy_where_it_was() {
+    let (repaired, other) = (machine('1'), machine('2'));
+    let (out, serving, new) = (container('a'), container('b'), container('c'));
+    let mut service = spec(None, None, None);
+    service.mode = ployz_core::ServiceMode::Global;
+    let plan = vec![run(&repaired, service, true)];
+    let client = Scripted::new(vec![created(
+        Call::Run(repaired, ContainerKind::ServiceContainer),
+        &new,
+    )])
+    .with_copy(&repaired, &out, CopyRotation::Out)
+    .with_copy(&other, &serving, CopyRotation::In)
+    .routing(&api());
+
+    let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
+
+    assert_eq!(outcome.services(), ended(&[("api", ServiceResult::New)]));
+    assert_eq!(
+        client.brought_in(),
+        [new],
+        "the repair sends In for its own copy only"
+    );
+    assert_eq!(client.rotation(&out), Some(CopyRotation::Out));
+    assert_eq!(client.rotation(&serving), Some(CopyRotation::In));
+    let listed = client.listed.lock().unwrap().clone();
+    assert!(!listed.is_empty());
+    assert!(
+        listed
+            .iter()
+            .flat_map(BTreeMap::values)
+            .flatten()
+            .all(|route| !route.contains(&out) && route.contains(&serving)),
+        "no proxy routes the Out copy or drops the other Machine's copy: {listed:?}"
+    );
+    for (proxy, route) in client.routes(&api(), false) {
+        assert_eq!(route, Some(BTreeSet::from([serving, new])), "{proxy}");
+    }
+    client.assert_done();
+}
+
+#[tokio::test(start_paused = true)]
 async fn only_the_machine_that_did_not_answer_is_named_away() {
     let [first, second, third] = [machine('1'), machine('2'), machine('3')];
     let olds = [container('a'), container('b'), container('e')];
