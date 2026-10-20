@@ -211,7 +211,8 @@ async function connect(options) {
   let client;
   let timer;
   let stopped = false;
-  const stop = () => { stopped = true; attempt.cancel(); void client?.close(); };
+  // The caller's own close reports a failed close; this one has nobody awaiting it.
+  const stop = () => { stopped = true; attempt.cancel(); void client?.close().catch(() => {}); };
   const cleanup = () => { clearTimeout(timer); signal?.removeEventListener("abort", stop); };
   signal?.addEventListener("abort", stop, { once: true });
   if (timeoutMs !== undefined) timer = setTimeout(stop, timeoutMs);

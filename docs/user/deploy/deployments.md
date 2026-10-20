@@ -151,7 +151,8 @@ its new containers printed. A failed deployment opens on the card that failed.
 | Status | What it means |
 | --- | --- |
 | **Queued** | Waiting for another deployment, or for GitHub Actions to build it |
-| **Deploying** | Building, then rolling out |
+| **Preparing** | Started: Ployz unpacks its upload, builds and plans. `ployz deployment ls` says `preparing`. |
+| **Deploying** | Rolling out |
 | **Deployed** | Every change applied |
 | **Failed** | Something stopped it. A service marked **Not attempted** never started. |
 | **Cancelled** | Someone cancelled it. A service it stopped partway reads **Cancelled**, not **Failed**. |
