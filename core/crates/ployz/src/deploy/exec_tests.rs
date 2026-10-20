@@ -207,6 +207,8 @@ struct Scripted {
     slots: Mutex<Vec<SlotKey>>,
     answers: Mutex<Vec<AnswerWhen>>,
     deploys: Mutex<Vec<Option<ployz_core::DeploymentLogId>>>,
+    /// The run each In ask carried, by copy.
+    in_runs: Mutex<Vec<(ContainerId, Option<ployz_core::DeploymentLogId>)>>,
     cancel_on_prepare: Option<CancellationToken>,
     /// This call cancels the Deploy once it is made.
     cancel_on: Option<(Call, CancellationToken)>,
@@ -263,6 +265,7 @@ impl Scripted {
             slots: Mutex::new(Vec::new()),
             answers: Mutex::new(Vec::new()),
             deploys: Mutex::new(Vec::new()),
+            in_runs: Mutex::new(Vec::new()),
             cancel_on_prepare: None,
             cancel_on: None,
             cancel_on_move: None,
@@ -1035,6 +1038,10 @@ impl MachineOperations for Scripted {
                 container: RunTarget::Existing(locator),
                 rotation: RunRotation::In { run, expect },
             } => {
+                self.in_runs
+                    .lock()
+                    .unwrap()
+                    .push((id_of(&locator), run.clone()));
                 self.rotate(
                     machine_id,
                     id_of(&locator),

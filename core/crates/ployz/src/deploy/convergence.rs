@@ -491,7 +491,7 @@ pub(in crate::deploy) async fn relocate<C: MachineOperations>(
     name: &dyn Fn(&MachineId) -> MachineRef,
     cancellation: &CancellationToken,
 ) -> Result<Relocated, RelocateError> {
-    let new = super::exec::move_container(
+    let (new, deploy) = super::exec::move_container(
         client,
         namespace,
         spec,
@@ -523,7 +523,7 @@ pub(in crate::deploy) async fn relocate<C: MachineOperations>(
         container_id: new,
         rotation: CopyRotation::Pending,
     };
-    let not_in = match cleanup::bring_in(client, &new, spec, Some(cleanup::fresh_run())).await {
+    let not_in = match cleanup::bring_in(client, &new, spec, deploy).await {
         Ok(BroughtIn::In) => None,
         Ok(BroughtIn::Refused(refusal)) => Some(refusal.message),
         Ok(BroughtIn::NotIn { health }) => {
