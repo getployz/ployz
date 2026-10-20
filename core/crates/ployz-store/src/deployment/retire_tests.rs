@@ -413,6 +413,7 @@ fn a_narrowed_deployment_never_tears_down_a_service_saved_state_runs() {
                         services: &[],
                         retire: &[retire],
                         losses: &[],
+                        saved: false,
                     },
                     ployz_core::Namespace::parse("shop-production").unwrap(),
                     None,

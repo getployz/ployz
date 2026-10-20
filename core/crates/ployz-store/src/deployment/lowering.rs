@@ -8,12 +8,15 @@ pub(crate) enum Scope<'a> {
     /// State holds and Saved does not, which deletes the Docker Volumes `losses` names.
     All { losses: &'a [VolumeLoss] },
     /// `services` and the Volumes and Configs they mount, and the teardown of the
-    /// Services `retire` names. It removes a Volume of `losses` once it ships
-    /// every Service Applied State mounts it on, at once when none does.
+    /// Services `retire` names. With `saved`, also every Service whose Saved
+    /// snapshot, or a Config or Volume it mounts, differs from Applied State. It
+    /// removes a Volume of `losses` once it ships every Service Applied State
+    /// mounts it on, at once when none does.
     Narrow {
         services: &'a [ServiceName],
         retire: &'a [Retire],
         losses: &'a [VolumeLoss],
+        saved: bool,
     },
 }
 
@@ -27,6 +30,7 @@ impl<'a> Scope<'a> {
                 services,
                 retire: &[],
                 losses: &[],
+                saved: false,
             }
         }
     }
@@ -132,21 +136,65 @@ pub(crate) fn freeze(
     namespace: Namespace,
     cluster_domain: Option<&Hostname>,
 ) -> Result<Frozen, RpcError> {
-    let (full, services, retire, losses): (bool, &[ServiceName], &[Retire], &[VolumeLoss]) =
-        match scope {
-            Scope::All { losses } => (true, &[], &[], losses),
-            Scope::Narrow {
-                services,
-                retire,
-                losses,
-            } => (false, services, retire, losses),
-        };
+    let (full, services, retire, losses, every_saved): (
+        bool,
+        &[ServiceName],
+        &[Retire],
+        &[VolumeLoss],
+        bool,
+    ) = match scope {
+        Scope::All { losses } => (true, &[], &[], losses, false),
+        Scope::Narrow {
+            services,
+            retire,
+            losses,
+            saved,
+        } => (false, services, retire, losses, saved),
+    };
     if !full && services.is_empty() && retire.is_empty() {
         return Err(error::invalid(
             "A targeted Deployment names no Service",
             json!({}),
         ));
     }
+    // A changed Config or Volume ships with the Service that mounts it, and is
+    // recorded only once that Service is a node.
+    let changed = |service: &SavedServiceIntent| {
+        !applied.services.contains(service)
+            || service.config_attachments.iter().any(|mount| {
+                let id = &mount.config_resource_id;
+                saved
+                    .configs
+                    .iter()
+                    .find(|config| config.resource_id == *id)
+                    != applied
+                        .configs
+                        .iter()
+                        .find(|config| config.resource_id == *id)
+            })
+            || service.volume_attachments.iter().any(|mount| {
+                let id = &mount.volume_resource_id;
+                saved
+                    .volumes
+                    .iter()
+                    .find(|volume| volume.resource_id == *id)
+                    != applied
+                        .volumes
+                        .iter()
+                        .find(|volume| volume.resource_id == *id)
+            })
+    };
+    let mut named = services.to_vec();
+    if every_saved {
+        for service in saved.services.iter().filter(|service| changed(service)) {
+            let name = ServiceName::parse(service.slug.as_str())
+                .map_err(|_| error::corrupt("Service name"))?;
+            if !named.contains(&name) {
+                named.push(name);
+            }
+        }
+    }
+    let services = named.as_slice();
     let mut removals = ServiceRemovals::default();
     for (at, gone) in retire.iter().enumerate() {
         let running = |name: &ServiceName| {
@@ -213,33 +261,6 @@ pub(crate) fn freeze(
     if !full {
         // The planner also ships, at its Saved snapshot, each Service the named ones reference.
         let shipped = &lowered.shipped;
-        // A changed Config or Volume ships with the Service that mounts it, and is
-        // recorded only once that Service is a node.
-        let changed = |service: &SavedServiceIntent| {
-            !applied.services.contains(service)
-                || service.config_attachments.iter().any(|mount| {
-                    let id = &mount.config_resource_id;
-                    saved
-                        .configs
-                        .iter()
-                        .find(|config| config.resource_id == *id)
-                        != applied
-                            .configs
-                            .iter()
-                            .find(|config| config.resource_id == *id)
-                })
-                || service.volume_attachments.iter().any(|mount| {
-                    let id = &mount.volume_resource_id;
-                    saved
-                        .volumes
-                        .iter()
-                        .find(|volume| volume.resource_id == *id)
-                        != applied
-                            .volumes
-                            .iter()
-                            .find(|volume| volume.resource_id == *id)
-                })
-        };
         let referenced: Vec<TargetNode> = saved
             .services
             .iter()

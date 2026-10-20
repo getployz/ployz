@@ -835,12 +835,12 @@ fn a_push_ships_every_saved_change_and_builds_only_what_it_selects() {
         &store,
         &push(Some(H1), Some(H2), Some(&["web/src/main.rs"])),
     );
+    // api's Saved change ships too, on the commit it last built.
     assert_eq!(
         deployed(&store, &who, &automated),
-        vec![(vec!["web".to_owned()], 2)]
+        vec![(vec!["web".to_owned(), "api".to_owned()], 2)]
     );
     assert_eq!(pinned(&store, &automated, "web").as_deref(), Some(H2));
-    // api's Saved change ships too, on the commit it last built.
     assert_eq!(pinned(&store, &automated, "api").as_deref(), Some(H1));
 }
 
@@ -901,6 +901,7 @@ fn policy_settings_apply_at_once_and_select_by_watch_paths() {
         )
         .unwrap_err();
     assert_eq!(error.code, RpcErrorCode::InvalidArgument);
+    backend::deploy(&store, &who, "production", 1);
 
     system(&store, &push(None, Some(H1), None));
     // Only docs changed: web doesn't watch them, and api doesn't auto-deploy.

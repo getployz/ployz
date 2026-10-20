@@ -663,8 +663,8 @@ fn deploy_by_hand(
 
 /// production's `db` and `worker` run.
 fn running(store: &ConfigStore, who: &Actor) {
-    let id = deploy_by_hand(store, who, &["db", "worker"]);
-    run(store, &id, &["db", "worker"]);
+    let id = deploy_by_hand(store, who, &["web", "db", "worker"]);
+    run(store, &id, &["web", "db", "worker"]);
 }
 
 /// What the one Deployment `automated` admitted tells its runner: the Services it
@@ -837,7 +837,15 @@ fn a_removal_waits_for_ci_with_what_the_merge_changed() {
 #[test]
 fn a_removed_service_that_never_ran_deploys_nothing() {
     let (store, who) = shop_with_lone_db();
-    watching(&store, &who);
+    set(
+        &store,
+        &who,
+        "production",
+        &[("web.watchPaths", json!(["web/**"]))],
+    );
+    // The first push would run db, Saved and never deployed; it is cancelled.
+    let first = system(&store, &who, &push(None, HEAD, None));
+    cancel(&store, &who, &first.admitted[0].deployment.id);
     remove_service(&store, &who, "pr-5", "db");
 
     let landed = merged(&store, &who, "2026-09-29T11:00:00Z", MERGE);
@@ -876,10 +884,14 @@ fn undo_before_the_push_keeps_the_service_running() {
     undo_merge(&store, &who);
     let pushed = system(&store, &who, &push(Some(HEAD), MERGE, Some(&["README.md"])));
     // web still deploys for the merge; db is saved again, so nothing tears it down.
-    // The undo brings db's PASSWORD back Not set, so web's push ships db and its Volume.
+    // The undo brings db's PASSWORD back Not set, a Saved change the push ships.
     assert_eq!(
         teardown(&store, &who, &pushed),
-        [vec!["web".to_owned()], NOTHING, vec!["data".to_owned()]]
+        [
+            vec!["web".to_owned(), "db".to_owned()],
+            NOTHING,
+            vec!["data".to_owned()]
+        ]
     );
 }
 
@@ -1130,9 +1142,14 @@ fn a_removal_supersedes_a_queued_deploy_that_would_run_the_service() {
     merged(&store, &who, "2026-09-29T11:00:00Z", MERGE);
 
     let pushed = system(&store, &who, &push(Some(HEAD), MERGE, Some(&["README.md"])));
+    // Production never ran web or worker, so the push ships them too.
     assert_eq!(
         teardown(&store, &who, &pushed),
-        [vec!["db".to_owned()], vec!["db".to_owned()], NOTHING]
+        [
+            vec!["web".to_owned(), "worker".to_owned(), "db".to_owned()],
+            vec!["db".to_owned()],
+            vec!["cache".to_owned()]
+        ]
     );
     assert!(store.claim(&queued, &runner()).is_err());
 }
@@ -1147,9 +1164,14 @@ fn a_removal_tears_down_what_a_deploy_claimed_before_its_push() {
     store.claim(&queued, &runner()).unwrap();
 
     let pushed = system(&store, &who, &push(Some(HEAD), MERGE, Some(&["README.md"])));
+    // Production never ran web or worker, so the push ships them too.
     assert_eq!(
         teardown(&store, &who, &pushed),
-        [vec!["db".to_owned()], vec!["db".to_owned()], NOTHING]
+        [
+            vec!["web".to_owned(), "worker".to_owned(), "db".to_owned()],
+            vec!["db".to_owned()],
+            vec!["cache".to_owned()]
+        ]
     );
 }
 
