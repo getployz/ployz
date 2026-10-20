@@ -70,6 +70,11 @@ pub struct DiffView {
     /// brings. Save or Deploy ends them.
     #[serde(default)]
     pub included: Vec<crate::Included>,
+    /// In a Branch, the Setup Commands the next Deploy runs: those of its Services
+    /// that haven't deployed in it yet.
+    #[serde(default)]
+    #[ts(as = "Option<Vec<crate::SetupCommand>>", optional)]
+    pub setup: Vec<crate::SetupCommand>,
     /// What deploying Working State destroys of Applied State and of what the Deployment
     /// in flight puts in place, sorted; empty when nothing.
     #[serde(default)]
@@ -318,6 +323,7 @@ fn compare(
         incoming: Vec::new(),
         follow_hints: Vec::new(),
         included: Vec::new(),
+        setup: Vec::new(),
         effects: BTreeSet::new(),
         broken: Vec::new(),
         changes: changes

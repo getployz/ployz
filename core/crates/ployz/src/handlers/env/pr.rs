@@ -29,7 +29,7 @@ pub(crate) fn shutdown(root: &ArgMatches) -> Result<(), Error> {
     let version = matches.get_one::<String>("expect-version").cloned();
     let (view, ran) = take_off(matches, &store, &at, (&accept, version), events)?;
     if view.deployment.status != DeploymentStatus::Applied {
-        return unfinished(matches, (&view, &[]), &[], ran, &again);
+        return unfinished(matches, &view, ran, &again);
     }
     let on = store::next(matches, &["deploy", "--env", name.as_str()]);
     deploy::finish_view(&view, Some(on))
@@ -338,10 +338,10 @@ fn shown(value: &Value) -> String {
     }
     match value {
         Value::Null => "not set".to_owned(),
-        Value::String(text) => text.clone(),
+        Value::String(text) => crate::ui::escaped(text),
         Value::Object(file) if file.contains_key("content") => "file".to_owned(),
         other @ (Value::Bool(_) | Value::Number(_) | Value::Array(_) | Value::Object(_)) => {
-            other.to_string()
+            crate::ui::escaped(&other.to_string())
         }
     }
 }
@@ -361,6 +361,15 @@ mod tests {
             shown(&json!({ "type": "http", "path": "/up" })),
             r#"{"path":"/up","type":"http"}"#
         );
+    }
+
+    #[test]
+    fn a_value_escapes_what_would_steer_the_terminal() {
+        assert_eq!(
+            shown(&json!("\u{1b}[31mevil\u{202E}")),
+            r"\u{1b}[31mevil\u{202e}"
+        );
+        assert_eq!(shown(&json!(["\u{202E}"])), r#"["\u{202e}"]"#);
     }
 
     /// pr-5's row removing `db`, `ride` and `refused_by` as given.
