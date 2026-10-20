@@ -46,7 +46,7 @@ import {
   alreadyOn, newestGuid, type PlanInput, type Planned, planForwardRelease, planFromCopies, type Refusal, type RefusalCode, type ReleaseFrom, restoreSource,
   roleOf, writerRemovedMessage,
 } from "#/modules/volume-run/plan";
-import { resizeRequirements } from "#/modules/volume-run/resize";
+import { deployingMessage, resizeRequirements, sizeDirection } from "#/modules/volume-run/resize";
 import { isBehind, isCurrent, releaseLine } from "#/modules/server-upgrade/server-upgrade";
 import { channelRelease, organizationReleaseChannel } from "#/modules/server-upgrade/server-upgrade.server";
 import { volumeRun } from "#/modules/volume-run/tables";
@@ -498,7 +498,27 @@ export const planVolumeRun = Effect.fn("VolumeRun.plan")(function* (
   if (pending !== null && input.kind !== "delete_mirror" && refusedWhileOwed(input, pending)) {
     return { ok: false, refusal: yield* namedOwedRefusal(pending) } satisfies VolumeRunPlan;
   }
+  if (input.kind === "resize" && sizeDirection(volume.recordedBytes, input.args.maximum_bytes) === "shrink") {
+    const refusal = yield* shrinkWhileDeploying(organizationId, input.environment, volume.volumeName, input.args.maximum_bytes);
+    if (refusal !== null) return { ok: false, refusal } satisfies VolumeRunPlan;
+  }
   return yield* planOnCluster(organizationId, volume, input, pending);
+});
+
+/**
+ * A shrink asked while a Deployment of the Environment is in flight, refused before any row in the words the Store
+ * refuses its record in. The Store's refusal is the authority; this one only spares a run that would fail at its record.
+ */
+const shrinkWhileDeploying = Effect.fn("VolumeRun.shrinkWhileDeploying")(function* (
+  organizationId: string,
+  environment: EnvironmentRef,
+  volumeName: string,
+  to: number,
+) {
+  const { in_flight: inFlight } = yield* readStore(organizationId, { query: "deployments", environment, limit: 1, cursor: null });
+  const [running] = inFlight;
+  if (running === undefined) return null;
+  return { code: "conflict", message: deployingMessage(volumeName, running.number, to), details: { reason: "deploying", deployment: { id: running.id, number: running.number } } } satisfies StoreRefusal;
 });
 
 /** A read's failure as none, except the plan running out of Cluster time, which refuses the whole plan. */

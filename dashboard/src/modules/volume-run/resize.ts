@@ -57,6 +57,13 @@ const refuse = (code: Refusal["code"], message: string): Refusal => ({ code, mes
 /** The direction from the recorded size to the asked one. */
 export const sizeDirection = (from: Bytes, to: Bytes): SizeDirection => (to > from ? "grow" : to < from ? "shrink" : "settle");
 
+/**
+ * Why a shrink waits for a Deployment in flight: it claims its Volumes at the recorded size, and a copy lowered beneath
+ * that claim fails its planner. The Store refuses the shrink's record in these words; the admission says them first.
+ */
+export const deployingMessage = (volumeName: string, number: number | null, to: Bytes) =>
+  `${number === null ? "A Deployment" : `Deployment #${number}`} is in flight; run ployz volume set ${volumeName} --size ${gigabytes(to)} again when it ends`;
+
 /** What every Server holding a copy must serve for a resize from `from` to `to`, or the run is refused before it asks any. */
 export function resizeRequirements(from: Bytes, to: Bytes): readonly Requirement[] {
   return RESIZE_ORDER[sizeDirection(from, to)].requires;

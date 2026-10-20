@@ -205,6 +205,7 @@ describe("volume runs", () => {
   /** Every system event the Store recorded, and how it refuses the next one, if it does. */
   let storeEvents: SystemEvent[];
   let storeRefuse: ((event: SystemEvent) => InstanceType<typeof RpcError> | null) | null;
+  let storeInFlight: { id: string; number: number | null }[];
   /** The nodes every Deployment the Store reads back targets. */
   let deployNodes: Array<{ type: "volume" | "service"; id: string; name: string; outcome: "pending"; rows: [] }>;
 
@@ -508,6 +509,7 @@ describe("volume runs", () => {
               after?.();
               return answer;
             }
+            if (query.query === "deployments") return { in_flight: storeInFlight };
             if (query.query === "deployment") {
               return { id: query.id, status: "running", namespace: "shop-production", environment: { id: "env-1", project: storeProject, name: "production" }, nodes: deployNodes };
             }
@@ -612,6 +614,7 @@ describe("volume runs", () => {
     storeVolumes = [{ id: volumeId, name: "data", storage: { kind: "provisioned", maximumBytes: 5_000_000 } }];
     storeEvents = [];
     storeRefuse = null;
+    storeInFlight = [];
     deployNodes = [{ type: "service", id: "svc-web", name: "web", outcome: "pending", rows: [] }, { type: "volume", id: volumeId, name: "data", outcome: "pending", rows: [] }];
     machines = [
       { name: "fsn-1", pool: true, copy: writerCopy() },
@@ -3273,6 +3276,37 @@ describe("volume runs", () => {
         expect(sizes).toStrictEqual(Array.from({ length: 3 }, () => ({ name: dockerVolume, maximum_bytes: 10 * GB, allow_shrink: true })));
         expect(bounds()).toEqual({ "fsn-1": 10, "fsn-2": 10, "fsn-3": 10 });
         expect(await rows()).toMatchObject([{ state: "done", message: "data is 10 GB on fsn-1, fsn-2, fsn-3" }]);
+      });
+
+      it("a record the Store refuses while a Deployment is in flight ends the run failed, naming it, and asks no Machine", async () => {
+        storeRefuse = (event) => event.event === "volume_resized" && event.to < event.from
+          ? new RpcError({ code: "conflict", message: "Deployment #7 is in flight", details: { reason: "deploying", volume: volumeId, deployment: { id: "dep-7", number: 7 } } })
+          : null;
+        const run = await requested(shrink(10));
+
+        await execute(run.id);
+
+        expect(verbs).toEqual([]);
+        expect(storeEvents).toEqual([]);
+        expect(bounds()).toEqual({ "fsn-1": 20, "fsn-2": 20, "fsn-3": 20 });
+        expect(await rows()).toMatchObject([{
+          state: "failed",
+          message: "data stays 20 GB on fsn-1, fsn-2, fsn-3, because Deployment #7 is in flight; run ployz volume set data --size 10 again when it ends",
+        }]);
+      });
+
+      it("is refused at admission while a Deployment is in flight, in the Store's words; a grow and a settle are not", async () => {
+        storeInFlight = [{ id: "dep-7", number: 7 }];
+
+        expect(await admit(shrink(10))).toEqual({
+          ok: false,
+          refusal: { code: "conflict", message: "Deployment #7 is in flight; run ployz volume set data --size 10 again when it ends", details: { reason: "deploying", deployment: { id: "dep-7", number: 7 } } },
+        });
+        expect(verbs).toEqual([]);
+        expect(await rows()).toEqual([]);
+        expect(await request(shrink(20))).toMatchObject({ ok: true });
+        await harness.pool.query("update volume_run set state = 'cancelled', finished_at = now()");
+        expect(await request(shrink(30))).toMatchObject({ ok: true });
       });
 
       it("the primary below its floor undoes the record and names the floor in whole GB, asking no mirror", async () => {

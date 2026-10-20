@@ -976,6 +976,67 @@ fn a_plain_deploy_after_a_grow_settles_the_volume_unchanged() {
     assert_eq!(runs_nothing(&store, &who, 2), unchanged());
 }
 
+/// Assert `refused` is the record refused while Deployment `n` is in flight.
+fn refused_while_deploying(refused: &RpcError, n: u8) {
+    assert_eq!(refused.code, RpcErrorCode::Conflict);
+    assert_eq!(
+        refused.details,
+        json!({
+            "reason": "deploying",
+            "volume": VOLUME,
+            "deployment": { "id": id(n), "number": n },
+        })
+    );
+    assert_eq!(
+        refused.message,
+        format!(
+            "Deployment #{n} is in flight; shrink data when it ends, or end it now with ployz \
+             deployment cancel {n}."
+        )
+    );
+}
+
+#[test]
+fn a_shrink_is_not_recorded_while_a_deployment_is_in_flight() {
+    let (store, who) = shop(managed(5));
+    publish(&store, &who);
+    deploy(&store, &who, 1);
+    admit(&store, &who, 2).unwrap();
+    // Queued, then claimed: both may still run, so both hold the size.
+    refused_while_deploying(&resize(&store, 5, 3).unwrap_err(), 2);
+    assert_eq!(shipped_sizes(&store, 2), vec![5]);
+    refused_while_deploying(&resize(&store, 5, 3).unwrap_err(), 2);
+    assert_eq!(listing(&store, &who, "data").recorded_storage, Some(gb(5)));
+    assert_eq!(runs_nothing(&store, &who, 2), unchanged());
+    resize(&store, 5, 3).unwrap();
+    assert_eq!(listing(&store, &who, "data").recorded_storage, Some(gb(3)));
+}
+
+#[test]
+fn a_shrink_recorded_before_an_admission_is_the_size_its_claim_reads() {
+    let (store, who) = shop(managed(5));
+    publish(&store, &who);
+    deploy(&store, &who, 1);
+    resize(&store, 5, 3).unwrap();
+    admit(&store, &who, 2).unwrap();
+    deploys_at(&store, &who, 2, 3);
+}
+
+#[test]
+fn a_record_that_raises_or_replays_is_taken_while_a_deployment_is_in_flight() {
+    let (store, who) = shop(managed(5));
+    publish(&store, &who);
+    deploy(&store, &who, 1);
+    resize(&store, 5, 3).unwrap();
+    admit(&store, &who, 2).unwrap();
+    // The shrink's own record again is a replay; its undo and a grow raise the size.
+    resize(&store, 5, 3).unwrap();
+    resize(&store, 3, 5).unwrap();
+    resize(&store, 5, 8).unwrap();
+    assert_eq!(listing(&store, &who, "data").recorded_storage, Some(gb(8)));
+    refused_while_deploying(&resize(&store, 8, 5).unwrap_err(), 2);
+}
+
 #[test]
 fn a_redeploy_leaves_a_volume_it_never_shipped_out_of_the_check() {
     let (store, who) = shop(managed(10));

@@ -2,10 +2,10 @@ import "@tanstack/react-start/server-only";
 import type { SetVolumeSizeRequest } from "@ployz/sdk";
 import { Effect, Option, Schema } from "effect";
 import { storeSystem } from "#/modules/config-store/config-store.server";
-import type { StoreRefused } from "#/modules/config-store/store.contract";
+import type { StoreRefusal, StoreRefused } from "#/modules/config-store/store.contract";
 import { ClusterOutOfTime, clusterRead } from "#/modules/runtime/organization-runtime.server";
 import { sdkFailureMessage } from "#/modules/runtime/ployz.server";
-import { type Bytes, gb, gbAtLeast, type SizeDirection, type SizeOutcome } from "#/modules/volume-run/resize";
+import { type Bytes, deployingMessage, gb, gbAtLeast, type SizeDirection, type SizeOutcome } from "#/modules/volume-run/resize";
 import { type MachineRef, openSession, requireOwner, type RunContext, SwitchAttemptError } from "#/modules/volume-run/volume-run.server";
 
 /**
@@ -105,6 +105,24 @@ export type RecordAnswer =
 
 const Recorded = Schema.Struct({ recorded: Schema.Union([Schema.Struct({ kind: Schema.Literal("provisioned"), maximumBytes: Schema.Number }), Schema.Struct({ kind: Schema.Literal("docker") })]) });
 const decodeRecorded = Schema.decodeUnknownOption(Recorded);
+const Deploying = Schema.Struct({ reason: Schema.Literal("deploying"), deployment: Schema.Struct({ number: Schema.NullOr(Schema.Number) }) });
+const decodeDeploying = Schema.decodeUnknownOption(Deploying);
+
+/**
+ * What the Store's refusal of a record from `record.from` to `record.to` means for the run, or null when it is no answer
+ * the record ends on. A shrink's record waits for a Deployment in flight, so the run names it and asks again after.
+ */
+export function recordRefusalOf(volumeName: string, record: { readonly from: Bytes; readonly to: Bytes }, refusal: Pick<StoreRefusal, "code" | "details">): RecordAnswer | null {
+  if (refusal.code === "not_found") return { ok: false, reason: "gone", message: `${volumeName} is no longer deployed, so its size was not recorded` };
+  if (refusal.code !== "conflict") return null;
+  const deploying = decodeDeploying(refusal.details);
+  if (Option.isSome(deploying)) return { ok: false, reason: "changed", message: deployingMessage(volumeName, deploying.value.deployment.number, record.to) };
+  const recorded = decodeRecorded(refusal.details);
+  const holds = Option.isSome(recorded)
+    ? recorded.value.recorded.kind === "provisioned" ? `records ${volumeName} at ${gb(recorded.value.recorded.maximumBytes)}, not ${gb(record.from)}` : `records ${volumeName} as a Docker Volume`
+    : `no longer records ${volumeName} at ${gb(record.from)}`;
+  return { ok: false, reason: "changed", message: `the Store ${holds}; read its size again` };
+}
 
 /**
  * Tell the Store every copy holds `to`: Cloud's own observation, in-process, so no user, token or agent can claim a
@@ -120,13 +138,8 @@ export const recordVolumeSize = Effect.fn("VolumeRun.recordVolumeSize")(function
   return yield* storeSystem(ctx.organizationId, { event: "volume_resized", environment: ctx.environmentId, volume: ctx.volumeId, from: record.from, to: record.to }).pipe(
     Effect.map((): RecordAnswer => ({ ok: true })),
     Effect.catchTag("StoreRefused", (refusal): Effect.Effect<RecordAnswer, StoreRefused> => {
-      if (refusal.code === "not_found") return Effect.succeed({ ok: false, reason: "gone", message: `${ctx.volumeName} is no longer deployed, so its size was not recorded` });
-      if (refusal.code !== "conflict") return Effect.fail(refusal);
-      const recorded = decodeRecorded(refusal.details);
-      const holds = Option.isSome(recorded)
-        ? recorded.value.recorded.kind === "provisioned" ? `records ${ctx.volumeName} at ${gb(recorded.value.recorded.maximumBytes)}, not ${gb(record.from)}` : `records ${ctx.volumeName} as a Docker Volume`
-        : `no longer records ${ctx.volumeName} at ${gb(record.from)}`;
-      return Effect.succeed({ ok: false, reason: "changed", message: `the Store ${holds}; read its size again` });
+      const answer = recordRefusalOf(ctx.volumeName, record, refusal);
+      return answer === null ? Effect.fail(refusal) : Effect.succeed(answer);
     }),
   );
 });

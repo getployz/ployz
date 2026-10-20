@@ -66,12 +66,14 @@ holds too much for the new limit, Ployz names the server and the smallest size i
 rounded up to a whole GB, and stops; a server whose Ployz is too old to shrink is named too. If the
 copy your service writes to refuses, the volume keeps its old limit. If a mirror refuses after that
 copy shrank, the volume has its new limit: free space in it, run `ployz volume sync data` so the
-mirror's copy follows, then run the same `ployz volume set` again. A shrunk volume has less free
-space, so it may fill up sooner.
+mirror's copy follows, then run the same `ployz volume set` again. A shrink asked while a deploy
+of the environment is in flight is refused before any copy changes and names that deployment: run
+the same command again when it ends. A shrunk volume has less free space, so it may fill up sooner.
 
 Running `ployz volume set data --size 8` with the size the volume already has asks every server
 to hold that size. That is how to finish a shrink a mirror refused or one that was interrupted:
-a copy still larger is shrunk to it. It only ever lowers a copy. If a server holds less than the
+a copy still larger is shrunk to it. It only lowers a copy, judged from Ployz's latest reading of
+each server's copy. If a server holds less than the
 volume's limit, Ployz refuses and tells you to run `ployz volume set` with the size that server
 holds, then again with the size you want, to grow it. If Ployz has no fresh reading of a server's copy,
 it refuses and asks you to try again in a moment.

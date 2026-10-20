@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { MachineId } from "@ployz/sdk";
 import type { PoolShortfall } from "#/modules/volume-run/resize";
-import { sizeRefusalOf } from "#/modules/volume-run/volume-size.server";
+import { recordRefusalOf, sizeRefusalOf } from "#/modules/volume-run/volume-size.server";
 
 const GB = 1_000_000_000;
 const db1 = { id: "m-1".padEnd(32, "0") as MachineId, name: "db-1" };
@@ -75,5 +75,30 @@ describe("sizeRefusalOf in a shrink", () => {
     ["a reason this Cloud doesn't know is final", refused({ reason: "too_hot" }), { kind: "refused", reason: "too_hot", boundBytes: null, capacity: null, floorBytes: null, message: "db-1 refused to resize data (too_hot)" }],
   ])("%s", (_, cause, expected) => {
     expect(sizeRefusalOf("data", db1, 10 * GB, "shrink", cause)).toEqual(expected);
+  });
+});
+
+describe("recordRefusalOf", () => {
+  const shrink = { from: 20 * GB, to: 10 * GB };
+  it.each<[string, { code: string; details: unknown }, unknown]>([
+    [
+      "a shrink refused while a Deployment is in flight names it and asks again when it ends",
+      { code: "conflict", details: { reason: "deploying", volume: "v", deployment: { id: "d", number: 7 } } },
+      { ok: false, reason: "changed", message: "Deployment #7 is in flight; run ployz volume set data --size 10 again when it ends" },
+    ],
+    [
+      "an unnumbered Deployment is named as one",
+      { code: "conflict", details: { reason: "deploying", volume: "v", deployment: { id: "d", number: null } } },
+      { ok: false, reason: "changed", message: "A Deployment is in flight; run ployz volume set data --size 10 again when it ends" },
+    ],
+    [
+      "a size recorded since names both",
+      { code: "conflict", details: { reason: "size_changed", volume: "v", recorded: { kind: "provisioned", maximumBytes: 30 * GB } } },
+      { ok: false, reason: "changed", message: "the Store records data at 30 GB, not 20 GB; read its size again" },
+    ],
+    ["a Volume no longer deployed is gone", { code: "not_found", details: null }, { ok: false, reason: "gone", message: "data is no longer deployed, so its size was not recorded" }],
+    ["a Store that couldn't answer ends nothing", { code: "unavailable", details: null }, null],
+  ])("%s", (_, refusal, expected) => {
+    expect(recordRefusalOf("data", shrink, refusal as { code: string; details: null })).toEqual(expected);
   });
 });

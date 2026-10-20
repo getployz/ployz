@@ -12,6 +12,7 @@ use serde_json::json;
 use ts_rs::TS;
 
 use crate::Actor;
+use crate::deployment::{self, DeploymentSummary};
 use crate::error;
 use crate::id::{EnvironmentId, VolumeId};
 use crate::scope;
@@ -45,13 +46,22 @@ pub struct VolumeResized {
 /// even when Working State was restored to `from` since. Once the lock moved on from
 /// `to`, the same record is no replay and fails the compare-and-set.
 ///
+/// A record that lowers the size waits for the Environment's Deployment in flight to
+/// end: a Deploy claims its Volumes at the lock's size, and a copy lowered beneath that
+/// claim fails its planner. A Deploy's admission and its claim take the same
+/// Environment lock, so either the record sees the Deployment or the Deployment's
+/// claim reads the lowered size. A record that
+/// raises, a grow's or a refused shrink's undo, never waits.
+///
 /// Every record that writes changes Applied State, which Cloud's change log reads, so
 /// the lock row needs no change-log source of its own.
 ///
 /// # Errors
 /// `not_found` when the Volume has no fixed storage, or is gone from both Working and
 /// Applied State; `conflict` with `reason: "size_changed"` when the lock row holds
-/// anything but `Provisioned { from }`, a Docker Volume included.
+/// anything but `Provisioned { from }`, a Docker Volume included; `conflict` with
+/// `reason: "deploying"`, naming the Deployment, when it lowers the size while one is
+/// in flight.
 pub(crate) fn record(
     tx: &mut dyn Tx,
     who: &Actor,
@@ -103,6 +113,11 @@ pub(crate) fn record(
             json!({ "reason": "size_changed", "volume": volume, "recorded": recorded }),
         ));
     }
+    if resized.to < resized.from
+        && let Some(running) = deployment::in_flight(tx, &id)?
+    {
+        return Err(deploying(&name, volume, &running));
+    }
     let storage = serde_json::to_string(&to).expect("storage is JSON");
     tx.execute(
         "UPDATE config_volume_storage SET storage = ?3 \
@@ -131,6 +146,27 @@ pub(crate) fn record(
         scope::save_working(tx, &mut environment)?;
     }
     Ok(())
+}
+
+/// The refusal of a record that lowers Volume `name` while Deployment `running` is in
+/// flight: it claimed, or will claim, the Volume at the size the lock holds, and a copy
+/// lowered beneath that claim fails its planner.
+fn deploying(name: &str, volume: &str, running: &DeploymentSummary) -> RpcError {
+    let cancel = running
+        .number
+        .map_or_else(|| running.id.to_string(), |number| number.to_string());
+    error::conflict(
+        format!(
+            "Deployment {} is in flight; shrink {name} when it ends, or end it now with \
+             ployz deployment cancel {cancel}.",
+            running.label()
+        ),
+        json!({
+            "reason": "deploying",
+            "volume": volume,
+            "deployment": { "id": running.id, "number": running.number },
+        }),
+    )
 }
 
 /// Applied State's node for Volume `volume`, if a Deploy put it there.
