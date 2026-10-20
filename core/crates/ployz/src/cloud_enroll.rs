@@ -28,8 +28,12 @@ pub(crate) enum Error {
     Http(#[source] reqwest::Error),
     #[error(transparent)]
     Json(#[from] serde_json::Error),
-    #[error("enroll HTTP {status}{}", crate::cloud_login::readable(.body))]
+    #[error("{}", crate::cloud_login::answered("enroll", *.status, .body))]
     Status { status: u16, body: String },
+    #[error(
+        "Cloud no longer takes this enrollment token: it is unknown, used or expired, or this Organization's Servers were forgotten; make a new one with ployz server add --command"
+    )]
+    TokenRefused,
     #[error(
         "waited {} minutes for another Server to found this Organization; if it was deleted, run ployz server forget or use Forget Servers in the dashboard",
         FOUNDER_WAIT.as_secs() / 60
@@ -57,6 +61,7 @@ impl Error {
             }
             Self::Json(_)
             | Self::Status { .. }
+            | Self::TokenRefused
             | Self::RetrySameCommand { .. }
             | Self::FounderWait => false,
         }
@@ -538,6 +543,9 @@ async fn post_json(
         .map_err(classify_http)?;
     let status = sent.status();
     let bytes = sent.bytes().await.map_err(classify_http)?;
+    if status == reqwest::StatusCode::UNAUTHORIZED {
+        return Err(Error::TokenRefused);
+    }
     if !status.is_success() {
         return Err(Error::Status {
             status: status.as_u16(),
@@ -642,7 +650,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn an_enroll_error_page_prints_as_its_status_alone() {
+    fn an_enroll_error_prints_cloud_s_sentence_or_its_status_alone() {
         let page = Error::Status {
             status: 502,
             body: "<html><body>Bad gateway</body></html>".to_owned(),
@@ -652,7 +660,13 @@ mod tests {
             status: 409,
             body: r#"{"error":"taken"}"#.to_owned(),
         };
-        assert_eq!(json.to_string(), r#"enroll HTTP 409: {"error":"taken"}"#);
+        assert_eq!(json.to_string(), "taken");
+        let public = Error::Status {
+            status: 422,
+            body: r#"{"_tag":"PublicError","code":"VALIDATION_FAILED","message":"Bad host."}"#
+                .to_owned(),
+        };
+        assert_eq!(public.to_string(), "Bad host.");
     }
 
     #[test]
@@ -1005,6 +1019,33 @@ mod tests {
         for url in [url, callback_url(&origin), report_url(&origin)] {
             assert!(!url.contains(token().as_str()), "{url}");
         }
+    }
+
+    #[tokio::test]
+    async fn a_token_cloud_no_longer_takes_says_so_and_how_to_get_another() {
+        let (listener, origin) = listen().await;
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            read_http(&mut stream).await;
+            let body = br#"{"error":"Authentication is required."}"#;
+            tokio::io::AsyncWriteExt::write_all(
+                &mut stream,
+                &http_response(401, "Unauthorized", body),
+            )
+            .await
+            .unwrap();
+        });
+        let error = enroll(&enroll_url(&origin), &token(), &identity(), &|_| {})
+            .await
+            .unwrap_err();
+        server.await.unwrap();
+        assert!(matches!(error, Error::TokenRefused), "{error:?}");
+        assert!(
+            error
+                .to_string()
+                .ends_with("make a new one with ployz server add --command"),
+            "{error}"
+        );
     }
 
     #[tokio::test]

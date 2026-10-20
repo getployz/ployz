@@ -76,7 +76,7 @@ export function ClusterDomainSection({ organizationSlug, domain, onCheck }: {
   }
 
   const status = domain === null ? null : clusterDomainStatus(domain, new Date());
-  const copy = status === null ? { message: "You’ll get one on your first deploy.", action: null } as const : statusCopy(status.state);
+  const copy = status === null ? { message: "You’ll get one when you generate your first domain.", action: null } as const : statusCopy(status.state);
   const excluded = status === null ? "" : excludedCopy(status.excluded);
 
   return (
