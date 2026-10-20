@@ -118,6 +118,7 @@ app's client ID and secret to ask GitHub which installations the person connecti
    | `GITHUB_APP_CLIENT_ID`, `GITHUB_APP_CLIENT_SECRET` | The GitHub App's client ID and secret, not the OAuth App's |
    | `GITHUB_APP_WEBHOOK_SECRET` | The GitHub App's webhook secret |
    | `GITHUB_APP_PRIVATE_KEY` | The whole private key PEM, in quotes |
+   | `PLOYZ_HOSTED_DNS_URL` | Optional. `compose.yml` sets `https://dns.ployz.app/` when it is unset |
 
    Leave every `POLAR_*` and `POSTHOG_*` variable unset: that turns off billing and product
    analytics. If a required value is missing, `web` and `worker` stop with a `ConfigError`.
@@ -162,12 +163,16 @@ app's client ID and secret to ask GitHub which installations the person connecti
    runs on: Ployz Cloud is only the dashboard, and your apps run on the servers you add. The
    command the dashboard gives you already points at your address.
 
-To install a server with a [Fleet Token](servers/add-a-server.md#install-with-a-fleet-token), add
-your address to the install line, or the server checks in with ployz.dev. An address that answers
-but isn't Ployz Cloud ends the install with an error:
+To install a server with a [Fleet Token](servers/add-a-server.md#install-with-a-fleet-token), use the
+install line **Add servers** or `ployz server token create` shows. Both already point at your
+address. The **Add servers** line installs the release your Ployz Cloud runs. The
+`ployz server token create` line installs the release of the `ployz` CLI that made it, so if your
+CLI and your Ployz Cloud run different releases, use the dashboard's line or upgrade the CLI
+first. To write the line yourself, add your address, or the server checks in with ployz.dev. An address that answers but isn't Ployz Cloud ends the
+install with an error:
 
 ```sh
-curl -fsSL https://ployz.sh | sudo PLOYZ_CLOUD_URL=https://cloud.example.com sh -s -- --enroll
+curl -fsSL https://ployz.sh | sudo PLOYZ_CLOUD_URL=https://cloud.example.com sh -s -- VERSION --enroll
 ```
 
 The CLI signs in to ployz.dev unless you point it at yours:

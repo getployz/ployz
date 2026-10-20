@@ -30,7 +30,7 @@ import { installationAccess } from "#/modules/github/github-access";
 import { cancelGithubRun } from "#/modules/github/github-build.server";
 import { countOrganizationMachines, loadOrganizationConnections } from "#/modules/machines/connections.server";
 import { writeAdmitted } from "#/modules/volume-placement/volume-placement.server";
-import type { StoreAnswer, StoreWriteResult, StoreCall, StoreRead, StoreRefusal, StoreResult, ViewAnswer } from "./store.contract";
+import type { CommandRefusal, StoreAnswer, StoreWriteResult, StoreCall, StoreRead, StoreRefusal, StoreResult, ViewAnswer } from "./store.contract";
 
 /** One view Cloud reads for itself, with no evidence: its own lookups, such as a Deployment's Namespace for its logs. */
 export const readStore = <Q extends ConfigQuery>(organizationId: string, query: Q) =>
@@ -144,7 +144,6 @@ export const requestChecks = Effect.fn("ConfigStore.requestChecks")(function* (o
 function statusFor(code: string) {
   switch (code) {
     case "invalid_argument":
-    case "invalid_input":
       return 422;
     case "not_found":
     case "unknown_command":
@@ -170,9 +169,11 @@ function statusFor(code: string) {
   }
 }
 
-export function refusal(error: StoreRefusal) {
+/** A Cloud command's refusal also names its `field`, what fits there and whether it wrote, as Store tools refuse. */
+export function refusal(error: StoreRefusal | CommandRefusal) {
   const { code, message, details } = error;
-  return Response.json({ error: { code, message, details } }, {
+  const told = "writes" in error ? { field: error.field, expected: error.expected, writes: error.writes } : {};
+  return Response.json({ error: { code, message, details, ...told } }, {
     status: statusFor(code),
     headers: { "cache-control": "no-store" },
   });
@@ -238,7 +239,7 @@ export const gatherTrusted = Effect.fn("ConfigStore.gatherTrusted")(function* (
   );
   const domains = yield* gatherDomainEvidence(organizationId, call, read).pipe(
     Effect.catchTag("HostedDnsError", () => Effect.fail(new StoreRefused({
-      code: "unavailable", message: "Cloud couldn't reserve the Cluster Domain; deploy again.", details: null,
+      code: "unavailable", message: "Cloud couldn't reserve the Cluster Domain; try again.", details: null,
     }))),
   );
   const volumes = yield* gatherVolumeEvidence(organizationId, call, read);
@@ -270,9 +271,10 @@ const afterWrite = Effect.fn("ConfigStore.afterWrite")(function* (
     yield* dispatchAdmitted(organizationId, written, command.command === "start");
   }
   // A removal that applied at admission (nothing on a Server) is deleted by the next sweep, and admits what is due
-  // after it: no worker will ask for that sweep, so ask now.
+  // after it, as is the removal a Sync's close marked: no worker will ask for that sweep, so ask now.
   const removed = written.written === "deployment" ? written.remove && written.status === "applied"
-    : written.written === "removal" && written.removal === "removing" && written.left.some((left) => left.deployment?.status === "applied");
+    : written.written === "removal" ? written.removal === "removing" && written.left.some((left) => left.deployment?.status === "applied")
+    : written.written === "synced" && written.closing;
   if (removed) yield* sendInngestEvent(createConfigSweepRequestedEvent({ organizationId }));
   yield* requestChecks(organizationId, written.checks);
 });

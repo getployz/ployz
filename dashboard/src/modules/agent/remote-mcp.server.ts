@@ -1,15 +1,17 @@
 import "@tanstack/react-start/server-only";
 import { randomUUID } from "node:crypto";
 import { createResourceServerChallenge } from "@better-auth/oauth-provider";
-import { type CallToolResult, createMcpHandler, fromJsonSchema, McpServer } from "@modelcontextprotocol/server";
+import { type CallToolResult, createMcpHandler, fromJsonSchema, type JsonSchemaValidator, type jsonSchemaValidator, McpServer } from "@modelcontextprotocol/server";
 import { APIError } from "better-auth/api";
 import { Effect, Option, Schema } from "effect";
 import { AGENT_TOOLS, type AgentCaller, type AgentResult, type AgentTool, runAgentCall } from "#/modules/agent/agent-runner.server";
 import { CATALOG } from "#/modules/agent/agent-tools";
+import { findCommand } from "#/modules/commands/commands.server";
 import { asRecord, asString, projectJsonObject, projectJsonValue } from "#/lib/json";
 import type { JsonObject } from "#/db/tables";
 import { grantClaimsOf, oauthCaller } from "#/modules/identity/caller.server";
 import { claimUrlFor } from "#/modules/identity/claim-required.server";
+import { ORGANIZATION_TOKEN_PREFIX } from "#/modules/identity/organization-token.server";
 import { REQUEST_KEY_HEADER, requestKeyOf } from "#/modules/operations/keyed.server";
 import { MCP_SCOPES, mcpEndpoints } from "#/server/auth-mcp.server";
 import { Auth } from "#/server/auth.server";
@@ -50,6 +52,16 @@ const APPROVAL = {
   description: "The ID of an approval a person granted. Send it when calling this tool again after it answered approval_required.",
 };
 
+const BAD_APPROVAL = { code: "invalid_argument", message: "This input does not fit: approval is an approval's ID, a string.", field: "approval", expected: APPROVAL, writes: "none" };
+
+/** Every argument reaches the tool, which refuses a bad one in the same shape as any other refusal. */
+const toolValidates: jsonSchemaValidator = {
+  getValidator<T>(): JsonSchemaValidator<T> {
+    // SAFETY: nothing reads `data` as `T`; the handler parses the arguments and the tool validates them.
+    return (input) => ({ valid: true, data: input as T, errorMessage: undefined });
+  },
+};
+
 const toolSchema = (tool: AgentTool): JsonObject => {
   if (!tool.gated) return tool.inputSchema;
   const properties = asRecord(tool.inputSchema["properties"]) ?? {};
@@ -66,6 +78,15 @@ const text = (body: JsonObject, isError: boolean): CallToolResult =>
   ({ isError, content: [{ type: "text", text: JSON.stringify(body) }], structuredContent: body });
 
 type Claim = { message: string; url: string };
+
+/** A published command's retry names the approval its call carried, which stays good while the plan it approved does. */
+const carrying = (tool: AgentTool, approval: string | null, result: AgentResult): AgentResult => {
+  if (approval === null || findCommand(tool.name) === undefined || !("outcome" in result) || !("refusal" in result.outcome)) return result;
+  const { refusal } = result.outcome;
+  if ("next" in refusal || !("retry" in refusal) || refusal.retry === undefined) return result;
+  const input = asRecord(refusal.retry.input);
+  return input === null ? result : { outcome: { ok: false, refusal: { ...refusal, retry: { ...refusal.retry, input: { ...input, approval } } } } };
+};
 
 const resultOf = (result: AgentResult, key: string, link: () => string, claim: Claim | null): CallToolResult => {
   if ("asking" in result) {
@@ -99,23 +120,27 @@ const serverFor = (caller: AgentCaller, request: Request, run: Run, appUrl: URL,
   for (const tool of AGENT_TOOLS) {
     server.registerTool(tool.name, {
       description: tool.description,
-      inputSchema: fromJsonSchema<JsonObject>(toolSchema(tool)),
+      inputSchema: fromJsonSchema<JsonObject>(toolSchema(tool), toolValidates),
       annotations: { readOnlyHint: tool.readOnly, destructiveHint: tool.destructive },
     }, async (args) => {
-      const { approval, ...input } = args;
+      const fields = asRecord(args) ?? {};
+      const { approval, ...rest } = fields;
+      if (tool.gated && approval !== undefined && asString(approval) === null) return text({ ok: false, refusal: BAD_APPROVAL }, true);
+      const input = tool.gated ? rest : fields;
       const sentKey = asString(input["request_key"]);
       const given = sentKey === null ? headerKey : requestKeyOf(sentKey);
       if (!given.ok) return text({ ok: false, refusal: given.refusal }, true);
       const key = given.key ?? randomUUID();
       keys.push(key);
       const sent = tool.keyed ? { ...input, request_key: key } : input;
-      const result = await run(runAgentCall(caller, {
+      const approvalId = tool.gated ? asString(approval) : null;
+      const result = carrying(tool, approvalId, await run(runAgentCall(caller, {
         tool: tool.name,
         input: projectJsonValue(sent) ?? null,
         key,
-        approvalId: asString(approval),
+        approvalId,
         page: { at: "organization" },
-      }));
+      })));
       const refused = "outcome" in result && "refusal" in result.outcome ? result.outcome.refusal : null;
       const claim = refused?.code === "claim_required" ? { message: refused.message, url: await run(claimUrlFor(caller.organization.id)) } : null;
       return resultOf(result, key, link, claim);
@@ -136,6 +161,9 @@ export const serveRemoteMcp = Effect.fn("RemoteMcp.serve")(function* (request: R
   if (request.method !== "POST") return withHeaders(new Response(null, { status: 405 }), { ...CORS, Allow: "POST, OPTIONS" });
   const { app } = yield* AppConfig;
   const { resource } = mcpEndpoints(app.url);
+  if (request.headers.get("authorization")?.startsWith(`Bearer ${ORGANIZATION_TOKEN_PREFIX}`) === true) {
+    return withHeaders(challenge(resource, "/mcp takes a Connect sign-in, not a Ployz token. For a token, run ployz mcp with PLOYZ_TOKEN."), CORS);
+  }
   const run: Run = Effect.runPromiseWith(yield* Effect.context<RemoteServices>());
   const keys: Array<string> = [];
   const response = yield* auth.mcp.protect(request, async (verified, claims) => {

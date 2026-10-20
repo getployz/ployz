@@ -28,7 +28,7 @@ pub(crate) use result::{
 };
 pub(crate) use stdout::{async_stdout, stdout, stdout_bytes, stdout_is_terminal};
 pub use table::{Cell, Fields, Table};
-pub(crate) use table::{REPLACED, printable, short_id, unprintable};
+pub(crate) use table::{REPLACED, escaped, printable, short_id, unprintable};
 pub use tone::{Painted, Tone, clap_styles};
 pub(crate) use tree::Tree;
 

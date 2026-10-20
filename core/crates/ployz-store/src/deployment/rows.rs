@@ -356,7 +356,7 @@ impl Failure {
                 },
             ),
             ExecutionError::Hook { failure, .. } => (
-                "The hook Container failed".to_owned(),
+                "The setup or pre-deploy command failed".to_owned(),
                 match failure {
                     HookFailure::Cancelled {
                         stop_error: Some(error),
@@ -798,8 +798,8 @@ fn merge_mounting_row(kept: &mut ServerRow, row: &ServerRow) {
 #[cfg(test)]
 mod tests {
     use ployz_core::{
-        ContainerId, ContainerRuntimeObservation, ExecutionError, HealthFailure, MachineAction,
-        OperationPhase, OperationRow, OperationStatus, RpcError, RpcErrorCode,
+        ContainerId, ContainerRuntimeObservation, ExecutionError, HealthFailure, HookFailure,
+        MachineAction, OperationPhase, OperationRow, OperationStatus, RpcError, RpcErrorCode,
     };
 
     use super::{Failure, RowPhase, RowState};
@@ -892,6 +892,19 @@ mod tests {
                 "Server {machine_id} needs a newer Ployz. It cannot serve ployz.serving.routes.v1."
             )
         );
+    }
+
+    #[test]
+    fn a_failed_hook_names_both_commands_it_can_run() {
+        let failed = Failure::of(
+            &ExecutionError::Hook {
+                container_id: ContainerId::parse("a".repeat(64)).unwrap(),
+                failure: HookFailure::Exit { code: 3 },
+            },
+            &[],
+        );
+        assert_eq!(failed.reason, "The setup or pre-deploy command failed");
+        assert_eq!(failed.cause, ["exited with code 3"]);
     }
 
     #[test]

@@ -94,6 +94,14 @@ impl Scope {
         let Some((directory, link)) = find(config)? else {
             return Ok(self);
         };
+        // Another Project leaves the link nothing to supply, so its Organization doesn't matter.
+        if self
+            .project
+            .as_ref()
+            .is_some_and(|named| named.name != link.project)
+        {
+            return Ok(self);
+        }
         check(&directory, &link)?;
         let project = self.project.get_or_insert(Named {
             name: link.project.clone(),
@@ -131,6 +139,35 @@ pub(crate) fn scope_from_env(config: &Path) -> Result<Scope, Error> {
     })
 }
 
+/// The scope of a Cloud-published command: the `project` and `environment` it was
+/// given, then `PLOYZ_PROJECT`/`PLOYZ_ENV`, then the directory link.
+pub(crate) fn scope_given(
+    config: &Path,
+    project: Option<&str>,
+    environment: Option<&str>,
+) -> Result<Scope, Error> {
+    Scope {
+        project: given_or_env(project, env::PROJECT, ProjectName::parse)?,
+        environment: given_or_env(environment, env::ENVIRONMENT, EnvironmentName::parse)?,
+        link: None,
+    }
+    .linked(config, |directory, link| {
+        check_organization(config, directory, link)
+    })
+}
+
+/// Refuse a `PLOYZ_PROJECT` or `PLOYZ_ENV` that names nothing, as [`scope_given`]
+/// would, before the command it scopes is known. A typed name skips its variable.
+pub(crate) fn check_env(typed_project: bool, typed_environment: bool) -> Result<(), Error> {
+    if !typed_project {
+        env_named(env::PROJECT, ProjectName::parse)?;
+    }
+    if !typed_environment {
+        env_named(env::ENVIRONMENT, EnvironmentName::parse)?;
+    }
+    Ok(())
+}
+
 /// [`scope_from_env`] for a caller whose credential acts in the Organization with ID
 /// `acting`, such as `ployz mcp`'s agent token, rather than in this device's sign-in.
 pub(crate) fn scope_from_env_in(config: &Path, acting: &str) -> Result<Scope, Error> {
@@ -140,23 +177,42 @@ pub(crate) fn scope_from_env_in(config: &Path, acting: &str) -> Result<Scope, Er
 }
 
 fn from_env() -> Result<Scope, Error> {
-    let named = |name: &str| std::env::var(name).ok();
     Ok(Scope {
-        project: named(env::PROJECT)
-            .map(|name| ProjectName::parse(name).map(env_named))
-            .transpose()?,
-        environment: named(env::ENVIRONMENT)
-            .map(|name| EnvironmentName::parse(name).map(env_named))
-            .transpose()?,
+        project: env_named(env::PROJECT, ProjectName::parse)?,
+        environment: env_named(env::ENVIRONMENT, EnvironmentName::parse)?,
         link: None,
     })
 }
 
-fn env_named<T>(name: T) -> Named<T> {
-    Named {
-        name,
+/// `given`, else the environment variable `var`, read only when nothing was given so
+/// a bad variable never blocks a typed name.
+fn given_or_env<T>(
+    given: Option<&str>,
+    var: &str,
+    parse: fn(String) -> Result<T, ployz_core::RpcError>,
+) -> Result<Option<Named<T>>, Error> {
+    let Some(name) = given else {
+        return env_named(var, parse);
+    };
+    Ok(Some(Named {
+        name: parse(name.to_owned())?,
+        source: Source::Flag,
+    }))
+}
+
+fn env_named<T>(
+    var: &str,
+    parse: fn(String) -> Result<T, ployz_core::RpcError>,
+) -> Result<Option<Named<T>>, Error> {
+    let Some(name) = std::env::var_os(var) else {
+        return Ok(None);
+    };
+    // A set name that isn't UTF-8 names nothing, so it is refused as an empty one is.
+    let name = name.into_string().unwrap_or_default();
+    Ok(Some(Named {
+        name: parse(name)?,
         source: Source::Env,
-    }
+    }))
 }
 
 /// `--project`/`--env` and their environment variables, without the link.
@@ -208,9 +264,16 @@ fn load(config: &Path) -> Result<BTreeMap<String, Link>, Error> {
         Ok(bytes) => serde_json::from_slice(&bytes).map_err(|error| {
             Error::caused(
                 RpcErrorCode::Internal,
-                format!("Could not read directory links {}.", path.display()),
+                format!(
+                    "Could not read directory links {}. Delete it, then run ployz link again in each directory you linked.",
+                    path.display()
+                ),
                 error,
             )
+            .hint(Hint::Next(format!(
+                "rm {}",
+                shell_words::quote(&path.to_string_lossy())
+            )))
         }),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(BTreeMap::new()),
         Err(error) => Err(error.into()),
@@ -829,6 +892,27 @@ mod tests {
             project: ProjectName::parse("shop".to_owned()).unwrap(),
             environment: EnvironmentName::parse("production".to_owned()).unwrap(),
         }
+    }
+
+    #[test]
+    fn unreadable_links_name_the_file_and_how_to_start_over() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("config.yaml");
+        std::fs::write(links_path(&config), "[[[").unwrap();
+        let error = load(&config).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .ends_with("Delete it, then run ployz link again in each directory you linked."),
+            "{error}"
+        );
+        assert_eq!(
+            error.hints(),
+            [Hint::Next(format!(
+                "rm {}",
+                shell_words::quote(&links_path(&config).to_string_lossy())
+            ))]
+        );
     }
 
     #[test]

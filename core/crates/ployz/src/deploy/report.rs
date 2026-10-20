@@ -98,7 +98,8 @@ pub(crate) fn service_row<'a>(
     replicas: impl IntoIterator<Item = Replica<'a>>,
 ) -> Row {
     let replicas: Vec<_> = replicas.into_iter().collect();
-    let removal = !replicas.is_empty() && replicas.iter().all(|replica| !replica.starts);
+    let removal =
+        depth.is_none() && !replicas.is_empty() && replicas.iter().all(|replica| !replica.starts);
     let served = !removal
         && replicas.iter().any(|replica| {
             replica.starts
