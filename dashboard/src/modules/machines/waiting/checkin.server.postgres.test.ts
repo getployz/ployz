@@ -1,4 +1,5 @@
 import { generateKeyPairSync, type KeyObject, sign } from "node:crypto";
+import { readFile } from "node:fs/promises";
 import { Cause, Effect, Exit, Random, Schema } from "effect";
 import { Inngest } from "inngest";
 import { afterAll, beforeAll, beforeEach, expect, it, vi } from "vitest";
@@ -1043,6 +1044,38 @@ it("refuses a second arrival to a joined host that returns on its token after th
   expect(await run(closeStaleServerEnrollments())).toEqual({ failed: 0, removed: 1 });
   expect(await send(token, host, readyAuto)).toEqual(wait);
   expect(await autoAttempts()).toHaveLength(0);
+});
+
+it("refuses a second arrival to a host whose failed attempt an app older than the attempt marker started", async () => {
+  await foundOrganization();
+  const { token } = await autoToken(5);
+  const host = newHost();
+  expect(await send(token, host, readyAuto)).toEqual(arrivalWait);
+  await endAuto((await autoAttempts())[0]?.id ?? "", "failed");
+  await harness.pool.query("delete from fleet_token_attempt");
+  expect(await send(token, host, readyAuto)).toEqual(wait);
+  expect(await autoAttempts()).toMatchObject([{ state: "failed" }]);
+});
+
+it("backfills the attempt markers the app writes from the enrollments already there", async () => {
+  await foundOrganization();
+  const { token } = await autoToken(5);
+  const retried = newHost();
+  expect(await send(token, retried, readyAuto)).toEqual(arrivalWait);
+  expect(await send(token, newHost(), readyAuto)).toEqual(arrivalWait);
+  await endAuto((await autoAttempts())[0]?.id ?? "", "failed");
+  const [row] = (await harness.pool.query<{ id: string }>("select id from waiting_server where checkin_key = $1", [retried.key])).rows;
+  const input = { ids: [row?.id ?? ""], names: { kind: "hostnames" }, storage: { kind: "none" }, runs: { services: true, ingress: true, builds: true } } as const;
+  await run(startServerEnrollment(ada, { organizationSlug: "ada", ...input }));
+  expect(await autoAttempts()).toHaveLength(3);
+  const markers = async () => (await harness.pool.query("select * from fleet_token_attempt order by checkin_key")).rows;
+  const written = await markers();
+  expect(written).toHaveLength(2);
+  const migration = await readFile(new URL("../../../../drizzle/20261020084557_fleet_token_attempt/migration.sql", import.meta.url), "utf8");
+  const backfill = migration.split("--> statement-breakpoint").find((statement) => statement.includes('INSERT INTO "fleet_token_attempt"')) ?? "";
+  await harness.pool.query("delete from fleet_token_attempt");
+  await harness.pool.query(backfill);
+  expect(await markers()).toEqual(written);
 });
 
 it("keeps joined usage after the seven-day sweep and refuses another arrival", async () => {

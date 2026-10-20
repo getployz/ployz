@@ -318,7 +318,7 @@ const startPlannedEnrollment = Effect.fn("ServerEnrollment.startPlanned")(functi
       requestedByUserId: userId,
     });
     yield* drizzle.insert(fleetTokenAttempt)
-      .select(drizzle.select({ organizationId: waitingServer.organizationId, fleetTokenId: waitingServer.fleetTokenId, checkinKey: waitingServer.checkinKey })
+      .select(drizzle.select({ organizationId: waitingServer.organizationId, fleetTokenId: sql`${row.fleetTokenId}::uuid`.as("fleet_token_id"), checkinKey: waitingServer.checkinKey })
         .from(waitingServer).where(eq(waitingServer.id, row.waitingServerId)))
       .onConflictDoNothing();
     yield* enqueueEvent(createServerEnrollmentRequestedEvent({ attemptId: id, organizationId }), delivery);
@@ -331,10 +331,11 @@ const usedOf = (tokenId: string) => sql<number>`(select count(*) from ${fleetTok
   + (select count(*) from ${serverEnrollment} where ${serverEnrollment.fleetTokenId} = ${tokenId} and ${serverEnrollment.endedAt} is null)`.mapWith(Number);
 
 // A host arrives once per token: after any attempt under it, even one whose waiting row has since gone, it waits for a person.
+// The row's own enrollments still count, since an app older than the attempt marker may start one during an upgrade.
 const arrivalSpent = (tokenId: string) => sql<boolean>`exists (select 1 from ${fleetTokenAttempt} where ${fleetTokenAttempt.fleetTokenId} = ${tokenId}
   and ${fleetTokenAttempt.checkinKey} = ${waitingServer.checkinKey})
   or exists (select 1 from ${serverEnrollment} where ${serverEnrollment.waitingServerId} = ${waitingServer.id}
-  and (${serverEnrollment.state} = 'joined' or ${serverEnrollment.endedAt} is null))`;
+  and (${serverEnrollment.fleetTokenId} = ${tokenId} or ${serverEnrollment.state} = 'joined' or ${serverEnrollment.endedAt} is null))`;
 
 const arrivingHost = (token: { readonly id: string; readonly organizationId: string }, checkinKey: string) => and(
   eq(waitingServer.organizationId, token.organizationId), eq(waitingServer.checkinKey, checkinKey),
