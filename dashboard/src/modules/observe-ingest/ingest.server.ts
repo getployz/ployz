@@ -128,30 +128,38 @@ export const ingestCrashPush = Effect.fn("ObserveIngest.crash")(function* (pushe
 
 const DAY_MS = 86_400_000;
 
-export const ingestRequestPush = Effect.fn("ObserveIngest.requests")(function* (pusher: ObservePusher, push: RequestPushInput) {
-  if (push.dropped > 0) {
-    yield* Effect.logWarning("A Machine dropped requests it could not keep for Cloud.", { ...pusher, dropped: push.dropped });
-  }
-  if (!(yield* AppConfig).analyticsEnabled) return;
+/** The rows of a requests push that land on a site with analytics on, within retention. */
+const analyticsRows = Effect.fn("ObserveIngest.analyticsRows")(function* (pusher: ObservePusher, push: RequestPushInput, now: number) {
+  if (!(yield* AppConfig).analyticsEnabled) return [];
   const { drizzle } = yield* Database;
   const enabled = yield* drizzle.select({ environmentId: analyticsSite.environmentId })
     .from(analyticsSite)
     .where(and(eq(analyticsSite.organizationId, pusher.organizationId), eq(analyticsSite.enabled, true)));
-  if (enabled.length === 0) return;
+  if (enabled.length === 0) return [];
   const namespaces = yield* namespacesByEnvironment(pusher.organizationId);
   const environments = new Map<string, string>();
   for (const site of enabled) {
     const namespace = namespaces.get(site.environmentId);
     if (namespace !== undefined) environments.set(namespace, site.environmentId);
   }
-
-  const now = yield* Clock.currentTimeMillis;
   const cutoff = retentionCutoff(now);
-  const rows = push.rows.flatMap(({ namespace, ua, contentType, secPurpose, ...row }) => {
+  return push.rows.flatMap(({ namespace, ua, contentType, secPurpose, ...row }) => {
     const environmentId = environments.get(namespace);
     if (environmentId === undefined || row.ts < cutoff || row.ts.getTime() > now + DAY_MS) return [];
     return [{ ...row, environmentId, ...classify({ method: row.method, status: row.status, ua, contentType, secPurpose }) }];
   });
+});
+
+/**
+ * Keeps the push's analytics rows, and advances the cursor even when it keeps none: a Machine that serves traffic keeps
+ * its salts fresh with requests pushes and sends no crash refresh, so this cursor is its only recent push time.
+ */
+export const ingestRequestPush = Effect.fn("ObserveIngest.requests")(function* (pusher: ObservePusher, push: RequestPushInput) {
+  if (push.dropped > 0) {
+    yield* Effect.logWarning("A Machine dropped requests it could not keep for Cloud.", { ...pusher, dropped: push.dropped });
+  }
+  const now = yield* Clock.currentTimeMillis;
+  const rows = yield* analyticsRows(pusher, push, now);
   yield* ensurePartitions(rows.map((row) => dayOf(row.ts)));
 
   const database = yield* Database;

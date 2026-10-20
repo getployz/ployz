@@ -142,7 +142,7 @@ it.live("counts a placeholder 0.0.0.0 or :: with every request that has no addre
     expect((yield* signUp("203.0.113.9")).status).toBe(201);
   })));
 
-it.live("answers GET with 405 in the public error shape", () =>
+it.live("answers any method but POST with 405 in the public error shape", () =>
   Effect.gen(function* () {
     const response = signupMethodNotAllowed();
     expect(response.status).toBe(405);

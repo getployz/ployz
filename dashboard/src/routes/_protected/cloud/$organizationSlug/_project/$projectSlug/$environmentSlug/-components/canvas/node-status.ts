@@ -1,5 +1,6 @@
 import type { DeploymentSummary, DeploymentView, DomainRow, ReviewLifecycleKind, ServiceListing } from "@ployz/sdk";
 import { plural } from "#/lib/plural";
+import { shippedService } from "#/modules/config-store/store-deployments";
 import type { Marker } from "#/modules/metrics/metrics-model";
 import type { RuntimeServiceRecord } from "#/modules/runtime/runtime.collection";
 import type { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
@@ -192,13 +193,12 @@ export function stagedChip(change: ReviewLifecycleKind, changeCount: number): De
 export function deployChip(
   service: Pick<ServiceListing, "name" | "change">,
   changeCount: number,
-  inFlight: readonly Pick<DeploymentSummary, "status" | "services" | "started_at" | "admitted_at">[],
+  inFlight: readonly Pick<DeploymentSummary, "status" | "services" | "ships" | "started_at" | "admitted_at">[],
   restarting: ReadonlySet<string> | null = null,
 ): DeployChipState | null {
-  const targets = (deployment: Pick<DeploymentSummary, "services">) => deployment.services.length === 0 || deployment.services.includes(service.name);
   const running = inFlight.find((deployment) => deployment.status !== "queued");
   if (running && restarting?.has(service.name)) return { kind: "deploying", since: running.started_at ?? running.admitted_at };
-  if (inFlight.some((deployment) => deployment.status === "queued" && targets(deployment))) return { kind: "queued" };
+  if (inFlight.some((deployment) => deployment.status === "queued" && shippedService(deployment, service.name))) return { kind: "queued" };
   return service.change === null ? null : stagedChip(service.change, changeCount);
 }
 

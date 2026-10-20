@@ -44,22 +44,29 @@ pub(crate) fn run(
         .ok_or_else(|| Failure::from(crate::cloud_login::LoginError::SignedOut))?;
     setup.acts_with(&credential).map_err(Failure::command)?;
     if command.typed == Some(Typed::Organization) {
-        if !ui::can_prompt() {
-            return Err(Failure::command(PublishError::NeedsTerminal {
+        let needs_terminal = || {
+            Failure::command(PublishError::NeedsTerminal {
+                path: command.path(),
+            })
+            .hint(Hint::Next(format!("{}/", setup.cloud)))
+        };
+        // A command agents may run needs no word from Cloud to refuse for want of a terminal.
+        // One kept for people asks first, so an agent hears `forbidden` in every mode.
+        if command.agents && !ui::can_prompt() {
+            return Err(needs_terminal());
+        }
+        let acting = runtime
+            .block_on(cloud_account::acting_as(&credential))
+            .map_err(Failure::from)?;
+        if acting.agent && !command.agents {
+            return Err(Failure::command(PublishError::AgentRefused {
                 path: command.path(),
             })
             .hint(Hint::Next(format!("{}/", setup.cloud))));
         }
-        let organization = runtime
-            .block_on(cloud_account::acting_in(&credential))
-            .map_err(Failure::from)?;
         ui::confirm_name(
-            &organization.slug,
-            || {
-                Failure::command(PublishError::NeedsTerminal {
-                    path: command.path(),
-                })
-            },
+            &acting.organization.slug,
+            needs_terminal,
             "Cancelled. Nothing changed.",
         )?;
     }
@@ -249,7 +256,7 @@ fn scope(
 
 /// Refuse a bad `PLOYZ_PROJECT` or `PLOYZ_ENV` before fetching the manifest that a
 /// command line the cache lacks needs, as [`scope`] would once the command is known.
-/// A typed `--project` or `--environment` still wins over its variable.
+/// A typed `--project` or `--env` still wins over its variable.
 pub(crate) fn check_scope_env(args: &[OsString]) -> Result<(), Failure> {
     let typed = |flag: &str| {
         args.iter()
@@ -260,7 +267,7 @@ pub(crate) fn check_scope_env(args: &[OsString]) -> Result<(), Failure> {
                     .is_some_and(|rest| rest.is_empty() || rest.starts_with('='))
             })
     };
-    crate::handlers::link::check_env(typed("--project"), typed("--environment"))
+    crate::handlers::link::check_env(typed("--project"), typed("--env"))
 }
 
 fn print(

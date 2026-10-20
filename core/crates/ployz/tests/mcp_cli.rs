@@ -13,6 +13,7 @@ fn mcp(cloud: &str, home: &std::path::Path) -> Child {
     Command::new(env!("CARGO_BIN_EXE_ployz"))
         .arg("mcp")
         .env("HOME", home)
+        .env_remove("XDG_CONFIG_HOME")
         .env("PLOYZ_CONFIG", home.join("config.toml"))
         .env("PLOYZ_TOKEN", "ployz_test_token")
         .env("PLOYZ_CLOUD_URL", cloud)
@@ -219,6 +220,7 @@ fn local(home: &std::path::Path, dir: &std::path::Path) -> Command {
     command
         .current_dir(dir)
         .env("HOME", home)
+        .env_remove("XDG_CONFIG_HOME")
         .env("PLOYZ_CONFIG", home.join("config.toml"))
         .env(
             "PLOYZ_STORE",

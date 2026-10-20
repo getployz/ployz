@@ -10,7 +10,7 @@ import {
   handleRuntimeEventsRequest,
   runtimeEventsValidationError,
 } from "#/routes/api/runtime/-events.handler";
-import { publicErrorResponse } from "#/server/public-error";
+import { publicErrorResponse, methodNotAllowed } from "#/server/public-error";
 import { runAppEffect } from "#/server/run.server";
 
 const RuntimeEventsSearch = Schema.Struct({
@@ -52,6 +52,7 @@ export const Route = createFileRoute("/api/runtime/events")({
           { openRuntimeWatch: openRuntimeWatchRequest },
         );
       },
+      ANY: (): Response => methodNotAllowed(Route),
     },
   },
 });

@@ -3,7 +3,10 @@
 //! through the real send server with every request replayed late.
 
 use std::{
-    sync::{Arc, Mutex as StdMutex},
+    sync::{
+        Arc, Mutex as StdMutex,
+        atomic::{AtomicBool, Ordering},
+    },
     time::Duration,
 };
 
@@ -715,6 +718,19 @@ async fn landed(socket: &Path, target: &str) -> Value {
     panic!("the pull never settled");
 }
 
+/// Polls the copy until the pull stopped with a failure. A copy the receive leaves writable
+/// still shows the target read-only for a moment before the pull checks its properties.
+async fn failed(socket: &Path) -> String {
+    for _ in 0..300 {
+        let copy = post(socket, "/Volume.Copy.Inspect", json!({"name": "data"})).await;
+        if let Some(failure) = copy.pointer("/Ok/pull/failure").and_then(Value::as_str) {
+            return failure.to_owned();
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("the pull never failed");
+}
+
 /// Resends the Pull until it finishes the landed receive. Inspect shows the target a
 /// moment before the receive task records its outcome, and a resend in that window
 /// still finds the receive running.
@@ -731,7 +747,8 @@ async fn finished(socket: &Path, target: &str) -> Value {
 
 #[tokio::test]
 async fn a_pull_into_no_slot_sizes_the_slot_from_the_writer_and_lands_the_target() {
-    let source = Source::start(Some(BOUND), "snapshot w-1-1 77\n").await;
+    let source = Source::start(Some(BOUND), "").await;
+    source.hold("target=", "snapshot w-1-1 77\n");
     let test = TestDir::new();
     let (socket, server) = puller(&test, &["root"], source.port);
 
@@ -745,6 +762,7 @@ async fn a_pull_into_no_slot_sizes_the_slot_from_the_writer_and_lands_the_target
         "{:?}",
         source.requests()
     );
+    source.release();
     let copy = landed(&socket, "w-1-1").await;
     assert_eq!(copy.pointer("/Ok/newest/guid"), Some(&json!("77")));
     assert_eq!(copy.pointer("/Ok/pull/target"), Some(&json!("w-1-1")));
@@ -771,8 +789,7 @@ async fn a_pull_that_leaves_the_copy_writable_fails() {
     let (socket, server) = puller(&test, &["root", "readonly-lost"], source.port);
 
     post(&socket, "/Volume.Copy.Pull", pull("w-1-1")).await;
-    let copy = landed(&socket, "w-1-1").await;
-    let failure = copy.pointer("/Ok/pull/failure").unwrap().as_str().unwrap();
+    let failure = failed(&socket).await;
     assert!(failure.contains("readonly=off"), "{failure}");
     server.abort();
 }
@@ -1726,23 +1743,31 @@ impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Capture {
     }
 }
 
-/// A task of `name` that panics while `gate` holds its child, answered once its failure
-/// is published and the child is still alive.
+/// A task of `name` that panics while `gate` holds its child, answered once it panicked
+/// and the child is still alive. The test's runtime runs one task at a time, so the panic
+/// is recorded by then.
 async fn panicked_with_a_held_child(receives: &Receives, name: &DockerVolumeName, gate: &Path) {
+    let panicked = Arc::new(AtomicBool::new(false));
     receives.spawn(name, |stop| {
         let child = held_child(&stop, gate);
+        let panicked = Arc::clone(&panicked);
         async move {
             let _child = child;
+            panicked.store(true, Ordering::SeqCst);
             panic!("the receive task broke");
         }
     });
     for _ in 0..500 {
-        if receives.failure(name).is_some() {
+        if panicked.load(Ordering::SeqCst) {
+            assert!(
+                receives.failure(name).is_none(),
+                "a failure was answered while its task's child is alive"
+            );
             return;
         }
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
-    panic!("the panic was never published");
+    panic!("the task never panicked");
 }
 
 /// A same-target retry (copy.rs `copy_pull`) answers and forgets a failure only once the
