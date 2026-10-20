@@ -76,7 +76,7 @@ fn name_a_config() -> RpcError {
 pub(crate) fn config_name(name: &str) -> Result<ConfigName, RpcError> {
     ConfigName::parse(name).map_err(|_| {
         error::invalid(
-            "Expected a Config name: up to 63 lowercase letters, digits and -",
+            "Expected a Config name: up to 63 lowercase letters, digits and -, starting and ending with a letter or digit",
             json!({ "example": "sentry" }),
         )
     })

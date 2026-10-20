@@ -30,6 +30,8 @@ export const storeChangeSources = {
   config_pr_plan: { key: ["project_id"] },
   config_pr_environment: { key: ["environment_id"] },
   config_pull_request: { key: ["repository_id", "number"] },
+  // A suite's verdict shows on every Deployment waiting for its commit, which polls nothing while it waits.
+  config_check_suite: { key: ["organization_id"] },
 } satisfies Record<string, { key: readonly string[] }>;
 
 /**

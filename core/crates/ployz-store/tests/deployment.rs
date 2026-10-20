@@ -198,7 +198,7 @@ fn a_deploy_publishes_then_its_runner_records_it_into_applied_state() {
     let admitted = admit(&store, &who, 1, &[], None).unwrap();
     assert_eq!(
         (admitted.status, admitted.saved, admitted.number),
-        (DeploymentStatus::Queued, Revision(1), 1)
+        (DeploymentStatus::Queued, Revision(1), Some(1))
     );
     // The submitted Deployment is Head now, so nothing is staged.
     assert!(changed(&store, &who).is_empty());
@@ -2038,7 +2038,7 @@ fn admission_replays_supersedes_and_checks_the_reviewed_version() {
     assert_eq!(stale.code, RpcErrorCode::Conflict);
     assert!(stale.details.get("diff").is_some());
     let second = admit(&store, &who, 2, &[], Some(diff(&store, &who).version)).unwrap();
-    assert_eq!((second.number, second.saved), (2, Revision(2)));
+    assert_eq!((second.number, second.saved), (Some(2), Revision(2)));
     assert_eq!(
         store
             .read(&who, &ployz_store::DeploymentQuery { id: id(1) })
@@ -2323,10 +2323,15 @@ fn a_retry_ships_exactly_what_the_failed_deployment_froze() {
             retried.saved,
             retried.services
         ),
-        (3, DeploymentStatus::Queued, first.saved, first.services)
+        (
+            Some(3),
+            DeploymentStatus::Queued,
+            first.saved,
+            first.services
+        )
     );
     // Replaying it is idempotent; its ID with another source is not.
-    assert_eq!(retry(&store, &who, 3, 1).unwrap().number, 3);
+    assert_eq!(retry(&store, &who, 3, 1).unwrap().number, Some(3));
     assert_eq!(code(retry(&store, &who, 3, 2)), RpcErrorCode::Conflict);
     // The failed one keeps its Node Outcomes; the retry targets every node again.
     assert_eq!(
@@ -2405,7 +2410,7 @@ fn redeploying_an_older_deployment_rolls_back_to_what_it_froze() {
     let rolled_back = retry(&store, &who, 3, 1).unwrap();
     assert_eq!(
         (rolled_back.number, rolled_back.status, rolled_back.saved),
-        (3, DeploymentStatus::Queued, first.saved)
+        (Some(3), DeploymentStatus::Queued, first.saved)
     );
     assert_eq!(apply(&store, 3), frozen);
     assert_eq!(rolls_back(&store, &who, 1), [2, 3]);
@@ -2452,13 +2457,13 @@ fn a_redeploy_is_refused_unless_its_deployment_ended() {
     assert_eq!(code(retry(&store, &who, 9, 2)), RpcErrorCode::Conflict);
     // A refused redeploy queued nothing, and an accepted one supersedes what's queued.
     fail_api(&store, 3);
-    assert_eq!(retry(&store, &who, 9, 3).unwrap().number, 4);
+    assert_eq!(retry(&store, &who, 9, 3).unwrap().number, Some(4));
     assert_eq!(status(&store, &who, 3), DeploymentStatus::Failed);
     admit(&store, &who, 5, &[], None).unwrap();
     retry(&store, &who, 6, 3).unwrap();
     assert_eq!(status(&store, &who, 5), DeploymentStatus::Superseded);
     assert_eq!(status(&store, &who, 9), DeploymentStatus::Superseded);
-    assert_eq!(retry(&store, &who, 7, 1).unwrap().number, 7);
+    assert_eq!(retry(&store, &who, 7, 1).unwrap().number, Some(7));
     assert_eq!(status(&store, &who, 6), DeploymentStatus::Superseded);
 }
 
@@ -2509,7 +2514,10 @@ fn a_redeploy_rolls_back_every_newer_deployment_that_may_have_changed_the_server
     assert_eq!(stale.code, RpcErrorCode::ConfirmationRequired);
     assert_eq!(stale.details["rolls_back"], json!([2]));
     assert_eq!(status(&store, &who, 5), DeploymentStatus::Queued);
-    assert_eq!(rollback(&store, &who, (6, 1), &[2]).unwrap().number, 6);
+    assert_eq!(
+        rollback(&store, &who, (6, 1), &[2]).unwrap().number,
+        Some(6)
+    );
 }
 
 #[test]
@@ -2542,7 +2550,7 @@ fn a_newer_deployment_whose_runner_is_gone_does_not_hold_up_a_redeploy() {
     backend::execute(&url, "UPDATE config_deployment SET lease = 0");
     assert_eq!(status(&store, &who, 2), DeploymentStatus::Unknown);
 
-    assert_eq!(retry(&store, &who, 3, 1).unwrap().number, 3);
+    assert_eq!(retry(&store, &who, 3, 1).unwrap().number, Some(3));
 }
 
 #[test]
@@ -2686,7 +2694,7 @@ fn deployments_page_newest_first_within_the_organization() {
             .iter()
             .map(|d| d.number)
             .collect::<Vec<_>>(),
-        [3, 2]
+        [Some(3), Some(2)]
     );
     let last = page(first.next_cursor.clone());
     assert_eq!(
@@ -2694,7 +2702,7 @@ fn deployments_page_newest_first_within_the_organization() {
             .iter()
             .map(|d| d.number)
             .collect::<Vec<_>>(),
-        [1]
+        [Some(1)]
     );
     assert_eq!(last.next_cursor, None);
     let bad_limit = store.read(
@@ -3240,7 +3248,7 @@ fn a_deployment_is_found_by_its_number() {
             &who,
             &ployz_store::NumberedDeploymentQuery {
                 environment: EnvironmentRef::default(),
-                number,
+                number: Some(number),
             },
         )
     };

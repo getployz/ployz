@@ -12,7 +12,7 @@ its Git branch. [How builds work](../builds/overview.md) covers what happens in 
    project you already have, click **Create** on that project's canvas instead.) The first time,
    click **Connect GitHub**, pick the account or organization, choose the repositories Ployz may
    use, and install the Ployz GitHub App. GitHub sends you back to **Settings → GitHub**, which
-   lists the account.
+   lists the account. It says "Repositories appear in a moment" until Ployz has listed them.
 2. Search for the repository, or paste its URL, and pick it.
 3. Before you deploy, set what your app needs to start:
    - To make it public, open **Settings → Networking** and click
@@ -95,9 +95,16 @@ behind, and services the push doesn't touch keep running as they are.
 Turn on **Wait for CI** under **Settings → Source** to hold a push's deploy until its GitHub
 checks pass, from GitHub Actions or any other app that reports checks. It applies at once.
 
-- If a check fails, the commit doesn't deploy. Re-run it on GitHub and the commit deploys once it
-  passes, or push a fix.
-- A newer push replaces a commit that's still waiting.
+A held push shows in **Runs** and in `ployz deployment ls` as a deployment that reads **Waiting
+for CI**, named by its commit rather than a number. It deploys as that same deployment once
+every check passes, and takes the next deployment number then, so deployments stay numbered in
+the order they ran, whichever branch passed CI first. Cancel it there to drop the push. Nothing
+was frozen for it, so it can't be redeployed: push again instead.
+
+- If a check fails, the deployment reads **CI failed** and the commit doesn't deploy. Re-run the
+  check on GitHub and the commit deploys once it passes, or push a fix.
+- A newer push replaces a commit that's still waiting, and so does a deploy you start yourself.
+  A replaced commit leaves the list; one you cancelled stays, so you can see you dropped it.
 - If no checks run for a commit, it waits until your next push. CI that reports commit statuses
   instead of checks counts as no checks.
 

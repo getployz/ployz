@@ -1,6 +1,7 @@
 //! `org rm` and `server forget` of every Server against a fake Cloud that asks a human
 //! first: under `--json` each answers `approval_required` naming the retry, and the
-//! retry carries the approval.
+//! retry carries the approval. An `org rm` a Server leaves partial names a retry that
+//! carries the approval it ran with.
 
 use std::{
     io::{BufRead, BufReader, Read, Write},
@@ -18,8 +19,9 @@ const ASKED_FORGET: &str = r#"{"error":{"code":"approval_required","message":"A 
 type Seen = Arc<Mutex<Vec<(String, Option<String>)>>>;
 
 /// Cloud that asks for approval `apr_9` before it removes Organization acme or forgets
-/// its Servers, recording each such request in `seen`.
-fn fake_cloud(seen: Seen) -> String {
+/// its Servers, recording each such request in `seen`. Unless `confirms`, a Server
+/// never confirms unpairing, so the approved removal stays partial.
+fn fake_cloud(seen: Seen, confirms: bool) -> String {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
     std::thread::spawn(move || {
@@ -50,8 +52,19 @@ fn fake_cloud(seen: Seen) -> String {
             let (status, reply) = match route.as_str() {
                 "DELETE /api/cli/organizations/o1" if approved => (
                     "200 OK",
-                    json!({ "organization": "acme", "removed": true, "servers": { "confirmed": [], "unconfirmed": [] } })
-                        .to_string(),
+                    json!({
+                        "organization": "acme",
+                        "removed": confirms,
+                        "servers": {
+                            "confirmed": [],
+                            "unconfirmed": if confirms { vec![] } else { vec!["0123456789abcdef0123456789abcdef"] },
+                        },
+                    })
+                    .to_string(),
+                ),
+                "GET /api/cli/approvals/apr_9" => (
+                    "200 OK",
+                    json!({ "approval": { "status": "approved" } }).to_string(),
                 ),
                 "DELETE /api/cli/organizations/o1" => ("409 Conflict", ASKED_REMOVE.to_owned()),
                 "POST /api/cli/forget-servers" if approved => (
@@ -115,7 +128,7 @@ fn json_of(output: &Output) -> Value {
 #[test]
 fn org_rm_and_forgetting_every_server_wait_on_an_approval_their_retry_carries() {
     let seen = Arc::default();
-    let cloud = fake_cloud(Arc::clone(&seen));
+    let cloud = fake_cloud(Arc::clone(&seen), true);
     let cases: [(&[&str], &str, &str); 2] = [
         (
             &["org", "rm", "acme", "--confirm", "acme"],
@@ -155,4 +168,48 @@ fn org_rm_and_forgetting_every_server_wait_on_an_approval_their_retry_carries() 
             ],
         );
     }
+}
+
+#[test]
+fn a_partial_org_rm_names_a_retry_that_carries_its_approval() {
+    let seen = Arc::default();
+    let cloud = fake_cloud(Arc::clone(&seen), false);
+    let args = ["org", "rm", "acme", "--confirm", "acme"];
+
+    let passed = ployz(
+        &cloud,
+        &[&["--json"], &args[..], &["--approval", "apr_9"]].concat(),
+    );
+    assert_eq!(passed.status.code(), Some(3), "{}", json_of(&passed));
+    let next = json_of(&passed);
+    let next = next
+        .pointer("/next")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    assert!(
+        next.ends_with("org rm acme --confirm acme --approval apr_9"),
+        "{next}"
+    );
+
+    let settled = ployz(&cloud, &args);
+    assert_eq!(settled.status.code(), Some(3));
+    let stderr = String::from_utf8_lossy(&settled.stderr);
+    assert!(
+        stderr.contains("org rm acme --confirm acme --approval apr_9"),
+        "{stderr}"
+    );
+    assert_eq!(
+        seen.lock().unwrap().drain(..).collect::<Vec<_>>(),
+        [
+            (
+                "DELETE /api/cli/organizations/o1".to_owned(),
+                Some("apr_9".to_owned())
+            ),
+            ("DELETE /api/cli/organizations/o1".to_owned(), None),
+            (
+                "DELETE /api/cli/organizations/o1".to_owned(),
+                Some("apr_9".to_owned())
+            ),
+        ],
+    );
 }

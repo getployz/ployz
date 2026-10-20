@@ -8,8 +8,8 @@ use crate::ui::{
 };
 use ployz_core::{QualifiedService, RpcError, RpcErrorCode};
 use ployz_store::{
-    BuildStatus, DeployedNode, DeploymentStatus, DeploymentView, DeploymentWarning, IngressAction,
-    IngressFailure, NodeStatus, RowState,
+    BuildStatus, DeployedNode, DeploymentStatus, DeploymentView, DeploymentWarning, FailedAt,
+    IngressAction, IngressFailure, NodeStatus, RowState,
 };
 use std::time::{Duration, UNIX_EPOCH};
 
@@ -104,8 +104,10 @@ pub(super) fn frame(view: &DeploymentView) -> Frame {
     Frame {
         run: Run::Stored(view.deployment.id.clone()),
         title: format!(
-            "Deploying #{} of {}/{}",
-            view.deployment.number, view.environment.project, view.environment.name
+            "Deploying {} of {}/{}",
+            view.deployment.label(),
+            view.environment.project,
+            view.environment.name
         ),
         rows,
         notices: view
@@ -170,6 +172,16 @@ pub(super) fn noop(view: &DeploymentView) -> bool {
             .preview
             .as_ref()
             .is_some_and(|preview| preview.noop() && !preview.has_observation_gaps())
+}
+
+/// Said for a Deployment that changed nothing on the Servers: it still recorded the
+/// saved version it shipped.
+pub(super) fn up_to_date(view: &DeploymentView) -> String {
+    format!(
+        "Nothing changed on the Servers; Deployment {} shipped version #{}.",
+        view.deployment.label(),
+        view.deployment.saved
+    )
 }
 
 pub(super) fn ingress_verb(action: IngressAction) -> &'static str {
@@ -290,10 +302,15 @@ pub(super) fn removal_retry(
         DeploymentStatus::Failed | DeploymentStatus::Unknown | DeploymentStatus::Cancelled
     );
     (view.deployment.remove && ended).then(|| {
+        // A removal queues at once, so it is numbered; the ID covers the rest.
+        let target = view.deployment.number.map_or_else(
+            || view.deployment.id.to_string(),
+            |number| number.to_string(),
+        );
         Hint::Retry(command(&[
             "deployment",
             "retry",
-            &view.deployment.number.to_string(),
+            &target,
             "--project",
             view.environment.project.as_str(),
             "--env",
@@ -313,7 +330,7 @@ fn failure(view: &DeploymentView, command: impl Fn(&[&str]) -> String) -> Failur
             | ployz_store::Outcome::NotExecuted { reason, cause, .. },
         ) => (reason.clone(), cause.clone()),
         _ => (
-            format!("Deployment #{} did not complete.", view.deployment.number),
+            format!("Deployment {} did not complete.", view.deployment.label()),
             Vec::new(),
         ),
     };
@@ -328,11 +345,13 @@ fn failure(view: &DeploymentView, command: impl Fn(&[&str]) -> String) -> Failur
             view.namespace.clone(),
             view.runtime_names.get(name).unwrap_or(name).clone(),
         );
-        let mut failed = false;
+        let mut logs = false;
+        let mut pulled = false;
         for row in &node.rows {
             let RowState::Failed {
                 reason: row_reason,
                 cause: row_cause,
+                step,
                 log,
                 ..
             } = &row.state
@@ -353,19 +372,38 @@ fn failure(view: &DeploymentView, command: impl Fn(&[&str]) -> String) -> Failur
                 server: row.server.clone(),
                 log: log.clone(),
             });
-            failed = true;
+            match step {
+                Some(
+                    FailedAt::Start
+                    | FailedAt::Health
+                    | FailedAt::Hook
+                    | FailedAt::Stop
+                    | FailedAt::Remove,
+                ) => logs = true,
+                Some(FailedAt::Pull) => pulled = true,
+                Some(FailedAt::Build | FailedAt::Create | FailedAt::Volume) => {}
+                None => logs |= log.is_some(),
+            }
         }
+        let scope = [
+            "--project",
+            view.environment.project.as_str(),
+            "--env",
+            view.environment.name.as_str(),
+        ];
         // One hint per Service, by its config name: it reads every Server's logs, and a
-        // token that reads through Cloud can serve it too.
-        if failed {
-            hints.push(Hint::Inspect(command(&[
-                "logs",
-                name.as_str(),
-                "--project",
-                view.environment.project.as_str(),
-                "--env",
-                view.environment.name.as_str(),
-            ])));
+        // token that reads through Cloud can serve it too. Before a Container exists it
+        // would show only the old one's lines, so a failed pull names the image instead,
+        // unless a build made it.
+        if logs {
+            hints.push(Hint::Inspect(command(
+                &[&["logs", name.as_str()][..], &scope].concat(),
+            )));
+        } else if pulled && !view.builds.iter().any(|build| build.service == *name) {
+            let image = format!("{name}.image");
+            hints.push(Hint::Inspect(command(
+                &[&["get", image.as_str()][..], &scope].concat(),
+            )));
         }
     }
     let mut failure = Failure::from(RpcError {
@@ -469,6 +507,93 @@ mod tests {
         );
     }
 
+    /// The step of every failed row.
+    fn failed_rows(view: &mut DeploymentView) -> impl Iterator<Item = &mut Option<FailedAt>> {
+        view.nodes
+            .iter_mut()
+            .flat_map(|node| node.rows.iter_mut())
+            .filter_map(|row| {
+                if let RowState::Failed { step, .. } = &mut row.state {
+                    Some(step)
+                } else {
+                    None
+                }
+            })
+    }
+
+    fn inspects(failure: &Failure) -> Vec<String> {
+        failure
+            .hints()
+            .iter()
+            .filter_map(|hint| {
+                if let Hint::Inspect(command) = hint {
+                    Some(command.clone())
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_pull_failure_inspects_the_image_instead_of_logs_no_container_wrote() {
+        let mut view = view();
+        for row in failed_rows(&mut view) {
+            *row = Some(FailedAt::Pull);
+        }
+        assert_eq!(
+            inspects(&failure(&view, command)),
+            ["ployz get web.image --project shop --env production"]
+        );
+
+        if let Some(row) = failed_rows(&mut view).nth(1) {
+            *row = Some(FailedAt::Start);
+        }
+        assert_eq!(
+            inspects(&failure(&view, command)),
+            ["ployz logs web --project shop --env production"]
+        );
+    }
+
+    #[test]
+    fn a_create_failure_offers_no_logs_only_the_old_container_wrote() {
+        let mut view = view();
+        for node in &mut view.nodes {
+            for row in &mut node.rows {
+                if let RowState::Failed { step, log, .. } = &mut row.state {
+                    *step = Some(FailedAt::Create);
+                    *log = None;
+                }
+            }
+        }
+        let failed = failure(&view, command);
+        assert!(inspects(&failed).is_empty());
+        assert!(
+            failed
+                .hints()
+                .iter()
+                .any(|hint| matches!(hint, Hint::Retry(_)))
+        );
+
+        for row in failed_rows(&mut view) {
+            *row = None;
+        }
+        assert!(inspects(&failure(&view, command)).is_empty());
+    }
+
+    #[test]
+    fn a_built_service_that_failed_to_pull_has_no_image_setting_to_inspect() {
+        let mut view = view();
+        for row in failed_rows(&mut view) {
+            *row = Some(FailedAt::Pull);
+        }
+        view.builds = serde_json::from_value(json!([
+            {"service": "web", "commit": null, "status": "built", "message": null}
+        ]))
+        .unwrap();
+        assert!(inspects(&failure(&view, command)).is_empty());
+    }
+
     #[test]
     fn a_failed_removal_never_says_to_retry_with_deploy() {
         let retries = |view: &DeploymentView| {
@@ -530,6 +655,10 @@ mod tests {
         ));
         assert!(completion(&view, command).is_ok());
         assert!(noop(&view));
+        assert_eq!(
+            up_to_date(&view),
+            "Nothing changed on the Servers; Deployment #7 shipped version #1."
+        );
         let warning = DeployWarning::ObservationOmitted {
             kind: ObservationKind::Container,
             machine_id: MachineId::random(),

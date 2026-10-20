@@ -1475,6 +1475,22 @@ fn remove_refuses_a_destructive_target_without_its_version() {
         },
     ));
     assert_eq!(stale.code, RpcErrorCode::ConfirmationRequired);
+    assert!(
+        unversioned
+            .message
+            .ends_with("Pass the version to go ahead"),
+        "{unversioned:?}"
+    );
+    assert!(
+        stale.message.starts_with(
+            "This changed since that version, so nothing was removed. Removing this will"
+        ),
+        "{stale:?}"
+    );
+    assert!(
+        stale.message.ends_with("Pass the new version to go ahead"),
+        "{stale:?}"
+    );
     // Accepting the data isn't confirming it.
     let unconfirmed =
         refusal(store.write_trusted(&who, &accepting_data(None), &observing(observed())));

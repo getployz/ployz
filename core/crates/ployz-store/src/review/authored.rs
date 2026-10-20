@@ -1014,6 +1014,17 @@ impl GitSelection {
 }
 
 impl Effect {
+    /// Shared Writes applies at once, so no row lists it; Discard and History
+    /// still carry it with its Volume.
+    fn listed(&self) -> bool {
+        !matches!(
+            self,
+            Self::Volume {
+                field: VolumeField::SharedWrites(_),
+                ..
+            }
+        )
+    }
     fn node(&self) -> ReviewNodeIdentity {
         let (node_type, id) = match self {
             Self::ServiceLifecycle(change) => (EnvironmentNodeType::Service, &change.record().id),
@@ -1747,6 +1758,9 @@ impl Plan {
         let mut rows: Vec<Row> = Vec::new();
         let names = crate::config_item::names_in(&[after, before]);
         for (index, effect) in self.effects.iter().enumerate() {
+            if !effect.listed() {
+                continue;
+            }
             let node = effect.node();
             let (name, lineage) = node_info(&node, after, before)?;
             if !changes.iter().any(|change| change.node == node) {
@@ -1860,12 +1874,7 @@ impl Plan {
                             json!(delta.before),
                             json!(delta.after),
                         ),
-                        VolumeField::SharedWrites(delta) => (
-                            "sharedWrites",
-                            None,
-                            json!(delta.before),
-                            json!(delta.after),
-                        ),
+                        VolumeField::SharedWrites(_) => unreachable!("Shared Writes is no row"),
                     };
                     (format!("volumes.{name}.{path}"), at, left, right, None)
                 }
@@ -2449,22 +2458,29 @@ pub(super) fn prepare_discard(
                 json!({ "path": path }),
             ));
         }
-        let selected: Vec<_> = rows
-            .iter()
-            .filter(|row| {
-                row.node == node
-                    && (whole
-                        || row.path == selected_path
-                            && row.effects.iter().all(|index| {
-                                plan.effects
-                                    .get(*index)
-                                    .expect("row belongs to plan")
-                                    .lifecycle()
-                                    .is_none()
-                            }))
-            })
-            .flat_map(|row| row.effects.iter().copied())
-            .collect();
+        let selected: Vec<_> = if whole {
+            plan.effects
+                .iter()
+                .enumerate()
+                .filter(|(_, effect)| effect.node() == node)
+                .map(|(index, _)| index)
+                .collect()
+        } else {
+            rows.iter()
+                .filter(|row| {
+                    row.node == node
+                        && row.path == selected_path
+                        && row.effects.iter().all(|index| {
+                            plan.effects
+                                .get(*index)
+                                .expect("row belongs to plan")
+                                .lifecycle()
+                                .is_none()
+                        })
+                })
+                .flat_map(|row| row.effects.iter().copied())
+                .collect()
+        };
         plan.reverse_into(&mut working, &selected)?;
     } else {
         working = baseline;

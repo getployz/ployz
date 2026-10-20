@@ -322,23 +322,13 @@ pub(super) fn reply(
             },
         };
     }
-    if let Some(why) = cloud_error(body) {
+    if let Some(why) = crate::cloud_login::cloud_message(body) {
         return Reply::Unreachable(BACKOFF, format!("Cloud answered {status}: {why}"));
     }
     if status.is_client_error() && status != StatusCode::REQUEST_TIMEOUT {
         return Reply::NotCloud(format!("answered {status}"));
     }
     Reply::Unreachable(BACKOFF, format!("Cloud answered {status}"))
-}
-
-fn cloud_error(body: &[u8]) -> Option<String> {
-    let body = serde_json::from_slice::<serde_json::Value>(body).ok()?;
-    let text = |field: &str| body.get(field).and_then(serde_json::Value::as_str);
-    let message = match text("_tag") {
-        Some("PublicError") => text("code").and(text("message")),
-        _ => text("error"),
-    };
-    message.map(str::to_owned)
 }
 
 /// Cloud holds a check-in back with `{error}` only, the shape its 429 sends.

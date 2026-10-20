@@ -18,9 +18,9 @@ use std::time::Duration;
 use clap::{ArgAction, ArgMatches, Command, ValueHint};
 use ployz_core::{RpcErrorCode, ServiceName};
 use ployz_store::{
-    Admit, Cancel, ConfigStore, Deploy, DeploymentId, DeploymentStatus, DeploymentSummary,
-    DeploymentView, DeploymentsQuery, EnvironmentRef, PlanQuery, Publish, RunnerId, Start,
-    UploadBase, UploadedSource, VolumeName,
+    Admit, Cancel, CiVerdict, ConfigStore, Deploy, DeploymentId, DeploymentStatus,
+    DeploymentSummary, DeploymentView, DeploymentsQuery, EnvironmentRef, PlanQuery, Publish,
+    RunnerId, Start, UploadBase, UploadedSource, VolumeName,
 };
 
 use super::store::{Next, Store, environment, mint, next, scoped, store};
@@ -129,7 +129,10 @@ pub(super) fn redeploy_command(command: Command) -> Command {
     )))
     .arg(id())
     .arg(switch("yes", Some('y')).env(crate::cli::env::AUTO_CONFIRM))
-    .arg(crate::cli::volume_acceptance())
+    .arg(crate::cli::volume_acceptance().help(format!(
+        "{}; --yes cannot bypass this",
+        crate::cli::VOLUME_ACCEPTANCE
+    )))
     .arg(crate::cli::reviewed_version())
 }
 
@@ -295,11 +298,29 @@ pub(super) fn refuse_local_detach(matches: &ArgMatches, store: &Store) -> Result
 pub(super) fn open_events(
     matches: &ArgMatches,
 ) -> Result<Option<std::io::BufWriter<std::fs::File>>, Error> {
-    Ok(matches
-        .get_one::<String>("events")
-        .map(std::fs::File::create)
-        .transpose()?
-        .map(std::io::BufWriter::new))
+    let Some(path) = matches.get_one::<String>("events") else {
+        return Ok(None);
+    };
+    let file = std::fs::File::create(path).map_err(|error| {
+        use std::io::ErrorKind;
+        let kind = error.kind();
+        let reason = if kind == ErrorKind::NotFound {
+            "no such directory"
+        } else if kind == ErrorKind::IsADirectory {
+            "it is a directory"
+        } else if kind == ErrorKind::PermissionDenied {
+            "permission denied"
+        } else {
+            "it can't be created"
+        };
+        Error::detailed_caused(
+            RpcErrorCode::InvalidArgument,
+            format!("Can't write --events file {path}: {reason}"),
+            serde_json::Value::Null,
+            Some(error),
+        )
+    })?;
+    Ok(Some(std::io::BufWriter::new(file)))
 }
 
 /// Run or follow a queued Deployment and report it. Exits 3 unless it applied.
@@ -349,7 +370,7 @@ pub(super) fn execute(
     source: Option<&Path>,
     events: Option<std::io::BufWriter<std::fs::File>>,
 ) -> Result<Shipped, Error> {
-    let hint = show_hint(matches, admitted.number);
+    let hint = hint_for(matches, admitted);
     let signal = crate::cancellation::interrupted()?;
     let mut runner = match store.local() {
         // Admission can end it at once, with nothing to run.
@@ -590,12 +611,14 @@ struct Followed {
 
 fn finish_progress(followed: &mut Followed, disposition: Disposition) {
     let frame = progress::frame(&followed.view);
+    let up_to_date = matches!(disposition, Disposition::UpToDate);
     if let Some(progress) = followed.progress.take() {
         progress.finish(frame, disposition);
-    } else if matches!(disposition, Disposition::UpToDate) {
-        ui::note("Everything is up to date.");
-    } else {
+    } else if !up_to_date {
         Progress::start(frame.clone()).finish(frame, disposition);
+    }
+    if up_to_date {
+        ui::note(progress::up_to_date(&followed.view));
     }
 }
 
@@ -626,17 +649,18 @@ fn follow(
     let mut last = None;
     let mut followed: Option<Followed> = None;
     let mut id = admitted.id.clone();
-    let mut number = admitted.number;
+    let mut tracked = admitted.clone();
     // A Cloud Deployment runs on without this process; a lost read says which one and where to watch it.
-    let lost = |error: Error, number: u64| {
+    let lost = |error: Error, tracked: &DeploymentSummary| {
         if runner.is_some() || error.report().code != RpcErrorCode::Unavailable {
             return error;
         }
         error
             .context(format!(
-                "Stopped following Deployment #{number}; it keeps running in Ployz Cloud."
+                "Stopped following Deployment {}; it keeps running in Ployz Cloud.",
+                tracked.label()
             ))
-            .hint(Hint::Inspect(show_hint(matches, number)))
+            .hint(Hint::Inspect(hint_for(matches, tracked)))
     };
     let mut unclaimed = Some(std::time::Instant::now() + UNCLAIMED);
     loop {
@@ -658,7 +682,7 @@ fn follow(
             }
             return followed.ok_or_else(Error::cancelled);
         }
-        let view = read.map_err(|error| lost(error, number))?;
+        let view = read.map_err(|error| lost(error, &tracked))?;
         let frame = progress::frame(&view);
         if let Some(followed) = followed.as_mut() {
             if let Some(progress) = followed.progress.as_mut() {
@@ -688,13 +712,14 @@ fn follow(
                 }
                 error
                     .context(format!(
-                        "Deployment #{number} was superseded, and Ployz Cloud stopped answering before its replacement could be read."
+                        "Deployment {} was superseded, and Ployz Cloud stopped answering before its replacement could be read.",
+                        tracked.label()
                     ))
                     .hint(Hint::Inspect(next(matches, &["deployment", "ls"])))
             })?;
             if let Some(newer) = newer {
-                id = newer.id;
-                number = newer.number;
+                id = newer.id.clone();
+                tracked = newer;
                 last = None;
                 continue;
             }
@@ -707,8 +732,8 @@ fn follow(
         {
             unclaimed = None;
             ui::note(format_args!(
-                "No Server has started Deployment #{} yet; it stays queued until one does.",
-                current.view.deployment.number
+                "No Server has started Deployment {} yet; it stays queued until one does.",
+                current.view.deployment.label()
             ));
             ui::hint(&Hint::Inspect("ployz server ls".into()));
         }
@@ -725,17 +750,19 @@ fn follow(
     }
 }
 
-/// The Environment's newest Deployment when it is newer than superseded `view` and targets every Service `view` did.
+/// The newest Deployment newer than superseded `view` that targets every Service `view` did, among the latest and those in flight.
 fn replacement(store: &Store, view: &DeploymentView) -> Result<Option<DeploymentSummary>, Error> {
     let page = store.read(&DeploymentsQuery {
         environment: EnvironmentRef {
             project: Some(view.environment.project.clone()),
             environment: Some(view.environment.name.clone()),
         },
-        limit: Some(1),
+        limit: None,
         cursor: None,
     })?;
-    Ok(page.deployments.into_iter().next().filter(|newer| {
+    // The latest may ship other Services while an older one in flight ships ours:
+    // the latest, then the in-flight ones newest first, whatever page they fall on.
+    Ok(page.latest.into_iter().chain(page.in_flight).find(|newer| {
         newer.number > view.deployment.number
             && ships_all(&view.deployment.services, &newer.services)
     }))
@@ -938,11 +965,8 @@ pub(super) fn ls(root: &ArgMatches) -> Result<(), Error> {
     );
     for deployment in &page.deployments {
         table.row([
-            Cell::from(format!("#{}", deployment.number)),
-            Cell::status(
-                super::store::word(&deployment.status),
-                status_tone(deployment.status),
-            ),
+            Cell::from(deployment.label()),
+            Cell::status(status_word(deployment), status_tone(deployment)),
             Cell::from(deployment.saved.to_string()),
         ]);
     }
@@ -953,11 +977,24 @@ pub(super) fn ls(root: &ArgMatches) -> Result<(), Error> {
     Ok(())
 }
 
+/// A Deployment's status in a word or two; a push waiting for CI says how its CI stands.
+fn status_word(deployment: &DeploymentSummary) -> String {
+    match (deployment.status, deployment.ci) {
+        (DeploymentStatus::WaitingForCi, Some(CiVerdict::Failed)) => "CI failed".to_owned(),
+        (DeploymentStatus::WaitingForCi, _) => "waiting for CI".to_owned(),
+        (status, _) => super::store::word(&status),
+    }
+}
+
 /// How a Deployment's status reads at a glance.
-const fn status_tone(status: DeploymentStatus) -> Tone {
-    match status {
+const fn status_tone(deployment: &DeploymentSummary) -> Tone {
+    match deployment.status {
         DeploymentStatus::Applied => Tone::Good,
         DeploymentStatus::Failed | DeploymentStatus::Unknown => Tone::Bad,
+        DeploymentStatus::WaitingForCi => match deployment.ci {
+            Some(CiVerdict::Failed) => Tone::Bad,
+            Some(CiVerdict::Pending) | None => Tone::Change,
+        },
         DeploymentStatus::Queued
         | DeploymentStatus::Superseded
         | DeploymentStatus::Running
@@ -979,7 +1016,7 @@ pub(super) fn deployment_id(
     };
     let found = store.read(&ployz_store::NumberedDeploymentQuery {
         environment: environment(matches)?,
-        number,
+        number: Some(number),
     })?;
     Ok(found.deployment.id)
 }
@@ -995,8 +1032,10 @@ fn refused<'a>(
             error,
             |refusal| refusal.code == RpcErrorCode::Conflict,
             || {
-                numbered(store, id)
-                    .map_or_else(|| id_hint(id), |(number, _)| show_hint(matches, number))
+                store
+                    .read(&ployz_store::DeploymentQuery { id: id.clone() })
+                    .ok()
+                    .map_or_else(|| id_hint(id), |view| hint_for(matches, &view.deployment))
             },
         ))
     }
@@ -1007,12 +1046,12 @@ pub(super) fn show_hint(matches: &ArgMatches, number: u64) -> String {
     next(matches, &["deployment", "show", &number.to_string()])
 }
 
-/// Deployment `id`'s number and Environment, when the Store can still say them.
-fn numbered(store: &Store, id: &DeploymentId) -> Option<(u64, String)> {
-    store
-        .read(&ployz_store::DeploymentQuery { id: id.clone() })
-        .ok()
-        .map(|view| (view.deployment.number, view.environment.name.to_string()))
+/// `ployz deployment show` for `deployment`: by number once it queued, by ID while it waits for CI.
+pub(super) fn hint_for(matches: &ArgMatches, deployment: &DeploymentSummary) -> String {
+    deployment.number.map_or_else(
+        || id_hint(&deployment.id),
+        |number| show_hint(matches, number),
+    )
 }
 
 fn id_hint(id: &DeploymentId) -> String {
@@ -1066,15 +1105,16 @@ fn confirm_rollback(store: &Store, source: &DeploymentId) -> Result<Vec<u64>, Er
     let Some(undoes) = rolls_back(&view.rolls_back) else {
         return Ok(Vec::new());
     };
-    let number = view.deployment.number;
-    ui::note(format!("Redeploying #{number} undoes {undoes}."));
+    // Only a Deployment that ran can be rolled back to, and every one that ran is numbered.
+    let number = view.deployment.label();
+    ui::note(format!("Redeploying {number} undoes {undoes}."));
     ui::confirm(
-        &format!("Roll back to #{number}?"),
+        &format!("Roll back to {number}?"),
         || {
             Error::detailed(
                 RpcErrorCode::ConfirmationRequired,
-                format!("Rolling back to #{number} needs confirmation. Nothing deployed."),
-                serde_json::json!({ "deployment": number, "rolls_back": view.rolls_back }),
+                format!("Rolling back to {number} needs confirmation. Nothing deployed."),
+                serde_json::json!({ "deployment": view.deployment.number, "rolls_back": view.rolls_back }),
             )
             .hint(Hint::Retry(super::typed_with(&["--yes"])))
         },
@@ -1127,7 +1167,7 @@ pub(super) fn cancel(root: &ArgMatches) -> Result<(), Error> {
         )
         .map_err(refused(matches, &store, &id))?;
     let view = store.read(&ployz_store::DeploymentQuery { id: id.clone() })?;
-    finish_view(&view, Some(show_hint(matches, view.deployment.number)))
+    finish_view(&view, Some(hint_for(matches, &view.deployment)))
 }
 
 pub(super) fn show(root: &ArgMatches) -> Result<(), Error> {
@@ -1145,11 +1185,11 @@ pub(super) fn finish_view(view: &DeploymentView, hint: Option<String>) -> Result
 /// A Deployment as human text.
 pub(super) fn say_view(view: &DeploymentView) {
     crate::ui::stream(format_args!(
-        "Deployment #{} of {}/{}: {}",
-        view.deployment.number,
+        "Deployment {} of {}/{}: {}",
+        view.deployment.label(),
         view.environment.project,
         view.environment.name,
-        super::store::word(&view.deployment.status)
+        status_word(&view.deployment)
     ));
     if let Some(upload) = &view.deployment.upload {
         crate::ui::stream(format_args!("  {}", provenance(upload)));
@@ -1217,8 +1257,33 @@ fn service_outcome_lines(services: &[ployz_core::ServiceOutcome]) -> Vec<String>
 
 #[cfg(test)]
 mod tests {
-    use super::{service_outcome_lines, ships_all};
-    use ployz_core::ServiceName;
+    use super::{Tone, open_events, service_outcome_lines, ships_all, status_tone, status_word};
+    use ployz_core::{RpcErrorCode, ServiceName};
+
+    #[test]
+    fn an_events_path_that_cannot_be_written_names_the_flag_and_the_path() {
+        let refused = |path: &str| {
+            let root = crate::cli::command()
+                .try_get_matches_from(["ployz", "deploy", "--events", path])
+                .unwrap();
+            open_events(super::leaf_matches(&root))
+                .unwrap_err()
+                .report()
+        };
+        let missing = refused("/nonexistent/dir/ev.ndjson");
+        assert_eq!(missing.code, RpcErrorCode::InvalidArgument);
+        assert_eq!(missing.cause.len(), 1, "{missing:?}");
+        assert_eq!(
+            missing.message,
+            "Can't write --events file /nonexistent/dir/ev.ndjson: no such directory"
+        );
+        let directory = std::env::temp_dir();
+        let directory = directory.to_str().unwrap();
+        assert_eq!(
+            refused(directory).message,
+            format!("Can't write --events file {directory}: it is a directory")
+        );
+    }
 
     #[test]
     fn each_service_reads_where_it_ended() {
@@ -1253,5 +1318,33 @@ mod tests {
         assert!(ships_all(&names(&["web"]), &names(&["web", "db"])));
         assert!(!ships_all(&names(&["web", "db"]), &names(&["web"])));
         assert!(!ships_all(&names(&[]), &names(&["web"])));
+    }
+
+    #[test]
+    fn a_push_waiting_for_ci_reads_how_its_ci_stands() {
+        let deployment = |status: &str, ci: Option<&str>| -> ployz_store::DeploymentSummary {
+            serde_json::from_value(serde_json::json!({
+                "id": "00000000-0000-4000-8000-000000000101",
+                "environment_id": "00000000-0000-4000-8000-000000000002",
+                "number": 1, "status": status, "saved": 1, "services": [],
+                "runner": null, "upload": null, "remove": false, "admitted_by": null,
+                "admitted_at": 0, "started_at": null, "ended_at": null, "message": null,
+                "push": null, "ci": ci, "in_flight": false, "outcome": null,
+            }))
+            .unwrap()
+        };
+        let read = |status: &str, ci: Option<&str>| {
+            let deployment = deployment(status, ci);
+            (status_word(&deployment), status_tone(&deployment))
+        };
+        assert_eq!(
+            read("waiting_for_ci", Some("pending")),
+            ("waiting for CI".to_owned(), Tone::Change)
+        );
+        assert_eq!(
+            read("waiting_for_ci", Some("failed")),
+            ("CI failed".to_owned(), Tone::Bad)
+        );
+        assert_eq!(read("queued", None), ("queued".to_owned(), Tone::Change));
     }
 }

@@ -299,15 +299,15 @@ fn what_landed_waits_for_ci_on_the_newest_head() {
     );
     set(&store, &who, "pr-5", &[("web.env.A", json!("2"))]);
     merged(&store, &who, "2026-09-29T11:00:00Z", MERGE);
-    let pushed = system(&store, &who, &push(Some(HEAD), MERGE, Some(&["README.md"])));
-    assert_eq!(pushed.waiting.len(), 1, "{pushed:?}");
+    system(&store, &who, &push(Some(HEAD), MERGE, Some(&["README.md"])));
+    assert_eq!(crate::support::held(&store, &who, "production"), [MERGE]);
     // Another push before CI passed: what landed waits on it instead.
-    let later = system(
+    system(
         &store,
         &who,
         &push(Some(MERGE), LATER, Some(&["README.md"])),
     );
-    assert_eq!(later.waiting.len(), 1, "{later:?}");
+    assert_eq!(crate::support::held(&store, &who, "production"), [LATER]);
 
     assert_eq!(deployed(&passed(&store, &who, LATER)), [["web"]]);
 }
