@@ -10,7 +10,6 @@ import { SYSTEM_NAMESPACE, splitQualifiedService } from "#/modules/machines/serv
 import { needsAttention, serverStatus } from "#/modules/machines/server-status";
 import type { DataLossIdentity } from "#/modules/runtime/data-loss-identity";
 import {
-  OPERATION_OBSERVE_DEADLINE_MS,
   OrganizationRuntime,
   operationRuntimeFrame,
   RUNTIME_FRAME_TIMEOUT_MS,
@@ -210,22 +209,23 @@ const ownedOrSystem = (organizationId: string, namespace: string) => namespace =
   ? Effect.succeed(true)
   : ownedNamespaces(organizationId).pipe(Effect.map((owned) => owned.includes(namespace)));
 
+/** How long a clean waits for the Cluster to say what destroying a Namespace would lose. */
+const DATA_LOSS_TIMEOUT = "10 seconds";
+
 /** A clean of `namespace` as it stands now; only of one no Environment owns, and never Ployz's own. */
 export const planClean = Effect.fn("ServerOperations.planClean")(function* (organizationId: string, namespace: string) {
   if (yield* ownedOrSystem(organizationId, namespace)) {
     return yield* new Conflict({ userFacing: true, message: `${namespace} belongs to an Environment: delete that Environment instead.` });
   }
-  return yield* observeClean(organizationId, namespace);
-});
-
-/** The clean read off the Cluster: its connect, its Data Loss and its frame together end at the plan's deadline. */
-const observeClean = Effect.fn("ServerOperations.observeClean")(function* (organizationId: string, namespace: string) {
   const session = yield* (yield* OrganizationRuntime).open(organizationId);
   if (session.status !== "connected") return yield* unreachable();
-  const lost = yield* session.connected.dataLossIfNamespaceDestroyed(namespace).pipe(Effect.mapError(unreachable));
+  const lost = yield* session.connected.dataLossIfNamespaceDestroyed(namespace).pipe(
+    Effect.mapError(unreachable),
+    Effect.timeoutOrElse({ duration: DATA_LOSS_TIMEOUT, orElse: () => Effect.fail(unreachable()) }),
+  );
   const frame = yield* session.connected.watchFirstFrame(RUNTIME_FRAME_TIMEOUT_MS).pipe(Effect.mapError(unreachable));
   return cleanPlan(frame, namespace, lost.data_loss);
-}, Effect.scoped, Effect.timeoutOrElse({ duration: OPERATION_OBSERVE_DEADLINE_MS, orElse: () => Effect.fail(unreachable()) }));
+}, Effect.scoped);
 
 const volumeOwners = Effect.fn("ServerOperations.volumeOwners")(function* (
   organizationId: string,

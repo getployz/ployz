@@ -1,15 +1,11 @@
 import type { Client, ConfigStore, Connection, MachineId } from "@ployz/sdk";
 import { assert, it } from "@effect/vitest";
-import { Deferred, Effect, Exit, Fiber, Layer } from "effect";
+import { Deferred, Effect, Fiber, Layer } from "effect";
 import * as TestClock from "effect/testing/TestClock";
 import { asTestDouble } from "#/lib/test-double";
 import { planClean, planRemove, UNREACHABLE_MESSAGE } from "#/modules/machines/server-operations.server";
 import { CloudStore } from "#/modules/config-store/store-sdk.server";
-import {
-  makeOrganizationRuntimeLayer,
-  OPERATION_OBSERVE_DEADLINE_MS,
-  ORGANIZATION_CONNECT_TIMEOUT,
-} from "#/modules/runtime/organization-runtime.server";
+import { makeOrganizationRuntimeLayer, ORGANIZATION_CONNECT_TIMEOUT } from "#/modules/runtime/organization-runtime.server";
 import { makePloyzLayer } from "#/modules/runtime/ployz.server";
 import { runtimeWatchFrameFixture } from "#/modules/runtime/runtime-watch-frame.test-fixture";
 import { noPairingChanges } from "#/test/organization-runtime";
@@ -81,7 +77,7 @@ const noOwners = Layer.succeed(CloudStore, {
   open: Effect.succeed(asTestDouble<ConfigStore>()({ read: async () => ({ namespaces: [] }) })),
 });
 
-it.effect("a clean whose data loss never comes back is reported as not answering once the plan's deadline passes", () =>
+it.effect("a clean whose data loss never comes back is reported as not answering after 10 seconds", () =>
   Effect.gen(function* () {
     const asking = yield* Deferred.make<void>();
     const layer = makeOrganizationRuntimeLayer(
@@ -99,9 +95,9 @@ it.effect("a clean whose data loss never comes back is reported as not answering
     })), Layer.merge(noOwners));
     const planning = yield* planClean("org-1", "stray").pipe(Effect.provide(layer), Effect.flip, Effect.forkChild);
     yield* Deferred.await(asking);
-    yield* TestClock.adjust(OPERATION_OBSERVE_DEADLINE_MS);
-    yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 0)));
-    const settled = planning.pollUnsafe();
-    assert.isTrue(settled !== undefined && Exit.isSuccess(settled) && settled.value instanceof Conflict && settled.value.message === UNREACHABLE_MESSAGE);
+    yield* TestClock.adjust("10 seconds");
+    // The test clock stands still from here, so a plan that settles at all settled by 10 seconds.
+    const error = yield* Fiber.join(planning);
+    assert.isTrue(error instanceof Conflict && error.message === UNREACHABLE_MESSAGE);
   }),
 );
