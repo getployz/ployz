@@ -1,7 +1,7 @@
 import "@tanstack/react-start/server-only";
 import { createHash } from "node:crypto";
-import type { Approval, ConfigCommand, DestructiveEffect, DiffView, JsonValue } from "@ployz/sdk";
-import { and, desc, eq, inArray, ne, type SQL, sql } from "drizzle-orm";
+import type { Approval, ConfigCommand, DestructiveEffect, DiffView, EnvironmentRef, JsonValue } from "@ployz/sdk";
+import { and, desc, eq, inArray, isNull, ne, type SQL, sql } from "drizzle-orm";
 import { Effect, Option, Schema } from "effect";
 import { canonicalJson } from "#/lib/json";
 import { Uuid } from "#/lib/schema";
@@ -18,7 +18,7 @@ import { operationApprovals } from "#/modules/approvals/tables";
 import { user } from "#/modules/identity/tables";
 import { readStore } from "#/modules/config-store/config-store.server";
 import { refusedWith } from "#/modules/config-store/store-sdk.server";
-import type { StoreRefusal } from "#/modules/config-store/store.contract";
+import { StoreRefused, type StoreRefusal } from "#/modules/config-store/store.contract";
 import { type Actor, type Caller, callerEnvironments, callerPermissions } from "#/modules/identity/actor";
 import { beyondEnvironments, lacks, refusalOf } from "#/modules/organization/access.server";
 import type { Permission } from "#/modules/organization/permissions";
@@ -93,7 +93,7 @@ export const readAsker = Effect.fn("Approvals.readAsker")(function* (organizatio
 export const undoApproval = Effect.fn("Approvals.undo")(function* (organizationId: string, id: string, moved: boolean) {
   const { drizzle } = yield* Database;
   yield* drizzle.update(operationApprovals)
-    .set({ status: moved ? "superseded" : "pending", decidedByUserId: null, decidedAt: null, updatedAt: new Date() })
+    .set({ status: moved ? "superseded" : "pending", decidedByUserId: null, decidedAt: null, usedAt: null, updatedAt: new Date() })
     .where(and(eq(operationApprovals.id, id), eq(operationApprovals.organizationId, organizationId), eq(operationApprovals.status, "approved")));
 });
 
@@ -194,7 +194,7 @@ type Trusted = { ok: true; approval: Exclude<Approval, "not_required"> } | { ok:
 
 /**
  * What a request carrying an approval runs: its command, as the approval records it, and what it acts on where Cloud
- * names that. A Store write leaves its target to the Store, whose digest binds the Environment or Project.
+ * can name it (`writeTarget` for a Store write). The Store's digest binds the command and target either way.
  */
 export type Redeeming = { readonly command: string; readonly subject?: string };
 
@@ -204,33 +204,56 @@ const AGAIN = "Run the command again without it to ask for";
  * Why `caller` can't run what `row` approved, or null: an approval runs only for the person who asked, through the
  * session or token they asked from, and only for the command and target they asked about.
  */
-const notTheirs = (caller: Pick<Caller, "userId" | "credential">, row: ApprovalRow, asked: Redeeming): string | null => {
+const notTheirs = (caller: Pick<Caller, "userId" | "credential">, row: ApprovalRow, asked?: Redeeming): string | null => {
   if (row.requestedByUserId !== caller.userId) return `Someone else asked for this approval, so only they can use it. ${AGAIN} your own.`;
   if (row.credentialKind !== caller.credential.kind || row.credentialId !== caller.credential.id) {
     return `This approval was asked for from another session or token. ${AGAIN} one from here.`;
   }
-  if (row.command !== asked.command || (asked.subject !== undefined && row.subject !== asked.subject)) {
+  if (asked !== undefined && (row.command !== asked.command || (asked.subject !== undefined && row.subject !== asked.subject))) {
     return `This approval covers only ${theRequest(row)}. ${AGAIN} one.`;
   }
   return null;
 };
 
-/** The approval `approvalId` as `caller` may run it for `asked`: every request that carries an approval redeems it here. */
+type Carried = { ok: true; row: ApprovalRow } | { ok: false; refusal: StoreRefusal };
+
+/** The approval `approvalId`, when `caller` asked for it from this credential, and for `asked` when named. */
+const carried = Effect.fn("Approvals.carried")(function* (
+  caller: Pick<Caller, "userId" | "organization" | "credential">,
+  approvalId: string,
+  asked?: Redeeming,
+): Effect.fn.Return<Carried, never, Database> {
+  const row = yield* readRow(caller.organization.id, approvalId).pipe(Effect.orDie);
+  if (row === undefined) {
+    return { ok: false, refusal: { code: "not_found", message: "No such approval.", details: { approval_id: approvalId } } };
+  }
+  const refused = notTheirs(caller, row, asked);
+  return refused === null ? { ok: true, row } : { ok: false, refusal: { code: "forbidden", message: refused, details: { approval_id: approvalId } } };
+});
+
+/**
+ * Why `caller` can't carry approval `approvalId` at all, or null: what a keyed request checks before it replays the
+ * operation its key started, since the replay never reaches the gate.
+ */
+export const unheldApproval = (caller: Pick<Caller, "userId" | "organization" | "credential">, approvalId: string | null) =>
+  approvalId === null ? Effect.succeed(null) : Effect.map(carried(caller, approvalId), (held) => held.ok ? null : held.refusal);
+
+/**
+ * The approval `approvalId` as `caller` may run it for `asked`: every request that carries an approval redeems it here.
+ * One whose operation already ran asks again.
+ */
 export const redeemApproval = Effect.fn("Approvals.redeem")(function* (
   caller: Pick<Caller, "userId" | "organization" | "credential">,
   approvalId: string | null,
   asked: Redeeming,
 ): Effect.fn.Return<Trusted, never, Database> {
   if (approvalId === null) return { ok: true, approval: "required" };
-  const row = yield* readRow(caller.organization.id, approvalId).pipe(Effect.orDie);
-  if (row === undefined) {
-    return { ok: false, refusal: { code: "not_found", message: "No such approval.", details: { approval_id: approvalId } } };
-  }
-  const refused = notTheirs(caller, row, asked);
-  if (refused !== null) return { ok: false, refusal: { code: "forbidden", message: refused, details: { approval_id: approvalId } } };
+  const held = yield* carried(caller, approvalId, asked);
+  if (!held.ok) return held;
+  const { row } = held;
   switch (row.status) {
     case "approved":
-      return { ok: true, approval: { approved: row.digest } };
+      return row.usedAt === null ? { ok: true, approval: { approved: row.digest } } : { ok: true, approval: "required" };
     case "denied":
       return {
         ok: false,
@@ -244,6 +267,49 @@ export const redeemApproval = Effect.fn("Approvals.redeem")(function* (
     case "superseded":
       return { ok: true, approval: "required" };
   }
+});
+
+/**
+ * What a Store write acts on, as an approval of it records it: its Environment's ID, or `project:<name>` for a
+ * Project's removal. Undefined where the Store can't name it, which then refuses the write itself, and for a Take into
+ * its only Destination, whose digest binds that Environment.
+ */
+export const writeTarget = Effect.fn("Approvals.writeTarget")(function* (organizationId: string, command: ConfigCommand) {
+  const listed = (project: string | null) =>
+    Effect.map(readStore(organizationId, { query: "environments", project }), ({ environments }) => environments);
+  const named = (ref: EnvironmentRef) =>
+    Effect.map(listed(ref.project), (environments) => environments.find((listing) => ref.environment == null ? listing.default : listing.name === ref.environment)?.id);
+  const target = Effect.gen(function* () {
+    switch (command.command) {
+      case "remove":
+        return command.environment == null ? `project:${command.project}` : yield* named({ project: command.project, environment: command.environment });
+      case "publish":
+        return yield* named(command.environment);
+      case "admit":
+        if (command.admit === "retry") return (yield* readStore(organizationId, { query: "deployment", id: command.deployment })).environment.id;
+        return "environment" in command ? yield* named(command.environment) : undefined;
+      case "sync": {
+        if (command.into != null) return yield* named(command.into);
+        // Omitted, it lands in the sender's Parent.
+        const environments = yield* listed(command.from.project);
+        const parent = environments.find((listing) => command.from.environment == null ? listing.default : listing.name === command.from.environment)?.parent;
+        return parent == null ? undefined : environments.find((listing) => listing.name === parent)?.id;
+      }
+      case "take":
+        return command.into == null ? undefined : yield* named(command.into);
+      default:
+        return undefined;
+    }
+  });
+  return yield* target.pipe(Effect.catchIf((error) => error instanceof StoreRefused, () => Effect.succeed(undefined)));
+});
+
+/** What a Store write that carries approval `approvalId` redeems it for: its command and, read only then, its target. */
+export const redeeming = Effect.fn("Approvals.redeeming")(function* (organizationId: string, command: ConfigCommand, approvalId: string | null) {
+  const asked: Redeeming = { command: approvalCommand(command) };
+  if (approvalId === null) return asked;
+  const subject = yield* writeTarget(organizationId, command);
+  return subject === undefined ? asked : { ...asked, subject };
 });
 
 /** The Environment review a human was asked to approve as `approvalId`, whatever the Organization asks now. */
@@ -370,6 +436,11 @@ export type OperationAsked = {
   protected?: string;
   /** What to run as the asker once approved: a dashboard ask that waits for a protector. */
   apply?: ServiceApply;
+  /**
+   * Its run records the approval it ran under, once, so carrying that approval again answers or finishes that run
+   * instead of starting another. The gate leaves such an approval unspent; it spends every other one on its one run.
+   */
+  recorded?: true;
 };
 
 const requestOperationApproval = Effect.fn("Approvals.requestOperation")(function* (
@@ -445,8 +516,33 @@ export const gateOperation = Effect.fn("Approvals.gateOperation")(function* (
   if (asked.effects.length === 0) return { ok: true, approvalId: null };
   if (asked.protected === undefined && !(yield* hasApprover(caller.organization.id))) return { ok: true, approvalId: null };
   const digest = operationDigest(asked);
-  if (trusted.approval !== "required" && trusted.approval.approved === digest) return { ok: true, approvalId };
+  if (approvalId !== null && trusted.approval !== "required" && trusted.approval.approved === digest) {
+    if (asked.recorded || (yield* spend(caller.organization.id, approvalId))) return { ok: true, approvalId };
+  }
   return { ok: false, refusal: yield* requestOperationApproval(caller, asked, digest).pipe(Effect.orDie) };
+});
+
+/**
+ * Spend approval `approvalId` on the one operation it lets through: true for the one run that does, false for any
+ * other, which asks again. One statement, so two runs racing on one approval can't both spend it.
+ */
+const spend = Effect.fn("Approvals.spend")(function* (organizationId: string, approvalId: string) {
+  const { drizzle } = yield* Database;
+  const spent = yield* drizzle.update(operationApprovals).set({ usedAt: new Date() }).where(and(
+    eq(operationApprovals.id, approvalId),
+    eq(operationApprovals.organizationId, organizationId),
+    eq(operationApprovals.status, "approved"),
+    isNull(operationApprovals.usedAt),
+  )).returning({ id: operationApprovals.id }).pipe(Effect.orDie);
+  return spent.length > 0;
+});
+
+/** Hand back an approval the gate spent on a run that then refused, so repeating that run needs no new approval. */
+export const unspendApproval = Effect.fn("Approvals.unspend")(function* (organizationId: string, approvalId: string) {
+  const { drizzle } = yield* Database;
+  yield* drizzle.update(operationApprovals).set({ usedAt: null })
+    .where(and(eq(operationApprovals.id, approvalId), eq(operationApprovals.organizationId, organizationId), eq(operationApprovals.status, "approved")))
+    .pipe(Effect.orDie);
 });
 
 /** A new ask for `asked` once the approval that covered it has run its one operation. */

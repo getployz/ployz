@@ -164,9 +164,16 @@ one still waiting for your answer still waits, unless it no longer destroys anyt
 An approval works only for the person who asked for it, from the same login or token they asked
 from, and only for the command and the target they asked about. Anyone else who sends it is
 refused with `forbidden`, and nothing changes. So is the same person from another login or
-token, or a different command or target. The refusal says which. Run the command again without
-`--approval` to ask for an approval of your own. When two people, or one person from two logins,
-ask for the same thing, each gets an approval of their own to answer.
+token, or a different command or target, even one that wouldn't ask for an approval at all, such
+as a save into another environment that removes nothing. The refusal says which. Run the command
+again without `--approval` to ask for an approval of your own. When two people, or one person from
+two logins, ask for the same thing, each gets an approval of their own to answer.
+
+An approval runs its command once. Sending it again for another run asks again, with a new
+approval to answer, even when the command and target are the same, such as changing a member back
+to a role you changed once already. A retry of the same deploy, or the same request sent again with
+its request key, answers what the first one started and runs nothing new. A save or deploy the
+Config Store refuses leaves its approval unused.
 
 You can answer from a terminal too. `ployz org approval ls` lists the approvals waiting,
 `ployz org approval show ID` shows what one would remove, and `ployz org approval approve ID` or

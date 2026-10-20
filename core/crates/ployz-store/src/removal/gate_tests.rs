@@ -42,7 +42,7 @@ fn asked(command: &str, approval: &Approval) -> Result<(), ployz_core::RpcError>
 
 fn digest_of(refused: ployz_core::RpcError) -> ApprovalDigest {
     assert_eq!(refused.code.as_str(), "approval_required", "{refused:?}");
-    serde_json::from_value(refused.details["approval"].clone()).unwrap()
+    serde_json::from_value(refused.details.get("approval").cloned().unwrap()).unwrap()
 }
 
 #[test]
@@ -63,7 +63,8 @@ fn an_approval_from_before_the_command_was_bound_asks_again() {
         "environment": production(),
         "effects": effects(),
     });
-    let before = ApprovalDigest::parse(format!("{VERSION}:{}", short_digest(&bound.to_string()))).unwrap();
+    let before =
+        ApprovalDigest::parse(format!("{VERSION}:{}", short_digest(&bound.to_string()))).unwrap();
     let fresh = digest_of(asked("remove", &Approval::Approved(before.clone())).unwrap_err());
     assert_ne!(fresh, before);
     asked("remove", &Approval::Approved(fresh)).unwrap();

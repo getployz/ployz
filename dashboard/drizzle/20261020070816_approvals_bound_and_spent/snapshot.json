@@ -1,7 +1,7 @@
 {
   "version": "8",
   "dialect": "postgres",
-  "id": "9b329d22-6f40-4574-8782-be804f0f996b",
+  "id": "c889560f-ffd0-4aa4-a62b-2a123100db7d",
   "prevIds": [
     "f55f9aec-39c8-4168-90fc-378bd8bbf1ba"
   ],
@@ -6864,6 +6864,19 @@
       "generated": null,
       "identity": null,
       "name": "decided_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "operation_approvals"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "used_at",
       "entityType": "columns",
       "schema": "public",
       "table": "operation_approvals"

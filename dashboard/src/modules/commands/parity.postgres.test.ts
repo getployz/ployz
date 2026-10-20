@@ -284,8 +284,7 @@ it.live("an approved call that refused once it ran hears its retry without the a
     expect(first).toMatchObject({ outcome: { ok: false, refusal: { message: "An Organization needs an owner. Make someone else an owner first.", writes: "unknown" } } });
     const retry = "outcome" in first && "refusal" in first.outcome && "retry" in first.outcome.refusal ? first.outcome.refusal.retry : undefined;
     expect(retry).toEqual({ tool: "org_member_role", input });
-    // The approval ran its one call, so repeating it under the same approval asks again.
-    expect(yield* call("role-retry")).toMatchObject({ asking: { refusal: { code: "approval_required" } } });
+    expect(yield* call("role-retry")).toEqual(first);
   }));
 
 // Catches an approved demotion that demotes again once the person is restored, under the approval already used.

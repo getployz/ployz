@@ -1,2 +1,0 @@
-DROP INDEX "operation_approvals_one_pending_idx";--> statement-breakpoint
-CREATE UNIQUE INDEX "operation_approvals_one_pending_idx" ON "operation_approvals" ("organization_id","digest","command","credential_kind","credential_id") WHERE "status" = 'pending';
