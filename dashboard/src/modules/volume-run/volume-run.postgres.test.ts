@@ -3761,6 +3761,7 @@ describe("volume runs", () => {
           { id: "placement-0", handler: () => ({ kind: "done" }) },
           { id: "refresh-mirrors", handler: () => undefined },
           { id: "run-deployment", handler: () => ({ ran: { id: "d-1", status: "applied", remove: false } }) },
+          { id: "retire-old", handler: () => ({ ids: [] }) },
           { id: "sync-uptime", handler: () => undefined },
           { id: "forget-run", handler: () => undefined },
           { id: "delete-orphan-mirrors", handler: () => undefined },
@@ -3978,6 +3979,7 @@ describe("volume runs", () => {
             verbs.push("run-deployment");
             return { ran: { id: "d-1", status: "applied", remove: false } };
           } },
+          { id: "retire-old", handler: () => ({ ids: [] }) },
           { id: "sync-uptime", handler: () => undefined },
           { id: "forget-run", handler: () => undefined },
           { id: "delete-orphan-mirrors", handler: () => undefined },
@@ -4132,6 +4134,7 @@ describe("volume runs", () => {
         { id: "record-run", handler: () => undefined },
         { id: "plan-builds", handler: () => [] },
         { id: "run-deployment", handler: () => ({ ran: { id: "d-1", status, remove: false } }) },
+        { id: "retire-old", handler: () => ({ ids: [] }) },
         { id: "sync-uptime", handler: () => undefined },
         { id: "forget-run", handler: () => undefined },
       ],
