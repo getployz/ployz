@@ -70,8 +70,20 @@ pub(super) async fn run(
             })
             .ok_or_else(|| super::invalid_argument("Build produced no receipt".into())),
         Err(PreparationError::Build(crate::build::Error::Withdrawn)) => Ok(BuildOutcome::Queued),
-        Err(error) => Err(super::preparation_error(error, token.is_cancelled())),
+        Err(error) => Err(build_error(error, token.is_cancelled())),
     }
+}
+
+/// A failed Build says only why: the caller names the Service and says it failed.
+/// Deploy preparation's framing, that no change was attempted, is not this call's.
+pub(super) fn build_error(error: PreparationError, cancellation_requested: bool) -> RpcError {
+    let PreparationError::Build(build) = &error else {
+        return super::preparation_error(error, cancellation_requested);
+    };
+    let diagnosis = crate::ui::row(build);
+    let mut error = super::preparation_error(error, cancellation_requested);
+    error.message = diagnosis;
+    error
 }
 
 /// What a Builder outside the Cluster does for the one Git Service in a deployment.

@@ -1139,14 +1139,63 @@ fn the_typed_name_alone_removes_a_project_and_an_environment_that_ran_services()
             // No Server is enrolled in process, so the removal Deployment the name
             // admitted can't take it off: it got past the confirmation in one call.
             Target::Local(_) => {
-                let (code, admitted) = ployz(
-                    Some(store),
-                    &["env", "rm", "staging", "--confirm", "shop/staging"],
-                );
-                assert_eq!(code, Some(3), "{admitted}");
-                assert_eq!(admitted["remove"], true, "{admitted}");
+                // A Ployz config typed on the command line carries into the command
+                // that finishes the removal.
+                let home = tempfile::tempdir().unwrap();
+                let config = home.path().join("my ployz").join("config.yaml");
+                let config = config.to_str().unwrap();
+                let output = store
+                    .command(home.path())
+                    .args(["--json", "--ployz-config", config])
+                    .args(["env", "rm", "staging", "--confirm", "shop/staging"])
+                    .output()
+                    .unwrap();
+                let admitted: Value = serde_json::from_slice(&output.stdout).unwrap();
+                assert_eq!(output.status.code(), Some(3), "{admitted}");
+                assert_eq!(admitted["environment"]["name"], "staging", "{admitted}");
+                assert_eq!(admitted["removal"], "removing", "{admitted}");
+                // The removal Deployment that didn't apply, whole, under `deployment`;
+                // `id` stays the removal's.
+                let deployment = &admitted["deployment"];
+                assert_eq!(deployment["remove"], true, "{admitted}");
+                assert_eq!(deployment["status"], "failed", "{admitted}");
+                assert_eq!(deployment["outcome"]["type"], "not_executed", "{admitted}");
+                assert!(deployment["nodes"].is_array(), "{admitted}");
+                assert_eq!(admitted.get("status"), None, "{admitted}");
+                assert_ne!(admitted["id"], deployment["id"], "{admitted}");
+                assert_eq!(admitted["deployments"][0]["id"], deployment["id"]);
+                assert_eq!(admitted["left"][0]["deployment"]["id"], deployment["id"]);
                 // A removal that didn't apply still names what the name confirmed.
                 assert_eq!(admitted["effects"][0]["name"], "web", "{admitted}");
+                let next = shell_words::join([
+                    "ployz",
+                    "--ployz-config",
+                    config,
+                    "env",
+                    "rm",
+                    "staging",
+                    "--confirm",
+                    "shop/staging",
+                ]);
+                assert_eq!(admitted["next"], next.as_str(), "{admitted}");
+                let stderr = String::from_utf8(output.stderr).unwrap();
+                assert!(stderr.contains(&format!("retry: {next}")), "{stderr}");
+                let (code, admitted) =
+                    ployz(Some(store), &["project", "rm", "shop", "--confirm", "shop"]);
+                assert_eq!(code, Some(3), "{admitted}");
+                assert_eq!(admitted["project"]["name"], "shop", "{admitted}");
+                assert_eq!(
+                    admitted["environments"],
+                    json!(["production", "staging"]),
+                    "{admitted}"
+                );
+                assert_eq!(admitted["removal"], "removing", "{admitted}");
+                assert_eq!(admitted["deployment"]["remove"], true, "{admitted}");
+                assert_eq!(admitted["deployments"][0]["remove"], true, "{admitted}");
+                assert_eq!(
+                    admitted["next"], "ployz project rm shop --confirm shop",
+                    "{admitted}"
+                );
             }
             // This fake Cloud never sweeps, so `--detach` returns once the removal is
             // under way rather than waiting for the sweep.
