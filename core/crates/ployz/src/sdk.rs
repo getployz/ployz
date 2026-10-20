@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde::Serialize;
 use serde_json::Value;
@@ -319,13 +319,34 @@ impl Session {
         }
     }
 
+    /// [`Self::until_closed`] for a call the Machine may take: a close once the call has
+    /// started ends the wait, not the call, so it is `unanswered`. A close seen before the
+    /// call starts sends nothing.
+    async fn until_closed_answered<T>(
+        &self,
+        work: impl std::future::Future<Output = Result<T, CallError>>,
+    ) -> Result<T, CallError> {
+        let started = AtomicBool::new(false);
+        tokio::select! {
+            biased;
+            () = self.inner.cancel.cancelled() => Err(CallError {
+                error: closed(),
+                unanswered: started.load(Ordering::Relaxed),
+            }),
+            result = async {
+                started.store(true, Ordering::Relaxed);
+                work.await
+            } => result,
+        }
+    }
+
     async fn unary<T: Rpc>(&self, request: T::Request) -> Result<T::Response, RpcError> {
         Ok(self.unary_answered::<T>(request).await?)
     }
 
     async fn unary_answered<T: Rpc>(&self, request: T::Request) -> Result<T::Response, CallError> {
         let mut client = self.client()?;
-        self.until_closed(async {
+        self.until_closed_answered(async {
             client
                 .call::<T>(request, None)
                 .await
@@ -784,8 +805,9 @@ impl Session {
     /// Returns `invalid_argument` when `request` is not one of the Volume switch
     /// commands or `machine` is not a Machine Target, and the Machine's [`RpcError`]
     /// otherwise, its `details` a `SwitchError` when the fence refused or a
-    /// `SetVolumeCopyRefused` when SetVolumeCopy refused.
-    pub async fn volume_switch(&self, machine: &str, request: Value) -> Result<Value, RpcError> {
+    /// `SetVolumeCopyRefused` when SetVolumeCopy refused. A failure no Machine sent is
+    /// `unanswered`: the Machine may have taken the request.
+    pub async fn volume_switch(&self, machine: &str, request: Value) -> Result<Value, CallError> {
         let target =
             MachineTarget::parse(machine).map_err(|error| invalid_argument(error.to_string()))?;
         let body: RpcRequestBody =
@@ -794,14 +816,22 @@ impl Session {
         let request = ployz_core::RpcRequest::from(body);
         let client = self.client()?;
         let response = self
-            .until_closed(client.invoke_raw(
-                &request,
-                path,
-                Some(&target),
-                Some(crate::connect::TARGET_RPC_TIMEOUT),
-            ))
+            .until_closed_answered(async {
+                client
+                    .invoke_raw(
+                        &request,
+                        path,
+                        Some(&target),
+                        Some(crate::connect::TARGET_RPC_TIMEOUT),
+                    )
+                    .await
+                    .map_err(CallError::from)
+            })
             .await?;
-        volume_switch_payload(request.body.command(), response.body)
+        Ok(volume_switch_payload(
+            request.body.command(),
+            response.body,
+        )?)
     }
 
     /// Live Observation of Data Loss that removing `machine` would cause.

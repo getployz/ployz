@@ -256,7 +256,10 @@ export interface Client extends Omit<native.Client, WrappedClientMethods> {
   preview(intent: DeployIntent): Promise<PreparedDeploy>;
   previewNamespaceRemoval(namespace: Namespace, destroy_volumes: boolean): Promise<PreparedDeploy>;
   run(intent: DeployIntent, options?: RunOptions): Promise<DeployOutcome<ExecutionError>>;
-  /** A `set_volume_copy` refusal rejects with an `RpcError` whose `details` is a `SetVolumeCopyRefused`. */
+  /**
+   * A `set_volume_copy` refusal rejects with an `RpcError` whose `details` is a `SetVolumeCopyRefused`. A rejection no
+   * Machine sent is `unanswered`: the Machine may have taken the request.
+   */
   volumeSwitch<R extends VolumeSwitchRequest>(machine: MachineTarget, request: R): Promise<VolumeSwitchReply<R["command"]>>;
   dataLossIfNamespaceDestroyed(namespace: Namespace, destroy_volumes?: boolean): Promise<ObservedDataLoss>;
   destroyNamespace(

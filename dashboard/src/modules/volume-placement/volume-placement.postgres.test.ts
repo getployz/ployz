@@ -247,7 +247,7 @@ describe("volume placement", () => {
       ["its Server doesn't answer", () => Effect.succeed([member("web-1", "writer"), member("web-3", "unanswered")])],
       ["the Cluster can't be reached", () => Effect.fail(new ClusterUnreachable({ message: "The cluster is unreachable." }))],
       ["the Cluster sends no frame in time", () => Effect.fail(new RuntimeConnectionFailure({ cause: "no frame", waitable: true }))],
-      ["the Cluster time runs out", () => Effect.fail(new ClusterOutOfTime())],
+      ["the Cluster time runs out", () => Effect.fail(new ClusterOutOfTime({ inFlight: true }))],
     ])("refuses deleting it when %s", async (_, inspect) => {
       await recorded(["web-2"]);
       const before = await events();

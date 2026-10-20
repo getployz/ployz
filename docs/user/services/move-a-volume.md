@@ -119,7 +119,10 @@ now; the mirror reads "Refreshing" on the volume page while it downloads. `volum
 copies everything again as a run, and takes `--wait`.
 
 A server that doesn't answer the sync in time may still have taken it, so the sync says so instead
-of guessing. Run `ployz volume sync data` again to see where each mirror got to.
+of guessing. A server the sync never asked, because it ran out of time or couldn't reach the
+cluster, is named as not asked, and the sync goes on to the next mirror. Whatever happens, the sync
+still lists the failed pulls it found first. Run `ployz volume sync data` again to see where each
+mirror got to.
 
 A copy of a big volume can take hours. Ployz checks on it every few seconds at first, then every
 five minutes. If the copy has not finished after six hours, the run fails and says so.
