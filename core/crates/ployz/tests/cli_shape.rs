@@ -429,9 +429,10 @@ fn a_cut_valid_list_still_names_the_closest_setting() {
     let (code, stderr) = run_human(&["explain", "web.restart_policy"]);
     assert_eq!(code, Some(2), "{stderr}");
     assert!(
-        stderr.contains("\nvalid: did you mean restartPolicy?\nvalid: "),
+        stderr.contains("\ndid you mean restartPolicy?\nvalid: "),
         "{stderr}"
     );
+    assert_eq!(stderr.matches("valid:").count(), 1, "{stderr}");
 }
 
 #[test]

@@ -1887,7 +1887,7 @@
       "read_only": true
     },
     {
-      "description": "Your servers now: state, release, upgrade, drain, disk, what runs there, leftovers no Environment owns, latest operation. This call asks no human.",
+      "description": "Your servers now: state, release, upgrade, drain, disk, what runs there, leftovers no Environment owns, latest operation, and a failed drain a later one hides. This call asks no human.",
       "destructive": false,
       "gate": "never",
       "input_schema": {
