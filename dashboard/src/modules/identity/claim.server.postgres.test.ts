@@ -5,6 +5,7 @@ import { Client } from "pg";
 import { expect, vi } from "vitest";
 import { organizationBillingState } from "#/modules/billing/tables";
 import { gateOperation, type OperationAsked } from "#/modules/approvals/approvals.server";
+import { readStore } from "#/modules/config-store/config-store.server";
 import { cloudStore } from "#/modules/config-store/store-sdk.server";
 import { githubInstallation, organizationGithubInstallation } from "#/modules/github/tables";
 import { signUpAnonymous } from "#/modules/identity/anonymous-signup.server";
@@ -454,6 +455,20 @@ it.live("a claim back from the claim page's sign-in takes at most 21 round trips
     for (let i = 0; i < 5; i++) yield* drizzle.execute(sql.raw(`create table claim_cost_${i} (organization_id text)`));
     expect(yield* claimOnce(2)).toHaveLength(claimed.length);
     expect(yield* organizationIds()).toHaveLength(3);
+  })));
+
+it.live("the claim's round-trip budget counts the native Store's statements too", () =>
+  inCloud(Effect.gen(function* () {
+    const claimOnce = Effect.fn(function* (i: number, readsStore: boolean) {
+      const agent = yield* sandbox();
+      const claimer = yield* claimSignUp(`Person ${i}`, `person-${i}@example.test`, agent.secret);
+      const read = readsStore ? readStore(agent.organization.id, { query: "projects" }) : Effect.void;
+      return yield* statementsOf(claimOrganization(claimer.actor, agent.secret).pipe(Effect.andThen(read)));
+    });
+    yield* claimOnce(0, false);
+    const claimed = yield* claimOnce(1, false);
+    const withStoreRead = yield* claimOnce(2, true);
+    expect(withStoreRead.length).toBeGreaterThan(claimed.length);
   })));
 
 // A loose ceiling for what round trips miss; the statement budget above is the tight bound.
