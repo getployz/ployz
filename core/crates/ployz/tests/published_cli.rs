@@ -709,7 +709,7 @@ fn a_typed_project_wins_over_an_empty_ployz_project() {
 fn a_typed_environment_wins_over_an_empty_ployz_env() {
     let cloud = Fixture::new("one");
     let mut args = scoped_args(&entry_scoped());
-    args.extend(["--environment".to_owned(), "production".to_owned()]);
+    args.extend(["--env".to_owned(), "production".to_owned()]);
 
     let output = cloud
         .command_in(cloud.home.path())
