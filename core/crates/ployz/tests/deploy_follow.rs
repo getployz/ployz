@@ -867,3 +867,14 @@ fn a_superseded_narrowed_deploy_keeps_its_result_when_reading_the_newer_one_fail
     };
     ended_superseded(&superseded_by(&newer, failed, false));
 }
+
+#[test]
+fn a_superseded_narrowed_deploy_stops_when_the_newer_one_ships_none_of_its_nodes() {
+    for nodes in [
+        &[("client", "unchanged")][..],
+        &[("client", "unchanged"), ("web", "unchanged")][..],
+    ] {
+        let newer = narrowed(8, DeploymentStatus::Applied, "client", nodes);
+        ended_superseded(&superseded_by(&newer, read(&newer), false));
+    }
+}
