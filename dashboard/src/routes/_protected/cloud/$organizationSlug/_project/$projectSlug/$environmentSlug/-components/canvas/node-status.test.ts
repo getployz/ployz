@@ -251,9 +251,8 @@ describe("deployChip", () => {
     expect(deployChip(service, 0, [deployment("running", ["api"])])).toBeNull();
   });
 
-  it("counts a Service a Deploy ships because a Service it names references it", () => {
+  it("queues a Service a Deploy ships because a Service it names references it", () => {
     expect(deployChip(service, 0, [deployment("queued", ["api"], ["api", "web"])])).toEqual({ kind: "queued" });
-    expect(deployChip(service, 0, [deployment("running", ["api"], ["api", "web"])], new Set(["web"]))).toEqual({ kind: "deploying", since: 100 });
   });
 
   it("says what the next Deploy does otherwise", () => {

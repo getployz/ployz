@@ -137,8 +137,9 @@ pub struct DeploymentSummary {
     pub saved: Revision,
     /// The Services it targets; empty targets every Service.
     pub services: Vec<ServiceName>,
-    /// Every Service it ships, as frozen at admission: the ones it targets and the
-    /// ones they reference. Empty while it waits for CI.
+    /// Every Service it ships or takes down, as frozen at admission: the ones it
+    /// targets, the ones they reference and the ones it removes. Empty while it
+    /// waits for CI.
     #[serde(default)]
     pub ships: Vec<ServiceName>,
     /// The runner that claimed it.

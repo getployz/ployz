@@ -188,10 +188,10 @@ export function deployChip(
   inFlight: readonly Pick<DeploymentSummary, "status" | "services" | "ships" | "started_at" | "admitted_at">[],
   restarting: ReadonlySet<string> | null = null,
 ): DeployChipState | null {
-  const targeting = inFlight.filter((deployment) => shippedService(deployment, service.name));
+  const targeting = inFlight.filter((deployment) => deployment.services.length === 0 || deployment.services.includes(service.name));
   const running = targeting.find((deployment) => deployment.status !== "queued");
   if (running && (restarting === null || restarting.has(service.name))) return { kind: "deploying", since: running.started_at ?? running.admitted_at };
-  if (targeting.some((deployment) => deployment.status === "queued")) return { kind: "queued" };
+  if (inFlight.some((deployment) => deployment.status === "queued" && shippedService(deployment, service.name))) return { kind: "queued" };
   return service.change === null ? null : stagedChip(service.change, changeCount);
 }
 

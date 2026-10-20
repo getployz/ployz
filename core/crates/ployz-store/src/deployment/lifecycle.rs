@@ -688,6 +688,7 @@ pub(crate) fn retry(
         number: Some(number),
         status: DeploymentStatus::Queued,
         services,
+        ships: shipped(&nodes),
         runner: None,
         admitted_by: who.principal.clone(),
         admitted_at,
