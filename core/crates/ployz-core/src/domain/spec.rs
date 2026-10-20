@@ -320,6 +320,30 @@ pub struct ContainerResources {
     pub ulimits: BTreeMap<String, Ulimit>,
 }
 
+impl ContainerResources {
+    /// The limits Docker changes on a running Container.
+    #[must_use]
+    pub const fn limits(&self) -> ContainerLimits {
+        ContainerLimits {
+            cpu_nanos: self.cpu_nanos,
+            memory_bytes: self.memory_bytes,
+            memory_reservation_bytes: self.memory_reservation_bytes,
+        }
+    }
+}
+
+/// The resource limits Docker applies to a running Container in place. Absent
+/// means unlimited.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
+pub struct ContainerLimits {
+    #[serde(default)]
+    pub cpu_nanos: Option<CpuNanos>,
+    #[serde(default)]
+    pub memory_bytes: Option<ByteQuantity>,
+    #[serde(default)]
+    pub memory_reservation_bytes: Option<ByteQuantity>,
+}
+
 /// A pre-deploy hook command with at least one argument.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(try_from = "Vec<String>", into = "Vec<String>")]

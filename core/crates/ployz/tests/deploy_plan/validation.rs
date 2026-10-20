@@ -122,6 +122,7 @@ fn placement_seed_randomizes_equal_priority_round_robin_order() {
             | DeployOperation::StopContainer { .. }
             | DeployOperation::RemoveContainer { .. }
             | DeployOperation::ReplaceContainer(..)
+            | DeployOperation::UpdateContainer(..)
             | DeployOperation::StopHook { .. }
             | DeployOperation::RunHook { .. }
             | DeployOperation::PrepareVolumes { .. }

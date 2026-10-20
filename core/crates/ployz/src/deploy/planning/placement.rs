@@ -7,19 +7,22 @@ use ployz_core::{
     ContainerId, ContainerObservation, CopyRotation, HookContainer, HostBind, MachineId, Namespace,
     PortPublication, RequestedServiceSpec, ResolvedServiceSpec, ResolvedUpdateConfig,
     ServiceContainer, ServiceId, ServiceMode, ServiceName, ServiceObservation, SpecChange,
-    UpdateOrder, compare_specs,
+    UPDATE_CONTAINER_LIMITS_CAPABILITY, UpdateOrder, compare_specs,
 };
 
 use super::capacity::{CapacityBudget, EndpointDemand, EndpointOperation};
 use super::volumes::VolumePlacement;
 use super::{DeployOperation, PlanError, PlanOptions, ReplacementOperation};
+use ployz_core::LimitsUpdateOperation;
 
+#[derive(Clone)]
 pub(super) struct PlacementState {
     unobserved: BTreeMap<MachineId, ployz_core::MachineObservation>,
     occupancy: BTreeMap<MachineId, usize>,
     capacity: CapacityBudget,
     sockets: HostSockets,
     reservations: BTreeMap<ServiceName, ReplicatedReservation>,
+    updaters: InPlaceUpdaters,
 }
 
 /// Shared Docker Volume trials own their budget and commit only accepted anchors.
@@ -27,6 +30,7 @@ pub(super) struct PlacementReservations {
     capacity: CapacityBudget,
     sockets: HostSockets,
     reservations: BTreeMap<ServiceName, ReplicatedReservation>,
+    updaters: InPlaceUpdaters,
 }
 
 impl PlacementReservations {
@@ -35,6 +39,7 @@ impl PlacementReservations {
             capacity: CapacityBudget::from_snapshot(snapshot),
             sockets: HostSockets::from_snapshot(snapshot),
             reservations: BTreeMap::new(),
+            updaters: InPlaceUpdaters::from_snapshot(snapshot),
         }
     }
 
@@ -45,26 +50,24 @@ impl PlacementReservations {
         observed: &[ServiceObservation],
         options: &PlanOptions,
     ) -> Result<(), PlanError> {
-        let mut capacity = self.capacity.clone();
-        let mut sockets = self.sockets.clone();
+        let mut budget = (self.capacity.clone(), self.sockets.clone());
         let reservations = requested
             .map(|spec| {
                 let observed = observed
                     .iter()
                     .find(|service| service.identity.name == spec.name);
                 reserve_replicated_service_demand(
-                    &mut capacity,
-                    &mut sockets,
+                    &mut budget,
                     spec,
                     observed,
                     machine_id,
                     options,
+                    &self.updaters,
                 )
                 .map(|reservation| (spec.name.clone(), reservation))
             })
             .collect::<Result<Vec<_>, _>>()?;
-        self.capacity = capacity;
-        self.sockets = sockets;
+        (self.capacity, self.sockets) = budget;
         self.reservations.extend(reservations);
         Ok(())
     }
@@ -91,19 +94,43 @@ impl PlacementReservations {
             // Socket effects are applied in Deploy order, including unreserved Services.
             sockets: HostSockets::from_snapshot(snapshot),
             reservations: self.reservations,
+            updaters: self.updaters,
         }
     }
 }
 
 impl PlacementState {
+    /// Whether the Service's copies could take the requested limits in place:
+    /// at least one would, and each such copy runs on a Machine whose daemon can.
+    pub(super) fn can_update_in_place(
+        &self,
+        current: &[ServiceContainer],
+        requested: &RequestedServiceSpec,
+        options: &PlanOptions,
+    ) -> bool {
+        self.updaters.can_update(current, requested, options)
+    }
+
+    /// Whether this Deploy keeps `container` running: as it is, or with its
+    /// limits changed in place.
+    pub(super) fn keeps_container(
+        container: &ServiceContainer,
+        requested: &RequestedServiceSpec,
+        options: &PlanOptions,
+        limits: LimitsChange,
+    ) -> bool {
+        container_fate(container, requested, options, limits) != ContainerFate::Replace
+    }
+
     pub(super) fn capacity_fits(&self, machine_id: &MachineId, peak: u64) -> bool {
         self.capacity.fits(machine_id, peak)
     }
 
-    pub(super) fn take_reservation(&mut self, service: &ServiceName) -> Option<CapacityAdmission> {
-        self.reservations
-            .remove(service)
-            .map(|reservation| CapacityAdmission::Reserved { reservation })
+    pub(super) fn take_reservation(
+        &mut self,
+        service: &ServiceName,
+    ) -> Option<ReplicatedReservation> {
+        self.reservations.remove(service)
     }
 
     pub(super) fn capacity_error_for<'a>(
@@ -160,7 +187,7 @@ impl HostSockets {
         operation: EndpointOperation,
         pre_stops: &[ContainerId],
     ) -> bool {
-        if matches!(operation, EndpointOperation::Unchanged) {
+        if operation.keeps_container() {
             return true;
         }
         let released = existing
@@ -190,7 +217,7 @@ impl HostSockets {
         if !self.fits(machine, requested, existing, operation, &[]) {
             return Err(socket_error(requested));
         }
-        if !matches!(operation, EndpointOperation::Unchanged) {
+        if !operation.keeps_container() {
             if let Some(container) = existing {
                 self.release(machine, container.as_observation().container_id);
             }
@@ -244,6 +271,7 @@ pub(super) struct GlobalPlacement<'placement> {
     pub(super) current: &'placement [ServiceContainer],
     pub(super) hooks: &'placement [HookContainer],
     pub(super) volumes: VolumePlacement<'placement>,
+    pub(super) limits: LimitsChange,
 }
 
 pub(super) fn plan_global(
@@ -256,34 +284,30 @@ pub(super) fn plan_global(
         current,
         hooks,
         volumes,
+        limits,
     } = target;
     let (requested, machines) = volumes.into_parts();
     let endpoint_demand = EndpointDemand::for_operation;
-    let has_changes = machines.iter().any(|machine| {
-        !matches!(
-            global_endpoint_operation(current, machine.machine.id, requested, options),
-            EndpointOperation::Unchanged
-        )
-    });
+    let endpoint_operation =
+        |machine_id| global_endpoint_operation(current, machine_id, requested, options, limits);
+    let has_changes = machines
+        .iter()
+        .any(|machine| !endpoint_operation(machine.machine.id).keeps_container());
     if requested.pre_deploy.is_some() && has_changes {
         release_hooks(&mut placement.capacity, hooks);
     }
     let capacity_error = placement
         .capacity
         .error_for(machines.iter().filter_map(|machine| {
-            (!matches!(
-                global_endpoint_operation(current, machine.machine.id, requested, options),
-                EndpointOperation::Unchanged
-            ))
-            .then_some(&machine.machine.id)
+            (!endpoint_operation(machine.machine.id).keeps_container())
+                .then_some(&machine.machine.id)
         }));
     let mut used = BTreeSet::new();
     let mut operations = Vec::new();
     let hook_machine = requested.pre_deploy.as_ref().and_then(|_| {
         machines.iter().find_map(|machine| {
-            let operation =
-                global_endpoint_operation(current, machine.machine.id, requested, options);
-            (!matches!(operation, EndpointOperation::Unchanged)
+            let operation = endpoint_operation(machine.machine.id);
+            (!operation.keeps_container()
                 && placement
                     .capacity
                     .fits_demand(&machine.machine.id, endpoint_demand(operation, true)))
@@ -301,6 +325,23 @@ pub(super) fn plan_global(
             .find(|container| is_up_to_date(container, requested, options))
         {
             used.insert(kept.as_observation().container_id);
+            continue;
+        }
+
+        if let Some(container) = on_machine(current, machine_id).find(|container| {
+            container_fate(container, requested, options, limits) == ContainerFate::Update
+        }) {
+            let observation = container.as_observation();
+            used.insert(observation.container_id);
+            operations.push(DeployOperation::UpdateContainer(LimitsUpdateOperation {
+                machine_id,
+                container_id: observation.container_id,
+                spec: resolve(
+                    requested,
+                    *service_id,
+                    determine_update_order(Some(container), requested),
+                ),
+            }));
             continue;
         }
 
@@ -414,12 +455,17 @@ fn global_endpoint_operation(
     machine_id: MachineId,
     requested: &RequestedServiceSpec,
     options: &PlanOptions,
+    limits: LimitsChange,
 ) -> EndpointOperation {
     if on_machine(current, machine_id).any(|container| {
         is_up_to_date(container, requested, options)
             || reusable_global(container, requested, options)
     }) {
         EndpointOperation::Unchanged
+    } else if on_machine(current, machine_id).any(|container| {
+        container_fate(container, requested, options, limits) == ContainerFate::Update
+    }) {
+        EndpointOperation::Update
     } else if on_machine(current, machine_id)
         .any(|container| super::super::is_active_runtime(&container.as_observation().runtime))
     {
@@ -439,22 +485,44 @@ fn on_machine(
 }
 
 pub(super) enum CapacityAdmission {
-    Pending { error: PlanError },
-    Reserved { reservation: ReplicatedReservation },
+    Pending {
+        error: PlanError,
+        limits: LimitsChange,
+    },
+    Reserved {
+        reservation: ReplicatedReservation,
+    },
 }
 
+#[derive(Clone)]
 pub(super) struct ReplicatedReservation {
     choices: Vec<ReplicaChoice>,
     hook_machine: Option<MachineId>,
 }
 
+impl ReplicatedReservation {
+    /// Whether any choice starts a new Container.
+    fn starts_copy(&self) -> bool {
+        self.choices.iter().any(|choice| {
+            matches!(
+                choice.action,
+                ReplicaAction::Replace { .. } | ReplicaAction::Create
+            )
+        })
+    }
+}
+
+#[derive(Clone)]
 struct ReplicaChoice {
     machine_id: MachineId,
     action: ReplicaAction,
 }
 
+#[derive(Clone)]
 enum ReplicaAction {
     Unchanged(ContainerId),
+    /// The Container stays and takes the requested limits in place.
+    Update(ContainerId),
     Replace {
         container_id: ContainerId,
         pre_stops: Vec<ContainerId>,
@@ -477,7 +545,7 @@ pub(super) fn plan_replicated(
     let (requested, machines) = target.volumes.into_parts();
     let reservation = match target.admission {
         CapacityAdmission::Reserved { reservation } => reservation,
-        CapacityAdmission::Pending { error } => {
+        CapacityAdmission::Pending { error, limits } => {
             // Selection uses trial socket claims; the accepted choices are applied below.
             let mut sockets = placement.sockets.clone();
             select_replicated(
@@ -487,7 +555,7 @@ pub(super) fn plan_replicated(
                 &placement.occupancy,
                 (&mut placement.capacity, &mut sockets),
                 error,
-                options,
+                (options, limits),
             )?
         }
     };
@@ -502,6 +570,21 @@ pub(super) fn plan_replicated(
         match action {
             ReplicaAction::Unchanged(container_id) => {
                 used.insert(container_id);
+            }
+            ReplicaAction::Update(container_id) => {
+                used.insert(container_id);
+                let container = by_id
+                    .get(&container_id)
+                    .expect("placement choices retain observed Containers");
+                operations.push(DeployOperation::UpdateContainer(LimitsUpdateOperation {
+                    machine_id,
+                    container_id,
+                    spec: resolve(
+                        requested,
+                        *service_id,
+                        determine_update_order(Some(container), requested),
+                    ),
+                }));
             }
             ReplicaAction::Replace {
                 container_id,
@@ -564,9 +647,13 @@ fn select_replicated(
     occupancy: &BTreeMap<MachineId, usize>,
     budget: (&mut CapacityBudget, &mut HostSockets),
     capacity_error: PlanError,
-    options: &PlanOptions,
+    fate: (&PlanOptions, LimitsChange),
 ) -> Result<ReplicatedReservation, PlanError> {
     let (capacity, sockets) = budget;
+    let (options, limits) = fate;
+    let keeps = |container: &ServiceContainer| {
+        container_fate(container, requested, options, limits) != ContainerFate::Replace
+    };
     let ServiceMode::Replicated { replicas } = requested.mode else {
         return Err(capacity_error);
     };
@@ -581,7 +668,7 @@ fn select_replicated(
     for containers in by_machine.values_mut() {
         containers.sort_by_key(|container| {
             (
-                is_up_to_date(container, requested, options),
+                container_fate(container, requested, options, limits),
                 container.as_observation().runtime.may_serve(),
             )
         });
@@ -593,7 +680,7 @@ fn select_replicated(
     let up_to_date = machines
         .iter()
         .flat_map(|id| by_machine.get(id).into_iter().flatten())
-        .filter(|container| is_up_to_date(container, requested, options))
+        .filter(|container| keeps(container))
         .count();
     let required = replicas
         .saturating_sub(existing)
@@ -608,7 +695,7 @@ fn select_replicated(
         let up_to_date = containers
             .into_iter()
             .flatten()
-            .filter(|container| is_up_to_date(container, requested, options))
+            .filter(|container| keeps(container))
             .count();
         (
             std::cmp::Reverse(up_to_date),
@@ -630,7 +717,7 @@ fn select_replicated(
             cursor += 1;
             let remaining = by_machine.get(&machine_id).map_or(&[][..], Vec::as_slice);
             let existing = remaining.last().copied();
-            let operation = replicated_operation(existing, requested, options);
+            let operation = replicated_operation(existing, requested, options, limits);
             let pre_stops = conflicting_siblings(requested, existing, operation, remaining);
             if !sockets.fits(machine_id, requested, existing, operation, &pre_stops) {
                 socket_blocked = true;
@@ -660,15 +747,20 @@ fn select_replicated(
         }
         remaining.retain(|container| !pre_stops.contains(&container.as_observation().container_id));
         sockets.admit(machine_id, requested, existing, operation)?;
-        let action = match existing {
-            Some(container) if matches!(operation, EndpointOperation::Unchanged) => {
+        let action = match (existing, operation) {
+            (Some(container), EndpointOperation::Unchanged) => {
                 ReplicaAction::Unchanged(container.as_observation().container_id)
             }
-            Some(container) => ReplicaAction::Replace {
-                container_id: container.as_observation().container_id,
-                pre_stops,
-            },
-            None => ReplicaAction::Create,
+            (Some(container), EndpointOperation::Update) => {
+                ReplicaAction::Update(container.as_observation().container_id)
+            }
+            (Some(container), EndpointOperation::Create | EndpointOperation::Replace) => {
+                ReplicaAction::Replace {
+                    container_id: container.as_observation().container_id,
+                    pre_stops,
+                }
+            }
+            (None, _) => ReplicaAction::Create,
         };
         choices.push(ReplicaChoice { machine_id, action });
     }
@@ -745,16 +837,118 @@ fn remove_unused(
     }
 }
 
-pub(super) fn is_up_to_date(
+fn is_up_to_date(
     container: &ServiceContainer,
     requested: &RequestedServiceSpec,
     options: &PlanOptions,
 ) -> bool {
+    container_fate(container, requested, options, LimitsChange::Replace) == ContainerFate::Keep
+}
+
+/// Machines whose daemon changes a running Container's limits in place.
+#[derive(Clone, Default)]
+struct InPlaceUpdaters(BTreeSet<MachineId>);
+
+impl InPlaceUpdaters {
+    fn from_snapshot(snapshot: &super::DeploySnapshot) -> Self {
+        Self(
+            snapshot
+                .machines
+                .iter()
+                .filter(|machine| {
+                    machine
+                        .machine
+                        .runtime
+                        .capabilities
+                        .contains(UPDATE_CONTAINER_LIMITS_CAPABILITY)
+                })
+                .map(|machine| machine.machine.id)
+                .collect(),
+        )
+    }
+
+    /// Whether every copy of the Service that would take the requested limits
+    /// in place runs on one of these Machines, and at least one would.
+    fn can_update(
+        &self,
+        current: &[ServiceContainer],
+        requested: &RequestedServiceSpec,
+        options: &PlanOptions,
+    ) -> bool {
+        let mut updates = current.iter().filter(|container| {
+            container_fate(container, requested, options, LimitsChange::InPlace)
+                == ContainerFate::Update
+        });
+        let mut any = false;
+        for container in updates.by_ref() {
+            if !self.0.contains(&container.as_observation().machine_id) {
+                return false;
+            }
+            any = true;
+        }
+        any
+    }
+}
+
+/// How one Deploy lands a limits-only change of one Service.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum LimitsChange {
+    /// Every serving copy takes the new limits under its own id.
+    InPlace,
+    /// New Containers carry the limits, as a Deploy without the capability does.
+    Replace,
+}
+
+impl LimitsChange {
+    /// Plan one Service in place when that starts no copy of it, else with
+    /// replacement, on a budget the abandoned trial never touched.
+    ///
+    /// A copy updated in place keeps its gen, and a Machine coming back takes
+    /// any In copy out of serving once a newer-gen sibling is routed everywhere.
+    /// So a Service is updated in place only when every copy keeps its id.
+    pub(super) fn decide<Budget: Clone, Planned>(
+        worth_trying: bool,
+        budget: &mut Budget,
+        mut plan: impl FnMut(&mut Budget, Self) -> Result<Planned, PlanError>,
+        starts_copy: impl FnOnce(&Planned) -> bool,
+    ) -> Result<Planned, PlanError> {
+        if worth_trying {
+            let mut trial = budget.clone();
+            let planned = plan(&mut trial, Self::InPlace)?;
+            if !starts_copy(&planned) {
+                *budget = trial;
+                return Ok(planned);
+            }
+        }
+        plan(budget, Self::Replace)
+    }
+}
+
+/// What a Deploy does with one observed Container of the requested Service,
+/// ordered from the most to the least work.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+enum ContainerFate {
+    Replace,
+    Update,
+    Keep,
+}
+
+fn container_fate(
+    container: &ServiceContainer,
+    requested: &RequestedServiceSpec,
+    options: &PlanOptions,
+    limits: LimitsChange,
+) -> ContainerFate {
     let observation = container.as_observation();
-    !options.force_recreate
-        && observation.runtime.may_serve()
-        && serving_rotation(observation)
-        && compare_specs(&observation.resolved_spec, requested) == SpecChange::UpToDate
+    if options.force_recreate || !observation.runtime.may_serve() || !serving_rotation(observation)
+    {
+        return ContainerFate::Replace;
+    }
+    match compare_specs(&observation.resolved_spec, requested) {
+        SpecChange::UpToDate => ContainerFate::Keep,
+        SpecChange::NeedsUpdate if limits == LimitsChange::InPlace => ContainerFate::Update,
+        SpecChange::NeedsUpdate | SpecChange::NeedsRecreate => ContainerFate::Replace,
+    }
 }
 
 /// A copy another run left Pending, Held or Out is not routed, so it is no
@@ -769,59 +963,70 @@ fn serving_rotation(observation: &ContainerObservation) -> bool {
 }
 
 fn reserve_replicated_service_demand(
-    capacity: &mut CapacityBudget,
-    sockets: &mut HostSockets,
+    budget: &mut (CapacityBudget, HostSockets),
     requested: &RequestedServiceSpec,
     observed: Option<&ServiceObservation>,
     machine_id: MachineId,
     options: &PlanOptions,
+    updaters: &InPlaceUpdaters,
 ) -> Result<ReplicatedReservation, PlanError> {
     let current = observed.map_or(&[][..], |service| service.containers.as_slice());
-    if let ServiceMode::Replicated { replicas } = requested.mode
-        && requested.pre_deploy.is_some()
-        && current
-            .iter()
-            .filter(|container| {
-                container.as_observation().machine_id == machine_id
-                    && is_up_to_date(container, requested, options)
-            })
-            .count()
-            < replicas.get() as usize
-    {
-        release_hooks(
-            capacity,
-            observed
-                .into_iter()
-                .flat_map(|service| &service.hook_containers),
-        );
-    }
-    let error = capacity.error_for([&machine_id]);
-    let reservation = select_replicated(
-        requested,
-        current,
-        vec![machine_id],
-        &BTreeMap::new(),
-        (capacity, sockets),
-        error,
-        options,
-    )?;
-    for container in current {
-        let observation = container.as_observation();
-        if !reservation
-            .choices
-            .iter()
-            .any(|choice| match &choice.action {
-                ReplicaAction::Unchanged(id)
-                | ReplicaAction::Replace {
-                    container_id: id, ..
-                } => *id == observation.container_id,
-                ReplicaAction::Create => false,
-            })
+    let reserve = |budget: &mut (CapacityBudget, HostSockets), limits| {
+        let (capacity, sockets) = budget;
+        if let ServiceMode::Replicated { replicas } = requested.mode
+            && requested.pre_deploy.is_some()
+            && current
+                .iter()
+                .filter(|container| {
+                    container.as_observation().machine_id == machine_id
+                        && container_fate(container, requested, options, limits)
+                            != ContainerFate::Replace
+                })
+                .count()
+                < replicas.get() as usize
         {
-            sockets.release(observation.machine_id, observation.container_id);
+            release_hooks(
+                capacity,
+                observed
+                    .into_iter()
+                    .flat_map(|service| &service.hook_containers),
+            );
         }
-    }
-    Ok(reservation)
+        let error = capacity.error_for([&machine_id]);
+        let reservation = select_replicated(
+            requested,
+            current,
+            vec![machine_id],
+            &BTreeMap::new(),
+            (capacity, sockets),
+            error,
+            (options, limits),
+        )?;
+        for container in current {
+            let observation = container.as_observation();
+            if !reservation
+                .choices
+                .iter()
+                .any(|choice| match &choice.action {
+                    ReplicaAction::Unchanged(id)
+                    | ReplicaAction::Update(id)
+                    | ReplicaAction::Replace {
+                        container_id: id, ..
+                    } => *id == observation.container_id,
+                    ReplicaAction::Create => false,
+                })
+            {
+                sockets.release(observation.machine_id, observation.container_id);
+            }
+        }
+        Ok(reservation)
+    };
+    LimitsChange::decide(
+        updaters.can_update(current, requested, options),
+        budget,
+        reserve,
+        ReplicatedReservation::starts_copy,
+    )
 }
 
 fn release_hooks<'a>(
@@ -837,12 +1042,12 @@ fn replicated_operation(
     existing: Option<&ServiceContainer>,
     requested: &RequestedServiceSpec,
     options: &PlanOptions,
+    limits: LimitsChange,
 ) -> EndpointOperation {
-    match existing {
-        Some(container) if is_up_to_date(container, requested, options) => {
-            EndpointOperation::Unchanged
-        }
-        Some(_) => EndpointOperation::Replace,
+    match existing.map(|container| container_fate(container, requested, options, limits)) {
+        Some(ContainerFate::Keep) => EndpointOperation::Unchanged,
+        Some(ContainerFate::Update) => EndpointOperation::Update,
+        Some(ContainerFate::Replace) => EndpointOperation::Replace,
         None => EndpointOperation::Create,
     }
 }

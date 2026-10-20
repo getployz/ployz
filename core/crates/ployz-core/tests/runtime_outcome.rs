@@ -143,6 +143,7 @@ fn operation_spec(operation: &DeployOperation) -> &ResolvedServiceSpec {
     match operation {
         DeployOperation::RunContainer { spec, .. } | DeployOperation::RunHook { spec, .. } => spec,
         DeployOperation::ReplaceContainer(replacement) => &replacement.spec,
+        DeployOperation::UpdateContainer(update) => &update.spec,
         DeployOperation::PrepareVolumes { .. }
         | DeployOperation::WaitHealthy { .. }
         | DeployOperation::StopContainer { .. }

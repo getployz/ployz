@@ -112,6 +112,33 @@ up to the most **memLimit** allows, 1024 GB; set the size your app needs. A serv
 1024 GB gets no `next:` command: it has to use less memory. Nor does a service without a
 **memLimit**.
 
+## My new limit didn't apply
+
+**web: Server edge did not apply the new limits. The Container keeps its previous limits.**,
+with the server's reason as the cause, and `retry: ployz deploy …`
+
+A deploy that only changes the CPU limit or raises the Memory limit applies it to the running
+replica in place (see [Changing a limit](../services/settings.md#changing-a-limit)). Here the
+server refused before changing anything, so the replica keeps its old limits. The
+usual cause is a Container changed on the server outside Ployz, for example with `docker update`:
+the server refuses a Memory limit below the one the Container runs with, since lowering it could
+kill the Container. Ployz has no command that only replaces a replica. Deploy a change to another
+setting of the service at the same time, such as a variable, and the deploy replaces the replica
+with the new limits.
+
+**web: Server edge found the Container not running, so the new limits do not apply.**
+
+The replica had stopped before the server could change it. Run the `retry:` command. A replica
+still stopped is replaced with one that has the new limits, and one its restart policy brought
+back gets the new limits in place.
+
+**web: Server edge could not confirm the new limits.**, with Docker's reason or the lost
+connection as the cause
+
+The server asked Docker for the change and got an error, read back other limits, found the
+replica stopped right after the change, or didn't answer in time. Which limits the replica runs with now is not known. Run the `retry:` command: a
+replica already on the new limits passes as up to date, and any other is updated again.
+
 ## My running service fails its healthcheck
 
 A replica passed its **Healthcheck** once and fails it now. It keeps getting traffic, so the

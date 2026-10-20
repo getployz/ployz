@@ -8,13 +8,14 @@
 use std::sync::Arc;
 
 use ployz_core::{
-    AnonymousVolumes, ContainerId, ContainerKind, ContainerLocator, ContainerNow,
-    ContainerObservation, ContainerRefusal, ContainerRefusalReason, ContainerRuntimeObservation,
-    ContainerWant, CopyRotation, DockerVolumeName, Drain, EnsuredContainer, ImageIngestOpened,
-    ImageIngestReason, ImagePulled, ImagesRemoved, LocalMachinePhase, MachineStorageObservation,
-    Namespace, NewContainer, PruneImagesRequest, PullImageFromMachineRequest, PullImageRequest,
-    ResolvedServiceSpec, RotationEdge, RotationRefusal, RotationTarget, RunRotation, RunTarget,
-    Start, StopOptions, VolumeGen, VolumeRemoved,
+    AnonymousVolumes, ContainerId, ContainerKind, ContainerLimitsUpdated, ContainerLocator,
+    ContainerNow, ContainerObservation, ContainerRefusal, ContainerRefusalReason,
+    ContainerRuntimeObservation, ContainerWant, CopyRotation, DockerVolumeName, Drain,
+    EnsuredContainer, ImageIngestOpened, ImageIngestReason, ImagePulled, ImagesRemoved,
+    LocalMachinePhase, MachineStorageObservation, Namespace, NewContainer, PruneImagesRequest,
+    PullImageFromMachineRequest, PullImageRequest, ResolvedServiceSpec, RotationEdge,
+    RotationRefusal, RotationTarget, RunRotation, RunTarget, Start, StopOptions, VolumeGen,
+    VolumeRemoved,
 };
 use ployz_core::{
     AnswerWhen, ContainerRun, DeploymentLogId, Gen, HEALTH_POLL_INTERVAL, HealthFailure,
@@ -670,6 +671,31 @@ impl LocalMachine {
                 .await?;
             // Every caller discards this reply; a deploy reads ports from its `PullImage`.
             Ok(ImagePulled::default())
+        })
+        .await
+    }
+
+    /// Apply `spec`'s CPU and memory limits to Container `container_id` in place
+    /// under shared admission, like a Container start.
+    ///
+    /// # Errors
+    ///
+    /// Returns when Docker is unavailable, admission is busy, or the Machine refuses
+    /// or fails the update.
+    pub(crate) async fn update_container_limits(
+        &self,
+        container_id: ContainerId,
+        spec: ResolvedServiceSpec,
+    ) -> Result<ContainerLimitsUpdated, Error> {
+        let local = self.clone();
+        let shared = self.owner.admission_lock().read_owned().await;
+        self.finish_admitted(shared, async move {
+            Ok(local
+                .containers
+                .as_ref()
+                .ok_or(Error::DockerUnavailable)?
+                .update_limits(&container_id, &spec)
+                .await?)
         })
         .await
     }

@@ -25,6 +25,7 @@ use super::placement::PlacementReservations;
 /// Every selected location carries its full Volume definition. Locality, budget
 /// checks, and creation previews derive from those assignments; there is no
 /// independently mutable list of pins or missing Volume commitments.
+#[derive(Clone)]
 pub(super) struct VolumePlan<'snapshot> {
     snapshot: &'snapshot DeploySnapshot,
     namespace: Namespace,

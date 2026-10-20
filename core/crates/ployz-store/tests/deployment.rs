@@ -3995,9 +3995,9 @@ fn unclaimed_lists_queued_deployments_no_runner_took() {
     assert_eq!(
         unclaimed
             .iter()
-            .map(|unclaimed| &unclaimed.deployment)
+            .map(|unclaimed| (&unclaimed.deployment, unclaimed.number))
             .collect::<Vec<_>>(),
-        [&id(1)]
+        [(&id(1), 1)]
     );
     assert!(store.unclaimed(0).unwrap().is_empty());
     store.claim(&id(1), &runner("runner-a")).unwrap();
