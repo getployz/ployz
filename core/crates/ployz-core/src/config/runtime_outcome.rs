@@ -20,7 +20,7 @@ struct RuntimeOutcomeEvidence {
 }
 
 /// Sanitized failure kinds; provider details remain inside encrypted evidence.
-#[derive(Clone, Copy, Debug, Serialize, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum RuntimeFailureKind {
     /// A Machine request failed.
@@ -33,14 +33,14 @@ pub enum RuntimeFailureKind {
     Hook,
     /// Execution was cancelled.
     Cancelled,
-    /// Another Deploy published a Service's Serving Pointer first.
-    Superseded,
+    /// A newer Deploy already serves the Service.
+    NewerServing,
     /// Another runner took over the environment.
     Interrupted,
 }
 
 /// Public counts contain no operation inputs or provider error messages.
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, TS)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum RuntimeOutcomeSummary {
     /// Every operation completed.
@@ -192,6 +192,7 @@ pub fn project_runtime_outcome(
                 ExecutionError::Health { .. } => RuntimeFailureKind::Health,
                 ExecutionError::DependencyHealth { .. } => RuntimeFailureKind::DependencyHealth,
                 ExecutionError::Hook { .. } => RuntimeFailureKind::Hook,
+                ExecutionError::NewerServing { .. } => RuntimeFailureKind::NewerServing,
                 ExecutionError::Cancelled => RuntimeFailureKind::Cancelled,
             };
             let summary = RuntimeOutcomeSummary::Failed {
@@ -201,20 +202,6 @@ pub fn project_runtime_outcome(
             };
             (summary, completed, Some(operation), unexecuted)
         }
-        DeployOutcome::Superseded {
-            completed,
-            unexecuted,
-            ..
-        } => (
-            RuntimeOutcomeSummary::Failed {
-                completed: completed.len(),
-                unexecuted: unexecuted.len(),
-                reason: RuntimeFailureKind::Superseded,
-            },
-            completed,
-            None,
-            unexecuted,
-        ),
         DeployOutcome::Interrupted {
             completed,
             unexecuted,

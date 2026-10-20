@@ -53,16 +53,6 @@ impl Ackers {
             Self::Unread => vec!["unknown, the Machine list was never read".to_owned()],
         }
     }
-
-    pub(crate) fn lists(&self, machine: &MachineId) -> bool {
-        match self {
-            Self::Known(named) => named.contains_key(machine),
-            Self::Incomplete { named, unnamed } => {
-                named.contains_key(machine) || unnamed.contains(machine)
-            }
-            Self::Unread => false,
-        }
-    }
 }
 
 /// One round's membership: the Machines that must ack, and the Machines the
@@ -212,7 +202,6 @@ fn reported_down(
         })
 }
 
-/// Every row whose containers arrived counts, whatever its deploy column holds.
 pub(crate) fn routed(
     rows: BTreeMap<(MachineId, QualifiedService), IngressRouteRow>,
     service: &QualifiedService,
@@ -221,7 +210,6 @@ pub(crate) fn routed(
         .filter(|((_, routed), _)| routed == service)
         .filter_map(|((machine, _), row)| match row {
             IngressRouteRow::Acked(ack) => Some((machine, ack.containers)),
-            IngressRouteRow::UnknownDeploy(containers) => Some((machine, containers)),
             IngressRouteRow::UnknownContainers => None,
         })
         .collect()
