@@ -351,21 +351,40 @@ fn check_organization(config: &Path, directory: &str, link: &Link) -> Result<(),
     let (Some(linked), Some(acting)) = (&link.organization, acting_organization(config)?) else {
         return Ok(());
     };
+    linked_in_acting(directory, linked, &acting)
+}
+
+/// Refuse a link made in another Organization than `acting`. One with the same
+/// name but another ID was replaced, so switching to it by name never helps.
+fn linked_in_acting(
+    directory: &str,
+    linked: &Organization,
+    acting: &Organization,
+) -> Result<(), Error> {
     if linked.id == acting.id {
         return Ok(());
     }
     let local = |organization: &Organization| organization.id == LOCAL_ORGANIZATION;
-    let next = if local(linked) || local(&acting) {
+    let replaced = linked.slug == acting.slug;
+    let next = if local(linked) || local(acting) || replaced {
         "ployz link".to_owned()
     } else {
         format!("ployz org use {}", linked.slug)
     };
-    Err(Error::detailed(
-        RpcErrorCode::Conflict,
+    let message = if replaced {
+        format!(
+            "{directory} is linked in an earlier Organization {}, which another Organization of that name replaced. Link it again",
+            linked.slug
+        )
+    } else {
         format!(
             "{directory} is linked in Organization {}, but you are acting in {}",
             linked.slug, acting.slug
-        ),
+        )
+    };
+    Err(Error::detailed(
+        RpcErrorCode::Conflict,
+        message,
         json!({ "link": directory, "linked": linked.slug, "acting": acting.slug }),
     )
     .hint(Hint::Next(next)))
@@ -994,6 +1013,32 @@ mod tests {
         );
         assert!(message.contains("ployz org use globex"), "{message}");
         check_acting_in("org_globex", "/src/shop", &link).unwrap();
+    }
+
+    #[test]
+    fn a_link_to_a_replaced_organization_of_the_same_name_says_link_again() {
+        let acting = Organization {
+            id: "org_new".to_owned(),
+            slug: "ada".to_owned(),
+        };
+        let linked = Organization {
+            id: "org_old".to_owned(),
+            ..acting.clone()
+        };
+        let refused = linked_in_acting("/src/shop", &linked, &acting).unwrap_err();
+        let message = refused.to_string();
+        assert!(message.contains("earlier Organization ada"), "{message}");
+        assert_eq!(refused.hints(), [Hint::Next("ployz link".to_owned())]);
+        let other = Organization {
+            id: "org_globex".to_owned(),
+            slug: "globex".to_owned(),
+        };
+        let refused = linked_in_acting("/src/shop", &other, &acting).unwrap_err();
+        assert_eq!(
+            refused.hints(),
+            [Hint::Next("ployz org use globex".to_owned())]
+        );
+        linked_in_acting("/src/shop", &acting, &acting).unwrap();
     }
 
     #[test]

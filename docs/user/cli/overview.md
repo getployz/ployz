@@ -50,6 +50,14 @@ which projects there are: it names your only project, or says the organization h
 how to link one. If Cloud doesn't answer within a few seconds, it shows `(none)` and the same
 `ployz link` step.
 
+A link belongs to the organization it was made in. Acting in another one, a command that uses the
+link, such as `ployz status`, refuses. When both are Ployz Cloud organizations, it names
+`ployz org use ORG` to switch back. When either is the local organization, it names `ployz link`
+to link the directory where you act now. If the organization the link was made in was replaced by
+a new one with the same name, it says the directory `is linked in an
+earlier Organization ORG, which another Organization of that name replaced` and names
+`ployz link` instead: `org use` can't reach the old one, so link the directory again.
+
 ## Set up your coding agent
 
 Paste this into your coding agent, such as Claude Code or Codex:
