@@ -118,8 +118,9 @@ export type ConfirmOptions = WatchOptions & {
 
 export type RunOptions = WatchOptions;
 
+/** `unanswered` holds when no Machine sent the failure: the dial failed, or the call went out and no status came back. */
 export declare const RpcError: {
-  new (error: RpcErrorPayload, options?: ErrorOptions): Error & RpcErrorPayload;
+  new (error: RpcErrorPayload & { unanswered?: boolean }, options?: ErrorOptions): Error & RpcErrorPayload & { readonly unanswered: boolean };
 };
 
 /** Private build evidence; never proof that content still exists on a Machine. */

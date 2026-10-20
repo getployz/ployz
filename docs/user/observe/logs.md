@@ -50,6 +50,9 @@ server doesn't answer, Ployz says so instead, since the missing lines may be on 
 other name before reading.
 `ployz logs --follow --machine X` with no service named follows every service that runs on X and
 skips the rest.
+When a followed server stops answering, `--follow` names it within about 20 seconds and keeps following the
+others. It ends once none still answers, and exits with code 3. It doesn't pick the server up again
+when it comes back; run the command again.
 
 Unqualified names without scope, service IDs, container selectors, commands with
 no service arguments, and `--follow` still use live container discovery.
@@ -65,15 +68,16 @@ no service arguments, and `--follow` still use live container discovery.
   first. It doesn't copy them anywhere else. To search or keep logs for longer, send them from your app to a log
   service.
 - **A replica that failed keeps its output.** Its exit code appears when the server observed it,
-  so you can see why it stopped.
+  so you can see why it stopped. A replica that keeps restarting shows each exit, and an OOM kill
+  reads **killed out of memory**.
 - **Deleted environments and removed services keep their logs until retention removes them.**
   Recreating an environment with the same name can show its earlier logs. A service's card
   on a deployment shows only that deployment's output.
 - **Containers started before your servers ran this release** keep Docker's old log settings, and
   their logs aren't kept, until their next deploy.
 - **Levels come from the line.** A JSON `level`, `lvl` or `severity` field, a logfmt `level=`, or
-  a leading `ERROR`, `WARN`, `INFO` or `DEBUG` (or a tag such as `[error]`) sets it. A line
-  without one counts as **Info**, stderr included.
+  a leading `ERROR`, `WARN`, `INFO` or `DEBUG` (or a tag such as `[error]`), after any
+  timestamp, sets it. A line without one counts as **Info**, stderr included.
 - **The dashboard never shows a Sealed value.** It replaces each one with `[secret NAME]`, and a
   variable you seal while you watch is scrubbed from the next lines on. Lines it couldn't check,
   say because your servers couldn't read the service's variables, show as

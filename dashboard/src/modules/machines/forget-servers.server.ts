@@ -1,7 +1,7 @@
 import "@tanstack/react-start/server-only";
 import type { AppliedVolume, MachineId } from "@ployz/sdk";
 import { eq } from "drizzle-orm";
-import { Effect, Schema } from "effect";
+import { Effect, Option, Schema } from "effect";
 import type { EncryptedSecretValue } from "#/db/tables";
 import type { Gate, OperationAsked } from "#/modules/approvals/approvals.server";
 import { cloudStore, storeTry } from "#/modules/config-store/store-sdk.server";
@@ -66,17 +66,23 @@ const knownServers = Effect.fn("ForgetServers.known")(function* (organizationId:
   return { known, seen, joining: pairing !== undefined && foundingClaimFresh(pairing) };
 });
 
-/** One connection attempt to each known Server, all at once, each bounded by the timeout. */
+/** A Server that just answered says its name at once; one that doesn't still counts as answering. */
+const NAME_TIMEOUT_MS = 2_000;
+
+/** One connection attempt to each known Server, all at once, each bounded by the timeout. One that answers says its name. */
 const reachServers = Effect.fn("ForgetServers.reach")(function* (known: ReadonlyArray<{ id: MachineId; name: string; management: string | null }>) {
   const ployz = yield* Ployz;
   type Reach = "answered" | ObservedServer["reach"];
   return yield* Effect.forEach(known, ({ id, name, management }): Effect.Effect<{ id: MachineId; name: string; reach: Reach }> => {
     if (management === null) return Effect.succeed({ id, name, reach: "no_connection" as const });
     const connection = { machine_id: id, management };
-    return Effect.scoped(ployz.connect({ connections: [connection], timeoutMs: SERVER_REACH_TIMEOUT_MS })).pipe(
-      Effect.as("answered" as const),
-      Effect.orElseSucceed(() => "didnt_answer" as const),
-      Effect.map((reach) => ({ id, name, reach })),
+    return Effect.scoped(Effect.gen(function* () {
+      const session = yield* ployz.connect({ connections: [connection], timeoutMs: SERVER_REACH_TIMEOUT_MS });
+      const details = yield* session.inspect().pipe(Effect.timeout(NAME_TIMEOUT_MS), Effect.option);
+      return Option.match(details, { onNone: () => name, onSome: ({ machine }) => machine?.name ?? name });
+    })).pipe(
+      Effect.map((answered) => ({ id, name: answered, reach: "answered" as const })),
+      Effect.orElseSucceed(() => ({ id, name, reach: "didnt_answer" as const })),
     );
   }, { concurrency: "unbounded" });
 });

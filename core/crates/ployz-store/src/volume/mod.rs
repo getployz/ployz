@@ -7,7 +7,9 @@ pub(crate) mod query;
 
 use std::collections::BTreeMap;
 
-use ployz_core::config::{SavedEnvironmentIntent, SavedVolumeIntent, VolumeAttachment, VolumeKind};
+use ployz_core::config::{
+    RestoredFrom, SavedEnvironmentIntent, SavedVolumeIntent, VolumeAttachment, VolumeKind,
+};
 use ployz_core::{ContainerPath, RpcError, ServiceName};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -44,6 +46,11 @@ pub struct CreateVolume {
     #[serde(default)]
     #[ts(as = "Option<bool>", optional)]
     pub storage_locked: bool,
+    /// The restore point of another Volume in the Environment that its data comes
+    /// from. A review then says which of the source's changes it loses.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub restored_from: Option<RestoredFrom>,
 }
 
 /// One Service mounting a Volume at a path.
@@ -132,6 +139,18 @@ pub(crate) fn create_volume(
     create: &CreateVolume,
 ) -> Result<VolumeStaged, RpcError> {
     let mut environment = scope::lock(tx, who, &create.environment)?;
+    if let Some(from) = &create.restored_from
+        && environment
+            .working
+            .volumes
+            .iter()
+            .all(|volume| volume.resource_id != from.volume)
+    {
+        return Err(error::not_found(
+            "The Volume to restore from is not in this Environment.",
+            json!({"restored_from": from.volume}),
+        ));
+    }
     crate::names::refuse_taken(
         tx,
         &environment,
@@ -145,6 +164,7 @@ pub(crate) fn create_volume(
         name: create.name.to_string(),
         storage: create.storage,
         shared_writes: create.shared_writes,
+        restored_from: create.restored_from.clone(),
     };
     environment.working.volumes.push(node.clone());
     let mut staged = vec![SettingPath::volume(&create.name)];
@@ -458,6 +478,7 @@ mod tests {
                     }],
                     shared_writes: false,
                     storage_locked: false,
+                    restored_from: None,
                 },
             )
             .unwrap();

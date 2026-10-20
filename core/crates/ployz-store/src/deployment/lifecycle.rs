@@ -76,7 +76,9 @@ pub(crate) fn admit(
     // A Service with nothing to run would fail the whole Deploy on the Servers.
     if let (None, Some(name)) = (&upload, frozen.sourceless.first()) {
         return Err(error::invalid(
-            format!("{name} has nothing to run yet: add an image or connect a repository"),
+            format!(
+                "{name} has nothing to run yet: add an image, connect a repository, or run ployz up in its directory"
+            ),
             json!({ "service": name }),
         ));
     }
@@ -211,6 +213,7 @@ pub(crate) fn admit(
         status: DeploymentStatus::Queued,
         saved,
         services: targets,
+        ships: shipped(&nodes),
         runner: None,
         upload,
         remove: saved == NOTHING,
@@ -687,6 +690,7 @@ pub(crate) fn retry(
         number: Some(number),
         status: DeploymentStatus::Queued,
         services,
+        ships: shipped(&nodes),
         runner: None,
         admitted_by: who.principal.clone(),
         admitted_at,

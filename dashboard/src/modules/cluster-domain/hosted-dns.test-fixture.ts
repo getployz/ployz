@@ -16,7 +16,8 @@ export type HostedDnsRequest = { method: string; path: string; authorization: st
  * other call with 204. `failWith` fails every call; `gone` answers calls for a name with a status (401
  * rejected token, 404 reaped, 410 retired). The certificate route signs the CSR with a throwaway
  * `openssl` CA for `certificateDays`, refuses (422) one naming anything but `name` and `*.name`, and
- * answers `certificateFailWith` when set.
+ * answers `certificateFailWith` when set. A grant waits until `reservesTogether` reserves have arrived,
+ * so concurrent reserves all reach Hosted DNS before any of them is answered.
  */
 export async function startFakeHostedDns() {
   const requests: HostedDnsRequest[] = [];
@@ -25,7 +26,9 @@ export async function startFakeHostedDns() {
     gone: new Map<string, number>(),
     certificateFailWith: null as number | null,
     certificateDays: 90,
+    reservesTogether: 1,
   };
+  const heldReserves: Array<() => void> = [];
   const ca = await mkdtemp(join(tmpdir(), "fake-hosted-dns-"));
   await execFile("openssl", ["req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256", "-nodes",
     "-subj", "/CN=Fake Hosted DNS CA", "-days", "1", "-keyout", join(ca, "ca.key"), "-out", join(ca, "ca.pem")]);
@@ -49,8 +52,9 @@ export async function startFakeHostedDns() {
         response.writeHead(state.failWith).end();
       } else if (request.method === "POST" && path === "/domains") {
         const name = `${body?.preferred}.ployz.test`;
-        response.writeHead(201, { "content-type": "application/json" })
-          .end(JSON.stringify({ name, token: `token-${requests.length}` }));
+        const token = `token-${requests.length}`;
+        heldReserves.push(() => response.writeHead(201, { "content-type": "application/json" }).end(JSON.stringify({ name, token })));
+        if (heldReserves.length >= state.reservesTogether) heldReserves.splice(0).forEach((grant) => grant());
       } else if (goneStatus !== undefined) {
         response.writeHead(goneStatus).end();
       } else if (path.endsWith("/certificate")) {

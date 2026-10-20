@@ -1,5 +1,6 @@
 import type { DeploymentSummary, DeploymentView, DomainRow, ReviewLifecycleKind, ServiceListing } from "@ployz/sdk";
 import { plural } from "#/lib/plural";
+import { shippedService } from "#/modules/config-store/store-deployments";
 import type { Marker } from "#/modules/metrics/metrics-model";
 import type { RuntimeServiceRecord } from "#/modules/runtime/runtime.collection";
 import type { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
@@ -184,23 +185,30 @@ export function stagedChip(change: ReviewLifecycleKind, changeCount: number): De
 /**
  * A Service's chip: anything about Deploys. A Deploy in flight that targets it (running, else queued), else what the
  * next Deploy does to it. `inFlight`: the Environment's Deployments in flight; one naming no Services deploys every one.
- * `restarting`: the Services the running Deploy stops or starts, null until its plan is read. A Service it targets but
- * leaves running (only snapshots its Volume, or nothing changed) is not Deploying.
+ * `restarting`: the Services the running Deploy stops or starts, null until its view is read. Only those read
+ * Deploying, so a chip never shows it before the evidence and drops it after: one the Deploy targets but leaves running
+ * (only snapshots its Volume, or nothing changed) is not Deploying; one it restarts without naming it (a Service that
+ * references a selected one) is.
  */
 export function deployChip(
   service: Pick<ServiceListing, "name" | "change">,
   changeCount: number,
-  inFlight: readonly Pick<DeploymentSummary, "status" | "services" | "started_at" | "admitted_at">[],
+  inFlight: readonly Pick<DeploymentSummary, "status" | "services" | "ships" | "started_at" | "admitted_at">[],
   restarting: ReadonlySet<string> | null = null,
 ): DeployChipState | null {
-  const targeting = inFlight.filter((deployment) => deployment.services.length === 0 || deployment.services.includes(service.name));
-  const running = targeting.find((deployment) => deployment.status !== "queued");
-  if (running && (restarting === null || restarting.has(service.name))) return { kind: "deploying", since: running.started_at ?? running.admitted_at };
-  if (targeting.some((deployment) => deployment.status === "queued")) return { kind: "queued" };
+  const running = inFlight.find((deployment) => deployment.status !== "queued");
+  if (running && restarting?.has(service.name)) return { kind: "deploying", since: running.started_at ?? running.admitted_at };
+  if (inFlight.some((deployment) => deployment.status === "queued" && shippedService(deployment, service.name))) return { kind: "queued" };
   return service.change === null ? null : stagedChip(service.change, changeCount);
 }
 
-export function restartedServices(deployment: Pick<DeploymentView, "nodes">): ReadonlySet<string> {
+/**
+ * The Services a Deploy stops or starts. Until its runner records the plan every node reads Pending, so only a Service
+ * it built a new image for counts. A build still running may yet reuse an image and leave the Service running, so a
+ * Service waits for its build to end or the plan, and its chip never comes off to come back.
+ */
+export function restartedServices(deployment: Pick<DeploymentView, "nodes" | "preview" | "builds">): ReadonlySet<string> {
+  if (deployment.preview === null) return new Set(deployment.builds.flatMap((build) => build.status === "built" ? [build.service] : []));
   return new Set(deployment.nodes.flatMap((node) => node.type === "service" && node.outcome !== "unchanged" ? [node.name] : []));
 }
 

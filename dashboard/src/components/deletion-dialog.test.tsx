@@ -84,6 +84,21 @@ describe("DeletionDialog", () => {
     expect(confirm).toHaveBeenCalledWith("evidence:2");
   });
 
+  it("says what it is doing while the deletion runs", async () => {
+    let finish = () => {};
+    const confirm = vi.fn(() => new Promise<void>((resolve) => { finish = resolve; }));
+    render(<DeletionDialog open onOpenChange={vi.fn()} title="Remove web-1?" place="web-1" confirmLabel="Remove" pendingLabel="Removing"
+      callbacks={{ load: vi.fn().mockResolvedValue(check([])), confirm }} />);
+    const input = await screen.findByRole("textbox", { name: "Type web-1 to confirm" });
+    fireEvent.change(input, { target: { value: "web-1" } });
+    await waitFor(() => expect(screen.getByRole("button", { name: "Remove" }).hasAttribute("disabled")).toBe(false));
+    fireEvent.click(screen.getByRole("button", { name: "Remove" }));
+
+    await screen.findByText("Removing");
+    expect(input.closest("form")?.getAttribute("aria-busy")).toBe("true");
+    finish();
+  });
+
   it("names disclosure controls by the group they show and hide", async () => {
     const items = [service("web"), service("api"), service("worker"), branch("preview-one"), branch("preview-two")];
     render(<DeletionDialog open onOpenChange={vi.fn()} title="Delete shop?" place="shop" confirmLabel="Delete" items={items}

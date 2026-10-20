@@ -140,7 +140,11 @@ fn lines(change: &NodeChange) -> Vec<String> {
             );
             continue;
         }
-        let path = &setting.path;
+        let by_id = format!("configs.@{}", change.node.id);
+        let path = &match setting.path.strip_prefix(&by_id) {
+            Some(rest) => format!("configs.{}{rest}", change.name),
+            None => setting.path.clone(),
+        };
         lines.push(match setting.kind {
             ChangeKind::Add => format!("  set {path} = {}", shown(&setting.after)),
             ChangeKind::Remove => format!("  unset {path}"),
@@ -252,6 +256,7 @@ impl Tool for DiscardInput {
             "at": at(&discarded.environment),
             "discarded": what,
             "changed": discarded.changed,
+            "dropped": discarded.dropped,
             "saved_not_staged": discarded.reversed.iter().map(|reversal| json!({
                 "name": reversal.change.name,
                 "way_back": reversal.way_back,

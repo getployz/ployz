@@ -12,7 +12,7 @@ its Git branch. [How builds work](../builds/overview.md) covers what happens in 
    project you already have, click **Create** on that project's canvas instead.) The first time,
    click **Connect GitHub**, pick the account or organization, choose the repositories Ployz may
    use, and install the Ployz GitHub App. GitHub sends you back to **Settings → GitHub**, which
-   lists the account.
+   lists the account. It says "Repositories appear in a moment" until Ployz has listed them.
 2. Search for the repository, or paste its URL, and pick it.
 3. Before you deploy, set what your app needs to start:
    - To make it public, open **Settings → Networking** and click
@@ -194,7 +194,8 @@ ployz github cat acme/web apps/web/package.json
 `--match` matches the whole path from the top of the repository, so `*.toml` finds only files at
 the top, and `**/*.toml` finds them in every folder. Quote the glob so your shell doesn't expand
 it. A listing stops at 500 files. When it's cut short, name a folder or a narrower `--match` to
-see the rest.
+see the rest. A folder or file the repository doesn't have fails with `No path` and exit code 1, as
+`github cat` does for a missing file.
 
 `github cat` prints text files up to 64 KiB. For a larger file or a binary one, it says so
 instead of printing it. Pass `--ref` to read a branch, tag or commit other than the default.

@@ -14,6 +14,7 @@ async fn ployz(store: &Path, address: std::net::SocketAddr, args: &[&str]) -> st
     tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
         .current_dir(home.path())
         .env("HOME", home.path())
+        .env_remove("XDG_CONFIG_HOME")
         .env("PLOYZ_CONFIG", home.path().join("config.yaml"))
         .env("PLOYZ_STORE", format!("sqlite:{}", store.display()))
         .env_remove("PLOYZ_TOKEN")
