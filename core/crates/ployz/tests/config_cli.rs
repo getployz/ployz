@@ -1288,6 +1288,75 @@ fn a_new_services_diff_and_plan_say_the_image_it_runs() {
     }
 }
 
+/// A Store with Service `web` staged, and a home whose context's one Server,
+/// `machine-1`, refuses every connection.
+fn no_server_answering() -> (Target, tempfile::TempDir) {
+    let store = Target::Local(tempfile::tempdir().unwrap());
+    ok(&store, &["project", "new", "shop"]);
+    ok(
+        &store,
+        &["service", "add", "web", "--image", "nginx:alpine"],
+    );
+    let home = tempfile::tempdir().unwrap();
+    std::fs::write(
+        home.path().join("config.yaml"),
+        "current_context: lab\ncontexts:\n  lab:\n    connections:\n      - tcp: 127.0.0.1:1\n        machine_id: 0123456789abcdef0123456789abcdef\n        name: machine-1\n",
+    )
+    .unwrap();
+    (store, home)
+}
+
+/// Run `ployz ARGS` from `home`; returns (stdout, stderr).
+fn run_in(store: &Target, home: &tempfile::TempDir, args: &[&str]) -> (String, String) {
+    let output = store.command(home.path()).args(args).output().unwrap();
+    assert!(output.status.success(), "{args:?}: {output:?}");
+    (
+        String::from_utf8(output.stdout).unwrap(),
+        String::from_utf8(output.stderr).unwrap(),
+    )
+}
+
+#[test]
+fn status_names_the_server_that_isnt_answering() {
+    let (store, home) = no_server_answering();
+    let (status, _) = run_in(&store, &home, &["--json", "status"]);
+    let status: Value = serde_json::from_str(&status).unwrap();
+    assert_eq!(
+        status["attention"][0],
+        json!({
+            "reason": "no_server_answers",
+            "message": "Server machine-1 isn't answering. Check that its Ployz daemon is running.",
+            "servers": ["machine-1"],
+        }),
+        "{status}"
+    );
+    let (shown, _) = run_in(&store, &home, &["status"]);
+    assert!(
+        shown.contains("needs attention = Server machine-1 isn't answering."),
+        "{shown}"
+    );
+
+    // With no Server to ask, status has nothing to say about Servers.
+    let unasked = ok(&store, &["status"]);
+    assert_eq!(unasked["attention"], json!([]), "{unasked}");
+}
+
+#[test]
+fn the_plan_warns_the_deploy_cant_run_while_no_server_answers() {
+    let (store, home) = no_server_answering();
+    let warning = "Server machine-1 isn't answering, so this deploy can't run until it does. \
+                   Check that its Ployz daemon is running.";
+    let (planned, _) = run_in(&store, &home, &["--json", "deploy", "--plan"]);
+    let planned: Value = serde_json::from_str(&planned).unwrap();
+    assert_eq!(planned["warnings"], json!([warning]), "{planned}");
+    let (_, said) = run_in(&store, &home, &["deploy", "--plan"]);
+    assert!(said.starts_with(&format!("! {warning}\n")), "{said}");
+
+    // With no Server to ask, the plan has nothing to warn of.
+    let unasked = ok(&store, &["deploy", "--plan"]);
+    assert_eq!(unasked.get("warnings"), None, "{unasked}");
+}
+
 #[test]
 fn discarding_a_new_services_image_points_at_discarding_the_service() {
     let store = Target::Local(tempfile::tempdir().unwrap());

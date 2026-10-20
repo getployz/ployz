@@ -33,7 +33,7 @@ These scripts are dev tooling that an operator runs on their own checkout. They 
 
 Each `.md` holds one block per command with its exit code, stdout and stderr. Each `.ansi` holds the same commands run under a terminal. Exit 124 means the capture's own timeout killed the command.
 
-Totals: 692 command blocks (store 240, cloud 165, cluster 105, cloud-cluster 182). Exits: 0 x380, 1 x243, 2 x37, 3 x16, 124 x8, 127 x1, 7 x1, none x6 (piped or typed TTY runs).
+Totals: 695 command blocks (store 243, cloud 165, cluster 105, cloud-cluster 182). Exits: 0 x383, 1 x243, 2 x37, 3 x16, 124 x8, 127 x1, 7 x1, none x6 (piped or typed TTY runs).
 
 ## The contract as the code states it
 

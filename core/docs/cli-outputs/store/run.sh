@@ -328,6 +328,20 @@ m context "ctx rm --json" --json ctx rm prod
 m context "ctx rm: unknown context" ctx rm nope
 c context "ctx ls (all removed)" ctx ls
 c context "status (with a context removed)" status
+# A context whose one Server refuses every connection.
+cat >"$PLOYZ_CONFIG" <<'EOF'
+current_context: down
+contexts:
+  down:
+    connections:
+      - tcp: 127.0.0.1:1
+        machine_id: 0123456789abcdef0123456789abcdef
+        name: web-1
+EOF
+c context "status (no Server answers)" status
+c context "status --json (no Server answers)" --json status
+c context "deploy --plan (no Server answers)" deploy --plan
+s ctx rm down
 
 c help "ployz --help" --help
 c help "ployz -h" -h

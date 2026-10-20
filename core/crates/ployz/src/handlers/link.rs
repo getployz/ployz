@@ -578,11 +578,14 @@ struct Staged {
 /// Something that needs someone to act, with the command that acts.
 #[derive(Serialize)]
 struct Attention {
-    /// An error code, `deployment_failed` or `deployment_unknown`.
+    /// An error code, `no_server_answers`, `deployment_failed` or `deployment_unknown`.
     reason: String,
     message: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     deployment: Option<DeploymentId>,
+    /// The Servers that didn't answer, by name where known.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    servers: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     next: Option<String>,
 }
@@ -630,6 +633,7 @@ pub(super) fn status(root: &ArgMatches) -> Result<(), Error> {
                     reason: error.code.to_string(),
                     message: crate::ui::row(&error),
                     deployment: None,
+                    servers: Vec::new(),
                     next,
                 });
                 None
@@ -637,6 +641,17 @@ pub(super) fn status(root: &ArgMatches) -> Result<(), Error> {
             Err(error) => return Err(store.fail(error)),
         },
     };
+    if let (Some(_), Some(_)) = (&store, &diff)
+        && let Some(silent) = silent_servers(matches)
+    {
+        attention.push(Attention {
+            reason: "no_server_answers".to_owned(),
+            message: format!("{silent}. {}", silent.next()),
+            deployment: None,
+            servers: silent.names().to_vec(),
+            next: None,
+        });
+    }
     let mut deploying = Vec::new();
     if let (Some(store), Some(_)) = (&store, &diff) {
         let page = store.read(&DeploymentsQuery {
@@ -672,6 +687,7 @@ pub(super) fn status(root: &ArgMatches) -> Result<(), Error> {
                     reason: reason.to_owned(),
                     message: format!("Deployment {} did not complete", ended.label()),
                     deployment: Some(ended.id.clone()),
+                    servers: Vec::new(),
                     next: Some(super::deploy::hint_for(matches, ended)),
                 });
             }
@@ -683,6 +699,7 @@ pub(super) fn status(root: &ArgMatches) -> Result<(), Error> {
             reason: "broken_reference".to_owned(),
             message: reference.to_string(),
             deployment: None,
+            servers: Vec::new(),
             next: Some(super::store::fix_broken(matches, reference)),
         });
     }
@@ -692,8 +709,8 @@ pub(super) fn status(root: &ArgMatches) -> Result<(), Error> {
         version: diff.version.clone(),
     });
     let hint = attention
-        .first()
-        .and_then(|attention| attention.next.clone())
+        .iter()
+        .find_map(|attention| attention.next.clone())
         .or_else(|| {
             staged
                 .as_ref()
@@ -722,6 +739,27 @@ pub(super) fn status(root: &ArgMatches) -> Result<(), Error> {
         crate::ui::hint(&Hint::Next(hint));
     }
     Ok(())
+}
+
+/// How long `ployz status` waits to learn whether a Server answers: past one connection's
+/// confirm timeout, far short of a deploy's wait for one.
+const ANSWERING: Duration = Duration::from_secs(6);
+
+/// The Servers a deploy from here would reach, when none of them answers. One bounded
+/// connection, as `deploy --plan` makes; one that runs out of time, or fails for another
+/// reason, says nothing.
+fn silent_servers(matches: &ArgMatches) -> Option<super::server::Silent> {
+    let context = matches
+        .try_get_one::<String>("context")
+        .ok()
+        .flatten()
+        .map(String::as_str);
+    super::runtime().ok()?.block_on(async {
+        match tokio::time::timeout(ANSWERING, super::server::connect(matches, context)).await {
+            Ok(Err(error)) => super::server::Silent::of(&error),
+            Ok(Ok(_)) | Err(_) => None,
+        }
+    })
 }
 
 fn this_server() -> Option<LocalCheckin> {

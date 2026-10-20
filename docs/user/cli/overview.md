@@ -308,6 +308,11 @@ stderr, such as `No Services in production yet.`; piped, it also prints the head
 A single record, such as
 `ployz status`, prints one `label = value` line per field when piped.
 
+`ployz status` lists what needs you under **needs attention**: a deployment that didn't complete,
+a reference to a removed service, or, when none of the servers a deploy would reach answers within a
+few seconds, `Server web-1 isn't answering`. With `--json` these are the `attention` rows; that one
+has reason `no_server_answers` and names the servers in `servers`.
+
 `ployz status` works signed out too. It shows what it can and says `signed in as no one`. On a
 server waiting for approval, it leads with a **this server** line: `Installing Docker`,
 `Building ZFS`, `Waiting for approval`, `No cluster yet`, `Blocked`, `Rejected`, `Token expired`, `Token revoked`,

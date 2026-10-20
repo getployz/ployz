@@ -470,7 +470,7 @@ fn no_reachable_server(
     Error::detailed_caused(
         RpcErrorCode::Unavailable,
         message,
-        json!({ "unreachable": unreachable }),
+        json!({ "unreachable": unreachable, "servers": shown }),
         cause,
     )
 }
@@ -481,6 +481,70 @@ pub(super) fn servers_unanswered(report: &RpcError) -> bool {
     report.code == RpcErrorCode::Unavailable
         && report.details.get("unreachable").is_some()
         && report.details.get("refused").is_none()
+}
+
+/// The Servers of a Cluster none of whose Servers answered, by name where the failure
+/// says which; empty when it doesn't.
+pub(super) struct Silent(Vec<String>);
+
+impl Silent {
+    /// Whether `error` is a connection no Server answered: Servers Cloud knows that
+    /// didn't, or a dial whose every connection went unanswered. `None` when a daemon
+    /// answered, or the failure is about something else, such as Cloud itself.
+    pub(super) fn of(error: &Error) -> Option<Self> {
+        let report = error.report();
+        if servers_unanswered(&report) {
+            let names = report.details.get("servers").and_then(Value::as_array);
+            return Some(Self(
+                names
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|name| Some(name.as_str()?.to_owned()))
+                    .collect(),
+            ));
+        }
+        let ConnectError::AllFailed {
+            reached: false,
+            attempts,
+            server,
+            ..
+        } = error.connect_error()?
+        else {
+            return None;
+        };
+        // With more than one connection, the one Server named is only the last tried.
+        Some(Self(if *attempts == 1 {
+            server.iter().cloned().collect()
+        } else {
+            Vec::new()
+        }))
+    }
+
+    pub(super) fn names(&self) -> &[String] {
+        &self.0
+    }
+
+    /// What to check, for the Server or Servers named.
+    pub(super) fn next(&self) -> &'static str {
+        match self.0.as_slice() {
+            [_] => "Check that its Ployz daemon is running.",
+            _ => "Check that the Ployz daemon is running on your Servers.",
+        }
+    }
+}
+
+impl std::fmt::Display for Silent {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.0.as_slice() {
+            [] => formatter.write_str("No Server is answering"),
+            [one] => write!(formatter, "Server {one} isn't answering"),
+            many => write!(
+                formatter,
+                "None of your Servers is answering ({})",
+                super::joined(many)
+            ),
+        }
+    }
 }
 
 pub(super) struct ConnectionOptions {
@@ -1194,6 +1258,40 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn silent_servers_are_named_as_cloud_names_them() {
+        let matches = crate::cli::command()
+            .try_get_matches_from(["ployz", "status"])
+            .unwrap();
+        let (held, gone) = ("a".repeat(32), "b".repeat(32));
+        let access = |unreachable: Vec<&String>| -> cloud_account::ServerAccess {
+            serde_json::from_value(json!({
+                "connections": [
+                    { "machine_id": held, "unix": "/nonexistent/ployz-test/daemon.sock" }
+                ],
+                "unreachable": unreachable,
+                "names": { held.clone(): "web-1" },
+            }))
+            .unwrap()
+        };
+        let silent = |access| async {
+            let Err(error) = dial(leaf_matches(&matches), access).await else {
+                panic!("dialed a Server that is not there");
+            };
+            Silent::of(&error).expect("no Server answered")
+        };
+
+        let one = silent(access(Vec::new())).await;
+        assert_eq!(one.to_string(), "Server web-1 isn't answering");
+        assert_eq!(one.next(), "Check that its Ployz daemon is running.");
+        let both = silent(access(vec![&gone])).await;
+        assert_eq!(
+            both.to_string(),
+            format!("None of your Servers is answering (web-1, {gone})")
+        );
+        assert_eq!(both.names(), ["web-1".to_owned(), gone]);
+    }
+
+    #[tokio::test]
     async fn a_cluster_whose_servers_all_fail_to_answer_comes_back_unanswered() {
         let matches = crate::cli::command()
             .try_get_matches_from(["ployz", "server", "forget", "web-1"])
@@ -1262,5 +1360,6 @@ mod tests {
         );
         assert_eq!(report.details.get("unreachable"), Some(&json!([gone])));
         assert!(!servers_unanswered(&report), "{report:?}");
+        assert!(Silent::of(&error).is_none(), "{report:?}");
     }
 }

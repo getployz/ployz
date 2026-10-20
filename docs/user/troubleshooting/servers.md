@@ -326,10 +326,12 @@ reported or nothing at all. Adding a server can fail with `This Organization's S
 reached`. A CLI command, or a deployment that couldn't run, says `Server web-1 isn't answering`,
 naming each server it couldn't reach by the name it last reported, or by its ID if Ployz never
 learned one. When a server answered but refused every connection, the error names the server
-tried last, as in `Server web-2, tried last, refused the connection`. A deploy whose ingress check
-couldn't reach a server warns `Couldn't check ingress: Server web-1 isn't answering`, with what the
-connection said in parentheses. A server that just joined or restarted answers within a minute; try
-again then.
+tried last, as in `Server web-2, tried last, refused the connection`. When no server answers,
+`ployz status` lists `Server web-1 isn't answering` under **needs attention**, and
+`ployz deploy --plan` warns first that the deploy can't run until it answers. A deploy whose ingress
+check couldn't reach a server warns `Couldn't check ingress: Server web-1 isn't answering`, with
+what the connection said in parentheses. A server that just joined or restarted answers within a
+minute; try again then.
 
 1. Check at your provider that the servers are running.
 2. On a server, run `sudo systemctl status ployz`. If Ployz is stopped, start it with
