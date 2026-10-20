@@ -559,17 +559,20 @@ fn prepare_debian_zfs(
     })
 }
 
-/// The DKMS version of the installed `zfs-dkms`, which is the package's upstream version.
+/// The DKMS version of the installed `zfs-dkms`, read from the source directory it ships.
 fn zfs_dkms_package_version() -> Option<String> {
-    let output = Command::new("dpkg-query")
-        .args(["-W", "-f=${Status} ${source:Upstream-Version}", "zfs-dkms"])
+    let output = Command::new("dpkg")
+        .args(["-L", "zfs-dkms"])
         .output()
         .ok()
         .filter(|output| output.status.success())?;
     String::from_utf8_lossy(&output.stdout)
-        .strip_prefix("install ok installed ")
-        .filter(|version| !version.is_empty())
-        .map(str::to_owned)
+        .lines()
+        .find_map(|line| {
+            line.strip_prefix("/usr/src/zfs-")
+                .filter(|version| !version.is_empty() && !version.contains('/'))
+                .map(str::to_owned)
+        })
 }
 
 pub(super) fn debian_contrib_source(apt_dir: &Path) -> PathBuf {

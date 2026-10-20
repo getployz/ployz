@@ -498,8 +498,8 @@ case "$*" in
 esac"#,
         );
         write_script(
-            &commands.join("dpkg-query"),
-            r#"[ "$PLOYZ_ZFS_DEBIAN_CONTRACT" = packaged-unbuilt ] && [ "$*" = '-W -f=${Status} ${source:Upstream-Version} zfs-dkms' ] && printf 'install ok installed 2.1.11'"#,
+            &commands.join("dpkg"),
+            r#"[ "$PLOYZ_ZFS_DEBIAN_CONTRACT" = packaged-unbuilt ] && [ "$*" = '-L zfs-dkms' ] && printf '/.\n/usr/src\n/usr/src/zfs-2.1.11\n/usr/src/zfs-2.1.11/dkms.conf\n'"#,
         );
         write_script(
             &commands.join("dkms"),
@@ -596,6 +596,8 @@ fn zfs_install_takes_over_a_prepared_build_contract() {
         "contended",
         "unprepared",
         "built",
+        "built-unknown",
+        "unknown",
     ] {
         let fixture = fixture(name);
         let root = fixture.path();
@@ -620,14 +622,16 @@ esac"#,
         );
         write_script(
             &commands.join("dpkg"),
-            r#"[ "$1" = -S ] && [ -f "$PLOYZ_INSTALLER_CONTRACT_ROOT/zfs-dkms" ] && [ "$PLOYZ_ZFS_TAKEOVER_CONTRACT" != mismatch ]"#,
+            r#"[ "$1" = -S ] && [ "$2" = "$PLOYZ_INSTALLER_CONTRACT_ROOT/usr/src/zfs-2.3.2" ] || exit 2
+case "$PLOYZ_ZFS_TAKEOVER_CONTRACT" in *unknown) echo 'dpkg-query: error: unexpected end of file in diversions' >&2; exit 2 ;; esac
+[ -f "$PLOYZ_INSTALLER_CONTRACT_ROOT/zfs-dkms" ] && [ "$PLOYZ_ZFS_TAKEOVER_CONTRACT" != mismatch ]"#,
         );
         write_script(
             &commands.join("dkms"),
             r#"echo "$*" >> "$PLOYZ_INSTALLER_CONTRACT_ROOT/dkms.log"
 case "$1" in
   status)
-    if [ "$PLOYZ_ZFS_TAKEOVER_CONTRACT" != built ]; then echo "zfs/2.3.2: added"
+    if [ "${PLOYZ_ZFS_TAKEOVER_CONTRACT#built}" = "$PLOYZ_ZFS_TAKEOVER_CONTRACT" ]; then echo "zfs/2.3.2: added"
     elif [ -f "$PLOYZ_INSTALLER_CONTRACT_ROOT/module" ]; then echo "zfs/2.3.2, 6.12.43+deb13-cloud-amd64, x86_64: installed"
     else echo "zfs/2.3.2, 6.12.43+deb13-cloud-amd64, x86_64: built"; fi ;;
   install) : > "$PLOYZ_INSTALLER_CONTRACT_ROOT/module" ;;
@@ -717,7 +721,12 @@ esac"#,
         }
         let state: PrepState =
             serde_json::from_slice(&fs::read(prepare.join("state.json")).unwrap()).unwrap();
-        assert_eq!(state.zfs_build, None, "{name}");
+        // An installed build is released whoever owns it; an unknown owner keeps any other.
+        if name == "unknown" {
+            assert_eq!(state.zfs_build, claim.zfs_build, "{name}");
+        } else {
+            assert_eq!(state.zfs_build, None, "{name}");
+        }
         assert!(state.added_packages.is_empty(), "{name}");
         assert!(!state.added_contrib_source, "{name}");
         let dkms = read_log(root, "dkms.log");
@@ -732,7 +741,7 @@ esac"#,
             assert!(source.exists(), "{name}");
         }
         let conf = fs::read_to_string(source.join("dkms.conf")).unwrap_or_default();
-        if name == "built" {
+        if name.starts_with("built") {
             assert!(
                 dkms.contains(&format!("install -m zfs -v 2.3.2 -k {KERNEL}")),
                 "{name}: {dkms}"

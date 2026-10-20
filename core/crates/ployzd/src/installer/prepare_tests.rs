@@ -66,8 +66,12 @@ fn dpkg_owner(status: u8) -> String {
 }
 
 fn dpkg_query(installed: &[&str]) -> String {
-    let installed = installed.join("|");
-    format!("case \"$3\" in {installed}) printf 'install ok installed' ;; *) exit 1 ;; esac")
+    let installed: String = installed
+        .iter()
+        .map(|package| format!("|{package}"))
+        .collect();
+    // The leading `''` keeps the pattern valid when nothing is installed.
+    format!("case \"$3\" in ''{installed}) printf 'install ok installed' ;; *) exit 1 ;; esac")
 }
 
 #[tokio::test]
@@ -223,6 +227,7 @@ async fn debian_prepare_rebuilds_a_recorded_build_only_when_no_package_ships_it(
         ),
         ("unpackaged", 1, registered),
         ("query-failed", 2, registered),
+        ("foreign-query-failed", 2, registered),
     ] {
         let fixture = host(
             case,
@@ -250,7 +255,9 @@ async fn debian_prepare_rebuilds_a_recorded_build_only_when_no_package_ships_it(
         fs::write(source_dir.join("dkms.conf"), "package\n").unwrap();
         fs::create_dir_all(prepare_dir(&paths)).unwrap();
         let claim = claimed_build(&paths, &source_dir);
-        claim.save().unwrap();
+        if case != "foreign-query-failed" {
+            claim.save().unwrap();
+        }
         run_contract_child_with_environment(
             "installer::prepare::tests::debian_prepare_rebuilds_a_recorded_build_only_when_no_package_ships_it",
             root,
@@ -271,7 +278,8 @@ async fn debian_prepare_rebuilds_a_recorded_build_only_when_no_package_ships_it(
         let state = read_state(root);
         let failure = zfs_summary(&state.zfs.step);
         match case {
-            "packaged" => {
+            // A registration this Machine didn't make is only built, even when its owner is unknown.
+            "packaged" | "foreign-query-failed" => {
                 assert_eq!(dkms_changes, [build], "{log}");
                 assert_eq!(conf, "package\n");
                 assert_eq!(state.zfs.step, ZfsStep::Ready);
@@ -745,6 +753,110 @@ fn discard_keeps_a_build_whose_owner_is_unknown() {
             .state
             .zfs_build
     );
+}
+
+/// On Amazon Linux, discard removes a build only on rpm's English negative for its source alone,
+/// and removes packages only once rpm says zfs-dkms isn't installed.
+#[test]
+fn amazon_linux_discard_needs_rpms_plain_answer() {
+    const CASE: &str = "PLOYZ_PREPARE_DISCARD_RPM_CONTRACT";
+    if let Ok(name) = env::var(CASE) {
+        let root = contract_root();
+        if let Err(error) = discard_at(&InstallPaths::at(&root)) {
+            fs::write(root.join("discard-error"), error.to_string()).unwrap();
+        }
+        fs::write(root.join("child-completed"), name).unwrap();
+        return;
+    }
+
+    let english = "echo \"file $2 is not owned by any package\"";
+    let german = "echo \"Die Datei $2 gehört zu keinem Paket\"";
+    let not_installed = "echo 'package zfs-dkms is not installed'";
+    let database_error = "echo 'error: cannot open Packages database in /var/lib/rpm' >&2";
+    for (case, owner, installed) in [
+        (
+            "unowned",
+            format!("if [ \"$LC_ALL\" = C ]; then {english}; else {german}; fi"),
+            not_installed.to_owned(),
+        ),
+        (
+            "database-error",
+            format!("{english}; {database_error}"),
+            not_installed.to_owned(),
+        ),
+        ("localized", german.to_owned(), not_installed.to_owned()),
+        (
+            "package-query-failed",
+            english.to_owned(),
+            format!("{not_installed}; {database_error}"),
+        ),
+    ] {
+        let fixture = host(
+            case,
+            AMAZON_LINUX_2023,
+            &[
+                (
+                    "rpm",
+                    &format!(
+                        "case \"$1\" in -qf) [ \"$2\" = \"$PLOYZ_INSTALLER_CONTRACT_ROOT/usr/src/zfs-2.1.11\" ] || exit 2; {owner} ;; -q) {installed} ;; esac; exit 1"
+                    ),
+                ),
+                ("dnf", ""),
+                (
+                    "dkms",
+                    "case \"$1\" in status) echo 'zfs/2.1.11: added' ;; esac",
+                ),
+            ],
+        );
+        let root = fixture.path();
+        let paths = InstallPaths::at(root);
+        let source_dir = root.join("usr/src/zfs-2.1.11");
+        fs::create_dir_all(&source_dir).unwrap();
+        fs::create_dir_all(prepare_dir(&paths)).unwrap();
+        let claim = claimed_build(&paths, &source_dir);
+        claim.save().unwrap();
+        run_contract_child_with_environment(
+            "installer::prepare::tests::amazon_linux_discard_needs_rpms_plain_answer",
+            root,
+            OsString::from(CASE),
+            OsString::from(case),
+            case,
+            [(OsString::from("LC_ALL"), OsString::from("de_DE.UTF-8"))],
+        );
+
+        let log = read_log(root);
+        let changes: Vec<&str> = log
+            .lines()
+            .filter(|line| !line.starts_with("dkms status") && !line.starts_with("rpm"))
+            .collect();
+        let error = fs::read_to_string(root.join("discard-error")).unwrap_or_default();
+        let state = read_state(root);
+        match case {
+            "unowned" => {
+                assert_eq!(
+                    changes,
+                    [
+                        "dkms remove -m zfs -v 2.1.11 --all",
+                        "dnf remove -y dkms lsb-release"
+                    ],
+                    "{log}"
+                );
+                assert!(!source_dir.exists());
+                assert_eq!(state.zfs_build, None);
+            }
+            _ => {
+                assert!(changes.is_empty(), "{case}: {log}");
+                assert!(source_dir.exists(), "{case}");
+                assert_eq!(state.zfs_build, claim.state.zfs_build, "{case}");
+                let refusal = if case == "package-query-failed" {
+                    "couldn't tell whether zfs-dkms is installed"
+                } else {
+                    "couldn't tell whether a package owns"
+                };
+                assert!(error.contains(refusal), "{case}: {error}");
+            }
+        }
+    }
 }
 
 fn discard_in_child(name: &str) {

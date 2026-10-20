@@ -583,7 +583,7 @@ fn dkms_build(
             return Err(refuse(
                 "build ZFS with DKMS",
                 format!(
-                    "the zfs-dkms package owns {}, but DKMS has no registration for it and couldn't build it. Run `{fix}` to register it again: {}",
+                    "the zfs-dkms package owns {} and DKMS couldn't build it. If DKMS lost its registration, `{fix}` registers it again: {}",
                     source_dir.display(),
                     ployz_core::error_chain::inline(&error)
                 ),
@@ -721,13 +721,6 @@ fn rpm_provided(capability: &str) -> bool {
         .is_ok_and(|output| output.status.success())
 }
 
-fn rpm_installed(package: &str) -> bool {
-    Command::new("rpm")
-        .args(["-q", package])
-        .output()
-        .is_ok_and(|output| output.status.success())
-}
-
 /// Whether a package ships a build's source, by the package manager's own answer.
 enum Ownership {
     Packaged,
@@ -740,11 +733,16 @@ fn package_ownership(package_manager: &str, build: &ZfsBuild) -> Ownership {
     match build {
         ZfsBuild::Ubuntu { .. } if deb_installed("zfsutils-linux") => Ownership::Packaged,
         ZfsBuild::Ubuntu { .. } => Ownership::Unpackaged,
-        // rpm exits 1 for any failed query; only these say the database has no owner for the path.
+        // rpm exits 1 for any failed query, and prints its negative even when the database
+        // didn't open. Only that negative for this path, alone, says no package owns it.
         ZfsBuild::Dkms { source_dir, .. } if package_manager == "dnf" => {
+            let path = source_dir.display();
+            let unowned = [
+                format!("file {path} is not owned by any package"),
+                format!("error: file {path}: No such file or directory"),
+            ];
             path_ownership("rpm", "-qf", source_dir, |text| {
-                text.contains("is not owned by any package")
-                    || text.contains("No such file or directory")
+                unowned.iter().any(|line| text.trim_end() == line)
             })
         }
         // dpkg exits 1 only when no package matches; errors exit 2.
@@ -759,7 +757,12 @@ fn path_ownership(
     unowned: impl Fn(&str) -> bool,
 ) -> Ownership {
     let query = format!("{command} {flag} {}", path.display());
-    let output = match Command::new(command).arg(flag).arg(path).output() {
+    let output = match Command::new(command)
+        .arg(flag)
+        .arg(path)
+        .env("LC_ALL", "C")
+        .output()
+    {
         Ok(output) => output,
         Err(error) => return Ownership::Unknown(format!("`{query}` couldn't run: {error}")),
     };
@@ -775,11 +778,37 @@ fn path_ownership(
     }
 }
 
-fn zfs_dkms_installed(package_manager: &str) -> bool {
-    if package_manager == "dnf" {
-        rpm_installed("zfs-dkms")
+/// Whether `zfs-dkms` is installed, or why the package manager couldn't say.
+fn zfs_dkms_installed(package_manager: &str) -> Result<bool, String> {
+    let dnf = package_manager == "dnf";
+    let (command, args) = if dnf {
+        ("rpm", ["-q", "zfs-dkms"].as_slice())
     } else {
-        deb_installed("zfs-dkms")
+        ("dpkg-query", ["-W", "-f=${Status}", "zfs-dkms"].as_slice())
+    };
+    let query = format!("{command} {}", args.join(" "));
+    let output = Command::new(command)
+        .args(args)
+        .env("LC_ALL", "C")
+        .output()
+        .map_err(|error| format!("`{query}` couldn't run: {error}"))?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    match output.status.code() {
+        Some(0) => Ok(dnf || stdout == "install ok installed"),
+        // dpkg-query exits 1 only for a package it doesn't know; errors exit 2.
+        Some(1) if !dnf => Ok(false),
+        Some(1)
+            if stdout.trim_end() == "package zfs-dkms is not installed" && stderr.is_empty() =>
+        {
+            Ok(false)
+        }
+        _ => Err(format!(
+            "`{query}` {}: {} {}",
+            output.status,
+            stdout.trim(),
+            stderr.trim()
+        )),
     }
 }
 
@@ -802,6 +831,10 @@ fn installed_by_dkms(build: &ZfsBuild) -> bool {
 
 fn remove_unowned_build(package_manager: &str, build: Option<ZfsBuild>) -> Option<ZfsBuild> {
     let build = build?;
+    // Ployz never removes an installed build, whoever owns it.
+    if installed_by_dkms(&build) {
+        return None;
+    }
     match package_ownership(package_manager, &build) {
         Ownership::Packaged => return None,
         Ownership::Unknown(cause) => {
@@ -810,7 +843,6 @@ fn remove_unowned_build(package_manager: &str, build: Option<ZfsBuild>) -> Optio
             );
             return Some(build);
         }
-        Ownership::Unpackaged if installed_by_dkms(&build) => return None,
         Ownership::Unpackaged => {}
     }
     if let ZfsBuild::Dkms {
@@ -901,6 +933,15 @@ pub(super) fn discard_at(paths: &InstallPaths) -> Result<(), Error> {
         }
         Some(Ownership::Unpackaged) | None => {}
     }
+    let keep_packages = (!job.state.added_packages.is_empty() || job.state.added_contrib_source)
+        && zfs_dkms_installed(package_manager).map_err(|cause| {
+            refuse(
+                "discard the ZFS build",
+                format!(
+                    "couldn't tell whether zfs-dkms is installed, so nothing was removed: {cause}"
+                ),
+            )
+        })?;
     if let Some(ZfsBuild::Dkms {
         module,
         version,
@@ -910,9 +951,7 @@ pub(super) fn discard_at(paths: &InstallPaths) -> Result<(), Error> {
         remove_build(module, version, source_dir)?;
     }
     remove_dir(&prepare_dir(paths).join("zfs"))?;
-    if (!job.state.added_packages.is_empty() || job.state.added_contrib_source)
-        && zfs_dkms_installed(package_manager)
-    {
+    if keep_packages {
         println!("Keeping the packages ZFS was built with, which the installed zfs-dkms needs");
         job.state.added_packages.clear();
         job.state.added_contrib_source = false;
