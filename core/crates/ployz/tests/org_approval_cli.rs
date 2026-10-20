@@ -109,6 +109,15 @@ fn fake_cloud_answering(seen: Seen, confirms: bool, answer: Answer) -> String {
                     json!({ "organization": "acme", "servers": [], "volumes": [], "cancelled": [] }).to_string(),
                 ),
                 "POST /api/cli/forget-servers" => ("409 Conflict", ASKED_FORGET.to_owned()),
+                "GET /api/cli/forget-servers" => (
+                    "200 OK",
+                    json!({
+                        "organization": "acme",
+                        "servers": [{ "id": "a".repeat(32), "name": "web-1", "reach": "didnt_answer" }],
+                        "volumes": [],
+                    })
+                    .to_string(),
+                ),
                 "POST /api/auth/device/code" => (
                     "200 OK",
                     json!({
@@ -248,6 +257,28 @@ fn org_rm_and_forgetting_every_server_wait_on_an_approval_their_retry_carries() 
             ],
         );
     }
+}
+
+#[test]
+fn forgetting_every_server_says_it_is_asking_cloud_except_under_json() {
+    let cloud = fake_cloud(Arc::default(), true);
+
+    let asked = ployz(&cloud, &["server", "forget"]);
+    assert_eq!(asked.status.code(), Some(2), "{asked:?}");
+    let stderr = String::from_utf8_lossy(&asked.stderr);
+    assert!(
+        stderr.starts_with("Asking Cloud which Servers to forget…\n"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("Organization acme (web-1)"), "{stderr}");
+
+    let json = ployz(&cloud, &["--json", "server", "forget"]);
+    assert_eq!(
+        json_of(&json).pointer("/error/code"),
+        Some(&json!("confirmation_required"))
+    );
+    let stderr = String::from_utf8_lossy(&json.stderr);
+    assert!(!stderr.contains("Asking Cloud"), "{stderr}");
 }
 
 #[test]

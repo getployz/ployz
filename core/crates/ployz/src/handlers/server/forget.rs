@@ -58,8 +58,7 @@ fn forget_all(root: &ArgMatches) -> Result<(), Error> {
     let (credential, typed) = runtime.block_on(async {
         let credential = cloud_account::from_env(&store).await?;
         let Some(typed) = matches.get_one::<String>("confirm") else {
-            let check = cloud_account::check_forget_servers(&credential).await?;
-            return Err(unconfirmed(&check));
+            return Err(unconfirmed(&check(&credential).await?));
         };
         Ok::<_, Error>((credential, typed))
     })?;
@@ -106,7 +105,7 @@ async fn unanswered(
     credential: &Credential,
     selector: &str,
 ) -> Result<String, Error> {
-    let check = cloud_account::check_forget_servers(credential).await?;
+    let check = check(credential).await?;
     let named =
         |server: &ObservedServer| server.name == selector || server.id.to_string() == selector;
     let server = match check.servers.as_slice() {
@@ -143,6 +142,14 @@ async fn unanswered(
         .hint(Hint::Retry(retry)));
     }
     Ok(check.organization)
+}
+
+/// Cloud's check, which waits on every Server before it answers.
+async fn check(credential: &Credential) -> Result<ForgetCheck, Error> {
+    if !crate::ui::json() {
+        crate::ui::note("Asking Cloud which Servers to forget…");
+    }
+    Ok(cloud_account::check_forget_servers(credential).await?)
 }
 
 fn finished(forgotten: &ServersForgotten) -> Result<(), Error> {

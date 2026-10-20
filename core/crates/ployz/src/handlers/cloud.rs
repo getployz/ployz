@@ -88,7 +88,11 @@ where
     InstallFuture: Future<Output = Result<(), Error>>,
 {
     runtime()?
-        .block_on(run_enrollment(root, &token, cloud_url, install, &|_| {}))
+        .block_on(run_enrollment(root, &token, cloud_url, install, &|stage| {
+            if stage == EnrollStage::Enrolling && !ui::json() {
+                ui::note("Asking Cloud to enroll this Server…");
+            }
+        }))
         .and_then(|printed| printed)
 }
 

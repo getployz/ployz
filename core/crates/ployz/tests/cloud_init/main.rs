@@ -388,11 +388,17 @@ async fn cloud_init_retries_not_yet_then_joins() {
         posts.first().and_then(|post| post.get("protocolVersion")),
         Some(&json!(1))
     );
+    let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        String::from_utf8_lossy(&output.stderr)
-            .contains("Another Machine is founding this Organization; waiting"),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
+        stderr.contains("Another Machine is founding this Organization; waiting"),
+        "{stderr}"
+    );
+    assert_eq!(
+        stderr
+            .matches("Asking Cloud to enroll this Server…")
+            .count(),
+        1,
+        "{stderr}"
     );
     assert_eq!(
         enroll.paths(),
