@@ -55,6 +55,17 @@ it("reads the result part's JSON after a reload, and says nothing about destruct
   expect(screen.queryByText("Didn't ask. Nothing destroyed.")).toBeNull();
 });
 
+it("names the Services a targeted Deploy ships by reference, and only its targets in an output saved before it said", async () => {
+  const targeted = { ...deployed, services: ["web"], ships: ["web", "postgres", "api"] };
+  await show(() => <ToolCard organizationSlug="acme" scope={scope} outcome={toolOutcome(call("deploy", { ok: true, value: targeted }), undefined)} />);
+  expect(screen.getByText("· Deploys web (+ api, postgres)")).toBeTruthy();
+  cleanup();
+
+  const older = { ...deployed, services: ["web"] };
+  await show(() => <ToolCard organizationSlug="acme" scope={scope} outcome={toolOutcome(call("deploy", { ok: true, value: older }), undefined)} />);
+  expect(screen.getByText("· Deploys web")).toBeTruthy();
+});
+
 it("gives a denial's reason, and a refusal's message", async () => {
   const denied = toolOutcome(call("deploy", { ok: false, refusal: { code: "approval_denied", message: "denied", details: { approval: { reason: "keep the data" } } } }), undefined);
   await show(() => <ToolStep name="deploy" outcome={denied} done />);

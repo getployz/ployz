@@ -163,6 +163,21 @@ const cases: ReadonlyArray<{ readonly name: string; readonly seed?: boolean; rea
     name: "project_create refuses a name another Project has",
     steps: [{ tool: "project_create", input: { name: "shop" }, hears: refused("conflict") }],
   },
+  {
+    name: "a removal of something that isn't there refuses as the tool does: nothing written, the call to repeat and the read to make",
+    steps: [
+      {
+        tool: "project_remove",
+        input: { project: "nope" },
+        hears: { ok: false, refusal: { code: "not_found", writes: "none", retry: { tool: "project_remove", input: { project: "nope" } }, next: [{ tool: "environment_show", input: {} }] } },
+      },
+      {
+        tool: "environment_remove",
+        input: { project: "shop", environment: "nope" },
+        hears: { ok: false, refusal: { code: "not_found", writes: "none", valid: ["production"], next: [{ tool: "environment_show", input: { project: "shop" } }] } },
+      },
+    ],
+  },
 ];
 
 const tools = Effect.fn(function* (seed: boolean) {

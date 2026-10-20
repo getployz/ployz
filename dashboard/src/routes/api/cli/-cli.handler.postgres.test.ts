@@ -1526,7 +1526,7 @@ it.live(
           cli("POST", "tokens", alice, { name: "deploy", expires_in_days: 30, preset: "deploy", environment });
         assert.deepStrictEqual(refusedWith(yield* minted("Not An Environment")),
           [422, "No Project here has an Environment named Not An Environment."]);
-        assert.deepStrictEqual(refusedWith(yield* minted("")), [422, "A Deploy token needs an Environment; pass `--environment`."]);
+        assert.deepStrictEqual(refusedWith(yield* minted("")), [422, "A Deploy token needs an Environment; pass `--env`."]);
         const unknown = yield* minted("staging");
         assert.deepStrictEqual(refusedWith(unknown), [422, "No Project here has an Environment named staging."]);
         assert.lengthOf(yield* (yield* Database).drizzle.select().from(organizationToken), 0);

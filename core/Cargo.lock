@@ -4097,6 +4097,7 @@ dependencies = [
  "ployz",
  "ployz-build",
  "ployz-core",
+ "ployz-store",
  "ployz-testkit",
  "rcgen",
  "regex",

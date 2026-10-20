@@ -10,6 +10,7 @@ import { TraceLine } from "#/components/ui/trace";
 import { Textarea } from "#/components/ui/textarea";
 import { cn } from "#/lib/utils";
 import { approvalBadge, approvalSubject, type ApprovalDecision, destroyedLine, redeployLine } from "#/modules/approvals/approvals";
+import { lossMoment } from "#/modules/volume-placement/volume-placement";
 import { approvalOptions, decideApproval, landDecision, refetchApprovals, type ApprovalView } from "./approvals.queries";
 import { type ChangeLine, reviewedChanges } from "./approval-review";
 
@@ -83,7 +84,12 @@ function PendingCard({ organizationSlug, approval }: { organizationSlug: string;
               return (
                 <li key={`${effect.kind}:${effect.path}`} className="flex gap-2">
                   <XIcon aria-hidden className="mt-0.5 size-3 shrink-0 text-destructive" />
-                  <span>{line.verb}{line.name !== null && <> <b>{line.name}</b></>}{line.after}</span>
+                  <span>
+                    {line.verb}{line.name !== null && <> <b>{line.name}</b></>}{line.after}
+                    {effect.lost_after !== undefined && (
+                      <span className="block">{`Changes after ${lossMoment(new Date(effect.lost_after.at * 1000))} are not in ${effect.lost_after.restored}`}</span>
+                    )}
+                  </span>
                 </li>
               );
             })}

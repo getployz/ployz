@@ -17,6 +17,7 @@ use axum::{
     routing::any,
 };
 use bollard::Docker;
+use futures_util::StreamExt as _;
 
 use super::*;
 use ployz_core::{Machine, MachineGateway, MachineId, ResolvedServiceSpec, VolumeSource};
@@ -62,6 +63,10 @@ pub(crate) struct FakeDocker {
     /// Named mode: a list answers with the named Containers its label filters match,
     /// as an observation publisher needs.
     pub(crate) list_named: bool,
+    /// Named mode: once an inspect answers a Container Docker OOM-killed, every later
+    /// inspect sends its headers and then stalls inside its body.
+    pub(crate) stall_after_oom: Arc<AtomicBool>,
+    pub(crate) oom_answered: Arc<AtomicBool>,
 }
 
 async fn fake_docker(
@@ -79,6 +84,13 @@ async fn fake_docker(
         hold.wait().await;
     }
     response
+}
+
+/// A 200 whose body starts and never finishes.
+fn stalled_body() -> Response {
+    let body = futures_util::stream::once(async { Ok(Bytes::from_static(b"{")) })
+        .chain(futures_util::stream::pending::<Result<Bytes, std::io::Error>>());
+    axum::body::Body::from_stream(body).into_response()
 }
 
 fn is_inspect(path: &str) -> bool {
@@ -175,6 +187,14 @@ async fn answer(fake: FakeDocker, method: Method, uri: Uri, body: Bytes) -> Resp
                 if fake.stopped_once.lock().unwrap().remove(&name) {
                     containers.get_mut(&name).unwrap()["State"] =
                         serde_json::json!({"Status": "running", "Running": true});
+                }
+                if fake.oom_answered.load(Ordering::SeqCst) {
+                    return stalled_body();
+                }
+                if fake.stall_after_oom.load(Ordering::SeqCst)
+                    && container.pointer("/State/OOMKilled") == Some(&serde_json::Value::Bool(true))
+                {
+                    fake.oom_answered.store(true, Ordering::SeqCst);
                 }
                 return Json(container).into_response();
             }

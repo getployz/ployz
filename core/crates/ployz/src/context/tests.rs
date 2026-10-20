@@ -121,14 +121,12 @@ fn update_founds_a_missing_config_and_its_directory() {
 #[test]
 fn connection_sources_are_plain_text() {
     use super::ConnectionSource;
-    assert_eq!(
-        ConnectionSource::Direct.to_string(),
-        "the explicit connection"
-    );
+    assert_eq!(ConnectionSource::Direct.to_string(), "the given connection");
     assert_eq!(
         ConnectionSource::LocalSocket.to_string(),
         "the local socket"
     );
+    assert_eq!(ConnectionSource::Cloud.to_string(), "Cloud");
     assert_eq!(
         ConnectionSource::Context("prod".into()).to_string(),
         "context prod"
@@ -266,4 +264,18 @@ fn set_current_context_rejects_an_unknown_name() {
         })
     );
     assert_eq!(config.current_context(), Some("prod"));
+}
+
+#[test]
+fn config_path_follows_xdg_config_home() {
+    use super::config_path_under;
+    assert_eq!(
+        config_path_under(Some(std::ffi::OsStr::new("/tmp/x"))),
+        "/tmp/x/ployz/config.yaml"
+    );
+    assert_eq!(config_path_under(None), "~/.config/ployz/config.yaml");
+    assert_eq!(
+        config_path_under(Some(std::ffi::OsStr::new("relative"))),
+        "~/.config/ployz/config.yaml"
+    );
 }
