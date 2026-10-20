@@ -23,7 +23,7 @@ These scripts are dev tooling that an operator runs on their own checkout. They 
 - [store/run.sh](store/run.sh): needs only the debug binary `core/target/debug/ployz`; it runs against the hidden SQLite Store (`PLOYZ_STORE=sqlite:…`) under an isolated HOME.
 - [cloud/run.sh](cloud/run.sh): starts its own seeded local Cloud with `dashboard/scripts/verify/up.sh` and stops only that one at the end (`KEEP=1` leaves it running). It refuses to run while this checkout already has a verify Cloud (`dashboard/.verify/run`), because `up.sh` would wipe it, including the one `verify-cluster up --cloud` uses. Its org rm of babbage is approved the same way, as Ada ([approve.sh](approve.sh)).
 - [cluster/run.sh](cluster/run.sh): needs privileged Docker, `cargo build -p ployz -p ployzd`, and `docker pull ghcr.io/getployz/ployz-testkit:main`; it builds alpha, beta, gamma plus a lone `solo`, then tears them down. Its Cluster, image and HOME carry a random per-run id, so runs from two checkouts never collide. It stops when a setup capture that later captures depend on fails, such as `server add`.
-- [cloud-cluster/run.sh](cloud-cluster/run.sh): needs a paired run from `scripts/verify-cluster up --machines 1 --daemon checkout --cloud`, linked to `shop` and deployed as its header says; call it as `MANIFEST=…/cluster.json SECTIONS="deploy runtime domain env errors up" run.sh [PARENT]`. Without `MANIFEST` it takes the newest run, and without `SECTIONS` it runs all six. `up` appends to `deploy.md`, so it needs `deploy` earlier in the same run. Cloud asks a person to approve a removal from `ployz`, so for env rm, project rm and the deploy that removes a domain the driver approves, as the seed's owner Ada, the approval id the command itself prints, with `ployz org approval approve` on a terminal because it asks for the Organization's name ([approve.sh](approve.sh)). It refuses a run whose manifest lacks a `.cloud` block or whose `state` is not `ready` (a torn-down run keeps its manifest as `removed`), and one that does not answer.
+- [cloud-cluster/run.sh](cloud-cluster/run.sh): needs a paired run from `scripts/verify-cluster up --machines 1 --daemon checkout --cloud`, linked to `shop` and deployed as its header says; call it as `MANIFEST=…/cluster.json SECTIONS="deploy runtime domain env errors up" run.sh [PARENT]`. Without `MANIFEST` it takes the newest run, and without `SECTIONS` it runs all six. `up` appends to `deploy.md`, so it needs `deploy` earlier in the same run. Cloud asks a person to approve a removal from `ployz`, so for env rm, project rm and the deploys that remove a domain (including the old host when the generated domain changes) the driver approves, as the seed's owner Ada, the approval id the command itself prints, with `ployz org approval approve` on a terminal because it asks for the Organization's name ([approve.sh](approve.sh)). It refuses a run whose manifest lacks a `.cloud` block or whose `state` is not `ready` (a torn-down run keeps its manifest as `removed`), and one that does not answer.
 
 - [record.py](record.py): runs one command in a PTY and writes an asciicast, a GIF (`agg`) and a last-frame PNG (`ffmpeg`), as in `record.py --gif out.gif --png out.png -- 'ployz deploy'`. It writes nothing unless the command exits with `--expect-exit` (default 0), and replaces each output through a temp file and a rename. [prototype-media/make.sh](prototype-media/make.sh) uses it to re-record the prototype GIFs.
 - [cap.sh](cap.sh): appends one command's capture to a `.md` and its terminal rendering to the matching `.ansi`. Every driver captures through it. `CAP_STDERR=FILE` writes the piped run's stderr to FILE as it happens, so a caller can read a line the command prints before it exits.
@@ -34,7 +34,7 @@ These scripts are dev tooling that an operator runs on their own checkout. They 
 
 Each `.md` holds one block per command with its exit code, stdout and stderr. Each `.ansi` holds the same commands run under a terminal. Exit 124 means the capture's own timeout killed the command.
 
-Totals: 684 command blocks (store 244, cloud 155, cluster 105, cloud-cluster 180). Exits: 0 x390, 1 x176, 2 x91, 3 x9, 124 x8, 127 x1, 7 x1, none x8 (piped, typed TTY or killed runs).
+Totals: 684 command blocks (store 244, cloud 155, cluster 105, cloud-cluster 180). Exits: 0 x394, 1 x172, 2 x91, 3 x9, 124 x8, 127 x1, 7 x1, none x8 (piped, typed TTY or killed runs).
 
 ## The contract as the code states it
 
@@ -79,9 +79,9 @@ Empty lists keep the header on stdout and say so on stderr, usually with a `next
 
 ## 2. Success and confirmation lines
 
-Dominant: one past-tense sentence naming the object and its scope, ending with a period. Of the 96 human success sentences that open with a past-tense verb or `Nothing`, 95 end with a period. The exception is token new's line, which ends with a colon before the secret.
+Dominant: one past-tense sentence naming the object and its scope, ending with a period. Of the 95 human success sentences that open with a past-tense verb or `Nothing`, 94 end with a period. The exception is token new's line, which ends with a colon before the secret.
 
-- Staged. `Staged web.replicas in shop/production.` 35 lines take this shape ([store/settings.md](store/settings.md)). Multi-object forms print `Staged: worker, configs.sentry` on a second line ([cloud-cluster/env.md](cloud-cluster/env.md)).
+- Staged. `Staged web.replicas in shop/production.` 36 lines take this shape ([store/settings.md](store/settings.md)). Multi-object forms print `Staged: worker, configs.sentry` on a second line ([cloud-cluster/env.md](cloud-cluster/env.md)).
 - Made or removed. `Created Project shop with Environment production.` and `Removed Project scratch1 and its Environments (production).` ([store/project.md](store/project.md)), `Revoked token eaf5a551-4ef7-4b40-a6c4-b906216ee3da.` ([cloud/token.md](cloud/token.md)).
 - Nothing to do. `Nothing changed in shop/production; web.env.MISSING is already unset.` ([store/settings.md](store/settings.md)), `Nothing changed on the Servers; Deployment #2 shipped version #1.` ([cloud-cluster/deploy.md](cloud-cluster/deploy.md)).
 - One line per container. `Restarted shop-production/web on alpha.` then `Restarted shop-production/web on gamma.` ([cluster/service.md](cluster/service.md)).
@@ -100,6 +100,7 @@ One follower, two looks. Piped, it prints plain lines on stderr: a heading, a li
 Deploying #5 of shop/production
   api (depth 0): unchanged
   postgres (depth 0): unchanged
+  redis (depth 0): unchanged
   web (depth 1): waiting 0/1
   worker (depth 1): unchanged
   Volume pg-data: unchanged
@@ -109,10 +110,10 @@ Deploying #5 of shop/production
   web (depth 1): switched 1/1
   Config sentry: unchanged
 ──────────────────────────────────────────
-1 deployed · 5 unchanged · across 1 server
+1 deployed · 6 unchanged · across 1 server
 ```
 
-([cloud-cluster/deploy.md](cloud-cluster/deploy.md), warnings left out). In the piped list, Services come by depth, then name, and the Volume and the Config follow. On a TTY the same follower redraws in place with marks and timings, `✔ Volume pg-data  unchanged`, `depth 1`, `  ✔ web  switched 1/1  15.0s`, and marks a failed node `✘` ([cloud-cluster/deploy.ansi](cloud-cluster/deploy.ansi)). Warnings print between the node lines as they arrive. Under `--json` the lines stay on stderr. `--detach` prints a result instead, `Deployment #7 of shop/production: queued` and a `  api: pending` line per node ([cloud-cluster/deploy.md](cloud-cluster/deploy.md)). `--events FILE` writes NDJSON like `{"id":"…","nodes":[…],"number":3,"status":"queued","type":"deployment"}` ([cluster/deploy.md](cluster/deploy.md)). The local Store prints the same heading ([store/errors.md](store/errors.md)). `up` adds steps before the follower, `Created Project workspace.`, `Added Service workspace.` and build lines such as `  workspace: waiting (building on machine-1)`, ends with `workspace built on machine-1.`, and prints `Open https://workspace.ada.ployz.test` and `Dashboard: http://localhost:…` on stdout ([cloud-cluster/deploy.md](cloud-cluster/deploy.md)).
+([cloud-cluster/deploy.md](cloud-cluster/deploy.md), warnings left out). In the piped list, Services come by depth, then name, and the Volume and the Config follow. On a TTY the same follower redraws in place with marks and timings, `✔ Volume pg-data  unchanged`, `depth 1`, `  ✔ web  switched 1/1  14.0s`, and marks a failed node `✘` ([cloud-cluster/deploy.ansi](cloud-cluster/deploy.ansi)). Warnings print between the node lines as they arrive. Under `--json` the lines stay on stderr. `--detach` prints a result instead, `Deployment #7 of shop/production: queued` and a `  api: pending` line per node ([cloud-cluster/deploy.md](cloud-cluster/deploy.md)). `--events FILE` writes NDJSON like `{"id":"…","nodes":[…],"number":3,"status":"queued","type":"deployment"}` ([cluster/deploy.md](cluster/deploy.md)). The local Store prints the same heading ([store/errors.md](store/errors.md)). `up` adds steps before the follower, `Created Project workspace.`, `Added Service workspace.` and build lines such as `  workspace: waiting (building on machine-1)`, ends with `workspace built on machine-1.`, and prints `Open https://workspace.ada.ployz.test` and `Dashboard: http://localhost:…` on stdout ([cloud-cluster/deploy.md](cloud-cluster/deploy.md)).
 
 server add follows the ingress the same way, `Deploying ingress to default` on the first Server and `Starting Globals on beta` on the next, then `Server beta is ready.` ([cluster/server.md](cluster/server.md)).
 
@@ -138,27 +139,25 @@ retry: ployz project rm scratch1 --confirm scratch1
 
 ## 5. Warnings
 
-Dominant: `! <sentence>.` on stderr. 71 lines, 14 distinct texts.
+Dominant: `! <sentence>.` on stderr. 35 lines, 12 distinct texts.
 
 | Count | Text (start) | Capture |
 |---|---|---|
-| 20 | `! Left PLOYZ_PRIVATE_DOMAIN empty in sentry/config.yml: it is a broken reference.` | [cloud-cluster/deploy.md](cloud-cluster/deploy.md) |
-| 20 | `! Left PORT empty in sentry/config.yml: it is a broken reference.` | [cloud-cluster/deploy.md](cloud-cluster/deploy.md) |
 | 7 | `! gamma did not answer; its rows are missing.` | [cluster/errors.md](cluster/errors.md) |
+| 7 | `! acme.com answers from another server. Point it at 2001:db8::10. …` | [cloud-cluster/deploy.md](cloud-cluster/deploy.md) |
+| 6 | `! web.ada.ployz.test is not published yet. Ployz Cloud publishes it once it reaches port 80 on 2001:db8::10.` | [cloud-cluster/deploy.md](cloud-cluster/deploy.md) |
 | 5 | `! Docker only (not recommended): Volumes on this Server get no size limits, …` | [cluster/server.md](cluster/server.md) |
-| 5 | `! acme.com answers from another server. Point it at 2001:db8::10. …` | [cloud-cluster/deploy.md](cloud-cluster/deploy.md) |
-| 4 | `! web's image nginx:1.27-alpine exposes 80; its domains send to 8080. …` | [cloud-cluster/deploy.md](cloud-cluster/deploy.md) |
 | 2 | `! Server gamma is running Services: shop-production/web.` | [cluster/server.md](cluster/server.md) |
 | 2 | `! workspace.ada.ployz.test is not published yet. …` | [cloud-cluster/deploy.md](cloud-cluster/deploy.md) |
-| 1 each | 6 more: two more images' ports, one more unpublished domain, `! Replicated Services may now be under-replicated: …`, `! Docker volume (not recommended): …` and `! No Server here can host Managed volumes yet, …` | [cloud-cluster/domain.md](cloud-cluster/domain.md), [cluster/server.md](cluster/server.md), [cluster/volume.md](cluster/volume.md) |
+| 1 each | 6 more: two more unpublished domains, `! api's image traefik/whoami:v1.11.0 exposes 80; its domains send to 8080. …`, `! Replicated Services may now be under-replicated: …`, `! Docker volume (not recommended): …` and `! No Server here can host Managed volumes yet, …` | [cloud-cluster/domain.md](cloud-cluster/domain.md), [cluster/server.md](cluster/server.md), [cluster/volume.md](cluster/volume.md) |
 
 Every warning starts uppercase or with a name. Under `--json` the same text also appears in a `warnings` array.
 
 ## 6. Errors
 
-Human errors go to stderr as `error: <message>`. 186 human error lines and 80 JSON error objects were captured, and 12 human errors add a `  cause:` line.
+Human errors go to stderr as `error: <message>`. 184 human error lines and 78 JSON error objects were captured, and 12 human errors add a `  cause:` line.
 
-First-word casing: 127 start uppercase, 37 lowercase, 19 are clap's, and 3 start with `--confirm`.
+First-word casing: 126 start uppercase, 36 lowercase, 19 are clap's, and 3 start with `--confirm`.
 
 - Dominant, uppercase: `No Service named nope in Environment production` then `valid: web, db` ([store/service.md](store/service.md)). Most end without a period; some end with one, such as `Not signed in to Cloud.` ([cloud/errors.md](cloud/errors.md)).
 - Lowercase: `no Organization nope of yours` ([cloud/org.md](cloud/org.md)), `context nope not found in Ployz config …` ([store/context.md](store/context.md)), `at least one setting flag is required` ([cluster/server.md](cluster/server.md)). Most lowercase lines lead with a name: `staging is not a Branch`, `shop/production has no Deployment #99`, `worker: pull image failed.`
@@ -192,14 +191,14 @@ Dominant: a trailing `next: <command>` line. Every hint is a labelled line of it
 
 | Form | Count | Example | Capture |
 |---|---|---|---|
-| `next:` | 140 in 23 files | `next: ployz login` | [cloud/errors.md](cloud/errors.md) |
-| `valid:` | 41 in 12 files | `valid: api, postgres, web, worker` | [cloud-cluster/errors.md](cloud-cluster/errors.md) |
+| `next:` | 142 in 22 files | `next: ployz login` | [cloud/errors.md](cloud/errors.md) |
+| `valid:` | 40 in 11 files | `valid: api, postgres, redis, web, worker` | [cloud-cluster/errors.md](cloud-cluster/errors.md) |
 | `inspect:` | 14 in 8 files | `inspect: ployz server ls` | [cluster/errors.md](cluster/errors.md) |
 | `retry:` | 13 in 9 files | `retry: ployz project rm scratch1 --confirm scratch1` | [store/project.md](store/project.md) |
 | `undo:` | 9 in 4 files | `undo: ployz history undo 7 --project shop --env production` | [cloud-cluster/deploy.md](cloud-cluster/deploy.md) |
 
 - `next:` targets vary in scope: `ployz diff --project shop`, `ployz diff`, `ployz deploy --project shop`.
-- Human output prints fewer hints than the JSON carries. 53 of 124 JSON success objects have a top-level `next`. 84 of 256 human successes print `next:`.
+- Human output prints fewer hints than the JSON carries. 53 of 126 JSON success objects have a top-level `next`. 87 of 258 human successes print `next:`.
 - `valid:` shows eight choices, then `and N more`: `valid: cpuLimit, healthcheck, image, maxRetries, memLimit, preDeployCommand, privateDns, registryCredential, and 18 more` ([store/settings.md](store/settings.md)). A near miss adds a line above it with the same label: `valid: did you mean replicas?`.
 
 ## 8. Identifiers
@@ -235,9 +234,9 @@ A failed Deployment exits 1, with its progress and the error on stderr: `Deployi
 
 ## 11. `--json` shape
 
-Dominant: one pretty-printed object on stdout (124 of 128 success outputs). The other 4 are NDJSON streams (logs and server logs).
+Dominant: one pretty-printed object on stdout (126 of 130 success outputs). The other 4 are NDJSON streams (logs and server logs).
 
-- Errors are compact, on one line: `{"error":{"cause":[],"code":"not_found","details":{},"message":"No Project named nope"}}`. Codes seen: not_found 26, invalid_argument 20, unauthenticated 15, conflict 10, unavailable 5, confirmation_required 3, ambiguous 1.
+- Errors are compact, on one line: `{"error":{"cause":[],"code":"not_found","details":{},"message":"No Project named nope"}}`. Codes seen: not_found 24, invalid_argument 20, unauthenticated 15, conflict 10, unavailable 5, confirmation_required 3, ambiguous 1.
 - Mutations share `environment`, `staged` and `next` ([store/settings.md](store/settings.md)).
 - Fan-outs add `failures` and `omitted` ([cluster/errors.md](cluster/errors.md)).
 - Time fields come in three forms: epoch seconds (`admitted_at`), ISO strings (`expires_at`), and `created_at_unix_nanos` ([cluster/ps-logs-exec.md](cluster/ps-logs-exec.md)).
@@ -249,8 +248,8 @@ Dominant: one pretty-printed object on stdout (124 of 128 success outputs). The 
 
 | Exit | Count | Meaning seen |
 |---|---|---|
-| 0 | 390 | success |
-| 1 | 176 | any failure: not found, conflict, unauthenticated, unavailable |
+| 0 | 394 | success |
+| 1 | 172 | any failure: not found, conflict, unauthenticated, unavailable |
 | 2 | 91 | clap errors, a missing or wrong `--confirm`, volume loss, `Expected a Deployment ID or number`, local `deploy --detach`, two Projects and none chosen |
 | 3 | 9 | partial fan-out with gamma down (7), `server upgrade` failing on its one Server, and `ployz exec` passing a remote 3 through |
 | 124 | 8 | the capture's own timeout: `logs --follow` (3); in cloud/, a login (2), `github connect`, and two follows that never end |
@@ -276,8 +275,7 @@ Each item reproduces in a capture on main, at the line it cites.
 2. `deployment start 1` with no Server follows until the capture's timeout kills it (exit 124), and prints nothing at all. [cloud/deploy.md:310](cloud/deploy.md)
 3. `server upgrade 0.2.3 gamma` exits 3, the partial code, though nothing printed on stdout and its only Server failed. The handler's `emit_committed` counts the result as printed in human mode too. [cluster/server.md:852](cluster/server.md)
 4. `server rm gamma --confirm gamma` removes the Server, then warns `! Server gamma is running Services: shop-production/web.` with `next: ployz server drain gamma`, which names the Server it just removed. [cluster/server.md:1004](cluster/server.md)
-5. env rm's removal Deployment prints `  api: starting 0/1` before `  api: removing 0/1` for a Service it only removes. [cloud-cluster/env.md:604](cloud-cluster/env.md)
-6. project rm help leaves the `<name>` argument with an empty description. [store/help.md:403](store/help.md)
+5. project rm help leaves the `<name>` argument with an empty description. [store/help.md:403](store/help.md)
 
 The earlier list's 32 items, rechecked against the same captures. Old items 15, 23 and 29 are items 4, 1 and 2 above.
 
@@ -290,7 +288,7 @@ Fixed, each at the capture that shows it:
 - 7, server ls with gamma down said nothing: it warns `! gamma did not answer; its rows are missing.` [cluster/errors.md:55](cluster/errors.md)
 - 8, a missing `--confirm` exited 1: both a missing and a wrong one exit 2. [store/project.md:224](store/project.md), [store/project.md:249](store/project.md)
 - 9, server upgrade printed its failure twice, then the cause again: one `error:` line and one `inspect:` line. [cluster/server.md:852](cluster/server.md)
-- 10, `domain add` of an existing domain claimed it staged: now `Nothing changed in shop/production; acme.com is already on web.` [cloud-cluster/domain.md:516](cloud-cluster/domain.md)
+- 10, `domain add` of an existing domain claimed it staged: now `Nothing changed in shop/production; acme.com is already on web.` [cloud-cluster/domain.md:604](cloud-cluster/domain.md)
 - 11, `env shutdown` of a never-deployed Environment printed a bare `applied: `: now `Deployment #1 of shop/qa: applied`. [store/env.md:988](store/env.md)
 - 12, `cannot Select a context…`: now `Choosing a context needs a terminal; name one instead.` [store/context.md:514](store/context.md)
 - 13, signed-out ps and logs reported a socket error: now `Not signed in to Cloud.` with `next: ployz login`. [cloud/errors.md:198](cloud/errors.md), [cloud/errors.md:223](cloud/errors.md)
@@ -299,10 +297,10 @@ Fixed, each at the capture that shows it:
 - 17, logs exited 0 with a Machine down: exit 3 and a warning. [cluster/errors.md:609](cluster/errors.md)
 - 18, server drain `--json` printed `public_key` as bytes: a base64 string. [cluster/server.md:892](cluster/server.md)
 - 19, `server show nope --json` said `invalid_argument`: now `not_found`. [cloud-cluster/errors.md:483](cloud-cluster/errors.md)
-- 20, a registry error's newline broke the result: the cause is one line, `error from registry: denied; denied`. [cloud-cluster/deploy.md:1453](cloud-cluster/deploy.md)
-- 21, up printed `built ` with no detail: now `workspace built on machine-1.` [cloud-cluster/deploy.md:2979](cloud-cluster/deploy.md)
+- 20, a registry error's newline broke the result: the cause is one line, `error from registry: denied; denied`. [cloud-cluster/deploy.md:1436](cloud-cluster/deploy.md)
+- 21, up printed `built ` with no detail: now `workspace built on machine-1.` [cloud-cluster/deploy.md:3066](cloud-cluster/deploy.md)
 - 22, clap Usage showed `--ployz-config`: now `Usage: ployz service add --image <REF> --project <project> <name>`. [store/service.md:162](store/service.md)
-- 24, status for a deleted Project gave no repair step: now `needs attention = No Project named workspace` with `next: ployz link --project PROJECT`. [cloud-cluster/deploy.md:3213](cloud-cluster/deploy.md)
+- 24, status for a deleted Project gave no repair step: now `needs attention = No Project named workspace` with `next: ployz link --project PROJECT`. [cloud-cluster/deploy.md:3295](cloud-cluster/deploy.md)
 - 25, the empty `--secret` error carried a postgres `example`: its details are `null`. [store/settings.md:105](store/settings.md)
 - 26, `env branch --live` had two colons: now `db can't be used live: the Branch copies it, so nothing running can lend it`. [store/env.md:936](store/env.md)
 - 28, server add over SSH ended on its wait line: it follows the ingress and ends `Server beta is ready.` [cluster/server.md:27](cluster/server.md)
@@ -314,6 +312,8 @@ Intentional, per a rule the captures state:
 
 - 5, a Managed volume can't switch storage after a Deploy was requested: `Volume cache keeps its storage once a Deploy has been requested; add a new Volume for other storage`. [cluster/volume.md:229](cluster/volume.md)
 - 27, a malformed `--expect-version 1` exits 2 and a stale well-formed one exits 1. Exit 2 means the command line is wrong; a stale version is a conflict with the current state, which exits 1. [cloud/deploy.md:768](cloud/deploy.md), [cloud-cluster/errors.md:107](cloud-cluster/errors.md)
+
+Seen once, not reproduced: env rm's removal Deployment printed `  api: starting 0/1` before `  api: removing 0/1` in the previous capture; the recapture removes api without starting it. [cloud-cluster/env.md:573](cloud-cluster/env.md)
 
 Not rechecked, because no capture reaches it now:
 
@@ -331,7 +331,7 @@ Five earlier questions are settled in the code, each as its option B or close to
 
 Still open:
 
-1. **Should human output print every `next` the JSON carries?** 53 JSON successes carry `next`; 84 human ones print it.
+1. **Should human output print every `next` the JSON carries?** 53 JSON successes carry `next`; 87 human ones print it.
    A. Yes, always.
    B. Only when the next step is not obvious (for example after a stage, say "deploy").
    C. Never on success; hints only on errors.
@@ -341,7 +341,7 @@ Still open:
    B. Names first, with a short id where two things can share a name.
    C. Keep ids where they appear today.
 
-3. **Error text.** 127 errors start uppercase and 37 lowercase, most of those with a name. Most raw upstream text now sits on a `cause:` line, but some still reaches the message.
+3. **Error text.** 126 errors start uppercase and 36 lowercase, most of those with a name. Most raw upstream text now sits on a `cause:` line, but some still reaches the message.
    A. One sentence in our words, capitalized, no period; the raw cause only in JSON `details`.
    B. Our sentence, then `cause: …` on a second line with the raw text.
    C. Keep passing the raw text through, but fix casing.

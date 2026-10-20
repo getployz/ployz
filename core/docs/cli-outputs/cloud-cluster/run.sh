@@ -6,12 +6,11 @@
 #   run=$(scripts/verify-cluster up --machines 1 --daemon checkout --cloud)
 # (a release daemon refuses this checkout's CLI), seeded with Organization
 # `ada`, Project `shop`, Environment `production` holding web (nginx, custom
-# domain acme.com, no generated domain, so `domain set web` refuses), api,
-# postgres (Volume pg-data), worker and redis, plus a staged, undeployed Branch
-# `fix-api`. Then, through `scripts/verify-cluster cli "$run" --`, run
-# `link --project shop`, `service rm redis` (its HTTP health check never
-# passes) and `deploy`. This script never starts, restarts or tears the setup
-# down.
+# domain acme.com and a generated domain on port 80), api, postgres (Volume
+# pg-data), worker (whoami on port 80, checked at /health) and redis (checked
+# with redis-cli ping), plus a staged, undeployed Branch `fix-api`. Then,
+# through `scripts/verify-cluster cli "$run" --`, run `link --project shop`
+# and `deploy`. This script never starts, restarts or tears the setup down.
 #
 #   MANIFEST=/abs/core/.verify/<run>/cluster.json [SECTIONS="..."] run.sh [PARENT]
 #   publish.sh DIR
@@ -325,10 +324,11 @@ domain_section() {
   m $M "domain set" -- $P domain set web shopweb
   c $M "domain ls with a staged change" -- $P domain ls
   c $M "diff" -- $P diff
-  m $M "deploy" -- $P deploy
+  # Changing the generated domain removes the old host, so Cloud asks.
+  gated $M "deploy (Ada approves removing web.ada.ployz.test)" -- $P deploy
   c $M "domain ls after deploy" -- $P domain ls
   m $M "domain set --json back" -- $P --json domain set web web --port 80
-  m $M "deploy" -- $P deploy
+  gated $M "deploy (Ada approves removing shopweb.ada.ployz.test)" -- $P deploy
 
   h $f "Add and remove a generated domain"
   m $M "domain add a generated domain" -- $P domain add api
