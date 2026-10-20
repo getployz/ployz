@@ -578,7 +578,7 @@ mod tests {
     use serde_json::{Value, json};
 
     use super::{
-        VolumeOwner, machine_removal_refusal, movable_services_on, qualified_labels,
+        VolumeOwner, drain_first, machine_removal_refusal, movable_services_on, qualified_labels,
         replicated_services_on, reset_removal_refusal, services_on, under_replicated,
     };
     use crate::ui::Hint;
@@ -744,6 +744,34 @@ mod tests {
             movable_services_on(&machine_id('a'), &live),
             [QualifiedService::parse("app/api").unwrap()]
         );
+    }
+
+    #[test]
+    fn rm_suggests_a_drain_only_while_it_still_asks() {
+        let live: LiveServices<RpcError> = derive_live_services(PartialResult {
+            successes: vec![
+                MachineSuccess {
+                    machine_id: machine_id('a'),
+                    value: vec![observation(
+                        '1',
+                        'a',
+                        "web",
+                        ContainerKind::ServiceContainer,
+                        'a',
+                    )],
+                },
+                MachineSuccess {
+                    machine_id: machine_id('b'),
+                    value: Vec::new(),
+                },
+            ],
+            failures: Vec::new(),
+            omissions: Vec::new(),
+        });
+        let web = [QualifiedService::parse("app/web").unwrap()];
+        assert_eq!(drain_first(&machine_id('a'), &live, false, false), web);
+        assert!(drain_first(&machine_id('a'), &live, false, true).is_empty());
+        assert!(drain_first(&machine_id('a'), &live, true, false).is_empty());
     }
 
     #[test]

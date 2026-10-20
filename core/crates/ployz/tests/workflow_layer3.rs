@@ -146,11 +146,26 @@ async fn machine_rm_warns_when_replicated_services_are_left_under_replicated() {
         );
         session.close().await;
 
-        let mut command = Command::new(env!("CARGO_BIN_EXE_ployz"));
-        command
-            .args(["--connect", &format!("tcp://{address}"), "server", verb])
-            .args(["--confirm", "machine-2", "machine-2"]);
-        let removed = command.output().unwrap();
+        let server = |args: &[&str]| {
+            Command::new(env!("CARGO_BIN_EXE_ployz"))
+                .args(["--connect", &format!("tcp://{address}"), "server", verb])
+                .args(args)
+                .output()
+                .unwrap()
+        };
+        let asked = server(&["machine-2"]);
+        let stderr = String::from_utf8_lossy(&asked.stderr);
+        assert!(!asked.status.success(), "{stderr}");
+        assert!(
+            stderr.contains("Server machine-2 is running Services: workflow/replicated."),
+            "{stderr}"
+        );
+        assert!(
+            stderr.contains("next: ployz server drain machine-2"),
+            "{stderr}"
+        );
+
+        let removed = server(&["--confirm", "machine-2", "machine-2"]);
         assert!(
             removed.status.success(),
             "stdout={} stderr={}",
@@ -162,14 +177,8 @@ async fn machine_rm_warns_when_replicated_services_are_left_under_replicated() {
             stderr.contains("Replicated Services may now be under-replicated: workflow/replicated"),
             "{stderr}"
         );
-        assert!(
-            stderr.contains("Server machine-2 is running Services: workflow/replicated."),
-            "{stderr}"
-        );
-        assert!(
-            stderr.contains("next: ployz server drain machine-2"),
-            "{stderr}"
-        );
+        assert!(!stderr.contains("is running Services"), "{stderr}");
+        assert!(!stderr.contains("server drain"), "{stderr}");
     }
 }
 
