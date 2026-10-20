@@ -180,6 +180,22 @@ fn diff_groups_new_services_and_compares_edits_with_their_introduction() {
 }
 
 #[test]
+fn a_draft_reversal_lists_by_name_among_the_deploy_changes() {
+    let (store, who) = shop();
+    backend::deploy(&store, &who, "production", 1);
+    set(&store, &who, "api.replicas", json!(3));
+    publish(&store, &who, None).unwrap();
+    set(&store, &who, "api.replicas", json!(1));
+    set(&store, &who, "web.replicas", json!(2));
+    let names: Vec<_> = diff(&store, &who)
+        .review_changes()
+        .into_iter()
+        .map(|change| change.name)
+        .collect();
+    assert_eq!(names, ["api", "web"]);
+}
+
+#[test]
 fn publish_saves_working_state_once() {
     let (store, who) = shop();
     let version = diff(&store, &who).version;
