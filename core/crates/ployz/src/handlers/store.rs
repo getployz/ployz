@@ -4,6 +4,8 @@
 use clap::{Arg, ArgMatches};
 use ployz_core::RpcErrorCode;
 use std::path::Path;
+use unicode_segmentation::UnicodeSegmentation as _;
+use unicode_width::UnicodeWidthStr as _;
 
 use ployz_store::{
     Actor, Admit, Ask, ConfigStore, DeploymentId, DeploymentSummary, EnvironmentRef,
@@ -386,9 +388,13 @@ impl<'m> Store<'m> {
     }
 
     /// This command again with its [`Self::args`] and `extra`, in the same Project
-    /// and Environment.
+    /// and Environment, with the same Ployz config.
     pub(crate) fn again(&self, extra: &[&str]) -> String {
-        let mut words: Vec<&str> = self.words.iter().map(String::as_str).collect();
+        let mut words: Vec<&str> = super::config_flag(self.matches)
+            .into_iter()
+            .flatten()
+            .collect();
+        words.extend(self.words.iter().map(String::as_str));
         words.extend(extra);
         next(self.matches, &words)
     }
@@ -779,18 +785,57 @@ pub(crate) fn word(value: &impl serde::Serialize) -> String {
         .unwrap_or_default()
 }
 
-/// A value as a change line shows it: a long one cut to its start and length, so one big variable doesn't fill the terminal.
+/// A value as a change line shows it: a long one cut to the start that fits 80 columns, and its length, so one big variable doesn't fill the terminal.
 pub(crate) fn shown(value: &serde_json::Value) -> String {
     const SHOWN: usize = 80;
-    let length = value.as_str().map_or_else(
-        || value.to_string().chars().count(),
-        |text| text.chars().count(),
-    );
-    if length <= SHOWN {
-        return value.to_string();
+    let text = value.to_string();
+    let (start, whole) = fitted(&text, SHOWN);
+    if whole {
+        return start;
     }
-    let start: String = value.to_string().chars().take(SHOWN).collect();
+    let length = value
+        .as_str()
+        .map_or_else(|| text.chars().count(), |raw| raw.chars().count());
     format!("{start}… ({length} chars)")
+}
+
+/// JSON `text` as shown, kept piece by piece while it fits `columns`, and whether all of it did.
+fn fitted(text: &str, columns: usize) -> (String, bool) {
+    let mut start = String::new();
+    let mut width = 0;
+    for piece in pieces(text) {
+        width += piece.width();
+        if width > columns {
+            return (start, false);
+        }
+        start.push_str(&piece);
+    }
+    (start, true)
+}
+
+/// JSON `text` as shown, in pieces a cut must not split: a JSON escape such as `\n` or
+/// `\u0001`, each [`crate::ui::unprintable`] character as its `\u{…}` escape, or one grapheme
+/// cluster, measured whole since its marks and selectors change its width.
+fn pieces(text: &str) -> impl Iterator<Item = String> + '_ {
+    let mut rest = text;
+    std::iter::from_fn(move || {
+        let c = rest.chars().next()?;
+        let (piece, length) = if c == '\\' {
+            let length = if rest.get(1..2) == Some("u") { 6 } else { 2 };
+            let escape = rest.get(..length).unwrap_or(rest);
+            (escape.to_owned(), escape.len())
+        } else if crate::ui::unprintable(c) {
+            (crate::ui::escaped(c.encode_utf8(&mut [0; 4])), c.len_utf8())
+        } else {
+            let printable = rest
+                .find(|c| c == '\\' || crate::ui::unprintable(c))
+                .map_or(rest, |end| rest.get(..end).unwrap_or(rest));
+            let grapheme = printable.graphemes(true).next().unwrap_or(printable);
+            (grapheme.to_owned(), grapheme.len())
+        };
+        rest = rest.get(length..).unwrap_or_default();
+        Some(piece)
+    })
 }
 
 /// A staged Setting change as lines, `web.replicas: 1 → 3`. A domain change reads as
@@ -803,7 +848,7 @@ pub(crate) fn changed(row: &ployz_core::config::ServiceSettingChange) -> Vec<Str
         };
         return vec![format!(
             "{}: {} → {}",
-            row.path,
+            crate::ui::escaped(&row.path),
             value(&row.before),
             value(&row.after)
         )];
@@ -862,7 +907,7 @@ pub(crate) fn plain(value: &serde_json::Value) -> String {
     if value.is_null() {
         "-".to_owned()
     } else {
-        value.to_string()
+        crate::ui::escaped(&value.to_string())
     }
 }
 
@@ -1073,6 +1118,57 @@ mod tests {
     }
 
     #[test]
+    fn a_value_escapes_what_would_steer_the_terminal() {
+        let value = json!("مرحبا\u{202E}evil\u{200B}\u{85}\t");
+        let escaped = r#""مرحبا\u{202e}evil\u{200b}\u{85}\t""#;
+        assert_eq!(plain(&value), escaped);
+        assert_eq!(shown(&value), escaped);
+        let long = shown(&json!(format!("\u{202E}{}", "a".repeat(100))));
+        assert!(long.starts_with(r#""\u{202e}aaa"#), "{long}");
+    }
+
+    #[test]
+    fn a_long_value_is_cut_within_80_columns_never_inside_an_escape() {
+        let cut = |before: usize, odd: char| {
+            shown(&json!(format!(
+                "{}{odd}{}",
+                "a".repeat(before),
+                "z".repeat(90 - before)
+            )))
+        };
+        let a = |count| "a".repeat(count);
+        assert_eq!(cut(78, '\u{202E}'), format!("\"{}… (91 chars)", a(78)));
+        assert_eq!(cut(75, '\u{202E}'), format!("\"{}… (91 chars)", a(75)));
+        assert_eq!(
+            cut(71, '\u{202E}'),
+            format!(r#""{}\u{{202e}}… (91 chars)"#, a(71))
+        );
+        assert_eq!(cut(78, '\n'), format!("\"{}… (91 chars)", a(78)));
+        assert_eq!(cut(76, '\u{1}'), format!("\"{}… (91 chars)", a(76)));
+        assert_eq!(
+            cut(70, '\u{1}'),
+            format!(r#""{}\u0001zzz… (91 chars)"#, a(70))
+        );
+        assert_eq!(cut(78, '界'), format!("\"{}… (91 chars)", a(78)));
+        assert_eq!(cut(78, '😀'), format!("\"{}… (91 chars)", a(78)));
+        assert_eq!(cut(77, '界'), format!("\"{}界… (91 chars)", a(77)));
+    }
+
+    #[test]
+    fn a_value_is_measured_in_columns_by_grapheme() {
+        let wide = |c: &str| format!("\"{}… (40 chars)", c.repeat(39));
+        assert_eq!(shown(&json!("界".repeat(40))), wide("界"));
+        assert_eq!(shown(&json!("😀".repeat(40))), wide("😀"));
+        let marked = format!("{}\u{301}\u{301}\u{301}", "a".repeat(78));
+        assert_eq!(shown(&json!(marked)), format!("\"{marked}\""));
+        let heart = format!("{}\u{2764}\u{FE0F}", "a".repeat(78));
+        assert_eq!(
+            shown(&json!(heart)),
+            format!("\"{}… (80 chars)", "a".repeat(78))
+        );
+    }
+
+    #[test]
     fn a_long_value_shows_its_start_and_length() {
         assert_eq!(shown(&json!("short")), "\"short\"");
         assert_eq!(shown(&json!(3)), "3");
@@ -1111,6 +1207,49 @@ mod tests {
         assert_eq!(
             error.message,
             "This Deploy permanently deletes the data of data"
+        );
+    }
+
+    #[test]
+    fn the_same_command_again_keeps_a_typed_ployz_config() {
+        let config = "/home/me/my ployz/config.yaml";
+        let again = |typed: &[&str]| {
+            let root = crate::cli::command().try_get_matches_from(typed).unwrap();
+            let key = SealingKey::new(&[7; 32]).unwrap();
+            Store {
+                backend: Backend::Local(
+                    std::sync::Arc::new(ConfigStore::open("sqlite::memory:", key).unwrap()),
+                    Actor::system(OrganizationId::parse(LOCAL_ORGANIZATION).unwrap()),
+                ),
+                matches: leaf_matches(&root),
+                words: vec!["env".to_owned(), "rm".to_owned(), "staging".to_owned()],
+            }
+            .again(&["--confirm", "shop/staging"])
+        };
+        let typed = again(&[
+            "ployz",
+            "--ployz-config",
+            config,
+            "env",
+            "rm",
+            "staging",
+            "--confirm",
+            "shop/staging",
+        ]);
+        assert_eq!(
+            typed,
+            "ployz --ployz-config '/home/me/my ployz/config.yaml' env rm staging --confirm shop/staging"
+        );
+        let root = crate::cli::command()
+            .try_get_matches_from(shell_words::split(&typed).unwrap())
+            .unwrap();
+        let leaf = leaf_matches(&root);
+        assert_eq!(leaf.get_one::<String>("ployz-config").unwrap(), config);
+        assert_eq!(leaf.get_one::<String>("confirm").unwrap(), "shop/staging");
+        // A default or `PLOYZ_CONFIG` holds for the next command on its own.
+        assert_eq!(
+            again(&["ployz", "env", "rm", "staging", "--confirm", "shop/staging"]),
+            "ployz env rm staging --confirm shop/staging"
         );
     }
 
