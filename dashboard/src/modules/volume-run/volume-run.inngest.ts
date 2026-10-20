@@ -1,4 +1,4 @@
-import type { ContainerId, ExpectedCopy, MachineId, Snapshot, VolumeCopy, WantedCopy } from "@ployz/sdk";
+import type { ContainerId, ExpectedCopy, MachineId, SlotRole, Snapshot, VolumeCopy, WantedCopy } from "@ployz/sdk";
 import { Effect, Option, Schema } from "effect";
 import { NonRetriableError } from "inngest";
 import { attemptLifecycle } from "#/modules/inngest/attempt-lifecycle";
@@ -287,10 +287,10 @@ async function mirrorVolume(steps: RunSteps, phase: PhaseOf<"mirror"> | PhaseOf<
   }
 }
 
-/** A slot's delete names the role the run saw, so its Machine refuses a slot that a late pull or a departure re-roled. */
-const deleteExpect = (copy: VolumeCopy | null): ExpectedCopy => {
+/** A slot's delete names the role its request was admitted for, so its Machine refuses a slot that holds another by then. */
+const deleteExpect = (copy: VolumeCopy | null, role: SlotRole | null): ExpectedCopy => {
   const expect = expectOf(copy);
-  return expect.kind === "mirror" && copy?.kind === "slot" ? { ...expect, role: copy.role } : expect;
+  return expect.kind === "mirror" && role !== null ? { ...expect, role } : expect;
 };
 
 const ROLE_NOUN = { mirror: "a mirror", old_copy: "an old copy" } as const;
@@ -299,13 +299,13 @@ async function deleteMirror(steps: RunSteps, phase: PhaseOf<"delete_mirror">) {
   const { run } = steps;
   try {
     for (const slot of phase.destroy) {
-      const expect = deleteExpect(slot.view.copy);
+      const expect = deleteExpect(slot.view.copy, phase.role);
       const answer = await setCopy(steps, `03-forget-${slot.machine.name}`, slot.machine, expect, { kind: "forget" }, `${slot.machine.name} is still busy with ${run.volumeName}`);
       if (answer.ok) continue;
-      const seen = expect.kind === "mirror" ? expect.role : undefined;
-      const reroled = seen !== undefined && answer.reason === "mismatch" && answer.copy?.kind === "slot" && answer.copy.role !== seen;
+      const { role } = phase;
+      const reroled = role !== null && answer.reason === "mismatch" && answer.copy?.kind === "slot" && answer.copy.role !== role;
       throw new NonRetriableError(reroled
-        ? `${copyName(run.volumeName, slot.machine.name)} is no longer ${ROLE_NOUN[seen]}, so nothing was deleted`
+        ? `${copyName(run.volumeName, slot.machine.name)} is no longer ${ROLE_NOUN[role]}, so nothing was deleted`
         : answer.message);
     }
     if (phase.forget !== null) {

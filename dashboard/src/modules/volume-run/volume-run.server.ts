@@ -293,9 +293,9 @@ const namedOwedRefusal = Effect.fn("VolumeRun.namedOwedRefusal")(function* (pend
 
 type DeleteMirrorArgs = VolumeRunArgs["delete_mirror"];
 
-const withSlotMachine = ({ slot, confirmed_name }: DeleteMirrorArgs, machines: readonly MachineRef[]): DeleteMirrorArgs => {
-  const machine = machines.find((entry) => entry.name === slot)?.id;
-  return machine === undefined ? { slot, confirmed_name } : { slot, confirmed_name, machine };
+const withSlotMachine = (args: DeleteMirrorArgs, machines: readonly MachineRef[]): DeleteMirrorArgs => {
+  const machine = machines.find((entry) => entry.name === args.slot)?.id;
+  return machine === undefined ? args : { ...args, machine };
 };
 
 export const releaseChangedMessage = (volumeName: string) => `${volumeName} changed since this release was planned; release it again`;

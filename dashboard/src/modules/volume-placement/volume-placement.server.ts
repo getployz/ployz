@@ -385,7 +385,7 @@ export const deleteOldCopy = Effect.fn("VolumePlacement.deleteOldCopy")(function
   const members = yield* inspect(organizationId, input.environment, input.volumeId);
   const old = oldCopies(observePlacement(members), row === undefined ? null : view(row)).find((copy) => copy.server.name === input.server);
   if (old === undefined) return { ok: false, refusal: NOT_OLD } as const;
-  const run = { volumeId: input.volumeId, environment: input.environment, kind: "delete_mirror", args: { slot: input.server, confirmed_name: null } } as const;
+  const run = { volumeId: input.volumeId, environment: input.environment, kind: "delete_mirror", args: { slot: input.server, confirmed_name: null, role: "old_copy" } } as const;
   const planned = yield* planVolumeRun(organizationId, run);
   if (!planned.ok) return { ok: false, refusal: { message: planned.refusal.message } } as const;
   const held = members.find((member) => member.machine.id === old.server.id);

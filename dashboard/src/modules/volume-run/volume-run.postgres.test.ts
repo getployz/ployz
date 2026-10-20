@@ -2187,6 +2187,7 @@ describe("volume runs", () => {
 
       expect(output.result).toEqual({ runId: run.id, destroyed: ["fsn-2"] });
       expect(verbs).toEqual(["forget@fsn-2", "forget@fsn-1"]);
+      expect(sent[0]?.expect).toEqual({ kind: "mirror", newest: base.guid, slot: "1" });
       expect(machines[1]?.copy).toBeNull();
       expect(await rows()).toMatchObject([{ state: "done", epoch: null }]);
     });
@@ -2194,7 +2195,7 @@ describe("volume runs", () => {
     it("refuses an old copy a late pull made the mirror after the run looked, and deletes nothing", async () => {
       machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(base, null, "7", "old_copy") };
       beforeSet.set("forget@fsn-2", () => { named("fsn-2").copy = slotCopy(base, null, "7", "mirror"); });
-      const run = await requested({ kind: "delete_mirror", args: { slot: "fsn-2", confirmed_name: null, machine: idOf("fsn-2") } });
+      const run = await requested({ kind: "delete_mirror", args: { slot: "fsn-2", confirmed_name: null, machine: idOf("fsn-2"), role: "old_copy" } });
 
       await execute(run.id);
 
