@@ -2284,6 +2284,7 @@ fn rolled_back_volume() -> (ConfigStore, Trusted) {
                 name: docker(5),
             }],
             unanswered: Vec::new(),
+            failure: None,
         }),
         approval: ployz_store::Approval::Required,
         asks: ployz_store::Asks::EveryDeploy,

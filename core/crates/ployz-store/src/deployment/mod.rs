@@ -20,6 +20,7 @@ pub(crate) use history::*;
 pub(crate) use landing::*;
 pub(crate) use lifecycle::*;
 pub(crate) use lowering::*;
+pub(crate) use rows::servers;
 pub use rows::{
     FailedAt, Failure, RowPhase, RowState, RowTracker, RowTransition, ServerProgress, ServerRow,
     starts_container,

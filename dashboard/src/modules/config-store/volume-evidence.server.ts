@@ -39,7 +39,8 @@ const EvidenceCommand = Schema.Union([AdmitCommand, RetryCommand, RemoveCommand,
 /**
  * For a Save, full Deploy, or removal, that removes deployed Volumes: which Servers hold their data, as Cloud itself observes them.
  * A Project's removal asks about every Environment's. Nothing here comes from the caller. When the Servers can't be
- * reached the evidence is left out, and the Store refuses the write rather than act on data it could not see.
+ * reached the evidence names them and why, or is left out when Cloud couldn't try, and the Store refuses the write
+ * rather than act on data it could not see.
  */
 export const gatherVolumeEvidence = Effect.fn("ConfigStore.gatherVolumeEvidence")(function* (
   organizationId: string,
