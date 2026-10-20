@@ -854,13 +854,16 @@ pub(crate) struct ServersForgotten {
 pub(crate) async fn check_forget_servers(
     credential: &Credential,
 ) -> Result<ForgetCheck, StoreCallError> {
+    let response = forget_check_request(credential)?
+        .send()
+        .await
+        .map_err(|error| cloud_login::unreachable(credential.cloud(), error))?;
+    store_answer(credential, response, cloud_login::unreachable).await
+}
+
+fn forget_check_request(credential: &Credential) -> Result<reqwest::RequestBuilder, LoginError> {
     let url = format!("{}/api/cli/forget-servers", credential.cloud());
-    store_answer(
-        credential,
-        send(credential, Method::GET, &url, None).await?,
-        cloud_login::unreachable,
-    )
-    .await
+    Ok(request(credential, Method::GET, &url, None)?.timeout(OPERATION_TIMEOUT))
 }
 
 /// Forget the Servers of the credential's Organization, named `organization`: Cloud
@@ -1355,6 +1358,23 @@ mod tests {
             cloud: cloud.to_owned(),
             token: Secret::new("ployz_secret".to_owned()),
         }
+    }
+
+    #[test]
+    fn a_forget_check_waits_past_the_cluster_time_cloud_may_spend_on_it() {
+        // Cloud tries every Server at once: a connect (10s), then its name (2s).
+        let cloud_bound = Duration::from_secs(12);
+        let check = forget_check_request(&token("https://cloud.test"))
+            .unwrap()
+            .build()
+            .unwrap();
+        assert!(
+            check
+                .timeout()
+                .is_some_and(|waits| *waits >= cloud_bound + Duration::from_secs(5)),
+            "{:?}",
+            check.timeout()
+        );
     }
 
     #[test]
