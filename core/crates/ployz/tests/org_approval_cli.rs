@@ -109,6 +109,19 @@ fn fake_cloud_answering(seen: Seen, confirms: bool, answer: Answer) -> String {
                     json!({ "organization": "acme", "servers": [], "volumes": [], "cancelled": [] }).to_string(),
                 ),
                 "POST /api/cli/forget-servers" => ("409 Conflict", ASKED_FORGET.to_owned()),
+                "POST /api/cli/server-access" => (
+                    "200 OK",
+                    json!({ "connections": [], "unreachable": ["a".repeat(32)] }).to_string(),
+                ),
+                "GET /api/cli/forget-servers" => (
+                    "200 OK",
+                    json!({
+                        "organization": "acme",
+                        "servers": [{ "id": "a".repeat(32), "name": "web-1", "reach": "didnt_answer" }],
+                        "volumes": [],
+                    })
+                    .to_string(),
+                ),
                 "POST /api/auth/device/code" => (
                     "200 OK",
                     json!({
@@ -248,6 +261,116 @@ fn org_rm_and_forgetting_every_server_wait_on_an_approval_their_retry_carries() 
             ],
         );
     }
+}
+
+#[test]
+fn forgetting_every_server_says_it_is_asking_cloud_except_under_json() {
+    let cloud = fake_cloud(Arc::default(), true);
+
+    let asked = ployz(&cloud, &["server", "forget"]);
+    assert_eq!(asked.status.code(), Some(2), "{asked:?}");
+    let stderr = String::from_utf8_lossy(&asked.stderr);
+    assert!(
+        stderr.starts_with("Asking Cloud which Servers to forget…\n"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("Organization acme (web-1)"), "{stderr}");
+
+    let json = ployz(&cloud, &["--json", "server", "forget"]);
+    assert_eq!(
+        json_of(&json).pointer("/error/code"),
+        Some(&json!("confirmation_required"))
+    );
+    let stderr = String::from_utf8_lossy(&json.stderr);
+    assert!(!stderr.contains("Asking Cloud"), "{stderr}");
+}
+
+#[test]
+fn forgetting_a_lone_server_that_does_not_answer_says_it_is_asking_cloud() {
+    let cloud = fake_cloud(Arc::default(), true);
+
+    let asked = ployz(&cloud, &["server", "forget", "web-1"]);
+    assert_eq!(asked.status.code(), Some(2), "{asked:?}");
+    let stderr = String::from_utf8_lossy(&asked.stderr);
+    assert_eq!(
+        stderr
+            .matches("Asking Cloud which Servers to forget…")
+            .count(),
+        1,
+        "{stderr}"
+    );
+    assert!(stderr.contains("It needs dead typed"), "{stderr}");
+
+    let forgot = ployz(&cloud, &["server", "forget", "web-1", "--confirm", "dead"]);
+    assert!(forgot.status.success(), "{forgot:?}");
+    let stderr = String::from_utf8_lossy(&forgot.stderr);
+    assert_eq!(
+        stderr
+            .matches("Asking Cloud which Servers to forget…")
+            .count(),
+        1,
+        "{stderr}"
+    );
+    asks_to_forget_around_the_approval(&stderr);
+}
+
+#[test]
+fn forgetting_every_server_says_it_asks_cloud_to_forget_them_before_each_send_except_under_json() {
+    let seen = Arc::default();
+    let cloud = fake_cloud(Arc::clone(&seen), true);
+
+    let forgot = ployz(&cloud, &["server", "forget", "--confirm", "acme"]);
+    assert!(forgot.status.success(), "{forgot:?}");
+    asks_to_forget_around_the_approval(&String::from_utf8_lossy(&forgot.stderr));
+    assert_eq!(seen.lock().unwrap().drain(..).count(), 2);
+
+    let approved = ployz(
+        &cloud,
+        &[
+            "server",
+            "forget",
+            "--confirm",
+            "acme",
+            "--approval",
+            "apr_9",
+        ],
+    );
+    assert!(approved.status.success(), "{approved:?}");
+    let stderr = String::from_utf8_lossy(&approved.stderr);
+    assert_eq!(
+        stderr
+            .matches("Asking Cloud to forget the Servers…")
+            .count(),
+        1,
+        "{stderr}"
+    );
+
+    let json = ployz(
+        &cloud,
+        &[
+            "--json",
+            "server",
+            "forget",
+            "--confirm",
+            "acme",
+            "--approval",
+            "apr_9",
+        ],
+    );
+    assert!(json.status.success(), "{}", json_of(&json));
+    let stderr = String::from_utf8_lossy(&json.stderr);
+    assert!(!stderr.contains("Asking Cloud"), "{stderr}");
+}
+
+/// The forget note before the first send, then the approval line, then the note again
+/// before the send that carries the approval.
+fn asks_to_forget_around_the_approval(stderr: &str) {
+    let note = "Asking Cloud to forget the Servers…";
+    let (before, after) = stderr
+        .split_once("Waiting for approval in Ployz Cloud… approved.")
+        .unwrap_or_else(|| panic!("no approval line: {stderr}"));
+    assert_eq!(before.matches(note).count(), 1, "{stderr}");
+    assert_eq!(after.matches(note).count(), 1, "{stderr}");
 }
 
 #[test]
