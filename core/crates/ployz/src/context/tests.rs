@@ -265,3 +265,17 @@ fn set_current_context_rejects_an_unknown_name() {
     );
     assert_eq!(config.current_context(), Some("prod"));
 }
+
+#[test]
+fn config_path_follows_xdg_config_home() {
+    use super::config_path_under;
+    assert_eq!(
+        config_path_under(Some(std::ffi::OsStr::new("/tmp/x"))),
+        "/tmp/x/ployz/config.yaml"
+    );
+    assert_eq!(config_path_under(None), "~/.config/ployz/config.yaml");
+    assert_eq!(
+        config_path_under(Some(std::ffi::OsStr::new("relative"))),
+        "~/.config/ployz/config.yaml"
+    );
+}

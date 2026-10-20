@@ -10,6 +10,7 @@ import type { StoreResult } from "#/modules/config-store/store.contract";
 import { projectsQuery, storeViewOptions } from "#/modules/config-store/store-view.queries";
 import { organizationMembersQueryOptions } from "#/modules/organization/members.queries";
 import * as lens from "#/modules/runtime/use-runtime-lens";
+import * as runtime from "#/providers/runtime-provider";
 import { StoreOrganizationDanger } from "./store-organization-danger";
 
 afterEach(() => {
@@ -21,6 +22,7 @@ async function renderAs(role: "owner" | "admin" | "member" | "support") {
   const queryClient = new QueryClient();
   const scope = { queryClient, sessionId: "session", userId: "user" };
   vi.spyOn(scopes, "useCollectionScope").mockReturnValue(scope);
+  vi.spyOn(runtime, "useClusterReleased").mockReturnValue(() => {});
   vi.spyOn(lens, "useRuntimeLens").mockReturnValue(asTestDouble<ReturnType<typeof lens.useRuntimeLens>>()({ machines: [] }));
   const noProjects: StoreResult<{ view: "projects" } & ProjectsView> = { ok: true, value: { view: "projects", projects: [] } };
   queryClient.setQueryData(storeViewOptions("ada", scope, projectsQuery()).queryKey, noProjects);

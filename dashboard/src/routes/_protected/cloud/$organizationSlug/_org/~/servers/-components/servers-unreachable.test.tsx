@@ -1,13 +1,18 @@
 // @vitest-environment jsdom
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, render, screen } from "@testing-library/react";
-import { afterEach, expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import { organizationMembersQueryOptions } from "#/modules/organization/members.queries";
+import * as runtime from "#/providers/runtime-provider";
 import { ServersUnreachable } from "./servers-unreachable";
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.restoreAllMocks();
+});
 
 function renderAs(role: "admin" | "member" | "support") {
+  vi.spyOn(runtime, "useClusterReleased").mockReturnValue(() => {});
   const queryClient = new QueryClient();
   queryClient.setQueryData(organizationMembersQueryOptions("ada").queryKey, {
     members: role === "support" ? [] : [{ name: "Linus", email: "linus@example.com", role, joined_at: "2026-01-01T00:00:00Z", you: true }],

@@ -256,6 +256,7 @@ impl Tool for DiscardInput {
             "at": at(&discarded.environment),
             "discarded": what,
             "changed": discarded.changed,
+            "dropped": discarded.dropped,
             "saved_not_staged": discarded.reversed.iter().map(|reversal| json!({
                 "name": reversal.change.name,
                 "way_back": reversal.way_back,

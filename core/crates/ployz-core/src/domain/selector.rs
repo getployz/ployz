@@ -69,7 +69,12 @@ impl ContainerSelector {
 #[serde(rename_all = "snake_case", tag = "error")]
 pub enum ContainerSelectorError {
     #[error("Container \"{selector}\" was not found")]
-    NotFound { selector: ContainerSelector },
+    NotFound {
+        selector: ContainerSelector,
+        /// The Service's Container names, any of which would have matched.
+        #[serde(default)]
+        valid: Vec<String>,
+    },
     #[error("Container \"{selector}\" matches multiple containers: {}", .container_ids.iter().map(ToString::to_string).collect::<Vec<_>>().join(", "))]
     Ambiguous {
         selector: ContainerSelector,
@@ -119,6 +124,10 @@ pub fn resolve_container_selector<'a, T: AsRef<ContainerObservation>>(
     match prefixed.as_slice() {
         [] => Err(ContainerSelectorError::NotFound {
             selector: selector.clone(),
+            valid: containers
+                .iter()
+                .map(|container| container.as_ref().display_name.clone())
+                .collect(),
         }),
         [container] => Ok(*container),
         _ => Err(ambiguous(selector, prefixed)),

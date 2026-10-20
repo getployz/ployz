@@ -76,6 +76,9 @@ it.live("stages a restore as one Store write and a seeded row, and discards both
     { name, mounts: [{ service: "web", path: "/data" }], change: "create" },
   ]);
 
+  const { effects } = yield* Effect.promise(() => store.read(ORGANIZATION, { query: "diff", environment: shop }));
+  expect(effects).toEqual([expect.objectContaining({ kind: "detaches_volume", name: "data", lost_after: { at, restored: name } })]);
+
   members = [member("web-2", "mirror")];
   expect(yield* restore()).toMatchObject({ ok: false, refusal: { message: "data has no primary answering to restore from." } });
   expect((yield* listPlacements(ORGANIZATION).pipe(Effect.provide(services))).map((row) => row.volumeId)).toEqual([id]);
