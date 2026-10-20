@@ -1876,7 +1876,13 @@ async fn a_late_ingress_repair_keeps_the_proxy_an_earlier_repair_published() {
         .into_iter()
         .map(|repair| match repair.action {
             SlotAction::Create(Ok(plan)) => plan,
-            action => panic!("a create on each empty Server, got {action:?}"),
+            action @ (SlotAction::Create(Err(_))
+            | SlotAction::Start(_)
+            | SlotAction::Dead(_)
+            | SlotAction::Restarting(_)
+            | SlotAction::Unchecked(_)) => {
+                panic!("a create on each empty Server, got {action:?}")
+            }
         })
         .collect();
     let [first_plan, second_plan] = plans.as_slice() else {
@@ -1912,7 +1918,13 @@ async fn a_late_ingress_repair_keeps_the_proxy_an_earlier_repair_published() {
         matches!(outcome, DeployOutcome::Success { .. }),
         "{outcome:?}"
     );
-    let mut published = first_client.pointers.lock().unwrap()[&ingress].clone();
+    let mut published = first_client
+        .pointers
+        .lock()
+        .unwrap()
+        .get(&ingress)
+        .cloned()
+        .expect("the first repair flipped the pointer");
     published.deploy = DeploymentLogId::parse("first-repair").unwrap();
 
     let second_client = Scripted::new(vec![created(
@@ -1937,7 +1949,13 @@ async fn a_late_ingress_repair_keeps_the_proxy_an_earlier_repair_published() {
         matches!(outcome, DeployOutcome::Success { .. }),
         "{outcome:?}"
     );
-    let last = second_client.pointers.lock().unwrap()[&ingress].clone();
+    let last = second_client
+        .pointers
+        .lock()
+        .unwrap()
+        .get(&ingress)
+        .cloned()
+        .expect("the second repair flipped the pointer");
     let mut serving_now = last.containers.clone();
     serving_now.sort();
     assert_eq!(
