@@ -8,10 +8,11 @@ import { StoreEnvironmentSettings, StoreProjectSettings } from "./store-settings
 import { asTestDouble } from "#/lib/test-double";
 import * as storeViews from "#/modules/config-store/store-view.queries";
 
-// The Store deletes a Project in one piece once its last removal applied: its Environments read as not found.
-vi.spyOn(storeViews, "useStoreView").mockReturnValue(asTestDouble<ReturnType<typeof storeViews.useStoreView>>()({
-  ok: false, refusal: { code: "not_found", message: "No Project named shop", details: {} },
-}));
+function refused(code: string) {
+  vi.spyOn(storeViews, "useStoreView").mockReturnValue(asTestDouble<ReturnType<typeof storeViews.useStoreView>>()({
+    ok: false, refusal: { code, message: "refused", details: {} },
+  }));
+}
 
 afterEach(() => { cleanup(); });
 
@@ -34,8 +35,19 @@ function open(Settings: typeof StoreProjectSettings) {
   return router;
 }
 
-it.each([["project", StoreProjectSettings], ["environment", StoreEnvironmentSettings]])(
-  "leaves the %s settings of a deleted Project for Projects", async (_, Settings) => {
-    const router = open(Settings);
-    await waitFor(() => expect(router.state.location.pathname).toBe("/cloud/acme/~"));
-  });
+const pages = [["project", StoreProjectSettings], ["environment", StoreEnvironmentSettings]] as const;
+
+// The Store deletes a Project in one piece once its last removal applied: its Environments read as not found.
+it.each(pages)("leaves the %s settings of a deleted Project for Projects", async (_, Settings) => {
+  refused("not_found");
+  const router = open(Settings);
+  await waitFor(() => expect(router.state.location.pathname).toBe("/cloud/acme/~"));
+});
+
+it.each(pages)("keeps the %s settings open when the Store fails to read a Project that exists", async (_, Settings) => {
+  refused("internal");
+  const router = open(Settings);
+  await waitFor(() => expect(router.state.status).toBe("idle"));
+  await new Promise((settle) => setTimeout(settle, 100));
+  expect(router.state.location.pathname).toBe("/cloud/acme/shop/production/settings");
+});
