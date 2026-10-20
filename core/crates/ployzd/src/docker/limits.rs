@@ -29,6 +29,23 @@ impl std::fmt::Display for LimitsRefusal {
     }
 }
 
+/// The limits Docker reports on a Container after an update asked for others.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct UnappliedLimits {
+    pub requested: ContainerLimits,
+    pub observed: ContainerLimits,
+}
+
+impl std::fmt::Display for UnappliedLimits {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "requested {:?}, observed {:?}",
+            self.requested, self.observed
+        )
+    }
+}
+
 impl ContainerRuntime {
     /// Apply `spec`'s CPU and memory limits to the Service Container `container_id`
     /// with `docker update`, then record `spec` as its resolved spec. The Container
@@ -89,8 +106,10 @@ impl ContainerRuntime {
         if observed != requested {
             return Err(Error::LimitsUnapplied {
                 container_id: *container_id,
-                requested,
-                observed,
+                limits: Box::new(UnappliedLimits {
+                    requested,
+                    observed,
+                }),
             });
         }
         config_operation.put(container_id, spec).await?;

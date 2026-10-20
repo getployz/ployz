@@ -52,7 +52,7 @@ use observe::ObservationSink;
 
 pub(crate) use create::container_log_config;
 pub(crate) use lifecycle::{ContainerCreated, ContainerRequest, require_eligible, same_creation};
-pub use limits::LimitsRefusal;
+pub use limits::{LimitsRefusal, UnappliedLimits};
 pub(crate) use managed_service::{DesiredContainer, Ensure, ManagedService};
 pub(crate) use peer_pull::pull_from_ingest;
 pub use spec_store::{Error as SpecStoreError, FloorTurn, MachineSpecStore};
@@ -1229,13 +1229,10 @@ pub enum Error {
         refusal: LimitsRefusal,
     },
     /// Docker accepted the update but reports other limits.
-    #[error(
-        "Docker reports limits {observed:?} on container {container_id} after an update to {requested:?}"
-    )]
+    #[error("Docker reports other limits on container {container_id} after an update: {limits}")]
     LimitsUnapplied {
         container_id: ContainerId,
-        requested: ployz_core::ContainerLimits,
-        observed: ployz_core::ContainerLimits,
+        limits: Box<UnappliedLimits>,
     },
     #[error("resolved spec not found in machine.db for {0}")]
     SpecNotFound(ContainerId),
