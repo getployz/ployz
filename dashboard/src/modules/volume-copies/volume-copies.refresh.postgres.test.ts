@@ -136,7 +136,7 @@ describe("Refresh now", () => {
   });
 
   it("refuses a Volume with no mirror", async () => {
-    await harness.pool.query(`update volume_placement set mirrors = '[]'`);
+    members = [member("web-1", "writer"), member("web-2", "old")];
     expect(await refresh()).toEqual({ ok: false, refusal: { code: "conflict", message: "data has no mirror", details: null } });
     await harness.pool.query(`delete from volume_placement`);
     members = [member("web-1", "writer")];

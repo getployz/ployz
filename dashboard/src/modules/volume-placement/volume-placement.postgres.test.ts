@@ -158,7 +158,7 @@ describe("volume placement", () => {
 
   it("deletes only an old copy at once, never the writer or a mirror", async () => {
     await stage("web-1", ["web-2", "web-4"]);
-    const members = [member("web-1", "writer"), member("web-2", "mirror"), member("web-3", "mirror"), member("web-4", "mirror")];
+    const members = [member("web-1", "writer"), member("web-2", "mirror"), member("web-3", "old"), member("web-4", "mirror")];
     const deleting = (server: string) => run(deleteOldCopy(organizationId, null, { volumeId, environment, server }, () => Effect.succeed(members)));
     for (const server of ["web-1", "web-2", "web-4"]) {
       expect(await deleting(server)).toEqual({ ok: false, refusal: { message: "Not an old copy" } });
@@ -297,7 +297,7 @@ describe("volume placement", () => {
     });
 
     it("refuses an acceptance of a loss the Volume no longer has, and stamps nothing", async () => {
-      const old = () => Effect.succeed([...members, member("web-3", "mirror")]);
+      const old = () => Effect.succeed([...members, member("web-3", "old")]);
       await stage("web-1");
       const shown = await admission(admit([]), old);
       if (shown.ok) throw new Error("expected a refusal");

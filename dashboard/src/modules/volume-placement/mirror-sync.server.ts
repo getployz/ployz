@@ -3,6 +3,7 @@ import type { EnvironmentRef, MachineId, Snapshot, VolumeCopy } from "@ployz/sdk
 import { and, eq, inArray, max, sql } from "drizzle-orm";
 import { Effect, Option, Semaphore } from "effect";
 import { volumePlacement } from "#/modules/volume-placement/tables";
+import { slotRole } from "#/modules/volume-placement/volume-placement";
 import { deployClaim } from "#/modules/volume-placement/volume-placement.server";
 import { expectOf, roleOf } from "#/modules/volume-run/plan";
 import { volumeMirrorStatus, volumeRun } from "#/modules/volume-run/tables";
@@ -175,9 +176,7 @@ const syncOnce = Effect.fn("MirrorSync.sync")(function* (organizationId: string,
   const members = yield* observe(organizationId, volume.dockerVolume);
   const [placement] = yield* drizzle.select().from(volumePlacement)
     .where(and(eq(volumePlacement.organizationId, organizationId), eq(volumePlacement.volumeId, volume.volumeId)));
-  const slots = members.filter(isSlot);
-  const mirrorIds = placement?.mirrors ?? slots.map((member) => member.machine.id);
-  const mirrors = slots.filter((member) => mirrorIds.includes(member.machine.id));
+  const mirrors = members.filter(isSlot).filter((member) => slotRole(member.view.copy) === "mirror");
 
   const statuses = mirrors.length === 0 ? [] : yield* drizzle.select().from(volumeMirrorStatus).where(and(
     eq(volumeMirrorStatus.volumeId, volume.volumeId),

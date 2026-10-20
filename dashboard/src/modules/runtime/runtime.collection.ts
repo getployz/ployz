@@ -107,11 +107,15 @@ const runtimeIncompleteVolumeIdSchema = Schema.Struct({
   name: Schema.String,
 });
 
-/** A managed Volume's copy on one Machine, in the Engine's words: `slot` is a mirror, `switching` is a root a run holds or left read-only. */
+/**
+ * A managed Volume's copy on one Machine, in the Engine's words: `switching` is a root a run holds or left read-only, and
+ * a `slot`'s `slotRole` says whether its Machine holds it as a mirror or as the old copy a move left.
+ */
 export const runtimeVolumeCopySchema = Schema.Struct({
   machineId: Schema.String,
   name: Schema.String,
   role: Schema.Literals(["writer", "slot", "switching"]),
+  slotRole: Schema.NullOr(Schema.Literals(["mirror", "old_copy"])),
 });
 export type RuntimeVolumeCopy = typeof runtimeVolumeCopySchema.Type;
 
