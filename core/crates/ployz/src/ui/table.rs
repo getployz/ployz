@@ -251,6 +251,19 @@ pub(crate) fn unprintable(c: char) -> bool {
         )
 }
 
+/// `text` with each [`unprintable`] character as its `\u{…}` escape, so a value shows as stored.
+pub(crate) fn escaped(text: &str) -> String {
+    text.chars()
+        .map(|c| {
+            if unprintable(c) {
+                c.escape_unicode().to_string()
+            } else {
+                c.to_string()
+            }
+        })
+        .collect()
+}
+
 pub(crate) const REPLACED: char = '\u{FFFD}';
 
 pub(crate) fn printable(text: &str) -> String {

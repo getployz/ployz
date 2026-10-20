@@ -271,6 +271,23 @@ it.live("a denied Service restart names the restart and its Service", () =>
     expect(resumed.results).toMatchObject([{ ok: false, refusal: { code: "approval_denied", message: "A human denied this restart web: not now" } }]);
   }));
 
+it.live("the model repeats an approved Cloud command that refused once it ran under the approval the sidebar holds, asking no one again", () =>
+  Effect.gen(function* () {
+    const { provided, caller, say, resume, pending } = yield* sidebar({ removeWeb: false });
+    const demote = { name: "org_member_role", input: { member: "ada@example.test", role: "member" } };
+    const model = fakeText();
+    model.setResponses([{ toolCalls: [demote] }, { toolCalls: [demote] }, { text: "You stay the owner." }]);
+    const approval = yield* waitingApproval(yield* say("make me a member", {}, model), pending);
+    yield* provided(decideApproval(caller, approval.id, { approve: { digest: approval.digest } }));
+
+    const resumed = yield* resume("resolved", {}, model);
+    expect(resumed.interrupts).toEqual([]);
+    const owner = { ok: false, refusal: { message: "An Organization needs an owner. Make someone else an owner first." } };
+    expect(resumed.results).toMatchObject([owner, owner]);
+    expect(resumed.heard.join("")).not.toContain(approval.id);
+    expect(yield* pending).toEqual([]);
+  }));
+
 const architecture = { page: "architecture", project: "shop", environment: "production", service: "web" };
 const ARCHITECTURE = '<dashboard-page page="architecture" project="shop" environment="production" service="web"/>';
 const SERVERS = '<dashboard-page page="servers"/>';

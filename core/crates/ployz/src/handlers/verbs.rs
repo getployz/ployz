@@ -311,7 +311,8 @@ pub(crate) const ENV_BRANCH: Verb = Verb::cloud(
     env::branch_command,
     env::branch::branch,
 )
-.needs(Permission::EnvironmentCreate);
+.needs(Permission::EnvironmentCreate)
+.docs("environments/environments.md");
 pub(crate) const ENV_COPY: Verb =
     Verb::cloud("env copy", Never, env::copy_command, env::branch::copy);
 pub(crate) const ENV_DEFAULT: Verb =
@@ -684,7 +685,8 @@ pub(crate) const TOKEN_RM: Verb = Verb::cloud(
     account::token_remove,
 )
 .docs("cli/overview.md");
-pub(crate) const UNSET: Verb = Verb::cloud("unset", Never, config::unset_command, config::unset);
+pub(crate) const UNSET: Verb = Verb::cloud("unset", Never, config::unset_command, config::unset)
+    .docs("environments/environments.md");
 pub(crate) const UP: Verb = Verb::cloud("up", Depends, up::command, up::up).docs("cli/overview.md");
 pub(crate) const VOLUME_ADD: Verb =
     Verb::cloud("volume add", Never, volume::add_command, volume::add);

@@ -23,6 +23,32 @@ const config = defineConfig({
   },
   optimizeDeps: {
     exclude: ['@ployz/sdk'],
+    // tanstackStart excludes better-auth, so the scanner never sees what its client imports; vite then finds these
+    // on first page load, re-optimizes and reloads into stale `?v=` hashes (504 Outdated Optimize Dep).
+    include: [
+      '@better-auth/core',
+      '@better-auth/core/api',
+      '@better-auth/core/db',
+      '@better-auth/core/db/adapter',
+      '@better-auth/core/db/internal',
+      '@better-auth/core/env',
+      '@better-auth/core/error',
+      '@better-auth/core/instrumentation',
+      '@better-auth/core/oauth2',
+      '@better-auth/core/social-providers',
+      '@better-auth/core/utils/db',
+      '@better-auth/core/utils/deprecate',
+      '@better-auth/core/utils/email',
+      '@better-auth/core/utils/error-codes',
+      '@better-auth/core/utils/host',
+      '@better-auth/core/utils/id',
+      '@better-auth/core/utils/ip',
+      '@better-auth/core/utils/is-api-error',
+      '@better-auth/core/utils/json',
+      '@better-auth/core/utils/string',
+      '@better-auth/core/utils/url',
+      'nanostores',
+    ],
   },
   server: {
     allowedHosts: [
