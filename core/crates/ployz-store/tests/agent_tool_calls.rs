@@ -3303,3 +3303,64 @@ fn review_says_every_agent_deploy_asks_on_cloud_and_none_does_locally() {
     .ok();
     assert_eq!(local["asks_approval"], json!(false), "{local}");
 }
+
+/// `server_show` for `web-1` when Cloud keeps `runs` on it, newest first,
+/// answering each read with as many as it asks for.
+fn shown_with_runs(runs: &[(&str, &str, Option<&str>)]) -> Value {
+    let operations = runs
+        .iter()
+        .enumerate()
+        .map(|(at, (run, state, reason))| {
+            json!({
+                "attempt": format!("00000000-0000-4000-8000-{at:012}"), "run": run,
+                "state": state, "requested_at": 100 - at, "ended_at": 100 - at,
+                "reason": reason, "servers": [], "kept": [], "unanswered": [],
+            })
+        })
+        .collect::<Vec<_>>();
+    let shown = drive(
+        &shop(),
+        in_org(),
+        "server_show",
+        json!({}),
+        "show-1",
+        &mut |cloud| match cloud {
+            Cloud::Ask(CloudQuery::Servers { .. }) => Ok(servers(&[("web-1", 'a')])),
+            Cloud::Ask(CloudQuery::Operations(query)) => Ok(json!({
+                "operations": operations.iter().take(usize::from(query.limit)).collect::<Vec<_>>(),
+            })),
+            Cloud::Ask(query) => panic!("unexpected read: {query:?}"),
+            Cloud::Act(act) => panic!("a read acts on nothing: {act:?}"),
+        },
+    )
+    .ok();
+    shown["servers"][0].clone()
+}
+
+// Catches a later run, such as an upgrade, hiding a Drain that failed, so the
+// Server reads as not draining with no word on why.
+#[test]
+fn server_show_keeps_a_failed_drain_a_later_run_hides() {
+    let never = Some("The drain never started.");
+
+    let hidden = shown_with_runs(&[
+        ("upgrade web-1", "done", None),
+        ("clean shop-old", "done", None),
+        ("drain web-1", "failed", never),
+    ]);
+    assert_eq!(hidden["latest"]["run"], "upgrade web-1");
+    assert_eq!(hidden["failed_drain"]["run"], "drain web-1", "{hidden}");
+    assert_eq!(hidden["failed_drain"]["state"], "failed");
+    assert_eq!(hidden["failed_drain"]["reason"], never.unwrap());
+
+    let latest = shown_with_runs(&[("drain web-1", "failed", never)]);
+    assert_eq!(latest["latest"]["reason"], never.unwrap());
+    assert_eq!(latest["failed_drain"], Value::Null, "{latest}");
+
+    let drained_since = shown_with_runs(&[
+        ("upgrade web-1", "done", None),
+        ("drain web-1", "done", None),
+        ("drain web-1", "failed", never),
+    ]);
+    assert_eq!(drained_since["failed_drain"], Value::Null, "{drained_since}");
+}
