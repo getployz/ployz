@@ -606,11 +606,12 @@ mod tests {
         time::{Duration, SystemTime},
     };
 
+    use nix::errno::Errno;
     use ployz_core::ContainerId;
 
-    use super::{Disk, Limits, Report, discard, run};
+    use super::{Disk, Limits, Report, discard, prune_exits, run};
     use crate::{
-        observe::layout::{RunExit, StoreRoot, run_exits},
+        observe::layout::{EXITS_FILE, RunExit, StoreRoot, run_exits},
         test_dir::TestDir,
     };
 
@@ -774,6 +775,27 @@ mod tests {
         assert_eq!(store.names(&id), ["3-12.log", "exits.jsonl"]);
         let kept: Vec<RunExit> = run_exits(&fs::read(&path).unwrap()).collect();
         assert_eq!(kept, [exit(50)]);
+    }
+
+    #[test]
+    fn the_exits_rewrite_never_syncs_a_dir_through_a_symlink() {
+        let store = store();
+        let target = store.docker.join("elsewhere");
+        fs::create_dir_all(&target).unwrap();
+        let exit = |ts: i64| RunExit {
+            ts,
+            exit_code: Some(1),
+            oom_killed: false,
+        };
+        let jsonl: Vec<u8> = [1, 3]
+            .map(|ts| [serde_json::to_vec(&exit(ts)).unwrap(), b"\n".to_vec()].concat())
+            .concat();
+        fs::write(target.join(EXITS_FILE), jsonl).unwrap();
+        let link = store.docker.join("swapped");
+        symlink(&target, &link).unwrap();
+
+        let error = prune_exits(&link, 2).unwrap_err();
+        assert_eq!(error.raw_os_error(), Some(Errno::ELOOP as i32));
     }
 
     #[test]
