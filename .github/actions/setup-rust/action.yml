@@ -46,7 +46,8 @@ runs:
         s3-prefix: ployz2/kache-v1
         manifest-key: ${{ inputs.cache-key }}-${{ runner.os }}-${{ runner.arch }}
         cache-key-prefix: kache-${{ inputs.cache-key }}
-        cache-dir: ${{ runner.temp }}/kache
+        # GitHub wipes runner.temp each job; self-hosted runners keep their tool cache, so kache stays warm.
+        cache-dir: ${{ runner.environment == 'github-hosted' && runner.temp || runner.tool_cache }}/kache
         cache-executables: true
         cache-c-cpp: true
         warm: true
