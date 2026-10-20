@@ -315,13 +315,26 @@ impl Session {
         }
     }
 
+    /// [`Self::until_closed`] for a call that may already be out: a close ends the wait,
+    /// not the call, so the Machine may still take it.
+    async fn until_closed_answered<T>(
+        &self,
+        work: impl std::future::Future<Output = Result<T, CallError>>,
+    ) -> Result<T, CallError> {
+        tokio::select! {
+            biased;
+            () = self.inner.cancel.cancelled() => Err(CallError { error: closed(), unanswered: true }),
+            result = work => result,
+        }
+    }
+
     async fn unary<T: Rpc>(&self, request: T::Request) -> Result<T::Response, RpcError> {
         Ok(self.unary_answered::<T>(request).await?)
     }
 
     async fn unary_answered<T: Rpc>(&self, request: T::Request) -> Result<T::Response, CallError> {
         let mut client = self.client()?;
-        self.until_closed(async {
+        self.until_closed_answered(async {
             client
                 .call::<T>(request, None)
                 .await
@@ -791,7 +804,7 @@ impl Session {
         let request = ployz_core::RpcRequest::from(body);
         let client = self.client()?;
         let response = self
-            .until_closed(async {
+            .until_closed_answered(async {
                 client
                     .invoke_raw(
                         &request,
