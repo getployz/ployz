@@ -244,6 +244,19 @@ fn held_run(rotation: &Option<CopyRotation>) -> DeploymentLogId {
     }
 }
 
+/// Named, with the rotation it keeps, and never routed by a user command.
+fn not_admitted(ran: &Ran, rotation: &str) {
+    let error = ran.answer.as_ref().unwrap_err();
+    assert_eq!(error.code, RpcErrorCode::Conflict, "{error:?}");
+    assert!(
+        error.message.contains(&container('1').to_string())
+            && error.message.contains(&format!(
+                "left {rotation} and not routed: no Deploy brought it In"
+            )),
+        "{error:?}"
+    );
+}
+
 fn conflict(ran: &Ran) {
     let error = ran.answer.as_ref().unwrap_err();
     assert_eq!(error.code, RpcErrorCode::Conflict, "{error:?}");
@@ -330,16 +343,18 @@ async fn user_stop_start_restart_remove() {
         )]
     );
 
-    let ran = row(
-        Command::Start,
-        CopyRotation::Pending,
-        true,
-        vec![inspected(), copy_call(Call::Restart)],
-    )
-    .await;
-    assert_eq!(ran.answer.unwrap(), Some(UserStarted::In));
-    assert_eq!(ran.rotation, Some(CopyRotation::In));
-    assert_eq!(ran.wants, [brought_in(None, CopyRotation::Pending)]);
+    for command in [Command::Start, Command::Restart] {
+        let steps = match command {
+            Command::Restart => vec![inspected(), copy_call(Call::Stop), copy_call(Call::Restart)],
+            Command::Start | Command::Stop | Command::Remove => {
+                vec![inspected(), copy_call(Call::Restart)]
+            }
+        };
+        let ran = row(command, CopyRotation::Pending, true, steps).await;
+        not_admitted(&ran, "Pending");
+        assert_eq!(ran.rotation, Some(CopyRotation::Pending));
+        assert_eq!(ran.wants.last(), Some(&started_pending()), "{command:?}");
+    }
 
     let ran = row(Command::Start, CopyRotation::In, true, vec![inspected()]).await;
     assert_eq!(ran.answer.unwrap(), Some(UserStarted::In));
@@ -348,7 +363,7 @@ async fn user_stop_start_restart_remove() {
     let mut fake = Scripted::new(vec![inspected()]).with_copy(
         &machine('a'),
         &container('1'),
-        CopyRotation::Pending,
+        CopyRotation::Held(theirs.clone()),
     );
     let verdict = HealthVerdict::TimedOut {
         deadline_millis: Some(1_000),
@@ -357,7 +372,7 @@ async fn user_stop_start_restart_remove() {
     fake.unhealthy_in.insert(container('1'), verdict.clone());
     let ran = run_command(Command::Start, Recording::of(fake)).await;
     assert_eq!(ran.answer.unwrap(), Some(UserStarted::NotIn(Some(verdict))));
-    assert_eq!(ran.rotation, Some(CopyRotation::Pending));
+    assert_eq!(ran.rotation, Some(CopyRotation::Held(theirs.clone())));
 
     for command in [Command::Start, Command::Restart] {
         let ran = row(command, CopyRotation::Out, true, vec![inspected()]).await;
@@ -418,16 +433,9 @@ async fn user_stop_start_restart_remove() {
         vec![inspected(), copy_call(Call::Stop), copy_call(Call::Restart)],
     )
     .await;
-    assert_eq!(ran.answer.unwrap(), Some(UserStarted::In));
-    assert_eq!(ran.rotation, Some(CopyRotation::In));
-    assert_eq!(
-        ran.wants,
-        [
-            stopped(),
-            started_pending(),
-            brought_in(None, CopyRotation::Pending)
-        ]
-    );
+    not_admitted(&ran, "Pending");
+    assert_eq!(ran.rotation, Some(CopyRotation::Pending));
+    assert_eq!(ran.wants, [stopped(), started_pending()]);
 
     for (rotation, was_stopped) in [
         (CopyRotation::In, true),
@@ -643,7 +651,7 @@ async fn a_queued_restart_waits_for_the_stops_ahead_of_it() {
             signal: None,
             grace_period_seconds: None,
         };
-        cleanup::user_restart(
+        let restarted = cleanup::user_restart(
             &recording,
             &machine('a'),
             &container('1'),
@@ -651,8 +659,13 @@ async fn a_queued_restart_waits_for_the_stops_ahead_of_it() {
             3,
             &CancellationToken::new(),
         )
-        .await
-        .unwrap();
+        .await;
+        // A Pending copy restarts but is not admitted.
+        assert_eq!(
+            restarted.is_ok(),
+            rotation == CopyRotation::In,
+            "{restarted:?}"
+        );
         recording.fake.assert_done();
         assert_eq!(
             *recording.stop_deadlines.lock().unwrap(),
@@ -728,8 +741,8 @@ async fn an_unanswered_held_ask_whose_re_read_fails_brings_the_copy_back_in() {
     }
 }
 
-/// A restart asks a Pending copy In as start does, so a gen 3 copy beside an In
-/// gen 4 copy is named left unrouted, with the reason, and is running again.
+/// A gen 3 copy left Pending beside an In gen 4 copy is restarted, and named left
+/// unrouted with the reason, as start names it.
 #[tokio::test(start_paused = true)]
 async fn a_restart_of_a_pending_copy_older_than_an_in_copy_reports_it_left_unrouted() {
     let newer = container('2');
@@ -754,14 +767,7 @@ async fn a_restart_of_a_pending_copy_older_than_an_in_copy_reports_it_left_unrou
     );
     let ran = run_command(Command::Restart, Recording::of(fake)).await;
 
-    let error = ran.answer.as_ref().unwrap_err();
-    assert_eq!(error.code, RpcErrorCode::Conflict, "{error:?}");
-    assert!(
-        error.message.contains(&container('1').to_string())
-            && error.message.contains("left Pending and not routed")
-            && error.message.contains("a newer copy is In"),
-        "{error:?}"
-    );
+    not_admitted(&ran, "Pending");
     assert_eq!(ran.rotation, Some(CopyRotation::Pending));
     assert!(
         !ran.fake
@@ -774,4 +780,105 @@ async fn a_restart_of_a_pending_copy_older_than_an_in_copy_reports_it_left_unrou
         "the restart left the copy stopped"
     );
     assert_eq!(ran.fake.rotation(&newer), Some(CopyRotation::In));
+}
+
+/// A Deploy failed after creating a gen 9 copy on b, which stayed Pending beside
+/// the configured gen 8 copies. Stop, start and restart never bring that copy In,
+/// so the configured copies keep serving and are never refused as older.
+#[tokio::test(start_paused = true)]
+async fn stop_start_restart_never_admit_a_failed_deploys_pending_copy() {
+    let failed = DeploymentLogId::parse("failed-deploy").unwrap();
+    let configured = [
+        (machine('a'), container('1')),
+        (machine('b'), container('2')),
+    ];
+    let stray = (machine('b'), container('9'));
+    let mut fake = Scripted::new(Vec::new());
+    for (machine, copy) in &configured {
+        fake = fake.with_copy_at(
+            &api(),
+            machine,
+            copy,
+            CopyRotation::In,
+            ployz_core::Gen::new(8),
+        );
+    }
+    fake = fake.with_copy_at(
+        &api(),
+        &stray.0,
+        &stray.1,
+        CopyRotation::Pending,
+        ployz_core::Gen::new(9),
+    );
+    fake.record(stray.1, |recorded| recorded.deploy = Some(failed.clone()));
+    // The stray copy goes first: a Pending sibling keeps the route of the last
+    // configured copy, as it would were the stops not concurrent.
+    let order = [stray, configured[0], configured[1]];
+    let none = || StopOptions {
+        signal: None,
+        grace_period_seconds: None,
+    };
+    let script = |calls: &[fn(MachineId, ContainerId) -> Call]| {
+        order
+            .iter()
+            .flat_map(|(machine, copy)| {
+                std::iter::once(observed(Call::Inspect(*machine, *copy), running()))
+                    .chain(calls.iter().map(|call| ok(call(*machine, *copy))))
+            })
+            .collect::<Vec<_>>()
+    };
+    let cancellation = CancellationToken::new();
+
+    *fake.steps.lock().unwrap() = script(&[Call::Stop]).into();
+    for (machine, copy) in &order {
+        cleanup::user_stop(&fake, machine, copy, none(), 1, &cancellation)
+            .await
+            .unwrap();
+    }
+    fake.assert_done();
+    assert_eq!(
+        fake.rotation(&stray.1),
+        Some(CopyRotation::Held(failed.clone()))
+    );
+
+    *fake.steps.lock().unwrap() = script(&[Call::Restart]).into();
+    let mut started = Vec::new();
+    for (machine, copy) in &order {
+        started.push(cleanup::user_start(&fake, machine, copy).await);
+    }
+    assert_ne!(fake.rotation(&stray.1), Some(CopyRotation::In));
+    for (_, copy) in &configured {
+        assert_eq!(fake.rotation(copy), Some(CopyRotation::In), "{started:?}");
+    }
+    let skipped = started.first().unwrap().as_ref().unwrap_err();
+    assert!(
+        skipped.message.contains(&stray.1.to_string()) && skipped.message.contains("not routed"),
+        "{skipped:?}"
+    );
+    fake.assert_done();
+
+    *fake.steps.lock().unwrap() = script(&[Call::Stop, Call::Restart]).into();
+    let mut restarted = Vec::new();
+    for (machine, copy) in &order {
+        restarted.push(cleanup::user_restart(&fake, machine, copy, none(), 1, &cancellation).await);
+    }
+    fake.assert_done();
+    let skipped = restarted.first().unwrap().as_ref().unwrap_err();
+    assert!(
+        skipped.message.contains(&stray.1.to_string()) && skipped.message.contains("not routed"),
+        "{skipped:?}"
+    );
+    for (result, (_, copy)) in restarted.iter().skip(1).zip(&configured) {
+        assert_eq!(result.as_ref().ok(), Some(&UserStarted::In), "{result:?}");
+        assert_eq!(fake.rotation(copy), Some(CopyRotation::In));
+    }
+    assert_ne!(fake.rotation(&stray.1), Some(CopyRotation::In));
+    let routes = fake.routes(&api(), false);
+    for (machine, routed) in routes {
+        let routed = routed.unwrap_or_default();
+        assert!(
+            configured.iter().all(|(_, copy)| routed.contains(copy)) && !routed.contains(&stray.1),
+            "the proxy on {machine} routes {routed:?}"
+        );
+    }
 }

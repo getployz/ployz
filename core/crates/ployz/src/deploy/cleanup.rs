@@ -375,7 +375,9 @@ pub(crate) async fn user_stop<C: MachineOperations>(
     if routable(&observed) && copy.rotation != CopyRotation::Out {
         let run = match &copy.rotation {
             CopyRotation::Held(run) => run.clone(),
-            CopyRotation::Pending | CopyRotation::In | CopyRotation::Out => fresh_run(),
+            // Under the run that created it, so start can tell it never served.
+            CopyRotation::Pending => observed.deploy_label().unwrap_or_else(fresh_run),
+            CopyRotation::In | CopyRotation::Out => fresh_run(),
         };
         let step = hold(client, &copy, run.clone(), cancellation).await;
         if copy.rotation == CopyRotation::In {
@@ -406,6 +408,10 @@ pub(crate) async fn user_start<C: MachineOperations>(
     if !routable(&observed) {
         return run_pending(client, &copy).await;
     }
+    if never_in(&observed) {
+        run_pending(client, &copy).await?;
+        return Err(not_admitted(&copy));
+    }
     let run = match &copy.rotation {
         CopyRotation::Out => return Err(deploy_again(&copy)),
         CopyRotation::Held(run) => Some(run.clone()),
@@ -428,6 +434,10 @@ pub(crate) async fn user_restart<C: MachineOperations>(
     let observed = observe(client, machine_id, container_id).await?;
     let copy = Copy::observed(&observed);
     let spec = &observed.resolved_spec;
+    if routable(&observed) && never_in(&observed) {
+        restart_pending(client, &copy, spec, stop, queued).await?;
+        return Err(not_admitted(&copy));
+    }
     let run = match (routable(&observed), &copy.rotation) {
         (true, CopyRotation::Out) => return Err(deploy_again(&copy)),
         (true, CopyRotation::Held(run)) => {
@@ -437,12 +447,8 @@ pub(crate) async fn user_restart<C: MachineOperations>(
             );
         }
         (true, CopyRotation::In) => fresh_run(),
-        (false, _) => return restart_pending(client, &copy, spec, stop, queued).await,
-        // Asked In as start does, so a copy older than an In one is named, not
-        // left unrouted unsaid.
-        (true, CopyRotation::Pending) => {
-            restart_pending(client, &copy, spec, stop, queued).await?;
-            return started(&copy, bring_in(client, &copy, spec, None).await?);
+        (false, _) | (true, CopyRotation::Pending) => {
+            return restart_pending(client, &copy, spec, stop, queued).await;
         }
     };
     let held = Copy {
@@ -512,6 +518,31 @@ async fn observe<C: MachineOperations>(
         .inspect_container(machine_id, container_id)
         .await
         .map(|details| details.container)
+}
+
+/// No Deploy brought this copy In: it is Pending, or a user stop withdrew it from
+/// Pending under its own Deploy's run. A failed Deploy leaves such copies beside
+/// the configured ones, and a user command that routed one would leave two
+/// versions answering, then refuse the configured copies as older.
+fn never_in(observed: &ContainerObservation) -> bool {
+    match observed.rotation() {
+        CopyRotation::Pending => true,
+        CopyRotation::Held(run) => observed.deploy_label().as_ref() == Some(run),
+        CopyRotation::In | CopyRotation::Out => false,
+    }
+}
+
+fn not_admitted(copy: &Copy) -> RpcError {
+    RpcError {
+        code: RpcErrorCode::Conflict,
+        message: format!(
+            "Container {} is left {} and not routed: no Deploy brought it In. Deploy the Service again to route it.",
+            copy.container_id,
+            rotation_name(&copy.rotation)
+        ),
+        details: Value::Null,
+        cause: Vec::new(),
+    }
 }
 
 /// Hooks stay Pending for life, and proxy copies are never routed.

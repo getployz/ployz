@@ -333,11 +333,19 @@ fn run() -> DeploymentLogId {
 }
 
 #[tokio::test]
-async fn a_start_is_serving_once_its_health_wait_passes() {
+async fn a_start_never_routes_a_copy_no_deploy_brought_in() {
     let service = support::DeployService::new(support::machine('a', "one"));
     let rotations = service.rotations();
-    assert_eq!(started(service).await, Started::Serving);
-    assert_eq!(
+    let error = acted(service, |session, machine| async move {
+        start_one(&session, machine, container_id('1')).await
+    })
+    .await
+    .unwrap_err();
+    assert!(
+        error.message.contains("left Pending and not routed"),
+        "{error:?}"
+    );
+    assert_ne!(
         rotations
             .lock()
             .unwrap()
@@ -365,7 +373,9 @@ async fn a_start_of_a_held_copy_brings_it_back_in() {
 
 #[tokio::test]
 async fn a_start_whose_health_cannot_be_read_is_unconfirmed() {
-    let service = support::DeployService::new(support::machine('a', "one")).unread_health();
+    let service = support::DeployService::new(support::machine('a', "one"))
+        .with_rotation(container_id('1'), CopyRotation::Held(run()))
+        .unread_health();
     assert_eq!(started(service).await, Started::Unconfirmed);
 }
 
@@ -451,6 +461,7 @@ async fn a_removal_of_a_stopped_in_copy_takes_it_out_then_removes_it() {
 #[tokio::test]
 async fn a_start_returns_only_once_its_healthcheck_passes() {
     let service = support::DeployService::new(support::machine('a', "one"))
+        .with_rotation(container_id('1'), CopyRotation::Held(run()))
         .turn_healthy_after(Duration::from_millis(1_500));
     let begun = Instant::now();
     assert_eq!(started(service).await, Started::Serving);
@@ -460,6 +471,7 @@ async fn a_start_returns_only_once_its_healthcheck_passes() {
 #[tokio::test]
 async fn a_start_that_never_passes_its_healthcheck_is_unhealthy_at_its_deadline() {
     let service = support::DeployService::new(support::machine('a', "one"))
+        .with_rotation(container_id('1'), CopyRotation::Held(run()))
         .hold_health()
         .with_effective_healthcheck(HealthcheckSpec::Configured(ConfiguredHealthcheck {
             test: HealthcheckCommand::parse(["CMD", "true"]).unwrap(),
