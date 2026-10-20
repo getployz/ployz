@@ -464,6 +464,31 @@ mod tests {
         server.abort();
     }
 
+    #[test]
+    fn without_systemd_the_plugin_refuses_a_socket_another_process_still_serves() {
+        let test = TestDir::new();
+        let socket = test.0.join("ployz.sock");
+        let live = StdUnixListener::bind(&socket).unwrap();
+
+        let error = listener(&socket).unwrap_err();
+
+        assert_eq!(error.kind(), io::ErrorKind::AddrInUse, "{error}");
+        let _client = std::os::unix::net::UnixStream::connect(&socket).unwrap();
+        live.set_nonblocking(true).unwrap();
+        live.accept().expect("the live listener still owns the path");
+    }
+
+    #[test]
+    fn without_systemd_the_plugin_replaces_a_socket_nothing_serves() {
+        let test = TestDir::new();
+        let socket = test.0.join("ployz.sock");
+        drop(StdUnixListener::bind(&socket).unwrap());
+
+        let _claimed = listener(&socket).unwrap();
+
+        std::os::unix::net::UnixStream::connect(&socket).expect("the plugin serves the path");
+    }
+
     #[tokio::test]
     async fn create_refuses_a_name_whose_writer_is_held_in_its_slot() {
         let test = TestDir::new();
