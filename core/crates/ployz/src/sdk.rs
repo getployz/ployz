@@ -127,7 +127,10 @@ pub struct ObservedCopy {
 fn volume_switch_path(body: &RpcRequestBody) -> Result<&'static str, RpcError> {
     use RpcRequestBody as Body;
     match body {
-        Body::InspectVolumeCopy(_) | Body::SeedVolume(_) | Body::SetVolumeCopy(_) => body
+        Body::InspectVolumeCopy(_)
+        | Body::SeedVolume(_)
+        | Body::SetVolumeCopy(_)
+        | Body::SetVolumeSize(_) => body
             .unary_path()
             .ok_or_else(|| invalid_argument(format!("{} is not a unary RPC", body.command()))),
         _ => Err(invalid_argument(format!(
@@ -140,12 +143,13 @@ fn volume_switch_path(body: &RpcRequestBody) -> Result<&'static str, RpcError> {
 /// The JSON a Volume switch verb's answer carries, or the Machine's error as it sent it.
 #[expect(
     clippy::wildcard_enum_match_arm,
-    reason = "the volume copy verbs answer with two reply kinds; any other kind is a Machine fault"
+    reason = "the Volume switch verbs answer with three reply kinds; any other kind is a Machine fault"
 )]
 fn volume_switch_payload(command: &str, body: RpcResponseBody) -> Result<Value, RpcError> {
     let payload = match body {
         RpcResponseBody::VolumeCopyView(view) => serde_json::to_value(view),
         RpcResponseBody::SetVolumeCopyReply(reply) => serde_json::to_value(reply),
+        RpcResponseBody::SetVolumeSizeReply(reply) => serde_json::to_value(reply),
         RpcResponseBody::Error(error) => return Err(error),
         other => {
             return Err(RpcError {
