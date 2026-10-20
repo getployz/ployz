@@ -1970,13 +1970,7 @@ impl Plan {
             });
         }
         for change in &mut changes {
-            change.data = super::data_effect(
-                &change.node,
-                change.lifecycle,
-                &change.settings,
-                before,
-                after,
-            );
+            change.data = super::data_effect(&change.node, change.lifecycle, before, after);
             change.restarts = super::restarts(&change.node, change.lifecycle, after, before)?;
         }
         let total_count = changes

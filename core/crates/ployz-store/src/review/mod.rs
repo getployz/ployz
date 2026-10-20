@@ -407,13 +407,8 @@ fn compare(
                         row
                     })
                     .collect();
-                let data = data_effect(
-                    &group.node,
-                    group.lifecycle,
-                    &settings,
-                    deployed,
-                    &environment.working,
-                );
+                let data =
+                    data_effect(&group.node, group.lifecycle, deployed, &environment.working);
                 let restarts = restarts(
                     &group.node,
                     group.lifecycle,
@@ -650,7 +645,6 @@ fn config_name(intents: &[&SavedEnvironmentIntent; 2], id: &str) -> Option<Strin
 fn data_effect(
     node: &ReviewNodeIdentity,
     lifecycle: ReviewLifecycleKind,
-    settings: &[ServiceSettingChange],
     deployed: &SavedEnvironmentIntent,
     working: &SavedEnvironmentIntent,
 ) -> Option<DataEffect> {
@@ -661,27 +655,9 @@ fn data_effect(
                 .iter()
                 .any(|volume| volume.resource_id == node.id))
         .then_some(DataEffect::Deleted),
-        EnvironmentNodeType::Service => {
-            let detached = settings.iter().any(|row| {
-                row.after.is_null()
-                    && row.path.split_once(".mounts.").is_some_and(|(_, name)| {
-                        working.volumes.iter().any(|volume| volume.name == name)
-                    })
-            });
-            let removed_with_mounts = lifecycle == ReviewLifecycleKind::Delete
-                && deployed
-                    .services
-                    .iter()
-                    .filter(|service| service.id == node.id)
-                    .flat_map(|service| &service.volume_attachments)
-                    .any(|mount| {
-                        working
-                            .volumes
-                            .iter()
-                            .any(|volume| volume.resource_id == mount.volume_resource_id)
-                    });
-            (detached || removed_with_mounts).then_some(DataEffect::Kept)
-        }
+        EnvironmentNodeType::Service => approval::detached(deployed, working, &node.id)
+            .next()
+            .map(|_| DataEffect::Kept),
         EnvironmentNodeType::Config => None,
     }
 }
