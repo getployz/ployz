@@ -15,8 +15,8 @@ use ployz_core::{
 use ployz_store::tools::{LogText, SealedValues, Withheld};
 use ployz_store::{
     BuildReport, BuildStatus, Builder, Claimed, CommitSha, ConfigStore, DeploymentId,
-    DeploymentStatus, DeploymentSummary, EnvironmentId, Failure, RowState, RowTracker, RunEvidence,
-    RunnerId,
+    DeploymentStatus, DeploymentSummary, EnvironmentId, Failure, ObservationFailure, RowState,
+    RowTracker, RunEvidence, RunnerId, VolumeObservation,
 };
 use serde::Deserialize as _;
 use serde_json::Value;
@@ -183,9 +183,9 @@ pub async fn run_deployment(
 }
 
 /// Which of `connections`' Servers hold each Docker Volume in `sought`: the
-/// evidence a Deploy that removes deployed Volumes is admitted with. When no
-/// Server can be reached, or listing the Machines fails, the observation names
-/// each of `connections`' Servers unanswered, with why.
+/// evidence a Deploy that removes deployed Volumes is admitted with. A check that
+/// fails names each of `connections`' Servers unanswered, and says whether none
+/// could be reached or which one answered with an error.
 ///
 /// # Errors
 /// Returns `invalid_argument` when `connections` is empty.
@@ -202,25 +202,21 @@ pub async fn observe_volumes(
     {
         Ok(session) => session,
         Err(error) if error.code == RpcErrorCode::InvalidArgument => return Err(error),
-        Err(error) => return Ok(failed(sought, servers, &error)),
+        Err(error) => {
+            let failure = ObservationFailure::unreachable(error);
+            return Ok(VolumeObservation::failed(sought, servers, failure));
+        }
     };
+    let answering = session
+        .client()
+        .ok()
+        .and_then(|client| client.connection().machine_id().copied());
     let observed = session.observe_volumes(sought.clone()).await;
     session.close().await;
-    Ok(observed.unwrap_or_else(|error| failed(sought, servers, &error)))
-}
-
-fn failed(
-    sought: Vec<ployz_core::DockerVolumeName>,
-    servers: Vec<MachineId>,
-    error: &RpcError,
-) -> ployz_store::VolumeObservation {
-    let Failure { reason, cause } = Failure::from(error);
-    let why = std::iter::once(reason)
-        .chain(cause)
-        .map(|part| part.trim_end_matches('.').to_owned())
-        .collect::<Vec<_>>()
-        .join(": ");
-    ployz_store::VolumeObservation::failed(sought, servers, why)
+    Ok(observed.unwrap_or_else(|error| {
+        let failure = ObservationFailure::answered(answering, error);
+        VolumeObservation::failed(sought, servers, failure)
+    }))
 }
 
 /// Every copy of every Volume on `connections`' Servers, by role: what Cloud's sweep

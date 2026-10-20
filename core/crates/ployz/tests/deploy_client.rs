@@ -1045,6 +1045,7 @@ async fn cloud_runner_deploys_a_store_deployment_once() {
 #[tokio::test]
 async fn observing_a_server_that_cannot_be_reached_names_it_and_why() {
     use ployz_core::{DockerVolumeName, MachineId};
+    use ployz_store::ObservationStage;
 
     let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let address = closed.local_addr().unwrap();
@@ -1062,7 +1063,46 @@ async fn observing_a_server_that_cannot_be_reached_names_it_and_why() {
     assert_eq!(observed.sought, sought);
     assert!(observed.held.is_empty());
     assert_eq!(observed.unanswered, [server]);
-    assert!(observed.failure.is_some_and(|why| !why.is_empty()));
+    let failure = observed.failure.unwrap();
+    assert_eq!(failure.stage, ObservationStage::Unreachable);
+    let deepest = failure.cause.last().unwrap_or(&failure.reason);
+    assert!(deepest.contains("Connection refused"), "{failure:?}");
+}
+
+#[tokio::test]
+async fn observing_a_server_that_answers_with_an_error_names_it_and_the_error() {
+    use ployz_core::{DockerVolumeName, RpcError, RpcErrorCode};
+    use ployz_store::ObservationStage;
+
+    let one = machine('a', "one").machine.id;
+    let service = DeployService::new(machine('a', "one"));
+    *service.machines_error.lock().unwrap() = Some(RpcError {
+        code: RpcErrorCode::Internal,
+        message: "The Machine list is unavailable.".into(),
+        details: serde_json::Value::Null,
+        cause: vec!["database is locked".into()],
+    });
+    let (address, server) = listening(service).await;
+    let sought = vec![DockerVolumeName::parse("shop-production_data").unwrap()];
+
+    let observed = ployz::sdk::observe_volumes(
+        vec![ployz::context::Connection::tcp(address).with_machine_id(one)],
+        sought.clone(),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(observed.sought, sought);
+    assert!(observed.held.is_empty());
+    assert_eq!(observed.unanswered, [one]);
+    let failure = observed.failure.unwrap();
+    assert_eq!(
+        failure.stage,
+        ObservationStage::Answered { server: Some(one) }
+    );
+    assert_eq!(failure.reason, "The Machine list is unavailable.");
+    assert_eq!(failure.cause, ["database is locked"]);
+    server.abort();
 }
 
 #[tokio::test]

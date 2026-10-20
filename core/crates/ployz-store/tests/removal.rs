@@ -1263,7 +1263,12 @@ fn a_sweep_that_could_not_look_at_the_servers_forgets_none_that_were_silent() {
         volumes: Some(VolumeObservation::failed(
             Vec::new(),
             Vec::new(),
-            "Could not connect to the Machine".to_owned(),
+            ployz_store::ObservationFailure::unreachable(ployz_core::RpcError {
+                code: ployz_core::RpcErrorCode::Unavailable,
+                message: "Could not connect to the Machine.".to_owned(),
+                details: serde_json::Value::Null,
+                cause: Vec::new(),
+            }),
         )),
         ..unseen(2)
     };

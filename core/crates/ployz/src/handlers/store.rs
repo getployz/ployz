@@ -7,8 +7,8 @@ use std::path::Path;
 
 use ployz_store::{
     Actor, Admit, Ask, ConfigStore, DeploymentId, DeploymentSummary, EnvironmentRef,
-    OrganizationId, ProjectName, Publish, Published, Removal, RemovalsQuery, Remove, SealingKey,
-    Sweep, SystemEvent, Tell, Trusted, View, VolumeObservation, Written,
+    ObservationFailure, OrganizationId, ProjectName, Publish, Published, Removal, RemovalsQuery,
+    Remove, SealingKey, Sweep, SystemEvent, Tell, Trusted, View, VolumeObservation, Written,
 };
 
 use super::{Error, config_path, leaf_matches, runtime};
@@ -327,14 +327,21 @@ impl<'m> Store<'m> {
             return Ok(None);
         };
         Ok(Some(runtime.block_on(async {
-            let observed = match super::server::connect(self.matches, context).await {
-                Ok(mut client) => client
-                    .observe_volumes(sought.clone())
-                    .await
-                    .map_err(|error| error.message),
-                Err(error) => Err(error.to_string()),
+            let mut client = match super::server::connect(self.matches, context).await {
+                Ok(client) => client,
+                Err(error) => {
+                    let failure = ObservationFailure::unreachable(error.report());
+                    return VolumeObservation::failed(sought, Vec::new(), failure);
+                }
             };
-            observed.unwrap_or_else(|why| VolumeObservation::failed(sought, Vec::new(), why))
+            let server = client.connection().machine_id().copied();
+            client
+                .observe_volumes(sought.clone())
+                .await
+                .unwrap_or_else(|error| {
+                    let failure = ObservationFailure::answered(server, error);
+                    VolumeObservation::failed(sought, server.into_iter().collect(), failure)
+                })
         })))
     }
 

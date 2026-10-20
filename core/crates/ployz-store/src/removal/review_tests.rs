@@ -52,39 +52,76 @@ fn removing_data() -> Vec<RemovedVolume> {
     removed(&holding(vec![data]), &holding(Vec::new()), &namespace).unwrap()
 }
 
-#[test]
-fn a_check_that_could_not_ask_its_server_refuses_naming_the_server_and_why() {
-    let removed = removing_data();
-    let sought = removed
+fn failed(failure: crate::ObservationFailure, servers: &[&str]) -> VolumeObservation {
+    let sought = removing_data()
         .iter()
         .map(|volume| volume.docker_volume.clone())
         .collect();
-    let server = MachineId::parse("a".repeat(32)).unwrap();
-    let observed = VolumeObservation::failed(
-        sought,
-        vec![server],
-        "Could not connect to the Machine: connection refused".to_owned(),
-    );
+    let mut observed = VolumeObservation::failed(sought, Vec::new(), failure);
+    if let Some(failure) = observed.failure.as_mut() {
+        failure.servers = servers.iter().map(|&server| server.to_owned()).collect();
+    }
+    observed
+}
 
-    let refused = held(removed, Some(&observed)).unwrap_err();
+fn refused_connection() -> RpcError {
+    RpcError {
+        code: ployz_core::RpcErrorCode::Unavailable,
+        message: "All 1 connections from the explicit connection failed.".to_owned(),
+        details: serde_json::Value::Null,
+        cause: vec!["Connection refused (os error 111)".to_owned()],
+    }
+}
+
+#[test]
+fn a_check_that_could_not_reach_its_server_names_it_and_carries_why() {
+    let failure = crate::ObservationFailure::unreachable(refused_connection());
+
+    let refused = held(removing_data(), Some(&failed(failure, &["one"]))).unwrap_err();
 
     assert_eq!(refused.code, ployz_core::RpcErrorCode::Unavailable);
     assert_eq!(
         refused.message,
-        format!(
-            "This removes deployed Volumes, and Ployz couldn't check Server {server} for their \
-             data, so it refuses: Could not connect to the Machine: connection refused. Try \
-             again once it can be reached"
-        )
+        "This removes deployed Volumes, and Ployz couldn't reach Server one to check for their \
+         data, so it refuses. Try again once it can be reached"
     );
     assert_eq!(
         refused.details,
-        json!({
-            "volumes": ["data"],
-            "unanswered": [server],
-            "reason": "Could not connect to the Machine: connection refused",
-        })
+        json!({ "volumes": ["data"], "unanswered": ["one"] })
     );
+    assert_eq!(
+        refused.cause,
+        [
+            "All 1 connections from the explicit connection failed.",
+            "Connection refused (os error 111)",
+        ]
+    );
+}
+
+#[test]
+fn a_server_that_answered_the_check_with_an_error_is_named_with_it() {
+    let server = MachineId::parse("a".repeat(32)).unwrap();
+    let error = RpcError {
+        code: ployz_core::RpcErrorCode::Internal,
+        message: "The Machine list is unavailable.".to_owned(),
+        details: serde_json::Value::Null,
+        cause: Vec::new(),
+    };
+    let failure = crate::ObservationFailure::answered(Some(server), error);
+
+    let refused = held(removing_data(), Some(&failed(failure, &["one"]))).unwrap_err();
+
+    assert_eq!(refused.code, ployz_core::RpcErrorCode::Unavailable);
+    assert_eq!(
+        refused.message,
+        "This removes deployed Volumes, and Server one returned an error when Ployz checked for \
+         their data, so it refuses. Fix the error Server one returned, then try again"
+    );
+    assert_eq!(
+        refused.details,
+        json!({ "volumes": ["data"], "server": "one" })
+    );
+    assert_eq!(refused.cause, ["The Machine list is unavailable."]);
 }
 
 #[test]
