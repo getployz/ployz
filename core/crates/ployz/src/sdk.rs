@@ -269,6 +269,15 @@ pub async fn connect_answered(
     if connections.is_empty() {
         return Err(invalid_argument("connections must not be empty".into()).into());
     }
+    Ok(connect_session(connections, connector).await?)
+}
+
+/// [`connect_answered`] on `connections` it already checked aren't empty, with the
+/// connection's own error.
+pub(crate) async fn connect_session(
+    connections: Vec<Connection>,
+    connector: Arc<dyn Connector>,
+) -> Result<Session, ConnectError> {
     let client = connect_selected_with(
         SelectedConnections {
             source: ConnectionSource::Direct,

@@ -29,6 +29,7 @@ fn setup_retry_classifies_ssh_and_preserves_aggregate_cause() {
         let error = ConnectError::AllFailed {
             selection: ConnectionSource::Direct,
             attempts: 1,
+            server: None,
             retry: aggregate,
             reached: false,
             last: Some(Box::new(ssh_error)),
