@@ -1,4 +1,6 @@
 //! Session-level preview/confirm/run behaviour against a fake Machine.
+#[path = "deploy_client/cleanup_report.rs"]
+mod cleanup_report;
 #[path = "deploy_client/operate.rs"]
 mod operate;
 #[path = "deploy_client/runner_cancellation.rs"]
@@ -114,17 +116,18 @@ async fn deploy_returns_success_for_a_completed_run() {
 
 #[tokio::test]
 async fn service_lifecycle_commands_change_each_named_service_container() {
-    for action in ["start", "stop"] {
+    // A stop holds each In copy out of rotation before it stops it.
+    for (action, rpcs) in [("start", 2), ("stop", 4)] {
         let machine = machine('a', "one");
         let service = DeployService::new(machine.clone());
-        let mut api = running_container(&machine, &spec("api"));
+        let mut api = deployed_container(&machine, &spec("api"));
         api.try_update(|parts| parts.container_id = ContainerId::parse("2".repeat(64)).unwrap())
             .unwrap();
         service
             .listed_containers()
             .lock()
             .unwrap()
-            .extend([running_container(&machine, &spec("web")), api]);
+            .extend([deployed_container(&machine, &spec("web")), api]);
         let mutating_rpcs = service.mutating_rpcs();
         let (address, server) = listening(service).await;
 
@@ -140,7 +143,7 @@ async fn service_lifecycle_commands_change_each_named_service_container() {
             "{action}: {}",
             String::from_utf8_lossy(&output.stderr)
         );
-        assert_eq!(mutating_rpcs.load(Ordering::SeqCst), 2, "{action}");
+        assert_eq!(mutating_rpcs.load(Ordering::SeqCst), rpcs, "{action}");
         server.abort();
     }
 }
@@ -587,6 +590,8 @@ async fn preview_includes_dns_warnings() {
             | DeployWarning::StorageHeadroom { .. }
             | DeployWarning::UnbudgetedDiskUsage
             | DeployWarning::StorageObservationUnknown { .. }
+            | DeployWarning::LeftRunning { .. }
+            | DeployWarning::MixedAfterReturn { .. }
             | DeployWarning::ObserverRelativeHostnameConflict
             | DeployWarning::SkippedDependencyHealth { .. }
             | DeployWarning::ImagePortMismatch { .. } => false,

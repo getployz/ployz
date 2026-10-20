@@ -427,6 +427,10 @@ pub enum Outcome {
         cause: Vec<String>,
         #[serde(default)]
         services: Vec<ServiceOutcome>,
+        /// What a failed replacement's compensation did to its new and old
+        /// Containers, one sentence each; users read it.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        compensation: Vec<String>,
     },
     /// Nothing executed: preparation failed first. `needs_upload` names the Services
     /// that can build only from a new upload.

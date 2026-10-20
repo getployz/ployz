@@ -1,12 +1,12 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::{
-    ContainerAction, ContainerId, ContainerKind, DataLoss, DependencyCondition, HookContainer,
-    IngressHost, MachineId, MachineObservation, MembershipObservation, Namespace, ObservedDataLoss,
-    PreservedVolume, PruneRefusal, QualifiedService, RequestedServiceSpec, ServiceId, ServiceMode,
-    ServiceName, ServiceObservation, ServicePlacementEligibility, ServicePlacementIneligibleReason,
-    UpdateOrder, VolumeToCreate, explicit_ingress_hosts, hostname_owners,
-    machine_matches_placement, same_service_mode_kind,
+    ContainerAction, ContainerId, ContainerKind, CopyRotation, DataLoss, DependencyCondition,
+    HookContainer, IngressHost, MachineId, MachineObservation, MembershipObservation, Namespace,
+    ObservedDataLoss, PreservedVolume, PruneRefusal, QualifiedService, RequestedServiceSpec,
+    ServiceId, ServiceMode, ServiceName, ServiceObservation, ServicePlacementEligibility,
+    ServicePlacementIneligibleReason, UpdateOrder, VolumeToCreate, explicit_ingress_hosts,
+    hostname_owners, machine_matches_placement, same_service_mode_kind,
 };
 
 use super::{
@@ -77,10 +77,8 @@ pub struct DeployPlan {
     preview: DeployPreview,
     /// The intent's pull credentials, for execution only; never in the preview.
     registry_auth: std::collections::BTreeMap<ployz_core::ServiceName, ployz_core::RegistryAuth>,
-    /// The plan only adds copies, so each flip serves what the pointer it replaces
-    /// serves plus this plan's new copies, never its planned keep list: the pointer may
-    /// have gained or withdrawn copies since this plan's snapshot.
-    adds_only: bool,
+    /// Every snapshot Machine's name, so a report names a Machine the plan places nothing on.
+    machine_names: BTreeMap<MachineId, ployz_core::MachineName>,
 }
 
 impl DeployPlan {
@@ -106,6 +104,10 @@ impl DeployPlan {
         &self.registry_auth
     }
 
+    pub(super) const fn machine_names(&self) -> &BTreeMap<MachineId, ployz_core::MachineName> {
+        &self.machine_names
+    }
+
     pub(super) fn pending_rows(&self) -> Vec<super::OperationRow> {
         self.operations
             .iter()
@@ -121,10 +123,6 @@ impl DeployPlan {
                 )
             })
             .collect()
-    }
-
-    pub(super) const fn adds_only(&self) -> bool {
-        self.adds_only
     }
 
     pub(super) fn prepend_warnings(&mut self, warnings: Vec<DeployWarning>) {
@@ -152,8 +150,21 @@ impl DeployPlan {
             groups,
             preview: DeployPreview::new(rows, Vec::new(), namespace),
             registry_auth: std::collections::BTreeMap::new(),
-            adds_only: false,
+            machine_names: BTreeMap::new(),
         }
+    }
+
+    #[cfg(test)]
+    pub(super) fn with_machine_names(mut self, machines: &[MachineId]) -> Self {
+        self.machine_names = machines
+            .iter()
+            .map(|id| {
+                let hex = id.to_string().chars().next().expect("a machine id");
+                let name = ployz_core::MachineName::parse(format!("machine-{hex}")).unwrap();
+                (*id, name)
+            })
+            .collect();
+        self
     }
 }
 
@@ -543,9 +554,7 @@ fn plan_create(
             group.kept = kept_containers(snapshot, &identity, &planned.operations);
         }
     }
-    let mut plan = admit(intent, &only, planned);
-    plan.adds_only = true;
-    Ok(plan)
+    Ok(admit(intent, &only, planned))
 }
 
 fn seal_plan(planned: Planned, snapshot: &DeploySnapshot, namespace: &Namespace) -> DeployPlan {
@@ -593,7 +602,7 @@ fn seal_plan(planned: Planned, snapshot: &DeploySnapshot, namespace: &Namespace)
         groups: planned.groups,
         preview,
         registry_auth: std::collections::BTreeMap::new(),
-        adds_only: false,
+        machine_names: super::progress::machine_names(snapshot),
     }
 }
 
@@ -894,10 +903,17 @@ fn removal_operations(
     obsolete: &[QualifiedService],
 ) -> Vec<DeployOperation> {
     let obsolete = obsolete.iter().collect::<BTreeSet<_>>();
-    services
+    let mut retiring: Vec<_> = services
         .iter()
         .filter(|service| obsolete.contains(&service.identity))
         .flat_map(|service| service.containers_for(ContainerAction::Remove))
+        .collect();
+    // A Pending sibling keeps proxies on the last routed copy, whose Out then
+    // never confirms, so Pending copies go first.
+    retiring
+        .sort_by_key(|container| *container.as_observation().rotation() != CopyRotation::Pending);
+    retiring
+        .into_iter()
         .map(|container| {
             let observation = container.as_observation();
             DeployOperation::RemoveContainer {

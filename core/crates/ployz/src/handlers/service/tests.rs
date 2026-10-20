@@ -67,7 +67,7 @@ fn stop_options_are_only_read_for_stop_actions() {
 
     for (command, actions) in [
         ("stop", &[ContainerAction::Stop][..]),
-        ("restart", &[ContainerAction::Stop, ContainerAction::Start]),
+        ("restart", &[ContainerAction::Restart]),
     ] {
         let matches = crate::cli::command()
             .try_get_matches_from(["ployz", "service", command, "api"])
@@ -346,6 +346,7 @@ fn action_result_keeps_machine_failures_apart_from_container_failures() {
             error: error.clone(),
         }],
         partial: true,
+        interrupted: false,
     };
     assert_eq!(
         serde_json::to_value(outcome.result(&live)).unwrap(),
@@ -471,4 +472,105 @@ async fn ps_reads_retiring_ids_from_a_reached_publisher() {
         HashSet::from([crate::serving_publish::tests::container('b')])
     );
     assert_eq!(reads, 1);
+}
+
+fn changed(partial: bool) -> ServiceActionOutcome {
+    ServiceActionOutcome {
+        containers: Vec::new(),
+        container_failures: Vec::new(),
+        partial,
+        interrupted: false,
+    }
+}
+
+#[tokio::test]
+async fn a_lifecycle_cancelled_before_its_first_step_exits_cancelled() {
+    let cancellation = CancellationToken::new();
+    cancellation.cancel();
+    let outcome = run_batches(
+        &[()],
+        &[ContainerAction::Stop],
+        &cancellation,
+        |(), _| async { Ok(changed(false)) },
+    )
+    .await
+    .unwrap();
+    assert!(outcome.partial);
+    assert_eq!(cancelled_exit(&outcome), 130);
+}
+
+#[tokio::test]
+async fn a_lifecycle_cancelled_between_batches_exits_cancelled() {
+    let cancellation = CancellationToken::new();
+    let mut steps = 0;
+    let outcome = run_batches(
+        &[(), ()],
+        &[ContainerAction::Restart],
+        &cancellation,
+        |(), _| {
+            steps += 1;
+            cancellation.cancel();
+            async { Ok(changed(false)) }
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(steps, 1);
+    assert!(outcome.partial);
+    assert_eq!(cancelled_exit(&outcome), 130);
+}
+
+/// Ctrl-C during the last step ends no later step, but it still ends the command as cancelled.
+#[tokio::test]
+async fn a_lifecycle_cancelled_during_its_last_step_exits_cancelled() {
+    let cancellation = CancellationToken::new();
+    let outcome = run_batches(
+        &[()],
+        &[ContainerAction::Restart],
+        &cancellation,
+        |(), _| {
+            cancellation.cancel();
+            async { Ok(changed(true)) }
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(cancelled_exit(&outcome), 130);
+}
+
+fn cancelled_exit(outcome: &ServiceActionOutcome) -> u8 {
+    crate::ui::after_result(&outcome.finish().unwrap_err())
+}
+
+/// `apply_service_action` marks a step partial for each copy it could not restart,
+/// or left Held or unrouted. One such step among later successes still exits partial.
+#[tokio::test]
+async fn a_restart_that_fails_a_copy_exits_partial() {
+    let failed = || ServiceActionOutcome {
+        container_failures: vec![ContainerFailure {
+            machine_id: MachineId::parse("a".repeat(32)).unwrap(),
+            container_id: ContainerId::parse("c".repeat(64)).unwrap(),
+            error: RpcError {
+                code: RpcErrorCode::Conflict,
+                message: "Container c is left Held and not routed".into(),
+                details: serde_json::Value::Null,
+                cause: Vec::new(),
+            },
+        }],
+        ..changed(true)
+    };
+    let mut steps = vec![failed(), changed(false), changed(false)].into_iter();
+    let outcome = run_batches(
+        &[(), (), ()],
+        &[ContainerAction::Restart],
+        &CancellationToken::new(),
+        |(), _| {
+            let step = steps.next().unwrap();
+            async { Ok(step) }
+        },
+    )
+    .await
+    .unwrap();
+    let error = outcome.finish().unwrap_err();
+    assert_eq!(error.printed_exit(), Some(crate::ui::PARTIAL_EXIT));
 }
