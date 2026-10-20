@@ -202,8 +202,12 @@ impl Refusal {
         self
     }
 
+    /// Whether the same call can succeed later: not after a claim, when the
+    /// agent must first pick one of `valid`, nor when what it asks already holds.
     pub(crate) fn retries(&self) -> bool {
         !matches!(self.fix(), Some(Fix::Claim { .. }))
+            && self.code != RpcErrorCode::Ambiguous
+            && self.details.get("settled") != Some(&Value::Bool(true))
     }
 
     /// The structured fix, if a human must act.
@@ -254,6 +258,9 @@ pub(crate) fn from_store(error: RpcError, call: &Call, writes: Writes) -> Refusa
     }
     if let Some(url) = details.get("claim_url").and_then(Value::as_str) {
         refusal = refusal.with_fix(&Fix::Claim { url: url.into() });
+    }
+    if details.get("settled") == Some(&Value::Bool(true)) {
+        refusal = refusal.with_detail("settled", Value::Bool(true));
     }
     if code == RpcErrorCode::ConfirmationRequired {
         // Only a confirmation's retry may accept loss: the one the Store named.
@@ -356,6 +363,7 @@ const CLI_NEXT: &[(&str, CliNext)] = &[
         "env new",
         CliNext::Fix(FixRow::Open(DashboardPage::Environments)),
     ),
+    ("env ls", CliNext::Tool("environment_show", None)),
     (
         "env branch",
         CliNext::Fix(FixRow::Open(DashboardPage::Environments)),
@@ -378,6 +386,10 @@ const CLI_NEXT: &[(&str, CliNext)] = &[
     ("deployment ls", CliNext::Tool("deployment_list", None)),
     ("diff", CliNext::Tool("review", None)),
     ("domain add", CliNext::Tool("domain_add", Some("service"))),
+    (
+        "service rename",
+        CliNext::Tool("service_rename", Some("service")),
+    ),
     ("volume inspect", CliNext::Tool("environment_show", None)),
     ("volume set", CliNext::VolumeSharedWrites),
     // volume_add takes no shared writes.

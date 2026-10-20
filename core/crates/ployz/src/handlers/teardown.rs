@@ -122,9 +122,9 @@ pub(super) fn with_accepted(accept: &[VolumeName]) -> Vec<&str> {
 /// removal Deployment it admitted. In process, this CLI also moves the removal on
 /// (sweep, admit what is due, run it) until the Store deleted the target; over
 /// HTTPS, Cloud carries on after the first ones and this waits until it deleted the
-/// target, or stops at once when a Server didn't answer the review. `None` once a
-/// removal Deployment that didn't apply was reported (running the command again
-/// finishes it).
+/// target, or stops at once when a Server didn't answer the review, or when a
+/// removal Deployment didn't apply (running the command again finishes it). `None`
+/// once a failure after applied removal Deployments was reported.
 pub(super) fn remove(
     matches: &ArgMatches,
     store: &Store,
@@ -196,6 +196,7 @@ pub(super) fn remove(
         bound_to(error, &effects)
     })?;
     let mut ran = Vec::new();
+    let mut stopped = None;
     let result = (|| {
         let (id, left, waiting_on) = match removal {
             Removal::Removed { residuals } => {
@@ -232,13 +233,22 @@ pub(super) fn remove(
                     }
                     shipped => shipped?,
                 };
+                ran.push(view.deployment.clone());
                 if view.deployment.status != DeploymentStatus::Applied {
-                    let reported = unfinished(matches, (&view, &effects), &ran, outcome, &again);
-                    ran.clear();
-                    reported?;
-                    return Ok(None);
+                    stopped = Some(Stopped {
+                        view,
+                        ran: outcome,
+                        again: again.clone(),
+                    });
+                    return Ok(Some((
+                        Removal::Removing {
+                            id,
+                            left: applied(left, &ran),
+                            waiting_on,
+                        },
+                        std::mem::take(&mut ran),
+                    )));
                 }
-                ran.push(view.deployment);
             }
             if store.local().is_none() {
                 if matches.get_flag("detach") {
@@ -301,6 +311,7 @@ pub(super) fn remove(
             removal,
             effects,
             ran,
+            stopped,
         })),
         Ok(None) => Ok(None),
         Err(error) if !ran.is_empty() => {
@@ -642,11 +653,32 @@ pub(super) struct Removed {
     pub(super) effects: Vec<DestructiveEffect>,
     #[serde(rename = "deployments")]
     pub(super) ran: Vec<DeploymentSummary>,
+    #[serde(flatten)]
+    stopped: Option<Stopped>,
+}
+
+/// The removal Deployment that didn't apply (yet), how running it ended, and the
+/// command that finishes it.
+#[derive(serde::Serialize)]
+struct Stopped {
+    #[serde(rename = "deployment")]
+    view: DeploymentView,
+    #[serde(skip)]
+    ran: Result<(), Error>,
+    #[serde(rename = "next")]
+    again: String,
 }
 
 impl Removed {
     /// Each line a person reads about it, after the ones `target` names.
     pub(super) fn say(&self, target: &str) {
+        if let Some(Stopped { view, .. }) = &self.stopped {
+            for deployment in self.ran.iter().filter(|ran| ran.id != view.deployment.id) {
+                crate::ui::stream(format_args!("Deployment {} applied", deployment.label()));
+            }
+            deploy::say_view(view);
+            return;
+        }
         for deployment in &self.ran {
             crate::ui::stream(format_args!(
                 "Took an Environment off the Servers (Deployment {}).",
@@ -689,8 +721,13 @@ impl Removed {
         }
     }
 
-    /// Exit 3 when a Server didn't answer, unless `--detach` asked not to wait.
-    pub(super) fn ended(&self, matches: &ArgMatches) -> Result<(), Error> {
+    /// Exit 3 when a Server didn't answer or a removal Deployment didn't apply,
+    /// unless `--detach` asked not to wait; a removal Deployment that failed is its
+    /// error, naming the command that finishes it.
+    pub(super) fn ended(self, matches: &ArgMatches) -> Result<(), Error> {
+        if let Some(Stopped { ran, again, .. }) = self.stopped {
+            return not_applied(matches, ran, again);
+        }
         match (&self.removal, matches.get_flag("detach")) {
             (Removal::Removing { waiting_on, .. }, false) if !waiting_on.is_empty() => {
                 Err(Error::partial())
@@ -889,7 +926,14 @@ pub(super) fn unfinished(
             deploy::say_view(view);
         },
     )?;
-    ran.map_err(|error| error.hint(Hint::Retry(again.to_owned())))
+    not_applied(matches, ran, again.to_owned())
+}
+
+/// How a command ends after a removal Deployment didn't apply: how running it
+/// failed, naming `again`, the command that finishes it; else exit 3, or 0 when
+/// `--detach` asked not to wait.
+fn not_applied(matches: &ArgMatches, ran: Result<(), Error>, again: String) -> Result<(), Error> {
+    ran.map_err(|error| error.hint(Hint::Retry(again)))
         .and_then(|()| match matches.get_flag("detach") {
             true => Ok(()),
             false => Err(Error::partial()),

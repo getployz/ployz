@@ -640,9 +640,24 @@ pub(crate) fn resolve(
         &[project.id.as_str().into(), name.as_str().into()],
     )?;
     let Some(row) = rows.first() else {
+        let rows = tx.query(
+            "SELECT name FROM config_environment WHERE project_id = ?1 ORDER BY name",
+            &[project.id.as_str().into()],
+        )?;
+        let names = rows
+            .iter()
+            .map(|row| row.text(0))
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut details = error::suggest(name.as_str(), names.iter().copied());
+        if let Some(details) = details.as_object_mut() {
+            details.insert(
+                "next".into(),
+                format!("ployz env ls --project {}", project.name).into(),
+            );
+        }
         return Err(error::not_found(
             format!("No Environment named {name} in Project {}", project.name),
-            json!({ "next": format!("ployz env new {name} --project {}", project.name) }),
+            details,
         ));
     };
     Ok((project.name, row.parse::<EnvironmentId>(0, "identity")?))
@@ -874,6 +889,8 @@ pub(crate) fn validate_and_refresh_working_from(
         .first()
         .ok_or_else(|| error::corrupt("Environment"))?
         .intent(0, "Working State")?;
+    // Every write of Working State, whole or not, comes through here.
+    crate::names::refuse_new_reserved(&before, &environment.working)?;
     let (working, live) = checked(
         tx,
         &environment.summary,

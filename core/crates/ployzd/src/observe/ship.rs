@@ -241,6 +241,11 @@ impl Outbox {
         Ok(true)
     }
 
+    /// Says whether `seq` is reserved and not yet queued.
+    pub fn is_reserved(&self, seq: u64) -> io::Result<bool> {
+        exists(&self.dir.join(entry_name(seq, RESERVED)))
+    }
+
     /// Releases the reserved seqs not in `keep`, which nothing will queue.
     pub fn release_reserved(&self, keep: &[u64]) -> io::Result<()> {
         let _ledger = self.ledger.lock().unwrap_or_else(PoisonError::into_inner);

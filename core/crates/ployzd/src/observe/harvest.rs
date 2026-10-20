@@ -681,7 +681,9 @@ impl Harvester {
 
     /// Finishes the settlements a failed write or a stopped harvester left
     /// unfinished, reading at most a few raw segments, and gives up those a
-    /// day old that no stream can repeat.
+    /// day old that no stream can repeat. A crash the outbox has not queued
+    /// is never given up: only a real crash can leave one, and it waits for
+    /// the outbox to take it.
     fn finish_settlements(&mut self) {
         let unfinished = match self.settlements.unfinished() {
             Ok(unfinished) => unfinished,
@@ -699,7 +701,7 @@ impl Harvester {
         });
         let mut kept = Vec::new();
         for (key, entry) in unfinished {
-            if key.ts() >= give_up_before {
+            if key.ts() >= give_up_before || self.crash_unqueued(&entry) {
                 kept.push((key, entry));
                 continue;
             }
@@ -727,6 +729,13 @@ impl Harvester {
             }
             self.finish(&key, entry, true);
         }
+    }
+
+    fn crash_unqueued(&self, entry: &Unfinished) -> bool {
+        entry.marker.is_crash()
+            && entry
+                .seq
+                .is_none_or(|seq| self.crashes.is_reserved(seq).unwrap_or(true))
     }
 
     /// Settlements of events older than this cannot be repeated: the open
@@ -4072,6 +4081,29 @@ mod tests {
         running.harvester.finish_settlements();
         assert_eq!(unfinished(&host), 0);
         assert!(queued(&host).is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_crash_the_outbox_never_queued_is_not_given_up() {
+        let host = host().with_machine();
+        let service = ("ployz.service.id", SERVICE_ID);
+        let outbox = host.store.crash_outbox();
+        let mut running = host.harvester();
+        fs::remove_dir_all(&outbox).unwrap();
+        fs::write(&outbox, b"").unwrap();
+        running
+            .harvester
+            .on_docker_event(event("die", T0 + 1, &[service, ("exitCode", "1")]));
+        running.settle_exits(|| Inspected::Gone);
+        let mut other = event("start", T0 + 2 + UNFINISHED_FOR_NANOS, &[service]);
+        other.actor.as_mut().unwrap().id = Some("cd".repeat(32));
+        running.harvester.on_docker_event(other);
+        running.harvester.finish_settlements();
+        fs::remove_file(&outbox).unwrap();
+        fs::create_dir(&outbox).unwrap();
+        running.harvester.finish_settlements();
+        assert_eq!(crashes(&host).len(), 1);
+        assert_eq!(unfinished(&host), 0);
     }
 
     #[tokio::test]

@@ -21,10 +21,10 @@ describe("ClusterDomainSection", () => {
     document.body.replaceChildren();
   });
 
-  it("says when the domain arrives before the first deploy", () => {
+  it("says when the domain arrives before the first generated domain", () => {
     render(<ClusterDomainSection organizationSlug="acme" domain={null} onCheck={vi.fn()} />);
 
-    expect(screen.getByText("You’ll get one on your first deploy.")).toBeTruthy();
+    expect(screen.getByText("You’ll get one when you generate your first domain.")).toBeTruthy();
     expect(screen.queryByRole("button")).toBeNull();
   });
 

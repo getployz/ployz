@@ -123,7 +123,7 @@ export function ManagedDomainDialog({
                       description={
                         clusterDomain
                           ? `.${clusterDomain}`
-                          : "Your domain is assigned on your first deploy."
+                          : "Your domain is assigned when you generate this one."
                       }
                     />
                   )}

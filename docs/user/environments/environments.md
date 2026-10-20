@@ -36,6 +36,14 @@ Ployz never copies data, so staging's database starts empty. A setup command run
 `web` first starts, to fill it. To give every new branch of production the same commands, add
 them under **Branch setup** in production's **Settings → Environment**.
 
+From the CLI, add the command when you branch, with `ployz env branch staging --copy web --copy
+postgres --setup 'web=pnpm db:seed'`. In the branch, `ployz get setup.web` shows it, `ployz set
+setup.web='pnpm db:seed --small'` changes it, and `ployz unset setup.web` removes it. A change
+takes effect at once, with nothing to deploy first: the next deploy runs the new command if `web`
+hasn't deployed in staging yet, and until then `ployz diff` shows it. So when a setup command
+fails, fix it with `ployz set` and deploy again. Because `setup.` names these commands, no Service can be named
+`setup`, just as none can be named `volumes` or `configs`.
+
 ## Test staging at its own address
 
 Staging's canvas opens as it deploys. Each copy with a generated address gets its own, with
@@ -170,11 +178,12 @@ syncing** in the Sync dialog.
   Open the Sync button's ▾ menu, then **Close staging…**. Ployz lists what goes, including changes
   you haven't synced. Type `my-app/staging` and click **Close branch**.
 
-A branch that closes as you sync it, or after 7 days, comes off your servers at Ployz's next
-hourly sweep. Until then the Sync button reads **Closing**, and `ployz env ls` shows
-`pending (synced)` or `pending (idle)` under REMOVAL. If its removal hasn't started, close it
-again from the ▾ menu or with `ployz env rm`. Once its removal runs, REMOVAL shows that
-deployment and its status, such as `#4 running`.
+A branch that closes as you sync it starts coming off your servers right away. A branch idle for
+7 days closes at Ployz's next hourly sweep. If a removal can't start yet, for example because a
+deployment is still stopping, it waits for the next hourly sweep. Until it starts, the Sync button
+reads **Closing**, and `ployz env ls` shows `pending (synced)` or `pending (idle)` under REMOVAL.
+If its removal hasn't started, close it again from the ▾ menu or with `ployz env rm`. Once its
+removal runs, REMOVAL shows that deployment and its status, such as `#4 running`.
 
 ### Production's changes follow into staging
 
@@ -243,5 +252,14 @@ server and link to its page, where you can forget it. Ployz tries again each hou
 hour after that. A volume whose copies Ployz couldn't all check is
 deleted only if you chose to delete every copy. Then a mirror of it made after the delete started
 goes too.
+
+### Delete a project
+
+1. Open **Settings → Project**.
+2. Click **Delete project**. Ployz lists what goes: every environment, with its services and data.
+3. Type `my-app` and click **Delete**.
+
+Only an owner or admin can delete a project. Like an environment, it stays listed until every
+server that ran it has taken it off.
 
 **Next:** [give every pull request its own copy of your app](preview-environments.md).
