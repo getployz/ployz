@@ -23,8 +23,8 @@ point's time, for example `pg-data-1027`, and says in red what you give up: "Cha
 are not in pg-data-1027". To drop the restore, discard it in Details.
 
 Copies, Details, the **Data loss** confirm and the approval card give a point's time in your own
-time zone. A point from an earlier day shows its date too, like "8 Oct, 10:27", and an open page
-adds it once midnight passes.
+time zone. A point from an earlier day shows its date too, like "8 Oct, 10:27". Copies, Details
+and the **Data loss** confirm add the date within a minute of midnight if they're still open.
 
 When an agent deploys a restore, its approval card says the same under the detach, like
 **Detaches volume pg-data from postgres**, then "Changes after 10:27 are not in pg-data-1027".

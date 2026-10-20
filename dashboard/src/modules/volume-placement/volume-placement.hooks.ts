@@ -102,7 +102,7 @@ export function useStagedPlacements(
   return {
     groups,
     // A Volume the Deploy deletes loses every copy; the Store confirms that itself, with its own details.
-    loss: placementLoss(staged.filter(({ volume }) => volume.change !== "delete").flatMap(({ changes }) => changes), now),
+    loss: placementLoss(staged.filter(({ volume }) => volume.change !== "delete").flatMap(({ changes }) => changes)),
     count: groups.reduce((total, group) => total + group.changeCount, 0),
     discard: (volumeId) => settle([discardOf(volumeId)]),
     undo: (volumeId, path) => {

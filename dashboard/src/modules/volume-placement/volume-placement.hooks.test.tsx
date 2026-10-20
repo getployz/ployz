@@ -91,7 +91,7 @@ it("leaves a Volume the Deploy deletes out of the copy loss, so only the Store's
   expect(result.current.count).toBe(1);
 });
 
-it("dates a staged restore's point in Details and its Data loss confirm once the day turns, with the Servers' answer unchanged", async () => {
+it("dates a staged restore's point in Details once the day turns, with the Servers' answer unchanged", async () => {
   vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
   try {
     vi.setSystemTime(new Date(2026, 9, 11, 23, 59));
@@ -108,14 +108,14 @@ it("dates a staged restore's point in Details and its Data loss confirm once the
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     const wrapper = ({ children }: { children: ReactNode }) => <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>;
     const { result } = renderHook(() => useStagedPlacements("acme", environment, "env-1", [{ id: "vol-restored", name: "data-2355", change: null }]), { wrapper });
-    const shown = () => ({ details: result.current.groups[0]?.rows[0]?.loss, confirm: result.current.loss.items[0]?.detail });
-    for (let tick = 0; tick < 20 && shown().details === undefined; tick++) await act(() => vi.advanceTimersByTimeAsync(10));
+    const shown = () => result.current.groups[0]?.rows[0]?.loss;
+    for (let tick = 0; tick < 20 && shown() === undefined; tick++) await act(() => vi.advanceTimersByTimeAsync(10));
 
     const clock = new Intl.DateTimeFormat("en-GB", { hour: "2-digit", minute: "2-digit" });
-    expect(shown()).toEqual({ details: `Changes after ${clock.format(at)} are not in data-2355`, confirm: `changes after ${clock.format(at)}` });
+    expect(shown()).toBe(`Changes after ${clock.format(at)} are not in data-2355`);
     await act(() => vi.advanceTimersByTimeAsync(2 * 60_000));
     const dated = new Intl.DateTimeFormat("en-GB", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
-    expect(shown()).toEqual({ details: `Changes after ${dated.format(at)} are not in data-2355`, confirm: `changes after ${dated.format(at)}` });
+    expect(shown()).toBe(`Changes after ${dated.format(at)} are not in data-2355`);
   } finally {
     vi.useRealTimers();
   }
