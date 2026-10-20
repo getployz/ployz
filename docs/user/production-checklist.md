@@ -50,7 +50,8 @@ list. Each item links to the page that does it.
 - **No automatic rollbacks.** A failed deploy doesn't undo itself. To go back, click **Redeploy**
   on an earlier deployment; it ships that deployment's commit and settings. See
   [Redeploy or cancel a deployment](deploy/deployments.md#redeploy-or-cancel-a-deployment). The
-  rollback lasts until your next push or deploy, so to keep it, revert the commit in Git. To roll
+  rollback lasts until your next deploy, or a push that deploys that service, so to keep it, revert
+  the commit in Git. To roll
   back settings only, use **Roll back to #N** in **Deployments** > **Versions**; see
   [Saved history](deploy/deployments.md#saved-history).
 - **No Docker Compose files.** Add each container as its own service.

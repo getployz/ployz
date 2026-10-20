@@ -181,7 +181,8 @@ their recorded outcomes.
   runner stopped reporting.
 - An applied removal or shutdown can't be redeployed: there is nothing left to ship. One that
   failed, was cancelled or reads `unknown` can.
-- **A rollback lasts until your next push or deploy**, which ships your latest commit and saved
+- **A rollback lasts until your next deploy, or a push that deploys the rolled-back service**
+  (see [Deploy on push](github.md#deploy-on-push)), which ships your latest commit and saved
   settings again. To keep it, revert the commit in Git and change the settings back.
 - **Cancel**, on a running deployment, stops it at its next step. What it already changed stays
   until your next deploy.
