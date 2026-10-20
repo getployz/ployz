@@ -1,6 +1,6 @@
 use crate::{
     InspectVolumeCopyRequest, SeedVolumeRequest, SetVolumeCopyReply, SetVolumeCopyRequest,
-    StorageCapacity, VolumeCopyView,
+    SetVolumeSizeReply, SetVolumeSizeRequest, StorageCapacity, VolumeCopyView,
     metrics::{MetricHistoryReply, MetricHistoryRequest},
 };
 use std::{
@@ -1477,6 +1477,7 @@ macro_rules! define_responses {
 define_responses! {
     ContractDescription(ContractDescription) => "contract_description";
     SetVolumeCopyReply(SetVolumeCopyReply) => "set_volume_copy_reply";
+    SetVolumeSizeReply(SetVolumeSizeReply) => "set_volume_size_reply";
     MachineDetails(MachineDetails) => "machine_details";
     Enrolled(Enrolled) => "enrolled";
     Registered(Registered) => "registered";

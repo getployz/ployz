@@ -3,7 +3,7 @@ import type { JsonValue } from "@ployz/sdk";
 import { Effect, Schema, SchemaIssue } from "effect";
 import type { JsonObject } from "#/db/tables";
 import { asRecord, asString } from "#/lib/json";
-import { gateOperation, type OperationAsked } from "#/modules/approvals/approvals.server";
+import { carriedInto, gateOperation, type OperationAsked, unspendApproval } from "#/modules/approvals/approvals.server";
 import { type CommandRefusal, type StoreRefusal, StoreRefused } from "#/modules/config-store/store.contract";
 import type { Caller } from "#/modules/identity/actor";
 import { lacks } from "#/modules/organization/access.server";
@@ -139,12 +139,18 @@ export function defineCommand<const N extends string, F extends Fields, O extend
       // Every published write lands in the Organization (none names an Environment), so a token limited to Environments can't make one.
       const lacking = lacks(caller, def.requires, kind === "read" ? "reads" : "organization");
       if (lacking !== null) return refused("forbidden", lacking);
-      if (gate !== "never") {
-        const gated = yield* gateOperation(caller, call.approvalId, yield* gate.asked(caller, decoded.success));
-        if (!gated.ok) return gated;
-      }
+      // A command that never asks still refuses an approval carried into it.
+      const carried = gate === "never" ? yield* carriedInto(caller, call.approvalId, { command: def.name }) : null;
+      if (carried !== null) return { ok: false, refusal: carried } as const;
+      const gated = gate === "never" ? null : yield* gateOperation(caller, call.approvalId, yield* gate.asked(caller, decoded.success));
+      if (gated !== null && !gated.ok) return gated;
       started = true;
-      return yield* run(caller, decoded.success);
+      // A run that refused hands back the approval it spent, so repeating it asks no one again.
+      const spent = gated?.approvalId ?? null;
+      const handBack = spent === null ? Effect.void : unspendApproval(caller.organization.id, spent);
+      const ran = yield* run(caller, decoded.success).pipe(Effect.tapError(() => handBack));
+      if (!ran.ok) yield* handBack;
+      return ran;
     }).pipe(
       Effect.catchIf((failure) => failure instanceof NotFound, (missing) => Effect.succeed(refused("not_found", missing.message))),
       Effect.catchIf((failure) => failure instanceof StoreRefused, (store) => Effect.succeed({ ok: false, refusal: store.refusal } as const)),

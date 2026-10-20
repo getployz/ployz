@@ -3,11 +3,11 @@
 use std::num::NonZeroU64;
 
 use ployz_core::{
-    ContainerId, ContainerKind, ContainerObservation, ContainerPath, ContainerRuntimeObservation,
-    DockerVolumeName, HealthObservation, MachineId, MachineStorageObservation, Namespace,
-    Placement, ProvisionedVolumeMaximumBytes, RequestedServiceSpec, ResolvedUpdateConfig,
-    ServiceMode, ServiceMount, ServiceObservation, ServiceVolume, ServiceVolumeGraph,
-    ServiceVolumeReference,
+    ContainerId, ContainerKind, ContainerObservation, ContainerPath, ContainerRefusal,
+    ContainerRuntimeObservation, DEPLOYMENT_ID_LABEL, DeploymentLogId, DockerVolumeName, Gen,
+    HealthObservation, MachineId, MachineStorageObservation, Namespace, Placement,
+    ProvisionedVolumeMaximumBytes, RequestedServiceSpec, ResolvedUpdateConfig, ServiceMode,
+    ServiceMount, ServiceObservation, ServiceVolume, ServiceVolumeGraph, ServiceVolumeReference,
 };
 
 use super::*;
@@ -15,56 +15,109 @@ use crate::global_fixtures::{
     container_id, created_on, global_service, global_service_with_image, grouped, machine,
     qualified, requested, running_on, service_id,
 };
-use crate::serving_publish::tests::FakeRow;
 
-#[tokio::test]
+fn rotated(mut observed: ContainerObservation, rotation: CopyRotation) -> ContainerObservation {
+    observed
+        .try_update(|parts| parts.rotation = Some(rotation))
+        .unwrap();
+    observed
+}
+
+fn with_gen(mut observed: ContainerObservation, r#gen: u64) -> ContainerObservation {
+    observed
+        .try_update(|parts| parts.r#gen = Some(Gen::new(r#gen)))
+        .unwrap();
+    observed
+}
+
+fn message(error: CatchUpError, joiner: &Machine) -> String {
+    crate::ui::chain_text(&joined_catch_up_error(error, joiner, |args| {
+        shell_words::join(std::iter::once("ployz").chain(args.iter().copied()))
+    }))
+}
+
+async fn catch_up(client: &mut FakeCatchUpClient, joiner: &Machine) -> Result<(), CatchUpError> {
+    catch_up_globals(
+        client,
+        joiner,
+        &tokio_util::sync::CancellationToken::new(),
+        |_| {},
+    )
+    .await
+}
+
+#[tokio::test(start_paused = true)]
 async fn partial_observations_reject_catch_up_before_any_placement() {
     let joiner = machine('1', "joiner");
     let peer = machine('f', "peer");
+    let unlisted = machine('e', "unlisted");
     for failed in [true, false] {
-        let mut client = FakeCatchUpClient {
-            machine_id: joiner.id,
-            services: Vec::new(),
-            target_services: None,
-            run_result: Ok(Some(container_id('a'))),
-            run_calls: Vec::new(),
-            row: FakeRow::default(),
-            failures: if failed {
-                vec![ployz_core::MachineFailure {
-                    machine_id: peer.id,
-                    error: RpcError {
-                        code: ployz_core::RpcErrorCode::Unavailable,
-                        message: "peer unavailable".into(),
-                        details: serde_json::Value::Null,
-                        cause: Vec::new(),
-                    },
-                }]
-            } else {
-                Vec::new()
-            },
-            omissions: if failed { Vec::new() } else { vec![peer.id] },
-            relisted: None,
-            listings: 0,
-            published_while_running: None,
-        };
-        let error = catch_up_globals(
-            &mut client,
-            &joiner,
-            &tokio_util::sync::CancellationToken::new(),
-            |_| {},
-        )
-        .await
-        .unwrap_err();
-        let message = crate::ui::chain_text(&joined_catch_up_error(error, &joiner, |args| {
-            shell_words::join(std::iter::once("ployz").chain(args.iter().copied()))
-        }));
+        let mut client = fake(&joiner, Vec::new());
+        client.names = vec![
+            (joiner.id, joiner.name.clone()),
+            (peer.id, peer.name.clone()),
+        ];
+        if failed {
+            client.failures = vec![ployz_core::MachineFailure {
+                machine_id: peer.id,
+                error: RpcError {
+                    code: ployz_core::RpcErrorCode::Unavailable,
+                    message: "peer unavailable".into(),
+                    details: serde_json::Value::Null,
+                    cause: Vec::new(),
+                },
+            }];
+        } else {
+            client.omissions = vec![unlisted.id];
+        }
+        let error = catch_up(&mut client, &joiner).await.unwrap_err();
+        let message = message(error, &joiner);
         assert!(
             message.contains("partial Service observations"),
             "{message}"
         );
-        assert!(message.contains(peer.id.as_str()), "{message}");
+        if failed {
+            assert!(message.contains("peer: peer unavailable"), "{message}");
+            assert!(!message.contains(peer.id.as_str()), "{message}");
+        } else {
+            // A Machine the membership does not list keeps its id.
+            assert!(
+                message.contains(&format!("{}: no terminal response", unlisted.id)),
+                "{message}"
+            );
+        }
         assert!(client.run_calls.is_empty());
+        assert_eq!(
+            client.listings, OBSERVATION_ATTEMPTS,
+            "a partial listing is retried within the run before it fails"
+        );
     }
+}
+
+#[tokio::test(start_paused = true)]
+async fn partial_observation_is_retried_in_run() {
+    let joiner = machine('1', "joiner");
+    let founder = machine('f', "founder");
+    let peer = machine('e', "peer");
+    let service = global_service(
+        qualified("app", "api"),
+        'a',
+        Placement::default(),
+        running_on(&founder, 'a'),
+    );
+    let mut client = fake(&joiner, Vec::new());
+    client.omissions = vec![peer.id];
+    client.relisted = Some(vec![service]);
+    client.target_services = Some(vec![global_service(
+        qualified("app", "api"),
+        'a',
+        Placement::default(),
+        running_on(&joiner, 'b'),
+    )]);
+    client.run_result = Ok(Some(container_id('b')));
+    catch_up(&mut client, &joiner).await.unwrap();
+    assert_eq!(client.listings, 2);
+    assert_eq!(client.run_calls.len(), 1);
 }
 
 #[tokio::test]
@@ -76,28 +129,8 @@ async fn successful_ensure_is_reobserved_before_success() {
         Placement::default(),
         created_on(&joiner, 'a'),
     );
-    let mut client = FakeCatchUpClient {
-        machine_id: joiner.id,
-        services: vec![service],
-        target_services: None,
-        run_result: Ok(Some(container_id('a'))),
-        run_calls: Vec::new(),
-        row: FakeRow::default(),
-        failures: Vec::new(),
-        omissions: Vec::new(),
-        relisted: None,
-        listings: 0,
-        published_while_running: None,
-    };
-
-    let error = catch_up_globals(
-        &mut client,
-        &joiner,
-        &tokio_util::sync::CancellationToken::new(),
-        |_| {},
-    )
-    .await
-    .unwrap_err();
+    let mut client = fake(&joiner, vec![service]);
+    let error = catch_up(&mut client, &joiner).await.unwrap_err();
     assert_eq!(error.unresolved, [qualified("app", "api")]);
 }
 
@@ -111,29 +144,18 @@ async fn initially_eligible_global_absent_from_target_inspection_remains_missing
         Placement::default(),
         running_on(&founder, 'a'),
     );
-    let mut client = FakeCatchUpClient {
-        machine_id: joiner.id,
-        services: vec![service],
-        target_services: Some(Vec::new()),
-        run_result: Ok(Some(container_id('a'))),
-        run_calls: Vec::new(),
-        row: FakeRow::default(),
-        failures: Vec::new(),
-        omissions: Vec::new(),
-        relisted: None,
-        listings: 0,
-        published_while_running: None,
-    };
-
-    let error = catch_up_globals(
-        &mut client,
-        &joiner,
-        &tokio_util::sync::CancellationToken::new(),
-        |_| {},
-    )
-    .await
-    .unwrap_err();
+    let mut client = fake(&joiner, vec![service]);
+    client.target_services = Some(Vec::new());
+    let error = catch_up(&mut client, &joiner).await.unwrap_err();
     assert_eq!(error.unresolved, [qualified("app", "api")]);
+    let message = message(error, &joiner);
+    assert!(
+        message.contains(&format!(
+            "app/api: copy {} is not running on this Machine after catch-up",
+            container_id('a').as_str()
+        )),
+        "{message}"
+    );
 }
 
 #[tokio::test]
@@ -160,28 +182,9 @@ async fn initially_eligible_global_with_only_hook_visible_remains_missing() {
         containers: Vec::new(),
         hook_containers: vec![ployz_core::HookContainer::try_from(hook).unwrap()],
     };
-    let mut client = FakeCatchUpClient {
-        machine_id: joiner.id,
-        services: vec![service],
-        target_services: Some(vec![hook_only]),
-        run_result: Ok(Some(container_id('a'))),
-        run_calls: Vec::new(),
-        row: FakeRow::default(),
-        failures: Vec::new(),
-        omissions: Vec::new(),
-        relisted: None,
-        listings: 0,
-        published_while_running: None,
-    };
-
-    let error = catch_up_globals(
-        &mut client,
-        &joiner,
-        &tokio_util::sync::CancellationToken::new(),
-        |_| {},
-    )
-    .await
-    .unwrap_err();
+    let mut client = fake(&joiner, vec![service]);
+    client.target_services = Some(vec![hook_only]);
+    let error = catch_up(&mut client, &joiner).await.unwrap_err();
     assert_eq!(error.unresolved, [qualified("app", "api")]);
 }
 
@@ -202,28 +205,9 @@ async fn initially_eligible_generation_absent_from_target_inspection_remains_mis
         running_on(&founder, 'b'),
         "ghcr.io/getployz/api:2",
     );
-    let mut client = FakeCatchUpClient {
-        machine_id: joiner.id,
-        services: vec![stale.clone(), current],
-        target_services: Some(vec![stale]),
-        run_result: Ok(Some(container_id('a'))),
-        run_calls: Vec::new(),
-        row: FakeRow::default(),
-        failures: Vec::new(),
-        omissions: Vec::new(),
-        relisted: None,
-        listings: 0,
-        published_while_running: None,
-    };
-
-    let error = catch_up_globals(
-        &mut client,
-        &joiner,
-        &tokio_util::sync::CancellationToken::new(),
-        |_| {},
-    )
-    .await
-    .unwrap_err();
+    let mut client = fake(&joiner, vec![stale.clone(), current]);
+    client.target_services = Some(vec![stale]);
+    let error = catch_up(&mut client, &joiner).await.unwrap_err();
     assert_eq!(error.unresolved, [qualified("app", "api")]);
 }
 
@@ -243,29 +227,224 @@ async fn another_namespaces_matching_shape_does_not_satisfy_catch_up() {
         Placement::default(),
         running_on(&founder, 'e'),
     );
-    let mut client = FakeCatchUpClient {
-        machine_id: joiner.id,
-        services: vec![shop.clone(), prod],
-        target_services: Some(vec![shop]),
-        run_result: Ok(Some(container_id('a'))),
-        run_calls: Vec::new(),
-        row: FakeRow::default(),
-        failures: Vec::new(),
-        omissions: Vec::new(),
-        relisted: None,
-        listings: 0,
-        published_while_running: None,
-    };
-
-    let error = catch_up_globals(
-        &mut client,
-        &joiner,
-        &tokio_util::sync::CancellationToken::new(),
-        |_| {},
-    )
-    .await
-    .unwrap_err();
+    let mut client = fake(&joiner, vec![shop.clone(), prod]);
+    client.target_services = Some(vec![shop]);
+    let error = catch_up(&mut client, &joiner).await.unwrap_err();
     assert_eq!(error.unresolved, [qualified("prod", "api")]);
+}
+
+#[tokio::test]
+async fn a_held_source_is_outdated() {
+    let joiner = machine('1', "joiner");
+    let founder = machine('f', "founder");
+    let held = rotated(
+        running_on(&founder, 'a'),
+        CopyRotation::Held(DeploymentLogId::parse("dep-a").unwrap()),
+    );
+    let service = global_service(qualified("app", "api"), 'a', Placement::default(), held);
+    let mut client = fake(&joiner, vec![service]);
+    let error = catch_up(&mut client, &joiner).await.unwrap_err();
+    assert_eq!(error.unresolved, [qualified("app", "api")]);
+    assert!(client.run_calls.is_empty(), "a Held copy is never a source");
+    let message = message(error, &joiner);
+    assert!(message.contains("redeploy"), "{message}");
+}
+
+#[tokio::test]
+async fn an_out_source_is_outdated() {
+    let joiner = machine('1', "joiner");
+    let founder = machine('f', "founder");
+    let out = rotated(running_on(&founder, 'a'), CopyRotation::Out);
+    let service = global_service(qualified("app", "api"), 'a', Placement::default(), out);
+    let mut client = fake(&joiner, vec![service]);
+    let error = catch_up(&mut client, &joiner).await.unwrap_err();
+    assert_eq!(error.unresolved, [qualified("app", "api")]);
+    assert!(client.run_calls.is_empty(), "an Out copy is never a source");
+    let message = message(error, &joiner);
+    assert!(message.contains("redeploy"), "{message}");
+}
+
+#[tokio::test]
+async fn a_pending_copy_older_than_an_in_gen_is_not_the_source() {
+    let joiner = machine('1', "joiner");
+    let founder = machine('f', "founder");
+    let identity = qualified("app", "api");
+    let current = with_gen(rotated(running_on(&founder, 'a'), CopyRotation::In), 2);
+    let stale = with_gen(created_on(&founder, 'b'), 1);
+    let mut client = fake(
+        &joiner,
+        vec![
+            global_service(identity.clone(), 'a', Placement::default(), current),
+            global_service(identity.clone(), 'a', Placement::default(), stale),
+        ],
+    );
+    client.target_services = Some(vec![global_service(
+        identity,
+        'a',
+        Placement::default(),
+        running_on(&joiner, 'c'),
+    )]);
+    client.run_result = Ok(Some(container_id('c')));
+    catch_up(&mut client, &joiner).await.unwrap();
+    let [new] = client.run_calls.as_slice() else {
+        panic!("one copy starts: {:?}", client.run_calls);
+    };
+    assert_eq!(
+        new.r#gen,
+        Gen::new(2),
+        "the newest In copy wins over an older Pending one"
+    );
+}
+
+#[tokio::test]
+async fn a_copy_keeps_its_sources_label_and_gen() {
+    let joiner = machine('1', "joiner");
+    let founder = machine('f', "founder");
+    let deploy = DeploymentLogId::parse("dep-a").unwrap();
+    let mut source = with_gen(rotated(running_on(&founder, 'a'), CopyRotation::In), 3);
+    source
+        .try_update(|parts| {
+            parts
+                .labels
+                .insert(DEPLOYMENT_ID_LABEL.to_owned(), deploy.to_string());
+        })
+        .unwrap();
+    let service = global_service(qualified("app", "api"), 'a', Placement::default(), source);
+    let mut client = fake(&joiner, vec![service]);
+    client.target_services = Some(vec![global_service(
+        qualified("app", "api"),
+        'a',
+        Placement::default(),
+        running_on(&joiner, 'b'),
+    )]);
+    client.run_result = Ok(Some(container_id('b')));
+    catch_up(&mut client, &joiner).await.unwrap();
+    let [new] = client.run_calls.as_slice() else {
+        panic!("one copy starts: {:?}", client.run_calls);
+    };
+    assert_eq!(new.r#gen, Gen::new(3));
+    assert_eq!(new.deployment_id, Some(deploy));
+    assert_eq!(
+        client
+            .brought_in
+            .iter()
+            .map(|copy| &copy.container_id)
+            .collect::<Vec<_>>(),
+        [&container_id('b')],
+        "a Pending copy is brought In after it starts"
+    );
+}
+
+#[tokio::test]
+async fn an_owner_gen_refusal_discards_the_copy() {
+    let joiner = machine('1', "joiner");
+    let founder = machine('f', "founder");
+    let service = global_service(
+        qualified("app", "api"),
+        'a',
+        Placement::default(),
+        running_on(&founder, 'a'),
+    );
+    let mut client = fake(&joiner, vec![service]);
+    client.target_services = Some(vec![global_service(
+        qualified("app", "api"),
+        'a',
+        Placement::default(),
+        running_on(&joiner, 'b'),
+    )]);
+    client.run_result = Ok(Some(container_id('b')));
+    client.bring_in = FakeBringIn::Refused(ContainerRefusalReason::OlderThanIn);
+    let error = catch_up(&mut client, &joiner).await.unwrap_err();
+    assert_eq!(error.unresolved, [qualified("app", "api")]);
+    assert_eq!(
+        client
+            .removed
+            .iter()
+            .map(|copy| &copy.container_id)
+            .collect::<Vec<_>>(),
+        [&container_id('b')],
+        "a copy the owner refuses In is discarded"
+    );
+    assert!(client.retired.is_empty());
+    let message = message(error, &joiner);
+    assert!(message.contains(OUTDATED), "{message}");
+}
+
+#[tokio::test]
+async fn own_superseded_copies_retire_after_in() {
+    let joiner = machine('1', "joiner");
+    let founder = machine('f', "founder");
+    let identity = qualified("app", "api");
+    let service = global_service(
+        identity.clone(),
+        'a',
+        Placement::default(),
+        rotated(running_on(&founder, 'b'), CopyRotation::In),
+    );
+    let old = running_on(&joiner, 'a');
+    let mut client = fake(&joiner, vec![service]);
+    client.target_services = Some(vec![
+        global_service(
+            identity.clone(),
+            'a',
+            Placement::default(),
+            running_on(&joiner, 'c'),
+        ),
+        global_service(identity.clone(), 'a', Placement::default(), old.clone()),
+    ]);
+    client.run_result = Ok(Some(container_id('c')));
+    catch_up(&mut client, &joiner).await.unwrap();
+    assert_eq!(
+        client
+            .brought_in
+            .iter()
+            .map(|copy| &copy.container_id)
+            .collect::<Vec<_>>(),
+        [&container_id('c')]
+    );
+    let retired = client.retired.clone();
+    let [retired] = retired.as_slice() else {
+        panic!("only this Machine's superseded copy retires: {retired:?}");
+    };
+    assert_eq!(retired.container_id, container_id('a'));
+    assert_eq!(retired.machine_id, joiner.id);
+    assert_eq!(retired.service, identity);
+    assert!(client.removed.is_empty());
+}
+
+#[tokio::test]
+async fn a_proxy_copy_skips_rotation() {
+    let joiner = machine('1', "joiner");
+    let founder = machine('f', "founder");
+    let ingress = QualifiedService::system_ingress();
+    let held = rotated(
+        running_on(&founder, 'a'),
+        CopyRotation::Held(DeploymentLogId::parse("dep-a").unwrap()),
+    );
+    let service = global_service(ingress.clone(), 'a', Placement::default(), held);
+    let mut client = fake(&joiner, vec![service]);
+    client.target_services = Some(vec![
+        global_service(
+            ingress.clone(),
+            'a',
+            Placement::default(),
+            running_on(&joiner, 'b'),
+        ),
+        global_service(ingress, 'a', Placement::default(), running_on(&joiner, 'c')),
+    ]);
+    client.run_result = Ok(Some(container_id('b')));
+    catch_up(&mut client, &joiner).await.unwrap();
+    assert_eq!(
+        client.run_calls.len(),
+        1,
+        "a Held proxy copy is still the source"
+    );
+    assert!(
+        client.brought_in.is_empty(),
+        "the proxy stays Pending for life"
+    );
+    assert!(client.retired.is_empty());
+    assert!(client.removed.is_empty());
 }
 
 #[tokio::test]
@@ -275,9 +454,9 @@ async fn interruption_settles_started_work_and_only_reports_unresolved_globals()
         let founder = machine('f', "founder");
         let first = qualified("app", "api");
         let second = qualified("app", "worker");
-        let mut client = FakeCatchUpClient {
-            machine_id: joiner.id,
-            services: vec![
+        let mut client = fake(
+            &joiner,
+            vec![
                 global_service(
                     first.clone(),
                     'a',
@@ -291,26 +470,19 @@ async fn interruption_settles_started_work_and_only_reports_unresolved_globals()
                     running_on(&founder, 'b'),
                 ),
             ],
-            target_services: Some(vec![global_service(
-                first.clone(),
-                'a',
-                Placement::default(),
-                running_on(&joiner, 'a'),
-            )]),
-            run_calls: Vec::new(),
-            row: FakeRow::default(),
-            run_result: Ok((!excluded).then(|| container_id('a'))),
-            failures: Vec::new(),
-            omissions: Vec::new(),
-            relisted: None,
-            listings: 0,
-            published_while_running: None,
-        };
+        );
+        client.target_services = Some(vec![global_service(
+            first.clone(),
+            'a',
+            Placement::default(),
+            running_on(&joiner, 'a'),
+        )]);
+        client.run_result = Ok((!excluded).then(|| container_id('a')));
         let cancel = tokio_util::sync::CancellationToken::new();
         let mut running = Vec::new();
         let error = catch_up_globals(&mut client, &joiner, &cancel, |fact| match fact {
             CatchUpFact::Creating(_) => cancel.cancel(),
-            CatchUpFact::Running { service, .. } => running.push(service),
+            CatchUpFact::Running(service) => running.push(service),
             CatchUpFact::Identified(_) | CatchUpFact::Excluded(_) | CatchUpFact::Failed(_) => {}
         })
         .await
@@ -334,63 +506,79 @@ async fn interruption_settles_started_work_and_only_reports_unresolved_globals()
     }
 }
 
+enum FakeBringIn {
+    In,
+    Refused(ContainerRefusalReason),
+}
+
 struct FakeCatchUpClient {
     machine_id: MachineId,
     services: Vec<ServiceObservation>,
     target_services: Option<Vec<ServiceObservation>>,
     run_calls: Vec<NewContainer>,
-    row: FakeRow,
     run_result: Result<Option<ContainerId>, RpcError>,
+    bring_in: FakeBringIn,
+    brought_in: Vec<Copy>,
+    retired: Vec<Copy>,
+    removed: Vec<Copy>,
     failures: Vec<ployz_core::MachineFailure<RpcError>>,
     omissions: Vec<MachineId>,
+    names: crate::drain::retirement::Names,
     relisted: Option<Vec<ServiceObservation>>,
     listings: u32,
-    published_while_running: Option<ployz_core::ServingPointer>,
 }
 
-impl PointerClient for FakeCatchUpClient {
-    async fn pointer_publisher(&mut self) -> Result<ployz_core::MachineTarget, RpcError> {
-        self.row.pointer_publisher().await
+fn fake(joiner: &Machine, services: Vec<ServiceObservation>) -> FakeCatchUpClient {
+    FakeCatchUpClient {
+        machine_id: joiner.id,
+        services,
+        target_services: None,
+        run_calls: Vec::new(),
+        run_result: Ok(Some(container_id('a'))),
+        bring_in: FakeBringIn::In,
+        brought_in: Vec::new(),
+        retired: Vec::new(),
+        removed: Vec::new(),
+        failures: Vec::new(),
+        omissions: Vec::new(),
+        names: Vec::new(),
+        relisted: None,
+        listings: 0,
     }
+}
 
-    async fn read_pointer_at(
-        &mut self,
-        at: &mut ployz_core::MachineTarget,
-        service: &QualifiedService,
-    ) -> Result<Option<ployz_core::ServingPointer>, RpcError> {
-        self.row.read_pointer_at(at, service).await
-    }
-
-    async fn publish_pointer_at(
-        &mut self,
-        at: &mut ployz_core::MachineTarget,
-        request: ployz_core::PublishServingPointerRequest,
-    ) -> Result<ployz_core::ServingPointerPublication, RpcError> {
-        self.row.publish_pointer_at(at, request).await
-    }
+fn flatten(services: &[ServiceObservation]) -> Vec<ContainerObservation> {
+    services
+        .iter()
+        .flat_map(ServiceObservation::members)
+        .map(|container| container.as_observation().clone())
+        .collect()
 }
 
 impl CatchUpClient for FakeCatchUpClient {
-    async fn live_services(&mut self) -> Result<LiveServices<RpcError>, Failure> {
+    async fn live_services(
+        &mut self,
+    ) -> Result<(LiveServices<RpcError>, crate::drain::retirement::Names), Failure> {
         self.listings += 1;
-        let services = match &self.relisted {
-            Some(relisted) if self.listings > 1 => relisted,
-            _ => &self.services,
+        let (services, failures, omissions) = match &self.relisted {
+            Some(relisted) if self.listings > 1 => (relisted, Vec::new(), Vec::new()),
+            _ => (
+                &self.services,
+                self.failures.clone(),
+                self.omissions.clone(),
+            ),
         };
-        Ok(LiveServices {
+        let live = LiveServices {
             containers: ployz_core::PartialResult {
                 successes: vec![ployz_core::MachineSuccess {
                     machine_id: self.machine_id,
-                    value: services
-                        .iter()
-                        .flat_map(ServiceObservation::members)
-                        .map(|container| container.as_observation().clone())
-                        .collect(),
+                    value: flatten(services),
                 }],
-                failures: self.failures.clone(),
-                omissions: self.omissions.clone(),
+                failures,
+                omissions,
             },
-        })
+        };
+        Ok((live, self.names.clone()))
     }
 
     async fn bridge_capacity(
@@ -415,27 +603,55 @@ impl CatchUpClient for FakeCatchUpClient {
         machine_id: &MachineId,
         new: NewContainer,
         _cancel: &tokio_util::sync::CancellationToken,
-    ) -> Result<Option<ContainerId>, RpcError> {
+    ) -> Result<Option<Copy>, RpcError> {
         assert_eq!(machine_id, &self.machine_id);
+        let service =
+            QualifiedService::new(new.slot.namespace.clone(), new.resolved_spec.name.clone());
         self.run_calls.push(new);
-        if let Some(pointer) = self.published_while_running.take() {
-            *self.row.row.lock().unwrap() = Some(pointer);
-        }
-        self.run_result.clone()
+        Ok(self.run_result.clone()?.map(|container_id| Copy {
+            machine_id: self.machine_id,
+            service,
+            container_id,
+            rotation: CopyRotation::Pending,
+        }))
+    }
+
+    async fn bring_in(
+        &mut self,
+        copy: &Copy,
+        _spec: &ResolvedServiceSpec,
+    ) -> Result<BroughtIn, RpcError> {
+        self.brought_in.push(copy.clone());
+        Ok(match &self.bring_in {
+            FakeBringIn::In => BroughtIn::In,
+            FakeBringIn::Refused(reason) => BroughtIn::Refused(ContainerRefusal {
+                reason: *reason,
+                message: format!("owner refused In: {reason:?}"),
+            }),
+        })
+    }
+
+    async fn retire_copy(
+        &mut self,
+        copy: &Copy,
+        _cancel: &tokio_util::sync::CancellationToken,
+    ) -> Result<Step, RpcError> {
+        self.retired.push(copy.clone());
+        Ok(Step::Done)
+    }
+
+    async fn remove_copy(&mut self, copy: &Copy) -> Result<Step, RpcError> {
+        self.removed.push(copy.clone());
+        Ok(Step::Done)
     }
 
     async fn target_containers(
         &mut self,
         _machine_id: &MachineId,
     ) -> Result<Vec<ContainerObservation>, Failure> {
-        Ok(self
-            .target_services
-            .as_ref()
-            .unwrap_or(&self.services)
-            .iter()
-            .flat_map(ServiceObservation::members)
-            .map(|container| container.as_observation().clone())
-            .collect())
+        Ok(flatten(
+            self.target_services.as_ref().unwrap_or(&self.services),
+        ))
     }
 }
 
@@ -476,457 +692,30 @@ fn provisioned_global_spec() -> RequestedServiceSpec {
 async fn failed_placement_is_reported_even_if_final_observation_is_running() {
     let joiner = machine('1', "joiner");
     let founder = machine('f', "founder");
-    let mut client = FakeCatchUpClient {
-        machine_id: joiner.id,
-        services: vec![global_service(
+    let mut client = fake(
+        &joiner,
+        vec![global_service(
             qualified("app", "api"),
             'a',
             Placement::default(),
             running_on(&founder, 'a'),
         )],
-        target_services: Some(vec![global_service(
-            qualified("app", "api"),
-            'a',
-            Placement::default(),
-            running_on(&joiner, 'b'),
-        )]),
-
-        run_calls: Vec::new(),
-
-        row: FakeRow::default(),
-        run_result: Err(RpcError {
-            code: ployz_core::RpcErrorCode::Conflict,
-            message: "creation key conflict".into(),
-            details: serde_json::Value::Null,
-            cause: Vec::new(),
-        }),
-        failures: Vec::new(),
-        omissions: Vec::new(),
-        relisted: None,
-        listings: 0,
-        published_while_running: None,
-    };
-    let error = catch_up_globals(
-        &mut client,
-        &joiner,
-        &tokio_util::sync::CancellationToken::new(),
-        |_| {},
-    )
-    .await
-    .unwrap_err();
-    assert!(
-        crate::ui::chain_text(&joined_catch_up_error(error, &joiner, |args| {
-            shell_words::join(std::iter::once("ployz").chain(args.iter().copied()))
-        }))
-        .contains("creation key conflict")
     );
-}
-
-fn pointed(deploy: &str, containers: &[char], retiring: &[char]) -> ployz_core::ServingPointer {
-    ployz_core::ServingPointer {
-        deploy: ployz_core::DeploymentLogId::parse(deploy).unwrap(),
-        containers: containers.iter().map(|id| container_id(*id)).collect(),
-        previous: (!retiring.is_empty())
-            .then(|| ployz_core::DeploymentLogId::parse(deploy).unwrap()),
-        retiring: retiring.iter().map(|id| container_id(*id)).collect(),
-        deciding: None,
-    }
-}
-
-fn replacing_client(row: FakeRow) -> (Machine, FakeCatchUpClient) {
-    let joiner = machine('1', "joiner");
-    let client = FakeCatchUpClient {
-        machine_id: joiner.id,
-        services: vec![global_service(
-            qualified("app", "api"),
-            'a',
-            Placement::default(),
-            running_on(&joiner, 'd'),
-        )],
-        target_services: Some(vec![global_service(
-            qualified("app", "api"),
-            'a',
-            Placement::default(),
-            running_on(&joiner, 'b'),
-        )]),
-        run_calls: Vec::new(),
-        row,
-        run_result: Ok(Some(container_id('b'))),
-        failures: Vec::new(),
-        omissions: Vec::new(),
-        relisted: None,
-        listings: 0,
-        published_while_running: None,
-    };
-    (joiner, client)
-}
-
-#[tokio::test]
-async fn a_healthy_copy_joins_the_pointer_and_what_it_replaced_retires() {
-    let row = FakeRow::default();
-    *row.row.lock().unwrap() = Some(pointed("dep-a", &['d', 'c'], &[]));
-    let (joiner, mut client) = replacing_client(row.clone());
-    catch_up_globals(
-        &mut client,
-        &joiner,
-        &tokio_util::sync::CancellationToken::new(),
-        |_| {},
-    )
-    .await
-    .unwrap();
-    assert_eq!(
-        *row.row.lock().unwrap(),
-        Some(pointed("dep-a", &['b'], &['d', 'c'])),
-        "the replaced copy and a pointed copy no Machine lists both retire"
-    );
-}
-
-#[tokio::test]
-async fn a_pointed_copy_another_machine_lists_stays_pointed() {
-    let row = FakeRow::default();
-    *row.row.lock().unwrap() = Some(pointed("dep-a", &['d', 'c'], &[]));
-    let (joiner, mut client) = replacing_client(row.clone());
-    let elsewhere = machine('2', "elsewhere");
-    client.relisted = Some(vec![
-        global_service(
-            qualified("app", "api"),
-            'a',
-            Placement::default(),
-            running_on(&joiner, 'b'),
-        ),
-        global_service(
-            qualified("app", "api"),
-            'a',
-            Placement::default(),
-            running_on(&elsewhere, 'c'),
-        ),
-    ]);
-    catch_up_globals(
-        &mut client,
-        &joiner,
-        &tokio_util::sync::CancellationToken::new(),
-        |_| {},
-    )
-    .await
-    .unwrap();
-    assert_eq!(
-        *row.row.lock().unwrap(),
-        Some(pointed("dep-a", &['c', 'b'], &['d'])),
-        "only this Machine's replaced copy retires; one another Machine lists stays for its owner"
-    );
-}
-
-#[tokio::test]
-async fn a_copy_started_under_a_pointer_carries_that_deploys_label() {
-    for pointer in [Some(pointed("dep-a", &['d'], &[])), None] {
-        let row = FakeRow::default();
-        row.row.lock().unwrap().clone_from(&pointer);
-        let (joiner, mut client) = replacing_client(row);
-        catch_up_globals(
-            &mut client,
-            &joiner,
-            &tokio_util::sync::CancellationToken::new(),
-            |_| {},
-        )
-        .await
-        .unwrap();
-        let labels: Vec<_> = client
-            .run_calls
-            .iter()
-            .map(|new| new.deployment_id.clone())
-            .collect();
-        assert_eq!(labels, vec![pointer.map(|pointer| pointer.deploy)]);
-    }
-}
-
-#[tokio::test]
-async fn a_started_copy_gone_before_the_final_listing_is_not_published() {
-    let row = FakeRow::default();
-    *row.row.lock().unwrap() = Some(pointed("dep-a", &['d'], &[]));
-    let (joiner, mut client) = replacing_client(row.clone());
     client.target_services = Some(vec![global_service(
         qualified("app", "api"),
         'a',
         Placement::default(),
-        running_on(&joiner, 'e'),
+        running_on(&joiner, 'b'),
     )]);
-    let caught_up = catch_up_globals(
-        &mut client,
-        &joiner,
-        &tokio_util::sync::CancellationToken::new(),
-        |_| {},
-    )
-    .await;
-    assert!(
-        caught_up.is_err(),
-        "another running copy does not stand in for it"
-    );
-    assert_eq!(
-        *row.row.lock().unwrap(),
-        Some(pointed("dep-a", &['d'], &[]))
-    );
-    assert_eq!(*row.publishes.lock().unwrap(), 0);
-}
-
-#[tokio::test]
-async fn a_lost_publish_retries_over_the_winner() {
-    let row = FakeRow::default();
-    *row.row.lock().unwrap() = Some(pointed("dep-a", &['d'], &[]));
-    row.interlopers
-        .lock()
-        .unwrap()
-        .push(pointed("dep-a", &['d', 'e'], &[]));
-    let (joiner, mut client) = replacing_client(row.clone());
-    catch_up_globals(
-        &mut client,
-        &joiner,
-        &tokio_util::sync::CancellationToken::new(),
-        |_| {},
-    )
-    .await
-    .unwrap();
-    assert_eq!(*row.publishes.lock().unwrap(), 2);
-    assert_eq!(
-        *row.row.lock().unwrap(),
-        Some(pointed("dep-a", &['e', 'b'], &['d']))
-    );
-}
-
-#[tokio::test]
-async fn a_service_with_no_pointer_gets_no_row() {
-    let row = FakeRow::default();
-    let (joiner, mut client) = replacing_client(row.clone());
-    catch_up_globals(
-        &mut client,
-        &joiner,
-        &tokio_util::sync::CancellationToken::new(),
-        |_| {},
-    )
-    .await
-    .unwrap();
-    assert_eq!(*row.row.lock().unwrap(), None);
-    assert_eq!(*row.publishes.lock().unwrap(), 0);
-}
-
-#[tokio::test]
-async fn a_publish_that_keeps_losing_fails_the_slot() {
-    let row = FakeRow::default();
-    *row.row.lock().unwrap() = Some(pointed("dep-a", &['d'], &[]));
-    *row.interlopers.lock().unwrap() = ['5', '6', '7', '8']
-        .iter()
-        .map(|id| pointed("dep-a", &['d', *id], &[]))
-        .collect();
-    let (joiner, mut client) = replacing_client(row);
-    let error = catch_up_globals(
-        &mut client,
-        &joiner,
-        &tokio_util::sync::CancellationToken::new(),
-        |_| {},
-    )
-    .await
-    .unwrap_err();
-    assert_eq!(error.unresolved, [qualified("app", "api")]);
-}
-
-fn newer_deploy(joiner: &Machine, row: &FakeRow, before_read: bool) -> Vec<ServiceObservation> {
-    let newer = pointed("dep-q", &['e'], &['d']);
-    if before_read {
-        *row.row.lock().unwrap() = Some(newer);
-    } else {
-        row.interlopers.lock().unwrap().push(newer);
-    }
-    let mut relisted = vec![
-        global_service(
-            qualified("app", "api"),
-            'a',
-            Placement::default(),
-            running_on(joiner, 'd'),
-        ),
-        global_service(
-            qualified("app", "api"),
-            'a',
-            Placement::default(),
-            running_on(joiner, 'b'),
-        ),
-    ];
-    if before_read {
-        relisted.push(global_service_with_image(
-            qualified("app", "api"),
-            'a',
-            Placement::default(),
-            running_on(joiner, 'e'),
-            "ghcr.io/getployz/api:2",
-        ));
-    }
-    relisted
-}
-
-#[tokio::test]
-async fn a_newer_deploy_read_before_the_publish_keeps_its_copy_serving() {
-    let row = FakeRow::default();
-    *row.row.lock().unwrap() = Some(pointed("dep-a", &['d'], &[]));
-    let (joiner, mut client) = replacing_client(row.clone());
-    client.relisted = Some(newer_deploy(&joiner, &row, true));
-    let error = catch_up_globals(
-        &mut client,
-        &joiner,
-        &tokio_util::sync::CancellationToken::new(),
-        |_| {},
-    )
-    .await
-    .unwrap_err();
-    assert_eq!(
-        *row.row.lock().unwrap(),
-        Some(pointed("dep-q", &['e'], &['d'])),
-        "the newer deploy's copy stays serving and the old spec's copy never joins"
-    );
-    assert_eq!(*row.publishes.lock().unwrap(), 0);
-    assert_eq!(error.unresolved, [qualified("app", "api")]);
-}
-
-#[tokio::test]
-async fn a_newer_deploy_published_after_the_listing_keeps_its_copy_serving() {
-    let row = FakeRow::default();
-    *row.row.lock().unwrap() = Some(pointed("dep-a", &['d'], &[]));
-    let (joiner, mut client) = replacing_client(row.clone());
-    client.relisted = Some(newer_deploy(&joiner, &row, false));
-    let error = catch_up_globals(
-        &mut client,
-        &joiner,
-        &tokio_util::sync::CancellationToken::new(),
-        |_| {},
-    )
-    .await
-    .unwrap_err();
-    assert_eq!(
-        *row.row.lock().unwrap(),
-        Some(pointed("dep-q", &['e'], &['d'])),
-        "a lost publish re-reads the newer deploy and adds nothing beside its copy"
-    );
-    assert_eq!(error.unresolved, [qualified("app", "api")]);
-}
-
-#[tokio::test]
-async fn a_newer_deploy_published_while_the_copy_starts_keeps_its_pointer() {
-    let row = FakeRow::default();
-    *row.row.lock().unwrap() = Some(pointed("dep-a", &['d'], &[]));
-    let (joiner, mut client) = replacing_client(row.clone());
-    client.published_while_running = Some(pointed("dep-q", &['e'], &['d']));
-    let error = catch_up_globals(
-        &mut client,
-        &joiner,
-        &tokio_util::sync::CancellationToken::new(),
-        |_| {},
-    )
-    .await
-    .unwrap_err();
-    assert_eq!(
-        *row.row.lock().unwrap(),
-        Some(pointed("dep-q", &['e'], &['d'])),
-        "a copy started under dep-a never joins dep-q, even with dep-q's copies unlisted"
-    );
-    assert_eq!(*row.publishes.lock().unwrap(), 0);
-    assert_eq!(error.unresolved, [qualified("app", "api")]);
-}
-
-#[tokio::test]
-async fn a_pointer_naming_only_absent_copies_never_gains_an_older_spec_recreation() {
-    let row = FakeRow::default();
-    *row.row.lock().unwrap() = Some(pointed("dep-q", &['7'], &[]));
-    let (joiner, mut client) = replacing_client(row.clone());
-    let error = catch_up_globals(
-        &mut client,
-        &joiner,
-        &tokio_util::sync::CancellationToken::new(),
-        |_| {},
-    )
-    .await
-    .unwrap_err();
-    assert!(
-        client.run_calls.is_empty(),
-        "an unlabelled copy dep-q never named supplies no spec worth recreating"
-    );
-    assert_eq!(*row.publishes.lock().unwrap(), 0);
-    assert_eq!(
-        *row.row.lock().unwrap(),
-        Some(pointed("dep-q", &['7'], &[]))
-    );
-    assert_eq!(error.unresolved, [qualified("app", "api")]);
-    assert!(
-        crate::ui::chain_text(&joined_catch_up_error(error, &joiner, |args| {
-            shell_words::join(std::iter::once("ployz").chain(args.iter().copied()))
-        }))
-        .contains("a newer deploy replaced it")
-    );
-}
-
-#[tokio::test]
-async fn only_copies_the_pointer_named_here_retire() {
-    let row = FakeRow::default();
-    *row.row.lock().unwrap() = Some(pointed("dep-a", &['d'], &[]));
-    let (joiner, mut client) = replacing_client(row.clone());
-    let api = || qualified("app", "api");
-    let hook = global_service(api(), 'a', Placement::default(), running_on(&joiner, '9'));
-    let mut hook = hook.containers.first().unwrap().clone().into_observation();
-    hook.try_update(|parts| parts.kind = ContainerKind::PreDeployHook)
-        .unwrap();
-    let mut relisted = vec![
-        global_service(api(), 'a', Placement::default(), running_on(&joiner, 'd')),
-        global_service(api(), 'a', Placement::default(), running_on(&joiner, 'b')),
-        global_service_with_image(
-            api(),
-            'a',
-            Placement::default(),
-            running_on(&joiner, 'e'),
-            "ghcr.io/getployz/api:2",
-        ),
-    ];
-    relisted
-        .first_mut()
-        .unwrap()
-        .hook_containers
-        .push(ployz_core::HookContainer::try_from(hook).unwrap());
-    client.relisted = Some(relisted);
-    catch_up_globals(
-        &mut client,
-        &joiner,
-        &tokio_util::sync::CancellationToken::new(),
-        |_| {},
-    )
-    .await
-    .unwrap();
-    assert_eq!(
-        *row.row.lock().unwrap(),
-        Some(pointed("dep-a", &['b'], &['d'])),
-        "the unpointed new-spec copy and the running hook stay out of retiring"
-    );
+    client.run_result = Err(RpcError {
+        code: ployz_core::RpcErrorCode::Conflict,
+        message: "creation key conflict".into(),
+        details: serde_json::Value::Null,
+        cause: Vec::new(),
+    });
+    let error = catch_up(&mut client, &joiner).await.unwrap_err();
+    assert!(message(error, &joiner).contains("creation key conflict"));
 }
 
 #[path = "global_catch_up_rpc_tests.rs"]
 mod rpc_tests;
-
-#[tokio::test]
-async fn a_retiring_copy_gone_from_the_listing_leaves_the_pointer() {
-    let row = FakeRow::default();
-    *row.row.lock().unwrap() = Some(pointed("dep-a", &['d'], &['7', 'e']));
-    let (joiner, mut client) = replacing_client(row.clone());
-    let api = || qualified("app", "api");
-    client.relisted = Some(vec![
-        global_service(api(), 'a', Placement::default(), running_on(&joiner, 'd')),
-        global_service(api(), 'a', Placement::default(), running_on(&joiner, 'b')),
-        global_service(api(), 'a', Placement::default(), running_on(&joiner, 'e')),
-    ]);
-    catch_up_globals(
-        &mut client,
-        &joiner,
-        &tokio_util::sync::CancellationToken::new(),
-        |_| {},
-    )
-    .await
-    .unwrap();
-    assert_eq!(
-        *row.row.lock().unwrap(),
-        Some(pointed("dep-a", &['b'], &['e', 'd'])),
-        "7 is gone and leaves retiring; e still runs and stays"
-    );
-}

@@ -574,7 +574,7 @@ $ ployz env sync --to --plan --env fix-web
 stdout:
 ```
 fix-web → production (version 31:e25e4c887592ac4e):
-  web.source: {"credentials":false,"image":"nginx:1.27","type":"image"} → {"credentials":false,"image":"nginx:1.28","type":"image"}
+  web.image: "nginx:1.27" → "nginx:1.28"
   web.env.DEBUG: null → "1" (new)
   web.env.NEW: null → "1" (new)
 ```

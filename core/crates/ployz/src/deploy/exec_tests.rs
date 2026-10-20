@@ -208,6 +208,8 @@ struct Scripted {
     slots: Mutex<Vec<SlotKey>>,
     answers: Mutex<Vec<AnswerWhen>>,
     deploys: Mutex<Vec<Option<ployz_core::DeploymentLogId>>>,
+    /// The run each In ask carried, by copy.
+    in_runs: Mutex<Vec<(ContainerId, Option<ployz_core::DeploymentLogId>)>>,
     cancel_on_prepare: Option<CancellationToken>,
     /// This call cancels the Deploy once it is made.
     cancel_on: Option<(Call, CancellationToken)>,
@@ -240,6 +242,7 @@ struct Scripted {
     /// Another writer moves this copy here just before the run's next ask of
     /// this kind on it.
     moved: Mutex<BTreeMap<(ContainerId, Ask), CopyRotation>>,
+    moved_sibling: Mutex<BTreeMap<(ContainerId, Ask), (ContainerId, CopyRotation)>>,
     /// Every live proxy keeps listing a copy of this Service for this many
     /// reads after it leaves In; `usize::MAX` never drops it.
     withheld: BTreeMap<QualifiedService, usize>,
@@ -267,6 +270,7 @@ impl Scripted {
             slots: Mutex::new(Vec::new()),
             answers: Mutex::new(Vec::new()),
             deploys: Mutex::new(Vec::new()),
+            in_runs: Mutex::new(Vec::new()),
             cancel_on_prepare: None,
             cancel_on: None,
             cancel_on_move: None,
@@ -285,6 +289,7 @@ impl Scripted {
             failed_route_reads: Mutex::new(0),
             read_latency: false,
             moved: Mutex::new(BTreeMap::new()),
+            moved_sibling: Mutex::new(BTreeMap::new()),
             withheld: BTreeMap::new(),
             lingering: Mutex::new(BTreeMap::new()),
             lagging: Mutex::new(BTreeMap::new()),
@@ -334,6 +339,16 @@ impl Scripted {
     /// before the run, so the rule's kept route applies from the first read.
     fn routing(self, service: &QualifiedService) -> Self {
         self.routes(service, false);
+        self
+    }
+
+    fn with_deploy(mut self, container_id: &ContainerId, deploy: &DeploymentLogId) -> Self {
+        self.copies
+            .get_mut()
+            .unwrap()
+            .get_mut(container_id)
+            .expect("deploy label on a recorded copy")
+            .deploy = Some(deploy.clone());
         self
     }
 
@@ -576,6 +591,14 @@ impl Scripted {
             .remove(&(container_id, Ask::of(target)));
         if let Some(rotation) = &raced {
             self.record(container_id, |copy| copy.rotation = rotation.clone());
+        }
+        let raced_sibling = self
+            .moved_sibling
+            .lock()
+            .unwrap()
+            .remove(&(container_id, Ask::of(target)));
+        if let Some((sibling, rotation)) = raced_sibling {
+            self.record(sibling, |copy| copy.rotation = rotation);
         }
         let copy = {
             let mut copies = self.copies.lock().unwrap();
@@ -1031,6 +1054,10 @@ impl MachineOperations for Scripted {
                 container: RunTarget::Existing(locator),
                 rotation: RunRotation::In { run, expect },
             } => {
+                self.in_runs
+                    .lock()
+                    .unwrap()
+                    .push((id_of(&locator), run.clone()));
                 self.rotate(
                     machine_id,
                     id_of(&locator),

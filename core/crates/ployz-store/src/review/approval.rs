@@ -274,22 +274,28 @@ fn lost_after(
     })
 }
 
+/// The digest a human approves for `command` (as Cloud names it: `publish`, `admit`,
+/// `retry`, `shut_down`, `remove`, `sync` or `take`) into `environment`.
 pub(crate) fn approval_digest(
     who: &Actor,
+    command: &str,
     environment: &EnvironmentId,
     version: &str,
     effects: &BTreeSet<DestructiveEffect>,
 ) -> ApprovalDigest {
-    digest(version, &bound(who, environment, effects))
+    digest(version, &bound(who, command, environment, effects))
 }
 
+/// What every approval binds: who asks, the command it runs, where, and what it destroys.
 fn bound(
     who: &Actor,
+    command: &str,
     environment: &EnvironmentId,
     effects: &BTreeSet<DestructiveEffect>,
 ) -> serde_json::Value {
     json!({
         "organization": who.organization,
+        "command": command,
         "environment": environment,
         "effects": effects,
     })
@@ -406,7 +412,11 @@ pub(crate) fn approve(
     if !effects.is_empty() {
         gate.trusted.admit(Permission::ChangesDestroy)?;
     }
-    let mut bound = bound(who, environment, effects);
+    let command = match shipping {
+        Shipping::Publish => "publish",
+        Shipping::Deploy { .. } => "admit",
+    };
+    let mut bound = bound(who, command, environment, effects);
     if let Shipping::Deploy { services, upload } = shipping
         && let Some(bound) = bound.as_object_mut()
     {
@@ -459,6 +469,7 @@ pub(crate) fn approve_retry(
     let accepted: BTreeSet<&VolumeName> = retry.accept_volume_loss.iter().collect();
     let bound = json!({
         "organization": who.organization,
+        "command": "retry",
         "environment": review.view.environment.id,
         "retry": retry.deployment,
         "number": rollback.number,
@@ -559,6 +570,7 @@ pub(crate) fn approve_move(
     };
     let bound = json!({
         "organization": who.organization,
+        "command": what,
         "environment": into.summary.id,
         what: from.id,
         "from_revision": from.revision,

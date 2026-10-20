@@ -89,25 +89,45 @@ pub(crate) struct ServiceUploads {
     pub(crate) services: BTreeMap<String, UploadDigest>,
 }
 
-/// Whether `deployment` moves its Services onto the uploads it builds from: it sent
-/// them, it applied, or it may still run. A failed retry of an older upload leaves
-/// each on its latest.
-fn advances(deployment: &Stored) -> bool {
-    deployment.summary.status == crate::DeploymentStatus::Applied
-        || deployment.summary.in_flight
-        || deployment
-            .service_uploads
-            .as_ref()
-            .is_none_or(|uploads| uploads.sent)
+/// Whether `deployment` applied `service`: it runs the upload it built it from.
+fn applied(deployment: &Stored, service: &str) -> bool {
+    deployment.run.nodes.get(service).is_some_and(|status| {
+        status.applied(deployment.summary.status == crate::DeploymentStatus::Applied)
+    })
 }
 
-/// The upload `service` builds from: its own in the latest Deployment that moved it.
-fn lineage<'a>(deployments: &'a [Stored], service: &str) -> Option<(usize, &'a UploadDigest)> {
+/// Whether `deployment` moved `service` onto the upload it builds it from: it sent
+/// that upload, or applied `service`. A retry leaves a Service it didn't apply on
+/// its latest, and one that never ran leaves every one. One admitted before uploads
+/// were kept per Service may be a retry, so only applying moves it.
+fn moved(deployment: &Stored, service: &str) -> bool {
+    deployment
+        .service_uploads
+        .as_ref()
+        .is_some_and(|uploads| uploads.sent)
+        || applied(deployment, service)
+}
+
+/// Whether a Deployment admitted now runs after `deployment` has moved `service`:
+/// it did, or it is running, so the next one queues behind it. A queued one is
+/// superseded instead.
+fn ahead(deployment: &Stored, service: &str) -> bool {
+    moved(deployment, service)
+        || (deployment.summary.in_flight
+            && deployment.summary.status != crate::DeploymentStatus::Queued)
+}
+
+/// The upload `service` builds from: its own in the latest Deployment that `moves` it.
+fn lineage<'a>(
+    deployments: &'a [Stored],
+    service: &str,
+    moves: fn(&Stored, &str) -> bool,
+) -> Option<(usize, &'a UploadDigest)> {
     deployments
         .iter()
         .enumerate()
         .rev()
-        .filter(|(_, deployment)| advances(deployment))
+        .filter(|(_, deployment)| moves(deployment, service))
         .find_map(|(at, deployment)| own(deployment, service).map(|digest| (at, digest)))
 }
 
@@ -151,7 +171,7 @@ pub(crate) fn admitted(
     let owned: Vec<(&str, usize, &UploadDigest)> = sourceless
         .iter()
         .filter_map(|service| {
-            lineage(&deployments, service).map(|(at, digest)| (*service, at, digest))
+            lineage(&deployments, service, ahead).map(|(at, digest)| (*service, at, digest))
         })
         .collect();
     // The newest, preferring what that Deployment carried itself.
@@ -198,8 +218,8 @@ pub(crate) fn admitted(
 
 /// The digests Cloud keeps for `environment`, given `held`, the Deployments Cloud
 /// holds an upload for: those that sent one. Each Service without a source keeps
-/// the upload it last built from and its latest upload sent, and a Deployment that
-/// may still run keeps every upload it builds from.
+/// the upload it next builds from, the one it runs, and its latest upload sent, and
+/// a Deployment that may still run keeps every upload it builds from.
 fn kept(
     tx: &mut dyn Tx,
     environment: &EnvironmentId,
@@ -235,7 +255,11 @@ fn kept(
         .filter(|service| matches!(service.config.source, ServiceSource::Empty { .. }))
     {
         let mut latest = deployments.iter().rev();
-        kept.extend(lineage(&deployments, &service.id).map(|(_, digest)| digest.clone()));
+        for moves in [moved, applied] {
+            kept.extend(
+                lineage(&deployments, &service.id, moves).map(|(_, digest)| digest.clone()),
+            );
+        }
         kept.extend(
             latest
                 .find(|deployment| {

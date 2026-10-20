@@ -169,17 +169,22 @@ impl Failure {
     /// A Server's daemon answered before this connection failed: a refusal, not an
     /// unreachable Server.
     pub(crate) fn daemon_answered(&self) -> bool {
+        self.connect_error().is_some_and(|error| !error.unreached())
+    }
+
+    /// The connection failure this failure carries, if any.
+    pub(crate) fn connect_error(&self) -> Option<&ConnectError> {
         let Inner::Command { error, .. } = &self.inner else {
-            return false;
+            return None;
         };
         let mut next: Option<&(dyn Error + 'static)> = Some(error.as_ref());
         while let Some(error) = next {
             if let Some(error) = error.downcast_ref::<ConnectError>() {
-                return !error.unreached();
+                return Some(error);
             }
             next = error.source();
         }
-        false
+        None
     }
 
     pub(crate) fn diagnostic(&self) -> Option<&ui::progress::Diagnostic> {
@@ -611,6 +616,7 @@ fn operator_code(error: &OperatorError) -> RpcErrorCode {
         | OperatorError::NoServices
         | OperatorError::NoDeploymentContainers => RpcErrorCode::NotFound,
         OperatorError::StreamClosed
+        | OperatorError::ExecContainerStopped { .. }
         | OperatorError::NoServableContainer
         | OperatorError::SnapshotStale => RpcErrorCode::Unavailable,
         OperatorError::Protocol(_) => RpcErrorCode::Internal,
