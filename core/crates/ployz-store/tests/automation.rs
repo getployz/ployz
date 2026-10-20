@@ -873,6 +873,75 @@ fn a_push_tears_down_a_service_a_save_removed() {
 }
 
 #[test]
+fn a_push_tears_down_a_service_a_save_removed_while_its_first_deploy_ran() {
+    let (store, who) = shop();
+    set(&store, &who, "web.watchPaths", json!(["web/**"]));
+    publish(&store, &who);
+    let first = system(&store, &push(None, Some(H1), None));
+    let runner = ployz_store::RunnerId::parse("runner").unwrap();
+    store
+        .claim(&first.admitted[0].deployment.id, &runner)
+        .unwrap();
+    store
+        .write(
+            &who,
+            &ployz_store::RemoveService {
+                environment: EnvironmentRef::default(),
+                service: ServiceName::parse("api").unwrap(),
+            },
+        )
+        .unwrap();
+    publish(&store, &who);
+
+    let automated = system(
+        &store,
+        &push(Some(H1), Some(H2), Some(&["web/src/main.rs"])),
+    );
+    assert_eq!(
+        deployed(&store, &who, &automated),
+        vec![(vec!["web".to_owned(), "api".to_owned()], 2)]
+    );
+}
+
+#[test]
+fn a_push_ships_a_saved_config_nothing_mounts() {
+    let (store, who) = shop();
+    set(&store, &who, "web.watchPaths", json!(["web/**"]));
+    backend::deploy(&store, &who, "production", 1);
+    system(&store, &push(None, Some(H1), None));
+    store
+        .write(
+            &who,
+            &ployz_store::CreateConfig {
+                id: ployz_store::ConfigId::parse("00000000-0000-4000-8000-000000000025").unwrap(),
+                environment: EnvironmentRef::default(),
+                name: ployz_core::ConfigName::parse("extra").unwrap(),
+                mounts: Vec::new(),
+            },
+        )
+        .unwrap();
+    publish(&store, &who);
+
+    let automated = system(
+        &store,
+        &push(Some(H1), Some(H2), Some(&["web/src/main.rs"])),
+    );
+    let nodes: Vec<String> = store
+        .read(
+            &who,
+            &ployz_store::DeploymentQuery {
+                id: automated.admitted[0].deployment.id.clone(),
+            },
+        )
+        .unwrap()
+        .nodes
+        .into_iter()
+        .map(|node| node.node.name().to_owned())
+        .collect();
+    assert!(nodes.contains(&"extra".to_owned()), "{nodes:?}");
+}
+
+#[test]
 fn policy_settings_apply_at_once_and_select_by_watch_paths() {
     let (store, who) = shop();
     publish(&store, &who);
