@@ -55,6 +55,9 @@ Before your first server, the **Servers** page shows one card instead of a list.
 under **Shown once. Expires in 7d.** Copy it now: Ployz can't show the token again. The card then
 says **Listening for servers…** until the first one checks in.
 
+Only an owner or admin can make a token. For a member, **Get install command** and **Add servers**
+say so instead.
+
 Once you have a server, or one is waiting, make more tokens with **Add servers**:
 
 1. Go to **Servers** and click **Add servers**. While you have no server, the bottom bar of your
@@ -123,6 +126,7 @@ curl -fsSL https://ployz.sh | sudo sh -s -- --enroll
 - **Hosts wait for you.** A host that runs the line checks in under **Waiting** until you enroll it from **Servers**.
 - **It lasts 24 hours by default.** `--expires` takes `1d`, `7d` or `30d`.
 - **Expiry and revoke stop new hosts only.** Servers already in stay.
+- **Only your login makes or revokes one.** An organization token can't.
 
 List your tokens, and revoke one by name:
 

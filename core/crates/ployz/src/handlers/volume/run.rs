@@ -321,7 +321,7 @@ pub(crate) fn remove_mirror_command(command: Command) -> Command {
 
 pub(crate) fn sync_command(command: Command) -> Command {
     store::scoped(command
-            .about("Hand a Volume's Mirror what changed since its last pull (Ployz Cloud); `volume show` follows the download"),
+            .about("Hand a Volume's Mirror what changed since its last pull (Ployz Cloud); the dashboard's Volume page follows the download"),
     )
     .arg(positional("volume", true))
     .arg(switch("full", None).help("Copy everything again as a run, for a Mirror that fell behind for good"))
@@ -461,12 +461,10 @@ fn hand_off(root: &ArgMatches, volume: &VolumeName) -> Result<(), Error> {
     let synced = runtime
         .block_on(sync_mirror(credential, &volume_id, &asked))
         .map_err(|error| store.fail(error))?;
-    let show = store::next(matches, &["volume", "show", volume.as_str()]);
-    crate::ui::finish(&Next::new(&synced, Some(show.clone())), || {
+    crate::ui::finish(&Next::new(&synced, None), || {
         for line in &synced.lines {
             crate::ui::stream(format_args!("{line}"));
         }
-        crate::ui::hint(&Hint::Next(show.clone()));
     })
 }
 

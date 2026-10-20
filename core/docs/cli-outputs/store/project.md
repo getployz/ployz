@@ -102,7 +102,7 @@ $ ployz project new Bad\ Name\!
 
 stderr:
 ```
-error: Expected a Project name: up to 63 lowercase letters, digits and -
+error: Expected a Project name: up to 63 lowercase letters, digits and -, starting and ending with a letter or digit
 ```
 
 ### project new --json: invalid name
@@ -114,7 +114,7 @@ $ ployz --json project new Bad\ Name\!
 
 stdout:
 ```
-{"error":{"cause":[],"code":"invalid_argument","details":null,"message":"Expected a Project name: up to 63 lowercase letters, digits and -"}}
+{"error":{"cause":[],"code":"invalid_argument","details":null,"message":"Expected a Project name: up to 63 lowercase letters, digits and -, starting and ending with a letter or digit"}}
 ```
 
 ### project ls

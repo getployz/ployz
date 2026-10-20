@@ -360,24 +360,33 @@ enum Enrollment {
 
 async fn wait_joined(acting: &Acting, enrollment: &str) -> Result<(), Error> {
     loop {
-        match acting
+        let read = acting
             .post("servers/enrollment", json!({ "id": enrollment }))
-            .await?
-        {
-            Enrollment::Pending => tokio::time::sleep(JOIN_POLL).await,
-            Enrollment::Expired => {
+            .await;
+        match read {
+            Err(LoginError::Status { status: 404, .. }) => {
                 return Err(Error::coded(
-                    RpcErrorCode::Conflict,
-                    "the enrollment expired before a Server joined",
+                    RpcErrorCode::NotFound,
+                    "the enrollment ended before a Server joined: forgetting this Organization's Servers voids its token",
                 )
                 .hint(Hint::Retry("ployz server add --command".into())));
             }
-            Enrollment::Joined { machine_id } => {
-                crate::ui::stream("The Server joined.");
-                return crate::ui::emit(
-                    &json!({ "server": { "id": machine_id }, "status": "joined" }),
-                );
-            }
+            read => match read? {
+                Enrollment::Pending => tokio::time::sleep(JOIN_POLL).await,
+                Enrollment::Expired => {
+                    return Err(Error::coded(
+                        RpcErrorCode::Conflict,
+                        "the enrollment expired before a Server joined",
+                    )
+                    .hint(Hint::Retry("ployz server add --command".into())));
+                }
+                Enrollment::Joined { machine_id } => {
+                    crate::ui::stream("The Server joined.");
+                    return crate::ui::emit(
+                        &json!({ "server": { "id": machine_id }, "status": "joined" }),
+                    );
+                }
+            },
         }
     }
 }
@@ -410,6 +419,36 @@ mod tests {
 
     fn add_matches(argv: &[&str]) -> ArgMatches {
         crate::cli::command().try_get_matches_from(argv).unwrap()
+    }
+
+    #[tokio::test]
+    async fn an_enrollment_voided_by_forgetting_the_servers_ends_the_wait() {
+        let cloud = crate::cloud_login::tests::fake_cloud(|route, _| match route {
+            "POST /api/cli/servers/enrollment" => (
+                404,
+                json!({ "_tag": "PublicError", "code": "NOT_FOUND", "message": "The requested resource was not found." }),
+            ),
+            _ => (500, json!({})),
+        });
+        let acting = Acting {
+            credential: Credential::Token {
+                cloud,
+                token: crate::cloud_login::Secret::new("ployz_secret".to_owned()),
+            },
+            organization: Organization {
+                id: "o1".to_owned(),
+                slug: "acme".to_owned(),
+            },
+        };
+        let error = wait_joined(&acting, "e1").await.unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "the enrollment ended before a Server joined: forgetting this Organization's Servers voids its token"
+        );
+        assert_eq!(
+            error.hints(),
+            [Hint::Retry("ployz server add --command".into())]
+        );
     }
 
     #[test]

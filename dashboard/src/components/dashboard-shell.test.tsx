@@ -251,3 +251,8 @@ it("keeps the agent closed, with its button in the top bar outside the page", as
   expect(button.getAttribute("aria-pressed")).toBe("false");
   expect(screen.queryByRole("region", { name: "Ployz agent" })).toBeNull();
 });
+
+it("names no place in the top bar on an organization page no place claims, such as a mistyped URL", async () => {
+  await show({ scope: "all", path: "/cloud/acme/servers" });
+  expect(screen.queryByRole("heading", { name: "Architecture" })).toBeNull();
+});

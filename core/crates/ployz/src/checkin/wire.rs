@@ -181,10 +181,17 @@ pub(crate) enum ZfsPrep {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum Answer {
-    Wait(Duration),
-    Probe(Duration, probe::Handout),
+    Wait(Wait),
+    Probe(Wait, probe::Handout),
     Enroll(Box<EnrollInstruction>),
     Stop(StopReason, String),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct Wait {
+    pub(super) after: Duration,
+    /// The Organization has no first server, which an Enroll on arrival token waits on.
+    pub(super) no_cluster: bool,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
@@ -217,6 +224,8 @@ pub(super) fn answer(body: &[u8]) -> Option<Answer> {
             retry_after: f64,
             #[serde(default)]
             probe: Option<serde_json::Value>,
+            #[serde(default, rename = "noCluster")]
+            no_cluster: bool,
         },
         Enroll(EnrollInstruction),
         Stop {
@@ -228,17 +237,30 @@ pub(super) fn answer(body: &[u8]) -> Option<Answer> {
     let body = serde_json::from_slice::<serde_json::Value>(body).ok()?;
     body.get("kind")?.as_str()?;
     Some(match serde_json::from_value::<Wire>(body) {
-        Ok(Wire::Wait { retry_after, probe }) => match probe.map(serde_json::from_value) {
-            Some(Ok(handout)) => Answer::Probe(wait_for(retry_after), handout),
-            Some(Err(why)) => {
-                crate::ui::note(format!("Could not read Cloud's probe handout: {why}"));
-                Answer::Wait(wait_for(retry_after))
+        Ok(Wire::Wait {
+            retry_after,
+            probe,
+            no_cluster,
+        }) => {
+            let wait = Wait {
+                after: wait_for(retry_after),
+                no_cluster,
+            };
+            match probe.map(serde_json::from_value) {
+                Some(Ok(handout)) => Answer::Probe(wait, handout),
+                Some(Err(why)) => {
+                    crate::ui::note(format!("Could not read Cloud's probe handout: {why}"));
+                    Answer::Wait(wait)
+                }
+                None => Answer::Wait(wait),
             }
-            None => Answer::Wait(wait_for(retry_after)),
-        },
+        }
         Ok(Wire::Enroll(instruction)) => Answer::Enroll(Box::new(instruction)),
         Ok(Wire::Stop { reason, message }) => Answer::Stop(reason, message),
-        Err(_) => Answer::Wait(UNKNOWN_WAIT),
+        Err(_) => Answer::Wait(Wait {
+            after: UNKNOWN_WAIT,
+            no_cluster: false,
+        }),
     })
 }
 

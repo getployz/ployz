@@ -1,6 +1,6 @@
 import "@tanstack/react-start/server-only";
 import { Effect, Schema } from "effect";
-import { APPROVAL_STATUSES, approvalSubject, destroyedLine } from "#/modules/approvals/approvals";
+import { APPROVAL_STATUSES, approvalTarget, destroyedLine } from "#/modules/approvals/approvals";
 import { decideAndApply } from "#/modules/approvals/apply.server";
 import type { ApprovalView } from "#/modules/approvals/approvals.server";
 import { defineCommand, type Ran } from "#/modules/commands/command.server";
@@ -28,7 +28,7 @@ const Answered = Schema.Struct({
 });
 
 const waiting = (approval: ApprovalView): typeof Waiting.Type => {
-  const { verb, name } = approvalSubject(approval.command, approval.review);
+  const { verb, name } = approvalTarget(approval.command, approval.review);
   return { id: approval.id, status: approval.status, verb, name, created_at: approval.created_at };
 };
 
@@ -46,7 +46,7 @@ type Decided = { ok: true; approval: ApprovalView } | Extract<Ran<never>, { ok: 
 
 const told = (decided: Decided, said: (subject: string) => string): Ran<typeof Answered.Type> => {
   if (!decided.ok) return decided;
-  const { verb, name } = approvalSubject(decided.approval.command, decided.approval.review);
+  const { verb, name } = approvalTarget(decided.approval.command, decided.approval.review);
   return { ok: true, output: answered(decided.approval), message: said(`${verb} ${name}`) };
 };
 
