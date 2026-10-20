@@ -255,8 +255,8 @@ fn a_deploy_publishes_then_its_runner_records_it_into_applied_state() {
     assert_eq!(
         nodes(&store, &who, 1),
         [
-            ("web".to_owned(), NodeStatus::Deployed),
-            ("api".to_owned(), NodeStatus::Deployed)
+            ("api".to_owned(), NodeStatus::Deployed),
+            ("web".to_owned(), NodeStatus::Deployed)
         ]
     );
     assert!(
@@ -283,8 +283,8 @@ fn a_deploy_publishes_then_its_runner_records_it_into_applied_state() {
     assert_eq!(
         nodes(&store, &who, 2),
         [
-            ("web".to_owned(), NodeStatus::Pending),
-            ("api".to_owned(), NodeStatus::Unchanged)
+            ("api".to_owned(), NodeStatus::Unchanged),
+            ("web".to_owned(), NodeStatus::Pending)
         ]
     );
     // Ending without executing leaves what the preview settled: nothing ran on api either way.
@@ -294,8 +294,8 @@ fn a_deploy_publishes_then_its_runner_records_it_into_applied_state() {
     assert_eq!(
         nodes(&store, &who, 2),
         [
-            ("web".to_owned(), NodeStatus::NotAttempted),
-            ("api".to_owned(), NodeStatus::Unchanged)
+            ("api".to_owned(), NodeStatus::Unchanged),
+            ("web".to_owned(), NodeStatus::NotAttempted)
         ]
     );
 }
@@ -826,8 +826,8 @@ fn an_existing_shared_config_keeps_its_edit_after_a_mounter_fails() {
     assert_eq!(
         nodes(&store, &who, 2),
         [
-            ("web".to_owned(), NodeStatus::Deployed),
             ("api".to_owned(), NodeStatus::Failed),
+            ("web".to_owned(), NodeStatus::Deployed),
             ("sentry".to_owned(), NodeStatus::Failed),
         ]
     );
@@ -855,8 +855,8 @@ fn an_existing_shared_config_waits_for_pending_mounters() {
     assert_eq!(
         nodes(&store, &who, 2),
         [
-            ("web".to_owned(), NodeStatus::Deployed),
             ("api".to_owned(), NodeStatus::Pending),
+            ("web".to_owned(), NodeStatus::Deployed),
             ("sentry".to_owned(), NodeStatus::Pending),
         ]
     );
@@ -1151,8 +1151,8 @@ fn a_partial_outcome_applies_only_confirmed_nodes() {
     assert_eq!(
         nodes(&store, &who, 1),
         [
-            ("web".to_owned(), NodeStatus::Deployed),
-            ("api".to_owned(), NodeStatus::Failed)
+            ("api".to_owned(), NodeStatus::Failed),
+            ("web".to_owned(), NodeStatus::Deployed)
         ]
     );
     // Only `api` is still to deploy; a different outcome can't overwrite this one.
@@ -1714,6 +1714,7 @@ fn a_failed_row_keeps_its_cause_chain_and_unfinished_rows_end_not_attempted() {
     assert_eq!(
         states,
         [
+            ("api".to_owned(), "beta".to_owned(), RowState::NotAttempted),
             (
                 "web".to_owned(),
                 "alpha".to_owned(),
@@ -1728,7 +1729,6 @@ fn a_failed_row_keeps_its_cause_chain_and_unfinished_rows_end_not_attempted() {
                     out_of_memory: None,
                 }
             ),
-            ("api".to_owned(), "beta".to_owned(), RowState::NotAttempted),
         ]
     );
 }
@@ -2032,11 +2032,11 @@ fn nothing_executed_applies_nothing() {
     assert_eq!(
         nodes(&store, &who, 1),
         [
-            ("web".to_owned(), NodeStatus::NotAttempted),
-            ("api".to_owned(), NodeStatus::NotAttempted)
+            ("api".to_owned(), NodeStatus::NotAttempted),
+            ("web".to_owned(), NodeStatus::NotAttempted)
         ]
     );
-    assert_eq!(changed(&store, &who), ["web", "api"]);
+    assert_eq!(changed(&store, &who), ["api", "web"]);
 }
 
 #[test]
@@ -2167,11 +2167,11 @@ fn a_cancelled_queued_deployment_never_runs() {
     assert_eq!(
         nodes(&store, &who, 1),
         [
-            ("web".to_owned(), NodeStatus::NotAttempted),
-            ("api".to_owned(), NodeStatus::NotAttempted)
+            ("api".to_owned(), NodeStatus::NotAttempted),
+            ("web".to_owned(), NodeStatus::NotAttempted)
         ]
     );
-    assert_eq!(changed(&store, &who), ["web", "api"]);
+    assert_eq!(changed(&store, &who), ["api", "web"]);
 }
 
 #[test]
@@ -2202,8 +2202,8 @@ fn a_cancelled_running_deployment_keeps_its_confirmed_node_outcomes() {
     assert_eq!(
         nodes(&store, &who, 1),
         [
-            ("web".to_owned(), NodeStatus::Deployed),
-            ("api".to_owned(), NodeStatus::Failed)
+            ("api".to_owned(), NodeStatus::Failed),
+            ("web".to_owned(), NodeStatus::Deployed)
         ]
     );
     assert_eq!(changed(&store, &who), ["api"]);
@@ -2231,7 +2231,7 @@ fn a_runner_that_loses_track_after_preparing_leaves_the_outcome_unknown() {
         code(store.record(&id(1), &a, succeeded(&["web", "api"]))),
         RpcErrorCode::Conflict
     );
-    assert_eq!(changed(&store, &who), ["web", "api"]);
+    assert_eq!(changed(&store, &who), ["api", "web"]);
 
     // Abandoned after preparing: unknown too.
     admit(&store, &who, 2, &[], None).unwrap();
@@ -2355,8 +2355,8 @@ fn a_retry_ships_exactly_what_the_failed_deployment_froze() {
     assert_eq!(
         nodes(&store, &who, 1),
         [
-            ("web".to_owned(), NodeStatus::Deployed),
-            ("api".to_owned(), NodeStatus::Failed)
+            ("api".to_owned(), NodeStatus::Failed),
+            ("web".to_owned(), NodeStatus::Deployed)
         ]
     );
     assert!(
@@ -2760,8 +2760,8 @@ fn a_staged_removal_leaves_applied_state_until_its_deploy_confirms_it() {
     assert_eq!(
         nodes(&store, &who, 1),
         [
-            ("web".to_owned(), NodeStatus::Deployed),
-            ("api".to_owned(), NodeStatus::Deployed)
+            ("api".to_owned(), NodeStatus::Deployed),
+            ("web".to_owned(), NodeStatus::Deployed)
         ]
     );
     let listed = store.read(&who, &ServicesQuery::default()).unwrap();
@@ -3636,16 +3636,16 @@ fn a_service_confirmed_mid_run_stays_deployed_when_the_runner_is_lost() {
     assert_eq!(
         nodes(&store, &who, 1),
         [
-            ("web".to_owned(), NodeStatus::Deployed),
-            ("api".to_owned(), NodeStatus::Pending)
+            ("api".to_owned(), NodeStatus::Pending),
+            ("web".to_owned(), NodeStatus::Deployed)
         ]
     );
     store.record(&id(1), &a, RunEvidence::Abandoned).unwrap();
     assert_eq!(
         nodes(&store, &who, 1),
         [
-            ("web".to_owned(), NodeStatus::Deployed),
-            ("api".to_owned(), NodeStatus::Unknown)
+            ("api".to_owned(), NodeStatus::Unknown),
+            ("web".to_owned(), NodeStatus::Deployed)
         ]
     );
     // web is in Applied State: only api is still to deploy.

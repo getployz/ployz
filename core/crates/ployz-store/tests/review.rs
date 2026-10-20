@@ -152,6 +152,15 @@ fn diff_groups_new_services_and_compares_edits_with_their_introduction() {
         serde_json::to_value(&view.changes).unwrap(),
         json!([
             {
+                "type": "service", "id": "00000000-0000-4000-8000-000000000004", "name": "api",
+                "row": "00000000-0000-4000-8000-000000000004:node", "lifecycle": "create", "comparison": "introduction",
+                "settings": [{
+                    "path": "api.image", "kind": "add", "before": null, "after": "caddy:2", "canRestore": false,
+                    "row": "00000000-0000-4000-8000-000000000004:source",
+                }],
+                "data": null, "restarts": [],
+            },
+            {
                 "type": "service", "id": "00000000-0000-4000-8000-000000000003", "name": "web",
                 "row": "00000000-0000-4000-8000-000000000003:node",
                 "lifecycle": "create", "comparison": "introduction",
@@ -162,15 +171,6 @@ fn diff_groups_new_services_and_compares_edits_with_their_introduction() {
                 }, {
                     "path": "web.replicas", "kind": "update", "before": 1, "after": 3, "canRestore": true,
                     "row": "00000000-0000-4000-8000-000000000003:replicas",
-                }],
-                "data": null, "restarts": [],
-            },
-            {
-                "type": "service", "id": "00000000-0000-4000-8000-000000000004", "name": "api",
-                "row": "00000000-0000-4000-8000-000000000004:node", "lifecycle": "create", "comparison": "introduction",
-                "settings": [{
-                    "path": "api.image", "kind": "add", "before": null, "after": "caddy:2", "canRestore": false,
-                    "row": "00000000-0000-4000-8000-000000000004:source",
                 }],
                 "data": null, "restarts": [],
             },
@@ -242,7 +242,8 @@ fn resetting_a_new_nodes_setting_uses_its_introduction_and_publishes_nothing() {
     assert_eq!(view.saved, None);
     assert_eq!(
         view.changes
-            .first()
+            .iter()
+            .find(|change| change.name == "web")
             .unwrap()
             .settings
             .iter()
@@ -542,7 +543,7 @@ fn a_compound_settings_row_discards_that_setting() {
         .flat_map(|node| &node.settings)
         .map(|row| (row.path.as_str(), row.can_restore))
         .collect();
-    assert_eq!(rows, [("web.healthcheck", true), ("api.source", true)]);
+    assert_eq!(rows, [("api.source", true), ("web.healthcheck", true)]);
     for (path, _) in rows {
         discard(&store, &who, Some(path), None).unwrap();
     }
@@ -1163,7 +1164,7 @@ fn discard_review_names_the_source_an_undeployed_save_loses_as_set_names_it() {
             .flat_map(|change| change.settings.clone())
             .map(|row| row.path)
             .collect();
-        assert_eq!(rows, [web_row, "api.image"], "saved {saved}");
+        assert_eq!(rows, ["api.image", web_row], "saved {saved}");
         assert_eq!(value(&store, &who, "web.image"), Some(json!(saved)));
     }
 }
@@ -1191,10 +1192,10 @@ fn discard_review_names_a_staged_image_on_a_saved_repository_as_the_image() {
     assert_eq!(discarded.dropped, ["web.image"]);
     // The staged image carries no branch, so only the saved repository's comes back:
     // a row the discard adds, not one it drops.
-    assert_eq!(before, ["web.source", "api.image"]);
+    assert_eq!(before, ["api.image", "web.source"]);
     assert_eq!(
         diff_rows(&store, &who),
-        ["web.branch", "web.source", "api.image"]
+        ["api.image", "web.branch", "web.source"]
     );
     assert_eq!(
         value(&store, &who, "web.repository"),

@@ -29,11 +29,11 @@ pub use rows::{
 use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::config::{
-    CompiledNodeConfig, EncryptedSecretValue, LowerDeploymentConfig, LowerDeploymentConfigFile,
-    LowerDeploymentInput, LowerDeploymentSnapshot, LowerDeploymentVolume, RuntimeOutcomeProjection,
-    SavedConfigIntent, SavedEnvironmentIntent, SavedServiceIntent, SavedVolumeIntent,
-    ServiceConfig, ServiceImageCredentials, ServiceSource, ValuePartOwner,
-    canonicalize_environment_intent, compile_environment_intent, lower_deployment,
+    CompiledNodeConfig, EncryptedSecretValue, EnvironmentNodeType, LowerDeploymentConfig,
+    LowerDeploymentConfigFile, LowerDeploymentInput, LowerDeploymentSnapshot,
+    LowerDeploymentVolume, RuntimeOutcomeProjection, SavedConfigIntent, SavedEnvironmentIntent,
+    SavedServiceIntent, SavedVolumeIntent, ServiceConfig, ServiceImageCredentials, ServiceSource,
+    ValuePartOwner, canonicalize_environment_intent, compile_environment_intent, lower_deployment,
     parse_runtime_preview, project_runtime_outcome, redacted_runtime_preview,
 };
 use ployz_core::{
@@ -695,6 +695,15 @@ impl DeployedNode {
             Self::Service { id, .. } => id.as_str(),
             Self::Volume { id, .. } => id.as_str(),
             Self::Config { id, .. } => id.as_str(),
+        }
+    }
+
+    #[must_use]
+    pub fn node_type(&self) -> EnvironmentNodeType {
+        match self {
+            Self::Service { .. } => EnvironmentNodeType::Service,
+            Self::Volume { .. } => EnvironmentNodeType::Volume,
+            Self::Config { .. } => EnvironmentNodeType::Config,
         }
     }
 }
