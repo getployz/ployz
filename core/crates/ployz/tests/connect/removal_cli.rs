@@ -119,7 +119,10 @@ async fn a_reset_warning_and_the_volume_note_read_as_sentences() {
             .await
             .unwrap();
         let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(stderr.contains(&format!("! {read}\n")), "{warning:?}: {stderr}");
+        assert!(
+            stderr.contains(&format!("! {read}\n")),
+            "{warning:?}: {stderr}"
+        );
         server.abort();
     }
 }

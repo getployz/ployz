@@ -1119,12 +1119,15 @@ impl Server {
         if approved {
             return Ok(Answer::Approved);
         }
-        let because = reason.map_or_else(String::new, |reason| format!(": {reason}"));
-        Ok(Answer::Refused(refused(format!(
-            "The human denied this {noun}{because}. Nothing was {past}; do not retry it \
-             unless they ask.",
-            noun = verb.noun(),
-            past = verb.past(),
+        Ok(Answer::Refused(refused(crate::ui::then_sentence(
+            &crate::ui::with_reason(
+                format_args!("The human denied this {}", verb.noun()),
+                reason.as_deref().unwrap_or_default(),
+            ),
+            &format!(
+                "Nothing was {}; do not retry it unless they ask.",
+                verb.past()
+            ),
         ))))
     }
 }

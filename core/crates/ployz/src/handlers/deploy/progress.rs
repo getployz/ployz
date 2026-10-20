@@ -278,9 +278,9 @@ pub(super) fn value_warnings(view: &DeploymentView) -> Vec<String> {
 
 pub(super) fn ingress_warnings(view: &DeploymentView) -> Vec<String> {
     let unchecked = ingress_unchecked(view).map(|cause| {
-        format!(
-            "Couldn't check ingress: {}. Deploy again to retry.",
-            cause.trim_end_matches('.')
+        crate::ui::then_sentence(
+            &format!("Couldn't check ingress: {cause}"),
+            "Deploy again to retry.",
         )
     });
     view.deployment
@@ -294,8 +294,9 @@ pub(super) fn ingress_warnings(view: &DeploymentView) -> Vec<String> {
                      See what holds it with `sudo ss -ltnp '( sport = :80 or sport = :443 )'`. \
                      Ployz starts ingress on its own once the port is free."
                 ),
-                IngressFailure::Failed { cause } => format!(
-                    "Ingress isn't running on {server}: {cause}. Deploy again to retry."
+                IngressFailure::Failed { cause } => crate::ui::then_sentence(
+                    &format!("Ingress isn't running on {server}: {cause}"),
+                    "Deploy again to retry.",
                 ),
             })
         })
