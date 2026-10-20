@@ -37,8 +37,8 @@ env:
 
 jobs:
   # Linux jobs run on the self-hosted pool when CI_SELF_HOSTED is on, the run is a push or a same-repo PR
-  # (fork PRs never), and a ployz-omarchy runner is online and idle. Otherwise, or on any error, GitHub's.
-  # pool answers whether any ployz-omarchy runner is online. Only then do picks share one group:
+  # (fork PRs never), and a ployz-boat runner is online and idle. Otherwise, or on any error, GitHub's.
+  # pool answers whether any ployz-boat runner is online. Only then do picks share one group:
   # ported from mikehardy/runner-fallback-action, they happen one at a time, each after a pause that lets
   # the previous pick's jobs claim their runners, and queue: max keeps every waiting pick. With the pool
   # offline every pick is GitHub's, so each run picks at once in its own group.
@@ -58,8 +58,8 @@ jobs:
         run: |
           online=false
           if [ "$TRUSTED" = true ]; then
-            if count=$(gh api "repos/$GITHUB_REPOSITORY/actions/runners?per_page=100" --jq '[.runners[] | select(.status == "online" and any(.labels[]; .name == "ployz-omarchy"))] | length'); then
-              echo "Online ployz-omarchy runners: $count"
+            if count=$(gh api "repos/$GITHUB_REPOSITORY/actions/runners?per_page=100" --jq '[.runners[] | select(.status == "online" and any(.labels[]; .name == "ployz-boat"))] | length'); then
+              echo "Online ployz-boat runners: $count"
               [ "$count" -ge 1 ] && online=true
             else
               echo "::warning::Could not list self-hosted runners; using GitHub's"
@@ -88,9 +88,9 @@ jobs:
           runner=ubuntu-24.04
           if [ "$ONLINE" = true ]; then
             sleep 5
-            if idle=$(gh api "repos/$GITHUB_REPOSITORY/actions/runners?per_page=100" --jq '[.runners[] | select(.status == "online" and (.busy | not) and any(.labels[]; .name == "ployz-omarchy"))] | length'); then
-              echo "Idle ployz-omarchy runners: $idle"
-              [ "$idle" -ge 1 ] && runner=ployz-omarchy
+            if idle=$(gh api "repos/$GITHUB_REPOSITORY/actions/runners?per_page=100" --jq '[.runners[] | select(.status == "online" and (.busy | not) and any(.labels[]; .name == "ployz-boat"))] | length'); then
+              echo "Idle ployz-boat runners: $idle"
+              [ "$idle" -ge 1 ] && runner=ployz-boat
             else
               echo "::warning::Could not list self-hosted runners; using $runner"
             fi
@@ -99,7 +99,8 @@ jobs:
           echo "Selected runner: $runner" >> "$GITHUB_STEP_SUMMARY"
 
   changes:
-    runs-on: ubuntu-24.04
+    needs: runner
+    runs-on: ${{ needs.runner.outputs.runner }}
     timeout-minutes: 5
     outputs:
       jobs: ${{ steps.select.outputs.jobs }}
@@ -371,8 +372,8 @@ jobs:
   ready:
     name: CI ready
     if: ${{ always() && !github.event.pull_request.draft }}
-    needs: [changes, contracts, rust-lint, rust-tests, uptime, macos-cli, cloud, release-contracts]
-    runs-on: ubuntu-24.04
+    needs: [runner, changes, contracts, rust-lint, rust-tests, uptime, macos-cli, cloud, release-contracts]
+    runs-on: ${{ needs.runner.outputs.runner || 'ubuntu-24.04' }}
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
