@@ -114,7 +114,8 @@ jobs:
             exit 1
           fi
 
-  # Each shard builds only its own packages on its own runner: the job is bound by the runner's 4 cores.
+  # Each shard builds only its own packages on its own runner, and runs half their tests:
+  # the job is bound by the runner's 4 cores.
   rust-tests:
     name: rust-tests (${{ matrix.shard }})
     defaults:
@@ -131,11 +132,19 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - shard: cli
+          - shard: cli-1
             packages: -p ployz -p ployz-sdk -p ployz-testkit -p ployz-build -p ployz-core -p ployz-verify -p ployz-config-wasm
-          - shard: daemon
+            partition: hash:1/2
+          - shard: cli-2
+            packages: -p ployz -p ployz-sdk -p ployz-testkit -p ployz-build -p ployz-core -p ployz-verify -p ployz-config-wasm
+            partition: hash:2/2
+          - shard: daemon-1
             packages: -p ployzd
-          # The Store suites on SQLite, then on Postgres, split in half by test.
+            partition: hash:1/2
+          - shard: daemon-2
+            packages: -p ployzd
+            partition: hash:2/2
+          # The Store suites on SQLite, then on Postgres.
           - shard: store-1
             packages: -p ployz-store
             partition: hash:1/2
@@ -157,7 +166,7 @@ jobs:
         with:
           cache-key: tests-${{ matrix.shard }}
       - uses: actions/setup-node@v4
-        if: matrix.shard == 'cli'
+        if: startsWith(matrix.shard, 'cli')
         with:
           node-version: 22
       - uses: taiki-e/install-action@c3ec0de9ae7f1019cea21aa96aa0a895b9552063 # v2
@@ -178,8 +187,8 @@ jobs:
               connections:
                 - tcp: 127.0.0.1:1
           EOF
-          cargo nextest run ${{ matrix.packages }} ${{ matrix.partition && format('--partition {0}', matrix.partition) }} --all-features --locked --no-fail-fast
-          if [ "${{ matrix.shard }}" != store-2 ]; then
+          cargo nextest run ${{ matrix.packages }} --partition ${{ matrix.partition }} --all-features --locked --no-fail-fast
+          if [ "${{ matrix.partition }}" = hash:1/2 ]; then
             cargo test --doc ${{ matrix.packages }} --all-features --locked
           fi
       # A throwaway server: durability only slows each test's new database.
@@ -195,15 +204,15 @@ jobs:
         if: startsWith(matrix.shard, 'store') && needs.changes.outputs.postgres == 'true'
         env:
           PLOYZ_STORE_TEST_POSTGRES: postgres://postgres:postgres@127.0.0.1:5432
-        run: cargo nextest run ${{ matrix.packages }} ${{ matrix.partition && format('--partition {0}', matrix.partition) }} --all-features --locked
+        run: cargo nextest run ${{ matrix.packages }} --partition ${{ matrix.partition }} --all-features --locked
       - name: Check the missing SSH prerequisite
-        if: matrix.shard == 'cli'
+        if: matrix.shard == 'cli-1'
         env:
           PLOYZ_BIN: ${{ github.workspace }}/core/target/debug/ployz
         run: bash scripts/test-missing-ssh-client.sh
       # Main pushes only: it mostly catches drift in the newest Docker release, and costs 2 minutes per run.
       - name: Decode the latest Docker's local log files as docker logs prints them
-        if: matrix.shard == 'daemon' && github.event_name == 'push'
+        if: matrix.shard == 'daemon-1' && github.event_name == 'push'
         env:
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER: sudo -E
         run: |
