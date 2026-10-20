@@ -173,6 +173,7 @@ fn run_json_with<V: AsRef<std::ffi::OsStr>>(
         .args(args)
         .args(["--ployz-config", config.to_str().unwrap()])
         .env("HOME", home.path())
+        .env_remove("XDG_CONFIG_HOME")
         .env_remove("PLOYZ_CONTEXT")
         .env_remove("PLOYZ_CONNECT")
         .env_remove("PLOYZ_TOKEN")
@@ -274,6 +275,7 @@ fn an_unreadable_config_fails_the_same_way_for_every_command() {
             .args(args)
             .args(["--json", "--ployz-config", config.to_str().unwrap()])
             .env("HOME", home.path())
+            .env_remove("XDG_CONFIG_HOME")
             .env_remove("PLOYZ_CONTEXT")
             .env_remove("PLOYZ_CONNECT")
             .env_remove("PLOYZ_TOKEN")
@@ -382,6 +384,7 @@ fn human_output(args: &[&str], env: &[(&str, &str)]) -> std::process::Output {
         .args(args)
         .args(["--ployz-config", config.to_str().unwrap()])
         .env("HOME", home.path())
+        .env_remove("XDG_CONFIG_HOME")
         .env_remove("PLOYZ_CONTEXT")
         .env_remove("PLOYZ_CONNECT")
         .env_remove("PLOYZ_TOKEN")
@@ -586,6 +589,7 @@ fn a_group_without_its_subcommand_prints_its_help_like_bare_ployz() {
         let output = ProcessCommand::new(env!("CARGO_BIN_EXE_ployz"))
             .arg(group)
             .env("HOME", home.path())
+            .env_remove("XDG_CONFIG_HOME")
             .env_remove("PLOYZ_CONTEXT")
             .output()
             .unwrap();
@@ -1115,6 +1119,7 @@ fn run_output(args: &[&str], env: &[(&str, &str)]) -> (Option<i32>, Option<Strin
     let output = ProcessCommand::new(env!("CARGO_BIN_EXE_ployz"))
         .args(args)
         .env("HOME", home.path())
+        .env_remove("XDG_CONFIG_HOME")
         .env_remove("PLOYZ_CONTEXT")
         .env_remove("PLOYZ_CONNECT")
         .envs(env.iter().copied())
@@ -1894,6 +1899,7 @@ fn show_web_1_with_config(
         .args(["server", "show", "web-1", "--json"])
         .args(["--ployz-config", config.to_str().unwrap()])
         .env("HOME", home.path())
+        .env_remove("XDG_CONFIG_HOME")
         .env_remove("PLOYZ_CONTEXT")
         .env_remove("PLOYZ_CONNECT")
         .env_remove("PLOYZ_STORE")
@@ -2159,6 +2165,7 @@ fn a_daemon_that_hangs_up_is_one_json_error_on_piped_stdout() {
         .args(["--json", "server", "ls", "--connect", &connect])
         .args(["--ployz-config", config.to_str().unwrap()])
         .env("HOME", home.path())
+        .env_remove("XDG_CONFIG_HOME")
         .env_remove("PLOYZ_CONTEXT")
         .env_remove("PLOYZ_CONNECT")
         .env_remove("PLOYZ_TOKEN")
@@ -2469,6 +2476,7 @@ fn results_on_stdout_side_channel_on_stderr() {
         let output = ProcessCommand::new(env!("CARGO_BIN_EXE_ployz"))
             .args(args)
             .env("HOME", home.path())
+            .env_remove("XDG_CONFIG_HOME")
             .env("PLOYZ_CONFIG", home.path().join("config.yaml"))
             .env(
                 "PLOYZ_STORE",
@@ -2566,7 +2574,7 @@ fn server_show_says_when_the_waiting_list_could_not_be_read() {
     let token = [("PLOYZ_TOKEN", "ployz_secret"), ("PLOYZ_CLOUD_URL", &cloud)];
     let (code, json, stderr) = run_json_with(&["server", "show", "nobody", "--json"], &token);
     assert_eq!(code, Some(1), "{json}");
-    assert_eq!(json.pointer("/error/code").unwrap(), "not_found", "{json}");
+    assert_eq!(json.pointer("/error/code").unwrap(), "conflict", "{json}");
     assert_eq!(message(&json), "this Organization has no Servers");
     assert!(
         stderr.contains("The servers waiting to join could not be read"),
@@ -2693,6 +2701,7 @@ fn run_token_cloud(cloud: &str, args: &[&str]) -> (Option<i32>, String, String) 
         .args(args)
         .args(["--ployz-config", config.to_str().unwrap()])
         .env("HOME", home.path())
+        .env_remove("XDG_CONFIG_HOME")
         .env_remove("PLOYZ_CONTEXT")
         .env_remove("PLOYZ_CONNECT")
         .env_remove("PLOYZ_STORE")

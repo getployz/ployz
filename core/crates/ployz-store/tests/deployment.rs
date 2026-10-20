@@ -3198,7 +3198,7 @@ fn deploying_a_service_with_nothing_to_run_is_refused_naming_it() {
     assert_eq!(refused.code, RpcErrorCode::InvalidArgument);
     assert_eq!(
         refused.message,
-        "blank has nothing to run yet: add an image or connect a repository"
+        "blank has nothing to run yet: add an image, connect a repository, or run ployz up in its directory"
     );
     assert_eq!(refused.details["service"], "blank");
     // Deploying other Services leaves it out.

@@ -12,6 +12,7 @@ afterAll(() => {
 const PATHS = [
   "/mcp",
   "/.well-known/oauth-protected-resource/mcp",
+  "/.well-known/oauth-protected-resource",
   "/.well-known/oauth-authorization-server",
   "/.well-known/oauth-authorization-server/api/auth",
   "/.well-known/mcp-registry-auth",
