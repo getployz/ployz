@@ -930,7 +930,7 @@ Staged worker.image in shop/production.
 
 ```console
 $ ployz deploy
-# exit 3
+# exit 1
 ```
 
 stdout:
@@ -969,7 +969,7 @@ denied
   postgres: unchanged
   worker: failed
   pg-data: unchanged
-# exit 3
+# exit 1
 
 ```
 
@@ -977,7 +977,7 @@ denied
 
 ```console
 $ ployz --json deploy
-# exit 3
+# exit 1
 ```
 
 stdout:

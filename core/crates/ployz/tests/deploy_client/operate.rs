@@ -383,7 +383,7 @@ async fn local_deploy_failure_recovery_keeps_explicit_connection_and_context() {
     server.abort();
     server.await.ok();
     let stderr = String::from_utf8(output.stderr).unwrap();
-    assert_eq!(output.status.code(), Some(3), "{stderr}");
+    assert_eq!(output.status.code(), Some(1), "{stderr}");
     let result: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(result["status"], "failed", "{result}");
     let hints = stderr

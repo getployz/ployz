@@ -44,9 +44,9 @@ every Server where that Service failed, in this order:
 So a Service that failed to pull on one Server and to start on another shows only
 `ployz logs <service>`.
 
-A Deployment result that did not fully succeed exits with code 3. A warning that
-names an incomplete Server observation also makes an
-otherwise successful invocation exit 3 when that Server was relevant to the selected
+A failed deploy exits with code 1. A Deployment that applied but whose result is missing
+a Server exits with code 3. A warning that names an incomplete Server observation also
+makes an otherwise successful invocation exit 3 when that Server was relevant to the selected
 Services or their dependencies, or to observed work the deploy affected. An Entry's
 Down observation is evidence from that Entry, not proof that somebody stopped the
 Server. Missing telemetry and unknown membership values alone do not establish Down.
