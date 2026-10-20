@@ -216,19 +216,23 @@ fn dispatch(matches: &ArgMatches, command: &mut Command) -> Result<(), Error> {
 }
 
 /// Whether the compiled command at `words` takes a value for `id`. Read from the
-/// command tree: `ArgMatches` refuses unknown ids only in debug builds.
+/// command tree: `ArgMatches` refuses unknown ids only in debug builds. The tree is
+/// unbuilt, so a global argument still sits on the ancestor that declares it.
 fn takes_value<'a>(words: impl IntoIterator<Item = &'a str>, id: &str) -> bool {
     let root = crate::cli::compiled();
+    let takes = |arg: &clap::Arg| arg.get_id() == id && arg.get_action().takes_values();
     let mut command = &root;
+    let mut inherited = false;
     for word in words {
         let Some(child) = command.find_subcommand(word) else {
             break;
         };
+        inherited |= command
+            .get_arguments()
+            .any(|arg| arg.is_global_set() && takes(arg));
         command = child;
     }
-    command
-        .get_arguments()
-        .any(|arg| arg.get_id() == id && arg.get_action().takes_values())
+    inherited || command.get_arguments().any(takes)
 }
 
 /// Whether `--context` was typed before the last subcommand (`ployz -c prod ps`): only the leaf
@@ -582,6 +586,15 @@ mod tests {
                 "ployz config ls doesn't use a context; it takes --project and --env",
             ),
             (&["org", "ls"], "ployz org ls doesn't use a context"),
+            // `history` hands its global --project and --env down to its actions.
+            (
+                &["history", "restore", "1"],
+                "ployz history restore doesn't use a context; it takes --project and --env",
+            ),
+            (
+                &["history", "undo", "1"],
+                "ployz history undo doesn't use a context; it takes --project and --env",
+            ),
         ] {
             let matches = command
                 .clone()
