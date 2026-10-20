@@ -1490,17 +1490,9 @@ impl FakeMachine for DiscoveryService {
             Some(SwitchFailure::Unanswered) => Err(ployz_core::rpc::target_unanswered_status(
                 &std::io::Error::new(std::io::ErrorKind::ConnectionReset, "connection reset"),
             )),
-            Some(SwitchFailure::Undialed) => {
-                let mut status = ployz_core::rpc::target_unanswered_status(&std::io::Error::new(
-                    std::io::ErrorKind::ConnectionRefused,
-                    "tcp connect error",
-                ));
-                status.metadata_mut().insert(
-                    "ployz-target-unreached",
-                    tonic::metadata::MetadataValue::from_static("1"),
-                );
-                Err(status)
-            }
+            Some(SwitchFailure::Undialed) => Err(ployz_core::rpc::target_unreached_status(
+                &std::io::Error::new(std::io::ErrorKind::ConnectionRefused, "tcp connect error"),
+            )),
             Some(SwitchFailure::Hangs) => std::future::pending().await,
             Some(SwitchFailure::Taken(taken)) => {
                 taken.notify_one();

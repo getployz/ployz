@@ -216,11 +216,14 @@ impl MachineProxy {
             .map_err(|error| ployz_core::rpc::caused_status(tonic::Code::Internal, &error))?;
         poll_fn(|context| channel.poll_ready(context))
             .await
-            .map_err(|error| ployz_core::rpc::target_unanswered_status(&error))?;
-        channel
-            .call(request)
-            .await
-            .map_err(|error| ployz_core::rpc::target_unanswered_status(&error))
+            .map_err(|error| ployz_core::rpc::target_unreached_status(&error))?;
+        channel.call(request).await.map_err(|error| {
+            if dial_failed(&error) {
+                ployz_core::rpc::target_unreached_status(&error)
+            } else {
+                ployz_core::rpc::target_unanswered_status(&error)
+            }
+        })
     }
 
     fn remote_backend(&self, address: ManagementAddress) -> Result<Channel, BackendError> {
@@ -243,6 +246,13 @@ impl MachineProxy {
         backends.insert(address, channel.clone());
         Ok(channel)
     }
+}
+
+/// Tonic wraps only its connector's failures in [`tonic::ConnectError`]: the connection to
+/// the target never opened, so no byte of the call left this Machine.
+fn dial_failed(error: &(dyn std::error::Error + 'static)) -> bool {
+    std::iter::successors(Some(error), |error| error.source())
+        .any(|error| error.is::<tonic::ConnectError>())
 }
 
 fn request_from_parts(parts: &http::request::Parts, body: Bytes) -> http::Request<Body> {

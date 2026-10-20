@@ -208,7 +208,8 @@ pub struct RunningDeploy {
 }
 
 /// A failure, and whether no Machine sent it: the dial failed, or the call went out and
-/// no status came back. A Machine's own refusal is `unanswered: false`.
+/// no status came back. A Machine's own refusal is `unanswered: false`, and so is a call
+/// the entry Machine says it could not dial its target for, since no Machine got it.
 #[derive(Debug)]
 pub struct CallError {
     pub error: RpcError,
@@ -230,7 +231,7 @@ impl std::error::Error for CallError {
 impl From<ConnectError> for CallError {
     fn from(error: ConnectError) -> Self {
         Self {
-            unanswered: error.unreached() || error.unreplied(),
+            unanswered: (error.unreached() || error.unreplied()) && !error.target_unreached(),
             error: error.into(),
         }
     }
@@ -806,7 +807,8 @@ impl Session {
     /// commands or `machine` is not a Machine Target, and the Machine's [`RpcError`]
     /// otherwise, its `details` a `SwitchError` when the fence refused or a
     /// `SetVolumeCopyRefused` when SetVolumeCopy refused. A failure no Machine sent is
-    /// `unanswered`: the Machine may have taken the request.
+    /// `unanswered`: the Machine may have taken the request. One whose entry Machine
+    /// could not dial `machine` is not, since `machine` never got it.
     pub async fn volume_switch(&self, machine: &str, request: Value) -> Result<Value, CallError> {
         let target =
             MachineTarget::parse(machine).map_err(|error| invalid_argument(error.to_string()))?;

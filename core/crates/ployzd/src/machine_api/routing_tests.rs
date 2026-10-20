@@ -206,8 +206,6 @@ async fn forwarding_keeps_the_cloud_routed_mark() {
     server.await.unwrap().unwrap();
 }
 
-const TARGET_UNREACHED_KEY: &str = "ployz-target-unreached";
-
 #[tokio::test]
 async fn a_dial_the_target_refuses_is_marked_as_never_reaching_it() {
     let listener = TcpListener::bind("[::1]:0").await.unwrap();
@@ -223,7 +221,9 @@ async fn a_dial_the_target_refuses_is_marked_as_never_reaching_it() {
         "an older client must still read a failed dial as the router's own failure: {status:?}"
     );
     assert!(
-        status.metadata().contains_key(TARGET_UNREACHED_KEY),
+        status
+            .metadata()
+            .contains_key(ployz_core::rpc::TARGET_UNREACHED_KEY),
         "a refused dial never sent the call: {status:?}"
     );
 }
@@ -247,7 +247,9 @@ async fn a_target_that_drops_the_call_after_taking_it_may_have_reached_it() {
         "{status:?}"
     );
     assert!(
-        !status.metadata().contains_key(TARGET_UNREACHED_KEY),
+        !status
+            .metadata()
+            .contains_key(ployz_core::rpc::TARGET_UNREACHED_KEY),
         "the target held the call before it dropped: {status:?}"
     );
 }
@@ -274,7 +276,9 @@ async fn a_target_that_outlives_the_call_deadline_may_have_reached_it() {
         "{status:?}"
     );
     assert!(
-        !status.metadata().contains_key(TARGET_UNREACHED_KEY),
+        !status
+            .metadata()
+            .contains_key(ployz_core::rpc::TARGET_UNREACHED_KEY),
         "the target held the call when its deadline passed: {status:?}"
     );
 }
@@ -312,21 +316,16 @@ async fn read_until_request_headers(stream: &mut tokio::net::TcpStream) {
     const PREFACE: usize = 24;
     const HEADERS: u8 = 0x1;
     let mut received = Vec::new();
-    let mut buffer = [0_u8; 4096];
     let mut frame_start = PREFACE;
     loop {
-        while received.len() >= frame_start + 9 {
-            let header = &received[frame_start..frame_start + 9];
-            if header[3] == HEADERS {
+        while let Some(&[l0, l1, l2, kind, ..]) = received.get(frame_start..frame_start + 9) {
+            if kind == HEADERS {
                 return;
             }
-            let length =
-                usize::from(header[0]) << 16 | usize::from(header[1]) << 8 | usize::from(header[2]);
-            frame_start += 9 + length;
+            frame_start += 9 + (usize::from(l0) << 16 | usize::from(l1) << 8 | usize::from(l2));
         }
-        let read = stream.read(&mut buffer).await.unwrap();
+        let read = stream.read_buf(&mut received).await.unwrap();
         assert_ne!(read, 0, "the router closed before sending the call");
-        received.extend_from_slice(&buffer[..read]);
     }
 }
 

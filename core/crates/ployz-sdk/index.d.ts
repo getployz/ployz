@@ -122,7 +122,10 @@ export type ConfirmOptions = WatchOptions & {
 
 export type RunOptions = WatchOptions;
 
-/** `unanswered` holds when no Machine sent the failure: the dial failed, or the call went out and no status came back. */
+/**
+ * `unanswered` holds when no Machine sent the failure: the dial failed, or the call went out and no status came back. A call
+ * whose entry Machine could not dial its target is not `unanswered`, since the target never got it.
+ */
 export declare const RpcError: {
   new (error: RpcErrorPayload & { unanswered?: boolean }, options?: ErrorOptions): Error & RpcErrorPayload & { readonly unanswered: boolean };
 };
@@ -258,7 +261,8 @@ export interface Client extends Omit<native.Client, WrappedClientMethods> {
   run(intent: DeployIntent, options?: RunOptions): Promise<DeployOutcome<ExecutionError>>;
   /**
    * A `set_volume_copy` refusal rejects with an `RpcError` whose `details` is a `SetVolumeCopyRefused`. A rejection no
-   * Machine sent is `unanswered`: the Machine may have taken the request.
+   * Machine sent is `unanswered`: the Machine may have taken the request. One whose entry Machine could not dial `machine`
+   * is not, since `machine` never got it.
    */
   volumeSwitch<R extends VolumeSwitchRequest>(machine: MachineTarget, request: R): Promise<VolumeSwitchReply<R["command"]>>;
   dataLossIfNamespaceDestroyed(namespace: Namespace, destroy_volumes?: boolean): Promise<ObservedDataLoss>;
