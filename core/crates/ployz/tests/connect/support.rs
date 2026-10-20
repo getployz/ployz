@@ -349,6 +349,10 @@ impl DiscoveryService {
 
     /// Apply `want` to the copy by the edge table; a copy goes In as soon as asked,
     /// since every copy here is healthy.
+    #[expect(
+        clippy::result_large_err,
+        reason = "the refusal is the wire's EnsuredContainer, returned as is"
+    )]
     fn turn(
         &self,
         mut copy: ployz_core::ContainerObservation,

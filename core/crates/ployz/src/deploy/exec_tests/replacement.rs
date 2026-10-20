@@ -567,7 +567,7 @@ async fn a_stop_first_or_rolling_failure_restores_every_old_copy_and_removes_eve
         assert_eq!(outcome.services(), ended(&[("api", ServiceResult::Old)]));
         let restored = [old_second, old_first];
         if order == UpdateOrder::Rolling {
-            assert_eq!(client.brought_in()[1..], restored);
+            assert_eq!(client.brought_in().get(1..), Some(&restored[..]));
         } else {
             assert_eq!(client.brought_in(), restored);
         }
@@ -1096,11 +1096,11 @@ async fn a_cancel_while_the_stop_first_step_withdraws_brings_every_held_copy_bac
 
 #[tokio::test(start_paused = true)]
 async fn a_stop_first_task_the_machine_window_delays_is_withdrawn_with_its_step() {
-    let machines = [machine('1'), machine('2'), machine('3')];
+    let [first, second, third] = [machine('1'), machine('2'), machine('3')];
     let olds = "abcdef01".chars().map(container).collect::<Vec<_>>();
     let news = "23456789".chars().map(container).collect::<Vec<_>>();
     // Six copies on the first Machine: one more than its window starts at once.
-    let owners = [0, 0, 0, 0, 0, 0, 1, 2].map(|at| machines[at]);
+    let owners = [first, first, first, first, first, first, second, third];
     let plan = owners
         .iter()
         .zip(&olds)
@@ -1113,10 +1113,15 @@ async fn a_stop_first_task_the_machine_window_delays_is_withdrawn_with_its_step(
         .map(|(owner, old)| observed(Call::Inspect(*owner, *old), running()))
         .collect::<Vec<_>>();
     for task in order {
-        steps.push(ok(Call::Stop(owners[task], olds[task])));
+        let (Some(owner), Some(old), Some(new)) =
+            (owners.get(task), olds.get(task), news.get(task))
+        else {
+            panic!("task {task} is in the plan");
+        };
+        steps.push(ok(Call::Stop(*owner, *old)));
         steps.push(created(
-            Call::Run(owners[task], ContainerKind::ServiceContainer),
-            &news[task],
+            Call::Run(*owner, ContainerKind::ServiceContainer),
+            new,
         ));
     }
     for (owner, old) in owners.iter().zip(&olds) {
