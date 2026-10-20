@@ -109,7 +109,7 @@ A host that checked in with a Fleet Token and waits to be enrolled. Cloud keeps 
 _Avoid_: Pending server, candidate, unenrolled machine
 
 **Check-in Key**:
-The Ed25519 key a waiting host makes for itself and signs each check-in with, alongside its Fleet Token. It names the host while it waits and nothing after; enrollment issues the Management Identity separately.
+The Ed25519 key a waiting host makes for itself and signs each check-in with, alongside its Fleet Token. It names the host while it waits; enrollment issues the Management Identity separately. Cloud also keeps each (Fleet Token, Check-in Key) pair that ever had a Server Enrollment, after the Waiting Server is gone, so a token enrolls a host on arrival at most once.
 _Avoid_: Host key, machine key, enrollment key
 
 **Server Enrollment**:
