@@ -414,10 +414,8 @@ impl Client {
         path: &'static str,
         target: Option<&MachineTarget>,
         timeout: Option<Duration>,
-    ) -> Result<ployz_core::RpcResponse, RpcError> {
-        let payload = request
-            .encode()
-            .map_err(|error| rpc_error(ConnectError::Codec(error)))?;
+    ) -> Result<ployz_core::RpcResponse, ConnectError> {
+        let payload = request.encode().map_err(ConnectError::Codec)?;
         apply_timeout(timeout, async {
             let mut grpc = self.grpc();
             grpc.ready().await?;
@@ -433,7 +431,6 @@ impl Client {
                 .decode_response()?)
         })
         .await
-        .map_err(rpc_error)
     }
 
     /// Specs carry Config bytes as JSON number arrays, so a 1 MB Config alone nears

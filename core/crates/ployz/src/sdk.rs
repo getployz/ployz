@@ -780,8 +780,9 @@ impl Session {
     /// Returns `invalid_argument` when `request` is not one of the Volume switch
     /// commands or `machine` is not a Machine Target, and the Machine's [`RpcError`]
     /// otherwise, its `details` a `SwitchError` when the fence refused or a
-    /// `SetVolumeCopyRefused` when SetVolumeCopy refused.
-    pub async fn volume_switch(&self, machine: &str, request: Value) -> Result<Value, RpcError> {
+    /// `SetVolumeCopyRefused` when SetVolumeCopy refused. A failure no Machine sent is
+    /// `unanswered`: the Machine may have taken the request.
+    pub async fn volume_switch(&self, machine: &str, request: Value) -> Result<Value, CallError> {
         let target =
             MachineTarget::parse(machine).map_err(|error| invalid_argument(error.to_string()))?;
         let body: RpcRequestBody =
@@ -790,14 +791,22 @@ impl Session {
         let request = ployz_core::RpcRequest::from(body);
         let client = self.client()?;
         let response = self
-            .until_closed(client.invoke_raw(
-                &request,
-                path,
-                Some(&target),
-                Some(crate::connect::TARGET_RPC_TIMEOUT),
-            ))
+            .until_closed(async {
+                client
+                    .invoke_raw(
+                        &request,
+                        path,
+                        Some(&target),
+                        Some(crate::connect::TARGET_RPC_TIMEOUT),
+                    )
+                    .await
+                    .map_err(CallError::from)
+            })
             .await?;
-        volume_switch_payload(request.body.command(), response.body)
+        Ok(volume_switch_payload(
+            request.body.command(),
+            response.body,
+        )?)
     }
 
     /// Live Observation of Data Loss that removing `machine` would cause.

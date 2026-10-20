@@ -1480,7 +1480,9 @@ impl FakeMachine for DiscoveryService {
                 &std::io::Error::new(std::io::ErrorKind::ConnectionReset, "connection reset"),
             )),
             Some(SwitchFailure::Hangs) => std::future::pending().await,
-            None => Err(Status::unimplemented("SetVolumeCopy is not used by this fixture")),
+            None => Err(Status::unimplemented(
+                "SetVolumeCopy is not used by this fixture",
+            )),
         }
     }
 
