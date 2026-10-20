@@ -28,7 +28,6 @@ pub struct VolumeResized {
     /// The size the Store recorded when the run read it; the record is a
     /// compare-and-set on it.
     pub from: ProvisionedVolumeMaximumBytes,
-    /// The size the Store records from now on.
     pub to: ProvisionedVolumeMaximumBytes,
 }
 
@@ -265,8 +264,6 @@ pub(crate) fn check_storage(
     Ok(())
 }
 
-/// Whether `asked` fits `fixed`: exactly under an `Edit` of this Volume, at or below
-/// it under `Replay`; a Docker Volume, or a change of kind, must match either way.
 fn fits(fixed: &VolumeKind, asked: &VolumeKind, edited: bool) -> bool {
     match (fixed, asked) {
         (

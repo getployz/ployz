@@ -78,7 +78,6 @@ enum Size {
     New,
 }
 
-/// The size the resize drives every copy to.
 const TARGET: Size = Size::New;
 
 /// The warm round's snapshot, which B already holds, and the cut's final `f-<epoch>`.
@@ -322,7 +321,6 @@ struct Release {
 struct Resize {
     row: Row,
     driver: Driver<ResizeStep>,
-    /// A Machine refused the target.
     refused: bool,
 }
 
@@ -1035,7 +1033,6 @@ fn expect_of(held: Held) -> Expect {
 }
 
 impl VolumeRuns {
-    /// The grow's steps in order.
     fn walk(&self) -> [ResizeStep; 4] {
         if self.broken.record_before_raise {
             [
@@ -1054,7 +1051,6 @@ impl VolumeRuns {
         }
     }
 
-    /// The step after `step` in the grow's walk.
     fn after(&self, step: ResizeStep) -> ResizeStep {
         self.walk()
             .into_iter()
@@ -1071,7 +1067,6 @@ impl VolumeRuns {
                 state.retire_resize();
             }
         };
-        // Every step checks the run still owns its row first.
         if !state.resize.row.running() {
             return next(state, ResizeStep::Over);
         }
