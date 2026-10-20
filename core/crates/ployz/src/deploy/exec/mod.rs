@@ -2871,8 +2871,7 @@ async fn leave_unstopped<C: MachineOperations>(
         Ok(cleanup::BroughtIn::Refused(refusal))
             if refusal.reason == ContainerRefusalReason::OlderThanIn =>
         {
-            let cleanup = CancellationToken::new();
-            return retire_older(client, progress, copy, rows, &cleanup).await;
+            return retire_older(client, progress, copy, rows).await;
         }
         Ok(cleanup::BroughtIn::Refused(refusal)) => Some(refusal.message),
         Err(error) => Some(error.message),
@@ -2888,10 +2887,15 @@ async fn retire_older<C: MachineOperations>(
     progress: &Progress,
     copy: &cleanup::Copy,
     rows: &Rows<'_>,
-    cancellation: &CancellationToken,
 ) {
-    let retired =
-        cleanup::retire(client, copy, false, AnonymousVolumes::Remove, cancellation).await;
+    let retired = cleanup::retire(
+        client,
+        copy,
+        false,
+        AnonymousVolumes::Remove,
+        &CancellationToken::new(),
+    )
+    .await;
     if let Some(left) = left_unless_done(retired) {
         rows.leave_running(progress, copy, Left::OlderNotRemoved(Box::new(left)));
     }
@@ -2994,7 +2998,7 @@ async fn restore_old<C: MachineOperations>(
         Ok(cleanup::BroughtIn::Refused(refusal))
             if refusal.reason == ContainerRefusalReason::OlderThanIn =>
         {
-            retire_older(client, progress, old, rows, cancellation).await;
+            retire_older(client, progress, old, rows).await;
             return ended(RestoreAttempt::NewerServing, false);
         }
         Ok(cleanup::BroughtIn::Refused(refusal)) => {

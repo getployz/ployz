@@ -1042,6 +1042,33 @@ async fn a_restore_a_newer_deploy_refuses_reads_as_the_newer_deploy_serving() {
     }
 }
 
+#[tokio::test(start_paused = true)]
+async fn a_cancelled_deploy_still_removes_an_old_copy_a_newer_deploy_refuses() {
+    let machine = machine('1');
+    let (old, newer) = (container('a'), container('c'));
+    let plan = vec![swap(&machine, &old, UpdateOrder::StopFirst)];
+    let run = Call::Run(machine, ContainerKind::ServiceContainer);
+    let cancellation = CancellationToken::new();
+    let client = Scripted {
+        cancel_on: Some((run.clone(), cancellation.clone())),
+        ..Scripted::new(vec![
+            observed(Call::Inspect(machine, old), running()),
+            ok(Call::Stop(machine, old)),
+            failed(run, "start failed"),
+            ok(Call::DiscardSlot(machine, ContainerKind::ServiceContainer)),
+            ok(Call::Remove(machine, old)),
+        ])
+    }
+    .with_copy(&machine, &old, CopyRotation::In)
+    .with_copy_at(&api(), &machine, &newer, CopyRotation::In, Gen::new(100));
+
+    let (_, warnings) = execute_reported(&plan, &[machine], &client, &cancellation).await;
+
+    assert!(warnings.is_empty(), "{warnings:?}");
+    assert_eq!(client.rotation(&old), None, "the old copy is removed");
+    client.assert_done();
+}
+
 #[tokio::test]
 async fn a_removed_service_retires_every_copy_through_out_and_ends_empty() {
     let (first, second) = (machine('1'), machine('2'));
