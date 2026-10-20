@@ -58,7 +58,7 @@ Constraints traced in code.
 
 ### Add servers
 
-The user opens Add servers. Cloud fills in a name such as `swift-heron`. The user can change it before creating. Expiry defaults to 1 day, with 7 days and 30 days on offer. One switch, Enroll on arrival, reveals one field, Up to N servers. Create shows the token once with three tabs.
+The user opens Add servers. Cloud fills in a name such as `swift-heron`. The user can change it before creating. Expiry defaults to 1 day, with 7 days and 30 days on offer. One switch, Enroll on arrival, reveals one field, Maximum servers. Create shows the token once with three tabs.
 
 ```sh
 curl -fsSL https://ployz.sh | sudo PLOYZ_ENROLL_TOKEN=pflt_… sh
@@ -218,13 +218,13 @@ No status column is synced between tables. The list a user sees is derived at re
    |  blocked is     |   \
    |  a status       |    \ token revoked or expired, no open attempt
    |                 |     +------------------------------> REMOVED   (row deleted; host gets stop{token_*})
-   |  enroll /       |    \ silent 7 days, no open attempt (sweep)
-   |  on arrival     v     +------------------------------> REMOVED
+   |  enroll /       |
+   |  on arrival     v
    |        ENROLLING{ awaiting_founder | instructed | running(stage) }
    |                 |                         |
    |  failed /       |                         | completed event
    |  cancelled      |                         v
-   +-----------------+                       JOINED   (stays in the Enrolling list; swept after 7 days)
+   +-----------------+                       JOINED   (row swept 7 days after endedAt)
 ```
 
 ```ts
@@ -475,7 +475,7 @@ It resolves storage per row, applies names, and skips rows with blockers or inel
 
 `startServerEnrollment` inserts `serverEnrollment` rows plus per-attempt `machine_enrollment_token` rows, then sends one `server/enrollment.requested` event per row.
 
-`revokeFleetToken` sets `revokedAt` and deletes the token's waiting rows that have no open attempt, in one transaction. It returns the count for "N waiting removed". Open attempts finish. The sweep deletes an expired token's waiting rows the same way.
+`revokeFleetToken` sets `revokedAt` and deletes the token's waiting rows that have no open attempt, in one transaction. It returns the count for "N waiting removed". Open attempts finish. An expired token's waiting row is deleted the same way, but only when that host next checks in with it.
 
 `rejectWaitingServers` sets `rejectedAt` and cancels any open attempt on those rows.
 
@@ -509,7 +509,7 @@ export const serverEnrollmentRun = attemptLifecycle({
   },
   cancelId: "server-enrollment-cancel",
   closeRun: closeServerEnrollment,      // terminal state, endedAt, expire token, drop encryptedToken
-  sweep: { id: "server-enrollment-sweep", closeStale: sweepWaitingAndEnrollments },
+  sweep: { id: "server-enrollment-sweep", closeStale: closeStaleServerEnrollments },
 });
 ```
 
@@ -587,11 +587,13 @@ The detail sheet shows Open, Closed, or "Unknown" with its reason. A waiting hos
 
 ### Stale rows
 
-- Waiting rows silent for 7 days with no open attempt are deleted by the sweep. A host that comes back re-registers with the same key as a fresh row, if its token still works.
-- Waiting rows of an expired token with no open attempt are deleted by the sweep.
-- Rejected tombstones stay while their token lives, and are deleted with it. A host rejected under one token can come back only with a new token.
-- Joined rows are deleted 7 days after `endedAt`. The Server already shows from the runtime lens.
-- `attemptLifecycle`'s sweep closes runs that ended without a close.
+Three paths delete a waiting row. None deletes a row that has an open attempt.
+
+- **Revoke.** `revokeFleetToken` deletes the token's rows at once, rejected tombstones included.
+- **Check-in on an ended token.** A check-in whose token is revoked or expired deletes that host's row and answers `stop{token_revoked|token_expired}`. Until the host checks in again, an expired token's rows stay.
+- **The hourly sweep.** `server-enrollment-sweep` (`closeStaleServerEnrollments`, cron `0 * * * *` UTC) does two things. It ends open attempts requested over 9 hours ago as failed, "Enrollment stopped". It deletes rows with a `joined` attempt that ended over 7 days ago (`JOINED_WAITING_KEEP_MS`). The Server already shows from the runtime lens. `fleet_token_join` keeps the token's joined count after the row goes.
+
+Nothing deletes a silent row. Offline is a status, and the row stays until one of the paths above removes it. Rejected tombstones stay until the token is revoked or the host checks in on an expired token. A host rejected under one token can come back only with a new token. Deleting the Organization cascades to all of its rows.
 
 Expiry is bookkeeping. It never touches a Cluster.
 

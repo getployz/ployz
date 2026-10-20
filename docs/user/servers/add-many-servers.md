@@ -10,7 +10,7 @@ Keep the token secret. Anyone with it can register hosts for you to review.
 ## Enroll on arrival
 
 To join hosts automatically, turn on **Enroll on arrival** in **Add servers** and set
-**Up to** to a maximum of 1 to 1000 servers. The CLI equivalent is
+**Maximum servers** to a number from 1 to 1000. The CLI equivalent is
 `ployz server token create --auto --max 3 --expires 7d`.
 Anyone with this token can join servers up to that limit until it expires or you revoke it.
 
