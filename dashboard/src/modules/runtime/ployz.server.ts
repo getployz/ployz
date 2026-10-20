@@ -29,7 +29,7 @@ import type {
   VolumeSwitchRequest,
   WatchOptions,
 } from "@ployz/sdk";
-import { connect as connectSdk, machineUpgradeAttemptId, observeCopies, ployzVersion, setVolumeCopyRefusal } from "@ployz/sdk";
+import { connect as connectSdk, machineUpgradeAttemptId, observeCopies, ployzVersion, SealedNames, setVolumeCopyRefusal } from "@ployz/sdk";
 import { Context, Data, Effect, Layer, Option, Schema, type Scope } from "effect";
 import type { JsonValue } from "#/db/tables";
 import { describeFailureCause } from "#/lib/error-message";
@@ -42,7 +42,7 @@ import { RuntimeConnectionFailure } from "#/modules/runtime/runtime-connection-e
 /** The release this SDK speaks; it needs no Machine. */
 export { ployzVersion };
 
-export { machineUpgradeAttemptId, setVolumeCopyRefusal };
+export { machineUpgradeAttemptId, SealedNames, setVolumeCopyRefusal };
 
 /** The error an SDK call rejects with when a Machine or the Store refuses it. */
 export { RpcError } from "@ployz/sdk";

@@ -82,6 +82,7 @@ const COMMAND_READ_FILES = {
 const NETWORK = /\bfetch\(|new EventSource\(/;
 /** Raw network access outside data files and server code. */
 const NETWORK_FILES = {
+  "lib/server-fn-fetch.ts": "the transport under every server function call from the browser",
   "modules/github/github-observation.api.ts": "server-only GitHub API client",
   "modules/inngest/client.ts": "server-only Inngest REST lookup of one run's status for the volume run sweep",
 };

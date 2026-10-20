@@ -12,7 +12,7 @@ pub(crate) use path::{
 };
 pub use path::{NodeName, SettingPath};
 
-mod size;
+pub(crate) mod size;
 
 use ployz_core::config::{
     AuthoredServiceConfig, COMMAND_MAX, CPU_LIMIT_MAX, HEALTHCHECK_PATH_MAX,
@@ -29,6 +29,7 @@ use ts_rs::TS;
 use crate::error;
 use crate::git::GitSetting;
 use crate::policy::{Policy, PolicySetting};
+use crate::scope::EnvironmentSummary;
 use crate::trusted::Trusted;
 
 /// Whether a change waits for a Deploy or takes effect at once.
@@ -306,7 +307,7 @@ impl ServiceSetting {
             }
             Self::MemLimit => json!({
                 "anyOf": [
-                    { "type": "number", "exclusiveMinimum": 0, "maximum": MEM_LIMIT_MAX },
+                    { "type": "number", "minimum": size::MEM_LIMIT_MIN, "maximum": MEM_LIMIT_MAX },
                     { "type": "string", "pattern": size::PATTERN },
                 ],
             }),
@@ -612,15 +613,22 @@ impl ServiceSetting {
     }
 
     /// A memory limit in GB from a number, text spelling one, or a size with a unit,
-    /// rounded to whole bytes. A number of bytes is refused with its size.
+    /// rounded to whole bytes. A number of bytes is refused with its size, and one under
+    /// [`size::MEM_LIMIT_MIN`] as too small to run.
     fn mem_limit(self, value: Value) -> Result<Value, RpcError> {
-        if let Some(bytes) = value.as_str().and_then(|text| size::bytes(text.trim())) {
-            return Ok(json!(bytes / 1e9));
+        let value = match value.as_str().and_then(|text| size::bytes(text.trim())) {
+            Some(bytes) => json!(bytes / 1e9),
+            None => self.coerce_number(value),
+        };
+        if value.as_f64().is_some_and(|gb| gb < size::MEM_LIMIT_MIN) {
+            return Err(self.invalid(&format!(
+                "expected at least {} GB (10 MB): Docker refuses less than 6 MiB",
+                size::MEM_LIMIT_MIN
+            )));
         }
-        let value = self.coerce_number(value);
         if value.is_string() {
             return Err(self.invalid(
-                "expected GB above 0 and up to 1024, or a size with a unit such as \"512MiB\" or \"1GiB\"",
+                "expected GB from 0.01 to 1024, or a size with a unit such as \"512MiB\" or \"1GiB\"",
             ));
         }
         if let Some((size, text)) = value.as_f64().and_then(size::looks_like_bytes) {
@@ -755,6 +763,31 @@ impl ServiceSetting {
                 error::invalid("Unknown Service Setting", details.into())
             })
     }
+}
+
+/// Whether `value` is text that names no HTTP path and spells no object.
+pub(crate) fn is_healthcheck_text(value: &Value) -> bool {
+    matches!(ServiceSetting::Healthcheck.coerce(value.clone()), Value::String(text) if !text.starts_with('/'))
+}
+
+/// Healthcheck text that is not a path: a command or a timeout takes an object.
+pub(crate) fn healthcheck_text(service: &ServiceName, summary: &EnvironmentSummary) -> RpcError {
+    let setting = ServiceSetting::Healthcheck;
+    error::invalid(
+        format!(
+            "{}: text sets an HTTP path like /health; a command takes an object like {{\"command\":\"pg_isready\",\"timeoutSeconds\":60}}, and an HTTP check's timeout one like {{\"path\":\"/health\",\"timeoutSeconds\":60}}",
+            setting.name()
+        ),
+        json!({
+            "setting": setting.name(),
+            "expected": setting.expected(),
+            "example": setting.examples().get(0),
+            "next": format!(
+                "ployz set {service} --patch '{{\"healthcheck\":{{\"command\":\"pg_isready\"}}}}' --env {} --project {}",
+                summary.name, summary.project
+            ),
+        }),
+    )
 }
 
 /// A core change row's value at `field` as reads show it: never a secret, a
