@@ -2,7 +2,7 @@ import "@tanstack/react-start/server-only";
 import type { EnvironmentRef, ExpectedCopy, MachineId, Snapshot, VolumeCopy, WantedCopy } from "@ployz/sdk";
 import { and, eq, inArray, max, sql } from "drizzle-orm";
 import { Data, Effect, Option, Semaphore } from "effect";
-import { ClusterOutOfTime, clusterRead } from "#/modules/runtime/organization-runtime.server";
+import { ClusterOutOfTime } from "#/modules/runtime/organization-runtime.server";
 import { volumePlacement } from "#/modules/volume-placement/tables";
 import { deployClaim } from "#/modules/volume-placement/volume-placement.server";
 import { expectOf, roleOf } from "#/modules/volume-run/plan";
@@ -225,7 +225,6 @@ const syncOnce = Effect.fn("MirrorSync.sync")(function* (organizationId: string,
   const steps: MirrorStep[] = [];
   const named = (member: Member) => copyName(volume.name, member.machine.name);
   const setCopy = (machine: MachineRef, expect: ExpectedCopy, want: WantedCopy) => ask(asker, machine, expect, want).pipe(
-    clusterRead,
     Effect.catchIf((error) => error instanceof ClusterOutOfTime, () => Effect.fail(new ReplyLost({ server: machine.name }))),
   );
   const pull = (member: SlotMember, copy: Slot, target: string) =>

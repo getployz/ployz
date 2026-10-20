@@ -1049,8 +1049,10 @@ export type CopyAsker = Pick<RunContext, "organizationId" | "dockerVolume" | "vo
 export const askCopy = Effect.fn("VolumeRun.askCopy")(function* (asker: CopyAsker, machine: MachineRef, expect: ExpectedCopy, want: WantedCopy) {
   const session = yield* openSession(asker.organizationId);
   return yield* session.volumeSwitch(machine.id, { command: "set_volume_copy", payload: { name: asker.dockerVolume, expect, want, gen: asker.gen } }).pipe(
+    clusterRead,
     Effect.map((reply): CopyAnswer => ({ ok: true, copy: reply.copy })),
-    Effect.catch((error) => {
+    Effect.catch((error): Effect.Effect<CopyAnswer, ClusterOutOfTime | SwitchAttemptError> => {
+      if (error instanceof ClusterOutOfTime) return Effect.fail(error);
       const refused = setVolumeCopyRefusal("cause" in error ? error.cause : undefined);
       if (refused === null) {
         return Effect.fail(new SwitchAttemptError(null, `set_volume_copy on ${machine.name}: ${sdkFailureMessage(error, [machine])}`));
