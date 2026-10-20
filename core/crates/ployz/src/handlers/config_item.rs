@@ -102,7 +102,8 @@ pub(super) fn mount_command(command: Command) -> Command {
     store::scoped(command.about("Mount a Config into a Service at a directory"))
         .arg(positional("service", true))
         .arg(positional("config", true))
-        .arg(positional("dir", true).help("Absolute directory, like /etc/nginx/conf.d"))
+        .arg(positional("dir", false).help("Absolute directory, like /etc/nginx/conf.d"))
+        .override_usage("ployz config mount [OPTIONS] <SERVICE> <CONFIG> <DIR>")
 }
 
 pub(super) fn unmount_command(command: Command) -> Command {
@@ -286,18 +287,40 @@ pub(super) fn delete(root: &ArgMatches) -> Result<(), Error> {
 
 pub(super) fn mount(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
+    let dir = mount_dir(matches)?;
     let service = service_name(matches)?;
     let mounted = store::store(root)?.write(&AttachConfig {
         environment: store::environment(matches)?,
         service: service.clone(),
         config: config_name(matches, "config")?,
-        dir: required(matches, "dir")?,
+        dir,
     })?;
     let unchanged = format!(
         "{service} already mounts Config {} there",
         mounted.config.name
     );
     staged(matches, &mounted, "Staged mount of Config", &unchanged)
+}
+
+/// `DIR`, or for `config add`'s `SERVICE:/DIR` typed here, the order this takes.
+fn mount_dir(matches: &ArgMatches) -> Result<String, Error> {
+    if let Some(dir) = matches.get_one::<String>("dir") {
+        return Ok(dir.clone());
+    }
+    let words =
+        ["service", "config"].map(|id| matches.get_one::<String>(id).map_or("", String::as_str));
+    let split = |word: &str| {
+        word.split_once(":/")
+            .map(|(service, dir)| (service.to_owned(), format!("/{dir}")))
+    };
+    let (service, config, dir) = match (split(words[0]), split(words[1])) {
+        (_, Some((service, dir))) => (service, words[0], dir),
+        (Some((service, dir)), None) => (service, words[1], dir),
+        (None, None) => return Err(Error::usage("dir is required")),
+    };
+    Err(Error::usage(format!(
+        "config mount takes SERVICE CONFIG DIR: ployz config mount {service} {config} {dir}"
+    )))
 }
 
 pub(super) fn unmount(root: &ArgMatches) -> Result<(), Error> {
@@ -380,4 +403,23 @@ fn file_name(matches: &ArgMatches) -> Result<ConfigFileName, Error> {
 fn service_name(matches: &ArgMatches) -> Result<ServiceName, Error> {
     ServiceName::parse(required(matches, "service")?)
         .map_err(|_| Error::usage("Expected a Service name, like web"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_mount_written_as_service_colon_dir_names_the_order_mount_takes() {
+        let refused = |args: &[&str]| {
+            let matches = mount_command(Command::new("mount"))
+                .try_get_matches_from(std::iter::once("mount").chain(args.iter().copied()))
+                .unwrap();
+            mount_dir(&matches).unwrap_err().to_string()
+        };
+        let hint = "config mount takes SERVICE CONFIG DIR: ployz config mount web app /etc/app";
+        assert_eq!(refused(&["app", "web:/etc/app"]), hint);
+        assert_eq!(refused(&["web:/etc/app", "app"]), hint);
+        assert_eq!(refused(&["web", "app"]), "dir is required");
+    }
 }

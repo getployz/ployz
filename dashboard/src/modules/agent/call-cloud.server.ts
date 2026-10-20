@@ -63,7 +63,7 @@ const noServers = (): ServersAnswer => {
 /** Why Cloud reached no Server: the Organization has none yet, or its Servers aren't answering. */
 const notConnected = Effect.fn("CallCloud.notConnected")(function* (organizationId: string) {
   return (yield* countOrganizationMachines(organizationId)) === 0
-    ? refusal("unavailable", NO_SERVERS_MESSAGE, CONNECT_SERVERS)
+    ? refusal("conflict", NO_SERVERS_MESSAGE, CONNECT_SERVERS)
     : unreachable();
 });
 
