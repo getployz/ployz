@@ -178,9 +178,10 @@ export function stagedChip(change: ReviewLifecycleKind, changeCount: number): De
 /**
  * A Service's chip: anything about Deploys. A Deploy in flight that targets it (running, else queued), else what the
  * next Deploy does to it. `inFlight`: the Environment's Deployments in flight; one naming no Services deploys every one.
- * `restarting`: the Services the running Deploy stops or starts, null until its plan is read. A Service it targets but
- * leaves running (only snapshots its Volume, or nothing changed) is not Deploying; one it restarts without naming it
- * (a Service that references a selected one) is.
+ * `restarting`: the Services the running Deploy stops or starts, null until its view is read. Only those read
+ * Deploying, so a chip never shows it before the evidence and drops it after: one the Deploy targets but leaves running
+ * (only snapshots its Volume, or nothing changed) is not Deploying; one it restarts without naming it (a Service that
+ * references a selected one) is.
  */
 export function deployChip(
   service: Pick<ServiceListing, "name" | "change">,
@@ -190,7 +191,7 @@ export function deployChip(
 ): DeployChipState | null {
   const targets = (deployment: Pick<DeploymentSummary, "services">) => deployment.services.length === 0 || deployment.services.includes(service.name);
   const running = inFlight.find((deployment) => deployment.status !== "queued");
-  if (running && (restarting === null ? targets(running) : restarting.has(service.name))) return { kind: "deploying", since: running.started_at ?? running.admitted_at };
+  if (running && restarting?.has(service.name)) return { kind: "deploying", since: running.started_at ?? running.admitted_at };
   if (inFlight.some((deployment) => deployment.status === "queued" && targets(deployment))) return { kind: "queued" };
   return service.change === null ? null : stagedChip(service.change, changeCount);
 }
