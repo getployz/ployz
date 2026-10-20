@@ -3,16 +3,13 @@
 use std::{
     fs::{self, File},
     io,
-    os::unix::{
-        fs::{FileTypeExt, PermissionsExt},
-        net::UnixListener,
-    },
+    os::unix::{fs::PermissionsExt, net::UnixListener},
     path::Path,
 };
 
 use crate::{
     filesystem::{MACHINE_API_SOCKET_MODE, PLOYZ_DIR_MODE, set_ployz_group},
-    socket_activation::{claim_socket_path, inherited_unix_listener},
+    socket_activation::{claim_socket_path, inherited_unix_listener, remove_stale_socket},
 };
 
 /// The claim lock on the Machine API socket path and the listener it serves.
@@ -70,17 +67,7 @@ fn machine_api_listener(path: &Path) -> io::Result<UnixListener> {
 }
 
 fn bind_socket(path: &Path) -> io::Result<UnixListener> {
-    match fs::symlink_metadata(path) {
-        Ok(metadata) if metadata.file_type().is_socket() => fs::remove_file(path)?,
-        Ok(_) => {
-            return Err(io::Error::new(
-                io::ErrorKind::AlreadyExists,
-                "refusing to replace a non-socket path",
-            ));
-        }
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-        Err(error) => return Err(error),
-    }
+    remove_stale_socket(path)?;
     let listener = UnixListener::bind(path)?;
     fs::set_permissions(path, fs::Permissions::from_mode(MACHINE_API_SOCKET_MODE))?;
     set_ployz_group(path)?;
