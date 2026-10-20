@@ -1086,7 +1086,7 @@ async fn stop_and_remove_rows_never_read_as_starting() {
     while let Ok(event) = rx.try_recv() {
         if let DeployEvent::Progress { rows, .. } = event {
             for row in rows {
-                let seen: &mut Vec<_> = &mut statuses[row.index as usize];
+                let seen: &mut Vec<_> = statuses.get_mut(row.index as usize).unwrap();
                 if seen.last() != Some(&row.status) {
                     seen.push(row.status);
                 }
