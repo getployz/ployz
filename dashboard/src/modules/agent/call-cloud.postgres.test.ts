@@ -22,6 +22,7 @@ import { acmeWeb, enrollStoreServer, seedStoreGitService, seedStoreOrganization,
 
 const ORGANIZATION = "00000000-0000-4000-8000-00000000c101";
 const DRAIN = "00000000-0000-4000-8000-00000000c102";
+const OTHER_DRAIN = "00000000-0000-4000-8000-00000000c103";
 const PROJECT = "00000000-0000-4000-8000-00000000c104";
 const ENVIRONMENT = "00000000-0000-4000-8000-00000000c105";
 const SERVICE = "00000000-0000-4000-8000-00000000c106";
@@ -59,6 +60,26 @@ describe("callCloud", () => {
       const [run] = yield* operationsOn(ORGANIZATION, { kind: "server", machine: MACHINE }, DRAIN, 1, "machine-1").pipe(Effect.provide(services));
 
       expect(run).toEqual(expect.objectContaining({ attempt: DRAIN, run: "drain machine-1" }));
+    }));
+
+  it.live("says why a Server's Drain ended without a report", () =>
+    Effect.gen(function* () {
+      const services = yield* Layer.build(yield* storeTestCloud());
+      const userId = yield* seedStoreOrganization(ORGANIZATION).pipe(Effect.provide(services));
+      const { drizzle } = yield* Database.pipe(Effect.provide(services));
+      const endedAt = new Date();
+      yield* drizzle.insert(serverDrainAttempt).values([
+        { id: DRAIN, organizationId: ORGANIZATION, machineId: MACHINE, requestedByUserId: userId, state: "failed", endCode: "not_started", endedAt },
+        {
+          id: OTHER_DRAIN, organizationId: ORGANIZATION, machineId: MACHINE, requestedByUserId: userId,
+          state: "failed", endCode: "refused", refusalMessage: "Drains need a newer Ployz on machine-1.", endedAt,
+        },
+      ]);
+      const read = (attempt: string) =>
+        operationsOn(ORGANIZATION, { kind: "server", machine: MACHINE }, attempt, 1, "machine-1").pipe(Effect.provide(services));
+
+      expect(yield* read(DRAIN)).toEqual([expect.objectContaining({ state: "failed", reason: "The drain never started." })]);
+      expect(yield* read(OTHER_DRAIN)).toEqual([expect.objectContaining({ state: "failed", reason: "Drains need a newer Ployz on machine-1." })]);
     }));
 
   const LOGS: CloudQuery = {
