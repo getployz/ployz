@@ -196,10 +196,14 @@ fn kinds(preview: &DeployPreview) -> Vec<String> {
                 replacement.old_container_id, replacement.machine_id
             ),
             DeployOperation::RunContainer { machine_id, .. } => format!("run on {machine_id}"),
+            DeployOperation::RemoveContainer {
+                machine_id,
+                container_id,
+                ..
+            } => format!("remove {container_id} on {machine_id}"),
             other @ (DeployOperation::PrepareVolumes { .. }
             | DeployOperation::WaitHealthy { .. }
             | DeployOperation::StopContainer { .. }
-            | DeployOperation::RemoveContainer { .. }
             | DeployOperation::StopHook { .. }
             | DeployOperation::RunHook { .. }
             | DeployOperation::RemoveVolume { .. }) => {
@@ -337,6 +341,34 @@ fn a_server_without_the_capability_makes_the_whole_service_replace() {
         [
             format!("replace {} on {}", container_id('b'), machine_id('1')),
             format!("replace {} on {}", container_id('c'), machine_id('2')),
+        ]
+    );
+}
+
+/// Spreading replicas onto a Server that joined since would start a copy
+/// there, so the copies that stay take the new gen too.
+#[test]
+fn a_memory_raise_that_spreads_onto_a_new_server_replaces_every_copy() {
+    let plan = plan_deploy(
+        [&limited(two_replicas(), 128)],
+        &DeploySnapshot {
+            machines: vec![capable('1', "first"), capable('2', "second")],
+            containers: vec![
+                container('b', '1', &limited(two_replicas(), 64), &service_id('a')),
+                container('c', '1', &limited(two_replicas(), 64), &service_id('a')),
+            ],
+            ..Default::default()
+        },
+        PlanOptions::default(),
+    )
+    .unwrap();
+
+    assert_eq!(
+        kinds(&plan),
+        [
+            format!("remove {} on {}", container_id('b'), machine_id('1')),
+            format!("replace {} on {}", container_id('c'), machine_id('1')),
+            format!("run on {}", machine_id('2')),
         ]
     );
 }

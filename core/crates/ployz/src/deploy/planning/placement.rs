@@ -15,6 +15,7 @@ use super::volumes::VolumePlacement;
 use super::{DeployOperation, PlanError, PlanOptions, ReplacementOperation};
 use ployz_core::LimitsUpdateOperation;
 
+#[derive(Clone)]
 pub(super) struct PlacementState {
     unobserved: BTreeMap<MachineId, ployz_core::MachineObservation>,
     occupancy: BTreeMap<MachineId, usize>,
@@ -49,16 +50,14 @@ impl PlacementReservations {
         observed: &[ServiceObservation],
         options: &PlanOptions,
     ) -> Result<(), PlanError> {
-        let mut capacity = self.capacity.clone();
-        let mut sockets = self.sockets.clone();
+        let mut budget = (self.capacity.clone(), self.sockets.clone());
         let reservations = requested
             .map(|spec| {
                 let observed = observed
                     .iter()
                     .find(|service| service.identity.name == spec.name);
                 reserve_replicated_service_demand(
-                    &mut capacity,
-                    &mut sockets,
+                    &mut budget,
                     spec,
                     observed,
                     machine_id,
@@ -68,8 +67,7 @@ impl PlacementReservations {
                 .map(|reservation| (spec.name.clone(), reservation))
             })
             .collect::<Result<Vec<_>, _>>()?;
-        self.capacity = capacity;
-        self.sockets = sockets;
+        (self.capacity, self.sockets) = budget;
         self.reservations.extend(reservations);
         Ok(())
     }
@@ -102,16 +100,15 @@ impl PlacementReservations {
 }
 
 impl PlacementState {
-    /// How this Deploy lands a limits-only change of the Service, decided once
-    /// for all of its copies.
-    pub(super) fn limits_change(
+    /// Whether the Service's copies could take the requested limits in place:
+    /// at least one would, and each such copy runs on a Machine whose daemon can.
+    pub(super) fn can_update_in_place(
         &self,
         current: &[ServiceContainer],
         requested: &RequestedServiceSpec,
-        machines: impl Iterator<Item = MachineId>,
         options: &PlanOptions,
-    ) -> LimitsChange {
-        LimitsChange::for_service(current, requested, machines, options, &self.updaters)
+    ) -> bool {
+        self.updaters.can_update(current, requested, options)
     }
 
     /// Whether this Deploy keeps `container` running: as it is, or with its
@@ -129,10 +126,11 @@ impl PlacementState {
         self.capacity.fits(machine_id, peak)
     }
 
-    pub(super) fn take_reservation(&mut self, service: &ServiceName) -> Option<CapacityAdmission> {
-        self.reservations
-            .remove(service)
-            .map(|reservation| CapacityAdmission::Reserved { reservation })
+    pub(super) fn take_reservation(
+        &mut self,
+        service: &ServiceName,
+    ) -> Option<ReplicatedReservation> {
+        self.reservations.remove(service)
     }
 
     pub(super) fn capacity_error_for<'a>(
@@ -487,20 +485,40 @@ fn on_machine(
 }
 
 pub(super) enum CapacityAdmission {
-    Pending { error: PlanError },
-    Reserved { reservation: ReplicatedReservation },
+    Pending {
+        error: PlanError,
+        limits: LimitsChange,
+    },
+    Reserved {
+        reservation: ReplicatedReservation,
+    },
 }
 
+#[derive(Clone)]
 pub(super) struct ReplicatedReservation {
     choices: Vec<ReplicaChoice>,
     hook_machine: Option<MachineId>,
 }
 
+impl ReplicatedReservation {
+    /// Whether any choice starts a new Container.
+    fn starts_copy(&self) -> bool {
+        self.choices.iter().any(|choice| {
+            matches!(
+                choice.action,
+                ReplicaAction::Replace { .. } | ReplicaAction::Create
+            )
+        })
+    }
+}
+
+#[derive(Clone)]
 struct ReplicaChoice {
     machine_id: MachineId,
     action: ReplicaAction,
 }
 
+#[derive(Clone)]
 enum ReplicaAction {
     Unchanged(ContainerId),
     /// The Container stays and takes the requested limits in place.
@@ -515,7 +533,6 @@ enum ReplicaAction {
 pub(super) struct ReplicatedPlacement<'a> {
     pub(super) volumes: VolumePlacement<'a>,
     pub(super) admission: CapacityAdmission,
-    pub(super) limits: LimitsChange,
 }
 
 pub(super) fn plan_replicated(
@@ -528,7 +545,7 @@ pub(super) fn plan_replicated(
     let (requested, machines) = target.volumes.into_parts();
     let reservation = match target.admission {
         CapacityAdmission::Reserved { reservation } => reservation,
-        CapacityAdmission::Pending { error } => {
+        CapacityAdmission::Pending { error, limits } => {
             // Selection uses trial socket claims; the accepted choices are applied below.
             let mut sockets = placement.sockets.clone();
             select_replicated(
@@ -538,7 +555,7 @@ pub(super) fn plan_replicated(
                 &placement.occupancy,
                 (&mut placement.capacity, &mut sockets),
                 error,
-                (options, target.limits),
+                (options, limits),
             )?
         }
     };
@@ -849,6 +866,28 @@ impl InPlaceUpdaters {
                 .collect(),
         )
     }
+
+    /// Whether every copy of the Service that would take the requested limits
+    /// in place runs on one of these Machines, and at least one would.
+    fn can_update(
+        &self,
+        current: &[ServiceContainer],
+        requested: &RequestedServiceSpec,
+        options: &PlanOptions,
+    ) -> bool {
+        let mut updates = current.iter().filter(|container| {
+            container_fate(container, requested, options, LimitsChange::InPlace)
+                == ContainerFate::Update
+        });
+        let mut any = false;
+        for container in updates.by_ref() {
+            if !self.0.contains(&container.as_observation().machine_id) {
+                return false;
+            }
+            any = true;
+        }
+        any
+    }
 }
 
 /// How one Deploy lands a limits-only change of one Service.
@@ -861,44 +900,27 @@ pub(super) enum LimitsChange {
 }
 
 impl LimitsChange {
-    /// In place only when no copy of the Service starts in this Deploy. A copy
-    /// updated in place keeps its gen, and a Machine coming back takes any In
-    /// copy out of serving once a newer-gen sibling is routed everywhere.
-    fn for_service(
-        current: &[ServiceContainer],
-        requested: &RequestedServiceSpec,
-        machines: impl Iterator<Item = MachineId>,
-        options: &PlanOptions,
-        updaters: &InPlaceUpdaters,
-    ) -> Self {
-        let machines: BTreeSet<MachineId> = machines.collect();
-        let mut kept = BTreeSet::new();
-        for container in current {
-            let observation = container.as_observation();
-            if !observation.runtime.may_serve() || !serving_rotation(observation) {
-                continue;
-            }
-            let own = if updaters.0.contains(&observation.machine_id) {
-                Self::InPlace
-            } else {
-                Self::Replace
-            };
-            match container_fate(container, requested, options, own) {
-                ContainerFate::Replace => return Self::Replace,
-                ContainerFate::Update | ContainerFate::Keep => {
-                    if machines.contains(&observation.machine_id) {
-                        kept.insert((observation.machine_id, observation.container_id));
-                    }
-                }
+    /// Plan one Service in place when that starts no copy of it, else with
+    /// replacement, on a budget the abandoned trial never touched.
+    ///
+    /// A copy updated in place keeps its gen, and a Machine coming back takes
+    /// any In copy out of serving once a newer-gen sibling is routed everywhere.
+    /// So a Service is updated in place only when every copy keeps its id.
+    pub(super) fn decide<Budget: Clone, Planned>(
+        worth_trying: bool,
+        budget: &mut Budget,
+        mut plan: impl FnMut(&mut Budget, Self) -> Result<Planned, PlanError>,
+        starts_copy: impl FnOnce(&Planned) -> bool,
+    ) -> Result<Planned, PlanError> {
+        if worth_trying {
+            let mut trial = budget.clone();
+            let planned = plan(&mut trial, Self::InPlace)?;
+            if !starts_copy(&planned) {
+                *budget = trial;
+                return Ok(planned);
             }
         }
-        let enough = match requested.mode {
-            ServiceMode::Global => machines
-                .iter()
-                .all(|machine| kept.iter().any(|(on, _)| on == machine)),
-            ServiceMode::Replicated { replicas } => kept.len() >= replicas.get() as usize,
-        };
-        if enough { Self::InPlace } else { Self::Replace }
+        plan(budget, Self::Replace)
     }
 }
 
@@ -941,8 +963,7 @@ fn serving_rotation(observation: &ContainerObservation) -> bool {
 }
 
 fn reserve_replicated_service_demand(
-    capacity: &mut CapacityBudget,
-    sockets: &mut HostSockets,
+    budget: &mut (CapacityBudget, HostSockets),
     requested: &RequestedServiceSpec,
     observed: Option<&ServiceObservation>,
     machine_id: MachineId,
@@ -950,60 +971,62 @@ fn reserve_replicated_service_demand(
     updaters: &InPlaceUpdaters,
 ) -> Result<ReplicatedReservation, PlanError> {
     let current = observed.map_or(&[][..], |service| service.containers.as_slice());
-    let limits = LimitsChange::for_service(
-        current,
-        requested,
-        std::iter::once(machine_id),
-        options,
-        updaters,
-    );
-    if let ServiceMode::Replicated { replicas } = requested.mode
-        && requested.pre_deploy.is_some()
-        && current
-            .iter()
-            .filter(|container| {
-                container.as_observation().machine_id == machine_id
-                    && container_fate(container, requested, options, limits)
-                        != ContainerFate::Replace
-            })
-            .count()
-            < replicas.get() as usize
-    {
-        release_hooks(
-            capacity,
-            observed
-                .into_iter()
-                .flat_map(|service| &service.hook_containers),
-        );
-    }
-    let error = capacity.error_for([&machine_id]);
-    let reservation = select_replicated(
-        requested,
-        current,
-        vec![machine_id],
-        &BTreeMap::new(),
-        (capacity, sockets),
-        error,
-        (options, limits),
-    )?;
-    for container in current {
-        let observation = container.as_observation();
-        if !reservation
-            .choices
-            .iter()
-            .any(|choice| match &choice.action {
-                ReplicaAction::Unchanged(id)
-                | ReplicaAction::Update(id)
-                | ReplicaAction::Replace {
-                    container_id: id, ..
-                } => *id == observation.container_id,
-                ReplicaAction::Create => false,
-            })
+    let reserve = |budget: &mut (CapacityBudget, HostSockets), limits| {
+        let (capacity, sockets) = budget;
+        if let ServiceMode::Replicated { replicas } = requested.mode
+            && requested.pre_deploy.is_some()
+            && current
+                .iter()
+                .filter(|container| {
+                    container.as_observation().machine_id == machine_id
+                        && container_fate(container, requested, options, limits)
+                            != ContainerFate::Replace
+                })
+                .count()
+                < replicas.get() as usize
         {
-            sockets.release(observation.machine_id, observation.container_id);
+            release_hooks(
+                capacity,
+                observed
+                    .into_iter()
+                    .flat_map(|service| &service.hook_containers),
+            );
         }
-    }
-    Ok(reservation)
+        let error = capacity.error_for([&machine_id]);
+        let reservation = select_replicated(
+            requested,
+            current,
+            vec![machine_id],
+            &BTreeMap::new(),
+            (capacity, sockets),
+            error,
+            (options, limits),
+        )?;
+        for container in current {
+            let observation = container.as_observation();
+            if !reservation
+                .choices
+                .iter()
+                .any(|choice| match &choice.action {
+                    ReplicaAction::Unchanged(id)
+                    | ReplicaAction::Update(id)
+                    | ReplicaAction::Replace {
+                        container_id: id, ..
+                    } => *id == observation.container_id,
+                    ReplicaAction::Create => false,
+                })
+            {
+                sockets.release(observation.machine_id, observation.container_id);
+            }
+        }
+        Ok(reservation)
+    };
+    LimitsChange::decide(
+        updaters.can_update(current, requested, options),
+        budget,
+        reserve,
+        ReplicatedReservation::starts_copy,
+    )
 }
 
 fn release_hooks<'a>(
