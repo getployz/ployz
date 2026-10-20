@@ -788,7 +788,7 @@ fn a_hand_typed_size_for_a_deployed_volume_points_at_volume_set() {
         ),
         (
             managed(5),
-            "data is deployed at 10 GB; a deployed Volume can't shrink yet",
+            "data is deployed at 10 GB; shrink it with ployz volume set data --size 5",
         ),
     ] {
         let refused = set_storage(&store, &who, "data", asked).unwrap_err();

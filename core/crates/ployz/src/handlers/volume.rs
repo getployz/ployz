@@ -43,7 +43,7 @@ pub(super) fn add_command(command: Command) -> Command {
 
 pub(super) fn set_command(command: Command) -> Command {
     storage_flags(store::scoped(command.about(
-        "Change a Volume's storage before its first deployment, grow a deployed one (Ployz Cloud), or whether it allows shared writes",
+        "Change a Volume's storage before its first deployment, resize a deployed one (Ployz Cloud), or whether it allows shared writes",
     )))
     .arg(positional("volume", true))
     .arg(shared_writes_flag())
@@ -219,8 +219,9 @@ enum StorageChange {
     /// Store refuses on a deployed Volume with its own message.
     Stage(VolumeKind),
     /// A deployed Managed Volume asked for another Managed size: a resize run on Ployz Cloud.
-    /// Cloud, not the CLI, refuses a smaller size. The size it already has stages nothing, on
-    /// any backend, and the size its Servers hold stages back over a restore of an older size.
+    /// A smaller size shrinks it, and a Server refuses one below its floor. The size it already
+    /// has stages nothing, on any backend, and the size its Servers hold stages back over a
+    /// restore of an older size.
     Resize(ProvisionedVolumeMaximumBytes),
 }
 
@@ -352,7 +353,7 @@ pub(super) fn inspect(root: &ArgMatches) -> Result<(), Error> {
             if listing.storage_locked {
                 match listing.volume.storage {
                     VolumeKind::Provisioned { .. } => {
-                        "deployed; ployz volume set --size grows it (Ployz Cloud)"
+                        "deployed; ployz volume set --size resizes it (Ployz Cloud)"
                     }
                     VolumeKind::Docker {} => "locked after deployment was requested",
                 }
@@ -530,6 +531,13 @@ mod tests {
                 Some(gb("10")),
                 docker,
                 StorageChange::Stage(docker),
+            ),
+            (
+                true,
+                twenty,
+                Some(gb("20")),
+                managed,
+                StorageChange::Resize(gb("10")),
             ),
             (true, docker, None, twenty, StorageChange::Stage(twenty)),
             // A restore staged the older size: the size the Servers hold stages back,

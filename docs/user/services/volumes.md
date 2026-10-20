@@ -50,10 +50,23 @@ Ployz grows each mirror first and the copy your service writes to last. If one s
 a copy has no room, Ployz refuses the whole resize, names that server, and the volume keeps its
 old limit. `ployz volume runs data` shows how a resize went. The new limit isn't a staged
 change: `ployz diff` shows nothing, and your next deploy leaves the service's container alone.
-Shrinking a deployed volume isn't supported yet. A Docker volume has no limit to grow.
+A Docker volume has no limit to grow.
 
 If you restore an older revision that asked for a smaller limit, the servers keep the size they
 hold. The panel shows the smaller one; enter the held size to stage it back.
+
+To shrink a deployed volume, run the same command with a smaller number:
+
+```sh
+# Shrink the data volume to 8 GB on every server that holds a copy
+ployz volume set data --size 8 --wait
+```
+
+Ployz shrinks the copy your service writes to first, then each mirror. A volume can't shrink
+below what it holds plus some headroom: 10% or 1 GB, whichever is larger. If a server refuses,
+Ployz names it and the smallest size it accepts, and stops. If the copy your service writes to
+refuses, the volume keeps its old limit. A shrunk volume has less free space, so it may fill up
+sooner.
 
 The dashboard doesn't show how full a volume is yet:
 
