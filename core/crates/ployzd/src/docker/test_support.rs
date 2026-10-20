@@ -241,15 +241,20 @@ async fn answer(fake: FakeDocker, method: Method, uri: Uri, body: Bytes) -> Resp
                         (status, 0)
                     };
                 let container = containers.get_mut(&name).unwrap();
-                let previous = container["State"].clone();
-                container["State"] = serde_json::json!({"Status": status, "ExitCode": code});
+                let previous = container["State"].take();
+                let mut state = serde_json::json!({"Status": status, "ExitCode": code});
                 if fake.stamp_starts && status == "running" {
-                    container["State"]["StartedAt"] = if previous["Status"] == "running" {
-                        previous["StartedAt"].clone()
+                    let started_at = if previous.get("Status") == Some(&"running".into()) {
+                        previous.get("StartedAt").cloned().unwrap_or_default()
                     } else {
                         chrono::Utc::now().to_rfc3339().into()
                     };
+                    state
+                        .as_object_mut()
+                        .expect("a literal object")
+                        .insert("StartedAt".into(), started_at);
                 }
+                container["State"] = state;
                 return StatusCode::NO_CONTENT.into_response();
             }
             panic!("unexpected implicit lifecycle action: {method} {path}");
