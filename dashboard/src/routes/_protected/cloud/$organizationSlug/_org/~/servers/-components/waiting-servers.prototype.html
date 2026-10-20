@@ -703,7 +703,7 @@ function openDetail(s) {
     <div class="kv">
       <span>OS</span><span>${s.os} · ${s.kernel}</span>
       <span>Machine</span><span>${s.cpu} vCPU · ${s.ram} GB · x86_64 · ${s.virt}</span>
-      <span>Docker</span><span>${s.docker ? `${s.docker}${s.block?.startsWith("Docker") ? ` <span class="t-warn">· too old</span>` : ""}` : "29.4.1 · installed at check-in"}</span>
+      <span>Docker</span><span>${s.docker ? `${s.docker}${s.block?.startsWith("Docker") ? ` <span class="t-warn">· too old</span>` : ""}` : s.prep === "docker" || s.block ? "Not installed" : "29.4.1"}</span>
       <span>cgroup</span><span>${s.cgroup}</span>
     </div>
     <div class="dlabel">Disks</div>
@@ -943,6 +943,7 @@ function runPrep() {
     if (!preparing.length) { clearInterval(prepTimer); prepTimer = null; return; }
     for (const s of preparing) {
       if (--s.prepT > 0) continue;
+      if (s.prep === "docker") s.docker = "29.4.1";
       if (s.prep === "docker" && !s.zfsWhy) { s.prep = "zfs"; s.prepT = 8 + Math.floor(rnd() * 12); continue; }
       s.prep = null;
     }
@@ -978,15 +979,18 @@ const SCRIPTS = {
   cli: [
     { group: "Tokens" },
     { id: "tok-create", title: "Create a token", cmd: "ployz server token create", out: [
-      "@400 [g]✓[/] Created [b]amber-falcon[/] [d]· expires in 24h[/]", "",
-      "  Run this on every server you want to add:", "",
+      "@400 [g]✓[/] Created [b]amber-falcon[/]",
+      "[m]pflt_7Hq2mXc9LwZr4TbN8vKd3sYpE1uGfA6jRo5iVnBxCzQ[/]", "",
+      "  Run on each host, and paste the token when it asks:",
       "  [m]curl -fsSL https://ployz.sh | sudo sh -s -- 0.4.2 --enroll[/]", "",
-      "[d]Shown once. They'll show up at[/] cloud.ployz.dev/acme/servers"] },
+      "[d]Shown once. Expires in 24h.[/]"] },
     { id: "tok-auto", title: "Join on arrival", cmd: "ployz server token create --auto --max 50 --expires 7d", out: [
-      "@400 [g]✓[/] Created [b]swift-heron[/] [d]· expires in 7 days[/]", "",
-      "  Servers join on their own, up to 50.", "",
+      "@400 [y]Anyone with this token can add servers. Keep it secret.[/]",
+      "[g]✓[/] Created [b]swift-heron[/]",
+      "[m]pflt_Rk4sW9eTq2LmB7xVz1HcNp8aJf3YdG6uKo5iXtEbQwM[/]", "",
+      "  Run on each host, and paste the token when it asks:",
       "  [m]curl -fsSL https://ployz.sh | sudo sh -s -- 0.4.2 --enroll[/]", "",
-      "[y]Anyone with this token can add servers. Keep it secret.[/]"] },
+      "[d]Shown once. Expires in 7d.[/]"] },
     { id: "tok-ls", title: "List tokens", cmd: "ployz server token ls", out: [
       "@200 [d]NAME           JOINS           SERVERS              EXPIRES[/]",
       "amber-falcon   when you say    182 waiting          in 22h",
@@ -1062,32 +1066,28 @@ const SCRIPTS = {
     { id: "install", title: "Paste the line", who: HOST, cmd: "curl -fsSL https://ployz.sh | sudo sh -s -- 0.4.2 --enroll", out: [
       "Installs Docker and Ployz.",
       "Fleet Token (from Servers in Ployz Cloud): ",
-      "@500 [g]✓[/] Ployz 0.4.2",
-      "@500 [c]⠋[/] Installing Docker",
-      "~@1600 [g]✓[/] Docker 29.4.1 [d](38s)[/]",
-      "@500 [g]✓[/] 8 vCPU · 32 GB · 3.8 TB spare disk",
-      "@600 [g]✓[/] Connected to [b]Acme[/] as hz-fsn1-001", "",
-      "Waiting for approval in Ployz Cloud…",
-      "[d]cloud.ployz.dev/acme/servers[/]"] },
+      "@500 Installed ployz to /usr/local/bin/ployz",
+      "@500 Checking in",
+      "@600 Waiting for approval",
+      "", "$ ployz status", "@300 [d]this server[/]  [c]Installing Docker[/]",
+      "", "$ ployz status", "@300 [d]this server[/]  [c]Waiting for approval[/]"] },
     { id: "auto", title: "With an auto token", who: HOST, cmd: "curl -fsSL https://ployz.sh | sudo sh -s -- 0.4.2 --enroll", out: [
       "Installs Docker and Ployz.",
       "Fleet Token (from Servers in Ployz Cloud): ",
-      "@500 [g]✓[/] Ployz 0.4.2",
-      "@500 [g]✓[/] Docker 29.4.1 [d](already installed)[/]",
-      "@500 [g]✓[/] Connected to [b]Acme[/] as ip-10-0-1-4", "",
-      "@400 [c]⠋[/] Setting up ZFS",
-      "~@1100 [c]⠙[/] Joining",
-      "~@900 [c]⠹[/] Going live",
-      "~@600 [g]✓[/] Live [d](1m 21s)[/]"] },
+      "@500 Installed ployz to /usr/local/bin/ployz",
+      "@500 Checking in",
+      "@600 Waiting for approval",
+      "", "$ ployz status", "@300 [d]this server[/]  [c]Installing Docker[/]",
+      "", "$ ployz status", "@300 [d]this server[/]  [c]Setting up ZFS[/]",
+      "", "$ ployz status", "@300 [d]this server[/]  [g]Joined[/]"] },
     { id: "blocked", title: "On a server that's too small", who: "root@hz-fsn1-005:~#", cmd: "curl -fsSL https://ployz.sh | sudo sh -s -- 0.4.2 --enroll", out: [
       "Installs Docker and Ployz.",
       "Fleet Token (from Servers in Ployz Cloud): ",
-      "@500 [g]✓[/] Ployz 0.4.2",
-      "@500 [c]⠋[/] Installing Docker",
-      "~@1200 [g]✓[/] Docker 29.4.1 [d](41s)[/]",
-      "@500 [y]![/] Disk is 20 GB. Ployz needs 30 GB.",
-      "@600 [g]✓[/] Connected to [b]Acme[/] as hz-fsn1-005", "",
-      "[d]Grow the disk and it clears on its own.[/]"] },
+      "@500 Installed ployz to /usr/local/bin/ployz",
+      "@500 Checking in",
+      "@600 Waiting for approval",
+      "", "$ ployz status", "@300 [d]this server[/]  [r]Blocked[/]",
+      "[d]blocked[/]      [r]Disk is 20 GiB. Ployz needs 30 GiB.[/]"] },
     { group: "While it waits" },
     { id: "status", title: "Check status", who: HOST, cmd: "ployz status", out: [
       "@300 Waiting for approval [d]· 14m[/]",

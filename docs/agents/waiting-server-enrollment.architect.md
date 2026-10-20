@@ -45,7 +45,7 @@ Today one Server enrolls per pasted command. The first `/api/enroll` to insert `
 
 There is no stop between "the box exists" and "the box is in a Cluster". Users can't pick the founder. They can't fix a 20 GB disk and retry without a new token.
 
-Constraints traced in code.
+Constraints traced in code before this work. They are the pre-feature baseline, and main has since changed several of them.
 
 - **Stable promise.** `ployz server add` with today's token keeps working. `/api/enroll` and `EnrollWire` (`core/crates/ployz/src/cloud_enroll.rs`) can only gain optional fields. `EnrollWire` already ignores unknown fields, except inside `pairing`.
 - **Single claimant.** `machine_enrollment_token` (`dashboard/src/modules/machines/tables.ts`) already has single-claimant semantics through `claimedMachineId` and `claimedPublicKey`. A per-attempt token is a row in that table, not a new credential kind.
@@ -180,7 +180,9 @@ export const waitingServer = pgTable("waiting_server", {
   probe: jsonb("probe").$type<ProbeResults | null>(),
   firstSeenAt, lastCheckInAt,
   rejectedAt: timestamp("rejected_at", { withTimezone: true }),   // tombstone: same key under the same token gets stop{rejected},
-                                                                  // unless its open attempt is past storage; another token clears it
+                                                                  // unless joinCommitted spares its open attempt; another token clears it
+  reportedAttemptId: uuid("reported_attempt_id"),                 // the attempt the host last reported committed (joining or publishing)
+  reportedStage: text("reported_stage").$type<EnrollmentStage>(), // furthest committed stage reported for it; moves only forward
 }, (t) => [uniqueIndex("waiting_server_key_idx").on(t.organizationId, t.checkinKey)]);
 
 /** Sole writer: the server-enrollment Inngest run, through attemptLifecycle. */
@@ -216,7 +218,7 @@ The token's used count is derived. It counts the token's open `serverEnrollment`
 
 A host gets one enroll on arrival per token. A trigger on each `serverEnrollment` insert writes `(fleetTokenId, checkinKey)` into `fleetTokenAttempt`, whichever path started the attempt. That row outlives the waiting row, so a host that left Waiting and checks in again under the same token waits for a person. A manual enroll is the retry.
 
-No status column is synced between tables. The list a user sees is derived at read time. It is `waitingServer` rows without `rejectedAt`, left-joined with their latest `serverEnrollment`. The check-in route writes facts and the run writes attempt state, so no row has two writers.
+No status column is synced between tables. The list a user sees is derived at read time. It is `waitingServer` rows without `rejectedAt`, left-joined with their latest `serverEnrollment`. The check-in route writes facts and the run writes attempt state, so no row has two writers. A host's report that its daemon committed the join is a fact, so check-in stores it on the waiting row (`reportedAttemptId`, `reportedStage`). The run stays the only writer of `serverEnrollment.stage`.
 
 ### State machine
 
@@ -224,8 +226,8 @@ No status column is synced between tables. The list a user sees is derived at re
               check-in (live fleet token + checkin key signature)
                        |
                        v
-   +------------> WAITING ------------ reject ------------> REJECTED  (tombstone; same token: stop{rejected}, unit stops)
-   |                 ^                                           |
+   +------------> WAITING ------------ reject ------------> REJECTED  (tombstone; same token: stop{rejected}, unit stops,
+   |                 ^                                           |          unless joinCommitted spares the open attempt)
    |                 +---- same key checks in under a new token -+
    |  blocked is     |   \
    |  a status       |    \ token revoked or expired, no open attempt
@@ -464,8 +466,8 @@ The installer gains `--storage zfs:<device>`.
 
 1. Load the `fleetToken` by hash. Verify the signature against `checkinKey` and check timestamp skew of 5 minutes or less. If the token has ended, run step 2 in a transaction of its own first. Apply per-token and per-source-IP rate limits.
 2. If the token is revoked or past `expiresAt`, look for an open attempt on this key. With one, keep going so the attempt can finish. Without one, delete the row and answer `stop{token_revoked | token_expired}`. Admission repeats this check after it locks the token.
-3. Upsert on `(organizationId, checkinKey)`. A key tombstoned under this same token gets `stop{rejected}`, unless its open attempt is already past `storage`, which keeps going. A key tombstoned under another token clears `rejectedAt` and takes the new `fleetTokenId`, so a new token brings a rejected host back. A key new to this token over the per-token cap of 1000 waiting rows gets 429.
-4. If `attempt` is present, emit `server/enrollment.reported`. The run applies it.
+3. Upsert on `(organizationId, checkinKey)`. A key tombstoned under this same token gets `stop{rejected}`, unless `joinCommitted` spares its open attempt (see `rejectWaitingServers` below), which keeps going. A key tombstoned under another token clears `rejectedAt` and takes the new `fleetTokenId`, so a new token brings a rejected host back. A key new to this token over the per-token cap of 1000 waiting rows gets 429.
+4. If `attempt` reports `joining` or `publishing` for the open attempt, write `reportedAttemptId` and `reportedStage` on the host's waiting row, in the transaction that already holds that row's lock. The stage moves only forward for the same attempt id, because reports reach Cloud out of order. Then, after commit, emit `server/enrollment.reported` whenever the reported stage differs from the attempt's recorded `stage`, or carries a failure. The run applies it with `recordStage`, which also moves a committed stage only forward. Equal stages mean the run has recorded it, so a lost send is retried by the next check-in.
 5. Read the open `serverEnrollment`.
    - If it is `running`, answer `enroll` with the decrypted token.
    - If it is `instructed`, answer `enroll` only when the host is ready for the attempt's storage. That means `prep.docker` is `ready`, and `prep.zfs` is `ready` when the storage is `zfs`. Otherwise answer `wait{10}`, and the row reads "Queued".
@@ -500,7 +502,11 @@ It resolves storage per row, applies names, and skips rows with blockers or inel
 
 `revokeFleetToken` sets `revokedAt` and deletes the token's waiting rows that have no open attempt, in one transaction. It returns the count for "N waiting removed". Open attempts finish. An expired token's waiting row is deleted the same way, but only when that host next checks in with it.
 
-`rejectWaitingServers` sets `rejectedAt` on those rows and cancels each open attempt that is not yet past `storage`. An attempt at `joining` or `publishing` (`PAST_STORAGE`) keeps going, and its host's check-ins go on until it finishes, as step 3 says.
+`rejectWaitingServers` locks the waiting rows in id order, sets `rejectedAt`, then locks their open attempts and cancels each one that `joinCommitted(attempt, row)` doesn't spare (`server-enrollment.ts`). It spares an attempt whose own `stage` is `joining` or `publishing`, or whose waiting row reports `joining` or `publishing` for that attempt id. A report for an older attempt doesn't count. Check-in writes the report under the same row lock, so Reject never reads a report older than the host's last check-in. A spared attempt keeps going, and its host's check-ins go on until it finishes, as step 3 says.
+
+One window stays open. A reject after the daemon commits the join but before the check-in that reports it reaches Cloud still cancels. The host ignores `stop{rejected}` once it is past joining, so that join then fails at publish. Closing the window needs the commit itself to go through Cloud.
+
+The Enrolling poll (`readServerEnrollmentStatus` in `enroll.server.ts`) keeps a rejected host's committed attempt in view, while it is open and for the usual hour after it ends. An ended one shows only when it ended at or after `rejectedAt`. A rejected host's other attempts are hidden. That covers attempts that ended before the reject and attempts Reject cancelled, including while their run is still cancelling.
 
 **Founding Claim.** The start transaction can't insert `organization_pairing` itself, because that row needs the founder's `MachineId` and public key. Those exist only once its daemon loads `machine.json`. So Cloud assigns the founder through the token. Exactly one per-attempt token carries `enrollmentRole = "founder"`, and `claimOrLoadEnrollment` changes in one place.
 
@@ -759,7 +765,7 @@ Each unit is one PR with its own check. Units run in this order. A unit may star
 | D1 | `fleet_token` table, two-word names, expiry, `createFleetToken`, `listFleetTokens`, `revokeFleetToken`, and the CLI API routes. | dashboard | none | A Postgres vitest shows an expired token refused, a name collision retried, and revoke deleting only waiting rows with no open attempt. |
 | D2 | `waiting_server` table, `POST /api/checkin` answering `wait` and `stop`, signature check, the optional `prep` field, `rejectWaitingServers`. | dashboard | D1 | Route tests cover a bad signature (401), an expired token (`stop{token_expired}`), a rejected key (`stop{rejected}`), the same key back under a new token (`wait`), and a request with and without `prep`. |
 | C3 | `ployz server checkin` loop, signed client, both systemd units, starting preparation, `prep` in each check-in, `status.json`, and the This server block in `ployz status`. | core | C1, C2, D2 | On Boat against `SERVERS=1` Cloud, a host shows in the waiting list within 10 s of `checkin --install` exiting, its status moves from Installing Docker to Ready, and reject stops both units. |
-| C4 | `install.sh` reads `PLOYZ_FLEET_TOKEN`, or prompts for it on the terminal with `--enroll`, writes the token file and runs `checkin --install`, which reads `PLOYZ_SKIP_ZFS`. Without either, behavior is unchanged. A Fleet Token in `PLOYZ_ENROLL_TOKEN` is refused. | core | C3 | `core/scripts/test-cli-installer.sh` covers both paths, and one `curl \| sh` on Boat lands a waiting row. |
+| C4 | `install.sh` reads `PLOYZ_FLEET_TOKEN`, or prompts for it on the terminal with `--enroll`, writes the token file and runs `checkin --install`, which reads `PLOYZ_SKIP_ZFS`. Without either, behavior is unchanged. A Fleet Token in `PLOYZ_ENROLL_TOKEN` is refused when nothing else selects check-in. | core | C3 | `core/scripts/test-cli-installer.sh` covers both paths, and one `curl \| sh` on Boat lands a waiting row. |
 | C5 | `ployz server token create\|ls\|revoke` with `--name`, `--auto --max`, `--expires`. | core | D1 | A `cli_shape.rs` case per verb, and the revoke output reports the removed count against `SERVERS=1`. |
 | C6 | `ployz server ls --waiting`, `server show` (renamed from `server inspect`, covering waiting rows), `server reject` with glob and confirm. | core | D2 | `cli_shape.rs` cases, and a glob reject on two Boat hosts confirms then stops both. |
 | D3 | UI for the Add servers dialog with Shell, cloud-init and Terraform tabs, the Tokens page, and the Waiting list with filters, detail sheet, reject, and preparation in the status cell. | dashboard | D1, D2 | verify-dashboard with `SERVERS=1` shows a minted token, a host arriving live, its status moving from Installing Docker to Ready with no row or column moving, and fixed columns with the 10-row box. |
