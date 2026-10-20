@@ -54,6 +54,14 @@ export class ClusterOutOfTime extends Data.TaggedError("ClusterOutOfTime")<{ rea
 export const withClusterBudget = (budgetMs: number) => <A, E, R>(self: Effect.Effect<A, E, R>) =>
   Effect.suspend(() => self.pipe(Effect.provideService(ClusterBudget, { budgetMs, spentMs: 0, reading: 0, since: 0 })));
 
+const timeLeft = (time: ClusterTime, now: number) => time.budgetMs - time.spentMs - (time.reading > 0 ? now - time.since : 0);
+
+/** Fails when the Cluster time is already spent, so an effect that leads up to a Cluster read does none of its work first. */
+export const requireClusterTime = Effect.gen(function* () {
+  const time = yield* ClusterBudget;
+  if (time !== null && timeLeft(time, yield* Clock.currentTimeMillis) <= 0) return yield* new ClusterOutOfTime({ inFlight: false });
+});
+
 /**
  * One Cluster read, cut on top of its own ceiling when its budget runs out. Only an SDK call goes through here, never a
  * pooled SQL query: interrupting one makes the SQL client send pg_cancel_backend later, which can cancel whatever
@@ -64,7 +72,7 @@ export const clusterRead = <A, E, R>(read: Effect.Effect<A, E, R>): Effect.Effec
     const time = yield* ClusterBudget;
     if (time === null) return yield* read;
     const now = yield* Clock.currentTimeMillis;
-    const left = time.budgetMs - time.spentMs - (time.reading > 0 ? now - time.since : 0);
+    const left = timeLeft(time, now);
     if (left <= 0) return yield* new ClusterOutOfTime({ inFlight: false });
     if (time.reading === 0) time.since = now;
     time.reading += 1;

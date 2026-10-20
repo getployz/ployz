@@ -65,8 +65,8 @@ describe("Refresh now", () => {
   };
   const refresh = () => run(refreshMirror(caller, environment, volumeId, () => Effect.succeed(blockers), () => Effect.succeed(members), () => Effect.succeed(members), ask));
   const runs = async () => (await harness.pool.query(`select kind, state from volume_run order by created_at`)).rows;
-  // The real askCopy, over a session to a paired Cluster whose SetVolumeCopy answers `answer`.
-  const pairedCluster = async (answer: (want: WantedCopy) => Promise<{ readonly copy: VolumeCopy }>) => {
+  // The real askCopy, over a session to a paired Cluster whose SetVolumeCopy answers `answer`. `connecting` runs at each connect.
+  const pairedCluster = async (answer: (want: WantedCopy) => Promise<{ readonly copy: VolumeCopy }>, connecting = () => {}) => {
     const encryption = makeSecretEncryption("test-encryption-secret");
     await harness.pool.query(`insert into organization_pairing (organization_id, encrypted_pairing_secret, founder_claim_machine_id, founder_machine_id)
       values ($1, $2, $3, $3)`, [organizationId, encryption.encrypt("pairing"), "1".repeat(32)]);
@@ -76,13 +76,16 @@ describe("Refresh now", () => {
       (id) => loadOrganizationConnections(id).pipe(Effect.provideService(Database, harness.database), Effect.provideService(SecretEncryption, encryption)),
       noPairingChanges,
     ).pipe(Layer.provide(makePloyzLayer({
-      connect: async () => asTestDouble<Client>()({
+      connect: async () => {
+        connecting();
+        return asTestDouble<Client>()({
         close: async () => {},
         volumeSwitch: async (_machine: MachineId, request: VolumeSwitchRequest) => {
           if (request.command !== "set_volume_copy") throw new Error(`unexpected ${request.command}`);
           return answer(request.payload.want);
         },
-      }),
+      });
+      },
     })));
   };
   const refreshOn = (cluster: Layer.Layer<OrganizationRuntime>) =>
@@ -276,6 +279,67 @@ describe("Refresh now", () => {
     });
     expect(switched).toEqual(["snapshot", "mirror"]);
   }, 30_000);
+
+  it("answers with the round's pull failures when the pairing goes while a pull spends the Cluster time, and asks no one after", async () => {
+    members = [member("web-1", "writer"), member("web-2", "failed"), member("web-3", "mirror")];
+    const switched: string[] = [];
+    const cluster = await pairedCluster((want) => {
+      switched.push(want.kind);
+      return want.kind === "mirror" ? new Promise<never>(() => {}) : Promise.resolve(SNAPSHOT);
+    });
+    const held = Effect.promise(() => new Promise<"held">((resolve) => { setTimeout(() => resolve("held"), 10_000); }));
+
+    const answer = await run(Effect.gen(function* () {
+      const fiber = yield* Effect.forkDetach(refreshOn(cluster));
+      yield* Effect.promise(() => vi.waitFor(() => expect(switched).toContain("mirror"), { timeout: 10_000 }));
+      yield* Effect.promise(() => harness.pool.query(`delete from organization_machine; delete from organization_pairing`));
+      yield* TestClock.adjust(SYNC_CLUSTER_BUDGET_MS);
+      return yield* Effect.raceFirst(Fiber.join(fiber), held);
+    }).pipe(Effect.provide(TestClock.layer())));
+
+    expect(answer).toEqual({
+      ok: false,
+      refusal: {
+        code: "unanswered",
+        message: [
+          "data-web-2 could not receive w-1-4: no space",
+          "web-2 didn't answer in time, so data's sync may have reached it; volume sync data again says where its mirrors got to",
+          "didn't ask web-3 to pull data, the sync ran out of time",
+        ].join("; "),
+        details: null,
+      },
+    });
+    expect(switched).toEqual(["snapshot", "mirror"]);
+  }, 30_000);
+
+  it.each(["the pairing is removed", "the connect fails"] as const)("answers with the round's pull failures and says it didn't ask the next mirror when %s", async (cut) => {
+    members = [member("web-1", "writer"), member("web-2", "failed"), member("web-3", "mirror")];
+    const switched: string[] = [];
+    let unreachable = false;
+    const cluster = await pairedCluster(async (want) => {
+      switched.push(want.kind);
+      if (want.kind !== "mirror") return SNAPSHOT;
+      if (cut === "the connect fails") unreachable = true;
+      else await harness.pool.query(`delete from organization_machine; delete from organization_pairing`);
+      throw TIMED_OUT;
+    }, () => {
+      if (unreachable) throw new Error("connection refused");
+    });
+
+    expect(await run(refreshOn(cluster))).toEqual({
+      ok: false,
+      refusal: {
+        code: "unanswered",
+        message: [
+          "data-web-2 could not receive w-1-4: no space",
+          "web-2 didn't answer in time, so data's sync may have reached it; volume sync data again says where its mirrors got to",
+          "didn't ask web-3 to pull data, Cloud couldn't reach the Cluster",
+        ].join("; "),
+        details: null,
+      },
+    });
+    expect(switched).toEqual(["snapshot", "mirror"]);
+  });
 
   it("says a hand-off the mirror's Server timed out on may have reached it, and blames no mirror for it", async () => {
     const cluster = await pairedCluster((want) => want.kind === "mirror" ? Promise.reject(TIMED_OUT) : Promise.resolve(SNAPSHOT));

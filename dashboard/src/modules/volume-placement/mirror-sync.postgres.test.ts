@@ -170,12 +170,30 @@ describe("the mirror sync", () => {
       .toEqual([{ machine_id: web("web-2"), failure: "set_volume_copy on web-2: connection refused" }]);
   });
 
-  it("fails the sync when the cluster itself is gone, and blames no mirror for it", async () => {
-    const disconnected: CopyAsk = (asker, machine, expected, want) => want.kind === "mirror"
+  it("says it didn't ask a mirror whose session didn't open, asks the next one, and blames no mirror for it", async () => {
+    members = [member("web-1", "writer"), member("web-2", "mirror"), member("web-3", "mirror")];
+    const disconnected: CopyAsk = (asker, machine, expected, want) => want.kind === "mirror" && machine.name === "web-2"
       ? Effect.fail(new Error("The cluster is disconnected."))
       : ask(asker, machine, expected, want);
-    await expect(run(syncMirrors(organizationId, volume, () => Effect.succeed(members), disconnected))).rejects.toThrow("The cluster is disconnected.");
+    expect((await run(syncMirrors(organizationId, volume, () => Effect.succeed(members), disconnected))).lines).toEqual([
+      "didn't ask web-2 to pull db, Cloud couldn't reach the Cluster",
+      "db-web-3 is pulling w-1-5",
+    ]);
+    expect(asked).toEqual(["snapshot web-1", "mirror web-3"]);
     expect((await harness.pool.query(`select machine_id from volume_mirror_status where failure is not null`)).rows).toEqual([]);
+  });
+
+  it("answers with the round's pull failures when the sync fails after reporting them", async () => {
+    members = [member("web-1", "writer"), member("web-2", "failed")];
+    await harness.pool.query(`alter table volume_run rename to volume_run_gone`);
+    const answer = await run(syncMirrors(organizationId, volume, () => Effect.succeed(members), ask))
+      .finally(() => harness.pool.query(`alter table volume_run_gone rename to volume_run`));
+    expect(answer).toEqual({
+      reported: [{ mirror: "db-web-2", target: "w-1-4", failure: "no space" }],
+      sync: { kind: "failed" },
+      lines: ["db-web-2 could not receive w-1-4: no space", "db's sync failed before it finished; volume sync db tries again"],
+    });
+    expect(asked).toEqual([]);
   });
 
   it("answers with the round's pull failures when the writer refuses its snapshot", async () => {

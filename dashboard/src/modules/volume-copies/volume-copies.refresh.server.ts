@@ -50,9 +50,10 @@ export const refreshMirror = Effect.fn("VolumeCopies.refreshMirror")(function* (
   const answer = yield* syncMirrors(caller.organizationId, { volumeId, name: volume.volumeName, dockerVolume: volume.dockerVolume, environment }, observe, ask)
     .pipe(Effect.result);
   if (Result.isFailure(answer)) return yield* named(UNANSWERED);
-  const { sync, lines } = answer.success;
+  const { reported, sync, lines } = answer.success;
+  if (sync.kind === "failed" && reported.length === 0) return yield* named(UNANSWERED);
   const refused = sync.kind === "synced" && sync.mirrors.some((step) => step.kind === "refused");
-  const unfinished = (kind: string) => kind === "unknown" || kind === "unasked";
+  const unfinished = (kind: string) => kind === "unknown" || kind === "unasked" || kind === "failed";
   const unknown = unfinished(sync.kind) || (sync.kind === "synced" && sync.mirrors.some((step) => unfinished(step.kind)));
   if (!refused && !unknown && (sync.kind === "synced" || sync.kind === "demoting")) return { ok: true, lines } as const;
   if (sync.kind === "unanswered") return { ok: false, refusal: silent(sync.servers) } as const;

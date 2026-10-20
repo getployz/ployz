@@ -33,6 +33,7 @@ import {
   clusterRead,
   OrganizationRuntime,
   PLAN_CLUSTER_BUDGET_MS,
+  requireClusterTime,
   RUNTIME_FRAME_TIMEOUT_MS,
   withClusterBudget,
 } from "#/modules/runtime/organization-runtime.server";
@@ -1047,9 +1048,12 @@ export type CopyAsker = Pick<RunContext, "organizationId" | "dockerVolume" | "vo
 
 /**
  * One SetVolumeCopy. A refusal is an answer, since the caller decides what follows it; only a failure to ask fails,
- * so a run's step retries. Out of Cluster time is `inFlight` only when the SetVolumeCopy itself was cut.
+ * so a run's step retries. Spent Cluster time fails it before it opens a session, and out of time is `inFlight` only
+ * when the SetVolumeCopy itself was cut. Any other failure but a `SwitchAttemptError` is a session that didn't open, so
+ * the SetVolumeCopy was never sent.
  */
 export const askCopy = Effect.fn("VolumeRun.askCopy")(function* (asker: CopyAsker, machine: MachineRef, expect: ExpectedCopy, want: WantedCopy) {
+  yield* requireClusterTime;
   const session = yield* openSession(asker.organizationId).pipe(
     Effect.catchIf((error) => error instanceof ClusterOutOfTime, () => Effect.fail(new ClusterOutOfTime({ inFlight: false }))),
   );
