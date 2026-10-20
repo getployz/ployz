@@ -4,7 +4,7 @@
 
 use ployz_core::RpcError;
 use ployz_core::config::{
-    EnvironmentNodeType, ReviewLifecycleKind, canonicalize_environment_intent,
+    EnvironmentNodeType, ReviewLifecycleKind, ServiceSettingChange, canonicalize_environment_intent,
 };
 
 use serde::{Deserialize, Serialize};
@@ -284,6 +284,19 @@ pub(crate) fn discard(
     })
 }
 
+/// Core names a source that changed since its introduction `web.source`; once that
+/// change goes, a new Service's row is the one `set` names, such as `web.image`.
+fn source_named(row: &ServiceSettingChange, now: &super::NodeChange) -> String {
+    let same = now
+        .settings
+        .iter()
+        .find(|kept| kept.row.is_some() && kept.row == row.row);
+    match same {
+        Some(kept) if row.path.ends_with(".source") => kept.path.clone(),
+        _ => row.path.clone(),
+    }
+}
+
 /// The paths of `before`'s changes that `after` no longer holds: a changed
 /// Setting, or a node it no longer makes or removes.
 fn dropped(before: &[super::NodeChange], after: &[super::NodeChange]) -> Vec<String> {
@@ -307,7 +320,7 @@ fn dropped(before: &[super::NodeChange], after: &[super::NodeChange]) -> Vec<Str
                                 && kept.after == row.after
                         })
                     })
-                    .map(|row| row.path.clone())
+                    .map(|row| source_named(row, now))
                     .collect(),
                 (_, None) => vec![match change.node.node_type {
                     EnvironmentNodeType::Service => change.name.clone(),

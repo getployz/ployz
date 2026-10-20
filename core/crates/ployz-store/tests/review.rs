@@ -1132,6 +1132,42 @@ fn discard_review_names_the_settings_an_undeployed_save_loses() {
     assert_eq!(discarded.dropped, ["web.replicas"]);
 }
 
+#[test]
+fn discard_review_names_the_source_an_undeployed_save_loses_as_set_names_it() {
+    // Core compares a new Service with its introduction, nginx:1, so a Save of
+    // nginx:2 lists as `web.source` and one of nginx:1 as this PR's `web.image`.
+    for (saved, staged, web_row) in [
+        ("nginx:1", "nginx:2", "web.image"),
+        ("nginx:2", "nginx:1", "web.source"),
+    ] {
+        let (store, who) = shop();
+        set(&store, &who, "web.image", json!(saved));
+        publish(&store, &who, None).unwrap();
+        set(&store, &who, "web.image", json!(staged));
+        let discarded = store
+            .write(
+                &who,
+                &Discard {
+                    target: Some(ployz_store::DiscardTarget::Review),
+                    version: Some(diff(&store, &who).version),
+                    ..Discard::default()
+                },
+            )
+            .unwrap();
+        // api's image row is unchanged, so the discard doesn't name it.
+        assert_eq!(discarded.dropped, ["web.image"], "saved {saved}");
+        let view = diff(&store, &who);
+        let rows: Vec<_> = view
+            .review_changes()
+            .iter()
+            .flat_map(|change| change.settings.clone())
+            .map(|row| row.path)
+            .collect();
+        assert_eq!(rows, [web_row, "api.image"], "saved {saved}");
+        assert_eq!(value(&store, &who, "web.image"), Some(json!(saved)));
+    }
+}
+
 fn unset(store: &ConfigStore, who: &Actor, path: &str) {
     store
         .write(
