@@ -336,12 +336,18 @@ fn leave(root: &ArgMatches, removal: Removal) -> Result<(), Error> {
             "cloud_released": cloud_released,
             "next": (cloud_released == Some(true)).then_some("ployz server add"),
         }))?;
-        let mut config = options.load_or_empty_config().map_err(|error| Error::from(error).context("Server removed; local context cleanup failed."))?;
+        let config = options.load_or_empty_config().map_err(|error| Error::from(error).context("Server removed; local context cleanup failed."))?;
         if let Some(context_name) = config.context_name(options.context()).map(str::to_owned)
-            && let Some(context) = config.contexts.get_mut(&context_name)
+            && config.contexts.contains_key(&context_name)
         {
-            context.drop_machine(&selected.id);
-            config.save().map_err(|error| Error::from(error).context("Server removed; local context cleanup failed."))?;
+            config
+                .update(|latest| {
+                    if let Some(context) = latest.contexts.get_mut(&context_name) {
+                        context.drop_machine(&selected.id);
+                    }
+                    Ok::<_, Error>(())
+                })
+                .map_err(|error| error.context("Server removed; local context cleanup failed."))?;
         }
         if reset_failure.is_some() {
             return Err(Error::partial());

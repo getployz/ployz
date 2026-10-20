@@ -5,6 +5,7 @@ import { Effect, Layer } from "effect";
 import { expect } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
 import { callCloud } from "#/modules/agent/call-cloud.server";
+import { startFakeHostedDns } from "#/modules/cluster-domain/hosted-dns.test-fixture";
 import { hasApprover } from "#/modules/approvals/approvals.server";
 import { createCustomerPortal } from "#/modules/billing/billing.server";
 import { gatherDomainEvidence } from "#/modules/config-store/domain-evidence.server";
@@ -38,8 +39,8 @@ type Reply = {
   domains?: ReadonlyArray<{ kind: string; hostname: string | null }>;
 };
 
-const shop = Effect.fn(function* (anonymous: boolean) {
-  const cloud = yield* storeTestCloud();
+const shop = Effect.fn(function* (anonymous: boolean, env?: Readonly<Record<string, string>>) {
+  const cloud = yield* storeTestCloud(env === undefined ? {} : { env });
   const services = yield* Layer.build(Layer.mergeAll(AuthLive.pipe(Layer.provide(cloud)), cloud, noServers));
   const provided = <A, E, R>(effect: Effect.Effect<A, E, R>) => effect.pipe(Effect.provide(services));
   const userId = yield* provided(seedStoreOrganization(ORGANIZATION));
@@ -110,10 +111,11 @@ it.live("an anonymous Organization's token can't mint another, add a custom doma
 
 it.live("an anonymous Organization still adds a generated domain", () =>
   Effect.gen(function* () {
-    const { send, domains } = yield* shop(true);
-    expect(yield* send("config/write", "POST", domain(null))).toMatchObject({ status: 200, json: { domain: { kind: "generated", hostname: null } } });
-    expect(yield* domains()).toEqual([{ kind: "generated", hostname: null }]);
-  }));
+    const hostedDns = yield* Effect.acquireRelease(Effect.promise(startFakeHostedDns), (fake) => Effect.promise(() => fake.close()));
+    const { send, domains } = yield* shop(true, { PLOYZ_HOSTED_DNS_URL: hostedDns.url });
+    expect(yield* send("config/write", "POST", domain(null))).toMatchObject({ status: 200, json: { domain: { kind: "generated", hostname: "web.shop.ployz.test" } } });
+    expect(yield* domains()).toEqual([{ kind: "generated", hostname: "web.shop.ployz.test" }]);
+  }).pipe(Effect.scoped));
 
 it.live("an add_domain whose hostname the Store can't read is refused, not waved through", () =>
   Effect.gen(function* () {

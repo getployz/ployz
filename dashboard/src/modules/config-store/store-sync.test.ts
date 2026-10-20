@@ -1,4 +1,4 @@
-import type { DeploymentSummary, RowId, SyncRow, SyncView } from "@ployz/sdk";
+import type { DeploymentSummary, EnvironmentRemoval, RowId, SyncRow, SyncView } from "@ployz/sdk";
 import { describe, expect, it } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
 import { closesIn, flipRow, flipsMoved, showNeverSyncing, syncButtonState, syncLine, syncPicks, syncSections, type Flips } from "./store-sync";
@@ -69,20 +69,25 @@ describe("the Sync dialog over the Store", () => {
 describe("the Sync button", () => {
   const branch = { parent: "production", to_parent: 4, pull_request: null };
   const pr = { ...branch, pull_request: { repository_id: 1, number: 142 } };
-  const removal = (status: DeploymentSummary["status"], in_flight: boolean) => asTestDouble<DeploymentSummary>()({ status, in_flight });
+  const removal = (status: DeploymentSummary["status"], in_flight: boolean) => asTestDouble<EnvironmentRemoval>()({ kind: "deployment", status, in_flight });
+  const pending: EnvironmentRemoval = { kind: "pending", because: "synced", since: 0 };
 
   it("says the first that applies: a shutdown under way or failed, Off, then what syncs into the Parent", () => {
     expect([
+      syncButtonState(pr, pending),
       syncButtonState(pr, removal("running", true)),
       syncButtonState(pr, removal("failed", false)),
       syncButtonState(pr, removal("applied", false)),
+      syncButtonState(branch, pending),
       syncButtonState(branch, removal("running", true)),
       syncButtonState(branch, null),
       syncButtonState({ ...branch, to_parent: 0 }, null),
     ].map(({ label, count }) => ({ label, count }))).toEqual([
       { label: "Shutting down", count: null },
+      { label: "Shutting down", count: null },
       { label: "Shutdown failed", count: null },
       { label: "Off", count: null },
+      { label: "Closing", count: null },
       { label: "Closing", count: null },
       { label: "Sync", count: 4 },
       { label: "In sync", count: null },

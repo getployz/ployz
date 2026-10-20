@@ -5,6 +5,11 @@ import { toast } from "sonner";
 import { DeletionDialog, type DeletionItem } from "#/components/deletion-dialog";
 import { forgetServersServerFn, previewForgetServersServerFn } from "#/modules/machines/forget-servers.functions";
 import { useClusterReleased } from "#/providers/runtime-provider";
+import { useYouMay } from "#/modules/organization/members.queries";
+
+/** Why you can't forget the Servers, or undefined when your role may. */
+export const useForgetServersRefusal = (organizationSlug: string) =>
+  useYouMay(organizationSlug, "servers:remove") ? undefined : "Only an owner or admin can forget them.";
 
 /**
  * Forget Servers, for Servers that were deleted: Cloud tries each as the dialog opens and again on confirm, lists what
@@ -38,13 +43,13 @@ export function ForgetServersDialog({ organizationSlug, open, onOpenChange }: {
     const forgotten = await forget({ data: { organizationSlug } });
     if (!forgotten.ok) throw new Error(forgotten.refusal.message);
     clusterReleased();
-    toast.success("Your Servers are forgotten. Add a server to deploy again.");
+    toast.success("Your servers are forgotten. Add a server to deploy again.");
   }
 
   return (
-    <DeletionDialog open={open} onOpenChange={onOpenChange} title="Forget all Servers?" place={organizationSlug}
-      confirmLabel="Forget Servers" pendingLabel="Forgetting"
-      sentence={<>Use this when your Servers were deleted. Your projects and settings stay. Volume data on these Servers
+    <DeletionDialog open={open} onOpenChange={onOpenChange} title="Forget all servers?" place={organizationSlug}
+      confirmLabel="Forget servers" pendingLabel="Forgetting"
+      sentence={<>Use this when your servers were deleted. Your projects and settings stay. Volume data on these servers
         can't be recovered.</>}
       callbacks={{ load, confirm }} />
   );

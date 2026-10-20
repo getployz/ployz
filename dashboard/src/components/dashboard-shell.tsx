@@ -39,7 +39,8 @@ export function DashboardShell({
   const page = useAgentPage(scope);
   const [dock, setDock] = useState<HTMLElement | null>(null);
   // The top bar names the place, so Billing, a section of Organization, reads Organization like its siblings.
-  const placeLabel = places.find((place) => place.current)?.label ?? getDashboardSectionLabel(section);
+  // Architecture is only the fallback for a route no place claims, such as a miss, so it names nothing here.
+  const placeLabel = places.find((place) => place.current)?.label ?? (section === "architecture" ? null : getDashboardSectionLabel(section));
   return (
     <AgentDock.Provider value={dock}>
     <div className="flex h-dvh min-h-0 overflow-hidden">
@@ -61,7 +62,7 @@ export function DashboardShell({
                   </Link>,
                   <Crumb key="crumb" />,
                 ]} />
-              : <h1 className="truncate text-sm font-semibold">{placeLabel}</h1>}
+              : placeLabel === null ? null : <h1 className="truncate text-sm font-semibold">{placeLabel}</h1>}
           <div className="ml-auto flex shrink-0 items-center gap-2">
             <AgentButton organizationSlug={scope.organizationSlug} chat={chat} onChat={onChat} />
             <div className="min-wf-nav:hidden"><DashboardAccountMenu scope={scope} /></div>
