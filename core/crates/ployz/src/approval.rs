@@ -3,8 +3,10 @@
 //! operation's name, anyone else waits for a human to approve it in Ployz Cloud. Either way
 //! the request runs again with the approval.
 
+use std::fmt::Display;
 use std::time::Duration;
 
+use chrono::{Local, SecondsFormat, TimeZone};
 use ployz_core::{RpcError, RpcErrorCode};
 use ployz_store::{DestructiveEffect, DestructiveKind, DiffView};
 use reqwest::Method;
@@ -162,6 +164,13 @@ impl Asked {
     }
 
     pub(crate) fn review(&self, verb: Verb) -> Vec<String> {
+        self.review_in(verb, &Local)
+    }
+
+    fn review_in<Zone: TimeZone>(&self, verb: Verb, zone: &Zone) -> Vec<String>
+    where
+        Zone::Offset: Display,
+    {
         let within = match &self.organization {
             Some(organization) => format!(" in Organization {organization}"),
             None => String::new(),
@@ -183,10 +192,17 @@ impl Asked {
                 things(self.effects.len())
             )
         }];
-        lines.extend(self.effects.iter().map(|effect| {
+        for effect in &self.effects {
             let mark = if destroys(effect.kind) { "✕" } else { "~" };
-            format!("  {mark} {}", line(effect))
-        }));
+            lines.push(format!("  {mark} {}", line(effect)));
+            if let Some(lost) = &effect.lost_after {
+                lines.push(format!(
+                    "    Changes after {} are not in {}",
+                    moment(lost.at, zone),
+                    lost.restored
+                ));
+            }
+        }
         let others = match &self.subject {
             Subject::Diff(diff) => diff.total_count.saturating_sub(self.effects.len()),
             Subject::Operation(_) => 0,
@@ -210,6 +226,20 @@ fn destroys(kind: DestructiveKind) -> bool {
             | DestructiveKind::RestartsService
             | DestructiveKind::UnprotectsEnvironment
     )
+}
+
+/// Unix seconds as RFC 3339 in `zone`, the way `ployz logs` prints its times.
+fn moment<Zone: TimeZone>(at: u64, zone: &Zone) -> String
+where
+    Zone::Offset: Display,
+{
+    i64::try_from(at)
+        .ok()
+        .and_then(|seconds| zone.timestamp_opt(seconds, 0).single())
+        .map_or_else(
+            || at.to_string(),
+            |time| time.to_rfc3339_opts(SecondsFormat::Secs, false),
+        )
 }
 
 fn things(count: usize) -> String {
@@ -371,6 +401,8 @@ pub(crate) async fn decide(
 
 #[cfg(test)]
 mod tests {
+    use chrono::FixedOffset;
+
     use super::{Asked, Verb};
 
     fn asked(verb: &str, kind: &str) -> Asked {
@@ -444,6 +476,44 @@ mod tests {
         assert_eq!(
             asked.review(Verb::Deploy),
             ["This deploy:", "  + 2 other changes"]
+        );
+    }
+
+    #[test]
+    fn a_restores_detach_says_which_changes_it_leaves_behind_in_the_given_zone() {
+        let asked: Asked = serde_json::from_value(serde_json::json!({
+            "approval_id": "a1",
+            "approval": "d1",
+            "effects": [{
+                "kind": "detaches_volume",
+                "name": "pg-data",
+                "node": "s1",
+                "path": "postgres.mounts.pg-data",
+                "lost_after": { "at": 1_791_451_620_u64, "restored": "pg-data-0927" },
+            }],
+            "diff": {
+                "environment": {
+                    "id": "00000000-0000-4000-8000-000000000002",
+                    "project": "shop",
+                    "name": "production",
+                    "revision": 3,
+                },
+                "version": "3:2:0.1",
+                "saved": 2,
+                "holds_staged": false,
+                "changes": [],
+                "total_count": 1,
+            },
+        }))
+        .unwrap();
+        let berlin = FixedOffset::east_opt(2 * 3600).unwrap();
+        assert_eq!(
+            asked.review_in(Verb::Deploy, &berlin),
+            [
+                "This deploy destroys 1 thing:",
+                "  ✕ detaches Volume pg-data from postgres",
+                "    Changes after 2026-10-08T11:27:00+02:00 are not in pg-data-0927",
+            ]
         );
     }
 

@@ -185,9 +185,20 @@ pub fn admit(
 
 /// Run admitted Deployment `id` to success; what the runner was handed.
 pub fn run(store: &ConfigStore, id: &ployz_store::DeploymentId) -> serde_json::Value {
-    use serde_json::json;
     let runner = ployz_store::RunnerId::parse("runner").unwrap();
     let claimed = store.claim(id, &runner).unwrap();
+    finish(store, id, claimed)
+}
+
+/// Run Deployment `id`, which the runner claimed as `claimed`, to success;
+/// what the runner was handed.
+pub fn finish(
+    store: &ConfigStore,
+    id: &ployz_store::DeploymentId,
+    claimed: ployz_store::Claimed,
+) -> serde_json::Value {
+    use serde_json::json;
+    let runner = ployz_store::RunnerId::parse("runner").unwrap();
     let names: Vec<String> = claimed
         .intent
         .target

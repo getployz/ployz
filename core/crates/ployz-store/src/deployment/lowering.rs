@@ -8,12 +8,15 @@ pub(crate) enum Scope<'a> {
     /// State holds and Saved does not, which deletes the Docker Volumes `losses` names.
     All { losses: &'a [VolumeLoss] },
     /// `services` and the Volumes and Configs they mount, and the teardown of the
-    /// Services `retire` names. It removes a Volume of `losses` once it ships
-    /// every Service Applied State mounts it on, at once when none does.
+    /// Services `retire` names. With `every_saved`, it ships every Saved change:
+    /// each Service, Volume and Config its [`Landing`] doesn't hold settled, and the
+    /// removal of each Config Saved drops. It removes a Volume of `losses` once it
+    /// ships every Service that may run mounting it, at once when none does.
     Narrow {
         services: &'a [ServiceName],
         retire: &'a [Retire],
         losses: &'a [VolumeLoss],
+        every_saved: bool,
     },
 }
 
@@ -27,6 +30,7 @@ impl<'a> Scope<'a> {
                 services,
                 retire: &[],
                 losses: &[],
+                every_saved: false,
             }
         }
     }
@@ -121,32 +125,77 @@ pub(crate) fn retirements(
     Ok(retire)
 }
 
-/// Freeze a Deployment of `saved` over `scope`: its target nodes, checked to lower
-/// to a Deploy Intent. Generated domains expand under `cluster_domain`;
-/// a plan, which has none, checks the rest.
+/// Freeze a Deployment of `saved` over `scope`, diffed against `landing`: its
+/// target nodes, checked to lower to a Deploy Intent. Generated domains expand
+/// under `cluster_domain`; a plan, which has none, checks the rest.
 pub(crate) fn freeze(
     environment: &EnvironmentId,
     saved: &SavedEnvironmentIntent,
-    applied: &SavedEnvironmentIntent,
+    landing: &Landing<'_>,
     scope: Scope<'_>,
     namespace: Namespace,
     cluster_domain: Option<&Hostname>,
 ) -> Result<Frozen, RpcError> {
-    let (full, services, retire, losses): (bool, &[ServiceName], &[Retire], &[VolumeLoss]) =
-        match scope {
-            Scope::All { losses } => (true, &[], &[], losses),
-            Scope::Narrow {
-                services,
-                retire,
-                losses,
-            } => (false, services, retire, losses),
-        };
+    let (full, services, retire, losses, every_saved): (
+        bool,
+        &[ServiceName],
+        &[Retire],
+        &[VolumeLoss],
+        bool,
+    ) = match scope {
+        Scope::All { losses } => (true, &[], &[], losses, false),
+        Scope::Narrow {
+            services,
+            retire,
+            losses,
+            every_saved,
+        } => (false, services, retire, losses, every_saved),
+    };
+    let dropped = landing.dropped(saved);
     if !full && services.is_empty() && retire.is_empty() {
         return Err(error::invalid(
             "A targeted Deployment names no Service",
             json!({}),
         ));
     }
+    // A changed Config or Volume ships with the Service that mounts it, and is
+    // recorded only once that Service is a node.
+    let changed = |service: &SavedServiceIntent| {
+        !landing.settled_service(service)
+            || service.config_attachments.iter().any(|mount| {
+                let id = &mount.config_resource_id;
+                match saved
+                    .configs
+                    .iter()
+                    .find(|config| config.resource_id == *id)
+                {
+                    Some(config) => !landing.settled_config(config),
+                    None => landing.configs().any(|config| config.resource_id == *id),
+                }
+            })
+            || service.volume_attachments.iter().any(|mount| {
+                let id = &mount.volume_resource_id;
+                match saved
+                    .volumes
+                    .iter()
+                    .find(|volume| volume.resource_id == *id)
+                {
+                    Some(volume) => !landing.settled_volume(volume),
+                    None => landing.volumes().any(|volume| volume.resource_id == *id),
+                }
+            })
+    };
+    let mut named = services.to_vec();
+    if every_saved {
+        for service in saved.services.iter().filter(|service| changed(service)) {
+            let name = ServiceName::parse(service.slug.as_str())
+                .map_err(|_| error::corrupt("Service name"))?;
+            if !named.contains(&name) {
+                named.push(name);
+            }
+        }
+    }
+    let services = named.as_slice();
     let mut removals = ServiceRemovals::default();
     for (at, gone) in retire.iter().enumerate() {
         let running = |name: &ServiceName| {
@@ -173,12 +222,7 @@ pub(crate) fn freeze(
         saved
             .services
             .iter()
-            .chain(
-                applied
-                    .services
-                    .iter()
-                    .filter(|old| !saved.services.iter().any(|new| new.id == old.id)),
-            )
+            .chain(&dropped.services)
             .map(TargetNode::service)
             .collect::<Result<_, _>>()?
     } else {
@@ -213,33 +257,6 @@ pub(crate) fn freeze(
     if !full {
         // The planner also ships, at its Saved snapshot, each Service the named ones reference.
         let shipped = &lowered.shipped;
-        // A changed Config or Volume ships with the Service that mounts it, and is
-        // recorded only once that Service is a node.
-        let changed = |service: &SavedServiceIntent| {
-            !applied.services.contains(service)
-                || service.config_attachments.iter().any(|mount| {
-                    let id = &mount.config_resource_id;
-                    saved
-                        .configs
-                        .iter()
-                        .find(|config| config.resource_id == *id)
-                        != applied
-                            .configs
-                            .iter()
-                            .find(|config| config.resource_id == *id)
-                })
-                || service.volume_attachments.iter().any(|mount| {
-                    let id = &mount.volume_resource_id;
-                    saved
-                        .volumes
-                        .iter()
-                        .find(|volume| volume.resource_id == *id)
-                        != applied
-                            .volumes
-                            .iter()
-                            .find(|volume| volume.resource_id == *id)
-                })
-        };
         let referenced: Vec<TargetNode> = saved
             .services
             .iter()
@@ -262,10 +279,11 @@ pub(crate) fn freeze(
                     .any(|mount| mount.volume_resource_id == volume.resource_id)
         })
     };
+    // Shipping every Saved change, it also ships a changed one nothing mounts.
     let kept: Vec<TargetNode> = saved
         .volumes
         .iter()
-        .filter(|volume| full || mounted(volume))
+        .filter(|volume| full || mounted(volume) || every_saved && !landing.settled_volume(volume))
         .map(|volume| TargetNode::volume(volume, None))
         .collect::<Result<_, _>>()?;
     nodes.extend(kept);
@@ -281,34 +299,37 @@ pub(crate) fn freeze(
             })
             .map(|service| nodes.iter().any(|node| node.id() == service.id))
             .collect();
-        let fresh = !applied
-            .configs
-            .iter()
+        let fresh = !landing
+            .configs()
             .any(|old| old.resource_id == config.resource_id);
         targeted.contains(&true) && (fresh || !targeted.contains(&false))
     };
     let configs: Vec<TargetNode> = saved
         .configs
         .iter()
-        .filter(|config| full || applies(config))
-        .chain(applied.configs.iter().filter(|old| {
-            full && !saved
-                .configs
-                .iter()
-                .any(|new| new.resource_id == old.resource_id)
-        }))
+        .filter(|config| {
+            full || applies(config)
+                || every_saved
+                    && !saved.services.iter().any(|service| {
+                        service
+                            .config_attachments
+                            .iter()
+                            .any(|mount| mount.config_resource_id == config.resource_id)
+                    })
+                    && !landing.settled_config(config)
+        })
+        .chain(dropped.configs.iter().filter(|_| full || every_saved))
         .map(TargetNode::config)
         .collect::<Result<_, _>>()?;
     nodes.extend(configs);
     if !full {
-        let unmounted = unmounted(saved, applied, &nodes)?;
+        let unmounted = unmounted(saved, landing, &nodes)?;
         nodes.extend(unmounted);
     }
     let ships = |id: &str| nodes.iter().any(|node| node.id() == id);
     let unmounts = |loss: &&VolumeLoss| {
-        full || applied
-            .services
-            .iter()
+        full || landing
+            .services()
             .filter(|service| {
                 service
                     .volume_attachments
@@ -321,9 +342,8 @@ pub(crate) fn freeze(
         .iter()
         .filter(unmounts)
         .map(|loss| {
-            let volume = applied
-                .volumes
-                .iter()
+            let volume = landing
+                .volumes()
                 .find(|volume| volume.resource_id == loss.volume.id.as_str())
                 .ok_or_else(|| error::corrupt("Applied State"))?;
             TargetNode::volume(volume, Some(loss.deletes.clone()))
@@ -348,22 +368,22 @@ pub(crate) fn freeze(
     })
 }
 
-/// Each Config Applied State `applied` holds and `saved` lacks that `nodes` don't
-/// ship yet but leave with: a removed Config goes with the Services that mounted
-/// it, once `nodes` ship every one.
+/// Each Config `saved` drops of `landing` that `nodes` don't ship yet but leave
+/// with: a removed Config goes with the Services that may run mounting it, once
+/// `nodes` ship every one.
 pub(super) fn unmounted(
     saved: &SavedEnvironmentIntent,
-    applied: &SavedEnvironmentIntent,
+    landing: &Landing<'_>,
     nodes: &[TargetNode],
 ) -> Result<Vec<TargetNode>, RpcError> {
     let ships = |id: &str| nodes.iter().any(|node| node.id() == id);
-    applied
+    landing
+        .dropped(saved)
         .configs
         .iter()
         .filter(|old| {
-            let targeted: Vec<bool> = applied
-                .services
-                .iter()
+            let targeted: Vec<bool> = landing
+                .services()
                 .filter(|service| {
                     service
                         .config_attachments
@@ -372,13 +392,7 @@ pub(super) fn unmounted(
                 })
                 .map(|service| ships(&service.id))
                 .collect();
-            !saved
-                .configs
-                .iter()
-                .any(|new| new.resource_id == old.resource_id)
-                && !ships(&old.resource_id)
-                && targeted.contains(&true)
-                && !targeted.contains(&false)
+            !ships(&old.resource_id) && targeted.contains(&true) && !targeted.contains(&false)
         })
         .map(TargetNode::config)
         .collect()

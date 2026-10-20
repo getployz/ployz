@@ -1,4 +1,4 @@
-import type { DrainReport, EnrollmentAssignment, QualifiedService } from "@ployz/sdk";
+import type { DrainReport, EnrollmentAssignment, MachineName, QualifiedService } from "@ployz/sdk";
 import { createdAt, type EncryptedSecretValue, type MachineId, sqlStringLiterals, updatedAt } from "#/db/tables";
 
 import { user } from "#/modules/identity/tables";
@@ -363,6 +363,8 @@ export const organizationMachine = pgTable(
     managementIdentity: text("management_identity"),
     /** The push URL this Machine last confirmed it holds; null until Cloud has set it since the capability was published. */
     pushTarget: text("push_target"),
+    /** The Server's name as it enrolled or the Cluster last reported it; null until Cloud has seen either. */
+    machineName: text("machine_name").$type<MachineName>(),
     isDialEntry: boolean("is_dial_entry").default(false).notNull(),
     createdAt,
     updatedAt,
@@ -438,6 +440,8 @@ export const machineEnrollmentToken = pgTable(
     claimedMachineId: text("claimed_machine_id").$type<MachineId>(),
     /** The claimant's WireGuard public key, in the enrollment identity's base64 form. */
     claimedPublicKey: text("claimed_public_key"),
+    /** The name the claimant enrolled with; null for a claim from before Cloud kept names. */
+    claimedName: text("claimed_name").$type<MachineName>(),
     claimedAt: timestamp("claimed_at", { mode: "date", withTimezone: true }),
     /** When this token first waited for a join slot: its place in the Organization's line. */
     queuedAt: timestamp("queued_at", { mode: "date", withTimezone: true }),
