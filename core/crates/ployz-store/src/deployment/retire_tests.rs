@@ -78,6 +78,7 @@ fn retiring_api() -> (ConfigStore, Actor) {
                 }],
                 shared_writes: false,
                 storage_locked: false,
+                restored_from: None,
             },
         )
         .unwrap();

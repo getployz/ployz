@@ -216,6 +216,23 @@ pub struct SavedVolumeIntent {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     #[ts(as = "Option<bool>", optional)]
     pub shared_writes: bool,
+    /// The restore point its data comes from, when a restore made it. Written only
+    /// when set, so other documents keep their bytes and fingerprints.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub restored_from: Option<RestoredFrom>,
+}
+
+/// A restore point of another Volume in the same Environment.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct RestoredFrom {
+    /// The source Volume's resource ID.
+    pub volume: String,
+    /// When the point was taken, in Unix seconds: the source's writes after it are
+    /// not in the restored Volume.
+    #[ts(type = "number")]
+    pub at: u64,
 }
 
 /// Storage chosen for a Volume: ordinary Docker storage or bounded, provisioned storage.
