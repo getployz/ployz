@@ -393,7 +393,12 @@ impl ContainerRuntime {
         {
             Ok(capacity) => {
                 observe_copies(&machine_id, &mut volumes, &capacity.copies);
-                capacity.committable_bytes().ok()
+                // Byte drift in unmanaged Pool usage would otherwise republish the Machine
+                // row on every rescan, and each row change rebuilds every peer's mesh routes.
+                capacity
+                    .committable_bytes()
+                    .ok()
+                    .map(|bytes| bytes - bytes % ployz_core::STORAGE_GIB)
             }
             Err(error) => {
                 eprintln!("Volume copies unobserved, Docker Volumes stay writers: {error}");
@@ -1077,7 +1082,7 @@ mod tests {
                 backing: StorageBacking::Fixed {
                     pool_size_bytes: 10 * gib,
                 },
-                unmanaged_used_bytes: 0,
+                unmanaged_used_bytes: 1000,
                 slot_bound_bytes: 0,
                 volumes: BTreeMap::new(),
                 copies: BTreeMap::new(),
@@ -1108,7 +1113,7 @@ mod tests {
             }
         };
 
-        observed(Some(10 * gib - gib)).await;
+        observed(Some(8 * gib)).await;
         fake.replies.lock().unwrap().remove("Storage.Inspect");
         observed(None).await;
 
