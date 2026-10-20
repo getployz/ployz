@@ -117,9 +117,7 @@ pub(crate) async fn wait_listed<C: MachineOperations>(
     acked: impl FnMut(&MachineId),
 ) -> Result<Wait, RpcError> {
     wait_routes(
-        client,
-        machine_id,
-        service,
+        || client.read_routes(machine_id, service),
         |routed| copies.is_subset(routed),
         cancellation,
         acked,
@@ -127,17 +125,16 @@ pub(crate) async fn wait_listed<C: MachineOperations>(
     .await
 }
 
+/// Read through the entry Machine: every Machine reads the same replicated ack rows,
+/// so a cut-off owner in the group does not stop the wait.
 pub(crate) async fn wait_none_listed<C: MachineOperations>(
     client: &C,
-    machine_id: &MachineId,
     service: &QualifiedService,
     copies: &BTreeSet<ContainerId>,
     cancellation: &CancellationToken,
 ) -> Result<Wait, RpcError> {
     wait_routes(
-        client,
-        machine_id,
-        service,
+        || client.read_entry_routes(service),
         |routed| routed.is_disjoint(copies),
         cancellation,
         |_| {},
@@ -153,9 +150,7 @@ pub(crate) async fn wait_unlisted<C: MachineOperations>(
     cancellation: &CancellationToken,
 ) -> Result<Wait, RpcError> {
     wait_routes(
-        client,
-        machine_id,
-        service,
+        || client.read_routes(machine_id, service),
         |routed| !routed.contains(container_id),
         cancellation,
         |_| {},
@@ -163,19 +158,20 @@ pub(crate) async fn wait_unlisted<C: MachineOperations>(
     .await
 }
 
-async fn wait_routes<C: MachineOperations>(
-    client: &C,
-    machine_id: &MachineId,
-    service: &QualifiedService,
+async fn wait_routes<Read>(
+    read: impl Fn() -> Read,
     satisfied: impl Fn(&BTreeSet<ContainerId>) -> bool,
     cancellation: &CancellationToken,
     mut acked: impl FnMut(&MachineId),
-) -> Result<Wait, RpcError> {
+) -> Result<Wait, RpcError>
+where
+    Read: Future<Output = Result<RoutesRead, RpcError>>,
+{
     let deadline = Instant::now() + ACK_WAIT;
     let mut confirmed = BTreeSet::new();
     loop {
         let read = tokio::select! {
-            read = client.read_routes(machine_id, service) => read?,
+            read = read() => read?,
             () = cancellation.cancelled() => return Ok(Wait::Cancelled),
         };
         let waiting = still_waiting(&read, &satisfied);

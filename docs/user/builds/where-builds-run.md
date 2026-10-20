@@ -104,11 +104,13 @@ When GitHub can't take a build, the build log says why, and the next builder tak
 
 ![Settings → Build: Build method, Build command and Preferred Builder](../images/service-settings-build.png)
 
-From the CLI, give `github`, or the server's ID. An owner or admin can also give its name as
-`ployz server ls` lists it:
+From the CLI or an agent, give `github`, or the server's name as `ployz server ls` lists it,
+or its ID. Any member can give a name, and `--patch` takes one too. Ployz saves the server's
+ID. A name two servers share is refused with both IDs, so give the ID instead:
 
 ```bash
 ployz set web.preferredBuilder=machine-1
+ployz set web --patch '{"preferredBuilder":"machine-1"}'
 ```
 
 The service tries that builder first, then follows the build order. A preferred server keeps

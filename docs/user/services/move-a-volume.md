@@ -31,6 +31,11 @@ Details, and you drop it in Details. A deploy that removes a mirror asks you to 
 - A move leaves the old server holding an old copy. It serves nothing and never refreshes. Its ×
   deletes it right away, after you confirm **Delete copy**. Its **Restore** stages a restore from its
   last point. While a staged restore reads the copy, × says "A restore reads this copy."
+- If a mirror run makes an old copy the mirror before its delete reaches the server, a server whose
+  Ployz is newer than 0.3.0-beta.6 refuses the delete and keeps the copy. The run says "data-web-1
+  is no longer an old copy, so nothing was deleted". A deploy that deletes an old copy or removes a
+  mirror is refused the same way when the copy changed. `ployz volume mirror rm` deletes the copy on
+  that server either way.
 - A move or mirror deletes the old copies on other servers first. Details says so. An old copy on
   the server you move or mirror onto stays, so Ployz sends only what changed since.
 - When the primary's server stops answering, Copies says "web-1 is not answering" and when

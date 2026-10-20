@@ -117,7 +117,7 @@ pub(crate) enum Work {
 impl GraphService {
     fn mark(&self, state: &State) -> Option<&'static str> {
         match state {
-            State::NotAttempted => Some("⊘"),
+            State::Cancelled | State::NotAttempted => Some("⊘"),
             State::Running(_) if self.ready > 0 && self.ready < self.total => Some("◐"),
             State::Pending
             | State::Running(_)
@@ -156,13 +156,14 @@ impl GraphService {
             State::ObservedRunning
             | State::Unchanged
             | State::Failed
+            | State::Cancelled
             | State::Warned
             | State::Unknown
             | State::Excluded => state.word(),
         };
         if self.total == 0 || (*state == State::NotAttempted && self.ready == 0) {
             word.to_owned()
-        } else if *state == State::Failed {
+        } else if matches!(state, State::Failed | State::Cancelled) {
             format!("{word} ({}/{} ready)", self.ready, self.total)
         } else {
             format!("{word} {}/{}", self.ready, self.total)
@@ -189,6 +190,8 @@ pub(crate) enum State {
     Failed,
     /// Applied, but left something to look at, such as ingress that didn't start.
     Warned,
+    /// The Deployment's cancel stopped it while it ran.
+    Cancelled,
     NotAttempted,
     Unknown,
     Excluded,
@@ -219,6 +222,7 @@ impl State {
             Self::Unchanged => "unchanged",
             Self::Failed => "failed",
             Self::Warned => "not running",
+            Self::Cancelled => "cancelled",
             Self::NotAttempted => "not attempted",
             Self::Unknown => "unknown",
             Self::Excluded => "excluded",
@@ -230,7 +234,7 @@ impl State {
             Self::Completed | Self::ObservedRunning => Tone::Good,
             Self::Failed => Tone::Bad,
             Self::Pending | Self::Running(_) | Self::Unknown | Self::Warned => Tone::Change,
-            Self::Unchanged | Self::NotAttempted | Self::Excluded => Tone::Muted,
+            Self::Unchanged | Self::Cancelled | Self::NotAttempted | Self::Excluded => Tone::Muted,
         }
     }
 }
@@ -241,6 +245,9 @@ impl From<&ployz_store::RowState> for State {
             ployz_store::RowState::Pending => Self::Pending,
             ployz_store::RowState::Running { phase, .. } => Self::Running(*phase),
             ployz_store::RowState::Completed => Self::Completed,
+            ployz_store::RowState::Failed {
+                cancelled: true, ..
+            } => Self::Cancelled,
             ployz_store::RowState::Failed { .. } => Self::Failed,
             ployz_store::RowState::NotAttempted => Self::NotAttempted,
             ployz_store::RowState::Unknown => Self::Unknown,
@@ -730,7 +737,7 @@ fn mark(state: &State, tick: usize) -> &'static str {
         State::Running(_) => SPINNER.get(tick % SPINNER.len()).copied().unwrap_or("~"),
         State::Completed | State::ObservedRunning | State::Unchanged => "✔",
         State::Failed => "✘",
-        State::Pending | State::NotAttempted | State::Excluded => "·",
+        State::Pending | State::Cancelled | State::NotAttempted | State::Excluded => "·",
         State::Unknown | State::Warned => "!",
     }
 }
@@ -984,6 +991,7 @@ fn outcome(row: &Row) -> Option<&'static str> {
         State::Unchanged => Some("unchanged"),
         State::Failed => Some("failed"),
         State::Warned => Some("warning"),
+        State::Cancelled => Some("cancelled"),
         State::NotAttempted => Some("not attempted"),
         State::Unknown => Some("unknown"),
         State::Excluded => Some("excluded"),
