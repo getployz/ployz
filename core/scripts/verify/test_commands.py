@@ -8,6 +8,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+import unittest.mock
 
 sys.dont_write_bytecode = True
 scripts = Path(__file__).resolve().parents[1]
@@ -65,6 +66,43 @@ class PublicIp(unittest.TestCase):
     def test_a_private_address_reports_none(self):
         for address in ("10.115.0.12", "192.168.122.48", "fd00::5"):
             self.assertEqual(cluster.public_ip(address), "none", address)
+
+
+class EnrollPublicIp(unittest.TestCase):
+    """Enrollment gives a Boat Server its IPv6 as the public IP, through Cloud too, and leaves a private address none."""
+
+    def enroll(self, address, cloud):
+        calls = []
+
+        def cli(run, commands, args, **kwargs):
+            calls.append(args)
+            added = cluster.json.dumps(dict(server=dict(machine=dict(id="m1")))).encode()
+            return cluster.subprocess.CompletedProcess(args, 0, added, b"")
+        run = dict(cloud=dict(url="http://localhost:3000")) if cloud else {}
+        node = dict(name="machine-1", ssh="root@203.0.113.1:22", address=address, endpoint=cluster.endpoint(address))
+        with unittest.mock.patch.object(cluster, "cli", cli):
+            cluster.enroll(run, unittest.mock.Mock(evidence="/evidence"), node, Path("/private"))
+        return calls
+
+    def public_ip_flag(self, args):
+        return args[args.index("--public-ip") + 1]
+
+    def test_a_standalone_boat_server_enrolls_with_its_ipv6(self):
+        calls = self.enroll("2001:41d0:8:829c:100::30", cloud=False)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][1:3], ["server", "add"])
+        self.assertEqual(self.public_ip_flag(calls[0]), "2001:41d0:8:829c:100::30")
+
+    def test_a_cloud_boat_server_sets_its_ipv6_after_enrolling(self):
+        calls = self.enroll("2001:41d0:8:829c:100::30", cloud=True)
+        self.assertEqual([args[1:3] for args in calls], [["server", "add"], ["server", "set"]])
+        self.assertEqual(calls[1], ["--json", "server", "set", "m1", "--public-ip", "2001:41d0:8:829c:100::30"])
+
+    def test_a_private_address_enrolls_with_no_public_ip_and_sets_none(self):
+        for cloud in (False, True):
+            calls = self.enroll("10.115.0.12", cloud=cloud)
+            self.assertEqual(len(calls), 1, cloud)
+            self.assertEqual(self.public_ip_flag(calls[0]), "none")
 
 if __name__ == "__main__":
     unittest.main()

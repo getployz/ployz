@@ -61,6 +61,8 @@ command -v zstd >/dev/null || DEBIAN_FRONTEND=noninteractive apt-get install -y 
     { apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq zstd >/dev/null; }
 sync
 """
+# Boat's image enables UFW at every boot, a clone of BAKE included, and UFW drops inbound IPv6,
+# the only address a sandbox serves the internet on.
 OPEN_WEB = "ufw allow 80/tcp >/dev/null; ufw allow 443/tcp >/dev/null"
 # A clone can carry an sshd listener that systemd no longer tracks, so restarting ssh later fails with
 # port 22 in use. Kill only listeners, so open SSH sessions survive.
@@ -82,6 +84,8 @@ INSTALLED = ("usr/local/bin/ployz* etc/systemd/system/ployz* etc/systemd/system/
              "etc/modprobe.d/ployz* etc/modules-load.d/ployz* etc/default/ployz*")
 # Files a run replaces outside INSTALLED: a check may swap runc for a wrapper and keeps runc.<tag>-original.
 REPLACED = "usr/bin/runc"
+# Files a run edits in place; restoring the stash's copy undoes the edit.
+EDITED = "etc/ufw/user.rules etc/ufw/user6.rules"
 STASH = "/var/lib/ployz-verify-bake.tar"
 # `up --bare` hosts skip the bake: Boat's plain base is Ubuntu 24.04 with Docker, and Boat has no Debian base,
 # so a Debian 12 host is the Debian cloud image under KVM inside a plain sandbox, reached through it.
@@ -141,7 +145,7 @@ if [ ! -e {STASH} ]; then
     cd / && shopt -s nullglob && found=()
     # Reset deletes every scratch path this listing lacks.
     {scratch()} -print0 2>/dev/null | LC_ALL=C sort -z > {STASH}.scratch
-    for path in {INSTALLED} {REPLACED} var/lib/ployz; do if [ -e "$path" ] || [ -L "$path" ]; then found+=("$path"); fi; done
+    for path in {INSTALLED} {REPLACED} {EDITED} var/lib/ployz; do if [ -e "$path" ] || [ -L "$path" ]; then found+=("$path"); fi; done
     tar -cpf {STASH}.next "${{found[@]}}" && sync {STASH}.next && mv {STASH}.next {STASH}
 fi
 """
@@ -167,6 +171,7 @@ section enabled; systemctl list-unit-files --no-legend --state=enabled | awk '{p
 section listening; ss -Hlntup | awk '{print $1, $5, $7}'
 section authorized; sha256sum /root/.ssh/authorized_keys
 section replaced; sha256sum /usr/bin/runc 2>&1; find /usr/bin -maxdepth 1 -name 'runc.*' 2>/dev/null
+section firewall; grep -h '^### tuple' /etc/ufw/user.rules /etc/ufw/user6.rules 2>/dev/null
 section scratch; cd / && """ + scratch("-maxdepth 2 ") + r""" -printf '%p %y\n' 2>/dev/null
 true
 """
@@ -792,10 +797,8 @@ class Provider:
         if self.run["image"] in (SNAPSHOT, None):
             self.install_key(node, sandbox)
         self.wait_agent(node)
-        # Boat's image enables UFW at every boot, a clone of BAKE included, and UFW drops inbound IPv6,
-        # the only address a sandbox serves the internet on.
-        self.exec(node, ["sh", "-ec", OPEN_WEB])
         if self.run.get("bare"):
+            self.exec(node, ["sh", "-ec", OPEN_WEB])
             if self.run.get("distro") == "debian-12":
                 key = (self.private / "id_ed25519.pub").read_text().strip()
                 self.exec(node, ["bash", "-ec", GUEST, "guest", key], timeout=900)
@@ -816,6 +819,9 @@ if [ -n "$(ss -Hlun 'sport = :51820')" ]; then echo "UDP port 51820 is taken" >&
             captured = self.fingerprint(node)
             if "ssh" not in captured:
                 write(fingerprints(self.run["image"]), captured)
+        if self.run["image"] != SNAPSHOT:
+            # After the stash and the fingerprint hold the bake's rules, so reset closes the ports again.
+            self.exec(node, ["sh", "-ec", OPEN_WEB])
 
     def install_key(self, node, sandbox):
         key = (self.private / "id_ed25519.pub").read_text().strip()
