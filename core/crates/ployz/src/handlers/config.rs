@@ -642,6 +642,22 @@ mod tests {
     }
 
     #[test]
+    fn a_value_resolves_without_its_surrounding_whitespace_as_the_store_reads_it() {
+        let servers = [server(1, "machine-1")];
+        for (value, id) in [
+            (format!(" {:032x}", 7), format!("{:032x}", 7)),
+            (format!("{:032x} ", 1), format!("{:032x}", 1)),
+            (" machine-1 ".to_owned(), format!("{:032x}", 1)),
+        ] {
+            assert_eq!(
+                resolved("web.preferredBuilder", &value, Some(&servers)).unwrap(),
+                id,
+                "{value:?}"
+            );
+        }
+    }
+
+    #[test]
     fn an_id_the_servers_dont_list_is_sent_as_typed() {
         let servers = [server(1, "machine-1")];
         let unlisted = format!("{:032x}", 7);
