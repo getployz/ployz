@@ -8,12 +8,12 @@
 use ployz_core::config::{ReviewComparisonRole, ReviewLifecycleKind};
 use ployz_core::{RpcError, RpcErrorCode, ServiceName};
 use ployz_store::{
-    Actor, AddDomain, Admit, Approval, ApprovalDigest, Asks, Change, ConfigStore, CreateProject,
-    CreateService, CreateVolume, DataEffect, Deploy, DeploymentId, DestructiveEffect,
-    DestructiveKind, DiffQuery, DiffView, Discard, Discarded, Edit, EnvironmentId,
-    EnvironmentQuery, EnvironmentRef, Hostname, Mount, OrganizationId, Permission, ProjectId,
-    ProjectName, Publish, Published, RemoveDomain, RemoveService, RemoveVolume, Revision,
-    ServiceLineageId, SettingPath, Trusted, VolumeId, VolumeName,
+    Actor, AddDomain, Admit, Approval, ApprovalDigest, Asks, Change, Command, ConfigStore,
+    CreateProject, CreateService, CreateVolume, DataEffect, Deploy, DeploymentId,
+    DestructiveEffect, DestructiveKind, DiffQuery, DiffView, Discard, Discarded, Edit,
+    EnvironmentId, EnvironmentQuery, EnvironmentRef, Hostname, Mount, OrganizationId, Permission,
+    ProjectId, ProjectName, Publish, Published, RemoveDomain, RemoveService, RemoveVolume,
+    Revision, ServiceLineageId, SettingPath, Trusted, VolumeId, VolumeName,
 };
 use serde_json::{Value, json};
 
@@ -3949,6 +3949,60 @@ fn detaching_a_volume_from_a_deployed_service_is_destructive_and_keeps_its_data(
             "web.mounts.data".to_owned()
         )]
     );
+}
+
+const DATA: &str = "00000000-0000-4000-8000-000000000005";
+
+/// Deploy `data` on `web`, then stage what Cloud's restore writes: one Batch that
+/// moves `web` onto `data-1142`, restored from `data`'s point at `at`. Returns the
+/// refused Publish and the review it refused.
+fn restore_data_at(at: u64) -> (RpcError, DiffView) {
+    let (store, who) = shop();
+    mount_data(&store, &who);
+    apply_all(&store, &who, &Trusted::default());
+    let restore = Command::decode(json!({
+        "command": "batch",
+        "commands": [
+            {"command": "edit", "changes": [{"op": "unset", "path": "web.mounts.data"}]},
+            {
+                "command": "create_volume",
+                "id": "00000000-0000-4000-8000-000000000006",
+                "name": "data-1142",
+                "storage": {"kind": "docker"},
+                "mounts": [{"service": "web", "path": "/data"}],
+                "restored_from": {"volume": DATA, "at": at},
+            },
+        ],
+    }))
+    .unwrap();
+    store.write(&who, &restore).unwrap();
+    let refused = publish_as(&store, &who, None, Approval::Required).unwrap_err();
+    (refused, diff(&store, &who))
+}
+
+#[test]
+fn a_restore_says_which_changes_its_detach_loses() {
+    let (refused, review) = restore_data_at(1_790_000_000);
+    assert_eq!(refused.code.as_str(), "approval_required", "{refused:?}");
+    assert_eq!(
+        refused.details["effects"],
+        json!([{
+            "kind": "detaches_volume",
+            "name": "data",
+            "node": WEB,
+            "path": "web.mounts.data",
+            "lost_after": {"at": 1_790_000_000_u64, "restored": "data-1142"},
+        }])
+    );
+    assert_eq!(json!(review.effects), refused.details["effects"]);
+}
+
+#[test]
+fn an_approval_binds_the_restore_point_it_loses_after() {
+    let (earlier, earlier_review) = restore_data_at(1_790_000_000);
+    let (later, later_review) = restore_data_at(1_790_000_600);
+    assert_eq!(earlier_review.version, later_review.version);
+    assert_ne!(earlier.details["approval"], later.details["approval"]);
 }
 
 #[test]
