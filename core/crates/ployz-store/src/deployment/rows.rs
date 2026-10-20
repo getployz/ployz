@@ -118,6 +118,7 @@ impl FailedAt {
                 Some(Self::Health)
             }
             ExecutionError::Hook { .. } => Some(Self::Hook),
+            ExecutionError::NewerServing { .. } => None,
             ExecutionError::Cancelled => from_phase(),
         }
     }
@@ -476,6 +477,10 @@ impl Failure {
                     | HookFailure::Exit { .. } => vec![failure.to_string()],
                 },
             ),
+            ExecutionError::NewerServing { service } => (
+                format!("A newer deploy is already serving {service}"),
+                Vec::new(),
+            ),
             ExecutionError::Cancelled => ("Cancelled".to_owned(), Vec::new()),
         };
         Self { reason, cause }
@@ -613,7 +618,9 @@ fn container(row: &OperationRow, last: Option<ContainerId>) -> Option<ContainerI
                 | MachineAction::ReadRoutes
                 | MachineAction::PublishServingPointer => None,
             },
-            ExecutionError::DependencyHealth { .. } | ExecutionError::Cancelled => None,
+            ExecutionError::DependencyHealth { .. }
+            | ExecutionError::NewerServing { .. }
+            | ExecutionError::Cancelled => None,
         },
         OperationStatus::Completed => last,
         OperationStatus::Pending | OperationStatus::Unexecuted => None,
@@ -663,6 +670,7 @@ fn state(
                 ExecutionError::Machine { .. }
                 | ExecutionError::DependencyHealth { .. }
                 | ExecutionError::Hook { .. }
+                | ExecutionError::NewerServing { .. }
                 | ExecutionError::Cancelled => None,
             },
             cancelled: false,

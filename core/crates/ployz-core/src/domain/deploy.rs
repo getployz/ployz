@@ -315,16 +315,6 @@ pub enum DeployOutcome<E> {
         #[serde(default)]
         services: Vec<ServiceOutcome>,
     },
-    /// Another Deploy published `service`'s Serving Pointer first. The lost
-    /// compare-and-set is never retried; this Deploy's Containers of `service`
-    /// were removed and `unexecuted` holds every operation not completed.
-    Superseded {
-        completed: Vec<DeployOperation>,
-        service: QualifiedService,
-        unexecuted: Vec<DeployOperation>,
-        #[serde(default)]
-        services: Vec<ServiceOutcome>,
-    },
     /// The store handed this Deploy's environment to another runner while it ran.
     Interrupted {
         completed: Vec<DeployOperation>,
@@ -341,7 +331,6 @@ impl<E> DeployOutcome<E> {
         match self {
             Self::Success { services, .. }
             | Self::Failed { services, .. }
-            | Self::Superseded { services, .. }
             | Self::Interrupted { services, .. } => services,
         }
     }
@@ -1117,6 +1106,10 @@ pub enum ExecutionError {
         container_id: ContainerId,
         failure: HookFailure,
     },
+    /// A newer Deploy's copy of `service` was already In, so this Deploy's copies
+    /// were discarded.
+    #[error("a newer deploy is already serving {service}")]
+    NewerServing { service: QualifiedService },
     #[error("deploy cancelled")]
     Cancelled,
 }

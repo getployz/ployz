@@ -151,7 +151,7 @@ async fn each_ready_start_waits_for_the_switch_before_it_completes() {
 }
 
 #[tokio::test]
-async fn a_newer_in_copy_reports_superseded_and_removes_the_new_copies() {
+async fn a_newer_in_copy_fails_the_deploy_naming_the_newer_deploy_and_removes_the_new_copies() {
     let machine = machine('1');
     let plan = vec![run(&machine, spec(None, None, None), true)];
     let (newer, new) = (container('a'), container('b'));
@@ -165,13 +165,23 @@ async fn a_newer_in_copy_reports_superseded_and_removes_the_new_copies() {
 
     assert_eq!(
         outcome,
-        DeployOutcome::Superseded {
+        DeployOutcome::Failed {
             completed: Vec::new(),
-            service: api(),
-            unexecuted: plan,
+            failed: FailedOperation::Operation {
+                operation: plan.first().cloned().unwrap(),
+                error: ExecutionError::NewerServing { service: api() },
+            },
+            unexecuted: Vec::new(),
             services: ended(&[("api", ServiceResult::Old)]),
         }
     );
+    let shown = crate::ui::plain(&crate::deploy::report::failure(&outcome, Vec::new()));
+    assert_eq!(
+        shown.lines().next(),
+        Some("error: api: A newer deploy is already serving app/api."),
+        "{shown}"
+    );
+    assert!(!shown.contains("start"), "{shown}");
     assert!(client.brought_in().is_empty());
     assert_eq!(client.rotation(&newer), Some(CopyRotation::In));
     client.assert_done();
