@@ -2687,7 +2687,8 @@ async fn replace_stop_first<C: MachineOperations>(
             };
             let stopped = stop_old_copy(client, index, progress, &old, rows, cancellation).await?;
             // A copy that was neither serving nor running has nothing to restore.
-            (was_running || stopped.rotation != CopyRotation::Pending).then_some(stopped)
+            (was_running || stopped.rotation != CopyRotation::Pending)
+                .then(|| (old.resolved_spec.clone(), stopped))
         }
         None => None,
     };
@@ -2707,7 +2708,7 @@ async fn replace_stop_first<C: MachineOperations>(
     match started {
         Ok(new_container) => Ok(Ran {
             started: Some(new_container),
-            held_old: held_old.map(|old| Box::new((operation.spec.clone(), old))),
+            held_old: held_old.map(Box::new),
         }),
         Err(error) => Err(compensate(
             client,
@@ -2877,7 +2878,7 @@ async fn compensate<C: MachineOperations>(
     index: usize,
     progress: &Progress,
     operation: &ReplacementOperation,
-    held_old: Option<cleanup::Copy>,
+    held_old: Option<(ResolvedServiceSpec, cleanup::Copy)>,
     rows: &Rows<'_>,
     cancellation: &CancellationToken,
     error: ExecutionError,
@@ -2898,9 +2899,9 @@ async fn compensate<C: MachineOperations>(
         None => None,
     };
     let compensation = match held_old {
-        Some(old) => ReplacementCompensation::OldStopped {
+        Some((spec, old)) => ReplacementCompensation::OldStopped {
             stop_new_container,
-            restore_old_container: restore_old(client, &old, &operation.spec, rows, cancellation)
+            restore_old_container: restore_old(client, &old, &spec, rows, cancellation)
                 .await
                 .attempt,
         },

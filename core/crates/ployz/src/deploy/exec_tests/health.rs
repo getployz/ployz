@@ -619,3 +619,78 @@ async fn dependency_prefers_this_runs_copies() {
         client.assert_done();
     }
 }
+
+/// A stop-first replacement fails to start, and the old copy it restores is OOM-killed.
+/// The failure names the old copy's own memory limit, not the replacement's.
+async fn restored_oom_limit(replacement_mib: i64) {
+    let machine = machine('1');
+    let old = container('a');
+    let old_limit = ByteQuantity::try_from(16 * 1024 * 1024).unwrap();
+    let new_limit = ByteQuantity::try_from(replacement_mib * 1024 * 1024).unwrap();
+    let mut old_spec = spec(Some(0), Some(healthcheck()), None);
+    old_spec.container.resources.memory_bytes = Some(old_limit);
+    let mut operation = replacement(&machine, &old, UpdateOrder::StopFirst);
+    let DeployOperation::ReplaceContainer(ref mut replacement) = operation else {
+        panic!("expected a replacement");
+    };
+    replacement.spec.container.resources.memory_bytes = Some(new_limit);
+    let verdict = HealthVerdict::Failed {
+        observation: unhealthy(),
+        last_check: None,
+        oom_killed: true,
+    };
+    let client = Scripted {
+        observed_specs: BTreeMap::from([(old, old_spec)]),
+        ..Scripted::new(vec![
+            observed(Call::Inspect(machine, old), running()),
+            ok(Call::Stop(machine, old)),
+            failed(
+                Call::Run(machine, ContainerKind::ServiceContainer),
+                "new image creation failed",
+            ),
+            ok(Call::DiscardSlot(machine, ContainerKind::ServiceContainer)),
+            Step(
+                Call::Restart(machine, old),
+                Reply::Settled(old, verdict.clone()),
+            ),
+        ])
+    }
+    .with_copy(&machine, &old, CopyRotation::In);
+    let outcome = execute_with(&[operation], &client, &CancellationToken::new()).await;
+    let DeployOutcome::Failed {
+        failed:
+            FailedOperation::Replacement {
+                compensation:
+                    ReplacementCompensation::OldStopped {
+                        restore_old_container: RestoreAttempt::Failed { error },
+                        ..
+                    },
+                ..
+            },
+        ..
+    } = outcome
+    else {
+        panic!("expected a failed restore, got {outcome:?}");
+    };
+    assert_eq!(
+        error,
+        ExecutionError::Health {
+            container_id: old,
+            failure: verdict.into_failure().unwrap(),
+            out_of_memory: Some(OutOfMemory {
+                memory_bytes: Some(old_limit),
+            }),
+        }
+    );
+    client.assert_done();
+}
+
+#[tokio::test]
+async fn a_restored_copy_killed_for_memory_names_its_own_limit() {
+    restored_oom_limit(64).await;
+}
+
+#[tokio::test]
+async fn a_restored_copy_killed_for_memory_under_an_unchanged_limit_names_it() {
+    restored_oom_limit(16).await;
+}

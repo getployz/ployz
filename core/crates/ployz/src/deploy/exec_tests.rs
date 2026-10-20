@@ -204,6 +204,7 @@ enum Decision {
 struct Scripted {
     steps: Mutex<VecDeque<Step>>,
     observations: Option<Vec<ContainerObservation>>,
+    observed_specs: BTreeMap<ContainerId, ResolvedServiceSpec>,
     slots: Mutex<Vec<SlotKey>>,
     answers: Mutex<Vec<AnswerWhen>>,
     deploys: Mutex<Vec<Option<ployz_core::DeploymentLogId>>>,
@@ -262,6 +263,7 @@ impl Scripted {
         Self {
             steps: Mutex::new(steps.into()),
             observations: None,
+            observed_specs: BTreeMap::new(),
             slots: Mutex::new(Vec::new()),
             answers: Mutex::new(Vec::new()),
             deploys: Mutex::new(Vec::new()),
@@ -1115,6 +1117,11 @@ impl MachineOperations for Scripted {
         match self.next(Call::Inspect(*machine_id, *container_id)) {
             Reply::Observed(runtime, healthcheck, last_check) => {
                 let mut container = observation(machine_id, container_id, runtime);
+                if let Some(spec) = self.observed_specs.get(container_id) {
+                    container
+                        .try_update(|parts| parts.resolved_spec = spec.clone())
+                        .unwrap();
+                }
                 container
                     .try_update(|parts| parts.effective_healthcheck = healthcheck)
                     .unwrap();
