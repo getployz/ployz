@@ -7,6 +7,7 @@ from contextlib import contextmanager
 import fcntl
 import hashlib
 import importlib
+import ipaddress
 import json
 import os
 from pathlib import Path
@@ -236,6 +237,12 @@ for table in iptables ip6tables; do
     $table -X PLOYZ-VERIFY-PARTITION 2>/dev/null || true
 done
 """
+
+
+def public_ip(address):
+    """The Server's public IP on a Machine's underlay address. A Boat sandbox's only IPv4 is private behind
+    NAT, so its routable IPv6 is the one the internet reaches; an Incus bridge address reaches nowhere."""
+    return address if ipaddress.ip_address(address).is_global else "none"
 
 
 def endpoint(address):
@@ -735,10 +742,11 @@ systemctl enable --now ployz.socket ployz-volume-plugin.socket ployz.service $ob
             # Cloud enrollment currently ignores --public-ip and --wg-endpoint; the Machine advertises the endpoints it discovers.
             # --no-install requires --storage none, yet managed Volumes work: the image ran `ployzd install --storage zfs`,
             # and the daemon creates the Machine Pool on the first Volume, as on a real Server.
+            public = public_ip(node["address"])
             result = cli(run, commands, ["--json", "server", "add", node["ssh"],
                                *([] if "cloud" in run else ["--standalone"]), "--no-install", "--storage", "none", "--yes",
                                "--name", node["name"], "--ssh-key", str(private / "id_ed25519"),
-                               "--public-ip", "none", "--wg-endpoint", node["endpoint"], "--wg-mtu", "1420"], check=False)
+                               "--public-ip", public, "--wg-endpoint", node["endpoint"], "--wg-mtu", "1420"], check=False)
             response = enrolled(node, result, commands.evidence)
             follow_up = response.get("follow_up_error", {})
             node["machine_id"] = response["server"]["machine"]["id"]
@@ -759,6 +767,9 @@ systemctl enable --now ployz.socket ployz-volume-plugin.socket ployz.service $ob
                     time.sleep(0.25)
                 # Complete the same Ingress Proxy follow-up offered by the CLI.
                 cli(run, commands, ["--json", "server", "set", node["machine_id"], "--accepts-ingress=true"])
+            if "cloud" in run and public != "none":
+                # Cloud enrollment kept the address the daemon looked up, which on Boat is the node's shared NAT IPv4.
+                cli(run, commands, ["--json", "server", "set", node["machine_id"], "--public-ip", public])
             save(run)
         bridged = [node for node in run["machines"] if node["name"] in run["bridged"]]
         if bridged:

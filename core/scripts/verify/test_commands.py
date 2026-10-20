@@ -55,5 +55,16 @@ class Enrollment(unittest.TestCase):
         self.assertEqual(cluster.enrolled(dict(name="machine-1"), result, "/evidence"), response)
 
 
+
+class PublicIp(unittest.TestCase):
+    """A Server's public IP is the address the internet reaches it on, or none."""
+
+    def test_a_boat_sandbox_reports_its_routable_ipv6(self):
+        self.assertEqual(cluster.public_ip("2001:41d0:8:829c:100::30"), "2001:41d0:8:829c:100::30")
+
+    def test_a_private_address_reports_none(self):
+        for address in ("10.115.0.12", "192.168.122.48", "fd00::5"):
+            self.assertEqual(cluster.public_ip(address), "none", address)
+
 if __name__ == "__main__":
     unittest.main()

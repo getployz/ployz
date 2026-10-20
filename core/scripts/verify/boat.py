@@ -798,6 +798,9 @@ class Provider:
                 self.mark(node["name"], guest=True)
                 # The guest's first boot runs cloud-init before sshd answers.
                 self.wait_agent(node, 600)
+            else:
+                # The plain image's UFW drops inbound IPv6, the only address a sandbox serves the internet on.
+                self.exec(node, ["sh", "-ec", "ufw allow 80/tcp >/dev/null; ufw allow 443/tcp >/dev/null"])
             return
         # A baked sandbox already holds BAKE's result; it keeps its own ployz install for reset to restore.
         bake = BAKE if self.run["image"] == SNAPSHOT else KEEP_INSTALL + (RECORD_IMAGES if POOL_SIZE else "")
