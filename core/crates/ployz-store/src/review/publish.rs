@@ -64,7 +64,8 @@ pub struct Discard {
     #[serde(default)]
     pub environment: EnvironmentRef,
     /// The comparison to return to. Head preserves the deployment baseline; Saved
-    /// abandons a draft reversal; Review discards the server-derived visible rows.
+    /// abandons a draft reversal; Review returns everything to Saved, or to Head
+    /// before the first Save.
     /// `None` returns everything to Head, and a path to its row's baseline: Saved
     /// when only a draft reversal lists it, else Head.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -293,13 +294,21 @@ fn dropped(before: &[super::NodeChange], after: &[super::NodeChange]) -> Vec<Str
                 .iter()
                 .find(|now| now.node == change.node && now.lifecycle == change.lifecycle);
             match (change.lifecycle, now) {
-                (ReviewLifecycleKind::Update, now) => change
+                (ReviewLifecycleKind::Update, None) => {
+                    change.settings.iter().map(|row| row.path.clone()).collect()
+                }
+                (_, Some(now)) => change
                     .settings
                     .iter()
-                    .filter(|row| now.is_none_or(|now| !now.settings.contains(row)))
+                    .filter(|row| {
+                        !now.settings.iter().any(|kept| {
+                            kept.path == row.path
+                                && kept.before == row.before
+                                && kept.after == row.after
+                        })
+                    })
                     .map(|row| row.path.clone())
                     .collect(),
-                (_, Some(_)) => Vec::new(),
                 (_, None) => vec![match change.node.node_type {
                     EnvironmentNodeType::Service => change.name.clone(),
                     EnvironmentNodeType::Volume => format!("volumes.{}", change.name),

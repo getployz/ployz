@@ -164,12 +164,12 @@ servers       via local
 
 === ctx ls (no contexts) :: $ ployz ctx ls
 No contexts yet. Contexts reach Clusters outside Ployz Cloud; your Cloud Servers need none.
-next: ployz server ls
+next: ployz login
 
 === ctx ls --json (no contexts) :: $ ployz --json ctx ls
 {
   "contexts": [],
-  "next": "ployz server ls"
+  "next": "ployz login"
 }
 
 === ctx ls :: $ ployz ctx ls
@@ -227,7 +227,7 @@ servers       via context prod
 
 === ctx ls (all removed) :: $ ployz ctx ls
 No contexts yet. Contexts reach Clusters outside Ployz Cloud; your Cloud Servers need none.
-next: ployz server ls
+next: ployz login
 
 === status (with a context removed) :: $ ployz status
 organization  local

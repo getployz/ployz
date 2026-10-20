@@ -49,7 +49,11 @@ behind. Saving again with no changes creates no new version. The CLI calls this
 `ployz deploy --skip-deploy`, and accepts `--message`.
 
 To undo, click **Discard** beside a change, or open **⋮** and choose **Discard all changes**.
-Discarding a service or volume you never deployed deletes it. Discard does not save a version.
+**Discard all changes** returns everything to your latest saved version, including a staged
+rollback. Discarding a service or volume you never deployed deletes it. Discard does not save a
+version. When your latest saved version is not running, for example because its deploy failed,
+the bottom bar shows **#4 not running** with **Deploy** instead of a change count. Neither its **⋮**
+menu nor Details offers **Discard all** then, since nothing is left to discard.
 A new service's change starts with what it runs, its image or its repository and branch, such as
 `web.image: null → "nginx:1"`. Those rows have no Discard of their own: discard the service.
 `ployz discard web.image` says so and names the command, `ployz discard web`.
@@ -59,7 +63,9 @@ In the CLI, `ployz discard` with no path drops every staged change in the enviro
 changes someone else staged from the dashboard or an agent, and lists each one it dropped. Pass a
 path, such as `ployz discard web.env.KEY`, to drop only that change. It also names each saved change
 it took out and the command that brings it back, such as `ployz discard web`. `ployz diff` lists
-those rows and `ployz status` counts them.
+those rows and `ployz status` counts them. Plain `ployz discard` goes back to what is deployed,
+while `ployz discard --target review` matches the dashboard's **Discard all changes** and goes
+back to your latest saved version.
 
 The dashboard's **Deploy** needs a staged change. To ship the same commit and settings again,
 click **Redeploy** on the newest deployment. To move GitHub services to their branch's latest

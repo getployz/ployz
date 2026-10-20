@@ -1076,9 +1076,10 @@ fn discard_review_restores_mixed_runtime_and_inverse_rows_once() {
 }
 
 #[test]
-fn discard_review_whole_runtime_node_dominates_draft_children() {
+fn discard_review_returns_to_saved_and_keeps_an_undeployed_save_listed() {
     let (store, who) = shop();
     publish(&store, &who, None).unwrap();
+    let saved = working(&store, &who);
     set(&store, &who, "web.replicas", json!(3));
     let before = diff(&store, &who);
     assert_eq!(before.review_changes().len(), 2);
@@ -1099,9 +1100,11 @@ fn discard_review_whole_runtime_node_dominates_draft_children() {
             },
         )
         .unwrap();
-    assert!(working(&store, &who).is_empty());
-    assert_eq!(diff(&store, &who).total_count, 0);
-    assert!(diff(&store, &who).draft_count > 0);
+    assert_eq!(working(&store, &who), saved);
+    let after = diff(&store, &who);
+    assert_eq!(after.draft_count, 0);
+    // Each Service the Save creates lists itself and the image it runs.
+    assert_eq!(after.total_count, 4);
     assert_eq!(
         store
             .read(&who, &ployz_store::HistoryQuery::default())
@@ -1109,6 +1112,24 @@ fn discard_review_whole_runtime_node_dominates_draft_children() {
             .revisions,
         history.revisions
     );
+}
+
+#[test]
+fn discard_review_names_the_settings_an_undeployed_save_loses() {
+    let (store, who) = shop();
+    publish(&store, &who, None).unwrap();
+    set(&store, &who, "web.replicas", json!(3));
+    let discarded = store
+        .write(
+            &who,
+            &Discard {
+                target: Some(ployz_store::DiscardTarget::Review),
+                version: Some(diff(&store, &who).version),
+                ..Discard::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(discarded.dropped, ["web.replicas"]);
 }
 
 fn unset(store: &ConfigStore, who: &Actor, path: &str) {
@@ -4542,5 +4563,50 @@ fn history_hides_the_plain_text_a_lapsed_deployment_protected() {
             );
             discard_to_saved(&store, &who);
         }
+    }
+}
+
+fn discard_review(store: &ConfigStore, who: &Actor) {
+    store
+        .write(
+            who,
+            &Discard {
+                target: Some(ployz_store::DiscardTarget::Review),
+                version: Some(diff(store, who).version),
+                ..Discard::default()
+            },
+        )
+        .unwrap();
+}
+
+#[test]
+fn discard_review_abandons_a_staged_roll_back() {
+    for running in [1, 2, 3] {
+        let (store, who) = shop();
+        publish(&store, &who, None).unwrap();
+        for replicas in [2, 3] {
+            if running == replicas - 1 {
+                backend::deploy(&store, &who, "production", 1);
+            }
+            set(&store, &who, "web.replicas", json!(replicas));
+            publish(&store, &who, None).unwrap();
+        }
+        if running == 3 {
+            backend::deploy(&store, &who, "production", 1);
+        }
+        assert!(stage_history(&store, &who, 1, ployz_store::HistoryAction::Restore).changed);
+        discard_review(&store, &who);
+        let after = diff(&store, &who);
+        assert_eq!(
+            value(&store, &who, "web.replicas"),
+            Some(json!(3)),
+            "running #{running}"
+        );
+        assert_eq!(after.draft_count, 0, "running #{running}");
+        assert_eq!(
+            after.total_count,
+            usize::from(running != 3),
+            "running #{running}: only the Save that is not running stays listed"
+        );
     }
 }
