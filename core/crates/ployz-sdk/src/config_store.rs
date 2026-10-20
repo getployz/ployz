@@ -275,6 +275,29 @@ impl ConfigStore {
         .await
     }
 
+    /// Retire the old copies the Organization's Deployment `deployment` left running,
+    /// on one of `connections` (`Connection[]`): each copy its Deploy reported left
+    /// running, of a Service it deployed or removed. A copy already gone counts as
+    /// retired, so a retry is safe. Resolves to the copies still running
+    /// (`RetireOutcome`), each with its Machine and why. Only Cloud's worker calls this.
+    ///
+    /// # Errors
+    /// Returns `not_found` for a Deployment of another Organization, the connection's
+    /// error when no Server can be reached, or a storage error.
+    #[napi(ts_return_type = "Promise<RetireOutcome>")]
+    pub async fn retire_old(
+        &self,
+        organization: String,
+        deployment: String,
+        #[napi(ts_arg_type = "Connection[]")] connections: serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        let who = actor(organization, None)?;
+        let deployment = DeploymentId::parse(deployment).map_err(rpc_to_napi)?;
+        let connections = crate::parse_connections(connections)?;
+        // Reading the Deployment as the Organization is the ownership check.
+        to_json(ployz::sdk::retire_old(Arc::clone(&self.store), who, deployment, connections).await)
+    }
+
     /// Record that `runner` stopped without finishing Deployment `deployment`: its
     /// outcome is unknown once it prepared it. Recording it after an outcome changes
     /// nothing.

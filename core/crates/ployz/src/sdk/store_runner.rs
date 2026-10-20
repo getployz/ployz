@@ -9,24 +9,29 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use ployz_core::{
-    ContainerId, DeployOperation, DeployOutcome, DeployWarning, ExecutionError, FailedOperation,
-    MachineId, RpcError, RpcErrorCode, ServiceName,
+    AnonymousVolumes, ContainerId, DeployOperation, DeployOutcome, DeployWarning, ExecutionError,
+    FailedOperation, MachineId, MachineObservation, QualifiedService, RpcError, RpcErrorCode,
+    ServiceName,
 };
 use ployz_store::tools::{LogText, SealedValues, Withheld};
 use ployz_store::{
-    BuildReport, BuildStatus, Builder, Claimed, CommitSha, ConfigStore, DeploymentId,
-    DeploymentStatus, DeploymentSummary, EnvironmentId, Failure, ObservationFailure, RowState,
+    Actor, BuildReport, BuildStatus, Builder, Claimed, CommitSha, ConfigStore, DeployedNode,
+    DeploymentId, DeploymentQuery, DeploymentStatus, DeploymentSummary, DeploymentView,
+    DeploymentWarning, EnvironmentId, Failure, NodeStatus, ObservationFailure, RowState,
     RowTracker, RunEvidence, RunnerId, VolumeObservation,
 };
-use serde::Deserialize as _;
+use serde::{Deserialize as _, Serialize};
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
+use ts_rs::TS;
 
 use super::build::BuildOutcome;
 use super::preparation::{BuildReceipt, PreparationInput, UploadDigest, needs_upload};
 use super::{ImageCleanup, PreparedDeploy, RunningBuild, Session, connect_connections};
 use crate::connect::{Client, SystemConnector};
 use crate::context::Connection;
+use crate::deploy::MachineOperations;
+use crate::deploy::cleanup::{self, Copy, Step};
 
 /// How often a running Deployment renews its lease and checks whether it was cancelled.
 const CANCEL_POLL: Duration = Duration::from_secs(2);
@@ -244,6 +249,213 @@ pub async fn observe_copies(
     let observed = session.observe_copies().await;
     session.close().await;
     observed
+}
+
+/// The old copies a Deployment's retire left running.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, TS)]
+pub struct RetireOutcome {
+    pub left: Vec<RetireLeft>,
+}
+
+/// One old copy still running.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, TS)]
+pub struct RetireLeft {
+    /// The Machine's name as the Deploy reported it, or its ID when the Deploy
+    /// did not know the name.
+    pub machine: String,
+    /// The Service as the Deployment names it.
+    pub service: ServiceName,
+    /// Users read it.
+    pub reason: String,
+}
+
+/// Retire the old copies Deployment `deployment` of `who`'s Organization left
+/// running, on one of `connections`: each copy its Deploy reported left running,
+/// of a Service it deployed or removed. A failed or unattempted Service keeps its
+/// old copy, which may be the one serving. A copy already gone counts as retired,
+/// so a retry observes again and only retires what is still there.
+///
+/// # Errors
+/// Returns `not_found` for a Deployment of another Organization, the connection's
+/// error when no Server can be reached or listing the Machines fails, or a storage
+/// error.
+pub async fn retire_old(
+    store: Arc<ConfigStore>,
+    who: Actor,
+    deployment: DeploymentId,
+    connections: Vec<Connection>,
+) -> Result<RetireOutcome, RpcError> {
+    let view = super::store_call(&store, move |store| {
+        store.read(&who, &DeploymentQuery { id: deployment })
+    })
+    .await?;
+    let copies = left_copies(&view);
+    if copies.is_empty() {
+        return Ok(RetireOutcome::default());
+    }
+    let session = connect_connections(connections, Arc::new(SystemConnector::default())).await?;
+    let retired = async {
+        let mut client = session.client()?;
+        let machines = client.machines().await.map_err(crate::connect::rpc_error)?;
+        Ok(retire_copies(&client, &machines, copies).await)
+    }
+    .await;
+    session.close().await;
+    retired
+}
+
+/// A copy a Deploy reported left running, of a Service it deployed or removed.
+struct LeftCopy {
+    service: ServiceName,
+    container_id: ContainerId,
+    machine: String,
+    /// The Service was removed, so its last copy may go Out.
+    allow_empty: bool,
+}
+
+fn left_copies(view: &DeploymentView) -> Vec<LeftCopy> {
+    let advanced: BTreeMap<QualifiedService, (&ServiceName, bool)> = view
+        .nodes
+        .iter()
+        .filter_map(|node| {
+            let DeployedNode::Service { name, .. } = &node.node else {
+                return None;
+            };
+            let removed = match node.outcome {
+                NodeStatus::Deployed => false,
+                NodeStatus::Removed => true,
+                NodeStatus::Pending
+                | NodeStatus::Failed
+                | NodeStatus::NotAttempted
+                | NodeStatus::Unchanged
+                | NodeStatus::Unknown => return None,
+            };
+            let runtime = view.runtime_names.get(name)?;
+            let service = QualifiedService::new(view.namespace.clone(), runtime.clone());
+            Some((service, (name, removed)))
+        })
+        .collect();
+    view.deployment
+        .warnings
+        .iter()
+        .filter_map(|warning| {
+            let DeploymentWarning::Deploy {
+                warning:
+                    DeployWarning::LeftRunning {
+                        service,
+                        container_id,
+                        machine,
+                        ..
+                    },
+            } = warning
+            else {
+                return None;
+            };
+            let (name, removed) = advanced.get(service)?;
+            Some(LeftCopy {
+                service: (*name).clone(),
+                container_id: *container_id,
+                machine: machine.clone(),
+                allow_empty: *removed,
+            })
+        })
+        .collect()
+}
+
+async fn retire_copies<C: MachineOperations>(
+    client: &C,
+    machines: &[MachineObservation],
+    copies: Vec<LeftCopy>,
+) -> RetireOutcome {
+    let names: BTreeMap<MachineId, String> = machines
+        .iter()
+        .map(|observed| (observed.machine.id, observed.machine.name.to_string()))
+        .collect();
+    let retired = futures_util::future::join_all(copies.iter().map(|copy| async {
+        // Names are not unique: every Machine of that name may hold the copy.
+        let held_by: Vec<MachineId> = machines
+            .iter()
+            .map(|observed| &observed.machine)
+            .filter(|machine| {
+                machine.name.as_str() == copy.machine || machine.id.to_string() == copy.machine
+            })
+            .map(|machine| machine.id)
+            .collect();
+        if held_by.is_empty() {
+            return vec![format!("{} is not in the Cluster", copy.machine)];
+        }
+        let mut reasons = Vec::new();
+        for machine_id in held_by {
+            if let Some(reason) = retire_copy(client, &names, machine_id, copy).await {
+                reasons.push(reason);
+            }
+        }
+        reasons
+    }))
+    .await;
+    let left = copies
+        .iter()
+        .zip(retired)
+        .flat_map(|(copy, reasons)| {
+            reasons.into_iter().map(|reason| RetireLeft {
+                machine: copy.machine.clone(),
+                service: copy.service.clone(),
+                reason,
+            })
+        })
+        .collect();
+    RetireOutcome { left }
+}
+
+/// Why `copy` still runs on `machine_id`, or none once it is gone.
+async fn retire_copy<C: MachineOperations>(
+    client: &C,
+    names: &BTreeMap<MachineId, String>,
+    machine_id: MachineId,
+    copy: &LeftCopy,
+) -> Option<String> {
+    let observed = match client
+        .inspect_container(&machine_id, &copy.container_id)
+        .await
+    {
+        Ok(details) => details.container,
+        Err(error) if error.code == RpcErrorCode::NotFound => return None,
+        Err(error) => return Some(failed(&copy.machine, error)),
+    };
+    let step = cleanup::retire(
+        client,
+        &Copy::observed(&observed),
+        copy.allow_empty,
+        AnonymousVolumes::Remove,
+        &CancellationToken::new(),
+    )
+    .await;
+    match step {
+        Ok(Step::Done) => None,
+        Ok(Step::Refused(refusal)) => Some(refusal.message),
+        Ok(Step::NotConfirmed(unconfirmed)) if unconfirmed.machines.is_empty() => {
+            Some("the route set did not name every live Machine".into())
+        }
+        Ok(Step::NotConfirmed(unconfirmed)) => {
+            let proxies: Vec<String> = unconfirmed
+                .machines
+                .iter()
+                .map(|id| names.get(id).cloned().unwrap_or_else(|| id.to_string()))
+                .collect();
+            Some(format!("proxy on {} did not confirm", proxies.join(", ")))
+        }
+        Ok(Step::Cancelled) => Some("interrupted".into()),
+        Err(error) => Some(failed(&copy.machine, error)),
+    }
+}
+
+/// The reason a Deploy gives for a copy whose Machine failed it.
+fn failed(machine: &str, error: RpcError) -> String {
+    if error.code == RpcErrorCode::Unavailable || error.target_unanswered() {
+        format!("{machine} did not answer")
+    } else {
+        error.message
+    }
 }
 
 /// Every claim pair is kept, under its name: a name sealed after the claim

@@ -44,7 +44,9 @@ pub use github_build::{
 };
 pub use running::Running;
 pub use store_call::store_call;
-pub use store_runner::{Sources, observe_copies, observe_volumes, run_deployment};
+pub use store_runner::{
+    RetireLeft, RetireOutcome, Sources, observe_copies, observe_volumes, retire_old, run_deployment,
+};
 
 /// Cancellable preparation whose progress is retained until read, within a byte budget.
 pub type RunningPreparation = Running<PreparedDeploy>;

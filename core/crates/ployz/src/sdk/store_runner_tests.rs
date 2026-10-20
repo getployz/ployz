@@ -721,3 +721,240 @@ fn a_full_deploy_builds_each_uploaded_service_from_its_own_upload() {
     };
     assert_eq!(services, [front]);
 }
+
+/// The real Client, recording each want it sends.
+struct Recording {
+    client: Client,
+    wants: std::sync::Mutex<Vec<ployz_core::ContainerWant>>,
+}
+
+impl MachineOperations for Recording {
+    async fn prepare_volumes(
+        &self,
+        machine_id: &MachineId,
+        specs: &[ployz_core::ServiceStorageSpec],
+    ) -> Result<ployz_core::PreparedVolumes, RpcError> {
+        MachineOperations::prepare_volumes(&self.client, machine_id, specs).await
+    }
+
+    async fn service_containers(
+        &self,
+        service: &QualifiedService,
+    ) -> Result<Vec<ployz_core::ContainerObservation>, RpcError> {
+        MachineOperations::service_containers(&self.client, service).await
+    }
+
+    async fn ensure_container(
+        &self,
+        machine_id: &MachineId,
+        want: ployz_core::ContainerWant,
+    ) -> Result<(ployz_core::ContainerNow, Option<ployz_core::HealthVerdict>), RpcError> {
+        self.wants.lock().unwrap().push(want.clone());
+        MachineOperations::ensure_container(&self.client, machine_id, want).await
+    }
+
+    async fn inspect_container(
+        &self,
+        machine_id: &MachineId,
+        container_id: &ContainerId,
+    ) -> Result<ployz_core::ContainerDetails, RpcError> {
+        MachineOperations::inspect_container(&self.client, machine_id, container_id).await
+    }
+
+    async fn remove_volume(&self, id: &ployz_core::DockerVolumeId) -> Result<(), RpcError> {
+        MachineOperations::remove_volume(&self.client, id).await
+    }
+
+    async fn runs_global(
+        &self,
+        machine_id: &MachineId,
+        slot: &ployz_core::SlotKey,
+        spec: &ployz_core::ResolvedServiceSpec,
+    ) -> Result<bool, RpcError> {
+        MachineOperations::runs_global(&self.client, machine_id, slot, spec).await
+    }
+
+    async fn ensure_image(
+        &self,
+        machine_id: &MachineId,
+        spec: &ployz_core::ResolvedServiceSpec,
+    ) -> Result<ployz_core::ImagePulled, RpcError> {
+        MachineOperations::ensure_image(&self.client, machine_id, spec).await
+    }
+
+    async fn ensure_unsettled(
+        &self,
+        machine_id: &MachineId,
+        want: ployz_core::ContainerWant,
+        timeout: Option<Duration>,
+    ) -> Result<ployz_core::EnsuredContainer, RpcError> {
+        self.wants.lock().unwrap().push(want.clone());
+        MachineOperations::ensure_unsettled(&self.client, machine_id, want, timeout).await
+    }
+
+    async fn read_routes(
+        &self,
+        machine_id: &MachineId,
+        service: &QualifiedService,
+    ) -> Result<ployz_core::RoutesRead, RpcError> {
+        MachineOperations::read_routes(&self.client, machine_id, service).await
+    }
+}
+
+/// `run`'s Deployment as the Store reads it, with each `(Service, outcome, copy)`
+/// a node whose old copy its Deploy left running on Machine `one`.
+fn left_running(
+    run: &Run,
+    actor: &ployz_store::Actor,
+    services: &[(&str, NodeStatus, char)],
+) -> DeploymentView {
+    use crate::global_fixtures::container_id;
+    let mut view = run
+        .store
+        .read(
+            actor,
+            &DeploymentQuery {
+                id: run.deployment.clone(),
+            },
+        )
+        .unwrap();
+    for (name, outcome, copy) in services {
+        let name = ServiceName::parse(*name).unwrap();
+        view.nodes.push(ployz_store::NodeOutcome {
+            node: DeployedNode::Service {
+                id: ployz_store::ServiceLineageId::parse("00000000-0000-4000-8000-000000000006")
+                    .unwrap(),
+                name: name.clone(),
+            },
+            outcome: *outcome,
+            rows: Vec::new(),
+        });
+        view.runtime_names.insert(name.clone(), name.clone());
+        view.deployment.warnings.push(DeploymentWarning::Deploy {
+            warning: DeployWarning::LeftRunning {
+                service: QualifiedService::new(view.namespace.clone(), name),
+                container_id: container_id(*copy),
+                machine: "one".into(),
+                reason: "proxy on two did not confirm".into(),
+            },
+        });
+    }
+    view
+}
+
+/// Machine `one`, holding copy `c` In.
+fn holding_c() -> super::super::test_support::DeployService {
+    use super::super::test_support as support;
+    support::DeployService::new(support::machine('a', "one")).with_rotation(
+        crate::global_fixtures::container_id('c'),
+        ployz_core::CopyRotation::In,
+    )
+}
+
+struct Retired {
+    outcome: RetireOutcome,
+    wants: Vec<ployz_core::ContainerWant>,
+    removed: BTreeSet<ContainerId>,
+}
+
+async fn retire(
+    view: &DeploymentView,
+    machine: super::super::test_support::DeployService,
+) -> Retired {
+    let removed = machine.removed_containers();
+    let (mut client, server) = super::super::test_support::connected(machine).await;
+    let machines = client.machines().await.unwrap();
+    let recording = Recording {
+        client,
+        wants: std::sync::Mutex::default(),
+    };
+    let outcome = retire_copies(&recording, &machines, left_copies(view)).await;
+    server.abort();
+    Retired {
+        outcome,
+        wants: recording.wants.into_inner().unwrap(),
+        removed: removed.lock().unwrap().clone(),
+    }
+}
+
+#[tokio::test]
+async fn a_deployment_that_left_nothing_running_retires_without_connecting() {
+    let (run, actor) = run();
+    let retired = retire_old(run.store, actor, run.deployment, Vec::new())
+        .await
+        .unwrap();
+    assert_eq!(retired, RetireOutcome::default());
+}
+
+#[tokio::test]
+async fn another_organizations_deployment_is_not_found() {
+    let (run, _) = run();
+    let other = ployz_store::Actor::system(ployz_store::OrganizationId::parse("other").unwrap());
+    let error = retire_old(run.store, other, run.deployment, Vec::new())
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, RpcErrorCode::NotFound);
+}
+
+#[tokio::test]
+async fn a_left_copy_already_gone_counts_as_retired() {
+    let (run, actor) = run();
+    let view = left_running(&run, &actor, &[("web", NodeStatus::Deployed, 'c')]);
+    let mut machine = holding_c();
+    machine
+        .uninspectable
+        .insert(crate::global_fixtures::container_id('c'));
+    let retired = retire(&view, machine).await;
+    assert_eq!(retired.outcome, RetireOutcome::default());
+    assert!(retired.wants.is_empty(), "{:?}", retired.wants);
+}
+
+#[tokio::test]
+async fn a_left_copy_whose_machine_does_not_answer_stays_left_naming_it() {
+    let (run, actor) = run();
+    let view = left_running(&run, &actor, &[("web", NodeStatus::Deployed, 'c')]);
+    let retired = retire(&view, holding_c().fail_inspects("unreachable")).await;
+    assert_eq!(
+        retired.outcome.left,
+        [RetireLeft {
+            machine: "one".into(),
+            service: ServiceName::parse("web").unwrap(),
+            reason: "one did not answer".into(),
+        }]
+    );
+}
+
+// Catches a retire that takes out the old copy of a Service whose replacement failed:
+// that copy may be the one serving.
+#[tokio::test]
+async fn a_failed_services_left_copy_is_not_touched() {
+    let (run, actor) = run();
+    let view = left_running(&run, &actor, &[("web", NodeStatus::Failed, 'c')]);
+    let retired = retire(&view, holding_c()).await;
+    assert_eq!(retired.outcome, RetireOutcome::default());
+    assert!(retired.wants.is_empty(), "{:?}", retired.wants);
+    assert!(retired.removed.is_empty());
+}
+
+#[tokio::test]
+async fn only_a_removed_services_left_copy_may_leave_it_empty() {
+    let (run, actor) = run();
+    for (outcome, allow_empty) in [(NodeStatus::Removed, true), (NodeStatus::Deployed, false)] {
+        let view = left_running(&run, &actor, &[("web", outcome, 'c')]);
+        let retired = retire(&view, holding_c()).await;
+        assert_eq!(retired.outcome, RetireOutcome::default(), "{outcome:?}");
+        assert!(
+            matches!(
+                retired.wants.first(),
+                Some(ployz_core::ContainerWant::Out { allow_empty: sent, .. }) if *sent == allow_empty
+            ),
+            "{outcome:?}: {:?}",
+            retired.wants
+        );
+        assert_eq!(
+            retired.removed,
+            BTreeSet::from([crate::global_fixtures::container_id('c')]),
+            "{outcome:?}"
+        );
+    }
+}
