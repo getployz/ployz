@@ -322,7 +322,7 @@ Scripts can tell failures apart by exit code:
 | Exit | Meaning |
 | --- | --- |
 | 0 | Done. |
-| 1 | It failed: something wasn't found, a server couldn't be reached, Ployz refused, or the server or Cloud doesn't support what you asked. |
+| 1 | It failed: something wasn't found, a server couldn't be reached, Ployz refused, the server or Cloud doesn't support what you asked, or the output couldn't be written, as with `> /dev/full`. |
 | 2 | Fix the command: a bad argument, a flag the command doesn't take, a missing `--confirm`, or a name that matches more than one thing. |
 | 3 | You got a result, but part of it is missing or didn't happen: some servers didn't answer, or some work couldn't be done, such as a `ployz server drain` that leaves a service where it is because no other server can take it. The output says what's left. Run it again once the servers are back, or once there's somewhere for the work to go. |
 | 130 | You cancelled: pressed Ctrl-C, didn't confirm a prompt, or stopped waiting for an approval. Before the work starts, nothing changes. A `ployz deploy` cancelled after its services applied keeps them, and its `--json` says `applied`. Once Ployz Cloud runs it, as with a `server rm` or `server upgrade` it's following, Ctrl-C only stops the following: the work goes on in Cloud and finishes on its own. |

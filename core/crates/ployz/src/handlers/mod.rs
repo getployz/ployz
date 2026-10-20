@@ -149,11 +149,12 @@ fn usage_failure(error: clap::Error) -> Error {
         error.kind(),
         ErrorKind::DisplayHelp | ErrorKind::DisplayVersion
     ) {
-        // clap's own `exit` swallows a closed stdout instead of dying of it.
+        // clap's own `exit` swallows a closed stdout instead of dying of it, and
+        // a full one: `ui::exit` fails a write stdout could not take.
         let mut stdout = crate::ui::stdout();
         let _ = write!(stdout, "{}", error.render().ansi());
         let _ = stdout.flush();
-        std::process::exit(0);
+        return Error::exit(0);
     }
     if !wants_json {
         error.exit();
