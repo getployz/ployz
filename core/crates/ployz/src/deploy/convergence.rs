@@ -61,17 +61,14 @@ pub struct Move {
     pub old: OldCopyEnd,
 }
 
-/// A move whose old copy may still be retiring: awaiting `old` ends it.
 pub(crate) struct Moving {
     pub(crate) from: MachineRef,
     pub(crate) to: MachineRef,
     pub(crate) old: Retiring,
 }
 
-/// How an old copy's retirement ends.
 pub(crate) type Retiring = BoxFuture<'static, Result<OldCopyEnd, LastIn>>;
 
-/// Out on the old copy was refused: it is the last copy In. Its replacement stays In too.
 #[derive(Debug)]
 pub(crate) struct LastIn;
 
@@ -100,7 +97,6 @@ pub enum Unconfirmed {
     Failed { detail: String },
 }
 
-/// How converging one replicated Service ended, its moves each an `M`.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum Converged<M = Move> {
     /// Every Container that had to move did. Never empty.
@@ -237,7 +233,6 @@ impl fmt::Display for MoveFailure {
     }
 }
 
-/// What converging needs from a Cluster: a fresh look, and one move at a time.
 pub(crate) trait ConvergenceClient {
     type Moved;
     async fn observe(&mut self) -> Result<DeploySnapshot, ConnectError>;
@@ -267,7 +262,6 @@ impl ConvergenceClient for Client {
     }
 }
 
-/// Moves `service`'s stranded Containers one at a time, each from a fresh look.
 pub(crate) async fn converge<C: ConvergenceClient>(
     client: &mut C,
     service: &QualifiedService,
@@ -461,8 +455,6 @@ fn stranded<'a>(
         .collect()
 }
 
-/// The stranded Containers a move may take: a Held copy is a user's to release, and an
-/// Out copy is already on its way out.
 fn movable<'a>(
     snapshot: &'a DeploySnapshot,
     service: &QualifiedService,
@@ -492,30 +484,23 @@ fn machine_ref(snapshot: &DeploySnapshot, id: &MachineId) -> MachineRef {
     MachineRef::from(machine(snapshot, id))
 }
 
-/// Why `relocate` did not get the new copy In and the old one Out.
 #[derive(Debug)]
 pub(in crate::deploy) enum RelocateError {
-    /// The new copy on `to` did not start or go In. The old copy keeps serving.
     NotServing {
         detail: String,
         replacement_removed: bool,
     },
-    /// Cancelled before the new copy went In. The old copy keeps serving.
-    Cancelled { replacement_removed: bool },
+    Cancelled {
+        replacement_removed: bool,
+    },
 }
 
-/// How far `relocate` got once the new copy was In.
 #[derive(Debug, Eq, PartialEq)]
 pub(in crate::deploy) enum Relocated {
-    /// Every live proxy lists the new copy: `old` is next to retire, by `retire_old`.
     Listed,
-    /// The new copy's listing was not confirmed, so `old` stays In.
     Unlisted(Unconfirmed),
 }
 
-/// Runs one move on rotation up to the old copy's retirement: the new copy starts Pending
-/// on `to` and goes In, and every live proxy lists it. `name` turns a Machine id into the
-/// Server a result names.
 pub(in crate::deploy) async fn relocate<C: MachineOperations>(
     client: &C,
     namespace: &Namespace,
@@ -612,7 +597,6 @@ pub(in crate::deploy) async fn relocate<C: MachineOperations>(
     Ok(Relocated::Listed)
 }
 
-/// Retires `old` once its replacement is listed: Out, unlisted by every live proxy, Gone.
 pub(in crate::deploy) async fn retire_old<C: MachineOperations>(
     client: &C,
     old: &Copy,
@@ -719,8 +703,6 @@ async fn move_one(
     }
 }
 
-/// The Server `id` names, as the snapshot knew it. Proxies report ids the snapshot may
-/// not list any more; those keep their id for a name.
 pub(crate) fn named(known: &[MachineRef], id: &MachineId) -> MachineRef {
     known
         .iter()

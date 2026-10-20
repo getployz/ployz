@@ -128,23 +128,15 @@ struct Scripted {
     /// Cancelled once the first Service converges.
     cancel_after_converge: Option<CancellationToken>,
     retired: bool,
-    /// Copies listed on the drained Server before each Service converges; an exhausted
-    /// script lists none.
     copies: VecDeque<Result<Vec<Copy>, RpcError>>,
-    /// How each Out copy ends once let go, in order.
     ends: VecDeque<OldCopyEnd>,
     let_go: Vec<Copy>,
-    /// How long each moved Service's old copy takes to retire.
     retire_time: Duration,
-    /// Services whose old copy is refused Out as the last copy In.
     last_in: Vec<QualifiedService>,
-    /// `in <service>` as each Service's new copy comes In, `gone <service>` as its old one
-    /// is removed.
     calls: Arc<Mutex<Vec<String>>>,
 }
 
 impl Scripted {
-    /// `moves` as the client hands them back: each old copy still to retire.
     fn retiring(&self, service: &QualifiedService, moves: Vec<Move>) -> Vec<Moving> {
         self.calls.lock().unwrap().push(format!("in {service}"));
         moves
@@ -319,7 +311,6 @@ fn nothing_left() -> Result<Vec<QualifiedService>, Lost> {
     Ok(Vec::new())
 }
 
-/// A copy of app/web on the drained Server in `rotation`.
 fn left_on_server(rotation: CopyRotation) -> Copy {
     Copy {
         machine_id: drained().id,

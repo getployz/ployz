@@ -411,13 +411,11 @@ trait DrainClient {
         service: &QualifiedService,
         cancellation: &CancellationToken,
     ) -> Converged<Moving>;
-    /// Every copy of `service` on `server`, from a fresh listing.
     async fn copies_on(
         &mut self,
         server: &MachineId,
         service: &QualifiedService,
     ) -> Result<Vec<Copy>, RpcError>;
-    /// Wait until no live proxy lists the Out copy, then remove it.
     async fn let_go(&mut self, copy: &Copy, cancellation: &CancellationToken) -> OldCopyEnd;
 }
 
@@ -618,12 +616,9 @@ async fn execute<C: DrainClient>(
     }
 }
 
-/// The replicated Services' entries in the order they were handled, each held until the
-/// old copies its moves left have retired. Those retirements run alongside later work.
 #[derive(Default)]
 struct Behind {
     entries: VecDeque<Pending>,
-    /// How many entries went to the report already: an `Ended`'s entry counts from here.
     flushed: usize,
     retiring: FuturesUnordered<BoxFuture<'static, Ended>>,
 }
@@ -634,7 +629,6 @@ struct Pending {
     moves: Vec<Step>,
 }
 
-/// The outcome an entry becomes once its moves' old copies have ended.
 enum Shape {
     Done(DrainOutcome),
     Moved,
@@ -645,11 +639,9 @@ enum Shape {
 struct Step {
     from: MachineRef,
     to: MachineRef,
-    /// `None` while the old copy is still retiring.
     old: Option<Result<OldCopyEnd, LastIn>>,
 }
 
-/// How the old copy of an entry's `index`th move ended.
 struct Ended {
     entry: usize,
     index: usize,
@@ -683,7 +675,6 @@ impl Behind {
         });
     }
 
-    /// Runs `work` while the old copies keep retiring, and reports the entries that ended.
     async fn alongside<T>(&mut self, record: &mut Record<'_>, work: impl Future<Output = T>) -> T {
         let mut work = pin!(work);
         loop {
@@ -697,7 +688,6 @@ impl Behind {
         }
     }
 
-    /// Waits for every retirement still running, then reports every entry.
     async fn finish(&mut self, record: &mut Record<'_>) {
         while let Some(ended) = self.retiring.next().await {
             self.end(ended);
@@ -714,8 +704,6 @@ impl Behind {
         step.old = Some(old);
     }
 
-    /// Reports the leading entries whose old copies have all ended. An Out refused as the
-    /// last copy In drops that move and says the copy stays.
     fn flush(&mut self, record: &mut Record<'_>) {
         while self
             .entries

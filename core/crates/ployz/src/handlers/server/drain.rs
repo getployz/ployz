@@ -123,9 +123,6 @@ fn render(report: &DrainReport) -> Result<(), Error> {
     Err(incomplete(report))
 }
 
-/// Why an incomplete Drain fails: a copy that must stay is the user's to resolve
-/// (Conflict); an old copy left behind is the next Drain's (Unavailable); anything else
-/// is already printed.
 fn incomplete(report: &DrainReport) -> Error {
     let server = &report.server.name;
     let mut stays = Vec::new();
@@ -239,7 +236,6 @@ fn went_wrong(step: DrainStep<'_>) -> bool {
     }
 }
 
-/// One Service's report, one line per copy the Drain handled.
 fn line(entry: &ServiceDrain, server: &MachineName) -> String {
     let service = &entry.service;
     let (moves, ending) = match &entry.outcome {

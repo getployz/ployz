@@ -22,7 +22,6 @@ async fn move_with(client: &Scripted) -> Result<ContainerId, MoveContainerError>
     .await
 }
 
-/// A move first reads the source copy's gen and deploy label.
 fn moving(steps: Vec<Step>) -> Scripted {
     let mut script = vec![observed(
         Call::Inspect(machine(FROM), container('a')),
@@ -55,7 +54,6 @@ fn name(id: &MachineId) -> MachineRef {
     }
 }
 
-/// The whole move: the new copy brought In, then the old one retired once it is listed.
 async fn relocate_with(
     client: &Scripted,
     cancellation: &CancellationToken,
@@ -277,8 +275,6 @@ async fn a_failed_run_removes_its_slot() {
     client.assert_done();
 }
 
-/// The replacement takes its gen and deploy label from the source copy, so a source it
-/// cannot read starts nothing.
 #[tokio::test]
 async fn an_unreadable_source_copy_starts_no_replacement() {
     let client = Scripted::new(vec![failed(

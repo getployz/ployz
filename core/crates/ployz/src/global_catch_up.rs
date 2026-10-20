@@ -52,15 +52,12 @@ pub(crate) trait CatchUpClient {
         &mut self,
         machine_id: &MachineId,
     ) -> Result<Option<BridgeEndpointCapacity>, Failure>;
-    /// Retires this Machine's copies of the slot's Service when the slot is no
-    /// longer eligible here; `true` means the slot was retired.
     async fn retire_if_ineligible(
         &mut self,
         machine_id: &MachineId,
         new: &NewContainer,
         cancel: &CancellationToken,
     ) -> Result<bool, RpcError>;
-    /// Starts or reuses the slot's copy; `None` means the slot was ineligible.
     async fn run_slot(
         &mut self,
         machine_id: &MachineId,
@@ -264,7 +261,6 @@ fn step_error(step: Step) -> Result<(), RpcError> {
     }
 }
 
-/// Starts a copy Pending; `bring_in` moves it In afterwards.
 async fn ensure_retried(
     client: &mut Client,
     target: &MachineTarget,
@@ -411,20 +407,15 @@ pub(crate) async fn follow_globals(
     result
 }
 
-/// How many times one run observes the cluster before giving up on an
-/// unseen Machine.
 const OBSERVATION_ATTEMPTS: u32 = 3;
 
 const OUTDATED: &str = "a newer deploy replaced it while catching up; redeploy";
 
-/// The copy catch-up recreates here: the newest In or Pending copy by gen for
-/// a user Service, the newest copy of any state for system ingress.
 struct Source {
     identity: QualifiedService,
     copy: Option<ContainerObservation>,
 }
 
-/// A copy started here, verified against the final listing afterwards.
 struct Started {
     identity: QualifiedService,
     copy: Copy,
@@ -515,8 +506,6 @@ fn not_in_message(health: Option<HealthVerdict>) -> String {
         .to_string()
 }
 
-/// Observes the cluster until every Machine answered, re-observing a partial
-/// listing within this run's attempts.
 async fn observe_complete<C: CatchUpClient>(
     client: &mut C,
     cancel: &CancellationToken,
@@ -552,7 +541,6 @@ async fn observe_complete<C: CatchUpClient>(
     unreachable!("the last attempt returns")
 }
 
-/// Catch up this Machine's Globals from the observed cluster.
 pub(crate) async fn catch_up_globals<C: CatchUpClient>(
     client: &mut C,
     this_machine: &Machine,

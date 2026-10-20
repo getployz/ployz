@@ -240,8 +240,6 @@ struct Scripted {
     /// Another writer moves this copy here just before the run's next ask of
     /// this kind on it.
     moved: Mutex<BTreeMap<(ContainerId, Ask), CopyRotation>>,
-    /// Another writer moves the named other copy there just before the run's next ask of
-    /// this kind on this copy.
     moved_sibling: Mutex<BTreeMap<(ContainerId, Ask), (ContainerId, CopyRotation)>>,
     /// Every live proxy keeps listing a copy of this Service for this many
     /// reads after it leaves In; `usize::MAX` never drops it.

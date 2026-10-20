@@ -74,11 +74,6 @@ impl RetireClient for Client {
     }
 }
 
-/// Every copy of `service` on `machine_id`, from a fresh listing.
-///
-/// # Errors
-///
-/// Returns the first Server's listing error.
 pub(crate) async fn copies_on<C: MachineOperations>(
     client: &C,
     machine_id: &MachineId,
@@ -93,15 +88,6 @@ pub(crate) async fn copies_on<C: MachineOperations>(
         .collect())
 }
 
-/// Retire every copy of `service` on `machine_id` through rotation: an In copy is taken
-/// Out, waited unlisted by every live proxy, then removed; a Pending or Out one is
-/// removed. Never allows an empty rotation: the last copy In refuses, and the caller
-/// reports it.
-///
-/// # Errors
-///
-/// Returns the Server's refusal, an unconfirmed unlisting as Unavailable, or the first
-/// RPC error.
 pub(crate) async fn retire_copies<C: MachineOperations>(
     client: &C,
     machine_id: &MachineId,
@@ -119,12 +105,6 @@ pub(crate) async fn retire_copies<C: MachineOperations>(
     Ok(())
 }
 
-/// Stop and remove the system Ingress Proxy on `machine_id` with a plain Gone: proxy
-/// copies are Pending for life, so no rotation step precedes it.
-///
-/// # Errors
-///
-/// Returns the Server's refusal or the first RPC error.
 pub(crate) async fn retire_ingress_proxy<C: MachineOperations>(
     client: &C,
     machine_id: &MachineId,
@@ -139,8 +119,6 @@ pub(crate) async fn retire_ingress_proxy<C: MachineOperations>(
     Ok(())
 }
 
-/// Let go of a copy a move left Out: wait until no live proxy lists it, then send Gone.
-/// It never moves one; a copy still In is not its business.
 pub(crate) async fn let_go<C: MachineOperations>(
     client: &C,
     copy: &Copy,
