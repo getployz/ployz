@@ -199,7 +199,6 @@ pub(crate) fn publisher_among(machines: &[MachineObservation]) -> Option<Machine
 pub(crate) struct Rotation {
     pub(crate) joining: Vec<Join>,
     pub(crate) leaving: Vec<ContainerId>,
-    /// Retiring ids a complete listing proved absent.
     pub(crate) pruning: Vec<ContainerId>,
 }
 

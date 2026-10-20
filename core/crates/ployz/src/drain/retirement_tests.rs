@@ -20,8 +20,6 @@ use crate::global_fixtures::{
     global_service, grouped, machine, qualified, requested, running_on, service_id,
 };
 
-/// A Cluster whose Machines each run a proxy that routes what [`proxy_routes`] says of
-/// the copies it sees. A frozen proxy keeps the routes it last read.
 struct Cluster {
     containers: Mutex<Vec<ContainerObservation>>,
     proxies: Vec<MachineId>,
@@ -54,7 +52,6 @@ impl Cluster {
         self
     }
 
-    /// What `proxy` routes now, from every copy it sees and what it routed before.
     fn route(&self, proxy: &MachineId) -> ProxyRoutes {
         let mut routes = self.routes.lock().unwrap();
         if self.frozen.contains(proxy) {
@@ -73,7 +70,6 @@ impl Cluster {
         current.clone()
     }
 
-    /// Take the copy `hex` Out behind the proxies' backs, as a move's Out step did.
     fn taken_out(&self, hex: char) -> Copy {
         let mut containers = self.containers.lock().unwrap();
         let copy = containers
@@ -267,7 +263,6 @@ impl MachineOperations for Cluster {
     }
 }
 
-/// A copy of app/api on `machine` in `rotation`, addressed so a proxy may route it.
 fn copy_on(machine: &Machine, hex: char, rotation: CopyRotation) -> ContainerObservation {
     let mut observation = running_on(machine, hex);
     observation
@@ -532,7 +527,6 @@ async fn let_go_leaves_the_copy_running_when_the_drain_is_cancelled() {
         machine('3', "stuck"),
     );
     let cancellation = CancellationToken::new();
-    // The stuck proxy still lists the copy, so the Ctrl-C arrives mid-wait.
     let mut cluster = Cluster::of(
         &[&drained, &other, &stuck],
         vec![

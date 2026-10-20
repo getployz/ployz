@@ -75,7 +75,6 @@ pub fn processes(root: &ArgMatches) -> Result<(), Error> {
     })
 }
 
-/// Copies the owner has taken Out of rotation. One that still runs is draining.
 fn retiring(services: &[&ServiceObservation]) -> HashSet<ContainerId> {
     services
         .iter()

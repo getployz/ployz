@@ -2111,10 +2111,6 @@ async fn gone<C: MachineOperations>(
         .map_err(|error| machine_error(MachineAction::RemoveContainer, error))
 }
 
-/// The replacement a move started on `to` did not start or serve, or the move was
-/// cancelled first (then the error is [`ExecutionError::Cancelled`]). The old copy keeps
-/// serving. `replacement_removed` says no new Container is left on `to`: none was made,
-/// or its removal was acknowledged.
 #[derive(Debug, thiserror::Error)]
 #[error("The new Container did not serve.")]
 pub(in crate::deploy) struct MoveContainerError {
@@ -2123,9 +2119,6 @@ pub(in crate::deploy) struct MoveContainerError {
     pub(in crate::deploy) replacement_removed: bool,
 }
 
-/// Starts the replacement for a moved copy on `to`, Pending, and answers its id. The copy
-/// keeps `old`'s gen and deploy label: a move is not a newer Deploy. Bringing it In and
-/// retiring `old` is the caller's job.
 pub(in crate::deploy) async fn move_container<C: MachineOperations>(
     client: &C,
     namespace: &Namespace,
