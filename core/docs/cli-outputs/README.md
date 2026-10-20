@@ -175,7 +175,7 @@ Raw upstream errors pass through:
 
 - `Cloud answered HTTP 405: <!doctype html>…` as `invalid_argument` ([cloud/errors.md](cloud/errors.md))
 - `could not reach Cloud at http://127.0.0.1:9: error sending request: client error (Connect): tcp connect error: Connection refused (os error 111)` ([cloud/errors.md](cloud/errors.md))
-- `Ployz's call to your Server's daemon failed: Docker operation failed: Docker responded with status code 409: container … is not running` ([cloud-cluster/errors.md](cloud-cluster/errors.md))
+- `Machine RPC failed: Docker operation failed: Docker responded with status code 409: container … is not running` ([cloud-cluster/errors.md](cloud-cluster/errors.md))
 - `create Container failed: Docker operation failed: Docker responded with status code 500: error from registry: denied` ([cloud-cluster/deploy.md](cloud-cluster/deploy.md))
 - `inspect Machine upgrade worker: No such file or directory (os error 2)` ([cluster/server.md](cluster/server.md))
 - `Ployz couldn't reach your Server's daemon: connection attempt failed: SSH connection to root@10.255.255.1 timed out after 3 seconds; …` ([cluster/server.md](cluster/server.md))
