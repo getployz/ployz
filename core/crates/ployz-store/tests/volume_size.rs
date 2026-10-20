@@ -15,10 +15,10 @@ use ployz_core::{
 use ployz_store::{
     Actor, Admit, Change, ConfigStore, CreateProject, CreateService, CreateVolume, Deploy,
     DeploymentId, DeploymentQuery, Discard, DiscardTarget, Edit, EnvironmentId, EnvironmentRef,
-    HistoryAction, HistoryPreviewQuery, Mount, OrganizationId, ProjectId, ProjectName, Publish,
-    RemoveVolume, Retry, Revision, RunEvidence, RunnerId, ServiceLineageId, SetVolumeStorage,
-    SettingPath, StageHistory, SystemEvent, Trusted, VolumeId, VolumeListing, VolumeName,
-    VolumeObservation, VolumeResized, VolumesQuery,
+    HistoryAction, HistoryPreviewQuery, Mount, NodeStatus, OrganizationId, ProjectId, ProjectName,
+    Publish, RemoveVolume, Retry, Revision, RunEvidence, RunnerId, ServiceLineageId,
+    SetVolumeStorage, SettingPath, StageHistory, SystemEvent, Trusted, VolumeId, VolumeListing,
+    VolumeName, VolumeObservation, VolumeResized, VolumesQuery,
 };
 use serde_json::{Value, json};
 
@@ -913,6 +913,67 @@ fn a_deploy_with_nothing_staged_after_a_shrink_ships_at_the_held_size() {
     admit(&store, &who, 2).unwrap();
     assert_eq!(revision_of(&store, &who, 2), revision_of(&store, &who, 1));
     deploys_at(&store, &who, 2, 3);
+}
+
+/// Deployment `n` runs with nothing to do, an empty preview then success, and
+/// settles every Node Outcome.
+fn runs_nothing(store: &ConfigStore, who: &Actor, n: u8) -> Vec<(String, NodeStatus)> {
+    let runner = RunnerId::parse("runner").unwrap();
+    store.claim(&id(n), &runner).unwrap();
+    let preview: DeployPreview = serde_json::from_value(json!({
+        "namespace": "shop-production", "operations": [], "warnings": [], "would_remove": [], "preserved_volumes": []
+    }))
+    .unwrap();
+    store
+        .record(&id(n), &runner, RunEvidence::Prepared(preview))
+        .unwrap();
+    let outcome: DeployOutcome<ployz_core::ExecutionError> =
+        serde_json::from_value(json!({ "type": "success", "completed": [] })).unwrap();
+    store
+        .record(
+            &id(n),
+            &runner,
+            RunEvidence::Executed {
+                progress: Vec::new(),
+                outcome: Box::new(outcome),
+                removed: Vec::new(),
+            },
+        )
+        .unwrap();
+    store
+        .read(who, &DeploymentQuery { id: id(n) })
+        .unwrap()
+        .nodes
+        .into_iter()
+        .map(|node| (node.node.name().to_owned(), node.outcome))
+        .collect()
+}
+
+fn unchanged() -> Vec<(String, NodeStatus)> {
+    vec![
+        ("web".to_owned(), NodeStatus::Unchanged),
+        ("data".to_owned(), NodeStatus::Unchanged),
+    ]
+}
+
+#[test]
+fn a_plain_deploy_after_a_shrink_settles_the_volume_unchanged() {
+    let (store, who) = shop(managed(5));
+    publish(&store, &who);
+    deploy(&store, &who, 1);
+    resize(&store, 5, 3).unwrap();
+    admit(&store, &who, 2).unwrap();
+    assert_eq!(runs_nothing(&store, &who, 2), unchanged());
+}
+
+#[test]
+fn a_plain_deploy_after_a_grow_settles_the_volume_unchanged() {
+    let (store, who) = shop(managed(5));
+    publish(&store, &who);
+    deploy(&store, &who, 1);
+    resize(&store, 5, 8).unwrap();
+    admit(&store, &who, 2).unwrap();
+    assert_eq!(runs_nothing(&store, &who, 2), unchanged());
 }
 
 #[test]

@@ -1371,7 +1371,7 @@ pub(crate) fn record(
                 None => {}
             }
             running(&stored)?;
-            let saved = saved_at(tx, &stored.summary.environment_id, stored.summary.saved)?;
+            let saved = held_revision(tx, &stored)?;
             let applied = applied_state(tx, &stored.summary.environment_id, &saved)?;
             // What the preview already settles shows while it runs; the rest reads
             // as Pending until what executing it did replaces these.
@@ -1444,7 +1444,7 @@ pub(crate) fn record(
             } else {
                 std::collections::BTreeSet::new()
             };
-            let saved = saved_at(tx, &stored.summary.environment_id, stored.summary.saved)?;
+            let saved = held_revision(tx, &stored)?;
             let applied = applied_state(tx, &stored.summary.environment_id, &saved)?;
             let outcomes = |projection| {
                 node_outcomes(
@@ -1545,7 +1545,7 @@ pub(crate) fn record(
                     }
                 }
             }
-            let saved = saved_at(tx, &stored.summary.environment_id, stored.summary.saved)?;
+            let saved = held_revision(tx, &stored)?;
             let applied = applied_state(tx, &stored.summary.environment_id, &saved)?;
             stored.run.nodes = keep_advanced(
                 &stored.run.nodes,
