@@ -466,21 +466,21 @@ pub(crate) async fn user_restart<C: MachineOperations>(
         // The ask may have landed, so the copy is restored as if Held.
         Err(error) => Err(RpcError {
             message: format!(
-                "Container {} was not restarted: {}.",
-                copy.container_id,
-                error.message.trim_end_matches('.')
+                "Container {} was not restarted: {}",
+                copy.container_id, error.message
             ),
             ..error
         }),
     };
     let brought = bring_in(client, &held, spec, Some(run)).await;
     if let Err(mut error) = stopped {
-        error.message.push_str(match brought {
-            Ok(BroughtIn::In) => " It is back In.",
+        let left = match brought {
+            Ok(BroughtIn::In) => "It is back In.",
             Ok(BroughtIn::NotIn { .. } | BroughtIn::Refused(_)) | Err(_) => {
-                " It is left Held and not routed."
+                "It is left Held and not routed."
             }
-        });
+        };
+        error.message = then_sentence(&error.message, left);
         return Err(error);
     }
     started(&held, brought?)
@@ -655,12 +655,25 @@ async fn not_stopped<C: MachineOperations>(
             "It is left running and Held."
         }
     };
-    error.message = format!(
-        "Container {} was not stopped: {}. {back}",
-        copy.container_id,
-        error.message.trim_end_matches('.')
+    error.message = then_sentence(
+        &format!(
+            "Container {} was not stopped: {}",
+            copy.container_id, error.message
+        ),
+        back,
     );
     error
+}
+
+/// `next` follows `message` as its own sentence, with one break however
+/// `message` ended.
+fn then_sentence(message: &str, next: &str) -> String {
+    let message = message.trim_end();
+    match message.chars().last() {
+        None => next.to_owned(),
+        Some('.' | '?' | '!' | ':') => format!("{message} {next}"),
+        Some(_) => format!("{message}. {next}"),
+    }
 }
 
 fn left_running(copy: &Copy, rotation: &str, step: Step) -> Result<(), RpcError> {
