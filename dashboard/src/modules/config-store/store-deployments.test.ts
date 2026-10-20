@@ -126,6 +126,17 @@ it("words a memory limit in the unit it was likely given", () => {
   ]);
 });
 
+it("words a CPU limit in vCPUs", () => {
+  const [web] = changeGroups({ ...diff, changes: [{ type: "service", id: "s1", row: "s1:node" as RowId, name: "web", lifecycle: "update", comparison: "head", data: null, restarts: [], settings: [
+    { path: "web.cpuLimit", kind: "update", before: 0.5, after: 2, canRestore: true, row: null },
+    { path: "web.cpuLimit", kind: "add", before: null, after: 1, canRestore: true, row: null },
+  ] }] }, services);
+  expect(web?.rows.map((row) => [row.currentValue, row.newValue])).toEqual([
+    ["0.5 vCPUs", "2 vCPUs"],
+    ["", "1 vCPU"],
+  ]);
+});
+
 it("words a Volume's storage by its limit", () => {
   expect(shownValue({ kind: "provisioned", maximumBytes: 4_100_000_000 })).toBe("4.1 GB limit");
   expect(shownValue({ kind: "docker" })).toBe("Docker volume");

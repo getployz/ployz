@@ -13,7 +13,6 @@ import {
 } from "effect";
 
 const Uuid = Schema.String.check(Schema.isUUID());
-const DEFAULT_HOSTED_DNS_URL = new URL("https://dns.ployz.app/");
 const DEFAULT_POSTHOG_HOST = new URL("https://us.i.posthog.com");
 export type GithubOrigins = { readonly api: string; readonly web: string; readonly codeload: string; readonly oidc: string };
 const GITHUB_ORIGINS: GithubOrigins = {
@@ -94,9 +93,7 @@ const rawFields = {
   posthogHost: Config.url("POSTHOG_HOST").pipe(
     Config.withDefault(DEFAULT_POSTHOG_HOST),
   ),
-  hostedDnsUrl: Config.url("PLOYZ_HOSTED_DNS_URL").pipe(
-    Config.withDefault(DEFAULT_HOSTED_DNS_URL),
-  ),
+  hostedDnsUrl: Config.url("PLOYZ_HOSTED_DNS_URL"),
   hostedDnsMintKey: optional(
     Config.schema(NonEmptySecret, "PLOYZ_HOSTED_DNS_MINT_KEY"),
   ),
