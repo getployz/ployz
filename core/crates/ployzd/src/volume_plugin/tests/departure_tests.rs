@@ -49,6 +49,12 @@ async fn departure_demotes_each_root_to_a_slot() {
         capacity.pointer("/Ok/copies/data/role").unwrap(),
         &json!("slot")
     );
+    assert_eq!(
+        capacity.pointer("/Ok/copies/data/slot_role").unwrap(),
+        &json!("old_copy")
+    );
+    let copy = post(&socket, "/Volume.Copy.Inspect", json!({"name": "data"})).await;
+    assert_eq!(copy.pointer("/Ok/role"), Some(&json!("old_copy")), "{copy}");
     let listed = post(&socket, "/VolumeDriver.List", json!({})).await;
     assert_eq!(listed.pointer("/Volumes").unwrap(), &json!([]));
     server.abort();
