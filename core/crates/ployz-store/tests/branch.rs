@@ -875,6 +875,48 @@ fn setup_is_a_reserved_service_name_and_an_older_service_named_setup_must_be_ren
         .unwrap()
         .saved
         .unwrap();
+
+    // A Branch or a Sync never brings the name into another Environment.
+    let copied = store
+        .write(&who, &branch("fix-setup", "production", &["setup"]))
+        .unwrap_err();
+    assert_eq!(copied.message, reserved);
+    store
+        .write(
+            &who,
+            &ployz_store::CreateEnvironment {
+                id: EnvironmentId::parse(uuid(20)).unwrap(),
+                project: None,
+                name: EnvironmentName::parse("staging").unwrap(),
+            },
+        )
+        .unwrap();
+    let offered = store
+        .read(
+            &who,
+            &ployz_store::SyncQuery {
+                from: at("production"),
+                into: Some(at("staging")),
+            },
+        )
+        .unwrap();
+    let synced = store
+        .write(
+            &who,
+            &ployz_store::SyncChanges {
+                from: at("production"),
+                into: Some(at("staging")),
+                close_after: false,
+                version: offered.version,
+                picks: None,
+                skip: Vec::new(),
+                values: std::collections::BTreeMap::new(),
+                id: None,
+            },
+        )
+        .unwrap_err();
+    assert_eq!(synced.message, reserved);
+
     let rename_first = "A Service in production is named setup, and setup.SERVICE now means \
         a Branch's Setup Command; rename it first: \
         ployz service rename setup NAME --env production --project shop";

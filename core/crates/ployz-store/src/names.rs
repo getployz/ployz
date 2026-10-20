@@ -129,6 +129,25 @@ fn refuse_reserved(name: &str) -> Result<(), RpcError> {
     ))
 }
 
+/// Refuse a reserved Service name `target` gives a Service that doesn't have it
+/// as its name in `now`. History, a Branch and a sync can't bring one in, but a
+/// Service named so from before keeps its name.
+pub(crate) fn refuse_new_reserved(
+    now: &SavedEnvironmentIntent,
+    target: &SavedEnvironmentIntent,
+) -> Result<(), RpcError> {
+    for service in &target.services {
+        if !now
+            .services
+            .iter()
+            .any(|held| held.id == service.id && held.slug == service.slug)
+        {
+            refuse_reserved(&service.slug)?;
+        }
+    }
+    Ok(())
+}
+
 /// Refuse each name `target` gives a node that the node doesn't hold in
 /// `environment` now, when another node holds it.
 pub(crate) fn refuse_new_taken(
@@ -137,14 +156,10 @@ pub(crate) fn refuse_new_taken(
     target: &SavedEnvironmentIntent,
 ) -> Result<(), RpcError> {
     let now = &environment.working;
+    refuse_new_reserved(now, target)?;
     let mut claims: Vec<(&str, Name<'_>)> = Vec::new();
     for service in &target.services {
         let held = now.services.iter().find(|held| held.id == service.id);
-        // A reserved name stays only on a Service that has it as its name now, not
-        // one that has it as its Private DNS name.
-        if held.is_none_or(|held| held.slug != service.slug) {
-            refuse_reserved(&service.slug)?;
-        }
         for name in [service.slug.as_str(), service.config.private_dns.as_str()] {
             if held.is_none_or(|held| held.slug != name && held.config.private_dns.as_str() != name)
             {
