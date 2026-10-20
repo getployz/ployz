@@ -1,4 +1,4 @@
-import type { DrainReport, MachineRef, MoveFailure, ServiceDrain } from "@ployz/sdk";
+import type { DrainReport, MachineRef, Move, MoveFailure, ServiceDrain } from "@ployz/sdk";
 import { describe, expect, it } from "vitest";
 import type { LatestDrain, LatestDrains } from "#/modules/machines/server-drain";
 import {
@@ -34,14 +34,28 @@ const report = (
   remaining,
   // As the Engine derives it.
   complete: stopped === null && remaining.kind === "observed"
-    && services.every((entry) => ["moved", "nothing_to_move", "retired"].includes(entry.result)),
+    && services.every(serviceComplete),
 });
+// As `DrainOutcome::complete` derives it: a move or a leftover counts only once its old container is stopped.
+const serviceComplete = (entry: ServiceDrain) => {
+  switch (entry.result) {
+    case "moved":
+      return entry.moves.every((move) => move.old.kind === "stopped");
+    case "old_copies":
+      return entry.ends.every((end) => end.kind === "stopped");
+    case "nothing_to_move":
+    case "retired":
+      return true;
+    default:
+      return false;
+  }
+};
 const finished = (services: ServiceDrain[], stopped: DrainReport["stopped"] = null): LatestDrain => ({
   attemptId: "a1", state: "finished", endedAt: "2026-10-04T10:00:00.000Z", report: report(services, stopped),
 });
 const view = (latest: LatestDrains, requested: string | null = null) => drainView({ server, latest, serverNames, requested });
 
-const moved: ServiceDrain = { service: "shop/api", result: "moved", moves: [{ from: web2, to: web1 }, { from: web2, to: web3 }, { from: web2, to: web1 }] };
+const moved: ServiceDrain = { service: "shop/api", result: "moved", moves: [{ from: web2, to: web1, old: { kind: "stopped" } }, { from: web2, to: web3, old: { kind: "stopped" } }, { from: web2, to: web1, old: { kind: "stopped" } }] };
 const retired: ServiceDrain = { service: "monitoring/node-exporter", result: "retired" };
 const volume: ServiceDrain = { service: "shop/postgres", result: "stays", reason: { kind: "volume", server: web2 } };
 const rollout: ServiceDrain = { service: "shop/redis", result: "stays", reason: { kind: "mid_rollout" } };
@@ -53,6 +67,8 @@ describe("Drain result", () => {
     expect(drainSummary(report([moved, retired]), "web-2")).toBe("Everything moved off web-2");
     expect(drainSummary(report([]), "web-2")).toBe("Nothing was running here");
     expect(drainSummary(report([{ service: "shop/api", result: "nothing_to_move" }]), "web-2")).toBe("Nothing needed to move");
+    expect(drainSummary(report([{ service: "shop/cron", result: "old_copies", ends: [{ kind: "stopped" }] }]), "web-2")).toBe("Everything moved off web-2");
+    expect(drainSummary(report([{ service: "shop/cron", result: "old_copies", ends: [{ kind: "running", unconfirmed: { kind: "proxies", servers: [web1] } }] }]), "web-2")).toBe("1 stayed");
   });
 
   it("counts what it left alone and never says nothing ran here while something does", () => {
@@ -84,7 +100,7 @@ describe("Drain result", () => {
     const partial: ServiceDrain = {
       service: "shop/worker",
       result: "failed",
-      moves: [{ from: web2, to: web1 }],
+      moves: [{ from: web2, to: web1, old: { kind: "stopped" } }],
       failure: { stage: "not_serving", from: web2, to: web3, detail: "health check timed out", replacement_removed: true },
     };
     expect(drainRow(partial, web2.id)).toMatchObject({
@@ -95,20 +111,35 @@ describe("Drain result", () => {
     const failure = (failure: MoveFailure): ServiceDrain => ({ service: "shop/worker", result: "failed", moves: [], failure });
     expect(drainRow(failure({ stage: "not_serving", from: web2, to: web3, detail: "timeout", replacement_removed: false }), web2.id).reason)
       .toBe("Its new container on web-3 didn't become healthy, and may still be there. It still runs here.");
-    expect(drainRow(failure({ stage: "old_not_removed", from: web2, to: web1, detail: "timeout", old_stopped: false }), web2.id).reason)
-      .toBe("It now runs on web-1 too, but its container here couldn't be stopped.");
-    expect(drainRow(failure({ stage: "old_not_removed", from: web2, to: web1, detail: "timeout", old_stopped: true }), web2.id).reason)
-      .toBe("It now runs on web-1. Its container here stopped but couldn't be removed.");
     const refused: ServiceDrain = {
-      service: "shop/worker", result: "failed", moves: [{ from: web2, to: web1 }], failure: { stage: "refused", reason: { kind: "mid_rollout" } },
+      service: "shop/worker", result: "failed", moves: [{ from: web2, to: web1, old: { kind: "stopped" } }], failure: { stage: "refused", reason: { kind: "mid_rollout" } },
     };
     expect(drainRow(refused, web2.id).reason).toBe("Stopped moving it. A deploy is in progress. Deploy it first. Moved to web-1 before that.");
+  });
+
+  it("says what an old container left on the drained server means, and what a user-stopped one needs", () => {
+    const left = (old: Move["old"]): ServiceDrain => ({ service: "shop/web", result: "moved", moves: [{ from: web2, to: web1, old }] });
+    expect(drainRow(left({ kind: "running", unconfirmed: { kind: "proxies", servers: [web3] } }), web2.id)).toMatchObject({
+      tone: "moved",
+      label: "Moved to web-1",
+      reason: "Its old container here is still running: web-3 didn't confirm the switch. The next drain cleans it up.",
+    });
+    expect(drainRow(left({ kind: "in", unconfirmed: { kind: "cancelled" } }), web2.id).reason)
+      .toBe("Its old container here still serves too: the drain stopped before the switch was confirmed. The next drain cleans it up.");
+    expect(drainRow({ service: "shop/web", result: "old_copies", ends: [{ kind: "stopped" }] }, web2.id))
+      .toMatchObject({ tone: "stopped", label: "Stopped here", reason: "Removed what an earlier move left here" });
+    const held: ServiceDrain = { service: "shop/worker", result: "held" };
+    expect(drainRow(held, web2.id)).toMatchObject({ tone: "stayed", label: "Stayed", reason: "You stopped it. Start or remove it first." });
+    expect(drainRow({ service: "shop/web", result: "stays", reason: { kind: "last_in" } }, web2.id).reason)
+      .toBe("It's the last copy serving. Deploy it to another server first.");
+    expect(drainSummary(report([moved, held, { service: "shop/web", result: "old_copies", ends: [{ kind: "stopped" }] }]), "web-2"))
+      .toBe("1 moved, 1 stopped, 1 stayed");
   });
 
   it("says where a stopped Drain left a Service, and what a mid-move cancel may have left", () => {
     expect(drainRow({ service: "shop/worker", result: "interrupted", moves: [] }, web2.id))
       .toMatchObject({ tone: "neutral", label: "Interrupted", reason: "The drain stopped before moving it. It still runs here." });
-    expect(drainRow({ service: "shop/worker", result: "interrupted", moves: [{ from: web2, to: web1 }] }, web2.id).reason)
+    expect(drainRow({ service: "shop/worker", result: "interrupted", moves: [{ from: web2, to: web1, old: { kind: "stopped" } }] }, web2.id).reason)
       .toBe("The drain stopped while moving it. Moved to web-1 before that.");
     expect(drainSummary(report([moved, { service: "shop/worker", result: "interrupted", moves: [] }], { kind: "cancelled" }), "web-2"))
       .toBe("1 moved, 1 interrupted");
@@ -227,5 +258,18 @@ describe("Drain hints", () => {
 
   it("lists what a Drain under way still has to move, without what no Project owns", () => {
     expect(drainLeftRows([postgres, stray], strays).map((row) => [row.key, row.label])).toEqual([["shop/postgres", "Pending"]]);
+  });
+});
+
+describe("A leftover still running here", () => {
+  const leftover: ServiceDrain = { service: "shop/web", result: "old_copies", ends: [{ kind: "running", unconfirmed: { kind: "cancelled" } }] };
+
+  it("reads as still running, not stopped", () => {
+    expect(drainRow(leftover, web2.id)).toMatchObject({ tone: "stayed", label: "Still running here" });
+  });
+
+  it("counts as stayed, not stopped", () => {
+    const value = report([leftover], null, { kind: "observed", services: ["shop/web"], unchosen: [] });
+    expect(drainSummary(value, "web-2")).toBe("1 stayed");
   });
 });
