@@ -3391,3 +3391,47 @@ fn server_show_keeps_a_failed_drain_a_later_unfinished_drain_follows() {
     assert_eq!(running["latest"]["state"], "running");
     assert_eq!(running["failed_drain"]["reason"], never, "{running}");
 }
+
+// Catches a newer Drain that Cloud lost clearing an older failure, so neither
+// Drain shows.
+#[test]
+fn server_show_keeps_a_failed_drain_a_later_lost_drain_follows() {
+    let never = "The drain never started.";
+
+    let lost = shown_with_runs(&[
+        ("upgrade web-1", "done", None),
+        ("drain web-1", "unknown", None),
+        ("drain web-1", "failed", Some(never)),
+    ]);
+    assert_eq!(lost["failed_drain"]["run"], "drain web-1", "{lost}");
+    assert_eq!(lost["failed_drain"]["state"], "failed");
+    assert_eq!(lost["failed_drain"]["reason"], never);
+}
+
+// Catches a newer superseded Drain clearing an older failure, though nothing
+// has drained the Server since.
+#[test]
+fn server_show_keeps_a_failed_drain_a_later_superseded_drain_follows() {
+    let never = "The drain never started.";
+
+    let superseded = shown_with_runs(&[
+        ("drain web-1", "superseded", None),
+        ("drain web-1", "failed", Some(never)),
+    ]);
+    assert_eq!(superseded["latest"]["state"], "superseded");
+    assert_eq!(superseded["failed_drain"]["reason"], never, "{superseded}");
+}
+
+// Catches an older failure showing over a newer one.
+#[test]
+fn server_show_shows_the_newest_failed_drain() {
+    let never = "The drain never started.";
+    let refused = "The drain was refused.";
+
+    let replaced = shown_with_runs(&[
+        ("upgrade web-1", "done", None),
+        ("drain web-1", "failed", Some(refused)),
+        ("drain web-1", "failed", Some(never)),
+    ]);
+    assert_eq!(replaced["failed_drain"]["reason"], refused, "{replaced}");
+}
