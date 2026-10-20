@@ -9,6 +9,7 @@ import { StoreRefused, type StoreRefusal } from "#/modules/config-store/store.co
 import { uniqueName } from "#/modules/config-store/store-services";
 import { mountChange } from "#/modules/config-store/store-volumes";
 import type { Access } from "#/modules/organization/access.server";
+import { withClusterBudget } from "#/modules/runtime/organization-runtime.server";
 import { failedRestore, volumePlacement } from "#/modules/volume-placement/tables";
 import {
   lossByVolume, lossTime, lossVersion, oldCopies, storeVersion, observePlacement, placementChanges, placementLosses, type Placement, type PlacementRow, type Seed,
@@ -390,20 +391,24 @@ export const deleteOldCopy = Effect.fn("VolumePlacement.deleteOldCopy")(function
   if (!planned.ok) return { ok: false, refusal: { message: planned.refusal.message } } as const;
   const held = members.find((member) => member.machine.id === old.server.id);
   const point = held?.answered === true ? held.view.copy?.newest?.guid ?? null : null;
-  const requested = yield* requestUnclaimedRun({ userId, organizationId }, { ...run, args: { ...run.args, machine: old.server.id } }, { server: old.server.id, point });
+  const requested = yield* requestUnclaimedRun({ userId, organizationId }, { ...run, args: { ...run.args, machine: old.server.id } }, { server: old.server.id, point }, inspect);
   return requested.ok ? { ok: true, run: requested.run } as const : { ok: false, refusal: { message: requested.refusal.message } } as const;
 });
 
+/** The Cluster time an old copy's delete may spend asking its Server, with the Volume's placement locked. */
+export const OLD_COPY_CLUSTER_BUDGET_MS = 10_000;
+
 /**
- * Requests `run` unless a Deploy still runs the Volume's placement, or, for an old copy's delete, the placement now keeps
- * the copy or a restore reads its `point`. The row lock makes the check and the insert one step against writeAdmitted's
- * stamp and staging: a Deploy stamped after it finds the run going and waits for it. The Environment's lock, shared, does
- * the same against stageRestore.
+ * Requests `run` unless a Deploy still runs the Volume's placement, or, for an old copy's delete, the staged placement
+ * keeps the copy, a restore reads its `point`, or its Server no longer reports it as an old copy. The row lock makes the
+ * check and the insert one step against writeAdmitted's stamp and staging: a Deploy stamped after it finds the run going
+ * and waits for it. The Environment's lock, shared, does the same against stageRestore.
  */
 export const requestUnclaimedRun = Effect.fn("VolumePlacement.requestUnclaimedRun")(function* (
   caller: { readonly userId: string | null; readonly organizationId: string },
   input: { readonly volumeId: string; readonly environment: EnvironmentRef } & Extract<VolumeRunInput, { kind: "delete_mirror" }>,
   deletes: { readonly server: MachineId; readonly point: string | null } | null = null,
+  inspect: typeof inspectVolumeCopies = inspectVolumeCopies,
 ) {
   const database = yield* Database;
   const volume = yield* resolveVolume(caller.organizationId, input.environment, input.volumeId);
@@ -414,13 +419,22 @@ export const requestUnclaimedRun = Effect.fn("VolumePlacement.requestUnclaimedRu
       .where(and(eq(volumePlacement.organizationId, caller.organizationId), eq(volumePlacement.volumeId, input.volumeId))).for("update");
     const busy = yield* deployClaim(caller.organizationId, row);
     if (busy !== null) return { ok: false, refusal: busy } as const;
-    const kept = row === undefined ? [] : [...row.mirrors ?? [], ...row.staged === null ? [] : [row.staged.primary, ...row.staged.mirrors]];
+    const kept = row?.staged == null ? [] : [row.staged.primary, ...row.staged.mirrors];
     if (deletes !== null && kept.includes(deletes.server)) return { ok: false, refusal: NOT_OLD } as const;
     const [reading] = deletes?.point == null ? [] : yield* drizzle.select({ volumeId: volumePlacement.volumeId }).from(volumePlacement).where(and(
       eq(volumePlacement.organizationId, caller.organizationId),
       sql`${volumePlacement.staged} -> 'seed' ->> 'sourceVolumeId' = ${input.volumeId}`,
       sql`${volumePlacement.staged} -> 'seed' -> 'point' ->> 'guid' = ${deletes.point}`));
     if (reading !== undefined) return { ok: false, refusal: READ } as const;
+    if (deletes !== null) {
+      // Asked under the lock, the Server says whether the copy is still old: the row's mirrors may be stale, and a Deploy
+      // that made it a mirror since the caller looked has ended, since none holds the row.
+      const members = yield* inspect(caller.organizationId, input.environment, input.volumeId).pipe(withClusterBudget(OLD_COPY_CLUSTER_BUDGET_MS), Effect.option);
+      const held = Option.isNone(members) ? undefined : members.value.find((member) => member.machine.id === deletes.server);
+      if (Option.isNone(members) || held?.answered !== true) return { ok: false, refusal: UNANSWERED } as const;
+      const old = oldCopies(observePlacement(members.value), row === undefined ? null : view(row)).some((copy) => copy.server.id === deletes.server);
+      if (!old) return { ok: false, refusal: NOT_OLD } as const;
+    }
     return yield* admitRun(caller, input, volume, randomUUID());
   }));
   return "owed" in admitted && !admitted.ok ? yield* nameRefusal(admitted) : admitted;

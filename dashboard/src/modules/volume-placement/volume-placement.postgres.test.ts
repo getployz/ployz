@@ -1,14 +1,15 @@
 import { type ConfigCommand, type ConfigCommitted, type ConfigStore, type MachineId, RpcError } from "@ployz/sdk";
-import { ConfigProvider, Effect, Layer } from "effect";
+import { ConfigProvider, Effect, Fiber, Layer } from "effect";
+import { TestClock } from "effect/testing";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
 import { StoreRefused } from "#/modules/config-store/store.contract";
 import { CloudStore } from "#/modules/config-store/store-sdk.server";
 import { GithubApi } from "#/modules/github/github-observation.api";
 import { InngestClient } from "#/modules/inngest/client";
-import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
+import { ClusterOutOfTime, clusterRead, OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import {
-  deleteOldCopy, discardPlacement, listPlacements, requestUnclaimedRun, restoreSettled, stagePlacement, stampPlacements, writeAdmitted,
+  deleteOldCopy, discardPlacement, listPlacements, OLD_COPY_CLUSTER_BUDGET_MS, requestUnclaimedRun, restoreSettled, stagePlacement, stampPlacements, writeAdmitted,
 } from "#/modules/volume-placement/volume-placement.server";
 import type { Member } from "#/modules/volume-run/volume-run";
 import { member } from "#/modules/volume-run/volume-run.test-fixture";
@@ -26,6 +27,11 @@ const organizationId = "00000000-0000-4000-8000-000000000f01";
 const volumeId = "vol1";
 const environment = { project: "shop", environment: "production" };
 const web = (name: string) => name.padEnd(32, "0") as MachineId;
+
+/** Polls until `ready`, on the real clock, so a test's TestClock stays where the test put it. */
+const until = (ready: () => Promise<boolean>) => Effect.promise(async () => {
+  while (!(await ready())) await new Promise((resolve) => setTimeout(resolve, 10));
+});
 
 /** Polls until `ready`, or until `settled` ends first. */
 const waitFor = async (ready: () => Promise<boolean>, settled: Promise<unknown>) => {
@@ -177,9 +183,86 @@ describe("volume placement", () => {
     expect((await harness.pool.query("select count(*)::int as runs from volume_run")).rows).toEqual([{ runs: 0 }]);
   });
 
+  describe("an old copy its Server reports", () => {
+    const deleting = { volumeId, environment, kind: "delete_mirror", args: { slot: "web-3", confirmed_name: null } } as const;
+    const request = (inspect: () => Effect.Effect<Member[], Error>) =>
+      requestUnclaimedRun({ userId: null, organizationId }, deleting, { server: web("web-3"), point: null }, inspect);
+    const recorded = (mirrors: string[]) => harness.pool.query(
+      "insert into volume_placement (volume_id, organization_id, environment_id, mirrors, staged) values ($1, $2, 'env-1', $3, null) on conflict (volume_id) do update set mirrors = excluded.mirrors",
+      [volumeId, organizationId, JSON.stringify(mirrors.map(web))],
+    );
+    const runs = async () => (await harness.pool.query("select count(*)::int as runs from volume_run")).rows;
+    let copies: Member[];
+    beforeEach(() => { copies = [member("web-1", "writer"), member("web-2", "mirror"), member("web-3", "old")]; });
+
+    it("deletes it though the dashboard still records it as a mirror", async () => {
+      await recorded(["web-2", "web-3"]);
+      expect(await run(request(() => Effect.succeed(copies)))).toMatchObject({ ok: true });
+      expect(await runs()).toEqual([{ runs: 1 }]);
+    });
+
+    it.each([["the dashboard and its Server record", ["web-2", "web-3"]], ["its Server records", ["web-2"]]])(
+      "refuses deleting it once a Deploy makes it a mirror between the check and the run, as %s",
+      async (_, mirrors) => {
+        await recorded(["web-2"]);
+        between = { query: "volumes", run: async () => {
+          await recorded(mirrors);
+          copies = [member("web-1", "writer"), member("web-2", "mirror"), member("web-3", "mirror")];
+        } };
+        expect(await run(request(() => Effect.succeed(copies)))).toEqual({ ok: false, refusal: { message: "Not an old copy" } });
+        expect(between).toBeNull();
+        expect(await runs()).toEqual([{ runs: 0 }]);
+      },
+    );
+
+    it.each([
+      ["its Server doesn't answer", () => Effect.succeed([member("web-1", "writer"), member("web-3", "unanswered")])],
+      ["the Cluster can't be reached", () => Effect.fail(new Error("The cluster is unreachable."))],
+      ["the Cluster time runs out", () => Effect.fail(new ClusterOutOfTime())],
+    ])("refuses deleting it when %s", async (_, inspect) => {
+      await recorded(["web-2"]);
+      expect(await run(request(inspect))).toEqual({ ok: false, refusal: { code: "unavailable", message: "Your servers aren't answering. Try again once they are.", details: null } });
+      expect(await runs()).toEqual([{ runs: 0 }]);
+    });
+
+    it("refuses deleting it when its Server never answers, once the Cluster time is spent", async () => {
+      await recorded(["web-2"]);
+      const answer = await run(Effect.gen(function* () {
+        let asked = false;
+        const fiber = yield* Effect.forkDetach(request(() => Effect.sync(() => { asked = true; }).pipe(Effect.andThen(clusterRead(Effect.never)))));
+        yield* until(async () => asked);
+        yield* TestClock.adjust(OLD_COPY_CLUSTER_BUDGET_MS);
+        return yield* Fiber.join(fiber);
+      }).pipe(Effect.provide(TestClock.layer())));
+      expect(answer).toMatchObject({ ok: false, refusal: { code: "unavailable" } });
+      expect(await runs()).toEqual([{ runs: 0 }]);
+    });
+
+    it("spends no Cluster time waiting for the placement's lock", async () => {
+      await recorded(["web-2"]);
+      const holder = await harness.pool.connect();
+      try {
+        await holder.query("begin");
+        await holder.query("select 1 from volume_placement for update");
+        const answer = await run(Effect.gen(function* () {
+          const fiber = yield* Effect.forkDetach(request(() => clusterRead(Effect.succeed(copies))));
+          yield* until(async () => (await harness.pool.query("select 1 from pg_stat_activity where wait_event_type = 'Lock'")).rowCount === 1);
+          yield* TestClock.adjust(2 * OLD_COPY_CLUSTER_BUDGET_MS);
+          yield* Effect.promise(() => holder.query("commit"));
+          return yield* Fiber.join(fiber);
+        }).pipe(Effect.provide(TestClock.layer())));
+        expect(answer).toMatchObject({ ok: true });
+      } finally {
+        holder.release();
+      }
+      expect(await runs()).toEqual([{ runs: 1 }]);
+    }, 30_000);
+  });
+
   describe("an old copy a staged restore reads", () => {
     const deleting = () => run(requestUnclaimedRun({ userId: null, organizationId },
-      { volumeId, environment, kind: "delete_mirror", args: { slot: "web-3", confirmed_name: null } }, { server: web("web-3"), point: "10" }));
+      { volumeId, environment, kind: "delete_mirror", args: { slot: "web-3", confirmed_name: null } }, { server: web("web-3"), point: "10" },
+      () => Effect.succeed([member("web-1", "writer"), member("web-2", "mirror"), member("web-3", "old")])));
     const restoring = (guid: string, deploymentId: string | null = null) => harness.pool.query(
       "insert into volume_placement (volume_id, organization_id, environment_id, mirrors, staged, deployment_id) values ('vol3', $1, 'env-1', '[]', $2, $3)",
       [organizationId, JSON.stringify({ primary: web("web-1"), mirrors: [], deletes: [], seed: {
