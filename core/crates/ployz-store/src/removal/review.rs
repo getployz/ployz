@@ -197,7 +197,8 @@ pub(crate) fn review(
 }
 
 /// Each of `removed` with the Docker Volumes the Servers hold of it, and the
-/// Servers that didn't answer. Refuses `unavailable` when nobody looked for one.
+/// Servers that didn't answer. Refuses `unavailable` when nobody looked for one, or
+/// the look couldn't ask the Servers.
 pub(crate) fn held(
     removed: Vec<RemovedVolume>,
     observed: Option<&VolumeObservation>,
@@ -206,15 +207,12 @@ pub(crate) fn held(
         return Ok((Vec::new(), Vec::new()));
     }
     let Some(observed) = observed.filter(|observed| {
-        removed
-            .iter()
-            .all(|volume| observed.sought.contains(&volume.docker_volume))
+        observed.failure.is_none()
+            && removed
+                .iter()
+                .all(|volume| observed.sought.contains(&volume.docker_volume))
     }) else {
-        return Err(error::unobserved(
-            "This removes deployed Volumes, and the Servers weren't checked for their data, \
-             so it refuses. Try again once the Servers can be reached",
-            json!({ "volumes": removed.iter().map(|volume| &volume.name).collect::<Vec<_>>() }),
-        ));
+        return Err(unchecked(&removed, observed));
     };
     let losses = removed
         .into_iter()
@@ -230,6 +228,44 @@ pub(crate) fn held(
         })
         .collect();
     Ok((losses, observed.unanswered.clone()))
+}
+
+/// The refusal for `removed` when the Servers weren't checked for their data: it
+/// names the Servers `observed` couldn't ask, and why, when it tried.
+fn unchecked(removed: &[RemovedVolume], observed: Option<&VolumeObservation>) -> RpcError {
+    let volumes: Vec<&VolumeName> = removed.iter().map(|volume| &volume.name).collect();
+    let Some((reason, servers)) = observed
+        .and_then(|observed| Some((observed.failure.as_deref()?, observed.unanswered.as_slice())))
+    else {
+        return error::unobserved(
+            "This removes deployed Volumes, and the Servers weren't checked for their data, \
+             so it refuses. Try again once the Servers can be reached",
+            json!({ "volumes": volumes }),
+        );
+    };
+    let (who, them) = match servers {
+        [] => ("the Servers".to_owned(), "they"),
+        [server] => (format!("Server {server}"), "it"),
+        servers => (
+            format!(
+                "Servers {}",
+                servers
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            "they",
+        ),
+    };
+    error::unobserved(
+        format!(
+            "This removes deployed Volumes, and Ployz couldn't check {who} for their data, so it \
+             refuses: {}. Try again once {them} can be reached",
+            reason.trim_end_matches('.')
+        ),
+        json!({ "volumes": volumes, "unanswered": servers, "reason": reason }),
+    )
 }
 
 /// Whether `consent` accepted deleting `loss`: the same Volume, and no Docker

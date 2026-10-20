@@ -676,6 +676,7 @@ impl Client {
             sought,
             held: held.into_iter().collect(),
             unanswered: unanswered.into_iter().collect(),
+            failure: None,
         })
     }
 

@@ -225,4 +225,22 @@ pub struct VolumeObservation {
     pub held: Vec<DockerVolumeId>,
     /// Servers that did not answer, or were not asked: what they hold is unknown.
     pub unanswered: Vec<MachineId>,
+    /// Why the observer couldn't ask the Servers at all, such as a connection that
+    /// failed: then nothing was checked and `unanswered` names each Server it meant to ask.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub failure: Option<String>,
+}
+
+impl VolumeObservation {
+    /// The observation of a check of `sought` that couldn't ask `servers`, for `reason`.
+    #[must_use]
+    pub fn failed(sought: Vec<DockerVolumeName>, servers: Vec<MachineId>, reason: String) -> Self {
+        Self {
+            sought,
+            held: Vec::new(),
+            unanswered: servers,
+            failure: Some(reason),
+        }
+    }
 }
