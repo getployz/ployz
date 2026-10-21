@@ -56,7 +56,7 @@ export function DashboardShell({
               // A detail page declares its crumb: `Servers / hel-1 ⌄`.
               ? <Crumbs items={[
                   <Link key="section" {...getDashboardDestination(scope, section)}
-                    className="truncate rounded-sm font-semibold text-foreground outline-none hover:underline focus-visible:ring-3 focus-visible:ring-ring/50">
+                    className="truncate rounded-sm font-semibold text-foreground outline-none hover:underline focus-visible:ring-3 focus-visible:ring-ring">
                     {placeLabel}
                   </Link>,
                   <Crumb key="crumb" />,

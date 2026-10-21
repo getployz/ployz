@@ -67,7 +67,7 @@ export function ServerRow({ organizationSlug, server, upgrade, stale }: {
     <Link
       to="/cloud/$organizationSlug/~/servers/$serverId"
       params={{ organizationSlug, serverId: server.machine.id }}
-      className={cn(SERVER_ROW_GRID, "outline-none transition-colors hover:bg-muted focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:ring-inset")}
+      className={cn(SERVER_ROW_GRID, "outline-none transition-colors hover:bg-muted focus-visible:ring-3 focus-visible:ring-ring focus-visible:ring-inset")}
     >
       <span aria-hidden="true" className={cn("size-2 rounded-full", stale ? "bg-muted-foreground" : dot)} />
       <span className="truncate font-medium">{server.name}</span>

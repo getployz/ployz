@@ -51,7 +51,7 @@
   --live-border: color-mix(in srgb, var(--muted-foreground) 60%, transparent);
   --border: #dedede;
   --input: #dedede;
-  --ring: #8f8f8f;
+  --ring: #737373;
   --chart-1: hsl(220 80% 55%);
   --chart-2: hsl(180 50% 44%);
   --chart-3: hsl(152 38% 42%);
@@ -116,7 +116,7 @@
   --live-border: color-mix(in srgb, var(--muted-foreground) 60%, transparent);
   --border: #333333;
   --input: #333333;
-  --ring: #737373;
+  --ring: #8f8f8f;
   --chart-1: hsl(220 80% 55%);
   --chart-2: hsl(180 50% 44%);
   --chart-3: hsl(152 38% 42%);
@@ -494,7 +494,7 @@
 
 @layer base {
   * {
-    @apply border-border outline-ring/50;
+    @apply border-border outline-ring;
   }
 
   html,
