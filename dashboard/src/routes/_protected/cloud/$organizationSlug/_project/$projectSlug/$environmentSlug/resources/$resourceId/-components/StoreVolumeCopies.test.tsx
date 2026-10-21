@@ -261,6 +261,14 @@ describe("VolumeCopiesPanel", () => {
     expect(rows("Live")).toEqual([`${id("web-1")}PrimaryWaiting for its report`]);
   });
 
+  it("keeps a silent mirror staged as primary under Elsewhere while the writer's report is on its way, staged, with nothing to stage again", () => {
+    const unlisted: Member = { machine: { id: id("web-1"), name: id("web-1") }, answered: false, incomplete: true };
+    panel([member("web-2", "unanswered"), unlisted], row(["web-2"], { primary: "web-2" }), { open: "web-2" });
+    expect(screen.getByText("web-2 is not answering.")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Make primary" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Remove mirror" })).toBeNull();
+  });
+
   it("waits for a Server's report when the frame lists it only by id, with no Forget link and no Use mirror", () => {
     const unlisted: Member = { machine: { id: id("web-1"), name: id("web-1") }, answered: false, incomplete: true };
     panel([unlisted, mirrorAsOf("web-2", fiveAgo())], row(["web-2"]));
