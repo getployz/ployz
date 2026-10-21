@@ -179,7 +179,7 @@ function Plan({ plan, current, className }: { plan: PlanDetails; current: boolea
         {plan.soon ? <Badge variant="secondary">Coming soon</Badge> : null}
       </div>
       <div className="flex flex-col gap-1">
-        <p className="text-2xl font-semibold">
+        <p className="text-2xl font-medium">
           {plan.price}
           <span className="text-muted-foreground text-sm font-normal"> {plan.per}</span>
         </p>
