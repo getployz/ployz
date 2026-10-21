@@ -6,7 +6,7 @@
 # 8 s after boot so the cut lands on its own fresh Corrosion commits, then brings it back.
 # 60 s later it fails when any Machine holds a different clock or value for one of <machine>'s
 # container rows, or when any proxy routes an address on <machine> that is not an In copy there.
-set -euo pipefail
+set -Eeuo pipefail
 trap 'echo "could not run: line $LINENO"; exit 2' ERR
 cd "$(dirname "$0")/../.."
 run=$1
