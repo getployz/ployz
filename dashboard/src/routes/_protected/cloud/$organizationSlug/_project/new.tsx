@@ -19,7 +19,6 @@ function RouteComponent() {
 
   return (
     <div className="relative flex h-full items-center justify-center overflow-hidden p-4">
-      <h1 className="sr-only">New project</h1>
       <div className="pointer-events-none absolute inset-0" aria-hidden="true">
         <ReactFlowProvider>
           <ReactFlow
@@ -35,7 +34,8 @@ function RouteComponent() {
           </ReactFlow>
         </ReactFlowProvider>
       </div>
-      <div className="relative w-full max-w-md">
+      <div className="relative flex w-full max-w-md flex-col gap-4">
+        <h1 className="text-2xl font-semibold">New project</h1>
         <ServiceCreateCommand organizationSlug={organizationSlug} />
       </div>
     </div>
