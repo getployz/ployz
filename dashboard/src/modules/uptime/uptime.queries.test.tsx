@@ -59,8 +59,9 @@ it.each([[true, "api.acme.dev"], [false, null]])("reads a Service's open inciden
   const wrapper = ({ children }: { children: ReactNode }) => <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>;
   const { result } = renderHook(() => useUnreachableHost({ organizationSlug: "acme", environmentId: "env" }, "api"), { wrapper });
 
-  await waitFor(() => expect(result.current).toBe(host));
-  await new Promise((resolve) => setTimeout(resolve, 20));
-  expect(result.current).toBe(host);
+  await waitFor(() => {
+    expect(result.current).toBe(host);
+    expect(queryClient.isFetching()).toBe(0);
+  });
   expect(read).toHaveBeenCalledTimes(uptimeEnabled ? 1 : 0);
 });

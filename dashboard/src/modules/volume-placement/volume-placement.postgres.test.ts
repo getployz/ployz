@@ -1,7 +1,7 @@
 import { type ConfigCommand, type ConfigCommitted, type ConfigStore, type MachineId, RpcError } from "@ployz/sdk";
 import { ConfigProvider, Effect, Fiber, Layer } from "effect";
 import { TestClock } from "effect/testing";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
 import { StoreRefused } from "#/modules/config-store/store.contract";
 import { CloudStore } from "#/modules/config-store/store-sdk.server";
@@ -30,16 +30,16 @@ const volumeId = "vol1";
 const environment = { project: "shop", environment: "production" };
 const web = (name: string) => name.padEnd(32, "0") as MachineId;
 
+const polling = { timeout: 20_000, interval: 10 };
+
 /** Polls until `ready`, on the real clock, so a test's TestClock stays where the test put it. */
-const until = (ready: () => Promise<boolean>) => Effect.promise(async () => {
-  while (!(await ready())) await new Promise((resolve) => setTimeout(resolve, 10));
-});
+const until = (ready: () => Promise<boolean>) => Effect.promise(() => expect.poll(ready, polling).toBe(true));
 
 /** Polls until `ready`, or until `settled` ends first. */
 const waitFor = async (ready: () => Promise<boolean>, settled: Promise<unknown>) => {
   let done = false;
   void settled.finally(() => { done = true; });
-  while (!done && !(await ready())) await new Promise((resolve) => setTimeout(resolve, 10));
+  await vi.waitFor(async () => { if (!done) expect(await ready()).toBe(true); }, polling);
 };
 
 describe("volume placement", () => {

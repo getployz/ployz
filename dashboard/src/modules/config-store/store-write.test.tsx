@@ -15,7 +15,7 @@ import {
 } from "./store-pending";
 import { showRefusalInline, useStoreWriter, type StoreEdit } from "./store-write";
 
-afterEach(() => { cleanup(); vi.restoreAllMocks(); });
+afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.useRealTimers(); });
 
 const ref = { project: "shop", environment: "production" };
 
@@ -193,12 +193,14 @@ it("shows pending sets as their values and unsets as the row's default, in order
 
 it("runs a Sync after pending edits in every Environment", async () => {
   const test = setup(view(2, 1));
+  vi.useFakeTimers();
   const edit = deferred<StoreResult<ConfigWritten>>();
   test.write.mockImplementationOnce(() => edit.promise).mockResolvedValueOnce({ ok: true, value: { written: "synced" } as never });
   act(() => { void test.edit({ environment: { project: "shop", environment: "staging" }, changes: replicas(3) }).isPersisted.promise.catch(() => {}); });
   const synced = test.writer.commit({ command: "sync", from: ref, into: null, version: "1", picks: null });
-  await new Promise((resolve) => setTimeout(resolve, 10));
+  await vi.advanceTimersByTimeAsync(10);
   expect(test.write).toHaveBeenCalledTimes(1);
+  vi.useRealTimers();
   edit.resolve(edited(3));
   await synced.isPersisted.promise;
   expect(test.write.mock.calls[1]?.[0]).toMatchObject({ data: { command: { command: "sync" } } });
@@ -206,6 +208,7 @@ it("runs a Sync after pending edits in every Environment", async () => {
 
 it("runs a Sync after a pending Batch that edits, as after an edit", async () => {
   const test = setup(view(2, 1));
+  vi.useFakeTimers();
   const batch = deferred<StoreResult<ConfigWritten>>();
   test.write.mockImplementationOnce(() => batch.promise).mockResolvedValueOnce({ ok: true, value: { written: "synced" } as never });
   const staging = { project: "shop", environment: "staging" };
@@ -214,8 +217,9 @@ it("runs a Sync after a pending Batch that edits, as after an edit", async () =>
       .isPersisted.promise.catch(() => {});
   });
   const synced = test.writer.commit({ command: "sync", from: ref, into: null, version: "1", picks: null });
-  await new Promise((resolve) => setTimeout(resolve, 10));
+  await vi.advanceTimersByTimeAsync(10);
   expect(test.write).toHaveBeenCalledTimes(1);
+  vi.useRealTimers();
   batch.resolve({ ok: true, value: { written: "batch", results: [] } as never });
   await synced.isPersisted.promise;
   expect(test.write.mock.calls[1]?.[0]).toMatchObject({ data: { command: { command: "sync" } } });

@@ -146,6 +146,7 @@ it.effect("a release whose members read takes 35 seconds and whose next connect 
  */
 const lacking = Effect.gen(function* () {
   const queries = yield* Queue.unbounded<() => void>();
+  const inspects = yield* Queue.unbounded<void>();
   let interrupted = 0;
   let finished = 0;
   const releaseChannel = Effect.callback<void>((resume) => { Queue.offerUnsafe(queries, () => resume(Effect.void)); }).pipe(
@@ -164,6 +165,7 @@ const lacking = Effect.gen(function* () {
       connect: async () => asTestDouble<Client>()({
         close: async () => {},
         volumeSwitch: async () => {
+          Queue.offerUnsafe(inspects, undefined);
           await inspected;
           return { copy: COPIES.mirror };
         },
@@ -178,7 +180,7 @@ const lacking = Effect.gen(function* () {
       drizzle: asTestDouble<DatabaseService["drizzle"]>()({ select: () => ({ from: () => ({ where: () => releaseChannel }) }) }),
     }))),
   );
-  return { layer, queries, interrupted: () => interrupted, finished: () => finished };
+  return { layer, queries, inspects, interrupted: () => interrupted, finished: () => finished };
 });
 
 it.effect("a Server's release channel query that takes 12 seconds finishes, and the member names the release it needs", () =>
@@ -206,7 +208,7 @@ it.effect("a Server whose inspect never answers is a member that didn't answer a
       Effect.provide(cluster.layer(new Promise<void>(() => {}))),
       Effect.forkChild,
     );
-    yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 0)));
+    yield* Queue.take(cluster.inspects);
     yield* TestClock.adjust("10 seconds");
     assert.deepStrictEqual(yield* Fiber.join(observing), [{ machine: { id: machine.id, name: machine.name }, answered: false }]);
   }),

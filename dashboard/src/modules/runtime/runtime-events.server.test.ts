@@ -128,7 +128,6 @@ describe("createRuntimeEventsResponse", () => {
     const cancel = reader?.cancel();
     releaseClose();
     await cancel;
-    await new Promise((resolve) => setTimeout(resolve, 0));
 
     expect(close).toHaveBeenCalledOnce();
   });
@@ -139,9 +138,11 @@ describe("createRuntimeEventsResponse", () => {
       finishFrames = resolve;
     });
     const close = vi.fn(async () => undefined);
+    let framesEnded = false;
     async function* frames() {
       await framesBlocked;
       yield* [];
+      framesEnded = true;
     }
     const response = createRuntimeEventsResponse({
       request: new Request("http://localhost/api/runtime/events"),
@@ -154,7 +155,7 @@ describe("createRuntimeEventsResponse", () => {
     await reader?.read();
     await reader?.cancel();
     finishFrames();
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await vi.waitFor(() => expect(framesEnded).toBe(true));
 
     expect(close).toHaveBeenCalledOnce();
   });
@@ -170,9 +171,11 @@ describe("createRuntimeEventsResponse", () => {
       releaseClose = resolve;
     });
     const close = vi.fn(() => closeBlocked);
+    let framesEnded = false;
     async function* frames() {
       await framesBlocked;
       yield* [];
+      framesEnded = true;
     }
     const response = createRuntimeEventsResponse({
       request: new Request("http://localhost/api/runtime/events", {
@@ -188,10 +191,10 @@ describe("createRuntimeEventsResponse", () => {
     abortController.abort();
     await vi.waitFor(() => expect(close).toHaveBeenCalledOnce());
     finishFrames();
+    await vi.waitFor(() => expect(framesEnded).toBe(true));
     const cancel = reader?.cancel();
     releaseClose();
     await cancel;
-    await new Promise((resolve) => setTimeout(resolve, 0));
 
     expect(close).toHaveBeenCalledOnce();
   });

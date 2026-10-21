@@ -2,8 +2,12 @@ import { beforeAll, describe, expect, it, vi } from "vitest";
 import * as run from "#/server/run.server";
 
 // No route does any work here: probing a handler only shows whether it refuses its own method outright.
+let working = () => {};
 beforeAll(() => {
-  vi.spyOn(run, "runAppEffect").mockReturnValue(new Promise(() => {}));
+  vi.spyOn(run, "runAppEffect").mockImplementation(() => {
+    working();
+    return new Promise(() => {});
+  });
 });
 
 type Handler = (ctx: { request: Request; params: Record<string, string> }) => Response | Promise<Response>;
@@ -16,11 +20,14 @@ const request = (method: string) => new Request("http://localhost/api", { method
 
 /** Whether `handler` answers `method` itself, rather than refusing it with a 405. */
 async function serves(handler: Handler, method: string) {
+  const worked = new Promise<undefined>((resolve) => {
+    working = () => resolve(undefined);
+  });
   const answer = await Promise.race([
     Promise.resolve()
       .then(() => handler({ request: request(method), params: {} }))
       .catch(() => undefined),
-    new Promise<undefined>((resolve) => setTimeout(resolve, 20)),
+    worked,
   ]);
   return !(answer instanceof Response && answer.status === 405);
 }

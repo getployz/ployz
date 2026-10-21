@@ -1,6 +1,6 @@
 import { it } from "@effect/vitest";
 import { asc, sql } from "drizzle-orm";
-import { Effect, Fiber, Layer } from "effect";
+import { Deferred, Effect, Fiber, Layer } from "effect";
 import { Inngest } from "inngest";
 import { expect, vi } from "vitest";
 import { cloudStore } from "#/modules/config-store/store-sdk.server";
@@ -61,17 +61,25 @@ const setup = Effect.fn(function* () {
     .map((event) => ({ id: event.id, data: event.data as MailSendRequestedEventData }));
   const claim = (now: string) => provide(claimCrashMail(ORGANIZATION, WEB, new Date(now), NAMES));
   // A cancelled run's claim that holds the rows, then rolls back and is never retried.
-  const failingClaim = provide(Effect.gen(function* () {
+  const failingClaim = (locked: Deferred.Deferred<void>, release: Deferred.Deferred<void>) => provide(Effect.gen(function* () {
     const database = yield* Database;
     yield* database.transaction(Effect.gen(function* () {
       const { drizzle } = yield* Database;
       yield* drizzle.execute(sql`select id from crash_event for update`);
-      yield* Effect.sleep("500 millis");
+      yield* Deferred.succeed(locked, undefined);
+      yield* Deferred.await(release);
       return yield* Effect.fail("rolled back");
     }));
   }).pipe(Effect.ignore));
+  const lockWaiter = Effect.promise(() => vi.waitFor(async () => {
+    const waiting = await Effect.runPromise(provide(Effect.gen(function* () {
+      const { drizzle } = yield* Database;
+      return yield* drizzle.execute(sql`select 1 from pg_stat_activity where datname = current_database() and wait_event_type = 'Lock'`, "objects");
+    }).pipe(Effect.orDie)));
+    expect(waiting.length).toBeGreaterThan(0);
+  }));
   const prune = (now: string) => provide(pruneCrashEvents(new Date(now)));
-  return { crash, unmailed, remaining, mails, claim, failingClaim, prune };
+  return { crash, unmailed, remaining, mails, claim, failingClaim, lockWaiter, prune };
 });
 
 it.live("five crashes queue one mail that counts them, naming the service, its Server and the last exit", () => Effect.gen(function* () {
@@ -109,12 +117,17 @@ it.live("a crash within the hour after a mail waits for the hour to pass, then m
 }));
 
 it.live("a claim that waits on a cancelled run's rolled-back claim still mails its crashes", () => Effect.gen(function* () {
-  const { crash, unmailed, mails, claim, failingClaim } = yield* setup();
+  const { crash, unmailed, mails, claim, failingClaim, lockWaiter } = yield* setup();
   yield* crash("2026-10-15T03:01:00Z");
-  const cancelled = yield* Effect.forkChild(failingClaim);
-  yield* Effect.sleep("100 millis");
+  const locked = yield* Deferred.make<void>();
+  const release = yield* Deferred.make<void>();
+  const cancelled = yield* Effect.forkChild(failingClaim(locked, release));
+  yield* Deferred.await(locked);
+  const claimed = yield* Effect.forkChild(claim("2026-10-15T03:02:00Z"));
+  yield* lockWaiter;
+  yield* Deferred.succeed(release, undefined);
 
-  expect(yield* claim("2026-10-15T03:02:00Z")).toEqual({ kind: "mailed", count: 1 });
+  expect(yield* Fiber.join(claimed)).toEqual({ kind: "mailed", count: 1 });
   yield* Fiber.join(cancelled);
   expect(yield* unmailed()).toEqual([]);
   expect(mails()).toHaveLength(1);

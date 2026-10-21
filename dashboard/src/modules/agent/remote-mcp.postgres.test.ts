@@ -268,8 +268,16 @@ const consentCall = (shop: Shop, path: string, body: { readonly id: string; read
 
 const disconnect = (shop: Shop) => Effect.flatMap(onlyConsent(shop), (id) => consentCall(shop, "/api/auth/oauth2/delete-consent", { id }));
 
-/** Codes, refresh tokens and consents are stamped in whole seconds, so a reconnect that must count as later waits one out. */
-const aSecondLater = Effect.sleep("1100 millis");
+/**
+ * Codes, refresh tokens and consents are compared in whole seconds, so a reconnect that must count as later moves
+ * everything stamped so far back, by a minute so it also clears skew between the app's clock and the database's.
+ */
+const aMinuteLater = (shop: Shop) => shop.provided(Effect.gen(function* () {
+  const { drizzle } = yield* Database;
+  for (const table of [verification, oauthRefreshToken, oauthConsent, member]) {
+    yield* drizzle.update(table).set({ createdAt: sql`${table.createdAt} - interval '1 minute'` });
+  }
+}));
 
 /** A refresh token row as better-auth stores one, made outside the token endpoint. */
 const plantRefreshToken = Effect.fn(function* (shop: Shop, clientId: string) {
@@ -512,7 +520,7 @@ it.live("leaving Shop ends the grant, and neither rejoining nor connecting again
 
     yield* shop.provided(removeMembership(ORGANIZATION, shop.boId, shop.boId));
     expect((yield* raw(shop, old.access_token)).status).toBe(401);
-    yield* aSecondLater;
+    yield* aMinuteLater(shop);
     yield* shop.provided(Effect.gen(function* () {
       const { drizzle } = yield* Database;
       yield* drizzle.insert(member).values({ userId: shop.boId, organizationId: ORGANIZATION, role: "owner" });
@@ -537,7 +545,7 @@ it.live("a membership that ends outside removeMembership leaves a consent that A
       const { drizzle } = yield* Database;
       yield* drizzle.delete(member).where(sql`${member.userId} = ${shop.boId}`);
     }));
-    yield* aSecondLater;
+    yield* aMinuteLater(shop);
     yield* shop.provided(Effect.gen(function* () {
       const { drizzle } = yield* Database;
       yield* drizzle.insert(member).values({ userId: shop.boId, organizationId: ORGANIZATION, role: "owner" });
@@ -595,7 +603,7 @@ it.live("disconnecting stops the grant's refresh token, even after the agent con
 
     expect((yield* disconnect(shop)).status).toBe(200);
     expect((yield* raw(shop, old.access_token)).status).toBe(401);
-    yield* aSecondLater;
+    yield* aMinuteLater(shop);
     expect((yield* raw(shop, yield* connect(shop, clientId))).status).toBe(200);
 
     expect((yield* refresh(shop, clientId, refreshToken)).status).toBe(400);
@@ -609,7 +617,7 @@ it.live("disconnecting stops a code the agent hasn't redeemed, even after the ag
     const pending = yield* issueCode(shop, clientId);
 
     expect((yield* disconnect(shop)).status).toBe(200);
-    yield* aSecondLater;
+    yield* aMinuteLater(shop);
     expect((yield* raw(shop, yield* connect(shop, clientId))).status).toBe(200);
 
     expect((yield* redeem(shop, pending)).status).toBe(400);
@@ -623,7 +631,7 @@ it.live("disconnecting stops every code the agent hasn't redeemed, however many 
     const pending = yield* Effect.forEach(Array.from({ length: 101 }), () => issueCode(shop, clientId));
 
     expect((yield* disconnect(shop)).status).toBe(200);
-    yield* aSecondLater;
+    yield* aMinuteLater(shop);
     expect((yield* raw(shop, yield* connect(shop, clientId))).status).toBe(200);
 
     const statuses = yield* Effect.forEach(pending, (code) => redeem(shop, code).pipe(Effect.map((answer) => answer.status)));
@@ -638,7 +646,7 @@ it.live("a refresh token made while disconnected mints nothing after the agent c
 
     expect((yield* disconnect(shop)).status).toBe(200);
     const late = yield* plantRefreshToken(shop, clientId);
-    yield* aSecondLater;
+    yield* aMinuteLater(shop);
     const renewed = yield* connectTokens(shop, clientId);
     expect((yield* raw(shop, renewed.access_token)).status).toBe(200);
 
@@ -658,7 +666,7 @@ it.live("someone else's refused disconnect doesn't keep Bo's old credentials ali
 
     expect((yield* consentCall(shop, "/api/auth/oauth2/delete-consent", { id: consentId }, outsider)).status).toBe(401);
     expect((yield* disconnect(shop)).status).toBe(200);
-    yield* aSecondLater;
+    yield* aMinuteLater(shop);
     expect((yield* raw(shop, yield* connect(shop, clientId))).status).toBe(200);
 
     expect((yield* redeem(shop, pending)).status).toBe(400);
@@ -689,7 +697,7 @@ it.live("a code redeemed while disconnected yields no refresh token that works a
 const resumedAfterReconnect = Effect.fn(function* (shop: Shop, clientId: string, kind: "code" | "refresh") {
   const old = yield* connectTokens(shop, clientId);
   const pending = yield* issueCode(shop, clientId);
-  yield* aSecondLater;
+  yield* aMinuteLater(shop);
   const request = kind === "code"
     ? { hold: yield* holdRead(verification, 1), send: redeem(shop, pending) }
     : { hold: yield* holdRead(oauthRefreshToken, 1), send: refresh(shop, clientId, old.refresh_token ?? expect.fail("connect issued no refresh token")) };
@@ -698,7 +706,7 @@ const resumedAfterReconnect = Effect.fn(function* (shop: Shop, clientId: string,
 
   const renewed = yield* Effect.gen(function* () {
     expect((yield* disconnect(shop)).status).toBe(200);
-    yield* aSecondLater;
+    yield* aMinuteLater(shop);
     return yield* connectTokens(shop, clientId);
   }).pipe(Effect.ensuring(request.hold.release));
   const answered = yield* Fiber.join(inFlight);
@@ -725,7 +733,7 @@ it.live("a redemption without a resource, held and resumed after a disconnect an
     const shop = yield* hostedShop();
     const clientId = yield* registerAgent(shop);
     const pending = yield* issueCode(shop, clientId, undefined, null);
-    yield* aSecondLater;
+    yield* aMinuteLater(shop);
     const hold = yield* holdRead(verification, 1);
     const inFlight = yield* Effect.forkScoped(redeem(shop, pending, null));
     // A request refused before the provider reads its code never reaches the hold, and has nothing left to resume.
@@ -734,7 +742,7 @@ it.live("a redemption without a resource, held and resumed after a disconnect an
     if (paused) {
       yield* Effect.gen(function* () {
         expect((yield* disconnect(shop)).status).toBe(200);
-        yield* aSecondLater;
+        yield* aMinuteLater(shop);
         const renewed = yield* redeem(shop, yield* issueCode(shop, clientId, undefined, null));
         expect((yield* raw(shop, Schema.decodeUnknownSync(Issued)(renewed.body).access_token)).status).toBe(200);
       }).pipe(Effect.ensuring(hold.release));
