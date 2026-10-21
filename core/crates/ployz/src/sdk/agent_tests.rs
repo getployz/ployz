@@ -790,15 +790,116 @@ async fn a_server_whose_log_store_fails_is_unanswered_with_its_reason() {
 }
 
 // Catches a logs ask where a Container its Machine can no longer inspect, such as the one
-// a redeploy removed, withholds the lines of every other Container on that Server, or
-// shows its own lines unscrubbed.
+// a redeploy removed, withholds the lines of every other Container on that Server, shows
+// its own lines unscrubbed, or leaves them out without saying so.
 #[tokio::test]
-async fn a_removed_containers_lines_are_left_out_and_the_rest_still_shown() {
+async fn a_removed_containers_lines_are_left_out_with_a_note_and_the_rest_still_shown() {
     let one = support::machine('a', "one");
     let mut service = support::DeployService::new(one.clone());
     service
         .uninspectable
         .insert(ContainerId::parse("d".repeat(64)).unwrap());
+
+    let [answer] = ask_logs(service, vec![logs_query(None, Some(&["TOKEN"]))])
+        .await
+        .try_into()
+        .unwrap();
+
+    assert_eq!(
+        shown(&answer),
+        [(
+            "one".to_owned(),
+            vec![
+                "line 8".to_owned(),
+                "line 10".to_owned(),
+                "token=[secret TOKEN]".to_owned(),
+            ]
+        )]
+    );
+    assert_eq!(
+        answer.notes,
+        [
+            "Lines from web/dddddddddddd on one withheld: their env could not be read to scrub Sealed values."
+        ]
+    );
+}
+
+// Catches a logs ask that leaves out the lines of a removed Container whose env the Log
+// Store kept, or shows them with their Sealed value in the clear.
+#[tokio::test]
+async fn a_removed_containers_lines_are_scrubbed_with_the_env_its_log_store_kept() {
+    let one = support::machine('a', "one");
+    let mut service = support::DeployService::new(one.clone());
+    let removed = ContainerId::parse("d".repeat(64)).unwrap();
+    service.uninspectable.insert(removed);
+    service.retained_envs.as_mut().unwrap().insert(
+        removed,
+        BTreeMap::from([
+            ("TOKEN".to_owned(), "live-only-sentinel".to_owned()),
+            ("PLAIN".to_owned(), "from-docker".to_owned()),
+        ]),
+    );
+
+    let [answer] = ask_logs(service, vec![logs_query(None, Some(&["TOKEN", "PLAIN"]))])
+        .await
+        .try_into()
+        .unwrap();
+
+    assert_eq!(
+        shown(&answer),
+        [(
+            "one".to_owned(),
+            vec![
+                "line 10".to_owned(),
+                "plain [secret PLAIN]".to_owned(),
+                "token=[secret TOKEN]".to_owned(),
+            ]
+        )]
+    );
+    assert!(answer.notes.is_empty(), "{:?}", answer.notes);
+}
+
+// Catches a logs ask that reads a Container's kept env when its Machine failed to inspect
+// it rather than answering that it is gone: its lines stay left out.
+#[tokio::test]
+async fn a_container_whose_inspect_fails_is_left_out_even_with_a_kept_env() {
+    let one = support::machine('a', "one");
+    let mut service = support::DeployService::new(one.clone());
+    let stalled = ContainerId::parse("d".repeat(64)).unwrap();
+    service.stalled_inspects.insert(stalled);
+    service.retained_envs.as_mut().unwrap().insert(
+        stalled,
+        BTreeMap::from([("TOKEN".to_owned(), "live-only-sentinel".to_owned())]),
+    );
+
+    let [answer] = ask_logs(service, vec![logs_query(None, Some(&["TOKEN"]))])
+        .await
+        .try_into()
+        .unwrap();
+
+    assert_eq!(
+        shown(&answer),
+        [(
+            "one".to_owned(),
+            vec![
+                "line 8".to_owned(),
+                "line 10".to_owned(),
+                "token=[secret TOKEN]".to_owned(),
+            ]
+        )]
+    );
+}
+
+// Catches a logs ask against a daemon that predates the retained env route treating its
+// refusal as anything but no env: the removed Container's lines stay left out.
+#[tokio::test]
+async fn a_daemon_without_the_retained_env_route_leaves_a_removed_containers_lines_out() {
+    let one = support::machine('a', "one");
+    let mut service = support::DeployService::new(one.clone());
+    service
+        .uninspectable
+        .insert(ContainerId::parse("d".repeat(64)).unwrap());
+    service.retained_envs = None;
 
     let [answer] = ask_logs(service, vec![logs_query(None, Some(&["TOKEN"]))])
         .await
@@ -851,6 +952,12 @@ async fn a_server_whose_containers_cannot_be_inspected_withholds_only_sealed_lin
                 why: Withheld::NoSecretContext
             }
         )]
+    );
+    assert_eq!(
+        sealed.notes,
+        [
+            "Lines from web/cccccccccccc, web/dddddddddddd on one withheld: their env could not be read to scrub Sealed values."
+        ]
     );
     assert_eq!(shown(&nothing_sealed).len(), 1);
 }

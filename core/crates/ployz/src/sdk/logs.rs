@@ -15,7 +15,7 @@ use ts_rs::TS;
 
 use super::{Session, invalid_argument};
 use crate::connect::{Client, ConnectError};
-use ployz_core::InspectContainerRequest;
+use ployz_core::{InspectContainerRequest, RetainedEnvRequest};
 use ployz_store::tools::{LineCap, LogExcerpt, LogText, SealedValues, Withheld};
 
 pub(super) const ROW_DEADLINE: Duration = Duration::from_secs(10);
@@ -484,33 +484,53 @@ fn tail_excerpt(frames: impl IntoIterator<Item = String>, sealed: &SealedValues)
 /// How long reading one Machine's lines for an agent may take, env included.
 const SERVICE_TAIL_READ: Duration = Duration::from_secs(10);
 
+/// One Machine's lines for an agent.
+#[derive(Debug)]
+pub(crate) struct AgentTail {
+    pub(crate) text: LogText,
+    /// Each Container whose lines `text` leaves out because its env could not be read to
+    /// scrub them, labelled as `ployz logs` prints it.
+    pub(crate) withheld: Vec<String>,
+}
+
+impl From<LogText> for AgentTail {
+    fn from(text: LogText) -> Self {
+        Self {
+            text,
+            withheld: Vec::new(),
+        }
+    }
+}
+
 /// The newest `cap` lines `selector` picks from `machine`'s Log Store, across every
 /// Container that wrote them, scrubbed of each Container's values for the `sealed` names
 /// as its Machine reports them, or of every env value when `sealed` is None. The env is
 /// read here and never leaves, and not at all when `sealed` names nothing. A Container
-/// whose env cannot be read, as after a redeploy removed it, has its lines left out; they
-/// are withheld only when no Container's env can be read. None when `selector` picks no
-/// lines there. The error says why the Machine did not answer in time.
+/// whose env cannot be read, as after a redeploy removed it, has its lines left out and
+/// is named in [`AgentTail::withheld`]; the text is withheld when no Container's env can
+/// be read. None when `selector` picks no lines there. The error says why the Machine
+/// did not answer in time.
 pub(crate) async fn service_tail(
     client: &Client,
     machine: MachineId,
     selector: LogHistoryRequest,
     cap: LineCap,
     sealed: Option<&BTreeSet<String>>,
-) -> Result<Option<LogText>, RpcError> {
+) -> Result<Option<AgentTail>, RpcError> {
     let target = MachineTarget::from(&machine);
     let read = async {
+        let service = selector.service.clone();
         let (newest, _) = newest_lines(client, &target, selector, LineCap::MAX).await?;
         if newest.is_empty() {
             return Ok(None);
         }
         if sealed.is_some_and(BTreeSet::is_empty) {
             let frames = frames(newest.into_iter().map(|(_, text)| text));
-            return Ok(Some(LogText::Shown(LogExcerpt::scrub(
+            return Ok(Some(AgentTail::from(LogText::Shown(LogExcerpt::scrub(
                 frames,
                 &SealedValues::none(),
                 cap,
-            ))));
+            )))));
         }
         let mut containers: Vec<ContainerId> = Vec::new();
         for (container, _) in &newest {
@@ -526,8 +546,17 @@ pub(crate) async fn service_tail(
         .await;
         let mut values = SealedValues::none();
         let mut readable = Vec::new();
+        let mut withheld = Vec::new();
         for (container, env) in containers.iter().zip(envs) {
-            let Some(env) = env else { continue };
+            let Some(env) = env else {
+                let id = crate::ui::short_id(container.as_str());
+                withheld.push(
+                    service
+                        .as_ref()
+                        .map_or_else(|| id.to_owned(), |service| format!("{service}/{id}")),
+                );
+                continue;
+            };
             values.extend(
                 env.into_iter()
                     .filter(|(name, _)| sealed.is_none_or(|sealed| sealed.contains(name))),
@@ -535,8 +564,11 @@ pub(crate) async fn service_tail(
             readable.push(*container);
         }
         if readable.is_empty() {
-            return Ok(Some(LogText::Withheld {
-                why: Withheld::NoSecretContext,
+            return Ok(Some(AgentTail {
+                text: LogText::Withheld {
+                    why: Withheld::NoSecretContext,
+                },
+                withheld,
             }));
         }
         let frames = frames(
@@ -545,9 +577,10 @@ pub(crate) async fn service_tail(
                 .filter(|(container, _)| readable.contains(container))
                 .map(|(_, text)| text),
         );
-        Ok(Some(LogText::Shown(LogExcerpt::scrub(
-            frames, &values, cap,
-        ))))
+        Ok(Some(AgentTail {
+            text: LogText::Shown(LogExcerpt::scrub(frames, &values, cap)),
+            withheld,
+        }))
     };
     in_time("its Log Store", read).await
 }
@@ -624,22 +657,40 @@ fn unavailable(message: String) -> RpcError {
     }
 }
 
+/// The env that scrubs a Container's lines: Docker's, or the one its Machine's
+/// Log Store kept once the Machine answers that the Container is gone. `None`
+/// when neither answers, which withholds the lines.
 pub(crate) async fn container_env(
     client: &Client,
     machine: MachineId,
     container: ContainerId,
 ) -> Option<BTreeMap<String, String>> {
-    client
+    let target = MachineTarget::from(&machine);
+    let inspected = client
         .invoke::<op::InspectContainer>(
             InspectContainerRequest {
                 container_id: container,
             },
-            &MachineTarget::from(&machine),
+            &target,
+            Some(TAIL_READ),
+        )
+        .await;
+    match inspected {
+        Ok(details) => return details.environment,
+        Err(error) if error.code == RpcErrorCode::NotFound => {}
+        Err(_) => return None,
+    }
+    client
+        .invoke::<op::RetainedEnv>(
+            RetainedEnvRequest {
+                container_id: container,
+            },
+            &target,
             Some(TAIL_READ),
         )
         .await
         .ok()
-        .and_then(|details| details.environment)
+        .and_then(|reply| reply.environment)
 }
 
 /// The newest `fetch` lines `selector` picks, newest first, and the code of the newest
