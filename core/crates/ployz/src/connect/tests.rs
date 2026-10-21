@@ -1165,8 +1165,8 @@ where
 {
     tokio::spawn(
         hyper::server::conn::http2::Builder::new(hyper_util::rt::TokioExecutor::new())
-            .initial_connection_window_size(ployz_core::RPC_WINDOW_BYTES)
-            .initial_stream_window_size(ployz_core::RPC_WINDOW_BYTES)
+            .initial_connection_window_size(ployz_core::RPC_CONNECTION_WINDOW_BYTES)
+            .initial_stream_window_size(ployz_core::RPC_STREAM_WINDOW_BYTES)
             .serve_connection(TokioIo::new(daemon), hyper::service::service_fn(handle)),
     );
 }

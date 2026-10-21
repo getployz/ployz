@@ -318,8 +318,8 @@ impl Daemon {
             .build();
 
         let rpc = Server::builder()
-            .initial_stream_window_size(ployz_core::RPC_WINDOW_BYTES)
-            .initial_connection_window_size(ployz_core::RPC_WINDOW_BYTES)
+            .initial_stream_window_size(ployz_core::RPC_STREAM_WINDOW_BYTES)
+            .initial_connection_window_size(ployz_core::RPC_CONNECTION_WINDOW_BYTES)
             .serve_with_incoming_shutdown(
                 machine_api.clone(),
                 UnixListenerStream::new(UnixListener::from_std(socket.listener)?),
@@ -705,8 +705,8 @@ async fn serve_machine_api(
 ) -> io::Result<()> {
     match listener {
         Some(listener) => Server::builder()
-            .initial_stream_window_size(ployz_core::RPC_WINDOW_BYTES)
-            .initial_connection_window_size(ployz_core::RPC_WINDOW_BYTES)
+            .initial_stream_window_size(ployz_core::RPC_STREAM_WINDOW_BYTES)
+            .initial_connection_window_size(ployz_core::RPC_CONNECTION_WINDOW_BYTES)
             .serve_with_incoming_shutdown(
                 machine_api,
                 TcpListenerStream::new(listener),

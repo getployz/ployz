@@ -349,8 +349,8 @@ where
         drain: drain.clone(),
     };
     let serving = http2::Builder::new(TokioExecutor::new())
-        .initial_stream_window_size(ployz_core::RPC_WINDOW_BYTES)
-        .initial_connection_window_size(ployz_core::RPC_WINDOW_BYTES)
+        .initial_stream_window_size(ployz_core::RPC_STREAM_WINDOW_BYTES)
+        .initial_connection_window_size(ployz_core::RPC_CONNECTION_WINDOW_BYTES)
         .serve_connection(
             TokioIo::new(tokio::io::join(recv, send)),
             TowerToHyperService::new(service),
