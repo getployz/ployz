@@ -91,7 +91,6 @@ function MintFlow({ organizationSlug, mint, onDone }: { organizationSlug: string
           spellCheck={false}
           aria-invalid={!nameOk}
           aria-describedby={nameOk ? undefined : nameRule}
-          className="font-mono"
         />
         {nameOk ? null : <span id={nameRule} className="text-xs text-destructive">Lowercase letters, digits and hyphens, up to 63.</span>}
       </div>
@@ -149,7 +148,7 @@ function MintDone({ organizationSlug, minted, onDone }: { organizationSlug: stri
   return (
     <div className="flex flex-col gap-3">
       <DialogHeader>
-        <DialogTitle className="font-mono">{minted.name}</DialogTitle>
+        <DialogTitle>{minted.name}</DialogTitle>
         <DialogDescription>{minted.autoEnroll === null ? "Waits for you" : `Auto up to ${minted.autoEnroll.maxServers}`}</DialogDescription>
       </DialogHeader>
       <InstallTabs target={minted} />

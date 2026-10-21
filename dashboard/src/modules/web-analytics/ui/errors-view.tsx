@@ -91,8 +91,8 @@ function ByRoute({ rows }: { rows: OnErrors["byRoute"] }) {
           {rows.map((row) => (
             <TableRow key={`${row.route}:${row.status}`}>
               <TableCell className="truncate font-mono" title={row.route}>{row.route}</TableCell>
-              <TableCell className={cn("text-right font-mono tabular-nums", row.status >= 500 && "text-destructive")}>{row.status}</TableCell>
-              <TableCell className="text-right font-mono tabular-nums">{formatCount(row.requests)}</TableCell>
+              <TableCell className={cn("text-right tabular-nums", row.status >= 500 && "text-destructive")}>{row.status}</TableCell>
+              <TableCell className="text-right tabular-nums">{formatCount(row.requests)}</TableCell>
             </TableRow>
           ))}
         </TableBody>

@@ -148,7 +148,7 @@ function OverviewCard({ label, value }: { label: string; value: ReactNode }) {
   return (
     <Card size="sm" className="gap-1 px-3">
       <span className="text-xs text-muted-foreground">{label}</span>
-      <span className="font-mono text-2xl tabular-nums" data-analytics-total={label}>{value}</span>
+      <span className="text-2xl tabular-nums" data-analytics-total={label}>{value}</span>
     </Card>
   );
 }
@@ -230,8 +230,8 @@ function Breakdown({ title, rows, onPick }: { title: string; rows: ReadonlyArray
         {rows.map((row) => (
           <TableRow key={row.value}>
             <ValueCell value={row.value} onPick={onPick} />
-            <TableCell className="text-right font-mono tabular-nums">{formatCount(row.visitors)}</TableCell>
-            <TableCell className="text-right font-mono tabular-nums">{formatCount(row.pageviews)}</TableCell>
+            <TableCell className="text-right tabular-nums">{formatCount(row.visitors)}</TableCell>
+            <TableCell className="text-right tabular-nums">{formatCount(row.pageviews)}</TableCell>
           </TableRow>
         ))}
       </TableBody>
@@ -253,8 +253,8 @@ function EntryPages({ rows }: { rows: OnView["entryPages"] }) {
         {rows.map((row) => (
           <TableRow key={row.value}>
             <ValueCell value={row.value} />
-            <TableCell className="text-right font-mono tabular-nums">{formatCount(row.visits)}</TableCell>
-            <TableCell className="text-right font-mono tabular-nums">{formatPercent(row.bounceRatePercent)}</TableCell>
+            <TableCell className="text-right tabular-nums">{formatCount(row.visits)}</TableCell>
+            <TableCell className="text-right tabular-nums">{formatPercent(row.bounceRatePercent)}</TableCell>
           </TableRow>
         ))}
       </TableBody>

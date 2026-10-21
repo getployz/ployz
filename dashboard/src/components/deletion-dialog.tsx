@@ -248,7 +248,7 @@ function DeletionList({ items, fresh }: { items: readonly DeletionItem[]; fresh:
           <li key={`group:${row.kind}`} className="flex items-center gap-3 text-sm">
             <span className="flex text-muted-foreground [&_svg]:size-4">{KIND_ICON[row.kind]}</span>
             <span className="min-w-0 flex-1 truncate">{row.label}</span>
-            {row.bytes !== undefined ? <span className="font-mono text-muted-foreground">{formatBytes(row.bytes)}</span> : null}
+            {row.bytes !== undefined ? <span className="text-muted-foreground">{formatBytes(row.bytes)}</span> : null}
             <Button type="button" variant="link" className="h-auto p-0 text-muted-foreground" aria-expanded={shown}
               aria-label={`${shown ? "Hide" : "Show"} ${row.label}`}
               onClick={() => setOpen((current) => {
@@ -271,11 +271,11 @@ function ItemRow({ item, isNew }: { item: DeletionItem; isNew: boolean }) {
   return (
     <li className="flex items-center gap-3 text-sm">
       <span className="flex text-muted-foreground [&_svg]:size-4">{item.icon ?? KIND_ICON[item.kind]}</span>
-      <span className="min-w-0 flex-1 truncate font-mono">{item.name}</span>
+      <span className="min-w-0 flex-1 truncate">{item.name}</span>
       {isNew ? <Badge variant="outline" className="border-warning-border bg-warning-soft text-warning-foreground">New</Badge> : null}
       {item.lostAfter ? <LostAfter detail={item.detail} at={item.lostAfter} />
         : item.detail ? <span className="text-muted-foreground">{item.detail}</span> : null}
-      {item.bytes !== undefined ? <span className="font-mono text-muted-foreground">{formatBytes(item.bytes)}</span> : null}
+      {item.bytes !== undefined ? <span className="text-muted-foreground">{formatBytes(item.bytes)}</span> : null}
     </li>
   );
 }

@@ -127,7 +127,7 @@ function OnMergeRow({ row, rows, organizationSlug, store, into }: {
   return (
     <li className={cn("grid grid-cols-[6rem_minmax(0,9rem)_minmax(0,1fr)_auto] items-center gap-x-3 border-b px-4 py-2 last:border-b-0",
       excluded && "text-muted-foreground", saving && "opacity-60")} aria-busy={saving}>
-      <span className="truncate font-mono text-xs text-muted-foreground">{row.node}</span>
+      <span className="truncate text-xs text-muted-foreground">{row.node}</span>
       <span className={cn("truncate font-mono text-xs", excluded && "opacity-60")}>{removal ? null : name}</span>
       <span className={cn("flex min-w-0 flex-wrap items-center gap-1.5 font-mono text-xs", excluded && "opacity-60")}>
         {kept ? <Badge variant="secondary">Kept</Badge> : removal ? <Removal row={row} /> : <RowValue row={row} preview={preview} />}

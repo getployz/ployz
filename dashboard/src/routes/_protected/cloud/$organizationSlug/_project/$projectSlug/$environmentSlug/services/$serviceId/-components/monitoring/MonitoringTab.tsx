@@ -383,7 +383,7 @@ function Charts({ organizationSlug, scope, service, range, dimmed, uptime, uptim
         <Card size="sm" className="flex-row items-baseline justify-between gap-3 px-3">
           <h3 className="text-sm font-medium">Managed volume</h3>
           <span className="flex min-w-0 gap-2 text-sm text-muted-foreground">
-            <span className="truncate font-mono">{volume.name}</span>
+            <span className="truncate">{volume.name}</span>
             <span className="shrink-0">· {volumeStorageText(volume.storage)}</span>
           </span>
         </Card>

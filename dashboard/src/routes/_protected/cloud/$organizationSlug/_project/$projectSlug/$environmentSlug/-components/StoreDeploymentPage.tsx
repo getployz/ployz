@@ -104,7 +104,7 @@ function RunHeader({ deployment, graph, selected, search, onCancel }: {
             {deploymentStatusLabel(deployment)}
             {/* One that ended as it started has no duration to show. */}
             {started && ended?.getTime() !== started.getTime() ? (
-              <>{" · "}<span className="font-mono tabular-nums">
+              <>{" · "}<span className="tabular-nums">
                 {ended ? formatDuration((ended.getTime() - started.getTime()) / 1000) : <RunningTime from={started} />}
               </span></>
             ) : null}

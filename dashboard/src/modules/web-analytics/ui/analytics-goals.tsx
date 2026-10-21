@@ -33,9 +33,9 @@ export function AnalyticsGoals({ scope, goals, visitors }: AnalyticsGoalsProps) 
                 <TableCell className="truncate" title={`${goal.name} ${goal.pathPattern}`}>
                   {goal.name} <span className="font-mono text-xs text-muted-foreground">{goal.pathPattern}</span>
                 </TableCell>
-                <TableCell className="text-right font-mono tabular-nums">{formatCount(goal.visitors)}</TableCell>
-                <TableCell className="text-right font-mono tabular-nums">{formatCount(goal.conversions)}</TableCell>
-                <TableCell className="text-right font-mono tabular-nums">{formatRate(goalRate(goal.visitors, visitors))}</TableCell>
+                <TableCell className="text-right tabular-nums">{formatCount(goal.visitors)}</TableCell>
+                <TableCell className="text-right tabular-nums">{formatCount(goal.conversions)}</TableCell>
+                <TableCell className="text-right tabular-nums">{formatRate(goalRate(goal.visitors, visitors))}</TableCell>
                 <TableCell>
                   <Button variant="ghost" size="icon-xs" aria-label={`Delete ${goal.name}`} disabled={goal.id.startsWith("pending:")}
                     onClick={() => deleteGoal.mutate(goal.id)}><Trash2Icon /></Button>
