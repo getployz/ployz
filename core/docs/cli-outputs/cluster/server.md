@@ -856,10 +856,56 @@ $ ployz server upgrade 0.2.3 gamma
 # exit 3
 ```
 
+stdout:
+```
+Server gamma failed to upgrade to 0.2.3 while launching.
+```
+
 stderr:
 ```
 error: Server gamma failed to upgrade to 0.2.3 while launching: could not inspect the Machine upgrade worker: No such file or directory (os error 2)
 inspect: journalctl -u ployz-upgrade-9c1f32b7863745b1a6075a4e59261a69.service
+```
+
+### server upgrade --json (fails at launch)
+
+```console
+$ ployz server upgrade 0.2.3 gamma --json
+# exit 3
+```
+
+stdout:
+```
+{
+  "attempts": [
+    {
+      "attempt_id": "7f94c963cdcb491da8c38e4e077fa308",
+      "error": "could not inspect the Machine upgrade worker: No such file or directory (os error 2)",
+      "outcome": "failed",
+      "server": "7f571356a2ff4c36abb2cd9a719ec8ec",
+      "stage": "launching",
+      "target": "0.2.3"
+    }
+  ],
+  "follow_up_error": {
+    "cause": [],
+    "code": "internal",
+    "details": {
+      "inspect": [
+        "journalctl -u ployz-upgrade-7f94c963cdcb491da8c38e4e077fa308.service"
+      ]
+    },
+    "message": "Server gamma failed to upgrade to 0.2.3 while launching: could not inspect the Machine upgrade worker: No such file or directory (os error 2)"
+  },
+  "unattempted": []
+}
+```
+
+stderr:
+```
+Server gamma failed to upgrade to 0.2.3 while launching.
+error: Server gamma failed to upgrade to 0.2.3 while launching: could not inspect the Machine upgrade worker: No such file or directory (os error 2)
+inspect: journalctl -u ployz-upgrade-7f94c963cdcb491da8c38e4e077fa308.service
 ```
 
 ### server forget (standalone)
@@ -1016,7 +1062,6 @@ Removed Server gamma.
 stderr:
 ```
 ! Server gamma is running Services: shop-production/web.
-next: ployz server drain gamma
 ! Replicated Services may now be under-replicated: shop-production/web. Their replicas were not moved.
 ```
 

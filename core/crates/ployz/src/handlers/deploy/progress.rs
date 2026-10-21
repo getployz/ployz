@@ -875,6 +875,7 @@ mod tests {
                     )),
                 },
                 out_of_memory,
+                last_run: None,
             };
             let machine_id = "a".repeat(32);
             let operations: Vec<ployz_core::OperationRow> = serde_json::from_value(json!([{
@@ -897,6 +898,7 @@ mod tests {
                 cause: cause.clone(),
                 services: Vec::new(),
                 compensation: Vec::new(),
+                cancelled: false,
             });
             let rows = &mut view.nodes.first_mut().unwrap().rows;
             rows.truncate(1);

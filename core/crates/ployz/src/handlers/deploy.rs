@@ -764,11 +764,20 @@ fn follow(
             && unclaimed.is_some_and(|after| std::time::Instant::now() >= after)
         {
             unclaimed = None;
-            ui::note(format_args!(
-                "No Server has started Deployment {} yet; it stays queued until one does.",
-                current.view.deployment.label()
-            ));
-            ui::hint(&Hint::Inspect("ployz server ls".into()));
+            if let Some(ahead) = ahead(store, &current.view) {
+                ui::note(format_args!(
+                    "Deployment {} waits for Deployment {} to finish.",
+                    current.view.deployment.label(),
+                    ahead.label()
+                ));
+                ui::hint(&Hint::Inspect(hint_for(matches, &ahead)));
+            } else {
+                ui::note(format_args!(
+                    "No Server has started Deployment {} yet; it stays queued until one does.",
+                    current.view.deployment.label()
+                ));
+                ui::hint(&Hint::Inspect("ployz server ls".into()));
+            }
         }
         if !current.view.deployment.status.in_flight() || runner.is_some_and(OwnedRunner::finished)
         {
@@ -781,6 +790,26 @@ fn follow(
             }
         });
     }
+}
+
+/// The oldest Deployment in `view`'s Environment still in flight ahead of it, which it waits behind.
+/// A failed read names none: the follow's next read reports it.
+fn ahead(store: &Store, view: &DeploymentView) -> Option<DeploymentSummary> {
+    let page = store
+        .read(&DeploymentsQuery {
+            environment: EnvironmentRef {
+                project: Some(view.environment.project.clone()),
+                environment: Some(view.environment.name.clone()),
+            },
+            limit: None,
+            cursor: None,
+        })
+        .ok()?;
+    let ours = view.deployment.number?;
+    page.in_flight
+        .into_iter()
+        .filter(|older| older.number.is_some_and(|number| number < ours))
+        .min_by_key(|older| older.number)
 }
 
 /// What took superseded `view`'s place, among the latest and those in flight.
@@ -1086,11 +1115,13 @@ pub(super) fn ls(root: &ArgMatches) -> Result<(), Error> {
     Ok(())
 }
 
-/// A Deployment's status in a word or two; a push waiting for CI says how its CI stands.
+/// A Deployment's status in a word or two; a push waiting for CI says how its CI stands,
+/// and a running one without a Deploy Preview yet reads preparing.
 fn status_word(deployment: &DeploymentSummary) -> String {
     match (deployment.status, deployment.ci) {
         (DeploymentStatus::WaitingForCi, Some(CiVerdict::Failed)) => "CI failed".to_owned(),
         (DeploymentStatus::WaitingForCi, _) => "waiting for CI".to_owned(),
+        (DeploymentStatus::Running, _) if deployment.preparing => "preparing".to_owned(),
         (status, _) => super::store::word(&status),
     }
 }
@@ -1130,7 +1161,8 @@ pub(super) fn deployment_id(
     Ok(found.deployment.id)
 }
 
-/// A refused redeploy, start or cancel points at the Deployment's current state.
+/// A refused redeploy, start or cancel points at the Deployment's current state,
+/// unless the Store names what to run next, such as `ployz server add`.
 fn refused<'a>(
     matches: &'a ArgMatches,
     store: &'a Store,
@@ -1139,7 +1171,9 @@ fn refused<'a>(
     move |error| {
         store.fail(super::store::with_next(
             error,
-            |refusal| refusal.code == RpcErrorCode::Conflict,
+            |refusal| {
+                refusal.code == RpcErrorCode::Conflict && refusal.details.get("next").is_none()
+            },
             || {
                 store
                     .read(&ployz_store::DeploymentQuery { id: id.clone() })
@@ -1507,5 +1541,28 @@ mod tests {
             provenance(&deployment("running", false)).as_deref(),
             Some("uploaded by nick, sha256 aaaaaaaaaaaa")
         );
+    }
+
+    #[test]
+    fn a_running_deployment_reads_preparing_until_it_has_a_deploy_preview() {
+        let read = |status: &str, preparing: bool| {
+            let deployment: ployz_store::DeploymentSummary =
+                serde_json::from_value(serde_json::json!({
+                    "id": "00000000-0000-4000-8000-000000000101",
+                    "environment_id": "00000000-0000-4000-8000-000000000002",
+                    "number": 1, "status": status, "saved": 1, "services": [],
+                    "runner": "cloud-run", "upload": null, "preparing": preparing,
+                    "remove": false, "admitted_by": null, "admitted_at": 0, "started_at": 0,
+                    "ended_at": null, "message": null, "push": null, "ci": null,
+                    "in_flight": true, "outcome": null,
+                }))
+                .unwrap();
+            (status_word(&deployment), status_tone(&deployment))
+        };
+        assert_eq!(
+            read("running", true),
+            ("preparing".to_owned(), Tone::Change)
+        );
+        assert_eq!(read("running", false), ("running".to_owned(), Tone::Change));
     }
 }

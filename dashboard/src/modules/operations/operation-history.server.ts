@@ -1,6 +1,7 @@
 import "@tanstack/react-start/server-only";
-import type { MachineId, Operation, RunState, Subject } from "@ployz/sdk";
-import { and, asc, desc, eq, inArray } from "drizzle-orm";
+import type { MachineId, Operation, RunState, Subject, UnknownEnd } from "@ployz/sdk";
+import { and, asc, desc, eq, inArray, or, sql } from "drizzle-orm";
+import type { PgColumn } from "drizzle-orm/pg-core";
 import { Effect, Schema } from "effect";
 import { Uuid } from "#/lib/schema";
 import { cleanupEndMessage } from "#/modules/machines/namespace-cleanup.server";
@@ -32,10 +33,24 @@ const RUN_STATES = {
 
 const seconds = (at: Date) => Math.floor(at.getTime() / 1000);
 
-const operation = (row: { attempt: string; run: string; state: keyof typeof RUN_STATES; requestedAt: Date; endedAt: Date | null; reason: string | null }): Operation => ({
+/** Microseconds since the epoch, as Postgres keeps them. A `Date` holds only milliseconds, and an Operation only seconds. */
+const micros = (at: PgColumn) => sql<bigint>`(extract(epoch from ${at}) * 1000000)::bigint`.mapWith(BigInt);
+
+type Timed = { readonly at: bigint; readonly operation: Operation };
+
+/**
+ * Newest first. Runs requested at the same instant fall back to their attempt, which is unique and named in the answer.
+ * Each query orders the same way so its limit keeps what this keeps: a `uuid` sorts by byte, and the upgrade's `text` id needs `collate "C"`.
+ */
+const newestFirst = (a: Timed, b: Timed) => Number(b.at - a.at) || (a.operation.attempt < b.operation.attempt ? -1 : 1);
+
+const operation = (row: {
+  attempt: string; run: string; state: keyof typeof RUN_STATES; end?: UnknownEnd; requestedAt: Date; endedAt: Date | null; reason: string | null;
+}): Operation => ({
   attempt: row.attempt,
   run: row.run,
   state: RUN_STATES[row.state],
+  end: row.end,
   requested_at: seconds(row.requestedAt),
   ended_at: row.endedAt === null ? null : seconds(row.endedAt),
   reason: row.reason,
@@ -70,6 +85,31 @@ export const serverNames = Effect.fn("OperationHistory.serverNames")(function* (
   return new Map([...claimed, ...kept, ...reported].flatMap(({ machine, name }) => machine === null || !name ? [] : [[machine, name] as const]));
 });
 
+const drainOperation = (row: typeof serverDrainAttempt.$inferSelect, name: string) => operation({
+  attempt: row.id,
+  run: `drain ${name}`,
+  state: row.state,
+  end: row.endCode === "lost" || row.endCode === "interrupted" ? row.endCode : undefined,
+  requestedAt: row.requestedAt,
+  endedAt: row.endedAt,
+  reason: drainEndMessage(row),
+});
+
+/**
+ * The Server's newest Drain with a verdict, however many runs came after it: one that finished, failed or was cancelled,
+ * or ended `unknown` under an end it names. Ordered as `serverOperations` orders its Drains, so a tie picks what it lists first.
+ */
+export const settledDrain = Effect.fn("OperationHistory.settledDrain")(function* (organizationId: string, machine: MachineId, known: string | null) {
+  const { drizzle } = yield* Database;
+  const [row] = yield* drizzle.select().from(serverDrainAttempt).where(and(
+    eq(serverDrainAttempt.organizationId, organizationId),
+    eq(serverDrainAttempt.machineId, machine),
+    or(inArray(serverDrainAttempt.state, ["finished", "failed", "cancelled"]), inArray(serverDrainAttempt.endCode, ["lost", "interrupted"])),
+  )).orderBy(desc(serverDrainAttempt.requestedAt), asc(serverDrainAttempt.id)).limit(1);
+  if (row === undefined) return null;
+  return drainOperation(row, known || ((yield* serverNames(organizationId, [machine])).get(machine) ?? machine));
+});
+
 const serverOperations = Effect.fn("OperationHistory.server")(function* (
   organizationId: string, machine: MachineId, attempt: string | null, limit: number, known: string | null,
 ) {
@@ -77,38 +117,36 @@ const serverOperations = Effect.fn("OperationHistory.server")(function* (
   const name = known || ((yield* serverNames(organizationId, [machine])).get(machine) ?? machine);
   const uuid = attempt !== null && isUuid(attempt) ? attempt : null;
   const hex = attempt?.replaceAll("-", "").toLowerCase() ?? null;
-  const drains = attempt !== null && uuid === null ? [] : yield* drizzle.select().from(serverDrainAttempt).where(and(
+  const drains = attempt !== null && uuid === null ? [] : yield* drizzle.select({ row: serverDrainAttempt, at: micros(serverDrainAttempt.requestedAt) }).from(serverDrainAttempt).where(and(
     eq(serverDrainAttempt.organizationId, organizationId),
     eq(serverDrainAttempt.machineId, machine),
     uuid === null ? undefined : eq(serverDrainAttempt.id, uuid),
-  )).orderBy(desc(serverDrainAttempt.requestedAt)).limit(limit);
-  const removals = attempt !== null && uuid === null ? [] : yield* drizzle.select().from(machineRemoveAttempt).where(and(
+  )).orderBy(desc(serverDrainAttempt.requestedAt), asc(serverDrainAttempt.id)).limit(limit);
+  const removals = attempt !== null && uuid === null ? [] : yield* drizzle.select({ row: machineRemoveAttempt, at: micros(machineRemoveAttempt.createdAt) }).from(machineRemoveAttempt).where(and(
     eq(machineRemoveAttempt.organizationId, organizationId),
     eq(machineRemoveAttempt.machineId, machine),
     uuid === null ? undefined : eq(machineRemoveAttempt.id, uuid),
-  )).orderBy(desc(machineRemoveAttempt.createdAt)).limit(limit);
-  const upgrades = yield* drizzle.select().from(serverUpgradeAttempt).where(and(
+  )).orderBy(desc(machineRemoveAttempt.createdAt), asc(machineRemoveAttempt.id)).limit(limit);
+  const upgrades = yield* drizzle.select({ row: serverUpgradeAttempt, at: micros(serverUpgradeAttempt.startedAt) }).from(serverUpgradeAttempt).where(and(
     eq(serverUpgradeAttempt.organizationId, organizationId),
     eq(serverUpgradeAttempt.machineId, machine),
     hex === null ? undefined : eq(serverUpgradeAttempt.attemptId, hex),
-  )).orderBy(desc(serverUpgradeAttempt.startedAt)).limit(limit);
+  )).orderBy(desc(serverUpgradeAttempt.startedAt), sql`${serverUpgradeAttempt.attemptId} collate "C"`).limit(limit);
   const now = Date.now();
   return [
-    ...drains.map((row) => operation({
-      attempt: row.id, run: `drain ${name}`, state: row.state, requestedAt: row.requestedAt, endedAt: row.endedAt, reason: drainEndMessage(row),
-    })),
-    ...removals.map((row) => operation({
+    ...drains.map(({ row, at }) => ({ at, operation: drainOperation(row, name) })),
+    ...removals.map(({ row, at }) => ({ at, operation: operation({
       attempt: row.id, run: `remove ${name}`, state: row.state, requestedAt: row.createdAt, endedAt: row.terminalAt, reason: row.failureMessage,
-    })),
-    ...upgrades.map((row) => operation({
+    }) })),
+    ...upgrades.map(({ row, at }) => ({ at, operation: operation({
       attempt: dashedAttempt(row.attemptId),
       run: `upgrade ${name}`,
       state: row.outcome === "running" && outlivedObservation(row.startedAt, now) ? "unknown" : row.outcome,
       requestedAt: row.startedAt,
       endedAt: row.endedAt,
       reason: row.error,
-    })),
-  ].sort((a, b) => b.requested_at - a.requested_at).slice(0, limit);
+    }) })),
+  ].sort(newestFirst).slice(0, limit).map((timed) => timed.operation);
 });
 
 const volumeOperations = Effect.fn("OperationHistory.volume")(function* (organizationId: string, volume: string, attempt: string | null, limit: number) {

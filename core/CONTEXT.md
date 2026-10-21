@@ -513,16 +513,16 @@ The address assigned to one container within its Machine Subnet. Its apparent cl
 _Avoid_: Management Address, globally unique container address
 
 **Serving Container**:
-A Service Container that may serve (running with health `healthy`, `failing` or `not_configured`), has a Container Address, and carries this observer's selected Published Serving Shape for its Qualified Service. It is observer-derived eligibility to receive traffic, not a replica identity. A Healthcheck gates the first serve only: a Container that passed once keeps serving while its check fails.
-The selected shape is the newest traffic-eligible shape observed for that Qualified Service. A starting, unhealthy, or stopped replacement does not exclude older Containers that may serve; once a newer shape can take traffic, only that shape serves, and it keeps serving while its check fails.
-_Avoid_: replica, endpoint, upstream
+A Service Container whose rotation is `In`, that may serve (running with health `healthy`, `failing` or `not_configured`), and that has a Container Address. The Ingress Proxy Service's own Containers never are one. It is observer-derived eligibility to receive traffic, not a replica identity. A Healthcheck gates the first serve only: a Container that passed once keeps serving while its check fails.
+Rotation is a field on each Container observation, and only the owning Machine writes it: `Pending` (created, never routed), `In` (routed), `Held` (out of routing, kept by one run that alone may bring it back In) or `Out` (out of routing for good; only removal follows). Each proxy, Ingress and Internal DNS, routes the In copies it observes on Machines that are not Down. When every such copy is on a Down Machine, the proxy keeps its current route, minus any copy its owner Held, while a routed copy is out of view or some copy is In or Pending. It empties the route once every copy in view is Held or Out. A proxy with no current route for the Service, as after a restart, routes its In copies on Down Machines too. Only the Ingress Proxy writes a route ack: the exact Container set it routes. A Deploy, drain or user command asks the owner to move a copy, then waits, bounded, on those acks; once per daemon start a Machine sets Out its own In copies that every live proxy routes a newer copy beside. No Serving Pointer, elected publisher or retire loop exists.
+_Avoid_: replica, endpoint, upstream, Serving Pointer
 
 **Serving Shape**:
 The content identity of the Resolved Service Spec fields whose change requires a new Container. Equal shapes are interchangeable Containers. It is derived from observed spec content, not Cluster intent. Service ID is not a Serving Shape.
 _Avoid_: current version, desired generation, Service ID as generation
 
 **Published Serving Shape**:
-The Serving Shape of a published observation, whose environment values and Config content are redacted. It hashes Config names in place of content, so Containers from an env-only or Config-only change share a shape and do not separate traffic ([#1419](https://github.com/getployz/ployz/issues/1419)).
+The Serving Shape of a published observation, whose environment values and Config content are redacted. It hashes Config names in place of content, so Containers from an env-only or Config-only change share a shape ([#1419](https://github.com/getployz/ployz/issues/1419)). Ployz compares shapes to match observed Containers to a wanted spec, in drift checks and Global catch-up. Routing follows each Container's `rotation`, not its shape.
 _Avoid_: Serving Shape for observation rows
 
 **Public Ingress**:

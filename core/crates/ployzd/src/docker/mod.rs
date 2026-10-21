@@ -157,15 +157,22 @@ impl LocalDocker {
 
     pub(crate) async fn managed_container_ids(&self) -> Result<Vec<ContainerId>, Error> {
         Ok(self
-            .labelled(vec![
-                LABEL_MANAGED.to_owned(),
-                LABEL_NAMESPACE.to_owned(),
-                LABEL_SERVICE_ID.to_owned(),
-            ])
+            .managed_containers()
             .await?
             .into_iter()
             .map(|(id, _)| id)
             .collect())
+    }
+
+    async fn managed_containers(
+        &self,
+    ) -> Result<Vec<(ContainerId, HashMap<String, String>)>, Error> {
+        self.labelled(vec![
+            LABEL_MANAGED.to_owned(),
+            LABEL_NAMESPACE.to_owned(),
+            LABEL_SERVICE_ID.to_owned(),
+        ])
+        .await
     }
 
     async fn service_containers(
@@ -453,7 +460,7 @@ impl ContainerRuntime {
         machine_id: &MachineId,
     ) -> Result<Vec<ContainerObservation>, Error> {
         let mut observations = Vec::new();
-        let mut inspected = futures_util::stream::iter(self.docker.managed_container_ids().await?)
+        let mut inspected = futures_util::stream::iter(self.managed_inventory().await?)
             .map(|container_id| async move {
                 (
                     container_id,
@@ -474,6 +481,40 @@ impl ContainerRuntime {
             }
         }
         Ok(observations)
+    }
+
+    /// Every managed Container's ID. A Container a container-level restore recreated
+    /// under a new ID first takes over the records its slot's old ID left, so it is
+    /// observed as it was before the restore.
+    ///
+    /// # Errors
+    ///
+    /// Returns when Docker or the Machine database cannot be read.
+    pub(crate) async fn managed_inventory(&self) -> Result<Vec<ContainerId>, Error> {
+        let listed = self.managed_slots().await?;
+        if !self.specs.record_creations(listed.clone()).await? {
+            return Ok(listed.into_iter().map(|(id, _)| id).collect());
+        }
+        // Creates and removes hold this lock across their Docker call and spec write,
+        // so only a listing taken under it agrees with the records it moves.
+        let mut operation = self.specs.config_operation().await;
+        let listed = self.managed_slots().await?;
+        for (old, new) in operation.adopt_restored(listed.clone()).await? {
+            eprintln!("adopted restored container {new}, which replaces {old}");
+        }
+        Ok(listed.into_iter().map(|(id, _)| id).collect())
+    }
+
+    async fn managed_slots(
+        &self,
+    ) -> Result<Vec<(ContainerId, Option<spec_store::CreationSlot>)>, Error> {
+        Ok(self
+            .docker
+            .managed_containers()
+            .await?
+            .into_iter()
+            .map(|(id, labels)| (id, creation_slot(&labels)))
+            .collect())
     }
 
     /// This Machine's Service Containers of `service`, each with the gen its labels
@@ -981,6 +1022,16 @@ impl ManagedLabels {
             },
         })
     }
+}
+
+fn creation_slot(labels: &HashMap<String, String>) -> Option<spec_store::CreationSlot> {
+    let ManagedLabels { identity, kind } = ManagedLabels::parse(labels).ok()?;
+    let key = labels.get(ployz_core::labels::CREATION_KEY)?;
+    Some(spec_store::CreationSlot::new(
+        &identity.namespace,
+        kind,
+        key,
+    ))
 }
 
 fn label_gen(labels: &HashMap<String, String>) -> Gen {
@@ -1650,7 +1701,7 @@ mod tests {
     }
 
     #[test]
-    fn only_the_system_ingress_migrates_queued_connections_when_the_kernel_can() {
+    fn only_the_system_ingress_gets_its_sysctls_at_create() {
         let machine_id = MachineId::parse("1".repeat(32)).unwrap();
         let gateway = MachineGateway(Ipv4Addr::new(10, 210, 0, 1));
         let ingress = ployz_core::QualifiedService::system_ingress();
@@ -1670,7 +1721,7 @@ mod tests {
                 &spec,
             )
             .unwrap();
-            create::migrate_ingress_requests(&mut body, namespace, &spec, kernel_supports);
+            create::ingress_sysctls(&mut body, namespace, &spec, kernel_supports);
             let host = body.host_config.unwrap();
             assert_eq!(host.log_config, Some(container_log_config()));
             host.sysctls
@@ -1678,12 +1729,18 @@ mod tests {
         let ingress_name = ingress.name.to_string();
         assert_eq!(
             sysctls(&ingress.namespace, &ingress_name, true),
+            Some(HashMap::from([
+                ("net.ipv4.tcp_migrate_req".into(), "1".into()),
+                ("net.ipv4.tcp_retries2".into(), "5".into()),
+            ]))
+        );
+        assert_eq!(
+            sysctls(&ingress.namespace, &ingress_name, false),
             Some(HashMap::from([(
-                "net.ipv4.tcp_migrate_req".into(),
-                "1".into()
+                "net.ipv4.tcp_retries2".into(),
+                "5".into()
             )]))
         );
-        assert_eq!(sysctls(&ingress.namespace, &ingress_name, false), None);
         assert_eq!(
             sysctls(
                 &ployz_core::Namespace::parse("app").unwrap(),

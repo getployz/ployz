@@ -130,6 +130,15 @@ An environment runs one deployment at a time. While one runs, **Deploy** reads *
 and yours waits as **Queued**. If you deploy again while one is waiting, the newest one takes its
 place.
 
+A deploy started outside that queue, say from a second computer's context, can still reach a
+service after a newer deploy did. It fails for that service and leaves the newer version serving.
+See [A newer deploy is already serving](../troubleshooting/deployments.md#a-newer-deploy-is-already-serving).
+
+From the CLI, `ployz deploy` keeps following a queued deployment. If it is still queued after 30
+seconds, the CLI names the deployment it waits for, like `Deployment #2 waits for Deployment #1 to
+finish.`, with the `ployz deployment show` command for that one. If nothing is ahead of it, the CLI
+says no Server has started it yet and points at `ployz server ls`.
+
 On the canvas, **Deploying** shows only on the services the running deployment restarts. A service
 it leaves running keeps its staged changes on its card.
 
@@ -141,8 +150,10 @@ after a reload and in other tabs, as long as the failed deployment is the newest
 
 **Runs**, under **Deployments** in the sidebar, lists every deployment, newest first. A
 deployment's page shows its status, who started it and, if it failed, the reason in red under the
-header. Below that is one card for each build, service, volume and config it touched, laid out left
-to right in the order they deploy. Click a card to see each server's progress and its
+header. A service that failed on its own reads Failed, and its failure is the reason, even when
+you cancelled the deployment while it ran. A cancelled deployment shows no reason when nothing in
+it failed on its own. Below that is one card for each build, service, volume and config it
+touched, laid out left to right in the order they deploy. Click a card to see each server's progress and its
 [logs](../observe/logs.md). A build's card shows the build output, and a service's card shows what
 its new containers printed. A failed deployment opens on the card that failed.
 
@@ -151,7 +162,8 @@ its new containers printed. A failed deployment opens on the card that failed.
 | Status | What it means |
 | --- | --- |
 | **Queued** | Waiting for another deployment, or for GitHub Actions to build it |
-| **Deploying** | Building, then rolling out |
+| **Preparing** | Started: Ployz unpacks its upload, builds and plans. `ployz deployment ls` says `preparing`. |
+| **Deploying** | Rolling out |
 | **Deployed** | Every change applied |
 | **Failed** | Something stopped it. A service marked **Not attempted** never started. |
 | **Cancelled** | Someone cancelled it. A service it stopped partway reads **Cancelled**, not **Failed**. |
@@ -195,7 +207,13 @@ Work your cancel stopped reads **Cancelled** in the dashboard and `cancelled` in
 `--json`, its row keeps `"state": "failed"` with `"cancelled": true`, and so does its service:
 `"outcome": "failed"` with `"cancelled": true`. Older Ployz versions ignore the marker and read
 it Failed. Work that failed on its own reads Failed, even in a cancelled deployment. So does work
-Ployz stopped for another reason, such as another service failing.
+Ployz stopped for another reason, such as another service failing. A service reads **Cancelled**
+when your cancel stopped its work, even if another service failed.
+
+Work Ployz stopped because the deployment lost its runner reads **Interrupted** in the dashboard
+and `interrupted` in the CLI. That happens when another deployment takes the environment over, or
+when the runner stops reporting in time. The deployment then reads **Unknown**. In `--json`, the
+row keeps `"state": "failed"` with `"interrupted": true`, and older Ployz versions read it Failed.
 
 If the runner stops reporting, unfinished rows read `unknown`. Completed and failed rows keep
 their recorded outcomes.
@@ -226,7 +244,8 @@ their recorded outcomes.
 - **Cancel**, on a running deployment, stops it at its next step. What it already changed stays
   until your next deploy.
 - On a queued deployment, **Deploy now** starts it if nothing is running ahead of it, and **⋮ →
-  Cancel deployment…** takes it out of the queue.
+  Cancel deployment…** takes it out of the queue. With no server in your organization, it refuses
+  and says to add one, as a deploy does.
 
 The CLI does the same with `ployz deployment redeploy`, `start` and `cancel`. Before a rollback,
 `ployz deployment redeploy 4` asks in a terminal; outside one, or with `--json`, it needs `--yes`.
@@ -237,11 +256,36 @@ A rollback that deletes volume data also needs `--accept-volume-loss <volume>` a
 ## Deploy without downtime
 
 Ployz starts the new replicas of a service alongside the old ones and waits until they're all
-ready. Then every server switches the service's traffic to the new replicas at once, and the old
-replicas stop once every server has switched, so your app keeps serving. A server that stops
-answering holds the old replicas for at most five minutes; after that they stop anyway. Before
-any replica stops, its server marks it as stopping so every server taking web traffic stops
-sending it requests, and the replica stops a few seconds later.
+healthy. Then every server starts sending the service's requests to the new replicas. Once every
+server has, the old replicas get no new requests, finish the ones they have for a few seconds,
+and stop. Your app keeps serving the whole time.
+
+Ployz waits up to five minutes for each server to switch. If a server is cut off or powered off,
+the deploy keeps the new replicas, leaves the old one running there, exits 3, and says so. When
+web-2 was already down as the deploy started:
+
+```text
+! Once web-2 is back, a copy left running can answer beside the new copies, and a left worker still takes jobs, until the next deploy.
+```
+
+When web-2 stopped answering during the deploy:
+
+```text
+! my-app-production/web left running on web-2 (web-2 did not answer). The next deploy cleans it up.
+```
+
+If web-2 stops answering in the middle of the switch, the deploy can fail instead, with
+`failed (2/3 ready)`, and exit 1, even though the new replicas serve
+([#2600](https://github.com/getployz/ployz/issues/2600)). Deploy again once web-2 is back.
+
+If the connection to a server drops while a new replica starts, the deploy fails with `create
+Container failed` and a cause such as `connection lost`. The server may have started that replica
+anyway. It keeps running beside the old ones but takes no requests, and the old replicas keep
+serving. `ployz ps` lists both, and the deployment doesn't mention the extra one. Your next deploy
+removes it, whatever you changed.
+
+Until you deploy again, that server can keep answering with the old version. See
+[Old and new versions answer at once](../troubleshooting/deployments.md#old-and-new-versions-answer-at-once).
 
 - **Set a health check.** Under **Settings → Deploy**, set **Healthcheck** to an HTTP path like
   `/up` or a command like `pg_isready -h 127.0.0.1`. A new replica is ready when the path answers

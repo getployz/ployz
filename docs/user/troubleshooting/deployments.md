@@ -19,7 +19,10 @@ while the deploy removes Containers it no longer needs, which waits until every 
 replacement leaves behind drain on each Server after the switch, so they show in
 `ployz ps`, not in the live block. A Service the deploy removes reads `waiting to remove`,
 then `stopping` and `removing`, then `removed`, and the summary counts it as removed. A Service
-the deploy keeps but only clears an old copy of reads `removing old`, then `switched`. The block
+the deploy keeps but only clears an old copy of reads `removing old`, then `switched`. When the
+deploy leaves old replicas running, the row reads like `switched 3/3, 2 left running` and the
+summary adds `2 copies left running`; see
+[Old and new versions answer at once](#old-and-new-versions-answer-at-once). The block
 ends with a summary that counts the Servers involved. In CI or redirected output,
 Ployz prints changes as lines and says `still waiting:` after 30 seconds without a
 change. To capture those lines through a pipe, use `ployz deploy 2>&1 | cat`.
@@ -149,13 +152,14 @@ service stays **Online**, with an amber **⚠** on its card.
 
 ## My app exits as soon as it starts
 
-**The Container exited**, **The Container is restarting** or **The Container stopped**, with
-`container … failed health monitoring: exited with code 1` or ending in `restarting`
+**The Container exited with code 1**, **The Container exited with code 1 and is restarting**,
+**The Container is restarting** or **The Container stopped**
 
 The new replica stopped right after it started, and the old version kept running. Any exit code
-can show here.
+can show here. The cause is the last line your app printed, from the same logs the **Deploy** log
+shows; it's left out when the logs couldn't be read, or couldn't be checked for Sealed values.
 
-- Read the **Deploy** log for the error your app printed before it stopped.
+- Read the **Deploy** log for the rest of what your app printed before it stopped.
 - Check the service's **Variables** for one your app needs that's missing or wrong.
 - Fix the **Start command**, or clear it to run the image's own command.
 - Code `137` usually means the replica went over its **Memory limit**. Raise or clear it under
@@ -213,6 +217,81 @@ Every replica of the service is on a server that's **Offline**, so the service i
 [When a server goes down](../services/scaling.md#when-a-server-goes-down). A service with replicas
 on other servers keeps serving from them, and reads **Degraded** while fewer serve than it asks
 for.
+
+## Old and new versions answer at once
+
+`Once web-2 is back, a copy left running can answer beside the new copies, and a left worker still takes jobs, until the next deploy.`
+or `my-app-production/web left running on web-2 (web-2 did not answer). The next deploy cleans it up.`
+
+A deploy couldn't reach web-2 to retire its old replica, because web-2 was cut off or powered
+off. Once web-2 is back, that replica can answer beside the new ones, so visitors get either
+version, and an old worker still takes jobs. A server that restarts takes its old replica out of
+traffic on its own within a few minutes, but the replica keeps running.
+
+1. Wait until web-2 shows online on the **Servers** page.
+2. Deploy again. With nothing staged, click **Redeploy** on the newest deployment, or run:
+
+   ```sh
+   ployz deploy web
+   ```
+
+The deploy stops the old replica, and the warning doesn't come back.
+
+## A server hasn't picked up the new version
+
+`web = web-2 has not picked up the new copies. Check its network.`
+
+`ployz status` prints this when web-2 is up but its proxy hasn't picked up `web`'s current copies,
+so visitors who reach web-2 can get the old version. It doesn't flag a copy a deploy reported as
+left running: that copy keeps serving beside the new ones until the next deploy, and the deploy's
+exit 3 line is what says so. See
+[Old and new versions answer at once](#old-and-new-versions-answer-at-once).
+
+- **Check web-2's network.** Your servers need UDP port 51820 open between them. See
+  [Troubleshooting servers](servers.md).
+- **Wait for it to rejoin.** Once web-2 catches up, the line goes away. A server that's down
+  shows as **Down** instead, and catches up once it's back.
+
+After a server rejoins, until every proxy catches up, usually under a minute, status can name
+servers that still see another one as Down. Run it again before you act.
+
+A `read` or `deploy` token without server access doesn't show this line yet, because Ployz Cloud
+reads for it.
+
+## A newer deploy is already serving
+
+`error: web: A newer deploy is already serving my-app-production/web.`
+
+Another deploy brought a newer version of `web` online while yours ran. Yours fails and exits 1.
+It removed the replicas it had started for `web`, and the newer version keeps serving. When the
+service deploys **Stop first** ([Service settings](../services/settings.md)), yours also removes
+the old replica it stopped, and says
+`A newer deploy is already serving; the old Container will not serve again.` A deploy that loses
+this way shows no log tail, because nothing failed to start. `ployz deployment show` lists the
+service as `web: a newer deploy serves it`. If you want your version, deploy again.
+
+## A stopped replica won't start
+
+`Container … is out of rotation and cannot start again. Deploy the Service again.`
+
+`ployz service start` brings back only replicas you stopped. A deploy retired this one, so it
+can't serve again. Deploy the service instead:
+
+```sh
+ployz deploy web
+```
+
+## A started replica gets no requests
+
+`Container … is left Pending and not routed: no Deploy brought it In. Deploy the Service again to route it.`
+
+A deploy that failed left this replica behind before it ever served. `ployz service start` and
+`ployz service restart` run it, but never send it requests, because two versions would answer at
+once. The command exits 3. Deploy the service to put a replica in service:
+
+```sh
+ployz deploy web
+```
 
 ## My deployment stays Queued
 
@@ -298,6 +377,8 @@ from its own upload.
 ## A waiting deploy says its upload is chosen when it starts
 
 `uploaded by nick, sha256 3f2a9c81b0d4 for now; chosen again when it starts`
+
+In Ployz Cloud: **Uploaded by nick for now; chosen again when it starts**
 
 A deploy without a new upload builds each service from the upload it last ran. If you deploy
 while another deployment is still running, yours waits, and which upload each service ran is

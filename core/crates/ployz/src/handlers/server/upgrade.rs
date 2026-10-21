@@ -4,8 +4,8 @@ use std::{collections::BTreeSet, time::Duration};
 
 use clap::ArgMatches;
 use ployz_core::{
-    Machine, MachineRelease, MachineTarget, MachineUpgradeAttempt, MachineUpgradeAttemptId,
-    MachineUpgradeOutcome, RequestMachineUpgradeRequest, RpcErrorCode, op,
+    Machine, MachineId, MachineRelease, MachineTarget, MachineUpgradeAttempt,
+    MachineUpgradeAttemptId, MachineUpgradeOutcome, RequestMachineUpgradeRequest, RpcErrorCode, op,
 };
 use reqwest::Method;
 use serde::{Deserialize, Serialize};
@@ -349,13 +349,34 @@ fn stopped(server: &str, upgrade: &CloudUpgrade) -> Option<Error> {
             crate::ui::stream(format_args!("Upgraded Server {server} to {target}."));
             return None;
         }
-        "failed" => format!("Server {server} failed to upgrade to {target}{reason}"),
+        "failed" => {
+            crate::ui::stream(format_args!(
+                "Server {server} failed to upgrade to {target}."
+            ));
+            format!("Server {server} failed to upgrade to {target}{reason}")
+        }
         "interrupted" => {
+            crate::ui::stream(format_args!(
+                "Server {server} stopped upgrading to {target}."
+            ));
             format!("The upgrade of Server {server} to {target} was interrupted{reason}")
         }
-        _ => format!("Cloud cannot tell whether Server {server} upgraded to {target}{reason}"),
+        _ => {
+            crate::ui::stream(format_args!(
+                "Cloud cannot tell whether Server {server} upgraded to {target}."
+            ));
+            format!("Cloud cannot tell whether Server {server} upgraded to {target}{reason}")
+        }
     };
     Some(Error::coded(RpcErrorCode::Internal, message))
+}
+
+/// An upgrade attempt and the Server it ran on, as `--json` prints it.
+#[derive(Serialize)]
+struct Attempted {
+    server: MachineId,
+    #[serde(flatten)]
+    attempt: MachineUpgradeAttempt,
 }
 
 /// Upgrade each Server's daemon in order, stopping at the first failure; once all succeed,
@@ -375,7 +396,10 @@ async fn run_all(
         let stopped = match run_one(client, machine, release.clone(), attempt_id, &mut seen).await {
             Err(error) => {
                 // An accepted attempt is committed evidence: keep it in the result.
-                attempts.extend(seen);
+                attempts.extend(seen.map(|attempt| Attempted {
+                    server: machine.id,
+                    attempt,
+                }));
                 error
             }
             Ok(attempt) => {
@@ -413,7 +437,10 @@ async fn run_all(
                         unreachable!("run_one returns only terminal evidence")
                     }
                 };
-                attempts.push(attempt);
+                attempts.push(Attempted {
+                    server: machine.id,
+                    attempt,
+                });
                 match stopped {
                     Some(error) => error,
                     None => continue,
@@ -538,7 +565,14 @@ fn print_attempt(machine: &Machine, attempt: &MachineUpgradeAttempt) {
         MachineUpgradeOutcome::Succeeded { version } => {
             crate::ui::stream(format_args!("Upgraded Server {name} to {version}."));
         }
-        MachineUpgradeOutcome::Failed { .. } | MachineUpgradeOutcome::Interrupted { .. } => {}
+        MachineUpgradeOutcome::Failed { stage, .. } => crate::ui::stream(format_args!(
+            "Server {name} failed to upgrade to {target} while {}.",
+            stage.as_str()
+        )),
+        MachineUpgradeOutcome::Interrupted { stage } => crate::ui::stream(format_args!(
+            "Server {name} stopped upgrading to {target} while {}.",
+            stage.as_str()
+        )),
     }
 }
 
@@ -660,7 +694,14 @@ mod tests {
             _machine: &Machine,
             _wait: Duration,
         ) -> Result<MachineUpgradeAttempt, crate::setup_retry::Error<ConnectError>> {
-            panic!("terminal answers are not polled")
+            Err(crate::setup_retry::Error::Permanent(ConnectError::Remote(
+                RpcError {
+                    code: RpcErrorCode::Internal,
+                    message: "upgrade record is unreadable".into(),
+                    details: Value::Null,
+                    cause: Vec::new(),
+                },
+            )))
         }
 
         async fn move_ingress(&mut self, image: IngressImage) -> Result<Option<Outcome>, Error> {
@@ -737,6 +778,67 @@ mod tests {
         assert_eq!(result["attempts"].as_array().unwrap().len(), 2);
         assert_eq!(result["ingress"], Value::Null);
         assert_eq!(moved, [IngressImage::Latest]);
+    }
+
+    #[tokio::test]
+    async fn every_json_attempt_names_its_server_by_id() {
+        let failed = MachineUpgradeOutcome::Failed {
+            stage: ployz_core::MachineUpgradeStage::Launching,
+            error: "no systemd".into(),
+        };
+        let interrupted = MachineUpgradeOutcome::Interrupted {
+            stage: ployz_core::MachineUpgradeStage::Launching,
+        };
+        let (a, b, c) = (machine('a', 1), machine('b', 2), machine('c', 3));
+        let cases = [
+            (vec![a.clone()], vec![succeeded()], vec![("a", "succeeded")]),
+            (vec![a.clone()], vec![failed.clone()], vec![("a", "failed")]),
+            (
+                vec![a.clone()],
+                vec![interrupted.clone()],
+                vec![("a", "interrupted")],
+            ),
+            (
+                vec![a.clone()],
+                vec![MachineUpgradeOutcome::Accepted],
+                vec![("a", "accepted")],
+            ),
+            (
+                vec![a.clone(), b.clone(), c.clone()],
+                vec![succeeded(), succeeded(), failed],
+                vec![("a", "succeeded"), ("b", "succeeded"), ("c", "failed")],
+            ),
+            (
+                vec![a, b, c],
+                vec![succeeded(), interrupted],
+                vec![("a", "succeeded"), ("b", "interrupted")],
+            ),
+        ];
+        for (machines, outcomes, expected) in cases {
+            let (result, _, _) = run_sequence(&machines, outcomes, None).await;
+            let result = result.unwrap();
+            let attempts = result.pointer("/attempts").and_then(Value::as_array);
+            let named = attempts
+                .unwrap()
+                .iter()
+                .map(|attempt| {
+                    assert!(attempt.get("attempt_id").is_some(), "{attempt}");
+                    assert!(attempt.get("target").is_some(), "{attempt}");
+                    (
+                        attempt.get("server").cloned().unwrap_or_default(),
+                        attempt.get("outcome").cloned().unwrap_or_default(),
+                    )
+                })
+                .collect::<Vec<_>>();
+            let expected = expected
+                .into_iter()
+                .map(|(name, outcome)| {
+                    let id = MachineId::parse(name.repeat(32)).unwrap();
+                    (json!(id), json!(outcome))
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(named, expected, "{result}");
+        }
     }
 
     #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
@@ -881,6 +983,54 @@ mod tests {
             "{stderr}"
         );
         assert!(!stderr.contains("firewall"), "{stderr}");
+    }
+
+    #[test]
+    fn a_lone_failed_server_is_named_on_stdout() {
+        // The result lines go to the process's real stdout, so read them from a child run.
+        const CHILD: &str = "PLOYZ_UPGRADE_FAILED_CHILD";
+        if std::env::var_os(CHILD).is_some() {
+            crate::ui::init(false, crate::ui::Color::Never);
+            let failed = MachineUpgradeOutcome::Failed {
+                stage: ployz_core::MachineUpgradeStage::Launching,
+                error: "no systemd".into(),
+            };
+            let (_, outcome, _) = tokio::runtime::Runtime::new()
+                .unwrap()
+                .block_on(run_sequence(&[machine('a', 1)], vec![failed], None));
+            assert!(outcome.is_err());
+            let upgrade = CloudUpgrade {
+                outcome: "failed".into(),
+                from_version: Some("1.2.2".into()),
+                target_version: Some("1.2.3".into()),
+                message: Some("install failed".into()),
+            };
+            assert!(stopped("b", &upgrade).is_some());
+            return;
+        }
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "handlers::server::upgrade::tests::a_lone_failed_server_is_named_on_stdout",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            stdout.contains("Server a failed to upgrade to 1.2.3 while launching.\n"),
+            "{stdout}"
+        );
+        assert!(
+            stdout.contains("Server b failed to upgrade to 1.2.3.\n"),
+            "{stdout}"
+        );
     }
 
     async fn restart_during_upgrade() {

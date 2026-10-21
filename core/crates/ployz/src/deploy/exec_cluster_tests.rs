@@ -571,6 +571,7 @@ async fn run_container(
 ) -> ContainerId {
     let slot = SlotKey {
         namespace: Namespace::parse("app").unwrap(),
+        service: resolved_spec.name.clone(),
         kind: ContainerKind::ServiceContainer,
         creation_key: CreationKey::try_from(uuid::Uuid::new_v4().to_string()).unwrap(),
     };

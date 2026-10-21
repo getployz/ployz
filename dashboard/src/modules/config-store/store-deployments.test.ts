@@ -1,10 +1,12 @@
-import type { DeploymentView, DiffView, JsonValue, MachineId, Outcome, RowId, ServiceId, ServiceListing } from "@ployz/sdk";
+import { readFileSync } from "node:fs";
+import type { DeploymentView, DiffView, JsonValue, MachineId, NodeOutcome, Outcome, RowId, ServiceId, ServiceListing } from "@ployz/sdk";
 import { expect, it } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
 import {
   showCancelling,
   canFixOnBranch, changeGroups, deploymentWarningText, deploymentActions, deploymentByline, deploymentLight, deploymentStatusLabel, deploysLabel, missingDeployLogs, outcomeReason,
-  deploymentLabel, freshRollback, nodeLight, reviewGroups, rollbackConfirm, shippedService, shownValue, uploadLabel, warnedService,
+  deploymentLabel, freshRollback, nodeLight, nodeStatusLabels, reviewGroups, rollbackConfirm, shippedService, shownNodeStatus, shownValue,
+  uploadLabel, warnedService,
 } from "./store-deployments";
 
 // The grouping reads only the changes and each Service's id and source.
@@ -206,9 +208,24 @@ it("words a push waiting for CI by how its CI stands, and lights it red once its
 });
 
 it("names an upload's provenance, and its uploader only when someone else started the Deployment", () => {
-  expect(uploadLabel({ digest: "d", base: { commit: "abc1234def", changed: true }, uploader: "nick" })).toBe("Uploaded by nick · abc1234 + changes");
-  expect(uploadLabel({ digest: "d", base: { commit: "abc1234def", changed: false }, uploader: "nick" }, "nick")).toBe("Uploaded · abc1234");
-  expect(uploadLabel({ digest: "d", base: null })).toBe("Uploaded");
+  expect(uploadLabel({ upload: { digest: "d", base: { commit: "abc1234def", changed: true }, uploader: "nick" } })).toBe("Uploaded by nick · abc1234 + changes");
+  expect(uploadLabel({ upload: { digest: "d", base: { commit: "abc1234def", changed: false }, uploader: "nick" } }, "nick")).toBe("Uploaded · abc1234");
+  expect(uploadLabel({ upload: { digest: "d", base: null } })).toBe("Uploaded");
+  expect(uploadLabel({ upload: null })).toBeNull();
+});
+
+it("says a waiting Deploy's upload is chosen for now, and again when it starts", () => {
+  const upload = { digest: "d", base: { commit: "abc1234def", changed: false }, uploader: "nick" };
+  expect(uploadLabel({ upload, chooses_upload_at_start: true })).toBe("Uploaded by nick · abc1234 for now; chosen again when it starts");
+  expect(uploadLabel({ upload, chooses_upload_at_start: false })).toBe("Uploaded by nick · abc1234");
+});
+
+it("reads a running Deployment as preparing until its runner records a Deploy Preview", () => {
+  const running = { status: "running", remove: false, outcome: null } as const;
+  expect(deploymentStatusLabel({ ...running, preparing: true })).toBe("Preparing");
+  expect(deploymentStatusLabel(running)).toBe("Deploying");
+  expect(deploymentStatusLabel({ ...running, remove: true, preparing: true })).toBe("Coming off the servers");
+  expect(deploymentLight({ status: "running" })).toBe("deploying");
 });
 
 const node = (name: string, outcome: DeploymentView["nodes"][number]["outcome"]) => ({ type: "service" as const, id: `id-${name}`, name, outcome, rows: [] });
@@ -288,6 +305,26 @@ it("keeps the deepest preparation failure cause in the Deployment banner", () =>
   };
   expect(outcomeReason(outcome)).toBe("Could not prepare the deployment: registry denied access");
   expect(outcome.cause).toEqual(["could not pull the image", "registry denied access"]);
+});
+
+it("drops the header's reason when the Deployment's cancel stopped the work it names, and keeps a real failure's", () => {
+  const stopped: Outcome = { type: "executed", summary: null, reason: "web: Cancelled", cause: [], services: [] };
+  expect(outcomeReason({ ...stopped, cancelled: true })).toBeUndefined();
+  // A Store from before the marker sends none, so the line reads as it did.
+  expect(outcomeReason(stopped)).toBe("web: Cancelled");
+  expect(outcomeReason({ ...stopped, reason: "api: create Container failed", cause: ["no space left on device"] }))
+    .toBe("api: create Container failed: no space left on device");
+});
+
+it("names a real failure in the header beside the work a cancel stopped, as the Store records the run", () => {
+  // ployz-store's deployment test writes this snapshot: a cancel stops web while api's create fails on its own.
+  const snapshot = new URL("../../../../core/crates/ployz-store/tests/snapshots/cancel_beside_a_real_failure.json", import.meta.url);
+  const recorded = asTestDouble<{ outcome: Outcome; nodes: (Pick<NodeOutcome, "outcome" | "cancelled"> & { name: string })[] }>()<unknown>(
+    JSON.parse(readFileSync(snapshot, "utf8")),
+  );
+  expect(outcomeReason(recorded.outcome)).toBe("api: create Container failed: no space left on device");
+  expect(Object.fromEntries(recorded.nodes.map((node) => [node.name, nodeStatusLabels[shownNodeStatus(node)]])))
+    .toEqual({ api: "Failed", web: "Cancelled" });
 });
 
 it("preserves reasons without a cause and outcomes without a reason", () => {

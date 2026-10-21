@@ -10,10 +10,10 @@ use std::{
 
 use hex::encode as hex_encode;
 use ployz_core::{
-    ConfigMount, ConfigSpec, ContainerId, ContainerRun, CopyRotation, DockerVolumeName,
-    ResolvedServiceSpec, VolumeGen,
+    ConfigMount, ConfigSpec, ContainerId, ContainerKind, ContainerRun, CopyRotation,
+    DockerVolumeName, Namespace, ResolvedServiceSpec, VolumeGen,
 };
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 use tokio::sync::{Mutex, MutexGuard, watch};
@@ -35,8 +35,23 @@ CREATE TABLE IF NOT EXISTS stops (
     id  TEXT NOT NULL PRIMARY KEY,
     run TEXT NOT NULL CHECK (json_valid(run))
 );
+CREATE TABLE IF NOT EXISTS creations (
+    slot TEXT NOT NULL PRIMARY KEY,
+    id   TEXT NOT NULL
+);
 ";
 static TEMPORARY_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// The namespace, kind and creation key a keyed create reserved. A container-level
+/// restore keeps a Container's labels and so its slot, but mints a new Docker ID.
+#[derive(Clone, Debug)]
+pub(crate) struct CreationSlot(String);
+
+impl CreationSlot {
+    pub(crate) fn new(namespace: &Namespace, kind: ContainerKind, key: &str) -> Self {
+        Self(serde_json::to_string(&(namespace, kind, key)).expect("creation slot serializes"))
+    }
+}
 
 #[derive(Clone)]
 pub struct MachineSpecStore {
@@ -182,6 +197,17 @@ impl MachineSpecStore {
         }
     }
 
+    /// Point each listed slot with no holder at the listed Container holding its spec.
+    /// Returns whether a listed Container looks restored, which
+    /// [`ConfigOperation::adopt_restored`] then adopts under the lock.
+    pub(crate) async fn record_creations(
+        &self,
+        listed: Vec<(ContainerId, Option<CreationSlot>)>,
+    ) -> Result<bool, Error> {
+        let path = self.path.clone();
+        blocking(move || Ok(!reconcile_creations(&path, &listed, false)?.is_empty())).await
+    }
+
     pub async fn get(
         &self,
         container_id: &ContainerId,
@@ -261,19 +287,41 @@ impl ConfigOperation<'_> {
     pub async fn put(
         &mut self,
         container_id: &ContainerId,
+        slot: Option<&CreationSlot>,
         spec: &ResolvedServiceSpec,
     ) -> Result<(), Error> {
         let path = self.store.path.clone();
         let container_id = container_id.to_string();
+        let slot = slot.cloned();
         let spec = serde_json::to_string(spec)?;
         blocking(move || {
-            connect(&path)?.execute(
+            let mut connection = connect(&path)?;
+            let transaction = connection.transaction()?;
+            transaction.execute(
                 "INSERT INTO containers (id, service_spec) VALUES (?1, ?2) ON CONFLICT (id) DO UPDATE SET service_spec = excluded.service_spec",
                 params![container_id, spec],
             )?;
+            if let Some(CreationSlot(slot)) = slot {
+                transaction.execute(
+                    "INSERT INTO creations (slot, id) VALUES (?1, ?2) ON CONFLICT (slot) DO UPDATE SET id = excluded.id",
+                    params![slot, container_id],
+                )?;
+            }
+            transaction.commit()?;
             Ok(())
         })
         .await
+    }
+
+    /// Move the records of each listed Container's restored-over ID onto it, so it is
+    /// observed as it was before the restore. `listed` is Docker's inventory read under
+    /// this lock. Returns each `(old, new)` pair moved.
+    pub(crate) async fn adopt_restored(
+        &mut self,
+        listed: Vec<(ContainerId, Option<CreationSlot>)>,
+    ) -> Result<Vec<(String, ContainerId)>, Error> {
+        let path = self.store.path.clone();
+        blocking(move || reconcile_creations(&path, &listed, true)).await
     }
 
     pub async fn remove(&mut self, container_id: &ContainerId) -> Result<bool, Error> {
@@ -284,7 +332,8 @@ impl ConfigOperation<'_> {
             connection.execute("DELETE FROM rotations WHERE id = ?1", [&container_id])?;
             connection.execute("DELETE FROM stops WHERE id = ?1", [&container_id])?;
             let removed =
-                connection.execute("DELETE FROM containers WHERE id = ?1", [container_id])? > 0;
+                connection.execute("DELETE FROM containers WHERE id = ?1", [&container_id])? > 0;
+            connection.execute("DELETE FROM creations WHERE id = ?1", [container_id])?;
             if removed
                 && let Err(error) = referenced_config_names(&connection)
                     .and_then(|retained| garbage_collect_config_files(&path, &retained))
@@ -476,6 +525,70 @@ fn garbage_collect_config_files(
     Ok(())
 }
 
+/// Point each listed slot that has no holder with a spec at the listed Container
+/// holding its spec, and return each listed Container with no spec whose slot names
+/// an ID absent from `listed` that holds a spec: one a restore recreated under a new
+/// ID. With `adopt`, that old ID's records move to the new ID, so `listed` must be
+/// read under the lock.
+fn reconcile_creations(
+    path: &Path,
+    listed: &[(ContainerId, Option<CreationSlot>)],
+    adopt: bool,
+) -> Result<Vec<(String, ContainerId)>, Error> {
+    let mut connection = connect(path)?;
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let present = listed
+        .iter()
+        .map(|(id, _)| id.as_str())
+        .collect::<HashSet<_>>();
+    let has_spec = |id: &str| {
+        transaction.query_row(
+            "SELECT EXISTS (SELECT 1 FROM containers WHERE id = ?1)",
+            [id],
+            |row| row.get::<_, bool>(0),
+        )
+    };
+    let mut restored = Vec::new();
+    for (id, slot) in listed {
+        let Some(CreationSlot(slot)) = slot else {
+            continue;
+        };
+        if has_spec(id.as_str())? {
+            transaction.execute(
+                "INSERT INTO creations (slot, id) VALUES (?1, ?2) ON CONFLICT (slot) DO UPDATE SET id = excluded.id WHERE NOT EXISTS (SELECT 1 FROM containers WHERE containers.id = creations.id)",
+                params![slot, id.as_str()],
+            )?;
+            continue;
+        }
+        let Some(old) = transaction
+            .query_row("SELECT id FROM creations WHERE slot = ?1", [slot], |row| {
+                row.get::<_, String>(0)
+            })
+            .optional()?
+        else {
+            continue;
+        };
+        if present.contains(old.as_str()) || !has_spec(&old)? {
+            continue;
+        }
+        if adopt {
+            for table in ["containers", "rotations", "stops"] {
+                transaction.execute(
+                    &format!("UPDATE {table} SET id = ?2 WHERE id = ?1"),
+                    params![old, id.as_str()],
+                )?;
+            }
+            transaction.execute(
+                "UPDATE creations SET id = ?2 WHERE slot = ?1",
+                params![slot, id.as_str()],
+            )?;
+        }
+        restored.push((old, *id));
+    }
+    transaction.commit()?;
+    Ok(restored)
+}
+
 fn initialize(path: &Path) -> Result<Connection, Error> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
@@ -616,8 +729,8 @@ mod tests {
         let second_id = ContainerId::parse("c".repeat(64)).unwrap();
         let incompatible_id = ContainerId::parse("d".repeat(64)).unwrap();
 
-        operation.put(&id, &spec).await.unwrap();
-        operation.put(&second_id, &spec).await.unwrap();
+        operation.put(&id, None, &spec).await.unwrap();
+        operation.put(&second_id, None, &spec).await.unwrap();
         connect(&path)
             .unwrap()
             .execute(
@@ -687,6 +800,218 @@ mod tests {
         let observed = restarted.inspect_managed(&id, &machine).await.unwrap();
         assert_eq!(observed.rotation(), &held);
         assert_eq!(observed.copy_gen(), Gen::FIRST);
+    }
+
+    struct Restorable {
+        runtime: crate::docker::ContainerRuntime,
+        fake: crate::docker::test_support::FakeDocker,
+        containers:
+            std::sync::Arc<std::sync::Mutex<std::collections::BTreeMap<String, serde_json::Value>>>,
+        machine: ployz_core::MachineId,
+        id: ContainerId,
+        spec: ResolvedServiceSpec,
+        rotation: ployz_core::CopyRotation,
+    }
+
+    async fn keyed_copy_in_rotation() -> Restorable {
+        use crate::docker::test_support::{
+            FakeDocker, container_request, fake_runtime_with, machine, spec_with_sources,
+        };
+        use ployz_core::{ContainerKind, CopyRotation, DeploymentLogId, Namespace};
+
+        let containers = std::sync::Arc::default();
+        let (runtime, fake) = fake_runtime_with(FakeDocker {
+            named_containers: Some(std::sync::Arc::clone(&containers)),
+            list_named: true,
+            ..Default::default()
+        })
+        .await;
+        let machine = machine();
+        let namespace = Namespace::parse("app").unwrap();
+        let spec = spec_with_sources(Vec::new());
+        let mut request = container_request(
+            ContainerKind::ServiceContainer,
+            &namespace,
+            &spec,
+            std::future::ready(None),
+        );
+        request.creation_key = Some("restore-1");
+        let id = runtime
+            .create_with_admission::<_, _, crate::docker::Error>(&machine, request)
+            .await
+            .unwrap()
+            .container_id;
+        let rotation = CopyRotation::Held(DeploymentLogId::parse("d1").unwrap());
+        runtime
+            .rotation_turn(&id)
+            .await
+            .unwrap()
+            .write(&rotation)
+            .await
+            .unwrap();
+        Restorable {
+            runtime,
+            fake,
+            containers,
+            machine: machine.id,
+            id,
+            spec,
+            rotation,
+        }
+    }
+
+    fn other_id(id: &ContainerId) -> ContainerId {
+        let flipped = if id.as_str().starts_with('f') {
+            'e'
+        } else {
+            'f'
+        };
+        ContainerId::parse(format!("{flipped}{}", &id.as_str()[1..])).unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_restored_copy_keeps_its_spec_and_rotation_under_its_new_id() {
+        let copy = keyed_copy_in_rotation().await;
+        let restored = other_id(&copy.id);
+        for container in copy.containers.lock().unwrap().values_mut() {
+            container
+                .as_object_mut()
+                .unwrap()
+                .insert("Id".into(), restored.as_str().into());
+        }
+
+        let listed = copy.runtime.list_managed(&copy.machine).await.unwrap();
+
+        let observed = listed
+            .iter()
+            .find(|observed| observed.container_id == restored)
+            .expect("the restored copy is observed");
+        assert_eq!(observed.resolved_spec, copy.spec);
+        assert_eq!(observed.rotation(), &copy.rotation);
+        let store = MachineSpecStore::open(copy.runtime.spec_store_path_for_test())
+            .await
+            .unwrap();
+        assert_eq!(store.get(&restored).await.unwrap(), Some(copy.spec));
+        assert_eq!(store.get(&copy.id).await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn a_scan_listed_before_a_replacement_leaves_the_replacements_records() {
+        use crate::docker::test_support::{container_request, machine};
+        use ployz_core::{ContainerKind, Namespace};
+
+        let copy = keyed_copy_in_rotation().await;
+        let restored = other_id(&copy.id);
+        for container in copy.containers.lock().unwrap().values_mut() {
+            container
+                .as_object_mut()
+                .unwrap()
+                .insert("Id".into(), restored.as_str().into());
+        }
+        let listed = std::sync::Arc::new(tokio::sync::Barrier::new(2));
+        *copy.fake.listed_hold.lock().unwrap() = Some(std::sync::Arc::clone(&listed));
+        let stale = tokio::spawn({
+            let (runtime, machine) = (copy.runtime.clone(), copy.machine);
+            async move { runtime.list_managed(&machine).await }
+        });
+        listed.wait().await;
+
+        copy.runtime.list_managed(&copy.machine).await.unwrap();
+        copy.runtime.remove(&restored, false, true).await.unwrap();
+        let mut machine = machine();
+        machine.id = copy.machine;
+        let namespace = Namespace::parse("app").unwrap();
+        let mut request = container_request(
+            ContainerKind::ServiceContainer,
+            &namespace,
+            &copy.spec,
+            std::future::ready(None),
+        );
+        request.creation_key = Some("restore-1");
+        let replacement = copy
+            .runtime
+            .create_with_admission::<_, _, crate::docker::Error>(&machine, request)
+            .await
+            .unwrap()
+            .container_id;
+        listed.wait().await;
+        let _ = stale.await.unwrap();
+
+        let store = MachineSpecStore::open(copy.runtime.spec_store_path_for_test())
+            .await
+            .unwrap();
+        assert_eq!(store.get(&replacement).await.unwrap(), Some(copy.spec));
+        assert_eq!(store.get(&restored).await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn a_stale_listing_never_points_a_slot_away_from_a_container_with_a_spec() {
+        let root = std::env::temp_dir().join(format!(
+            "ployzd-machine-db-{}",
+            ployz_core::MachineId::random()
+        ));
+        let store = MachineSpecStore::open(root.join("machine.db"))
+            .await
+            .unwrap();
+        let spec = crate::docker::test_support::spec_with_sources(Vec::new());
+        let slot = super::CreationSlot::new(
+            &ployz_core::Namespace::parse("app").unwrap(),
+            ployz_core::ContainerKind::ServiceContainer,
+            "restore-1",
+        );
+        let live = ContainerId::parse("a".repeat(64)).unwrap();
+        let stale = ContainerId::parse("b".repeat(64)).unwrap();
+        let restored = ContainerId::parse("c".repeat(64)).unwrap();
+        let mut operation = store.config_operation().await;
+        operation.put(&live, Some(&slot), &spec).await.unwrap();
+        operation.put(&stale, None, &spec).await.unwrap();
+        drop(operation);
+
+        store
+            .record_creations(vec![(stale, Some(slot.clone()))])
+            .await
+            .unwrap();
+
+        assert_eq!(
+            store
+                .config_operation()
+                .await
+                .adopt_restored(vec![(restored, Some(slot))])
+                .await
+                .unwrap(),
+            vec![(live.to_string(), restored)]
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn a_copy_with_its_slot_whose_old_id_still_runs_is_not_rehomed() {
+        let copy = keyed_copy_in_rotation().await;
+        let foreign = other_id(&copy.id);
+        {
+            let mut containers = copy.containers.lock().unwrap();
+            let mut twin = containers.values().next().unwrap().clone();
+            let fields = twin.as_object_mut().unwrap();
+            fields.insert("Id".into(), foreign.as_str().into());
+            fields.insert("Name".into(), "/twin".into());
+            containers.insert("twin".into(), twin);
+        }
+
+        let listed = copy.runtime.list_managed(&copy.machine).await.unwrap();
+
+        assert_eq!(
+            listed
+                .iter()
+                .map(|observed| observed.container_id)
+                .collect::<Vec<_>>(),
+            vec![copy.id]
+        );
+        let store = MachineSpecStore::open(copy.runtime.spec_store_path_for_test())
+            .await
+            .unwrap();
+        assert_eq!(store.get(&foreign).await.unwrap(), None);
+        assert_eq!(store.rotation(&foreign).await.unwrap(), None);
+        assert_eq!(store.rotation(&copy.id).await.unwrap(), Some(copy.rotation));
     }
 
     #[tokio::test]

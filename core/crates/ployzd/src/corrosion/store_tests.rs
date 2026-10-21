@@ -673,6 +673,36 @@ async fn ingress_route_acks_upsert_and_delete_against_the_schema() {
     task.abort();
 }
 
+#[tokio::test]
+async fn remove_machine_deletes_route_ack() {
+    let db = rusqlite::Connection::open_in_memory().unwrap();
+    db.execute_batch(include_str!("schema.sql")).unwrap();
+    let (store, task) = identity_store(db).await;
+    let gone = MachineId::parse("a".repeat(32)).unwrap();
+    let kept = MachineId::parse("b".repeat(32)).unwrap();
+    let api = QualifiedService::parse("app/api").unwrap();
+    let ack = IngressRouteAck {
+        containers: [ContainerId::parse("c".repeat(64)).unwrap()].into(),
+    };
+    for machine in [&gone, &kept] {
+        store
+            .publish_ingress_routes(
+                machine,
+                &BTreeMap::from([(api.clone(), IngressRouteChange::Upsert(ack.clone()))]),
+            )
+            .await
+            .unwrap();
+    }
+
+    store.remove_machine(&gone).await.unwrap();
+
+    assert_eq!(
+        store.ingress_routes().await.unwrap(),
+        BTreeMap::from([((kept, api), IngressRouteRow::Acked(ack))])
+    );
+    task.abort();
+}
+
 fn identity_container(machine_id: MachineId) -> ployz_core::ContainerObservation {
     serde_json::from_value(json!({
         "container_id": "c".repeat(64),

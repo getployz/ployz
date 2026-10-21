@@ -13,8 +13,9 @@ use bollard::{
 use ployz_core::labels::CREATION_KEY;
 use ployz_core::{
     ContainerId, ContainerKind, ContainerObservation, Gen, Machine, MachineId,
-    MachineStorageObservation, Namespace, ResolvedServiceSpec, ServicePlacementEligibility,
-    ServicePlacementIneligibleReason, ServicePlacementUnknownReason, SlotKey,
+    MachineStorageObservation, Namespace, ResolvedServiceSpec, ServiceName,
+    ServicePlacementEligibility, ServicePlacementIneligibleReason, ServicePlacementUnknownReason,
+    SlotKey,
 };
 
 #[cfg(test)]
@@ -113,7 +114,7 @@ impl ContainerRuntime {
             storage,
         } = request;
         let reserved_name =
-            creation_key.map(|key| creation_name(&machine.id, namespace, kind, key));
+            creation_key.map(|key| creation_name(&machine.id, namespace, &spec.name, kind, key));
         if let (Some(name), Some(key)) = (&reserved_name, creation_key) {
             // Wait for an in-flight create to persist its spec before comparing a retry.
             let _operation = self.specs.config_operation().await;
@@ -171,7 +172,7 @@ impl ContainerRuntime {
         image: ImagePull<'_>,
     ) -> Result<ContainerCreated, Error> {
         let reserved_name =
-            creation_key.map(|key| creation_name(&machine.id, namespace, kind, key));
+            creation_key.map(|key| creation_name(&machine.id, namespace, &spec.name, kind, key));
         let mut body = create::container_create_body(
             &machine.id,
             machine.subnet.gateway(),
@@ -179,7 +180,7 @@ impl ContainerRuntime {
             namespace,
             spec,
         )?;
-        create::migrate_ingress_requests(
+        create::ingress_sysctls(
             &mut body,
             namespace,
             spec,
@@ -289,7 +290,12 @@ impl ContainerRuntime {
                     field: "container ID",
                     source,
                 })?;
-            if let Err(error) = config_operation.put(&container_id, spec).await {
+            let slot =
+                creation_key.map(|key| super::spec_store::CreationSlot::new(namespace, kind, key));
+            if let Err(error) = config_operation
+                .put(&container_id, slot.as_ref(), spec)
+                .await
+            {
                 self.force_remove_container(&container_id).await?;
                 return Err(error.into());
             }
@@ -320,7 +326,7 @@ impl ContainerRuntime {
         spec: &ResolvedServiceSpec,
         key: &str,
     ) -> Result<Option<ContainerCreated>, Error> {
-        let name = creation_name(&machine.id, namespace, kind, key);
+        let name = creation_name(&machine.id, namespace, &spec.name, kind, key);
         self.matching_creation(machine, namespace, kind, spec, &name, key)
             .await
     }
@@ -352,7 +358,7 @@ impl ContainerRuntime {
         slot: &SlotKey,
     ) -> Result<Option<ContainerObservation>, Error> {
         let key = slot.creation_key.as_str();
-        let name = creation_name(machine_id, &slot.namespace, slot.kind, key);
+        let name = creation_name(machine_id, &slot.namespace, &slot.service, slot.kind, key);
         self.keyed_container(machine_id, &name, key).await
     }
 
@@ -743,13 +749,15 @@ pub(crate) fn same_creation(
 fn creation_name(
     machine: &MachineId,
     namespace: &Namespace,
+    service: &ServiceName,
     kind: ContainerKind,
     key: &str,
 ) -> String {
     use sha2::{Digest, Sha256};
     let scope =
         serde_json::to_vec(&(machine, namespace, kind, key)).expect("creation scope serializes");
-    format!("ployz-create-{}", hex::encode(Sha256::digest(scope)))
+    let digest = hex::encode(Sha256::digest(scope));
+    format!("{service}-{}", &digest[..12])
 }
 
 /// Refuse unsupported or unobservable placement without conflating the two.
@@ -867,6 +875,63 @@ mod tests {
             "host",
             serde_json::json!({})
         )));
+    }
+
+    #[tokio::test]
+    async fn a_keyed_container_is_named_after_its_service() {
+        let containers =
+            std::sync::Arc::new(std::sync::Mutex::new(std::collections::BTreeMap::new()));
+        let (runtime, _fake) = fake_runtime_with(FakeDocker {
+            named_containers: Some(containers.clone()),
+            ..Default::default()
+        })
+        .await;
+        let machine = machine();
+        let namespace = Namespace::parse("app").unwrap();
+        let spec = spec_with_sources(Vec::new());
+        let created = runtime
+            .create_with_admission::<_, _, Error>(
+                &machine,
+                ContainerRequest {
+                    creation_key: Some("plan:0"),
+                    ..container_request(
+                        ContainerKind::ServiceContainer,
+                        &namespace,
+                        &spec,
+                        std::future::ready(None),
+                    )
+                },
+            )
+            .await
+            .unwrap();
+        let names = containers
+            .lock()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        let [name] = names.as_slice() else {
+            panic!("one keyed create makes one Container: {names:?}");
+        };
+        let suffix = name
+            .strip_prefix("api-")
+            .unwrap_or_else(|| panic!("{name} starts with the Service name"));
+        assert!(
+            suffix.len() == 12 && suffix.bytes().all(|byte| byte.is_ascii_hexdigit()),
+            "{name} ends in 12 hex digits"
+        );
+        let slot = SlotKey {
+            namespace,
+            service: spec.name.clone(),
+            kind: ContainerKind::ServiceContainer,
+            creation_key: ployz_core::CreationKey::try_from("plan:0".to_owned()).unwrap(),
+        };
+        let found = runtime.inspect_slot(&machine.id, &slot).await.unwrap();
+        assert_eq!(
+            found.map(|container| container.container_id),
+            Some(created.container_id),
+            "the slot finds the Container it named"
+        );
     }
 
     async fn stranded(error: &str) -> (ContainerRuntime, FakeDocker, ContainerId) {

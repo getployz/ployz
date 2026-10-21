@@ -2184,7 +2184,7 @@ mod ensure_container {
     }
 
     fn slot(key: &str) -> Value {
-        json!({"namespace":"app", "kind":"service_container", "creation_key":key})
+        json!({"namespace":"app", "service":"api", "kind":"service_container", "creation_key":key})
     }
 
     fn run_new(key: &str, spec: Value) -> Value {
@@ -2462,7 +2462,7 @@ mod ensure_container {
     async fn a_resent_hook_want_after_the_hook_exited_runs_it_once_and_returns_its_exit() {
         let (data_dir, _store, service, fake) = fake_docker_service("ployzd-ensure-hook").await;
         let hook = json!({"want":{"state":"running", "rotation":"pending", "container":{"new":{
-            "slot":{"namespace":"app", "kind":"pre_deploy_hook", "creation_key":"h1"},
+            "slot":{"namespace":"app", "service":"api", "kind":"pre_deploy_hook", "creation_key":"h1"},
             "resolved_spec":spec("example.test/api:1"), "gen":1}}}});
         let id = present(&ensure(&service, hook.clone()).await).container_id;
         // The hook ran and exited, and the reply was lost.

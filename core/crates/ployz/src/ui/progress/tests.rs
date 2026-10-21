@@ -136,6 +136,66 @@ fn a_removed_service_counts_as_removed_in_the_summary() {
     assert!(!text.contains("deployed"), "{text}");
 }
 
+/// Between two copies' removals, one copy is gone and the other has not begun:
+/// the row still reads as removing.
+#[test]
+fn a_removal_that_has_begun_reads_as_removing_not_starting() {
+    use ployz_store::RowState;
+    let machines = [MachineId::random(), MachineId::random()];
+    let removal = |states: [&RowState; 2]| {
+        let row = crate::deploy::service_row(
+            QualifiedService::parse("shop/api").unwrap(),
+            None,
+            machines
+                .iter()
+                .zip(states)
+                .map(|(machine, state)| crate::deploy::Replica {
+                    machine: *machine,
+                    state,
+                    timing: Timing::Unavailable,
+                    starts: false,
+                    updates: false,
+                }),
+        );
+        Frame {
+            run: Run::Direct(Namespace::parse("shop").unwrap()),
+            title: "Deploying shop".into(),
+            rows: vec![row],
+            notices: Vec::new(),
+        }
+    };
+    let removing = RowState::Running {
+        phase: RowPhase::RemovingContainer,
+        serving: false,
+    };
+    let text = plain(
+        removal([&RowState::Pending, &RowState::Pending]),
+        vec![
+            (1, Message::Update(removal([&removing, &RowState::Pending]))),
+            (
+                2,
+                Message::Update(removal([&RowState::Completed, &RowState::Pending])),
+            ),
+            (
+                3,
+                Message::Update(removal([&RowState::Completed, &removing])),
+            ),
+            (
+                4,
+                Message::Finish(
+                    removal([&RowState::Completed, &RowState::Completed]),
+                    Disposition::Settled,
+                ),
+            ),
+        ],
+    );
+    assert!(!text.contains("starting"), "{text}");
+    assert!(text.contains("api: waiting to remove 0/2"), "{text}");
+    assert!(text.contains("api: removing 0/2"), "{text}");
+    assert!(text.contains("api: removing 1/2"), "{text}");
+    assert!(text.contains("api: removed 2/2"), "{text}");
+}
+
 #[test]
 fn phase_and_detail_changes_are_preserved_and_restart_quiet_period() {
     let initial = frame(State::Pending);
@@ -663,7 +723,7 @@ fn an_overflowing_view_drops_switched_rows_before_a_deeper_failure() {
         log: None,
         unanswered: false,
         out_of_memory: None,
-        cancelled: false,
+        stopped_by: ployz_store::StoppedBy::NOTHING,
     };
     let mut rows: Vec<_> = (0..12)
         .map(|i| service(&format!("svc{i}"), 0, 1, &ployz_store::RowState::Completed))
@@ -699,7 +759,7 @@ fn an_overflowing_view_puts_finished_ingress_repairs_after_a_failure() {
         log: None,
         unanswered: false,
         out_of_memory: None,
-        cancelled: false,
+        stopped_by: ployz_store::StoppedBy::NOTHING,
     };
     let mut rows: Vec<_> = (0..12)
         .map(|n| Row {

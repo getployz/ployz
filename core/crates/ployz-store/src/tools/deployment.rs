@@ -63,7 +63,7 @@ fn node(node: &NodeOutcome) -> Value {
             reason,
             step,
             log,
-            cancelled: false,
+            stopped_by: crate::StoppedBy::NOTHING,
             ..
         } => Some((row.server.as_str(), reason, step, log)),
         RowState::Pending
@@ -122,7 +122,7 @@ fn diagnose(view: &DeploymentView, call: &Call) -> Option<[Call; 2]> {
                 matches!(
                     row.state,
                     RowState::Failed {
-                        cancelled: false,
+                        stopped_by: crate::StoppedBy::NOTHING,
                         ..
                     }
                 )
@@ -145,7 +145,7 @@ fn diagnose(view: &DeploymentView, call: &Call) -> Option<[Call; 2]> {
 }
 
 fn summary(deployment: &DeploymentSummary) -> Value {
-    json!({
+    let mut summary = json!({
         "deployment": deployment.number,
         "status": deployment.status,
         "in_flight": deployment.in_flight,
@@ -154,7 +154,11 @@ fn summary(deployment: &DeploymentSummary) -> Value {
         "saved_revision": deployment.saved.0,
         "started_at": deployment.started_at,
         "ended_at": deployment.ended_at,
-    })
+    });
+    if let (true, Value::Object(object)) = (deployment.preparing, &mut summary) {
+        object.insert("preparing".into(), true.into());
+    }
+    summary
 }
 
 fn show(view: &DeploymentView) -> Value {

@@ -1777,6 +1777,67 @@ fn a_project_removal_on_cloud_takes_off_what_it_can_and_leaves_the_rest_to_cloud
     );
 }
 
+/// Deployment #1 queued while Cloud had a Server; the last one left before its worker
+/// claimed it. Starting it refuses at once, as a Deploy does, instead of following a
+/// Deployment nothing will run.
+#[test]
+fn starting_a_queued_deployment_with_no_server_left_refuses_at_once() {
+    fn unclaimed(_: &std::sync::Arc<ConfigStore>, _: &Written) {}
+    fn none_left_to_start(command: &StoreCommand) -> Trusted {
+        let servers = if matches!(command, StoreCommand::Start(_)) {
+            0
+        } else {
+            1
+        };
+        Trusted {
+            servers: Some(servers),
+            ..evidence()
+        }
+    }
+    let cloud = Target::Cloud {
+        url: cloud(unclaimed, std::sync::Arc::default(), none_left_to_start),
+        token: "ployz_alice",
+    };
+    ok(&cloud, &["project", "new", "shop"]);
+    ok(
+        &cloud,
+        &["service", "add", "web", "--image", "nginx:alpine"],
+    );
+    ok(&cloud, &["deploy", "--detach"]);
+
+    let home = tempfile::tempdir().unwrap();
+    let mut started = cloud
+        .command(home.path())
+        .args(["--json", "deployment", "start", "1"])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while started.try_wait().unwrap().is_none() {
+        if std::time::Instant::now() >= deadline {
+            started.kill().unwrap();
+            panic!("deployment start was still following a Deployment no Server can run");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    let output = started.wait_with_output().unwrap();
+    let json: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(output.status.code(), Some(1), "{json}");
+    assert_eq!(json["error"]["code"], json!("conflict"), "{json}");
+    assert_eq!(
+        json["error"]["message"],
+        json!(
+            "This Organization has no servers yet, so nothing deployed. Add one, then deploy again."
+        )
+    );
+    assert_eq!(
+        json["error"]["details"]["next"],
+        json!("ployz server add"),
+        "{json}"
+    );
+}
+
 #[test]
 fn an_agent_lists_and_removes_a_project_without_servers() {
     for store in &targets() {
@@ -4974,6 +5035,24 @@ fn a_config_lists_as_new_until_deployed_and_its_change_names_the_services_it_res
     assert!(human(&["diff"]).contains("\n  restarts web, worker\n"));
     assert!(human(&["deploy", "--plan"]).contains("\n  restarts web, worker\n"));
     assert!(human(&["deploy", "web", "--plan"]).contains("\n  restarts web\n"));
+}
+
+#[test]
+fn a_size_the_store_refuses_never_says_it_was_staged() {
+    let store = &Target::Local(tempfile::tempdir().unwrap());
+    ok(store, &["project", "new", "shop"]);
+    ok(store, &["service", "add", "web", "--image", "web:1"]);
+    ok(store, &["volume", "add", "data", "--docker"]);
+    applied(store, "production");
+    let home = tempfile::tempdir().unwrap();
+    let (code, stderr) = person(
+        store,
+        home.path(),
+        &["volume", "set", "data", "--size", "10", "--wait"],
+    );
+    assert_ne!(code, Some(0), "{stderr}");
+    assert!(stderr.contains("keeps its storage"), "{stderr}");
+    assert!(!stderr.contains("Nothing to wait for"), "{stderr}");
 }
 
 #[test]
