@@ -36,7 +36,7 @@ const server = (name: string, storage: CopyServer["storage"] = "pool"): CopyServ
 
 function panel(members: Member[], placement: PlacementRow | null, options: {
   open?: string; upgrade?: string[]; servers?: CopyServer[]; matchedAt?: string; refreshing?: boolean; deploying?: boolean; owed?: boolean;
-  forgetGate?: RoleGate; floorless?: string[]; seeds?: boolean; rows?: PlacementRow[];
+  forgetGate?: RoleGate; floorless?: string[]; restorable?: string[]; rows?: PlacementRow[];
 } = {}) {
   const stage = vi.fn();
   const refresh = vi.fn();
@@ -48,7 +48,7 @@ function panel(members: Member[], placement: PlacementRow | null, options: {
   const router = createRouter({ routeTree: createRootRoute(), history: createMemoryHistory() });
   render(<RouterContextProvider router={router}><VolumeCopiesPanel organizationSlug="ada" forgetGate={options.forgetGate ?? { allowed: true, reason: undefined }} volume={volume} members={members} rows={options.rows ?? (placement ? [placement] : [])} running={null} owed={options.owed ?? false} copies={copies}
     servers={options.servers ?? members.map((entry) => server(entry.machine.name))} accepting={members.map((entry) => entry.machine.id)} floorless={(options.floorless ?? []).map(id)}
-    upgrade={options.upgrade ?? []} seeds={options.seeds ?? true} disabled={false} deploying={options.deploying ?? false} stage={stage} restore={restore}
+    upgrade={options.upgrade ?? []} restorable={(options.restorable ?? members.map((entry) => entry.machine.name)).map(id)} disabled={false} deploying={options.deploying ?? false} stage={stage} restore={restore}
     deleteCopy={deleteCopy} refresh={refresh} refreshing={options.refreshing ?? false}
     open={options.open ? id(options.open) : null} onOpen={onOpen} /></RouterContextProvider>);
   return { stage, deleteCopy, restore, onOpen, refresh };
@@ -135,10 +135,10 @@ describe("VolumeCopiesPanel", () => {
     const point = { guid: "web-3", name: "web-3-point", at: 0 };
     const restoring: PlacementRow = { ...row([]), volumeId: "restored",
       staged: { primary: id("web-1"), mirrors: [], deletes: [], seed: { sourceVolumeId: volume.id, sourceName: volume.name, dockerVolume: "ns_vol-restored", point } } };
-    panel([member("web-1", "writer"), old], row([]), { seeds: false, rows: [row([]), restoring] });
+    panel([member("web-1", "writer"), old, member("web-4", "unanswered")], row([]), { rows: [row([]), restoring] });
     expect(group("Elsewhere").getByText("Staged")).toBeTruthy();
     cleanup();
-    panel([member("web-1", "writer"), old], row([]), { seeds: false });
+    panel([member("web-1", "writer"), old, member("web-4", "unanswered")], row([]));
     expect(screen.queryByRole("button", { name: "Restore from web-3" })).toBeNull();
   });
 
@@ -391,6 +391,24 @@ describe("mirror detail", () => {
     const { restore } = panel(fresh(), row(["web-2"]), { open: "web-2" });
     fireEvent.click(screen.getByRole("button", { name: "Restore" }));
     expect(restore).toHaveBeenCalledWith(expect.objectContaining({ guid: "web-2" }));
+  });
+
+  it("offers no Restore while a Server is silent or its report hasn't arrived", () => {
+    const unlisted: Member = { machine: { id: id("web-3"), name: id("web-3") }, answered: false, incomplete: true };
+    for (const other of [member("web-3", "unanswered"), unlisted]) {
+      panel([...fresh(), other], row(["web-2"]), { open: "web-2" });
+      expect(screen.getByText("Restore point")).toBeTruthy();
+      expect(screen.queryByRole("button", { name: "Restore" })).toBeNull();
+      // The alert says the Server isn't answering; the point adds no planner refusal of its own.
+      expect(screen.queryByText(/did not answer|report hasn't arrived/)).toBeNull();
+      cleanup();
+    }
+  });
+
+  it("says why a point can't be restored when the seed run would refuse it, as a Server with a copy lacks the generation floor", () => {
+    panel(fresh(), row(["web-2"]), { open: "web-2", floorless: ["web-2"] });
+    expect(screen.queryByRole("button", { name: "Restore" })).toBeNull();
+    expect(screen.getByText("Volume restore is not available on web-2.")).toBeTruthy();
   });
 
   it("gives a restore point from today the time alone", () => {

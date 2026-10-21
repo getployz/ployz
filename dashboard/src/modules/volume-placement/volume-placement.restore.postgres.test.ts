@@ -82,7 +82,7 @@ it.live("stages a restore as one Store write and a seeded row, and discards both
   expect(effects).toEqual([expect.objectContaining({ kind: "detaches_volume", name: "data", lost_after: { at, restored: name } })]);
 
   members = [member("web-2", "mirror")];
-  expect(yield* restore()).toMatchObject({ ok: false, refusal: { message: "data has no primary answering to restore from." } });
+  expect(yield* restore()).toMatchObject({ ok: false, refusal: { code: "conflict", message: "data has no primary to restore from" } });
   expect((yield* listPlacements(ORGANIZATION).pipe(Effect.provide(services))).map((row) => row.volumeId)).toEqual([id]);
 
   expect(yield* discardPlacement(ORGANIZATION, null, id, shop).pipe(Effect.provide(services))).toEqual({ ok: true, placement: null });
@@ -96,6 +96,28 @@ it.live("refuses a restore while a Server is silent or its report hasn't arrived
   for (const mirror of [member("web-2", "unanswered"), { machine, answered: false, incomplete: true } satisfies Member]) {
     expect(yield* stageRestore(ORGANIZATION, null, { volumeId: SOURCE, environment: shop, ...point }, () => Effect.succeed([member("web-1", "writer"), mirror]))
       .pipe(Effect.provide(services))).toMatchObject({ ok: false, refusal: { code: "unanswered", message: "Your servers aren't answering. Try again once they are." } });
+  }
+  expect(yield* listPlacements(ORGANIZATION).pipe(Effect.provide(services))).toEqual([]);
+}));
+
+it.live("refuses a restore the Deploy's seed run would refuse, as it observes the members, and stages nothing", () => Effect.gen(function* () {
+  const { services } = yield* deployedShop();
+  const { machine } = member("web-2", "mirror");
+  // The seed run's observer reads a Server without the generation floor that holds a copy as one that lacks it.
+  const floorless: Member = { machine, answered: false, lack: "Volume restore is not in Ployz 0.3.0-beta.4 on web-2." };
+  const refusals: [Member[], { code: string; message: string }][] = [
+    [[member("web-1", "writer"), floorless], { code: "unsupported", message: "Volume restore is not in Ployz 0.3.0-beta.4 on web-2." }],
+    [[member("web-1", "writer"), member("web-2", "writer")], { code: "conflict", message: "data has two writers, data-web-1 and data-web-2" }],
+  ];
+  for (const [members, refusal] of refusals) {
+    const runs: unknown[] = [];
+    const inspect: MemberInspector = (_organization, _environment, _volume, run) => {
+      runs.push(run);
+      return Effect.succeed(members);
+    };
+    expect(yield* stageRestore(ORGANIZATION, null, { volumeId: SOURCE, environment: shop, ...point }, inspect).pipe(Effect.provide(services)))
+      .toMatchObject({ ok: false, refusal });
+    expect(runs).toEqual([expect.objectContaining({ kind: "seed", args: expect.objectContaining({ guid: point.guid, name: point.name }) })]);
   }
   expect(yield* listPlacements(ORGANIZATION).pipe(Effect.provide(services))).toEqual([]);
 }));
