@@ -173,6 +173,8 @@ export const serverDrainAttempt = pgTable(
     approvalId: uuid("approval_id"),
     /** The digest of the plan its gate admitted: it runs only while it would destroy exactly that, or nothing. */
     planDigest: text("plan_digest"),
+    /** A try found the servers silent, so the pending row waits for them rather than for another Drain. */
+    serversSilent: boolean("servers_silent").default(false).notNull(),
     requestedAt: timestamp("requested_at", { mode: "date", withTimezone: true }).defaultNow().notNull(),
     startedAt: timestamp("started_at", { mode: "date", withTimezone: true }),
     endedAt: timestamp("ended_at", { mode: "date", withTimezone: true }),

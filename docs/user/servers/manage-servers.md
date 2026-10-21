@@ -221,10 +221,10 @@ at a time: a second one reads **Queued · Waiting on web-1**. While a drain runs
 **Drain** row counts the services left to move and lists them as **Pending**; each one leaves the
 list as it leaves the server. You can leave the page while one runs.
 If your servers don't answer when a drain's turn comes, as while one restarts, the drain reads
-**Queued** and tries again 20 seconds after each try. It starts once they answer. While it waits,
-it doesn't hold up the organization's other drains: they can start and run, and while one runs, the
-waiting drain reads **Queued · Waiting on** that drain's server. It waits up to 15 minutes from when
-you confirmed, and other drains ending don't extend that. If your servers still don't answer by
+**Waiting for your servers to answer** and tries again 20 seconds after each try. It starts once
+they answer. While it waits, it doesn't hold up the organization's other drains: they can start and
+run, and it keeps that label rather than **Queued**. It waits up to 15 minutes from when you
+confirmed, and other drains ending don't extend that. If your servers still don't answer by
 then, the drain doesn't start and reads **Drain didn't start. Try again.** Nothing on the server
 changed. A drain whose turn comes more than 15 minutes after you confirmed still starts if your
 servers answer at once. If they don't, it doesn't start.
