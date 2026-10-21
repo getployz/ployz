@@ -15,14 +15,17 @@ target_id=$(jq -r --arg m "$target" '.machines[] | select(.name == $m) | .machin
 names=$(jq -r '.machines[].name' "$run")
 store() { vc exec "$run" "$1" -- sqlite3 -readonly /var/lib/ployz/corrosion/store.db "$2"; }
 upstreams() {
-  vc exec "$run" "$1" -- curl -s --unix-socket /run/ployz/ingress/caddy/admin.sock http://localhost/config/ \
-    | jq -r '[..|objects|select(.handler=="reverse_proxy")|.upstreams[].dial]|.[]'
+  vc exec "$run" "$1" -- curl -sf --unix-socket /run/ployz/ingress/caddy/admin.sock http://localhost/config/ \
+    | jq -er '[..|objects|select(.handler=="reverse_proxy")|.upstreams[].dial|sub(":[0-9]+$"; "")]|.[]'
 }
 down() {
-  until vc cli "$run" -- --json server ls 2>/dev/null \
-    | jq -e --arg m "$target" '[.servers[]|select(.machine.name==$m)|.membership]|.[0]=="down"' >/dev/null; do
+  for _ in $(seq 90); do
+    vc cli "$run" -- --json server ls 2>/dev/null \
+      | jq -e --arg m "$target" '[.servers[]|select(.machine.name==$m)|.membership]|.[0]=="down"' >/dev/null && return
     sleep 2
   done
+  echo "$target never showed as down"
+  exit 2
 }
 
 vc power off "$run" "$target" >/dev/null; down
@@ -50,11 +53,13 @@ for query in "$clocks" "$contents"; do
   done
 done
 
-serving=$(store "$target" "select json_extract(container, '\$.address')||':80' from containers
+serving=$(store "$target" "select json_extract(container, '\$.address') from containers
   where machine_id = '$target_id' and rotation = 'in' and json_extract(container, '\$.address') is not null")
 subnet=$(vc exec "$run" "$target" -- sh -c "ip -4 -o addr show | grep -o '10\.210\.[0-9]*\.' | head -1")
+[ -n "$subnet" ] || { echo "no overlay address on $target"; exit 2; }
 for m in $names; do
-  for address in $(upstreams "$m" | grep "^$subnet" || true); do
+  routed=$(upstreams "$m") || { echo "FAIL: could not read $m's proxy routes"; failed=1; continue; }
+  for address in $(awk -v p="$subnet" 'index($0, p) == 1' <<<"$routed"); do
     if ! grep -qxF "$address" <<<"$serving"; then
       echo "FAIL: $m routes $address, which is not an In copy on $target"
       failed=1

@@ -144,7 +144,7 @@ impl CorrosionConfig {
             tracing::warn!(
                 data_dir = %self.paths.data_dir.display(),
                 error = %ployz_core::error_chain::inline(&error),
-                "Corrosion's commits can be lost on power loss on this filesystem: its data directory does not write synchronously"
+                "Corrosion's commits can be lost on power loss: its data directory does not write synchronously"
             );
         }
         create_private_dir(&self.paths.run_dir)?;
@@ -370,10 +370,16 @@ fn sync_writes(dir: &Path) -> Result<(), SyncWritesError> {
     for entry in fs::read_dir(dir).map_err(failed)? {
         let entry = entry.map_err(failed)?;
         let file_type = entry.file_type().map_err(failed)?;
-        if file_type.is_dir() {
-            sync_writes(&entry.path())?;
+        let flagged = if file_type.is_dir() {
+            sync_writes(&entry.path())
         } else if file_type.is_file() {
-            set_sync_flag(&entry.path(), OFlags::empty())?;
+            set_sync_flag(&entry.path(), OFlags::empty())
+        } else {
+            Ok(())
+        };
+        match flagged {
+            Err(error) if error.source.kind() == std::io::ErrorKind::NotFound => {}
+            flagged => flagged?,
         }
     }
     Ok(())
@@ -383,7 +389,7 @@ fn set_sync_flag(path: &Path, kind: OFlags) -> Result<(), SyncWritesError> {
     let set = || -> rustix::io::Result<()> {
         let fd = rustix::fs::open(
             path,
-            OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC | kind,
+            OFlags::RDONLY | OFlags::NONBLOCK | OFlags::CLOEXEC | kind,
             Mode::empty(),
         )?;
         let flags = rustix::fs::ioctl_getflags(&fd)?;
@@ -599,7 +605,15 @@ mod tests {
                     );
                 }
             }
-            Err(error) => assert!(error.path.starts_with(dir), "{error}"),
+            Err(error) => {
+                let refused = [rustix::io::Errno::OPNOTSUPP, rustix::io::Errno::NOTTY]
+                    .map(|errno| Some(errno.raw_os_error()));
+                assert!(
+                    error.path == dir && refused.contains(&error.source.raw_os_error()),
+                    "only the filesystem refusing the flag may stop the walk: {error}: {}",
+                    error.source
+                );
+            }
         }
     }
 
