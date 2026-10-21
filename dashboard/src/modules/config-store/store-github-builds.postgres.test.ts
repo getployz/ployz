@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import { it } from "@effect/vitest";
 import type { ConfigCommand, JsonValue } from "@ployz/sdk";
-import { Effect, Layer } from "effect";
+import { Effect } from "effect";
 import type { StoreCall } from "./store.contract";
 import { expect, vi } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
@@ -56,7 +56,7 @@ it.live(
   "a Store build goes to GitHub first; its check-in must come from the dispatched repository, workflow and run; a cancel ends it",
   () =>
     Effect.gen(function* () {
-      const services = yield* Layer.build(yield* storeTestCloud({ github: github.service }));
+      const services = yield* storeTestCloud({ github: github.service });
       const provided = <A, E, R>(program: Effect.Effect<A, E, R>) => program.pipe(
         Effect.provide(services),
         Effect.provideService(GithubOidcKeys, { keys: Effect.succeed([jwk]) }),
@@ -181,7 +181,7 @@ it.live(
 
 it.live("a build that checked in reports its steps until its Organization disconnects GitHub, then is refused", () =>
   Effect.gen(function* () {
-    const services = yield* Layer.build(yield* storeTestCloud({ github: github.service }));
+    const services = yield* storeTestCloud({ github: github.service });
     const provided = <A, E, R>(program: Effect.Effect<A, E, R>) => program.pipe(
       Effect.provide(services),
       Effect.provideService(GithubOidcKeys, { keys: Effect.succeed([jwk]) }),

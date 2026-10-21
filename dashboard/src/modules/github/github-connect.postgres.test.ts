@@ -1,5 +1,5 @@
 import { it } from "@effect/vitest";
-import { Deferred, Effect, Fiber, Layer, Schedule } from "effect";
+import { Deferred, Effect, Fiber, Schedule } from "effect";
 import { eq, sql } from "drizzle-orm";
 import { Inngest } from "inngest";
 import { TestClock } from "effect/testing";
@@ -89,7 +89,7 @@ const landing = (path: string) => Object.fromEntries(new URL(path, "http://cloud
 
 it.live("links only installations the person who started the connect owns on GitHub, in any Organization they manage", () =>
   Effect.gen(function* () {
-    const services = yield* Layer.build(yield* storeTestCloud({ github }));
+    const services = yield* storeTestCloud({ github });
     const run = <A, E, R>(program: Effect.Effect<A, E, R>) => program.pipe(Effect.provide(services));
     const failure = <A, E extends { readonly _tag: string }, R>(program: Effect.Effect<A, E, R>) => run(Effect.flip(program)).pipe(Effect.map((error) => error._tag));
     const linked = (organizationId: string) => run(listGithubInstallationsForOrganization(organizationId)).pipe(
@@ -213,7 +213,7 @@ const hopperCloud = Effect.fn(function* () {
   renamed.clear();
   afterSecondPage = undefined;
   listingAllowed = true;
-  const services = yield* Layer.build(yield* storeTestCloud({ github, inngest }));
+  const services = yield* storeTestCloud({ github, inngest });
   const run = <A, E, R>(program: Effect.Effect<A, E, R>) => program.pipe(Effect.provide(services));
   const ada = { userId: yield* run(seedStoreOrganization(SHOP)) };
   yield* run(upsertGithubInstallation({ installationId: 9, accountLogin: "hopper", accountType: "Organization", accountAvatarUrl: null }));
