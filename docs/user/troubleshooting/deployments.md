@@ -336,6 +336,21 @@ once. The command exits 3. Deploy the service to put a replica in service:
 ployz deploy web
 ```
 
+## Ployz restarted on a server during my deploy
+
+`cause: connection to the daemon closed` or `cause: stream closed because of a broken pipe`
+
+Ployz restarted on the server your deploy connects through, as it does during an upgrade. The
+deploy fails within seconds and exits 1, and the deployment reads Failed. Your app keeps serving:
+the deploy left the old replica running, and may have left a new one beside it. Deploy again, or
+redeploy the failed deployment, and Ployz finishes the switch and removes the leftovers:
+
+```sh
+ployz deploy
+```
+
+When Ployz restarts on another server the deploy uses, the deploy waits for it and carries on.
+
 ## My deployment stays Queued
 
 - Another deployment of the environment is running. Yours runs after it; cancel that one from
