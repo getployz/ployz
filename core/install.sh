@@ -139,11 +139,12 @@ read_fleet_token() {
     stty -echo < "$TTY" || error "Could not turn off echo on the terminal, so the Fleet Token isn't read from it."
     # The prompt waits until echo is off: a token pasted the moment it shows must not echo.
     printf 'Fleet Token (from Servers in Ployz Cloud): ' >> "$TTY"
-    { read -r token < "$TTY" || token=; printf '%s\n' "$token" >&3; } &
+    # The child also turns echo back on. bash 5.2 can spin forever on a SIGINT that lands as it starts waiting for a
+    # command, so this shell starts no wait between the Enter and echo coming back.
+    { read -r token < "$TTY" || token=; printf '%s\n' "$token" >&3; exec stty "$tty_mode" < "$TTY"; } &
     wait "$!"
     read -r FLEET_TOKEN <&3
     exec 3<&-
-    stty "$tty_mode" < "$TTY"
     trap - EXIT HUP INT TERM
     printf '\n' >> "$TTY"
 }
