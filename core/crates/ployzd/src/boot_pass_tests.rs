@@ -295,19 +295,30 @@ mod alone {
     #[test]
     fn only_this_machine() {
         let cluster = Cluster::new();
+        let local = &cluster.local.id;
 
-        assert!(alone(
-            &list(&[&cluster.local], Vec::new()),
-            &cluster.local.id
-        ));
-        assert!(alone(&list(&[], Vec::new()), &cluster.local.id));
+        assert!(alone(&list(&[&cluster.local], Vec::new()), local, &[]));
+        assert!(alone(&list(&[], Vec::new()), local, &[]));
         assert!(!alone(
             &list(&[&cluster.local, &cluster.peer], Vec::new()),
-            &cluster.local.id
+            local,
+            &[]
         ));
         assert!(!alone(
             &list(&[&cluster.local], vec![cluster.peer.id]),
-            &cluster.local.id
+            local,
+            &[]
+        ));
+    }
+
+    #[test]
+    fn a_joiner_before_its_peers_rows_arrive() {
+        let cluster = Cluster::new();
+
+        assert!(!alone(
+            &list(&[&cluster.local], Vec::new()),
+            &cluster.local.id,
+            std::slice::from_ref(&cluster.peer)
         ));
     }
 

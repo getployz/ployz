@@ -52,8 +52,9 @@ pub(crate) trait BootHost: Send + Sync {
 
 #[derive(Clone)]
 pub(crate) enum Peers {
-    /// The Machine list names no other Machine and has no partly replicated row.
-    /// An empty list counts too.
+    /// This Machine founded the Cluster, and its Machine list names no other
+    /// Machine and has no partly replicated row. An empty list counts too. A
+    /// joiner is never alone: its first read can predate its peers' rows.
     Alone,
     /// The Machine list is unread, or no peer answered.
     Silent,
@@ -240,8 +241,13 @@ fn actor_key(actor: &str) -> String {
     actor.replace('-', "").to_ascii_lowercase()
 }
 
-fn alone(machines: &ReplicatedObservations<Machine, MachineId>, local: &MachineId) -> bool {
-    machines.incomplete_ids.is_empty()
+fn alone(
+    machines: &ReplicatedObservations<Machine, MachineId>,
+    local: &MachineId,
+    bootstrap: &[Machine],
+) -> bool {
+    bootstrap.is_empty()
+        && machines.incomplete_ids.is_empty()
         && machines
             .observations
             .iter()
@@ -265,7 +271,11 @@ impl BootHost for DaemonHost {
         let Some(machines) = self.machines.current() else {
             return Peers::Silent;
         };
-        if alone(&machines, &self.machine_id) {
+        if alone(
+            &machines,
+            &self.machine_id,
+            self.machine.record().bootstrap(),
+        ) {
             return Peers::Alone;
         }
         for peer in machines
