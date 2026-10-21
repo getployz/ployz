@@ -19,7 +19,8 @@ curl -fsSL https://ployz.sh | INSTALL_BIN_DIR="$HOME/.local/bin" sh -s -- beta
 ```
 
 Check it with `ployz --version`. Install the beta, not Homebrew or the stable release. Ployz
-Cloud enrolls servers only from 0.3.0-beta.6 on, and those are still on 0.2.
+Cloud enrolls servers only from 0.3.0-beta.6 on. The stable release and Homebrew are still on
+0.2.
 
 ## 2. Install the Ployz skill
 
