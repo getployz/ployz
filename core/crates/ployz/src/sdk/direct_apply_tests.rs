@@ -87,3 +87,63 @@ async fn a_direct_apply_whose_container_restarted_names_the_exited_runs_last_lin
     );
     assert_eq!(failure.cause, ["token=[redacted]"]);
 }
+
+/// `ployz server add` founding a Cluster without Cloud, whose Ingress Proxy crash-loops,
+/// tells a person the exit code and the last line.
+#[tokio::test]
+async fn a_founding_server_add_whose_ingress_keeps_restarting_prints_its_exit_and_last_line() {
+    let failure =
+        failed(support::DeployService::new(support::machine('a', "one")).restart_containers())
+            .await;
+    let failure = crate::handlers::server::init::ingress_incomplete(
+        failure,
+        "ployz server set one --accepts-ingress=true".into(),
+    );
+    let text = crate::ui::plain(&failure);
+    assert!(
+        text.starts_with(
+            "error: Server initialized; ingress deployment incomplete: web: The Container exited with code 1 and is restarting.\n  cause: token=[redacted]\n"
+        ),
+        "{text}"
+    );
+    assert_eq!(failure.causes(), ["token=[redacted]"]);
+}
+
+/// Cloud enrollment behind `ployz server add` whose Ingress Proxy crash-loops tells a
+/// person the exit code and the last line.
+#[tokio::test]
+async fn a_cloud_enrollment_whose_ingress_keeps_restarting_prints_its_exit_and_last_line() {
+    let failure =
+        failed(support::DeployService::new(support::machine('a', "one")).restart_containers())
+            .await;
+    let failure = crate::handlers::cloud::ingress_incomplete(failure);
+    let text = crate::ui::plain(&failure);
+    assert!(
+        text.starts_with(
+            "error: Server initialized; Ingress deployment incomplete: web: The Container exited with code 1 and is restarting. Rerun the same ployz server add command without --reset, keeping all other options, to reconcile it.\n  cause: token=[redacted]\n"
+        ),
+        "{text}"
+    );
+}
+
+/// A failure with no deploy evidence keeps each path's headline as it was.
+#[test]
+fn an_ingress_failure_without_deploy_evidence_keeps_its_headline() {
+    let failure = || crate::failure::Failure::unavailable("down");
+    let init = crate::handlers::server::init::ingress_incomplete(failure(), String::new());
+    assert_eq!(
+        init.report().message,
+        "Server initialized; ingress deployment incomplete."
+    );
+    let cloud = crate::handlers::cloud::ingress_incomplete(failure());
+    assert_eq!(
+        cloud.report().message,
+        "Server initialized; Ingress deployment incomplete. Rerun the same ployz server add command without --reset, keeping all other options, to reconcile it."
+    );
+    let set =
+        crate::handlers::server::ingress_incomplete("Server updated", failure(), String::new());
+    assert_eq!(
+        set.report().message,
+        "Server updated; the Ingress Proxy did not follow."
+    );
+}

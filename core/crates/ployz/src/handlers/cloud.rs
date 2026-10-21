@@ -476,9 +476,14 @@ where
         && let Some(requested) = ingress
     {
         // An interrupted Apply may have completed mutations. Do not replay it.
-        let _ingress = crate::deploy::apply_requested(&mut ready, &requested, false, false, "default").await.map_err(|error| {
-            super::ingress_hints(Error::from(error), |args| super::rerun(matches, args)).context("Server initialized; Ingress deployment incomplete. Rerun the same ployz server add command without --reset, keeping all other options, to reconcile it.")
-        })?;
+        let _ingress =
+            crate::deploy::apply_requested(&mut ready, &requested, false, false, "default")
+                .await
+                .map_err(|error| {
+                    ingress_incomplete(super::ingress_hints(Error::from(error), |args| {
+                        super::rerun(matches, args)
+                    }))
+                })?;
     }
     progress(EnrollStage::Publishing);
     // Repeated Set stages a fresh capability; its first operational RPC completes rotation.
@@ -504,6 +509,11 @@ where
 
 /// The first Server's result. Founding it, Cloud deploys the Organization's saved
 /// Environments to it, as Deployments admitted after this returns.
+/// The first Server is enrolled but its Ingress Proxy deploy failed.
+pub(crate) fn ingress_incomplete(error: Error) -> Error {
+    error.context("Server initialized; Ingress deployment incomplete. Rerun the same ployz server add command without --reset, keeping all other options, to reconcile it.")
+}
+
 fn founder_result(machine: &Machine, founding: bool) -> serde_json::Value {
     let next = founding.then_some("ployz deployment ls");
     if founding {

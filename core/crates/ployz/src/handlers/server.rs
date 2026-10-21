@@ -38,7 +38,7 @@ mod endpoint;
 pub(super) mod enroll;
 pub(super) mod forget;
 mod helpers;
-mod init;
+pub(crate) mod init;
 pub(super) mod reject;
 mod remove;
 mod show;
