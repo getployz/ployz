@@ -1210,16 +1210,10 @@ impl Client {
 
 /// A call the router or this client's own deadline shows went unanswered names the
 /// Machine in the deepest line, which is the one progress shows. Every other error
-/// keeps its own words. A call that went out and got no reply is `Unavailable`, so a
-/// caller may resend it: whether the Machine acted is unknown.
+/// keeps its own words.
 pub(crate) fn answered_by(machine_id: &MachineId, error: ConnectError) -> RpcError {
     if !error.target_unanswered() {
-        let unreplied = error.unreplied();
-        let mut error = rpc_error(error);
-        if unreplied {
-            error.code = RpcErrorCode::Unavailable;
-        }
-        return error;
+        return rpc_error(error);
     }
     let error = rpc_error(error);
     let transport = std::iter::once(error.message)
