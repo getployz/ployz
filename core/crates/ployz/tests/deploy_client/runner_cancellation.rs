@@ -220,6 +220,33 @@ async fn a_takeover_nobody_cancelled_records_no_row_or_node_cancelled() {
 }
 
 #[tokio::test]
+async fn a_takeover_records_the_work_it_stopped_interrupted_not_failed() {
+    let (store, actor, id) = taken_over_mid_create().await;
+    let view = store
+        .read(&actor, &ployz_store::DeploymentQuery { id })
+        .unwrap();
+    let nodes = serde_json::to_value(&view.nodes).unwrap();
+    let web = nodes
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|node| node["name"] == "web")
+        .unwrap();
+    let states: Vec<_> = web["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| (row["state"].clone(), row["interrupted"].clone()))
+        .collect();
+    // Failed as before Interrupted, so older readers read it; marked for newer ones.
+    assert_eq!(
+        states,
+        [(serde_json::json!("failed"), serde_json::json!(true))],
+        "{web}"
+    );
+}
+
+#[tokio::test]
 async fn cancel_during_a_create_records_the_work_it_stopped_cancelled_not_failed() {
     let (store, actor, id) = deployment();
     let service = DeployService::new(machine('a', "entry")).hold_health();

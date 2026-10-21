@@ -1,6 +1,6 @@
 import "@tanstack/react-start/server-only";
 import { createHash, createPublicKey, verify } from "node:crypto";
-import { and, count, eq, isNull, lt, or, sql } from "drizzle-orm";
+import { and, count, eq, exists, isNull, lt, not, or, sql, type SQL } from "drizzle-orm";
 import { Clock, Data, Effect, Option, Schema } from "effect";
 import {
   CHECKIN_WAIT_SECONDS,
@@ -14,6 +14,7 @@ import { createServerEnrollmentReportedEvent, type ServerEnrollmentCheckinReport
 import { sendInngestEvent } from "#/modules/inngest/client";
 import { asStage, forwardTo, openAttemptFor, type OpenAttempt } from "#/modules/machines/waiting/enrollment-run.server";
 import { hasFirstServer, startArrivalEnrollment } from "#/modules/machines/waiting/enroll.server";
+import { organizationMachine } from "#/modules/machines/tables";
 import { hashFleetToken } from "#/modules/machines/waiting/fleet-token.server";
 import { decodeStoredProbe, handOutProbe, probeAfterCheckIn } from "#/modules/machines/waiting/probe.server";
 import { countWithinRateLimit, sometimesPruneStaleRateLimits } from "#/modules/machines/waiting/rate-limit.server";
@@ -128,6 +129,29 @@ const endUnlessEnrolling = Effect.fn("Checkin.endUnlessEnrolling")(function* (
   return stop(reason);
 });
 
+// A joined host checks in again only after its Server was reset. Once Cloud no longer holds that Server, the row starts
+// over, as the seven-day sweep would remove it, so the host waits like any arrival. Its token's joins and spent arrival
+// outlive the row.
+const startOverAfterServerGone = Effect.fn("Checkin.startOverAfterServerGone")(function* (waitingServerId: string) {
+  const { drizzle } = yield* Database;
+  const joined = (server: SQL) => exists(drizzle.select({ id: serverEnrollment.id }).from(serverEnrollment).where(and(
+    eq(serverEnrollment.waitingServerId, waitingServer.id),
+    eq(serverEnrollment.state, "joined"),
+    server,
+  )));
+  const serverHeld = exists(drizzle.select({ id: organizationMachine.machineId }).from(organizationMachine).where(and(
+    eq(organizationMachine.organizationId, waitingServer.organizationId),
+    eq(organizationMachine.machineId, serverEnrollment.machineId),
+  )));
+  const removed = yield* drizzle.delete(waitingServer).where(and(
+    eq(waitingServer.id, waitingServerId),
+    isNull(waitingServer.rejectedAt),
+    joined(sql`true`),
+    not(joined(serverHeld)),
+  )).returning({ id: waitingServer.id });
+  return removed.length > 0;
+});
+
 const admit = Effect.fn("Checkin.admit")(function* (
   token: { readonly id: string; readonly organizationId: string },
   request: CheckinRequest,
@@ -138,7 +162,7 @@ const admit = Effect.fn("Checkin.admit")(function* (
     eq(waitingServer.organizationId, token.organizationId),
     eq(waitingServer.checkinKey, request.checkinKey),
   );
-  const [existing] = yield* drizzle
+  const [found] = yield* drizzle
     .select({
       id: waitingServer.id,
       fleetTokenId: waitingServer.fleetTokenId,
@@ -148,6 +172,7 @@ const admit = Effect.fn("Checkin.admit")(function* (
     })
     .from(waitingServer)
     .where(key);
+  const existing = found !== undefined && (yield* startOverAfterServerGone(found.id)) ? undefined : found;
   const newToToken = existing?.fleetTokenId !== token.id;
   const heldBefore = newToToken ? yield* heldByToken(token.id) : 0;
   const takingLastSlots = heldBefore >= WAITING_PER_TOKEN - LAST_SLOTS;

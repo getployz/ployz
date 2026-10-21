@@ -63,7 +63,7 @@ fn node(node: &NodeOutcome) -> Value {
             reason,
             step,
             log,
-            cancelled: false,
+            stopped_by: crate::StoppedBy::NOTHING,
             ..
         } => Some((row.server.as_str(), reason, step, log)),
         RowState::Pending
@@ -122,7 +122,7 @@ fn diagnose(view: &DeploymentView, call: &Call) -> Option<[Call; 2]> {
                 matches!(
                     row.state,
                     RowState::Failed {
-                        cancelled: false,
+                        stopped_by: crate::StoppedBy::NOTHING,
                         ..
                     }
                 )

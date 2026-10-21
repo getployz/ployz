@@ -26,7 +26,6 @@ use ployz_core::{
 };
 use thiserror::Error;
 
-pub const IMAGE: &str = "ghcr.io/getployz/ployz-testkit:main";
 pub const SERVICE_CONTAINER_IMAGE: &str = "alpine:3.23.3";
 pub const OWNER_LABEL: &str = "dev.ployz.testkit";
 pub const CLUSTER_LABEL: &str = "dev.ployz.testkit.cluster";
@@ -168,6 +167,7 @@ pub struct Cluster {
 
 impl Cluster {
     pub fn create(plan: ClusterPlan) -> Result<Self, TestkitError> {
+        let image = std::env::var("PLOYZ_TESTKIT_IMAGE").map_err(|_| TestkitError::ImageUnset)?;
         let labels = plan.labels();
         let network = plan.network();
         let mut network_args = vec!["network".to_owned(), "create".to_owned()];
@@ -177,7 +177,6 @@ impl Cluster {
         network_args.push(network.clone());
         docker(network_args)?;
         let cluster = Self { plan };
-        let image = std::env::var("PLOYZ_TESTKIT_IMAGE").unwrap_or_else(|_| IMAGE.into());
         for (index, machine) in cluster.plan.machines.iter().enumerate() {
             let mut args = vec![
                 "run".to_owned(),
@@ -1031,6 +1030,10 @@ fn version_reached(current: &BTreeMap<String, i64>, target: &BTreeMap<String, i6
 
 #[derive(Debug, Error)]
 pub enum TestkitError {
+    #[error(
+        "PLOYZ_TESTKIT_IMAGE is unset; build one from this checkout: PLOYZ_TESTKIT_IMAGE=$(scripts/testkit-image.sh ployz-testkit-checkout:dev)"
+    )]
+    ImageUnset,
     #[error("invalid Cluster name {0:?}")]
     InvalidClusterName(String),
     #[error("could not allocate a loopback API port: {0}")]

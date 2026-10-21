@@ -6,7 +6,7 @@
 use std::time::Duration;
 
 use clap::{ArgMatches, Command};
-use ployz_core::{MachineName, ProvisionedVolumeMaximumBytes, RpcError, RpcErrorCode};
+use ployz_core::{MachineName, ProvisionedVolumeMaximumBytes, RpcErrorCode};
 use ployz_store::{
     EnvironmentId, EnvironmentName, EnvironmentSummary, ProjectName, VolumeId, VolumeName,
     VolumeQuery, VolumeView, VolumesQuery,
@@ -607,9 +607,6 @@ fn request_located(
     let confirming = matches!(asked.ask, RunAsk::DeleteMirror { confirm: None, .. });
     let run = match approved(runtime, credential, matches, volume, volume_id, &asked)? {
         Ok(run) => run,
-        Err(StoreCallError::Refused(refusal)) if already(&asked.ask, &refusal) => {
-            return crate::ui::done(&refusal, format_args!("{}.", refusal.message));
-        }
         Err(error) => return Err(refused(store, matches, error, confirming, volume)),
     };
     let follow = store::next(
@@ -689,13 +686,6 @@ fn approved(
             other => Ok(other),
         },
     )
-}
-
-/// A resize Cloud refuses because every copy already has that size: nothing to do.
-fn already(ask: &RunAsk, refusal: &RpcError) -> bool {
-    matches!(ask, RunAsk::Resize { .. })
-        && refusal.code == RpcErrorCode::Conflict
-        && refusal.details.get("settled") == Some(&serde_json::Value::Bool(true))
 }
 
 fn ended(run: &VolumeRun, started: &str, follow: String) -> Result<(), Error> {
