@@ -408,6 +408,11 @@ describe("recovery", () => {
     expect(found).toMatchObject({ kind: "forget", down: [{ name: "web-1" }] });
   });
 
+  it("offers no Forget for another silent Server while the primary's Server answers that it lacks the capability", () => {
+    expect(recover([lacking("web-1"), mirrorAsOf("web-2", at), member("web-3", "unanswered")], row(["web-2"])))
+      .toMatchObject({ kind: "restore", stage: { refused: "Volume move needs a newer Ployz on web-1." } });
+  });
+
   it("refuses the restore with the lacking Server's upgrade sentence once nothing is silent", () => {
     expect(recover([mirrorAsOf("web-2", at), lacking("web-3")], row(["web-2"])))
       .toMatchObject({ kind: "restore", stage: { refused: "Volume move needs a newer Ployz on web-3." } });
