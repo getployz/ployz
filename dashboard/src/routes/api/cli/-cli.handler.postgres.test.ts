@@ -5,7 +5,7 @@ import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 import type { Client, DockerVolumeName, MachineId, MachineName, RuntimeWatchView } from "@ployz/sdk";
 import { and, eq, sql } from "drizzle-orm";
-import { Cause, ConfigProvider, Effect, Exit, Layer, Schema } from "effect";
+import { Cause, ConfigProvider, Effect, Exit, Fiber, Layer, Schema } from "effect";
 import { Inngest } from "inngest";
 import { Polar } from "#/modules/billing/polar-provider.server";
 import { GithubRepositoriesLive } from "#/modules/github/github-cli.server";
@@ -83,6 +83,8 @@ const encryption = makeSecretEncryption("fixture-server-access-encryption-123456
 function fakeServers() {
   const servers = new Map<string, {
     online: boolean | "hangs" | "refuses" | "drops"; slots: Map<string, string>; closeHangs?: boolean;
+    /** The next Set stages its key, as a daemon does, then holds its reply until this settles. */
+    holdSetReply?: Promise<void>;
   }>();
   const aborts = connectionAborts();
   let sets = 0;
@@ -106,6 +108,9 @@ function fakeServers() {
           sets += 1;
           const capability = `ployz1:${connection?.machine_id}:${label}:${sets}`;
           server.slots.set(label, capability);
+          const held = server.holdSetReply;
+          server.holdSetReply = undefined;
+          await held;
           return capability;
         },
         setPushTarget: async () => undefined,
@@ -903,6 +908,50 @@ it.live(
         assert.deepStrictEqual(swept.confirmed, [machine]);
         assert.strictEqual(server.slots.size, 0);
         assert.deepStrictEqual(fake.aborts.aborted(), [true, true]);
+      }).pipe(Effect.provide(layer));
+    }),
+  60_000,
+);
+
+it.live(
+  "two first uses of one credential on a Server share one Management Capability, whichever Set answers last",
+  () =>
+    Effect.gen(function* () {
+      const fake = fakeServers();
+      const layer = yield* cliLayer(fake.layer);
+      yield* Effect.gen(function* () {
+        const database = yield* Database;
+        const alice = yield* signUp("alice");
+        const machine = ids.machineId("00000000000000000000000000001263");
+        yield* enroll(alice.organization.id, machine, true);
+        let answerFirst = () => undefined as void;
+        const holdSetReply = new Promise<void>((resolve) => { answerFirst = resolve; });
+        const server = { online: true as const, slots: new Map<string, string>(), holdSetReply };
+        fake.servers.set(machine, server);
+        const token = (yield* cli("POST", "tokens", alice, { name: "ci", expires_in_days: 30 })).json.token
+          ?? assert.fail("no token");
+        const ci = { bearer: token.secret };
+
+        // The first Set's reply lands only once the second first use has either queued behind the holder's lock or,
+        // without one, stored its own key; either way the first's upsert would commit last.
+        const first = yield* Effect.forkChild(cli("POST", "server-access", ci));
+        const second = yield* Effect.forkChild(cli("POST", "server-access", ci));
+        const waitingOnLock = database.drizzle.execute(sql`select 1 from pg_locks
+          where locktype = 'advisory' and not granted
+            and database = (select oid from pg_database where datname = current_database())`, "objects");
+        const stored = database.drizzle.select({ machineId: serverAccess.machineId }).from(serverAccess)
+          .where(eq(serverAccess.credentialId, token.id));
+        yield* Effect.promise(() => vi.waitFor(async () => {
+          const [waiting, rows] = await Effect.runPromise(Effect.all([waitingOnLock, stored]).pipe(Effect.orDie));
+          assert.isTrue(waiting.length > 0 || rows.length > 0, "the second first use neither waits nor stored a key");
+        }, { timeout: 10_000 }));
+        answerFirst();
+        const replies = yield* Effect.all([Fiber.join(first), Fiber.join(second)]);
+
+        const held = server.slots.get(serverAccessLabel(token.id)) ?? assert.fail("no holder");
+        assert.deepStrictEqual(replies.map((reply) => reply.json.connections?.[0]?.management), [held, held]);
+        assert.strictEqual(fake.sets(), 1);
+        assert.strictEqual((yield* cli("POST", "server-access", ci)).json.connections?.[0]?.management, held);
       }).pipe(Effect.provide(layer));
     }),
   60_000,
