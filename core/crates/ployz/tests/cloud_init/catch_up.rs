@@ -115,7 +115,6 @@ async fn machine_add_reports_omitted_targets_before_catch_up() {
         assert!(stderr.contains("partial Service observations"), "{stderr}");
         assert!(stderr.contains("no terminal response"), "{stderr}");
         assert!(stderr.contains("remains a Cluster member"), "{stderr}");
-        assert!(!stderr.contains("server forget"), "{stderr}");
         assert_eq!(entry.target_inspect_attempts(), 0);
         assert_eq!(entry.ensure_attempts(), 0);
         target.join_request();

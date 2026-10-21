@@ -658,9 +658,9 @@ impl MachineObservation {
     }
 
     /// An Unarrived Machine: omitted, never recorded by this observer's admin, and with
-    /// no daemon version in its row. A registrar writes an empty runtime, and a daemon
-    /// publishes its own row, version included, only once it participates, so this
-    /// observer has no sign the Machine ever ran and it holds no Service Container.
+    /// no daemon version in its row. Cloud's Register writes an empty runtime, and a
+    /// daemon publishes its own row, version included, only once it participates, so
+    /// this observer has no sign the Machine ever ran and it holds no Service Container.
     #[must_use]
     pub fn unarrived(&self) -> bool {
         !self.invites_rpc()
