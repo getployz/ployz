@@ -195,19 +195,24 @@ async fn restart_reports_one_restart_or_the_start_that_failed() {
 #[tokio::test]
 async fn restart_returns_once_a_slow_start_passes_its_healthcheck() {
     let machine = machine('a', "one");
-    let service = DeployService::new(machine.clone())
-        .turn_healthy_after(std::time::Duration::from_millis(1_500));
+    let service = DeployService::new(machine.clone()).turn_healthy_on_release();
     service
         .listed_containers()
         .lock()
         .unwrap()
         .push(deployed_container(&machine, &spec("web")));
-    let (address, server) = listening(service).await;
-    let begun = std::time::Instant::now();
+    let (address, server) = listening(service.clone()).await;
 
-    let (code, restarted) = ployz(None, &address.to_string(), &["service", "restart", "web"]).await;
+    let restart = tokio::spawn(async move {
+        ployz(None, &address.to_string(), &["service", "restart", "web"]).await
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(30), service.health_waited())
+        .await
+        .expect("the restart never waited for health");
+    assert!(!restart.is_finished(), "returned before the start passed");
+    service.release_health();
+    let (code, restarted) = restart.await.unwrap();
     assert_eq!(code, 0, "{restarted}");
-    assert!(begun.elapsed() >= std::time::Duration::from_millis(1_500));
     server.abort();
 }
 
@@ -731,8 +736,7 @@ async fn ctrl_c_during_cleanup_prints_each_copy_left_running_and_exits_non_zero(
         .with_machines(vec![entry, edge.clone()])
         .never_unroute_on(edge.machine.id);
     daemon.listed_containers().lock().unwrap().push(old);
-    let unrouted = daemon.unrouted();
-    let (address, server) = listening(daemon).await;
+    let (address, server) = listening(daemon.clone()).await;
     let connect = format!("tcp://{address}");
     let command = |args: &[&str]| {
         let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"));
@@ -761,13 +765,9 @@ async fn ctrl_c_during_cleanup_prints_each_copy_left_running_and_exits_non_zero(
         assert!(output.status.success(), "{output:?}");
     }
     let deploy = command(&["deploy"]).spawn().unwrap();
-    tokio::time::timeout(Duration::from_secs(20), async {
-        while !unrouted.lock().unwrap().contains(&old_id) {
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-    })
-    .await
-    .expect("cleanup takes the old copy out of rotation");
+    tokio::time::timeout(Duration::from_secs(20), daemon.unrouted_copy(&old_id))
+        .await
+        .expect("cleanup takes the old copy out of rotation");
     let interrupted = std::process::Command::new("kill")
         .args(["-INT", &deploy.id().unwrap().to_string()])
         .status()

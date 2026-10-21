@@ -98,7 +98,10 @@ pub(super) fn following_args(matches: &ArgMatches) -> Vec<&str> {
 /// How often `deploy` reads a Deployment Cloud runs while following it.
 pub(super) const FOLLOW_POLL: Duration = Duration::from_secs(1);
 /// How long a followed Deployment may sit queued before the follow says why it waits.
-const UNCLAIMED: Duration = Duration::from_secs(30);
+fn unclaimed_wait() -> Duration {
+    crate::cli::env::seconds(crate::cli::env::DEPLOY_UNCLAIMED_SECONDS)
+        .unwrap_or(Duration::from_secs(30))
+}
 
 pub(super) fn deployment_group(command: Command) -> Command {
     command.about("Read, redeploy, start and cancel Deployments")
@@ -679,7 +682,7 @@ fn follow(
             ))
             .hint(Hint::Inspect(hint_for(matches, tracked)))
     };
-    let mut unclaimed = Some(std::time::Instant::now() + UNCLAIMED);
+    let mut unclaimed = Some(std::time::Instant::now() + unclaimed_wait());
     loop {
         if signal.is_cancelled() {
             return followed.ok_or_else(Error::cancelled);

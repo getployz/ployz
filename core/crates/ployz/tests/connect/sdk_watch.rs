@@ -503,16 +503,9 @@ async fn next_frame(watch: &sdk::Watch) -> RuntimeWatchFrame {
 }
 
 async fn wait_watch_rpc_dropped(service: &DiscoveryService) {
-    timeout(Duration::from_secs(2), async {
-        loop {
-            if service.live_watch_senders() == 0 {
-                return;
-            }
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
-    })
-    .await
-    .expect("cancel must drop the Watch RPC without another next()");
+    timeout(Duration::from_secs(2), service.watch_rpcs_dropped())
+        .await
+        .expect("cancel must drop the Watch RPC without another next()");
 }
 
 fn watch_description() -> ContractDescription {

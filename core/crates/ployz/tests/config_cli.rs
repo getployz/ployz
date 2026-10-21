@@ -402,6 +402,7 @@ struct Approvals {
     asking: std::sync::Mutex<usize>,
     calls: std::sync::Mutex<Vec<(String, String, Value)>>,
     runs: std::sync::Mutex<Vec<String>>,
+    ran: std::sync::Condvar,
 }
 
 impl Approvals {
@@ -468,6 +469,17 @@ impl Approvals {
         self.runs.lock().unwrap().clone()
     }
 
+    fn wait_for_run(&self, run: &str) {
+        let runs = self.runs.lock().unwrap();
+        let (runs, waited) = self
+            .ran
+            .wait_timeout_while(runs, std::time::Duration::from_secs(30), |runs| {
+                !runs.iter().any(|seen| seen == run)
+            })
+            .unwrap();
+        assert!(!waited.timed_out(), "never ran {run}: {runs:?}");
+    }
+
     fn run(&self, method: &str, route: &str, body: &[u8], approval: Option<&str>) -> (u16, Value) {
         let carried = approval
             .map(|id| format!(" approved by {id}"))
@@ -476,6 +488,7 @@ impl Approvals {
             .lock()
             .unwrap()
             .push(format!("{method} {route}{carried}"));
+        self.ran.notify_all();
         let body: Value = serde_json::from_slice(body).unwrap_or(Value::Null);
         let segments: Vec<&str> = route.split('/').collect();
         match (method, segments.as_slice()) {
@@ -5566,16 +5579,7 @@ fn stopping_a_cloud_drain_chosen_by_id_names_the_server_not_its_id() {
         .stderr(std::process::Stdio::piped())
         .spawn()
         .unwrap();
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-    let followed = "GET server-drains/drn_running".to_owned();
-    while !approvals.runs().contains(&followed) {
-        assert!(
-            std::time::Instant::now() < deadline,
-            "the CLI never followed the drain: {:?}",
-            approvals.runs()
-        );
-        std::thread::sleep(std::time::Duration::from_millis(20));
-    }
+    approvals.wait_for_run("GET server-drains/drn_running");
     let pid = rustix::process::Pid::from_raw(child.id().try_into().unwrap()).unwrap();
     rustix::process::kill_process(pid, rustix::process::Signal::INT).unwrap();
     let output = child.wait_with_output().unwrap();
@@ -5715,16 +5719,7 @@ fn ctrl_c_stops_following_a_cleanup_cloud_keeps_running() {
         .stderr(std::process::Stdio::piped())
         .spawn()
         .unwrap();
-    let following = "GET namespace-cleanups/cln_slow".to_owned();
-    let started = std::time::Instant::now();
-    while !approvals.runs().contains(&following) {
-        assert!(
-            started.elapsed() < std::time::Duration::from_secs(30),
-            "{:?}",
-            approvals.runs()
-        );
-        std::thread::sleep(std::time::Duration::from_millis(20));
-    }
+    approvals.wait_for_run("GET namespace-cleanups/cln_slow");
     let pid = child.id().to_string();
     assert!(
         Command::new("kill")
@@ -5733,24 +5728,15 @@ fn ctrl_c_stops_following_a_cleanup_cloud_keeps_running() {
             .unwrap()
             .success()
     );
-    let interrupted = std::time::Instant::now();
-    let status = loop {
-        if let Some(status) = child.try_wait().unwrap() {
-            break status;
-        }
-        if interrupted.elapsed() > std::time::Duration::from_secs(5) {
-            child.kill().unwrap();
-            panic!("still following 5s after Ctrl-C: {:?}", approvals.runs());
-        }
-        std::thread::sleep(std::time::Duration::from_millis(20));
+    let mut child_stderr = child.stderr.take().unwrap();
+    let (exited, exit) = std::sync::mpsc::channel();
+    std::thread::spawn(move || exited.send(child.wait().unwrap()));
+    let Ok(status) = exit.recv_timeout(std::time::Duration::from_secs(5)) else {
+        Command::new("kill").args(["-KILL", &pid]).status().unwrap();
+        panic!("still following 5s after Ctrl-C: {:?}", approvals.runs());
     };
     let mut stderr = String::new();
-    child
-        .stderr
-        .take()
-        .unwrap()
-        .read_to_string(&mut stderr)
-        .unwrap();
+    child_stderr.read_to_string(&mut stderr).unwrap();
     assert_eq!(status.code(), Some(130), "{stderr}");
     assert!(
         stderr.contains(

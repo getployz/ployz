@@ -300,7 +300,8 @@ impl Client {
         let payload = T::into_request(request)
             .encode()
             .map_err(ConnectError::Codec)?;
-        self.call_retried::<T>(payload, Some(target), Some(TARGET_RPC_TIMEOUT))
+        let timeout = crate::connect::target_read_timeout();
+        self.call_retried::<T>(payload, Some(target), Some(timeout))
             .await
     }
 
