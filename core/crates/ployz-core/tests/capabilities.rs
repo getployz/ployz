@@ -235,7 +235,6 @@ const FIELD_FLOOR: &[&str] = &[
     "ployz.image.prune.v1",
     "ployz.image.pull-from-machine.v1",
     "ployz.logs.history.v2",
-    "ployz.logs.retained-env.v1",
     "ployz.logs.tail.v1",
     "ployz.machine.enroll.v1",
     "ployz.machine.forget.v1",
@@ -289,7 +288,7 @@ const ABOVE_FLOOR: &[(&str, &str)] = &[
     ),
     (
         "ployz.logs.retained-env.v1",
-        "falls back: the SDK asks it only after InspectContainer fails, and a refusal withholds the Container's Sealed lines as before",
+        "falls back: the SDK asks it only after InspectContainer answers NotFound, and a refusal withholds the Container's Sealed lines as before",
     ),
 ];
 
