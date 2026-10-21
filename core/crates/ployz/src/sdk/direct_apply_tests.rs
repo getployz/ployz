@@ -87,3 +87,32 @@ async fn a_direct_apply_whose_container_restarted_names_the_exited_runs_last_lin
     );
     assert_eq!(failure.cause, ["token=[redacted]"]);
 }
+
+/// A run that exited printing nothing has no last line, so no earlier run's line
+/// stands in for it, on the headline or under it.
+#[tokio::test]
+async fn a_direct_apply_whose_last_run_printed_nothing_names_no_line() {
+    let failure = failed(
+        support::DeployService::new(support::machine('a', "one"))
+            .reboot_containers_through_a_silent_run(),
+    )
+    .await;
+    let report = failure.report();
+    assert_eq!(
+        report.message,
+        "web: The Container exited with code 1 and is restarting."
+    );
+    assert_eq!(report.cause, Vec::<String>::new());
+    let text = crate::ui::plain(&crate::handlers::server::ingress_incomplete(
+        "Server updated",
+        failure,
+        "ployz server set one --accepts-ingress=true".into(),
+    ));
+    assert!(
+        text.starts_with(
+            "error: Server updated; the Ingress Proxy did not follow: web: The Container exited with code 1 and is restarting.\n"
+        ),
+        "{text}"
+    );
+    assert!(!text.contains("cause:"), "{text}");
+}
