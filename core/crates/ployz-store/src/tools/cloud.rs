@@ -187,6 +187,12 @@ pub struct Mirror {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 pub struct OperationsAnswer {
     pub operations: Vec<Operation>,
+    /// On a Server's history, its newest Drain with a verdict (done, failed, or `unknown` with
+    /// an `end`), however many runs came after it. Absent when it has none, and from a Cloud
+    /// from before it, whose answer holds only what `operations` lists.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub settled_drain: Option<Operation>,
 }
 
 /// One requested operation and how it ended so far. An [`Act`](super::Act)
