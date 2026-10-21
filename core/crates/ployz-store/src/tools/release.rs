@@ -1,6 +1,8 @@
 //! Tools that move Staged changes on: review them, discard them, deploy them
 //! or save them for the next deploy.
 
+use std::collections::BTreeMap;
+
 use ployz_core::config::{ChangeKind, EnvironmentNodeType, ReviewLifecycleKind};
 use ployz_core::{ConfigName, ServiceName};
 use schemars::JsonSchema;
@@ -88,6 +90,7 @@ impl Tool for Review {
                 format!("{kind} {}", effect.name)
             })
             .collect::<Vec<_>>();
+        let labels = NodeChange::labels(&diff.changes);
         Ok(json!({
             "at": at(&diff.environment),
             "revision": diff.environment.revision.0,
@@ -97,7 +100,7 @@ impl Tool for Review {
                 "holds_staged": diff.published,
             })),
             "staged": diff.total_count,
-            "lines": diff.changes.iter().flat_map(lines).collect::<Vec<_>>(),
+            "lines": diff.changes.iter().flat_map(|change| lines(change, &labels)).collect::<Vec<_>>(),
             "asks_approval": !cx.is_local(),
             "destroys": destroys,
             "broken": diff.broken.iter().map(ToString::to_string).collect::<Vec<_>>(),
@@ -106,7 +109,7 @@ impl Tool for Review {
 }
 
 /// One node's change as plain lines: the node, then each Setting.
-fn lines(change: &NodeChange) -> Vec<String> {
+fn lines(change: &NodeChange, labels: &BTreeMap<String, String>) -> Vec<String> {
     let kind = match change.node.node_type {
         EnvironmentNodeType::Service => "service",
         EnvironmentNodeType::Volume => "volume",
@@ -140,11 +143,7 @@ fn lines(change: &NodeChange) -> Vec<String> {
             );
             continue;
         }
-        let by_id = format!("configs.@{}", change.node.id);
-        let path = &match setting.path.strip_prefix(&by_id) {
-            Some(rest) => format!("configs.{}{rest}", change.name),
-            None => setting.path.clone(),
-        };
+        let path = labels.get(&setting.path).unwrap_or(&setting.path);
         lines.push(match setting.kind {
             ChangeKind::Add => format!("  set {path} = {}", shown(&setting.after)),
             ChangeKind::Remove => format!("  unset {path}"),

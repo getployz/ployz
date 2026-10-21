@@ -5,11 +5,11 @@ import { Inngest } from "inngest";
 import { Auth, AuthLive, CLI_CLIENT_ID, Unauthorized } from "#/server/auth.server";
 import { AppConfig } from "#/server/config.server";
 import { Database, DatabaseLive } from "#/server/database.server";
-import { member, session as sessionTable, user as userTable, verification } from "#/modules/identity/tables";
+import { deviceCode, member, session as sessionTable, user as userTable, verification } from "#/modules/identity/tables";
 import { organization as organizationTable } from "#/modules/organization/tables";
 import { hashClaimSecret } from "#/modules/identity/claim-required.server";
 import { eq, like, sql } from "drizzle-orm";
-import { vi } from "vitest";
+import { expect, vi } from "vitest";
 import { Polar } from "#/modules/billing/polar-provider.server";
 import { InngestClient } from "#/modules/inngest/client";
 import {
@@ -226,8 +226,9 @@ it.live(
         const approved = yield* call("/device/approve", { cookie: owner, body: { userCode, organizationId: ownerOrganizationId } });
         assert.strictEqual(approved.status, 200);
         assert.strictEqual((yield* device.poll()).json?.error, "slow_down");
-        // RFC 8628's default five-second polling interval.
-        yield* Effect.sleep("5 seconds");
+        // RFC 8628's default five-second polling interval, passed by moving the last poll back.
+        const { drizzle } = yield* Database;
+        yield* drizzle.update(deviceCode).set({ lastPolledAt: sql`${deviceCode.lastPolledAt} - interval '5 seconds'` }).where(eq(deviceCode.userCode, userCode));
         const granted = yield* device.poll();
         assert.strictEqual(granted.status, 200);
         const token = granted.json?.access_token ?? assert.fail("no access token");
@@ -250,7 +251,6 @@ it.live(
         const moved = yield* call("/organization/set-active", { bearer: token, body: { organizationSlug: slug } });
         assert.strictEqual(moved.status, 200);
         assert.deepStrictEqual([moved.cookie, moved.authToken], [undefined, null]);
-        const { drizzle } = yield* Database;
         yield* drizzle.update(sessionTable).set({ expiresAt: new Date(Date.now() + 60_000) }).where(eq(sessionTable.token, token));
         const refreshed = yield* call("/get-session", { bearer: token });
         assert.strictEqual(refreshed.json?.user?.email, "owner@example.test");
@@ -351,7 +351,7 @@ it.live(
         yield* call(`/device?user_code=${userCode}`, { cookie });
         const first = yield* Effect.forkChild(call("/device/approve", { cookie, body: { userCode, organizationId: firstId } }));
         const sleeping = sql`select 1 from pg_stat_activity where datname = current_database() and wait_event = 'PgSleep'`;
-        while ((yield* drizzle.execute(sleeping, "objects")).length === 0) yield* Effect.sleep("20 millis");
+        yield* Effect.promise(() => vi.waitFor(async () => expect(await Effect.runPromise(drizzle.execute(sleeping, "objects"))).not.toHaveLength(0)));
         const duplicate = yield* call("/device/approve", { cookie, body: { userCode, organizationId: otherId } });
         assert.strictEqual((yield* Fiber.join(first)).status, 200);
         const token = (yield* poll()).json?.access_token ?? assert.fail("no access token");

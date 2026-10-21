@@ -44,7 +44,7 @@ it("withholds a page's text when the Store can't say what is Sealed", async () =
     logHistory: (options: LogHistoryOptions) => Effect.promise(async () => {
       asked.push(options.sealed);
       handle.want();
-      await new Promise(resolve => setTimeout(resolve, 10));
+      await vi.waitFor(() => expect(handle.reads.some(read => read.failed || read.names !== undefined)).toBe(true));
       const failed = handle.reads.some(read => read.failed);
       const shown = { id: "m/c/100/history/0", source: asTestDouble<LogMetadata>()({ machine_id: "m", machine_name: "fsn-1", origin: { origin: "service" as const, service_id: "s", service_name: "api", container_id: "c", hook: null } }), timestamp_nanos: "100", channel: "stdout" as const, text: "shown" as const, level: "info" as const, message: "TOKEN=73519086427351908642" };
       const at = { machineId: "m", machineName: "fsn-1", containerId: "c", serviceName: "api" };

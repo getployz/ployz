@@ -177,6 +177,9 @@ Click a server. Its page shows its status and public IP address, then:
 An entry marked **Not in any Project** is left over from a deleted project or environment.
 **Remove** deletes its containers and its volumes, data included, from every server.
 
+When you restore a server from a snapshot of its disk, Ployz picks its services and ingress back
+up as they were when the snapshot was taken. Your next deploy updates them as usual.
+
 ## Reach a server from the CLI
 
 When the CLI reaches your servers through Ployz Cloud, only owners and admins can run these commands:
@@ -376,6 +379,8 @@ running and private DNS keeps answering (with the exceptions in
 the release it ran before.
 The command prints one line per server it tried, the failed one included. The error after it, on
 stderr, says why that server failed.
+With `--json`, each entry in `attempts` names its server's id under `server`, and `unattempted`
+lists the ids of the servers the command never reached.
 A server that doesn't answer within a minute counts as failed, so an offline server stops the
 command quickly instead of waiting out the upgrade.
 

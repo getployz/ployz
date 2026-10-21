@@ -932,7 +932,7 @@ fn plan(matches: &ArgMatches, store: &Store, services: Vec<ServiceName>) -> Resu
                 super::store::word(&change.lifecycle)
             ));
             for row in &change.settings {
-                for line in super::store::changed(row) {
+                for line in super::store::changed(row, &change.settings) {
                     crate::ui::stream(format_args!("  {line}"));
                 }
             }
@@ -1161,7 +1161,8 @@ pub(super) fn deployment_id(
     Ok(found.deployment.id)
 }
 
-/// A refused redeploy, start or cancel points at the Deployment's current state.
+/// A refused redeploy, start or cancel points at the Deployment's current state,
+/// unless the Store names what to run next, such as `ployz server add`.
 fn refused<'a>(
     matches: &'a ArgMatches,
     store: &'a Store,
@@ -1170,7 +1171,9 @@ fn refused<'a>(
     move |error| {
         store.fail(super::store::with_next(
             error,
-            |refusal| refusal.code == RpcErrorCode::Conflict,
+            |refusal| {
+                refusal.code == RpcErrorCode::Conflict && refusal.details.get("next").is_none()
+            },
             || {
                 store
                     .read(&ployz_store::DeploymentQuery { id: id.clone() })

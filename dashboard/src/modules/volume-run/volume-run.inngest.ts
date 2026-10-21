@@ -15,7 +15,7 @@ import { PATIENCE, PATIENCE_WAITS, waitsFor } from "#/modules/volume-run/patienc
 import { gb, gbAtLeast, type ResizePhase, type ResizeStep, type SizeDirection, type SizeOutcome, undoOnRefusal } from "#/modules/volume-run/resize";
 import { type RecordAnswer, recordVolumeSize, resizeCopy } from "#/modules/volume-run/volume-size.server";
 import { fenceTaken } from "#/modules/volume-run/volume-run.deploy.server";
-import { alreadyOn, epochOf, expectOf, observedEpoch, type Planned, planForwardRelease, planFromCopies } from "#/modules/volume-run/plan";
+import { alreadyOn, epochOf, expectOf, observedEpoch, type Planned, planForwardRelease, planFromCopies, ROLE_NOUN } from "#/modules/volume-run/plan";
 import { type AnsweredMember, copyName, type Member, type ReleasePlan } from "#/modules/volume-run/volume-run";
 import {
   claimVolumeRun,
@@ -296,8 +296,6 @@ const deleteExpect = (copy: VolumeCopy | null, role: SlotRole | null): ExpectedC
   const expect = expectOf(copy);
   return expect.kind === "mirror" && role !== null ? { ...expect, role } : expect;
 };
-
-const ROLE_NOUN = { mirror: "a mirror", old_copy: "an old copy" } as const;
 
 async function deleteMirror(steps: RunSteps, phase: PhaseOf<"delete_mirror">) {
   const { run } = steps;

@@ -368,7 +368,7 @@ commands! {
     Start(Start) -> Deployment(crate::DeploymentSummary)
         needs ChangesDeploy
         agent [DeploymentStart]
-        => crate::deployment::start(tx, who, &c.deployment);
+        => crate::deployment::start(tx, who, &c.deployment, trusted);
     /// Cancel a queued or running Deployment.
     Cancel(Cancel) -> Deployment(crate::DeploymentSummary)
         needs ChangesDeploy

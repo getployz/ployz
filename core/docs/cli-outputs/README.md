@@ -272,7 +272,7 @@ Dominant: one pretty-printed object on stdout (126 of 130 success outputs). The 
 Each item reproduces in a capture on main, at the line it cites.
 
 1. `exec` of a missing binary prints `OCI runtime exec failed: …` on stdout, exit 127. [cloud-cluster/errors.md:31](cloud-cluster/errors.md) **Kept: `exec` passes the remote command's output and exit code through.**
-2. `deployment start 1` with no Server follows until the capture's timeout kills it (exit 124), and prints nothing at all. [cloud/deploy.md:310](cloud/deploy.md)
+2. `deployment start 1` with no Server follows until the capture's timeout kills it (exit 124), and prints nothing at all. [cloud/deploy.md:310](cloud/deploy.md) **Fixed: with no Server enrolled, start refuses at once like a Deploy, `next: ployz server add`. The capture's seed enrolls a Server that never answers and runs no worker, so its start still waits in the queue.**
 3. project rm help leaves the `<name>` argument with an empty description. [store/help.md:403](store/help.md)
 
 The earlier list's 32 items, rechecked against the same captures. Old items 23 and 29 are items 1 and 2 above.
