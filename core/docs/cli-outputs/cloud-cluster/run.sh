@@ -6,12 +6,11 @@
 #   run=$(scripts/verify-cluster up --machines 1 --daemon checkout --cloud)
 # (a release daemon refuses this checkout's CLI), seeded with Organization
 # `ada`, Project `shop`, Environment `production` holding web (nginx, custom
-# domain acme.com, no generated domain, so `domain set web` refuses), api,
-# postgres (Volume pg-data), worker and redis, plus a staged, undeployed Branch
-# `fix-api`. Then, through `scripts/verify-cluster cli "$run" --`, run
-# `link --project shop`, `service rm redis` (its HTTP health check never
-# passes) and `deploy`. This script never starts, restarts or tears the setup
-# down.
+# domain acme.com and a generated domain on port 80), api, postgres (Volume
+# pg-data), worker (whoami on port 80, checked at /health) and redis (checked
+# with redis-cli ping), plus a staged, undeployed Branch `fix-api`. Then,
+# through `scripts/verify-cluster cli "$run" --`, run `link --project shop`
+# and `deploy`. This script never starts, restarts or tears the setup down.
 #
 #   MANIFEST=/abs/core/.verify/<run>/cluster.json [SECTIONS="..."] run.sh [PARENT]
 #   publish.sh DIR
@@ -19,7 +18,9 @@
 # Each section writes its own OUT.md and OUT.ansi into a fresh mktemp -d under
 # PARENT (default /tmp); `up` appends to deploy.md, so it runs only after `deploy`.
 # publish.sh scrubs them and copies them over the tracked ones. Every section
-# leaves web deployed and serving.
+# leaves web deployed and serving. Cloud asks a person to approve a removal
+# from `ployz` (env rm, project rm, a deploy that removes a domain); the driver
+# approves each as the seed's owner Ada, so those captures show the outcome.
 #
 # The CLI only runs through `scripts/verify-cluster cli MANIFEST -- ARGS`, whose
 # working directory is the run's workspace/; `up` deploys that directory, so
@@ -53,6 +54,9 @@ CAPTURES=$("$DOCS/capture-dir.sh" "${1:-}") || exit 1
 # same environment and working directory that `cli` sets, so TTY captures
 # (cap.sh's `script` runs) show the real terminal rendering.
 # PLOYZ_CLOUD_TIMEOUT=N stops a streaming command after N seconds either way.
+# PLOYZ_CLOUD_DIRECT=1 takes the direct path when piped too, for an approval-gated
+# capture whose approval id must be read while it waits: `cli` replays output
+# only once the command ends.
 WRAPPER=$(mktemp /tmp/ployz-cloud.XXXXXX) || exit 1
 readonly SECTIONS RUN_DIR WORKSPACE CAPTURES WRAPPER
 # up_section records here what it changed, so a run that stops early puts it back.
@@ -82,7 +86,7 @@ echo "raw captures in $CAPTURES"
   echo 'set -euo pipefail'
   printf 'vc=%q manifest=%q run=%q url=%q\n' "$CORE/scripts/verify-cluster" "$MANIFEST" "$RUN_DIR" "$(jq -r .cloud.url "$MANIFEST")"
   cat <<'WRAP'
-if [ ! -t 1 ]; then
+if [ ! -t 1 ] && [ -z "${PLOYZ_CLOUD_DIRECT:-}" ]; then
   exec "$vc" cli ${PLOYZ_CLOUD_TIMEOUT:+--timeout "$PLOYZ_CLOUD_TIMEOUT"} "$manifest" -- "$@"
 fi
 t=${PLOYZ_CLOUD_TIMEOUT:-}
@@ -111,6 +115,10 @@ h() { echo "## $2" >>"$CAPTURES/$1"; echo >>"$CAPTURES/$1"; }
 start() { : >"$CAPTURES/$1.ansi"; echo "# $2" >"$CAPTURES/$1.md"; echo >>"$CAPTURES/$1.md"; }
 latest() { "$P" --json deployment ls --limit 1 | jq -r '.deployments[0].id'; }
 latest_number() { "$P" --json deployment ls --limit 1 | jq -r '.deployments[0].number'; }
+# shellcheck source=../approve.sh
+source "$DOCS/approve.sh"
+# gated FILE TITLE -- CMD...   a capture Ada approves; the direct path streams its stderr
+gated() { PLOYZ_CLOUD_DIRECT=1 PLOYZ_CLOUD_TIMEOUT=300 approved ada "$@"; }
 settle() { # wait until no Deployment of production is queued or running
   for _ in $(seq 60); do
     "$P" --json deployment ls --limit 5 | jq -e '[.deployments[] | select(.status == "queued" or .status == "running")] | length == 0' >/dev/null && return
@@ -230,7 +238,7 @@ up_section() {
   c $D "status after up (two Projects)" -- $P status
   c $D "service ls after up (two Projects, no --project, linked directory)" -- $P service ls
   c $D "deployment ls after up" -- $P deployment ls
-  m $D "project rm the up Project" -- $P project rm workspace --confirm workspace
+  gated $D "project rm the up Project (Ada approves it)" -- $P project rm workspace --confirm workspace
   c $D "status with the directory still linked to the removed Project" -- $P status
   c $D "status --json with the directory still linked to the removed Project" -- $P --json status
   # Put the links back as they were, so later commands act on shop again.
@@ -316,10 +324,11 @@ domain_section() {
   m $M "domain set" -- $P domain set web shopweb
   c $M "domain ls with a staged change" -- $P domain ls
   c $M "diff" -- $P diff
-  m $M "deploy" -- $P deploy
+  # Changing the generated domain removes the old host, so Cloud asks.
+  gated $M "deploy (Ada approves removing web.ada.ployz.test)" -- $P deploy
   c $M "domain ls after deploy" -- $P domain ls
   m $M "domain set --json back" -- $P --json domain set web web --port 80
-  m $M "deploy" -- $P deploy
+  gated $M "deploy (Ada approves removing shopweb.ada.ployz.test)" -- $P deploy
 
   h $f "Add and remove a generated domain"
   m $M "domain add a generated domain" -- $P domain add api
@@ -327,7 +336,7 @@ domain_section() {
   c $M "domain ls with two generated domains" -- $P domain ls
   local host; host=$("$P" --json domain ls | jq -r '[.. | objects | select(has("host")) | .host | select(startswith("api"))][0] // empty')
   m $M "domain rm" -- $P domain rm "${host:-api.ada.ployz.test}"
-  m $M "deploy" -- $P deploy
+  gated $M "deploy the removal (Ada approves it)" -- $P deploy
   m $M "domain add --json a generated domain" -- $P --json domain add api
   m $M "domain rm --json" -- $P --json domain rm "${host:-api.ada.ployz.test}"
   m $M "discard" -- $P discard
@@ -390,7 +399,7 @@ env_section() {
 
   h $f "rm"
   m $E "env rm without --confirm" -- $P env rm hotfix
-  m $E "env rm" -- $P env rm hotfix --confirm shop/hotfix
+  gated $E "env rm (Ada approves it)" -- $P env rm hotfix --confirm shop/hotfix
   m $E "env rm --json" -- $P --json env rm preview --confirm shop/preview
   c $E "env ls after" -- $P env ls
 
