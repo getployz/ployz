@@ -233,6 +233,7 @@ async fn a_machine_silent_while_a_global_start_checks_its_slot_is_named() {
                 r#gen: ployz_core::Gen::FIRST,
                 slot: slot_key(
                     &test_namespace(),
+                    &global.name,
                     ContainerKind::ServiceContainer,
                     crate::cluster::global_creation_key(&global),
                 ),

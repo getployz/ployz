@@ -284,9 +284,9 @@ pub(super) fn value_warnings(view: &DeploymentView) -> Vec<String> {
 
 pub(super) fn ingress_warnings(view: &DeploymentView) -> Vec<String> {
     let unchecked = ingress_unchecked(view).map(|cause| {
-        format!(
-            "Couldn't check ingress: {}. Deploy again to retry.",
-            cause.trim_end_matches('.')
+        crate::ui::then_sentence(
+            &crate::ui::with_reason("Couldn't check ingress", cause),
+            "Deploy again to retry.",
         )
     });
     view.deployment
@@ -300,8 +300,12 @@ pub(super) fn ingress_warnings(view: &DeploymentView) -> Vec<String> {
                      See what holds it with `sudo ss -ltnp '( sport = :80 or sport = :443 )'`. \
                      Ployz starts ingress on its own once the port is free."
                 ),
-                IngressFailure::Failed { cause } => format!(
-                    "Ingress isn't running on {server}: {cause}. Deploy again to retry."
+                IngressFailure::Failed { cause } => crate::ui::then_sentence(
+                    &crate::ui::with_reason(
+                        format_args!("Ingress isn't running on {server}"),
+                        cause,
+                    ),
+                    "Deploy again to retry.",
                 ),
             })
         })
@@ -1445,6 +1449,19 @@ mod tests {
             ingress_warnings(&view),
             ["Ingress isn't running on web-1: pull failed. Deploy again to retry."]
         );
+        view.deployment.ingress.first_mut().unwrap().failure = Some(IngressFailure::Failed {
+            cause: "pull failed.".into(),
+        });
+        assert_eq!(
+            ingress_warnings(&view),
+            ["Ingress isn't running on web-1: pull failed. Deploy again to retry."]
+        );
+        view.deployment.ingress.first_mut().unwrap().failure =
+            Some(IngressFailure::Failed { cause: " ".into() });
+        assert_eq!(
+            ingress_warnings(&view),
+            ["Ingress isn't running on web-1. Deploy again to retry."]
+        );
     }
 
     #[test]
@@ -1488,6 +1505,11 @@ mod tests {
                 "Couldn't check ingress: lab-1 went unobserved (connection refused). Deploy again to retry.",
                 "Couldn't check ingress: lab-2 went unobserved (no answer). Deploy again to retry."
             ]
+        );
+        view.deployment.warnings = vec![DeploymentWarning::IngressUnchecked { cause: "".into() }];
+        assert_eq!(
+            ingress_warnings(&view),
+            ["Couldn't check ingress. Deploy again to retry."]
         );
     }
 

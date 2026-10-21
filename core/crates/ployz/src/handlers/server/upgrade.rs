@@ -349,11 +349,24 @@ fn stopped(server: &str, upgrade: &CloudUpgrade) -> Option<Error> {
             crate::ui::stream(format_args!("Upgraded Server {server} to {target}."));
             return None;
         }
-        "failed" => format!("Server {server} failed to upgrade to {target}{reason}"),
+        "failed" => {
+            crate::ui::stream(format_args!(
+                "Server {server} failed to upgrade to {target}."
+            ));
+            format!("Server {server} failed to upgrade to {target}{reason}")
+        }
         "interrupted" => {
+            crate::ui::stream(format_args!(
+                "Server {server} stopped upgrading to {target}."
+            ));
             format!("The upgrade of Server {server} to {target} was interrupted{reason}")
         }
-        _ => format!("Cloud cannot tell whether Server {server} upgraded to {target}{reason}"),
+        _ => {
+            crate::ui::stream(format_args!(
+                "Cloud cannot tell whether Server {server} upgraded to {target}."
+            ));
+            format!("Cloud cannot tell whether Server {server} upgraded to {target}{reason}")
+        }
     };
     Some(Error::coded(RpcErrorCode::Internal, message))
 }
@@ -538,7 +551,14 @@ fn print_attempt(machine: &Machine, attempt: &MachineUpgradeAttempt) {
         MachineUpgradeOutcome::Succeeded { version } => {
             crate::ui::stream(format_args!("Upgraded Server {name} to {version}."));
         }
-        MachineUpgradeOutcome::Failed { .. } | MachineUpgradeOutcome::Interrupted { .. } => {}
+        MachineUpgradeOutcome::Failed { stage, .. } => crate::ui::stream(format_args!(
+            "Server {name} failed to upgrade to {target} while {}.",
+            stage.as_str()
+        )),
+        MachineUpgradeOutcome::Interrupted { stage } => crate::ui::stream(format_args!(
+            "Server {name} stopped upgrading to {target} while {}.",
+            stage.as_str()
+        )),
     }
 }
 
@@ -881,6 +901,54 @@ mod tests {
             "{stderr}"
         );
         assert!(!stderr.contains("firewall"), "{stderr}");
+    }
+
+    #[test]
+    fn a_lone_failed_server_is_named_on_stdout() {
+        // The result lines go to the process's real stdout, so read them from a child run.
+        const CHILD: &str = "PLOYZ_UPGRADE_FAILED_CHILD";
+        if std::env::var_os(CHILD).is_some() {
+            crate::ui::init(false, crate::ui::Color::Never);
+            let failed = MachineUpgradeOutcome::Failed {
+                stage: ployz_core::MachineUpgradeStage::Launching,
+                error: "no systemd".into(),
+            };
+            let (_, outcome, _) = tokio::runtime::Runtime::new()
+                .unwrap()
+                .block_on(run_sequence(&[machine('a', 1)], vec![failed], None));
+            assert!(outcome.is_err());
+            let upgrade = CloudUpgrade {
+                outcome: "failed".into(),
+                from_version: Some("1.2.2".into()),
+                target_version: Some("1.2.3".into()),
+                message: Some("install failed".into()),
+            };
+            assert!(stopped("b", &upgrade).is_some());
+            return;
+        }
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "handlers::server::upgrade::tests::a_lone_failed_server_is_named_on_stdout",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            stdout.contains("Server a failed to upgrade to 1.2.3 while launching.\n"),
+            "{stdout}"
+        );
+        assert!(
+            stdout.contains("Server b failed to upgrade to 1.2.3.\n"),
+            "{stdout}"
+        );
     }
 
     async fn restart_during_upgrade() {
