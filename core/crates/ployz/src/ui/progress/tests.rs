@@ -144,6 +144,7 @@ fn a_removal_that_has_begun_reads_as_removing_not_starting() {
         let row = crate::deploy::service_row(
             QualifiedService::parse("shop/api").unwrap(),
             None,
+            None,
             [crate::deploy::Replica {
                 machine,
                 state,
