@@ -43,6 +43,8 @@ describe("semantic UI states", () => {
 
     expect(input.getAttribute("data-changed")).toBe("true");
     expect(input.className).toContain("data-[changed=true]:bg-changed-soft");
+    expect(input.className).toContain("focus-visible:ring-ring/50");
+    expect(input.className).not.toContain("ring-changed");
     expect(textarea.getAttribute("data-changed")).toBe("true");
     expect(textarea.className).toContain(
       "data-[changed=true]:bg-changed-soft",
