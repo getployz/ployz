@@ -52,6 +52,23 @@ describe("runtimeLine", () => {
     expect(runtimeLine(service, null, watch({ incomplete: true }))).toMatchObject({ word: "Deployed", down: false });
   });
 
+  it("says a grey Not seen running, not Crashed or Stopped, when none of its containers runs while the evidence is incomplete", () => {
+    const partial = watch({ incomplete: true });
+    const notSeen = { word: "Not seen running", tone: "quiet", down: false };
+    expect(runtimeLine(service, runtime(container("exited"), container("restarting")), partial)).toMatchObject(notSeen);
+    expect(runtimeLine(service, runtime({ ...container("exited"), runtime: { state: "exited", code: 0 } }), partial)).toMatchObject(notSeen);
+    expect(nodeIssues(runtimeLine(service, runtime(container("restarting")), partial), [])).toBeNull();
+  });
+
+  it("says Deployed, as with no record, for a record with no container while the evidence is incomplete, leftover hook or not", () => {
+    const partial = watch({ incomplete: true });
+    const leftoverHook = { containers: [], hookContainers: [{ ...container("exited"), kind: "hook" }] };
+    expect(runtimeLine(service, runtime(), partial)).toMatchObject({ word: "Deployed", tone: "quiet", down: false });
+    expect(runtimeLine(service, leftoverHook, partial)).toMatchObject({ word: "Deployed", tone: "quiet", down: false });
+    expect(nodeIssues(runtimeLine(service, leftoverHook, partial), [])).toBeNull();
+    expect(runtimeLine(service, leftoverHook, seen)).toMatchObject({ word: "Not running", tone: "bad", down: true });
+  });
+
   it("never guesses without current evidence: it waits, greys the last word with its age, or says why", () => {
     const since = new Date("2026-09-30T10:00:00Z");
     expect(runtimeLine(service, null, watch({ status: "connecting", observedAt: null })).tone).toBe("pending");
@@ -72,17 +89,26 @@ describe("runtimeLine", () => {
     expect(runtimeLine({ ...service, change: "create" }, runtime(container("restarting")), seen)).toMatchObject({ word: "Crashed", down: true });
   });
 
-  it("says a grey Starting while a Deploy starts a Service no Server has named yet, but keeps any down record", () => {
+  it("says a grey Starting while a Deploy starts a Service none of whose containers runs yet, but keeps any down record", () => {
     const deploying = { ...seen, deploying: true };
     const exited = (code: number) => ({ ...container("exited"), runtime: { state: "exited", code } });
     expect(runtimeLine(service, null, deploying)).toMatchObject({ word: "Starting", tone: "quiet", down: false });
     expect(runtimeLine({ ...service, change: "create" }, null, deploying)).toMatchObject({ word: "Starting", tone: "quiet" });
     expect(runtimeLine({ ...service, change: "delete" }, null, deploying)).toMatchObject({ word: "Not running", down: true });
     expect(runtimeLine(service, null, { ...deploying, lens: { ...observed, status: "unavailable" } })).toMatchObject({ word: "Not running", tone: "quiet" });
-    expect(runtimeLine(service, runtime(), deploying)).toMatchObject({ word: "Not running", tone: "bad", down: true });
+    expect(runtimeLine(service, runtime(), deploying)).toMatchObject({ word: "Starting", tone: "quiet", down: false });
+    expect(nodeIssues(runtimeLine(service, runtime(), deploying), [])).toBeNull();
+    expect(runtimeLine({ ...service, change: "delete" }, runtime(), deploying)).toMatchObject({ word: "Not running", down: true });
     expect(runtimeLine(service, runtime(exited(0)), deploying)).toMatchObject({ word: "Stopped", tone: "bad", down: true });
     expect(runtimeLine(service, runtime(exited(1)), deploying)).toMatchObject({ word: "Crashed", tone: "crashed", down: true });
     expect(runtimeLine(service, runtime(container("restarting")), deploying)).toMatchObject({ word: "Crashed", down: true });
+  });
+
+  it("says a grey Starting while a first Deploy runs its pre-deploy command, and Not running for a leftover one outside a Deploy", () => {
+    const hook: RuntimeContainerRecord = { ...container("running"), kind: "hook" };
+    const preDeploy = { containers: [], hookContainers: [hook] };
+    expect(runtimeLine({ ...service, change: "create" }, preDeploy, { ...seen, deploying: true })).toMatchObject({ word: "Starting", tone: "quiet", down: false });
+    expect(runtimeLine(service, preDeploy, seen)).toMatchObject({ word: "Not running", tone: "bad", down: true });
   });
 
   it("says Degraded when fewer replicas serve than it asks for, except while a Deploy rolls them or a Server didn't report", () => {

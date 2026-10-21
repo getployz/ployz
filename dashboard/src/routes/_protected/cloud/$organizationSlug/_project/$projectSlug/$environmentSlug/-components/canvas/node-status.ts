@@ -31,14 +31,13 @@ export const NO_MOUNTS_CONFIGURED = line("No mounts configured", "idle");
  * `starting`: current evidence while a Deploy starts it; stale evidence keeps its last word.
  */
 function evidenceLine(runtime: Pick<RuntimeServiceRecord, "containers"> | null, whole: boolean, offline: ReadonlySet<string>, desiredReplicas: number | null, deploying: boolean, starting: boolean) {
-  const absent = line("Not running", "bad", true);
-  // No Server has ever named it and a Deploy is starting it: its first containers are on their way.
-  if (!runtime) return !whole ? line("Deployed", "quiet") : starting ? line("Starting", "quiet") : absent;
-  if (runtime.containers.length === 0) return absent;
+  if ((!runtime || runtime.containers.length === 0) && !whole) return line("Deployed", "quiet");
+  if (!runtime || runtime.containers.length === 0) return starting ? line("Starting", "quiet") : line("Not running", "bad", true);
   const containers = runtime.containers.filter((container) => !offline.has(container.machineId));
   // A Server missing from partial evidence may still serve it.
   if (containers.length === 0) return whole ? line("Server offline", "bad", true) : line("Server offline", "quiet");
   const running = containers.filter((container) => container.runtime?.state === "running");
+  if (running.length === 0 && !whole) return line("Not seen running", "quiet");
   // A run its Server stopped on request is no crash, whatever code the app exited with.
   if (running.length === 0) return containers.every((container) => container.runtime?.state === "exited" && (container.runtime.code === 0 || container.runtime.stopped === true))
     ? line("Stopped", "bad", true) : line("Crashed", "crashed", true);
@@ -59,9 +58,9 @@ export type RuntimeLens = Pick<ReturnType<typeof useRuntimeLens>, "status" | "in
 /**
  * A Service's status line: what runs now, from runtime evidence. Staged work never replaces it, and it never guesses:
  * before evidence it waits, and evidence that isn't current reads grey with its age.
- * `deploying`: a Deploy in flight restarts it. Current evidence that names no record of it then reads Starting, not Not running;
+ * `deploying`: a Deploy in flight restarts it. Current, whole evidence that names no container of it then reads Starting, not Not running;
  * evidence that isn't current keeps its last word;
- * any record it has still says what it says: a Service already down stays down.
+ * any container it has still says what it says: a Service already down stays down.
  * `desiredReplicas`: how many it asks for, when known; fewer serving reads Degraded, except while a Deploy rolls them.
  */
 export function runtimeLine(
