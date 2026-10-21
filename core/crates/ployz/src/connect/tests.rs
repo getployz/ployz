@@ -1046,9 +1046,8 @@ async fn held_call(client: tokio::io::DuplexStream) -> Option<Duration> {
             .encode()
             .unwrap();
     let started = tokio::time::Instant::now();
-    let outcome =
-        tokio::time::timeout(Duration::from_secs(3600), rpc.describe_contract(request)).await;
-    outcome.ok().map(|reply| {
+    let held = tokio::time::timeout(Duration::from_secs(3600), rpc.describe_contract(request));
+    held.await.ok().map(|reply| {
         assert!(reply.is_err(), "a held call cannot succeed");
         started.elapsed()
     })
