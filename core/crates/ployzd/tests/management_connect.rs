@@ -223,6 +223,73 @@ async fn a_management_proof_admits_only_the_connection_it_was_made_on() {
     server.await.unwrap();
 }
 
+/// Leave asks for the shutdown that drains its own connection, and its reply is the
+/// caller's only proof of the reset. A reply finished after the drain's GOAWAY and PING
+/// round trip ends the connection's last stream; it must still reach the caller.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_reply_finished_as_shutdown_drains_reaches_the_caller() {
+    let (_map, relay_url, _relay) = run_relay_server().await.unwrap();
+    let (_dir, owner, local) = participating().await;
+    let machine_id = local.record().id();
+    let capability = local
+        .set_management_client(SetManagementClientRequest::Set { label: cloud() })
+        .await
+        .unwrap()
+        .capability
+        .unwrap();
+    let endpoint = management::bind(
+        local.record().management_secret(),
+        &ManagementConfig {
+            relay_url: relay_url.clone(),
+            port: 0,
+            relay_tls: CaTlsConfig::insecure_skip_verify(),
+        },
+    )
+    .await
+    .unwrap();
+    let shutdown = CancellationToken::new();
+    let (connections, _observed) = mpsc::unbounded_channel();
+    let gate = Arc::new(RequestGate::default());
+    let server = tokio::spawn(management::serve(
+        endpoint,
+        local.clone(),
+        ObservedApi {
+            api: MachineApi::builder(owner).build(),
+            connections,
+            seen: Arc::default(),
+            gate: Arc::clone(&gate),
+        },
+        Arc::default(),
+        shutdown.clone(),
+    ));
+    let channel = SystemConnector::new("/ployz-missing-ssh-client")
+        .with_management_relay(ManagementRelay::custom(
+            relay_url,
+            CaTlsConfig::insecure_skip_verify(),
+        ))
+        .connect(&connection(&capability))
+        .await
+        .unwrap();
+    activate(channel.clone()).await;
+    gate.hold.store(true, Ordering::SeqCst);
+    let call = tokio::spawn(describe(channel));
+    wait_until(|| gate.active.load(Ordering::SeqCst) == 1).await;
+    shutdown.cancel();
+    // The in-process relay answers the drain's PING well within this; waiting longer
+    // only makes the reply more surely the last thing written before the close.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    gate.release.add_permits(1);
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(10), call)
+            .await
+            .expect("the reply must not wait out the connection's idle timeout")
+            .unwrap()
+            .expect("the drain must not drop the reply"),
+        machine_id
+    );
+    server.await.unwrap();
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn verification_racing_removal_does_not_revoke_the_saved_candidate() {
     let (_map, relay_url, _relay) = run_relay_server().await.unwrap();
