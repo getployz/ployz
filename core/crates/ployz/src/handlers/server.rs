@@ -131,7 +131,11 @@ pub(super) async fn connect_remote(
         let store = CredentialStore::beside(&super::config_path(matches)?);
         match cloud_account::from_env(&store).await {
             Ok(credential) => {
-                return dial(matches, cloud_account::server_access(&credential).await?).await;
+                let access = cloud_account::server_access(&credential).await?;
+                if by_socket(&access.connections) {
+                    return Ok(None);
+                }
+                return dial(matches, access).await;
             }
             Err(LoginError::SignedOut) => {}
             Err(error) => return Err(error.into()),
@@ -143,17 +147,19 @@ pub(super) async fn connect_remote(
         context,
         std::path::Path::new(crate::connect::DEFAULT_LOCAL_SOCKET),
     )?;
-    if selected
-        .connections
-        .iter()
-        .any(|connection| matches!(connection.transport(), crate::context::Transport::Unix(_)))
-    {
+    if by_socket(&selected.connections) {
         return Ok(None);
     }
     let connector = SystemConnector::default().with_ssh_timeout(crate::cli::ssh_timeout(matches));
     Ok(Some(
         crate::connect::connect_selected_with(selected, Arc::new(connector)).await?,
     ))
+}
+
+fn by_socket(connections: &[crate::context::Connection]) -> bool {
+    connections
+        .iter()
+        .any(|connection| matches!(connection.transport(), crate::context::Transport::Unix(_)))
 }
 
 /// [`connect`] through any Server but `leaving`, and the Server it entered by.

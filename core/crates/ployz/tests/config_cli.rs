@@ -1364,6 +1364,47 @@ fn status_leaves_a_local_socket_to_this_servers_row() {
 }
 
 #[test]
+fn status_leaves_a_local_socket_cloud_hands_out_alone() {
+    let (store, home) = no_server_answering();
+    std::fs::remove_file(home.path().join("config.yaml")).unwrap();
+    let socket = home.path().join("missing.sock");
+    let access = json!({
+        "connections": [{ "machine_id": "0123456789abcdef0123456789abcdef", "unix": socket }],
+        "unreachable": [],
+        "names": { "0123456789abcdef0123456789abcdef": "machine-1" },
+    })
+    .to_string();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let cloud = format!("http://{}", listener.local_addr().unwrap());
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let mut stream = stream.unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut line = String::new();
+            while reader.read_line(&mut line).unwrap() > 2 {
+                line.clear();
+            }
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{access}",
+                access.len()
+            )
+            .unwrap();
+        }
+    });
+    let output = store
+        .command(home.path())
+        .env("PLOYZ_TOKEN", "ployz_alice")
+        .env("PLOYZ_CLOUD_URL", &cloud)
+        .args(["--json", "status"])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let status: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(status["attention"], json!([]), "{status}");
+}
+
+#[test]
 fn the_plan_warns_the_deploy_cant_run_while_no_server_answers() {
     let (store, home) = no_server_answering();
     let warning = "Server machine-1 isn't answering, so this deploy can't run until it does. \
