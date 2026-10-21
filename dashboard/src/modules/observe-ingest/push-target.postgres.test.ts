@@ -1,7 +1,7 @@
 import { it } from "@effect/vitest";
 import type { Client } from "@ployz/sdk";
 import { asc, eq } from "drizzle-orm";
-import { Effect, Layer } from "effect";
+import { Effect } from "effect";
 import { expect } from "vitest";
 import type { MachineId } from "#/db/tables";
 import { asTestDouble } from "#/lib/test-double";
@@ -43,7 +43,7 @@ const setup = Effect.fn(function* (onSet: OnSet = async () => {}, close: () => P
       });
     },
   });
-  const cloud = yield* Layer.build(Layer.merge(yield* storeTestCloud(), ployz));
+  const cloud = yield* storeTestCloud({ with: ployz });
   const provide = <A, E>(effect: Effect.Effect<A, E, Database | SecretEncryption>) => effect.pipe(Effect.provide(cloud), Effect.orDie);
   yield* provide(seedStoreOrganization(ORGANIZATION));
   yield* provide(enrollStoreServer(ORGANIZATION));

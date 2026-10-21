@@ -1,6 +1,6 @@
 import { it } from "@effect/vitest";
 import { eq, sql } from "drizzle-orm";
-import { Effect, Layer } from "effect";
+import { Effect } from "effect";
 import { expect } from "vitest";
 import { resolveCaller } from "#/modules/identity/caller.server";
 import { member, organizationToken, user } from "#/modules/identity/tables";
@@ -22,8 +22,7 @@ interface SignupBody {
 }
 
 const inCloud = <A, E, R>(body: Effect.Effect<A, E, R>) => Effect.gen(function* () {
-  const cloud = yield* storeTestCloud();
-  return yield* body.pipe(Effect.provide(Layer.mergeAll(AuthLive.pipe(Layer.provide(cloud)), cloud)));
+  return yield* body.pipe(Effect.provide(yield* storeTestCloud({ with: AuthLive })));
 });
 
 const signUp = Effect.fn(function* (ip: string) {

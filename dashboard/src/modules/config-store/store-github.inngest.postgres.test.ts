@@ -1,7 +1,7 @@
 import { it } from "@effect/vitest";
 import { InngestTestEngine } from "@inngest/test";
 import type { ConfigCommand, JsonValue, ConfigTrusted } from "@ployz/sdk";
-import { Effect, Layer } from "effect";
+import { Effect } from "effect";
 import { Inngest } from "inngest";
 import { expect } from "vitest";
 import { storeSystem } from "#/modules/config-store/config-store.server";
@@ -54,7 +54,7 @@ it.live(
     Effect.gen(function* () {
       const state = { head: H1, suite: { status: "in_progress", conclusion: null as string | null, updated_at: "2026-09-29T10:00:00Z" } };
       const githubApi = github(state);
-      const services = yield* Layer.build(yield* storeTestCloud({ github: githubApi.service }));
+      const services = yield* storeTestCloud({ github: githubApi.service });
       // A member of the Organization installed the GitHub App as installation 7.
       yield* Effect.all([seedStoreOrganization(ORGANIZATION), enrollStoreServer(ORGANIZATION)]).pipe(Effect.provide(services));
       const store = yield* cloudStore.pipe(Effect.provide(services));
@@ -110,7 +110,7 @@ it.live(
   () =>
     Effect.gen(function* () {
       const state = { head: H1, merged: false };
-      const services = yield* Layer.build(yield* storeTestCloud({ github: fakeGithubApiBy(({ path }): JsonValue =>
+      const services = yield* storeTestCloud({ github: fakeGithubApiBy(({ path }): JsonValue =>
         path.includes("/git/ref/")
           ? { ref: "refs/heads/main", object: { type: "commit", sha: state.head } }
           : path.includes("/compare/")
@@ -121,7 +121,7 @@ it.live(
                 base: { ref: "main" }, merged: state.merged, merge_commit_sha: state.merged ? MERGE : null, commits: 1,
                 state: state.merged ? "closed" : "open", updated_at: state.merged ? "2026-09-29T11:00:00Z" : "2026-09-29T10:00:00Z",
               }
-              : { id: 42, full_name: "acme/web", private: true }).service }));
+              : { id: 42, full_name: "acme/web", private: true }).service });
       yield* Effect.all([seedStoreOrganization(ORGANIZATION), enrollStoreServer(ORGANIZATION)]).pipe(Effect.provide(services));
       const store = yield* cloudStore.pipe(Effect.provide(services));
       const write = (command: ConfigCommand) => Effect.promise(() => store.write(ORGANIZATION, command));

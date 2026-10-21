@@ -3,7 +3,7 @@ import { it } from "@effect/vitest";
 import { InngestTestEngine, mockCtx } from "@inngest/test";
 import { type Client, type ConfigCommand, type MachineId, RpcError } from "@ployz/sdk";
 import { eq, sql } from "drizzle-orm";
-import { Effect, Layer, Result } from "effect";
+import { Effect, Result } from "effect";
 import { Inngest } from "inngest";
 import { expect, vi } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
@@ -56,7 +56,7 @@ const cloud = (servers: "answering" | "unreachable" | { answers: boolean } | { c
       return asTestDouble<Client>()({ close: async () => undefined });
     },
   });
-  return yield* Layer.build(Layer.merge(yield* storeTestCloud(), ployz));
+  return yield* storeTestCloud({ with: ployz });
 });
 
 /** Organization `ORGANIZATION` with a row in every table teardown clears, so `nothingLeft` proves each one went. */

@@ -1,6 +1,6 @@
 import { it } from "@effect/vitest";
 import { and, asc, eq, sql } from "drizzle-orm";
-import { Effect, Layer } from "effect";
+import { Effect } from "effect";
 import { expect } from "vitest";
 import { cloudStore } from "#/modules/config-store/store-sdk.server";
 import { owners } from "#/modules/config-store/store-lookup.server";
@@ -40,7 +40,7 @@ it("a site's day is its own calendar day, not UTC's", () => {
 });
 
 const setup = Effect.fn(function* (env: Readonly<Record<string, string>> = { ANALYTICS_ENABLED: "true" }) {
-  const services = yield* Layer.build(yield* storeTestCloud({ env }));
+  const services = yield* storeTestCloud({ env });
   const provide = <A, E, R>(effect: Effect.Effect<A, E, R>) => effect.pipe(Effect.provide(services));
   yield* provide(seedStoreOrganization(ORGANIZATION, { name: "Acme", slug: "acme" }));
   const store = yield* provide(cloudStore);

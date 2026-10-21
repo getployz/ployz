@@ -40,8 +40,7 @@ type Reply = {
 };
 
 const shop = Effect.fn(function* (anonymous: boolean, env?: Readonly<Record<string, string>>) {
-  const cloud = yield* storeTestCloud(env === undefined ? {} : { env });
-  const services = yield* Layer.build(Layer.mergeAll(AuthLive.pipe(Layer.provide(cloud)), cloud, noServers));
+  const services = yield* storeTestCloud({ env, with: Layer.merge(AuthLive, noServers) });
   const provided = <A, E, R>(effect: Effect.Effect<A, E, R>) => effect.pipe(Effect.provide(services));
   const userId = yield* provided(seedStoreOrganization(ORGANIZATION));
   yield* provided(seedStoreGitService(ORGANIZATION, {

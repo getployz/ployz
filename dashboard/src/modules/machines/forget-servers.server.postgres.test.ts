@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { it } from "@effect/vitest";
 import { InngestTestEngine } from "@inngest/test";
 import type { Client, ConfigCommand, MachineId } from "@ployz/sdk";
-import { Deferred, Effect, Fiber, Layer, Schema } from "effect";
+import { Deferred, Effect, Fiber, Schema } from "effect";
 import * as TestClock from "effect/testing/TestClock";
 import { Inngest } from "inngest";
 import { expect } from "vitest";
@@ -40,7 +40,7 @@ const cloud = (answers: boolean) => Effect.gen(function* () {
       return asTestDouble<Client>()({ close: async () => undefined, inspect: async () => ({ machine: { name: "machine-1" } }) });
     },
   });
-  return yield* Layer.build(Layer.merge(yield* storeTestCloud(), ployz));
+  return yield* storeTestCloud({ with: ployz });
 });
 
 /** A signed-up owner's Organization whose founder completed, a Project with a queued Deploy, and enrollment rows. */
@@ -83,7 +83,7 @@ it.live("Forget Servers refuses while a Server answers, and forgets nothing", ()
 it.live("Forget Servers answers within its Cluster time, and aborts the connection, while a Server that answered never closes its session", () => Effect.gen(function* () {
   const closing = yield* Deferred.make<void>();
   const signals: AbortSignal[] = [];
-  const services = yield* Layer.build(Layer.merge(yield* storeTestCloud(), makePloyzLayer({
+  const services = yield* storeTestCloud({ with: makePloyzLayer({
     connect: async ({ signal }) => {
       if (signal) signals.push(signal);
       return asTestDouble<Client>()({
@@ -94,7 +94,7 @@ it.live("Forget Servers answers within its Cluster time, and aborts the connecti
         inspect: async () => ({ machine: { name: "machine-1" } }),
       });
     },
-  })));
+  }) });
   yield* Effect.gen(function* () {
     const { userId } = yield* seeded();
     const answer = yield* Effect.gen(function* () {

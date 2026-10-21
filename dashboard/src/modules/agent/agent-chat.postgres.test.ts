@@ -63,9 +63,8 @@ const drain = (stream: AsyncIterable<StreamChunk>) => Effect.promise(async () =>
  * model in her sidebar. `removeWeb` stages web's removal, so the next Deploy destroys it.
  */
 const sidebar = Effect.fn(function* (options: { removeWeb: boolean }) {
-  const cloud = yield* storeTestCloud();
   const stub = ConfigProvider.layer(ConfigProvider.fromEnv({ env: { PLOYZ_AGENT_STUB: "1" } }));
-  const services = yield* Layer.build(Layer.mergeAll(AuthLive.pipe(Layer.provide(cloud)), cloud, stub));
+  const services = yield* storeTestCloud({ with: Layer.merge(AuthLive, stub) });
   const provided = <A, E, R>(effect: Effect.Effect<A, E, R>) => effect.pipe(Effect.provide(services));
   const userId = yield* provided(seedStoreOrganization(ORGANIZATION));
   yield* provided(enrollStoreServer(ORGANIZATION));

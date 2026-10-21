@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { it } from "@effect/vitest";
 import type { Act, CloudQuery, LogsAnswer, MachineId, MachineName, RuntimeWatchView, ServerRef, ServiceVerb, VolumeId, VolumeRun } from "@ployz/sdk";
 import { eq, sql } from "drizzle-orm";
-import { Effect, Layer, Schema } from "effect";
+import { Effect, Schema } from "effect";
 import { Inngest } from "inngest";
 import { describe, expect, vi } from "vitest";
 import { asRecord } from "#/lib/json";
@@ -42,7 +42,7 @@ const Asked = Schema.Struct({ approval: Schema.String, approval_id: Schema.Strin
 describe("callCloud", () => {
   it.live("answers an operations query as OperationsAnswer, the shape the agent tools decode", () =>
     Effect.gen(function* () {
-      const services = yield* Layer.build(yield* storeTestCloud());
+      const services = yield* storeTestCloud();
       const userId = yield* seedStoreOrganization(ORGANIZATION).pipe(Effect.provide(services));
       const { drizzle } = yield* Database.pipe(Effect.provide(services));
       yield* drizzle.insert(serverDrainAttempt).values({ id: DRAIN, organizationId: ORGANIZATION, machineId: MACHINE, requestedByUserId: userId });
@@ -59,7 +59,7 @@ describe("callCloud", () => {
 
   it.live("names a Server run by the name its act resolved when the runtime has no frame", () =>
     Effect.gen(function* () {
-      const services = yield* Layer.build(yield* storeTestCloud());
+      const services = yield* storeTestCloud();
       const userId = yield* seedStoreOrganization(ORGANIZATION).pipe(Effect.provide(services));
       const { drizzle } = yield* Database.pipe(Effect.provide(services));
       yield* drizzle.insert(serverDrainAttempt).values({ id: DRAIN, organizationId: ORGANIZATION, machineId: MACHINE, requestedByUserId: userId });
@@ -71,7 +71,7 @@ describe("callCloud", () => {
 
   it.live("says why a Server's Drain ended without a report", () =>
     Effect.gen(function* () {
-      const services = yield* Layer.build(yield* storeTestCloud());
+      const services = yield* storeTestCloud();
       const userId = yield* seedStoreOrganization(ORGANIZATION).pipe(Effect.provide(services));
       const { drizzle } = yield* Database.pipe(Effect.provide(services));
       const endedAt = new Date();
@@ -92,7 +92,7 @@ describe("callCloud", () => {
   // Catches a lost Drain and an interrupted one reaching the agent tools as the same `unknown`, told apart only by words.
   it.live("names how a Drain with no verdict ended", () =>
     Effect.gen(function* () {
-      const services = yield* Layer.build(yield* storeTestCloud());
+      const services = yield* storeTestCloud();
       const userId = yield* seedStoreOrganization(ORGANIZATION).pipe(Effect.provide(services));
       const { drizzle } = yield* Database.pipe(Effect.provide(services));
       const ran = (inngestRunId: string) => ({ state: "unknown", inngestRunId, startedAt: new Date(), endedAt: new Date() }) as const;
@@ -134,7 +134,7 @@ describe("callCloud", () => {
   // Catches a polled Server run named by its raw id whenever the runtime has no frame to name it.
   it.live("names a polled Server run by the name Cloud keeps when the runtime has no frame", () =>
     Effect.gen(function* () {
-      const services = yield* Layer.build(yield* storeTestCloud());
+      const services = yield* storeTestCloud();
       const userId = yield* seedStoreOrganization(ORGANIZATION).pipe(Effect.provide(services));
       yield* enrollStoreServer(ORGANIZATION, { secret: "ppair_fixture_store", server: MACHINE }).pipe(Effect.provide(services));
       const { drizzle } = yield* Database.pipe(Effect.provide(services));
@@ -158,7 +158,7 @@ describe("callCloud", () => {
   // Catches a failed Drain missing from the answer once later runs fill the limit the agent asked for.
   it.live("answers a Server's operations with its newest Drain with a verdict, past the limit", () =>
     Effect.gen(function* () {
-      const services = yield* Layer.build(yield* storeTestCloud());
+      const services = yield* storeTestCloud();
       const userId = yield* seedStoreOrganization(ORGANIZATION).pipe(Effect.provide(services));
       yield* enrollStoreServer(ORGANIZATION, { secret: "ppair_fixture_store", server: MACHINE }).pipe(Effect.provide(services));
       const { drizzle } = yield* Database.pipe(Effect.provide(services));
@@ -185,7 +185,7 @@ describe("callCloud", () => {
   // Catches an act's reply naming its Server by a name Cloud kept before a rename reached it.
   it.live("names an act's Server by the name the act resolved, over a stale one Cloud kept", () =>
     Effect.gen(function* () {
-      const services = yield* Layer.build(yield* storeTestCloud());
+      const services = yield* storeTestCloud();
       const userId = yield* seedStoreOrganization(ORGANIZATION).pipe(Effect.provide(services));
       yield* enrollStoreServer(ORGANIZATION, { secret: "ppair_fixture_store", server: MACHINE }).pipe(Effect.provide(services));
       const { drizzle } = yield* Database.pipe(Effect.provide(services));
@@ -214,7 +214,7 @@ describe("callCloud", () => {
   // Catches a removed Server's runs named by its raw id once Cloud drops its row.
   it.live("names a removed Server's runs by the name it enrolled with while another Server stays", () =>
     Effect.gen(function* () {
-      const services = yield* Layer.build(yield* storeTestCloud());
+      const services = yield* storeTestCloud();
       const userId = yield* seedStoreOrganization(ORGANIZATION).pipe(Effect.provide(services));
       yield* enrollStoreServer(ORGANIZATION, { secret: "ppair_fixture_store", server: MACHINE }).pipe(Effect.provide(services));
       const generation = createHash("sha256").update("ppair_fixture_store").digest("hex");
@@ -249,7 +249,7 @@ describe("callCloud", () => {
   // Catches a Server the frame reports with no name read as `drain ` over the name Cloud kept.
   it.live("names a polled Server run by the name Cloud keeps when the frame reports it nameless", () =>
     Effect.gen(function* () {
-      const services = yield* Layer.build(yield* storeTestCloud());
+      const services = yield* storeTestCloud();
       const userId = yield* seedStoreOrganization(ORGANIZATION).pipe(Effect.provide(services));
       yield* enrollStoreServer(ORGANIZATION, { secret: "ppair_fixture_store", server: MACHINE }).pipe(Effect.provide(services));
       const { drizzle } = yield* Database.pipe(Effect.provide(services));
@@ -302,7 +302,7 @@ describe("callCloud", () => {
     Effect.gen(function* () {
       const asked: Array<CloudQuery> = [];
       const opens: Array<string> = [];
-      const services = yield* Layer.build(yield* storeTestCloud());
+      const services = yield* storeTestCloud();
       const heard = yield* callCloud(member, { ask: LOGS }).pipe(runtime(connected(asked), opens), Effect.provide(services));
       expect(heard).toEqual({ ok: true, value: TAIL });
       expect(asked).toEqual([LOGS]);
@@ -311,7 +311,7 @@ describe("callCloud", () => {
 
   it.live("scrubs a logs ask under every name the Store holds Sealed, whatever the ask carries", () =>
     Effect.gen(function* () {
-      const services = yield* Layer.build(yield* storeTestCloud());
+      const services = yield* storeTestCloud();
       yield* seedStoreOrganization(ORGANIZATION).pipe(Effect.provide(services));
       const store = yield* cloudStore.pipe(Effect.provide(services));
       const production = { project: "shop", environment: null };
@@ -343,7 +343,7 @@ describe("callCloud", () => {
 
   it.live("reruns a logs ask under a name sealed while the runtime was being read, and withholds one that never settles", () =>
     Effect.gen(function* () {
-      const services = yield* Layer.build(yield* storeTestCloud());
+      const services = yield* storeTestCloud();
       yield* seedStoreOrganization(ORGANIZATION).pipe(Effect.provide(services));
       const store = yield* cloudStore.pipe(Effect.provide(services));
       const production = { project: "shop", environment: null };
@@ -390,7 +390,7 @@ describe("callCloud", () => {
       const asked: Array<CloudQuery> = [];
       const opens: Array<string> = [];
       const support: Caller = { ...member, role: null, support: { variables: true, configs: true, logs: false } };
-      const services = yield* Layer.build(yield* storeTestCloud());
+      const services = yield* storeTestCloud();
       const heard = yield* callCloud(support, { ask: LOGS }).pipe(runtime(connected(asked), opens), Effect.provide(services));
       expect(heard).toEqual({
         ok: false,
@@ -414,7 +414,7 @@ describe("callCloud", () => {
   // Catches a read token kept from logs it may read, or a token held to staging reading production's logs, metrics or containers.
   it.live("lets a Read only token read logs, and holds a Deploy token's logs, metrics, containers, copies and Server metrics to its Environment", () =>
     Effect.gen(function* () {
-      const services = yield* Layer.build(yield* storeTestCloud());
+      const services = yield* storeTestCloud();
       yield* seedStoreOrganization(ORGANIZATION).pipe(Effect.provide(services));
       const store = yield* cloudStore.pipe(Effect.provide(services));
       const STAGING = "00000000-0000-4000-8000-00000000c109";
@@ -469,7 +469,7 @@ describe("callCloud", () => {
   // Catches an Organization that never added a Server told its Servers aren't answering, or its Server list refused.
   it.live("lists no Servers for an Organization with none, and tells it to add one for a logs ask and a removal", () =>
     Effect.gen(function* () {
-      const services = yield* Layer.build(yield* storeTestCloud());
+      const services = yield* storeTestCloud();
       yield* seedStoreOrganization(ORGANIZATION).pipe(Effect.provide(services));
       const noServers = {
         ok: false,
@@ -488,7 +488,7 @@ describe("callCloud", () => {
   // Catches a token without the permission told the Servers are missing or down, before it hears it may not act.
   it.live("refuses a token its grant before looking for Servers, for a volume move or mirror and a removal", () =>
     Effect.gen(function* () {
-      const services = yield* Layer.build(yield* storeTestCloud());
+      const services = yield* storeTestCloud();
       yield* seedStoreOrganization(ORGANIZATION).pipe(Effect.provide(services));
       const deployer: Caller = { ...member, credential: { kind: "token", id: "t", grant: presetGrant({ preset: "deploy", environment: "staging" }) } };
       const to: ServerRef = { machine: MACHINE, name: "web-2" };
@@ -508,7 +508,7 @@ describe("callCloud", () => {
   // Catches an unreachable Cluster surfacing as a crash, an empty tail, or the no-Servers refusal.
   it.live("refuses a logs ask clearly when the Organization's Servers aren't connected", () =>
     Effect.gen(function* () {
-      const services = yield* Layer.build(yield* storeTestCloud());
+      const services = yield* storeTestCloud();
       yield* Effect.all([seedStoreOrganization(ORGANIZATION), enrollStoreServer(ORGANIZATION)]).pipe(Effect.provide(services));
       for (const opened of [{ status: "unreachable", error: null }, { status: "no_connection" }] as const) {
         const heard = yield* callCloud(member, { ask: LOGS }).pipe(runtime(opened, []), Effect.provide(services));
@@ -522,7 +522,7 @@ describe("callCloud", () => {
   // Catches a failed read before the removal reported as a write that may have reached the Servers.
   it.live("says nothing was written when a removal fails while reading what it would lose", () =>
     Effect.gen(function* () {
-      const services = yield* Layer.build(yield* storeTestCloud());
+      const services = yield* storeTestCloud();
       const reading: ScopedRuntimeClientSession = {
         status: "connected",
         connected: asTestDouble<PloyzSession>()({
@@ -538,7 +538,7 @@ describe("callCloud", () => {
     Effect.gen(function* () {
       const inngest = new Inngest({ id: "call-cloud-test" });
       const send = vi.spyOn(inngest, "send").mockResolvedValue({ ids: [] });
-      const services = yield* Layer.build(yield* storeTestCloud({ inngest }));
+      const services = yield* storeTestCloud({ inngest });
       const userId = yield* seedStoreOrganization(ORGANIZATION).pipe(Effect.provide(services));
       const caller: Caller = { ...member, userId };
       const set = {
@@ -585,7 +585,7 @@ describe("callCloud", () => {
     Effect.gen(function* () {
       const inngest = new Inngest({ id: "call-cloud-test" });
       const send = vi.spyOn(inngest, "send").mockResolvedValue({ ids: [] });
-      const services = yield* Layer.build(yield* storeTestCloud({ inngest }));
+      const services = yield* storeTestCloud({ inngest });
       const userId = yield* seedStoreOrganization(ORGANIZATION).pipe(Effect.provide(services));
       const caller: Caller = { ...member, userId };
       const act: Act = {
@@ -622,7 +622,7 @@ describe("callCloud", () => {
   const deployedWeb = Effect.gen(function* () {
     const inngest = new Inngest({ id: "call-cloud-test" });
     const send = vi.spyOn(inngest, "send").mockResolvedValue({ ids: [] });
-    const services = yield* Layer.build(yield* storeTestCloud({ inngest }));
+    const services = yield* storeTestCloud({ inngest });
     const userId = yield* seedStoreOrganization(ORGANIZATION).pipe(Effect.provide(services));
     const store = yield* seedStoreGitService(ORGANIZATION, { project: PROJECT, environment: ENVIRONMENT, service: SERVICE }).pipe(Effect.provide(services));
     yield* Effect.promise(() => store.write(ORGANIZATION, {
@@ -825,7 +825,7 @@ describe("callCloud", () => {
     Effect.gen(function* () {
       const inngest = new Inngest({ id: "call-cloud-test" });
       const send = vi.spyOn(inngest, "send").mockResolvedValue({ ids: [] });
-      const services = yield* Layer.build(yield* storeTestCloud({ inngest }));
+      const services = yield* storeTestCloud({ inngest });
       const userId = yield* seedStoreOrganization(ORGANIZATION).pipe(Effect.provide(services));
       const caller: Caller = { ...member, userId };
       const off = {

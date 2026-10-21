@@ -1,6 +1,6 @@
 import { it } from "@effect/vitest";
 import type { ConfigCommand, JsonValue } from "@ployz/sdk";
-import { Effect, Layer } from "effect";
+import { Effect } from "effect";
 import { describe, expect } from "vitest";
 import { actDenial, type AgentCaller, runAgentCall } from "#/modules/agent/agent-runner.server";
 import { cloudStore } from "#/modules/config-store/store-sdk.server";
@@ -181,7 +181,7 @@ const cases: ReadonlyArray<{ readonly name: string; readonly seed?: boolean; rea
 ];
 
 const tools = Effect.fn(function* (seed: boolean) {
-  const services = yield* Layer.build(yield* storeTestCloud({ github: github.service }));
+  const services = yield* storeTestCloud({ github: github.service });
   const userId = yield* seedStoreOrganization(ORGANIZATION).pipe(Effect.provide(services));
   if (seed) {
     const store = yield* cloudStore.pipe(Effect.provide(services));
