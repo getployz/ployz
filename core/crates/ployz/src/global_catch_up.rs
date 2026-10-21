@@ -572,6 +572,7 @@ fn not_in_message(health: Option<HealthVerdict>) -> String {
 
 async fn observe_complete<C: CatchUpClient>(
     client: &mut C,
+    this_machine: &MachineId,
     cancel: &CancellationToken,
     observe: &mut impl FnMut(CatchUpFact),
 ) -> Result<LiveServices<RpcError>, CatchUpError> {
@@ -580,7 +581,7 @@ async fn observe_complete<C: CatchUpClient>(
         let Observed {
             mut live,
             names,
-            unarrived,
+            mut unarrived,
         } = tokio::select! {
             biased;
             () = cancel.cancelled() => return Err(cancelled()),
@@ -588,6 +589,8 @@ async fn observe_complete<C: CatchUpClient>(
                 live.map_err(|error| CatchUpError::new(error, Vec::new()))?
             }
         };
+        // The joiner's own row may still be its Register row; it is arriving now.
+        unarrived.retain(|(id, _)| id != this_machine);
         live.containers
             .omissions
             .retain(|id| !unarrived.iter().any(|(unarrived, _)| unarrived == id));
@@ -620,7 +623,7 @@ pub(crate) async fn catch_up_globals<C: CatchUpClient>(
     cancel: &CancellationToken,
     mut observe: impl FnMut(CatchUpFact),
 ) -> Result<(), CatchUpError> {
-    let live = observe_complete(client, cancel, &mut observe).await?;
+    let live = observe_complete(client, &this_machine.id, cancel, &mut observe).await?;
     let services = live.services();
     let sources = sources(&services);
     let mut unresolved: Vec<QualifiedService> = sources
