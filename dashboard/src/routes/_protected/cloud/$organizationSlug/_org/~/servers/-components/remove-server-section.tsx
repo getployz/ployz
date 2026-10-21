@@ -171,7 +171,8 @@ function ForgetLastServerRow({ machine, organizationSlug }: { machine: RuntimeMa
 
 /**
  * Forgetting takes a Server that is gone for good out of the cluster without resetting it, then waits on the removal.
- * A Server that doesn't answer can't list its volumes, so the list is often empty; the sentence still says they're lost.
+ * A Server that doesn't answer can't list its volumes, so the list is often empty; the sentence still says which come
+ * back from a mirror and which are lost.
  */
 function ForgetServerRow({ machine, organizationSlug }: { machine: RuntimeMachineRecord; organizationSlug: string }) {
   const navigate = useNavigate();
@@ -198,7 +199,7 @@ function ForgetServerRow({ machine, organizationSlug }: { machine: RuntimeMachin
     <>
       <SettingsDanger
         label={`Forget ${machine.name}`}
-        hint="It's gone. Ployz stops waiting for it; its volumes can't be recovered."
+        hint="It's gone. Ployz stops waiting for it. Its volumes come back only where another server holds a mirror."
         action={
           <Button variant="destructive" onClick={() => setOpen(true)}>
             <UnplugIcon data-icon="inline-start" />
@@ -213,8 +214,9 @@ function ForgetServerRow({ machine, organizationSlug }: { machine: RuntimeMachin
         place={machine.name}
         confirmLabel="Forget"
         pendingLabel="Forgetting"
-        sentence={<>Ployz takes it out of the cluster without reaching it. Its volumes{" "}
-          <span className="text-destructive">can't be recovered</span>.</>}
+        sentence={<>Ployz takes it out of the cluster without reaching it. A volume with a mirror on another server comes
+          back from it: open the volume's Copies, click Use mirror, then deploy. Volumes with no copy elsewhere{" "}
+          <span className="text-destructive">are lost</span>.</>}
         callbacks={{ load, confirm: forget }}
       />
     </>

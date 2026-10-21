@@ -58,6 +58,7 @@ import {
   managementAddress,
   type Member,
   parseDockerVolumeName,
+  RUN_FEATURES,
   type ServiceSpec,
   VOLUME_RUN_MESSAGE_LIMIT,
   VOLUME_RUN_RUNNING_CHECK_MS,
@@ -1357,7 +1358,7 @@ export const observeVolumeMembers = Effect.fn("VolumeRun.observeMembers")(functi
   const frame = yield* session.watchFirstFrame(RUNTIME_FRAME_TIMEOUT_MS).pipe(clusterRead);
   // A Docker-only Machine holds no copy and may not serve the verb, so it must not block the run.
   const managed = frame.machines.filter((observed) => observed.storage?.state !== "stateless");
-  const unlisted = frame.incomplete_ids.machines.map((id): Member => ({ machine: { id, name: id }, answered: false }));
+  const unlisted = frame.incomplete_ids.machines.map((id): Member => ({ machine: { id, name: id }, answered: false, incomplete: true }));
   const listed = yield* Effect.forEach(managed, ({ machine }) => {
     const ref: MachineRef = { id: machine.id, name: machine.name };
     const server = { name: machine.name, daemonVersion: machine.runtime.daemon_version };
@@ -1393,12 +1394,6 @@ export const observeVolumeMembers = Effect.fn("VolumeRun.observeMembers")(functi
   }, { concurrency: "unbounded" });
   return [...listed, ...unlisted];
 }, Effect.scoped);
-
-/** What a run of each kind is called when a Server can't run it. */
-const RUN_FEATURES = {
-  mirror: "Volume mirror", sync: "Mirror refresh", delete_mirror: "Mirror removal", move: "Volume move", release: "Volume move", restore: "Using a mirror", seed: "Volume restore",
-  resize: "Volume resize", deploy: "Deploy",
-} satisfies Record<VolumeRunKind, string>;
 
 const lackSentence = Effect.fn("VolumeRun.lackSentence")(function* (
   organizationId: string, capability: string, server: { readonly name: string; readonly daemonVersion: string }, kind: VolumeRunKind | undefined,

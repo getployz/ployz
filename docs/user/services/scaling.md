@@ -94,8 +94,10 @@ To bring services back:
    can answer beside the new ones, with the old version, until your next deploy removes it. See
    [Old and new versions answer at once](../troubleshooting/deployments.md#old-and-new-versions-answer-at-once).
 3. If it's gone for good, [forget it](../servers/manage-servers.md#forget-a-server-that-is-gone)
-   with **Forget server** on its page or `ployz server forget web-2 --confirm dead`, then
-   restore its databases from your backups.
+   with **Forget server** on its page or `ployz server forget web-2 --confirm dead`. Then bring
+   each of its volumes back from its mirror with **Use mirror** under the volume's **Copies**, see
+   [When its server goes down](volumes.md#when-its-server-goes-down), and the others from your
+   backups.
 
 ## Good to know
 

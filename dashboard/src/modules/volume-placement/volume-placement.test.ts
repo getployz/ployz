@@ -8,13 +8,13 @@ import {
   detachedCopies,
   drainPlacement,
   editPlacement,
-  failover,
   nextPlacementStep,
   observePlacement,
   placementChanges,
   placementSteps,
   placementTargets,
   placementForm,
+  recovery,
   mirroredVolumes,
   oldCopies,
   mirrorResourceId,
@@ -358,29 +358,99 @@ describe("editPlacement", () => {
     const staged = editPlacement(target(members, row(["web-2"], { primary: "web-3", mirrors: ["web-2"] })), { kind: "remove_mirror", server: id("web-2") });
     expect(staged).toEqual({ primary: id("web-3"), mirrors: [], deletes: [] });
   });
-
-  it("stages the mirror as primary when the primary's Server is silent", () => {
-    const members = [member("web-1", "unanswered"), mirrorAsOf("web-2", at)];
-    const staged = editPlacement(target(members, row(["web-2"])), { kind: "move", to: id("web-2") });
-    expect(staged).toEqual({ primary: id("web-2"), mirrors: [], deletes: [] });
-    expect(steps(members, row(["web-2"], { primary: "web-2" }))).toEqual([{ kind: "restore", args: { from: "web-2" } }]);
-  });
 });
 
-describe("failover", () => {
-  it("offers the mirror when the primary stops answering, with the loss time from its newest snapshot", () => {
-    const members = [member("web-1", "unanswered"), mirrorAsOf("web-2", at)];
-    expect(failover(observePlacement(members), row(["web-2"]))).toMatchObject({ down: { name: "web-1" }, mirror: { name: "web-2" }, lostAfter: at });
+describe("recovery", () => {
+  const ids = (...names: string[]) => names.map(id);
+  const recover = (members: Member[], placement: PlacementRow | null, owed = false, accepting = ids("web-1", "web-2", "web-3"), floorless: MachineId[] = []) =>
+    recovery(volume, members, placement, accepting, owed, floorless);
+  const lacking = (server: string) => ({ ...member(server, "unanswered"), lack: `Volume move needs a newer Ployz on ${server}.` });
+  const forgotten = [mirrorAsOf("web-2", at)];
+
+  it("is null while the primary answers, even with a silent mirror", () => {
+    expect(recover([member("web-1", "writer"), member("web-2", "unanswered")], row(["web-2"]))).toBeNull();
   });
 
-  it("offers nothing once the mirror is staged, or while the primary answers", () => {
-    const members = [member("web-1", "unanswered"), mirrorAsOf("web-2", at)];
-    expect(failover(observePlacement(members), row(["web-2"], { primary: "web-2" }))).toBeNull();
-    expect(failover(observePlacement([member("web-1", "writer"), member("web-2", "unanswered")]), row([]))).toBeNull();
+  it("asks to forget the silent Server, naming the mirror and its last snapshot, with nothing to stage", () => {
+    const found = recover([member("web-1", "unanswered"), mirrorAsOf("web-2", at)], row(["web-2"]));
+    expect(found).toEqual({ kind: "forget", down: [{ id: id("web-1"), name: "web-1" }], mirror: { id: id("web-2"), name: "web-2" }, lostAfter: at });
   });
 
-  it("does not offer a detached copy", () => {
-    expect(failover(observePlacement([member("web-1", "unanswered"), member("web-2", "old")]), row([]))).toBeNull();
+  it("names every silent Server, since each one holds the stage back", () => {
+    const found = recover([member("web-1", "unanswered"), mirrorAsOf("web-2", at), member("web-3", "unanswered")], row(["web-2"]));
+    expect(found).toMatchObject({ kind: "forget", down: [{ name: "web-1" }, { name: "web-3" }] });
+  });
+
+  it("leaves a Server that lacks the capability out of the silent names, since an upgrade fixes it, not Forget", () => {
+    const found = recover([member("web-1", "unanswered"), mirrorAsOf("web-2", at), lacking("web-3")], row(["web-2"]));
+    expect(found).toMatchObject({ kind: "forget", down: [{ name: "web-1" }] });
+  });
+
+  const unlisted = (server: string): Member => ({ machine: { id: id(server), name: id(server) }, answered: false, incomplete: true });
+
+  it("waits for a Server the frame lists only by id, with no Forget: its report is incomplete, not silence", () => {
+    const found = recover([unlisted("web-1"), mirrorAsOf("web-2", at)], row(["web-2"]));
+    expect(found).toEqual({ kind: "wait", mirror: { id: id("web-2"), name: "web-2" }, lostAfter: at });
+  });
+
+  it("still asks to forget a silent Server while another's report is incomplete, naming only the silent one", () => {
+    const found = recover([member("web-1", "unanswered"), mirrorAsOf("web-2", at), unlisted("web-3")], row(["web-2"]));
+    expect(found).toMatchObject({ kind: "forget", down: [{ name: "web-1" }] });
+  });
+
+  it("refuses the restore with the lacking Server's upgrade sentence once nothing is silent", () => {
+    expect(recover([mirrorAsOf("web-2", at), lacking("web-3")], row(["web-2"])))
+      .toMatchObject({ kind: "restore", stage: { refused: "Volume move needs a newer Ployz on web-3." } });
+  });
+
+  it("refuses the restore the Deploy would refuse, when the mirror's Server lacks the generation floor", () => {
+    expect(recover(forgotten, row(["web-2"]), false, ids("web-1", "web-2", "web-3"), ids("web-2")))
+      .toMatchObject({ kind: "restore", stage: { refused: "Using a mirror needs a newer Ployz on web-2." } });
+  });
+
+  it("is null while the primary is silent and no mirror answers", () => {
+    expect(recover([member("web-1", "unanswered"), member("web-2", "unanswered")], row(["web-2"]))).toBeNull();
+    expect(recover([member("web-1", "unanswered"), member("web-2", "old")], row([]))).toBeNull();
+  });
+
+  it.each([["the row", row(["web-2"])], ["no row", null]])("stages the mirror as primary once only it answers, with %s", (_, placement) => {
+    expect(recover(forgotten, placement)).toEqual({
+      kind: "restore",
+      mirror: { id: id("web-2"), name: "web-2" },
+      lostAfter: at,
+      stage: { placement: { primary: id("web-2"), mirrors: [], deletes: [] }, mirrors: [id("web-2")] },
+    });
+  });
+
+  it("stages a placement the Deploy runs as a restore from the mirror, asking for the writes it loses", () => {
+    const found = recover(forgotten, row(["web-2"]));
+    if (found?.kind !== "restore" || "refused" in found.stage) throw new Error("expected a stage");
+    const staged: PlacementRow = { ...row([...found.stage.mirrors]), staged: found.stage.placement };
+    const planned = placementChanges(volume, forgotten, staged);
+    expect(placementSteps(planned)).toEqual([{ kind: "restore", args: { from: "web-2" } }]);
+    expect(placementLosses(planned)).toEqual([{ volume, server: null, writes: true, after: at }]);
+  });
+
+  it("refuses with the planner's words while another copy answers, or the mirror holds no snapshot", () => {
+    const refused = (members: Member[]) => {
+      const found = recover(members, row(["web-2"]));
+      return found?.kind === "restore" && "refused" in found.stage ? found.stage.refused : null;
+    };
+    expect(refused([mirrorAsOf("web-2", at), member("web-3", "old")])).toMatch(/^pg-data also has copies on web-3;/);
+    const empty = member("web-2", "mirror");
+    if (!empty.answered || empty.view.copy === null) throw new Error("fixture");
+    expect(refused([{ ...empty, view: { copy: { ...empty.view.copy, newest: null } } }])).toMatch(/holds no snapshot to restore$/);
+  });
+
+  it("refuses while a Move is owed, or when the mirror's Server runs no Services", () => {
+    expect(recover(forgotten, row(["web-2"]), true)).toMatchObject({ kind: "restore", stage: { refused: "pg-data's last move hasn't finished." } });
+    expect(recover(forgotten, row(["web-2"]), false, ids("web-1"))).toMatchObject({ kind: "restore", stage: { refused: "web-2 doesn't run Services." } });
+  });
+
+  it("is null once the row stages the mirror as primary, but still asks to forget a silent Server first", () => {
+    expect(recover(forgotten, row(["web-2"], { primary: "web-2" }))).toBeNull();
+    expect(recover([member("web-1", "unanswered"), mirrorAsOf("web-2", at)], row(["web-2"], { primary: "web-2" })))
+      .toMatchObject({ kind: "forget", down: [{ name: "web-1" }] });
   });
 });
 

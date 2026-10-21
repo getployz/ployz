@@ -7,7 +7,7 @@ import { epochOf, planFromCopies } from "#/modules/volume-run/plan";
 import { runWords } from "#/modules/volume-run/volume-copies";
 import { rustMachineIdSchema } from "#/modules/machines/enrollment";
 import type { RuntimeVolumeCopy } from "#/modules/runtime/runtime.collection";
-import { type AnsweredMember, type Member, parseDockerVolumeName, type VolumeRunInput, type VolumeRunView } from "#/modules/volume-run/volume-run";
+import { type AnsweredMember, type Member, parseDockerVolumeName, RUN_FEATURES, type VolumeRunInput, type VolumeRunView } from "#/modules/volume-run/volume-run";
 
 export type MachineRef = { readonly id: MachineId; readonly name: MachineName };
 export type PlacementVolume = { readonly id: string; readonly name: string };
@@ -329,16 +329,49 @@ export function mirrorsAfter(mirrors: readonly MachineId[], change: PlacementCha
   }
 }
 
-/** The primary went silent and a mirror answers: the drawer and the tray offer it. */
-export type Failover = { readonly down: MachineRef; readonly mirror: MachineRef; readonly lostAfter: Date | null };
+export type Recovery =
+  | { readonly kind: "forget"; readonly down: readonly MachineRef[]; readonly mirror: MachineRef; readonly lostAfter: Date | null }
+  /** A member's report is incomplete: not silence, so nothing to forget yet and nothing to stage. */
+  | { readonly kind: "wait"; readonly mirror: MachineRef; readonly lostAfter: Date | null }
+  | {
+    readonly kind: "restore";
+    readonly mirror: MachineRef;
+    readonly lostAfter: Date | null;
+    readonly stage: { readonly placement: Placement; readonly mirrors: readonly MachineId[] } | { readonly refused: string };
+  };
 
-export function failover(observed: ObservedPlacement, row: PlacementRow | null): Failover | null {
-  const down = observed.unanswered[0];
-  if (observed.primary !== null || down === undefined) return null;
-  const mirrors = appliedMirrors(observed, row);
-  const mirror = observed.copies.find((copy) => copy.kind === "slot" && mirrors.includes(copy.server.id));
-  if (mirror === undefined || row?.staged?.primary === mirror.server.id) return null;
-  return { down, mirror: mirror.server, lostAfter: mirror.newest };
+export function recovery(
+  volume: PlacementVolume,
+  members: readonly Member[],
+  row: PlacementRow | null,
+  accepting: readonly MachineId[],
+  owed: boolean,
+  floorless: readonly MachineId[],
+): Recovery | null {
+  const observed = observePlacement(members);
+  if (observed.primary !== null) return null;
+  const applied = appliedMirrors(observed, row);
+  const copy = observed.copies.find((each) => each.kind === "slot" && applied.includes(each.server.id));
+  if (copy === undefined) return null;
+  const { server: mirror, newest: lostAfter } = copy;
+  const unanswered = members.filter((member): member is Extract<Member, { answered: false }> => !member.answered && member.lack === undefined);
+  const silent = unanswered.filter((member) => member.incomplete === undefined).map((member) => member.machine);
+  if (silent.length > 0) return { kind: "forget", down: silent, mirror, lostAfter };
+  if (unanswered.length > 0) return { kind: "wait", mirror, lostAfter };
+  if (row?.staged?.primary === mirror.id) return null;
+  return { kind: "restore", mirror, lostAfter, stage: restoreStage(volume, members, mirror, applied, accepting, owed, floorless) };
+}
+
+function restoreStage(
+  volume: PlacementVolume, members: readonly Member[], mirror: MachineRef, applied: readonly MachineId[], accepting: readonly MachineId[], owed: boolean,
+  floorless: readonly MachineId[],
+): Extract<Recovery, { kind: "restore" }>["stage"] {
+  if (owed) return { refused: `${volume.name}'s last move hasn't finished.` };
+  if (!accepting.includes(mirror.id)) return { refused: `${mirror.name} doesn't run Services.` };
+  if (floorless.includes(mirror.id)) return { refused: `${RUN_FEATURES.restore} needs a newer Ployz on ${mirror.name}.` };
+  const planned = planFromCopies({ kind: "restore", args: { from: mirror.name }, volumeName: volume.name, orphan: false }, members);
+  if (!planned.ok) return { refused: planned.refusal.message };
+  return { placement: { primary: mirror.id, mirrors: [], deletes: [] }, mirrors: applied };
 }
 
 export type PlacementTargets = { readonly move: readonly MachineRef[]; readonly mirror: readonly MachineRef[] };

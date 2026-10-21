@@ -373,7 +373,8 @@ cluster until it reboots or you remove it.
    ```
 
    See [When a server goes down](../services/scaling.md#when-a-server-goes-down) for which
-   services come back.
+   services come back, and [When its server goes down](../services/volumes.md#when-its-server-goes-down)
+   to bring a volume back from its mirror with **Use mirror** before you deploy.
 
 ## A server's address changed
 
