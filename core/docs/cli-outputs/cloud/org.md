@@ -31,13 +31,13 @@ stdout:
   "organizations": [
     {
       "current": true,
-      "id": "5e293990-09ad-45c1-b636-6444de4fb848",
+      "id": "272b2d2d-c2f1-4da3-8c1b-bd2895683240",
       "name": "Ada Lovelace's Projects",
       "slug": "ada"
     },
     {
       "current": false,
-      "id": "47e4dfcf-7e63-44d0-9a6e-f183ca472a51",
+      "id": "12a598c2-c836-47d2-9a0b-62471a62ae28",
       "name": "Babbage Labs",
       "slug": "babbage"
     }
@@ -102,7 +102,7 @@ stdout:
 ```
 {
   "organization": {
-    "id": "5e293990-09ad-45c1-b636-6444de4fb848",
+    "id": "272b2d2d-c2f1-4da3-8c1b-bd2895683240",
     "slug": "ada"
   }
 }
@@ -261,18 +261,26 @@ error: This credential acts in Organization ada, not babbage. No changes made.
 next: ployz org use babbage
 ```
 
-### org rm babbage --confirm babbage (empty, acting in it)
+### org rm babbage --confirm babbage (empty, acting in it; Ada approves it)
 
 ```console
 $ ployz org rm babbage --confirm babbage
-# exit 124
+# exit 0
+```
+
+stdout:
+```
+Removed Organization babbage.
 ```
 
 stderr:
 ```
 This removal in Organization babbage destroys 1 thing:
   ✕ removes Organization babbage
-Waiting for approval in Ployz Cloud… 
+Approve 0f855ae3-e748-4961-9fec-eeb196f73242 under Waiting on you in the Ployz agent at http://localhost:33247/cloud/babbage?chat=72a6fc42-da55-425f-b098-7e8308156dd4
+next: ployz org approval approve 0f855ae3-e748-4961-9fec-eeb196f73242
+Waiting for approval in Ployz Cloud… approved.
+This device now acts in Organization ada.
 ```
 
 ### org ls after removal
@@ -285,8 +293,7 @@ $ ployz org ls
 stdout:
 ```
 ORGANIZATION	NAME	CURRENT
-ada	Ada Lovelace's Projects	-
-babbage	Babbage Labs	current
+ada	Ada Lovelace's Projects	current
 ```
 
 ### status after removing the acting Organization
@@ -298,14 +305,14 @@ $ ployz status
 
 stdout:
 ```
-cloud = http://localhost:35249
-organization = babbage
+cloud = http://localhost:33247
+organization = ada
 signed in as = ada@example.com
-needs attention = This Organization has no Project yet
+needs attention = Name a Project: this Organization has more than one
 ```
 
 stderr:
 ```
-next: ployz project new NAME
+next: ployz link --project PROJECT
 ```
 
