@@ -9,6 +9,7 @@ import { CloudStore } from "#/modules/config-store/store-sdk.server";
 import { InngestClient } from "#/modules/inngest/client";
 import { createCancelServerDrain, createCloseStaleServerDrains, createDrainServer } from "#/modules/machines/server-drain.inngest";
 import { DRAIN_PENDING_LIMIT_MS, DRAIN_RUNNING_LIMIT_MS } from "#/modules/machines/server-drain";
+import { drainView } from "#/modules/machines/server-drain-view";
 import {
   executeDrainOnce, latestDrainOf, listLatestServerDrains, readCliServerDrain, requestCliServerDrain, requestServerDrain,
 } from "#/modules/machines/server-drain.server";
@@ -202,7 +203,7 @@ describe("drain-server", () => {
       name: "server/drain.requested",
       data: { attemptId: requestId, organizationId, machineId },
     };
-    expect(await request()).toEqual({ drain: { attemptId: requestId, state: "pending", requestedAt: expect.any(String) } });
+    expect(await request()).toEqual({ drain: { attemptId: requestId, state: "pending", requestedAt: expect.any(String), serversSilent: false } });
     expect(send.mock.calls).toEqual([[event]]);
 
     expect(await request(secondTab)).toMatchObject({ drain: { attemptId: requestId, state: "pending" } });
@@ -354,6 +355,27 @@ describe("drain-server", () => {
     expect(sleeps(output)).toHaveLength(5);
     expect(drainCalls).toEqual([[machineId, { scope: "services", services: ["shop-production/api"] }]]);
     expect(await rows()).toMatchObject([{ state: "finished", end_code: null, report: partialReport }]);
+  });
+
+  it("reads waiting for its servers, not queued behind another Drain that runs meanwhile, until its servers answer", async () => {
+    const other = "00000000-0000-4000-8000-0000000000b1";
+    const serverNames = new Map([[web1.id, web1.name], [web2.id, web2.name], [otherMachineId, "web-3"]]);
+    const viewOf = async () => drainView({ server: web2, latest: await latest(), serverNames, requested: null });
+    await request();
+    await request(other, otherMachineId);
+    await claim(other, "run-other");
+    expect(await viewOf()).toEqual({ kind: "queued", behind: "web-3" });
+
+    silentOpens = 1;
+    const seen: unknown[] = [];
+    whileWaiting = async () => { seen.push(await viewOf()); };
+    drainAnswer = () => Effect.promise(async () => {
+      seen.push(await viewOf());
+      return partialReport;
+    });
+    await drain();
+
+    expect(seen).toEqual([{ kind: "waiting" }, { kind: "running", since: expect.any(String) }]);
   });
 
   it("stops waiting once the request is older than the pending limit, and ends never started", async () => {
@@ -683,7 +705,7 @@ describe("drain-server", () => {
     await request(secondTab);
 
     expect(await latest()).toEqual({
-      [machineId]: { attemptId: secondTab, state: "pending", requestedAt: expect.any(String) },
+      [machineId]: { attemptId: secondTab, state: "pending", requestedAt: expect.any(String), serversSilent: false },
     });
   });
 
