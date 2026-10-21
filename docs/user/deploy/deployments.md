@@ -277,6 +277,12 @@ If web-2 stops answering in the middle of the switch, the deploy can fail instea
 `failed (2/3 ready)`, and exit 1, even though the new replicas serve
 ([#2600](https://github.com/getployz/ployz/issues/2600)). Deploy again once web-2 is back.
 
+If the connection to a server drops while a new replica starts, the deploy fails with `create
+Container failed` and a cause such as `connection lost`. The server may have started that replica
+anyway. It keeps running beside the old ones but takes no requests, and the old replicas keep
+serving. `ployz ps` lists both, and the deployment doesn't mention the extra one. Your next deploy
+removes it, whatever you changed.
+
 Until you deploy again, that server can keep answering with the old version. See
 [Old and new versions answer at once](../troubleshooting/deployments.md#old-and-new-versions-answer-at-once).
 

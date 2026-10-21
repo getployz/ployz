@@ -4,6 +4,7 @@ import type {
   CopyObservation,
   CopyRefusal,
   DestructiveEffect,
+  DockerVolume,
   EnvironmentRef,
   ExpectedCopy,
   MachineId,
@@ -45,7 +46,7 @@ import {
   alreadyOn, newestGuid, type PlanInput, type Planned, planForwardRelease, planFromCopies, type Refusal, type RefusalCode, type ReleaseFrom, restoreSource,
   roleOf, writerRemovedMessage,
 } from "#/modules/volume-run/plan";
-import { RESIZE_REQUIREMENTS } from "#/modules/volume-run/resize";
+import { deployingMessage, resizeRequirements, sizeDirection } from "#/modules/volume-run/resize";
 import { isBehind, isCurrent, releaseLine } from "#/modules/server-upgrade/server-upgrade";
 import { channelRelease, organizationReleaseChannel } from "#/modules/server-upgrade/server-upgrade.server";
 import { volumeRun } from "#/modules/volume-run/tables";
@@ -392,7 +393,8 @@ const refusalCode = {
   confirm_required: "confirmation_required",
   invalid: "invalid_argument",
   already_on: "conflict",
-  already_sized: "conflict",
+  held_below: "conflict",
+  unobserved: "unavailable",
   no_writer: "conflict",
   two_writers: "conflict",
   volume_switching: "conflict",
@@ -405,7 +407,7 @@ const refusalCode = {
 
 /** A plan's refusal as the Store hears it; a call whose outcome already holds is settled, so the Store offers no retry. */
 const storeRefusal = ({ code, message, next }: Refusal): StoreRefusal => {
-  if (code === "already_on" || code === "already_sized") return { code: refusalCode[code], message, details: { settled: true } };
+  if (code === "already_on") return { code: refusalCode[code], message, details: { settled: true } };
   return { code: refusalCode[code], message, details: next === undefined ? null : { next } };
 };
 
@@ -496,7 +498,27 @@ export const planVolumeRun = Effect.fn("VolumeRun.plan")(function* (
   if (pending !== null && input.kind !== "delete_mirror" && refusedWhileOwed(input, pending)) {
     return { ok: false, refusal: yield* namedOwedRefusal(pending) } satisfies VolumeRunPlan;
   }
+  if (input.kind === "resize" && sizeDirection(volume.recordedBytes, input.args.maximum_bytes) === "shrink") {
+    const refusal = yield* shrinkWhileDeploying(organizationId, input.environment, volume.volumeName, input.args.maximum_bytes);
+    if (refusal !== null) return { ok: false, refusal } satisfies VolumeRunPlan;
+  }
   return yield* planOnCluster(organizationId, volume, input, pending);
+});
+
+/**
+ * A shrink asked while a Deployment of the Environment is in flight, refused before any row in the words the Store
+ * refuses its record in. The Store's refusal is the authority; this one only spares a run that would fail at its record.
+ */
+const shrinkWhileDeploying = Effect.fn("VolumeRun.shrinkWhileDeploying")(function* (
+  organizationId: string,
+  environment: EnvironmentRef,
+  volumeName: string,
+  to: number,
+) {
+  const { in_flight: inFlight } = yield* readStore(organizationId, { query: "deployments", environment, limit: 1, cursor: null });
+  const [running] = inFlight;
+  if (running === undefined) return null;
+  return { code: "conflict", message: deployingMessage(volumeName, running.number, to), details: { reason: "deploying", deployment: { id: running.id, number: running.number } } } satisfies StoreRefusal;
 });
 
 /** A read's failure as none, except the plan running out of Cluster time, which refuses the whole plan. */
@@ -515,7 +537,7 @@ export const planOnCluster = Effect.fn("VolumeRun.planOnCluster")(function* (
   input: PlanRequest,
   pending: Owed | null,
 ) {
-  const members = yield* answered(observeVolumeMembers(organizationId, volume.dockerVolume, input));
+  const members = yield* answered(observeVolumeMembers(organizationId, volume.dockerVolume, input.kind === "resize" ? { ...input, recordedBytes: volume.recordedBytes } : input));
   if (Option.isNone(members)) return { ok: false, refusal: unanswered } satisfies VolumeRunPlan;
   if (pending !== null && input.kind === "release") return yield* planForward(volume, input, pending, members.value);
   const resolved = input.kind === "delete_mirror"
@@ -1316,12 +1338,20 @@ export const removeContainer = Effect.fn("VolumeRun.removeContainer")(function* 
 const isDestination = (run: VolumeLaneInput, machine: { readonly id: MachineId; readonly name: MachineName | null }) =>
   (run.kind === "move" || run.kind === "mirror") && (run.args.machine === undefined ? run.args.to === machine.name : run.args.machine === machine.id);
 
+/** A run as the observe step reads it: a resize carries the size the Store records, which decides its direction. */
+type ObservedRun = Exclude<VolumeLaneInput, { kind: "resize" }> | (Extract<VolumeLaneInput, { kind: "resize" }> & { readonly recordedBytes: number });
+
+const boundOf = (volumes: readonly DockerVolume[], machineId: MachineId, dockerVolume: string) => {
+  const storage = volumes.find((volume) => volume.id.machine_id === machineId && volume.id.name === dockerVolume)?.storage;
+  return storage?.kind === "provisioned" ? storage.bound_bytes : null;
+};
+
 /**
  * Each managed Server's copy of `dockerVolume`; a Server that doesn't answer in time is a member that didn't answer.
  * So is one the frame lists only by id: it is still in the cluster, so a mirror on it is not gone.
  * For a run, a Server that holds a copy or receives one and lacks the generation floor is a member that lacks it.
  */
-export const observeVolumeMembers = Effect.fn("VolumeRun.observeMembers")(function* (organizationId: string, dockerVolume: string, run?: VolumeLaneInput) {
+export const observeVolumeMembers = Effect.fn("VolumeRun.observeMembers")(function* (organizationId: string, dockerVolume: string, run?: ObservedRun) {
   const session = yield* openSession(organizationId);
   const frame = yield* session.watchFirstFrame(RUNTIME_FRAME_TIMEOUT_MS).pipe(clusterRead);
   // A Docker-only Machine holds no copy and may not serve the verb, so it must not block the run.
@@ -1330,28 +1360,33 @@ export const observeVolumeMembers = Effect.fn("VolumeRun.observeMembers")(functi
   const listed = yield* Effect.forEach(managed, ({ machine }) => {
     const ref: MachineRef = { id: machine.id, name: machine.name };
     const server = { name: machine.name, daemonVersion: machine.runtime.daemon_version };
-    const lacks = (capability: string) => lackSentence(organizationId, capability, server, run?.kind).pipe(
+    const lacks = (capability: string, kind: VolumeRunKind | undefined) => lackSentence(organizationId, capability, server, kind).pipe(
       Effect.map((lack): Member => ({ machine: ref, answered: false, lack })),
     );
+    /** Named by the verb, not the run, so a resize says which direction the Server lacks: "Volume shrink needs a newer Ployz on db-1." */
+    const lacksVerb = (requirement: Requirement) => lacks(requirement.capability, undefined);
     const capabilities = { capabilities: machine.runtime.capabilities ?? [] };
     const floorless = run !== undefined && serverSupports(capabilities, requirements.volumeFloor) === false;
-    // A resize asks every holder, so a holder that may not serve the verb, a Server listing no capabilities included, lacks it.
-    const unsized = run?.kind === "resize" ? RESIZE_REQUIREMENTS.find((requirement) => serverSupports(capabilities, requirement) !== true) : undefined;
+    const unsized = run?.kind === "resize"
+      ? resizeRequirements(run.recordedBytes, run.args.maximum_bytes).find((requirement) => serverSupports(capabilities, requirement) !== true)
+      : undefined;
+    const sized = run?.kind === "resize" ? { boundBytes: boundOf(frame.volumes, machine.id, dockerVolume) } : {};
     return session.volumeSwitch(machine.id, { command: "inspect_volume_copy", payload: { name: dockerVolume } }).pipe(
       clusterRead,
       Effect.timeout(OBSERVE_TIMEOUT),
       Effect.flatMap((view) => floorless && (view.copy !== null || isDestination(run, ref))
-        ? lacks(requirements.volumeFloor.capability)
+        ? lacks(requirements.volumeFloor.capability, run?.kind)
         : unsized !== undefined && view.copy !== null
-        ? lacks(unsized.capability)
+        ? lacksVerb(unsized)
         : Effect.succeed<Member>({
           machine: ref,
           address: managementAddress(machine.public_key),
           answered: true,
           view,
           floorless,
+          ...sized,
         })),
-      Effect.catchTag("ServerLacks", (lack) => lacks(lack.capability)),
+      Effect.catchTag("ServerLacks", (lack) => lacks(lack.capability, run?.kind)),
       Effect.orElseSucceed((): Member => ({ machine: ref, answered: false })),
     );
   }, { concurrency: "unbounded" });

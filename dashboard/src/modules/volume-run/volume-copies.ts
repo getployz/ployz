@@ -17,7 +17,7 @@ export function runWords(run: VolumeRunView): string {
     release: "Resuming the primary",
     restore: `Using mirror on ${args.from}`,
     seed: `Restoring into ${args.into?.name}`,
-    resize: args.maximum_bytes === undefined ? "Resizing" : `Growing to ${gb(args.maximum_bytes)}`,
+    resize: args.maximum_bytes === undefined ? "Resizing" : `Resizing to ${gb(args.maximum_bytes)}`,
     deploy: "Deploying",
   }[run.kind];
 }
