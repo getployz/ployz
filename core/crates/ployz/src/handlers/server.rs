@@ -747,7 +747,7 @@ async fn apply_update(
 }
 
 /// A committed Server change whose Ingress Proxy follow-up failed: name it and the exact rerun.
-pub(super) fn ingress_incomplete(committed: &str, error: Error, next: String) -> Error {
+pub(crate) fn ingress_incomplete(committed: &str, error: Error, next: String) -> Error {
     error
         .context(format!("{committed}; the Ingress Proxy did not follow."))
         .hint(Hint::Next(next))
