@@ -53,7 +53,8 @@ export function StoreServiceCard({ service, domains, changeCount, runtimeIdentit
   const subtitle = domain ? <CardDescription className={cn("truncate", domain.live && "text-foreground")}>{domain.hostname}</CardDescription> : null;
   // A Deploy in flight takes the chip, so staged work beside it keeps its own word on the pink card.
   const staged = service.change === null || chip?.kind === "staged" ? null : stagedChip(service.change, changeCount);
-  const chipBadge = <span className="flex shrink-0 items-center gap-1"><DeployChip chip={chip} /><DeployChip chip={staged} /></span>;
+  // Stacked, so two chips take no more width from the name than the widest one.
+  const chipBadge = <span className="flex shrink-0 flex-col items-end gap-1"><DeployChip chip={chip} /><DeployChip chip={staged} /></span>;
   const navigate = useNavigate();
   // Secrets it has no value for: deploys skip them, so the card counts them and opens its variables.
   const unset = notSetLabel(notSet);
