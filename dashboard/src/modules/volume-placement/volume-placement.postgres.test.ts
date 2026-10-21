@@ -423,6 +423,8 @@ describe("volume placement", () => {
       expect(writes).toEqual([]);
       expect(await holder()).toBeNull();
       expect(await admission(admit(["data", "other"]))).toMatchObject({ ok: false, refusal: { code: "confirmation_required" } });
+      expect(await admission(admit(["data", "other"], "v1#loss-0"))).toMatchObject({ ok: false, refusal: { code: "confirmation_required" } });
+      expect(writes).toEqual([]);
       expect(await admission(admit(["data", "other"], await shown()))).toEqual({ ok: true, command: admit(["other"]) });
       expect(await holder()).toBe("dep-1");
     });
