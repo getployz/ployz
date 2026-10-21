@@ -1,16 +1,19 @@
-//! A grow of one Volume, then a Move of it from A to B, the Release that takes it over,
-//! and every late `SetVolumeSize` and `SetVolumeCopy` the dead runs can still deliver.
+//! A resize of one Volume, a grow or a shrink, then a Move of it from A to B, the Release
+//! that takes it over, and every late `SetVolumeSize` and `SetVolumeCopy` the dead runs
+//! can still deliver.
 //!
 //! DESIGN.md bet 6 promises that a late step from a dead run leaves a Volume with at
 //! most one Writer. This model checks that promise, and what each run reports, over
 //! every interleaving of:
 //!
-//! - the resize (`resizeVolume` in `volume-run.inngest.ts`) growing every copy to one
-//!   target, Mirrors first and the primary last, then recording the target in the
-//!   Store; a Machine whose Pool can't fit it refuses, and the run ends recording
-//!   nothing. Cloud may end its row at any moment, and its `SetVolumeSize` still lands
-//!   later, unfenced. The Store's size must never exceed the bound of a live copy, the
-//!   one any later run may promote;
+//! - the resize (`resizeVolume` in `volume-run.inngest.ts`) setting every copy to one
+//!   target. A grow asks Mirrors first and the primary last, then records the target in
+//!   the Store; a Machine whose Pool can't fit it refuses, and the run ends recording
+//!   nothing. A shrink records the target first, then lowers the primary and then each
+//!   Mirror; a Machine whose copy references too much for it refuses, and a refusal
+//!   before any copy changed records the old size back. Cloud may end the row at any
+//!   moment, and its `SetVolumeSize` still lands later, unfenced. The Store's size must
+//!   never exceed the bound of a live copy, the one any later run may promote;
 //! - the Move (`moveVolume` in `dashboard/src/modules/volume-run/volume-run.inngest.ts`)
 //!   from its cut, or from one warm pull when B held no copy for the grow to ask: cut
 //!   A, pull the cut's snapshot to B, commit, start B, remove A's kept Container;
@@ -31,11 +34,11 @@
 //!
 //! Out of scope: Deploy lanes, operator collisions, Machines that do not answer,
 //! warm rounds beyond that one pull, and a second takeover. Of the resize: real
-//! capacities (one Machine either fits the target or not), ZFS (a bound is one value
-//! per copy), the Store's record transaction (one atomic step on the lock row), a
-//! shrink, a resize during or after the Move (a late `SetVolumeSize` may land during
-//! it, and only raises), a Restore, and a Mirror made after the grow by anything but
-//! the Move's own pull.
+//! capacities and floors (one Machine either takes the target or not, and a floor
+//! never moves), ZFS (a bound is one value per copy), the Store's record transaction
+//! (one atomic step on the lock row), a second resize, a resize during or after the
+//! Move (a late `SetVolumeSize` may land during it), a Restore, and a Mirror made after
+//! the resize by anything but the Move's own pull.
 
 use std::net::Ipv6Addr;
 
@@ -70,15 +73,48 @@ impl Machine {
     }
 }
 
-/// A Volume size. One grow per trace, from one old size to one target, keeps the state
-/// space small.
+/// A Volume size. One resize per trace, between these two, keeps the state space small.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
 enum Size {
-    Old,
-    New,
+    Small,
+    Large,
 }
 
-const TARGET: Size = Size::New;
+/// Which way the resize moves the Volume's bound (`SizeDirection` in `resize.ts`).
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+enum Direction {
+    Grow,
+    Shrink,
+}
+
+impl Direction {
+    /// The size every copy and the Store hold when the resize starts.
+    fn from(self) -> Size {
+        match self {
+            Self::Grow => Size::Small,
+            Self::Shrink => Size::Large,
+        }
+    }
+
+    /// The size the resize asks for.
+    fn to(self) -> Size {
+        match self {
+            Self::Grow => Size::Large,
+            Self::Shrink => Size::Small,
+        }
+    }
+}
+
+/// The one Machine that can't take the target, if any, and why.
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+enum Cramped {
+    /// Its Pool has no room for the larger size: a grow, and a pull's raise, refuse
+    /// `NoCapacity`.
+    Pool(Machine),
+    /// Its copy references more than the smaller size leaves room for, so `shrink_floor`
+    /// sits above the target: a shrink refuses `BelowFloor`.
+    Copy(Machine),
+}
 
 /// The warm round's snapshot, which B already holds, and the cut's final `f-<epoch>`.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
@@ -178,9 +214,11 @@ enum Want {
     },
     Forget,
     Floor,
-    /// `SetVolumeSize`, which carries no `gen` and checks no floor.
+    /// `SetVolumeSize`, which carries no `gen` and checks no lane floor. A shrink run
+    /// sends it with `allow_shrink`.
     Size {
         to: Size,
+        allow_shrink: bool,
     },
 }
 
@@ -194,6 +232,7 @@ enum Refusal {
     Switching,
     NoCapacity,
     Shrink,
+    BelowFloor,
     Other,
 }
 
@@ -252,12 +291,15 @@ impl Row {
     }
 }
 
-/// The grow's walk, `RESIZE_ORDER.grow` in `resize.ts`: Mirrors first (B), the primary
-/// last (A), then the record. A Machine holding no copy is not a holder and is skipped.
+/// The resize's walk, `RESIZE_ORDER` in `resize.ts`. A grow sets Mirrors first (B), the
+/// primary last (A), then records. A shrink records first, then sets the primary, then
+/// each Mirror; a refusal before any copy changed records the old size back
+/// (`undoOnRefusal`). A Machine holding no copy is not a holder and is skipped.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 enum ResizeStep {
-    Raise(Machine),
+    Set(Machine),
     Record,
+    Unrecord,
     Finish,
     Over,
 }
@@ -321,7 +363,20 @@ struct Release {
 struct Resize {
     row: Row,
     driver: Driver<ResizeStep>,
+    direction: Direction,
+    /// A holder answered `holds`: `done` in `resizeVolume` has a `held`.
+    held: bool,
+    /// A holder refused the resize.
     refused: bool,
+    /// Cloud ended the row (`EndResize`) before the driver ended it itself.
+    cut_short: bool,
+}
+
+impl Resize {
+    /// A refusal found no copy changed, so the run undoes its record (`undoOnRefusal`).
+    fn undoes(self) -> bool {
+        self.refused && !self.held
+    }
 }
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
@@ -330,11 +385,10 @@ struct State {
     b: Host,
     requests: Vec<Request>,
     /// What the Store records, which Deploys and the planners read; apart from the
-    /// target the resize sends, so the order of raise and record is what gets checked.
+    /// target the resize sends, so the order of set and record is what gets checked.
     size: Size,
     resize: Resize,
-    /// The one Machine whose Pool can't fit the target, if any.
-    cramped: Option<Machine>,
+    cramped: Option<Cramped>,
     row: Row,
     moving: Driver<MoveStep>,
     release: Option<Release>,
@@ -474,7 +528,40 @@ impl State {
 
     /// Whether `machine`'s Pool can hold a copy of `size`.
     fn fits(&self, machine: Machine, size: Size) -> bool {
-        size == Size::Old || self.cramped != Some(machine)
+        size == Size::Small || self.cramped != Some(Cramped::Pool(machine))
+    }
+
+    /// Whether `machine`'s copy references too much to shrink to the smaller size.
+    fn below_floor(&self, machine: Machine) -> bool {
+        self.cramped == Some(Cramped::Copy(machine))
+    }
+
+    /// The Store holds the size the resize asked for.
+    fn recorded(&self) -> bool {
+        self.size == self.resize.direction.to()
+    }
+
+    /// The resize is over, every request it sent has landed, and no later run has sent
+    /// anything: the copies hold what the resize left them.
+    fn resize_settled(&self) -> bool {
+        self.resize.driver.step == ResizeStep::Over
+            && self.release.is_none()
+            && self
+                .requests
+                .iter()
+                .all(|request| request.lane == Lane::Resize && !state_in_flight(request.progress))
+    }
+
+    /// Every Mirror holds at least its Writer's bound, so promoting one never lands a
+    /// Writer smaller than the one it replaces.
+    fn mirrors_keep_up(&self) -> bool {
+        Machine::ALL.iter().all(|machine| {
+            let host = self.host(*machine);
+            let writer = self.host(machine.other());
+            !matches!(host.copy, Held::Slot { .. })
+                || !writer.copy.is_writer()
+                || writer.bound <= host.bound
+        })
     }
 }
 
@@ -506,6 +593,12 @@ struct Broken {
     done_without_record: bool,
     /// A pull leaves the slot's bound as it was instead of raising it to the Writer's.
     pull_keeps_bound: bool,
+    /// A shrink lowers every Machine first and records its target last.
+    shrink_records_last: bool,
+    /// A shrink lowers the Mirror before the primary.
+    shrink_mirror_first: bool,
+    /// A shrink refused before any copy changed keeps the size it recorded.
+    shrink_keeps_refused_record: bool,
 }
 
 /// One bounded slice of the runs. Each is checked whole; together they cover the resize
@@ -517,33 +610,59 @@ enum Scenario {
     Resize,
     /// A resize that runs to its own end, then the Move and its Release.
     ResizeThenMove,
-    /// A grow on both copies whose row ends while a `SetVolumeSize` is on the wire;
+    /// A resize on both copies whose row ends while a `SetVolumeSize` is on the wire;
     /// the Move starts at once, and the late request lands anywhere in it.
     LateResize,
 }
 
+/// One start: which way the resize goes, whether B held a Mirror when it ran (else B
+/// joins at the Move's warm pull), and which Machine, if any, can't take the target.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Origin {
+    direction: Direction,
+    b_held: bool,
+    cramped: Option<Cramped>,
+}
+
+fn start(direction: Direction, b_held: bool, cramped: Option<Cramped>) -> Origin {
+    Origin {
+        direction,
+        b_held,
+        cramped,
+    }
+}
+
 impl Scenario {
-    /// Whether B held a Mirror when the grow ran (else it joins at the Move's warm pull),
-    /// and which Machine, if any, lacks room for the target.
-    fn starts(self) -> &'static [(bool, Option<Machine>)] {
+    fn starts(self) -> Vec<Origin> {
+        use Direction::{Grow, Shrink};
+        use Machine::{A, B};
         match self {
-            Self::Resize => &[
-                (true, None),
-                (true, Some(Machine::A)),
-                (true, Some(Machine::B)),
-                (false, None),
-                (false, Some(Machine::A)),
-                (false, Some(Machine::B)),
+            Self::Resize => vec![
+                start(Grow, true, None),
+                start(Grow, true, Some(Cramped::Pool(A))),
+                start(Grow, true, Some(Cramped::Pool(B))),
+                start(Grow, false, None),
+                start(Grow, false, Some(Cramped::Pool(A))),
+                start(Grow, false, Some(Cramped::Pool(B))),
+                start(Shrink, true, None),
+                start(Shrink, true, Some(Cramped::Copy(A))),
+                start(Shrink, true, Some(Cramped::Copy(B))),
+                start(Shrink, false, None),
+                start(Shrink, false, Some(Cramped::Copy(A))),
             ],
-            // A grow refused by the first holder it asks changes nothing, so the Move
-            // after it is the Move with no resize.
-            Self::ResizeThenMove => &[
-                (true, None),
-                (true, Some(Machine::A)),
-                (false, None),
-                (false, Some(Machine::B)),
+            // A resize refused by the first holder it asks changes nothing, so the Move
+            // after it is the Move with no resize. A shrink's floor is asked by no pull,
+            // so a B that joins at the Move is the same with or without one.
+            Self::ResizeThenMove => vec![
+                start(Grow, true, None),
+                start(Grow, true, Some(Cramped::Pool(A))),
+                start(Grow, false, None),
+                start(Grow, false, Some(Cramped::Pool(B))),
+                start(Shrink, true, None),
+                start(Shrink, true, Some(Cramped::Copy(B))),
+                start(Shrink, false, None),
             ],
-            Self::LateResize => &[(true, None)],
+            Self::LateResize => vec![start(Grow, true, None), start(Shrink, true, None)],
         }
     }
 }
@@ -551,6 +670,8 @@ impl Scenario {
 #[derive(Clone, Copy, Debug)]
 struct VolumeRuns {
     scenario: Scenario,
+    /// Only this direction's starts; `None` runs both.
+    direction: Option<Direction>,
     /// Resends each run may make of a request still unanswered.
     resends: u8,
     /// Daemon restarts during a cut's flip.
@@ -562,6 +683,7 @@ impl Default for VolumeRuns {
     fn default() -> Self {
         Self {
             scenario: Scenario::ResizeThenMove,
+            direction: None,
             resends: 1,
             crashes: 1,
             broken: Broken::default(),
@@ -729,8 +851,12 @@ impl VolumeRuns {
         let to = request.to;
         match request.progress {
             Progress::Sent => {
-                if let Want::Size { to: size } = request.want {
-                    let reply = Self::set_size(state, to, size);
+                if let Want::Size {
+                    to: size,
+                    allow_shrink,
+                } = request.want
+                {
+                    let reply = Self::set_size(state, to, size, allow_shrink);
                     if state.resize.driver.waiting == Some(index) {
                         state.reply(index, reply);
                     } else {
@@ -818,10 +944,12 @@ impl VolumeRuns {
     }
 
     /// `set_size_admitted` (`ployzd/src/volume_plugin/size.rs`), whole under the switch
-    /// lock: a bound only rises, an equal one answers with no write, and a read-only
-    /// root is mid-cut.
-    fn set_size(state: &mut State, to: Machine, size: Size) -> Reply {
+    /// lock: a bound rises, or falls when the request allows it and the copy's
+    /// `shrink_floor` (read once, at the start of the request) sits below the target;
+    /// an equal one answers with no write, and a read-only root is mid-cut.
+    fn set_size(state: &mut State, to: Machine, size: Size, allow_shrink: bool) -> Reply {
         let fits = state.fits(to, size);
+        let below_floor = state.below_floor(to);
         let host = state.host_mut(to);
         let switching = match host.copy {
             Held::None => return Reply::Refused(Refusal::Other),
@@ -829,7 +957,17 @@ impl VolumeRuns {
             Held::Slot { .. } => false,
         };
         if size < host.bound {
-            return Reply::Refused(Refusal::Shrink);
+            if !allow_shrink {
+                return Reply::Refused(Refusal::Shrink);
+            }
+            if switching {
+                return Reply::Refused(Refusal::Switching);
+            }
+            if below_floor {
+                return Reply::Refused(Refusal::BelowFloor);
+            }
+            host.bound = size;
+            return Reply::Bound(size);
         }
         if size == host.bound {
             return Reply::Bound(size);
@@ -1035,26 +1173,22 @@ fn expect_of(held: Held) -> Expect {
 }
 
 impl VolumeRuns {
-    fn walk(&self) -> [ResizeStep; 4] {
-        if self.broken.record_before_raise {
-            [
-                ResizeStep::Record,
-                ResizeStep::Raise(Machine::B),
-                ResizeStep::Raise(Machine::A),
-                ResizeStep::Finish,
-            ]
-        } else {
-            [
-                ResizeStep::Raise(Machine::B),
-                ResizeStep::Raise(Machine::A),
-                ResizeStep::Record,
-                ResizeStep::Finish,
-            ]
+    /// `planResize`: the holders in `RESIZE_ORDER[direction]` order, with the record
+    /// placed first or last.
+    fn walk(&self, direction: Direction) -> [ResizeStep; 4] {
+        use ResizeStep::{Finish, Record, Set};
+        let (a, b) = (Set(Machine::A), Set(Machine::B));
+        match direction {
+            Direction::Grow if self.broken.record_before_raise => [Record, b, a, Finish],
+            Direction::Grow => [b, a, Record, Finish],
+            Direction::Shrink if self.broken.shrink_records_last => [a, b, Record, Finish],
+            Direction::Shrink if self.broken.shrink_mirror_first => [Record, b, a, Finish],
+            Direction::Shrink => [Record, a, b, Finish],
         }
     }
 
-    fn after(&self, step: ResizeStep) -> ResizeStep {
-        self.walk()
+    fn after(&self, direction: Direction, step: ResizeStep) -> ResizeStep {
+        self.walk(direction)
             .into_iter()
             .skip_while(|each| *each != step)
             .nth(1)
@@ -1073,25 +1207,31 @@ impl VolumeRuns {
             return next(state, ResizeStep::Over);
         }
         let driver = state.resize.driver;
+        let direction = state.resize.direction;
         match (driver.step, driver.waiting) {
-            (ResizeStep::Raise(machine), None) => {
+            (ResizeStep::Set(machine), None) => {
                 if state.host(machine).copy == Held::None {
-                    return next(state, self.after(driver.step));
+                    return next(state, self.after(direction, driver.step));
                 }
                 let sent = state.send(
                     Lane::Resize,
                     machine,
                     Expect::None,
-                    Want::Size { to: TARGET },
+                    Want::Size {
+                        to: direction.to(),
+                        allow_shrink: direction == Direction::Shrink,
+                    },
                 );
                 state.resize.driver.waiting = Some(sent);
             }
-            // `sizeOutcome`: a bound at least the target holds it, `switching` is retried
-            // like `busy`, and anything else refuses the resize.
-            (ResizeStep::Raise(_), Some(_)) => match state.replied(driver.waiting) {
+            // `sizeOutcome`: a bound at the target, or past it the way the resize goes,
+            // holds it; `switching` is retried like `busy`; anything else refuses the
+            // resize, which undoes a record no copy has changed under.
+            (ResizeStep::Set(_), Some(_)) => match state.replied(driver.waiting) {
                 None => {}
                 Some(Reply::Bound(_) | Reply::Refused(Refusal::Shrink)) => {
-                    next(state, self.after(driver.step));
+                    state.resize.held = true;
+                    next(state, self.after(direction, driver.step));
                 }
                 Some(Reply::Refused(Refusal::Switching)) if driver.busy > 0 => {
                     state.resize.driver.busy -= 1;
@@ -1100,7 +1240,12 @@ impl VolumeRuns {
                 Some(Reply::Refused(_) | Reply::Copy(_) | Reply::PullFailed) => {
                     state.resize.refused = true;
                     if self.broken.resize_skips_failures {
-                        next(state, self.after(driver.step));
+                        next(state, self.after(direction, driver.step));
+                    } else if state.recorded()
+                        && state.resize.undoes()
+                        && !self.broken.shrink_keeps_refused_record
+                    {
+                        next(state, ResizeStep::Unrecord);
                     } else {
                         state.resize.row = Row::Failed;
                         next(state, ResizeStep::Over);
@@ -1109,9 +1254,14 @@ impl VolumeRuns {
             },
             (ResizeStep::Record, _) => {
                 if !self.broken.done_without_record {
-                    state.size = TARGET;
+                    state.size = direction.to();
                 }
-                next(state, self.after(driver.step));
+                next(state, self.after(direction, driver.step));
+            }
+            (ResizeStep::Unrecord, _) => {
+                state.size = direction.from();
+                state.resize.row = Row::Failed;
+                next(state, ResizeStep::Over);
             }
             (ResizeStep::Finish, _) => {
                 state.resize.row = Row::Done;
@@ -1596,7 +1746,8 @@ fn steps<S>(state: &State, driver: Driver<S>) -> bool {
 }
 
 impl VolumeRuns {
-    fn initial(&self, b_held: bool, cramped: Option<Machine>) -> State {
+    fn initial(&self, start: Origin) -> State {
+        let from = start.direction.from();
         State {
             a: Host {
                 copy: Held::Root {
@@ -1608,10 +1759,10 @@ impl VolumeRuns {
                 holder: Holder::Running,
                 switch: None,
                 turn: None,
-                bound: Size::Old,
+                bound: from,
             },
             b: Host {
-                copy: if b_held {
+                copy: if start.b_held {
                     Held::Slot {
                         newest: Some(Snap::Warm),
                     }
@@ -1622,14 +1773,14 @@ impl VolumeRuns {
                 holder: Holder::Absent,
                 switch: None,
                 turn: None,
-                bound: Size::Old,
+                bound: from,
             },
             requests: Vec::new(),
-            size: Size::Old,
+            size: from,
             resize: Resize {
                 row: Row::Warm,
                 driver: Driver {
-                    step: self.walk()[0],
+                    step: self.walk(start.direction)[0],
                     waiting: None,
                     resends: match self.scenario {
                         Scenario::Resize => self.resends,
@@ -1637,12 +1788,15 @@ impl VolumeRuns {
                     },
                     busy: 1,
                 },
+                direction: start.direction,
+                held: false,
                 refused: false,
+                cut_short: false,
             },
-            cramped,
+            cramped: start.cramped,
             row: Row::Warm,
             moving: Driver {
-                step: if b_held {
+                step: if start.b_held {
                     MoveStep::Cut
                 } else {
                     MoveStep::Warm
@@ -1664,8 +1818,9 @@ impl Model for VolumeRuns {
     fn init_states(&self) -> Vec<State> {
         self.scenario
             .starts()
-            .iter()
-            .map(|(b_held, cramped)| self.initial(*b_held, *cramped))
+            .into_iter()
+            .filter(|start| self.direction.is_none_or(|only| only == start.direction))
+            .map(|start| self.initial(start))
             .collect()
     }
 
@@ -1757,7 +1912,10 @@ impl Model for VolumeRuns {
                 }
                 state.resize.driver.waiting = None;
             }
-            Action::EndResize => state.resize.row = Row::Failed,
+            Action::EndResize => {
+                state.resize.row = Row::Failed;
+                state.resize.cut_short = true;
+            }
             Action::Release => self.release_step(&mut state),
             Action::ReleaseResend => {
                 let lost = state
@@ -1808,10 +1966,15 @@ impl Model for VolumeRuns {
             }),
             Property::always(STORE_FITS, |_, state: &State| state.store_fits()),
             Property::always(RESIZE_DONE_HOLDS, |_, state: &State| {
-                state.resize.row != Row::Done || state.size == TARGET
+                state.resize.row != Row::Done || state.recorded()
             }),
             Property::always(REFUSED_RECORDS_NOTHING, |_, state: &State| {
-                !state.resize.refused || state.size == Size::Old
+                let resize = state.resize;
+                !(resize.undoes() && resize.driver.step == ResizeStep::Over && !resize.cut_short)
+                    || state.size == resize.direction.from()
+            }),
+            Property::always(MIRRORS_KEEP_UP, |_, state: &State| {
+                !state.resize_settled() || state.mirrors_keep_up()
             }),
         ];
         properties.extend(self.reached());
@@ -1853,35 +2016,92 @@ impl VolumeRuns {
                 ),
             ]
         };
-        let grows = || {
+        let resizes = || {
             vec![
-                Property::<Self>::sometimes("a resize finishes", |_, state: &State| {
-                    state.resize.row == Row::Done
+                Property::<Self>::sometimes(
+                    "a resize settles with a Mirror held and nothing else sent",
+                    |_, state: &State| {
+                        state.resize_settled()
+                            && state.a.copy.is_writer()
+                            && matches!(state.b.copy, Held::Slot { .. })
+                    },
+                ),
+                Property::sometimes("a grow finishes", |_, state: &State| {
+                    grow(state) && state.resize.row == Row::Done
                 }),
                 Property::sometimes(
-                    "a refused resize leaves a Mirror bigger than the Store",
+                    "a refused grow leaves a Mirror bigger than the Store",
                     |_, state: &State| {
-                        state.resize.refused && state.size == Size::Old && state.b.bound == TARGET
+                        grow(state)
+                            && state.resize.refused
+                            && state.size == Size::Small
+                            && state.b.bound == Size::Large
+                    },
+                ),
+                Property::sometimes(
+                    "a shrink finishes with both copies lowered",
+                    |_, state: &State| {
+                        shrink(state)
+                            && state.resize.row == Row::Done
+                            && state.a.bound == Size::Small
+                            && state.b.bound == Size::Small
+                    },
+                ),
+                Property::sometimes(
+                    "a shrink the Mirror refused ends with the Store at the new size, the primary lowered and the Mirror still larger",
+                    |_, state: &State| {
+                        shrink(state)
+                            && state.resize.refused
+                            && state.resize.driver.step == ResizeStep::Over
+                            && state.size == Size::Small
+                            && state.a.bound == Size::Small
+                            && state.b.bound == Size::Large
                     },
                 ),
             ]
         };
         match self.scenario {
             Scenario::Resize => {
-                let mut reached = grows();
+                let mut reached = resizes();
                 reached.push(Property::sometimes(
-                    "a resize ends after its record and before it finishes",
-                    |_, state: &State| state.resize.row == Row::Failed && state.size == TARGET,
+                    "a grow ends after its record and before it finishes",
+                    |_, state: &State| {
+                        grow(state) && state.resize.row == Row::Failed && state.size == Size::Large
+                    },
+                ));
+                reached.push(Property::sometimes(
+                    "a shrink the primary refused ends with the Store back at the old size and both copies unchanged",
+                    |_, state: &State| {
+                        shrink(state)
+                            && state.resize.undoes()
+                            && state.resize.driver.step == ResizeStep::Over
+                            && !state.resize.cut_short
+                            && state.size == Size::Large
+                            && state.a.bound == Size::Large
+                            && state.b.bound == Size::Large
+                    },
+                ));
+                reached.push(Property::sometimes(
+                    "a shrink the primary refused is cut short before its undo, leaving the new size recorded",
+                    |_, state: &State| {
+                        shrink(state)
+                            && state.resize.undoes()
+                            && state.resize.driver.step == ResizeStep::Over
+                            && state.resize.cut_short
+                            && state.size == Size::Small
+                            && state.a.bound == Size::Large
+                    },
                 ));
                 reached
             }
             Scenario::ResizeThenMove => {
-                let mut reached = grows();
+                let mut reached = resizes();
                 reached.extend(move_ends());
                 reached.push(Property::sometimes(
                     "a Release back to A promotes a grown copy with no pull",
                     |_, state: &State| {
-                        state.size == TARGET
+                        grow(state)
+                            && state.size == Size::Large
                             && state.a.copy.is_writer()
                             && state
                                 .release
@@ -1892,7 +2112,8 @@ impl VolumeRuns {
                 reached.push(Property::sometimes(
                     "a Move to a Machine the grow never asked starts it grown",
                     |_, state: &State| {
-                        state.size == TARGET
+                        grow(state)
+                            && state.size == Size::Large
                             && state.row == Row::Done
                             && state.requests.iter().any(|request| {
                                 request.lane == Lane::Move
@@ -1906,17 +2127,49 @@ impl VolumeRuns {
                             })
                     },
                 ));
+                reached.push(Property::sometimes(
+                    "a Move after a shrink finishes on the lowered copy",
+                    |_, state: &State| {
+                        shrink(state)
+                            && state.row == Row::Done
+                            && state.b.copy.is_writer()
+                            && state.b.bound == Size::Small
+                    },
+                ));
+                reached.push(Property::sometimes(
+                    "a Move after a shrink the Mirror refused promotes the larger copy over the smaller Store",
+                    |_, state: &State| {
+                        shrink(state)
+                            && state.resize.refused
+                            && state.row == Row::Done
+                            && state.b.copy.is_writer()
+                            && state.b.bound == Size::Large
+                            && state.size == Size::Small
+                    },
+                ));
                 reached
             }
             Scenario::LateResize => {
                 let mut reached = move_ends();
                 reached.push(Property::sometimes(
-                    "a dead resize's request is still on the wire after the cut",
+                    "a late request lands before the Move sends, and the resize settles",
+                    |_, state: &State| state.resize_settled() && state.requests.is_empty(),
+                ));
+                reached.push(Property::sometimes(
+                    "a dead grow's request is still on the wire after the cut",
+                    |_, state: &State| grow(state) && on_the_wire(state),
+                ));
+                reached.push(Property::sometimes(
+                    "a dead shrink's request is still on the wire after the cut",
+                    |_, state: &State| shrink(state) && on_the_wire(state),
+                ));
+                reached.push(Property::sometimes(
+                    "a dead shrink's request lowers the Writer the Move made",
                     |_, state: &State| {
-                        matches!(state.a.copy, Held::Slot { .. })
-                            && state.requests.iter().any(|request| {
-                                request.lane == Lane::Resize && request.progress == Progress::Sent
-                            })
+                        shrink(state)
+                            && state.row == Row::Done
+                            && state.b.copy.is_writer()
+                            && state.b.bound == Size::Small
                     },
                 ));
                 reached
@@ -1933,7 +2186,26 @@ const DONE_HOLDS: &str = "a run that finished done still holds at rest";
 const RELEASE_WINS: &str = "a Release finishes whatever the dead Move still sends";
 const STORE_FITS: &str = "the Store's size fits every copy";
 const RESIZE_DONE_HOLDS: &str = "a resize that finished done recorded its target";
-const REFUSED_RECORDS_NOTHING: &str = "a resize a Machine refused recorded nothing";
+const REFUSED_RECORDS_NOTHING: &str =
+    "a resize refused before any copy changed ends recording nothing";
+const MIRRORS_KEEP_UP: &str = "a resize leaves every Mirror at least its Writer's size";
+
+fn grow(state: &State) -> bool {
+    state.resize.direction == Direction::Grow
+}
+
+fn shrink(state: &State) -> bool {
+    state.resize.direction == Direction::Shrink
+}
+
+/// A dead resize's `SetVolumeSize` is still unlanded once the Move cut A.
+fn on_the_wire(state: &State) -> bool {
+    matches!(state.a.copy, Held::Slot { .. })
+        && state
+            .requests
+            .iter()
+            .any(|request| request.lane == Lane::Resize && request.progress == Progress::Sent)
+}
 
 fn at_rest(model: &VolumeRuns, state: &State) -> bool {
     let mut actions = Vec::new();
@@ -1988,12 +2260,18 @@ mod tests {
 
     /// Each property fails once the guard that keeps it is taken out.
     fn breaks(broken: Broken, properties: &[&'static str]) {
-        breaks_in(Scenario::ResizeThenMove, broken, properties);
+        breaks_in(Scenario::ResizeThenMove, None, broken, properties);
     }
 
-    fn breaks_in(scenario: Scenario, broken: Broken, properties: &[&'static str]) {
+    fn breaks_in(
+        scenario: Scenario,
+        direction: Option<Direction>,
+        broken: Broken,
+        properties: &[&'static str],
+    ) {
         let checker = VolumeRuns {
             scenario,
+            direction,
             broken,
             ..VolumeRuns::default()
         }
@@ -2055,6 +2333,7 @@ mod tests {
     fn a_grow_records_only_after_every_copy_holds_it() {
         breaks_in(
             Scenario::Resize,
+            Some(Direction::Grow),
             Broken {
                 record_before_raise: true,
                 ..Broken::default()
@@ -2064,26 +2343,88 @@ mod tests {
     }
 
     #[test]
-    fn a_done_grow_recorded_its_target() {
-        breaks_in(
-            Scenario::Resize,
-            Broken {
-                done_without_record: true,
-                ..Broken::default()
-            },
-            &[RESIZE_DONE_HOLDS],
-        );
+    fn a_done_resize_recorded_its_target() {
+        for direction in [Direction::Grow, Direction::Shrink] {
+            breaks_in(
+                Scenario::Resize,
+                Some(direction),
+                Broken {
+                    done_without_record: true,
+                    ..Broken::default()
+                },
+                &[RESIZE_DONE_HOLDS],
+            );
+        }
     }
 
     #[test]
     fn a_refused_grow_records_nothing() {
         breaks_in(
             Scenario::Resize,
+            Some(Direction::Grow),
             Broken {
                 resize_skips_failures: true,
                 ..Broken::default()
             },
             &[STORE_FITS, REFUSED_RECORDS_NOTHING],
+        );
+    }
+
+    /// A shrink that goes on past a refusal can't leave the Store above a copy, since it
+    /// recorded the smaller size first; what it leaves is a Mirror lowered under a
+    /// primary that refused, and a record the primary's refusal should have undone.
+    #[test]
+    fn a_refused_shrink_stops() {
+        breaks_in(
+            Scenario::Resize,
+            Some(Direction::Shrink),
+            Broken {
+                resize_skips_failures: true,
+                ..Broken::default()
+            },
+            &[MIRRORS_KEEP_UP, REFUSED_RECORDS_NOTHING],
+        );
+    }
+
+    #[test]
+    fn a_shrink_records_before_any_copy_lowers() {
+        breaks_in(
+            Scenario::Resize,
+            Some(Direction::Shrink),
+            Broken {
+                shrink_records_last: true,
+                ..Broken::default()
+            },
+            &[STORE_FITS],
+        );
+    }
+
+    /// The primary's floor is asked first, so a refusal changes no copy. Lowering the
+    /// Mirror first leaves it under a primary that then refuses, and the record stays,
+    /// since a copy did change.
+    #[test]
+    fn a_shrink_lowers_the_primary_before_its_mirrors() {
+        breaks_in(
+            Scenario::Resize,
+            Some(Direction::Shrink),
+            Broken {
+                shrink_mirror_first: true,
+                ..Broken::default()
+            },
+            &[MIRRORS_KEEP_UP],
+        );
+    }
+
+    #[test]
+    fn a_shrink_refused_before_any_copy_changed_undoes_its_record() {
+        breaks_in(
+            Scenario::Resize,
+            Some(Direction::Shrink),
+            Broken {
+                shrink_keeps_refused_record: true,
+                ..Broken::default()
+            },
+            &[REFUSED_RECORDS_NOTHING],
         );
     }
 

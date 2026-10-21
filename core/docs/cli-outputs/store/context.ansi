@@ -43,7 +43,7 @@ next: ployz diff --project shop
   "attention": [],
   "deploying": [],
   "environment": {
-    "id": "c30e5c01-12b4-4a10-85d6-1fbf469f25b6",
+    "id": "aa00109c-d5ea-45af-acc0-43dc8afb8bb4",
     "name": "production",
     "project": "shop",
     "revision": 21
@@ -90,7 +90,7 @@ next: ployz diff
   "attention": [],
   "deploying": [],
   "environment": {
-    "id": "c30e5c01-12b4-4a10-85d6-1fbf469f25b6",
+    "id": "aa00109c-d5ea-45af-acc0-43dc8afb8bb4",
     "name": "production",
     "project": "shop",
     "revision": 34
