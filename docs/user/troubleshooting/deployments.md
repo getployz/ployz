@@ -281,6 +281,29 @@ A server whose root disk uses ZFS, Btrfs or tmpfs can still lose its last change
 happens, restart the services on it, as above. `ployz server ls` names each such server, and
 `ployz server show` adds a `store` line that says so.
 
+## My deploy failed when a server lost power or its network
+
+`cause: operation timed out` or `cause: stream closed because of a broken pipe`
+
+The server your CLI connects through stopped answering, so the deploy failed and exited 1, within
+about a minute and a half. Services it had already switched run the new version, and the others
+keep their old replicas. Once the server is back, deploy again to finish the rest:
+
+```sh
+ployz deploy
+```
+
+## My upload or log stream fails on a slow connection
+
+`keep-alive timed out`
+
+Your connection moves less than about 17 KB/s (140 kbit/s), so the server's answers to the CLI's
+checks wait behind your upload or download for more than a minute, and the CLI gives up as if the
+server had stopped answering. It happens during `ployz up` and builds that upload your code, and
+when a busy `ployz logs -f` waits on you, such as while you scroll it in `less`.
+
+Run the command again from a faster connection, such as a CI runner.
+
 ## A server hasn't picked up the new version
 
 `web = web-2 has not picked up the new copies. Check its network.`

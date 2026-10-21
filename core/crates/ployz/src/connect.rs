@@ -49,6 +49,15 @@ pub(crate) const UNARY_RETRY_DELAYS: [Duration; 3] = [
 
 pub(crate) const TARGET_RPC_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// While a call is open, the client pings the entry daemon after this long without a
+/// read, and fails an open call within interval + timeout of its last read: an entry
+/// that lost power or its network ends a Deploy instead of hanging it.
+const KEEP_ALIVE_INTERVAL: Duration = Duration::from_secs(10);
+/// A ping or its answer queues behind up to [`ployz_core::RPC_STREAM_WINDOW_BYTES`] of
+/// unread data per call, so this also sets the slowest link a call survives: about
+/// 17 KB/s.
+const KEEP_ALIVE_TIMEOUT: Duration = Duration::from_secs(60);
+
 /// Bounds how long a connect waits for the entry daemon to confirm itself.
 ///
 /// A socket-activated daemon accepts connects before it serves; this bound is
@@ -235,6 +244,10 @@ async fn connect_stream(
     let mut stream = Some(stream);
     Endpoint::from_static("http://[::]:50051")
         .connect_timeout(timeout)
+        .http2_keep_alive_interval(KEEP_ALIVE_INTERVAL)
+        .keep_alive_timeout(KEEP_ALIVE_TIMEOUT)
+        .initial_stream_window_size(ployz_core::RPC_STREAM_WINDOW_BYTES)
+        .initial_connection_window_size(ployz_core::RPC_CONNECTION_WINDOW_BYTES)
         .connect_with_connector(tower::service_fn(move |_| {
             // A redial must pass shared Machine confirmation before another RPC.
             // Let Client decide whether the failed operation may be retried.
