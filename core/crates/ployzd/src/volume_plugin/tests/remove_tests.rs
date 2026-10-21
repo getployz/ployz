@@ -1,5 +1,6 @@
 //! Docker Volume removal and lookup behavior through plugin routes.
 
+use super::copy_tests::{eventually, let_requests_act};
 use super::inspect_tests::set_property;
 use super::*;
 
@@ -355,19 +356,13 @@ async fn remove_waits_for_a_list_holding_the_storage_mutation() {
         let socket = socket.clone();
         async move { post(&socket, "/VolumeDriver.List", json!({})).await }
     });
-    tokio::time::timeout(Duration::from_secs(5), async {
-        while !test.0.join("list-held").exists() {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .unwrap();
+    eventually("the List's hold", || test.0.join("list-held").exists()).await;
 
     let remove = tokio::spawn({
         let socket = socket.clone();
         async move { post(&socket, "/VolumeDriver.Remove", json!({"Name":"data"})).await }
     });
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    let_requests_act(Duration::from_millis(300)).await;
     assert!(
         !remove.is_finished(),
         "Remove answered while List held the mutation: {}",
