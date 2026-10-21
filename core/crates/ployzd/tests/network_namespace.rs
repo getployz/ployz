@@ -677,6 +677,64 @@ fn the_build_worker_reaches_the_image_servers_but_not_the_host_or_the_mesh() {
         "a loopback resolver behind DNAT, like Docker's embedded DNS"
     );
 
+    for (namespace, interface, address) in [
+        (&host, "ployz-wg", "10.210.0.1/16"),
+        (&peer, "fpeer-wg", "10.210.0.2/16"),
+    ] {
+        ns(
+            namespace,
+            "ip",
+            &["address", "add", address, "dev", interface],
+        );
+    }
+    for (program, original, namespace, target, source) in [
+        ("iptables", "127.0.0.12", &peer, "10.210.0.2", "10.210.0.1"),
+        ("iptables", "127.0.0.11", &host, "127.0.0.1", "127.0.0.1"),
+        ("ip6tables", "::1", &host, "fdcc::1", "fdcc::1"),
+    ] {
+        let port = if target == "127.0.0.1" {
+            51504
+        } else {
+            MACHINE_API_PORT
+        };
+        let destination = if target.contains(':') {
+            format!("[{target}]:{port}")
+        } else {
+            format!("{target}:{port}")
+        };
+        ns(
+            &host,
+            program,
+            &[
+                "-t",
+                "nat",
+                "-I",
+                "OUTPUT",
+                "-d",
+                original,
+                "-p",
+                "tcp",
+                "--dport",
+                "53",
+                "-j",
+                "DNAT",
+                "--to-destination",
+                &destination,
+            ],
+        );
+        let mut server = stream_server(namespace, target, port);
+        assert!(
+            !cgroup.connects(&host, source, original, 53),
+            "the fenced worker reached {destination} through a redirect of {original}:53"
+        );
+        connect(&host, source, original, 53);
+        assert_eq!(
+            server.peer(),
+            source,
+            "the redirect of {original}:53 did not reach {destination}"
+        );
+    }
+
     for (namespace, address, port) in [
         (&host, "127.0.0.1", 51504),
         (&host, "fdcc::1", MACHINE_API_PORT),
