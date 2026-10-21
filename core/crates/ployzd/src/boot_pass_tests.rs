@@ -375,8 +375,8 @@ fn row(copy: &ContainerObservation) -> ContainerObservation {
 }
 
 /// The local copy and a peer's newer copy, each routed by every proxy. The store
-/// holds their rows, and each owner answers with the full copy unless `answers`
-/// says otherwise.
+/// holds their rows. This Machine answers with its full copy, and the peer does
+/// only when `peer_answers`.
 async fn replaced_by_with(
     older: impl FnOnce(ContainerObservation) -> ContainerObservation,
     newer: impl FnOnce(ContainerObservation) -> ContainerObservation,
