@@ -4,10 +4,11 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
+use std::ops::Range;
 
+use aho_corasick::{AhoCorasick, MatchKind};
 use base64::Engine as _;
 use base64::engine::general_purpose::{STANDARD, STANDARD_NO_PAD};
-use regex::bytes;
 
 /// A value shorter than this is too likely to occur by chance, so it is scrubbed only
 /// where its name labels it.
@@ -46,72 +47,137 @@ impl fmt::Debug for SealedValues {
 }
 
 /// The byte forms of a `SealedValues`, compiled once so every frame of a stream is matched
-/// without rebuilding the regex.
+/// without rebuilding the matcher.
 ///
 /// A value of at least `SHORT_VALUE` bytes is matched exact, base64 with and without
 /// padding, percent-encoded with upper and lower hex, and each of its lines that long on
 /// its own. A shorter value is matched only where its name labels it, `NAME = value`.
 pub struct SealedForms {
-    /// Every long form in one alternation, longest first, so a value containing a shorter
-    /// one is replaced whole.
-    long: Option<bytes::Regex>,
-    names: BTreeMap<Vec<u8>, String>,
-    labelled: Vec<Labelled>,
+    forms: Vec<Form>,
+    /// One pattern per form, in `forms` order, so a match's pattern id indexes it.
+    matcher: AhoCorasick,
     longest: usize,
     multiline: bool,
+}
+
+struct Form {
+    bytes: Vec<u8>,
+    name: String,
+    kind: FormKind,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FormKind {
+    Exact,
+    Base64,
+    Base64NoPad,
+    PercentUpper,
+    PercentLower,
+    Line,
+    /// A short value's bytes, a match only when `NAME = ` precedes them.
+    Labelled,
+}
+
+/// One stretch of `text` to replace: `start..end`, of which the first `keep` bytes are a
+/// label shown as written. Overlapping forms are unioned into one span.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Span<'f> {
+    start: usize,
+    end: usize,
+    keep: usize,
+    name: &'f str,
+    /// Bytes of the longest form in the union, whose name the marker takes.
+    form_len: usize,
+}
+
+impl<'f> Span<'f> {
+    fn overlaps(&self, other: &Self) -> bool {
+        self.start < other.end && other.start < self.end
+    }
+
+    fn union(self, other: Self) -> Self {
+        let (first, second) = if self.start <= other.start {
+            (self, other)
+        } else {
+            (other, self)
+        };
+        let (name, form_len) = if other.form_len > self.form_len {
+            (other.name, other.form_len)
+        } else {
+            (self.name, self.form_len)
+        };
+        Self {
+            start: first.start,
+            end: self.end.max(other.end),
+            keep: first.keep.min(second.start - first.start),
+            name,
+            form_len,
+        }
+    }
+
+    fn straddles(&self, at: usize) -> bool {
+        self.start < at && at < self.end
+    }
 }
 
 impl SealedForms {
     #[must_use]
     pub fn compile(sealed: &SealedValues) -> Self {
-        let mut names: BTreeMap<Vec<u8>, String> = BTreeMap::new();
+        let mut long: BTreeMap<Vec<u8>, (String, FormKind)> = BTreeMap::new();
         let mut labelled = Vec::new();
         for (name, value) in &sealed.0 {
             if value.is_empty() {
                 continue;
             }
             if value.len() < SHORT_VALUE {
-                labelled.push(Labelled::new(name, value));
+                labelled.push(Form {
+                    bytes: value.clone().into_bytes(),
+                    name: name.clone(),
+                    kind: FormKind::Labelled,
+                });
                 continue;
             }
             let lines = value
                 .lines()
                 .filter(|line| line.len() >= SHORT_VALUE)
-                .map(str::to_owned);
+                .map(|line| (FormKind::Line, line.to_owned()));
             let encoded = [
-                value.clone(),
-                STANDARD.encode(value),
-                STANDARD_NO_PAD.encode(value),
-                percent_encoded(value, b"0123456789ABCDEF"),
-                percent_encoded(value, b"0123456789abcdef"),
+                (FormKind::Exact, value.clone()),
+                (FormKind::Base64, STANDARD.encode(value)),
+                (FormKind::Base64NoPad, STANDARD_NO_PAD.encode(value)),
+                (
+                    FormKind::PercentUpper,
+                    percent_encoded(value, b"0123456789ABCDEF"),
+                ),
+                (
+                    FormKind::PercentLower,
+                    percent_encoded(value, b"0123456789abcdef"),
+                ),
             ];
-            for form in encoded.into_iter().chain(lines) {
-                names
-                    .entry(form.into_bytes())
-                    .or_insert_with(|| name.clone());
+            for (kind, form) in encoded.into_iter().chain(lines) {
+                long.entry(form.into_bytes())
+                    .or_insert_with(|| (name.clone(), kind));
             }
         }
-        let mut forms: Vec<&[u8]> = names.keys().map(Vec::as_slice).collect();
-        forms.sort_by_key(|form| std::cmp::Reverse(form.len()));
-        let long = (!forms.is_empty()).then(|| {
-            let pattern = forms
-                .iter()
-                .map(|form| regex::escape(&String::from_utf8_lossy(form)))
-                .collect::<Vec<_>>()
-                .join("|");
-            bytes::Regex::new(&pattern).expect("escaped literals always compile")
-        });
-        let longest = forms
-            .iter()
-            .map(|form| form.len())
-            .chain(labelled.iter().map(|short| short.longest))
+        let longest = long
+            .keys()
+            .map(Vec::len)
+            .chain(labelled.iter().map(Form::labelled_len))
             .max()
             .unwrap_or_default();
-        let multiline = forms.iter().any(|form| form.contains(&b'\n'));
+        let multiline = long.keys().any(|form| form.contains(&b'\n'));
+        let forms: Vec<Form> = long
+            .into_iter()
+            .map(|(bytes, (name, kind))| Form { bytes, name, kind })
+            .chain(labelled)
+            .collect();
+        let matcher = AhoCorasick::builder()
+            .match_kind(MatchKind::Standard)
+            .build(forms.iter().map(|form| &form.bytes))
+            .expect("a few hundred short literals fit any automaton");
         Self {
-            long,
-            names,
-            labelled,
+            forms,
+            matcher,
             longest,
             multiline,
         }
@@ -125,7 +191,9 @@ impl SealedForms {
     /// Replace every form in `text` with `[secret NAME]`, counting each into `redacted`.
     #[must_use]
     pub fn scrub(&self, text: &str, redacted: &mut u32) -> String {
-        String::from_utf8(self.scrub_bytes(text.as_bytes(), redacted))
+        let bytes = text.as_bytes();
+        let spans = self.find(bytes);
+        String::from_utf8(replaced(bytes, 0..bytes.len(), &spans, redacted))
             .expect("replacing whole UTF-8 forms with ASCII keeps text valid")
     }
 
@@ -141,61 +209,74 @@ impl SealedForms {
         self.multiline
     }
 
-    fn scrub_bytes(&self, text: &[u8], redacted: &mut u32) -> Vec<u8> {
-        let mut text = match &self.long {
-            Some(long) => long
-                .replace_all(text, |found: &bytes::Captures| {
-                    *redacted += 1;
-                    let form = found.get(0).map_or(&b""[..], |m| m.as_bytes());
-                    marker(self.names.get(form).map_or("", String::as_str))
-                })
-                .into_owned(),
-            None => text.to_vec(),
-        };
-        for short in &self.labelled {
-            text = short
-                .whole
-                .replace_all(&text, |found: &bytes::Captures| {
-                    *redacted += 1;
-                    let mut out = found.get(1).map_or(&b""[..], |m| m.as_bytes()).to_vec();
-                    out.extend(marker(&short.name));
-                    out
-                })
-                .into_owned();
+    /// Every form in `text` in order, overlapping ones unioned so no byte of a form that
+    /// only partly overlaps another survives. A short value counts only with its label.
+    fn find(&self, text: &[u8]) -> Vec<Span<'_>> {
+        let mut spans: Vec<Span<'_>> = Vec::new();
+        for found in self.matcher.find_overlapping_iter(text) {
+            let form = self
+                .forms
+                .get(found.pattern().as_usize())
+                .expect("pattern ids index forms");
+            let start = match form.kind {
+                FormKind::Labelled => match label_before(text, found.start(), &form.name) {
+                    Some(start) => start,
+                    None => continue,
+                },
+                FormKind::Exact
+                | FormKind::Base64
+                | FormKind::Base64NoPad
+                | FormKind::PercentUpper
+                | FormKind::PercentLower
+                | FormKind::Line => found.start(),
+            };
+            let mut span = Span {
+                start,
+                end: found.end(),
+                keep: found.start() - start,
+                name: &form.name,
+                form_len: form.bytes.len(),
+            };
+            while let Some(last) = spans.pop_if(|last| last.overlaps(&span)) {
+                span = last.union(span);
+            }
+            spans.push(span);
         }
-        text
+        spans
     }
 
-    /// Byte spans of every form in `text`, as the batch scrub would match them.
-    fn spans(&self, text: &[u8]) -> Vec<(usize, usize)> {
-        let long = self.long.iter().flat_map(|long| long.find_iter(text));
-        let short = self
-            .labelled
+    fn labelled(&self) -> impl Iterator<Item = &Form> {
+        self.forms
             .iter()
-            .flat_map(|short| short.whole.find_iter(text));
-        long.chain(short).map(|m| (m.start(), m.end())).collect()
+            .filter(|form| form.kind == FormKind::Labelled)
+    }
+
+    fn long(&self) -> impl Iterator<Item = &Form> {
+        self.forms
+            .iter()
+            .filter(|form| form.kind != FormKind::Labelled)
     }
 
     /// Where a labelled form has begun at the end of `text` but its value has not arrived.
     fn pending_start(&self, text: &[u8]) -> Option<usize> {
-        self.labelled
-            .iter()
-            .filter_map(|short| short.pending.find(text))
-            .map(|m| m.start())
+        self.labelled()
+            .filter_map(|form| form.pending_start(text))
             .min()
     }
 
     /// The longest proper prefix of a long form that `text` ends with, and the form's name.
     fn prefix_tail(&self, text: &[u8]) -> Option<(usize, &str)> {
         let last = text.last()?;
-        self.names
-            .iter()
-            .filter_map(|(form, name)| {
-                let cut = (1..form.len()).rev().find(|&n| {
-                    form.get(n - 1) == Some(last)
-                        && form.get(..n).is_some_and(|prefix| text.ends_with(prefix))
+        self.long()
+            .filter_map(|form| {
+                let cut = (1..form.bytes.len()).rev().find(|&n| {
+                    form.bytes.get(n - 1) == Some(last)
+                        && form
+                            .bytes
+                            .get(..n)
+                            .is_some_and(|prefix| text.ends_with(prefix))
                 })?;
-                Some((cut, name.as_str()))
+                Some((cut, form.name.as_str()))
             })
             .max_by_key(|(cut, _)| *cut)
     }
@@ -207,12 +288,12 @@ impl SealedForms {
             text.extend(marker(name));
             return;
         }
-        for short in &self.labelled {
-            let Some(found) = short.pending.captures(text).and_then(|c| c.get(1)) else {
+        for form in self.labelled() {
+            let Some(cut) = form.pending_prefix(text) else {
                 continue;
             };
-            text.truncate(found.start());
-            text.extend(marker(&short.name));
+            text.truncate(text.len() - cut);
+            text.extend(marker(&form.name));
             return;
         }
     }
@@ -220,55 +301,118 @@ impl SealedForms {
 
 impl fmt::Debug for SealedForms {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let names: BTreeSet<&str> = self
-            .names
-            .values()
-            .map(String::as_str)
-            .chain(self.labelled.iter().map(|short| short.name.as_str()))
-            .collect();
+        let names: BTreeSet<&str> = self.forms.iter().map(|form| form.name.as_str()).collect();
         f.debug_tuple("SealedForms").field(&names).finish()
     }
+}
+
+impl Form {
+    /// `NAME=value`, the shortest text a labelled form takes.
+    fn labelled_len(&self) -> usize {
+        self.name.len() + 1 + self.bytes.len()
+    }
+
+    /// Where `NAME \s* ([=:] \s* PREFIX?)?` ends `text`, PREFIX a proper prefix of the value.
+    fn pending_start(&self, text: &[u8]) -> Option<usize> {
+        let bare = skip_space_back(text, text.len());
+        let after_separator = separator_before(text, bare).map(|at| skip_space_back(text, at));
+        let after_prefix = (1..self.bytes.len())
+            .filter(|&n| {
+                self.bytes
+                    .get(..n)
+                    .is_some_and(|prefix| text.ends_with(prefix))
+            })
+            .filter_map(|n| {
+                let at = skip_space_back(text, text.len() - n);
+                separator_before(text, at).map(|at| skip_space_back(text, at))
+            });
+        [Some(bare), after_separator]
+            .into_iter()
+            .flatten()
+            .chain(after_prefix)
+            .filter_map(|end| label_ending_at(text, &self.name, end))
+            .min()
+    }
+
+    /// The longest proper prefix of the value that ends `text` with its label before it.
+    fn pending_prefix(&self, text: &[u8]) -> Option<usize> {
+        (1..self.bytes.len()).rev().find(|&n| {
+            self.bytes
+                .get(..n)
+                .is_some_and(|prefix| text.ends_with(prefix))
+                && label_before(text, text.len() - n, &self.name).is_some()
+        })
+    }
+}
+
+/// Where `\b NAME \s* [=:] \s*` starts when it ends at `at`.
+fn label_before(text: &[u8], at: usize, name: &str) -> Option<usize> {
+    let at = skip_space_back(text, at);
+    let at = separator_before(text, at)?;
+    label_ending_at(text, name, skip_space_back(text, at))
+}
+
+fn label_ending_at(text: &[u8], name: &str, end: usize) -> Option<usize> {
+    let start = end.checked_sub(name.len())?;
+    let found = text.get(start..end)? == name.as_bytes();
+    (found && word_boundary(text, start)).then_some(start)
+}
+
+fn skip_space_back(text: &[u8], mut at: usize) -> usize {
+    while at > 0 && text.get(at - 1).is_some_and(|byte| is_space(*byte)) {
+        at -= 1;
+    }
+    at
+}
+
+fn separator_before(text: &[u8], at: usize) -> Option<usize> {
+    let at = at.checked_sub(1)?;
+    matches!(text.get(at), Some(b'=' | b':')).then_some(at)
+}
+
+fn word_boundary(text: &[u8], at: usize) -> bool {
+    let before = at
+        .checked_sub(1)
+        .and_then(|at| text.get(at))
+        .is_some_and(|byte| is_word(*byte));
+    let after = text.get(at).is_some_and(|byte| is_word(*byte));
+    before != after
+}
+
+const fn is_space(byte: u8) -> bool {
+    matches!(byte, b' ' | b'\t' | b'\n' | b'\r' | 0x0b | 0x0c)
+}
+
+const fn is_word(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || byte == b'_'
 }
 
 fn marker(name: &str) -> Vec<u8> {
     format!("[secret {name}]").into_bytes()
 }
 
-/// A value too short to match on its own, matched only as `NAME = value`.
-struct Labelled {
-    name: String,
-    /// The labelled form; the label is kept and the value replaced.
-    whole: bytes::Regex,
-    /// Text ending inside the label, its separator, or group 1, a proper prefix of the value.
-    pending: bytes::Regex,
-    longest: usize,
-}
-
-impl Labelled {
-    fn new(name: &str, value: &str) -> Self {
-        let label = regex::escape(name);
-        let whole = bytes::Regex::new(&format!(r"\b({label}\s*[=:]\s*){}", regex::escape(value)))
-            .expect("escaped literals always compile");
-        let prefixes = (1..value.len())
-            .rev()
-            .filter_map(|n| value.get(..n))
-            .map(regex::escape)
-            .collect::<Vec<_>>()
-            .join("|");
-        let prefix = if prefixes.is_empty() {
-            String::new()
-        } else {
-            format!("({prefixes})?")
-        };
-        let pending = bytes::Regex::new(&format!(r"\b{label}\s*(?:[=:]\s*{prefix})?$"))
-            .expect("escaped literals always compile");
-        Self {
-            name: name.to_owned(),
-            whole,
-            pending,
-            longest: name.len() + 1 + value.len(),
-        }
+/// `text[range]` with every span inside it replaced by its marker, each counted into
+/// `redacted`. A span never straddles either end of `range`.
+fn replaced(text: &[u8], range: Range<usize>, spans: &[Span<'_>], redacted: &mut u32) -> Vec<u8> {
+    let mut out = Vec::with_capacity(range.len());
+    let mut cursor = range.start;
+    for span in spans
+        .iter()
+        .filter(|span| range.start <= span.start && span.end <= range.end)
+    {
+        out.extend(
+            text.get(cursor..span.start + span.keep)
+                .expect("spans lie within the text, in order"),
+        );
+        out.extend(marker(span.name));
+        *redacted += 1;
+        cursor = span.end;
     }
+    out.extend(
+        text.get(cursor..range.end)
+            .expect("the range lies within the text"),
+    );
+    out
 }
 
 /// One stream of a Container's output.
@@ -313,13 +457,13 @@ enum Veil {
 
 impl Veil {
     /// Where shown bytes begin in `text`, whose first `at` bytes are released now.
-    fn shown_from(&mut self, text: &[u8], at: usize, forms: &SealedForms) -> usize {
+    fn shown_from(&mut self, text: &[u8], at: usize, longest: usize, spans: &[Span<'_>]) -> usize {
         let bytes = match *self {
             Self::Off => return 0,
-            Self::Pending => forms.longest().saturating_sub(1),
+            Self::Pending => longest.saturating_sub(1),
             Self::Bytes(bytes) => bytes,
         };
-        match veil_point(text, bytes, &forms.spans(text)) {
+        match veil_point(text, bytes, spans) {
             Ok(end) if end <= at => {
                 *self = Self::Off;
                 end
@@ -368,12 +512,11 @@ impl FrameScrub {
         let carry = self.carry(channel);
         carry.held.extend_from_slice(bytes);
         let text = std::mem::take(&mut carry.held);
-        let at = release_point(&text, forms);
-        let from = carry.veil.shown_from(&text, at, forms);
-        let (release, held) = text.split_at(at);
-        carry.held = held.to_vec();
-        let mut redacted = 0;
-        forms.scrub_bytes(release.split_at(from).1, &mut redacted)
+        let spans = forms.find(&text);
+        let at = release_point(&text, forms, &spans);
+        let from = carry.veil.shown_from(&text, at, forms.longest(), &spans);
+        carry.held = text.get(at..).unwrap_or_default().to_vec();
+        replaced(&text, from..at, &spans, &mut 0)
     }
 
     /// Drop what `channel` holds and veil what it shows next, for a frame hidden whole: a form
@@ -394,9 +537,12 @@ impl FrameScrub {
         .into_iter()
         .filter(|(_, carry)| !carry.held.is_empty())
         .map(|(channel, mut carry)| {
-            let from = carry.veil.shown_from(&carry.held, carry.held.len(), forms);
-            let mut redacted = 0;
-            let mut out = forms.scrub_bytes(carry.held.split_at(from).1, &mut redacted);
+            let spans = forms.find(&carry.held);
+            let len = carry.held.len();
+            let from = carry
+                .veil
+                .shown_from(&carry.held, len, forms.longest(), &spans);
+            let mut out = replaced(&carry.held, from..len, &spans, &mut 0);
             forms.hide_prefix(&mut out);
             (channel, out)
         })
@@ -414,14 +560,14 @@ impl FrameScrub {
 /// Where a veil of `bytes` ends in `text`: past those bytes, then past any form straddling
 /// the point, since it began in veiled bytes, and the rest of the line, until a line end
 /// outside every form. `Err` when `text` ends first, with the bytes still to hide after it.
-fn veil_point(text: &[u8], bytes: usize, spans: &[(usize, usize)]) -> Result<usize, usize> {
+fn veil_point(text: &[u8], bytes: usize, spans: &[Span<'_>]) -> Result<usize, usize> {
     let mut at = bytes;
     loop {
         if at > text.len() {
             return Err(at - text.len());
         }
-        if let Some(&(_, end)) = spans.iter().find(|&&(start, end)| start < at && at < end) {
-            at = end;
+        if let Some(span) = spans.iter().find(|span| span.straddles(at)) {
+            at = span.end;
             continue;
         }
         let (hidden, rest) = text.split_at(at);
@@ -436,7 +582,7 @@ fn veil_point(text: &[u8], bytes: usize, spans: &[(usize, usize)]) -> Result<usi
 }
 
 /// Where `text` splits into bytes to release now and bytes to hold.
-fn release_point(text: &[u8], forms: &SealedForms) -> usize {
+fn release_point(text: &[u8], forms: &SealedForms, spans: &[Span<'_>]) -> usize {
     let len = text.len();
     let hold = forms.longest().saturating_sub(1);
     let mut at = if text.ends_with(b"\n") {
@@ -452,9 +598,8 @@ fn release_point(text: &[u8], forms: &SealedForms) -> usize {
     at = at.max(len.saturating_sub(hold.max(CARRY_CAP)));
     // A form that straddles the point is complete, so release it whole: nothing the batch
     // scrub would match can start inside it.
-    let spans = forms.spans(text);
-    while let Some(&(_, end)) = spans.iter().find(|&&(start, end)| start < at && at < end) {
-        at = end;
+    while let Some(span) = spans.iter().find(|span| span.straddles(at)) {
+        at = span.end;
     }
     while text.get(at).is_some_and(|byte| byte & 0xC0 == 0x80) {
         at += 1;

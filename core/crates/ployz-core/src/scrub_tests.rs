@@ -294,3 +294,52 @@ fn a_discard_veils_a_multiline_value_begun_in_the_veiled_bytes() {
     assert_eq!(scrub.push(Channel::Stdout, b"later\n", &forms), b"later\n");
     assert!(scrub.finish(&forms).is_empty());
 }
+
+// Catches a longest-first alternation that replaces the first form and leaves the tail of
+// one it only partly overlaps.
+#[test]
+fn overlapping_forms_leave_no_byte_of_either() {
+    let forms = SealedForms::compile(&secrets(&[("HEAD", "abcXYZ"), ("TAIL", "XYZdef")]));
+    let mut redacted = 0;
+    let out = forms.scrub("in abcXYZdef out", &mut redacted);
+    for piece in ["abc", "XYZ", "def"] {
+        assert!(!out.contains(piece), "{piece:?} survived in {out:?}");
+    }
+    assert!(
+        out.starts_with("in [secret ") && out.ends_with("] out"),
+        "{out:?}"
+    );
+    assert_eq!(redacted, 1);
+    let streamed = stdout_of(&[b"in abcXY", b"Zdef out\n"], &forms);
+    assert_eq!(String::from_utf8(streamed).unwrap(), format!("{out}\n"));
+}
+
+#[test]
+fn a_short_value_is_matched_only_with_its_label() {
+    let forms = SealedForms::compile(&secrets(&[("PIN", "4821")]));
+    let mut redacted = 0;
+    let out = forms.scrub(
+        "PIN=4821 PIN : 4821 pin=4821 4821 XPIN=4821 PIN 4821",
+        &mut redacted,
+    );
+    assert_eq!(
+        out,
+        "PIN=[secret PIN] PIN : [secret PIN] pin=4821 4821 XPIN=4821 PIN 4821"
+    );
+    assert_eq!(redacted, 2);
+}
+
+#[test]
+fn a_label_split_across_frames_scrubs_its_value() {
+    let forms = SealedForms::compile(&secrets(&[("PIN", "4821")]));
+    let text = "cfg PIN = 4821 ok\n";
+    for at in 0..=text.len() {
+        let (head, tail) = split_at_byte(text, at);
+        let out = stdout_of(&[&head, &tail], &forms);
+        assert_eq!(
+            String::from_utf8(out).unwrap(),
+            "cfg PIN = [secret PIN] ok\n",
+            "split at {at}"
+        );
+    }
+}

@@ -3972,12 +3972,12 @@ dependencies = [
 name = "ployz-core"
 version = "0.3.0-beta.6"
 dependencies = [
+ "aho-corasick",
  "base64 0.22.1",
  "ipnet",
  "minisign-verify",
  "oci-spec",
  "prost",
- "regex",
  "semver",
  "serde",
  "serde_json",
