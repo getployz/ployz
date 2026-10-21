@@ -53,8 +53,9 @@ fn a_follow_read_error_cannot_detach_owned_work_even_when_cancel_is_refused() {
     let worker_finished = Arc::clone(&finished);
     let worker_store = Arc::clone(&local);
     let id = admitted.id.clone();
+    let (release, released) = std::sync::mpsc::channel::<()>();
     let handle = std::thread::spawn(move || {
-        std::thread::sleep(Duration::from_millis(50));
+        released.recv().unwrap();
         let summary = worker_store.record(
             &id,
             &runner,
@@ -84,6 +85,7 @@ fn a_follow_read_error_cannot_detach_owned_work_even_when_cancel_is_refused() {
             )
             .is_err()
         );
+        release.send(()).unwrap();
     }
     assert!(
         finished.load(Ordering::SeqCst),

@@ -387,6 +387,7 @@ async fn assert_unhealthy_service_is_not_repaired(
     run_container(client, machines[0].id, spec).await;
     let before = wait_for_service(client, &service_id, 1).await;
     let id = before.first().unwrap().container_id;
+    // real-wait: gives the real cluster's repair loop time to act; a repair that never happens emits no event
     tokio::time::sleep(Duration::from_secs(3)).await;
     let after = wait_for_service(client, &service_id, 1).await;
     assert_eq!(after.first().unwrap().container_id, id);
@@ -486,6 +487,12 @@ fn healthcheck(command: &str, retries: u32) -> ployz_core::HealthcheckSpec {
     })
 }
 
+/// Pauses before the next poll of the cluster.
+async fn poll_again(interval: Duration) {
+    // real-wait: polls the real cluster's RPC for a state change it does not stream
+    tokio::time::sleep(interval).await;
+}
+
 async fn wait_running(client: &mut Client, machine: &Machine, container_id: &ContainerId) {
     tokio::time::timeout(Duration::from_secs(10), async {
         loop {
@@ -500,7 +507,7 @@ async fn wait_running(client: &mut Client, machine: &Machine, container_id: &Con
             {
                 break;
             }
-            tokio::time::sleep(Duration::from_millis(50)).await;
+            poll_again(Duration::from_millis(50)).await;
         }
     })
     .await
@@ -530,7 +537,7 @@ async fn wait_for_service(
                     return containers;
                 }
             }
-            tokio::time::sleep(Duration::from_millis(100)).await;
+            poll_again(Duration::from_millis(100)).await;
         }
     })
     .await
@@ -551,7 +558,7 @@ async fn wait_for_runtime(
             {
                 break;
             }
-            tokio::time::sleep(Duration::from_millis(100)).await;
+            poll_again(Duration::from_millis(100)).await;
         }
     })
     .await

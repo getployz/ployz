@@ -119,6 +119,7 @@ mod tests {
             let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
             let count = calls.clone();
             let server = tokio::spawn(async move {
+                let mut held = Vec::new();
                 loop {
                     let (mut socket, _) = listener.accept().await.unwrap();
                     let mut request = [0; 4096];
@@ -132,7 +133,9 @@ mod tests {
                         && count.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0
                         && status == 200
                     {
-                        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+                        // Held open with no reply, so the client's read times out and it retries.
+                        held.push(socket);
+                        continue;
                     }
                     let body = r#"{"name":"library/caddy","tags":["2.10.0"]}"#;
                     let _ = socket.write_all(format!("HTTP/1.1 {status} Test\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await;

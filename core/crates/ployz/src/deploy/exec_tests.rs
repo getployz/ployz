@@ -94,8 +94,8 @@ enum Reply {
     Listed(Vec<ContainerObservation>),
     Created(ContainerId),
     Settled(ContainerId, HealthVerdict),
-    CreatedLater(ContainerId),
-    CreatedAfter(ContainerId, std::time::Duration),
+    /// Created once the test's own delay ends.
+    CreatedAfter(ContainerId, fn() -> tokio::time::Sleep),
     Observed(
         ContainerRuntimeObservation,
         Option<ployz_core::HealthcheckSpec>,
@@ -793,7 +793,6 @@ impl Scripted {
                     Reply::Error(error) => return Err(error),
                     Reply::Pending => std::future::pending().await,
                     Reply::Listed(_)
-                    | Reply::CreatedLater(_)
                     | Reply::CreatedAfter(..)
                     | Reply::Observed(..)
                     | Reply::ObservedIngress(_) => {
@@ -948,8 +947,7 @@ impl Scripted {
         let healthy = settled.then_some(HealthVerdict::Healthy);
         let reply = self.next(call.clone());
         let container_id = match &reply {
-            Reply::Created(id) | Reply::Settled(id, _) | Reply::CreatedLater(id) => Some(*id),
-            Reply::CreatedAfter(id, _) => Some(*id),
+            Reply::Created(id) | Reply::Settled(id, _) | Reply::CreatedAfter(id, _) => Some(*id),
             Reply::Ok
             | Reply::Listed(_)
             | Reply::Observed(..)
@@ -981,12 +979,8 @@ impl Scripted {
                 assert!(settled, "only a Settled creation answers a verdict");
                 ensured(present(&container_id), Some(verdict))
             }
-            Reply::CreatedLater(container_id) => {
-                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-                ensured(present(&container_id), healthy)
-            }
             Reply::CreatedAfter(container_id, delay) => {
-                tokio::time::sleep(delay).await;
+                delay().await;
                 ensured(present(&container_id), healthy)
             }
             Reply::Ok => ensured(ContainerNow::Absent { of }, None),
@@ -1083,7 +1077,6 @@ impl MachineOperations for Scripted {
             Reply::Ok
             | Reply::Created(_)
             | Reply::Settled(..)
-            | Reply::CreatedLater(_)
             | Reply::CreatedAfter(..)
             | Reply::Observed(..)
             | Reply::ObservedIngress(_)
@@ -1227,7 +1220,6 @@ impl MachineOperations for Scripted {
             | Reply::Listed(_)
             | Reply::Created(_)
             | Reply::Settled(..)
-            | Reply::CreatedLater(_)
             | Reply::CreatedAfter(..) => {
                 panic!("scripted inspect requires Observed or Error")
             }
@@ -1287,7 +1279,6 @@ fn unit(reply: Reply) -> Result<(), RpcError> {
         Reply::Listed(_)
         | Reply::Created(_)
         | Reply::Settled(..)
-        | Reply::CreatedLater(_)
         | Reply::CreatedAfter(..)
         | Reply::Observed(..)
         | Reply::ObservedIngress(_)
@@ -1547,10 +1538,6 @@ fn unhealthy_run(machine: MachineId, container_id: &ContainerId) -> Step {
             },
         ),
     )
-}
-
-fn created_later(call: Call, container_id: &ContainerId) -> Step {
-    Step(call, Reply::CreatedLater(*container_id))
 }
 
 fn observed(call: Call, runtime: ContainerRuntimeObservation) -> Step {

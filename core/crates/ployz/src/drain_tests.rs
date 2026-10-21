@@ -131,7 +131,8 @@ struct Scripted {
     copies: VecDeque<Result<Vec<Copy>, RpcError>>,
     ends: VecDeque<OldCopyEnd>,
     let_go: Vec<Copy>,
-    retire_time: Duration,
+    /// How long an old copy takes to retire; `None` retires it at once.
+    retire_delay: Option<fn() -> tokio::time::Sleep>,
     last_in: Vec<QualifiedService>,
     calls: Arc<Mutex<Vec<String>>>,
 }
@@ -143,11 +144,13 @@ impl Scripted {
             .into_iter()
             .map(|Move { from, to, old }| {
                 let calls = Arc::clone(&self.calls);
-                let retire_time = self.retire_time;
+                let retire_delay = self.retire_delay;
                 let refused = self.last_in.contains(service);
                 let service = service.clone();
                 let old = async move {
-                    tokio::time::sleep(retire_time).await;
+                    if let Some(delay) = retire_delay {
+                        delay().await;
+                    }
                     if refused {
                         return Err(LastIn);
                     }
@@ -772,7 +775,7 @@ async fn old_copy_retires_overlap_the_next_move() {
             Converged::Moved { moves: one_move() },
         ]
         .into(),
-        retire_time: Duration::from_secs(5),
+        retire_delay: Some(|| tokio::time::sleep(Duration::from_secs(5))),
         ..Scripted::default()
     };
     let report = run(&mut client, &[], &["web", "api"], &CancellationToken::new()).await;
@@ -798,7 +801,7 @@ async fn an_old_copy_refused_out_keeps_its_move_and_stays() {
             Converged::Moved { moves: one_move() },
         ]
         .into(),
-        retire_time: Duration::from_secs(5),
+        retire_delay: Some(|| tokio::time::sleep(Duration::from_secs(5))),
         last_in: vec![qualified("web")],
         ..Scripted::default()
     };

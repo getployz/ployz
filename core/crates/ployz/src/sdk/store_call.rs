@@ -83,9 +83,10 @@ mod tests {
     #[tokio::test]
     async fn a_slow_call_times_out_and_keeps_its_turn_until_it_ends() {
         static ONE: Semaphore = Semaphore::const_new(1);
+        let (release, released) = std::sync::mpsc::channel::<()>();
         let (done, finished) = std::sync::mpsc::channel();
         let error = bounded(&ONE, QUEUE_TIMEOUT, Duration::from_millis(10), move || {
-            std::thread::sleep(Duration::from_millis(200));
+            released.recv().unwrap();
             done.send(()).unwrap();
             Ok(())
         })
@@ -97,6 +98,7 @@ mod tests {
             0,
             "the running work keeps its turn"
         );
+        release.send(()).unwrap();
         finished.recv().unwrap();
         let waited = tokio::time::timeout(Duration::from_secs(5), ONE.acquire()).await;
         assert!(waited.is_ok(), "the turn ends with the work");

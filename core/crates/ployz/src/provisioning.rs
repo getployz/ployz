@@ -223,6 +223,7 @@ struct Remote {
     destination: SshDestination,
     key: PathBuf,
     timeout: std::time::Duration,
+    version_timeout: std::time::Duration,
     control_path: Option<PathBuf>,
     ssh: PathBuf,
     scp: PathBuf,
@@ -247,6 +248,7 @@ impl Remote {
             destination: destination.clone(),
             key: ssh_key(matches),
             timeout: crate::cli::ssh_timeout(matches),
+            version_timeout: bootstrap::VERSION_TIMEOUT,
             control_path: crate::connect::control_path(),
             ssh: "ssh".into(),
             scp: "scp".into(),
@@ -336,7 +338,12 @@ impl Remote {
             "chmod 700 {path} && {path} version",
             path = shell_quote(daemon)
         ));
-        bootstrap::verify_command_version("preflight remote bootstrap daemon", command).await
+        bootstrap::verify_command_version(
+            "preflight remote bootstrap daemon",
+            command,
+            self.version_timeout,
+        )
+        .await
     }
 
     async fn install(
@@ -700,9 +707,13 @@ pub(crate) async fn fetch_daemon(path: &Path) -> Result<(), ProvisionError> {
 pub(crate) async fn daemon_is_current(path: &Path) -> bool {
     let mut command = Command::new(path);
     command.arg("version");
-    bootstrap::verify_command_version("check the daemon version", command)
-        .await
-        .is_ok()
+    bootstrap::verify_command_version(
+        "check the daemon version",
+        command,
+        bootstrap::VERSION_TIMEOUT,
+    )
+    .await
+    .is_ok()
 }
 
 pub(crate) fn process_is_root() -> bool {

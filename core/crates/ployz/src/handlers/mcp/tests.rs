@@ -167,9 +167,8 @@ fn incoming(stream: &std::net::TcpStream) -> Seen {
 }
 
 /// A Ployz Cloud that answers `script` and records each decision on an approval. With
-/// `asking`, a write without an approval gets that `approval_required` refusal, and one
-/// with an approval waits `slow` before its answer.
-fn fake_cloud(mut script: Vec<Scripted>, asking: Option<Value>, slow: Duration) -> Fake {
+/// `asking`, a write without an approval gets that `approval_required` refusal.
+fn fake_cloud(mut script: Vec<Scripted>, asking: Option<Value>) -> Fake {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
     let (saw, seen) = channel();
@@ -201,9 +200,6 @@ fn fake_cloud(mut script: Vec<Scripted>, asking: Option<Value>, slow: Duration) 
                 .iter()
                 .position(|each| each.path == path && each.body == body)
             {
-                if approval.is_some() {
-                    std::thread::sleep(slow);
-                }
                 match script.remove(at).answer {
                     Answered::Value(value) => ("200 OK", value.to_string()),
                     Answered::Error(error) => (
@@ -477,7 +473,7 @@ async fn every_cloud_transcript_replays_through_ployz_mcp() {
         .iter()
         .filter(|each| each.place.store == in_org())
     {
-        let fake = fake_cloud(script(transcript), None, Duration::ZERO);
+        let fake = fake_cloud(script(transcript), None);
         replays(transcript, on_cloud(&fake, transcript.place.clone())).await;
         let seen = fake.requests();
         let expected = script(transcript);
@@ -516,7 +512,7 @@ async fn an_organization_token_mints_in_its_organization_asked_once() {
     let mut cloud = vec![organizations];
     cloud.extend(script(&transcript));
     cloud.extend(script(&transcript));
-    let fake = fake_cloud(cloud, None, Duration::ZERO);
+    let fake = fake_cloud(cloud, None);
     let mut server = on_cloud(&fake, transcript.place.clone());
     server.account.organization = Acting::default();
     let mut client = Client::initialized(server, json!({})).await;
@@ -560,7 +556,7 @@ async fn a_token_swapped_by_mcp_login_acts_in_its_own_organization_on_the_next_c
     let transcript = transcript("project_create", in_org());
     let mut cloud = vec![acts_in("org_acme", "acme"), acts_in("org_globex", "globex")];
     cloud.extend(script(&transcript));
-    let fake = fake_cloud(cloud, None, Duration::ZERO);
+    let fake = fake_cloud(cloud, None);
     let home = tempfile::tempdir().unwrap();
     let config = home.path().join("config.toml");
     let here = std::env::current_dir().unwrap().canonicalize().unwrap();
@@ -745,11 +741,7 @@ async fn an_unknown_tool_is_an_invalid_params_error() {
 #[tokio::test]
 async fn a_replayed_request_without_a_key_writes_under_the_same_id() {
     let transcript = transcript("service_add", in_org());
-    let fake = fake_cloud(
-        (0..4).flat_map(|_| script(&transcript)).collect(),
-        None,
-        Duration::ZERO,
-    );
+    let fake = fake_cloud((0..4).flat_map(|_| script(&transcript)).collect(), None);
     let unkeyed = |fake: &Fake| Server {
         keys: call_key,
         ..on_cloud(fake, transcript.place.clone())
@@ -810,18 +802,18 @@ struct Approving {
     deploy: Transcript,
 }
 
-fn approving_with(slow: Duration) -> Approving {
-    approving_as(Vec::new(), slow)
+fn approving_with() -> Approving {
+    approving_as(Vec::new())
 }
 
 /// [`approving_with`], with Cloud also answering `also`.
-fn approving_as(also: Vec<Scripted>, slow: Duration) -> Approving {
+fn approving_as(also: Vec<Scripted>) -> Approving {
     let deploy = transcript("deploy", in_org());
     // A second call on the same server reads again before it writes.
     let mut twice = script(&deploy);
     twice.extend(script(&deploy));
     twice.extend(also);
-    let fake = fake_cloud(twice, Some(deploy_asks()), slow);
+    let fake = fake_cloud(twice, Some(deploy_asks()));
     let server = on_cloud(&fake, deploy.place.clone());
     Approving {
         fake,
@@ -831,7 +823,7 @@ fn approving_as(also: Vec<Scripted>, slow: Duration) -> Approving {
 }
 
 fn approving() -> Approving {
-    approving_with(Duration::ZERO)
+    approving_with()
 }
 
 /// The deploy wrote twice, the second time with the approval and the same command.
@@ -975,7 +967,7 @@ async fn ployz_mcp_sends_the_agent_credential_and_the_human_answers_with_their_o
         fake,
         server,
         deploy,
-    } = approving_as(vec![acts_in("org", "acme")], Duration::ZERO);
+    } = approving_as(vec![acts_in("org", "acme")]);
     let home = signed_in_home(&fake, true);
     let mut client = eliciting(without_token(server, &home)).await;
     client
@@ -1057,7 +1049,7 @@ async fn the_device_s_sign_in_answers_even_when_ployz_token_is_the_agent_s() {
         fake,
         server,
         deploy,
-    } = approving_as(vec![acts_in("org", "acme")], Duration::ZERO);
+    } = approving_as(vec![acts_in("org", "acme")]);
     let home = signed_in_home(&fake, false);
     let mut client = eliciting(signed_in_beside(server, &home)).await;
     client
@@ -1102,7 +1094,7 @@ async fn an_approval_in_another_organization_is_not_answered_and_names_the_switc
         fake,
         server,
         deploy,
-    } = approving_as(vec![device_acts_in, agent_acts_in], Duration::ZERO);
+    } = approving_as(vec![device_acts_in, agent_acts_in]);
     let home = signed_in_home(&fake, true);
     let mut client = eliciting(without_token(server, &home)).await;
     client
@@ -1180,7 +1172,7 @@ fn removal_asks() -> Value {
 
 async fn remove_trial(content: Value) -> (Value, Value, Vec<Seen>) {
     let removal = transcript("project_remove", in_org());
-    let fake = fake_cloud(script(&removal), Some(removal_asks()), Duration::ZERO);
+    let fake = fake_cloud(script(&removal), Some(removal_asks()));
     let mut client = eliciting(on_cloud(&fake, removal.place.clone())).await;
     client
         .send(&request(
@@ -1435,10 +1427,7 @@ async fn a_host_that_cannot_elicit_never_takes_the_model_s_answer() {
         fake,
         server,
         deploy,
-    } = approving_as(
-        vec![acts_in("org", "acme"), acts_in("org", "acme")],
-        Duration::ZERO,
-    );
+    } = approving_as(vec![acts_in("org", "acme"), acts_in("org", "acme")]);
     let mut client = Client::connect(server);
     let asking = at_once(ask_as_claude_code(&mut client, &deploy.input)).await;
     deploy_pending(&fake, &asking);
@@ -1466,7 +1455,7 @@ async fn a_host_without_elicitation_hears_of_the_approval_at_once_and_writes_wit
         fake,
         server,
         deploy,
-    } = approving_as(vec![acts_in("org", "acme")], Duration::ZERO);
+    } = approving_as(vec![acts_in("org", "acme")]);
     let mut client = Client::initialized(server, json!({})).await;
     let refused = at_once(client.call(2, "deploy", deploy.input.clone())).await;
     deploy_pending(&fake, &refused);
@@ -1667,7 +1656,7 @@ async fn web_traffic_off(capabilities: Value, also: Vec<Scripted>) -> (Value, Fa
     };
     let mut script = vec![read];
     script.extend(also);
-    let fake = fake_cloud(script, Some(set_asks()), Duration::ZERO);
+    let fake = fake_cloud(script, Some(set_asks()));
     let place = transcript("server_set", in_org()).place;
     let mut client = Client::initialized(on_cloud(&fake, place), capabilities).await;
     client
@@ -2052,6 +2041,7 @@ mod published {
                     (status, reply, revision, slow)
                 };
                 if let Some(slow) = slow {
+                    // real-wait: holds the fake Cloud's manifest reply on a real socket so a second call reaches the in-process reread lock; that wait emits no event
                     std::thread::sleep(slow);
                 }
                 let _ = saw.send(seen);
@@ -2694,7 +2684,7 @@ mod published {
 
     #[tokio::test]
     async fn a_cloud_without_published_commands_lists_the_catalog_alone() {
-        let fake = fake_cloud(Vec::new(), None, Duration::ZERO);
+        let fake = fake_cloud(Vec::new(), None);
         let home = tempfile::tempdir().unwrap();
         let mut client =
             Client::initialized(on_published(&fake, home.path()).await, json!({})).await;

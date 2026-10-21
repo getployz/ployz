@@ -407,6 +407,31 @@ fn only_a_call_that_got_no_status_back_is_unreplied() {
     }
 }
 
+/// Polls the OS until `ready` yields a value.
+async fn poll_os<T>(mut ready: impl FnMut() -> Option<T>) -> T {
+    loop {
+        if let Some(value) = ready() {
+            return value;
+        }
+        // real-wait: polls the OS for a fake SSH child's pid file or a process's exit; neither emits an event a test can await
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+/// Waits until no process has `pid`.
+async fn exited(pid: u32) {
+    poll_os(|| {
+        let alive = StdCommand::new("kill")
+            .args(["-0", &pid.to_string()])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success());
+        (!alive).then_some(())
+    })
+    .await;
+}
+
 #[tokio::test]
 async fn cancelling_ssh_establishment_returns_without_waiting_for_ssh() {
     let root = std::env::temp_dir().join(format!("ployz-ssh-cancel-{}", std::process::id()));
@@ -425,31 +450,18 @@ async fn cancelling_ssh_establishment_returns_without_waiting_for_ssh() {
         // Finishing the readiness branch drops the pending connection and its SSH child.
         tokio::select! {
             result = connector.connect(&connection) => panic!("SSH finished before cancellation: {result:?}"),
-            pid = async {
-                loop {
-                    if let Ok(contents) = fs::read_to_string(program.with_extension("pid"))
-                        && let Ok(pid) = contents.trim().parse::<u32>()
-                    {
-                        break pid;
-                    }
-                    tokio::time::sleep(Duration::from_millis(10)).await;
-                }
-            } => pid,
+            pid = poll_os(|| {
+                fs::read_to_string(program.with_extension("pid"))
+                    .ok()
+                    .and_then(|contents| contents.trim().parse::<u32>().ok())
+            }) => pid,
         }
     })
     .await
     .expect("fake SSH did not publish its PID");
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(1);
-    while StdCommand::new("kill")
-        .args(["-0", &pid.to_string()])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .is_ok_and(|status| status.success())
-    {
-        assert!(tokio::time::Instant::now() < deadline, "ssh was not killed");
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
+    tokio::time::timeout(Duration::from_secs(1), exited(pid))
+        .await
+        .expect("ssh was not killed");
 
     fs::remove_dir_all(root).unwrap();
 }
@@ -743,19 +755,9 @@ async fn child_stream_preserves_half_close_and_reaps_on_cancellation() {
     let child = spawn_child(Path::new("cat"), &[]).unwrap();
     let pid = child._child.id().unwrap();
     drop(child);
-    tokio::time::timeout(Duration::from_secs(3), async {
-        while StdCommand::new("kill")
-            .args(["-0", &pid.to_string()])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .is_ok_and(|status| status.success())
-        {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("cancelled helper was not reaped");
+    tokio::time::timeout(Duration::from_secs(3), exited(pid))
+        .await
+        .expect("cancelled helper was not reaped");
 }
 
 #[tokio::test(start_paused = true)]

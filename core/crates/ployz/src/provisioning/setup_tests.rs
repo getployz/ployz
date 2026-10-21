@@ -268,7 +268,7 @@ async fn remote_verify_timeout_kills_the_child_and_cleans_the_stage() {
     let log = fixture.path().join("commands.log");
     let pid = fixture.path().join("preflight.pid");
     let release = release_fixture(fixture.path(), &fixture.path().join("installer.log"), 0);
-    let remote = remote(
+    let mut remote = remote(
         fixture.path(),
         "root@host",
         &log,
@@ -290,11 +290,13 @@ esac
             arch = env::consts::ARCH,
         ),
     );
+    // The fake child writes its pid in milliseconds, so a one second budget still times it out.
+    remote.version_timeout = std::time::Duration::from_secs(1);
 
     let error = run_remote(&remote, &release).await.unwrap_err();
 
     assert!(
-        crate::ui::chain_text(&error).contains("timed out after 10 seconds"),
+        crate::ui::chain_text(&error).contains("timed out after 1 seconds"),
         "{error}"
     );
     let log = fs::read_to_string(log).unwrap();

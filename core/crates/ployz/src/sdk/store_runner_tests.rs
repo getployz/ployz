@@ -120,6 +120,18 @@ impl Drop for Dropped {
     }
 }
 
+/// Cleanup that is still pending when cancellation lands: another task wakes it only after the cancel.
+fn after_cancel(token: &CancellationToken) -> tokio::sync::oneshot::Receiver<()> {
+    let (done, cleanup) = tokio::sync::oneshot::channel();
+    let token = token.clone();
+    tokio::spawn(async move {
+        token.cancelled().await;
+        tokio::task::yield_now().await;
+        let _ = done.send(());
+    });
+    cleanup
+}
+
 #[tokio::test]
 async fn cancellation_drops_pending_connection_setup() {
     let (run, actor) = run();
@@ -150,9 +162,9 @@ async fn renewing_aborts_but_keeps_owned_work_driven_until_cleanup_finishes() {
     cancel(&run, &actor);
     let token = CancellationToken::new();
     let cleaned = Arc::new(AtomicBool::new(false));
+    let cleanup = after_cancel(&token);
     let work = async {
-        token.cancelled().await;
-        tokio::time::sleep(Duration::from_millis(20)).await;
+        cleanup.await.unwrap();
         cleaned.store(true, Ordering::SeqCst);
         "actual outcome"
     };
@@ -224,12 +236,11 @@ async fn a_launch_or_initial_report_failure_settles_all_started_builds_and_keeps
         .iter()
         .map(|target| {
             let token = CancellationToken::new();
-            let work_token = token.clone();
             let stopped = Arc::clone(&stopped);
+            let cleanup = after_cancel(&token);
             let running =
                 super::super::running::Running::spawn(token, move |_reporter| async move {
-                    work_token.cancelled().await;
-                    tokio::time::sleep(Duration::from_millis(20)).await;
+                    cleanup.await.unwrap();
                     stopped.fetch_add(1, Ordering::SeqCst);
                     Err(RpcError {
                         code: RpcErrorCode::Unavailable,
