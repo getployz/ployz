@@ -928,28 +928,53 @@ fn a_named_context_without_a_config_is_not_found_rather_than_unconfigured() {
 }
 
 #[tokio::test]
-async fn a_call_after_the_stream_closed_is_final() {
+async fn a_call_after_the_stream_closed_is_marked_and_stays_unavailable() {
     let (client, daemon) = tokio::io::duplex(1024);
     let channel = connect_stream(client, Duration::from_secs(5))
         .await
         .unwrap();
-    drop(daemon);
     let mut rpc = ployz_core::MachineRpcClient::new(channel);
     let describe = || {
         ployz_core::op::DescribeContract::into_request(ployz_core::DescribeContractRequest {})
             .encode()
             .unwrap()
     };
-    let _lost = rpc.describe_contract(describe()).await.unwrap_err();
-    let status = rpc.describe_contract(describe()).await.unwrap_err();
-    let connect = ConnectError::from(status);
+    let mut in_flight = rpc.clone();
+    let in_flight = tokio::spawn(async move { in_flight.describe_contract(describe()).await });
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    drop(daemon);
+    let lost = TransportError::from(in_flight.await.unwrap().unwrap_err());
+    assert!(!lost.session_closed, "{lost:?}");
+    assert!(
+        lost.unanswered,
+        "the first call may have reached the daemon"
+    );
+
+    let closed = TransportError::from(rpc.describe_contract(describe()).await.unwrap_err());
+    assert!(closed.session_closed, "{closed:?}");
+    assert!(!closed.unanswered, "a call on a closed session never left");
+    let connect = ConnectError::Rpc(closed);
     assert_eq!(connect.retry(), Retry::Now, "a redial opens a new stream");
     let error = rpc_error(connect);
-    assert_eq!(error.code.retry(), Retry::Never, "{error:?}");
+    assert_eq!(error.code, RpcErrorCode::Unavailable);
+    assert!(on_closed_session(&error), "{error:?}");
+    assert_eq!(error.details, closed_session_error().details);
     assert!(
         crate::ui::chain_text(&error).contains("connection to the daemon closed"),
         "{error:?}"
     );
+}
+
+#[test]
+fn a_broken_pipe_is_not_a_closed_session() {
+    let status = tonic::Status::from_error(Box::new(io::Error::new(
+        io::ErrorKind::BrokenPipe,
+        "stream closed because of a broken pipe",
+    )));
+    let error = TransportError::from(status);
+    assert!(!error.session_closed, "{error:?}");
+    assert!(error.unanswered);
+    assert!(!on_closed_session(&error.to_rpc_error()));
 }
 
 #[test]
