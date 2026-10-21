@@ -1021,6 +1021,42 @@ mod tests {
     }
 
     #[test]
+    fn status_names_no_stale_address_for_a_machine_only_the_reader_calls_down() {
+        let [one, two, three] = machines();
+        let check = checked_routing(
+            listed(&[&one, &two, &three], &[]),
+            vec![(
+                web([routed_on(&one, '1'), routed_on(&three, '3')]),
+                Ok(routes_as_ployzd_answers(
+                    &[(&one, &['1']), (&two, &['1'])],
+                    &[&three],
+                )),
+            )],
+            BTreeMap::from([
+                (
+                    two.id,
+                    web_routed_at(&[('1', [10, 210, 0, 1]), ('3', [10, 210, 2, 2])]),
+                ),
+                (
+                    three.id,
+                    web_routed_at(&[('1', [10, 210, 2, 2]), ('3', [10, 210, 0, 1])]),
+                ),
+            ]),
+        );
+
+        assert!(
+            check.attention.is_empty(),
+            "no routes_stale_address row for what machine-3 routes or for its copies"
+        );
+        assert_eq!(
+            warned(&check),
+            [
+                "The Server status asked sees machine-3 Down, so status is not checking what it routes or who routes its copies of web."
+            ]
+        );
+    }
+
+    #[test]
     fn a_service_whose_copies_are_all_on_down_machines_warns_nothing() {
         let [one, two, three] = machines();
         let mut read = routes_as_ployzd_answers(&[(&one, &[])], &[&two, &three]);
