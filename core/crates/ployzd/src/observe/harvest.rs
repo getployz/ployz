@@ -2014,7 +2014,7 @@ mod tests {
         observe::{
             frame::{Piece, Stream, tests::frame},
             layout::{
-                ContainerKind, ContainerMeta, Gap, GapReason, LINKING_FILE, LogFileName,
+                ContainerKind, ContainerMeta, ENV_FILE, Gap, GapReason, LINKING_FILE, LogFileName,
                 RetainedEnv, StoreRoot,
             },
             metrics::segment::Row,
@@ -2829,6 +2829,32 @@ mod tests {
                 ("TOKEN".to_owned(), "live-only-sentinel".to_owned()),
                 ("PLAIN".to_owned(), "from-docker".to_owned()),
             ]))
+        );
+    }
+
+    // Catches a Container whose env.json went missing, as when its first write failed,
+    // never getting it back while Docker still has the Container.
+    #[tokio::test]
+    async fn a_containers_missing_env_is_kept_again_on_its_next_inspect() {
+        let host = host();
+        let id = host.container(&[lines(T0 + 1, 3)]);
+        let mut running = host.harvester();
+        running.harvester.rescan();
+        running
+            .harvester
+            .on_inspected(id, managed_with_env(3, &["TOKEN=live-only-sentinel"]));
+        fs::remove_file(host.dir().join(ENV_FILE)).unwrap();
+
+        running
+            .harvester
+            .on_inspected(id, managed_with_env(3, &["TOKEN=live-only-sentinel"]));
+
+        assert_eq!(
+            host.env().map(RetainedEnv::into_values),
+            Some(BTreeMap::from([(
+                "TOKEN".to_owned(),
+                "live-only-sentinel".to_owned()
+            )]))
         );
     }
 
