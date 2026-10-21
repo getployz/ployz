@@ -81,6 +81,8 @@ pub(super) struct DeployService {
     pub(super) history_failures: BTreeMap<MachineId, String>,
     /// Containers the Machine can no longer inspect, as when one has been removed.
     pub(super) uninspectable: BTreeSet<ContainerId>,
+    /// Containers whose inspect runs out of time, as when Docker stalls.
+    pub(super) stalled_inspects: BTreeSet<ContainerId>,
     /// The env the Log Store kept per Container; `None` is a daemon predating the route.
     pub(super) retained_envs: Option<BTreeMap<ContainerId, BTreeMap<String, String>>>,
     start_error: Option<RpcError>,
@@ -166,6 +168,7 @@ impl DeployService {
             history_requests: Arc::new(Mutex::new(Vec::new())),
             history_failures: BTreeMap::new(),
             uninspectable: BTreeSet::new(),
+            stalled_inspects: BTreeSet::new(),
             retained_envs: Some(BTreeMap::new()),
             start_error: None,
             listing_failures: Vec::new(),
@@ -883,6 +886,9 @@ impl FakeMachine for DeployService {
         }
         if self.uninspectable.contains(&inspect.container_id) {
             return Err(Status::not_found("no such container"));
+        }
+        if self.stalled_inspects.contains(&inspect.container_id) {
+            return Err(Status::deadline_exceeded("docker did not answer"));
         }
         let service = self.identity(&inspect.container_id);
         let spec = spec(service.name.as_str())

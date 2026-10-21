@@ -852,6 +852,37 @@ async fn a_removed_containers_lines_are_scrubbed_with_the_env_its_log_store_kept
     );
 }
 
+// Catches a logs ask that reads a Container's kept env when its Machine failed to inspect
+// it rather than answering that it is gone: its lines stay left out.
+#[tokio::test]
+async fn a_container_whose_inspect_fails_is_left_out_even_with_a_kept_env() {
+    let one = support::machine('a', "one");
+    let mut service = support::DeployService::new(one.clone());
+    let stalled = ContainerId::parse("d".repeat(64)).unwrap();
+    service.stalled_inspects.insert(stalled);
+    service.retained_envs.as_mut().unwrap().insert(
+        stalled,
+        BTreeMap::from([("TOKEN".to_owned(), "live-only-sentinel".to_owned())]),
+    );
+
+    let [answer] = ask_logs(service, vec![logs_query(None, Some(&["TOKEN"]))])
+        .await
+        .try_into()
+        .unwrap();
+
+    assert_eq!(
+        shown(&answer),
+        [(
+            "one".to_owned(),
+            vec![
+                "line 8".to_owned(),
+                "line 10".to_owned(),
+                "token=[secret TOKEN]".to_owned(),
+            ]
+        )]
+    );
+}
+
 // Catches a logs ask against a daemon that predates the retained env route treating its
 // refusal as anything but no env: the removed Container's lines stay left out.
 #[tokio::test]
