@@ -790,10 +790,10 @@ async fn a_server_whose_log_store_fails_is_unanswered_with_its_reason() {
 }
 
 // Catches a logs ask where a Container its Machine can no longer inspect, such as the one
-// a redeploy removed, withholds the lines of every other Container on that Server, or
-// shows its own lines unscrubbed.
+// a redeploy removed, withholds the lines of every other Container on that Server, shows
+// its own lines unscrubbed, or leaves them out without saying so.
 #[tokio::test]
-async fn a_removed_containers_lines_are_left_out_and_the_rest_still_shown() {
+async fn a_removed_containers_lines_are_left_out_with_a_note_and_the_rest_still_shown() {
     let one = support::machine('a', "one");
     let mut service = support::DeployService::new(one.clone());
     service
@@ -815,6 +815,12 @@ async fn a_removed_containers_lines_are_left_out_and_the_rest_still_shown() {
                 "token=[secret TOKEN]".to_owned(),
             ]
         )]
+    );
+    assert_eq!(
+        answer.notes,
+        [
+            "one withheld the lines of 1 Container whose env could not be read to scrub them: web/dddddddddddd"
+        ]
     );
 }
 
@@ -850,6 +856,7 @@ async fn a_removed_containers_lines_are_scrubbed_with_the_env_its_log_store_kept
             ]
         )]
     );
+    assert!(answer.notes.is_empty(), "{:?}", answer.notes);
 }
 
 // Catches a logs ask that reads a Container's kept env when its Machine failed to inspect
@@ -946,5 +953,6 @@ async fn a_server_whose_containers_cannot_be_inspected_withholds_only_sealed_lin
             }
         )]
     );
+    assert!(sealed.notes.is_empty(), "{:?}", sealed.notes);
     assert_eq!(shown(&nothing_sealed).len(), 1);
 }
