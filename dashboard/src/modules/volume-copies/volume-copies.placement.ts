@@ -84,7 +84,7 @@ export function copiesFromPlacement(input: {
   };
   const primary: PrimaryServer | null = observed.primary !== null
     ? { ...observed.primary, state: readOnly(observed.primary.id) ? "read_only" : "live" }
-    : form.primary.change === null ? unreported(presumedPrimary(observed, row?.staged?.primary ?? null))
+    : form.primary.change === null ? unreported(presumedPrimary(observed, row))
     : null;
   const seed = row?.staged?.seed;
   return {

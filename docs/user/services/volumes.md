@@ -154,7 +154,8 @@ isn't answering. While any server's report is on its way, Copies offers no way t
 When the primary's server answers but can't report its copy, Copies says so, like "web-1 can't
 report this copy" or "web-1 needs a newer Ployz", and offers neither a Forget nor **Use mirror**:
 web-1 is up, and may still hold the volume. Copies names such a server under **Live** before one
-that isn't answering.
+that isn't answering. A server that holds the volume's mirror stays under **Copies**, and is named
+under **Live** only when no other server could hold the volume.
 
 Under **Live**, the primary reads **Live** only while its server reports it writable. During a
 move, while writes pause on the server it leaves, it reads **Read-only**. A server whose Ployz is

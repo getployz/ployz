@@ -65,7 +65,7 @@ const steps = (members: Member[], placement: PlacementRow | null) => placementSt
 
 describe("presumedPrimary", () => {
   const unlisted = (server: string): Member => ({ machine: { id: id(server), name: id(server) }, answered: false, incomplete: true });
-  const presumed = (members: Member[], staged: string | null = null) => presumedPrimary(observePlacement(members), staged === null ? null : id(staged))?.id ?? null;
+  const presumed = (members: Member[], staged: string | null = null) => presumedPrimary(observePlacement(members), staged === null ? null : row(null, { primary: staged }))?.id ?? null;
 
   it("presumes a Server whose report is on its way over a silent one, in the order the observer lists them", () => {
     // observeVolumeMembers lists the frame's Servers, silent ones among them, and appends those it names only by id.

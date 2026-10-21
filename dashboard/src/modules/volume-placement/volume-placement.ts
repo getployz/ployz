@@ -30,7 +30,7 @@ export type ObservedPlacement = {
   readonly unanswered: readonly MachineRef[];
   /** The unanswered Servers whose report is on its way. */
   readonly waiting: readonly MachineRef[];
-  /** The unanswered Servers that answered without reporting their copy, as they lack a capability. */
+  /** Of `unanswered`, the Servers that are up but lack a capability to report their copy. */
   readonly lacking: readonly MachineRef[];
   /** Every Server in the cluster, answering or not. */
   readonly members: readonly MachineId[];
@@ -158,26 +158,29 @@ export function oldCopies(observed: ObservedPlacement, row: PlacementRow | null)
 }
 
 /**
- * The Server presumed to hold the primary, which only Copies' Live row and the recovery alert read: the one that
- * reports it, else, with none answering, one that didn't. One whose report is on its way comes first, though the
- * observer lists it last, then one that is up but lacks a capability, then a silent one: each before it may still hold
- * the writer. Among those, the staged primary comes first, since a failed move returns there, else the first listed.
+ * The Server presumed to hold the primary: the one that reports it, else, with none answering, one that didn't. A
+ * Server the Volume records as a mirror comes last, as it holds a mirror. Before it, one whose report is on its way
+ * comes first, though the observer lists it last, then one that is up but lacks a capability, then a silent one: each
+ * before it may still hold the writer. Among those, the staged primary comes first, since a failed move returns there,
+ * else the first listed. Copies names it under Live, the recovery alert reads it, a staged edit keeps it as the primary,
+ * and a restore says its writes are lost.
  */
-export function presumedPrimary(observed: ObservedPlacement, staged: MachineId | null): MachineRef | null {
+export function presumedPrimary(observed: ObservedPlacement, row: PlacementRow | null): MachineRef | null {
   if (observed.primary !== null) return observed.primary;
-  const pool = [observed.waiting, observed.lacking, observed.unanswered].find((servers) => servers.length > 0) ?? [];
-  return pool.find((server) => server.id === staged) ?? pool[0] ?? null;
+  const mirrors = appliedMirrors(observed, row);
+  const holding = (servers: readonly MachineRef[]) => servers.filter((server) => !mirrors.includes(server.id));
+  const pool = [holding(observed.waiting), holding(observed.lacking), holding(observed.unanswered), observed.unanswered]
+    .find((servers) => servers.length > 0) ?? [];
+  return pool.find((server) => server.id === row?.staged?.primary) ?? pool[0] ?? null;
 }
 
 /**
- * What the next Deploy aims for: the staged placement, else what is applied. With no primary answering, the silent
- * Server is presumed to hold it. Null when no Server holds the Volume.
+ * What the next Deploy aims for: the staged placement, else what is applied, on the presumed primary. Null when no
+ * Server holds the Volume.
  */
 export function targetPlacement(observed: ObservedPlacement, row: PlacementRow | null): Placement | null {
   if (row?.staged != null) return stagedPlacement(observed, row.staged);
-  // A staged edit keeps this Server as the primary, so it is the first that didn't answer, never a guess that may be a
-  // Server holding only a copy.
-  const primary = observed.primary ?? observed.unanswered[0] ?? null;
+  const primary = presumedPrimary(observed, row);
   if (primary === null) return null;
   return { primary: primary.id, mirrors: appliedMirrors(observed, row), deletes: [] };
 }
@@ -229,8 +232,8 @@ export function placementChanges(volume: PlacementVolume, members: readonly Memb
   // A move to a mirror is unfinished while the row still lists that mirror, as only the move's last run takes it out:
   // once the target writes it holds the root, yet the next Deploy must finish the same move.
   const handing = observed.primary?.id === staged.primary && (row.mirrors ?? []).includes(staged.primary);
-  // With no primary answering, a silent Server presumed to hold the Volume is no move: the staged one when it is silent,
-  // since a failed move returns there, else the first, as targetPlacement presumes.
+  // With no primary answering, a staged primary that didn't answer is no move: it may hold the Volume, and a failed move
+  // returns there.
   const holder = observed.primary ?? observed.unanswered.find((server) => server.id === staged.primary) ?? observed.unanswered[0] ?? null;
   const moving = holder?.id !== staged.primary || handing;
   // A mirror its answering Server no longer holds is already removed: a cancelled Deploy's late run took it.
@@ -243,7 +246,7 @@ export function placementChanges(volume: PlacementVolume, members: readonly Memb
     const how: MoveHow = target !== undefined && observed.primary === null ? "restore" : handing || applied.includes(staged.primary) ? "promote" : "copy";
     const from = handing
       ? observed.copies.find((copy) => copy.kind === "slot" && copy.server.id !== staged.primary)?.server ?? null
-      : observed.primary ?? (how === "restore" ? observed.unanswered[0] ?? null : null);
+      : observed.primary ?? (how === "restore" ? presumedPrimary(observed, row) : null);
     changes.push({
       kind: "move",
       volume,
@@ -389,7 +392,7 @@ export function recovery(
   // was heard from the presumed primary decides, as Live shows it. Silent: Forget, naming every silent Server, since
   // each holds the stage back. Lacking a capability: it is up, so say what it lacks.
   if (observed.waiting.length > 0) return { kind: "wait", mirror, lostAfter };
-  const presumed = presumedPrimary(observed, row?.staged?.primary ?? null);
+  const presumed = presumedPrimary(observed, row);
   const primary = members.find((member) => member.machine.id === presumed?.id);
   if (primary !== undefined && !primary.answered) {
     const heard = heardFrom(primary);
