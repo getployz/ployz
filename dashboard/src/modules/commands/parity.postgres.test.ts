@@ -3,8 +3,8 @@ import type { JsonValue } from "@ployz/sdk";
 import { EventType, type StreamChunk } from "@tanstack/ai";
 import { fakeText } from "@tanstack/ai/testing";
 import { asc, eq, sql } from "drizzle-orm";
-import { Cause, ConfigProvider, Effect, Exit, Fiber, Layer, Schedule, Schema } from "effect";
-import { expect } from "vitest";
+import { Cause, ConfigProvider, Effect, Exit, Fiber, Layer, Schema } from "effect";
+import { expect, vi } from "vitest";
 import { asRecord } from "#/lib/json";
 import { asTestDouble } from "#/lib/test-double";
 import { agentChat } from "#/modules/agent/agent-chat.server";
@@ -82,14 +82,18 @@ const parity = Effect.fn(function* () {
   yield* execute(sql`insert into uptime_result ${resultColumns} ${failed(sql`date_trunc('seconds', now()) - interval '2 minutes'`, "routine")} from uptime_check`);
   yield* execute(sql`insert into uptime_incident (id, organization_id, check_id, check_revision, opened_at, opened_by)
     select gen_random_uuid(), organization_id, id, 1, date_trunc('seconds', now()) - interval '2 minutes', ${SERVES_500} from uptime_check`);
-  const checker = execute(sql`
+  const answer = provided(Effect.gen(function* () {
+    const { drizzle } = yield* Database;
+    return yield* drizzle.execute(sql`
     with asked as (
       update uptime_check set probe_answered_at = date_trunc('milliseconds', probe_requested_at)
       where probe_requested_at is not null and (probe_answered_at is null or probe_answered_at < date_trunc('milliseconds', probe_requested_at))
       returning id, organization_id, date_trunc('milliseconds', probe_requested_at) as at)
-    insert into uptime_result ${resultColumns} ${failed(sql`at`, "triggered")} from asked`).pipe(
-    Effect.orDie, Effect.repeat(Schedule.spaced("100 millis")), Effect.asVoid,
-  );
+    insert into uptime_result ${resultColumns} ${failed(sql`at`, "triggered")} from asked returning check_id`, "objects");
+  })).pipe(Effect.orDie);
+  const checker = Effect.tryPromise((signal) => vi.waitFor(async () => {
+    if (!signal.aborted) expect(await Effect.runPromise(answer)).not.toHaveLength(0);
+  }, { timeout: 10_000 })).pipe(Effect.ignore, Effect.forever);
 
   const route = (name: string, input: JsonValue) => Effect.gen(function* () {
     const request = new Request(`http://localhost:3000/api/cli/run/${name}`, {

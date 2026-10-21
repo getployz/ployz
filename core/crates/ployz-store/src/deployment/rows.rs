@@ -426,39 +426,50 @@ impl Failure {
                 },
                 vec![failure.to_string()],
             ),
-            ExecutionError::Health { failure, .. } => (
-                match failure {
+            ExecutionError::Health {
+                failure, last_run, ..
+            } => {
+                let exit_code = last_run.as_ref().and_then(|run| run.exit_code);
+                let reason = match failure {
                     HealthFailure::Runtime {
                         observation: ContainerRuntimeObservation::Restarting,
                         ..
-                    } => "The Container is restarting",
+                    } => exit_code.map_or_else(
+                        || "The Container is restarting".to_owned(),
+                        |code| format!("The Container exited with code {code} and is restarting"),
+                    ),
                     HealthFailure::Runtime {
-                        observation: ContainerRuntimeObservation::Exited { .. },
+                        observation: ContainerRuntimeObservation::Exited { code },
                         ..
-                    } => "The Container exited",
+                    } => format!("The Container exited with code {code}"),
                     HealthFailure::Runtime {
                         observation: ContainerRuntimeObservation::Dead,
                         ..
-                    } => "The Container stopped",
+                    } => "The Container stopped".to_owned(),
                     HealthFailure::Cancelled
                     | HealthFailure::TimedOut { .. }
-                    | HealthFailure::Runtime { .. } => "The Container failed its health check",
-                }
-                .to_owned(),
-                // The reason already says it: `restarting` alone adds nothing.
-                if matches!(
-                    failure,
+                    | HealthFailure::Runtime { .. } => {
+                        "The Container failed its health check".to_owned()
+                    }
+                };
+                let mut cause = match failure {
+                    // The reason already says it.
                     HealthFailure::Runtime {
-                        observation: ContainerRuntimeObservation::Restarting
+                        observation:
+                            ContainerRuntimeObservation::Restarting
+                            | ContainerRuntimeObservation::Exited { .. }
                             | ContainerRuntimeObservation::Dead,
                         last_check: None,
-                    }
-                ) {
-                    Vec::new()
-                } else {
-                    vec![failure.to_string()]
-                },
-            ),
+                    } => Vec::new(),
+                    HealthFailure::Cancelled
+                    | HealthFailure::TimedOut { .. }
+                    | HealthFailure::Runtime { .. } => vec![failure.to_string()],
+                };
+                if let HealthFailure::Runtime { .. } = failure {
+                    cause.extend(last_run.as_ref().and_then(|run| run.last_line.clone()));
+                }
+                (reason, cause)
+            }
             ExecutionError::DependencyHealth {
                 dependency,
                 failure,
@@ -1192,6 +1203,7 @@ mod tests {
                     last_check: None,
                 },
                 out_of_memory: None,
+                last_run: None,
             },
             &[],
         )
@@ -1348,7 +1360,7 @@ mod tests {
         );
         assert_eq!(
             reason(ContainerRuntimeObservation::Exited { code: 1 }),
-            "The Container exited"
+            "The Container exited with code 1"
         );
         assert_eq!(
             reason(ContainerRuntimeObservation::Dead),
@@ -1363,9 +1375,10 @@ mod tests {
                 .cause
                 .is_empty()
         );
-        assert_eq!(
-            failure(ContainerRuntimeObservation::Exited { code: 1 }).cause,
-            ["exited with code 1"]
+        assert!(
+            failure(ContainerRuntimeObservation::Exited { code: 1 })
+                .cause
+                .is_empty()
         );
     }
 }

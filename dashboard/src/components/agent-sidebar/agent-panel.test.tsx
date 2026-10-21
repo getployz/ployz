@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { UIMessage } from "@tanstack/ai-react";
 import { afterEach, expect, it, vi } from "vitest";
@@ -228,13 +228,16 @@ it("folds thinking and calls under one summary, leaving the Deployment card and 
 const ask = async (text: string) => {
   vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });
   let send = (_chunk: JsonObject) => {};
+  let pulled = () => {};
   vi.stubGlobal("fetch", vi.fn((_url: string, init?: RequestInit) => {
     if (init?.method !== "POST") return Promise.resolve(Response.json({ messages: [] }));
     const body = new ReadableStream({
       start: (controller) => {
         send = (chunk) => controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify({ threadId: "thread-acme", timestamp: 0, ...chunk })}\n\n`));
       },
-    });
+      // With no buffer, the reply asks for more only once it has taken in every chunk sent.
+      pull: () => pulled(),
+    }, { highWaterMark: 0 });
     return Promise.resolve(new Response(body, { headers: { "content-type": "text/event-stream" } }));
   }));
   const client = new QueryClient({ defaultOptions: { queries: { enabled: false, retry: false } } });
@@ -244,9 +247,10 @@ const ask = async (text: string) => {
   fireEvent.change(box, { target: { value: text } });
   fireEvent.keyDown(box, { key: "Enter" });
   await screen.findByRole("button", { name: "Stop" });
-  return (...chunks: ReadonlyArray<JsonObject>) => new Promise((resolve) => {
+  return (...chunks: ReadonlyArray<JsonObject>) => act(async () => {
+    const taken = new Promise<void>((resolve) => { pulled = resolve; });
     for (const chunk of chunks) send(chunk);
-    setTimeout(resolve, 50);
+    await taken;
   });
 };
 

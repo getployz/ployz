@@ -412,13 +412,15 @@ it.live("forgets an installation while a sync writes its repositories, and neith
     }));
     yield* Deferred.await(held);
 
-    const waitingLocks = (gated: boolean) => run(Effect.gen(function* () {
-      const { drizzle } = yield* Database;
-      const [row] = yield* drizzle.select({ count: sql<number>`count(*)::int` }).from(sql`pg_locks`)
-        .where(gated ? sql`not granted and locktype = 'advisory' and objid = 1 and classid = 4242`
-          : sql`not granted and not (locktype = 'advisory' and objid = 1 and classid = 4242)`);
-      if ((row?.count ?? 0) === 0) return yield* Effect.fail("not waiting");
-    }).pipe(Effect.retry({ schedule: Schedule.spaced("10 millis") }), Effect.orDie));
+    const waitingLocks = (gated: boolean) => Effect.promise(() => vi.waitFor(async () => {
+      const [row] = await Effect.runPromise(run(Effect.gen(function* () {
+        const { drizzle } = yield* Database;
+        return yield* drizzle.select({ count: sql<number>`count(*)::int` }).from(sql`pg_locks`)
+          .where(gated ? sql`not granted and locktype = 'advisory' and objid = 1 and classid = 4242`
+            : sql`not granted and not (locktype = 'advisory' and objid = 1 and classid = 4242)`);
+      })));
+      expect(row?.count ?? 0).toBeGreaterThan(0);
+    }));
 
     const syncing = yield* elsewhere(Effect.promise(() => Effect.runPromise(sync)));
     yield* waitingLocks(true);

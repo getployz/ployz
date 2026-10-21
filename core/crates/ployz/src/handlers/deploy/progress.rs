@@ -43,6 +43,9 @@ pub(super) fn frame(view: &DeploymentView) -> Frame {
         let mut row = service_row(
             QualifiedService::new(view.namespace.clone(), name.clone()),
             depth,
+            view.preview
+                .as_ref()
+                .and_then(|preview| preview.placed_on.get(runtime)),
             node.rows.iter().map(|row| Replica {
                 machine: row.machine_id,
                 state: &row.state,
@@ -663,6 +666,35 @@ mod tests {
     }
 
     #[test]
+    fn a_followed_deploy_counts_the_server_whose_copy_it_kept() {
+        let plan = crate::global_fixtures::replicated_plan(8, &['1'], 8);
+        let mut view = view();
+        view.deployment.status = DeploymentStatus::Applied;
+        view.namespace = "app".parse().unwrap();
+        view.runtime_names.clear();
+        let rows: Vec<_> = plan
+            .preview()
+            .operations
+            .iter()
+            .map(|row| json!({"machine_id": row.machine_id, "server": "edge", "state": "completed", "started_at": 1, "finished_at": 2}))
+            .collect();
+        view.nodes = vec![serde_json::from_value(json!({
+            "type": "service", "id": "cccccccc-cccc-4ccc-8ccc-cccccccccccc", "name": "api", "outcome": "deployed", "rows": rows
+        }))
+        .unwrap()];
+        view.preview = Some(plan.preview().clone());
+        let frame = frame(&view);
+        assert!(
+            frame.rows.iter().any(|row| matches!(
+                &row.subject,
+                Subject::Service(graph) if graph.machines.len() == 8
+            )),
+            "{:?}",
+            frame.rows
+        );
+    }
+
+    #[test]
     fn a_renamed_service_reads_by_its_service_name_not_its_private_name() {
         let mut removal = view();
         removal.deployment.status = DeploymentStatus::Applied;
@@ -880,6 +912,7 @@ mod tests {
                     )),
                 },
                 out_of_memory,
+                last_run: None,
             };
             let machine_id = "a".repeat(32);
             let operations: Vec<ployz_core::OperationRow> = serde_json::from_value(json!([{

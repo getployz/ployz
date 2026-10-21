@@ -19,7 +19,7 @@ use crate::ui::{self, Cell, Hint, Table, printable};
 pub(crate) fn command(command: Command) -> Command {
     base(command, "Enroll servers waiting to join")
         .long_about("Select waiting servers by name or a quoted glob. Cloud plans the founder, names and storage. Review the plan and confirm, or pass --yes. --first enrolls only the oldest match; --first NAME picks the founder from the selection. --status follows attempts; alone it resumes following open attempts. Ctrl-C stops following without cancelling enrollment.")
-        .arg(positional("pattern", false).conflicts_with("all"))
+        .arg(positional("pattern", false).conflicts_with("all").help("A waiting server's name, or a quoted glob such as 'web-*'"))
         .arg(switch("all", None).help("Select every waiting server"))
         .arg(value("first", None).num_args(0..=1).default_missing_value("").value_name("NAME").help("Enroll only the oldest match, or pick NAME as founder"))
         .arg(value("name", None).value_name("PATTERN").help("Server name pattern; put n in braces to number servers"))

@@ -23,7 +23,7 @@ pub(super) fn add_command(command: Command) -> Command {
     store::scoped(
         command.about("Give a Service a domain: HOST for a custom one, none for a generated one"),
     )
-    .arg(positional("service", true))
+    .arg(positional("service", true).help("Service name"))
     .arg(positional("host", false).help("Custom hostname, like app.example.com"))
     .arg(
         value("prefix", None)
@@ -41,7 +41,7 @@ pub(super) fn set_command(command: Command) -> Command {
     store::scoped(command.about(
         "Change a Service's generated domain to PREFIX.CLUSTER-DOMAIN; staged until you deploy",
     ))
-    .arg(positional("service", true))
+    .arg(positional("service", true).help("Service name"))
     .arg(
         positional("prefix", true)
             .help("One DNS label, unique among the Organization's generated domains"),

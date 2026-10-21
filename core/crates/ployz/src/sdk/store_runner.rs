@@ -10,8 +10,8 @@ use std::time::Duration;
 
 use ployz_core::{
     AnonymousVolumes, ContainerId, DeployOperation, DeployOutcome, DeployWarning, ExecutionError,
-    FailedOperation, MachineId, MachineObservation, QualifiedService, RpcError, RpcErrorCode,
-    ServiceName,
+    FailedOperation, HealthFailure, LastRun, MachineId, MachineObservation, QualifiedService,
+    RpcError, RpcErrorCode, ServiceName,
 };
 use ployz_store::tools::{LogText, SealedValues, Withheld};
 use ployz_store::{
@@ -909,8 +909,9 @@ impl Run {
         let mut tracker = RowTracker::default();
         let mut pending = BTreeMap::new();
         let mut warnings = Vec::new();
+        let mut stopped = BTreeMap::new();
         while let Some(event) = running.next().await {
-            let rows = match event {
+            let mut rows = match event {
                 ployz_core::DeployEvent::Progress { rows, .. } => rows,
                 ployz_core::DeployEvent::Warning { warning } => {
                     warnings.push(warning);
@@ -921,14 +922,27 @@ impl Run {
                 | ployz_core::DeployEvent::ImagesPruned { .. } => continue,
             };
             self.record_warnings(&mut warnings).await;
+            if let Ok(client) = session.client() {
+                for row in &mut rows {
+                    if let ployz_core::OperationStatus::Failed { error } = &mut row.status {
+                        self.fill_last_run(&client, scrub, row.machine_id, error, &mut stopped)
+                            .await;
+                    }
+                }
+            }
             for mut row in tracker.changes(&rows) {
                 let container = tracker.container(&row);
                 if let (RowState::Failed { log: Some(log), .. }, Some(container), Ok(client)) =
                     (&mut row.state, container, session.client())
                 {
-                    *log = self
-                        .failed_log(&client, scrub, row.machine, container)
-                        .await;
+                    *log = match stopped.get(&container) {
+                        Some((read, _)) => read.clone(),
+                        None => {
+                            self.failed_log(&client, scrub, row.machine, container)
+                                .await
+                                .0
+                        }
+                    };
                 }
                 pending.insert((row.service.clone(), row.machine), row);
             }
@@ -964,7 +978,18 @@ impl Run {
                 confirmed.extend(new);
             }
         }
-        let outcome = running.finished().await?;
+        let mut outcome = running.finished().await?;
+        if let (DeployOutcome::Failed { failed, .. }, Ok(client)) = (&mut outcome, session.client())
+        {
+            let (machine, error) = match failed {
+                FailedOperation::Operation { operation, error } => (operation.machine_id(), error),
+                FailedOperation::Replacement {
+                    operation, error, ..
+                } => (operation.machine_id, error),
+            };
+            self.fill_last_run(&client, scrub, machine, error, &mut stopped)
+                .await;
+        }
         Ok((outcome, pending.into_values().collect(), warnings))
     }
 
@@ -1066,34 +1091,75 @@ impl Run {
         self.record(RunEvidence::NotExecuted(failure)).await
     }
 
+    /// Gives a Container's stop its last run from the Log Store, read once per Container
+    /// into `stopped` with its row's log, so the row and the outcome say the same.
+    async fn fill_last_run(
+        &self,
+        client: &Client,
+        scrub: &Scrub,
+        machine: MachineId,
+        error: &mut ExecutionError,
+        stopped: &mut BTreeMap<ContainerId, (LogText, LastRun)>,
+    ) {
+        let ExecutionError::Health {
+            container_id,
+            failure: HealthFailure::Runtime { .. },
+            last_run,
+            ..
+        } = error
+        else {
+            return;
+        };
+        let (_, run) = match stopped.entry(*container_id) {
+            std::collections::btree_map::Entry::Occupied(read) => read.into_mut(),
+            std::collections::btree_map::Entry::Vacant(unread) => {
+                let (log, exit_code) = self.failed_log(client, scrub, machine, *container_id).await;
+                let last_line = match &log {
+                    LogText::Shown(excerpt) => excerpt.lines().last().cloned(),
+                    LogText::Withheld { .. } => None,
+                };
+                unread.insert((
+                    log,
+                    LastRun {
+                        exit_code,
+                        last_line,
+                    },
+                ))
+            }
+        };
+        *last_run = Some(run.clone());
+    }
+
+    /// The failed Container's scrubbed tail, and the code of its newest stored exit.
     async fn failed_log(
         &self,
         client: &Client,
         scrub: &Scrub,
         machine: MachineId,
         container: ContainerId,
-    ) -> LogText {
+    ) -> (LogText, Option<i64>) {
+        let withheld = |why| (LogText::Withheld { why }, None);
         let Some(env) = super::container_env(client, machine, container).await else {
-            return LogText::Withheld {
-                why: Withheld::NoSecretContext,
-            };
+            return withheld(Withheld::NoSecretContext);
         };
         let Ok(mut names) = self.sealed_names(&scrub.environment).await else {
-            return LogText::Withheld {
-                why: Withheld::NoSecretContext,
-            };
+            return withheld(Withheld::NoSecretContext);
         };
         names.extend(scrub.sealed_at_claim.iter().cloned());
-        let Some(frames) = super::tail_frames(client, machine, container).await else {
-            return LogText::Withheld {
-                why: Withheld::Unanswered,
-            };
+        let Some(tail) = super::tail_frames(client, machine, container).await else {
+            return withheld(Withheld::Unanswered);
         };
         match self.settled_sealed_names(&scrub.environment, names).await {
-            Some(names) => super::tail_excerpt(frames, &scrub.values(&names, env)),
-            None => LogText::Withheld {
-                why: Withheld::NoSecretContext,
-            },
+            Some(names) => (
+                super::tail_excerpt(tail.frames, &scrub.values(&names, env)),
+                tail.exit_code,
+            ),
+            None => (
+                LogText::Withheld {
+                    why: Withheld::NoSecretContext,
+                },
+                tail.exit_code,
+            ),
         }
     }
 

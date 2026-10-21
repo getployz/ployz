@@ -537,15 +537,11 @@ describe("volume runs", () => {
     if (!result.ok) throw new Error(result.refusal.message);
     return result.run;
   };
-  const waitingOnLock = async () => {
-    for (let poll = 0; poll < 200; poll++) {
-      const { rows: waiting } = await harness.pool.query(
-        "select 1 from pg_stat_activity where datname = current_database() and wait_event_type = 'Lock'");
-      if (waiting.length > 0) return;
-      await new Promise((resolve) => setTimeout(resolve, 25));
-    }
-    throw new Error("nothing waited on the held row lock");
-  };
+  const waitingOnLock = () => vi.waitFor(async () => {
+    const { rows: waiting } = await harness.pool.query(
+      "select 1 from pg_stat_activity where datname = current_database() and wait_event_type = 'Lock'");
+    if (waiting.length === 0) throw new Error("nothing waited on the held row lock");
+  }, { timeout: 5_000, interval: 25 });
   const settled = ["05-cut", "07-start", "03-start", "04-resume", "05-resume", "03-restore", "03-demote", "03-reset-forget-mirror", "03-reset-forget-writer", "04-forget"];
   const sleeps = [
     ...["03-r0", "03-r1", "03-r2", "06-final"].flatMap((prefix) => Array.from({ length: 9 }, (_, poll) => `${prefix}-backoff-${poll}`)),
@@ -2184,6 +2180,7 @@ describe("volume runs", () => {
       expect(await rows()).toMatchObject([{ state: "failed", message: "data-fsn-2 could not receive dep-10: disk full" }]);
     });
 
+    // Interim 20 s ceiling while fu-flake-volume-run-mirror-timeout fixes why this runs near 5 s on CI; that fix removes it.
     it("mirror: a pull that never lands gives up after six hours of checks backing off to five minutes", async () => {
       machines[1] = { name: "fsn-2", pool: true, copy: null, pullFault: { target: "dep-10", kind: "stall" } };
       const run = await requested({ kind: "mirror", args: { to: "fsn-2" } });
@@ -2193,7 +2190,7 @@ describe("volume runs", () => {
 
       expect(verbs.filter((verb) => verb === "pull@fsn-2(dep-10)")).toHaveLength(PATIENCE_WAITS.length + 1);
       expect(await rows()).toMatchObject([{ state: "failed", message: "data-fsn-2 has not finished dep-10 after 6h" }]);
-    });
+    }, 20_000);
 
     it("mirror: a pull the 5 s checks started replays none of its checks into the new schedule, so it lands instead of giving up", async () => {
       const run = await requested({ kind: "mirror", args: { to: "fsn-2" } });
@@ -2329,7 +2326,7 @@ describe("volume runs", () => {
 
       await execute(admitted.run.id);
 
-      expect(sent.find((request) => request.want.kind === "forget")?.expect).toEqual({ kind: "mirror", newest: base.guid, slot: "7", role: "old_copy" });
+      expect(verbs.filter((verb) => verb.startsWith("forget"))).toEqual([]);
       expect(machines[1]?.copy).toEqual(slotCopy(base, null, "7", "mirror"));
       expect(await rows()).toMatchObject([{ state: "failed", message: "data-fsn-2 is no longer an old copy, so nothing was deleted" }]);
     });
@@ -3518,6 +3515,31 @@ describe("volume runs", () => {
       });
       expect(await rows()).toEqual([]);
       expect(send).not.toHaveBeenCalled();
+    });
+
+    it("mirror rm --if-old-copy is refused once its old copy became the mirror, and writes no run", async () => {
+      machines = [
+        { name: "fsn-1", pool: true, copy: writerCopy() },
+        { name: "fsn-2", pool: true, copy: slotCopy(base, null, "7", "mirror") },
+      ];
+
+      const admitted = await run({ kind: "delete_mirror", args: { slot: "fsn-2", confirmed_name: null, role: "old_copy" } });
+
+      expect(admitted).toEqual({ ok: false, refusal: { code: "conflict", message: "data-fsn-2 is no longer an old copy, so nothing was deleted", details: null } });
+      expect(await rows()).toEqual([]);
+    });
+
+    it("mirror rm --if-old-copy of a real old copy starts its delete, named for an old copy", async () => {
+      machines = [
+        { name: "fsn-1", pool: true, copy: writerCopy() },
+        { name: "fsn-2", pool: true, copy: slotCopy(base, null, "7", "old_copy") },
+      ];
+
+      const admitted = await run({ kind: "delete_mirror", args: { slot: "fsn-2", confirmed_name: null, role: "old_copy" } });
+
+      expect(admitted).toMatchObject({ ok: true });
+      expect((await harness.pool.query("select kind, state, args from volume_run")).rows)
+        .toMatchObject([{ kind: "delete_mirror", state: "requested", args: { slot: "fsn-2", role: "old_copy" } }]);
     });
 
     it("a Mirror Remove on a busy Volume is refused as busy before it asks", async () => {

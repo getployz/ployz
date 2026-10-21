@@ -1,4 +1,5 @@
-//! Global Services and their Containers, as catch-up and Drain retirement tests observe them.
+//! Services and their Containers, as catch-up, Drain retirement and Deploy summary tests
+//! observe them.
 
 use ployz_core::{
     ContainerId, ContainerKind, ContainerObservation, ContainerResources,
@@ -163,4 +164,54 @@ fn container_on(
         stopped: false,
     })
     .unwrap()
+}
+
+/// `api` in `app` asked for `replicas` copies across Servers `1` to `servers`, where each
+/// Server in `running` already runs one up-to-date copy.
+pub(crate) fn replicated_plan(
+    servers: u32,
+    running: &[char],
+    replicas: u32,
+) -> crate::deploy::DeployPlan {
+    let spec = requested(ServiceMode::Replicated {
+        replicas: std::num::NonZeroU32::new(replicas).unwrap(),
+    });
+    let machines: Vec<_> = (1..=servers)
+        .map(|n| {
+            let hex = char::from_digit(n, 16).unwrap();
+            machine(hex, &format!("server-{hex}"))
+        })
+        .collect();
+    let resolved = spec
+        .to_resolved(service_id('a'), ResolvedUpdateConfig::default())
+        .expect("volume graph is scoped");
+    let containers = running
+        .iter()
+        .map(|hex| {
+            let on = machines
+                .iter()
+                .find(|machine| machine.id == MachineId::parse(hex.to_string().repeat(32)).unwrap())
+                .expect("a running copy sits on a listed Server");
+            let mut copy = running_on(on, *hex);
+            copy.try_update(|parts| parts.resolved_spec = resolved.clone())
+                .unwrap();
+            copy
+        })
+        .collect();
+    let snapshot = crate::deploy::DeploySnapshot {
+        machines: machines
+            .into_iter()
+            .map(|machine| {
+                ployz_core::MachineObservation::new(machine, ployz_core::MembershipObservation::Up)
+            })
+            .collect(),
+        containers,
+        ..Default::default()
+    };
+    let intent = ployz_core::DeployIntent::apply_all(
+        Namespace::parse("app").unwrap(),
+        [&spec],
+        Default::default(),
+    );
+    crate::deploy::plan_deploy(&intent, &snapshot).unwrap()
 }
