@@ -44,6 +44,8 @@ pub(crate) struct FakeDocker {
     pub(crate) inspect_hold: Arc<Mutex<Option<Arc<tokio::sync::Barrier>>>>,
     /// The next inspect reads the Container first, then its answer waits here twice.
     pub(crate) answered_hold: Arc<Mutex<Option<Arc<tokio::sync::Barrier>>>>,
+    /// The next Container list is answered, then its reply waits here twice.
+    pub(crate) listed_hold: Arc<Mutex<Option<Arc<tokio::sync::Barrier>>>>,
     pub(crate) reject_list: Arc<AtomicBool>,
     /// Named mode: every stop fails and leaves the Container as it was.
     pub(crate) refuse_stop: Arc<AtomicBool>,
@@ -85,7 +87,12 @@ async fn fake_docker(
 ) -> Response {
     let hold = (method == Method::GET && is_inspect(uri.path()))
         .then(|| fake.answered_hold.lock().unwrap().take())
-        .flatten();
+        .flatten()
+        .or_else(|| {
+            (method == Method::GET && uri.path().ends_with("/containers/json"))
+                .then(|| fake.listed_hold.lock().unwrap().take())
+                .flatten()
+        });
     let response = answer(fake, method, uri, body).await;
     if let Some(hold) = hold {
         hold.wait().await;

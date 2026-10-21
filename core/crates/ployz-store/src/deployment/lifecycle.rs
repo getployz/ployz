@@ -1104,7 +1104,7 @@ pub(crate) fn claim(
         }
     };
     let sources = build::sources_of(tx, &stored)?;
-    let saved = saved_at(tx, &stored.summary.environment_id, stored.summary.saved)?;
+    let saved = held_revision(tx, &stored)?;
     let branch = crate::branch::lowering(tx, &stored.summary.environment_id, &saved)?;
     let (services, removals) = stored.lowering();
     let lowered = lower(
@@ -1242,6 +1242,15 @@ pub(crate) fn save_receipt(
     Ok(())
 }
 
+/// The Saved revision `stored` ships, each Volume at the size its Servers hold: a
+/// Deploy neither grows nor shrinks one, so a revision saved before a resize asks
+/// the size it holds now.
+fn held_revision(tx: &mut dyn Tx, stored: &Stored) -> Result<SavedEnvironmentIntent, RpcError> {
+    let mut saved = saved_at(tx, &stored.summary.environment_id, stored.summary.saved)?;
+    crate::volume::size::held(tx, &stored.summary.environment_id, &mut saved.volumes)?;
+    Ok(saved)
+}
+
 /// The lowering input of `stored`, secrets unsealed: what a build of it takes.
 /// In-process only.
 pub(crate) fn input(
@@ -1249,7 +1258,7 @@ pub(crate) fn input(
     stored: &Stored,
     sealing: &SealingKey,
 ) -> Result<Value, RpcError> {
-    let saved = saved_at(tx, &stored.summary.environment_id, stored.summary.saved)?;
+    let saved = held_revision(tx, stored)?;
     let branch = crate::branch::lowering(tx, &stored.summary.environment_id, &saved)?;
     let (services, removals) = stored.lowering();
     lower(
@@ -1366,7 +1375,7 @@ pub(crate) fn record(
                 None => {}
             }
             running(&stored)?;
-            let saved = saved_at(tx, &stored.summary.environment_id, stored.summary.saved)?;
+            let saved = held_revision(tx, &stored)?;
             let applied = applied_state(tx, &stored.summary.environment_id, &saved)?;
             // What the preview already settles shows while it runs; the rest reads
             // as Pending until what executing it did replaces these.
@@ -1439,7 +1448,7 @@ pub(crate) fn record(
             } else {
                 std::collections::BTreeSet::new()
             };
-            let saved = saved_at(tx, &stored.summary.environment_id, stored.summary.saved)?;
+            let saved = held_revision(tx, &stored)?;
             let applied = applied_state(tx, &stored.summary.environment_id, &saved)?;
             let outcomes = |projection| {
                 node_outcomes(
@@ -1540,7 +1549,7 @@ pub(crate) fn record(
                     }
                 }
             }
-            let saved = saved_at(tx, &stored.summary.environment_id, stored.summary.saved)?;
+            let saved = held_revision(tx, &stored)?;
             let applied = applied_state(tx, &stored.summary.environment_id, &saved)?;
             stored.run.nodes = keep_advanced(
                 &stored.run.nodes,
