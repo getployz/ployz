@@ -43,7 +43,7 @@ import { readCliServerDrain } from "#/modules/machines/server-drain.server";
 import { freshApproval, freshOperationDigest, planClean } from "#/modules/machines/server-operations.server";
 import { readCliServerUpgrade } from "#/modules/server-upgrade/server-upgrade.server";
 import { type Admission, REQUEST_KEY_HEADER, requestKeyOf } from "#/modules/operations/keyed.server";
-import { ForgetServer, ForgetServers, NewVolumeRun, RemoveServer, SyncVolume, UpgradeServer } from "#/modules/operations/cli-wire";
+import { DrainServer, ForgetServer, ForgetServers, NewVolumeRun, RemoveServer, SyncVolume, UpgradeServer } from "#/modules/operations/cli-wire";
 import { OPERATIONS } from "#/modules/operations/operations";
 import { cleanNamespace, drainServer, forgetServer, removeServer, runVolume, unheld, upgradeServer } from "#/modules/operations/operations.server";
 import { removeOrganization } from "#/modules/organization/organization-removal.server";
@@ -351,15 +351,15 @@ export const handleCliRequest = Effect.fn("Cli.handle")(function* (request: Requ
       const input = yield* decodeBody(RemoveServer, request, "Removing a Server takes the Data Loss it confirms.");
       const call = yield* operationCall(request);
       if (!call.ok) return refusal(call.refused.refusal);
-      return admitted(yield* removeServer(caller, machineId, input.confirm_data_loss.confirmed, call), (id) => ({ id }));
+      return admitted(yield* removeServer(caller, machineId, input.confirm_data_loss.confirmed, call, input.server_name), (id) => ({ id }));
     }
     case "POST servers/:id/forget": {
       const machineId = serverIdOf(id);
       if (machineId === null) return noSuchServer();
-      yield* decodeBody(ForgetServer, request, "Forgetting a Server takes no options.");
+      const input = yield* decodeBody(ForgetServer, request, "Forgetting a Server takes no options.");
       const call = yield* operationCall(request);
       if (!call.ok) return refusal(call.refused.refusal);
-      return admitted(yield* forgetServer(caller, machineId, call), (id) => ({ id }));
+      return admitted(yield* forgetServer(caller, machineId, call, input.server_name), (id) => ({ id }));
     }
     case "GET server-removals/:id": {
       const attempt = Schema.is(Uuid)(id)
@@ -371,9 +371,10 @@ export const handleCliRequest = Effect.fn("Cli.handle")(function* (request: Requ
     case "POST servers/:id/drain": {
       const machineId = serverIdOf(id);
       if (machineId === null) return noSuchServer();
+      const shown = request.body === null ? undefined : (yield* decodeBody(DrainServer, request, "A drain takes no options.")).server_name;
       const call = yield* operationCall(request);
       if (!call.ok) return refusal(call.refused.refusal);
-      return admitted(yield* drainServer(caller, machineId, call), accepted);
+      return admitted(yield* drainServer(caller, machineId, call, shown), accepted);
     }
     case "GET server-drains/:id": {
       const drain = Schema.is(Uuid)(id) ? yield* readCliServerDrain(caller.organization.id, id) : null;
@@ -385,7 +386,7 @@ export const handleCliRequest = Effect.fn("Cli.handle")(function* (request: Requ
       const input = yield* decodeBody(UpgradeServer, request, "An upgrade takes at most the Release Channel it names.");
       const call = yield* operationCall(request);
       if (!call.ok) return refusal(call.refused.refusal);
-      return admitted(yield* upgradeServer(caller, { machineId, channel: input.channel }, call), accepted);
+      return admitted(yield* upgradeServer(caller, { machineId, channel: input.channel }, call, input.server_name), accepted);
     }
     case "GET server-upgrades/:id":
       if (!isUpgradeAttemptId(id)) return missingRefusal("No such upgrade.");

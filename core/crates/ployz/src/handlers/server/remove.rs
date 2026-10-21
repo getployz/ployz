@@ -274,11 +274,11 @@ fn leave(root: &ArgMatches, removal: Removal) -> Result<(), Error> {
             },
             async |approval| match removal {
                 Removal::Reset => {
-                    cloud_account::start_removal(credential, &selected.id, &confirmation, approval)
+                    cloud_account::start_removal(credential, &selected, &confirmation, approval)
                         .await
                 }
                 Removal::Forget => {
-                    cloud_account::start_forget(credential, &selected.id, approval).await
+                    cloud_account::start_forget(credential, &selected, approval).await
                 }
             },
         )?),

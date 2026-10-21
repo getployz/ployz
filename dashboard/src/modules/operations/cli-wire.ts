@@ -2,13 +2,18 @@ import { Schema } from "effect";
 import { dataLossIdentitySchema } from "#/modules/runtime/data-loss-identity";
 import type { VolumeRunRequestKind } from "#/modules/volume-run/volume-run";
 
+/** The name the CLI resolved the Server by and showed, which its run keeps. An older CLI sends none. */
+const shownName = { server_name: Schema.optional(Schema.String) };
+
 /** `server rm`: the reset's DataLossConfirmation, the Volumes the user accepted losing. */
-export const RemoveServer = Schema.Struct({ confirm_data_loss: Schema.Struct({ confirmed: Schema.Array(dataLossIdentitySchema) }) });
+export const RemoveServer = Schema.Struct({ confirm_data_loss: Schema.Struct({ confirmed: Schema.Array(dataLossIdentitySchema) }), ...shownName });
 
 /** `server forget <server>`: nothing to confirm beyond the approval. */
-export const ForgetServer = Schema.Struct({});
+export const ForgetServer = Schema.Struct(shownName);
 
-export const UpgradeServer = Schema.Struct({ channel: Schema.optional(Schema.String) });
+export const DrainServer = Schema.Struct(shownName);
+
+export const UpgradeServer = Schema.Struct({ channel: Schema.optional(Schema.String), ...shownName });
 
 /** `server forget` with no Server: the Organization's slug, as the user typed it. */
 export const ForgetServers = Schema.Struct({ organization: Schema.String });

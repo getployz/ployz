@@ -202,7 +202,7 @@ fn through_cloud(
             credential,
             Method::POST,
             &format!("servers/{id}/upgrade"),
-            &json!({ "channel": channel }),
+            &json!({ "channel": channel, "server_name": name }),
             None,
         ));
         let run = match started {
