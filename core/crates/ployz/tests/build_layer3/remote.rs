@@ -369,8 +369,8 @@ async fn prepared_build_is_delivered_to_its_destination_without_a_registry() {
             .args([
                 "--connect",
                 &address,
-                "machine",
-                "update",
+                "server",
+                "set",
                 machine.as_str(),
                 policy,
             ])
