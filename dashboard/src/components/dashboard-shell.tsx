@@ -40,7 +40,7 @@ export function DashboardShell({
   const [dock, setDock] = useState<HTMLElement | null>(null);
   const placeLabel = places.find((place) => place.current)?.label ?? getDashboardSectionLabel(section);
   // Pages behind the Org Store gate own their h1, so its loading and error states stand in with the place's name.
-  const gateHeading = <h1 className={scope.kind === "environment" ? "sr-only" : "text-2xl font-semibold"}>{placeLabel}</h1>;
+  const gateHeading = <h1 className={canvas ? "sr-only" : "text-2xl font-semibold"}>{placeLabel}</h1>;
   return (
     <AgentDock.Provider value={dock}>
     <div className="flex h-dvh min-h-0 overflow-hidden">
