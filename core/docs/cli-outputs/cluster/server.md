@@ -1062,7 +1062,6 @@ Removed Server gamma.
 stderr:
 ```
 ! Server gamma is running Services: shop-production/web.
-next: ployz server drain gamma
 ! Replicated Services may now be under-replicated: shop-production/web. Their replicas were not moved.
 ```
 

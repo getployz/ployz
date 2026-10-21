@@ -1,11 +1,12 @@
 //! Real RPC adapter contracts for Global catch-up.
 
 use super::*;
-use ployz_core::{ContainerNow, EnsuredContainer, RpcResponse};
+use ployz_core::{ContainerNow, EnsuredContainer, RpcResponse, ServiceName};
 
-fn global_slot(key: &str) -> SlotKey {
+fn global_slot(key: &str, service: &ServiceName) -> SlotKey {
     SlotKey {
         namespace: Namespace::parse("app").unwrap(),
+        service: service.clone(),
         kind: ContainerKind::ServiceContainer,
         creation_key: CreationKey::try_from(key.to_owned()).unwrap(),
     }
@@ -14,7 +15,7 @@ fn global_slot(key: &str) -> SlotKey {
 fn new_container(key: &str, resolved_spec: ployz_core::ResolvedServiceSpec) -> NewContainer {
     NewContainer {
         r#gen: ployz_core::Gen::FIRST,
-        slot: global_slot(key),
+        slot: global_slot(key, &resolved_spec.name),
         resolved_spec,
         deployment_id: None,
         registry_auth: None,

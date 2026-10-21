@@ -200,6 +200,15 @@ function applyOne(namespace, spec, options = defaultPlanOptions()) {
   };
 }
 
+// Cloud's close budget for a short-lived session (SESSION_CLOSE_CLUSTER_MS), which this package cannot import.
+const STOPPED_CLOSE_MS = 2_000;
+
+function settledWithin(promise, ms) {
+  let timer;
+  const elapsed = new Promise(resolve => (timer = setTimeout(resolve, ms)));
+  return Promise.race([promise, elapsed]).finally(() => clearTimeout(timer));
+}
+
 async function connect(options) {
   const { signal, timeoutMs } = options;
   if (timeoutMs !== undefined && (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > 2147483647)) {
@@ -221,7 +230,12 @@ async function connect(options) {
     const close = client.close.bind(client);
     // Keep listening until the close finishes, so an abort during it still reaches the session.
     client.close = async () => { try { return await close(); } finally { cleanup(); } };
-    if (stopped) { await client.close(); signal?.throwIfAborted(); throw new Error("session deadline exceeded"); }
+    // The abort or deadline is why connect failed, so a failed or hung close here must not replace or hold it.
+    if (stopped) {
+      await settledWithin(client.close().catch(() => {}), STOPPED_CLOSE_MS);
+      signal?.throwIfAborted();
+      throw new Error("session deadline exceeded");
+    }
     return client;
   } catch (error) { cleanup(); throw error; }
 }
