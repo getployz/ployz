@@ -17,12 +17,10 @@ use super::{BOOT_PASS_WAIT, BootHost, Observed, run};
 use crate::{
     corrosion::{
         Error as CorrosionError, IngressRouteAck, IngressRouteRow, ReplicatedObservations,
-        ReplicatedStore, store_tests::identity_store, wait_for_catch_up,
     },
     ingress::PublishedRoutes,
     machine::LocalMachineError,
     route_acks::{required_ackers, routed},
-    test_dir::TestDir,
 };
 
 const ACTOR: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -173,8 +171,8 @@ struct FakeHost {
     local: MachineId,
     targets: watch::Receiver<Option<BTreeMap<String, i64>>>,
     local_actor: &'static str,
-    /// `None` is a store already caught up to any target.
-    store: Option<ReplicatedStore>,
+    /// The store's version per actor. `None` is a store already caught up to any target.
+    versions: Option<watch::Receiver<BTreeMap<String, i64>>>,
     observed: Arc<Mutex<Option<Observed>>>,
     wants: Arc<Mutex<Vec<ContainerWant>>>,
 }
@@ -185,7 +183,7 @@ impl FakeHost {
             local: local.id,
             targets: watch::channel(Some(BTreeMap::new())).1,
             local_actor: LOCAL_ACTOR,
-            store: None,
+            versions: None,
             observed: Arc::new(Mutex::new(Some(observed))),
             wants: Arc::default(),
         }
@@ -210,10 +208,18 @@ impl BootHost for FakeHost {
     }
 
     async fn catch_up(&self, target: &BTreeMap<String, i64>) -> Result<(), CorrosionError> {
-        match &self.store {
-            Some(store) => wait_for_catch_up(store, target).await,
-            None => Ok(()),
+        if let Some(versions) = &self.versions {
+            versions
+                .clone()
+                .wait_for(|versions| {
+                    target.iter().all(|(actor, version)| {
+                        versions.get(actor).copied().unwrap_or_default() >= *version
+                    })
+                })
+                .await
+                .expect("the test holds the store");
         }
+        Ok(())
     }
 
     async fn observe(&self) -> Result<Observed, CorrosionError> {
@@ -344,20 +350,9 @@ async fn down_proxy() {
     );
 }
 
-/// A file-backed store, so the test edits the rows the store's server reads.
-async fn store_at_version(dir: &TestDir, version: i64) -> (ReplicatedStore, rusqlite::Connection) {
-    std::fs::create_dir_all(&dir.0).unwrap();
-    let path = dir.0.join("corrosion.db");
-    let db = rusqlite::Connection::open(&path).unwrap();
-    db.execute_batch(&format!(
-        "CREATE TABLE crsql_db_versions (site_id BLOB PRIMARY KEY, db_version INTEGER);
-         CREATE TABLE __corro_bookkeeping_gaps (actor_id BLOB, start INTEGER, end INTEGER);
-         CREATE TABLE __corro_seq_bookkeeping (site_id BLOB, db_version INTEGER);
-         INSERT INTO crsql_db_versions VALUES (X'{ACTOR}', {version});"
-    ))
-    .unwrap();
-    let (store, _server) = identity_store(rusqlite::Connection::open(&path).unwrap()).await;
-    (store, db)
+/// A store at `version` for [`ACTOR`], so the test advances it as replication would.
+fn store_at_version(version: i64) -> watch::Sender<BTreeMap<String, i64>> {
+    watch::Sender::new(BTreeMap::from([(ACTOR.to_owned(), version)]))
 }
 
 #[tokio::test(start_paused = true)]
@@ -373,17 +368,16 @@ async fn stale_own_row_does_not_ack() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn waits_for_peer_targets_and_catch_up() {
-    let dir = TestDir::new("ployzd-boot-pass");
-    let (store, db) = store_at_version(&dir, 3).await;
+    let store = store_at_version(3);
     let cluster = Cluster::new();
     let observed = cluster.acked_everywhere();
     let own = own_acks(&cluster.local, &observed);
     let (peer, targets) = watch::channel(None);
     let host = FakeHost {
         targets,
-        store: Some(store),
+        versions: Some(store.subscribe()),
         ..FakeHost::new(&cluster.local, observed)
     };
     let running = tokio::spawn(run(host.clone(), synced(), published(own)));
@@ -393,8 +387,9 @@ async fn waits_for_peer_targets_and_catch_up() {
     peer.send_replace(Some(BTreeMap::from([(ACTOR.to_owned(), 5)])));
     tokio::time::sleep(Duration::from_millis(1500)).await;
     assert!(host.wants().is_empty(), "the store is behind the peer");
-    db.execute("UPDATE crsql_db_versions SET db_version = 5", [])
-        .unwrap();
+    store.send_modify(|versions| {
+        versions.insert(ACTOR.to_owned(), 5);
+    });
     tokio::time::timeout(Duration::from_secs(5), running)
         .await
         .unwrap()
@@ -406,20 +401,15 @@ async fn waits_for_peer_targets_and_catch_up() {
 /// Ingress as it runs at boot: each publish renders the routes from the store as
 /// it stood when the render began, and publishing starts before catch-up.
 fn rendered_from(
-    path: std::path::PathBuf,
+    versions: watch::Receiver<BTreeMap<String, i64>>,
     caught_up_at: i64,
     stale: BTreeMap<QualifiedService, BTreeSet<ContainerId>>,
     fresh: BTreeMap<QualifiedService, BTreeSet<ContainerId>>,
 ) -> watch::Receiver<PublishedRoutes> {
     let (publishes, published) = watch::channel(PublishedRoutes::default());
     tokio::spawn(async move {
-        let db = rusqlite::Connection::open(path).unwrap();
         while !publishes.is_closed() {
-            let version: i64 = db
-                .query_row("SELECT max(db_version) FROM crsql_db_versions", [], |row| {
-                    row.get(0)
-                })
-                .unwrap();
+            let version = versions.borrow().get(ACTOR).copied().unwrap();
             let routes = if version >= caught_up_at {
                 &fresh
             } else {
@@ -435,10 +425,9 @@ fn rendered_from(
     published
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn acks_only_from_a_publish_rendered_after_catch_up() {
-    let dir = TestDir::new("ployzd-boot-pass-render");
-    let (store, db) = store_at_version(&dir, 3).await;
+    let store = store_at_version(3);
     let cluster = Cluster::new();
     // This Machine's row predates the power-off and routes only its old copy.
     let observed = observed(
@@ -459,16 +448,18 @@ async fn acks_only_from_a_publish_rendered_after_catch_up() {
     )]);
     let host = FakeHost {
         targets: watch::channel(Some(BTreeMap::from([(ACTOR.to_owned(), 5)]))).1,
-        store: Some(store),
+        versions: Some(store.subscribe()),
         ..FakeHost::new(&cluster.local, observed)
     };
-    let published = rendered_from(dir.0.join("corrosion.db"), 5, stale, fresh);
+    let published = rendered_from(store.subscribe(), 5, stale, fresh);
     let running = tokio::spawn(run(host.clone(), synced(), published));
 
-    tokio::time::sleep(Duration::from_millis(1500)).await;
+    // Mid-render, so the render in flight read the store before catch-up.
+    tokio::time::sleep(Duration::from_millis(1550)).await;
     assert!(host.wants().is_empty(), "the store is behind the peer");
-    db.execute("UPDATE crsql_db_versions SET db_version = 5", [])
-        .unwrap();
+    store.send_modify(|versions| {
+        versions.insert(ACTOR.to_owned(), 5);
+    });
     tokio::time::timeout(Duration::from_secs(5), running)
         .await
         .unwrap()
@@ -477,16 +468,13 @@ async fn acks_only_from_a_publish_rendered_after_catch_up() {
     assert_eq!(host.wants(), vec![out(&cluster.old)]);
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn catch_up_skips_this_machines_own_actor() {
     const PEER_ACTOR: &str = "cccccccccccccccccccccccccccccccc";
-    let dir = TestDir::new("ployzd-boot-pass-own-actor");
-    let (store, db) = store_at_version(&dir, 25).await;
-    db.execute(
-        &format!("INSERT INTO crsql_db_versions VALUES (X'{PEER_ACTOR}', 4)"),
-        [],
-    )
-    .unwrap();
+    let store = store_at_version(25);
+    store.send_modify(|versions| {
+        versions.insert(PEER_ACTOR.to_owned(), 4);
+    });
     let cluster = Cluster::new();
     let observed = cluster.acked_everywhere();
     let own = own_acks(&cluster.local, &observed);
@@ -498,7 +486,7 @@ async fn catch_up_skips_this_machines_own_actor() {
         ])))
         .1,
         local_actor: ACTOR,
-        store: Some(store),
+        versions: Some(store.subscribe()),
         ..FakeHost::new(&cluster.local, observed)
     };
 
