@@ -75,7 +75,9 @@ fn failed_drain(operations: &[Operation]) -> Option<Value> {
         DrainVerdict::Failed | DrainVerdict::Lost | DrainVerdict::Interrupted => {
             (at > 0).then(|| {
                 let mut shown = latest(drain);
-                shown["outcome"] = json!(verdict);
+                if let Some(fields) = shown.as_object_mut() {
+                    fields.insert("outcome".to_owned(), json!(verdict));
+                }
                 shown
             })
         }
