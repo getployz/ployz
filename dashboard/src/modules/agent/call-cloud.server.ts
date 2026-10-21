@@ -12,7 +12,7 @@ import { countOrganizationMachines, loadOrganizationConnections } from "#/module
 import { UNREACHABLE_MESSAGE } from "#/modules/machines/server-operations.server";
 import type { ServerPolicyChange } from "#/modules/machines/server-policy";
 import { admittedAt, type Admission } from "#/modules/operations/keyed.server";
-import { dashedAttempt, operationsOn, serverNames } from "#/modules/operations/operation-history.server";
+import { dashedAttempt, operationsOn, serverNames, settledDrain } from "#/modules/operations/operation-history.server";
 import {
   actService,
   cleanNamespace,
@@ -203,10 +203,11 @@ const ask = Effect.fn("CallCloud.ask")(function* (caller: Caller, query: CloudQu
       return yield* runtimeRead(caller, query, "metrics:read", query.subject.kind === "service" ? query.subject.namespace : null);
     case "copies":
       return yield* copies(caller, query.namespace, query.volume);
-    case "operations":
-      return yield* operationsOn(organizationId, query.subject, query.attempt, query.limit).pipe(
-        Effect.map((operations) => answer<OperationsAnswer>({ operations })),
-      );
+    case "operations": {
+      const operations = yield* operationsOn(organizationId, query.subject, query.attempt, query.limit);
+      const settled = query.subject.kind === "server" && query.attempt === null ? yield* settledDrain(organizationId, query.subject.machine, null) : null;
+      return answer<OperationsAnswer>(settled === null ? { operations } : { operations, settled_drain: settled });
+    }
     case "logs":
       if (caller.support !== null && !caller.support.logs) {
         return refusal("forbidden", "This Organization doesn't show its container logs to Ployz support.");
@@ -273,10 +274,10 @@ const act = Effect.fn("CallCloud.act")(function* (caller: Caller, { attempt, dig
       return yield* admitted(admission, { kind: "service", environment: action.environment, service: action.service }, "Service");
     }
     case "drain":
-      return yield* admitted(yield* drainServer(caller, action.server.machine, call), { kind: "server", machine: action.server.machine }, "Server", action.server.name);
+      return yield* admitted(yield* drainServer(caller, action.server.machine, call, action.server.name), { kind: "server", machine: action.server.machine }, "Server", action.server.name);
     case "upgrade":
       return yield* admitted(
-        yield* upgradeServer(caller, { machineId: action.server.machine, channel: undefined }, call),
+        yield* upgradeServer(caller, { machineId: action.server.machine, channel: undefined }, call, action.server.name),
         { kind: "server", machine: action.server.machine },
         "Server",
         action.server.name,
@@ -300,7 +301,7 @@ const act = Effect.fn("CallCloud.act")(function* (caller: Caller, { attempt, dig
       if (connected === null) return yield* beforeWrite(notConnected(organizationId));
       const { data_loss } = yield* beforeWrite(connected.dataLossIfMachineRemoved(action.server.machine));
       return yield* admitted(
-        yield* removeServer(caller, action.server.machine, data_loss, call),
+        yield* removeServer(caller, action.server.machine, data_loss, call, action.server.name),
         { kind: "server", machine: action.server.machine },
         "Server",
         action.server.name,
@@ -308,7 +309,7 @@ const act = Effect.fn("CallCloud.act")(function* (caller: Caller, { attempt, dig
     }
     case "forget_server":
       return yield* admitted(
-        yield* forgetServer(caller, action.server.machine, call),
+        yield* forgetServer(caller, action.server.machine, call, action.server.name),
         { kind: "server", machine: action.server.machine },
         "Server",
         action.server.name,

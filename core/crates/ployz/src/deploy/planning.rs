@@ -521,7 +521,51 @@ fn plan_create(
     Ok(admit(intent, only, planned))
 }
 
+/// The Servers each deployed Service has a copy on once every operation completes.
+/// An operation that names an observed copy replaces, updates, stops or removes it,
+/// so every copy no operation names stays where it is.
+fn placed_on(
+    planned: &Planned,
+    snapshot: &DeploySnapshot,
+    namespace: &Namespace,
+) -> BTreeMap<ServiceName, BTreeSet<MachineId>> {
+    let named: BTreeSet<ContainerId> = planned
+        .operations
+        .iter()
+        .filter_map(DeployOperation::container_id)
+        .collect();
+    let observed = snapshot.services_in(namespace);
+    planned
+        .groups
+        .iter()
+        .filter_map(|group| group.service.as_ref())
+        .map(|service| {
+            let kept = observed
+                .iter()
+                .filter(|observed| observed.identity.name == *service)
+                .flat_map(|observed| &observed.containers)
+                .map(ServiceContainer::as_observation)
+                .filter(|copy| !named.contains(&copy.container_id))
+                .map(|copy| copy.machine_id);
+            let started = planned
+                .operations
+                .iter()
+                .filter(|operation| {
+                    matches!(
+                        operation,
+                        DeployOperation::RunContainer { .. }
+                            | DeployOperation::ReplaceContainer(_)
+                            | DeployOperation::UpdateContainer(_)
+                    ) && operation.service_name() == Some(service)
+                })
+                .map(DeployOperation::machine_id);
+            (service.clone(), kept.chain(started).collect())
+        })
+        .collect()
+}
+
 fn seal_plan(planned: Planned, snapshot: &DeploySnapshot, namespace: &Namespace) -> DeployPlan {
+    let placed_on = placed_on(&planned, snapshot, namespace);
     let preview = DeployPreview {
         storage: Vec::new(),
         namespace: namespace.clone(),
@@ -560,6 +604,7 @@ fn seal_plan(planned: Planned, snapshot: &DeploySnapshot, namespace: &Namespace)
         prune_refusal: planned.prune_refusal,
         depths: super::report::depths(&planned.groups),
         dependencies: super::report::dependencies(&planned.groups),
+        placed_on,
     };
     DeployPlan {
         operations: planned.operations,

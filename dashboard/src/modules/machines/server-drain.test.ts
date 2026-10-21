@@ -162,15 +162,24 @@ describe("Drain view", () => {
     expect(view({})).toEqual({ kind: "idle" });
     expect(view({}, "a2")).toEqual({ kind: "starting" });
     expect(view({ [web2.id]: finished([moved]) }, "a2")).toEqual({ kind: "starting" });
-    expect(view({ [web2.id]: { attemptId: "a2", state: "pending", requestedAt: "2026-10-04T10:00:00.000Z" } }, "a2"))
+    expect(view({ [web2.id]: { attemptId: "a2", state: "pending", requestedAt: "2026-10-04T10:00:00.000Z", serversSilent: false } }, "a2"))
       .toEqual({ kind: "queued", behind: null });
   });
 
   it("names the Server whose running Drain a queued one waits behind", () => {
     expect(view({
-      [web2.id]: { attemptId: "a2", state: "pending", requestedAt: "2026-10-04T10:00:00.000Z" },
+      [web2.id]: { attemptId: "a2", state: "pending", requestedAt: "2026-10-04T10:00:00.000Z", serversSilent: false },
       [web1.id]: { attemptId: "a1", state: "running", startedAt: "2026-10-04T09:59:00.000Z" },
     })).toEqual({ kind: "queued", behind: "web-1" });
+  });
+
+  it("reads waiting for its servers once they didn't answer it, whether or not another Drain runs", () => {
+    const waiting: LatestDrain = { attemptId: "a2", state: "pending", requestedAt: "2026-10-04T10:00:00.000Z", serversSilent: true };
+    expect(view({ [web2.id]: waiting })).toEqual({ kind: "waiting" });
+    expect(view({
+      [web2.id]: waiting,
+      [web1.id]: { attemptId: "a1", state: "running", startedAt: "2026-10-04T09:59:00.000Z" },
+    })).toEqual({ kind: "waiting" });
   });
 
   it("offers Drain again when something stayed, failed or was not reached, or the Drain stopped early", () => {

@@ -226,6 +226,8 @@ pub(super) struct DiscoveryService {
     pub(super) select_unimplemented: bool,
     /// How SetVolumeCopy fails on these targets; every other target leaves it unimplemented.
     pub(super) set_volume_copy_failures: BTreeMap<MachineId, SwitchFailure>,
+    /// How long each routes read takes to answer, as a slow target does.
+    pub(super) routes_delay: std::time::Duration,
 }
 
 #[derive(Clone)]
@@ -307,6 +309,7 @@ impl DiscoveryService {
             update_refusal: None,
             select_unimplemented: false,
             set_volume_copy_failures: BTreeMap::new(),
+            routes_delay: std::time::Duration::ZERO,
         }
     }
 
@@ -1326,6 +1329,7 @@ impl FakeMachine for DiscoveryService {
         else {
             panic!("expected a routes read");
         };
+        tokio::time::sleep(self.routes_delay).await;
         Ok(Response::new(
             RpcResponse::from(self.routes(&read.service))
                 .encode()

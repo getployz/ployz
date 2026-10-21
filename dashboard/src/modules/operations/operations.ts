@@ -4,7 +4,7 @@ import { ForgetServersInput } from "#/modules/machines/forget-servers";
 import { RemoveNamespaceInput } from "#/modules/machines/namespace-cleanup";
 import { RequestServerDrainInput } from "#/modules/machines/server-drain";
 import { BuildConcurrencyChangeSchema, RequestServerPolicyChangeInput } from "#/modules/machines/server-policy";
-import { ForgetServer, ForgetServers, RemoveServer, UpgradeServer, VOLUME_RUN_BODIES } from "#/modules/operations/cli-wire";
+import { DrainServer, ForgetServer, ForgetServers, RemoveServer, UpgradeServer, VOLUME_RUN_BODIES } from "#/modules/operations/cli-wire";
 import { RequestServerUpgradeInput } from "#/modules/server-upgrade/server-upgrade";
 import { RefreshMirrorInput } from "#/modules/volume-copies/volume-copies";
 import { DeleteCopyInput, StageRestoreInput } from "#/modules/volume-placement/volume-placement";
@@ -129,7 +129,7 @@ export const OPERATIONS = {
     surfaces: {
       cli: {
         route: "POST servers/:id/drain",
-        body: null,
+        body: DrainServer,
         options: { server: { via: ":id" }, wait: CLI_FOLLOWS, stageOff: { omitted: "The CLI drains only; `volume move` moves a Volume off." } },
       },
       agent: {
@@ -319,7 +319,7 @@ export const OPERATIONS = {
     },
   }),
   "volume.remove_mirror": operation({
-    options: Schema.Struct({ volume: Name, environment: Name, slot: Name, confirmName: Name, acceptLoss: Names }),
+    options: Schema.Struct({ volume: Name, environment: Name, slot: Name, confirmName: Name, ifOldCopy: Schema.Boolean, acceptLoss: Names }),
     requires: "volumes:delete-copy",
     gate: "approval",
     idempotency: "volume_mirror_remove",
@@ -327,7 +327,7 @@ export const OPERATIONS = {
       cli: {
         route: VOLUME_RUNS,
         body: VOLUME_RUN_BODIES.delete_mirror,
-        options: { volume: { via: ":id" }, environment: { via: "environment" }, slot: { via: "slot" }, confirmName: { via: "confirm" }, acceptLoss: CLI_APPROVAL },
+        options: { volume: { via: ":id" }, environment: { via: "environment" }, slot: { via: "slot" }, confirmName: { via: "confirm" }, ifOldCopy: { via: "kind" }, acceptLoss: CLI_APPROVAL },
       },
       agent: {
         tool: "volume_mirror_remove",
@@ -336,6 +336,7 @@ export const OPERATIONS = {
           environment: AGENT_ENVIRONMENT,
           slot: { omitted: "The agent removes the Volume's mirror and never names an old copy." },
           confirmName: { omitted: "accept_volume_loss binds the loss instead of a typed name." },
+          ifOldCopy: { omitted: "The agent removes the Volume's mirror and never names an old copy." },
           acceptLoss: AGENT_LOSS,
         },
       },
@@ -348,6 +349,7 @@ export const OPERATIONS = {
           environment: { via: "environment" },
           slot: { via: "server" },
           confirmName: { omitted: "The page's own dialog confirms." },
+          ifOldCopy: { omitted: "The page deletes only an old copy, so Cloud always admits it as one." },
           acceptLoss: { omitted: "The page's own dialog confirms." },
         },
       },

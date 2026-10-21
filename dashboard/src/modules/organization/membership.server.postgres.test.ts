@@ -182,6 +182,11 @@ describe("removeMembership", () => {
   });
 });
 
+const lockWaiter = () => vi.waitFor(async () => {
+  expect((await harness.pool.query("select 1 from pg_stat_activity where datname = current_database() and wait_event_type = 'Lock'")).rowCount)
+    .toBeGreaterThan(0);
+});
+
 type Tx = Parameters<Parameters<typeof harness.db.transaction>[0]>[0];
 
 const whileLocked = async <A>(organizationId: string, change: (tx: Tx) => Promise<void>, during: () => Promise<A>) => {
@@ -189,7 +194,7 @@ const whileLocked = async <A>(organizationId: string, change: (tx: Tx) => Promis
     await tx.select({ userId: member.userId }).from(member).where(eq(member.organizationId, organizationId)).orderBy(asc(member.userId)).for("update");
     await change(tx);
     const outcome = during();
-    await new Promise((resolve) => setTimeout(resolve, 300));
+    await lockWaiter();
     return { outcome };
   });
   return outcome;

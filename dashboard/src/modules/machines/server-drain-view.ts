@@ -28,6 +28,8 @@ export type DrainView =
   | { readonly kind: "starting" }
   /** Requested, and waiting for a run: behind `behind`'s Drain when another Server's is running. */
   | { readonly kind: "queued"; readonly behind: string | null }
+  /** Its turn came and the servers didn't answer: it tries again until they do, or its pending limit ends it. */
+  | { readonly kind: "waiting" }
   | { readonly kind: "running"; readonly since: string }
   | {
     readonly kind: "finished";
@@ -47,7 +49,7 @@ export type DrainView =
 
 /** Whether a Drain is under way from this Server's point of view: the button spins and the switch waits. */
 export const drainBusy = (view: DrainView) =>
-  view.kind === "starting" || view.kind === "queued" || view.kind === "running";
+  view.kind === "starting" || view.kind === "queued" || view.kind === "waiting" || view.kind === "running";
 
 export const drainButtonLabel = (view: DrainView): "Drain" | "Drain again" =>
   (view.kind === "finished" && view.again) || view.kind === "failed" || view.kind === "cancelled" || view.kind === "unknown"
@@ -71,6 +73,7 @@ export function drainView(input: {
   if (own === null) return { kind: "idle" };
   switch (own.state) {
     case "pending": {
+      if (own.serversSilent) return { kind: "waiting" };
       // Drains in one Organization run one at a time.
       const behind = Object.entries(latest).find(([id, other]) => id !== server.id && other.state === "running");
       return { kind: "queued", behind: behind === undefined ? null : input.serverNames.get(behind[0]) ?? null };

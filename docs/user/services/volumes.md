@@ -154,8 +154,10 @@ Run the `ployz volume restore` line it prints to make that copy the writer again
 While one of your servers is offline, the deploy can't tell whether that server holds the writer,
 so it names that server instead and suggests no restore. See
 [When a server goes down](scaling.md#when-a-server-goes-down).
-If several servers hold copies, keep the newest and remove the others with the `ployz volume mirror rm` lines it names. A volume
-that is [mid-move](move-a-volume.md#when-a-move-stops) refuses too, and names the
+If several servers hold copies, it names them. Keep the newest and delete the others from the
+volume's page in Ployz Cloud, which shows whether each is a mirror or an old copy. The error prints
+no `ployz volume mirror rm` line for them, because such a line run later could delete a copy that
+has since become the mirror. A volume that is [mid-move](move-a-volume.md#when-a-move-stops) refuses too, and names the
 `ployz volume release` line that stops the move. A move that stopped before its first snapshot
 has nothing to release, so it names the `ployz volume move` line that runs the move again.
 

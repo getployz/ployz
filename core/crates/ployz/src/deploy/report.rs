@@ -106,9 +106,12 @@ enum Step {
     Retire,
 }
 
+/// `placed_on` is the Servers the plan leaves the Service on, when the plan is known.
+/// The row counts them once the Service completed, since only then do they hold.
 pub(crate) fn service_row<'a>(
     service: QualifiedService,
     depth: Option<u32>,
+    placed_on: Option<&BTreeSet<MachineId>>,
     replicas: impl IntoIterator<Item = Replica<'a>>,
 ) -> Row {
     let replicas: Vec<_> = replicas.into_iter().collect();
@@ -285,7 +288,10 @@ pub(crate) fn service_row<'a>(
             } else {
                 Work::Start
             },
-            machines: replicas.iter().map(|replica| replica.machine).collect(),
+            machines: match placed_on {
+                Some(placed_on) if state == State::Completed && !removal => placed_on.clone(),
+                _ => replicas.iter().map(|replica| replica.machine).collect(),
+            },
         }),
         detail: (failed > 0 && state.active()).then(|| format!("{failed} failed")),
         state,
@@ -302,6 +308,7 @@ pub(super) struct Direct {
     pub(super) operations: Vec<OperationRow>,
     notices: Vec<ployz_core::DeployWarning>,
     depths: BTreeMap<ServiceName, u32>,
+    placed_on: BTreeMap<ServiceName, BTreeSet<MachineId>>,
 }
 
 impl Direct {
@@ -314,6 +321,7 @@ impl Direct {
             operations: Vec::new(),
             notices: preview.warnings.clone(),
             depths: preview.depths.clone(),
+            placed_on: preview.placed_on.clone(),
         };
         direct.observe(&preview.operations);
         direct
@@ -359,6 +367,7 @@ impl Direct {
                 service_row(
                     QualifiedService::new(self.namespace.clone(), service.clone()),
                     self.depths.get(service).copied(),
+                    self.placed_on.get(service),
                     self.rows
                         .values()
                         .filter(|(row, _)| row.service == *service)

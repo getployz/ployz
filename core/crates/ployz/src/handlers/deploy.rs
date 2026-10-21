@@ -128,7 +128,11 @@ pub(super) fn redeploy_command(command: Command) -> Command {
          --accept-volume-loss.",
     )))
     .arg(id())
-    .arg(switch("yes", Some('y')).env(crate::cli::env::AUTO_CONFIRM))
+    .arg(
+        switch("yes", Some('y'))
+            .env(crate::cli::env::AUTO_CONFIRM)
+            .help("Roll back without asking"),
+    )
     .arg(crate::cli::volume_acceptance().help(format!(
         "{}; --yes cannot bypass this",
         crate::cli::VOLUME_ACCEPTANCE
@@ -910,7 +914,12 @@ fn plan(matches: &ArgMatches, store: &Store, services: Vec<ServiceName>) -> Resu
     let hint = store.again(&["--expect-version", plan.version.as_str()]);
     let (ingress, ingress_unchecked) = match ingress_check(matches) {
         Ok(check) => (Some(check.repairs), check.unchecked),
-        Err(cause) => (None, vec![cause]),
+        Err(Unchecked { cause, silent }) => {
+            if let Some(silent) = silent {
+                ui::warn(cant_run(&silent));
+            }
+            (None, vec![cause])
+        }
     };
     let shown = Planned {
         domain_changes: super::store::domain_changes(
@@ -932,7 +941,7 @@ fn plan(matches: &ArgMatches, store: &Store, services: Vec<ServiceName>) -> Resu
                 super::store::word(&change.lifecycle)
             ));
             for row in &change.settings {
-                for line in super::store::changed(row) {
+                for line in super::store::changed(row, &change.settings) {
                     crate::ui::stream(format_args!("  {line}"));
                 }
             }
@@ -985,22 +994,48 @@ fn undecided(unresolved: &[String]) -> Option<String> {
     ))
 }
 
-fn ingress_check(matches: &ArgMatches) -> Result<crate::ingress::IngressCheck, String> {
+/// The plan's warning when no Server answers: the deploy waits on one.
+fn cant_run(silent: &super::server::Silent) -> String {
+    let until = if let [_] = silent.names() {
+        "it does"
+    } else {
+        "one does"
+    };
+    format!(
+        "{silent}, so this deploy can't run until {until}. {}",
+        silent.next()
+    )
+}
+
+/// Why ingress went unchecked, and whether that is because no Server answered.
+struct Unchecked {
+    cause: String,
+    silent: Option<super::server::Silent>,
+}
+
+fn ingress_check(matches: &ArgMatches) -> Result<crate::ingress::IngressCheck, Unchecked> {
     let context = matches
         .try_get_one::<String>("context")
         .ok()
         .flatten()
         .map(String::as_str);
+    let unchecked = |cause| Unchecked {
+        cause,
+        silent: None,
+    };
     runtime()
-        .map_err(|error| error.to_string())?
+        .map_err(|error| unchecked(error.to_string()))?
         .block_on(async {
             let mut client = super::server::connect(matches, context)
                 .await
-                .map_err(|error| crate::ingress::unchecked(&error, None))?;
+                .map_err(|error| Unchecked {
+                    cause: crate::ingress::unchecked(&error, None),
+                    silent: super::server::Silent::of(&error),
+                })?;
             let server = client.server();
             crate::ingress::planned_slots(&mut client)
                 .await
-                .map_err(|error| crate::ingress::unchecked(&error, server))
+                .map_err(|error| unchecked(crate::ingress::unchecked(&error, server)))
         })
 }
 
@@ -1342,6 +1377,7 @@ pub(super) fn say_view(view: &DeploymentView) {
         | ployz_store::Outcome::Executed {
             reason: Some(reason),
             cause,
+            cancelled: false,
             ..
         },
     ) = &view.deployment.outcome
@@ -1362,11 +1398,12 @@ pub(super) fn say_view(view: &DeploymentView) {
         ));
     }
     for node in &view.nodes {
-        crate::ui::stream(format_args!(
-            "  {}: {}",
-            node.node.name(),
+        let outcome = if node.outcome == ployz_store::NodeStatus::Failed && node.cancelled {
+            "cancelled".to_owned()
+        } else {
             super::store::word(&node.outcome)
-        ));
+        };
+        crate::ui::stream(format_args!("  {}: {outcome}", node.node.name()));
     }
     for build in &view.builds {
         let commit = build.commit.as_ref().map_or("the upload", |commit| {

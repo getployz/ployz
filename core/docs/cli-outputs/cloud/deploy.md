@@ -307,11 +307,17 @@ Deployment #1 of shop/production: queued
   sentry: pending
 ```
 
-### deployment start 1 (follows; no Server)
+### deployment start 1 (follows; no Server enrolled)
 
 ```console
 $ ployz deployment start 1
-# exit 124
+# exit 1
+```
+
+stderr:
+```
+error: This Organization has no servers yet, so nothing deployed. Add one, then deploy again.
+next: ployz server add
 ```
 
 ### deployment cancel 1

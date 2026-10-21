@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { notifyManager, QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { Prep, StoredReport } from "#/modules/machines/waiting/checkin-wire";
@@ -28,6 +28,7 @@ afterEach(() => {
   cleanup();
   vi.useRealTimers();
   vi.restoreAllMocks();
+  notifyManager.setScheduler((callback) => setTimeout(callback, 0));
 });
 
 const NOW = Date.parse("2026-10-17T10:00:00Z");
@@ -279,8 +280,8 @@ function deferred<T>() {
   const promise = new Promise<T>((done) => { resolve = done; });
   return { promise, resolve };
 }
-// React Query tells its observers on a setTimeout(0), which act does not wait for.
-const notified = () => new Promise((done) => setTimeout(done, 0));
+// React Query tells its observers on a setTimeout(0), which act does not wait for; a microtask it does.
+const notifyWithinAct = () => notifyManager.setScheduler(queueMicrotask);
 const flowClient = () => seedRole(new QueryClient({ defaultOptions: { queries: { retry: false } } }), "ada", "owner");
 function flow(servers: readonly WaitingServerView[], hasFirst: boolean) {
   const client = flowClient();
@@ -296,6 +297,7 @@ it.each(["waiting-first", "status-first"])("keeps returned rows at their effecti
   const first = { ...host("first"), firstSeenAt: "2026-10-17T08:00:00Z", arrivalAt: "2026-10-17T08:00:00Z" };
   const second = host("second");
   const attempt: ServerEnrollmentView = { id: "attempt", waitingServerId: first.id, role: "joiner", name: "first", storage: { kind: "none" }, state: "running", stage: "installing", queued: false, ahead: null, machineId: null, failure: null, requestedAt: "2026-10-17T09:00:00Z", endedAt: null };
+  notifyWithinAct();
   const client = flowClient();
   const waitingKey = waitingServersQueryOptions("ada").queryKey;
   const statusKey = serverEnrollmentsQueryOptions("ada").queryKey;
@@ -310,8 +312,8 @@ it.each(["waiting-first", "status-first"])("keeps returned rows at their effecti
   const waitingFetch = client.refetchQueries({ queryKey: waitingKey });
   const statusFetch = client.refetchQueries({ queryKey: statusKey });
   const returned: WaitingServerView = { ...first, arrivalAt: "2026-10-17T10:01:00Z", returned: { state: "failed", stage: "storage", message: "Disk missing" } };
-  const endWaiting = () => act(async () => { waiting.resolve([second, returned]); await waitingFetch; await notified(); });
-  const endStatus = () => act(async () => { status.resolve({ attempts: [{ ...attempt, state: "failed", endedAt: returned.arrivalAt }], hasFirst: true, joining: 0 }); await statusFetch; await notified(); });
+  const endWaiting = () => act(async () => { waiting.resolve([second, returned]); await waitingFetch; });
+  const endStatus = () => act(async () => { status.resolve({ attempts: [{ ...attempt, state: "failed", endedAt: returned.arrivalAt }], hasFirst: true, joining: 0 }); await statusFetch; });
   if (order === "waiting-first") {
     await endWaiting();
     expect(rowNames()).toEqual(["second", "first"]);
@@ -397,6 +399,7 @@ it("does not offer an unproven spare-disk promise, and cannot enroll a zero-row 
 });
 
 it("keeps preview data while editing, debounces names, and permits a background refetch", async () => {
+  notifyWithinAct();
   const preview = previewStub();
   const client = flowClient();
   render(<QueryClientProvider client={client}><EnrollSheet organizationSlug="ada" servers={[host("one")]} hasFirst onClose={vi.fn()} /></QueryClientProvider>);
@@ -405,7 +408,7 @@ it("keeps preview data while editing, debounces names, and permits a background 
   preview.mockReturnValueOnce(pendingPlan.promise);
   const refetch = client.invalidateQueries({ queryKey: ["server-enrollment-plan"] });
   await vi.waitFor(() => expect(preview).toHaveBeenCalledTimes(2));
-  await act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)); });
+  await act(async () => {});
   expect(screen.getByRole<HTMLButtonElement>("button", { name: "Enroll 1" }).disabled).toBe(false);
   await act(async () => { pendingPlan.resolve(planFor(["id-one"])); await refetch; });
   fireEvent.change(screen.getByRole("combobox", { name: "Names" }), { target: { value: "pattern" } });
