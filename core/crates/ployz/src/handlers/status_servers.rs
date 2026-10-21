@@ -928,6 +928,40 @@ mod tests {
     }
 
     #[test]
+    fn status_names_no_machine_for_a_removed_copy_whose_owner_the_reader_calls_down() {
+        let [one, two, three] = machines();
+        let check = judge(Observed {
+            machines: listed(&[&one, &two, &three], &[]),
+            copies: Copies::Listed {
+                live: listing(&[]),
+                reads: vec![(
+                    web([routed_on(&one, '1'), routed_on(&three, '3')]),
+                    Ok(routes_as_ployzd_answers(
+                        &[(&one, &['1', '3']), (&two, &['1', '3'])],
+                        &[&three],
+                    )),
+                )],
+                routed: BTreeMap::from([(
+                    two.id,
+                    Ok(web_routed_at(&[
+                        ('1', [10, 210, 0, 1]),
+                        ('0', [10, 210, 12, 5]),
+                    ])),
+                )]),
+            },
+        });
+
+        assert!(
+            check
+                .attention
+                .iter()
+                .all(|attention| attention.reason != "routes_stale_address"),
+            "{}",
+            serde_json::to_value(&check.attention).unwrap()
+        );
+    }
+
+    #[test]
     fn status_names_no_machine_for_a_removed_copy_at_an_address_no_machine_owns() {
         let [one, two, three] = machines();
         let check =

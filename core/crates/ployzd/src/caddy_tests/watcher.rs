@@ -1509,7 +1509,7 @@ async fn routed_addresses_claim_nothing_after_a_failed_write_without_the_admin()
 }
 
 #[tokio::test]
-async fn routed_addresses_are_empty_on_a_machine_with_no_caddy() {
+async fn routed_addresses_are_empty_on_a_machine_that_takes_no_ingress() {
     let WatcherFixture {
         machine,
         state,
@@ -1517,6 +1517,10 @@ async fn routed_addresses_are_empty_on_a_machine_with_no_caddy() {
         server,
         directory,
     } = watcher_fixture().await;
+    let machine = Machine {
+        accepts_ingress: false,
+        ..machine
+    };
     state.containers.lock().unwrap().remove(1);
     let caddyfile = directory.join(CONFIG_FILE);
     let (route_publishes, mut published) =
@@ -1540,6 +1544,45 @@ async fn routed_addresses_are_empty_on_a_machine_with_no_caddy() {
     .await
     .expect("no Caddy runs here, so this Machine routes nothing")
     .unwrap();
+
+    shutdown.cancel();
+    watcher.await.unwrap().unwrap();
+    server.abort();
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[tokio::test]
+async fn routed_addresses_claim_nothing_without_the_admin_on_a_machine_that_takes_ingress() {
+    let WatcherFixture {
+        machine,
+        state,
+        address,
+        server,
+        directory,
+    } = watcher_fixture().await;
+    state.containers.lock().unwrap().remove(1);
+    let caddyfile = directory.join(CONFIG_FILE);
+    let (route_publishes, published) =
+        tokio::sync::watch::channel(crate::ingress::PublishedRoutes::default());
+    let shutdown = CancellationToken::new();
+    let watcher = tokio::spawn(watch_caddy(
+        machine.clone(),
+        ReplicatedStore::new(ApiClient::http1(address, &"a".repeat(64)).unwrap()),
+        no_down,
+        caddyfile.clone(),
+        route_publishes,
+        shutdown.clone(),
+        || std::future::ready(Ok(None::<TestAdmin>)),
+    ));
+
+    wait_for_caddyfile(&caddyfile, "10.210.1.2:80").await;
+    state.wait_for_ack_transactions(1).await;
+    settle().await;
+    assert_eq!(
+        published.borrow().addresses,
+        None,
+        "a Caddy this Machine has not observed yet may already serve the file"
+    );
 
     shutdown.cancel();
     watcher.await.unwrap().unwrap();
