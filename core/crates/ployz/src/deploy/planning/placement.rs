@@ -908,7 +908,8 @@ impl LimitsChange {
     /// more of than it asks for, so a copy whose in-place update missed it keeps
     /// serving on its old limits until the next Deploy. A Service is updated in
     /// place only when every copy keeps its id. The boot pass no longer relies on
-    /// that, since it counts copies instead of trusting their gens.
+    /// that: it sets Out a copy beside newer ones only when a Deploy would recreate
+    /// it or the Service has more copies than replicas, never for its gen alone.
     pub(super) fn decide<Budget: Clone, Planned>(
         worth_trying: bool,
         budget: &mut Budget,
