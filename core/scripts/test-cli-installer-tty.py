@@ -77,26 +77,32 @@ def run(shell, env, mode):
     os.write(script_write, SOURCE)
     os.close(script_write)
     output = b''
-    deadline = time.monotonic() + 10
-    while b'Fleet Token (from Servers in Ployz Cloud): ' not in output:
-        assert time.monotonic() < deadline, (shell, mode, output)
-        if select.select([master], [], [], .01)[0]:
-            output += os.read(master, 65536)
+    status = None
+
+    def wait_for(phase, reached):
+        nonlocal output
+        start = time.monotonic()
+        while not reached():
+            elapsed = time.monotonic() - start
+            assert elapsed < 10, f'{shell} {mode}: no {phase} after {elapsed:.1f}s; output: {output!r}'
+            if select.select([master], [], [], .01)[0]:
+                try:
+                    output += os.read(master, 65536)
+                except OSError:
+                    pass
+
+    def exited():
+        nonlocal status
+        done, status = os.waitpid(pid, os.WNOHANG)
+        return done
+
+    wait_for('prompt', lambda: PROMPT in output)
     echo_at_prompt = bool(termios.tcgetattr(master)[3] & termios.ECHO)
     if mode == 'term':
         os.kill(pid, signal.SIGTERM)
     else:
         os.write(master, {'type': TOKEN + '\n', 'ctrl-c': '\x03'}[mode].encode())
-    while True:
-        assert time.monotonic() < deadline, (shell, mode, output)
-        if select.select([master], [], [], .01)[0]:
-            try:
-                output += os.read(master, 65536)
-            except OSError:
-                pass
-        done, status = os.waitpid(pid, os.WNOHANG)
-        if done:
-            break
+    wait_for('exit', exited)
     echo_after = bool(termios.tcgetattr(master)[3] & termios.ECHO)
     os.close(master)
     rc = os.waitstatus_to_exitcode(status)
