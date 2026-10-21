@@ -473,14 +473,17 @@ fn a_crashing_copy_on_a_down_machine_shows_only_the_down_row() {
     let [one, two, three] = machines();
     let check = judged(
         listed(&[&one, &two], &[&three]),
-        listed_copies(vec![web_copy(
+        omitted_by(
+            listed_copies(vec![web_copy(
+                &three,
+                '3',
+                CopyRotation::In,
+                ContainerRuntimeObservation::Restarting,
+                1,
+                1,
+            )]),
             &three,
-            '3',
-            CopyRotation::In,
-            ContainerRuntimeObservation::Restarting,
-            1,
-            1,
-        )]),
+        ),
     );
 
     assert_eq!(
@@ -768,16 +771,23 @@ fn a_server_that_never_arrived_does_not_hide_a_draining_copy() {
         "{:?}",
         messages(&check)
     );
+    assert!(warned(&check).is_empty());
 }
 
 #[test]
 fn a_live_server_left_unasked_hides_a_draining_copy_behind_its_warning() {
-    let mut unknown =
-        MachineObservation::new(machine('d', "machine-4"), MembershipObservation::Unknown);
-    unknown.machine.runtime.daemon_version = "0.3.0".into();
-    assert!(!unknown.unarrived());
+    let unrecognized = MachineObservation {
+        membership_evidence: Some(MembershipEvidence::Unrecognized {
+            raw: "paused".to_owned(),
+        }),
+        ..MachineObservation::new(
+            machine('d', "machine-4"),
+            MembershipObservation::Unrecognized("paused".to_owned()),
+        )
+    };
+    assert!(!unrecognized.unarrived());
 
-    let check = draining_beside(unknown);
+    let check = draining_beside(unrecognized);
 
     assert!(check.attention.is_empty());
     assert_eq!(

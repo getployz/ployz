@@ -597,7 +597,7 @@ fn service_names(services: &[QualifiedService]) -> String {
 /// Out copy still running counts as kept only for a Replicated Service in a `complete`
 /// view: it stands in for a missing In copy only when every copy was seen. Each Held copy
 /// cancels one Out stand-in, never an In copy. The mode and the count come from the
-/// newest kept In copy, else the newest kept Out copy.
+/// newest In copy that is not stopped, else the newest running Out copy.
 fn shortfall<'service>(
     service: &'service ServiceObservation,
     down: &BTreeSet<MachineId>,
