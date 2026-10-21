@@ -226,7 +226,7 @@ impl VolumeStorage {
             newest,
             resume_token,
             pull: self.pull(slot, name).await?,
-            role: self.slot_role(&slot.name).await?,
+            role: Some(self.slot_role(&slot.name).await?),
         }))
     }
 

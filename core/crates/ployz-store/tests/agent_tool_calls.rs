@@ -841,6 +841,44 @@ fn review_names_a_config_by_its_name() {
 }
 
 #[test]
+fn review_and_inspect_name_a_config_mount_by_its_config() {
+    let store = shop();
+    let service = json!({ "name": "web", "image": "traefik/whoami" });
+    call(&store, "service_add", service, "add-1").ok();
+    let config = json!({
+        "config": "sentry",
+        "files": { "config.yml": "a: 1" },
+        "service": "web",
+        "path": "/etc/sentry",
+    });
+    call(&store, "config_write", config, "write-1").ok();
+
+    let review = call(&store, "review", json!({}), "review-1").ok();
+    let lines = review["lines"].as_array().unwrap();
+    assert!(
+        lines
+            .iter()
+            .any(|line| line == r#"  set web.configs.sentry = "/etc/sentry""#),
+        "{review}"
+    );
+    assert!(!review.to_string().contains("configs.@"), "{review}");
+
+    let inspected = call(
+        &store,
+        "service_inspect",
+        json!({ "service": "web" }),
+        "inspect-1",
+    )
+    .ok();
+    let staged = inspected["staged"].as_array().unwrap();
+    assert!(
+        staged.iter().any(|path| path == "configs.sentry"),
+        "{inspected}"
+    );
+    assert!(!inspected.to_string().contains("configs.@"), "{inspected}");
+}
+
+#[test]
 fn discard_drops_a_staged_service() {
     let store = shop();
     call(

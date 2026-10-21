@@ -83,8 +83,14 @@ it("holds the dialog through Back until the secret shows", async () => {
   fireEvent.click(submit);
   await waitFor(() => expect(submit.hasAttribute("disabled")).toBe(true));
   await act(async () => {
+    const decided = new Promise<void>((resolve) => {
+      const stop = history.subscribe(() => {
+        stop();
+        resolve();
+      });
+    });
     window.history.back();
-    await new Promise((settle) => setTimeout(settle, 50));
+    await decided;
   });
   await made("pzt_kept");
 

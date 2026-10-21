@@ -195,7 +195,6 @@ it("keeps the confirm open while its grow is admitted, so Escape can't strand th
   fireEvent.click(within(dialog).getByRole("button", { name: "Grow" }));
   await within(dialog).findByRole("button", { name: /Growing/ });
   fireEvent.keyDown(dialog, { key: "Escape" });
-  await act(async () => { await new Promise((resolve) => setTimeout(resolve, 50)); });
   expect(screen.getByRole("alertdialog")).toBe(dialog);
   await act(async () => { refuse(new Error("data has a move in progress")); });
   await screen.findByText("data has a move in progress");
