@@ -88,7 +88,7 @@ export function runtimeLine(
 ): RuntimeLine {
   const rolling = deploy === "restarts";
   // A new Service a failed Deploy still started has containers, and one a Deploy is starting has none yet: say what they do.
-  if (service.change === "create" && !runtime && deploy !== "restarts") return line("Not deployed", "idle");
+  if (service.change === "create" && !runtime && !rolling) return line("Not deployed", "idle");
   if (service.source === "empty") return line("No source", "idle");
   if (lens.noServers) return line("Needs a server", "idle");
   switch (lens.status) {
