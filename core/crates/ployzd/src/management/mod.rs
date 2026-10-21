@@ -348,10 +348,13 @@ where
         client,
         drain: drain.clone(),
     };
-    let serving = http2::Builder::new(TokioExecutor::new()).serve_connection(
-        TokioIo::new(tokio::io::join(recv, send)),
-        TowerToHyperService::new(service),
-    );
+    let serving = http2::Builder::new(TokioExecutor::new())
+        .initial_stream_window_size(ployz_core::RPC_WINDOW_BYTES)
+        .initial_connection_window_size(ployz_core::RPC_WINDOW_BYTES)
+        .serve_connection(
+            TokioIo::new(tokio::io::join(recv, send)),
+            TowerToHyperService::new(service),
+        );
     tokio::pin!(serving);
     let ended = tokio::select! {
         served = serving.as_mut() => {

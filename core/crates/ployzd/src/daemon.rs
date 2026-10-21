@@ -317,11 +317,14 @@ impl Daemon {
             .with_image_ingest(Arc::clone(&ingest))
             .build();
 
-        let rpc = Server::builder().serve_with_incoming_shutdown(
-            machine_api.clone(),
-            UnixListenerStream::new(UnixListener::from_std(socket.listener)?),
-            shutdown.clone().cancelled_owned(),
-        );
+        let rpc = Server::builder()
+            .initial_stream_window_size(ployz_core::RPC_WINDOW_BYTES)
+            .initial_connection_window_size(ployz_core::RPC_WINDOW_BYTES)
+            .serve_with_incoming_shutdown(
+                machine_api.clone(),
+                UnixListenerStream::new(UnixListener::from_std(socket.listener)?),
+                shutdown.clone().cancelled_owned(),
+            );
         let publisher = run_machine_publisher(
             replicated_store.clone().zip(machine_view.clone()),
             local.clone(),
@@ -702,6 +705,8 @@ async fn serve_machine_api(
 ) -> io::Result<()> {
     match listener {
         Some(listener) => Server::builder()
+            .initial_stream_window_size(ployz_core::RPC_WINDOW_BYTES)
+            .initial_connection_window_size(ployz_core::RPC_WINDOW_BYTES)
             .serve_with_incoming_shutdown(
                 machine_api,
                 TcpListenerStream::new(listener),
