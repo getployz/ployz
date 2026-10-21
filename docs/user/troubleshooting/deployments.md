@@ -259,8 +259,9 @@ again.
 
 The restart makes web-2 report its replicas again, and every server sends requests to them. A
 deploy or **Redeploy** with nothing changed doesn't help, because it leaves the replicas as they are.
+If some requests still reach web-2's old replicas a minute later, restart the service again.
 
-A server whose root disk uses ZFS or Btrfs can still lose its last changes in a power cut. If that
+A server whose root disk uses ZFS, Btrfs or tmpfs can still lose its last changes in a power cut. If that
 happens, restart the services on it, as above.
 
 ## A server hasn't picked up the new version
