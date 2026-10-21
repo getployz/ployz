@@ -16,6 +16,7 @@ use bollard::{
         ContainerCreateBody, HostConfig, Mount, MountType, RestartPolicy, RestartPolicyNameEnum,
     },
 };
+use rustix::fs::{IFlags, Mode, OFlags};
 use serde::Serialize;
 
 use crate::{
@@ -139,6 +140,15 @@ impl CorrosionConfig {
 
     fn install(&self) -> Result<InstalledFiles, Error> {
         create_private_dir(&self.paths.data_dir)?;
+        let refused = sync_writes(&self.paths.data_dir);
+        if let Some(first) = refused.first() {
+            tracing::warn!(
+                data_dir = %self.paths.data_dir.display(),
+                refused = refused.len(),
+                error = %ployz_core::error_chain::inline(first),
+                "Corrosion's commits can be lost on power loss: files in its data directory do not write synchronously"
+            );
+        }
         create_private_dir(&self.paths.run_dir)?;
         let token = load_or_create_token(&self.paths.token_file())?;
         let schema_path = self.paths.data_dir.join("schema.sql");
@@ -344,6 +354,82 @@ fn create_private_dir(path: &Path) -> Result<(), Error> {
     Ok(())
 }
 
+#[derive(Debug, thiserror::Error)]
+#[error("could not make {} write synchronously", path.display())]
+struct SyncWritesError {
+    path: PathBuf,
+    source: std::io::Error,
+}
+
+// Corrosion broadcasts a commit before SQLite syncs it, and peers never send a Machine its
+// own changes back, so a commit lost to power loss after broadcast is never recovered.
+fn sync_writes(dir: &Path) -> Vec<SyncWritesError> {
+    let mut refused = Vec::new();
+    sync_tree(dir, OFlags::DIRECTORY, &mut refused);
+    refused.retain(|error| error.source.kind() != std::io::ErrorKind::NotFound);
+    refused
+}
+
+fn sync_tree(dir: &Path, open: OFlags, refused: &mut Vec<SyncWritesError>) {
+    if let Err(error) = set_sync_flag(dir, open) {
+        refused.push(error);
+    }
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(source) => {
+            refused.push(SyncWritesError {
+                path: dir.to_path_buf(),
+                source,
+            });
+            return;
+        }
+    };
+    for entry in entries {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(source) => {
+                refused.push(SyncWritesError {
+                    path: dir.to_path_buf(),
+                    source,
+                });
+                continue;
+            }
+        };
+        let path = entry.path();
+        match entry.file_type() {
+            Ok(file_type) if file_type.is_dir() => {
+                sync_tree(&path, OFlags::DIRECTORY | OFlags::NOFOLLOW, refused)
+            }
+            Ok(file_type) if file_type.is_file() => {
+                if let Err(error) = set_sync_flag(&path, OFlags::NOFOLLOW) {
+                    refused.push(error);
+                }
+            }
+            Ok(_) => {}
+            Err(source) => refused.push(SyncWritesError { path, source }),
+        }
+    }
+}
+
+fn set_sync_flag(path: &Path, kind: OFlags) -> Result<(), SyncWritesError> {
+    let set = || -> rustix::io::Result<()> {
+        let fd = rustix::fs::open(
+            path,
+            OFlags::RDONLY | OFlags::NONBLOCK | OFlags::CLOEXEC | kind,
+            Mode::empty(),
+        )?;
+        let flags = rustix::fs::ioctl_getflags(&fd)?;
+        if !flags.contains(IFlags::SYNC) {
+            rustix::fs::ioctl_setflags(&fd, flags | IFlags::SYNC)?;
+        }
+        Ok(())
+    };
+    set().map_err(|errno| SyncWritesError {
+        path: path.to_path_buf(),
+        source: errno.into(),
+    })
+}
+
 fn load_or_create_token(path: &Path) -> Result<String, Error> {
     match fs::read_to_string(path) {
         Ok(token) if !token.is_empty() => {
@@ -517,6 +603,76 @@ mod tests {
         assert_eq!(fs::read_to_string(&path).unwrap(), token);
         assert_eq!(load_or_create_token(&path).unwrap(), token);
         assert_eq!(fs::metadata(&path).unwrap().mode() & 0o777, 0o600);
+    }
+
+    #[test]
+    fn existing_store_files_write_synchronously() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path();
+        fs::create_dir(dir.join("snapshots")).unwrap();
+        fs::write(dir.join("snapshots/old.db"), "").unwrap();
+        fs::write(dir.join("store.db"), "").unwrap();
+
+        let refused = sync_writes(dir);
+        if refused.is_empty() {
+            for path in [
+                dir.to_path_buf(),
+                dir.join("snapshots"),
+                dir.join("snapshots/old.db"),
+                dir.join("store.db"),
+            ] {
+                let file = fs::File::open(&path).unwrap();
+                assert!(
+                    rustix::fs::ioctl_getflags(&file)
+                        .unwrap()
+                        .contains(IFlags::SYNC),
+                    "{} does not write synchronously",
+                    path.display()
+                );
+            }
+        } else {
+            let unsupported = [rustix::io::Errno::OPNOTSUPP, rustix::io::Errno::NOTTY]
+                .map(|errno| Some(errno.raw_os_error()));
+            assert!(refused.iter().any(|error| error.path == dir));
+            for error in &refused {
+                assert!(
+                    unsupported.contains(&error.source.raw_os_error()),
+                    "only the filesystem refusing the flag may leave files unflagged: {error}: {}",
+                    error.source
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn one_refused_file_leaves_the_rest_of_the_store_writing_synchronously() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path();
+        let refused = dir.join("refused");
+        fs::write(&refused, "").unwrap();
+        fs::set_permissions(&refused, fs::Permissions::from_mode(0o000)).unwrap();
+        let siblings: Vec<_> = (0..20).map(|n| dir.join(format!("store-{n}.db"))).collect();
+        for sibling in &siblings {
+            fs::write(sibling, "").unwrap();
+        }
+
+        let _ = sync_writes(dir);
+
+        let synchronous = |path: &Path| {
+            rustix::fs::ioctl_getflags(fs::File::open(path).unwrap())
+                .unwrap()
+                .contains(IFlags::SYNC)
+        };
+        if !synchronous(dir) {
+            return;
+        }
+        for sibling in &siblings {
+            assert!(
+                synchronous(sibling),
+                "{} does not write synchronously",
+                sibling.display()
+            );
+        }
     }
 
     #[tokio::test(start_paused = true)]
