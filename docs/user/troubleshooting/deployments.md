@@ -306,9 +306,18 @@ reads for it.
 `web = web-3 routes a copy to 10.210.2.2, which its owner does not report. Check its network.`
 
 `ployz status` prints this when web-3's proxy sends a replica's traffic to an address that the
-server running the replica doesn't report for it. This happens when the replica's address changed
-and web-3 hasn't caught up, so visitors who reach web-3 can fail to reach `web`. A server that
-doesn't answer the check adds no line.
+server running the replica doesn't report for it. This happens when the replica's address changed,
+or the replica was removed, and web-3 hasn't caught up, so visitors who reach web-3 can fail to
+reach `web`. A server that doesn't answer the check adds no line. Status names no server for a
+replica whose own server didn't answer or is Down.
+
+During a deploy or a move, a proxy can route a replica that was just removed until it catches up,
+so this line can show for a few seconds and go away by itself. Run status again before you act.
+
+When status warns that `web-3 has not confirmed what its proxy serves`, web-3's daemon has just
+started, or it wrote a new proxy config without reaching the proxy. Until the proxy loads a config
+web-3 can see, status doesn't check what web-3 routes. The warning goes away once the proxy
+answers. If it stays, web-3's proxy isn't answering its daemon. See [Troubleshooting servers](servers.md).
 
 - **Check web-3's network.** Your servers need UDP port 51820 open between them. See
   [Troubleshooting servers](servers.md).
