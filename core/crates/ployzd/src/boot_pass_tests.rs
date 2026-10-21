@@ -356,8 +356,7 @@ fn digest(mut copy: ContainerObservation, value: &str) -> ContainerObservation {
     copy
 }
 
-/// The local copy at gen 1 and a peer's copy at gen 2, each routed by every proxy.
-fn beside(
+fn routed_everywhere(
     cluster: &Cluster,
     older: &ContainerObservation,
     newer: &ContainerObservation,
@@ -382,7 +381,7 @@ async fn replaced_by(
     let cluster = Cluster::new();
     let older = older(copy(1, &cluster.local, 1));
     let newer = newer(copy(2, &cluster.peer, 2));
-    let wants = pass(&cluster.local, beside(&cluster, &older, &newer)).await;
+    let wants = pass(&cluster.local, routed_everywhere(&cluster, &older, &newer)).await;
     match wants.as_slice() {
         [] => false,
         [want] if *want == out(&older) => true,

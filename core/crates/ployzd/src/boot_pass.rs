@@ -127,9 +127,7 @@ pub(crate) fn superseded(
         .collect()
 }
 
-/// Whether a Deploy that wanted `newer` would have replaced `older` rather than
-/// kept it. A Container from a daemon that predates the digest label is judged
-/// on what the row shows.
+/// A Container from a daemon before the digest label is judged on its row alone.
 fn replaces(newer: &ContainerObservation, older: &ContainerObservation) -> bool {
     let digests = (
         newer.labels.get(LABEL_RECREATE_DIGEST),
