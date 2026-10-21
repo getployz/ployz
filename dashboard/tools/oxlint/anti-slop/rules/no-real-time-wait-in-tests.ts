@@ -9,7 +9,7 @@ const scheduleWaits = new Set(["spaced", "fixed", "exponential"]);
 const timerGlobals = new Set(["globalThis", "global", "window"]);
 const testerRoots = new Set(["it", "test"]);
 const fakeTimerHooks = new Set(["beforeEach", "beforeAll"]);
-const suppression = /oxlint-disable(?:-next-line|-line)?\b[^\n]*anti-slop\/no-real-time-wait-in-tests/u;
+const suppression = /(?:es|ox)lint-disable(?:-next-line|-line)?\b[^\n]*anti-slop\/no-real-time-wait-in-tests/u;
 const suppressionReason = /\s--\s*\S/u;
 
 type Tester = "effect" | "live" | "plain";

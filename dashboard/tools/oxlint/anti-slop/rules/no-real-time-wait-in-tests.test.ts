@@ -183,5 +183,11 @@ tester.run("no-real-time-wait-in-tests", noRealTimeWaitInTestsRule, {
       it("waits", async () => { await new Promise((resolve) => setTimeout(resolve, 300)); });`,
       errors: [{ messageId: "unexplainedSuppression" }, { messageId: "realClock" }],
     },
+    {
+      filename,
+      code: `// eslint-disable-next-line anti-slop/no-real-time-wait-in-tests
+      it("waits", async () => { await new Promise((resolve) => setTimeout(resolve, 300)); });`,
+      errors: [{ messageId: "unexplainedSuppression" }, { messageId: "realClock" }],
+    },
   ],
 });

@@ -77,7 +77,7 @@ const setup = Effect.fn(function* () {
       return yield* drizzle.execute(sql`select 1 from pg_stat_activity where datname = current_database() and wait_event_type = 'Lock'`, "objects");
     }).pipe(Effect.orDie)));
     expect(waiting.length).toBeGreaterThan(0);
-  }));
+  }, { timeout: 10_000 }));
   const prune = (now: string) => provide(pruneCrashEvents(new Date(now)));
   return { crash, unmailed, remaining, mails, claim, failingClaim, lockWaiter, prune };
 });

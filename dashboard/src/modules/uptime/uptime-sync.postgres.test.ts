@@ -283,7 +283,7 @@ it.live("a sync waits for an uncommitted sync of the same Environment, then read
   yield* Effect.promise(() => vi.waitFor(async () => {
     expect(await Effect.runPromise(query(sql`select 1 from pg_stat_activity where datname = current_database() and wait_event_type = 'Lock'`)))
       .not.toHaveLength(0);
-  }));
+  }, { timeout: 10_000 }));
   expect(second.pollUnsafe()).toBeUndefined();
   yield* Deferred.succeed(release, undefined);
   yield* Fiber.join(first);

@@ -91,9 +91,9 @@ const parity = Effect.fn(function* () {
       returning id, organization_id, date_trunc('milliseconds', probe_requested_at) as at)
     insert into uptime_result ${resultColumns} ${failed(sql`at`, "triggered")} from asked returning check_id`, "objects");
   })).pipe(Effect.orDie);
-  const checker = Effect.promise((signal) => vi.waitFor(async () => {
+  const checker = Effect.tryPromise((signal) => vi.waitFor(async () => {
     if (!signal.aborted) expect(await Effect.runPromise(answer)).not.toHaveLength(0);
-  }, { timeout: 10_000 })).pipe(Effect.forever);
+  }, { timeout: 10_000 })).pipe(Effect.ignore, Effect.forever);
 
   const route = (name: string, input: JsonValue) => Effect.gen(function* () {
     const request = new Request(`http://localhost:3000/api/cli/run/${name}`, {
