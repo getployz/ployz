@@ -16,6 +16,7 @@ use bollard::{
         ContainerCreateBody, HostConfig, Mount, MountType, RestartPolicy, RestartPolicyNameEnum,
     },
 };
+use rustix::fs::{IFlags, Mode, OFlags};
 use serde::Serialize;
 
 use crate::{
@@ -139,6 +140,13 @@ impl CorrosionConfig {
 
     fn install(&self) -> Result<InstalledFiles, Error> {
         create_private_dir(&self.paths.data_dir)?;
+        if let Err(error) = sync_writes(&self.paths.data_dir) {
+            tracing::warn!(
+                data_dir = %self.paths.data_dir.display(),
+                error = %ployz_core::error_chain::inline(&error),
+                "Corrosion's commits can be lost on power loss on this filesystem: its data directory does not write synchronously"
+            );
+        }
         create_private_dir(&self.paths.run_dir)?;
         let token = load_or_create_token(&self.paths.token_file())?;
         let schema_path = self.paths.data_dir.join("schema.sql");
@@ -344,6 +352,52 @@ fn create_private_dir(path: &Path) -> Result<(), Error> {
     Ok(())
 }
 
+#[derive(Debug, thiserror::Error)]
+#[error("could not make {} write synchronously", path.display())]
+struct SyncWritesError {
+    path: PathBuf,
+    source: std::io::Error,
+}
+
+// Corrosion broadcasts a commit before SQLite syncs it, and peers never send a Machine its
+// own changes back, so a commit lost to power loss after broadcast is never recovered.
+fn sync_writes(dir: &Path) -> Result<(), SyncWritesError> {
+    set_sync_flag(dir, OFlags::DIRECTORY)?;
+    let failed = |source: std::io::Error| SyncWritesError {
+        path: dir.to_path_buf(),
+        source,
+    };
+    for entry in fs::read_dir(dir).map_err(failed)? {
+        let entry = entry.map_err(failed)?;
+        let file_type = entry.file_type().map_err(failed)?;
+        if file_type.is_dir() {
+            sync_writes(&entry.path())?;
+        } else if file_type.is_file() {
+            set_sync_flag(&entry.path(), OFlags::empty())?;
+        }
+    }
+    Ok(())
+}
+
+fn set_sync_flag(path: &Path, kind: OFlags) -> Result<(), SyncWritesError> {
+    let set = || -> rustix::io::Result<()> {
+        let fd = rustix::fs::open(
+            path,
+            OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC | kind,
+            Mode::empty(),
+        )?;
+        let flags = rustix::fs::ioctl_getflags(&fd)?;
+        if !flags.contains(IFlags::SYNC) {
+            rustix::fs::ioctl_setflags(&fd, flags | IFlags::SYNC)?;
+        }
+        Ok(())
+    };
+    set().map_err(|errno| SyncWritesError {
+        path: path.to_path_buf(),
+        source: errno.into(),
+    })
+}
+
 fn load_or_create_token(path: &Path) -> Result<String, Error> {
     match fs::read_to_string(path) {
         Ok(token) if !token.is_empty() => {
@@ -517,6 +571,38 @@ mod tests {
         assert_eq!(fs::read_to_string(&path).unwrap(), token);
         assert_eq!(load_or_create_token(&path).unwrap(), token);
         assert_eq!(fs::metadata(&path).unwrap().mode() & 0o777, 0o600);
+    }
+
+    #[test]
+    fn existing_and_new_store_files_write_synchronously() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path();
+        fs::create_dir(dir.join("snapshots")).unwrap();
+        fs::write(dir.join("snapshots/old.db"), "").unwrap();
+        fs::write(dir.join("store.db"), "").unwrap();
+
+        match sync_writes(dir) {
+            Ok(()) => {
+                fs::write(dir.join("store.db-wal"), "").unwrap();
+                for path in [
+                    dir.to_path_buf(),
+                    dir.join("snapshots"),
+                    dir.join("snapshots/old.db"),
+                    dir.join("store.db"),
+                    dir.join("store.db-wal"),
+                ] {
+                    let file = fs::File::open(&path).unwrap();
+                    assert!(
+                        rustix::fs::ioctl_getflags(&file)
+                            .unwrap()
+                            .contains(IFlags::SYNC),
+                        "{} does not write synchronously",
+                        path.display()
+                    );
+                }
+            }
+            Err(error) => assert!(error.path.starts_with(dir), "{error}"),
+        }
     }
 
     #[tokio::test(start_paused = true)]
