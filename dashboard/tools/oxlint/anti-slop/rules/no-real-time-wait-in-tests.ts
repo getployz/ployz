@@ -6,6 +6,7 @@ const testFilePattern = /\.test\.[cm]?[jt]sx?$/u;
 const timerPromiseModules = new Set(["node:timers/promises", "timers/promises"]);
 const timerFunctions = new Set(["setTimeout", "setInterval", "setImmediate"]);
 const scheduleWaits = new Set(["spaced", "fixed", "exponential"]);
+const timerGlobals = new Set(["globalThis", "global", "window"]);
 const testerRoots = new Set(["it", "test"]);
 const fakeTimerHooks = new Set(["beforeEach", "beforeAll"]);
 const suppression = /oxlint-disable(?:-next-line|-line)?\b[^\n]*anti-slop\/no-real-time-wait-in-tests/u;
@@ -118,6 +119,18 @@ function enclosingTester(node: ESTree.Node): Tester | null {
   return tester;
 }
 
+function enclosingTestCall(node: ESTree.Node): ESTree.CallExpression | null {
+  let child: ESTree.Node = node;
+  for (let current = node.parent; current !== null; current = current.parent) {
+    if (current.type === "CallExpression" && current.arguments.some((argument) => argument === child)) {
+      const chain = calleeChain(current.callee);
+      if (chain !== null && testerKind(chain) !== null) return current;
+    }
+    child = current;
+  }
+  return null;
+}
+
 function isInsidePromiseExecutor(node: ESTree.Node): boolean {
   let current: ESTree.Node | null = node.parent;
   while (current !== null) {
@@ -171,9 +184,22 @@ function hookScope(fakes: FakeTimers): ESTree.Node | null {
   return hook.parent?.parent ?? null;
 }
 
-function runsUnderFakeTimers(node: ESTree.CallExpression, timer: string, fakeTimers: ReadonlyArray<FakeTimers>): boolean {
+function restoredBefore(node: ESTree.Node, fakes: FakeTimers, restores: ReadonlyArray<ESTree.CallExpression>): boolean {
+  return restores.some((restore) => {
+    if (restore.start < fakes.call.end || node.start < restore.end) return false;
+    const [owner] = enclosingFunctions(restore);
+    return owner === undefined || isAncestor(owner, node);
+  });
+}
+
+function runsUnderFakeTimers(
+  node: ESTree.CallExpression,
+  timer: string,
+  fakeTimers: ReadonlyArray<FakeTimers>,
+  restores: ReadonlyArray<ESTree.CallExpression>,
+): boolean {
   return fakeTimers.some((fakes) => {
-    if (!fakes.fakes.has(timer)) return false;
+    if (!fakes.fakes.has(timer) || restoredBefore(node, fakes, restores)) return false;
     const scope = hookScope(fakes);
     if (scope !== null) return isAncestor(scope, node);
     const [owner] = enclosingFunctions(fakes.call);
@@ -201,10 +227,11 @@ export const noRealTimeWaitInTestsRule = defineRule({
   },
   create(context) {
     if (!testFilePattern.test(context.filename)) return {};
-    let drivesTestClock = false;
+    const testClockDrives: Array<ESTree.CallExpression> = [];
     const timerPromiseLocals = new Set<string>();
     const timerPromiseNamespaces = new Set<string>();
     const fakeTimers: Array<FakeTimers> = [];
+    const realTimerRestores: Array<ESTree.CallExpression> = [];
     const timerWaitsJudgedAtExit: Array<{ node: ESTree.CallExpression; timer: string; tester: Tester | null }> = [];
     const testClockWaitsJudgedAtExit: Array<{ node: ESTree.Node; messageId: "realClock" | "undrivenTestClock" }> = [];
 
@@ -215,11 +242,21 @@ export const noRealTimeWaitInTestsRule = defineRule({
       return call[1];
     }
 
+    function globalTimer(callee: ESTree.Node): string | null {
+      if (callee.type === "Identifier") return timerPromiseLocals.has(callee.name) ? null : callee.name;
+      const call = memberCall(callee);
+      return call !== null && timerGlobals.has(call[0]) ? call[1] : null;
+    }
+
     function promiseWrappedTimer(node: ESTree.CallExpression): string | null {
-      const callee = node.callee;
-      if (callee.type !== "Identifier" || !timerFunctions.has(callee.name)) return null;
-      if (timerPromiseLocals.has(callee.name) || !isInsidePromiseExecutor(node)) return null;
-      return callee.name;
+      const timer = globalTimer(node.callee);
+      if (timer === null || !timerFunctions.has(timer) || !isInsidePromiseExecutor(node)) return null;
+      return timer;
+    }
+
+    function drivesTestClockFor(wait: ESTree.Node): boolean {
+      const test = enclosingTestCall(wait);
+      return testClockDrives.some((drive) => test === null || isAncestor(test, drive));
     }
 
     function checkSuppression(comment: Comment): void {
@@ -262,8 +299,12 @@ export const noRealTimeWaitInTestsRule = defineRule({
           fakeTimers.push({ call: node, fakes: fakedTimers(node) });
           return;
         }
+        if (object === "vi" && property === "useRealTimers") {
+          realTimerRestores.push(node);
+          return;
+        }
         if (object === "TestClock" && (property === "adjust" || property === "setTime")) {
-          drivesTestClock = true;
+          testClockDrives.push(node);
           return;
         }
         const isSleep = object === "Effect" && property === "sleep";
@@ -284,10 +325,12 @@ export const noRealTimeWaitInTestsRule = defineRule({
       },
       "Program:exit"() {
         for (const wait of timerWaitsJudgedAtExit) {
-          if (runsUnderFakeTimers(wait.node, wait.timer, fakeTimers)) continue;
+          if (runsUnderFakeTimers(wait.node, wait.timer, fakeTimers, realTimerRestores)) continue;
           context.report({ node: wait.node.callee, messageId: wait.tester === "effect" ? "mixedClock" : "realClock" });
         }
-        if (!drivesTestClock) for (const wait of testClockWaitsJudgedAtExit) context.report(wait);
+        for (const wait of testClockWaitsJudgedAtExit) {
+          if (!drivesTestClockFor(wait.node)) context.report(wait);
+        }
         for (const comment of context.sourceCode.getAllComments()) checkSuppression(comment);
       },
     };

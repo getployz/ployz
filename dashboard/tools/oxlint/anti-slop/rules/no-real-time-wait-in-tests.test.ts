@@ -56,6 +56,30 @@ tester.run("no-real-time-wait-in-tests", noRealTimeWaitInTestsRule, {
   invalid: [
     {
       filename,
+      code: `it("waits on the global object", async () => { await new Promise((resolve) => globalThis.setTimeout(resolve, 300)); });`,
+      errors: [{ messageId: "realClock" }],
+    },
+    {
+      filename,
+      code: `it("restores real timers, then waits", async () => {
+        vi.useFakeTimers();
+        vi.useRealTimers();
+        await new Promise((resolve) => setTimeout(resolve, 300));
+      });`,
+      errors: [{ messageId: "realClock" }],
+    },
+    {
+      filename,
+      code: `it.effect("drives its own clock", () => Effect.gen(function* () {
+        const fiber = yield* Effect.fork(Effect.sleep("5 seconds"));
+        yield* TestClock.adjust("5 seconds");
+        yield* Fiber.join(fiber);
+      }));
+      it.effect("never drives the clock", () => Effect.sleep("1 second"));`,
+      errors: [{ messageId: "undrivenTestClock" }],
+    },
+    {
+      filename,
       code: `it("waits", async () => { await new Promise((resolve) => setTimeout(resolve, 300)); });`,
       errors: [{ messageId: "realClock" }],
     },
