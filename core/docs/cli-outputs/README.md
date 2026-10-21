@@ -35,7 +35,7 @@ These scripts are dev tooling that an operator runs on their own checkout. They 
 
 Each `.md` holds one block per command with its exit code, stdout and stderr. Each `.ansi` holds the same commands run under a terminal. Exit 124 means the capture's own timeout killed the command.
 
-Totals: 687 command blocks (store 247, cloud 155, cluster 105, cloud-cluster 180). Exits: 0 x397, 1 x173, 2 x91, 3 x9, 124 x7, 127 x1, 7 x1, none x8 (piped, typed TTY or killed runs).
+Totals: 687 command blocks (store 247, cloud 155, cluster 105, cloud-cluster 180); the `deploy --events` file excerpt in [cluster/deploy.md](cluster/deploy.md) is not one. Exits: 0 x397, 1 x173, 2 x91, 3 x10, 124 x7, 127 x1, 7 x1, none x7 (piped, typed TTY or killed runs).
 
 ## The contract as the code states it
 
@@ -140,7 +140,7 @@ retry: ployz project rm scratch1 --confirm scratch1
 
 ## 5. Warnings
 
-Dominant: `! <sentence>.` on stderr. 35 lines, 12 distinct texts.
+Dominant: `! <sentence>.` on stderr. 36 lines, 13 distinct texts.
 
 | Count | Text (start) | Capture |
 |---|---|---|
@@ -150,7 +150,7 @@ Dominant: `! <sentence>.` on stderr. 35 lines, 12 distinct texts.
 | 5 | `! Docker only (not recommended): Volumes on this Server get no size limits, …` | [cluster/server.md](cluster/server.md) |
 | 2 | `! Server gamma is running Services: shop-production/web.` | [cluster/server.md](cluster/server.md) |
 | 2 | `! workspace.ada.ployz.test is not published yet. …` | [cloud-cluster/deploy.md](cloud-cluster/deploy.md) |
-| 1 each | 6 more: two more unpublished domains, `! api's image traefik/whoami:v1.11.0 exposes 80; its domains send to 8080. …`, `! Replicated Services may now be under-replicated: …`, `! Docker volume (not recommended): …` and `! No Server here can host Managed volumes yet, …` | [cloud-cluster/domain.md](cloud-cluster/domain.md), [cluster/server.md](cluster/server.md), [cluster/volume.md](cluster/volume.md) |
+| 1 each | 7 more: two more unpublished domains, `! api's image traefik/whoami:v1.11.0 exposes 80; its domains send to 8080. …`, `! Replicated Services may now be under-replicated: …`, `! Docker volume (not recommended): …`, `! No Server here can host Managed volumes yet, …` and `! Server web-1 isn't answering, so this deploy can't run until it does. …` | [cloud-cluster/domain.md](cloud-cluster/domain.md), [cluster/server.md](cluster/server.md), [cluster/volume.md](cluster/volume.md), [store/context.md](store/context.md) |
 
 Every warning starts uppercase or with a name. Under `--json` the same text also appears in a `warnings` array.
 
@@ -192,14 +192,14 @@ Dominant: a trailing `next: <command>` line. Every hint is a line of its own, la
 
 | Form | Count | Example | Capture |
 |---|---|---|---|
-| `next:` | 142 in 22 files | `next: ployz login` | [cloud/errors.md](cloud/errors.md) |
+| `next:` | 144 in 22 files | `next: ployz login` | [cloud/errors.md](cloud/errors.md) |
 | `valid:` | 35 in 11 files | `valid: api, postgres, redis, web, worker` | [cloud-cluster/errors.md](cloud-cluster/errors.md) |
-| `inspect:` | 14 in 8 files | `inspect: ployz server ls` | [cluster/errors.md](cluster/errors.md) |
+| `inspect:` | 15 in 8 files | `inspect: ployz server ls` | [cluster/errors.md](cluster/errors.md) |
 | `retry:` | 13 in 9 files | `retry: ployz project rm scratch1 --confirm scratch1` | [store/project.md](store/project.md) |
 | `undo:` | 9 in 4 files | `undo: ployz history undo 7 --project shop --env production` | [cloud-cluster/deploy.md](cloud-cluster/deploy.md) |
 
 - `next:` targets vary in scope: `ployz diff --project shop`, `ployz diff`, `ployz deploy --project shop`.
-- Human output prints fewer hints than the JSON carries. 53 of 126 JSON success objects have a top-level `next`. 86 of 258 human successes print `next:`.
+- Human output prints fewer hints than the JSON carries. 54 of 127 JSON success objects have a top-level `next`. 88 of 260 human successes print `next:`.
 - `valid:` shows eight choices, then `and N more`: `valid: cpuLimit, healthcheck, image, maxRetries, memLimit, preDeployCommand, privateDns, registryCredential, and 18 more` ([store/settings.md](store/settings.md)). A near miss adds an unlabeled line above it: `did you mean replicas?`.
 
 ## 8. Identifiers
@@ -235,7 +235,7 @@ A failed Deployment exits 1, with its progress and the error on stderr: `Deployi
 
 ## 11. `--json` shape
 
-Dominant: one pretty-printed object on stdout (126 of 130 success outputs). The other 4 are NDJSON streams (logs and server logs).
+Dominant: one pretty-printed object on stdout (127 of 131 success outputs). The other 4 are NDJSON streams (logs and server logs).
 
 - Errors are compact, on one line: `{"error":{"cause":[],"code":"not_found","details":{},"message":"No Project named nope"}}`. Codes seen: not_found 24, invalid_argument 20, unauthenticated 15, conflict 10, unavailable 5, confirmation_required 3, ambiguous 1.
 - Mutations share `environment`, `staged` and `next` ([store/settings.md](store/settings.md)).
@@ -249,14 +249,14 @@ Dominant: one pretty-printed object on stdout (126 of 130 success outputs). The 
 
 | Exit | Count | Meaning seen |
 |---|---|---|
-| 0 | 394 | success |
+| 0 | 397 | success |
 | 1 | 173 | any failure: not found, conflict, unauthenticated, unavailable |
 | 2 | 91 | clap errors, a missing or wrong `--confirm`, volume loss, `Expected a Deployment ID or number`, local `deploy --detach`, two Projects and none chosen |
-| 3 | 9 | partial fan-out with gamma down (7), `server upgrade` failing on its one Server, and `ployz exec` passing a remote 3 through |
+| 3 | 10 | partial fan-out with gamma down (7), `server upgrade` with and without `--json` failing on its one Server (2), and `ployz exec` passing a remote 3 through |
 | 124 | 7 | the capture's own timeout: `logs --follow` (3); in cloud/, a login (2), `github connect`, and a `deploy` follow that never ends |
 | 7, 127 | 2 | `ployz exec` passing through the remote code ([cloud-cluster/runtime.md](cloud-cluster/runtime.md), [cloud-cluster/errors.md](cloud-cluster/errors.md)) |
 
-8 blocks record no exit of their own: three typed TTY runs, three piped through `head`, and two port-forwards whose `# exit 124` lands in their stderr. Exit 2 now follows the error code, so a missing `--confirm` and a wrong one both exit 2. `ployz exec` can return 1, 2 or 3 from the remote command, which overlap ployz's own codes ([cluster/ps-logs-exec.md](cluster/ps-logs-exec.md)).
+7 blocks record no exit of their own: three typed TTY runs, two piped through `head`, and two port-forwards whose `# exit 124` lands in their stderr. Exit 2 now follows the error code, so a missing `--confirm` and a wrong one both exit 2. `ployz exec` can return 1, 2 or 3 from the remote command, which overlap ployz's own codes ([cluster/ps-logs-exec.md](cluster/ps-logs-exec.md)).
 
 ## 13. Help text
 
@@ -332,7 +332,7 @@ Five earlier questions are settled in the code, each as its option B or close to
 
 Still open:
 
-1. **Should human output print every `next` the JSON carries?** 53 JSON successes carry `next`; 86 human ones print it.
+1. **Should human output print every `next` the JSON carries?** 54 JSON successes carry `next`; 88 human ones print it.
    A. Yes, always.
    B. Only when the next step is not obvious (for example after a stage, say "deploy").
    C. Never on success; hints only on errors.
