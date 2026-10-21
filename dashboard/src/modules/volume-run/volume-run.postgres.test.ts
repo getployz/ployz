@@ -2188,14 +2188,22 @@ describe("volume runs", () => {
     });
 
     // The engine replays every earlier step on each of the 84 executions these 78 checks take, so this runs in seconds.
-    it("mirror: a pull that never lands gives up after six hours of checks backing off to five minutes", { timeout: 30_000 }, async () => {
+    it("mirror: a pull that never lands gives up after six hours of checks backing off to five minutes", { timeout: 20_000 }, async () => {
       machines[1] = { name: "fsn-2", pool: true, copy: null, pullFault: { target: "dep-10", kind: "stall" } };
       const run = await requested({ kind: "mirror", args: { to: "fsn-2" } });
-      const waits = PATIENCE_WAITS.map((_, check) => ({ id: `03-r0-backoff-${check}`, handler: () => undefined }));
 
-      await execute(run.id, "run-1", waits);
+      const output = await new InngestTestEngine({
+        function: createRunVolume(new Inngest({ id: "test" }), runEffect),
+        events: [{ name: "volume/run.requested", data: { organizationId, environment: "env-1", volumeId, runId: run.id } }],
+        // Sleeps as plain calls, not memoized steps, which halves what each of the 84 executions replays.
+        transformCtx: (ctx) => {
+          const mocked = mockCtx(ctx);
+          return { ...mocked, step: { ...mocked.step, sleep: vi.fn<typeof ctx.step.sleep>().mockResolvedValue(undefined) }, runId: "run-1", attempt: 0 };
+        },
+      }).execute();
 
       expect(verbs.filter((verb) => verb === "pull@fsn-2(dep-10)")).toHaveLength(PATIENCE_WAITS.length + 1);
+      expect(vi.mocked(output.ctx.step.sleep).mock.calls).toEqual(PATIENCE_WAITS.map((wait, check) => [`03-r0-backoff-${check}`, `${wait}s`]));
       expect(await rows()).toMatchObject([{ state: "failed", message: "data-fsn-2 has not finished dep-10 after 6h" }]);
     });
 
