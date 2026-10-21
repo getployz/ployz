@@ -237,6 +237,30 @@ traffic on its own within a few minutes, but the replica keeps running.
 
 The deploy stops the old replica, and the warning doesn't come back.
 
+## Some requests get the wrong answer after a server lost power
+
+`proxy on web-1 did not confirm`
+
+After web-2 lost power and came back, some requests through your other servers get the wrong
+answer: an old version of your app, a redirect, or a 404 from something else on web-2. Deploys can
+wait several minutes and then fail with the message above. On an earlier Ployz release, web-2 could
+lose its last changes when the power went, and your other servers kept an out-of-date view of its
+replicas. Ployz now saves each change on the server before the others see it, so this no longer
+starts. A view that went out of date before you upgraded stays until a deploy replaces it.
+
+1. [Upgrade Ployz](../servers/manage-servers.md#upgrade-ployz-on-a-server) on every server.
+2. Deploy the services that run on web-2 again. With nothing staged, click **Redeploy** on the
+   newest deployment, or run:
+
+   ```sh
+   ployz deploy web
+   ```
+
+The deploy replaces web-2's replicas, and every server sends requests to the new ones.
+
+A server whose root disk uses ZFS or Btrfs can still lose its last changes in a power cut. If that
+happens, deploy the services on it again, as above.
+
 ## A server hasn't picked up the new version
 
 `web = web-2 has not picked up the new copies. Check its network.`
