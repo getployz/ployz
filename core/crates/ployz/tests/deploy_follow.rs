@@ -1050,6 +1050,7 @@ fn shown_and_followed(view: &DeploymentView) -> (String, String) {
         VecDeque::from([read(view)]),
         root.path(),
         &["deployment", "show", "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"],
+        &[],
         Duration::from_secs(20),
     );
     assert!(output.status.success(), "{output:?}");
@@ -1058,6 +1059,7 @@ fn shown_and_followed(view: &DeploymentView) -> (String, String) {
         VecDeque::from([admitted(), read(view)]),
         root.path(),
         &["deploy", "--project", "shop", "--env", "production"],
+        &[],
         Duration::from_secs(20),
     );
     assert_eq!(output.status.code(), Some(3), "{output:?}");
