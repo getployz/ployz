@@ -571,9 +571,6 @@ impl Plan {
                 value: Cell::Absent,
             });
         }
-        if let Some(base) = base.as_mut() {
-            forget_gone(base, &self.from, &next);
-        }
         let next = parse_environment_intent(json!(next))?;
         let base = base.unwrap_or_else(|| {
             let mut base = self.from.clone();
@@ -696,7 +693,9 @@ impl Plan {
 
     /// Add `from`'s node at `lineage` to `next` (and `base`) as it needs to exist: fresh
     /// ids, no custom domains, `into`'s generated-address naming, its own credential, and
-    /// every setting that arrives as a row of its own at its default.
+    /// every setting that arrives as a row of its own at its default. A node of another
+    /// lineage the base still holds under its name goes: `from` holds the new node and
+    /// `next` no clash, so neither side holds the old one (#1473).
     fn introduce(
         &self,
         next: &mut Intent,
@@ -714,6 +713,9 @@ impl Plan {
                 ..source.clone()
             };
             if let Some(base) = base {
+                forget_volumes(base, |v| {
+                    v.name == copy.name && v.resource_lineage_id != copy.resource_lineage_id
+                });
                 base.volumes.push(copy.clone());
             }
             next.volumes.push(copy);
@@ -729,6 +731,9 @@ impl Plan {
                 ..source.clone()
             };
             if let Some(base) = base {
+                forget_configs(base, |c| {
+                    c.name == copy.name && c.resource_lineage_id != copy.resource_lineage_id
+                });
                 base.configs.push(copy.clone());
             }
             next.configs.push(copy);
@@ -772,6 +777,10 @@ impl Plan {
             credential_id.clone_from(&copy.id);
         }
         if let Some(base) = base {
+            base.services.retain(|s| {
+                s.lineage_id == copy.lineage_id
+                    || (s.slug != copy.slug && s.config.private_dns != copy.config.private_dns)
+            });
             base.services.push(copy.clone());
         }
         next.services.push(copy);
@@ -956,38 +965,35 @@ pub fn dependents(env: &Intent, lineage: &str) -> Vec<RowId> {
     rows
 }
 
-/// Drop from `base` every node neither side holds, and its mounts. Plans never read
-/// one, and a node added later under its name would otherwise clash with it there.
-fn forget_gone(base: &mut Intent, from: &Intent, next: &Intent) {
-    let held: BTreeSet<String> = nodes(from)
-        .into_keys()
-        .chain(nodes(next).into_keys())
-        .map(str::to_owned)
+/// Drop from `base` the Volumes `gone` matches, and every mount on them.
+fn forget_volumes(base: &mut Intent, gone: impl Fn(&SavedVolumeIntent) -> bool) {
+    let ids: Vec<String> = base
+        .volumes
+        .iter()
+        .filter(|v| gone(v))
+        .map(|v| v.resource_id.clone())
         .collect();
-    let (volumes, configs): (Vec<_>, Vec<_>) = (
-        base.volumes
-            .iter()
-            .filter(|v| !held.contains(&v.resource_lineage_id))
-            .map(|v| v.resource_id.clone())
-            .collect(),
-        base.configs
-            .iter()
-            .filter(|c| !held.contains(&c.resource_lineage_id))
-            .map(|c| c.resource_id.clone())
-            .collect(),
-    );
-    base.services.retain(|s| held.contains(&s.lineage_id));
-    base.volumes
-        .retain(|v| held.contains(&v.resource_lineage_id));
-    base.configs
-        .retain(|c| held.contains(&c.resource_lineage_id));
+    base.volumes.retain(|v| !ids.contains(&v.resource_id));
     for service in &mut base.services {
         service
             .volume_attachments
-            .retain(|a| !volumes.contains(&a.volume_resource_id));
+            .retain(|a| !ids.contains(&a.volume_resource_id));
+    }
+}
+
+/// Drop from `base` the Configs `gone` matches, and every mount on them.
+fn forget_configs(base: &mut Intent, gone: impl Fn(&SavedConfigIntent) -> bool) {
+    let ids: Vec<String> = base
+        .configs
+        .iter()
+        .filter(|c| gone(c))
+        .map(|c| c.resource_id.clone())
+        .collect();
+    base.configs.retain(|c| !ids.contains(&c.resource_id));
+    for service in &mut base.services {
         service
             .config_attachments
-            .retain(|a| !configs.contains(&a.config_resource_id));
+            .retain(|a| !ids.contains(&a.config_resource_id));
     }
 }
 
