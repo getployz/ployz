@@ -351,8 +351,9 @@ ployz deploy
 
 Do it right away when the service deploys **Stop first**, the default for a single replica with a
 volume ([Service settings](../services/settings.md)): the failed deploy may already have stopped the
-old replica, so the service is down until the next deploy. Otherwise the old replica keeps serving,
-sometimes beside a new one.
+old replica, so the service is down until the next deploy. Otherwise a replica that was serving
+before the deploy keeps serving, sometimes beside a new one. A service's first deploy has none, so
+it stays down until you deploy again.
 
 When Ployz restarts on another server the deploy uses, the deploy waits for it and carries on.
 
