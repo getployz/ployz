@@ -5325,6 +5325,56 @@ fn a_discard_to_saved_reads_a_lone_mount_without_an_id() {
 }
 
 #[test]
+fn a_second_discard_of_a_mount_by_id_still_names_its_config() {
+    let store = web_and_app(Some("web:/etc/app"));
+    ok(&store, &["config", "mount", "web", "app", "/etc/v2"]);
+    let diff = ok(&store, &["diff"]);
+    let path = diff["changes"][0]["settings"][0]["path"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(path.starts_with("web.configs.@"), "{diff}");
+    ok(&store, &["discard", &path]);
+
+    let said = printed(&store, &["discard", &path]);
+    assert!(
+        said.contains("Nothing staged at web.configs.app "),
+        "{said}"
+    );
+    assert!(!said.contains("configs.@"), "{said}");
+}
+
+#[test]
+fn an_undo_tells_apart_the_files_of_two_configs_of_one_name() {
+    let store = web_and_app(None);
+    ok(&store, &["config", "rm", "app"]);
+    ok(&store, &["config", "add", "app"]);
+    let file = tempfile::NamedTempFile::new().unwrap();
+    std::fs::write(file.path(), "b: 2").unwrap();
+    let from = file.path().to_str().unwrap();
+    ok(&store, &["config", "put", "app", "app.yml", "--from", from]);
+    ok(&store, &["deploy", "--skip-deploy"]);
+
+    let preview = printed(&store, &["history", "undo", "3", "--preview"]);
+    let files: Vec<&str> = preview
+        .lines()
+        .filter(|line| line.contains(".files.app.yml"))
+        .collect();
+    assert_eq!(files.len(), 2, "{preview}");
+    assert!(
+        files
+            .iter()
+            .all(|line| line.contains("configs.app.files.app.yml (@")),
+        "{preview}"
+    );
+    assert_ne!(
+        files[0].split(':').next(),
+        files[1].split(':').next(),
+        "{preview}"
+    );
+}
+
+#[test]
 fn a_replaced_config_of_the_same_name_reads_apart_in_diff() {
     let store = web_and_app(Some("web:/etc/app"));
     ok(&store, &["config", "rm", "app"]);
