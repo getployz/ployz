@@ -1609,6 +1609,50 @@ mod tests {
     }
 
     #[test]
+    fn a_copy_loss_retry_runs_and_carries_clouds_version_back_verbatim() {
+        let typed = [
+            "ployz",
+            "deploy",
+            "--project",
+            "mirrors",
+            "--env",
+            "production",
+        ];
+        let root = crate::cli::command().try_get_matches_from(typed).unwrap();
+        let key = SealingKey::new(&[7; 32]).unwrap();
+        let store = Store {
+            backend: Backend::Local(
+                std::sync::Arc::new(ConfigStore::open("sqlite::memory:", key).unwrap()),
+                Actor::system(OrganizationId::parse(LOCAL_ORGANIZATION).unwrap()),
+            ),
+            matches: leaf_matches(&root),
+            words: vec!["deploy".to_owned()],
+        };
+        let refused = ployz_core::RpcError {
+            code: RpcErrorCode::ConfirmationRequired,
+            message: "Deploying loses data of data. Accept each by name".into(),
+            details: json!({ "version": "5:1:0.1#loss-fzfjky", "accept": ["data"] }),
+            cause: Vec::new(),
+        };
+        let hints = store.accepting(StoreCallError::Refused(refused)).hints();
+        let retry = "ployz deploy --accept-volume-loss data --expect-version '5:1:0.1#loss-fzfjky' \
+                     --project mirrors --env production";
+        assert_eq!(hints, [Hint::Retry(retry.into())]);
+        let reparsed = crate::cli::command()
+            .try_get_matches_from(shell_words::split(retry).unwrap())
+            .unwrap_or_else(|error| panic!("{retry}: {error}"));
+        let leaf = leaf_matches(&reparsed);
+        assert_eq!(
+            leaf.get_one::<String>("expect-version").map(String::as_str),
+            Some("5:1:0.1#loss-fzfjky")
+        );
+        assert_eq!(
+            crate::handlers::string_values(leaf, "accept-volume-loss"),
+            ["data"]
+        );
+    }
+
+    #[test]
     fn publish_is_not_a_command() {
         assert!(
             crate::cli::command()
