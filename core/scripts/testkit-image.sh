@@ -13,6 +13,8 @@ base=ployz-testkit-base:local
 cd "$(dirname "$0")/.."
 core=$PWD
 
+# A provenance attestation carries the build time, so the id would change on
+# every cached build and force a fresh prime.
 docker build --provenance=false --tag "$unprimed" --file crates/ployz-testkit/Dockerfile "$core" >&2
 built=$(docker image inspect --format '{{.Id}}' "$unprimed")
 primed_from=$(docker image inspect --format '{{index .Config.Labels "dev.ployz.testkit.primed-from"}}' "$base" 2>/dev/null || true)
