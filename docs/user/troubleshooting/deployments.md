@@ -195,13 +195,10 @@ None of the service's replicas is running. **Crashed** means one exited with an 
 restarting; **Stopped** means they all exited cleanly, or you stopped them, and weren't restarted.
 A replica you stopped reads **Stopped** whatever code your app exited with, and `ployz ps` shows
 it as `stopped`. One that exited on its own before your stop reached it still reads **Crashed**.
-While a deploy starts the service, including while its pre-deploy command runs, the card reads a
-grey **Starting**. A replica that crashes during a first deploy can read **Crashed** for a few
-seconds: if the deployment ends **Deployed**, there's nothing to fix.
-
-A grey **Not seen running** means part of your servers' report hasn't arrived yet, and none of
-the replicas in the part that did is running. A replica may still be running where the report
-is missing, so it doesn't count as down. Wait a few seconds for the rest of the report.
+While a deploy starts the service and none of its replicas exists yet, including while its
+pre-deploy command runs, the card reads a grey **Starting**. A replica that crashes during a
+first deploy can read **Crashed** for a few seconds: if the deployment ends **Deployed**, there's
+nothing to fix.
 
 - Read the last lines in the service's **Logs**. If they end with no error, it may have run out of
   memory: raise **Memory limit**.
@@ -213,6 +210,12 @@ is missing, so it doesn't count as down. Wait a few seconds for the rest of the 
   ```sh
   ployz service restart api
   ```
+
+## My service shows Not seen running
+
+Part of your servers' report hasn't arrived yet, and none of the replicas in the part that did
+is running. A replica may still be running where the report is missing, so the service doesn't
+count as down. Wait a few seconds for the rest of the report.
 
 ## My service shows Server offline
 

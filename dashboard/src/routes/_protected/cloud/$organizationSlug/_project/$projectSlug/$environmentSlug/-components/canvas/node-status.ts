@@ -32,13 +32,11 @@ export const NO_MOUNTS_CONFIGURED = line("No mounts configured", "idle");
  */
 function evidenceLine(runtime: Pick<RuntimeServiceRecord, "containers"> | null, whole: boolean, offline: ReadonlySet<string>, desiredReplicas: number | null, deploying: boolean, starting: boolean) {
   if (!runtime && !whole) return line("Deployed", "quiet");
-  // A Deploy is starting it and none of its containers exists yet, at most its pre-deploy command: they are on their way.
   if (!runtime || runtime.containers.length === 0) return starting ? line("Starting", "quiet") : line("Not running", "bad", true);
   const containers = runtime.containers.filter((container) => !offline.has(container.machineId));
   // A Server missing from partial evidence may still serve it.
   if (containers.length === 0) return whole ? line("Server offline", "bad", true) : line("Server offline", "quiet");
   const running = containers.filter((container) => container.runtime?.state === "running");
-  // A replica on a Server missing from partial evidence may be running there.
   if (running.length === 0 && !whole) return line("Not seen running", "quiet");
   // A run its Server stopped on request is no crash, whatever code the app exited with.
   if (running.length === 0) return containers.every((container) => container.runtime?.state === "exited" && (container.runtime.code === 0 || container.runtime.stopped === true))
