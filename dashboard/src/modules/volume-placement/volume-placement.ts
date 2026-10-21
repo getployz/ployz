@@ -28,8 +28,9 @@ export type ObservedPlacement = {
   readonly primary: MachineRef | null;
   readonly copies: readonly ObservedCopy[];
   readonly unanswered: readonly MachineRef[];
-  /** Unanswered Servers that may still hold the writer: one whose report is on its way, and one that is up but lacks a capability. */
+  /** The unanswered Servers whose report is on its way. */
   readonly waiting: readonly MachineRef[];
+  /** The unanswered Servers that answered without reporting their copy, as they lack a capability. */
   readonly lacking: readonly MachineRef[];
   /** Every Server in the cluster, answering or not. */
   readonly members: readonly MachineId[];
@@ -157,7 +158,7 @@ export function oldCopies(observed: ObservedPlacement, row: PlacementRow | null)
 }
 
 /**
- * The Server presumed to hold the primary, which Copies names under Live and the recovery alert reads: the one that
+ * The Server presumed to hold the primary, which only Copies' Live row and the recovery alert read: the one that
  * reports it, else, with none answering, one that didn't. One whose report is on its way comes first, though the
  * observer lists it last, then one that is up but lacks a capability, then a silent one: each before it may still hold
  * the writer. Among those, the staged primary comes first, since a failed move returns there, else the first listed.
@@ -174,7 +175,9 @@ export function presumedPrimary(observed: ObservedPlacement, staged: MachineId |
  */
 export function targetPlacement(observed: ObservedPlacement, row: PlacementRow | null): Placement | null {
   if (row?.staged != null) return stagedPlacement(observed, row.staged);
-  const primary = presumedPrimary(observed, null);
+  // A staged edit keeps this Server as the primary, so it is the first that didn't answer, never a guess that may be a
+  // Server holding only a copy.
+  const primary = observed.primary ?? observed.unanswered[0] ?? null;
   if (primary === null) return null;
   return { primary: primary.id, mirrors: appliedMirrors(observed, row), deletes: [] };
 }
@@ -226,9 +229,10 @@ export function placementChanges(volume: PlacementVolume, members: readonly Memb
   // A move to a mirror is unfinished while the row still lists that mirror, as only the move's last run takes it out:
   // once the target writes it holds the root, yet the next Deploy must finish the same move.
   const handing = observed.primary?.id === staged.primary && (row.mirrors ?? []).includes(staged.primary);
-  // A staged primary that didn't answer may already hold the writer, so keeping it is no move, whatever else is pending.
-  const kept = observed.primary === null ? observed.unanswered.some((server) => server.id === staged.primary) : observed.primary.id === staged.primary;
-  const moving = !kept || handing;
+  // With no primary answering, a silent Server presumed to hold the Volume is no move: the staged one when it is silent,
+  // since a failed move returns there, else the first, as targetPlacement presumes.
+  const holder = observed.primary ?? observed.unanswered.find((server) => server.id === staged.primary) ?? observed.unanswered[0] ?? null;
+  const moving = holder?.id !== staged.primary || handing;
   // A mirror its answering Server no longer holds is already removed: a cancelled Deploy's late run took it.
   const gone = (id: MachineId) => copyOn(id) === undefined && members.some((member) => member.machine.id === id && member.answered);
   for (const id of applied) {
@@ -239,7 +243,7 @@ export function placementChanges(volume: PlacementVolume, members: readonly Memb
     const how: MoveHow = target !== undefined && observed.primary === null ? "restore" : handing || applied.includes(staged.primary) ? "promote" : "copy";
     const from = handing
       ? observed.copies.find((copy) => copy.kind === "slot" && copy.server.id !== staged.primary)?.server ?? null
-      : observed.primary ?? (how === "restore" ? presumedPrimary(observed, staged.primary) : null);
+      : observed.primary ?? (how === "restore" ? observed.unanswered[0] ?? null : null);
     changes.push({
       kind: "move",
       volume,
