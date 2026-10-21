@@ -110,7 +110,7 @@ function RunHeader({ deployment, graph, selected, search, onCancel }: {
             ) : null}
             {graph.nodes.length ? ` · ${graph.done} of ${graph.nodes.length}` : null}
           </p>
-          <p className="truncate text-xs text-muted-foreground">
+          <p className="break-words text-xs text-muted-foreground">
             {byline}{byline ? " · " : null}
             <Link to={VERSIONS_ROUTE_TO} params={params} search={{ revision: deployment.saved }}
               className="underline-offset-4 hover:underline">Version #{deployment.saved}</Link>
