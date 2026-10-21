@@ -33,7 +33,8 @@ use super::{
     frame::{self, DamageScan},
     layout::{
         ContainerKind, ContainerMeta, EXITS_FILE, FIRST_SET_FILE, GAPS_FILE, Gap, GapReason,
-        LINKING_FILE, LogFileName, META_FILE, RunExit, SCANNED_FILE, StoreRoot, create_private_dir,
+        LINKING_FILE, LogFileName, META_FILE, RetainedEnv, RunExit, SCANNED_FILE, StoreRoot,
+        create_private_dir,
     },
     metrics::{
         sampler,
@@ -968,6 +969,11 @@ impl Harvester {
             tracing::error!(container = %id, %error, "cannot write container metadata");
             return;
         }
+        if let Some(env) = retained_env(&inspected)
+            && let Err(error) = env.write(&store_dir)
+        {
+            tracing::warn!(container = %id, %error, "cannot keep the container's env for scrubbing its lines");
+        }
         let max_files = max_files(&inspected);
         let created_nanos = inspected
             .created
@@ -1701,6 +1707,11 @@ fn read_meta(dir: &Path) -> io::Result<Option<ContainerMeta>> {
     }
 }
 
+fn retained_env(inspected: &ContainerInspectResponse) -> Option<RetainedEnv> {
+    let entries = inspected.config.as_ref()?.env.as_deref()?;
+    RetainedEnv::from_inspected(entries)
+}
+
 fn write_meta(dir: &Path, meta: &ContainerMeta) -> io::Result<()> {
     let json = serde_json::to_vec(meta).map_err(io::Error::other)?;
     crate::filesystem::atomic_write(&dir.join(META_FILE), &json, 0o600)
@@ -1971,7 +1982,7 @@ fn rfc3339_nanos(at: &str) -> Option<i64> {
 mod tests {
     use std::{
         cell::Cell,
-        collections::HashMap,
+        collections::{BTreeMap, HashMap},
         fs,
         io::{self, Write},
         os::unix::fs::MetadataExt,
@@ -2003,7 +2014,8 @@ mod tests {
         observe::{
             frame::{Piece, Stream, tests::frame},
             layout::{
-                ContainerKind, ContainerMeta, Gap, GapReason, LINKING_FILE, LogFileName, StoreRoot,
+                ContainerKind, ContainerMeta, Gap, GapReason, LINKING_FILE, LogFileName,
+                RetainedEnv, StoreRoot,
             },
             metrics::segment::Row,
             ship::{self, Outbox},
@@ -2708,6 +2720,10 @@ mod tests {
         fn meta(&self) -> ContainerMeta {
             read_meta(&self.dir()).unwrap().unwrap()
         }
+
+        fn env(&self) -> Option<RetainedEnv> {
+            RetainedEnv::read(&self.dir()).unwrap()
+        }
     }
 
     const WEB: [(&str, &str); 4] = [
@@ -2718,7 +2734,13 @@ mod tests {
     ];
 
     fn managed(max_files: usize) -> Inspected {
+        managed_with_env(max_files, &[])
+    }
+
+    fn managed_with_env(max_files: usize, env: &[&str]) -> Inspected {
         let mut inspected = labelled(&WEB);
+        inspected.config.as_mut().unwrap().env =
+            Some(env.iter().map(|entry| (*entry).to_owned()).collect());
         inspected.created = Some("2025-10-09T08:53:20Z".parse().unwrap());
         inspected.state = Some(ContainerState {
             running: Some(true),
@@ -2781,6 +2803,33 @@ mod tests {
             .map(|gap| (gap.from, gap.reason))
             .collect();
         assert_eq!(gaps, [(T0 + 3, GapReason::NotCaptured)]);
+    }
+
+    // Catches a Log Store that keeps a removed Container's lines but not the env that
+    // scrubs them, and one that drops the env with the Container.
+    #[tokio::test]
+    async fn a_removed_containers_env_stays_with_its_lines() {
+        let host = host();
+        let id = host.container(&[lines(T0 + 1, 3)]);
+        let mut running = host.harvester();
+        running.harvester.rescan();
+        assert_eq!(host.env(), None);
+
+        running.harvester.on_inspected(
+            id,
+            managed_with_env(3, &["TOKEN=live-only-sentinel", "PLAIN=from-docker"]),
+        );
+        host.remove_from_docker();
+        running.harvester.on_inspected(id, Inspected::Gone);
+
+        assert_eq!(host.held(), 1);
+        assert_eq!(
+            host.env().map(RetainedEnv::into_values),
+            Some(BTreeMap::from([
+                ("TOKEN".to_owned(), "live-only-sentinel".to_owned()),
+                ("PLAIN".to_owned(), "from-docker".to_owned()),
+            ]))
+        );
     }
 
     fn at(nanos: i64) -> String {

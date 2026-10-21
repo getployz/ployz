@@ -935,10 +935,14 @@ struct RawContainerConfig {
 fn inspected_environment(
     config: &RawContainerConfig,
 ) -> Option<std::collections::BTreeMap<String, String>> {
-    config
-        .env
-        .as_deref()
-        .unwrap_or_default()
+    parse_environment(config.env.as_deref().unwrap_or_default())
+}
+
+/// Docker's `Config.Env` entries as a map; `None` when an entry has no `KEY=`.
+pub(crate) fn parse_environment(
+    entries: &[String],
+) -> Option<std::collections::BTreeMap<String, String>> {
+    entries
         .iter()
         .map(|entry| {
             entry
