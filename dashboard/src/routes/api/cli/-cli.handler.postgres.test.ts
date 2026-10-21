@@ -89,6 +89,8 @@ function fakeServers() {
     holdSetReply?: Promise<void>;
     /** The next Clear waits for this before it takes the slot, as one held up on the wire would. */
     holdClear?: Promise<void>;
+    /** The next Clear takes the slot, as a daemon does, then holds its reply until this settles. */
+    holdClearReply?: Promise<void>;
   }>();
   const aborts = connectionAborts();
   let sets = 0;
@@ -130,6 +132,9 @@ function fakeServers() {
           server.holdClear = undefined;
           await held;
           server.slots.delete(label);
+          const reply = server.holdClearReply;
+          server.holdClearReply = undefined;
+          await reply;
         },
         inspect: async () => ({ management_clients: [...server.slots.keys()] }),
         close: () => server.closeHangs ? new Promise<void>(() => {}) : Promise.resolve(),
@@ -1300,6 +1305,87 @@ it.live(
         assert.strictEqual(reply.status, 401, reply.text);
         assert.strictEqual(fake.sets(), 1);
         assert.strictEqual(server.slots.size, 0);
+        assert.strictEqual(fake.clears(), 2);
+        assert.deepStrictEqual(yield* database.drizzle.select().from(serverAccess).where(eq(serverAccess.organizationId, alice.organization.id)), []);
+      }).pipe(Effect.provide(layer));
+    }),
+  30_000,
+);
+
+it.live(
+  "a Set that lands while the sweep's Clear reply is on the wire is recorded revoked over the sweep's claim and Cleared",
+  () =>
+    Effect.gen(function* () {
+      const fake = fakeServers();
+      const layer = yield* cliLayer(fake.layer);
+      yield* Effect.gen(function* () {
+        const database = yield* Database;
+        const alice = yield* signUp("alice");
+        const machine = ids.machineId("00000000000000000000000000001287");
+        yield* enroll(alice.organization.id, machine, true);
+        let deliverSet = () => undefined as void;
+        const holdSet = new Promise<void>((resolve) => { deliverSet = resolve; });
+        let replyClear = () => undefined as void;
+        const holdClearReply = new Promise<void>((resolve) => { replyClear = resolve; });
+        const server = { online: true as const, slots: new Map<string, string>(), holdSet, holdClearReply };
+        fake.servers.set(machine, server);
+        const first = yield* Effect.forkChild(cli("POST", "server-access", alice));
+        yield* Effect.promise(() => vi.waitFor(() => assert.strictEqual(fake.sets(), 1), { timeout: 10_000 }));
+
+        // The sweep revokes the row, holds it for its Clear, and empties the slot; its reply is still on the wire
+        // when the Set lands.
+        yield* database.drizzle.update(member).set({ role: "member" }).where(eq(member.organizationId, alice.organization.id));
+        const sweep = yield* Effect.forkChild(retireServerAccess());
+        yield* Effect.promise(() => vi.waitFor(() => assert.strictEqual(fake.clears(), 1), { timeout: 10_000 }));
+        deliverSet();
+        const reply = yield* Fiber.join(first);
+        assert.strictEqual(reply.status, 401, reply.text);
+        replyClear();
+        yield* Fiber.join(sweep);
+        assert.strictEqual(server.slots.size, 0);
+        assert.strictEqual(fake.sets(), 1);
+        assert.strictEqual(fake.clears(), 2);
+        assert.deepStrictEqual(yield* database.drizzle.select().from(serverAccess).where(eq(serverAccess.organizationId, alice.organization.id)), []);
+      }).pipe(Effect.provide(layer));
+    }),
+  30_000,
+);
+
+it.live(
+  "a Set that lands while another first use's Clear reply is on the wire is recorded revoked over that claim and Cleared",
+  () =>
+    Effect.gen(function* () {
+      const fake = fakeServers();
+      const layer = yield* cliLayer(fake.layer);
+      yield* Effect.gen(function* () {
+        const database = yield* Database;
+        const alice = yield* signUp("alice");
+        const machine = ids.machineId("00000000000000000000000000001288");
+        yield* enroll(alice.organization.id, machine, true);
+        let deliverSet = () => undefined as void;
+        const holdSet = new Promise<void>((resolve) => { deliverSet = resolve; });
+        let replyClear = () => undefined as void;
+        const holdClearReply = new Promise<void>((resolve) => { replyClear = resolve; });
+        const server = { online: true as const, slots: new Map<string, string>(), holdSet, holdClearReply };
+        fake.servers.set(machine, server);
+        const first = yield* Effect.forkChild(cli("POST", "server-access", alice));
+        yield* Effect.promise(() => vi.waitFor(() => assert.strictEqual(fake.sets(), 1), { timeout: 10_000 }));
+
+        // A revocation an old instance recorded over the claim, its Clear never dialed. A second first use Clears it
+        // and empties the slot; its reply is still on the wire when Alice loses access and the first Set lands.
+        yield* database.drizzle.update(serverAccess).set({ revokedAt: new Date(), encryptedCapability: null, claim: null })
+          .where(eq(serverAccess.organizationId, alice.organization.id));
+        const second = yield* Effect.forkChild(cli("POST", "server-access", alice));
+        yield* Effect.promise(() => vi.waitFor(() => assert.strictEqual(fake.clears(), 1), { timeout: 10_000 }));
+        yield* database.drizzle.update(member).set({ role: "member" }).where(eq(member.organizationId, alice.organization.id));
+        deliverSet();
+        const reply = yield* Fiber.join(first);
+        assert.strictEqual(reply.status, 401, reply.text);
+        replyClear();
+        const other = yield* Fiber.join(second);
+        assert.strictEqual(other.status, 401, other.text);
+        assert.strictEqual(server.slots.size, 0);
+        assert.strictEqual(fake.sets(), 1);
         assert.strictEqual(fake.clears(), 2);
         assert.deepStrictEqual(yield* database.drizzle.select().from(serverAccess).where(eq(serverAccess.organizationId, alice.organization.id)), []);
       }).pipe(Effect.provide(layer));

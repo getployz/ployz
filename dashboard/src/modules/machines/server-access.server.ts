@@ -141,7 +141,8 @@ export const provideServerAccess = Effect.fn("ServerAccess.provide")(function* (
       while (true) {
         // The row this request held went from under it, as a revocation does, or this request Cleared a revoked row
         // itself: no second Set for a credential that no longer authorizes one. A Set this request landed is
-        // recorded revoked, so retireServerAccess below, or the sweep, Clears it.
+        // recorded revoked over whatever the row holds, a Clear's token included, since that Clear may have emptied
+        // the slot before the Set landed; retireServerAccess below, or the sweep, Clears it again.
         if (reclaiming) {
           const [checked] = yield* drizzle.select({
             authorized: sql<boolean>`${authorizedBy(caller.userId, caller.organization.id, caller.credential.kind, caller.credential.id)}`,
@@ -156,7 +157,10 @@ export const provideServerAccess = Effect.fn("ServerAccess.provide")(function* (
                 userId: caller.userId,
                 revokedAt: now,
                 updatedAt: now,
-              }).onConflictDoNothing({ target: [serverAccess.organizationId, serverAccess.credentialId, serverAccess.machineId] });
+              }).onConflictDoUpdate({
+                target: [serverAccess.organizationId, serverAccess.credentialId, serverAccess.machineId],
+                set: { revokedAt: now, encryptedCapability: null, claim: null, updatedAt: now },
+              });
             }
             return { capability: null, refused: null, revoked: true };
           }
