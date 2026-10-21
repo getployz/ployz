@@ -110,15 +110,13 @@ pub(super) fn logs(credential: &Credential, asked: LogsAsked<'_>) -> Result<(), 
                 && unknown(name).is_some()
         })
         .map(|(name, _)| scoped.no_service(name));
-    if read.iter().all(|(_, answer)| answer.servers.is_empty())
+    // A Server that did not answer may hold the lines, so it outranks the refusal, as
+    // on the direct path.
+    if read
+        .iter()
+        .all(|(_, answer)| answer.servers.is_empty() && answer.seen.unanswered.is_empty())
         && let Some(refusal) = refusal
     {
-        // Why another name's Servers did not answer still matters beside the refusal.
-        for (_, answer) in &read {
-            for note in &answer.notes {
-                ui::note(note);
-            }
-        }
         return Err(refusal);
     }
     let shown = read

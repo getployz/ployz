@@ -4006,7 +4006,7 @@ fn reading_through_cloud_refuses_a_name_nothing_answered_for() {
         );
     }
     ok(&linus, &["metrics", "web"]);
-    // Nothing printed, but why a Server did not answer for `worker` still shows.
+    // web-2 did not answer for `worker` and may hold its lines, so that outranks the refusal.
     let home = tempfile::tempdir().unwrap();
     let output = linus
         .command(home.path())
@@ -4020,9 +4020,10 @@ fn reading_through_cloud_refuses_a_name_nothing_answered_for() {
             String::from_utf8(output.stderr).unwrap()
         ),
         (
-            Some(1),
+            Some(3),
             String::new(),
-            "web-2 did not answer: timed out\nerror: No Service named nosvc in Environment production\nvalid: web, worker\n".to_owned()
+            "web-2 did not answer: timed out\n! web-2 did not answer; its rows are missing.\n"
+                .to_owned()
         )
     );
     // Lines for `web` already printed, so the refusal for `nosvc` comes after them.
