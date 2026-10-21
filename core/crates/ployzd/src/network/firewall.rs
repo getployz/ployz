@@ -235,11 +235,26 @@ fn fenced(
     rules
 }
 
+/// Docker's embedded DNS, which a host on a user-defined Docker network
+/// resolves through, DNATs port 53 to a random port on the same address.
+/// Filter OUTPUT sees the new port, so only that address may keep its DNS
+/// through a redirect: one anywhere else could open any port to the worker.
+const DOCKER_EMBEDDED_DNS: &str = "127.0.0.11/32";
+
 fn ipv4_fence(fence: &ployz_build::Fence) -> Vec<String> {
-    let allowed = fence
-        .image_ports
+    let allowed = ["udp", "tcp"]
         .iter()
-        .map(|port| format!("-d 127.0.0.1/32 -p tcp --dport {port}"))
+        .map(|protocol| {
+            format!(
+                "-d {DOCKER_EMBEDDED_DNS} -p {protocol} -m conntrack --ctorigdst {DOCKER_EMBEDDED_DNS} --ctorigdstport {DNS_PORT}"
+            )
+        })
+        .chain(
+            fence
+                .image_ports
+                .iter()
+                .map(|port| format!("-d 127.0.0.1/32 -p tcp --dport {port}")),
+        )
         .collect();
     let mut drops: Vec<String> = [
         &format!("{}+", ployz_build::BUILD_BRIDGE_PREFIX),
@@ -541,6 +556,8 @@ mod tests {
             [
                 "-d 127.0.0.0/8 -p udp --dport 53 -j RETURN",
                 "-d 127.0.0.0/8 -p tcp --dport 53 -j RETURN",
+                "-d 127.0.0.11/32 -p udp -m conntrack --ctorigdst 127.0.0.11/32 --ctorigdstport 53 -j RETURN",
+                "-d 127.0.0.11/32 -p tcp -m conntrack --ctorigdst 127.0.0.11/32 --ctorigdstport 53 -j RETURN",
                 "-d 127.0.0.1/32 -p tcp --dport 41234 -j RETURN",
                 "-m cgroup --path /system.slice/docker-abc.scope -m addrtype --dst-type LOCAL -j DROP",
                 "-m cgroup --path /system.slice/docker-abc.scope -o ployz-build+ -j DROP",

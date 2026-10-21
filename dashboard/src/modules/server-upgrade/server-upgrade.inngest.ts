@@ -163,6 +163,7 @@ async function upgradeServer(
     channel,
     fromVersion,
     inngestRunId: runId,
+    serverName: name,
   })));
   const attempt = await step.run(`request-upgrade-${machineId}`, () =>
     runEffect(requestUpgradeOnServer({ organizationId, machineId, attemptId, channel })));
