@@ -581,8 +581,8 @@ struct Staged {
 /// Something that needs someone to act, with the command that acts.
 #[derive(Serialize)]
 pub(super) struct Attention {
-    /// An error code, `deployment_failed`, `deployment_unknown`, `broken_reference`,
-    /// `machine_down` or `routes_not_acked`.
+    /// An error code, `no_server_answers`, `deployment_failed`, `deployment_unknown`,
+    /// `broken_reference`, `machine_down` or `routes_not_acked`.
     pub(super) reason: String,
     pub(super) message: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -893,7 +893,7 @@ fn status_record(status: &Status) -> Fields {
         let label = match &attention.subject {
             Some(Subject::NotPickedUp { service, .. }) => Cow::Owned(service.name.to_string()),
             Some(Subject::Down { machine }) => Cow::Owned(machine.to_string()),
-            None => Cow::Borrowed("needs attention"),
+            Some(Subject::Unanswered { .. }) | None => Cow::Borrowed("needs attention"),
         };
         record.push(label, Cell::status(&attention.message, Tone::Bad));
     }

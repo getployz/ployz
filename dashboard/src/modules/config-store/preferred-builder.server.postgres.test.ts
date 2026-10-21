@@ -16,16 +16,13 @@ import { Auth, AuthLive } from "#/server/auth.server";
 import { encodePublicError, statusForPublicError } from "#/server/public-error";
 import { Database } from "#/server/database.server";
 import { machineId } from "#/test/ids";
-import { storeTestCloud } from "#/test/store-cloud";
+import { storeTestCloudWith } from "#/test/store-cloud";
 import { SecretEncryption } from "#/utils/encrypted-secret.server";
 
 const origin = "http://localhost:3000";
 const here = { project: null, environment: null };
 
-const cloudLayer = Effect.fn(function* () {
-  const services = yield* storeTestCloud({ env: { PLOYZ_HOSTED_DNS_URL: "http://127.0.0.1:9/" } });
-  return Layer.merge(AuthLive.pipe(Layer.provide(services)), services);
-});
+const cloudServices = () => storeTestCloudWith(AuthLive, { env: { PLOYZ_HOSTED_DNS_URL: "http://127.0.0.1:9/" } });
 
 const signUp = Effect.fn(function* (name: string) {
   const response = yield* (yield* Auth).handler(new Request(`${origin}/api/auth/sign-up/email`, {
@@ -124,7 +121,7 @@ it.live(
   "the CLI's set resolves a Preferred Builder in Cloud: github, then an exact Machine ID, then a Server name, then an ID as typed",
   () =>
     Effect.gen(function* () {
-      const layer = yield* cloudLayer();
+      const cloud = yield* cloudServices();
       yield* Effect.gen(function* () {
         const { session, preferred } = yield* shop();
         const resolves: Array<[string, string]> = [
@@ -150,7 +147,7 @@ it.live(
           status: 404, error: ["not_found", "Server machine-8 was not found"],
         }, "a Server of an earlier pairing isn't listed");
         assert.strictEqual(yield* preferred(), unlisted, "a refused value writes nothing");
-      }).pipe(Effect.provide(layer));
+      }).pipe(Effect.provide(cloud));
     }),
   60_000,
 );
@@ -159,7 +156,7 @@ it.live(
   "a Server name reaches the Store as its Machine ID from --patch, the agent's service_update and a member's dashboard",
   () =>
     Effect.gen(function* () {
-      const layer = yield* cloudLayer();
+      const cloud = yield* cloudServices();
       yield* Effect.gen(function* () {
         const { alice, bob, slug, session, preferred } = yield* shop();
 
@@ -184,7 +181,7 @@ it.live(
         assert.strictEqual(yield* preferred(), two, "a member's dashboard write");
         assert.deepStrictEqual(yield* cli(bob.session, set("machine-1")), { status: 200, error: null }, "a member's CLI");
         assert.strictEqual(yield* preferred(), one);
-      }).pipe(Effect.provide(layer));
+      }).pipe(Effect.provide(cloud));
     }),
   60_000,
 );
@@ -193,7 +190,7 @@ it.live(
   "only a Service's preferredBuilder is resolved: a variable of that name keeps the text",
   () =>
     Effect.gen(function* () {
-      const layer = yield* cloudLayer();
+      const cloud = yield* cloudServices();
       yield* Effect.gen(function* () {
         const { alice, slug } = yield* shop();
         assert.isTrue((yield* writeStoreAsMember(alice, slug, {
@@ -207,7 +204,7 @@ it.live(
         });
         const values = read.ok && read.value.view === "environment" ? read.value.values : assert.fail("no Settings");
         assert.deepInclude(values?.["env"], { PREFERREDBUILDER: "machine-1", PREFERRED: "machine-2" });
-      }).pipe(Effect.provide(layer));
+      }).pipe(Effect.provide(cloud));
     }),
   60_000,
 );
@@ -216,7 +213,7 @@ it.live(
   "a Preferred Builder that can't be a Machine Target is refused as the CLI's MachineTarget::parse refuses it, before any Server is read",
   () =>
     Effect.gen(function* () {
-      const layer = yield* cloudLayer();
+      const cloud = yield* cloudServices();
       yield* Effect.gen(function* () {
         const { session, preferred } = yield* shop();
         assert.deepStrictEqual(yield* cli(session, set("machine-1")), { status: 200, error: null });
@@ -235,7 +232,7 @@ it.live(
           const refused = yield* Effect.flip(resolvePreferredBuilders("org-1", set(typed)).pipe(Effect.provide(noDatabase)));
           assert.deepInclude(refused, { _tag: "StoreRefused", code: "invalid_argument" }, JSON.stringify(typed));
         }
-      }).pipe(Effect.provide(layer));
+      }).pipe(Effect.provide(cloud));
     }),
   60_000,
 );
@@ -244,7 +241,7 @@ it.live(
   "a refusal shows the typed Server as the CLI does, trimmed and escaped by Rust's str::trim and escape_debug",
   () =>
     Effect.gen(function* () {
-      const layer = yield* cloudLayer();
+      const cloud = yield* cloudServices();
       yield* Effect.gen(function* () {
         const { session } = yield* shop();
         // Each expected message is the CLI's own, printed by `format!("Server {} was not found", typed.trim().escape_debug())`.
@@ -263,7 +260,7 @@ it.live(
         }
         // U+0085 is Unicode white space, which Rust trims and JavaScript's trim keeps.
         assert.deepStrictEqual(yield* cli(session, set("\u0085machine-2")), { status: 200, error: null });
-      }).pipe(Effect.provide(layer));
+      }).pipe(Effect.provide(cloud));
     }),
   60_000,
 );
@@ -272,7 +269,7 @@ it.live(
   "another Organization's Servers are never matched, even under the same pairing",
   () =>
     Effect.gen(function* () {
-      const layer = yield* cloudLayer();
+      const cloud = yield* cloudServices();
       yield* Effect.gen(function* () {
         const { session, preferred } = yield* shop();
         const carol = yield* resolveCaller(signedIn(yield* signUp("carol")));
@@ -298,7 +295,7 @@ it.live(
           status: 404, error: ["not_found", "Server elsewhere was not found"],
         });
         assert.strictEqual(yield* preferred(), one);
-      }).pipe(Effect.provide(layer));
+      }).pipe(Effect.provide(cloud));
     }),
   60_000,
 );

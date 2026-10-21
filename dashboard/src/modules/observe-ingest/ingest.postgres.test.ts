@@ -1,7 +1,7 @@
 import { createPrivateKey, sign } from "node:crypto";
 import { it } from "@effect/vitest";
 import { asc, sql } from "drizzle-orm";
-import { Effect, Layer } from "effect";
+import { Effect } from "effect";
 import { Inngest } from "inngest";
 import { expect, vi } from "vitest";
 import { cloudStore } from "#/modules/config-store/store-sdk.server";
@@ -95,7 +95,7 @@ const setup = Effect.fn(function* (env: Readonly<Record<string, string>> = { ANA
   const inngest = new Inngest({ id: "observe-ingest-test" });
   vi.spyOn(inngest, "send").mockResolvedValue({ ids: [] });
   forgetPartitions();
-  const services = yield* Layer.build(yield* storeTestCloud({ inngest, env }));
+  const services = yield* storeTestCloud({ inngest, env });
   const provide = <A, E>(effect: Effect.Effect<A, E, Database>) => effect.pipe(Effect.provide(services));
   yield* provide(seedStoreOrganization(ORGANIZATION, { name: "Acme", slug: "acme" }));
   yield* enrollStoreServer(ORGANIZATION).pipe(Effect.provide(services));

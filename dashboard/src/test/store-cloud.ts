@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import type { ConfigTrusted, Connection, MachineId } from "@ployz/sdk";
-import { ConfigProvider, Effect, Layer } from "effect";
+import { ConfigProvider, type Context, Effect, Layer, type Scope } from "effect";
 import { Inngest } from "inngest";
 import { vi } from "vitest";
 import { Polar, type PolarService } from "#/modules/billing/polar-provider.server";
@@ -34,20 +34,16 @@ export const sendsNowhere = () => {
   return inngest;
 };
 
-/**
- * Cloud with the Config Store in a fresh database, and everything its Store workers use: GitHub as `github` answers
- * (none by default), repository reads through it unless `repositories` stands in, no Cluster paired, a self-hosted
- * billing plan, and an Inngest client that sends nowhere. `env` overrides configuration. With `fleet`, every Organization
- * is paired with the Machines those connections reach, dialed through the real SDK.
- */
-export const storeTestCloud = Effect.fn(function* (options: {
+interface StoreCloudOptions {
   readonly github?: GithubApiService;
   readonly repositories?: GithubRepositories["Service"];
   readonly polar?: PolarService;
   readonly inngest?: Inngest;
   readonly env?: Readonly<Record<string, string>>;
   readonly fleet?: { readonly connections: ReadonlyArray<Connection> } | null;
-} = {}) {
+}
+
+const storeCloudLayer = Effect.fn(function* (options: StoreCloudOptions) {
   const fleet = options.fleet;
   const cloud = yield* postgresTestDatabase;
   const env = { ...testConfigEnvironment(), NODE_ENV: "test", DATABASE_URL: cloud.url.href, ...options.env };
@@ -74,6 +70,29 @@ export const storeTestCloud = Effect.fn(function* (options: {
       ).pipe(Layer.provide(PloyzLive)),
   );
 });
+
+type StoreCloudLayer = Effect.Success<ReturnType<typeof storeCloudLayer>>;
+
+/** What {@link storeTestCloud} provides. */
+export type StoreCloud = Layer.Success<StoreCloudLayer>;
+
+type BuiltStoreCloud<A, E> = Effect.Effect<Context.Context<StoreCloud | A>, Layer.Error<StoreCloudLayer> | E, Scope.Scope>;
+
+/**
+ * Cloud with the Config Store in a fresh database, and everything its Store workers use: GitHub as `github` answers
+ * (none by default), repository reads through it unless `repositories` stands in, no Cluster paired, a self-hosted
+ * billing plan, and an Inngest client that sends nowhere. `env` overrides configuration. With `fleet`, every Organization
+ * is paired with the Machines those connections reach, dialed through the real SDK.
+ *
+ * Built once, in the caller's Scope, as Cloud builds its services once per process: every provide of what this returns
+ * shares one pool and one Config Store. A Layer would build again, and open the Store again, on each provide.
+ */
+export const storeTestCloud = (options: StoreCloudOptions = {}): BuiltStoreCloud<never, never> =>
+  Effect.flatMap(storeCloudLayer(options), Layer.build);
+
+/** {@link storeTestCloud} with `layer`'s services, such as `AuthLive`, built on Cloud's in the same build. */
+export const storeTestCloudWith = <A, E>(layer: Layer.Layer<A, E, StoreCloud>, options: StoreCloudOptions = {}): BuiltStoreCloud<A, E> =>
+  Effect.flatMap(storeCloudLayer(options), (cloud) => Layer.build(Layer.provideMerge(layer, cloud)));
 
 /** Organization `id` (Shop by default), whose one member Ada installed the GitHub App on `acme` as installation 7. */
 export const seedStoreOrganization = Effect.fn(function* (id: string, named: { name: string; slug: string } = { name: "Shop", slug: "shop" }) {

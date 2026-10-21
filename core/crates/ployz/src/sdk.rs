@@ -57,9 +57,7 @@ pub use logs::{
     ContainerLogInput, ContainerLogRecord, ContainerLogStream, LogHistoryInput, LogHistoryRecord,
     LogHistoryStream,
 };
-pub(crate) use logs::{
-    container_env, failed_tail, process_tail, service_tail, tail_excerpt, tail_frames,
-};
+pub(crate) use logs::{container_env, failed_tail, process_tail, service_tail, tail_frames};
 pub use metrics::{MetricHistory, MetricHistoryInput, MetricSubject, metric_history};
 pub use preparation::{
     BuildReceipt, BuildVariables, OutsideBuildInput, PreparationInput, UploadDigest, VERSION,
@@ -1495,3 +1493,7 @@ mod preparation_tests;
 #[cfg(test)]
 #[path = "sdk/volume_switch_tests.rs"]
 mod volume_switch_tests;
+
+#[cfg(test)]
+#[path = "sdk/direct_apply_tests.rs"]
+mod direct_apply_tests;

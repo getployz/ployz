@@ -9,21 +9,19 @@ agent the Ployz skill, and the agent can deploy and change your services for you
 ## Install the CLI
 
 ```sh
-curl -fsSL https://ployz.sh | sh
-
-# or with Homebrew
-brew install getployz/ployz/ployz
+curl -fsSL https://ployz.sh | sh -s -- beta
 ```
 
 It runs on Linux and macOS. On Windows, install it inside WSL. To upgrade, run the same command
-again, or `brew upgrade ployz`.
+again.
 
-The script installs the stable release to `/usr/local/bin`. For the beta, or one version, name it
-after `sh -s --`. To install somewhere else, set `INSTALL_BIN_DIR` to a directory that exists:
+The line installs the beta release to `/usr/local/bin`. Ployz Cloud enrolls servers only from
+0.3.0-beta.6 on, and the stable release and Homebrew are still on 0.2. Without `beta`, the
+script installs stable. For one version, name it after `sh -s --` instead. To install somewhere
+else, set `INSTALL_BIN_DIR` to a directory that exists:
 
 ```sh
-curl -fsSL https://ployz.sh | sh -s -- beta
-curl -fsSL https://ployz.sh | INSTALL_BIN_DIR="$HOME/.local/bin" sh
+curl -fsSL https://ployz.sh | INSTALL_BIN_DIR="$HOME/.local/bin" sh -s -- beta
 ```
 
 ## Sign in
@@ -307,6 +305,18 @@ row, so `ployz service ls | cut -f1` prints the names. An empty list prints one 
 stderr, such as `No Services in production yet.`; piped, it also prints the header row on stdout.
 A single record, such as
 `ployz status`, prints one `label = value` line per field when piped.
+
+`ployz status` lists what needs you under **needs attention**: a deployment that didn't complete,
+a reference to a removed service, or `Server web-1 isn't answering` when none of the servers a
+deploy would reach answers. With `--json` these are the `attention` rows; that one has reason
+`no_server_answers` and names the servers in `servers`. It comes from the same single connection
+status makes to check your servers (below), not a separate one. A server that accepts the
+connection but never answers takes 5 seconds to give up on, and status tries each server once.
+A check that can't finish adds no row and warns `Could not check which Servers picked up the new
+copies` instead, so no row doesn't prove a server answered. A context or `--connect` that reaches the daemon on this host through its local
+socket never gets this row; the **this server** line covers it. Signed in to Cloud, status asks
+Cloud for server access once per run. The first `ployz status` or other server command for a
+sign-in or token also waits while Cloud sets up your access on each server.
 
 `ployz status` works signed out too. It shows what it can and says `signed in as no one`. On a
 server waiting for approval, it leads with a **this server** line: `Installing Docker`,

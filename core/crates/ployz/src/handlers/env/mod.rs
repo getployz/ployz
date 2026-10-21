@@ -34,7 +34,7 @@ pub(super) fn group(command: Command) -> Command {
 pub(super) fn new_command(command: Command) -> Command {
     command
         .about("Create an empty Environment")
-        .arg(positional("name", true))
+        .arg(positional("name", true).help("The new Environment's name, unique in the Project"))
         .arg(project_arg())
 }
 
@@ -47,7 +47,7 @@ pub(super) fn ls_command(command: Command) -> Command {
 pub(super) fn default_command(command: Command) -> Command {
     command
         .about("Make an Environment the Project's Default Environment")
-        .arg(positional("name", true))
+        .arg(positional("name", true).help("The Environment to make the Default"))
         .arg(project_arg())
 }
 
@@ -56,7 +56,7 @@ pub(super) fn protect_command(command: Command) -> Command {
         .about(
             "Protect an Environment so it cannot be removed and only an owner or admin can change its repository or deploy branch",
         )
-        .arg(positional("name", true))
+        .arg(positional("name", true).help("The Environment to protect"))
         .arg(switch("off", None).help("Unprotect it, so it can be removed and anyone who can stage can change its repository or deploy branch"))
         .arg(project_arg())
 }
@@ -93,7 +93,7 @@ pub(super) fn rm_command(command: Command) -> Command {
                          elsewhere it fails with confirmation_required, naming what goes and \
                          the exact retry.",
         )
-        .arg(positional("name", true))
+        .arg(positional("name", true).help("The Environment to remove"))
         .arg(project_arg())
         .arg(
             value("confirm", None)
@@ -218,7 +218,7 @@ pub(super) fn copy_command(command: Command) -> Command {
     store::scoped(
         command.about("Make a Live Node the Branch's own copy; a Volume it mounts comes empty"),
     )
-    .arg(positional("node", true))
+    .arg(positional("node", true).help("The Parent's Service to copy"))
     .arg(expect())
 }
 
@@ -275,7 +275,7 @@ pub(super) fn shutdown_command(command: Command) -> Command {
                  accepted by name. Its configuration, history and Branch stay, and pushes \
                  leave it off; `ployz deploy --env NAME` turns it back on.",
         )
-        .arg(positional("name", true))
+        .arg(positional("name", true).help("The Environment to take off the Servers"))
         .arg(project_arg())
         .arg(crate::cli::volume_acceptance())
         .arg(crate::cli::reviewed_version()),

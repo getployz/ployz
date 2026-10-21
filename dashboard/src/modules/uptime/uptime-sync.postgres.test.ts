@@ -3,7 +3,7 @@ import { it } from "@effect/vitest";
 import { InngestTestEngine } from "@inngest/test";
 import type { JsonValue, SavedServiceIntent } from "@ployz/sdk";
 import { sql, type SQL } from "drizzle-orm";
-import { Deferred, Effect, Fiber, Layer } from "effect";
+import { Deferred, Effect, Fiber } from "effect";
 import { Inngest } from "inngest";
 import { expect, vi } from "vitest";
 import { createRunStoreDeployment } from "#/modules/config-store/store-deployment.inngest";
@@ -35,7 +35,7 @@ type CheckRow = {
  * admitted with the Cluster Domain frozen. `apply` writes the Service's Applied State row as the Store's `advance` does.
  */
 const setup = Effect.fn(function* () {
-  const services = yield* Layer.build(yield* storeTestCloud());
+  const services = yield* storeTestCloud();
   yield* seedStoreOrganization(ORGANIZATION).pipe(Effect.provide(services));
   const store = yield* cloudStore.pipe(Effect.provide(services));
   const write = (command: Parameters<typeof store.write>[1]) => Effect.promise(() => store.write(ORGANIZATION, command));
