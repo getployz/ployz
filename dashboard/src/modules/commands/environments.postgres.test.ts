@@ -1,5 +1,5 @@
 import { assert, it } from "@effect/vitest";
-import { Effect, Layer } from "effect";
+import { Effect } from "effect";
 import { cloudStore } from "#/modules/config-store/store-sdk.server";
 import { mintOrganizationTokenUnchecked } from "#/modules/identity/organization-token.server";
 import { presetGrant, type TokenGrant } from "#/modules/identity/token-grant";
@@ -7,7 +7,7 @@ import { organizationServerUpgrades } from "#/modules/server-upgrade/tables";
 import { handleRunRequest } from "#/routes/api/cli/-handlers";
 import { AuthLive } from "#/server/auth.server";
 import { Database } from "#/server/database.server";
-import { seedStoreOrganization, storeTestCloud } from "#/test/store-cloud";
+import { seedStoreOrganization, storeTestCloudWith } from "#/test/store-cloud";
 
 const ORGANIZATION = "00000000-0000-4000-8000-000000002207";
 
@@ -41,25 +41,23 @@ const shop = Effect.fn(function* () {
 
 it.live("refuses an Organization-wide command to a token held to Environments, even one whose grant holds its permission", () =>
   Effect.gen(function* () {
-    const cloud = yield* storeTestCloud();
-    const layer = Layer.mergeAll(AuthLive.pipe(Layer.provide(cloud)), cloud);
+    const cloud = yield* storeTestCloudWith(AuthLive);
     yield* Effect.gen(function* () {
       const { policy, channels } = yield* shop();
       const scoped = yield* policy({ permissions: ["servers:operate"], environments: ["staging"] }, "beta");
       assert.deepStrictEqual(scoped, { status: 403, message: "This token can deploy only to staging." });
       assert.deepStrictEqual(yield* channels, []);
-    }).pipe(Effect.provide(layer));
+    }).pipe(Effect.provide(cloud));
   }), 60_000);
 
 it.live("lets a Full token set the upgrade policy, and refuses Read and Deploy tokens", () =>
   Effect.gen(function* () {
-    const cloud = yield* storeTestCloud();
-    const layer = Layer.mergeAll(AuthLive.pipe(Layer.provide(cloud)), cloud);
+    const cloud = yield* storeTestCloudWith(AuthLive);
     yield* Effect.gen(function* () {
       const { policy, channels } = yield* shop();
       assert.strictEqual((yield* policy(presetGrant({ preset: "full" }), "beta")).status, 200);
       assert.strictEqual((yield* policy(presetGrant({ preset: "read" }), "stable")).status, 403);
       assert.strictEqual((yield* policy(presetGrant({ preset: "deploy", environment: "staging" }), "stable")).status, 403);
       assert.deepStrictEqual(yield* channels, ["beta"]);
-    }).pipe(Effect.provide(layer));
+    }).pipe(Effect.provide(cloud));
   }), 60_000);

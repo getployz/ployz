@@ -40,10 +40,11 @@ You need a Linux server you can reach as root over SSH.
 1. Install the CLI:
 
    ```sh
-   curl -fsSL https://ployz.sh | sh
-   # or
-   brew install getployz/ployz/ployz
+   curl -fsSL https://ployz.sh | sh -s -- beta
    ```
+
+   Ployz Cloud enrolls servers only from 0.3.0-beta.6 on. The stable release and Homebrew are
+   still on 0.2, so install the beta.
 
 2. Sign in to Ployz Cloud:
 

@@ -14,7 +14,7 @@ import {
 } from "#/modules/machines/machine-removal.functions";
 import { withMissingDataLossIdentities, type DataLossList } from "#/modules/runtime/data-loss-confirm";
 import type { DataLossIdentity } from "#/modules/runtime/data-loss-identity";
-import type { MachineRemoveResult } from "#/modules/machines/machine-removal";
+import { removalFailureMessage, type MachineRemoveResult } from "#/modules/machines/machine-removal";
 import type { RuntimeMachineRecord } from "#/modules/runtime/runtime.collection";
 import { RowWarning } from "#/components/settings/row-warning";
 import { SettingsDanger, SettingsSection } from "#/components/settings/settings-section";
@@ -25,6 +25,7 @@ import { useClusterReleased } from "#/providers/runtime-provider";
 /** Polls the removal until it settles. Closing the dialog or leaving the page aborts; polling stops within a second. */
 async function waitForMachineRemoveAttempt(
   organizationSlug: string,
+  name: string,
   attemptId: string,
   stopped: () => boolean,
 ): Promise<MachineRemoveResult | "aborted" | { missing: DataLossIdentity[] }> {
@@ -45,7 +46,7 @@ async function waitForMachineRemoveAttempt(
         return { missing: attempt.missingIdentities };
       case "failed":
       case "cancelled":
-        throw new Error(attempt.failureMessage);
+        throw new Error(removalFailureMessage(name, attempt));
       default: {
         const _exhaustive: never = attempt;
         throw new Error(`Unhandled machine remove attempt: ${_exhaustive}`);
@@ -127,7 +128,7 @@ export function RemoveServerSection({ machine, organizationSlug, last, offline, 
             const queued = await enqueueMachineRemoveServerFn({
               data: { organizationSlug, machineId: machine.id, confirmDataLoss: identities },
             });
-            const result = await waitForMachineRemoveAttempt(organizationSlug, queued.id,
+            const result = await waitForMachineRemoveAttempt(organizationSlug, machine.name, queued.id,
               () => abort.signal.aborted || !stillHere());
             if (result === "aborted") return;
             if ("release" in result) {
@@ -188,7 +189,7 @@ function ForgetServerRow({ machine, organizationSlug }: { machine: RuntimeMachin
   const forget = async () => {
     const stillHere = markHere();
     const answer = await forgetServerServerFn({ data: { organizationSlug, machineId: machine.id, requestId: crypto.randomUUID() } });
-    const result = await waitForMachineRemoveAttempt(organizationSlug, answer.id, () => !stillHere());
+    const result = await waitForMachineRemoveAttempt(organizationSlug, machine.name, answer.id, () => !stillHere());
     if (result === "aborted") return;
     if ("missing" in result) throw new Error(`${machine.name} changed while it was being forgotten. Try again.`);
     toast(`${machine.name} forgotten`);

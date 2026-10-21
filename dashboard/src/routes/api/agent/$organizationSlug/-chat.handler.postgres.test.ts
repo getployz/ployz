@@ -10,7 +10,7 @@ import { handleAgentChat } from "#/routes/api/agent/$organizationSlug/-chat.hand
 import { Auth, AuthLive } from "#/server/auth.server";
 import { Database } from "#/server/database.server";
 import { encodePublicError, statusForPublicError } from "#/server/public-error";
-import { storeTestCloud } from "#/test/store-cloud";
+import { storeTestCloudWith } from "#/test/store-cloud";
 
 const origin = "http://localhost:3000";
 
@@ -49,9 +49,8 @@ const chat = (slug: string, headers: Readonly<Record<string, string>>, threadId:
 
 /** `body` against a fresh Cloud whose sidebar reads `env`: the stub model unless a test says otherwise. `cloudEnv` configures the Cloud. */
 const inCloud = <A, E, R>(body: Effect.Effect<A, E, R>, env: Record<string, string> = { PLOYZ_AGENT_STUB: "1" }, cloudEnv: Record<string, string> = {}) => Effect.gen(function* () {
-  const cloud = yield* storeTestCloud({ env: cloudEnv });
   const config = ConfigProvider.layer(ConfigProvider.fromEnv({ env }));
-  return yield* body.pipe(Effect.provide(Layer.mergeAll(AuthLive.pipe(Layer.provide(cloud)), cloud, config)));
+  return yield* body.pipe(Effect.provide(yield* storeTestCloudWith(Layer.merge(AuthLive, config), { env: cloudEnv })));
 });
 
 it.live("the sidebar answers a signed-in member in their active Organization", () =>

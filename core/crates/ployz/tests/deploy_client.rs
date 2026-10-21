@@ -1506,6 +1506,38 @@ async fn failed_deploy_whose_container_ran_out_of_memory_says_so() {
 /// headline Cloud joins from them reads as the crash and not `restarting`.
 #[tokio::test]
 async fn failed_deploy_whose_container_keeps_restarting_names_its_exit_and_last_line() {
+    restarting_deploy_names_its_exit_and_last_line(
+        DeployService::new(machine('a', "one")).restart_containers(),
+        Some("token=[redacted]"),
+    )
+    .await;
+}
+
+/// The last line is the one the exited run printed, not the next run's first.
+#[tokio::test]
+async fn failed_deploy_whose_container_restarted_names_the_exited_runs_last_line() {
+    restarting_deploy_names_its_exit_and_last_line(
+        DeployService::new(machine('a', "one")).reboot_containers(),
+        Some("token=[redacted]"),
+    )
+    .await;
+}
+
+/// A run that exited printing nothing has no last line, so no earlier run's line
+/// stands in for it.
+#[tokio::test]
+async fn failed_deploy_whose_last_run_printed_nothing_names_no_line() {
+    restarting_deploy_names_its_exit_and_last_line(
+        DeployService::new(machine('a', "one")).reboot_containers_through_a_silent_run(),
+        None,
+    )
+    .await;
+}
+
+async fn restarting_deploy_names_its_exit_and_last_line(
+    service: DeployService,
+    last_line: Option<&str>,
+) {
     use ployz_store::{
         Actor, Admit, ConfigStore, CreateProject, CreateService, Deploy, DeploymentId,
         DeploymentStatus, EnvironmentId, EnvironmentRef, OrganizationId, Outcome, ProjectId,
@@ -1555,7 +1587,6 @@ async fn failed_deploy_whose_container_keeps_restarting_names_its_exit_and_last_
             &Trusted::default(),
         )
         .unwrap();
-    let service = DeployService::new(machine('a', "one")).restart_containers();
     let (address, server) = listening(service).await;
 
     let summary = ployz::sdk::run_deployment(
@@ -1588,13 +1619,18 @@ async fn failed_deploy_whose_container_keeps_restarting_names_its_exit_and_last_
         reason,
         "web: The Container exited with code 1 and is restarting"
     );
-    assert_eq!(cause, &["token=[redacted]"]);
+    let last_line: Vec<String> = last_line.into_iter().map(str::to_owned).collect();
+    assert_eq!(cause, &last_line);
     let headline = cause
         .last()
         .map_or_else(|| reason.clone(), |cause| format!("{reason}: {cause}"));
     assert_eq!(
         headline,
-        "web: The Container exited with code 1 and is restarting: token=[redacted]"
+        match last_line.first() {
+            Some(line) =>
+                format!("web: The Container exited with code 1 and is restarting: {line}"),
+            None => "web: The Container exited with code 1 and is restarting".to_owned(),
+        }
     );
     let rows = view
         .nodes
@@ -1611,7 +1647,7 @@ async fn failed_deploy_whose_container_keeps_restarting_names_its_exit_and_last_
         rows,
         [(
             "The Container exited with code 1 and is restarting",
-            vec!["token=[redacted]".to_owned()]
+            last_line
         )]
     );
 }

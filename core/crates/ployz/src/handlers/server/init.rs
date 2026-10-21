@@ -148,11 +148,12 @@ pub(in crate::handlers) fn init(root: &ArgMatches) -> Result<(), Error> {
                 crate::deploy::apply_requested(&mut ready, &requested, false, false, &context_name)
                     .await
                     .map_err(|error| {
-                        super::super::ingress_hints(Error::from(error), |args| {
-                            super::super::recovery_command(matches, &context_name, args)
-                        })
-                        .context("Server initialized; ingress deployment incomplete.")
-                        .hint(Hint::Next(ingress_recovery.clone()))
+                        ingress_incomplete(
+                            super::super::ingress_hints(Error::from(error), |args| {
+                                super::super::recovery_command(matches, &context_name, args)
+                            }),
+                            ingress_recovery.clone(),
+                        )
                     })?;
             return Ok(Some(outcome));
         }
@@ -165,6 +166,13 @@ pub(in crate::handlers) fn init(root: &ArgMatches) -> Result<(), Error> {
         "ingress": ingress.as_ref().ok().and_then(Option::as_ref),
     });
     crate::ui::emit_committed(result, ingress.map(drop))
+}
+
+/// The initial Server is committed but its Ingress Proxy deploy failed.
+pub(crate) fn ingress_incomplete(error: Error, next: String) -> Error {
+    let headline =
+        super::super::ingress_headline("Server initialized; ingress deployment incomplete", &error);
+    error.context(headline).hint(Hint::Next(next))
 }
 
 #[cfg(test)]

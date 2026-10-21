@@ -66,7 +66,7 @@ pub(crate) async fn apply_requested(
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     let confirm = client.confirm(&preview, &signal, Some(tx));
     tokio::pin!(confirm);
-    let outcome = loop {
+    let mut outcome = loop {
         tokio::select! {
             event = rx.recv(), if !rx.is_closed() || !rx.is_empty() => if let Some(event) = event {
                 show(event, &mut evidence, &mut progress);
@@ -79,7 +79,7 @@ pub(crate) async fn apply_requested(
             }
         }
     };
-    let tails = evidence.tails(client).await;
+    let tails = evidence.tails(client, &mut outcome).await;
     progress.finish(
         evidence.frame(),
         if signal.is_cancelled() {

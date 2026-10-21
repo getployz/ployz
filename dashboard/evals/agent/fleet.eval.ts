@@ -1,7 +1,7 @@
 import { describe, it } from "@effect/vitest";
 import { fakeText } from "@tanstack/ai/testing";
 import { SealedNames } from "@ployz/sdk";
-import { Effect, Layer } from "effect";
+import { Effect } from "effect";
 import { expect } from "vitest";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import { serviceOperations } from "#/modules/service-act/service-act.server";
@@ -12,7 +12,7 @@ import { startFleet } from "./fleet";
 describe("the fake fleet", () => {
   it.live("answers Cloud's runtime session through the SDK and records what it was asked", () => Effect.gen(function* () {
     const fleet = yield* startFleet({});
-    const services = yield* Layer.build(yield* storeTestCloud({ fleet }));
+    const services = yield* storeTestCloud({ fleet });
     const session = yield* OrganizationRuntime.use((runtime) => runtime.open(ORGANIZATION)).pipe(Effect.provide(services));
     expect(session.status).toBe("connected");
     if (session.status !== "connected") return;

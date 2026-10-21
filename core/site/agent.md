@@ -6,7 +6,7 @@ Ployz Cloud. Run them in order. Each step is safe to run again.
 ## 1. Install the CLI
 
 ```sh
-curl -fsSL https://ployz.sh | sh
+curl -fsSL https://ployz.sh | sh -s -- beta
 ```
 
 This installs `ployz` to `/usr/local/bin`. If that directory isn't writable, the script runs
@@ -15,11 +15,12 @@ the user's `PATH` instead:
 
 ```sh
 mkdir -p ~/.local/bin
-curl -fsSL https://ployz.sh | INSTALL_BIN_DIR="$HOME/.local/bin" sh
+curl -fsSL https://ployz.sh | INSTALL_BIN_DIR="$HOME/.local/bin" sh -s -- beta
 ```
 
-Check it with `ployz --version`. Homebrew users can run `brew install getployz/ployz/ployz`
-instead.
+Check it with `ployz --version`. Install the beta, not Homebrew or the stable release. Ployz
+Cloud enrolls servers only from 0.3.0-beta.6 on. The stable release and Homebrew are still on
+0.2.
 
 ## 2. Install the Ployz skill
 

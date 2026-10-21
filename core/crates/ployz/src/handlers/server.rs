@@ -38,7 +38,7 @@ mod endpoint;
 pub(super) mod enroll;
 pub(super) mod forget;
 mod helpers;
-mod init;
+pub(crate) mod init;
 pub(super) mod reject;
 mod remove;
 mod show;
@@ -868,10 +868,12 @@ async fn apply_update(
 }
 
 /// A committed Server change whose Ingress Proxy follow-up failed: name it and the exact rerun.
-pub(super) fn ingress_incomplete(committed: &str, error: Error, next: String) -> Error {
-    error
-        .context(format!("{committed}; the Ingress Proxy did not follow."))
-        .hint(Hint::Next(next))
+pub(crate) fn ingress_incomplete(committed: &str, error: Error, next: String) -> Error {
+    let headline = super::ingress_headline(
+        &format!("{committed}; the Ingress Proxy did not follow"),
+        &error,
+    );
+    error.context(headline).hint(Hint::Next(next))
 }
 
 fn parse_update(matches: &ArgMatches) -> Result<MachineUpdate, Error> {
