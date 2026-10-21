@@ -811,15 +811,15 @@ pub(super) fn record(
     Ok(())
 }
 
-/// Each row that failed on its own, by runtime Service and first to finish first,
-/// then the runtime Services one of whose rows the Deployment's cancel stopped.
+/// Each row that failed on its own, by runtime Service and first to fail on its own
+/// first, then the runtime Services one of whose rows the Deployment's cancel stopped.
 pub(super) fn failed_or_cancelled(
     tx: &mut dyn Tx,
     stored: &Stored,
 ) -> Result<(Vec<(ServiceName, Failure)>, BTreeSet<ServiceName>), RpcError> {
     let found = tx.query(
-        "SELECT service, state FROM config_deployment_row WHERE deployment_id = ?1 \
-         ORDER BY finished, service, machine",
+        "SELECT service, machine, state, finished, history FROM config_deployment_row \
+         WHERE deployment_id = ?1",
         &[stored.summary.id.as_str().into()],
     )?;
     let (mut failed, mut cancelled) = (Vec::new(), BTreeSet::new());
@@ -829,20 +829,52 @@ pub(super) fn failed_or_cancelled(
             cause,
             stopped_by,
             ..
-        } = row.json(1, "Deployment row")?
+        } = row.json(2, "Deployment row")?
         else {
             continue;
         };
         let service = row.parse(0, "Deployment row")?;
         match stopped_by {
-            StoppedBy::NOTHING => failed.push((service, Failure { reason, cause })),
+            StoppedBy::NOTHING => {
+                // A row the cancel stopped before it failed on its own keeps the
+                // cancel's finish time, so its own failure dates from its history.
+                let at = history(row, 4)?
+                    .as_deref()
+                    .and_then(failed_on_its_own)
+                    .or(row.optional_int(3)?);
+                let machine = row.text(1)?.to_owned();
+                failed.push((at, service, machine, Failure { reason, cause }));
+            }
             StoppedBy::CANCEL => {
                 cancelled.insert(service);
             }
             _ => {}
         }
     }
+    failed.sort_by(|a, b| (a.0, &a.1, &a.2).cmp(&(b.0, &b.1, &b.2)));
+    let failed = failed
+        .into_iter()
+        .map(|(_, service, _, failure)| (service, failure))
+        .collect();
     Ok((failed, cancelled))
+}
+
+/// When the row last began failing on its own.
+fn failed_on_its_own(history: &[RowTransition]) -> Option<i64> {
+    history
+        .iter()
+        .rev()
+        .take_while(|entry| {
+            matches!(
+                entry.state,
+                RowState::Failed {
+                    stopped_by: StoppedBy::NOTHING,
+                    ..
+                }
+            )
+        })
+        .last()
+        .map(|entry| entry.at)
 }
 
 pub(super) fn settle(tx: &mut dyn Tx, stored: &Stored) -> Result<(), RpcError> {
