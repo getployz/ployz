@@ -462,4 +462,43 @@ mod tests {
         );
         server.abort();
     }
+
+    #[tokio::test(start_paused = true)]
+    async fn subscribe_times_out_when_the_snapshot_never_finishes() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(
+                listener,
+                Router::new().route(
+                    "/v1/subscriptions",
+                    post(|| async {
+                        let columns = futures_util::stream::once(async {
+                            Ok::<_, Infallible>(Bytes::from_static(b"{\"columns\":[\"id\"]}\n"))
+                        });
+                        Body::from_stream(futures_util::StreamExt::chain(
+                            columns,
+                            futures_util::stream::pending(),
+                        ))
+                    }),
+                ),
+            )
+            .await
+            .unwrap();
+        });
+        let client = ApiClient::http1(address, &"a".repeat(64)).unwrap();
+        let error = tokio::time::timeout(
+            IO_TIMEOUT + Duration::from_secs(1),
+            client.subscribe(Statement::new("SELECT id FROM test", [])),
+        )
+        .await
+        .expect("stalled subscription snapshot must fail")
+        .err()
+        .expect("stalled subscription snapshot must fail");
+        assert!(
+            matches!(error, super::Error::Io(ref error) if error.kind() == std::io::ErrorKind::TimedOut),
+            "{error}"
+        );
+        server.abort();
+    }
 }
