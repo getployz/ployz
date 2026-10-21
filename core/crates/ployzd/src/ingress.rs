@@ -566,8 +566,9 @@ where
                             Err(error) => (false, Err(ApplyError::BeforeServing(error))),
                         }
                     };
-                    // A refused load leaves the record standing only while the Caddy that
-                    // confirmed it still runs. A new Caddy serves its Caddyfile.
+                    // A refused load leaves the record standing only while the newest observed
+                    // ingress container is the one whose admin confirmed it. A new Caddy serves
+                    // its Caddyfile. An in-place restart under the same id goes unseen (#2787).
                     let refused =
                         through_admin && matches!(result, Err(ApplyError::BeforeServing(_)));
                     if !(refused && recorded_by.is_some() && recorded_by == caddy) {

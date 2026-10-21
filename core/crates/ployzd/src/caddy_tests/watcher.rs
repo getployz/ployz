@@ -1877,6 +1877,67 @@ async fn routed_addresses_claim_nothing_once_a_new_caddy_replaces_the_one_that_l
     std::fs::remove_dir_all(directory).unwrap();
 }
 
+#[tokio::test]
+async fn routed_addresses_stand_while_the_caddy_that_loaded_them_refuses_a_new_load() {
+    let WatcherFixture {
+        machine,
+        state,
+        address,
+        server,
+        directory,
+    } = watcher_fixture().await;
+    let api = state.api_container();
+    let (load_tx, mut loads) = mpsc::unbounded_channel();
+    let admin = TestAdmin { loads: load_tx };
+    let (route_publishes, mut published) =
+        tokio::sync::watch::channel(crate::ingress::PublishedRoutes::default());
+    let shutdown = CancellationToken::new();
+    let watcher = tokio::spawn(watch_caddy(
+        machine.clone(),
+        ReplicatedStore::new(ApiClient::http1(address, &"a".repeat(64)).unwrap()),
+        no_down,
+        directory.join(CONFIG_FILE),
+        route_publishes,
+        shutdown.clone(),
+        move || std::future::ready(Ok(Some(admin.clone()))),
+    ));
+    assert!(next_load(&mut loads).await.contains("10.210.1.2:80"));
+    state.wait_for_ack_transactions(1).await;
+    let id = api.identity();
+    let copy = api.container_id;
+    let routes_api_at = move |published: &crate::ingress::PublishedRoutes| {
+        published.addresses.as_ref().is_some_and(|addresses| {
+            addresses.get(&id).and_then(|copies| copies.get(&copy))
+                == Some(&ContainerAddress([10, 210, 1, 2].into()))
+        })
+    };
+    timeout(
+        Duration::from_secs(5),
+        published.wait_for(routes_api_at.clone()),
+    )
+    .await
+    .expect("the running Caddy loaded 10.210.1.2")
+    .unwrap();
+
+    std::fs::remove_dir_all(directory.join("certs")).unwrap();
+    std::fs::write(directory.join("certs"), b"blocks certificate preparation").unwrap();
+    state.set_address(api.container_id, [10, 210, 1, 7]);
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    assert!(
+        loads.try_recv().is_err(),
+        "the new config never reached Caddy"
+    );
+    assert!(
+        routes_api_at(&published.borrow()),
+        "the Caddy that loaded 10.210.1.2 still runs and still serves it"
+    );
+
+    shutdown.cancel();
+    watcher.await.unwrap().unwrap();
+    server.abort();
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
 const CHALLENGE: &str = r#"{"challenge_token":"LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0","challenge_response":"LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}"#;
 
 fn no_down() -> std::future::Ready<Result<BTreeSet<MachineId>, CorrosionError>> {
