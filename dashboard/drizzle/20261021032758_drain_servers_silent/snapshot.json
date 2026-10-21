@@ -1,10 +1,9 @@
 {
   "version": "8",
   "dialect": "postgres",
-  "id": "c9a4b5f7-b714-4e4f-a023-2f1f53dd1996",
+  "id": "d685ada3-3812-4e8e-8ade-7586cea329f8",
   "prevIds": [
-    "378d8c2e-af71-4303-b7c8-6c4c32fd2d51",
-    "86409c18-a1c8-4d0f-be60-f5c1cb279124"
+    "3212ab1f-559e-40ff-9c4c-825d2fedb13c"
   ],
   "ddl": [
     {
@@ -3454,6 +3453,19 @@
       "table": "machine_remove_attempt"
     },
     {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "server_name",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "machine_remove_attempt"
+    },
+    {
       "type": "boolean",
       "typeSchema": null,
       "notNull": true,
@@ -4099,6 +4111,19 @@
       "generated": null,
       "identity": null,
       "name": "machine_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "server_drain_attempt"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "server_name",
       "entityType": "columns",
       "schema": "public",
       "table": "server_drain_attempt"
@@ -6088,6 +6113,19 @@
       "generated": null,
       "identity": null,
       "name": "machine_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "server_upgrade_attempt"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "server_name",
       "entityType": "columns",
       "schema": "public",
       "table": "server_upgrade_attempt"
