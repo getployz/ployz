@@ -21,8 +21,8 @@ use ployz_core::{
     MembershipObservation, Namespace, NewContainer, OperationPhase, OutOfMemory, PortPublication,
     PullPolicy, QualifiedService, ReadRoutesRequest, RemoveContainerPurpose, RemoveVolumeRequest,
     ResolvedServiceSpec, Retry, RoutesRead, RpcError, RpcErrorCode, RunRotation, RunTarget,
-    ServiceId, ServiceName, ServiceOutcome, SlotKey, StopOptions, TransportProtocol,
-    UpdateContainerLimitsRequest, UpdateOrder, op,
+    RuntimeWatchRequest, ServiceId, ServiceName, ServiceOutcome, SlotKey, StopOptions,
+    TransportProtocol, UpdateContainerLimitsRequest, UpdateOrder, decode_runtime_watch_frame, op,
 };
 use sha2::{Digest, Sha256};
 use tokio::sync::mpsc::UnboundedSender;
@@ -132,6 +132,9 @@ pub(crate) trait MachineOperations {
         &self,
         service: &QualifiedService,
     ) -> Result<Vec<ContainerObservation>, RpcError>;
+    /// Every Container row in the entry Machine's store, which keeps the rows of
+    /// a Machine that does not answer.
+    async fn replicated_containers(&self) -> Result<Vec<ContainerObservation>, RpcError>;
     async fn ensure_container(
         &self,
         machine_id: &MachineId,
@@ -252,6 +255,31 @@ impl MachineOperations for Client {
                     && container.resolved_spec.name == service.name
             })
             .collect())
+    }
+
+    async fn replicated_containers(&self) -> Result<Vec<ContainerObservation>, RpcError> {
+        let payload = op::RuntimeWatch::into_request(RuntimeWatchRequest {})
+            .encode()
+            .map_err(|error| RpcError::from(ConnectError::from(error)))?;
+        let mut stream = self
+            .runtime_watch_stream(payload)
+            .await
+            .map_err(|error| error.to_rpc_error())?;
+        let Some(frame) = stream
+            .message()
+            .await
+            .map_err(|status| TransportError::from_stream_status(status).to_rpc_error())?
+        else {
+            return Err(RpcError {
+                code: RpcErrorCode::Unavailable,
+                message: "Runtime Watch ended before its first frame".into(),
+                details: serde_json::Value::Null,
+                cause: Vec::new(),
+            });
+        };
+        decode_runtime_watch_frame(&frame)
+            .map(|frame| frame.containers)
+            .map_err(|error| crate::ui::rpc_error(RpcErrorCode::Internal, &error))
     }
 
     async fn ensure_container(
@@ -491,6 +519,7 @@ macro_rules! restart_policy {
 restart_policy! {
     wait fn prepare_volumes(&self, machine_id: &MachineId, specs: &[ployz_core::ServiceStorageSpec]) -> Result<ployz_core::PreparedVolumes, RpcError>;
     wait fn service_containers(&self, service: &QualifiedService) -> Result<Vec<ContainerObservation>, RpcError>;
+    once("a failed read leaves the gen to the live answers") fn replicated_containers(&self) -> Result<Vec<ContainerObservation>, RpcError>;
     wait fn ensure_container(&self, machine_id: &MachineId, want: ContainerWant) -> Result<(ContainerNow, Option<HealthVerdict>), RpcError>;
     wait fn inspect_container(&self, machine_id: &MachineId, container_id: &ContainerId) -> Result<ContainerDetails, RpcError>;
     wait fn remove_volume(&self, id: &DockerVolumeId) -> Result<(), RpcError>;

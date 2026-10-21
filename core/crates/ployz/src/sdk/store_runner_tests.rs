@@ -827,6 +827,12 @@ impl MachineOperations for Recording {
         MachineOperations::service_containers(&self.client, service).await
     }
 
+    async fn replicated_containers(
+        &self,
+    ) -> Result<Vec<ployz_core::ContainerObservation>, RpcError> {
+        MachineOperations::replicated_containers(&self.client).await
+    }
+
     async fn ensure_container(
         &self,
         machine_id: &MachineId,
