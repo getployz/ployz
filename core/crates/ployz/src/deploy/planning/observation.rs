@@ -77,7 +77,7 @@ pub(super) fn warnings(
     }
     // Its old copies were never observed, so no cleanup report reaches them;
     // they keep running until the next Deploy, and serve beside the new copies
-    // unless their Machine restarts.
+    // unless their Machine restarts and its boot pass confirms the new ones.
     let away: Vec<DeployWarning> = warnings
         .iter()
         .filter_map(|warning| {
