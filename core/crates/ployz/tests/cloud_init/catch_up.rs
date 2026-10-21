@@ -161,6 +161,7 @@ async fn machine_add_plans_catch_up_past_an_unarrived_registration() {
         &["--json"],
     )
     .await;
+    assert!(output.status.success());
     assert_unarrived_in_result(&output);
     target.join_request();
 }
@@ -174,16 +175,55 @@ async fn cloud_join_reports_an_unarrived_registration_in_its_result() {
         &["--json"],
     )
     .await;
+    assert!(output.status.success());
     assert_unarrived_in_result(&output);
+}
+
+/// A real Down member, or a failed start, still fails catch-up after it skipped the
+/// Unarrived Server; the result and the hint still name that Server.
+#[tokio::test]
+async fn a_failed_catch_up_still_reports_the_unarrived_registration() {
+    let down_member = |entry: JoinDaemon| {
+        unarrived_registration(entry.with_membership(MembershipObservation::Down))
+    };
+    for (ensure, entry) in [
+        (
+            Fault::Healthy,
+            &down_member as &dyn Fn(JoinDaemon) -> JoinDaemon,
+        ),
+        (Fault::Permanent, &unarrived_registration),
+    ] {
+        for json in [false, true] {
+            let args: &[&str] = if json { &["--json"] } else { &[] };
+            let (output, _, target) = machine_add_with(Fault::Healthy, ensure, entry, args).await;
+            assert_unarrived_in_failure(&output, json);
+            target.join_request();
+            let (output, _) = cloud_join_with(Fault::Healthy, ensure, entry, args).await;
+            assert_unarrived_in_failure(&output, json);
+        }
+    }
+}
+
+fn assert_unarrived_in_failure(output: &Output, json: bool) {
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(3), "{stderr}");
+    assert!(stderr.contains("remains a Cluster member"), "{stderr}");
+    assert!(
+        stderr.contains("Server claim-only shows no sign it ever joined"),
+        "{stderr}"
+    );
+    if json {
+        assert_unarrived_in_result(output);
+    } else {
+        assert!(
+            stderr.contains(&format!("server forget {} --confirm dead", "c".repeat(32))),
+            "{stderr}"
+        );
+    }
 }
 
 /// A `--json` join names each Unarrived Server and the command that forgets it.
 fn assert_unarrived_in_result(output: &Output) {
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
     let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     let Some([entry]) = result
         .get("unarrived")

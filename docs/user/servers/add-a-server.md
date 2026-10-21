@@ -310,7 +310,9 @@ these there:
   never joined, `ployz server ls` lists it as down with no version. The next `ployz server add`
   doesn't wait on it: it warns `Server web-3 shows no sign it ever joined` and prints
   `ployz server forget <its ID> --confirm dead` to take it out. With `--json`, the result lists
-  each such server under `unarrived`, with its `id`, `name` and that command as `next`.
+  each such server under `unarrived`, with its `id`, `name` and that command as `next`. You get
+  the warning, the command and the list even when the add then fails for another reason, such as
+  a down server.
 - **Client IPs stay out of Ployz's ingress logs, not your app's.** Caddy passes the client IP to
   your app in `X-Forwarded-For`. If your app logs requests, its logs, and the Log Store's copy of
   them, can hold client IPs and user agents. Those logs are yours to manage.

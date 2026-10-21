@@ -375,15 +375,18 @@ pub(crate) enum CatchUpFact {
     NotArrived(Names),
 }
 
-/// Follow target-only catch-up with the shared progress block.
+/// Follow target-only catch-up with the shared progress block. Returns the Unarrived
+/// Servers it reported, whether or not catch-up then succeeded.
 pub(crate) async fn follow_globals(
     client: &mut Client,
     assigned: &Machine,
     command: impl Fn(&[&str]) -> String,
-) -> Result<Vec<serde_json::Value>, CatchUpError> {
+) -> (Vec<serde_json::Value>, Result<(), CatchUpError>) {
     use crate::ui::progress::{Disposition, Frame, Progress, Row, Run, State, Subject, Timing};
-    let signal = crate::cancellation::interrupted()
-        .map_err(|error| CatchUpError::new(error.into(), Vec::new()))?;
+    let signal = match crate::cancellation::interrupted() {
+        Ok(signal) => signal,
+        Err(error) => return (Vec::new(), Err(CatchUpError::new(error.into(), Vec::new()))),
+    };
     let mut frame = Frame {
         run: Run::CatchUp(assigned.id),
         title: format!("Starting Globals on {}", assigned.name),
@@ -464,7 +467,7 @@ pub(crate) async fn follow_globals(
         crate::ui::hint(&crate::ui::Hint::Next(next.clone()));
         unarrived.push(serde_json::json!({ "id": id, "name": name, "next": next }));
     }
-    result.map(|()| unarrived)
+    (unarrived, result)
 }
 
 /// Add the Unarrived Servers catch-up skipped to a join result, when there are any.
@@ -609,6 +612,7 @@ async fn observe_complete<C: CatchUpClient>(
             return Ok(live);
         }
         if attempt == OBSERVATION_ATTEMPTS {
+            observe(CatchUpFact::NotArrived(unarrived));
             let details = partial_failure_details(&live.containers, |id| server_name(&names, id));
             return Err(CatchUpError::new(
                 Failure::unavailable(format!(
