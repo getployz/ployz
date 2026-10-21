@@ -341,7 +341,8 @@ ployz deploy web
 `cause: connection to the daemon closed` or `cause: stream closed because of a broken pipe`
 
 Ployz restarted on the server your deploy connects through, as it does during an upgrade. The
-deploy fails within about 15 seconds and exits 1, and the deployment reads Failed. Deploy again,
+deploy fails, usually within seconds (2–12 s in our tests) and within about a minute at most. It
+exits 1, and the deployment reads Failed. Deploy again,
 or redeploy the failed deployment, and Ployz finishes the switch and removes what the failed deploy
 left behind:
 
@@ -352,8 +353,8 @@ ployz deploy
 Do it right away when the service deploys **Stop first**, the default for a single replica with a
 volume ([Service settings](../services/settings.md)): the failed deploy may already have stopped the
 old replica, so the service is down until the next deploy. Otherwise a replica that was serving
-before the deploy keeps serving, sometimes beside a new one. A service's first deploy has none, so
-it stays down until you deploy again.
+before the deploy keeps serving, sometimes beside a new one. A service's first deploy has no old
+replica: it serves only if its new replica came In before the failure; otherwise deploy again.
 
 When Ployz restarts on another server the deploy uses, the deploy waits for it and carries on.
 
