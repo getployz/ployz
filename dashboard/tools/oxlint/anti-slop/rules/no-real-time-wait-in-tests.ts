@@ -316,7 +316,8 @@ export const noRealTimeWaitInTestsRule = defineRule({
 
         const tester = enclosingTester(node);
         if (tester === "live" || tester === "plain") {
-          context.report({ node: callee, messageId: "realClock" });
+          // Effect's default Clock schedules through the global setTimeout, so fake timers drive it.
+          timerWaitsJudgedAtExit.push({ node, timer: "setTimeout", tester });
         } else if (tester === null) {
           testClockWaitsJudgedAtExit.push({ node: callee, messageId: "realClock" });
         } else if (alwaysWaits) {

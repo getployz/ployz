@@ -46,6 +46,15 @@ tester.run("no-real-time-wait-in-tests", noRealTimeWaitInTestsRule, {
         it("fires", async () => { await new Promise((resolve) => setTimeout(resolve, 1_000)); });
       });`,
     },
+    {
+      filename,
+      code: `it("expires a day later", async () => {
+        vi.useFakeTimers();
+        const expired = Effect.runPromise(Effect.sleep("1 day"));
+        await vi.advanceTimersByTimeAsync(86_400_000);
+        await expired;
+      });`,
+    },
     { filename: "feature.ts", code: `export const pause = () => new Promise((resolve) => setTimeout(resolve, 10));` },
     {
       filename,
