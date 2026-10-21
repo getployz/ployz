@@ -8,7 +8,8 @@ use ployz_core::{
     AdvertisedEndpoint, ContainerAddress, ContainerId, ContainerKind, ContainerLocator,
     ContainerNow, ContainerObservation, ContainerRuntimeObservation, ContainerWant, CopyRotation,
     EnsuredContainer, Gen, HealthObservation, Machine, MachineId, MachineName, MachineRuntime,
-    MembershipEvidence, Namespace, QualifiedService, ResolvedServiceSpec, WireGuardPublicKey,
+    MembershipEvidence, Namespace, PullPolicy, QualifiedService, ResolvedServiceSpec,
+    WireGuardPublicKey,
 };
 use serde_json::json;
 use tokio::{sync::watch, time::Instant};
@@ -328,6 +329,147 @@ async fn kept_beside_a_newer_gen_of_its_image() {
     );
 
     assert!(pass(&cluster.local, observed).await.is_empty());
+}
+
+fn respec(
+    mut copy: ContainerObservation,
+    edit: impl FnOnce(&mut ResolvedServiceSpec),
+) -> ContainerObservation {
+    copy.try_update(|parts| edit(&mut parts.resolved_spec))
+        .unwrap();
+    copy
+}
+
+fn memory(copy: ContainerObservation, bytes: i64) -> ContainerObservation {
+    respec(copy, |spec| {
+        spec.container.resources.memory_bytes = Some(bytes.try_into().unwrap());
+    })
+}
+
+fn digest(mut copy: ContainerObservation, value: &str) -> ContainerObservation {
+    copy.try_update(|parts| {
+        parts
+            .labels
+            .insert(crate::docker::LABEL_RECREATE_DIGEST.into(), value.into());
+    })
+    .unwrap();
+    copy
+}
+
+/// The local copy at gen 1 and a peer's copy at gen 2, each routed by every proxy.
+fn beside(
+    cluster: &Cluster,
+    older: &ContainerObservation,
+    newer: &ContainerObservation,
+) -> Observed {
+    observed(
+        &cluster.local,
+        &[&cluster.local, &cluster.peer, &cluster.proxy],
+        &[],
+        vec![older.clone(), newer.clone()],
+        routes(&[
+            (&cluster.local, &[older, newer]),
+            (&cluster.peer, &[older, newer]),
+            (&cluster.proxy, &[older, newer]),
+        ]),
+    )
+}
+
+async fn replaced_by(
+    older: impl FnOnce(ContainerObservation) -> ContainerObservation,
+    newer: impl FnOnce(ContainerObservation) -> ContainerObservation,
+) -> bool {
+    let cluster = Cluster::new();
+    let older = older(copy(1, &cluster.local, 1));
+    let newer = newer(copy(2, &cluster.peer, 2));
+    let wants = pass(&cluster.local, beside(&cluster, &older, &newer)).await;
+    match wants.as_slice() {
+        [] => false,
+        [want] if *want == out(&older) => true,
+        other => panic!("unexpected wants {other:?}"),
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn replaced_by_a_new_pre_deploy_hook() {
+    assert!(
+        replaced_by(
+            |copy| copy,
+            |copy| respec(copy, |spec| {
+                spec.pre_deploy =
+                    Some(serde_json::from_value(json!({ "command": ["migrate"] })).unwrap());
+            })
+        )
+        .await
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn replaced_by_an_always_pull() {
+    assert!(
+        replaced_by(
+            |copy| copy,
+            |copy| respec(copy, |spec| spec.container.pull_policy = PullPolicy::Always)
+        )
+        .await
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn replaced_by_a_lowered_memory_limit() {
+    assert!(replaced_by(|copy| memory(copy, 1 << 30), |copy| memory(copy, 1 << 29)).await);
+}
+
+#[tokio::test(start_paused = true)]
+async fn kept_beside_a_raised_memory_limit() {
+    assert!(!replaced_by(|copy| memory(copy, 1 << 29), |copy| memory(copy, 1 << 30)).await);
+}
+
+#[tokio::test(start_paused = true)]
+async fn replaced_by_other_environment_or_config_content() {
+    assert!(replaced_by(|copy| digest(copy, "a"), |copy| digest(copy, "b")).await);
+}
+
+#[tokio::test(start_paused = true)]
+async fn kept_beside_an_equal_digest() {
+    assert!(!replaced_by(|copy| digest(copy, "a"), |copy| digest(copy, "a")).await);
+}
+
+#[tokio::test(start_paused = true)]
+async fn kept_when_either_copy_predates_the_digest() {
+    assert!(!replaced_by(|copy| copy, |copy| copy).await);
+    assert!(!replaced_by(|copy| copy, |copy| digest(copy, "b")).await);
+    assert!(!replaced_by(|copy| digest(copy, "a"), |copy| copy).await);
+}
+
+#[tokio::test(start_paused = true)]
+async fn superseded_by_the_newest_replacing_gen() {
+    let cluster = Cluster::new();
+    let older = copy(1, &cluster.local, 1);
+    let kept = copy(3, &cluster.peer, 2);
+    let replacing = newer_image(copy(4, &cluster.peer, 3));
+    let all = [&older, &kept, &replacing];
+    let observed = observed(
+        &cluster.local,
+        &[&cluster.local, &cluster.peer, &cluster.proxy],
+        &[],
+        all.iter().map(|copy| (*copy).clone()).collect(),
+        routes(&[
+            (&cluster.local, &all),
+            (&cluster.peer, &all),
+            (&cluster.proxy, &all),
+        ]),
+    );
+    let own = own_acks(&cluster.local, &observed);
+
+    assert_eq!(
+        super::superseded(&cluster.local.id, &observed, &own),
+        vec![super::Superseded {
+            service: api(),
+            container: older.container_id,
+            by: Gen::new(3),
+        }]
+    );
 }
 
 #[tokio::test(start_paused = true)]
