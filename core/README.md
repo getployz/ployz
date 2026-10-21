@@ -12,8 +12,8 @@ curl -fsSL https://ployz.sh | sh -s -- beta
 Ployz Cloud enrolls servers only from 0.3.0-beta.6 on. The stable release and
 Homebrew (`brew install getployz/ployz/ployz`) are still on 0.2.
 
-Releases and channels: [docs/RELEASE.md](docs/RELEASE.md). What a 0.x daemon
-keeps working across: [DESIGN.md](DESIGN.md#stable-promise).
+Releases and channels: [docs/RELEASE.md](docs/RELEASE.md). What a daemon keeps
+working across from 0.3.0 on: [DESIGN.md](DESIGN.md#stable-promise).
 
 ## CLI
 
