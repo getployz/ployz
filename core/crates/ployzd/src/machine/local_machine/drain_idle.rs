@@ -8,7 +8,6 @@ use std::{
     path::Path,
 };
 
-/// The `st` column's values, in hex as the kernel prints them.
 const ESTABLISHED: &str = "01";
 const LISTEN: &str = "0A";
 
@@ -59,7 +58,6 @@ fn serves_connection(tables: &[&str], listening: &mut BTreeSet<u16>) -> bool {
 
 struct Socket<'table> {
     port: u16,
-    /// The remote address without its port, in the kernel's hex.
     remote: &'table str,
     state: &'table str,
 }
@@ -117,7 +115,6 @@ mod tests {
     /// The copy's own connection to a database on 10.1.0.9:5432, from an ephemeral port.
     const TCP_OUTBOUND: &str = "   2: 0A010005:A2C4 0A010009:1538 01 00000000:00000000 02:000AFC7E 00000000     0        0 1003 1 0000000000000000 20 4 30 10 -1";
 
-    /// Whether one read of `tables`, the first of its drain, finds an inbound connection.
     fn serves(tables: &[&str]) -> bool {
         serves_connection(tables, &mut BTreeSet::new())
     }

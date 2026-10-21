@@ -1202,7 +1202,6 @@ mod settled {
                 false,
             ),
         ] {
-            // The first poll after the state changes decides.
             let (health, waited) = ensure_stalling_after_oom(
                 settled_run(60_000),
                 Duration::from_millis(500),
@@ -1428,7 +1427,6 @@ mod stopped_on_request {
             self.docker_sets(&[("/State/Pid", json!(4242))]);
         }
 
-        /// Stop the Container with `drain`, and how long the stop took.
         async fn stop_timed(&self, drain: Drain) -> (ContainerObservation, Duration) {
             let began = std::time::Instant::now();
             let stopped = ensure(

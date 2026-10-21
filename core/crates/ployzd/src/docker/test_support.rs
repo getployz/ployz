@@ -105,7 +105,6 @@ async fn fake_docker(
     response
 }
 
-/// A 200 whose body comes `delay` after its headers.
 fn slow_body(delay: Duration, body: serde_json::Value) -> Response {
     let body = futures_util::stream::once(async move {
         tokio::time::sleep(delay).await;

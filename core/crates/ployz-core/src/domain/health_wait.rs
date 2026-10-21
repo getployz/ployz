@@ -29,7 +29,6 @@ pub enum HealthExpectation {
     Healthy,
 }
 
-/// The window `spec` asks a Container to stay up through, or its default.
 #[must_use]
 pub fn health_monitor(spec: &ResolvedServiceSpec) -> Duration {
     spec.update.monitor_millis.map_or_else(
@@ -38,8 +37,6 @@ pub fn health_monitor(spec: &ResolvedServiceSpec) -> Duration {
     )
 }
 
-/// The window when nothing asks for one: the short stayed-up watch without a
-/// healthcheck, the runtime grace with one.
 #[must_use]
 pub fn default_monitor(healthcheck: Option<&HealthcheckSpec>) -> Duration {
     match healthcheck {
@@ -61,10 +58,9 @@ pub fn settle_deadline(spec: &ResolvedServiceSpec) -> Duration {
     deadline.max(health_monitor(spec))
 }
 
-/// How long a settle's inspect may run when it starts near or past
-/// [`settle_deadline`], so a Docker slowed by a Deploy cannot turn a healthy copy
-/// into a timeout, even one whose whole deadline is the one-second watch, while a
-/// stalled one still ends. A verdict can so come up to this long after the deadline.
+/// How long a settle's inspect started near or past [`settle_deadline`] may still run.
+/// A Docker slowed by a Deploy then cannot turn a healthy copy into a timeout, while a
+/// stalled inspect still ends. A verdict can come up to this long after the deadline.
 pub const SETTLE_INSPECT_GRACE: Duration = Duration::from_secs(5);
 
 /// Which run of a Container one inspect saw. Docker gives each start a new one,

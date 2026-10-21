@@ -9,8 +9,8 @@ use tokio_util::sync::CancellationToken;
 
 use super::{MachineOperations, Progress};
 
-/// How long a dependency may read unhealthy or restarting before the dependent's
-/// Deploy fails. Separate from the no-healthcheck watch, which is shorter.
+/// A dependency reading unhealthy or restarting can recover, so the dependent's Deploy
+/// waits this long before it fails.
 const RUNTIME_FAILURE_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
 
 pub(super) async fn wait_healthy<C: MachineOperations>(
