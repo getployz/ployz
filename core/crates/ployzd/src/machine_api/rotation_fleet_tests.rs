@@ -19,11 +19,11 @@ use std::{
 use futures_util::{SinkExt, StreamExt};
 use ployz_core::{
     AdvertisedEndpoint, AnswerWhen, ConfiguredHealthcheck, ContainerId, ContainerLocator,
-    ContainerNow, ContainerRefusalReason, ContainerWant, CopyRotation, DeploymentLogId,
-    EnsureContainerRequest, EnsuredContainer, HealthVerdict, HealthcheckCommand, HealthcheckSpec,
-    HttpHealthcheck, Machine, MachineId, MachineName, MachineRpc, MachineRuntime, NewContainer,
-    ProxyRoutes, QualifiedService, ReadRoutesRequest, ResolvedServiceSpec, RoutesRead, RunRotation,
-    RunTarget, WireGuardPublicKey, op, proxy_routes, service_containers,
+    ContainerNow, ContainerRefusalReason, ContainerRuntimeObservation, ContainerWant, CopyRotation,
+    DeploymentLogId, EnsureContainerRequest, EnsuredContainer, HealthVerdict, HealthcheckCommand,
+    HealthcheckSpec, HttpHealthcheck, Machine, MachineId, MachineName, MachineRpc, MachineRuntime,
+    NewContainer, ProxyRoutes, QualifiedService, ReadRoutesRequest, ResolvedServiceSpec,
+    RoutesRead, RunRotation, RunTarget, WireGuardPublicKey, op, proxy_routes, service_containers,
 };
 use serde_json::{Value, json};
 use tokio::{
@@ -1262,6 +1262,60 @@ async fn last_in_ignores_a_sibling_on_a_down_machine() {
 
     refused(&reply, ContainerRefusalReason::LastIn);
     assert_eq!(fleet.node(0).rotation(a).await, CopyRotation::In);
+}
+
+/// The guard reads the acks, the acked sibling exits, and the guard admits Out.
+/// The copy set Out still runs, so a proxy keeps routing it beside its exited
+/// sibling rather than routing the exited sibling alone.
+#[tokio::test]
+async fn a_running_copy_set_out_as_its_acked_sibling_exits_stays_routed() {
+    let fleet = Fleet::start().await;
+    let api = service("api");
+    let a = fleet.routed(0, "a", "api", 1).await;
+    fleet.addressed(0, a, "10.210.1.2").await;
+    let b = fleet.routed(1, "b", "api", 2).await;
+    fleet.addressed(1, b, "10.210.2.2").await;
+    fleet.ack_all(&api, &[a, b]).await;
+    let current = proxy_routes(
+        &service_containers(fleet.store.containers().await.unwrap().observations),
+        |_| false,
+        &ProxyRoutes::new(),
+    );
+    let reading = fleet.cluster.hold_query(SERVICE_ROUTES, 1);
+
+    let (reply, ()) = tokio::join!(
+        ensure(fleet.node(0), out(a, false, Some(CopyRotation::In))),
+        async {
+            reading.wait().await;
+            fleet
+                .node(1)
+                .set_state(b, json!({"Status": "exited", "ExitCode": 1}));
+            tokio::time::timeout(SETTLE, async {
+                while fleet.store.container(&b).await.unwrap().is_none_or(|row| {
+                    !matches!(row.runtime, ContainerRuntimeObservation::Exited { .. })
+                }) {
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            })
+            .await
+            .unwrap_or_else(|_| panic!("{b} never published as exited"));
+            reading.wait().await;
+        }
+    );
+
+    ensured(&reply);
+    assert!(fleet.node(0).running(a));
+    fleet.published(a, Some(CopyRotation::Out)).await;
+    let routes = proxy_routes(
+        &service_containers(fleet.store.containers().await.unwrap().observations),
+        |_| false,
+        &current,
+    );
+    let routed: BTreeSet<_> = routes[&api]
+        .iter()
+        .map(|serving| serving.as_observation().container_id)
+        .collect();
+    assert_eq!(routed, BTreeSet::from([a, b]));
 }
 
 /// A Machine membership holds no evidence for is unknown, not Down.
