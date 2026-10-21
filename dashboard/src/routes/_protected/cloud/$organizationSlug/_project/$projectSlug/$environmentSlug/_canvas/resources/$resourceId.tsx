@@ -2,6 +2,7 @@ import { createFileRoute, useLoaderData } from "@tanstack/react-router";
 import { Schema } from "effect";
 import { prefetchRemote, prefetchStoreConfig } from "#/collections/route-data";
 import { configsQuery, requireView, useStoreViews } from "#/modules/config-store/store-view.queries";
+import { organizationMembersQueryOptions } from "#/modules/organization/members.queries";
 import { parseMirrorResourceId } from "#/modules/volume-placement/volume-placement";
 import { volumePlacementsQueryOptions } from "#/modules/volume-placement/volume-placement.queries";
 import {
@@ -21,6 +22,7 @@ export const Route = createFileRoute(
     prefetchStoreConfig(context, params.organizationSlug,
       { project: params.projectSlug, environment: params.environmentSlug }, params.resourceId),
     prefetchRemote(context, volumePlacementsQueryOptions(params.organizationSlug)),
+    prefetchRemote(context, organizationMembersQueryOptions(params.organizationSlug)),
   ]),
   pendingComponent: CanvasInspectorPending,
   errorComponent: () => <CanvasInspectorError noun="Resource" />,
