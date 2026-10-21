@@ -1,5 +1,6 @@
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, VecDeque},
+    num::NonZeroU32,
     sync::{Arc, Mutex},
     time::Duration,
 };
@@ -8,7 +9,8 @@ use ployz_core::{
     AdvertisedEndpoint, ContainerAddress, ContainerId, ContainerKind, ContainerLocator,
     ContainerNow, ContainerObservation, ContainerRuntimeObservation, ContainerWant, CopyRotation,
     EnsuredContainer, Gen, HealthObservation, Machine, MachineId, MachineName, MachineRuntime,
-    MembershipEvidence, Namespace, QualifiedService, ResolvedServiceSpec, WireGuardPublicKey,
+    MembershipEvidence, Namespace, PullPolicy, QualifiedService, ResolvedServiceSpec, ServiceMode,
+    UpdateOrder, WireGuardPublicKey,
 };
 use serde_json::json;
 use tokio::{sync::watch, time::Instant};
@@ -143,7 +145,7 @@ impl Cluster {
     fn new() -> Self {
         let (local, peer, proxy) = (machine("local", 1), machine("peer", 2), machine("proxy", 3));
         let old = copy(1, &local, 1);
-        let new = copy(2, &peer, 2);
+        let new = newer_image(copy(2, &peer, 2));
         Self {
             local,
             peer,
@@ -175,18 +177,32 @@ struct FakeHost {
     local_actor: &'static str,
     /// `None` is a store already caught up to any target.
     store: Option<ReplicatedStore>,
-    observed: Arc<Mutex<Option<Observed>>>,
+    /// The views the store gives, in order; the last one stays.
+    observed: Arc<Mutex<VecDeque<Observed>>>,
+    reads: Arc<Mutex<usize>>,
+    /// What each owner answers for its Containers; a Container missing here gets no answer.
+    answers: BTreeMap<ContainerId, ContainerObservation>,
+    /// How many more times each Container's owner fails to answer before it does.
+    refusals: Arc<Mutex<BTreeMap<ContainerId, usize>>>,
     wants: Arc<Mutex<Vec<ContainerWant>>>,
 }
 
 impl FakeHost {
     fn new(local: &Machine, observed: Observed) -> Self {
+        let answers = observed
+            .containers
+            .iter()
+            .map(|copy| (copy.container_id, copy.clone()))
+            .collect();
         Self {
             local: local.id,
             targets: watch::channel(Peers::Answered(BTreeMap::new())).1,
             local_actor: LOCAL_ACTOR,
             store: None,
-            observed: Arc::new(Mutex::new(Some(observed))),
+            observed: Arc::new(Mutex::new(VecDeque::from([observed]))),
+            reads: Arc::default(),
+            answers,
+            refusals: Arc::default(),
             wants: Arc::default(),
         }
     }
@@ -217,12 +233,31 @@ impl BootHost for FakeHost {
     }
 
     async fn observe(&self) -> Result<Observed, CorrosionError> {
-        Ok(self
-            .observed
-            .lock()
-            .unwrap()
-            .take()
-            .expect("the pass reads the store once"))
+        *self.reads.lock().unwrap() += 1;
+        let mut views = self.observed.lock().unwrap();
+        Ok(if views.len() > 1 {
+            views.pop_front()
+        } else {
+            views.front().cloned()
+        }
+        .expect("the store has a view"))
+    }
+
+    async fn inspect(
+        &self,
+        machine: MachineId,
+        container: ContainerId,
+    ) -> Option<ContainerObservation> {
+        if let Some(left) = self.refusals.lock().unwrap().get_mut(&container)
+            && *left > 0
+        {
+            *left -= 1;
+            return None;
+        }
+        self.answers
+            .get(&container)
+            .filter(|copy| copy.machine_id == machine)
+            .cloned()
     }
 
     async fn ensure(&self, want: ContainerWant) -> Result<EnsuredContainer, LocalMachineError> {
@@ -336,7 +371,7 @@ mod alone {
         assert_eq!(started.elapsed(), Duration::ZERO);
         assert!(host.wants().is_empty());
         assert!(
-            host.observed.lock().unwrap().is_some(),
+            *host.reads.lock().unwrap() == 0,
             "the pass never read the store"
         );
     }
@@ -386,6 +421,566 @@ async fn higher_gen_missing_one_ack() {
     );
 
     assert!(pass(&cluster.local, observed).await.is_empty());
+}
+
+fn newer_image(mut copy: ContainerObservation) -> ContainerObservation {
+    copy.try_update(|parts| parts.resolved_spec.container.image = "example.test/image:2".into())
+        .unwrap();
+    copy
+}
+
+fn respec(
+    mut copy: ContainerObservation,
+    edit: impl FnOnce(&mut ResolvedServiceSpec),
+) -> ContainerObservation {
+    copy.try_update(|parts| edit(&mut parts.resolved_spec))
+        .unwrap();
+    copy
+}
+
+fn replicas(copy: ContainerObservation, replicas: u32) -> ContainerObservation {
+    respec(copy, |spec| {
+        spec.mode = ServiceMode::Replicated {
+            replicas: NonZeroU32::new(replicas).unwrap(),
+        };
+    })
+}
+
+fn memory(copy: ContainerObservation, bytes: i64) -> ContainerObservation {
+    respec(copy, |spec| {
+        spec.container.resources.memory_bytes = Some(bytes.try_into().unwrap());
+    })
+}
+
+fn greeting(copy: ContainerObservation, value: &str) -> ContainerObservation {
+    respec(copy, |spec| {
+        spec.container
+            .environment
+            .insert("GREETING".into(), value.into());
+    })
+}
+
+/// A store row keeps no environment.
+fn row(copy: &ContainerObservation) -> ContainerObservation {
+    respec(copy.clone(), |spec| spec.container.environment.clear())
+}
+
+/// `local` judging `copies`, each routed by every proxy. The store holds their
+/// rows, and `answer` turns each full copy into what its owner answers.
+fn host_for(
+    cluster: &Cluster,
+    local: &Machine,
+    copies: &[&ContainerObservation],
+    answer: impl Fn(ContainerObservation) -> Option<ContainerObservation>,
+) -> (FakeHost, BTreeMap<QualifiedService, BTreeSet<ContainerId>>) {
+    let observed = observed(
+        local,
+        &[&cluster.local, &cluster.peer, &cluster.proxy],
+        &[],
+        copies.iter().map(|copy| row(copy)).collect(),
+        routes(&[
+            (&cluster.local, copies),
+            (&cluster.peer, copies),
+            (&cluster.proxy, copies),
+        ]),
+    );
+    let own = own_acks(local, &observed);
+    let answers = copies
+        .iter()
+        .filter_map(|copy| Some((copy.container_id, answer((*copy).clone())?)))
+        .collect();
+    let host = FakeHost {
+        answers,
+        ..FakeHost::new(local, observed)
+    };
+    (host, own)
+}
+
+/// The Outs a pass on `host` sends.
+async fn outs(
+    (host, own): (FakeHost, BTreeMap<QualifiedService, BTreeSet<ContainerId>>),
+) -> Vec<ContainerWant> {
+    run(host.clone(), synced(), published(own)).await;
+    host.wants()
+}
+
+/// The local copy beside its siblings, as [`host_for`] has them. True when the
+/// pass sets the local copy Out.
+async fn set_out_beside(
+    cluster: &Cluster,
+    older: ContainerObservation,
+    newer: Vec<ContainerObservation>,
+    answer: impl Fn(ContainerObservation) -> Option<ContainerObservation>,
+) -> bool {
+    let all = std::iter::once(&older).chain(&newer).collect::<Vec<_>>();
+    match outs(host_for(cluster, &cluster.local, &all, answer))
+        .await
+        .as_slice()
+    {
+        [] => false,
+        [want] if *want == out(&older) => true,
+        other => panic!("unexpected wants {other:?}"),
+    }
+}
+
+/// The local gen-1 copy beside a peer's gen-2 copy, each as `older` and `newer`
+/// make it, and every owner answers.
+async fn replaced_by(
+    older: impl FnOnce(ContainerObservation) -> ContainerObservation,
+    newer: impl FnOnce(ContainerObservation) -> ContainerObservation,
+) -> bool {
+    let cluster = Cluster::new();
+    set_out_beside(
+        &cluster,
+        older(copy(1, &cluster.local, 1)),
+        vec![newer(copy(2, &cluster.peer, 2))],
+        Some,
+    )
+    .await
+}
+
+#[tokio::test(start_paused = true)]
+async fn replaced_by_a_new_pre_deploy_hook() {
+    assert!(
+        replaced_by(
+            |copy| copy,
+            |copy| respec(copy, |spec| {
+                spec.pre_deploy =
+                    Some(serde_json::from_value(json!({ "command": ["migrate"] })).unwrap());
+            })
+        )
+        .await
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn replaced_by_an_always_pull() {
+    assert!(
+        replaced_by(
+            |copy| copy,
+            |copy| respec(copy, |spec| spec.container.pull_policy = PullPolicy::Always)
+        )
+        .await
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn replaced_by_a_lowered_memory_limit() {
+    assert!(replaced_by(|copy| memory(copy, 1 << 30), |copy| memory(copy, 1 << 29)).await);
+}
+
+#[tokio::test(start_paused = true)]
+async fn kept_beside_a_raised_memory_limit() {
+    assert!(
+        !replaced_by(
+            |copy| memory(copy, 1 << 29),
+            |copy| replicas(memory(copy, 1 << 30), 2)
+        )
+        .await
+    );
+}
+
+/// Deploy N scales from 1 to 2, keeping the local copy at gen 1 and starting the
+/// peer's at gen 2. Deploy M raises the limit in place while this Machine is off,
+/// so the peer's copy keeps gen 2 under the new spec, and the local update fails.
+#[tokio::test(start_paused = true)]
+async fn kept_when_an_in_place_deploy_missed_it() {
+    let cluster = Cluster::new();
+    let kept_by_n = memory(copy(1, &cluster.local, 1), 1 << 29);
+    let updated_by_m = replicas(memory(copy(2, &cluster.peer, 2), 3 << 29), 2);
+
+    assert!(!set_out_beside(&cluster, kept_by_n, vec![updated_by_m], Some).await);
+}
+
+#[tokio::test(start_paused = true)]
+async fn replaced_by_other_environment_values() {
+    assert!(replaced_by(|copy| greeting(copy, "old"), |copy| greeting(copy, "new")).await);
+}
+
+#[tokio::test(start_paused = true)]
+async fn kept_beside_equal_environment_values() {
+    assert!(
+        !replaced_by(
+            |copy| greeting(copy, "same"),
+            |copy| replicas(greeting(copy, "same"), 2)
+        )
+        .await
+    );
+}
+
+/// A scale from 1 to 2 keeps the gen-1 copy beside the new gen-2 one.
+#[tokio::test(start_paused = true)]
+async fn kept_by_a_scale_up() {
+    assert!(!replaced_by(|copy| copy, |copy| replicas(copy, 2)).await);
+}
+
+/// A Deploy while this Machine was Down started the one replica elsewhere.
+#[tokio::test(start_paused = true)]
+async fn replaced_by_an_identical_failover_copy() {
+    assert!(replaced_by(|copy| copy, |copy| copy).await);
+}
+
+/// With 2 replicas, a Deploy while this Machine was Down kept the peer's gen-1 copy
+/// and started a gen-2 one. The gen-1 copy with the larger id ranks past 2.
+#[tokio::test(start_paused = true)]
+async fn failover_ranks_out_the_gen_1_copy_with_the_larger_id() {
+    let cluster = Cluster::new();
+    let kept = copy(5, &cluster.peer, 1);
+    let started = replicas(copy(7, &cluster.proxy, 2), 2);
+
+    assert!(
+        set_out_beside(
+            &cluster,
+            copy(6, &cluster.local, 1),
+            vec![kept.clone(), started.clone()],
+            Some
+        )
+        .await
+    );
+    assert!(
+        !set_out_beside(
+            &cluster,
+            copy(4, &cluster.local, 1),
+            vec![kept, started],
+            Some
+        )
+        .await
+    );
+}
+
+/// Two Machines back at once, each judging its own gen-1 copy from the same view,
+/// set exactly one of them Out.
+#[tokio::test(start_paused = true)]
+async fn two_machines_judging_at_once_drop_one_copy() {
+    let cluster = Cluster::new();
+    let here = copy(4, &cluster.local, 1);
+    let there = copy(5, &cluster.peer, 1);
+    let started = replicas(copy(7, &cluster.proxy, 2), 2);
+    let all = [&here, &there, &started];
+
+    let (here_outs, there_outs) = tokio::join!(
+        outs(host_for(&cluster, &cluster.local, &all, Some)),
+        outs(host_for(&cluster, &cluster.peer, &all, Some)),
+    );
+
+    assert_eq!((here_outs, there_outs), (Vec::new(), vec![out(&there)]));
+}
+
+#[tokio::test(start_paused = true)]
+async fn kept_when_an_unreadable_sibling_ranks_above_it() {
+    let cluster = Cluster::new();
+    let unreadable = copy(5, &cluster.peer, 1);
+    let started = replicas(copy(7, &cluster.proxy, 2), 2);
+    let peer = cluster.peer.id;
+
+    assert!(
+        !set_out_beside(
+            &cluster,
+            copy(6, &cluster.local, 1),
+            vec![unreadable, started],
+            |copy| (copy.machine_id != peer).then_some(copy)
+        )
+        .await
+    );
+}
+
+/// One Machine cannot confirm the other's copy, so their views differ. However
+/// either decides, the Service keeps its 2 replicas.
+#[tokio::test(start_paused = true)]
+async fn two_machines_with_different_answers_keep_the_replica_count() {
+    let cluster = Cluster::new();
+    let here = copy(4, &cluster.local, 1);
+    let there = copy(5, &cluster.peer, 1);
+    let started = replicas(copy(7, &cluster.proxy, 2), 2);
+    let all = [&here, &there, &started];
+    let blind_to = |hidden: MachineId| {
+        move |copy: ContainerObservation| (copy.machine_id != hidden).then_some(copy)
+    };
+
+    for (here_sees, there_sees) in [
+        (blind_to(cluster.peer.id), blind_to(cluster.proxy.id)),
+        (blind_to(cluster.proxy.id), blind_to(cluster.local.id)),
+    ] {
+        let (here_outs, there_outs) = tokio::join!(
+            outs(host_for(&cluster, &cluster.local, &all, here_sees)),
+            outs(host_for(&cluster, &cluster.peer, &all, there_sees)),
+        );
+
+        assert!(all.len() - here_outs.len() - there_outs.len() >= 2);
+    }
+}
+
+/// Copies one Deploy started differ in update order alone when one replaced a copy
+/// holding a host port, which stops first, and the other is new, which starts first.
+#[tokio::test(start_paused = true)]
+async fn replaced_by_one_deploy_that_both_replaced_and_started_copies() {
+    let cluster = Cluster::new();
+    let order = |copy, order| respec(copy, |spec| spec.update.order = order);
+
+    assert!(
+        set_out_beside(
+            &cluster,
+            copy(1, &cluster.local, 1),
+            vec![
+                order(
+                    replicas(newer_image(copy(3, &cluster.peer, 2)), 2),
+                    UpdateOrder::StopFirst
+                ),
+                order(
+                    replicas(newer_image(copy(4, &cluster.proxy, 2)), 2),
+                    UpdateOrder::StartFirst
+                ),
+            ],
+            Some,
+        )
+        .await
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn kept_beside_an_identical_newer_copy_of_a_global_service() {
+    let cluster = Cluster::new();
+    let global = |copy| respec(copy, |spec| spec.mode = ServiceMode::Global);
+
+    assert!(
+        !set_out_beside(
+            &cluster,
+            global(copy(1, &cluster.local, 1)),
+            vec![global(copy(2, &cluster.peer, 2))],
+            Some,
+        )
+        .await
+    );
+}
+
+/// The pass ranks the local copy third of 2 when it starts fetching specs. Before it
+/// sends the Out, a Deploy has `then` happen. This Machine's ingress has routed
+/// every copy of both views.
+async fn set_out_after(then: impl FnOnce(&Cluster, &mut Vec<ContainerObservation>)) -> bool {
+    let cluster = Cluster::new();
+    let local = copy(6, &cluster.local, 1);
+    let mut copies = vec![
+        local.clone(),
+        copy(5, &cluster.peer, 1),
+        replicas(copy(7, &cluster.proxy, 2), 2),
+    ];
+    let (host, mut own) = host_for(
+        &cluster,
+        &cluster.local,
+        &copies.iter().collect::<Vec<_>>(),
+        Some,
+    );
+    then(&cluster, &mut copies);
+    let (later, later_own) = host_for(
+        &cluster,
+        &cluster.local,
+        &copies.iter().collect::<Vec<_>>(),
+        Some,
+    );
+    for (service, routed) in later_own {
+        own.entry(service).or_default().extend(routed);
+    }
+    let later = later.observed.lock().unwrap().pop_front().unwrap();
+    host.observed.lock().unwrap().push_back(later);
+    match outs((host, own)).await.as_slice() {
+        [] => false,
+        [want] if *want == out(&local) => true,
+        other => panic!("unexpected wants {other:?}"),
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn set_out_when_the_view_holds_until_the_out() {
+    assert!(set_out_after(|_, _| {}).await);
+}
+
+#[tokio::test(start_paused = true)]
+async fn kept_when_a_deploy_retires_the_newer_copy_during_the_fetch() {
+    assert!(
+        !set_out_after(|_, copies| {
+            copies.pop();
+        })
+        .await
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn kept_when_a_newer_gen_appears_during_the_fetch() {
+    assert!(
+        !set_out_after(|cluster, copies| {
+            copies.push(replicas(copy(8, &cluster.proxy, 3), 2));
+        })
+        .await
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn replaced_once_the_owner_answers_on_a_later_try() {
+    let cluster = Cluster::new();
+    let older = greeting(copy(1, &cluster.local, 1), "old");
+    let newer = greeting(copy(2, &cluster.peer, 2), "new");
+    let (host, own) = host_for(&cluster, &cluster.local, &[&older, &newer], Some);
+    host.refusals.lock().unwrap().insert(newer.container_id, 3);
+
+    assert_eq!(outs((host, own)).await, vec![out(&older)]);
+}
+
+#[tokio::test(start_paused = true)]
+async fn kept_when_the_owner_reports_another_gen() {
+    let cluster = Cluster::new();
+    let older = greeting(copy(1, &cluster.local, 1), "old");
+    let newer = greeting(copy(2, &cluster.peer, 2), "new");
+    let peer = cluster.peer.id;
+
+    assert!(
+        !set_out_beside(&cluster, older, vec![newer], |mut copy| {
+            if copy.machine_id == peer {
+                copy.try_update(|parts| parts.r#gen = Some(Gen::new(3)))
+                    .unwrap();
+            }
+            Some(copy)
+        })
+        .await
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn kept_when_the_newer_copys_owner_does_not_answer() {
+    let cluster = Cluster::new();
+    let older = greeting(copy(1, &cluster.local, 1), "old");
+    let newer = greeting(copy(2, &cluster.peer, 2), "new");
+    let local = cluster.local.id;
+
+    assert!(
+        !set_out_beside(&cluster, older, vec![newer], |copy| (copy.machine_id
+            == local)
+            .then_some(copy))
+        .await
+    );
+}
+
+#[test]
+fn counts_a_copy_whose_newest_sibling_went_unconfirmed_as_unjudged() {
+    let cluster = Cluster::new();
+    let observed = cluster.acked_everywhere();
+    let own = own_acks(&cluster.local, &observed);
+    let candidates = super::candidates(&cluster.local.id, &observed, &own);
+    let specs = BTreeMap::from([(cluster.old.container_id, cluster.old.resolved_spec.clone())]);
+
+    assert_eq!(super::superseded(&candidates, &specs), (Vec::new(), 1));
+}
+
+#[tokio::test(start_paused = true)]
+async fn kept_when_this_machine_cannot_read_its_copy() {
+    let cluster = Cluster::new();
+    let older = greeting(copy(1, &cluster.local, 1), "old");
+    let newer = greeting(copy(2, &cluster.peer, 2), "new");
+    let peer = cluster.peer.id;
+
+    assert!(
+        !set_out_beside(&cluster, older, vec![newer], |copy| (copy.machine_id
+            == peer)
+            .then_some(copy))
+        .await
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn kept_when_the_owner_reports_the_newer_copy_out() {
+    let cluster = Cluster::new();
+    let older = greeting(copy(1, &cluster.local, 1), "old");
+    let newer = greeting(copy(2, &cluster.peer, 2), "new");
+    let peer = cluster.peer.id;
+
+    assert!(
+        !set_out_beside(&cluster, older, vec![newer], |mut copy| {
+            if copy.machine_id == peer {
+                copy.try_update(|parts| parts.rotation = Some(CopyRotation::Out))
+                    .unwrap();
+            }
+            Some(copy)
+        })
+        .await
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn kept_beside_an_older_differing_gen_when_the_newest_matches() {
+    let cluster = Cluster::new();
+
+    assert!(
+        !set_out_beside(
+            &cluster,
+            copy(1, &cluster.local, 1),
+            vec![
+                newer_image(copy(3, &cluster.peer, 2)),
+                replicas(copy(4, &cluster.peer, 3), 2)
+            ],
+            Some,
+        )
+        .await
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn replaced_by_the_newest_gen_when_an_older_one_matches() {
+    let cluster = Cluster::new();
+
+    assert!(
+        set_out_beside(
+            &cluster,
+            copy(1, &cluster.local, 1),
+            vec![
+                copy(3, &cluster.peer, 2),
+                newer_image(copy(4, &cluster.peer, 3))
+            ],
+            Some,
+        )
+        .await
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn replaced_by_identical_always_pull_siblings() {
+    let cluster = Cluster::new();
+    let always = |copy| {
+        newer_image(respec(copy, |spec| {
+            spec.container.pull_policy = PullPolicy::Always;
+        }))
+    };
+
+    assert!(
+        set_out_beside(
+            &cluster,
+            copy(1, &cluster.local, 1),
+            vec![
+                always(copy(3, &cluster.peer, 2)),
+                always(copy(4, &cluster.peer, 2))
+            ],
+            Some,
+        )
+        .await
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn kept_when_the_newest_siblings_disagree() {
+    let cluster = Cluster::new();
+
+    assert!(
+        !set_out_beside(
+            &cluster,
+            copy(1, &cluster.local, 1),
+            vec![
+                newer_image(copy(3, &cluster.peer, 2)),
+                respec(copy(4, &cluster.peer, 2), |spec| {
+                    spec.container.pull_policy = PullPolicy::Always;
+                })
+            ],
+            Some,
+        )
+        .await
+    );
 }
 
 #[tokio::test(start_paused = true)]
