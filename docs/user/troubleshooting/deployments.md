@@ -233,9 +233,10 @@ or `my-app-production/web left running on web-2 (web-2 did not answer). The next
 A deploy couldn't reach web-2 to retire its old replica, because web-2 was cut off or powered
 off. Once web-2 is back, that replica can answer beside the new ones, so visitors get either
 version, and an old worker still takes jobs. A server that restarts takes its old replica out of
-traffic on its own within a few minutes, but the replica keeps running. It leaves the replica in
-traffic when the server running the newer replica doesn't answer, or when the deploy changed only
-memory or CPU limits. Then deploy again.
+traffic on its own within a few minutes, but the replica keeps running. That includes a replica a
+deploy replaced while the server was offline, even with nothing changed. It leaves the replica in
+traffic when the server running the newer replica doesn't answer, or when a memory or CPU limit
+change couldn't reach it. Then deploy again.
 
 1. Wait until web-2 shows online on the **Servers** page.
 2. Deploy again. With nothing staged, click **Redeploy** on the newest deployment, or run:

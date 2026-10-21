@@ -904,10 +904,11 @@ impl LimitsChange {
     /// replacement, on a budget the abandoned trial never touched.
     ///
     /// A copy updated in place keeps its gen and reads as the new spec. A Machine
-    /// coming back sets Out an In copy only when a Deploy would make a new
-    /// Container in its place, so a copy whose in-place update missed it keeps
+    /// coming back sets Out a copy a Deploy would make anew, or one its Service has
+    /// more of than it asks for, so a copy whose in-place update missed it keeps
     /// serving on its old limits until the next Deploy. A Service is updated in
-    /// place only when every copy keeps its id.
+    /// place only when every copy keeps its id. The boot pass no longer relies on
+    /// that, since it counts copies instead of trusting their gens.
     pub(super) fn decide<Budget: Clone, Planned>(
         worth_trying: bool,
         budget: &mut Budget,

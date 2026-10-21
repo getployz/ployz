@@ -90,8 +90,9 @@ To bring services back:
    Use the CLI and name them: a deploy that includes a service whose volume is on the offline
    server fails before it changes anything, and the dashboard's **Deploy** includes every
    service.
-2. When the server comes back, its replicas start again. A replica the deploy in step 1 replaced
-   can answer beside the new ones, with the old version, until your next deploy removes it. See
+2. When the server comes back, its replicas start again. Within a few minutes it takes each
+   replica the deploy in step 1 replaced out of traffic, but the replica keeps running until your
+   next deploy removes it. If it can't confirm the new replica, the old one answers beside it. See
    [Old and new versions answer at once](../troubleshooting/deployments.md#old-and-new-versions-answer-at-once).
 3. If it's gone for good, [forget it](../servers/manage-servers.md#forget-a-server-that-is-gone)
    with **Forget server** on its page or `ployz server forget web-2 --confirm dead`. Then bring
