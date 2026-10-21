@@ -1199,6 +1199,7 @@ async fn waits_for_two_publishes_after_catch_up() {
     let (publishes, published) = watch::channel(PublishedRoutes {
         count: 1,
         routes: own.clone(),
+        ..PublishedRoutes::default()
     });
     let running = tokio::spawn(run(host.clone(), synced(), published));
     let publish = || {

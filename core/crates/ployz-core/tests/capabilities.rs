@@ -8,12 +8,13 @@ use ployz_core::{
     LIST_VOLUMES_CAPABILITY, LOG_HISTORY_CAPABILITY, MACHINE_STORAGE_OBSERVATION_CAPABILITY,
     METRIC_HISTORY_CAPABILITY, MINT_BUILD_GRANT_CAPABILITY, PREPARE_VOLUMES_CAPABILITY,
     PRUNE_IMAGES_CAPABILITY, PUBLISH_CERTIFICATE_MATERIAL_CAPABILITY, PULL_IMAGE_CAPABILITY,
-    PULL_IMAGE_FROM_MACHINE_CAPABILITY, READ_ROUTES_CAPABILITY, REGISTER_MACHINE_CAPABILITY,
-    REMOVE_VOLUME_CAPABILITY, REQUEST_MACHINE_UPGRADE_CAPABILITY, RETAINED_ENV_CAPABILITY,
-    RUNTIME_WATCH_CAPABILITY, Rpc, SEED_VOLUME_CAPABILITY, SELECT_ENDPOINT_CAPABILITY,
-    SET_MANAGEMENT_CLIENT_CAPABILITY, SET_PUSH_TARGET_CAPABILITY, SET_VOLUME_COPY_CAPABILITY,
-    SET_VOLUME_SIZE_CAPABILITY, TAIL_LOGS_CAPABILITY, UPDATE_CONTAINER_LIMITS_CAPABILITY,
-    UPDATE_MACHINE_CAPABILITY, VOLUME_FLOOR_CAPABILITY, VOLUME_SHRINK_CAPABILITY, op,
+    PULL_IMAGE_FROM_MACHINE_CAPABILITY, READ_ROUTED_ADDRESSES_CAPABILITY, READ_ROUTES_CAPABILITY,
+    REGISTER_MACHINE_CAPABILITY, REMOVE_VOLUME_CAPABILITY, REQUEST_MACHINE_UPGRADE_CAPABILITY,
+    RETAINED_ENV_CAPABILITY, RUNTIME_WATCH_CAPABILITY, Rpc, SEED_VOLUME_CAPABILITY,
+    SELECT_ENDPOINT_CAPABILITY, SET_MANAGEMENT_CLIENT_CAPABILITY, SET_PUSH_TARGET_CAPABILITY,
+    SET_VOLUME_COPY_CAPABILITY, SET_VOLUME_SIZE_CAPABILITY, TAIL_LOGS_CAPABILITY,
+    UPDATE_CONTAINER_LIMITS_CAPABILITY, UPDATE_MACHINE_CAPABILITY, VOLUME_FLOOR_CAPABILITY,
+    VOLUME_SHRINK_CAPABILITY, op,
 };
 
 /// Capability constants are generated from the catalog, so a typo would stay
@@ -88,6 +89,10 @@ fn catalogued_capabilities_keep_stable_spellings() {
             "ployz.certificates.publish.v1",
         ),
         (READ_ROUTES_CAPABILITY, "ployz.serving.routes.v1"),
+        (
+            READ_ROUTED_ADDRESSES_CAPABILITY,
+            "ployz.serving.routed-addresses.v1",
+        ),
         (UPDATE_MACHINE_CAPABILITY, "ployz.machine.update.v1"),
         (LEAVE_MACHINE_CAPABILITY, "ployz.machine.leave.v1"),
         (FORGET_MACHINE_CAPABILITY, "ployz.machine.forget.v1"),
@@ -168,6 +173,7 @@ fn advertised_capability_groups_match_the_frozen_catalog() {
         [
             "ployz.certificates.publish.v1",
             "ployz.serving.routes.v1",
+            "ployz.serving.routed-addresses.v1",
             "ployz.runtime.watch.v1",
         ]
     );
@@ -289,6 +295,10 @@ const ABOVE_FLOOR: &[(&str, &str)] = &[
     (
         "ployz.logs.retained-env.v1",
         "falls back: the SDK asks it only after InspectContainer answers NotFound, and a refusal withholds the Container's Sealed lines as before",
+    ),
+    (
+        "ployz.serving.routed-addresses.v1",
+        "claims nothing: status names no stale address for a Server whose daemon refuses it",
     ),
 ];
 

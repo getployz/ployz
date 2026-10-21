@@ -10,8 +10,8 @@ use ployz_core::{
     CapabilityAdvertisement, CertificateMaterialChange, CertificateMaterialPublished,
     ContainerList, ContainerObservation, ContractDescription, EndpointSelected, EnvironmentValues,
     LiveLogTarget, LocalMachinePhase, LogMetadata, LogOrigin, MachineLogService, MachineRpc,
-    OpaquePayload, PROTOCOL_MAJOR, RetainedEnvReply, RoutesRead, Rpc, RpcError, RpcErrorCode,
-    RpcRequestBody, RpcResponse, SelectEndpointRequest, op,
+    OpaquePayload, PROTOCOL_MAJOR, RetainedEnvReply, RoutedAddresses, RoutesRead, Rpc, RpcError,
+    RpcErrorCode, RpcRequestBody, RpcResponse, SelectEndpointRequest, op,
 };
 use serde_json::Value;
 use tonic::{Request, Response, Status};
@@ -39,6 +39,7 @@ pub struct MachineService {
     pub(crate) builds: Arc<crate::build::Runner>,
     pub(crate) grants: Arc<crate::management::BuildGrants>,
     pub(crate) endpoint_chooser: Option<crate::network::EndpointChooser>,
+    pub(crate) published_routes: tokio::sync::watch::Receiver<crate::ingress::PublishedRoutes>,
 }
 
 impl MachineService {
@@ -58,6 +59,10 @@ impl MachineService {
                 .expect("default Build policy"),
             grants: Arc::default(),
             endpoint_chooser: None,
+            published_routes: tokio::sync::watch::channel(
+                crate::ingress::PublishedRoutes::default(),
+            )
+            .1,
         }
     }
 
@@ -781,6 +786,16 @@ impl MachineRpc for MachineService {
             routes,
             complete: matches!(membership.ackers, Ackers::Known(_)),
             down: membership.down,
+        })
+    }
+
+    async fn read_routed_addresses(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        expect::<op::ReadRoutedAddresses>(request)?;
+        respond(RoutedAddresses {
+            routes: self.published_routes.borrow().addresses.clone(),
         })
     }
 }

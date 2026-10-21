@@ -1,9 +1,10 @@
 //! Observer-local ingress derivation, watching, and shared filesystem state.
 
 use ployz_core::{
-    CertificateHost, ContainerAddress, ContainerId, ContainerObservation, DeploymentLogId,
-    HttpProtocol, IngressHost, Machine, MachineId, PortPublication, ProxyRoutes, QualifiedService,
-    ServiceContainer, hostname_owners, proxy_routes, service_containers,
+    CertificateHost, ContainerAddress, ContainerId, ContainerObservation,
+    ContainerRuntimeObservation, DeploymentLogId, HttpProtocol, IngressHost, Machine, MachineId,
+    PortPublication, ProxyRoutes, QualifiedService, ServiceContainer, hostname_owners,
+    proxy_routes, service_containers,
 };
 use serde::Serialize;
 use std::{
@@ -51,6 +52,9 @@ use caddy::CaddyAdmin;
 pub(crate) struct PublishedRoutes {
     pub(crate) count: u64,
     pub(crate) routes: BTreeMap<QualifiedService, BTreeSet<ContainerId>>,
+    /// `None` while this process can't confirm what Caddy serves.
+    pub(crate) addresses:
+        Option<BTreeMap<QualifiedService, BTreeMap<ContainerId, ContainerAddress>>>,
 }
 
 /// Run the Caddy watcher.
@@ -190,6 +194,22 @@ impl IngressSite {
         match protocol {
             HttpProtocol::Http => publication.http.as_deref(),
             HttpProtocol::Https => publication.https.as_deref(),
+        }
+    }
+
+    /// The HTTPS route with the certificate Caddy serves it under. Without material,
+    /// Caddy renders no HTTPS site, so the route proxies nothing.
+    #[must_use]
+    pub(super) fn https(&self) -> Option<(&CertificateMaterial, &[IngressEndpoint])> {
+        self.material().zip(self.route(HttpProtocol::Https))
+    }
+
+    /// Ordered endpoints Caddy proxies to for one HTTP protocol.
+    #[must_use]
+    pub(super) fn proxied(&self, protocol: HttpProtocol) -> Option<&[IngressEndpoint]> {
+        match protocol {
+            HttpProtocol::Http => self.route(HttpProtocol::Http),
+            HttpProtocol::Https => self.https().map(|(_, endpoints)| endpoints),
         }
     }
 
@@ -366,7 +386,42 @@ fn creation_key(container: &ServiceContainer) -> (i64, &str) {
     )
 }
 
+/// True when no Caddy can serve on this Machine: every ingress container here is stopped,
+/// or it has none and takes no ingress.
+fn serves_nothing(
+    machine: &MachineId,
+    takes_ingress: bool,
+    containers: &[ServiceContainer],
+) -> bool {
+    let mut local = containers
+        .iter()
+        .map(ServiceContainer::as_observation)
+        .filter(|observation| observation.machine_id == *machine && is_system_ingress(observation))
+        .peekable();
+    if local.peek().is_none() {
+        return !takes_ingress;
+    }
+    local.all(|observation| at_rest(&observation.runtime))
+}
+
+/// True when a container's process isn't running and can serve nothing.
+pub(crate) fn at_rest(runtime: &ContainerRuntimeObservation) -> bool {
+    matches!(
+        runtime,
+        ContainerRuntimeObservation::Created
+            | ContainerRuntimeObservation::Exited { .. }
+            | ContainerRuntimeObservation::Dead
+    )
+}
+
 fn newest_local_ingress(machine: &Machine, containers: &[ServiceContainer]) -> Option<ContainerId> {
+    local_ingress(machine, containers).map(|container| container.as_observation().container_id)
+}
+
+fn local_ingress<'container>(
+    machine: &Machine,
+    containers: &'container [ServiceContainer],
+) -> Option<&'container ServiceContainer> {
     containers
         .iter()
         .filter(|container| {
@@ -374,7 +429,6 @@ fn newest_local_ingress(machine: &Machine, containers: &[ServiceContainer]) -> O
             observation.machine_id == machine.id && is_system_ingress(observation)
         })
         .max_by(|left, right| creation_key(left).cmp(&creation_key(right)))
-        .map(|container| container.as_observation().container_id)
 }
 
 /// What the Caddyfile was last written from. A write while Caddy's admin socket is down
@@ -416,6 +470,8 @@ where
     // Every Caddy reload clears passive health counts and re-arms a dead upstream, so an
     // unchanged input is never reloaded.
     let mut last_input = None;
+    // The Caddy whose admin confirmed the published addresses.
+    let mut recorded_by = None;
     let mut acked = BTreeMap::new();
     // Kept while every copy is out of reach.
     let mut routed = ProxyRoutes::new();
@@ -442,6 +498,14 @@ where
         };
         loop {
             down.update(load_down().await);
+            // Read each pass, since turning the role off doesn't restart the daemon.
+            let takes_ingress = !matches!(
+                replicated.machine(machine.id.as_str()).await,
+                Ok(Some(Machine {
+                    accepts_ingress: false,
+                    ..
+                }))
+            );
             let input = match (
                 replicated.containers().await,
                 replicated.certificate_state().await,
@@ -450,38 +514,78 @@ where
                     let containers = service_containers(containers.observations);
                     let routes =
                         proxy_routes(&containers, |machine| down.contains(machine), &routed);
+                    let projection =
+                        IngressProjection::derive(&machine, &containers, &certificates, &routes);
                     Ok((
-                        IngressProjection::derive(&machine, &containers, &certificates, &routes),
                         newest_local_ingress(&machine, &containers),
+                        serves_nothing(&machine.id, takes_ingress, &containers),
+                        routed_addresses(&projection, &routes),
+                        projection,
                         routes,
                     ))
                 }
                 (Err(error), _) | (_, Err(error)) => Err(io::Error::other(error)),
             };
             match input {
-                Ok((projection, caddy, routes)) => {
-                    let loaded = last_input
-                        .as_ref()
-                        .is_some_and(|last: &CaddyInput| last.loaded(&projection, caddy.as_ref()));
-                    let result = async {
-                        if loaded {
-                            return Ok(());
+                Ok((caddy, no_caddy, addresses, projection, routes)) => {
+                    // A stopped Caddy no longer serves what it loaded.
+                    let loaded = !no_caddy
+                        && last_input.as_ref().is_some_and(|last: &CaddyInput| {
+                            last.loaded(&projection, caddy.as_ref())
+                        });
+                    let (through_admin, result) = if loaded {
+                        (true, Ok(()))
+                    } else {
+                        match connect().await {
+                            Ok(admin) => {
+                                let input = CaddyInput {
+                                    projection,
+                                    caddy,
+                                    through_admin: admin.is_some(),
+                                };
+                                let result = if last_input.as_ref() == Some(&input) {
+                                    Ok(())
+                                } else {
+                                    let applied = apply_caddy(
+                                        &input.projection,
+                                        &config_file,
+                                        admin.as_ref(),
+                                    )
+                                    .await;
+                                    // A refused load leaves the earlier one serving. Any other
+                                    // failure may have replaced the file Caddy restarts from.
+                                    match (&applied, admin.is_some()) {
+                                        (Ok(()), _) => last_input = Some(input),
+                                        (Err(ApplyError::BeforeServing(_)), true) => {}
+                                        (Err(_), _) => last_input = None,
+                                    }
+                                    applied
+                                };
+                                (admin.is_some(), result)
+                            }
+                            Err(error) => (false, Err(ApplyError::BeforeServing(error))),
                         }
-                        let admin = connect().await.map_err(io::Error::other)?;
-                        let input = CaddyInput {
-                            projection,
-                            caddy,
-                            through_admin: admin.is_some(),
+                    };
+                    // A refused load leaves the record standing only while the newest observed
+                    // ingress container is the one whose admin confirmed it. A new Caddy serves
+                    // its Caddyfile. An in-place restart under the same id goes unseen (#2787).
+                    let refused =
+                        through_admin && matches!(result, Err(ApplyError::BeforeServing(_)));
+                    if !(refused && recorded_by.is_some() && recorded_by == caddy) {
+                        // Without the admin, a running Caddy serves what it last loaded or, after
+                        // a restart, the Caddyfile, so the record claims nothing.
+                        let addresses = if through_admin {
+                            (!refused).then_some(addresses)
+                        } else {
+                            no_caddy.then(BTreeMap::new)
                         };
-                        if last_input.as_ref() != Some(&input) {
-                            apply_caddy(&input.projection, &config_file, admin.as_ref())
-                                .await
-                                .map_err(io::Error::other)?;
-                            last_input = Some(input);
-                        }
-                        Ok::<_, io::Error>(())
+                        recorded_by = caddy.filter(|_| through_admin && addresses.is_some());
+                        route_publishes.send_if_modified(|publishes| {
+                            let changed = publishes.addresses != addresses;
+                            publishes.addresses = addresses;
+                            changed
+                        });
                     }
-                    .await;
                     if let Err(error) = result {
                         eprintln!(
                             "failed to update Ingress Proxy configuration: {error}",
@@ -544,6 +648,36 @@ fn route_acks(routes: &ProxyRoutes) -> BTreeMap<QualifiedService, IngressRouteAc
         .collect()
 }
 
+fn routed_addresses(
+    projection: &IngressProjection,
+    routes: &ProxyRoutes,
+) -> BTreeMap<QualifiedService, BTreeMap<ContainerId, ContainerAddress>> {
+    let proxied: BTreeSet<_> = projection
+        .sites
+        .iter()
+        .filter_map(|site| {
+            let owner = &site.publication.as_ref()?.owner;
+            let endpoints = [HttpProtocol::Http, HttpProtocol::Https]
+                .into_iter()
+                .filter_map(|protocol| site.proxied(protocol))
+                .flatten();
+            Some(endpoints.map(move |endpoint| (owner, endpoint.address)))
+        })
+        .flatten()
+        .collect();
+    routes
+        .iter()
+        .filter_map(|(service, route)| {
+            let addresses: BTreeMap<_, _> = route
+                .iter()
+                .filter(|serving| proxied.contains(&(service, serving.address())))
+                .map(|serving| (serving.as_observation().container_id, serving.address()))
+                .collect();
+            (!addresses.is_empty()).then(|| (service.clone(), addresses))
+        })
+        .collect()
+}
+
 async fn publish_route_acks(
     replicated: &ReplicatedStore,
     machine_id: &MachineId,
@@ -585,7 +719,17 @@ async fn publish_route_acks(
     }
 }
 
-/// Write shared certificate state and concretely reconcile Caddy.
+/// A failed Caddy apply, split by whether Caddy already serves the new config.
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum ApplyError {
+    #[error(transparent)]
+    BeforeServing(caddy::Error),
+    #[error(transparent)]
+    AfterServing(caddy::Error),
+}
+
+/// Write shared certificate state and concretely reconcile Caddy. Without a running
+/// Caddy, the new config serves once the Caddyfile Caddy starts from is written.
 ///
 /// # Errors
 ///
@@ -594,16 +738,25 @@ pub(crate) async fn apply_caddy<A: CaddyAdmin>(
     projection: &IngressProjection,
     config_file: &Path,
     admin: Option<&A>,
-) -> Result<(), caddy::Error> {
+) -> Result<(), ApplyError> {
     write_certificate_files(
         config_file,
         &projection.sites,
         0o600,
         prepare_directory,
         set_ployz_group,
-    )?;
-    caddy::reconcile(projection, config_file, admin).await?;
-    remove_stale_certificate_files(config_file, &projection.sites)?;
+    )
+    .map_err(|error| ApplyError::BeforeServing(error.into()))?;
+    let caddyfile = caddy::load(projection, admin)
+        .await
+        .map_err(ApplyError::BeforeServing)?;
+    caddy::write_caddyfile(config_file, &caddyfile).map_err(if admin.is_some() {
+        ApplyError::AfterServing
+    } else {
+        ApplyError::BeforeServing
+    })?;
+    remove_stale_certificate_files(config_file, &projection.sites)
+        .map_err(|error| ApplyError::AfterServing(error.into()))?;
     Ok(())
 }
 

@@ -106,6 +106,15 @@ impl MachineApiBuilder {
     }
 
     #[must_use]
+    pub(crate) fn with_published_routes(
+        mut self,
+        published: tokio::sync::watch::Receiver<crate::ingress::PublishedRoutes>,
+    ) -> Self {
+        self.service.published_routes = published;
+        self
+    }
+
+    #[must_use]
     pub(crate) fn with_image_ingest(mut self, ingest: Arc<ImageIngest>) -> Self {
         self.service = self.service.with_image_ingest(ingest);
         self

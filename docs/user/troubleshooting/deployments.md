@@ -302,6 +302,40 @@ servers that still see another one as Down. Run it again before you act.
 A `read` or `deploy` token without server access doesn't show this line yet, because Ployz Cloud
 reads for it.
 
+## A server routes a replica at an old address
+
+`web = web-3 routes a copy to 10.210.2.2, which its owner does not report. Check its network.`
+
+`ployz status` prints this when web-3's proxy sends a replica's traffic to an address that the
+server running the replica doesn't report for it. This happens when the replica's address changed,
+or the replica was removed, and web-3 hasn't caught up, so visitors who reach web-3 can fail to
+reach `web`. A server that doesn't answer the check adds no line. For a removed replica, status
+names no server when any server that may have run the replica didn't answer or is Down.
+
+Status skips this check while a deploy is in progress. Right after a deploy or a move, a proxy that
+hasn't caught up can still route a replica that was just removed, so the line can show briefly and
+go away by itself. Run status again before you act.
+
+When status warns that `web-3 has not confirmed what its proxy serves`, one of these happened:
+
+- Web-3's daemon has just started.
+- Web-3 wrote a new proxy config without reaching the proxy.
+- Web-3's proxy restarted, and web-3 hasn't loaded its config into the new proxy yet.
+- Status couldn't read what web-3 routes within 3 seconds, which a slow link between servers can
+  cause.
+
+Until web-3's proxy loads a config web-3 can see, status doesn't check what web-3 routes.
+The warning goes away once the proxy answers, usually within 2 seconds of a daemon restart or
+upgrade. If it stays, web-3's proxy isn't answering its daemon, or web-3 can't load its config
+into the proxy. See [Troubleshooting servers](servers.md).
+
+- **Check web-3's network.** Your servers need UDP port 51820 open between them. See
+  [Troubleshooting servers](servers.md).
+- **Wait for it to catch up.** Once web-3's proxy routes the replica at its current address, the
+  line goes away.
+
+A `read` or `deploy` token without server access doesn't show this line yet.
+
 ## A newer deploy is already serving
 
 `error: web: A newer deploy is already serving my-app-production/web.`
