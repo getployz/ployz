@@ -549,15 +549,22 @@ describe("volume runs", () => {
       ...["fsn-2", "fsn-3"].flatMap((server) => [`04-forget-${server}`, `03-forget-${server}`])]
       .flatMap((id) => Array.from({ length: 6 }, (_, check) => `${id}-wait-${check + 1}`)),
     ...Array.from({ length: 8 }, (_, check) => `01-wait-${check}`),
-    ...["fsn-1", "fsn-2", "fsn-3"].flatMap((server) => [0, 1, 2].flatMap((index) =>
-      Array.from({ length: 119 }, (_, check) => `03-${index}-size-${idOf(server)}-wait-${check + 1}`))),
   ].map((id) => ({ id, handler: () => undefined }));
-  const execute = (runRowId: string, runId = "run-1", steps?: Array<{ id: string; handler: () => object | undefined }>, volume = volumeId, took?: string, attempt = 0) => new InngestTestEngine({
-    function: createRunVolume(new Inngest({ id: "test" }), runEffect),
-    events: [{ name: "volume/run.requested", data: { organizationId, environment: "env-1", volumeId: volume, runId: runRowId, took } }],
-    transformCtx: (ctx) => ({ ...mockCtx(ctx), runId, attempt }),
-    steps: [...(steps ?? []), ...sleeps],
-  }).execute();
+  /**
+   * Only a resize reaches these. The engine rebuilds every mock on each of a run's executions, so giving all 1071 to
+   * every run made the six-hour mirror test take seconds on them alone.
+   */
+  const sizeSleeps = ["fsn-1", "fsn-2", "fsn-3"].flatMap((server) => [0, 1, 2].flatMap((index) =>
+    Array.from({ length: 119 }, (_, check) => ({ id: `03-${index}-size-${idOf(server)}-wait-${check + 1}`, handler: () => undefined }))));
+  const execute = async (runRowId: string, runId = "run-1", steps?: Array<{ id: string; handler: () => object | undefined }>, volume = volumeId, took?: string, attempt = 0) => {
+    const { rows: [row] } = await harness.pool.query<{ kind: string }>("select kind from volume_run where id = $1", [runRowId]);
+    return new InngestTestEngine({
+      function: createRunVolume(new Inngest({ id: "test" }), runEffect),
+      events: [{ name: "volume/run.requested", data: { organizationId, environment: "env-1", volumeId: volume, runId: runRowId, took } }],
+      transformCtx: (ctx) => ({ ...mockCtx(ctx), runId, attempt }),
+      steps: [...(steps ?? []), ...sleeps, ...(row?.kind === "resize" ? sizeSleeps : [])],
+    }).execute();
+  };
   /** Runs the row as Inngest would from the event its request sent, `took` and all. */
   const deliver = (runRowId: string, runId = "run-1") => {
     const event = send.mock.calls.flatMap(([sent]) => [sent].flat()).find((sent) => sent.id === `volume-run-${runRowId}`);
@@ -2180,7 +2187,6 @@ describe("volume runs", () => {
       expect(await rows()).toMatchObject([{ state: "failed", message: "data-fsn-2 could not receive dep-10: disk full" }]);
     });
 
-    // Interim 20 s ceiling while fu-flake-volume-run-mirror-timeout fixes why this runs near 5 s on CI; that fix removes it.
     it("mirror: a pull that never lands gives up after six hours of checks backing off to five minutes", async () => {
       machines[1] = { name: "fsn-2", pool: true, copy: null, pullFault: { target: "dep-10", kind: "stall" } };
       const run = await requested({ kind: "mirror", args: { to: "fsn-2" } });
@@ -2190,7 +2196,7 @@ describe("volume runs", () => {
 
       expect(verbs.filter((verb) => verb === "pull@fsn-2(dep-10)")).toHaveLength(PATIENCE_WAITS.length + 1);
       expect(await rows()).toMatchObject([{ state: "failed", message: "data-fsn-2 has not finished dep-10 after 6h" }]);
-    }, 20_000);
+    });
 
     it("mirror: a pull the 5 s checks started replays none of its checks into the new schedule, so it lands instead of giving up", async () => {
       const run = await requested({ kind: "mirror", args: { to: "fsn-2" } });
