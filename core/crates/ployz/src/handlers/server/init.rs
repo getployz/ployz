@@ -170,9 +170,9 @@ pub(in crate::handlers) fn init(root: &ArgMatches) -> Result<(), Error> {
 
 /// The initial Server is committed but its Ingress Proxy deploy failed.
 pub(crate) fn ingress_incomplete(error: Error, next: String) -> Error {
-    error
-        .context("Server initialized; ingress deployment incomplete.")
-        .hint(Hint::Next(next))
+    let headline =
+        super::super::ingress_headline("Server initialized; ingress deployment incomplete", &error);
+    error.context(headline).hint(Hint::Next(next))
 }
 
 #[cfg(test)]

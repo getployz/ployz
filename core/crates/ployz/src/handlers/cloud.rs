@@ -507,13 +507,15 @@ where
     Ok(ui::emit(&founder_result(&machine, founding)))
 }
 
-/// The first Server's result. Founding it, Cloud deploys the Organization's saved
-/// Environments to it, as Deployments admitted after this returns.
 /// The first Server is enrolled but its Ingress Proxy deploy failed.
 pub(crate) fn ingress_incomplete(error: Error) -> Error {
-    error.context("Server initialized; Ingress deployment incomplete. Rerun the same ployz server add command without --reset, keeping all other options, to reconcile it.")
+    let headline =
+        super::ingress_headline("Server initialized; Ingress deployment incomplete", &error);
+    error.context(format!("{headline} Rerun the same ployz server add command without --reset, keeping all other options, to reconcile it."))
 }
 
+/// The first Server's result. Founding it, Cloud deploys the Organization's saved
+/// Environments to it, as Deployments admitted after this returns.
 fn founder_result(machine: &Machine, founding: bool) -> serde_json::Value {
     let next = founding.then_some("ployz deployment ls");
     if founding {
