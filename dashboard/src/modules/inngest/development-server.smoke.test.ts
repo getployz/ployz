@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect, type WorkerConnection } from "inngest/connect";
 import { Inngest } from "inngest";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createRetireOld } from "#/modules/config-store/retire-old.inngest";
 import { DRAIN_SLOT } from "#/modules/inngest/drain-slot";
 import {
@@ -101,23 +101,34 @@ async function stopProcess(process: ChildProcess | undefined) {
   process.kill("SIGTERM");
   await Promise.race([
     new Promise<void>((resolve) => process.once("exit", () => resolve())),
+    // oxlint-disable-next-line anti-slop/no-real-time-wait-in-tests -- the grace a process that ignores SIGTERM gets before SIGKILL; its exit is raced
     new Promise<void>((resolve) => setTimeout(resolve, 2_000)),
   ]);
   if (process.exitCode === null) process.kill("SIGKILL");
 }
 
-async function waitForRow(
+function waitForRow(
   store: SmokeStore,
   operationId: string,
   predicate: (row: SmokeRow) => boolean,
 ) {
-  const deadline = Date.now() + 30_000;
-  while (Date.now() < deadline) {
+  return vi.waitFor(async () => {
     const row = await store.read(operationId);
     if (row && predicate(row)) return row;
-    await new Promise((resolve) => setTimeout(resolve, 100));
-  }
-  throw new Error(`Inngest smoke row ${operationId} did not reach its target.`);
+    throw new Error(`Inngest smoke row ${operationId} did not reach its target.`);
+  }, { timeout: 30_000, interval: 100 });
+}
+
+// The statuses of the runs an event started, from the development server's GraphQL API: its REST API caches each
+// answer for 15 seconds.
+async function runStatuses(devPort: number, { ids: [eventId] }: { readonly ids: ReadonlyArray<string> }) {
+  const response = await fetch(`http://127.0.0.1:${devPort}/v0/gql`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ query: `{ event(query: { eventId: ${JSON.stringify(eventId)} }) { functionRuns { status } } }` }),
+  });
+  const { data }: { data?: { event?: { functionRuns: ReadonlyArray<{ status: string }> | null } | null } } = await response.json();
+  return data?.event?.functionRuns?.map((run) => run.status) ?? [];
 }
 
 describe("Inngest development server durable smoke", () => {
@@ -370,6 +381,7 @@ describe("Inngest development server durable smoke", () => {
     await change("org-1", "m3", { acceptsServices: true });
     await change("org-2", "m4", { acceptsServices: true });
     await expect.poll(() => ["policy m1", "policy m2", "policy m4"].every((key) => running.has(key)), { timeout: 10_000 }).toBe(true);
+    // oxlint-disable-next-line anti-slop/no-real-time-wait-in-tests -- the development server reports a run the slot holds like one about to start, so only time shows it stays held
     await new Promise((resolve) => setTimeout(resolve, 1_000));
     expect(running.has("policy m3")).toBe(false);
 
@@ -401,12 +413,12 @@ describe("Inngest development server durable smoke", () => {
     worker = await connect({ apps: [{ client: inngest, functions: [run] }],
       gatewayUrl: `ws://127.0.0.1:${started.gatewayPort}/v0/connect`, handleShutdownSignals: [] });
 
-    await inngest.send({ name: "smoke/volume-run", data: { volumeId: "vol-1", runId: "taken" } });
+    const taken = await inngest.send({ name: "smoke/volume-run", data: { volumeId: "vol-1", runId: "taken" } });
     await inngest.send({ name: "smoke/volume-run", data: { volumeId: "vol-2", runId: "kept" } });
     await expect.poll(() => sleeping.size, { timeout: 10_000 }).toBe(2);
     await inngest.send({ name: volumeRunTakenEvent, data: { runId: "taken" } });
     await expect.poll(() => finished.has("kept"), { timeout: 20_000 }).toBe(true);
-    await new Promise((resolve) => setTimeout(resolve, 1_500));
+    await vi.waitFor(async () => expect(await runStatuses(started.devPort, taken)).toEqual(["CANCELLED"]), { timeout: 10_000 });
 
     expect([...finished]).toEqual(["kept"]);
   }, 60_000);
@@ -444,7 +456,7 @@ describe("Inngest development server durable smoke", () => {
       inngest.send(createConfigDeploymentStartedEvent({ organizationId: "org", environmentId, deploymentId, number }));
     await retire("env-1", "same", 2);
     await retire("env-1", "same", 2);
-    await retire("env-2", "superseded", 2);
+    const superseded = await retire("env-2", "superseded", 2);
     await retire("env-3", "elsewhere", 2);
     await retire("env-5", "current", 3);
     await retire("env-6", "unnumbered", 2);
@@ -457,7 +469,7 @@ describe("Inngest development server durable smoke", () => {
     await admit("env-6", "unknown", null);
     const kept = ["current", "elsewhere", "same", "unnumbered"];
     await expect.poll(() => [...finished].sort(), { timeout: 20_000 }).toEqual(kept);
-    await new Promise((resolve) => setTimeout(resolve, 1_500));
+    await vi.waitFor(async () => expect(await runStatuses(started.devPort, superseded)).toEqual(["CANCELLED"]), { timeout: 10_000 });
 
     expect([...finished].sort()).toEqual(kept);
     expect(claimed.sort()).toEqual(["current", "elsewhere", "same", "superseded", "unnumbered"]);
@@ -527,30 +539,23 @@ async function startDevServer() {
   }
 }
 
-async function waitForDevServer(ports: DevServerPorts, process: ChildProcess, output: () => string) {
+function waitForDevServer(ports: DevServerPorts, process: ChildProcess, output: () => string) {
   // The server moves off a port it finds taken, and exits when one is taken between that check and its bind.
   const portTaken = () => /Port conflict|address already in use/.test(output());
-  const deadline = Date.now() + 15_000;
-  while (Date.now() < deadline) {
+  return vi.waitFor(async () => {
     if (portTaken()) return "port taken";
     if (process.exitCode !== null) return `exited with ${process.exitCode}`;
-    try {
-      // Bounded, so a listener that took the port and never answers can't hold the loop.
-      const response = await fetch(`http://127.0.0.1:${ports.devPort}/dev`, { signal: AbortSignal.timeout(1_000) });
-      // Any listener on devPort can answer. Only the server we started reports the gateway ports we gave it, and it
-      // reports the ports it moved to instead when it found ours taken.
-      const { startOpts }: DevServerInfo = await response.json();
-      if (
-        startOpts?.connectGatewayPort === ports.gatewayPort &&
-        startOpts.connectGRPCConfig?.Gateway?.Port === ports.gatewayGrpcPort &&
-        startOpts.connectGRPCConfig.Executor?.Port === ports.executorGrpcPort
-      ) {
-        return "ready";
-      }
-    } catch {
-      // Nothing answers on devPort yet, or what answers is not an Inngest development server.
+    const response = await fetch(`http://127.0.0.1:${ports.devPort}/dev`, { signal: AbortSignal.timeout(1_000) });
+    // Any listener on devPort can answer. Only the server we started reports the gateway ports we gave it, and it
+    // reports the ports it moved to instead when it found ours taken.
+    const { startOpts }: DevServerInfo = await response.json();
+    if (
+      startOpts?.connectGatewayPort === ports.gatewayPort &&
+      startOpts.connectGRPCConfig?.Gateway?.Port === ports.gatewayGrpcPort &&
+      startOpts.connectGRPCConfig.Executor?.Port === ports.executorGrpcPort
+    ) {
+      return "ready";
     }
-    await new Promise((resolve) => setTimeout(resolve, 100));
-  }
-  return "did not become ready";
+    throw new Error("What answers on devPort is not the development server we started.");
+  }, { timeout: 15_000, interval: 100 }).catch(() => "did not become ready");
 }

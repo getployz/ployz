@@ -14,6 +14,7 @@ const snapshot = asTestDouble<EnrollmentSnapshot>()({ assignments: [] });
 /** A Cluster whose connections query waits for the test to answer it, and whose snapshot comes once `observed` resolves. */
 const slowQuery = Effect.gen(function* () {
   const queries = yield* Queue.unbounded<() => void>();
+  const reads = yield* Queue.unbounded<void>();
   let interrupted = 0;
   const layer = (observed: Promise<void>) => makeOrganizationRuntimeLayer(
     () => Effect.callback<void>((resume) => { Queue.offerUnsafe(queries, () => resume(Effect.void)); }).pipe(
@@ -25,12 +26,13 @@ const slowQuery = Effect.gen(function* () {
     connect: async () => asTestDouble<Client>()({
       close: async () => {},
       observeEnrollment: async () => {
+        Queue.offerUnsafe(reads, undefined);
         await observed;
         return snapshot;
       },
     }),
   })));
-  return { layer, queries, interrupted: () => interrupted };
+  return { layer, queries, reads, interrupted: () => interrupted };
 });
 
 it.effect("a join whose connections query takes 12 seconds lets the query finish and reads the Cluster's snapshot", () =>
@@ -62,7 +64,7 @@ it.effect("a Cluster that never answers a join reads unreachable after 10 second
     const query = yield* Queue.take(cluster.queries);
     yield* TestClock.adjust("12 seconds");
     query();
-    yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 0)));
+    yield* Queue.take(cluster.reads);
     yield* TestClock.adjust("10 seconds");
     assert.strictEqual(yield* Fiber.join(joining), "unreachable");
     assert.strictEqual(cluster.interrupted(), 0);

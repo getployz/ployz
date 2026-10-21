@@ -936,7 +936,7 @@ fn plan(matches: &ArgMatches, store: &Store, services: Vec<ServiceName>) -> Resu
                 super::store::word(&change.lifecycle)
             ));
             for row in &change.settings {
-                for line in super::store::changed(row) {
+                for line in super::store::changed(row, &change.settings) {
                     crate::ui::stream(format_args!("  {line}"));
                 }
             }

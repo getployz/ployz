@@ -176,7 +176,7 @@ pub(crate) fn inspect(root: &ArgMatches) -> Result<(), Error> {
         store::domain_list(&domains, service.name.as_str()),
     );
     for change in &view.changes {
-        for line in store::changed(change) {
+        for line in store::changed(change, &view.changes) {
             record.push("staged", line);
         }
     }

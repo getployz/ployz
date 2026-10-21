@@ -1,6 +1,6 @@
 import { generateKeyPairSync, type KeyObject, sign } from "node:crypto";
 import { readFile } from "node:fs/promises";
-import { Cause, Effect, Exit, Random, Schema } from "effect";
+import { Cause, Effect, Exit, Random, Schema, Tracer } from "effect";
 import { Inngest } from "inngest";
 import { afterAll, beforeAll, beforeEach, expect, it, vi } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
@@ -197,13 +197,28 @@ it("stores prep while the host prepares, and reads a check-in without it as read
 const storedProbe = async (ip: string) =>
   (await harness.pool.query("select probe from waiting_server where observed_ip = $1", [ip])).rows[0]?.probe;
 
-const settledTcp = async (ip: string) => {
-  for (let waited = 0; waited < 8000; waited += 20) {
-    const tcp = (await storedProbe(ip))?.tcp;
-    if (tcp !== undefined && tcp["80"].seen !== "pending" && tcp["443"].seen !== "pending") return tcp;
-    await new Promise((resolve) => setTimeout(resolve, 20));
-  }
-  throw new Error(`the probe for ${ip} never settled`);
+const settledTcp = (ip: string) => vi.waitFor(async () => {
+  const tcp = (await storedProbe(ip))?.tcp;
+  if (tcp === undefined || tcp["80"].seen === "pending" || tcp["443"].seen === "pending") throw new Error(`the probe for ${ip} never settled`);
+  return tcp;
+}, { timeout: 8_000, interval: 20 });
+
+const spanEnded = (name: string) => {
+  let resolve = () => {};
+  const ended = new Promise<void>((done) => { resolve = done; });
+  const tracer = Tracer.make({
+    span: (options) => {
+      const span = new Tracer.NativeSpan(options);
+      if (options.name !== name) return span;
+      const end = span.end.bind(span);
+      span.end = (endTime, exit) => {
+        end(endTime, exit);
+        resolve();
+      };
+      return span;
+    },
+  });
+  return { tracer, ended };
 };
 
 const shortenWindow = (ms: number) =>
@@ -363,9 +378,10 @@ it("ignores a connect that finishes after the host moved to another address", as
     await send(token, host, { ip: "127.0.0.2" });
     await harness.runEffect(openProbeSelection(ada, { organizationSlug: "ada", ids: await waitingIds() }));
     await shortenWindow(1_500);
-    expect(await send(token, host, { ip: "127.0.0.2" })).toHaveProperty("probe");
+    const probed = spanEnded("Probe.inbound");
+    expect(await run(checkIn(request(token, host, { ip: "127.0.0.2" })).pipe(Effect.withTracer(probed.tracer)))).toHaveProperty("probe");
     expect(await send(token, host, { ip: "127.0.0.3" })).toHaveProperty("probe");
-    await new Promise((resolve) => setTimeout(resolve, 2_000));
+    await probed.ended;
     const privateRange = { seen: "not_probed", reason: "private_range" };
     expect((await storedProbe("127.0.0.3"))?.tcp).toEqual({ "80": privateRange, "443": privateRange });
   } finally {
@@ -482,14 +498,10 @@ it("reopens all of a selection or none of it when one host's window is still run
   expect(await storedProbe("198.51.100.83")).toBeNull();
 });
 
-const blockedOnRowLocks = async (count: number) => {
-  for (let waited = 0; waited < 5000; waited += 20) {
-    const { rows } = await harness.pool.query("select 1 from pg_stat_activity where wait_event_type = 'Lock' and datname = current_database()");
-    if (rows.length >= count) return;
-    await new Promise((resolve) => setTimeout(resolve, 20));
-  }
-  throw new Error(`fewer than ${count} operations waited on a row lock`);
-};
+const blockedOnRowLocks = (count: number) => vi.waitFor(async () => {
+  const { rows } = await harness.pool.query("select 1 from pg_stat_activity where wait_event_type = 'Lock' and datname = current_database()");
+  if (rows.length < count) throw new Error(`fewer than ${count} operations waited on a row lock`);
+}, { timeout: 5_000, interval: 20 });
 const blockedOnRowLock = () => blockedOnRowLocks(1);
 
 it("won't reopen over a handout a queued check-in committed while the selection waited", async () => {
@@ -532,17 +544,22 @@ it("stamps a handout when it is issued, so a check-in queued behind a long lock 
     await blocker.query("select id from waiting_server for update");
     const checking = send(token, host, { ip });
     await blockedOnRowLock();
-    await new Promise((resolve) => setTimeout(resolve, 11_200));
+    const { rows: [queued] } = await blocker.query<{ at: string }>("select clock_timestamp()::text as at");
     const reopening = harness.runEffect(openProbeSelection(ada, { organizationSlug: "ada", ids }));
     await blockedOnRowLocks(2);
     await blocker.query("commit");
     const handout = handedOut(await checking);
     expect(await reopening).toEqual({ probing: 0 });
     expect(await storedProbe(ip)).toMatchObject({ handout });
+    const { rows: [stamped] } = await harness.pool.query<{ late: boolean }>(
+      "select (probe->>'handedAt')::timestamptz > $1::timestamptz as late from waiting_server where observed_ip = $2",
+      [queued?.at, ip],
+    );
+    expect(stamped?.late).toBe(true);
   } finally {
     blocker.release();
   }
-}, 20_000);
+});
 
 const heapFirstBiggestId = async (token: string) => {
   for (const ip of ["198.51.100.86", "198.51.100.87"]) await send(token, newHost(), { ip });
@@ -774,12 +791,7 @@ it.each([
     await holder.query("begin");
     await holder.query("select 1 from fleet_token where id = $1 for update", [a.id]);
     const refresh = run(Effect.exit(checkIn(request(a.token, moving, { ip: "198.51.100.50" }))));
-    for (let waited = 0; ; waited += 10) {
-      const blocked = await harness.pool.query("select 1 from pg_stat_activity where wait_event_type = 'Lock' and datname = current_database()");
-      if (blocked.rowCount !== 0) break;
-      if (waited > 5000) throw new Error("the refresh never blocked on the token lock");
-      await new Promise((resolve) => setTimeout(resolve, 10));
-    }
+    await blockedOnRowLock();
     expect(await send(b.token, moving, { ip: "198.51.100.51" })).toEqual(wait);
     if (thenRevoke) {
       expect(await run(revokeFleetToken(ada, { organizationSlug: "ada", id: b.id }))).toEqual({ waitingRemoved: 1 });

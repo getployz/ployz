@@ -45,13 +45,9 @@ const blockedCleanupWrites = async () => (await harness.pool.query(
    where datname = current_database() and query like 'insert into "deployment_cleanup"%' and wait_event_type = 'Lock'`,
 )).rowCount;
 
-async function until(condition: () => Promise<boolean> | boolean) {
-  const deadline = Date.now() + 10_000;
-  while (!await condition()) {
-    if (Date.now() > deadline) throw new Error("the condition never held");
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
-}
+const until = (condition: () => Promise<boolean> | boolean) => vi.waitFor(async () => {
+  if (!await condition()) throw new Error("the condition never held");
+}, { timeout: 10_000, interval: 10 });
 
 it("never rewrites how a run ended, and lets a newer run of the same Deployment take the row", async () => {
   await harness.runEffect(recordCleanupWaiting("first", requested("rerun")));

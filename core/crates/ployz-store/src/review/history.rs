@@ -241,7 +241,8 @@ pub(crate) fn stage(
         return Err(error::confirmation_required(
             format!(
                 "This History action overwrites draft changes to {}",
-                prepared.overwritten().join(", ")
+                NodeChange::shown_paths(&reviewed.view.review_changes(), prepared.overwritten())
+                    .join(", ")
             ),
             json!({ "history_preview": preview_of(&environment, &reviewed, &prepared, &query) }),
         ));
