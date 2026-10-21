@@ -575,8 +575,6 @@ pub fn local_runtime(data_dir: &Path) -> MachineRuntime {
     }
 }
 
-/// The filesystem Corrosion keeps its store on, or the data directory's before the
-/// store exists.
 fn store_filesystem(data_dir: &Path) -> Option<String> {
     let store = crate::corrosion::CorrosionPaths::data_dir_under(data_dir);
     let stat = match rustix::fs::statfs(&store) {

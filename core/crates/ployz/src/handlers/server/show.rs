@@ -112,8 +112,6 @@ fn daemon_skew_warning(machines: &[MachineObservation], cli_version: &str) -> Op
 const POWER_CUT_STORES: [(&str, &str); 3] =
     [("zfs", "ZFS"), ("btrfs", "Btrfs"), ("tmpfs", "tmpfs")];
 
-/// The filesystem a Server keeps its state on, named as a person knows it when it can
-/// lose its last changes in a power cut.
 fn power_cut_store(runtime: &MachineRuntime) -> Option<&'static str> {
     let filesystem = runtime.store_filesystem.as_deref()?;
     POWER_CUT_STORES
@@ -153,7 +151,6 @@ fn power_cut_warning(machines: &[MachineObservation]) -> Option<String> {
     }
 }
 
-/// `a`, `a and b`, `a, b and c`.
 fn prose_list<'item>(items: impl IntoIterator<Item = &'item str>, conjunction: &str) -> String {
     let items = items.into_iter().collect::<Vec<_>>();
     match items.split_last() {
