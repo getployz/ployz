@@ -387,7 +387,7 @@ mod tests {
         time::Duration,
     };
 
-    use axum::{Router, body::Body, routing::post};
+    use axum::{Router, body::Body, response::IntoResponse, routing::post};
     use bytes::Bytes;
     use tokio::{net::TcpListener, sync::mpsc};
     use tokio_stream::wrappers::UnboundedReceiverStream;
@@ -473,6 +473,57 @@ mod tests {
         assert!(
             matches!(error, super::Error::Io(ref error) if error.kind() == std::io::ErrorKind::TimedOut),
             "{error}"
+        );
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn a_burst_of_queries_stays_under_corrosions_load_shed_limit() {
+        const CORROSION_ROUTE_LIMIT: usize = 128;
+        let in_flight = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server_in_flight = in_flight.clone();
+        let server = tokio::spawn(async move {
+            axum::serve(
+                listener,
+                Router::new().route(
+                    "/v1/queries",
+                    post(move || {
+                        let in_flight = server_in_flight.clone();
+                        async move {
+                            use std::sync::atomic::Ordering;
+                            let now = in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+                            let response = if now > CORROSION_ROUTE_LIMIT {
+                                (
+                                    axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                                    "max concurrency limit reached",
+                                )
+                                    .into_response()
+                            } else {
+                                tokio::time::sleep(Duration::from_millis(20)).await;
+                                "{\"columns\":[\"x\"]}\n{\"eoq\":{\"time\":0.0}}\n".into_response()
+                            };
+                            in_flight.fetch_sub(1, Ordering::SeqCst);
+                            response
+                        }
+                    }),
+                ),
+            )
+            .await
+            .unwrap();
+        });
+        let client = ApiClient::new(address, &"a".repeat(64)).unwrap();
+        let results = futures_util::future::join_all(
+            (0..3 * CORROSION_ROUTE_LIMIT).map(|_| client.query(Statement::new("SELECT x", []))),
+        )
+        .await;
+        let failures = results.iter().filter(|result| result.is_err()).count();
+        assert_eq!(
+            failures,
+            0,
+            "{:?}",
+            results.into_iter().find_map(Result::err)
         );
         server.abort();
     }
