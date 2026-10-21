@@ -24,7 +24,10 @@ use ployzd::{
     management::ManagementConfig,
     runtime_unit::UnitSupervision,
 };
-use tokio::io::{AsyncWriteExt, copy, stdin, stdout};
+use tokio::{
+    io::{AsyncRead, AsyncWrite, AsyncWriteExt, copy, stdin, stdout},
+    net::UnixStream,
+};
 
 const DIAL_STDIO_SOCKET_TIMEOUT: Duration = Duration::from_secs(20);
 
@@ -335,26 +338,86 @@ fn install_request(
 
 async fn dial_stdio(path: &Path) -> io::Result<()> {
     let stream = wait_until_socket_accepts(path, DIAL_STDIO_SOCKET_TIMEOUT).await?;
+    bridge(stdin(), stdout(), stream).await
+}
+
+async fn bridge(
+    mut input: impl AsyncRead + Unpin,
+    mut output: impl AsyncWrite + Unpin,
+    stream: UnixStream,
+) -> io::Result<()> {
     let (mut socket_read, mut socket_write) = stream.into_split();
-    let input = async {
-        copy(&mut stdin(), &mut socket_write).await?;
+    let forward = async {
+        copy(&mut input, &mut socket_write).await?;
         socket_write.shutdown().await
     };
-    let output = async {
-        copy(&mut socket_read, &mut stdout()).await?;
-        stdout().flush().await
+    let back = async {
+        copy(&mut socket_read, &mut output).await?;
+        output.flush().await
     };
-    tokio::try_join!(input, output).map(|_| ())
+    tokio::try_join!(forward, back).map(|_| ())
 }
 
 #[cfg(test)]
 mod tests {
     use ployzd::network::NetworkError;
+    use tokio::{
+        io::{AsyncReadExt, duplex},
+        net::UnixListener,
+    };
 
     use super::*;
 
     fn release(value: &str) -> MachineRelease {
         MachineRelease::parse(value).unwrap()
+    }
+
+    async fn bridged(
+        input: impl AsyncRead + Unpin,
+        daemon: impl AsyncFnOnce(UnixStream),
+    ) -> Vec<u8> {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ployz.sock");
+        let listener = UnixListener::bind(&path).unwrap();
+        let (output, mut client_output) = duplex(64);
+        let stream = UnixStream::connect(&path).await.unwrap();
+        let daemon = async {
+            let (socket, _) = listener.accept().await.unwrap();
+            daemon(socket).await;
+        };
+        let bridged = tokio::time::timeout(Duration::from_secs(5), bridge(input, output, stream));
+        let ((), bridged) = tokio::join!(daemon, bridged);
+        bridged
+            .expect("bridge outlived the daemon's socket")
+            .unwrap();
+        let mut seen = Vec::new();
+        client_output.read_to_end(&mut seen).await.unwrap();
+        seen
+    }
+
+    #[tokio::test]
+    async fn bridge_ends_when_the_daemon_closes_while_stdin_stays_open() {
+        let (_client_input, input) = duplex(64);
+        let seen = bridged(input, async |mut socket: UnixStream| {
+            socket.write_all(b"reply").await.unwrap();
+        })
+        .await;
+        assert_eq!(seen, b"reply");
+    }
+
+    #[tokio::test]
+    async fn bridge_returns_the_reply_sent_after_stdin_closes() {
+        let (mut client_input, input) = duplex(64);
+        client_input.write_all(b"request").await.unwrap();
+        drop(client_input);
+        let seen = bridged(input, async |mut socket: UnixStream| {
+            let mut request = Vec::new();
+            socket.read_to_end(&mut request).await.unwrap();
+            assert_eq!(request, b"request");
+            socket.write_all(b"reply").await.unwrap();
+        })
+        .await;
+        assert_eq!(seen, b"reply");
     }
 
     #[test]
