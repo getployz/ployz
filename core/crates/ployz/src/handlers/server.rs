@@ -38,7 +38,7 @@ mod endpoint;
 pub(super) mod enroll;
 pub(super) mod forget;
 mod helpers;
-mod init;
+pub(crate) mod init;
 pub(super) mod reject;
 mod remove;
 mod show;
@@ -868,13 +868,11 @@ async fn apply_update(
 }
 
 /// A committed Server change whose Ingress Proxy follow-up failed: name it and the exact rerun.
-/// A failed deploy's own sentence names what its Container did, so it stays on the
-/// headline; the one `cause:` line is then the Container's last line.
 pub(crate) fn ingress_incomplete(committed: &str, error: Error, next: String) -> Error {
-    let headline = match error.diagnostic() {
-        Some(_) => format!("{committed}; the Ingress Proxy did not follow: {error}"),
-        None => format!("{committed}; the Ingress Proxy did not follow."),
-    };
+    let headline = super::ingress_headline(
+        &format!("{committed}; the Ingress Proxy did not follow"),
+        &error,
+    );
     error.context(headline).hint(Hint::Next(next))
 }
 

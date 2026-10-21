@@ -516,6 +516,16 @@ fn recovery_command(matches: &ArgMatches, context: &str, command: &[&str]) -> St
     shell_words::join(args)
 }
 
+/// The headline for a committed step whose Ingress Proxy deploy failed. A failed deploy's
+/// own sentence names what its Container did, so it stays on the headline; the one
+/// `cause:` line is then the Container's last line.
+pub(crate) fn ingress_headline(stem: &str, error: &Error) -> String {
+    match error.diagnostic() {
+        Some(_) => format!("{stem}: {error}"),
+        None => format!("{stem}."),
+    }
+}
+
 /// Direct ingress diagnostics acquire their command scope before committed output is serialized.
 pub(crate) fn ingress_hints(mut error: Error, command: impl Fn(&[&str]) -> String) -> Error {
     let Some(diagnostic) = error.diagnostic() else {
