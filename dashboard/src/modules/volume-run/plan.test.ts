@@ -207,6 +207,39 @@ describe("plan_from_copies_table", () => {
     });
   });
 
+  it.each([["move", move("fsn-3")], ["mirror", mirror("fsn-3")]])("names an old copy's removal with --if-old-copy when a %s finds one on a third Server", (_, input) => {
+    expect(planFromCopies(input, [member("fsn-1", "writer"), member("fsn-2", "old"), member("fsn-3", "empty")])).toEqual({
+      ok: false,
+      refusal: { code: "second_mirror", message: "data already has a copy on fsn-2, data-fsn-2", next: "ployz volume mirror rm data-fsn-2 --if-old-copy" },
+    });
+  });
+
+  it("refuses a delete admitted for an old copy once its slot holds the mirror, and deletes nothing", () => {
+    const oldCopy = (slot: string): PlanInput => ({ kind: "delete_mirror", args: { slot, confirmed_name: null, role: "old_copy" }, ...data });
+    expect(planFromCopies(oldCopy("fsn-2"), [member("fsn-1", "writer"), member("fsn-2", "mirror")])).toEqual({
+      ok: false,
+      refusal: { code: "role_changed", message: "data-fsn-2 is no longer an old copy, so nothing was deleted" },
+    });
+    expect(outcome(oldCopy("fsn-2"), [member("fsn-1", "writer"), member("fsn-2", "old")])).toBe("delete fsn-2 forget fsn-1");
+    expect(outcome(remove("fsn-2"), [member("fsn-1", "writer"), member("fsn-2", "mirror")])).toBe("delete fsn-2 forget fsn-1");
+    expect(outcome(remove("fsn-2"), [member("fsn-1", "writer"), member("fsn-2", "old")])).toBe("delete fsn-2 forget fsn-1");
+  });
+
+  it("leaves a slot whose Server reports no role to that Server's own check", () => {
+    const { role: _, ...unreported } = COPIES.mirror;
+    const silent: Member = { machine: member("fsn-2", "mirror").machine, address: "fdcc::1", answered: true, view: { copy: unreported }, floorless: false };
+    const input: PlanInput = { kind: "delete_mirror", args: { slot: "fsn-2", confirmed_name: null, role: "old_copy" }, ...data };
+    expect(outcome(input, [member("fsn-1", "writer"), silent])).toBe("delete fsn-2 forget fsn-1");
+  });
+
+  it("keeps --if-old-copy in the only-copy refusal of a delete admitted for an old copy", () => {
+    const input: PlanInput = { kind: "delete_mirror", args: { slot: "fsn-2", confirmed_name: null, role: "old_copy" }, ...data };
+    expect(planFromCopies(input, [member("fsn-2", "old")])).toEqual({
+      ok: false,
+      refusal: { code: "confirm_required", message: "data-fsn-2 is data's only copy; volume mirror rm data-fsn-2 --if-old-copy --confirm data" },
+    });
+  });
+
   it("names release, not the removal mirror rm refuses, when a move from a stopped cut finds a copy on a third Server", () => {
     expect(planFromCopies(move("fsn-3"), [member("fsn-1", "cut"), member("fsn-2", "mirror"), member("fsn-3", "empty")])).toEqual({
       ok: false,

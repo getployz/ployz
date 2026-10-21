@@ -43,7 +43,7 @@ import { readCliServerDrain } from "#/modules/machines/server-drain.server";
 import { freshApproval, freshOperationDigest, planClean } from "#/modules/machines/server-operations.server";
 import { readCliServerUpgrade } from "#/modules/server-upgrade/server-upgrade.server";
 import { type Admission, REQUEST_KEY_HEADER, requestKeyOf } from "#/modules/operations/keyed.server";
-import { DrainServer, ForgetServer, ForgetServers, NewVolumeRun, RemoveServer, SyncVolume, UpgradeServer } from "#/modules/operations/cli-wire";
+import { DrainServer, ForgetServer, ForgetServers, NewVolumeRun, RemoveServer, SyncVolume, UpgradeServer, volumeRunInput } from "#/modules/operations/cli-wire";
 import { OPERATIONS } from "#/modules/operations/operations";
 import { cleanNamespace, drainServer, forgetServer, removeServer, runVolume, unheld, upgradeServer } from "#/modules/operations/operations.server";
 import { removeOrganization } from "#/modules/organization/organization-removal.server";
@@ -51,7 +51,6 @@ import { CreateOrganization } from "#/modules/organization/organization-state";
 import { createOrganizationForSession } from "#/modules/organization/organization-state.server";
 import { slugifySegment } from "#/utils/slug";
 import { NotFound, Validation } from "#/server/public-error";
-import type { VolumeRunInput } from "#/modules/volume-run/volume-run";
 import { getVolumeRun, listVolumeRuns } from "#/modules/volume-run/volume-run.server";
 import { refreshMirror } from "#/modules/volume-copies/volume-copies.refresh.server";
 
@@ -116,25 +115,6 @@ function enrollInput(body: typeof EnrollServers.Type): EnrollInput {
 }
 
 const isUpgradeAttemptId = (id: string | undefined): id is string => id !== undefined && /^[0-9a-f]{32}$/.test(id);
-
-function volumeRunInput(body: typeof NewVolumeRun.Type): VolumeRunInput {
-  switch (body.kind) {
-    case "mirror":
-      return { kind: "mirror", args: { to: body.to } };
-    case "sync":
-      return { kind: "sync", args: { full: true } };
-    case "delete_mirror":
-      return { kind: "delete_mirror", args: { slot: body.slot ?? null, confirmed_name: body.confirm ?? null, role: "any" } };
-    case "move":
-      return { kind: "move", args: { to: body.to } };
-    case "release":
-      return { kind: "release", args: {} };
-    case "restore":
-      return { kind: "restore", args: { from: body.from } };
-    case "resize":
-      return { kind: "resize", args: { maximum_bytes: body.maximum_bytes } };
-  }
-}
 
 // The CLI reads a bare 404 as an unsupported route, so a missing Volume or run answers as a refusal.
 const missingRefusal = (message: string) => refusal({ code: "not_found", message, details: null });

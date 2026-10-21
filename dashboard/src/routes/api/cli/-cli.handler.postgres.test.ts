@@ -631,6 +631,7 @@ const cliVolumeRunBodies: ReadonlyArray<CliBody> = [
   { environment: { project: "shop", environment: "production" }, kind: "mirror", to: "web-2" },
   { environment: { project: "shop", environment: "production" }, kind: "sync", full: true },
   { environment: { project: "shop", environment: "production" }, kind: "delete_mirror", slot: "web-2", confirm: "data" },
+  { environment: { project: "shop", environment: "production" }, kind: "delete_old_copy", slot: "web-2" },
   { environment: { project: "shop", environment: "production" }, kind: "move", to: "web-2" },
   { environment: { project: "shop", environment: "production" }, kind: "release" },
   { environment: { project: "shop", environment: "production" }, kind: "restore", from: "web-2" },
@@ -1565,7 +1566,12 @@ it.live(
           [403, "This token's grant doesn't include services:control."]);
         assert.deepStrictEqual(refusedWith(yield* cli("POST", "volumes/vol-1/sync", { bearer: deployer.secret }, { environment: production })),
           [403, "This token can deploy only to staging."]);
-        for (const body of cliVolumeRunBodies.filter(({ kind }) => kind !== "delete_mirror")) {
+        const deletes = ({ kind }: CliBody) => kind === "delete_mirror" || kind === "delete_old_copy";
+        for (const body of cliVolumeRunBodies.filter(deletes)) {
+          assert.deepStrictEqual(refusedWith(yield* cli("POST", "volumes/vol-1/runs", { bearer: reader }, body)),
+            [403, "This token's grant doesn't include volumes:delete-copy."], JSON.stringify(body));
+        }
+        for (const body of cliVolumeRunBodies.filter((body) => !deletes(body))) {
           assert.deepStrictEqual(refusedWith(yield* cli("POST", "volumes/vol-1/runs", { bearer: reader }, body)),
             [403, "This token's grant doesn't include services:control."], JSON.stringify(body));
           assert.deepStrictEqual(refusedWith(yield* cli("POST", "volumes/vol-1/runs", { bearer: deployer.secret }, body)),
