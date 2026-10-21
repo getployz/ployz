@@ -289,6 +289,7 @@ fn leave(root: &ArgMatches, removal: Removal) -> Result<(), Error> {
     runtime.block_on(async {
         let mut reset_failure = None;
         let mut cloud_released = None;
+        let mut cloud_kept = None;
 
         // TODO: do not reroute away from the current entry before removal.
         if let (Some(credential), Some(id)) = (&cloud, &run) {
@@ -297,6 +298,7 @@ fn leave(root: &ArgMatches, removal: Removal) -> Result<(), Error> {
             if let Release::Kept { reason } = &removed.release {
                 crate::ui::warn(format!("Cloud keeps its hold on the Cluster: {reason}"));
             }
+            cloud_kept = Some(matches!(removed.release, Release::Kept { .. }));
             cloud_released = Some(removed.release == Release::Released);
         } else if removal == Removal::Forget {
             client
@@ -337,7 +339,15 @@ fn leave(root: &ArgMatches, removal: Removal) -> Result<(), Error> {
             crate::ui::stream("Cloud let go of the Cluster: this Organization has no Server now. Its Environments keep their config; nothing runs until you add a Server.");
             crate::ui::hint(&Hint::Next("ployz server add".into()));
         }
-        if let Some(reason) = &reset_failure {
+        if let Some(reason) = &reset_failure
+            && cloud_kept == Some(false)
+        {
+            // Cloud lets go only of a Server the Cluster already forgot, so only its reset is in doubt.
+            crate::ui::warn(crate::ui::then_sentence(
+                &format!("Cloud let go of Server {}, but {reason}", selected.name),
+                "Reset does not erase volume data.",
+            ));
+        } else if let Some(reason) = &reset_failure {
             crate::ui::warn(crate::ui::then_sentence(
                 &crate::ui::with_reason(
                     format_args!("Server {} was not fully cleaned up or reset", selected.name),
@@ -368,6 +378,7 @@ fn leave(root: &ArgMatches, removal: Removal) -> Result<(), Error> {
             "data_loss": observed.data_loss,
             "under_replicated": replicated_services,
             "cloud_released": cloud_released,
+            "cloud_kept": cloud_kept,
             "next": (cloud_released == Some(true)).then_some("ployz server add"),
         }))?;
         let config = options.load_or_empty_config().map_err(|error| Error::from(error).context("Server removed; local context cleanup failed."))?;

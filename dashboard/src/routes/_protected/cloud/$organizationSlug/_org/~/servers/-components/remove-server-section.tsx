@@ -14,6 +14,7 @@ import {
 } from "#/modules/machines/machine-removal.functions";
 import { withMissingDataLossIdentities, type DataLossList } from "#/modules/runtime/data-loss-confirm";
 import type { DataLossIdentity } from "#/modules/runtime/data-loss-identity";
+import { removedToast } from "./removed-toast";
 import { removalFailureMessage, type MachineRemoveResult } from "#/modules/machines/machine-removal";
 import type { RuntimeMachineRecord } from "#/modules/runtime/runtime.collection";
 import { RowWarning } from "#/components/settings/row-warning";
@@ -132,13 +133,10 @@ export function RemoveServerSection({ machine, organizationSlug, last, offline, 
               () => abort.signal.aborted || !stillHere());
             if (result === "aborted") return;
             if ("release" in result) {
-              const { release } = result;
-              if (release.kind === "kept") toast.warning(`${machine.name} left the cluster. Cloud keeps its hold: ${release.reason}`);
-              else if (release.kind === "released") {
-                clusterReleased();
-                toast(`${machine.name} removed. Add a server to deploy again.`);
-              }
-              else toast(`${machine.name} removed`);
+              if (result.release.kind === "released") clusterReleased();
+              const { warning, message } = removedToast(machine.name, result);
+              if (warning) toast.warning(message);
+              else toast(message);
               void navigate({ to: "/cloud/$organizationSlug/~/servers", params: { organizationSlug } });
               return;
             }

@@ -33,7 +33,7 @@ import type { TokenGrant } from "#/modules/identity/token-grant";
 import { Auth, AuthLive } from "#/server/auth.server";
 import { githubInstallation, githubRepositoryCache, organizationGithubInstallation } from "#/modules/github/tables";
 import { member, session as sessionTable, user } from "#/modules/identity/tables";
-import { machineRemoveAttempt, organizationMachine } from "#/modules/machines/tables";
+import { machineRemoveAttempt, organizationMachine, serverAccess } from "#/modules/machines/tables";
 import {
   completeMachineRemoveAttemptActivity,
   prepareMachineRemoveAttemptActivity,
@@ -1310,6 +1310,89 @@ it.live(
         const release = yield* releaseServerActivity({ ...removal, ...removed });
         assert.strictEqual(release.kind, "kept");
       }).pipe(Effect.provide(cloud));
+    }),
+  60_000,
+);
+
+/**
+ * A retried removal whose Server the Cluster already forgot: the SDK answers removed with this warning (ployz
+ * `RESET_UNCONFIRMED`), and the Server keeps one device key. `others` Servers of the same pairing stay enrolled.
+ */
+const removeForgottenServer = Effect.fn(function* (others: readonly MachineId[]) {
+  const alice = yield* signUp("alice");
+  const caller = yield* resolveCaller(signedIn(alice));
+  const organizationId = caller.organization.id;
+  yield* enrollStoreServer(organizationId);
+  const machineId = ids.machineId("0");
+  const { drizzle } = yield* Database;
+  const encryption = yield* SecretEncryption;
+  const [enrolled] = yield* drizzle.select().from(organizationMachine);
+  if (!enrolled) return assert.fail("no Server enrolled");
+  for (const other of others) {
+    yield* drizzle.insert(organizationMachine).values({
+      ...enrolled, machineId: other, isDialEntry: false, encryptedCapability: encryption.encrypt(`ployz1:${other}`),
+    });
+  }
+  yield* drizzle.insert(serverAccess).values({
+    organizationId, machineId, credentialId: crypto.randomUUID(), credentialKind: "session", userId: caller.userId,
+    encryptedCapability: encryption.encrypt("ployz1:cli"),
+  });
+  const connected = asTestDouble<PloyzSession>()({
+    watchFirstFrame: () => Effect.fail(new RuntimeConnectionFailure({ cause: "timed out" })),
+    removeMachine: () => Effect.succeed({ reset_warning: "its reset couldn't be confirmed: it was already gone from the Cluster" }),
+  });
+  const runtime = { cancel: () => Effect.void, open: () => Effect.succeed({ status: "connected" as const, connected }) };
+  const removal = { organizationId, machineId, serverName: null, confirmDataLoss: [], noReset: false };
+  const attempt = yield* requestMachineRemoveAttempt({ ...removal, requestedByUserId: caller.userId });
+  const inngestRunId = "run-forgotten";
+  yield* prepareMachineRemoveAttemptActivity({ attemptId: attempt.id, inngestRunId, now: new Date() });
+  const removed = yield* Effect.scoped(removeMachineActivity({ ...removal, id: attempt.id, inngestRunId }))
+    .pipe(Effect.provideService(OrganizationRuntime, runtime));
+  if (removed.kind !== "removed") return assert.fail(`not removed: ${removed.kind}`);
+  const release = yield* releaseServerActivity({ ...removal, ...removed });
+  yield* completeMachineRemoveAttemptActivity({
+    attemptId: attempt.id, inngestRunId, now: new Date(),
+    completion: { state: "succeeded", result: { resetWarning: removed.resetWarning, release } },
+  });
+  const [settled] = yield* drizzle.select().from(machineRemoveAttempt).where(eq(machineRemoveAttempt.id, attempt.id));
+  return {
+    settled,
+    servers: (yield* drizzle.select().from(organizationMachine)).map((row) => row.machineId).sort(),
+    keys: (yield* drizzle.select().from(serverAccess)).map((row) => row.machineId),
+    pairings: (yield* drizzle.select().from(organizationPairing)).length,
+  };
+});
+
+it.live(
+  "a Server already gone from the Cluster loses Cloud's row and its device keys while other Servers keep the Cluster",
+  () =>
+    Effect.gen(function* () {
+      const cloud = yield* cloudServices();
+      const other = ids.machineId("1");
+      const after = yield* removeForgottenServer([other]).pipe(Effect.provide(cloud));
+      assert.strictEqual(after.settled?.state, "succeeded");
+      assert.deepStrictEqual(after.settled?.result, {
+        resetWarning: "its reset couldn't be confirmed: it was already gone from the Cluster",
+        release: { kind: "others_remain" },
+      });
+      assert.deepStrictEqual(after.servers, [other]);
+      assert.deepStrictEqual(after.keys, []);
+      assert.strictEqual(after.pairings, 1);
+    }),
+  60_000,
+);
+
+it.live(
+  "the last Server already gone from the Cluster keeps Cloud's hold, as its reset couldn't be confirmed",
+  () =>
+    Effect.gen(function* () {
+      const cloud = yield* cloudServices();
+      const after = yield* removeForgottenServer([]).pipe(Effect.provide(cloud));
+      assert.strictEqual(after.settled?.state, "succeeded");
+      assert.strictEqual(after.settled?.result?.release.kind, "kept");
+      assert.deepStrictEqual(after.servers, [ids.machineId("0")]);
+      assert.deepStrictEqual(after.keys, [ids.machineId("0")]);
+      assert.strictEqual(after.pairings, 1);
     }),
   60_000,
 );
