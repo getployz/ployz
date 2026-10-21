@@ -829,7 +829,8 @@ pub enum DeployWarning {
         reason: String,
     },
     /// Cleanup could not reach or confirm `machine` (cut off or powered off).
-    /// Once it is back, a copy left running can answer beside the new copies.
+    /// Once it is back, it takes its replaced copies out of traffic if it can
+    /// confirm the new ones, but they keep running until the next Deploy.
     MixedAfterReturn {
         /// The Machine's name when the plan knows it, else its id.
         machine: String,
@@ -920,7 +921,7 @@ impl Display for DeployWarning {
             ),
             Self::MixedAfterReturn { machine } => write!(
                 f,
-                "Once {machine} is back, a copy left running can answer beside the new copies, and a left worker still takes jobs, until the next deploy."
+                "Once {machine} is back, it takes its replaced copies out of traffic if it can confirm the new ones. They keep running, and a left worker still takes jobs, until the next deploy."
             ),
         }
     }

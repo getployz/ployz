@@ -175,3 +175,82 @@ async fn one_store_read_serves_every_service_of_a_deploy() {
     assert_eq!(*client.store_reads.lock().unwrap(), 1);
     client.assert_done();
 }
+
+#[tokio::test]
+async fn another_service_or_namespace_in_the_store_leaves_the_gen_alone() {
+    let (live, other) = (machine('1'), machine('2'));
+    let (worker, foreign, new) = (container('a'), container('b'), container('c'));
+    let plan = vec![run(&live, spec(None, None, None), true)];
+    let client = Scripted {
+        store: Store::Copies,
+        ..Scripted::new(vec![created(
+            Call::Run(live, ContainerKind::ServiceContainer),
+            &new,
+        )])
+    }
+    .with_copy_at(
+        &QualifiedService::new(test_namespace(), ServiceName::parse("worker").unwrap()),
+        &other,
+        &worker,
+        CopyRotation::In,
+        Gen::new(7),
+    )
+    .with_copy_at(
+        &QualifiedService::new(
+            Namespace::parse("other-ns").unwrap(),
+            ServiceName::parse("api").unwrap(),
+        ),
+        &other,
+        &foreign,
+        CopyRotation::In,
+        Gen::new(9),
+    );
+
+    let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
+
+    assert!(
+        matches!(outcome, DeployOutcome::Success { .. }),
+        "{outcome:?}"
+    );
+    assert_eq!(new_gen(&client, &new), Gen::FIRST);
+    client.assert_done();
+}
+
+#[tokio::test(start_paused = true)]
+async fn cancelling_ends_a_wait_on_a_silent_store_and_starts_nothing() {
+    let live = machine('1');
+    let plan = vec![run(&live, spec(None, None, None), true)];
+    let client = Scripted {
+        store: Store::Silent,
+        ..Scripted::new(Vec::new())
+    };
+    let cancellation = CancellationToken::new();
+    let cancel = cancellation.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        cancel.cancel();
+    });
+    let started = tokio::time::Instant::now();
+
+    let outcome = execute_with(&plan, &client, &cancellation).await;
+
+    assert!(
+        matches!(
+            &outcome,
+            DeployOutcome::Failed {
+                failed: FailedOperation::Operation {
+                    error: ExecutionError::Cancelled,
+                    ..
+                },
+                ..
+            }
+        ),
+        "{outcome:?}"
+    );
+    assert!(
+        started.elapsed() < STORED_GENS_WAIT,
+        "{:?}",
+        started.elapsed()
+    );
+    client.assert_done();
+}

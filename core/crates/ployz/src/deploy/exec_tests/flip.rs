@@ -1432,7 +1432,7 @@ pub(super) fn left_running(machine: &str, reason: &str) -> String {
 
 fn mixed_after_return(machine: &str) -> String {
     format!(
-        "Once {machine} is back, a copy left running can answer beside the new copies, and a left worker still takes jobs, until the next deploy."
+        "Once {machine} is back, it takes its replaced copies out of traffic if it can confirm the new ones. They keep running, and a left worker still takes jobs, until the next deploy."
     )
 }
 

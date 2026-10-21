@@ -268,7 +268,7 @@ the deploy keeps the new replicas, leaves the old one running there, exits 3, an
 web-2 was already down as the deploy started:
 
 ```text
-! Once web-2 is back, a copy left running can answer beside the new copies, and a left worker still takes jobs, until the next deploy.
+! Once web-2 is back, it takes its replaced copies out of traffic if it can confirm the new ones. They keep running, and a left worker still takes jobs, until the next deploy.
 ```
 
 When web-2 stopped answering during the deploy:

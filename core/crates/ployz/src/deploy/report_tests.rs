@@ -1127,7 +1127,7 @@ fn a_machine_away_during_cleanup_is_named_once_under_the_copies_left_on_it() {
             .expect("at least three lines shown"),
         [
             "! shop/web left running on machine-3 (proxy on machine-3 did not confirm). The next deploy cleans it up.",
-            "! Once machine-3 is back, a copy left running can answer beside the new copies, and a left worker still takes jobs, until the next deploy.",
+            "! Once machine-3 is back, it takes its replaced copies out of traffic if it can confirm the new ones. They keep running, and a left worker still takes jobs, until the next deploy.",
             "! shop/web left running on machine-3 (proxy on machine-3 did not confirm). The next deploy cleans it up.",
         ]
     );

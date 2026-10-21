@@ -1948,6 +1948,7 @@ impl<'a> Rows<'a> {
         &self,
         client: &C,
         service: &QualifiedService,
+        cancellation: &CancellationToken,
     ) -> Result<Gen, ExecutionError> {
         let mut gens = self.gens.lock().await;
         if let Some(r#gen) = gens.get(service) {
@@ -1957,7 +1958,11 @@ impl<'a> Rows<'a> {
             .service_containers(service)
             .await
             .map_err(|error| machine_error(MachineAction::ListContainers, error))?;
-        let stored = self.stored_gens(client).await.get(service).copied();
+        let stored = self
+            .stored_gens(client, cancellation)
+            .await?
+            .get(service)
+            .copied();
         let highest = copies
             .iter()
             .filter(|copy| copy.kind == ContainerKind::ServiceContainer)
@@ -1976,13 +1981,31 @@ impl<'a> Rows<'a> {
     async fn stored_gens<C: MachineOperations>(
         &self,
         client: &C,
-    ) -> &BTreeMap<QualifiedService, Gen> {
+        cancellation: &CancellationToken,
+    ) -> Result<&BTreeMap<QualifiedService, Gen>, ExecutionError> {
         self.stored_gens
-            .get_or_init(|| async {
-                let Ok(Ok(containers)) =
-                    tokio::time::timeout(STORED_GENS_WAIT, client.replicated_containers()).await
-                else {
-                    return BTreeMap::new();
+            .get_or_try_init(|| async {
+                let read = tokio::select! {
+                    biased;
+                    () = cancellation.cancelled() => return Err(ExecutionError::Cancelled),
+                    read = tokio::time::timeout(STORED_GENS_WAIT, client.replicated_containers()) => read,
+                };
+                let containers = match read {
+                    Ok(Ok(containers)) => containers,
+                    Ok(Err(error)) => {
+                        tracing::warn!(
+                            error = %error.message,
+                            "couldn't read the entry Machine's store; new gens follow the live answers only"
+                        );
+                        return Ok(BTreeMap::new());
+                    }
+                    Err(_) => {
+                        tracing::warn!(
+                            wait = ?STORED_GENS_WAIT,
+                            "the entry Machine's store didn't answer in time; new gens follow the live answers only"
+                        );
+                        return Ok(BTreeMap::new());
+                    }
                 };
                 let mut highest = BTreeMap::new();
                 for copy in containers
@@ -1992,7 +2015,7 @@ impl<'a> Rows<'a> {
                     let r#gen = highest.entry(copy.identity()).or_insert(Gen::FIRST);
                     *r#gen = (*r#gen).max(copy.copy_gen());
                 }
-                highest
+                Ok(highest)
             })
             .await
     }
@@ -2194,7 +2217,9 @@ async fn execute_operation<C: MachineOperations>(
             skip_health_monitor,
         } => {
             let slot = slots.slot(ContainerKind::ServiceContainer, spec, index, None);
-            let r#gen = rows.gen_for(client, &rows.service(spec)).await?;
+            let r#gen = rows
+                .gen_for(client, &rows.service(spec), cancellation)
+                .await?;
             run_container(
                 client,
                 index,
@@ -2301,7 +2326,7 @@ async fn execute_operation<C: MachineOperations>(
                 Some(replacement.old_container_id),
             );
             let r#gen = rows
-                .gen_for(client, &rows.service(&replacement.spec))
+                .gen_for(client, &rows.service(&replacement.spec), cancellation)
                 .await?;
             if replacement.spec.update.order.stops_first() {
                 let old = rows
