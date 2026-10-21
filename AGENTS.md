@@ -2,7 +2,7 @@
 
 - `core/` owns the engine, CLI, daemon, SDK, native helpers, and releases. Run Cargo there; apply relevant `core/CODING_STANDARDS.md` rules when changing core code.
 - `dashboard/` owns Ployz Cloud: web, worker, durable workflows, and self-host packaging. Run pnpm there.
-- Before designing core behavior, read the bets in `core/DESIGN.md`. Name each bet your change touches in the PR body, and the choice it changed. If you cross a red flag, argue it there. Dashboard UI follows `dashboard/DESIGN.md`.
+- Before designing Engine behavior, including Cloud code that drives it, read the bets in `core/DESIGN.md`. Name each bet your change touches in the PR body, and the choice it changed. If you cross a red flag, argue it there. Dashboard UI follows `dashboard/DESIGN.md`.
 - Use the terms defined in `core/CONTEXT.md` (Engine) and `dashboard/CONTEXT.md` (Cloud) rather than synonyms. Work across the Engine–Cloud boundary reads both.
 - `docs/user/` describes shipped behavior from the user's point of view. Check it before deciding how something works today, and update it when user-visible behavior changes.
 - Prove changes on the real artifact: dashboard UI with the `verify-dashboard` skill (add `SERVERS=1` for runtime UI), and anything needing real Machines (daemon, Docker, WireGuard, ZFS, moves) with the `verify-server` skill, before reaching for cloud VMs.
