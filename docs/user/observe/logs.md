@@ -65,7 +65,8 @@ sooner when logs and metrics fill their share of the disk, or when the disk drop
 (at least 2 GB).
 
 Anything your app printed stays in those files, secrets included. The dashboard, an agent, and
-`ployz logs` through Ployz Cloud hide Sealed values when they show a line. `ployz logs` run with
+`ployz logs` through Ployz Cloud hide Sealed values when they show a line. A value shorter than 6
+characters is hidden only where its name labels it, as in `PIN=4821`. `ployz logs` run with
 server access, and the files on the server, keep the line as printed. They live in
 `/var/lib/docker/ployz-observe/v1/containers/<container id>/`, or under Docker's data directory
 if you moved it. Only root can read them: log files are `0640 root:root`, the `env.json` of
