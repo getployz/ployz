@@ -34,7 +34,7 @@ use std::{
 };
 use tokio::{
     net::TcpListener,
-    sync::mpsc,
+    sync::{mpsc, watch},
     task::JoinHandle,
     time::{advance, pause, resume, timeout},
 };
@@ -105,25 +105,22 @@ async fn reconciles_resnapshots_and_retries_protocol_failures() {
         Some([10, 210, 1, 6]),
         vec![ingress("example.com", 80, HttpProtocol::Http)],
     ));
-    tokio::time::timeout(Duration::from_secs(5), async {
-        while state.container_opens.load(Ordering::SeqCst) < 2 {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("Caddy watcher did not resubscribe");
+    state
+        .wait_until("Caddy watcher did not resubscribe", |state| {
+            state.container_opens.load(Ordering::SeqCst) >= 2
+        })
+        .await;
     wait_for_caddyfile(&caddyfile, "10.210.1.6:80").await;
     assert!(!watcher.is_finished(), "watcher failure exited the plane");
 
     state.stall_container.store(true, Ordering::SeqCst);
     state.send(b"{\"row\":[1,[]]}\n");
-    tokio::time::timeout(Duration::from_secs(5), async {
-        while state.container_opens.load(Ordering::SeqCst) < 3 {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("Caddy watcher did not begin a stalled subscription");
+    state
+        .wait_until(
+            "Caddy watcher did not begin a stalled subscription",
+            |state| state.container_opens.load(Ordering::SeqCst) >= 3,
+        )
+        .await;
     shutdown.cancel();
     tokio::time::timeout(Duration::from_secs(1), watcher)
         .await
@@ -593,7 +590,7 @@ async fn transient_apply_failure_retries_without_a_replicated_event() {
         ..
     } = watcher_fixture().await;
     let (load_tx, mut load_rx) = mpsc::unbounded_channel();
-    let attempts = Arc::new(AtomicUsize::new(0));
+    let attempts = Arc::new(watch::Sender::new(0));
     let admin = RetryAdmin {
         attempts: Arc::clone(&attempts),
         loads: load_tx,
@@ -613,7 +610,7 @@ async fn transient_apply_failure_retries_without_a_replicated_event() {
         .await
         .expect("failed apply was not retried without another event")
         .unwrap();
-    assert_eq!(attempts.load(Ordering::SeqCst), 2);
+    assert_eq!(*attempts.borrow(), 2);
 
     shutdown.cancel();
     watcher.await.unwrap().unwrap();
@@ -810,23 +807,31 @@ async fn certificate_only_reload_writes_no_ack() {
     } = watcher_fixture().await;
     let (load_tx, mut load_rx) = mpsc::unbounded_channel();
     let admin = TestAdmin { loads: load_tx };
+    let (route_publishes, mut published) = watch::channel(Default::default());
     let shutdown = CancellationToken::new();
     let watcher = tokio::spawn(watch_caddy(
         machine,
         ReplicatedStore::new(ApiClient::http1(address, &"a".repeat(64)).unwrap()),
         no_down,
         directory.join(CONFIG_FILE),
-        tokio::sync::watch::channel(Default::default()).0,
+        route_publishes,
         shutdown.clone(),
         move || std::future::ready(Ok(Some(admin.clone()))),
     ));
     next_load(&mut load_rx).await;
     state.wait_for_ack_transactions(1).await;
+    let first_pass = published.borrow_and_update().count;
 
     state.write_certificate("example.com", CHALLENGE);
     let challenged = next_load(&mut load_rx).await;
     assert!(challenged.contains("acme-challenge"), "{challenged}");
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    timeout(
+        Duration::from_secs(5),
+        published.wait_for(|publishes| publishes.count > first_pass),
+    )
+    .await
+    .expect("the reload's publish pass never finished")
+    .unwrap();
     assert_eq!(state.ack_transactions(), 1);
 
     shutdown.cancel();
@@ -1023,7 +1028,7 @@ async fn no_ack_when_the_caddy_load_fails() {
     } = watcher_fixture().await;
     let first = state.api_container();
     let (load_tx, mut load_rx) = mpsc::unbounded_channel();
-    let attempts = Arc::new(AtomicUsize::new(0));
+    let attempts = Arc::new(watch::Sender::new(0));
     let admin = RetryAdmin {
         attempts: Arc::clone(&attempts),
         loads: load_tx,
@@ -1039,20 +1044,13 @@ async fn no_ack_when_the_caddy_load_fails() {
         move || std::future::ready(Ok(Some(admin.clone()))),
     ));
 
-    timeout(Duration::from_millis(500), async {
-        while attempts.load(Ordering::SeqCst) == 0 {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("first load was not attempted");
-    tokio::time::sleep(Duration::from_millis(200)).await;
-    assert_eq!(state.ack_transactions(), 0, "a failed load wrote an ack");
-
     timeout(Duration::from_secs(2), load_rx.recv())
         .await
         .expect("failed load was not retried")
         .unwrap();
+    assert_eq!(*attempts.borrow(), 2);
+    // The watcher acks only after a load returns, so a failed load's ack would precede the retry.
+    assert_eq!(state.ack_transactions(), 0, "a failed load wrote an ack");
     state.wait_for_ack_transactions(1).await;
     assert_eq!(state.last_acks(), vec![ack(&machine, &[&first])]);
 
@@ -1085,7 +1083,7 @@ async fn route_publishes_count_only_this_process() {
         params: ack(&machine, &[&stale]),
     }]);
     let (load_tx, mut load_rx) = mpsc::unbounded_channel();
-    let attempts = Arc::new(AtomicUsize::new(0));
+    let attempts = Arc::new(watch::Sender::new(0));
     let admin = RetryAdmin {
         attempts: Arc::clone(&attempts),
         loads: load_tx,
@@ -1103,13 +1101,13 @@ async fn route_publishes_count_only_this_process() {
         move || std::future::ready(Ok(Some(admin.clone()))),
     ));
 
-    timeout(Duration::from_millis(500), async {
-        while attempts.load(Ordering::SeqCst) == 0 {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
+    timeout(
+        Duration::from_millis(500),
+        attempts.subscribe().wait_for(|attempts| *attempts > 0),
+    )
     .await
-    .expect("first load was not attempted");
+    .expect("first load was not attempted")
+    .unwrap();
     assert_eq!(state.ack_transactions(), 1, "only the stale row exists");
     assert_eq!(
         *published.borrow_and_update(),
@@ -1214,6 +1212,7 @@ async fn watcher_fixture() -> WatcherFixture {
             reserved(observation(9, &machine.id, "ingress", None, Vec::new())),
         ])),
         container_opens: Arc::new(AtomicUsize::new(0)),
+        recorded: Arc::new(watch::Sender::new(())),
         stall_container: Arc::new(AtomicBool::new(false)),
         container_subscriptions: Arc::new(Mutex::new(Vec::new())),
         certificate_subscriptions: Arc::new(Mutex::new(Vec::new())),
@@ -1274,7 +1273,7 @@ impl CaddyAdmin for TestAdmin {
 
 #[derive(Clone)]
 struct RetryAdmin {
-    attempts: Arc<AtomicUsize>,
+    attempts: Arc<watch::Sender<usize>>,
     loads: mpsc::UnboundedSender<()>,
 }
 
@@ -1284,7 +1283,12 @@ impl CaddyAdmin for RetryAdmin {
     }
 
     async fn load(&self, _json: &str) -> Result<(), CaddyError> {
-        if self.attempts.fetch_add(1, Ordering::SeqCst) == 0 {
+        let mut first = false;
+        self.attempts.send_modify(|attempts| {
+            first = *attempts == 0;
+            *attempts += 1;
+        });
+        if first {
             return Err(CaddyError::Admin("temporary load failure".into()));
         }
         self.loads.send(()).unwrap();
@@ -1302,6 +1306,8 @@ async fn settle() {
 struct WatchState {
     containers: Arc<Mutex<Vec<ContainerObservation>>>,
     container_opens: Arc<AtomicUsize>,
+    /// Bumped after the fake records a statement or opens a subscription.
+    recorded: Arc<watch::Sender<()>>,
     stall_container: Arc<AtomicBool>,
     container_subscriptions: Arc<Mutex<Vec<mpsc::UnboundedSender<Bytes>>>>,
     certificate_subscriptions: Arc<Mutex<Vec<mpsc::UnboundedSender<Bytes>>>>,
@@ -1406,24 +1412,28 @@ impl WatchState {
             .collect()
     }
 
+    async fn wait_until(&self, what: &str, mut done: impl FnMut(&Self) -> bool) {
+        let mut recorded = self.recorded.subscribe();
+        timeout(Duration::from_secs(5), recorded.wait_for(|()| done(self)))
+            .await
+            .unwrap_or_else(|_| panic!("{what}"))
+            .unwrap();
+    }
+
     async fn wait_for_container_queries(&self, count: usize) {
-        timeout(Duration::from_secs(5), async {
-            while self.container_queries() < count {
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-        })
-        .await
-        .unwrap_or_else(|_| panic!("container query {count} was never sent"));
+        self.wait_until(
+            &format!("container query {count} was never sent"),
+            |state| state.container_queries() >= count,
+        )
+        .await;
     }
 
     async fn wait_for_ack_transactions(&self, count: usize) {
-        timeout(Duration::from_secs(5), async {
-            while self.ack_transactions() < count {
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-        })
-        .await
-        .unwrap_or_else(|_| panic!("ack transaction {count} was never written"));
+        self.wait_until(
+            &format!("ack transaction {count} was never written"),
+            |state| state.ack_transactions() >= count,
+        )
+        .await;
     }
 
     fn send_certificates(&self, event: &'static [u8]) {
@@ -1455,6 +1465,7 @@ async fn query(State(state): State<WatchState>, body: Bytes) -> Response {
         .lock()
         .unwrap()
         .push((Sent::Query, statement.query.clone()));
+    state.recorded.send_replace(());
     if fail {
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     }
@@ -1518,6 +1529,7 @@ async fn subscribe(State(state): State<WatchState>, body: Bytes) -> Response {
             .unwrap();
     }
     subscriptions.lock().unwrap().push(sender);
+    state.recorded.send_replace(());
     Response::new(Body::from_stream(
         UnboundedReceiverStream::new(receiver).map(Ok::<_, Infallible>),
     ))
@@ -1532,6 +1544,7 @@ async fn transact(State(state): State<WatchState>, body: Bytes) -> Response {
     );
     let results = vec![json!({"rows_affected": 1, "time": 0.0}); statements.len()];
     state.transactions.lock().unwrap().push(statements);
+    state.recorded.send_replace(());
     if state
         .lose_next_transaction_response
         .swap(false, Ordering::SeqCst)
@@ -1544,31 +1557,35 @@ async fn transact(State(state): State<WatchState>, body: Bytes) -> Response {
 }
 
 async fn wait_for_caddyfile_without(path: &Path, gone: &str) -> String {
-    tokio::time::timeout(Duration::from_secs(5), async {
-        loop {
-            if let Ok(caddyfile) = std::fs::read_to_string(path)
-                && !caddyfile.contains(gone)
-            {
-                return caddyfile;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
+    caddyfile_where(
+        path,
+        &format!("Caddyfile still contained {gone}"),
+        |caddyfile| !caddyfile.contains(gone),
+    )
     .await
-    .unwrap_or_else(|_| panic!("Caddyfile still contained {gone}"))
 }
 
 async fn wait_for_caddyfile(path: &Path, expected: &str) -> String {
+    caddyfile_where(
+        path,
+        &format!("Caddyfile never contained {expected}"),
+        |caddyfile| caddyfile.contains(expected),
+    )
+    .await
+}
+
+async fn caddyfile_where(path: &Path, what: &str, done: impl Fn(&str) -> bool) -> String {
     tokio::time::timeout(Duration::from_secs(5), async {
         loop {
             if let Ok(caddyfile) = std::fs::read_to_string(path)
-                && caddyfile.contains(expected)
+                && done(&caddyfile)
             {
                 return caddyfile;
             }
+            // real-wait: polls the Caddyfile on disk, which emits no write event
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
     })
     .await
-    .unwrap_or_else(|_| panic!("Caddyfile never contained {expected}"))
+    .unwrap_or_else(|_| panic!("{what}"))
 }
