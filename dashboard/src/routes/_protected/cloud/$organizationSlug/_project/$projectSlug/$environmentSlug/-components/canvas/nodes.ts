@@ -15,7 +15,11 @@ import type {
   StoreCanvas,
   StoreLiveNode,
   CanvasStoreLiveNode,
+  CanvasStoreTemplateNode,
 } from "./types";
+
+/** The space between a template's Services when they first take their places side by side. */
+const MEMBER_GAP = 32;
 
 /** A node's link handles: out of its top, into its bottom, below any trays. */
 const handles = (height: number) => [
@@ -69,7 +73,31 @@ export function volumeTrays(services: readonly Pick<ServiceListing, "id" | "name
  * or Config a Service here mounts is a tray under it, not a node. Which node is selected is the route's to say, not React Flow's.
  */
 export function buildStoreNodes(
-  store: Pick<StoreCanvas, "services" | "unmountedVolumes" | "unmountedConfigs"> & { live?: StoreLiveNode[] },
+  store: Pick<StoreCanvas, "services" | "unmountedVolumes" | "unmountedConfigs"> & { live?: StoreLiveNode[]; templates?: StoreCanvas["templates"] },
+  canvasPositions: CanvasPosition[],
+  environmentId: string,
+  /** The template whose Services fill the canvas instead of everything else; null shows each template as one node. */
+  openTemplate: string | null = null,
+): CanvasResourceNode[] {
+  const nodes = allStoreNodes(store, canvasPositions, environmentId);
+  const templates = store.templates ?? [];
+  const memberOf = new Map(templates.flatMap((instance) => instance.members.map((member) => [member.id, instance.install.name] as const)));
+  if (openTemplate) return nodes.filter((node) => memberOf.get(node.id) === openTemplate);
+  // A template stands where its first Service does, top-left.
+  const collapsed = templates.flatMap((instance) => {
+    const members = nodes.filter((node) => memberOf.get(node.id) === instance.install.name);
+    if (members.length === 0) return [];
+    return [{
+      id: templateNodeId(instance.install.name), type: "storeTemplate", width: SERVICE_NODE_WIDTH, height: SERVICE_NODE_HEIGHT,
+      position: { x: Math.min(...members.map((member) => member.position.x)), y: Math.min(...members.map((member) => member.position.y)) },
+      draggable: false, data: { instance },
+    } satisfies CanvasStoreTemplateNode];
+  });
+  return [...collapsed, ...nodes.filter((node) => !memberOf.has(node.id))];
+}
+
+function allStoreNodes(
+  store: Pick<StoreCanvas, "services" | "unmountedVolumes" | "unmountedConfigs"> & { live?: StoreLiveNode[]; templates?: StoreCanvas["templates"] },
   canvasPositions: CanvasPosition[],
   environmentId: string,
 ): CanvasResourceNode[] {
@@ -78,17 +106,32 @@ export function buildStoreNodes(
   const sizeOf = (id: string) => ({ ...SERVICE_NODE_SIZE, height: SERVICE_NODE_HEIGHT + (trayCount.get(id) ?? 0) * VOLUME_TRAY_HEIGHT });
   const positionByResource = getPositionByCanvasResource(canvasPositions);
   const occupied = canvasPositions.map((position) => ({ x: position.x, y: position.y, ...sizeOf(position.resourceId) }));
+  // A template's Services with no place yet go side by side in one free block, so they open together.
+  const planned = new Map<string, { x: number; y: number }>();
+  for (const instance of store.templates ?? []) {
+    const loose = instance.members.filter((member) => trayCount.has(member.id) && !positionByResource.has(canvasPositionKey({ resourceType: "service", resourceId: member.id })));
+    if (loose.length === 0) continue;
+    const block = {
+      width: loose.length * (SERVICE_NODE_WIDTH + MEMBER_GAP) - MEMBER_GAP,
+      height: Math.max(...loose.map((member) => sizeOf(member.id).height)),
+    };
+    const at = findPlacement({ x: 0, y: 0 }, block, occupied);
+    occupied.push({ ...at, ...block });
+    loose.forEach((member, index) =>
+      planned.set(member.id, { x: at.x + index * (SERVICE_NODE_WIDTH + MEMBER_GAP), y: at.y }));
+  }
   const place = (resourceType: CanvasResourceType, resourceId: string) => {
     const stored = positionByResource.get(canvasPositionKey({ resourceType, resourceId }));
     if (stored) return getCanvasPosition(stored);
+    const fixed = resourceType === "service" ? planned.get(resourceId) : undefined;
+    if (fixed) return fixed;
     const size = sizeOf(resourceId);
     const position = findPlacement({ x: 0, y: 0 }, size, occupied);
     occupied.push({ ...position, ...size });
     return position;
   };
   const node = { width: SERVICE_NODE_WIDTH, height: SERVICE_NODE_HEIGHT, handles: handles(SERVICE_NODE_HEIGHT), draggable: true };
-  return [
-    ...store.services.map((service) => {
+  const services = store.services.map((service) => {
       const { height } = sizeOf(service.service.id);
       return {
         ...node,
@@ -99,7 +142,9 @@ export function buildStoreNodes(
         position: place("service", service.service.id),
         data: { ...service, resourceType: "service", resourceId: service.service.id, environmentId },
       } satisfies CanvasStoreServiceNode;
-    }),
+    });
+  return [
+    ...services,
     ...store.unmountedVolumes.map((volume) => ({
       ...node,
       id: volume.id,
@@ -150,3 +195,4 @@ export function shownNodeIds(nodes: readonly CanvasResourceNode[], ids: readonly
 }
 
 export const liveNodeId = (lineageId: string) => `live:${lineageId}`;
+export const templateNodeId = (install: string) => `template:${install}`;

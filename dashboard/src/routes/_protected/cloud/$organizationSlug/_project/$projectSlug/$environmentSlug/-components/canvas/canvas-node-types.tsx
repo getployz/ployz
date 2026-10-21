@@ -6,6 +6,7 @@ import { StoreServiceNode } from "./StoreServiceNode";
 import { StoreVolumeNode } from "./StoreVolumeNode";
 import { StoreConfigNode } from "./StoreConfigNode";
 import { StoreLiveNode } from "./StoreLiveNode";
+import { StoreTemplateNode } from "./StoreTemplateNode";
 
 export const LOADING_NODE: Node<Record<string, never>, "loading"> = {
   id: "loading-placeholder",
@@ -21,6 +22,7 @@ export const canvasNodeTypes = {
   storeVolume: StoreVolumeNode,
   storeConfig: StoreConfigNode,
   storeLive: StoreLiveNode,
+  storeTemplate: StoreTemplateNode,
   loading: LoadingNode,
 };
 

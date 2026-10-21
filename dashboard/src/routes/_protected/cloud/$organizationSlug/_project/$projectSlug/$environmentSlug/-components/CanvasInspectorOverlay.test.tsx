@@ -14,6 +14,7 @@ import { CanvasInspectorError } from "./CanvasInspectorRouteStates";
 import { ENVIRONMENT_SERVICE_ROUTE_TO } from "./environment-route-paths";
 import { serviceSearchSchema } from "../services/$serviceId/-components/service-pages";
 import { CanvasNodeList } from "./canvas/CanvasServiceList";
+import { buildStoreNodes } from "./canvas/nodes";
 import type { VolumeListing } from "@ployz/sdk";
 import { asTestDouble } from "#/lib/test-double";
 
@@ -48,7 +49,7 @@ function Architecture() {
     } : null}
     canvas={<div className="canvas-graph" role="region" aria-label="Mobile architecture list">
       <Link data-canvas-node="api" to={ENVIRONMENT_SERVICE_ROUTE_TO} params={{ ...params, serviceId: "api" }}>API node</Link>
-      <CanvasNodeList store={{ services: [], unmountedVolumes: [volume], unmountedConfigs: [] }} selectedNodeId={nodeId} />
+      <CanvasNodeList nodes={buildStoreNodes({ services: [], unmountedVolumes: [volume], unmountedConfigs: [] }, [], "production")} selectedNodeId={nodeId} />
     </div>}
   >
     <Outlet />

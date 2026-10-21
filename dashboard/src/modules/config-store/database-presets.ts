@@ -1,3 +1,4 @@
+import { TEMPLATES } from "./templates";
 import type { ConfigCommand, EnvironmentRef } from "@ployz/sdk";
 import { randomText } from "./store-services";
 import { DEFAULT_VOLUME_GB } from "./store-volumes";
@@ -70,7 +71,8 @@ export const DATABASE_PRESETS: readonly DatabasePreset[] = [
 ];
 
 /** A Service Template as people read it: its preset's label, else its id. */
-export const templateLabel = ({ id }: { id: string }) => DATABASE_PRESETS.find((preset) => preset.id === id)?.label ?? id;
+export const templateLabel = ({ id }: { id: string }) =>
+  DATABASE_PRESETS.find((preset) => preset.id === id)?.label ?? TEMPLATES.find((template) => template.id === id)?.name ?? id;
 
 const LETTERS = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
 

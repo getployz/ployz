@@ -20,7 +20,10 @@ import { sourceText } from "#/modules/config-store/store-branches";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "#/components/ui/tabs";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "#/components/ui/select";
 import { serviceSetting, settingChange, settingError, type ServiceSettingName, type SettingSchema } from "#/modules/config-store/catalog";
-import { templateLabel } from "#/modules/config-store/database-presets";
+import { DATABASE_PRESETS, templateLabel } from "#/modules/config-store/database-presets";
+import { useInstalls } from "#/modules/config-store/template-values";
+import { installOf } from "#/modules/config-store/templates";
+import { StoreTemplateSection } from "./StoreTemplateSection";
 import { changedProps, dnsLabelError, serviceChanges, serviceSettingRows, settingText } from "#/modules/config-store/store-services";
 import { diffQuery, environmentSettingsQuery, namespaceQuery, requireView, servicesQuery, useStoreViews, volumesQuery } from "#/modules/config-store/store-view.queries";
 import type { Persistable } from "#/collections/query-collection";
@@ -66,6 +69,27 @@ export type StoreService = {
   set: (name: string, value: JsonValue | null) => Persistable;
 };
 
+/** `service` as the drawer edits it; a template's portal edits the same Service the same way. */
+export function storeService(
+  organizationSlug: string, environment: EnvironmentRef, service: ServiceListing,
+  settings: Parameters<typeof serviceSettingRows>[0], diff: Parameters<typeof serviceChanges>[0], writer: ReturnType<typeof useStoreWriter>,
+): StoreService {
+  const rows = serviceSettingRows(settings, service.name);
+  const path = (name: string) => `${service.name}.${name}`;
+  const edit = (change: Change) => writer.edit({ environment, changes: [change] });
+  return {
+    organizationSlug,
+    environment,
+    service,
+    rows,
+    changes: serviceChanges(diff, service.id),
+    source: sourceOf(service, rows),
+    path,
+    edit,
+    set: (name, value) => edit(value === null ? { op: "unset", path: path(name) } : { op: "set", path: path(name), value }),
+  };
+}
+
 /** A Service's source as its Settings say, pending edits included; an upload only while it has none of its own. */
 function sourceOf(service: ServiceListing, rows: Map<string, SettingRow>): ServiceListing["source"] {
   if (settingText(rows.get("repository")?.value)) return "git";
@@ -110,27 +134,16 @@ export function StoreServiceDrawer({ params }: { params: { organizationSlug: str
   const volumes = effectiveVolumes(requireView(views[3]).volumes, services, settings);
   const namespace = views[4].ok ? views[4].value.namespace : null;
   const writer = useStoreWriter(organizationSlug);
+  const installed = useInstalls(organizationSlug, store);
   const { tab } = useSearch({ from: SERVICE_ROUTE_FROM });
   const navigate = useNavigate({ from: SERVICE_ROUTE_TO });
   const service = services.find((candidate) => candidate.id === params.serviceId);
   // A stale link, or removed while open (from the CLI; the drawer's own Delete closes it).
   if (!service) return <CanvasInspectorNotFound noun="Service" />;
 
-  const rows = serviceSettingRows(settings, service.name);
-  const path = (name: string) => `${service.name}.${name}`;
-  const edit = (change: Change) => writer.edit({ environment: store, changes: [change] });
-  const state: StoreService = {
-    organizationSlug,
-    environment: store,
-    service,
-    rows,
-    changes: serviceChanges(diff, service.id),
-    source: sourceOf(service, rows),
-    path,
-    edit,
-    set: (name, value) => edit(value === null ? { op: "unset", path: path(name) } : { op: "set", path: path(name), value }),
-  };
-  const database = service.template != null;
+  const state = storeService(organizationSlug, store, service, settings, diff, writer);
+  const database = DATABASE_PRESETS.some((preset) => preset.id === service.template?.id);
+  const instance = installOf(installed.installs, service.id);
   const replicasOf = (name: string) => replicaCount(serviceSettingRows(settings, name).get("replicas"));
   // A volume without shared writes holds this service to one replica. More than one already (from before the rule)
   // isn't capped: its volume's writers warning says so, with the fix.
@@ -142,6 +155,7 @@ export function StoreServiceDrawer({ params }: { params: { organizationSlug: str
   const buildMethod = settingText(state.rows.get("buildMethod")?.value ?? state.rows.get("buildMethod")?.default);
   const field = (name: ServiceSettingName) => <StoreSettingField key={name} state={state} name={name} />;
   const bodies = {
+    template: instance ? <StoreTemplateSection state={state} instance={instance} parent={installed.parent} /> : null,
     source: <StoreSourceSection state={state} />,
     // Domain statuses need a look at the Cluster, so the rest of the drawer doesn't wait for them.
     networking: (
@@ -276,7 +290,11 @@ const OPTION_HELP = new Map([
 const policyText = (value: JsonValue | undefined) => value === null || value === undefined ? null : String(value);
 
 /** One scalar Setting as the catalog describes it: its title, help, bounds and choices. */
-function StoreSettingField({ state, name, warning }: { state: StoreService; name: ServiceSettingName; warning?: ReactNode }) {
+export function StoreSettingField({ state, name, warning, label, description }: {
+  state: StoreService; name: ServiceSettingName; warning?: ReactNode;
+  /** A template's portal names it in its own words. */
+  label?: ReactNode; description?: string;
+}) {
   // A Store refusal (a rule the panel didn't foresee, or a change from elsewhere) shows on the row, not only in a toast.
   const [refusal, setRefusal] = useState<string | null>(null);
   const setting: SettingSchema = serviceSetting(name);
@@ -315,8 +333,8 @@ function StoreSettingField({ state, name, warning }: { state: StoreService; name
   return (
     <Field orientation="responsive">
       <FieldContent>
-        <FieldLabel>{setting.title}</FieldLabel>
-        <FieldDescription>{hint(name, setting)}</FieldDescription>
+        <FieldLabel>{label ?? setting.title}</FieldLabel>
+        <FieldDescription>{description ?? hint(name, setting)}</FieldDescription>
         {warning}
         {refusal ? <FieldError>{refusal}</FieldError> : null}
       </FieldContent>

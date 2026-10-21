@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { PencilIcon, PlusIcon, ZapIcon } from "lucide-react";
 import type { DomainRow, JsonValue, ServiceSettingChange } from "@ployz/sdk";
 import { Link } from "@tanstack/react-router";
@@ -61,8 +61,10 @@ export function defaultPortHint(port: JsonValue | undefined, domains: readonly P
  * A Service's domains over the Config Store: at most one generated domain under the Cluster Domain and any custom
  * ones, each with the status the Store gives it. Adding, retargeting and removing one are staged for the next Deploy.
  */
-export function StoreNetworkingSection({ state, version, privateFirst = false, validatePrivateDns }: {
+export function StoreNetworkingSection({ state, version, privateFirst = false, validatePrivateDns, portal }: {
   state: StoreService;
+  /** A template's portal: its own label, public domains only. */
+  portal?: { label: ReactNode };
   /** A database is reached privately: its address leads, and domains follow. */
   privateFirst?: boolean;
   /** The review's version, which undoing a removal discards against. */
@@ -139,10 +141,10 @@ export function StoreNetworkingSection({ state, version, privateFirst = false, v
 
   return (
     <>
-      {privateFirst ? privateRow : null}
+      {privateFirst && !portal ? privateRow : null}
       <Field orientation="responsive" data-changed={domains.some((domain) => domainChanged(changes, domain)) || undefined}>
         <FieldContent>
-          <FieldLabel>Public domains</FieldLabel>
+          <FieldLabel>{portal?.label ?? "Public domains"}</FieldLabel>
           {none ? <FieldDescription>None</FieldDescription> : null}
         </FieldContent>
         {addButtons}
@@ -221,7 +223,7 @@ export function StoreNetworkingSection({ state, version, privateFirst = false, v
             }}
           />
         ) : null}
-      {privateFirst ? null : privateRow}
+      {privateFirst || portal ? null : privateRow}
     </>
   );
 }

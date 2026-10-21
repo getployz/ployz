@@ -31,7 +31,7 @@ export function ServiceCreatorDialog({
   };
   onCreateVolume: () => void;
   onCreateConfig: () => void;
-  onCreated: (result: { service: { id: string } }, stillHere: boolean) => void | Promise<void>;
+  onCreated: (result: { service: { id: string }; install?: string }, stillHere: boolean) => void | Promise<void>;
 }) {
   // Escape or a click outside can't close it mid-create: the new service opens once it's saved.
   const [creating, setCreating] = useState(false);

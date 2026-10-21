@@ -1,5 +1,5 @@
 import { useMatch } from "@tanstack/react-router";
-import { liveNodeId } from "./canvas/nodes";
+import { liveNodeId, templateNodeId } from "./canvas/nodes";
 
 const ENVIRONMENT_SERVICE_ROUTE_ID =
   "/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas/services/$serviceId";
@@ -13,6 +13,8 @@ const LIVE_NODE_ROUTE_ID =
   "/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas/live/$lineageId";
 const PR_PLAN_ROUTE_ID =
   "/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas/pr-environments/$repositoryId";
+const TEMPLATE_ROUTE_ID =
+  "/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas/templates/$templateId";
 const ENVIRONMENT_RESOURCE_ROUTE_ID =
   "/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas/resources/$resourceId";
 
@@ -72,10 +74,15 @@ export function useCanvasInspectorSelection(): CanvasInspectorSelection {
     from: PR_PLAN_ROUTE_ID,
     shouldThrow: false,
   });
+  const templateMatch = useMatch({
+    from: TEMPLATE_ROUTE_ID,
+    shouldThrow: false,
+  });
   const selectedServiceId = serviceMatch?.params.serviceId ?? null;
   const selectedLiveLineageId = liveMatch?.params.lineageId ?? null;
   const selectedResourceId = resourceMatch?.params.resourceId ?? null;
-  const selectedNodeId = selectedServiceId ?? selectedResourceId ?? (selectedLiveLineageId && liveNodeId(selectedLiveLineageId));
+  const selectedNodeId = selectedServiceId ?? selectedResourceId ?? (selectedLiveLineageId && liveNodeId(selectedLiveLineageId))
+    ?? (templateMatch ? templateNodeId(templateMatch.params.templateId) : null);
 
   return {
     selectedServiceId,

@@ -1,5 +1,6 @@
 import type { ConfigListing, DiffView, DomainRow, ServiceListing, VolumeListing } from "@ployz/sdk";
 import type { MountedConfig } from "#/modules/config-store/store-configs";
+import type { InstallView } from "#/modules/config-store/templates";
 import type { Node } from "@xyflow/react";
 
 export type CanvasResourceType = "service" | "volume" | "config";
@@ -63,6 +64,9 @@ export type StoreLiveNode = {
 
 export type CanvasStoreLiveNode = Node<{ live: StoreLiveNode }, "storeLive">;
 
+/** A frame around a template's Services, sized to them; it moves when they do. */
+export type CanvasStoreTemplateNode = Node<{ instance: InstallView }, "storeTemplate">;
+
 /** What the canvas draws from the Config Store while it backs this Environment. */
 export type StoreCanvas = {
   services: StoreCanvasService[];
@@ -72,6 +76,8 @@ export type StoreCanvas = {
   unmountedVolumes: VolumeListing[];
   /** The Configs no Service here mounts, which are nodes of their own. */
   unmountedConfigs: ConfigListing[];
+  /** The templates running here. */
+  templates: InstallView[];
   /** A Branch's Live Nodes; none elsewhere. */
   live: StoreLiveNode[];
   /** What the next Deploy changes: the bottom bar's count and its Details. */
@@ -82,6 +88,7 @@ export type CanvasResourceNode =
   | CanvasStoreServiceNode
   | CanvasStoreVolumeNode
   | CanvasStoreConfigNode
-  | CanvasStoreLiveNode;
+  | CanvasStoreLiveNode
+  | CanvasStoreTemplateNode;
 
 export type FlowPosition = { x: number; y: number };

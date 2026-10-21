@@ -47,6 +47,8 @@ type BottomBarProps = {
   waiting?: ReadonlyArray<{ number: number; changes: number; environment: string }>;
   /** The Organization has no Server to deploy to: Deploy becomes Add a server; Publish still works. */
   noServers?: boolean;
+  /** Template inputs and decisions still open: Deploy waits on them. */
+  toFix?: number;
 };
 
 type ReviewProps = Parameters<typeof EnvironmentChangesReview>[0];
@@ -70,6 +72,7 @@ export function BottomBar({
   notes,
   waiting = [],
   noServers = false,
+  toFix = 0,
   admitting = false,
 }: BottomBarProps) {
   const slot = useContext(BottomBarSlot);
@@ -84,7 +87,7 @@ export function BottomBar({
   // Oldest first: the oldest holds, or is next for, the Environment's one run.
   const active = [...newestFirst].reverse();
   const hasChanges = totalChanges > 0 || canPublish;
-  const deployable = totalChanges > 0 && !noServers;
+  const deployable = totalChanges > 0 && !noServers && toFix === 0;
   const shown = hasChanges ? undefined : active.find((deployment) => deployment.id !== viewedId);
 
   function deploy() {
@@ -142,7 +145,7 @@ export function BottomBar({
         <AddServerDialog organizationSlug={params.organizationSlug} label="Add a server" variant="intent" />
       ) : <Tooltip>
         <TooltipTrigger render={<Button variant="intent" disabled={!deployable || admitting} aria-keyshortcuts="Shift+Enter" onClick={deploy} />}>
-          {active.length > 0 ? "Deploy next" : "Deploy"}
+          {toFix > 0 ? `${toFix} to fix` : active.length > 0 ? "Deploy next" : "Deploy"}
         </TooltipTrigger>
         <TooltipContent>⇧+Enter</TooltipContent>
       </Tooltip>}

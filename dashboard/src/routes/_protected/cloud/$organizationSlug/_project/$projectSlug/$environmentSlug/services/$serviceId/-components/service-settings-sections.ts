@@ -1,4 +1,5 @@
 export type ServiceSettingsSectionId =
+  | "template"
   | "source"
   | "networking"
   | "storage"
@@ -13,6 +14,7 @@ export type ServiceSettingsSectionMeta = {
 };
 
 export const SERVICE_SETTINGS_SECTIONS = [
+  { id: "template", label: "Template" },
   { id: "source", label: "Source" },
   { id: "networking", label: "Networking" },
   { id: "storage", label: "Storage" },

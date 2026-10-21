@@ -23,6 +23,9 @@ import { BottomBarSlot } from "./canvas/BottomBar";
 import { CanvasFlow } from "./canvas/CanvasFlow";
 import { DeploymentLightingProvider, useOpenDeployment } from "./deployment-page";
 import { buildStoreEdges, buildStoreNodes, volumeTrays } from "./canvas/nodes";
+import { useTemplateState } from "#/modules/config-store/template-values";
+import { installs } from "#/modules/config-store/templates";
+import { TemplateView, useTemplateView } from "./canvas/template-view";
 import type { StoreCanvas } from "./canvas/types";
 import { configTrays } from "#/modules/config-store/store-configs";
 import { branchQuery, configsQuery, diffQuery, domainsQuery, environmentSettingsQuery, namespaceQuery, requireView, servicesQuery, useStoreViews, volumesQuery } from "#/modules/config-store/store-view.queries";
@@ -77,6 +80,7 @@ function CanvasWithData() {
     [servicesQuery(ref), environmentSettingsQuery(ref), diffQuery(ref), volumesQuery(ref), branchQuery(ref), namespaceQuery(ref), domainsQuery(ref),
       configsQuery(ref)] as const);
   const { selectedNodeId } = useCanvasInspectorSelection();
+  const saved = useTemplateState(organizationSlug, ref);
   const positions = getCanvasPositionsCollection(organizationSlug, scope);
   const { data: positionRows } = useLiveSuspenseQuery({
     queryKey: ["canvas-positions", positions.id, environmentId],
@@ -97,6 +101,7 @@ function CanvasWithData() {
   const canvasPositions = positionRows.map((row) => parseLiveQueryRow(canvasPositionSchema, row));
   const { trays, unmounted } = volumeTrays(services.services, volumes.volumes, diff,
     (name) => replicaCount(serviceSettingRows(settings, name).get("replicas")));
+  const templates = installs(services.services, settings, saved?.installs ?? null);
   const store: StoreCanvas = {
     services: services.services.map((service) => {
       const changes = serviceChanges(diff, service.id);
@@ -118,15 +123,18 @@ function CanvasWithData() {
     configs: configListings,
     unmountedVolumes: unmounted,
     unmountedConfigs: configs.unmounted,
+    templates,
     live: branch.ok ? liveNodes(branch.value.live, services.services) : [],
     diff,
   };
-  const initialNodes = buildStoreNodes(store, canvasPositions, environmentId);
-  const initialEdges = buildStoreEdges(store);
+  const { open: openTemplate } = useTemplateView();
+  const initialNodes = buildStoreNodes(store, canvasPositions, environmentId, openTemplate);
+  const shown = new Set(initialNodes.map((node) => node.id));
+  const initialEdges = buildStoreEdges(store).filter((edge) => shown.has(edge.source) && shown.has(edge.target));
 
   return (
     <ReactFlowProvider
-      key={`${projectSlug}/${environmentSlug}`}
+      key={`${projectSlug}/${environmentSlug}/${openTemplate ?? ""}`}
       initialNodes={initialNodes}
       initialEdges={initialEdges}
       initialWidth={1200}
@@ -155,8 +163,10 @@ export function EnvironmentCanvasScene() {
   const { selectedNodeId, selectedServiceId, deploymentId, deploymentReturnTo, deploymentList, newBranch, prPlan } = useCanvasInspectorSelection();
   const lighting = useOpenDeployment();
   const [bottomBarSlot, setBottomBarSlot] = useState<HTMLElement | null>(null);
+  const [openTemplate, setOpenTemplate] = useState<string | null>(null);
 
   return (
+    <TemplateView value={{ open: openTemplate, setOpen: setOpenTemplate }}>
     <BottomBarSlot.Provider value={bottomBarSlot}>
     <StorePickingProvider newBranch={newBranch}>
     <StorePrPickingProvider prPlan={prPlan}>
@@ -185,5 +195,6 @@ export function EnvironmentCanvasScene() {
     </StorePrPickingProvider>
     </StorePickingProvider>
     </BottomBarSlot.Provider>
+    </TemplateView>
   );
 }

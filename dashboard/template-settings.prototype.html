@@ -1,0 +1,498 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Template settings prototype · Ployz Cloud</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+:root {
+  --background: #fff; --foreground: #111; --card: #fff; --muted: #f2f2f2; --muted-foreground: #666; --border: #dedede;
+  --secondary: #fafafa; --primary: #111; --primary-foreground: #fff;
+  --destructive: hsl(1 62% 44%); --destructive-soft: hsl(1 68% 95%); --destructive-border: hsl(1 64% 85%);
+  --success: hsl(152 38% 42%); --success-soft: hsl(152 38% 91%);
+  --warning: hsl(44 70% 40%); --warning-soft: hsl(44 78% 90%); --warning-border: hsl(44 78% 80%);
+  --changed: #d0268c; --changed-deep: #a80068; --changed-soft: #fff0f7; --changed-border: #efb3ce;
+  --radius: 10px;
+  font-family: "Geist Variable", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 14px; color: var(--foreground); background: var(--background);
+  -webkit-text-size-adjust: 100%;
+}
+* { box-sizing: border-box; }
+body { margin: 0; }
+button, input, select { font: inherit; color: inherit; }
+button { cursor: pointer; }
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; }
+.muted { color: var(--muted-foreground); }
+
+.app { display: grid; grid-template-rows: 52px 1fr; height: 100dvh; }
+.top { display: flex; align-items: center; gap: 10px; padding: 0 16px; border-bottom: 1px solid var(--border); }
+.logo { width: 22px; height: 22px; border-radius: 6px; background: linear-gradient(135deg, #f04ba0, #d0268c); }
+.crumb { padding: 4px 10px; border: 1px solid var(--border); border-radius: 8px; font-size: 13px; }
+.main { display: grid; grid-template-columns: 1fr 440px; min-height: 0; }
+.canvas { position: relative; background: radial-gradient(circle, #e4e4e4 1px, transparent 1px) 0 0 / 18px 18px; overflow: hidden; }
+.panel { border-left: 1px solid var(--border); display: flex; flex-direction: column; min-height: 0; background: var(--background); }
+@media (max-width: 860px) {
+  .main { grid-template-columns: 1fr; }
+  .canvas { display: none; }
+  .panel { border-left: 0; }
+}
+
+/* canvas card */
+.tcard { position: absolute; left: 50%; top: 42%; transform: translate(-50%, -50%); width: 280px; }
+.tcard .stack { position: absolute; inset: 0; border: 1px solid var(--border); border-radius: var(--radius); background: var(--card); }
+.tcard .stack.s1 { transform: translate(6px, 6px); }
+.tcard .stack.s2 { transform: translate(12px, 12px); }
+.tcard .face { position: relative; border: 2px solid var(--changed); border-radius: var(--radius); background: var(--card); padding: 14px; }
+.svcmini { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 10px; }
+.chip { display: inline-flex; align-items: center; gap: 5px; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--border); font-size: 12px; background: var(--card); }
+.chip.gone { text-decoration: line-through; color: var(--muted-foreground); border-style: dashed; }
+.chip.new { border-color: var(--changed-border); background: var(--changed-soft); color: var(--changed-deep); }
+
+/* panel */
+.phead { display: flex; align-items: center; gap: 10px; padding: 14px 16px; border-bottom: 1px solid var(--border); }
+.ticon { width: 34px; height: 34px; border-radius: 9px; border: 1px solid var(--border); display: grid; place-items: center; background: var(--secondary); }
+.ptitle { font-weight: 600; font-size: 15px; }
+.badge { display: inline-flex; align-items: center; padding: 1px 7px; border-radius: 6px; border: 1px solid var(--border); font-size: 12px; font-weight: 500; }
+.badge.warn { background: var(--warning-soft); border-color: var(--warning-border); color: #6b4e00; }
+.badge.pink { background: var(--changed-soft); border-color: var(--changed-border); color: var(--changed-deep); }
+.badge.red { background: var(--destructive-soft); border-color: var(--destructive-border); color: var(--destructive); }
+.pbody { flex: 1; overflow-y: auto; padding: 4px 16px 24px; }
+.sec { padding: 16px 0; border-bottom: 1px solid var(--border); }
+.sec:last-child { border-bottom: 0; }
+.sech { font-size: 12px; font-weight: 600; color: var(--muted-foreground); margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center; }
+
+.btn { border: 1px solid var(--border); background: var(--card); border-radius: 8px; padding: 6px 12px; font-weight: 500; font-size: 13px; }
+.btn.primary { background: var(--primary); color: var(--primary-foreground); border-color: var(--primary); }
+.btn.pink { background: var(--changed); color: #fff; border-color: var(--changed); }
+.btn.ghost { border-color: transparent; background: transparent; }
+.btn.sm { padding: 3px 9px; font-size: 12.5px; }
+.btn:disabled { opacity: .45; cursor: default; }
+
+.field { display: grid; grid-template-columns: 120px 1fr; gap: 10px; align-items: center; padding: 7px 0; }
+.field > label { font-size: 13px; }
+.field.changed > label { color: var(--changed-deep); font-weight: 500; }
+.field.changed > label::before { content: ""; display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--changed); margin-right: 6px; vertical-align: 1px; }
+.field.unset > label { color: var(--warning); font-weight: 500; }
+.seg { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; padding: 2px; background: var(--muted); flex-wrap: wrap; }
+.seg button { border: 0; background: transparent; padding: 4px 10px; border-radius: 6px; font-size: 13px; color: var(--muted-foreground); }
+.seg button.on { background: var(--card); color: var(--foreground); box-shadow: 0 1px 2px rgb(0 0 0 / .08); font-weight: 500; }
+.input { border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px; width: 100%; background: var(--card); }
+.sub { grid-column: 2; font-size: 12px; color: var(--muted-foreground); margin-top: -4px; }
+
+.row { display: flex; align-items: center; gap: 10px; padding: 9px 10px; border: 1px solid var(--border); border-radius: 9px; margin-bottom: 6px; background: var(--card); }
+.row .grow { flex: 1; min-width: 0; }
+.row .name { font-weight: 500; }
+.row .meta { font-size: 12px; color: var(--muted-foreground); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.row.gone { border-style: dashed; background: var(--secondary); }
+.row.gone .name { text-decoration: line-through; color: var(--muted-foreground); }
+.row.new { border-color: var(--changed-border); background: var(--changed-soft); }
+.group { border: 1px solid var(--border); border-radius: 11px; padding: 8px 8px 2px; margin-bottom: 6px; background: var(--secondary); }
+.group .gh { display: flex; align-items: center; gap: 8px; padding: 2px 4px 8px; font-size: 13px; }
+.group .gh b { font-weight: 600; }
+.group.new { border-color: var(--changed-border); background: var(--changed-soft); }
+.sicon { width: 26px; height: 26px; border-radius: 7px; border: 1px solid var(--border); display: grid; place-items: center; background: var(--secondary); flex: none; }
+
+.foot { border-top: 1px solid var(--changed-border); background: var(--changed-soft); padding: 12px 16px; }
+.foot .lines { display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px; max-height: 38vh; overflow-y: auto; }
+.cl { display: flex; align-items: baseline; gap: 8px; font-size: 13px; }
+.cl .k { min-width: 0; flex: 1; }
+.cl .v { white-space: nowrap; }
+.datapick { margin: 2px 0 4px 0; padding: 8px; border: 1px solid var(--destructive-border); background: #fff; border-radius: 8px; }
+.datapick .seg { background: var(--destructive-soft); }
+.datapick.warn { border-color: var(--warning-border); }
+.datapick.warn .seg { background: var(--warning-soft); }
+.factions { display: flex; align-items: center; gap: 8px; }
+.factions .count { flex: 1; font-weight: 600; color: var(--changed-deep); }
+
+/* portal fields: a member Service's own setting, shown here */
+.pf { padding: 10px 0; }
+.pfh { display: flex; align-items: center; gap: 8px; }
+.pfh label { font-size: 13px; font-weight: 500; flex: 1; }
+.pf.changed .pfh label { color: var(--changed-deep); }
+.pf.changed .pfh label::before { content: ""; display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--changed); margin-right: 6px; vertical-align: 1px; }
+.desc { font-size: 12.5px; color: var(--muted-foreground); margin: 2px 0 8px; }
+.portal { display: inline-flex; align-items: center; gap: 5px; border: 1px solid var(--border); background: var(--secondary); border-radius: 999px; padding: 2px 9px 2px 7px; font-size: 12px; color: var(--muted-foreground); }
+.dlist { display: flex; flex-direction: column; gap: 6px; }
+.drow { display: flex; align-items: center; gap: 8px; border: 1px solid var(--border); border-radius: 8px; padding: 4px 4px 4px 10px; min-height: 36px; }
+.drow .grow { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.drow.new { border-color: var(--changed-border); background: var(--changed-soft); }
+.drow.gen { background: var(--secondary); }
+.drow .ok { width: 7px; height: 7px; border-radius: 50%; background: var(--success); flex: none; }
+.drow.new .ok { background: var(--changed); }
+.dadd { display: flex; gap: 6px; }
+.stepper { display: inline-flex; align-items: center; gap: 10px; }
+.stepper .mono { min-width: 18px; text-align: center; font-size: 14px; }
+/* topology variant */
+.topo { position: relative; height: 210px; border: 1px solid var(--border); border-radius: var(--radius); background: radial-gradient(circle, #e9e9e9 1px, transparent 1px) 0 0 / 14px 14px; margin-top: 12px; }
+.topo svg { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+.tnode { position: absolute; width: 132px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 9px; background: var(--card); font-size: 12.5px; transform: translate(-50%, -50%); text-align: left; }
+.tnode .n { font-weight: 600; font-size: 13px; }
+.tnode.sel { outline: 2px solid var(--changed); outline-offset: 1px; }
+.tnode.gone { border-style: dashed; color: var(--muted-foreground); background: var(--secondary); }
+.tnode.gone .n { text-decoration: line-through; }
+.tnode.ext { border-style: dashed; background: #fff; }
+.tnode.new { border-color: var(--changed-border); background: var(--changed-soft); }
+.tnode .opt { position: absolute; top: -9px; right: 8px; font-size: 10.5px; padding: 0 6px; border-radius: 999px; background: var(--primary); color: #fff; }
+.callout { margin-top: 10px; border: 1px solid var(--border); border-radius: 9px; padding: 4px 12px; background: var(--secondary); }
+
+/* tabs variant */
+.tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--border); padding: 0 12px; }
+.tabs button { border: 0; background: transparent; padding: 10px 10px; font-size: 13px; color: var(--muted-foreground); border-bottom: 2px solid transparent; margin-bottom: -1px; }
+.tabs button.on { color: var(--foreground); border-bottom-color: var(--foreground); font-weight: 500; }
+.tabs .dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--changed); margin-left: 5px; vertical-align: 2px; }
+
+/* update sheet */
+.scrim { position: fixed; inset: 0; background: rgb(0 0 0 / .32); display: grid; place-items: center; padding: 16px; z-index: 20; }
+.sheet { width: min(480px, 100%); background: var(--card); border-radius: 14px; box-shadow: 0 20px 60px rgb(0 0 0 / .25); overflow: hidden; }
+.sheet .sh { padding: 16px; border-bottom: 1px solid var(--border); font-weight: 600; font-size: 15px; display: flex; gap: 8px; align-items: center; }
+.sheet .sb { padding: 8px 16px 16px; max-height: 60vh; overflow-y: auto; }
+.sheet .sf { padding: 12px 16px; border-top: 1px solid var(--border); display: flex; justify-content: flex-end; gap: 8px; align-items: center; }
+
+.switcher { position: fixed; left: 50%; bottom: 14px; transform: translateX(-50%); display: flex; gap: 4px; padding: 4px; border-radius: 999px; background: #111; z-index: 30; box-shadow: 0 6px 24px rgb(0 0 0 / .25); }
+.switcher button { border: 0; background: transparent; color: #aaa; padding: 6px 12px; border-radius: 999px; font-size: 12.5px; }
+.switcher button.on { background: #fff; color: #111; font-weight: 600; }
+.toast { position: fixed; left: 50%; top: 64px; transform: translateX(-50%); background: #111; color: #fff; padding: 8px 14px; border-radius: 9px; font-size: 13px; z-index: 40; }
+@media (max-width: 860px) { .switcher { bottom: auto; top: 10px; left: auto; right: 10px; transform: none; } .switcher button { padding: 5px 9px; } .switcher .full { display: none; } }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script>
+// The template, as its author writes it: options, and one function from option values to Services.
+const RELEASES = {
+  2: {
+    options: [
+      { key: "domains", kind: "portal", service: "plausible", setting: "domains", label: "Domains", description: "Where people open Plausible." },
+      { key: "database", label: "Database", kind: "choice", choices: [["bundled", "Bundled"], ["existing", "Use existing"]], default: "bundled", part: "db" },
+      { key: "events", label: "Events", kind: "choice", choices: [["bundled", "Bundled"], ["external", "External"]], default: "bundled", part: "events" },
+      { key: "size", label: "Size", kind: "choice", choices: [["s", "Small"], ["m", "Medium"], ["l", "Large"]], default: "s" },
+      { key: "backups", kind: "portal", service: "postgres", nested: true, setting: "backups", label: "Database backups", description: "Daily copies of your Plausible data.", part: "db" },
+      { key: "replicas", kind: "portal", service: "plausible", setting: "replicas", label: "Web servers", description: "Copies serving the dashboard.", part: "web" },
+    ],
+    uses: { postgres: 1 },
+    images: { web: "community-edition:v2.1.4", events: "clickhouse:24.3" },
+  },
+  3: {
+    options: null, // v2's plus Sign ups, set below
+    images: { web: "community-edition:v3.0.1", events: "clickhouse:24.12" },
+    uses: { postgres: 2 },
+  },
+};
+RELEASES[3].options = [...RELEASES[2].options.slice(0, 1),
+  { key: "signups", label: "Sign ups", kind: "choice", choices: [["open", "Open"], ["invite", "Invite only"], ["closed", "Closed"]], default: null, added: true },
+  ...RELEASES[2].options.slice(1)];
+
+// A second template, used by Plausible's releases. Its own options decide its own Services.
+const POSTGRES = { 1: { major: 16 }, 2: { major: 17 } };
+function renderPostgres(version, name, svc) {
+  const via = { template: "Postgres", version };
+  const out = [{ part: "db", name, image: `postgres:${POSTGRES[version].major}`, meta: "1 CPU · 1 GB", volume: { name: "plausible-pg", size: "1.1 GB" }, via }];
+  if (svc.postgres.backups === "daily") out.push({ part: "dbbackup", name: `${name}-backup`, image: "pg-backup:1.4", meta: "Daily · 03:00", via });
+  return out;
+}
+
+const SIZE = { s: "1 CPU · 1 GB", m: "2 CPU · 4 GB", l: "4 CPU · 8 GB" };
+const EXISTING = ["postgres"]; // Services in this Environment that can serve as the database
+
+function render(version, o, svc) {
+  const img = RELEASES[version].images;
+  const out = [{ part: "web", name: "plausible", image: img.web, meta: `${svc.plausible.replicas} × ${SIZE[o.size]}` }];
+  if (o.events === "bundled") out.push({ part: "events", name: "plausible-events", image: img.events, meta: SIZE[o.size], volume: { name: "events-data", size: "4.2 GB" } });
+  if (o.database === "bundled") out.push(...renderPostgres(RELEASES[version].uses.postgres, "plausible-db", svc));
+  return out;
+}
+
+const SAVED = { version: 2, values: { database: "bundled", events: "bundled", size: "s", dbService: "postgres", eventsUrl: "" } };
+// Settings that live on a member Service; a portal option edits them in place.
+const SAVED_SVC = { plausible: { domains: ["stats.acme.com"], replicas: 1 }, postgres: { backups: "off" } };
+const cloneSvc = (svc) => JSON.parse(JSON.stringify(svc));
+const EDITS = [{ id: "e1", service: "plausible", field: "DISABLE_REGISTRATION", value: "false", template: "true" }];
+
+let state = {
+  variant: location.hash.slice(1) || "tabs",
+  version: SAVED.version,
+  values: { ...SAVED.values },
+  svc: cloneSvc(SAVED_SVC),
+  data: {},          // removed Service name -> "keep" | "backup" | "delete"
+  edits: [...EDITS],
+  part: "db",        // topology variant: selected part
+  tab: "options",
+  updating: false,
+  updateValues: {},
+  toast: "",
+  applied: 0,
+};
+const set = (patch) => { state = { ...state, ...patch }; draw(); };
+const setValue = (key, value) => set({ values: { ...state.values, [key]: value } });
+
+function diff() {
+  const before = render(SAVED.version, SAVED.values, SAVED_SVC);
+  const after = render(state.version, state.values, state.svc);
+  const lines = [];
+  if (state.version !== SAVED.version) lines.push({ k: "Version", v: `v${SAVED.version} → v${state.version}` });
+  const pgA = RELEASES[SAVED.version].uses.postgres, pgB = RELEASES[state.version].uses.postgres;
+  if (pgA !== pgB && state.values.database === "bundled") lines.push({ k: "Postgres", v: `v${pgA} → v${pgB}` });
+  for (const opt of RELEASES[state.version].options) {
+    if (opt.kind === "portal") { if (!opt.nested || state.values.database === "bundled") lines.push(...portalLines(opt)); continue; }
+    const a = SAVED.values[opt.key], b = state.values[opt.key];
+    if (a !== b) lines.push({ k: opt.label, v: `${labelOf(opt, a)} → ${labelOf(opt, b)}` });
+  }
+  if (state.values.database === "existing" && SAVED.values.database === "existing" && SAVED.values.dbService !== state.values.dbService)
+    lines.push({ k: "Database", v: `${SAVED.values.dbService} → ${state.values.dbService}` });
+  const removed = before.filter((s) => !after.some((t) => t.name === s.name));
+  const added = after.filter((s) => !before.some((t) => t.name === s.name));
+  for (const s of added) lines.push({ k: s.name, v: "New", cls: "pink" });
+  for (const s of removed) lines.push({ k: s.name, v: "Removed", removed: s });
+  return { lines, removed, added, after, before };
+}
+function portalLines(opt) {
+  const a = SAVED_SVC[opt.service][opt.setting], b = state.svc[opt.service][opt.setting];
+  if (opt.setting === "domains") return [
+    ...b.filter((d) => !a.includes(d)).map((d) => ({ k: opt.label, v: `+ ${d}` })),
+    ...a.filter((d) => !b.includes(d)).map((d) => ({ k: opt.label, v: `− ${d}` })),
+  ];
+  const show = (v) => opt.setting === "backups" ? (v === "daily" ? "Daily" : "Off") : v;
+  return a === b ? [] : [{ k: opt.label, v: `${show(a)} → ${show(b)}` }];
+}
+const setSvc = (service, setting, value) => set({ svc: { ...state.svc, [service]: { ...state.svc[service], [setting]: value } } });
+function addDomain(form) {
+  const d = form.domain.value.trim().toLowerCase();
+  const cur = state.svc.plausible.domains;
+  if (d && !cur.includes(d)) setSvc("plausible", "domains", [...cur, d]);
+  return false;
+}
+function portalField(opt) {
+  const cur = state.svc[opt.service][opt.setting];
+  const changed = JSON.stringify(cur) !== JSON.stringify(SAVED_SVC[opt.service][opt.setting]);
+  let control = "";
+  if (opt.setting === "domains") control = `<div class="dlist">
+      ${cur.map((d) => `<div class="drow ${SAVED_SVC.plausible.domains.includes(d) ? "" : "new"}"><span class="ok"></span><span class="grow mono">${d}</span><button class="btn ghost sm" aria-label="Remove ${d}" onclick="setSvc('plausible','domains',state.svc.plausible.domains.filter((x)=>x!=='${d}'))">✕</button></div>`).join("")}
+      <div class="drow gen"><span class="ok"></span><span class="grow mono muted">plausible-shop.ployz.app</span></div>
+      <form class="dadd" onsubmit="return addDomain(this)"><input class="input" name="domain" placeholder="analytics.example.com" autocapitalize="off" autocorrect="off"><button class="btn sm">Add</button></form>
+    </div>`;
+  if (opt.setting === "replicas") control = `<div class="stepper"><button class="btn sm" ${cur <= 1 ? "disabled" : ""} onclick="setSvc('plausible','replicas',${cur - 1})">−</button><span class="mono">${cur}</span><button class="btn sm" ${cur >= 10 ? "disabled" : ""} onclick="setSvc('plausible','replicas',${cur + 1})">+</button></div>`;
+  if (opt.setting === "backups") control = `<div class="seg">${[["daily", "Daily"], ["off", "Off"]].map(([k, t]) => `<button class="${cur === k ? "on" : ""}" onclick="setSvc('postgres','backups','${k}')">${t}</button>`).join("")}</div>`;
+  const chip = opt.nested ? `${icon.layers}Postgres` : `${icon.box}${opt.service}`;
+  return `<div class="pf ${changed ? "changed" : ""}">
+    <div class="pfh"><label>${opt.label}</label><button class="portal" onclick="toast('Opens ${opt.nested ? "Postgres" : opt.service} settings')">${chip}</button></div>
+    <div class="desc">${opt.description}</div>${control}</div>`;
+}
+const labelOf = (opt, v) => opt.kind === "choice" ? (opt.choices.find((c) => c[0] === v)?.[1] ?? "Not set") : (v || "Not set");
+
+const icon = {
+  layers: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83Z"/><path d="m22 17.65-9.17 4.16a2 2 0 0 1-1.66 0L2 17.65"/><path d="m22 12.65-9.17 4.16a2 2 0 0 1-1.66 0L2 12.65"/></svg>`,
+  box: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/><path d="m3.3 7 8.7 5 8.7-5"/><path d="M12 22V12"/></svg>`,
+  disk: `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14a9 3 0 0 0 18 0V5"/><path d="M3 12a9 3 0 0 0 18 0"/></svg>`,
+  link: `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>`,
+  expand: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 3h6v6"/><path d="M9 21H3v-6"/><path d="M21 3l-7 7"/><path d="M3 21l7-7"/></svg>`,
+};
+
+// ---------- shared pieces ----------
+function optionField(opt) {
+  if (opt.kind === "portal") return opt.nested && state.values.database !== "bundled" ? "" : portalField(opt);
+  const v = state.values[opt.key];
+  const changed = SAVED.values[opt.key] !== v;
+  const unset = v == null || v === "";
+  let control = "";
+  control = `<div class="seg">${opt.choices.map(([cv, cl]) => `<button class="${cv === v ? "on" : ""}" onclick="setValue('${opt.key}','${cv}')">${cl}</button>`).join("")}</div>`;
+  let sub = "";
+  if (opt.key === "database" && v === "existing") sub = `<div class="sub">Service <select class="input" style="width:auto;padding:3px 6px" onchange="setValue('dbService',this.value)">${EXISTING.map((s) => `<option ${s === state.values.dbService ? "selected" : ""}>${s}</option>`).join("")}</select></div>`;
+  if (opt.key === "events" && v === "external") sub = `<div class="sub"><input class="input" placeholder="http://clickhouse:8123/plausible" value="${state.values.eventsUrl}" oninput="state.values.eventsUrl=this.value"></div>`;
+  return `<div class="field ${changed ? "changed" : ""} ${unset && opt.kind === "choice" ? "unset" : ""}"><label>${opt.label}</label><div>${control}</div>${sub}</div>`;
+}
+
+function serviceRows() {
+  const { after, removed, added } = diff();
+  const row = (s) => `<div class="row ${added.includes(s) ? "new" : ""}">
+      <div class="sicon">${icon.box}</div>
+      <div class="grow"><div class="name">${s.name}</div><div class="meta mono">${s.image} · ${s.meta}</div></div>
+      ${s.volume ? `<span class="chip">${icon.disk}${s.volume.name}</span>` : ""}
+      ${added.includes(s) ? `<span class="badge pink">New</span>` : ""}
+    </div>`;
+  const rows = after.filter((s) => !s.via).map(row);
+  const nested = after.filter((s) => s.via);
+  if (nested.length) {
+    const v = nested[0].via.version, isNew = nested.every((s) => added.includes(s));
+    rows.push(`<div class="group ${isNew ? "new" : ""}"><div class="gh">${icon.layers}<b>Postgres</b><span class="badge">v${v}</span>
+      <span class="muted" style="flex:1;text-align:right;font-size:12px">${v < 2 ? "v2 comes with Plausible v3" : "Managed by Plausible"}</span></div>
+      ${nested.map(row).join("")}</div>`);
+  }
+  for (const s of removed) rows.push(`<div class="row gone"><div class="sicon">${icon.box}</div><div class="grow"><div class="name">${s.name}</div><div class="meta">${s.volume ? `${s.volume.name} · ${s.volume.size}` : ""}</div></div><span class="badge red">Removed</span></div>`);
+  if (state.values.database === "existing") rows.push(`<div class="row" style="border-style:dashed"><div class="sicon">${icon.link}</div><div class="grow"><div class="name">${state.values.dbService}</div><div class="meta">Database · not part of Plausible</div></div></div>`);
+  return rows.join("");
+}
+
+function versionBlock() {
+  const latest = 3;
+  return state.version < latest
+    ? `<div style="display:flex;align-items:center;gap:10px"><span class="muted" style="flex:1">v${latest} available</span><button class="btn primary sm" onclick="openUpdate()">Update to v${latest}</button></div>`
+    : `<div class="muted">Up to date</div>`;
+}
+
+function editsBlock() {
+  if (!state.edits.length) return "";
+  return `<div class="sec"><div class="sech"><span>Edits</span><span>${state.edits.length}</span></div>
+    ${state.edits.map((e) => `<div class="row"><div class="grow"><div class="name mono">${e.service} · ${e.field}</div><div class="meta mono">${e.value} · template: ${e.template}</div></div><button class="btn ghost sm" onclick="resetEdit('${e.id}')">Reset</button></div>`).join("")}
+  </div>`;
+}
+const resetEdit = (id) => set({ edits: state.edits.filter((e) => e.id !== id), toast: "Reset" });
+
+function footHtml() {
+  const { lines } = diff();
+  if (!lines.length) return "";
+  const pending = lines.filter((l) => l.removed && l.removed.volume && !state.data[l.removed.name]);
+  return `<div class="foot" id="foot">
+    <div class="lines">${lines.map((l) => {
+      let html = `<div class="cl"><span class="k">${l.k}</span><span class="v ${l.removed ? "" : "mono"}">${l.cls ? `<span class="badge pink">${l.v}</span>` : l.removed ? `<span class="badge red">${l.removed.volume ? "Deletes data" : "Removed"}</span>` : l.v}</span></div>`;
+      if (l.removed && l.removed.volume) {
+        const c = state.data[l.removed.name];
+        html += `<div class="datapick"><div class="muted" style="font-size:12px;margin-bottom:6px">${icon.disk} ${l.removed.volume.name} · ${l.removed.volume.size}</div>
+          <div class="seg">${[["keep", "Keep data"], ["backup", "Back up, then delete"], ["delete", "Delete"]].map(([k, t]) => `<button class="${c === k ? "on" : ""}" onclick="pickData('${l.removed.name}','${k}')">${t}</button>`).join("")}</div></div>`;
+      }
+      return html;
+    }).join("")}</div>
+    <div class="factions"><span class="count">${lines.length} ${lines.length === 1 ? "change" : "changes"}</span>
+      <button class="btn ghost sm" onclick="discard()">Discard</button>
+      <button class="btn pink sm" ${pending.length ? "disabled" : ""} onclick="apply()">Apply</button></div>
+  </div>`;
+}
+const pickData = (name, choice) => set({ data: { ...state.data, [name]: choice } });
+const discard = () => set({ values: { ...SAVED.values }, svc: cloneSvc(SAVED_SVC), version: SAVED.version, data: {} });
+function apply() {
+  const n = diff().lines.length;
+  Object.assign(SAVED, { version: state.version, values: { ...state.values } });
+  Object.assign(SAVED_SVC, cloneSvc(state.svc));
+  set({ data: {}, toast: `${n} ${n === 1 ? "change" : "changes"} added to Deploy` });
+}
+function drawFoot() { const f = document.getElementById("foot-slot"); if (f) f.innerHTML = footHtml(); }
+
+function header() {
+  const svcCount = diff().after.length;
+  return `<div class="phead"><div class="ticon">${icon.layers}</div>
+    <div style="flex:1;min-width:0"><div class="ptitle">Plausible</div><div class="muted" style="font-size:12.5px">Template · ${svcCount} services</div></div>
+    <span class="badge">v${state.version}</span></div>`;
+}
+
+// ---------- variant A: form ----------
+function variantForm() {
+  const opts = RELEASES[state.version].options;
+  return `${header()}<div class="pbody">
+    <div class="sec">${versionBlock()}</div>
+    <div class="sec"><div class="sech"><span>Options</span></div>${opts.map(optionField).join("")}</div>
+    <div class="sec"><div class="sech"><span>Services</span><button class="btn ghost sm" onclick="toast('Opens the services on the canvas')">${icon.expand} Open</button></div>${serviceRows()}</div>
+    ${editsBlock()}
+  </div><div id="foot-slot">${footHtml()}</div>`;
+}
+
+// ---------- variant B: topology ----------
+const POS = { web: [50, 22], events: [24, 74], db: [76, 74] };
+function variantTopo() {
+  const { after, removed, added } = diff();
+  const opts = RELEASES[state.version].options;
+  const byPart = (p) => after.find((s) => s.part === p) ?? null;
+  const gonePart = (p) => removed.find((s) => s.part === p) ?? null;
+  const nodes = ["web", "events", "db"].map((p) => {
+    const s = byPart(p), g = gonePart(p);
+    const opt = opts.find((o) => o.part === p);
+    const [x, y] = POS[p];
+    let cls = "", title = "", meta = "";
+    if (s) { title = s.name; meta = s.meta; if (added.includes(s)) cls = "new"; }
+    else if (g) { title = g.name; meta = "Removed"; cls = "gone"; }
+    else if (p === "db") { title = state.values.dbService; meta = "Existing"; cls = "ext"; }
+    else { title = "ClickHouse"; meta = "External"; cls = "ext"; }
+    return `<button class="tnode ${cls} ${state.part === p ? "sel" : ""}" style="left:${x}%;top:${y}%" onclick="set({part:'${p}'})">
+      ${opt ? `<span class="opt">${opt.key === "replicas" ? `${state.svc.plausible.replicas}×` : labelOf(opt, state.values[opt.key])}</span>` : ""}
+      <div class="n">${title}</div><div class="muted" style="font-size:11.5px">${meta}</div></button>`;
+  }).join("");
+  const lines = `<svg viewBox="0 0 100 100" preserveAspectRatio="none">${["events", "db"].map((p) => `<line x1="${POS.web[0]}" y1="${POS.web[1] + 8}" x2="${POS[p][0]}" y2="${POS[p][1] - 8}" stroke="#c9c9c9" stroke-width="0.6" ${byPart(p) ? "" : 'stroke-dasharray="2 2"'} vector-effect="non-scaling-stroke"/>`).join("")}</svg>`;
+  const partOpts = opts.filter((o) => o.part === state.part);
+  const partName = { web: "plausible", events: "Events", db: "Database" }[state.part];
+  const global = opts.filter((o) => !o.part);
+  return `${header()}<div class="pbody">
+    <div class="sec" style="padding-top:12px">${versionBlock()}
+      <div class="topo">${lines}${nodes}</div>
+      <div class="callout"><div class="sech" style="margin:8px 0 2px">${partName}</div>${partOpts.map(optionField).join("")}</div>
+    </div>
+    <div class="sec"><div class="sech"><span>Options</span></div>${global.map(optionField).join("")}</div>
+    ${editsBlock()}
+  </div><div id="foot-slot">${footHtml()}</div>`;
+}
+
+// ---------- variant C: tabs ----------
+function variantTabs() {
+  const opts = RELEASES[state.version].options;
+  const changedOpts = diff().lines.length > 0;
+  const tab = state.tab;
+  const t = (k, label, dot) => `<button class="${tab === k ? "on" : ""}" onclick="set({tab:'${k}'})">${label}${dot ? '<span class="dot"></span>' : ""}</button>`;
+  let body = "";
+  if (tab === "options") body = `<div class="sec">${opts.map(optionField).join("")}</div>`;
+  if (tab === "services") body = `<div class="sec">${serviceRows()}</div>${editsBlock()}`;
+  if (tab === "version") body = `<div class="sec">${versionBlock()}</div>
+    <div class="sec"><div class="sech">History</div>
+      <div class="cl"><span class="k">v2 · Database bundled</span><span class="v muted">Aug 12</span></div>
+      <div class="cl" style="margin-top:6px"><span class="k">v1 → v2</span><span class="v muted">Jun 3</span></div></div>
+    ${state.values.database === "bundled" ? `<div class="sec"><div class="sech">Uses</div><div class="cl"><span class="k">${icon.layers} Postgres</span><span class="v mono">v${RELEASES[state.version].uses.postgres}</span></div></div>` : ""}`;
+  return `${header()}<div class="tabs">${t("options", "Settings", changedOpts)}${t("services", "Services", false)}${t("version", "Version", state.version < 3)}</div>
+    <div class="pbody">${body}</div><div id="foot-slot">${footHtml()}</div>`;
+}
+
+// ---------- update sheet ----------
+function openUpdate() { set({ updating: true, updateValues: { signups: null, pgData: null } }); }
+function updateSheet() {
+  const from = SAVED.version, to = 3;
+  const a = RELEASES[from].images, b = RELEASES[to].images;
+  const after = render(to, state.values, state.svc);
+  const imgLines = after.filter((s) => !s.via && a[s.part] !== b[s.part]).map((s) => `<div class="cl"><span class="k">${s.name}</span><span class="v mono">${a[s.part].split(":")[1]} → ${b[s.part].split(":")[1]}</span></div>`).join("");
+  const pgFrom = RELEASES[from].uses.postgres, pgTo = RELEASES[to].uses.postgres;
+  const pgUp = state.values.database === "bundled" && pgFrom !== pgTo;
+  const pgData = state.updateValues.pgData;
+  const pgBlock = pgUp ? `<div class="sech" style="margin-top:16px">Postgres</div>
+      <div class="cl"><span class="k">v${pgFrom} → v${pgTo}</span><span class="v mono">postgres ${POSTGRES[pgFrom].major} → ${POSTGRES[pgTo].major}</span></div>
+      <div class="cl" style="margin-top:6px"><span class="k">plausible-db</span><span class="v"><span class="badge warn">Upgrades data</span></span></div>
+      <div class="datapick warn" style="margin-top:8px"><div class="muted" style="font-size:12px;margin-bottom:6px">${icon.disk} plausible-pg · 1.1 GB</div>
+        <div class="seg">${[["backup", "Back up, then upgrade"], ["inplace", "Upgrade"]].map(([k, t]) => `<button class="${pgData === k ? "on" : ""}" onclick="state.updateValues.pgData='${k}';draw()">${t}</button>`).join("")}</div></div>` : "";
+  const signups = state.updateValues.signups;
+  const signOpt = RELEASES[to].options.find((o) => o.key === "signups");
+  return `<div class="scrim" onclick="if(event.target===this)set({updating:false})"><div class="sheet">
+    <div class="sh">${icon.layers} Update to v${to}</div>
+    <div class="sb">
+      <div class="sech" style="margin-top:10px">Images</div>${imgLines}
+      ${pgBlock}
+      <div class="sech" style="margin-top:16px">New option</div>
+      <div class="field ${signups ? "changed" : "unset"}"><label>${signOpt.label}</label><div><div class="seg">${signOpt.choices.map(([cv, cl]) => `<button class="${cv === signups ? "on" : ""}" onclick="state.updateValues.signups='${cv}';draw()">${cl}</button>`).join("")}</div></div></div>
+      ${state.edits.length ? `<div class="sech" style="margin-top:16px">Edits</div>${state.edits.map((e) => `<div class="cl"><span class="k mono">${e.service} · ${e.field}</span><span class="v"><span class="badge warn">Replaced</span></span></div>`).join("")}` : ""}
+      <div class="muted" style="font-size:12.5px;margin-top:16px">Your settings stay.</div>
+    </div>
+    <div class="sf">${(() => { const left = (signups ? 0 : 1) + (pgUp && !pgData ? 1 : 0); return left ? `<span class="muted" style="flex:1;font-size:12.5px">${left} to set</span>` : ""; })()}<button class="btn ghost" onclick="set({updating:false})">Cancel</button><button class="btn primary" ${signups && (!pgUp || pgData) ? "" : "disabled"} onclick="doUpdate()">Update</button></div>
+  </div></div>`;
+}
+function doUpdate() {
+  SAVED.values.signups = null; // the saved state never had it, so the footer shows the set value as a change
+  set({ updating: false, version: 3, values: { ...state.values, signups: state.updateValues.signups }, edits: [], toast: "" });
+}
+
+// ---------- shell ----------
+function canvas() {
+  const { after, removed } = diff();
+  return `<div class="tcard"><div class="stack s2"></div><div class="stack s1"></div><div class="face">
+    <div style="display:flex;align-items:center;gap:10px"><div class="ticon">${icon.layers}</div><div style="flex:1"><div class="ptitle" style="font-size:14px">Plausible</div><div class="muted" style="font-size:12px">${after.length} services</div></div><span class="badge">v${state.version}</span></div>
+    <div class="svcmini">${after.filter((s) => !s.via).map((s) => `<span class="chip">${s.name}</span>`).join("")}${after.some((s) => s.via) ? `<span class="chip">${icon.layers}Postgres</span>` : ""}${removed.map((s) => `<span class="chip gone">${s.name}</span>`).join("")}</div>
+  </div></div>`;
+}
+function toast(msg) { set({ toast: msg }); }
+let toastTimer;
+function draw() {
+  const v = { form: variantForm, topo: variantTopo, tabs: variantTabs }[state.variant] ?? variantForm;
+  document.getElementById("root").innerHTML = `<div class="app">
+    <div class="top"><div class="logo"></div><span class="crumb">shop</span><span class="muted">/</span><span class="crumb">production</span></div>
+    <div class="main"><div class="canvas">${canvas()}</div><div class="panel">${v()}</div></div>
+  </div>
+  <div class="switcher">${[["form", "A", "Form"], ["topo", "B", "Topology"], ["tabs", "C", "Tabs"]].map(([k, l, f]) => `<button class="${state.variant === k ? "on" : ""}" onclick="location.hash='${k}';set({variant:'${k}'})">${l}<span class="full"> · ${f}</span></button>`).join("")}</div>
+  ${state.updating ? updateSheet() : ""}
+  ${state.toast ? `<div class="toast">${state.toast}</div>` : ""}`;
+  if (state.toast) { clearTimeout(toastTimer); toastTimer = setTimeout(() => { state.toast = ""; draw(); }, 1800); }
+}
+draw();
+</script>
+</body>
+</html>

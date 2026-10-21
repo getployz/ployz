@@ -1,4 +1,6 @@
-import { defineConfig } from 'vite'
+import { existsSync, readFileSync } from 'node:fs'
+import { join } from 'node:path'
+import { defineConfig, type Plugin } from 'vite'
 import { devtools } from '@tanstack/devtools-vite'
 import { nitro } from 'nitro/vite'
 
@@ -8,6 +10,31 @@ import viteReact from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 
 const marketingOrigin = process.env['MARKETING_ORIGIN']
+
+// Dev only: `/__login` signs a browser in as the verify seed's user, for opening a verify env from another device.
+const verifyLogin: Plugin = {
+  name: 'verify-login',
+  apply: 'serve',
+  configureServer(server) {
+    server.middlewares.use('/__login', (_req, res) => {
+      const seed = join(server.config.root, '.verify/run/seed.json')
+      if (!existsSync(seed)) {
+        res.statusCode = 404
+        res.end('No verify seed. Run scripts/verify/up.sh.')
+        return
+      }
+      const { cookie, organizationSlug } = JSON.parse(readFileSync(seed, 'utf8'))
+      const attrs = 'Path=/; HttpOnly; SameSite=Lax; Max-Age=604800'
+      res.setHeader('Set-Cookie', [
+        `better-auth.session_token=${cookie}; ${attrs}`,
+        `__Secure-better-auth.session_token=${cookie}; ${attrs}; Secure`,
+      ])
+      res.statusCode = 302
+      res.setHeader('Location', `/cloud/${organizationSlug}/shop/production`)
+      res.end()
+    })
+  },
+}
 
 const config = defineConfig({
   resolve: {
@@ -34,6 +61,7 @@ const config = defineConfig({
     proxy: marketingOrigin ? { '/_astro': marketingOrigin, '/pagefind': marketingOrigin } : undefined,
   },
   plugins: [
+    verifyLogin,
     devtools(),
     tailwindcss(),
     tanstackStart({ client: { entry: './client.tsx' } }),

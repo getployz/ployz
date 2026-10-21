@@ -8,7 +8,9 @@ import {
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { useLoaderData, useLocation, useNavigate, useParams } from "@tanstack/react-router";
-import { PlusIcon } from "lucide-react";
+import { ArrowLeftIcon, LayersIcon, PlusIcon } from "lucide-react";
+import { Badge } from "#/components/ui/badge";
+import { useTemplateView } from "./template-view";
 import { Button } from "#/components/ui/button";
 import { BottomBar } from "./BottomBar";
 import { storeHintNotes } from "./store-hints";
@@ -40,6 +42,7 @@ import { RuntimeLensContext } from "./RuntimeLensProvider";
 import {
   ENVIRONMENT_ROUTE_FROM,
   ENVIRONMENT_SERVICE_ROUTE_TO,
+  ENVIRONMENT_TEMPLATE_ROUTE_TO,
 } from "../environment-route-paths";
 import type { CanvasResourceNode, StoreCanvas } from "./types";
 
@@ -150,7 +153,8 @@ export function CanvasFlow({
           </ReactFlow>
         </CanvasContextMenu>
       </div>
-      <CanvasNodeList store={store} selectedNodeId={selectedNodeId} />
+      <CanvasNodeList nodes={canvasNodes} selectedNodeId={selectedNodeId} />
+      <OpenTemplateBar store={store} />
       <div className="pointer-events-none absolute top-4 right-4 flex items-center gap-2">
         <SyncButton />
         <CanvasFinder nodes={findableNodes} />
@@ -176,7 +180,10 @@ export function CanvasFlow({
         onCreateConfig={openConfigCreatorFromServiceDialog}
         onCreated={async (result, stillHere) => {
           creator.setCreatorOpen(false);
-          if (stillHere) await navigate({
+          if (stillHere && result.install) await navigate({
+            to: ENVIRONMENT_TEMPLATE_ROUTE_TO, params: { ...params, templateId: result.install }, search: (prev) => prev,
+          });
+          else if (stillHere) await navigate({
             to: ENVIRONMENT_SERVICE_ROUTE_TO,
             params: {
               organizationSlug: params.organizationSlug,
@@ -231,8 +238,28 @@ function StoreBottomBar({ store }: { store: StoreCanvas }) {
         notes={storeHintNotes(diff, groups, actions.neverSync)}
         waiting={waiting}
         noServers={noServers}
+        toFix={store.templates.reduce((sum, instance) => sum + instance.toFix, 0)}
       />
       {actions.dialog}
     </>
+  );
+}
+
+/** Over a template's Services: where the canvas is, and the way back to everything. */
+function OpenTemplateBar({ store }: { store: StoreCanvas }) {
+  const { open, setOpen } = useTemplateView();
+  const { environmentSlug } = useParams({ from: ENVIRONMENT_ROUTE_FROM });
+  const instance = store.templates.find((candidate) => candidate.install.name === open);
+  if (!instance) return null;
+  return (
+    <div className="pointer-events-auto absolute top-4 left-4 z-10 flex items-center gap-1 rounded-lg border bg-background/90 p-1 text-sm shadow-sm backdrop-blur">
+      <Button type="button" variant="ghost" size="sm" aria-label={`Back to ${environmentSlug}`} onClick={() => setOpen(null)}>
+        <ArrowLeftIcon data-icon="inline-start" />
+        <span className="max-[860px]:hidden">{environmentSlug}</span>
+      </Button>
+      <span className="text-muted-foreground max-[860px]:hidden">/</span>
+      <span className="flex items-center gap-1.5 px-2 font-medium"><LayersIcon className="size-4 text-muted-foreground" />{instance.install.name}</span>
+      <Badge variant="outline" className="max-[860px]:hidden">v{instance.release.version}</Badge>
+    </div>
   );
 }

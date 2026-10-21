@@ -3,6 +3,8 @@ import { useRef, useState } from "react";
 import { useReactFlow } from "@xyflow/react";
 import { useLoaderData, useNavigate } from "@tanstack/react-router";
 import type { EnvironmentRef } from "@ployz/sdk";
+import { saveInstall } from "#/modules/config-store/template-values";
+import { newInstall, type Install, type Template, type TemplateMember } from "#/modules/config-store/templates";
 import { createServiceCommand, newServiceName, serviceName, uniqueName, type NewServiceSource } from "#/modules/config-store/store-services";
 import { databaseCommand, randomPassword, type DatabasePreset } from "#/modules/config-store/database-presets";
 import { servicesQuery, storeViewOptions, volumesQuery } from "#/modules/config-store/store-view.queries";
@@ -52,6 +54,36 @@ export function useCreateStoreService(organizationSlug: string) {
     const name = newServiceName(source, services(target.store));
     const { isPersisted } = writer.commit(createServiceCommand(id, target.store, name, source));
     return { service: { id }, persisted: isPersisted.promise };
+  };
+}
+
+/** Creates `members` as Services stamped with their Install, each with the Settings it renders. */
+export function createMembers(writer: ReturnType<typeof useStoreWriter>, environment: EnvironmentRef, install: Install, members: readonly TemplateMember[]) {
+  return members.map((member) => {
+    const id = crypto.randomUUID();
+    writer.commit({ command: "batch", environment, commands: [
+      { command: "create_service", id, environment, name: member.name, image: member.image,
+        template: { id: install.template, version: install.version } },
+      { command: "edit", environment, expect: null,
+        changes: Object.entries(member.set).map(([key, value]) => ({ op: "set", path: `${member.name}.${key}`, value })) },
+    ] });
+    return id;
+  });
+}
+
+/**
+ * Installs `template` at its newest release: its members as stamped Services, placed in a column where the canvas put
+ * it, and the Install's record. The result names the Install so the caller can open it.
+ */
+export function useCreateStoreInstall(organizationSlug: string) {
+  const { writer, place, services } = useStoreCreate(organizationSlug);
+  return (target: NewServicePlacement, template: Template) => {
+    const record = newInstall(template, serviceName(template.id === "postgres" ? "db" : template.id, services(target.store)));
+    const ids = createMembers(writer, target.store, record.install, record.receipt.members);
+    ids.forEach((id, index) => place({ environmentId: target.environmentId, resourceType: "service", resourceId: id,
+      x: target.position.x, y: target.position.y + index * (SERVICE_NODE_HEIGHT + SNAP_GRID[1] * 2) }));
+    saveInstall(organizationSlug, target.store, record);
+    return { service: { id: ids[0] ?? "" }, install: record.install.name, persisted: Promise.resolve() };
   };
 }
 

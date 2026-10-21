@@ -33,9 +33,11 @@ import {
 import {
   type NewServicePlacement,
   useCreateStoreDatabase,
+  useCreateStoreInstall,
   useCreateStoreService,
 } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/canvas/useServiceCreator";
 import { DATABASE_PRESETS, type DatabasePreset } from "#/modules/config-store/database-presets";
+import { templateById, type Template } from "#/modules/config-store/templates";
 import { randomName, type NewServiceSource } from "#/modules/config-store/store-services";
 import { environmentsQuery, fetchStoreView } from "#/modules/config-store/store-view.queries";
 import { useStoreWriter } from "#/modules/config-store/store-write";
@@ -83,7 +85,8 @@ type ServiceCommandProps = {
   };
   initialPanel?: CreatePanel;
   /** `stillHere` is false once the user moved on: close up, but don't take them anywhere. */
-  onCreated?: (result: { service: { id: string } }, stillHere: boolean) => void | Promise<void>;
+  /** `install` names the Install a template created, to open instead of its first Service. */
+  onCreated?: (result: { service: { id: string }; install?: string }, stillHere: boolean) => void | Promise<void>;
   onCreateVolume?: () => void;
   onCreateConfig?: () => void;
   /** Says when a create starts and ends, so the dialog around it can stay open meanwhile. */
@@ -158,8 +161,16 @@ function GitPanel(props: GitPanelProps) {
   return <GitRepoSelector {...props} />;
 }
 
-function DatabasePanel({ disabled, onSelectPreset }: { disabled: boolean; onSelectPreset: (preset: DatabasePreset) => void }) {
+const POSTGRES_TEMPLATE = templateById("postgres");
+
+function DatabasePanel({ disabled, onSelectPreset, onSelectTemplate }: {
+  disabled: boolean;
+  onSelectPreset: (preset: DatabasePreset) => void;
+  onSelectTemplate: (template: Template) => void;
+}) {
+  const PostgresLogo = DATABASE_LOGOS.postgres;
   return (
+    <>
     <CommandGroup>
       {DATABASE_PRESETS.map((preset) => {
         const Logo = DATABASE_LOGOS[preset.id];
@@ -171,6 +182,16 @@ function DatabasePanel({ disabled, onSelectPreset }: { disabled: boolean; onSele
         );
       })}
     </CommandGroup>
+    {POSTGRES_TEMPLATE && (
+      <CommandGroup heading="Templates">
+        <CommandItem value="Postgres template single HA" disabled={disabled} onSelect={() => onSelectTemplate(POSTGRES_TEMPLATE)}>
+          <PostgresLogo />
+          <span>Postgres</span>
+          <span className="ml-auto text-xs text-muted-foreground">Single or HA</span>
+        </CommandItem>
+      </CommandGroup>
+    )}
+    </>
   );
 }
 
@@ -195,6 +216,7 @@ function useServiceCreateActions({
   const markHere = useStillHere();
   const createStoreService = useCreateStoreService(props.organizationSlug);
   const createStoreDatabase = useCreateStoreDatabase(props.organizationSlug);
+  const createStoreInstall = useCreateStoreInstall(props.organizationSlug);
   // Holds the project a failed command already created, so any retry, from any panel, reuses it.
   const createdProjectRef = useRef<CreationTarget | null>(null);
   const storeWriter = useStoreWriter(props.organizationSlug);
@@ -269,7 +291,7 @@ function useServiceCreateActions({
     });
   }
 
-  const createInTarget = (create: (placement: NewServicePlacement) => ReturnType<typeof createStoreService>) =>
+  const createInTarget = (create: (placement: NewServicePlacement) => { service: { id: string }; install?: string; persisted: Promise<unknown> }) =>
     whileCreating(async () => {
       const stillHere = markHere();
       const target = props.mode === "service" ? await serviceModeTarget(props) : await createProjectTarget();
@@ -297,6 +319,8 @@ function useServiceCreateActions({
     createInTarget((placement) => createStoreService(placement, source));
   const createDatabase = (preset: DatabasePreset) =>
     createInTarget((placement) => createStoreDatabase(placement, preset));
+  const createInstall = (template: Template) =>
+    createInTarget((placement) => createStoreInstall(placement, template));
 
   function selectCreateItem({ id, panel }: CreateMenuItem) {
     if (panel) {
@@ -327,6 +351,7 @@ function useServiceCreateActions({
     setActivePanel,
     createServiceFromSource,
     createDatabase,
+    createInstall,
   };
 }
 
@@ -342,6 +367,7 @@ export function ServiceCreateCommand(props: ServiceCreateCommandProps) {
     setActivePanel,
     createServiceFromSource,
     createDatabase,
+    createInstall,
   } = useServiceCreateActions({ props, setPanel, setQuery });
 
   return (
@@ -421,7 +447,8 @@ export function ServiceCreateCommand(props: ServiceCreateCommandProps) {
             />
           ) : null}
           {panel.kind === "database" ? (
-            <DatabasePanel disabled={isPending} onSelectPreset={(preset) => void createDatabase(preset)} />
+            <DatabasePanel disabled={isPending} onSelectPreset={(preset) => void createDatabase(preset)}
+              onSelectTemplate={(template) => void createInstall(template)} />
           ) : null}
         </CommandList>
       </Command>
