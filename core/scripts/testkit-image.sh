@@ -1,20 +1,28 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Build TAG: this checkout's ployz, ployzd and entrypoint over the published
-# testkit image, whose nested Docker graph they reuse. testkit:main is
-# published only by a manual Cluster checks run on main, so its own binaries
-# and entrypoint can be any age. Host binaries need Ubuntu 24.04's glibc.
+# Build TAG: this checkout's ployz, ployzd and entrypoint over a testkit base
+# built here from crates/ployz-testkit/Dockerfile. The base keeps the stable
+# local tag ployz-testkit-base:local and is primed again only when Docker's
+# layer cache produced a different image. Host binaries need Ubuntu 24.04's glibc.
 #   PLOYZ_TESTKIT_IMAGE=$(scripts/testkit-image.sh ployz-testkit-checkout:dev)
 tag=${1:?usage: scripts/testkit-image.sh TAG}
-base=ghcr.io/getployz/ployz-testkit:main
+unprimed=ployz-testkit-base:unprimed
+base=ployz-testkit-base:local
 # From core/, so rustup takes the pinned rust-toolchain.toml.
 cd "$(dirname "$0")/.."
 core=$PWD
 
+docker build --provenance=false --tag "$unprimed" --file crates/ployz-testkit/Dockerfile "$core" >&2
+built=$(docker image inspect --format '{{.Id}}' "$unprimed")
+primed_from=$(docker image inspect --format '{{index .Config.Labels "dev.ployz.testkit.primed-from"}}' "$base" 2>/dev/null || true)
+if [ "$primed_from" != "$built" ]; then
+    echo "priming $base from $built" >&2
+    scripts/prime-testkit-image.sh "$unprimed" "$base" >&2
+fi
+
 cargo build --locked --package ployz --package ployzd >&2
 target=$(cargo metadata --format-version 1 --no-deps | jq -r .target_directory)
-docker image inspect "$base" >/dev/null 2>&1 || docker pull "$base" >&2
 
 context=$(mktemp -d)
 trap 'rm -rf "$context"' EXIT
