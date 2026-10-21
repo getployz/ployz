@@ -1030,6 +1030,19 @@ pub struct OutOfMemory {
     pub memory_bytes: Option<ByteQuantity>,
 }
 
+/// A stopped Container's last run, as its Server's Log Store holds it.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
+pub struct LastRun {
+    /// The code its newest exit had; `None` when Docker didn't say, or none is stored yet.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub exit_code: Option<i64>,
+    /// Its newest line, scrubbed of Sealed values.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub last_line: Option<String>,
+}
+
 /// Why a `service_healthy` dependency gate failed.
 #[derive(Clone, Debug, Error, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -1100,6 +1113,11 @@ pub enum ExecutionError {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[ts(optional)]
         out_of_memory: Option<OutOfMemory>,
+        /// What its Server's Log Store held of the run that ended, which the runner
+        /// reads once the Container stops: Machines don't send it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        last_run: Option<LastRun>,
     },
     #[error("dependency {dependency} failed health gate: {failure}")]
     DependencyHealth {

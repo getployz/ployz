@@ -393,11 +393,17 @@ pub(crate) async fn failed_tail(
     sealed: &SealedValues,
 ) -> LogText {
     match tail_frames(client, machine, container).await {
-        Some(frames) => tail_excerpt(frames, sealed),
+        Some(tail) => tail_excerpt(tail.frames, sealed),
         None => LogText::Withheld {
             why: Withheld::Unanswered,
         },
     }
+}
+
+/// A failed Container's raw last lines, and the code of its newest stored exit.
+pub(crate) struct Tail {
+    pub(crate) frames: Vec<String>,
+    pub(crate) exit_code: Option<i64>,
 }
 
 /// The raw last lines of failed Container `container` on `machine`, for
@@ -406,15 +412,18 @@ pub(crate) async fn tail_frames(
     client: &Client,
     machine: MachineId,
     container: ContainerId,
-) -> Option<Vec<String>> {
+) -> Option<Tail> {
     let target = MachineTarget::from(&machine);
     let read = async {
         let selector = LogHistoryRequest {
             container_id: Some(container),
             ..LogHistoryRequest::default()
         };
-        let newest = newest_lines(client, &target, selector, TAIL_FETCH).await?;
-        Ok::<_, RpcError>(frames(newest.into_iter().map(|(_, text)| text)))
+        let (newest, exit_code) = newest_lines(client, &target, selector, TAIL_FETCH).await?;
+        Ok::<_, RpcError>(Tail {
+            frames: frames(newest.into_iter().map(|(_, text)| text)),
+            exit_code,
+        })
     };
     tokio::time::timeout(TAIL_READ, read).await.ok()?.ok()
 }
@@ -446,7 +455,7 @@ pub(crate) async fn service_tail(
 ) -> Result<Option<LogText>, RpcError> {
     let target = MachineTarget::from(&machine);
     let read = async {
-        let newest = newest_lines(client, &target, selector, LineCap::MAX).await?;
+        let (newest, _) = newest_lines(client, &target, selector, LineCap::MAX).await?;
         if newest.is_empty() {
             return Ok(None);
         }
@@ -588,15 +597,16 @@ pub(crate) async fn container_env(
         .and_then(|details| details.environment)
 }
 
-/// The newest `fetch` lines `selector` picks, newest first. The error says why the Log
-/// Store could not be read.
+/// The newest `fetch` lines `selector` picks, newest first, and the code of the newest
+/// exit read with them. The error says why the Log Store could not be read.
 async fn newest_lines(
     client: &Client,
     target: &MachineTarget,
     selector: LogHistoryRequest,
     fetch: u16,
-) -> Result<Vec<(ContainerId, Vec<u8>)>, RpcError> {
+) -> Result<(Vec<(ContainerId, Vec<u8>)>, Option<i64>), RpcError> {
     let mut newest = Vec::new();
+    let mut exit = None;
     let mut cursor = None;
     loop {
         let request = op::LogHistory::into_request(LogHistoryRequest {
@@ -631,10 +641,10 @@ async fn newest_lines(
                         cause: Vec::new(),
                     });
                 }
-                HistoryRow::Container(_)
-                | HistoryRow::Gap { .. }
-                | HistoryRow::Exit { .. }
-                | HistoryRow::Heartbeat => {}
+                HistoryRow::Exit { exit_code, .. } => {
+                    exit.get_or_insert(exit_code);
+                }
+                HistoryRow::Container(_) | HistoryRow::Gap { .. } | HistoryRow::Heartbeat => {}
             }
         }
         if cursor.is_none() || newest.len() >= usize::from(fetch) {
@@ -642,7 +652,7 @@ async fn newest_lines(
         }
     }
     newest.truncate(usize::from(fetch));
-    Ok(newest)
+    Ok((newest, exit.flatten()))
 }
 
 /// Newest-first lines as frames in the order they were written.
