@@ -489,9 +489,8 @@
   }
 }
 
-/* Agent replies: chat-sized rhythm. tokens.css spends --color-muted on muted text, so code takes the muted surface. */
+/* Agent replies: chat-sized rhythm. */
 .typeset-chat {
   --typeset-flow: 1em;
   --typeset-leading: 1.6;
-  --color-muted: var(--muted);
 }
