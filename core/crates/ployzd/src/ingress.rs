@@ -44,11 +44,6 @@ pub(crate) mod caddy;
 
 use caddy::CaddyAdmin;
 
-/// Acks name the Containers routed, not a deploy.
-fn rotation_ack_deploy() -> DeploymentLogId {
-    DeploymentLogId::parse("rotation").expect("rotation is a valid deploy id")
-}
-
 /// What this process's ingress has published since it started: how many writes
 /// succeeded, and the Containers the last one acked per Service. A row already in
 /// Corrosion may predate a power-off, so only these count as this Machine's acks.
@@ -382,6 +377,21 @@ fn newest_local_ingress(machine: &Machine, containers: &[ServiceContainer]) -> O
         .map(|container| container.as_observation().container_id)
 }
 
+/// What the Caddyfile was last written from. A write while Caddy's admin socket is down
+/// isn't `through_admin`, since a starting Caddy may have read the Caddyfile before it.
+#[derive(Eq, PartialEq)]
+struct CaddyInput {
+    projection: IngressProjection,
+    caddy: Option<ContainerId>,
+    through_admin: bool,
+}
+
+impl CaddyInput {
+    fn loaded(&self, projection: &IngressProjection, caddy: Option<&ContainerId>) -> bool {
+        self.through_admin && self.projection == *projection && self.caddy.as_ref() == caddy
+    }
+}
+
 /// Watch replicated ingress inputs and concretely apply changed projections to Caddy.
 ///
 /// # Errors
@@ -403,6 +413,8 @@ where
     LoadDown: FnMut() -> DownFuture,
     DownFuture: Future<Output = Result<BTreeSet<MachineId>, CorrosionError>>,
 {
+    // Every Caddy reload clears passive health counts and re-arms a dead upstream, so an
+    // unchanged input is never reloaded.
     let mut last_input = None;
     let mut acked = BTreeMap::new();
     // Kept while every copy is out of reach.
@@ -439,41 +451,46 @@ where
                     let routes =
                         proxy_routes(&containers, |machine| down.contains(machine), &routed);
                     Ok((
-                        (
-                            IngressProjection::derive(
-                                &machine,
-                                &containers,
-                                &certificates,
-                                &routes,
-                            ),
-                            newest_local_ingress(&machine, &containers),
-                        ),
+                        IngressProjection::derive(&machine, &containers, &certificates, &routes),
+                        newest_local_ingress(&machine, &containers),
                         routes,
                     ))
                 }
                 (Err(error), _) | (_, Err(error)) => Err(io::Error::other(error)),
             };
             match input {
-                Ok((input, routes)) => {
-                    if last_input.as_ref() != Some(&input) {
-                        let result = async {
-                            let admin = connect().await.map_err(io::Error::other)?;
-                            apply_caddy(&input.0, &config_file, admin.as_ref())
-                                .await
-                                .map_err(io::Error::other)
-                        }
-                        .await;
-                        if let Err(error) = result {
-                            eprintln!(
-                                "failed to update Ingress Proxy configuration: {error}",
-                                error = ployz_core::error_chain::inline(&error),
-                            );
-                            if wait_before_retry(&shutdown).await {
-                                continue;
-                            }
+                Ok((projection, caddy, routes)) => {
+                    let loaded = last_input
+                        .as_ref()
+                        .is_some_and(|last: &CaddyInput| last.loaded(&projection, caddy.as_ref()));
+                    let result = async {
+                        if loaded {
                             return Ok(());
                         }
-                        last_input = Some(input);
+                        let admin = connect().await.map_err(io::Error::other)?;
+                        let input = CaddyInput {
+                            projection,
+                            caddy,
+                            through_admin: admin.is_some(),
+                        };
+                        if last_input.as_ref() != Some(&input) {
+                            apply_caddy(&input.projection, &config_file, admin.as_ref())
+                                .await
+                                .map_err(io::Error::other)?;
+                            last_input = Some(input);
+                        }
+                        Ok::<_, io::Error>(())
+                    }
+                    .await;
+                    if let Err(error) = result {
+                        eprintln!(
+                            "failed to update Ingress Proxy configuration: {error}",
+                            error = ployz_core::error_chain::inline(&error),
+                        );
+                        if wait_before_retry(&shutdown).await {
+                            continue;
+                        }
+                        return Ok(());
                     }
                     let acks = route_acks(&routes);
                     let published = acks
@@ -489,7 +506,6 @@ where
                     routed = routes;
                 }
                 Err(error) => {
-                    last_input = None;
                     eprintln!(
                         "failed to rebuild ingress projection: {error}",
                         error = ployz_core::error_chain::inline(&error),
@@ -518,7 +534,6 @@ fn route_acks(routes: &ProxyRoutes) -> BTreeMap<QualifiedService, IngressRouteAc
         .iter()
         .map(|(service, route)| {
             let ack = IngressRouteAck {
-                deploy: rotation_ack_deploy(),
                 containers: route
                     .iter()
                     .map(|serving| serving.as_observation().container_id)

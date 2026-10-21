@@ -41,6 +41,7 @@ CREATE TABLE ingress_routes
 (
     machine_id TEXT      NOT NULL,
     service_id TEXT      NOT NULL,
+    -- Unused. Corrosion refuses to drop a column, so it stays for stores that have it.
     deploy     TEXT      NOT NULL DEFAULT '',
     containers TEXT      NOT NULL DEFAULT '[]' CHECK (json_valid(containers)),
     PRIMARY KEY (machine_id, service_id)

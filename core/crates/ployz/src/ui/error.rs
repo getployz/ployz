@@ -47,13 +47,14 @@ impl Hint {
         }
     }
 
-    const fn label(&self) -> &'static str {
+    const fn label(&self) -> Option<&'static str> {
         match self {
-            Self::Next(_) => "next:",
-            Self::Inspect(_) => "inspect:",
-            Self::Retry(_) => "retry:",
-            Self::Undo(_) => "undo:",
-            Self::Closest(_) | Self::Valid(_) => "valid:",
+            Self::Next(_) => Some("next:"),
+            Self::Inspect(_) => Some("inspect:"),
+            Self::Retry(_) => Some("retry:"),
+            Self::Undo(_) => Some("undo:"),
+            Self::Closest(_) => None,
+            Self::Valid(_) => Some("valid:"),
         }
     }
 
@@ -79,7 +80,10 @@ impl Hint {
     ///
     /// Returns the writer's error.
     pub fn write(&self, out: &mut dyn io::Write) -> io::Result<()> {
-        writeln!(out, "{} {}", Tone::Label.paint(self.label()), self.text())
+        match self.label() {
+            Some(label) => writeln!(out, "{} {}", Tone::Label.paint(label), self.text()),
+            None => writeln!(out, "{}", self.text()),
+        }
     }
 
     /// Hints carried as `details` keys by an error that crossed the wire.
@@ -207,6 +211,23 @@ pub(crate) fn sentence(mut text: String) -> String {
     text
 }
 
+/// `next` follows `message` as its own sentence, with one break however
+/// `message` ended. A dangling colon introduces nothing, so it becomes the break.
+pub(crate) fn then_sentence(message: &str, next: &str) -> String {
+    match message.trim_end().trim_end_matches(':').trim_end() {
+        "" => next.to_owned(),
+        message => format!("{} {next}", sentence(message.to_owned())),
+    }
+}
+
+/// `what`, then `: reason` when there is a reason to give.
+pub(crate) fn with_reason(what: impl std::fmt::Display, reason: &str) -> String {
+    match reason.trim() {
+        "" => what.to_string(),
+        reason => format!("{what}: {reason}"),
+    }
+}
+
 #[cfg(test)]
 pub(crate) fn chain_text(error: Chain<'_>) -> String {
     inline(error)
@@ -319,7 +340,7 @@ mod tests {
         assert_eq!(
             String::from_utf8(out.into_inner()).unwrap(),
             "error: No Setting s1l\n\
-             valid: did you mean s11?\n\
+             did you mean s11?\n\
              valid: s1, s2, s3, s4, s5, s6, s7, s8, and 3 more\n"
         );
     }

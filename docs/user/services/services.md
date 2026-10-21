@@ -81,10 +81,14 @@ Open the service and click **⋮** next to its name. A running service offers **
   The header counts them, like **Restarting 4/12**. If a container doesn't come back, the restart
   stops there and leaves the rest untouched. The service shows why, like **Container 4 on web-2
   didn't come back**, with **Retry**.
-- **Stop** asks first: every container stops on every server until you start the service or
-  deploy. A stopped service reads **Stopped**, even when your app exits with an error code on
-  shutdown, as some wrappers like `npm start` do.
-- **Start** starts every stopped container.
+- **Stop** asks first: every server stops sending the service requests, then every container
+  stops, until you start the service or deploy. The containers stay on your servers. A stopped
+  service reads **Stopped**, even when your app exits with an error code on shutdown, as some
+  wrappers like `npm start` do.
+- **Start** starts the same containers again and sends them requests once they're healthy. A
+  container a deploy replaced can't come back this way; deploy the service instead.
+- Start and restart only send requests to containers a deploy put in service. A container a
+  failed deploy left behind runs but gets no requests. The command names it, and exits 3.
 
 The dashboard can't run a command in a service yet. The CLI does all four:
 
