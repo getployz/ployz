@@ -909,6 +909,37 @@ mod tests {
         assert_eq!(serde_json::to_value(&check.attention).unwrap(), json!([]));
     }
 
+    #[test]
+    fn status_warns_that_it_skips_a_machine_whose_proxy_config_is_unconfirmed() {
+        let [one, two, three] = machines();
+        let check = checked_routing(
+            listed(&[&one, &two, &three], &[]),
+            vec![(
+                web([routed_on(&one, '1'), routed_on(&three, '3')]),
+                Ok(routes_as_ployzd_answers(
+                    &[
+                        (&one, &['1', '3']),
+                        (&two, &['1', '3']),
+                        (&three, &['1', '3']),
+                    ],
+                    &[],
+                )),
+            )],
+            BTreeMap::from([
+                (one.id, web_routed_at(&[('1', [10, 210, 0, 1])])),
+                (two.id, RoutedAddresses { routes: None }),
+            ]),
+        );
+
+        assert_eq!(serde_json::to_value(&check.attention).unwrap(), json!([]));
+        assert_eq!(
+            warned(&check),
+            [
+                "machine-2 has not confirmed what its proxy serves, so status is not checking it for stale addresses."
+            ]
+        );
+    }
+
     fn checked_with_an_old_copy(rotation: CopyRotation) -> Check {
         let [one, two, three] = machines();
         checked(

@@ -1378,7 +1378,7 @@ async fn routed_addresses_leave_out_an_https_route_caddy_has_no_certificate_for(
 }
 
 #[tokio::test]
-async fn routed_addresses_wait_for_caddy_to_load_a_config_written_without_its_admin() {
+async fn routed_addresses_claim_nothing_while_caddy_may_serve_a_config_written_without_its_admin() {
     let WatcherFixture {
         machine,
         state,
@@ -1415,12 +1415,19 @@ async fn routed_addresses_wait_for_caddy_to_load_a_config_written_without_its_ad
     settle().await;
     assert_eq!(
         published.borrow().addresses,
-        Some(BTreeMap::from([(
-            api.identity(),
-            BTreeMap::from([(api.container_id, api.address.unwrap())])
-        )])),
-        "the running Caddy still serves 10.210.1.2"
+        None,
+        "Caddy serves 10.210.1.2 until it restarts from the file that routes 10.210.1.7"
     );
+    state.set_address(api.container_id, [10, 210, 1, 2]);
+    wait_for_caddyfile(&caddyfile, "10.210.1.2:80").await;
+    settle().await;
+    assert_eq!(
+        published.borrow().addresses,
+        None,
+        "a Caddy that restarted from the last file still routes 10.210.1.7"
+    );
+    state.set_address(api.container_id, [10, 210, 1, 7]);
+    wait_for_caddyfile(&caddyfile, "10.210.1.7:80").await;
 
     admin_up.store(true, Ordering::SeqCst);
     state.send(b"{\"change\":{}}\n");
@@ -1437,6 +1444,45 @@ async fn routed_addresses_wait_for_caddy_to_load_a_config_written_without_its_ad
     )
     .await
     .expect("Caddy loaded 10.210.1.7, so it is recorded")
+    .unwrap();
+
+    shutdown.cancel();
+    watcher.await.unwrap().unwrap();
+    server.abort();
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[tokio::test]
+async fn routed_addresses_are_empty_on_a_machine_with_no_caddy() {
+    let WatcherFixture {
+        machine,
+        state,
+        address,
+        server,
+        directory,
+    } = watcher_fixture().await;
+    state.containers.lock().unwrap().remove(1);
+    let caddyfile = directory.join(CONFIG_FILE);
+    let (route_publishes, mut published) =
+        tokio::sync::watch::channel(crate::ingress::PublishedRoutes::default());
+    let shutdown = CancellationToken::new();
+    let watcher = tokio::spawn(watch_caddy(
+        machine.clone(),
+        ReplicatedStore::new(ApiClient::http1(address, &"a".repeat(64)).unwrap()),
+        no_down,
+        caddyfile.clone(),
+        route_publishes,
+        shutdown.clone(),
+        || std::future::ready(Ok(None::<TestAdmin>)),
+    ));
+
+    wait_for_caddyfile(&caddyfile, "10.210.1.2:80").await;
+    timeout(
+        Duration::from_secs(5),
+        published.wait_for(|published| published.addresses == Some(BTreeMap::new())),
+    )
+    .await
+    .expect("no Caddy runs here, so this Machine routes nothing")
     .unwrap();
 
     shutdown.cancel();
