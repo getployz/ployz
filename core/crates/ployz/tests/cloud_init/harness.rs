@@ -948,6 +948,12 @@ impl FakeMachine for JoinDaemon {
         };
         rpc_ok(RoutesRead::default())
     }
+    async fn read_routed_addresses(
+        &self,
+        _request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        unused()
+    }
     async fn pull_image(
         &self,
         _request: Request<OpaquePayload>,

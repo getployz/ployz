@@ -783,6 +783,14 @@ impl MachineRpc for MachineService {
             down: membership.down,
         })
     }
+
+    async fn read_routed_addresses(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        expect::<op::ReadRoutedAddresses>(request)?;
+        todo!("answer with the addresses this Machine's proxy last applied")
+    }
 }
 
 fn listed(ackers: &Ackers) -> impl Iterator<Item = ployz_core::MachineId> + '_ {

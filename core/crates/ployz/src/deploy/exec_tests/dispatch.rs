@@ -449,6 +449,7 @@ async fn removal_sent(purpose: ployz_core::RemoveContainerPurpose) -> Vec<Contai
                     | RpcRequestBody::InspectBuildGrant(_)
                     | RpcRequestBody::PublishCertificateMaterial(_)
                     | RpcRequestBody::ReadRoutes(_)
+                    | RpcRequestBody::ReadRoutedAddresses(_)
                     | RpcRequestBody::MetricHistory(_)
                     | RpcRequestBody::RetainedEnv(_)
                     | RpcRequestBody::LogHistory(_)

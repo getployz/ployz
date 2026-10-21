@@ -2,14 +2,14 @@
 //! Machine, and each live Machine whose proxy lacks a Service's In copies or still routes
 //! its Out or Held ones. What the check could not see is a warning, never an all-clear.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use clap::ArgMatches;
 use futures_util::{StreamExt, stream};
 use ployz_core::{
     ContainerId, CopyRotation, EnvironmentValues, LiveServices, MachineId, MachineName,
-    MachineObservation, MembershipObservation, Namespace, QualifiedService, RoutesRead, RpcError,
-    ServiceContainer, ServiceObservation, Unacked, serving_containers,
+    MachineObservation, MembershipObservation, Namespace, QualifiedService, RoutedAddresses,
+    RoutesRead, RpcError, ServiceContainer, ServiceObservation, Unacked, serving_containers,
 };
 use ployz_store::{DeploymentStatus, DeploymentSummary};
 use serde::Serialize;
@@ -126,6 +126,8 @@ enum Copies {
         /// Each Service of the namespace that has serving copies, with its routes as
         /// one Server reads them.
         reads: Vec<(ServiceObservation, Result<RoutesRead, RpcError>)>,
+        /// Each Machine that answered with the addresses its proxy last applied.
+        routed: BTreeMap<MachineId, RoutedAddresses>,
     },
 }
 
@@ -183,7 +185,11 @@ async fn observe(
     };
     Ok(Observed {
         machines,
-        copies: Copies::Listed { live, reads },
+        copies: Copies::Listed {
+            live,
+            reads,
+            routed: BTreeMap::new(),
+        },
     })
 }
 
@@ -261,7 +267,7 @@ fn judge(observed: Observed) -> Check {
             check.unseen.push(Unseen::Unlisted(error));
             return check;
         }
-        Copies::Listed { live, reads } => (live, reads),
+        Copies::Listed { live, reads, .. } => (live, reads),
     };
     let unanswered: Vec<MachineId> = live
         .containers
@@ -563,13 +569,39 @@ mod tests {
         machines: Vec<MachineObservation>,
         reads: Vec<(ServiceObservation, Result<RoutesRead, RpcError>)>,
     ) -> Check {
+        checked_routing(machines, reads, BTreeMap::new())
+    }
+
+    fn checked_routing(
+        machines: Vec<MachineObservation>,
+        reads: Vec<(ServiceObservation, Result<RoutesRead, RpcError>)>,
+        routed: BTreeMap<MachineId, RoutedAddresses>,
+    ) -> Check {
         judge(Observed {
             machines,
             copies: Copies::Listed {
                 live: listing(&[]),
                 reads,
+                routed,
             },
         })
+    }
+
+    fn web_routed_at(copies: &[(char, [u8; 4])]) -> RoutedAddresses {
+        RoutedAddresses {
+            routes: BTreeMap::from([(
+                qualified("app", "web"),
+                copies
+                    .iter()
+                    .map(|(hex, address)| {
+                        (
+                            container_id(*hex),
+                            ContainerAddress(Ipv4Addr::from(*address)),
+                        )
+                    })
+                    .collect(),
+            )]),
+        }
     }
 
     fn warned(check: &Check) -> Vec<String> {
@@ -628,6 +660,50 @@ mod tests {
         assert_eq!(
             super::super::link::rendered(check.attention),
             "organization  ?\nsigned in as  local\nweb           machine-3 has not picked up the new copies. Check its network.\n"
+        );
+    }
+
+    #[test]
+    fn status_names_a_machine_whose_proxy_routes_a_copy_at_an_address_its_owner_does_not_report() {
+        let [one, two, three] = machines();
+        let check = checked_routing(
+            listed(&[&one, &two, &three], &[]),
+            vec![(
+                web([routed_on(&one, '1'), routed_on(&two, '2')]),
+                Ok(routes_as_ployzd_answers(
+                    &[
+                        (&one, &['1', '2']),
+                        (&two, &['1', '2']),
+                        (&three, &['1', '2']),
+                    ],
+                    &[],
+                )),
+            )],
+            BTreeMap::from([
+                (
+                    one.id,
+                    web_routed_at(&[('1', [10, 210, 0, 1]), ('2', [10, 210, 0, 1])]),
+                ),
+                (
+                    three.id,
+                    web_routed_at(&[('1', [10, 210, 2, 2]), ('2', [10, 210, 0, 1])]),
+                ),
+            ]),
+        );
+
+        assert_eq!(
+            serde_json::to_value(&check.attention).unwrap(),
+            json!([{
+                "reason": "routes_stale_address",
+                "message": "machine-3 routes a copy to 10.210.2.2, which its owner does not report. Check its network.",
+                "service": "app/web",
+                "machine": "machine-3",
+                "addresses": ["10.210.2.2"],
+            }])
+        );
+        assert_eq!(
+            super::super::link::rendered(check.attention),
+            "organization  ?\nsigned in as  local\nweb           machine-3 routes a copy to 10.210.2.2, which its owner does not report. Check its network.\n"
         );
     }
 
@@ -893,6 +969,7 @@ mod tests {
             copies: Copies::Listed {
                 live: listing(&[&two, &three]),
                 reads: Vec::new(),
+                routed: BTreeMap::new(),
             },
         });
 

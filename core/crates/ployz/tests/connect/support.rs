@@ -1336,6 +1336,12 @@ impl FakeMachine for DiscoveryService {
                 .unwrap(),
         ))
     }
+    async fn read_routed_addresses(
+        &self,
+        _request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        Err(Status::unimplemented("unused"))
+    }
     async fn pull_image(
         &self,
         _request: Request<OpaquePayload>,
