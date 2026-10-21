@@ -2,13 +2,10 @@
 # Capture real `ployz` CLI output against a throwaway 4-Machine testkit Cluster
 # (alpha, beta, gamma, plus a lone solo).
 #
-# Prerequisites (manual):
-#   - Docker that can run --privileged containers.
-#   - Debug binaries of this checkout: (cd core && cargo build -p ployz -p ployzd)
-#   - Base testkit image: docker pull ghcr.io/getployz/ployz-testkit:main
-#     This script layers this checkout's debug ployzd/ployz and testkit
-#     entrypoint on top of it as ployz-cli-capture:ID, so the daemon matches
-#     the CLI.
+# Prerequisites: Docker that can run --privileged containers.
+# scripts/testkit-image.sh builds this checkout's debug ployzd/ployz and
+# layers them and the testkit entrypoint over ghcr.io/getployz/ployz-testkit:main
+# as ployz-cli-capture:ID, so the daemon matches the CLI.
 #
 # Nothing touches ~/.config/ployz or real Servers: HOME is a fresh
 # /tmp/ployz-cap-home-ID.XXXXXX, the Config Store is the hidden SQLite one
@@ -38,12 +35,11 @@ ID=$(od -An -N4 -tx4 /dev/urandom | tr -d ' ')
 NAME=cli-capture-$ID
 NET=ployz-testkit-$NAME
 IMAGE=ployz-cli-capture:$ID
+"$CORE/scripts/testkit-image.sh" "$IMAGE" >/dev/null || exit 1
 HOME=$(mktemp -d "/tmp/ployz-cap-home-$ID.XXXXXX") || exit 1
 readonly DOCS CORE CAPTURES ID NAME NET IMAGE HOME
 export HOME
-build_ctx=''
 teardown() {
-  [ -z "$build_ctx" ] || rm -rf "$build_ctx"
   [ "${KEEP:-0}" != 1 ] || return 0
   docker ps -aq -f "label=dev.ployz.testkit.cluster=$NAME" | xargs -r docker rm -f -v >/dev/null 2>&1 || true
   docker network rm "$NET" >/dev/null 2>&1 || true
@@ -77,12 +73,6 @@ mkdir -p "$HOME/.ssh" "$HOME/bin"; ssh-keygen -q -t ed25519 -N '' -f "$HOME/.ssh
 printf 'Host *\n  UserKnownHostsFile %s/.ssh/known_hosts\n  IdentityFile %s/.ssh/id_ed25519\n' "$HOME" "$HOME" >"$HOME/.ssh/config"
 printf '#!/bin/sh\nexec /usr/bin/ssh -F %s/.ssh/config "$@"\n' "$HOME" >"$HOME/bin/ssh"; chmod +x "$HOME/bin/ssh"
 export PATH="$HOME/bin:$PATH"
-build_ctx=$(mktemp -d) || exit 1
-cp "$CORE/target/debug/ployzd" "$CORE/target/debug/ployz" "$build_ctx/"
-cp "$CORE/crates/ployz-testkit/entrypoint.sh" "$build_ctx/"
-printf 'FROM ghcr.io/getployz/ployz-testkit:main\nCOPY ployzd ployz /usr/local/bin/\nCOPY --chmod=755 entrypoint.sh /usr/local/bin/ployz-testkit-entrypoint\n' >"$build_ctx/Dockerfile"
-docker build -q -t "$IMAGE" "$build_ctx" >/dev/null
-rm -rf "$build_ctx"
 docker network create --label dev.ployz.testkit=true --label "dev.ployz.testkit.cluster=$NAME" "$NET" >/dev/null
 for i in $(seq 0 $((COUNT - 1))); do
   docker run -d --privileged --name "$NET-$i" --network "$NET" \
@@ -124,6 +114,7 @@ m "$S" "server set (labels)" -- $P server set gamma --label-add zone=b
 m "$S" "server set --json" -- $P server set gamma --label-rm zone --json
 m "$S" "server set (no change flags)" -- $P server set gamma
 m "$S" "server upgrade (fails at launch: the testkit has no systemd)" -- $P server upgrade 0.2.3 gamma
+m "$S" "server upgrade --json (fails at launch)" -- $P server upgrade 0.2.3 gamma --json
 m "$S" "server forget (standalone)" -- $P server forget
 
 D=$CAPTURES/deploy.md

@@ -156,7 +156,7 @@ async fn l3_061_default_spec_creates_and_removes_from_docker_and_machine_db() {
     specs
         .config_operation()
         .await
-        .put(&orphan, &fixture_spec(&service_id, &service_name))
+        .put(&orphan, None, &fixture_spec(&service_id, &service_name))
         .await
         .unwrap();
     runtime.remove(&orphan, true, true).await.unwrap();
@@ -345,7 +345,7 @@ async fn update_limits_changes_a_running_container_in_place() {
     specs
         .config_operation()
         .await
-        .put(&container_id, &spec)
+        .put(&container_id, None, &spec)
         .await
         .unwrap();
     let mut below_live = spec.clone();
@@ -376,7 +376,7 @@ async fn update_limits_changes_a_running_container_in_place() {
     specs
         .config_operation()
         .await
-        .put(&container_id, &updated)
+        .put(&container_id, None, &updated)
         .await
         .unwrap();
 
@@ -1059,8 +1059,8 @@ async fn docker_events_and_rescans_publish_redacted_local_observations() {
     let spec = fixture_spec(&service_id, &service_name);
     {
         let mut operation = specs.config_operation().await;
-        operation.put(&service, &spec).await.unwrap();
-        operation.put(&hook, &spec).await.unwrap();
+        operation.put(&service, None, &spec).await.unwrap();
+        operation.put(&hook, None, &spec).await.unwrap();
     }
 
     let runtime = ContainerRuntime::new(docker.clone(), specs.clone())
@@ -1161,7 +1161,7 @@ async fn docker_events_and_rescans_publish_redacted_local_observations() {
     specs
         .config_operation()
         .await
-        .put(&fallback, &spec)
+        .put(&fallback, None, &spec)
         .await
         .unwrap();
     wait_for(Duration::from_secs(5), || async {

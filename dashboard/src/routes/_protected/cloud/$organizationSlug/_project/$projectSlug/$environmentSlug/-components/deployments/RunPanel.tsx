@@ -10,7 +10,7 @@ import { missingDeployLogs, nodeStatusLabels, outcomeReason, shownNodeStatus } f
 import { buildLogQuery, useStoreView } from "#/modules/config-store/store-view.queries";
 import { ENVIRONMENT_ROUTE_FROM } from "../environment-route-paths";
 import type { DeploymentCleanupView } from "#/modules/config-store/tables";
-import { buildStatusLabels, cleanupLabel, rowLabel, rowLight, rowTiming, type OutcomeRunNode, type RunNode } from "./run-graph";
+import { buildStatusLabels, cleanupLabel, rowLabel, rowLight, rowStopped, rowTiming, type OutcomeRunNode, type RunNode } from "./run-graph";
 import { RunTime, runNodeIcons, runNodeKinds } from "./RunCanvas";
 
 /** The picked node: its status, each Server's row as reported, then its logs. */
@@ -161,7 +161,7 @@ function Row({ row }: { row: ServerRow }) {
         <span className="text-muted-foreground">{rowLabel(row)}</span>
         <span className="ml-auto"><RunTime timing={rowTiming([row])} /></span>
       </div>
-      {row.state === "failed" && !row.cancelled ? (
+      {row.state === "failed" && !rowStopped(row) ? (
         <div className="flex flex-col gap-0.5 pl-5.5 text-destructive">
           <p className="break-words">{row.reason}</p>
           {row.cause.map((cause) => <p key={cause} className="break-words text-muted-foreground">{cause}</p>)}
