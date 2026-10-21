@@ -413,6 +413,11 @@ describe("recovery", () => {
       .toMatchObject({ kind: "restore", stage: { refused: "Volume move needs a newer Ployz on web-1." } });
   });
 
+  it("names the primary's lack rather than wait on another Server's report", () => {
+    expect(recover([lacking("web-1"), mirrorAsOf("web-2", at), unlisted("web-3")], row(["web-2"])))
+      .toMatchObject({ kind: "restore", stage: { refused: "Volume move needs a newer Ployz on web-1." } });
+  });
+
   it("refuses the restore with the lacking Server's upgrade sentence once nothing is silent", () => {
     expect(recover([mirrorAsOf("web-2", at), lacking("web-3")], row(["web-2"])))
       .toMatchObject({ kind: "restore", stage: { refused: "Volume move needs a newer Ployz on web-3." } });
