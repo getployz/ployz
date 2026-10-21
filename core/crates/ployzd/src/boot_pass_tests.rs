@@ -51,12 +51,12 @@ fn api() -> QualifiedService {
     QualifiedService::parse("app/api").unwrap()
 }
 
-fn copy(suffix: u8, machine: &Machine, r#gen: u64) -> ContainerObservation {
+fn copy(suffix: u8, machine: &Machine, r#gen: u64, image: &str) -> ContainerObservation {
     let resolved_spec: ResolvedServiceSpec = serde_json::from_value(json!({
         "service_id": "a".repeat(32),
         "name": "api",
         "mode": { "mode": "replicated", "replicas": 1 },
-        "container": { "image": "example.test/image", "pull_policy": "missing" },
+        "container": { "image": image, "pull_policy": "missing" },
     }))
     .unwrap();
     ContainerObservation::try_from(ployz_core::ContainerObservationParts {
@@ -129,8 +129,8 @@ fn out(copy: &ContainerObservation) -> ContainerWant {
     }
 }
 
-/// A powered-off Machine back with gen 1 In, while a peer serves gen 2 and a
-/// second peer runs only a proxy.
+/// A powered-off Machine back with gen 1 In, while a peer serves gen 2 of a newer
+/// image and a second peer runs only a proxy.
 struct Cluster {
     local: Machine,
     peer: Machine,
@@ -142,8 +142,8 @@ struct Cluster {
 impl Cluster {
     fn new() -> Self {
         let (local, peer, proxy) = (machine("local", 1), machine("peer", 2), machine("proxy", 3));
-        let old = copy(1, &local, 1);
-        let new = copy(2, &peer, 2);
+        let old = copy(1, &local, 1, "example.test/image:1");
+        let new = copy(2, &peer, 2, "example.test/image:2");
         Self {
             local,
             peer,
@@ -306,9 +306,28 @@ async fn higher_gen_missing_one_ack() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn kept_beside_a_newer_gen_of_its_image() {
+    let cluster = Cluster::new();
+    let kept = copy(1, &cluster.local, 1, "example.test/image:2");
+    let observed = observed(
+        &cluster.local,
+        &[&cluster.local, &cluster.peer, &cluster.proxy],
+        &[],
+        vec![kept.clone(), cluster.new.clone()],
+        routes(&[
+            (&cluster.local, &[&kept, &cluster.new]),
+            (&cluster.peer, &[&kept, &cluster.new]),
+            (&cluster.proxy, &[&kept, &cluster.new]),
+        ]),
+    );
+
+    assert!(pass(&cluster.local, observed).await.is_empty());
+}
+
+#[tokio::test(start_paused = true)]
 async fn equal_gen() {
     let cluster = Cluster::new();
-    let same = copy(2, &cluster.peer, 1);
+    let same = copy(2, &cluster.peer, 1, "example.test/image:2");
     let observed = observed(
         &cluster.local,
         &[&cluster.local, &cluster.peer, &cluster.proxy],
