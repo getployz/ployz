@@ -366,8 +366,15 @@ them, even by exact version.
 running and private DNS keeps answering (with the exceptions in
 [Private networking](../services/private-networking.md)), Ployz stops at the first server that fails, and a server whose upgrade fails goes back to
 the release it ran before.
+The command prints one line per server it tried, the failed one included. The error after it, on
+stderr, says why that server failed.
 A server that doesn't answer within a minute counts as failed, so an offline server stops the
 command quickly instead of waiting out the upgrade.
+
+An upgrade doesn't always replace the web server Ployz runs on each server. One created by an
+earlier release can hang a request for about 15 minutes when a server running one of your
+replicas powers off. See [This app didn't respond](../troubleshooting/app-not-reachable.md#this-app-didnt-respond)
+to replace it.
 
 With Ployz Cloud, a server that's offline, building, or already taking another upgrade is skipped
 instead: Ployz names it and says why, upgrades the rest, exits 3, and prints the command that
@@ -492,8 +499,14 @@ servers, except for services whose volume was on it (see
 server stops everything; your projects and settings stay, and the bottom bar shows **Add servers**
 until you [add one](add-a-server.md).
 
+On a server that joined from a Fleet Token, `sudo ployz status` then says
+`this server = Not in a Cluster`.
+
 The reset first stops every copy in progress on the server. If one doesn't stop within 30 seconds,
 the removal fails and names its volume; remove the server again.
+
+Your other servers also forget which replicas the removed server was sending requests to, so
+`ployz status` never names it as a server that hasn't picked up a service's new version.
 
 If the server resets but your other servers can't forget it, `ployz server rm` says "Server web-2
 reset but is still listed." and prints `ployz server forget web-2` to finish. Ployz Cloud
