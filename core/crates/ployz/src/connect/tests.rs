@@ -926,3 +926,28 @@ fn a_named_context_without_a_config_is_not_found_rather_than_unconfigured() {
     let selected = resolve_connections(&config, None, None, &socket).unwrap();
     assert_eq!(selected.source, ConnectionSource::LocalSocket);
 }
+
+#[tokio::test]
+async fn a_call_after_the_stream_closed_is_final() {
+    let (client, daemon) = tokio::io::duplex(1024);
+    let channel = connect_stream(client, Duration::from_secs(5))
+        .await
+        .unwrap();
+    drop(daemon);
+    let mut rpc = ployz_core::MachineRpcClient::new(channel);
+    let describe = || {
+        ployz_core::op::DescribeContract::into_request(ployz_core::DescribeContractRequest {})
+            .encode()
+            .unwrap()
+    };
+    let _lost = rpc.describe_contract(describe()).await.unwrap_err();
+    let status = rpc.describe_contract(describe()).await.unwrap_err();
+    let connect = ConnectError::from(status);
+    assert_eq!(connect.retry(), Retry::Now, "a redial opens a new stream");
+    let error = rpc_error(connect);
+    assert_eq!(error.code.retry(), Retry::Never, "{error:?}");
+    assert!(
+        crate::ui::chain_text(&error).contains("connection to the daemon closed"),
+        "{error:?}"
+    );
+}
