@@ -32,9 +32,9 @@ use super::{
     docker_file_age,
     frame::{self, DamageScan},
     layout::{
-        ContainerKind, ContainerMeta, EXITS_FILE, FIRST_SET_FILE, GAPS_FILE, Gap, GapReason,
-        LINKING_FILE, LogFileName, META_FILE, RetainedEnv, RunExit, SCANNED_FILE, StoreRoot,
-        create_private_dir,
+        ContainerKind, ContainerMeta, ENV_FILE, EXITS_FILE, FIRST_SET_FILE, GAPS_FILE, Gap,
+        GapReason, LINKING_FILE, LogFileName, META_FILE, RetainedEnv, RunExit, SCANNED_FILE,
+        StoreRoot, create_private_dir,
     },
     metrics::{
         sampler,
@@ -948,6 +948,7 @@ impl Harvester {
         };
         let store_dir = self.store.container(&id);
         let Seen::Pending = seen else {
+            keep_env(&id, &store_dir, &inspected);
             if let Some(meta) = container_meta(&inspected) {
                 if let Err(error) = write_meta(&store_dir, &meta) {
                     tracing::warn!(container = %id, %error, "cannot update container metadata");
@@ -969,11 +970,7 @@ impl Harvester {
             tracing::error!(container = %id, %error, "cannot write container metadata");
             return;
         }
-        if let Some(env) = retained_env(&inspected)
-            && let Err(error) = env.write(&store_dir)
-        {
-            tracing::warn!(container = %id, %error, "cannot keep the container's env for scrubbing its lines");
-        }
+        keep_env(&id, &store_dir, &inspected);
         let max_files = max_files(&inspected);
         let created_nanos = inspected
             .created
@@ -1704,6 +1701,19 @@ fn read_meta(dir: &Path) -> io::Result<Option<ContainerMeta>> {
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error)),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(error),
+    }
+}
+
+/// Writes the env once: Docker never changes a Container's env, and a write
+/// that failed is retried on the next inspect.
+fn keep_env(id: &ContainerId, dir: &Path, inspected: &ContainerInspectResponse) {
+    if dir.join(ENV_FILE).exists() {
+        return;
+    }
+    if let Some(env) = retained_env(inspected)
+        && let Err(error) = env.write(dir)
+    {
+        tracing::warn!(container = %id, %error, "cannot keep the container's env for scrubbing its lines");
     }
 }
 
