@@ -18,6 +18,11 @@ from pathlib import Path
 SOURCE = Path(sys.argv[1]).read_bytes()
 TOKEN = 'pflt_' + 'a' * 43
 ARGS = ['-s', '--', '1.2.3', '--enroll']
+READ_SYSCALL = {'x86_64': '0', 'aarch64': '63'}[os.uname().machine]
+
+
+def reading_terminal(pid):
+    return Path(f'/proc/{pid}/syscall').read_text().split()[:2] == [READ_SYSCALL, '0x0']
 
 
 def stub(path, text):
@@ -37,26 +42,38 @@ def run(shell, env, mode):
     os.write(script_write, SOURCE)
     os.close(script_write)
     output = b''
-    deadline = time.monotonic() + 10
-    while b'Fleet Token (from Servers in Ployz Cloud): ' not in output:
-        assert time.monotonic() < deadline, (shell, mode, output)
-        if select.select([master], [], [], .01)[0]:
-            output += os.read(master, 65536)
-    echo_at_prompt = bool(termios.tcgetattr(master)[3] & termios.ECHO)
-    if mode == 'term':
-        os.kill(pid, signal.SIGTERM)
-    else:
-        os.write(master, {'type': TOKEN + '\n', 'ctrl-c': '\x03'}[mode].encode())
-    while True:
-        assert time.monotonic() < deadline, (shell, mode, output)
-        if select.select([master], [], [], .01)[0]:
-            try:
-                output += os.read(master, 65536)
-            except OSError:
-                pass
+    status = None
+
+    def wait_for(phase, reached):
+        nonlocal output
+        start = time.monotonic()
+        while not reached():
+            elapsed = time.monotonic() - start
+            assert elapsed < 10, f'{shell} {mode}: no {phase} after {elapsed:.1f}s; output: {output!r}'
+            if select.select([master], [], [], .01)[0]:
+                try:
+                    output += os.read(master, 65536)
+                except OSError:
+                    pass
+
+    def exited():
+        nonlocal status
         done, status = os.waitpid(pid, os.WNOHANG)
-        if done:
-            break
+        return done
+
+    wait_for('prompt', lambda: b'Fleet Token (from Servers in Ployz Cloud): ' in output)
+    echo_at_prompt = bool(termios.tcgetattr(master)[3] & termios.ECHO)
+    if mode == 'type':
+        os.write(master, (TOKEN + '\n').encode())
+    else:
+        # A trapped signal that lands after the prompt but before the shell blocks in read(2) waits for a line or a
+        # second signal, in dash and bash alike. Nobody presses Ctrl-C that fast, so signal once the shell reads.
+        wait_for('blocking read of the terminal', lambda: reading_terminal(pid))
+        if mode == 'term':
+            os.kill(pid, signal.SIGTERM)
+        else:
+            os.write(master, b'\x03')
+    wait_for('exit', exited)
     echo_after = bool(termios.tcgetattr(master)[3] & termios.ECHO)
     os.close(master)
     rc = os.waitstatus_to_exitcode(status)
