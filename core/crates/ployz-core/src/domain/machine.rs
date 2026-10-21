@@ -140,6 +140,11 @@ pub struct MachineRuntime {
     /// never persisted. Absent when unobserved and from older daemons.
     #[ts(optional = nullable)]
     pub pool_committable_bytes: Option<u64>,
+    /// Filesystem type under the daemon's replicated state, such as `ext4` or `zfs`, or
+    /// its magic number in hex when the daemon does not name it. Absent when unobserved
+    /// and from older daemons.
+    #[ts(optional = nullable)]
+    pub store_filesystem: Option<String>,
     /// Every capability name the daemon binary serves. Empty from a daemon
     /// that predates the field, and when an older entry relays a newer peer's
     /// record, so empty claims nothing.
@@ -1013,6 +1018,22 @@ mod machine_runtime_capabilities_tests {
         let runtime: MachineRuntime =
             serde_json::from_value(json!({ "daemon_version": "0.2.4" })).unwrap();
         assert!(runtime.capabilities.is_empty());
+        assert_eq!(runtime.store_filesystem, None);
+    }
+
+    #[test]
+    fn runtime_store_filesystem_round_trips() {
+        let runtime: MachineRuntime = serde_json::from_value(json!({
+            "daemon_version": "0.3.0",
+            "store_filesystem": "zfs",
+        }))
+        .unwrap();
+        assert_eq!(runtime.store_filesystem.as_deref(), Some("zfs"));
+        let encoded = serde_json::to_value(&runtime).unwrap();
+        assert_eq!(
+            serde_json::from_value::<MachineRuntime>(encoded).unwrap(),
+            runtime
+        );
     }
 
     #[test]

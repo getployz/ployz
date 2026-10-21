@@ -377,13 +377,14 @@ fn reopening_a_participating_machine_refreshes_runtime_metadata() {
         memory_total_bytes: None,
         running_builds: 0,
         pool_committable_bytes: None,
+        store_filesystem: None,
         capabilities: Default::default(),
     })
     .unwrap();
     fs::write(&path, serde_json::to_vec_pretty(&stale).unwrap()).unwrap();
 
     let reopened = LocalMachineStore::open(&dir.0).unwrap();
-    let expected = ployzd::machine::local_runtime();
+    let expected = ployzd::machine::local_runtime(&dir.0);
     assert_eq!(reopened.record().machine().unwrap().runtime, expected);
     let persisted: LocalMachineRecord = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
     assert_eq!(persisted.machine().unwrap().runtime, expected);

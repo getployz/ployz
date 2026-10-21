@@ -545,7 +545,7 @@ impl LocalMachineRecord {
 }
 
 #[must_use]
-pub fn local_runtime() -> MachineRuntime {
+pub fn local_runtime(data_dir: &Path) -> MachineRuntime {
     MachineRuntime {
         daemon_version: env!("CARGO_PKG_VERSION").into(),
         docker_version: docker_version(Path::new("docker"), DOCKER_VERSION_TIMEOUT),
@@ -570,7 +570,30 @@ pub fn local_runtime() -> MachineRuntime {
             .map(|(total, _)| total),
         running_builds: 0,
         pool_committable_bytes: None,
+        store_filesystem: store_filesystem(data_dir),
         capabilities: ployz_core::served_capabilities(),
+    }
+}
+
+fn store_filesystem(data_dir: &Path) -> Option<String> {
+    let store = crate::corrosion::CorrosionPaths::data_dir_under(data_dir);
+    let stat = match rustix::fs::statfs(&store) {
+        Err(rustix::io::Errno::NOENT) => rustix::fs::statfs(data_dir),
+        stat => stat,
+    };
+    // Filesystem magic numbers are 32 bits; f_type's width and sign vary by target.
+    stat.ok().map(|stat| filesystem_name(stat.f_type as u32))
+}
+
+fn filesystem_name(magic: u32) -> String {
+    match magic {
+        0x2fc1_2fc1 => "zfs".into(),
+        0x9123_683e => "btrfs".into(),
+        0x0102_1994 => "tmpfs".into(),
+        0x794c_7630 => "overlay".into(),
+        0xef53 => "ext4".into(),
+        0x5846_5342 => "xfs".into(),
+        other => format!("{other:#010x}"),
     }
 }
 
@@ -665,6 +688,28 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
 
     use super::*;
+
+    #[test]
+    fn filesystem_names_cover_the_ones_that_refuse_synchronous_writes() {
+        assert_eq!(filesystem_name(0x2fc1_2fc1), "zfs");
+        assert_eq!(filesystem_name(0x9123_683e), "btrfs");
+        assert_eq!(filesystem_name(0x0102_1994), "tmpfs");
+        assert_eq!(filesystem_name(0x794c_7630), "overlay");
+        assert_eq!(filesystem_name(0xef53), "ext4");
+        assert_eq!(filesystem_name(0x5846_5342), "xfs");
+        assert_eq!(filesystem_name(0x1234_abcd), "0x1234abcd");
+        assert_eq!(filesystem_name(0x6969), "0x00006969");
+    }
+
+    #[test]
+    fn store_filesystem_is_named_before_and_after_the_store_exists() {
+        let root = tempfile::tempdir().unwrap();
+        let expected = filesystem_name(rustix::fs::statfs(root.path()).unwrap().f_type as u32);
+        assert_eq!(store_filesystem(root.path()), Some(expected.clone()));
+        fs::create_dir(root.path().join("corrosion")).unwrap();
+        assert_eq!(store_filesystem(root.path()), Some(expected));
+        assert_eq!(store_filesystem(&root.path().join("missing")), None);
+    }
 
     #[tokio::test]
     async fn served_capabilities_match_a_contract_with_every_group() {

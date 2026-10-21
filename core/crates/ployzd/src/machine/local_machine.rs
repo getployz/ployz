@@ -439,7 +439,7 @@ impl LocalMachine {
             } else {
                 requested_endpoints.to_vec()
             },
-            runtime: local_runtime(),
+            runtime: local_runtime(self.owner.data_dir()),
             memory_total_bytes: capacity.memory_total_bytes,
             disk_total_bytes: capacity.disk_total_bytes,
             disk_available_bytes: capacity.disk_available_bytes,

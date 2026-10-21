@@ -45,9 +45,14 @@ impl CorrosionPaths {
     #[must_use]
     pub fn under(ployz_data_dir: &Path, ployz_run_dir: &Path) -> Self {
         Self {
-            data_dir: ployz_data_dir.join("corrosion"),
+            data_dir: Self::data_dir_under(ployz_data_dir),
             run_dir: ployz_run_dir.join("corrosion"),
         }
+    }
+
+    #[must_use]
+    pub fn data_dir_under(ployz_data_dir: &Path) -> PathBuf {
+        ployz_data_dir.join("corrosion")
     }
 
     #[must_use]
