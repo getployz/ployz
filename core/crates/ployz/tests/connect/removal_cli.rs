@@ -453,10 +453,10 @@ async fn cloud_removes_its_last_server_for_the_cli() {
 
 #[tokio::test]
 async fn a_cloud_removal_whose_retries_ran_out_says_to_forget_a_server_that_is_gone() {
-    // Cloud's reply as `GET server-removals/:id` refuses a `failed / retry_exhausted` attempt.
+    // Cloud refuses a sent removal that ran out of retries as `GET server-removals/:id`, its reset unknown.
     let (cloud, _, _) = fake_cloud_settling(
         "503 Service Unavailable",
-        r#"{"error":{"code":"unavailable","message":"Machine remove retries were exhausted.","details":{"failure_code":"retry_exhausted"}}}"#,
+        r#"{"error":{"code":"unavailable","message":"Machine remove retries were exhausted.","details":{"reset_unknown":true}}}"#,
         false,
     );
     let (output, _) = remove_last_cloud_server(

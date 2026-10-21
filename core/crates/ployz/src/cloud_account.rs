@@ -1009,11 +1009,7 @@ pub(crate) async fn follow_removal(
         Ok(Some(RemovalRun::Succeeded(removal))) => Ok(removal),
         Ok(None) => Err(StoreCallError::Refused(removal_unsettled(name))),
         Err(StoreCallError::Refused(refused))
-            if refused
-                .details
-                .get("failure_code")
-                .and_then(serde_json::Value::as_str)
-                == Some("retry_exhausted") =>
+            if refused.details.get("reset_unknown") == Some(&serde_json::Value::Bool(true)) =>
         {
             Err(StoreCallError::Refused(RpcError {
                 code: ployz_core::RpcErrorCode::Unavailable,

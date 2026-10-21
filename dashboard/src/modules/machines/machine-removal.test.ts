@@ -13,6 +13,8 @@ describe("toMachineRemoveAttemptView", () => {
     missingIdentities: null,
     failureCode: null,
     failureMessage: null,
+    removeSentAt: null,
+    noReset: false,
     result: null,
   };
 
@@ -69,9 +71,24 @@ describe("toMachineRemoveAttemptView", () => {
       id: base.id,
       machineId: entry,
       state: "failed",
-      failureCode: "server_lacks",
+      resetUnknown: false,
       failureMessage: "sdk_not_shipped",
     });
+  });
+
+  it("leaves a reset unknown only when a sent removal ran out of retries", () => {
+    const sent = new Date();
+    const exhausted = { ...base, state: "failed" as const, failureCode: "retry_exhausted", failureMessage: "Machine remove retries were exhausted." };
+    const unknown = (attempt: Parameters<typeof toMachineRemoveAttemptView>[0]) => {
+      const view = toMachineRemoveAttemptView(attempt);
+      return view.state === "failed" && view.resetUnknown;
+    };
+    expect(unknown({ ...exhausted, removeSentAt: sent })).toBe(true);
+    // Nothing reached the Server before the retries ran out.
+    expect(unknown(exhausted)).toBe(false);
+    // A forget never asks for a reset.
+    expect(unknown({ ...exhausted, removeSentAt: sent, noReset: true })).toBe(false);
+    expect(unknown({ ...exhausted, state: "cancelled", removeSentAt: sent })).toBe(false);
   });
 
   it("does not treat an empty missing-identities row as confirm-everything", () => {
@@ -110,7 +127,7 @@ describe("removalLack", () => {
 describe("removalFailureMessage", () => {
   it("leaves a removal whose retries ran out unknown, and names Forget for a Server that is gone", () => {
     const message = removalFailureMessage("web-2", {
-      failureCode: "retry_exhausted",
+      resetUnknown: true,
       failureMessage: "Machine remove retries were exhausted.",
     });
     expect(message).toContain("web-2");
@@ -119,7 +136,7 @@ describe("removalFailureMessage", () => {
   });
 
   it("says a refusal as the Server gave it", () => {
-    expect(removalFailureMessage("web-2", { failureCode: "conflict", failureMessage: "A copy is still writing." }))
+    expect(removalFailureMessage("web-2", { resetUnknown: false, failureMessage: "A copy is still writing." }))
       .toBe("A copy is still writing.");
   });
 });

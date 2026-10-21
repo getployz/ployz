@@ -86,16 +86,14 @@ export type MachineRemoveAttemptView =
       id: string;
       machineId: string;
       state: "failed" | "cancelled";
-      failureCode: string;
+      /** A removal sent to the Server ran out of retries, so whether it reset is unknown and Cloud still lists it. */
+      resetUnknown: boolean;
       failureMessage: string;
     };
 
-/**
- * What a failed removal tells the person who asked for it. One whose retries ran out never heard whether its Server reset,
- * so Cloud still lists it: a Server that is gone is forgotten instead.
- */
-export function removalFailureMessage(name: string, attempt: { failureCode: string; failureMessage: string }) {
-  return attempt.failureCode === "retry_exhausted"
+/** What a failed removal tells the person who asked for it. A Server whose reset is unknown and is gone is forgotten. */
+export function removalFailureMessage(name: string, attempt: { resetUnknown: boolean; failureMessage: string }) {
+  return attempt.resetUnknown
     ? `Ployz Cloud couldn't tell whether ${name} reset, so it's still listed. If ${name} is gone, forget it with Forget server.`
     : attempt.failureMessage;
 }
@@ -107,6 +105,8 @@ export function toMachineRemoveAttemptView(attempt: {
   missingIdentities: DataLossIdentity[] | null;
   failureCode: string | null;
   failureMessage: string | null;
+  removeSentAt: Date | null;
+  noReset: boolean;
   result: MachineRemoveResult | null;
 }): MachineRemoveAttemptView {
   switch (attempt.state) {
@@ -141,14 +141,16 @@ export function toMachineRemoveAttemptView(attempt: {
     }
     case "failed":
     case "cancelled": {
-      if (attempt.failureCode === null || attempt.failureMessage === null || attempt.failureMessage === "") {
+      if (attempt.failureMessage === null || attempt.failureMessage === "") {
         throw new Error(`${attempt.state} attempt has no failure message.`);
       }
       return {
         id: attempt.id,
         machineId: attempt.machineId,
         state: attempt.state,
-        failureCode: attempt.failureCode,
+        // Retries run out for any step; only one that already asked the Server to reset leaves the reset unknown.
+        resetUnknown: attempt.state === "failed" && attempt.failureCode === "retry_exhausted"
+          && attempt.removeSentAt !== null && !attempt.noReset,
         failureMessage: attempt.failureMessage,
       };
     }
