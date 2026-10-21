@@ -1173,7 +1173,7 @@ mod settled {
                 false,
             ),
         ] {
-            // Between the polls at 0s and 1s, so the one at 1s decides.
+            // The first poll after the state changes decides.
             let (health, waited) = ensure_stalling_after_oom(
                 settled_run(60_000),
                 Duration::from_millis(500),
@@ -1187,7 +1187,7 @@ mod settled {
             );
             assert_eq!(health.oom_killed(), oom_killed, "{state}: {health:?}");
             assert!(
-                waited >= Duration::from_millis(900) && waited < Duration::from_secs(2),
+                waited >= Duration::from_millis(500) && waited < Duration::from_secs(2),
                 "{state}: waited {waited:?}"
             );
         }
@@ -1195,7 +1195,7 @@ mod settled {
 
     #[tokio::test]
     async fn ensure_settled_times_out_on_time_for_a_container_killed_out_of_memory() {
-        // Polls land at 0s, 1s and the 1.9s deadline; the kill shows between the last two.
+        // The kill shows before the 1.9s deadline and every inspect after it stalls.
         let (health, waited) = ensure_stalling_after_oom(
             settled_run(1_900),
             Duration::from_millis(1_450),

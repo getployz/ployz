@@ -15,7 +15,7 @@ use super::MachineOperations;
 use crate::connect::{TARGET_RPC_TIMEOUT, in_rpc_timeout, stop_rpc_timeout};
 use crate::ui::{then_sentence, with_reason};
 
-pub(crate) const ACK_POLL: Duration = Duration::from_secs(1);
+pub(crate) const ACK_POLL: Duration = Duration::from_millis(200);
 pub(crate) const ACK_WAIT: Duration = Duration::from_secs(300);
 
 const DOCKER_STOP_GRACE_SECONDS: u16 = 10;

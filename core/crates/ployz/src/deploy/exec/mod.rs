@@ -1212,8 +1212,13 @@ async fn publish_group<C: MachineOperations>(
         .into_iter()
         .collect();
     let (mut outs, mut gone) = (Vec::new(), Vec::new());
-    for (machine_id, container_id) in &old {
-        let copy = match inspect(client, machine_id, container_id).await {
+    let inspected = join_all(
+        old.iter()
+            .map(|(machine_id, container_id)| inspect(client, machine_id, container_id)),
+    )
+    .await;
+    for ((machine_id, container_id), inspected) in old.iter().zip(inspected) {
+        let copy = match inspected {
             Ok(details) => cleanup::Copy::observed(&details.container),
             Err(ExecutionError::Machine { error, .. }) if error.code == RpcErrorCode::NotFound => {
                 continue;
@@ -1371,35 +1376,41 @@ async fn route_new<C: MachineOperations>(
     cancellation: &CancellationToken,
 ) -> Result<(), Published> {
     let (_, first_machine, _) = new.first().expect("a published group started copies");
-    for (task, machine_id, container_id) in new {
-        let copy = cleanup::Copy {
-            machine_id: *machine_id,
-            service: service.clone(),
-            container_id: *container_id,
-            rotation: CopyRotation::Pending,
-        };
-        let spec = operation_at(operations, *task)
-            .spec()
-            .expect("a started copy has a spec");
-        let error = match cleanup::bring_in(client, &copy, spec, Some(rows.run.clone())).await {
-            Ok(cleanup::BroughtIn::In) => continue,
-            Ok(cleanup::BroughtIn::NotIn { health, .. }) => {
-                health_error(*container_id, health, spec)
-            }
-            Ok(cleanup::BroughtIn::Refused(refusal))
-                if refusal.reason == ContainerRefusalReason::OlderThanIn =>
-            {
-                ExecutionError::NewerServing {
+    let brought = join_all(
+        new.iter()
+            .map(|(task, machine_id, container_id)| async move {
+                let copy = cleanup::Copy {
+                    machine_id: *machine_id,
                     service: service.clone(),
-                }
-            }
-            Ok(cleanup::BroughtIn::Refused(refusal)) => {
-                machine_error(MachineAction::StartContainer, refusal.into_error())
-            }
-            Err(error) => machine_error(MachineAction::StartContainer, error),
-        };
-        return Err(Published::CopyFailed { task: *task, error });
-    }
+                    container_id: *container_id,
+                    rotation: CopyRotation::Pending,
+                };
+                let spec = operation_at(operations, *task)
+                    .spec()
+                    .expect("a started copy has a spec");
+                let error =
+                    match cleanup::bring_in(client, &copy, spec, Some(rows.run.clone())).await {
+                        Ok(cleanup::BroughtIn::In) => return Ok(()),
+                        Ok(cleanup::BroughtIn::NotIn { health, .. }) => {
+                            health_error(*container_id, health, spec)
+                        }
+                        Ok(cleanup::BroughtIn::Refused(refusal))
+                            if refusal.reason == ContainerRefusalReason::OlderThanIn =>
+                        {
+                            ExecutionError::NewerServing {
+                                service: service.clone(),
+                            }
+                        }
+                        Ok(cleanup::BroughtIn::Refused(refusal)) => {
+                            machine_error(MachineAction::StartContainer, refusal.into_error())
+                        }
+                        Err(error) => machine_error(MachineAction::StartContainer, error),
+                    };
+                Err(Published::CopyFailed { task: *task, error })
+            }),
+    )
+    .await;
+    brought.into_iter().collect::<Result<Vec<()>, _>>()?;
     let ids: BTreeSet<ContainerId> = new.iter().map(|(_, _, id)| *id).collect();
     match cleanup::wait_listed(client, first_machine, service, &ids, cancellation, |_| {}).await {
         Ok(cleanup::Wait::Done) => {}

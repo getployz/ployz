@@ -6,6 +6,7 @@
 //! available, and editing Machine Labels evicts nothing.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use ployz_core::{
     AnonymousVolumes, ContainerId, ContainerKind, ContainerLimitsUpdated, ContainerLocator,
@@ -18,8 +19,8 @@ use ployz_core::{
     VolumeRemoved,
 };
 use ployz_core::{
-    AnswerWhen, ContainerRun, DeploymentLogId, Gen, HEALTH_POLL_INTERVAL, HealthFailure,
-    HealthPoll, HealthVerdict, HealthcheckSpec, ReadyWait, health_monitor,
+    AnswerWhen, ContainerRun, DeploymentLogId, Gen, HealthFailure, HealthPoll, HealthVerdict,
+    HealthcheckSpec, ReadyWait, health_monitor, settle_deadline,
 };
 
 use self::rotation::RotationWant;
@@ -30,6 +31,10 @@ use crate::docker::{
 };
 use crate::docker_image::ImagePull;
 use crate::machine::{STORAGE_OBSERVATION_TIMEOUT, local_storage};
+
+/// A settle inspects local Docker, so a short poll costs little and sets how late a
+/// verdict is seen. Remote health waits keep `HEALTH_POLL_INTERVAL`.
+const SETTLE_POLL: Duration = Duration::from_millis(100);
 
 #[cfg(test)]
 static SETTLES: std::sync::Mutex<std::collections::BTreeMap<ContainerId, usize>> =
@@ -767,11 +772,27 @@ impl LocalMachine {
         let monitor = health_monitor(spec);
         let mut wait = ReadyWait::new(healthcheck, monitor);
         let started = tokio::time::Instant::now();
+        let limit = settle_deadline(spec);
         let mut first_run = None;
+        let mut seen = (None, false);
         loop {
-            let inspected = containers
-                .inspect_managed_run(container_id, &machine_id)
-                .await?;
+            // Docker can stall an inspect of a Container it OOM-killed, and the
+            // verdict still answers by the deadline.
+            let Ok(inspected) = tokio::time::timeout_at(
+                started + limit,
+                containers.inspect_managed_run(container_id, &machine_id),
+            )
+            .await
+            else {
+                let (last_check, oom_killed) = seen;
+                return Ok(HealthVerdict::TimedOut {
+                    deadline_millis: u64::try_from(limit.as_millis()).ok(),
+                    last_check,
+                    oom_killed,
+                });
+            };
+            let inspected = inspected?;
+            seen = (inspected.details.last_check.clone(), inspected.oom_killed);
             first_run = first_run.or_else(|| inspected.details.run.clone());
             let elapsed = started.elapsed();
             let wake = match wait.poll(&inspected.details, elapsed).0 {
@@ -815,7 +836,7 @@ impl LocalMachine {
                     });
                 }
             };
-            tokio::time::sleep_until(started + (elapsed + HEALTH_POLL_INTERVAL).min(wake)).await;
+            tokio::time::sleep_until(started + (elapsed + SETTLE_POLL).min(wake)).await;
         }
     }
 
