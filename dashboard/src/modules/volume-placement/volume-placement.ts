@@ -229,7 +229,7 @@ export function placementChanges(volume: PlacementVolume, members: readonly Memb
     const how: MoveHow = target !== undefined && observed.primary === null ? "restore" : handing || applied.includes(staged.primary) ? "promote" : "copy";
     const from = handing
       ? observed.copies.find((copy) => copy.kind === "slot" && copy.server.id !== staged.primary)?.server ?? null
-      : observed.primary ?? (how === "restore" ? observed.unanswered[0] ?? null : null);
+      : observed.primary ?? (how === "restore" ? holder : null);
     changes.push({
       kind: "move",
       volume,
@@ -362,11 +362,15 @@ export function recovery(
   const copy = observed.copies.find((each) => each.kind === "slot" && applied.includes(each.server.id));
   if (copy === undefined) return null;
   const { server: mirror, newest: lostAfter } = copy;
-  // Only a silent primary leads to Forget or Use mirror: one whose report is on its way may still hold the writer.
+  // Only a silent primary leads to Forget: one whose report is on its way may still hold the writer, and one that answered
+  // it lacks a capability is up, so the restore's refusal names what it lacks.
   const presumed = presumedPrimary(observed, row?.staged?.primary ?? null);
   const primary = members.find((member) => member.machine.id === presumed?.id);
-  if (primary !== undefined && heardFrom(primary) === "waiting") return { kind: "wait", mirror, lostAfter };
-  const silent = members.filter((member) => heardFrom(member) === "silent").map((member) => member.machine);
+  const heard = primary === undefined ? null : heardFrom(primary);
+  if (heard === "waiting") return { kind: "wait", mirror, lostAfter };
+  const silent = heard === null || heard === "silent"
+    ? members.filter((member) => heardFrom(member) === "silent").map((member) => member.machine)
+    : [];
   if (silent.length > 0) return { kind: "forget", down: silent, mirror, lostAfter };
   if (members.some((member) => heardFrom(member) === "waiting")) return { kind: "wait", mirror, lostAfter };
   if (row?.staged?.primary === mirror.id) return null;

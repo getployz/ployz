@@ -1,6 +1,6 @@
 import type { ChangeKind, MachineId, MachineName } from "@ployz/sdk";
 import {
-  appliedMirrors, detachedName, observePlacement, type PlacementItem, type PlacementRow, type PlacementVolume, placementForm,
+  appliedMirrors, detachedName, observePlacement, type PlacementItem, type PlacementRow, type PlacementVolume, placementForm, presumedPrimary,
 } from "#/modules/volume-placement/volume-placement";
 import { runWords } from "#/modules/volume-run/volume-copies";
 import { copyName, type Heard, heardFrom, type Member, type VolumeRunView } from "#/modules/volume-run/volume-run";
@@ -76,14 +76,15 @@ export function copiesFromPlacement(input: {
 
   const readOnly = (id: MachineId) => members.some((member) =>
     member.answered && member.machine.id === id && member.view.copy?.kind === "root" && member.view.copy.readonly);
-  // Defensive: placementForm names an answering Server here only if it holds no root, and then Live names nobody.
-  const unreported = (server: ServerRef): PrimaryServer | null => {
+  // presumedPrimary names an answering Server only when it reports the primary, which the first arm takes.
+  const unreported = (server: ServerRef | null): PrimaryServer | null => {
+    if (server === null) return null;
     const from = heard(server.id);
     return from === "answered" ? null : { id: server.id, name: server.name, state: from };
   };
   const primary: PrimaryServer | null = observed.primary !== null
     ? { ...observed.primary, state: readOnly(observed.primary.id) ? "read_only" : "live" }
-    : form.primary.change === null ? unreported(form.primary.server)
+    : form.primary.change === null ? unreported(presumedPrimary(observed, row?.staged?.primary ?? null))
     : null;
   const seed = row?.staged?.seed;
   return {

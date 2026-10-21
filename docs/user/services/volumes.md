@@ -143,9 +143,9 @@ records which of its copies is a mirror and which is an old copy, so a mirror ma
 `ployz volume mirror` refreshes like any other, and a move from the CLI leaves an old copy too. A
 mirror's age turns amber with a **⚠** once it is more than an hour old.
 
-While a server's report is still on its way, Copies doesn't say the server is down. Its primary
-reads **Waiting for its report**, and a mirror on it says it is waiting for its server's report.
-Until that report arrives, Copies offers no way to forget another server.
+While a server's report is still on its way, Copies doesn't say the server is down. A primary on
+it reads **Waiting for its report**, and a mirror on it says it is waiting for its server's report.
+Until the primary's report arrives, Copies offers no way to forget a server.
 
 Under **Live**, the primary reads **Live** only while its server reports it writable. During a
 move, while writes pause on the server it leaves, it reads **Read-only**. A server whose Ployz is
