@@ -163,6 +163,16 @@ describe("Refresh now", () => {
     expect(await refresh()).toEqual({ ok: false, refusal: { code: "unanswered", message: "web-2 isn't answering", details: null } });
   });
 
+  it("waits for a Server's report the frame lists only by id, rather than naming it silent", async () => {
+    const unlisted: Member = { machine: { id: web("web-2"), name: web("web-2") }, answered: false, incomplete: true };
+    members = [member("web-1", "writer"), unlisted];
+    const waiting = { ok: false, refusal: { code: "unanswered", message: "Waiting for every server's report", details: null } };
+    expect(await refresh()).toEqual(waiting);
+    expect(await run(refreshMirror(caller, environment, volumeId, () => Effect.fail("down"), () => Effect.succeed(members), () => Effect.succeed(members), ask)))
+      .toEqual(waiting);
+    expect(asked).toEqual([]);
+  });
+
   it("answers with the round's pull failures before naming a silent Server", async () => {
     members = [member("web-1", "writer"), member("web-2", "failed"), member("web-3", "unanswered")];
     expect(await refresh()).toEqual({

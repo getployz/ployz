@@ -158,6 +158,11 @@ describe("VolumeCopiesPanel", () => {
     expect(stage).not.toHaveBeenCalled();
   });
 
+  it("names the silent Primary's Server under Live as not answering, never Live, with no time", () => {
+    panel([member("web-1", "unanswered"), mirrorAsOf("web-2", fiveAgo())], row(["web-2"]));
+    expect(rows("Live")).toEqual(["web-1PrimaryNot answering"]);
+  });
+
   it("tells a member an owner or admin has to forget the silent Server, with no link", () => {
     panel([member("web-1", "unanswered"), mirrorAsOf("web-2", fiveAgo())], row(["web-2"]),
       { forgetGate: { allowed: false, reason: "Only an owner or admin can forget servers." } });
@@ -212,6 +217,7 @@ describe("VolumeCopiesPanel", () => {
     expect(screen.getByText("Copies shows what you can do once every server has reported.")).toBeTruthy();
     expect(screen.getByRole("alert").className).not.toContain("text-destructive");
     expect(screen.queryByText(/not answering|take over/)).toBeNull();
+    expect(rows("Live")).toEqual([`${id("web-1")}PrimaryWaiting for its report`]);
     expect(screen.queryByRole("link")).toBeNull();
     expect(useMirror()).toBeNull();
   });
@@ -344,6 +350,13 @@ describe("mirror detail", () => {
     expect(screen.getByText("Refresh skipped")).toBeTruthy();
     expect(screen.getByText(/^web-2 is not answering\. Ployz retries every 15 minutes\. Until it catches up, a failover loses 2 hours of writes\.$/)).toBeTruthy();
     expect(refreshNow().disabled).toBe(false);
+  });
+
+  it("says a mirror whose report hasn't arrived waits for it, not that its Server isn't answering", () => {
+    const unlisted: Member = { machine: { id: id("web-2"), name: id("web-2") }, answered: false, incomplete: true };
+    panel([member("web-1", "writer"), unlisted], row(["web-2"]), { open: "web-2", matchedAt: matchedAgo(135) });
+    expect(screen.getByText(/^Waiting for its server's report\. Ployz retries every 15 minutes\. Until it catches up, a failover loses 2 hours of writes\.$/)).toBeTruthy();
+    expect(screen.queryByText(/not answering/)).toBeNull();
   });
 
   it("hides the skipped prose while a round runs", () => {

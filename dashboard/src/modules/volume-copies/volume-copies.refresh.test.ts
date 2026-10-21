@@ -46,6 +46,12 @@ describe("skippedWords", () => {
     );
   });
 
+  it("says a mirror whose report hasn't arrived waits for it, naming no Server as silent", () => {
+    expect(skippedWords(mirror(minutesAgo(135), { skipped: "waiting" }), now)).toBe(
+      "Waiting for its server's report. Ployz retries every 15 minutes. Until it catches up, a failover loses 2 hours of writes.",
+    );
+  });
+
   it("names no time when rounds skipped the Volume before its Server went silent", () => {
     const at = new Date("2026-10-12T14:35:00Z");
     const words = skippedWords(mirror(at, { skipped: "silent" }), new Date("2026-10-12T15:38:49Z"));

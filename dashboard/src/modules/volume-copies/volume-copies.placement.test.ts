@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { MachineId } from "@ployz/sdk";
 import type { PlacementRow } from "#/modules/volume-placement/volume-placement";
+import type { Member } from "#/modules/volume-run/volume-run";
 import { COPIES, member, run } from "#/modules/volume-run/volume-run.test-fixture";
 import { copiesFromPlacement, type MirrorStatusView } from "./volume-copies.placement";
 import { cardLine, traySpeech } from "./volume-copies";
@@ -97,6 +98,19 @@ describe("copiesFromPlacement", () => {
     const [mirror] = model.elsewhere;
     expect(mirror).toMatchObject({ kind: "mirror", skipped: null, refreshedAt: new Date(now.getTime() - 5 * 60_000) });
     expect(mirror && cardLine(mirror, now)).toMatchObject({ stale: false, age: "5 minutes ago" });
+  });
+
+  it("marks a mirror whose report hasn't arrived as waiting, not silent", () => {
+    const unlisted: Member = { machine: { id: id("web-2"), name: id("web-2") }, answered: false, incomplete: true };
+    expect(copies(row(["web-2"]), [member("web-1", "writer"), unlisted]).elsewhere[0]).toMatchObject({ kind: "mirror", skipped: "waiting" });
+  });
+
+  it("puts the primary under Live with what its Server said: live only on its own report", () => {
+    const mirrored = (primary: Member) => copies(row(["web-2"]), [primary, member("web-2", "mirror")]).live.server;
+    expect(mirrored(member("web-1", "writer"))).toEqual({ id: id("web-1"), name: "web-1", heard: "answered" });
+    expect(mirrored(member("web-1", "unanswered"))).toEqual({ id: id("web-1"), name: "web-1", heard: "silent" });
+    const unlisted: Member = { machine: { id: id("web-1"), name: id("web-1") }, answered: false, incomplete: true };
+    expect(mirrored(unlisted)).toEqual({ id: id("web-1"), name: id("web-1"), heard: "waiting" });
   });
 
   it("marks a silent mirror skipped with no age when no sync ever found it current", () => {
