@@ -86,6 +86,10 @@ export function copiesFromPlacement(input: {
     ? { ...observed.primary, state: readOnly(observed.primary.id) ? "read_only" : "live" }
     : form.primary.change === null ? unreported(presumedPrimary(observed, row))
     : null;
+  // A staged primary that Live doesn't name, as a Server whose report is on its way or that lacks a capability outranks
+  // it, stays listed where the Volume records it as a mirror.
+  const outranked = form.primary.change === null && primary !== null && primary.id !== form.primary.server.id
+    && appliedMirrors(observed, row).includes(form.primary.server.id);
   const seed = row?.staged?.seed;
   return {
     volume: { id: volume.id, name: volume.name },
@@ -98,7 +102,7 @@ export function copiesFromPlacement(input: {
     },
     elsewhere: [
       ...form.mirrors.map((item) => mirror(item, stagedOf(item.change))),
-      ...promoted ? [mirror(form.primary, "primary")] : [],
+      ...promoted || outranked ? [mirror(form.primary, "primary")] : [],
       ...form.detached.map(old),
     ],
   };
