@@ -1332,9 +1332,17 @@ async fn routed_addresses_leave_out_an_https_route_caddy_has_no_certificate_for(
     state.mutate(|parts| {
         parts.resolved_spec.ports = vec![ingress("secure.example.com", 8443, HttpProtocol::Https)];
     });
+    let web = observation(
+        4,
+        &machine.id,
+        "web",
+        Some([10, 210, 1, 5]),
+        vec![ingress("web.example.com", 80, HttpProtocol::Http)],
+    );
+    state.containers.lock().unwrap().push(web.clone());
     let (load_tx, mut load_rx) = mpsc::unbounded_channel();
     let admin = TestAdmin { loads: load_tx };
-    let (route_publishes, published) =
+    let (route_publishes, mut published) =
         tokio::sync::watch::channel(crate::ingress::PublishedRoutes::default());
     let shutdown = CancellationToken::new();
     let watcher = tokio::spawn(watch_caddy(
@@ -1348,14 +1356,20 @@ async fn routed_addresses_leave_out_an_https_route_caddy_has_no_certificate_for(
     ));
 
     let loaded = next_load(&mut load_rx).await;
-    state.wait_for_ack_transactions(1).await;
-    settle().await;
     assert!(!loaded.contains("10.210.1.2:8443"), "{loaded}");
-    assert_eq!(
-        published.borrow().addresses,
-        BTreeMap::new(),
-        "Caddy proxies nothing for secure.example.com until it has a certificate"
-    );
+    timeout(
+        Duration::from_secs(5),
+        published.wait_for(|published| {
+            published.addresses
+                == BTreeMap::from([(
+                    web.identity(),
+                    BTreeMap::from([(web.container_id, web.address.unwrap())]),
+                )])
+        }),
+    )
+    .await
+    .expect("Caddy proxies only web.example.com until secure.example.com has a certificate")
+    .unwrap();
 
     shutdown.cancel();
     watcher.await.unwrap().unwrap();

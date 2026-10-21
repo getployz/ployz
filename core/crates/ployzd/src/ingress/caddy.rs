@@ -340,7 +340,7 @@ fn route_summary(projection: &IngressProjection) -> String {
     let mut summary = String::new();
     for site in &projection.sites {
         for (protocol, scheme) in [(HttpProtocol::Http, "http"), (HttpProtocol::Https, "https")] {
-            let Some(endpoints) = site.route(protocol) else {
+            let Some(endpoints) = site.proxied(protocol) else {
                 continue;
             };
             let upstreams = endpoints

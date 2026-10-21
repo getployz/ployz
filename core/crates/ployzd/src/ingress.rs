@@ -480,31 +480,36 @@ where
             };
             match input {
                 Ok((caddy, addresses, projection, routes)) => {
-                    let mut through_admin = last_input
+                    let loaded = last_input
                         .as_ref()
                         .is_some_and(|last: &CaddyInput| last.loaded(&projection, caddy.as_ref()));
-                    let result = async {
-                        if through_admin {
-                            return Ok(());
+                    let (through_admin, result) = if loaded {
+                        (true, Ok(()))
+                    } else {
+                        match connect().await {
+                            Ok(admin) => {
+                                let input = CaddyInput {
+                                    projection,
+                                    caddy,
+                                    through_admin: admin.is_some(),
+                                };
+                                let result = if last_input.as_ref() == Some(&input) {
+                                    Ok(())
+                                } else {
+                                    apply_caddy(&input.projection, &config_file, admin.as_ref())
+                                        .await
+                                        .map(|()| last_input = Some(input))
+                                };
+                                (admin.is_some(), result)
+                            }
+                            Err(error) => (false, Err(ApplyError::BeforeServing(error))),
                         }
-                        let admin = connect().await.map_err(ApplyError::BeforeServing)?;
-                        through_admin = admin.is_some();
-                        let input = CaddyInput {
-                            projection,
-                            caddy,
-                            through_admin,
-                        };
-                        if last_input.as_ref() != Some(&input) {
-                            apply_caddy(&input.projection, &config_file, admin.as_ref()).await?;
-                            last_input = Some(input);
-                        }
-                        Ok(())
-                    }
-                    .await;
+                    };
                     if matches!(result, Err(ApplyError::AfterServing(_))) {
                         last_input = None;
                     }
-                    // Without the admin, a running Caddy keeps serving the config it last loaded.
+                    // Without the admin, only the Caddyfile is written, and a running Caddy keeps
+                    // serving the config it last loaded.
                     if through_admin && !matches!(result, Err(ApplyError::BeforeServing(_))) {
                         route_publishes.send_if_modified(|publishes| {
                             let changed = publishes.addresses != addresses;
