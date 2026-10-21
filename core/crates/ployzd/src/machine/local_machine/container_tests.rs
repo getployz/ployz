@@ -1252,7 +1252,7 @@ mod stopped_on_request {
     use ployz_core::{
         ContainerId, ContainerLocator, ContainerNow, ContainerObservation, ContainerRun,
         ContainerRuntimeObservation, ContainerWant, Drain, EnsuredContainer, MachineName,
-        NewContainer, RunRotation, RunTarget, StopOptions,
+        NewContainer, PortPublication, RunRotation, RunTarget, StopOptions,
     };
     use serde_json::json;
 
@@ -1271,9 +1271,24 @@ mod stopped_on_request {
     }
 
     impl Fixture {
-        /// One running Container whose app exits 1 when stopped, as one that exits
-        /// non-zero on SIGTERM does.
+        /// One running Container serving port 8080 whose app exits 1 when stopped, as
+        /// one that exits non-zero on SIGTERM does. Docker reports no pid until
+        /// [`Self::sockets`] sets one, so a drain waits its full length.
         async fn start() -> Self {
+            Self::publishing(vec![
+                serde_json::from_value(json!({
+                    "mode": "ingress",
+                    "hostname": "api.example.test",
+                    "load_balancer_port": 443,
+                    "container_port": 8080,
+                    "http_protocol": "http",
+                }))
+                .unwrap(),
+            ])
+            .await
+        }
+
+        async fn publishing(ports: Vec<PortPublication>) -> Self {
             let data_dir =
                 std::env::temp_dir().join(format!("ployzd-stopped-mark-{}", MachineId::random()));
             let mut store = LocalMachineStore::open(&data_dir).unwrap();
@@ -1302,10 +1317,13 @@ mod stopped_on_request {
             .await;
             let local = LocalMachine::new(owner)
                 .with_containers(Some(runtime.clone()))
-                .with_zpool("true");
+                .with_zpool("true")
+                .with_proc_root(data_dir.join("proc"));
+            let mut spec = spec_with_sources(vec![]);
+            spec.ports = ports;
             let new: NewContainer = serde_json::from_value(json!({
                 "slot": {"namespace":"app", "service":"api", "kind":"service_container", "creation_key":"s1"},
-                "resolved_spec": spec_with_sources(vec![]),
+                "resolved_spec": spec,
                 "gen": 1,
             }))
             .unwrap();
@@ -1388,6 +1406,41 @@ mod stopped_on_request {
             .unwrap();
             self.docker_sets(meanwhile);
             ensuring.await.unwrap()
+        }
+
+        /// Give the Container a pid whose namespace lists one socket per `(port, state)`,
+        /// a listener on 0.0.0.0 and any other on 10.1.0.5.
+        fn sockets(&self, sockets: &[(u16, &str)]) {
+            let net = self.data_dir.join("proc/4242/net");
+            std::fs::create_dir_all(&net).unwrap();
+            let header = "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n";
+            let mut tcp = header.to_owned();
+            for (row, (port, state)) in sockets.iter().enumerate() {
+                let (local, remote) = if *state == "0A" {
+                    ("00000000", "00000000:0000")
+                } else {
+                    ("0A010005", "0A010002:C350")
+                };
+                tcp.push_str(&format!("   {row}: {local}:{port:04X} {remote} {state} 00000000:00000000 00:00000000 00000000     0        0 1 1 0000000000000000 20 4 30 10 -1\n"));
+            }
+            std::fs::write(net.join("tcp"), tcp).unwrap();
+            std::fs::write(net.join("tcp6"), header).unwrap();
+            self.docker_sets(&[("/State/Pid", json!(4242))]);
+        }
+
+        /// Stop the Container with `drain`, and how long the stop took.
+        async fn stop_timed(&self, drain: Drain) -> (ContainerObservation, Duration) {
+            let began = std::time::Instant::now();
+            let stopped = ensure(
+                &self.local,
+                ContainerWant::Stopped {
+                    container: ContainerLocator::Id(self.id),
+                    drain,
+                    stop: StopOptions::default(),
+                },
+            )
+            .await;
+            (stopped, began.elapsed())
         }
 
         fn stop_rows(&self) -> i64 {
@@ -1536,5 +1589,155 @@ mod stopped_on_request {
             "no row outlives its Container's spec"
         );
         fixture.finish();
+    }
+
+    mod stop_checked {
+        use super::*;
+
+        const ESTABLISHED: &str = "01";
+        const LISTEN: &str = "0A";
+        const TIME_WAIT: &str = "06";
+
+        fn assert_exited(stopped: &ContainerObservation) {
+            assert_eq!(
+                stopped.runtime,
+                ContainerRuntimeObservation::Exited { code: 1 }
+            );
+        }
+
+        #[tokio::test]
+        async fn stop_checked_ends_the_drain_once_the_copy_is_idle() {
+            let fixture = Fixture::start().await;
+            fixture.sockets(&[(8080, LISTEN)]);
+
+            let (stopped, took) = fixture.stop_timed(Drain::MAX).await;
+
+            assert_exited(&stopped);
+            assert!(
+                took < Duration::from_secs(10),
+                "a copy listening with no connection stops long before the 30 s cap, took {took:?}"
+            );
+            fixture.finish();
+        }
+
+        #[tokio::test]
+        async fn stop_checked_ends_the_drain_when_the_last_connection_closes() {
+            let fixture = Fixture::start().await;
+            fixture.sockets(&[(8080, LISTEN), (8080, ESTABLISHED)]);
+            let mut stopping = fixture.runtime.subscribe_stopping_for_test();
+
+            let (stopped, _) = {
+                let stop = fixture.stop_timed(Drain::MAX);
+                tokio::pin!(stop);
+                tokio::select! {
+                    _ = &mut stop => panic!("the stop ended while a connection was open"),
+                    drained = stopping.wait_for(|stopping| stopping.contains_key(&fixture.id)) => {
+                        drained.unwrap();
+                    }
+                }
+                assert!(
+                    tokio::time::timeout(Duration::from_millis(300), &mut stop)
+                        .await
+                        .is_err(),
+                    "the drain waits while the connection is open"
+                );
+                fixture.sockets(&[(8080, LISTEN), (8080, TIME_WAIT)]);
+                tokio::time::timeout(Duration::from_secs(10), stop)
+                    .await
+                    .expect("the drain ends once the connection closes")
+            };
+
+            assert_exited(&stopped);
+            fixture.finish();
+        }
+
+        #[tokio::test]
+        async fn stop_checked_waits_for_a_connection_whose_listener_closed_during_the_drain() {
+            let fixture = Fixture::start().await;
+            fixture.sockets(&[(8080, LISTEN), (8080, ESTABLISHED)]);
+            let mut stopping = fixture.runtime.subscribe_stopping_for_test();
+
+            let (stopped, took) = {
+                let stop = fixture.stop_timed(Drain::try_from(500).unwrap());
+                tokio::pin!(stop);
+                tokio::select! {
+                    _ = &mut stop => panic!("the stop ended while a connection was open"),
+                    drained = stopping.wait_for(|stopping| stopping.contains_key(&fixture.id)) => {
+                        drained.unwrap();
+                    }
+                }
+                assert!(
+                    tokio::time::timeout(Duration::from_millis(200), &mut stop)
+                        .await
+                        .is_err(),
+                    "the drain reads the listener"
+                );
+                fixture.sockets(&[(8080, ESTABLISHED)]);
+                stop.await
+            };
+
+            assert_exited(&stopped);
+            assert!(
+                took >= Duration::from_millis(500),
+                "the connection still holds the copy, took {took:?}"
+            );
+            fixture.finish();
+        }
+
+        #[tokio::test]
+        async fn stop_checked_waits_the_full_drain_on_a_busy_copy() {
+            let fixture = Fixture::start().await;
+            fixture.sockets(&[(8080, LISTEN), (8080, ESTABLISHED)]);
+
+            let (stopped, took) = fixture.stop_timed(Drain::try_from(500).unwrap()).await;
+
+            assert_exited(&stopped);
+            assert!(took >= Duration::from_millis(500), "took {took:?}");
+            fixture.finish();
+        }
+
+        #[tokio::test]
+        async fn stop_checked_waits_the_full_drain_when_the_sockets_cannot_be_read() {
+            let fixture = Fixture::start().await;
+
+            let (stopped, took) = fixture.stop_timed(Drain::try_from(500).unwrap()).await;
+
+            assert_exited(&stopped);
+            assert!(
+                took >= Duration::from_millis(500),
+                "no pid is no evidence of idleness, took {took:?}"
+            );
+            fixture.finish();
+        }
+
+        #[tokio::test]
+        async fn stop_checked_waits_for_a_connection_on_a_port_the_service_never_declared() {
+            let fixture = Fixture::publishing(vec![]).await;
+            fixture.sockets(&[(9000, LISTEN), (9000, ESTABLISHED)]);
+
+            let (stopped, took) = fixture.stop_timed(Drain::try_from(500).unwrap()).await;
+
+            assert_exited(&stopped);
+            assert!(
+                took >= Duration::from_millis(500),
+                "private traffic needs no published port, took {took:?}"
+            );
+            fixture.finish();
+        }
+
+        #[tokio::test]
+        async fn stop_checked_stops_a_copy_without_a_listener_at_once() {
+            let fixture = Fixture::start().await;
+            fixture.sockets(&[(0xA2C4, ESTABLISHED)]);
+
+            let (stopped, took) = fixture.stop_timed(Drain::MAX).await;
+
+            assert_exited(&stopped);
+            assert!(
+                took < Duration::from_secs(10),
+                "an outbound connection serves no client, took {took:?}"
+            );
+            fixture.finish();
+        }
     }
 }

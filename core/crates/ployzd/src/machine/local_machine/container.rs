@@ -36,6 +36,10 @@ use crate::machine::{STORAGE_OBSERVATION_TIMEOUT, local_storage};
 /// verdict is seen. Remote health waits keep `HEALTH_POLL_INTERVAL`.
 const SETTLE_POLL: Duration = Duration::from_millis(100);
 
+/// Reading a copy's sockets is cheap, so a short poll costs little and sets how late
+/// an idle copy is seen.
+const DRAIN_POLL: Duration = Duration::from_millis(50);
+
 #[cfg(test)]
 static SETTLES: std::sync::Mutex<std::collections::BTreeMap<ContainerId, usize>> =
     std::sync::Mutex::new(std::collections::BTreeMap::new());
@@ -323,8 +327,10 @@ impl LocalMachine {
     /// already holding a turn deadlocks.
     ///
     /// The stopping mark is set without a turn so replication tells every proxy
-    /// while the drain sleeps. A daemon restart forgets the mark; a still-running
-    /// Container returns to ingress and the resend redoes the drain.
+    /// during the drain. An idle copy ends its drain early, so a proxy that has not
+    /// heard yet may dial the stopped copy and retry another. A daemon restart forgets
+    /// the mark; a still-running Container returns to ingress and the resend redoes the
+    /// drain.
     ///
     /// With a `fence`, the Container holds that Volume and the gen is checked against
     /// its floor under the turn, after the drain: a Deploy that raised the floor
@@ -425,7 +431,8 @@ impl LocalMachine {
             Ok(withdrawal) => withdrawal,
             Err(refused) => return Ok(Err(refused)),
         };
-        tokio::time::sleep(drain.as_duration()).await;
+        let _ =
+            tokio::time::timeout(drain.as_duration(), self.until_idle(containers, container)).await;
         let turn = self.owner.admission_lock().write_owned().await;
         let held = match check().await? {
             Ok(held) => held,
@@ -452,6 +459,31 @@ impl LocalMachine {
         Ok(Ok(containers
             .inspect_managed(container, &machine_id)
             .await?))
+    }
+
+    /// Ends once the copy holds no inbound connection, one from off its loopback on a
+    /// port it listened on at any read of this drain. A copy with no listener reads
+    /// idle at once. A copy whose sockets cannot be read never reads idle, so its drain
+    /// waits the full cap.
+    ///
+    /// Every Service copy joins the Ployz network, so its pid's tables list only its
+    /// own sockets. A copy in the host's namespace would list the host's, and read
+    /// busy until the cap.
+    async fn until_idle(
+        &self,
+        containers: &crate::docker::ContainerRuntime,
+        container: &ContainerId,
+    ) {
+        let Ok(Some(pid)) = containers.pid(container).await else {
+            return std::future::pending().await;
+        };
+        let mut listening = std::collections::BTreeSet::new();
+        while !matches!(
+            drain_idle::holds_connection(&self.proc_root, pid, &mut listening),
+            Ok(false)
+        ) {
+            tokio::time::sleep(DRAIN_POLL).await;
+        }
     }
 
     /// The cut's Container half: drain and stop every holder of the Volume, then run
@@ -1452,6 +1484,8 @@ fn create_refusal(error: Error) -> Result<ContainerRefusal, Error> {
     Ok(refuse(reason, ployz_core::error_chain::inline(&error)))
 }
 
+#[path = "drain_idle.rs"]
+mod drain_idle;
 #[path = "rotation.rs"]
 mod rotation;
 

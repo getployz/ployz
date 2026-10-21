@@ -44,6 +44,7 @@ pub struct LocalMachine {
     containers: Option<ContainerRuntime>,
     plugin: crate::storage::Plugin,
     zpool: PathBuf,
+    proc_root: PathBuf,
     settled: container::SettledCreations,
 }
 
@@ -149,6 +150,7 @@ impl LocalMachine {
             containers: None,
             plugin: crate::storage::Plugin::default(),
             zpool: PathBuf::from("zpool"),
+            proc_root: PathBuf::from("/proc"),
             settled: container::SettledCreations::default(),
         }
     }
@@ -157,6 +159,13 @@ impl LocalMachine {
     #[must_use]
     pub(crate) fn with_zpool(mut self, program: impl Into<PathBuf>) -> Self {
         self.zpool = program.into();
+        self
+    }
+
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn with_proc_root(mut self, root: impl Into<PathBuf>) -> Self {
+        self.proc_root = root.into();
         self
     }
 
