@@ -392,39 +392,56 @@ pub(crate) async fn failed_tail(
     container: ContainerId,
     sealed: &SealedValues,
 ) -> (LogText, LastRun) {
-    let (log, exit_code) = match tail_frames(client, machine, container).await {
-        Some(tail) => (tail_excerpt(tail.frames, sealed), tail.exit_code),
+    match tail_frames(client, machine, container).await {
+        Some(tail) => tail.scrubbed(sealed),
         None => (
             LogText::Withheld {
                 why: Withheld::Unanswered,
             },
-            None,
+            LastRun::default(),
         ),
-    };
-    let run = last_run(&log, exit_code);
-    (log, run)
-}
-
-/// A failed Container's last run: the code of its newest stored exit, and the newest
-/// line of its scrubbed `log`.
-pub(crate) fn last_run(log: &LogText, exit_code: Option<i64>) -> LastRun {
-    LastRun {
-        exit_code,
-        last_line: match log {
-            LogText::Shown(excerpt) => excerpt.lines().last().cloned(),
-            LogText::Withheld { .. } => None,
-        },
     }
 }
 
-/// A failed Container's raw last lines, and the code of its newest stored exit.
+/// A failed Container's raw last lines, oldest first, and its newest stored exit.
 pub(crate) struct Tail {
-    pub(crate) frames: Vec<String>,
-    pub(crate) exit_code: Option<i64>,
+    frames: Vec<String>,
+    exit: Option<Exit>,
+}
+
+/// A stored exit, and how many of the tail's newest lines the next run printed after it.
+#[derive(Clone, Copy)]
+struct Exit {
+    code: Option<i64>,
+    lines_after: usize,
+}
+
+impl Tail {
+    pub(crate) fn exit_code(&self) -> Option<i64> {
+        self.exit.and_then(|exit| exit.code)
+    }
+
+    /// The tail scrubbed of `sealed`, and the run its newest exit ended: that code and
+    /// the last line that run printed, not one the next run printed after it.
+    pub(crate) fn scrubbed(self, sealed: &SealedValues) -> (LogText, LastRun) {
+        let ran = self
+            .frames
+            .len()
+            .saturating_sub(self.exit.map_or(0, |exit| exit.lines_after));
+        let last_line = match tail_excerpt(self.frames.iter().take(ran).cloned(), sealed) {
+            LogText::Shown(excerpt) => excerpt.lines().last().cloned(),
+            LogText::Withheld { .. } => None,
+        };
+        let run = LastRun {
+            exit_code: self.exit_code(),
+            last_line,
+        };
+        (tail_excerpt(self.frames, sealed), run)
+    }
 }
 
 /// The raw last lines of failed Container `container` on `machine`, for
-/// [`tail_excerpt`] once what to scrub them of is known. None when unread in time.
+/// [`Tail::scrubbed`] once what to scrub them of is known. None when unread in time.
 pub(crate) async fn tail_frames(
     client: &Client,
     machine: MachineId,
@@ -436,16 +453,16 @@ pub(crate) async fn tail_frames(
             container_id: Some(container),
             ..LogHistoryRequest::default()
         };
-        let (newest, exit_code) = newest_lines(client, &target, selector, TAIL_FETCH).await?;
+        let (newest, exit) = newest_lines(client, &target, selector, TAIL_FETCH).await?;
         Ok::<_, RpcError>(Tail {
             frames: frames(newest.into_iter().map(|(_, text)| text)),
-            exit_code,
+            exit,
         })
     };
     tokio::time::timeout(TAIL_READ, read).await.ok()?.ok()
 }
 
-pub(crate) fn tail_excerpt(frames: Vec<String>, sealed: &SealedValues) -> LogText {
+fn tail_excerpt(frames: impl IntoIterator<Item = String>, sealed: &SealedValues) -> LogText {
     LogText::Shown(LogExcerpt::scrub(
         frames,
         sealed,
@@ -621,7 +638,7 @@ async fn newest_lines(
     target: &MachineTarget,
     selector: LogHistoryRequest,
     fetch: u16,
-) -> Result<(Vec<(ContainerId, Vec<u8>)>, Option<i64>), RpcError> {
+) -> Result<(Vec<(ContainerId, Vec<u8>)>, Option<Exit>), RpcError> {
     let mut newest = Vec::new();
     let mut exit = None;
     let mut cursor = None;
@@ -659,7 +676,10 @@ async fn newest_lines(
                     });
                 }
                 HistoryRow::Exit { exit_code, .. } => {
-                    exit.get_or_insert(exit_code);
+                    exit.get_or_insert(Exit {
+                        code: exit_code,
+                        lines_after: newest.len(),
+                    });
                 }
                 HistoryRow::Container(_) | HistoryRow::Gap { .. } | HistoryRow::Heartbeat => {}
             }
@@ -669,7 +689,7 @@ async fn newest_lines(
         }
     }
     newest.truncate(usize::from(fetch));
-    Ok((newest, exit.flatten()))
+    Ok((newest, exit))
 }
 
 /// Newest-first lines as frames in the order they were written.
