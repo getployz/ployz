@@ -53,12 +53,13 @@ trunc() {
   } >>"$CAPTURES/$f.md"
   rm -f "$o" "$e"
 }
-# tty FILE "TITLE" "INPUT" ARGS...   run under a pty, typing INPUT after 1s
+# tty FILE "TITLE" "INPUT" ARGS...   run under a pty, typing INPUT after 1s;
+# TTY_SHOWN names INPUT in the title when it holds keys that do not print
 tty() {
   local f=$1 t=$2 input=$3; shift 3
   local cmd; printf -v cmd '%q ' "$B" "$@"
   {
-    echo "### $t (TTY, typed: ${input:-<Enter>})"; echo; echo '```console'; echo "\$ ployz $*"
+    echo "### $t (TTY, typed: ${TTY_SHOWN:-${input:-<Enter>}})"; echo; echo '```console'; echo "\$ ployz $*"
     (sleep 1; printf '%s\n' "$input"; sleep 2) | script -qec "$cmd" /dev/null 2>&1 | sed 's/\r$//' || true
     echo '```'; echo
   } >>"$CAPTURES/$f.md"
@@ -321,8 +322,8 @@ m context "ctx use" ctx use dev
 m context "ctx use --json" --json ctx use prod
 m context "ctx use: unknown context" ctx use nope
 m context "ctx use (no name, not a terminal)" ctx use
-tty context "ctx use picker" "1" ctx use
-tty context "ctx use picker, invalid choice" "9" ctx use
+TTY_SHOWN='<Down> <Enter>' tty context "ctx use picker" $'\e[B' ctx use
+tty context "ctx use picker ignores a digit" "9" ctx use
 m context "ctx rm" ctx rm dev
 m context "ctx rm --json" --json ctx rm prod
 m context "ctx rm: unknown context" ctx rm nope

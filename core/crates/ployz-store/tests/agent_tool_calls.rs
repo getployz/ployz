@@ -1808,6 +1808,41 @@ fn remove_container() -> Value {
 }
 
 #[test]
+fn a_claimed_deployment_reads_preparing_until_its_deploy_preview() {
+    let (store, id) = deploying();
+    let runner = RunnerId::parse("runner").unwrap();
+    let claimed = store.claim(&id, &runner).unwrap();
+    let shown = call(&store, "deployment_show", json!({}), "show-1").ok();
+    let listed = call(&store, "deployment_list", json!({}), "list-1").ok();
+    assert_eq!(
+        (&shown["status"], &shown["preparing"]),
+        (&json!("running"), &json!(true)),
+        "{shown}"
+    );
+    assert_eq!(listed["deployments"][0]["preparing"], true, "{listed}");
+
+    let preview: DeployPreview = serde_json::from_value(json!({
+        "namespace": claimed.intent.namespace,
+        "operations": [{
+            "index": 0, "machine_id": machine('a'), "service_name": "web",
+            "operation": remove_container(), "status": { "type": "pending" },
+        }],
+        "warnings": [], "would_remove": [], "preserved_volumes": [],
+    }))
+    .unwrap();
+    store
+        .record(&id, &runner, RunEvidence::Prepared(preview))
+        .unwrap();
+    let shown = call(&store, "deployment_show", json!({}), "show-2").ok();
+    let listed = call(&store, "deployment_list", json!({}), "list-2").ok();
+    assert!(shown.get("preparing").is_none(), "{shown}");
+    assert!(
+        listed["deployments"][0].get("preparing").is_none(),
+        "{listed}"
+    );
+}
+
+#[test]
 fn a_deployment_shows_its_progress_then_where_its_failure_logged() {
     let (store, id) = deploying();
     let runner = RunnerId::parse("runner").unwrap();

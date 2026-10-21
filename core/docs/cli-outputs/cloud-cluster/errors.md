@@ -12,7 +12,7 @@ $ ployz logs nosuch
 stderr:
 ```
 error: No Service named nosuch in Environment production
-valid: api, postgres, web, worker
+valid: api, postgres, redis, web, worker
 ```
 
 ### exec in an unknown Service 
@@ -25,7 +25,7 @@ $ ployz exec nosuch -- true
 stderr:
 ```
 error: No Service named nosuch in Environment production
-valid: api, postgres, web, worker
+valid: api, postgres, redis, web, worker
 ```
 
 ### exec a missing binary 
@@ -49,8 +49,8 @@ $ ployz exec worker -- true
 
 stderr:
 ```
-error: Could not start the command in ployz-create-af57ae4c8ee193deb9af715b3ade4e060cb09821ea5c48dfe127555471401bf9.
-  cause: Docker responded with status code 409: container c72c2a83b060bfe3b4b903510d2fc6c5a4db5b0e68e28c0a6d11e3ad06d3d29d is not running
+error: Could not start the command in ployz-create-7d3f5b67ce06153b8fbc57aee4a12762ed82636395e66984de94aad6e04aff4d.
+  cause: Docker responded with status code 409: container 8bfa5b7325b339683fa99688de674007ea64906dc097b7b56d56a7d77804ed6e is not running
 ```
 
 ### logs of a stopped Service 
@@ -62,8 +62,8 @@ $ ployz logs worker --tail 2
 
 stderr:
 ```
-2026-10-20T17:13:35.024512312+00:00 machine-1 worker/78810c66d7ae | exited with 2
-2026-10-20T17:14:00.740444025+00:00 machine-1 worker/c72c2a83b060 | exited with 2
+2026-10-20T22:45:15.769682179+00:00 machine-1 worker/2db204873ae2 | exited with 2
+2026-10-20T22:45:40.088049980+00:00 machine-1 worker/8bfa5b7325b3 | exited with 2
 ```
 
 ### service restart of an unknown Service 
@@ -76,7 +76,7 @@ $ ployz service restart nosuch
 stderr:
 ```
 error: No Service named nosuch in Environment production
-valid: api, postgres, web, worker
+valid: api, postgres, redis, web, worker
 ```
 
 ### service inspect of an unknown Service 
@@ -89,7 +89,7 @@ $ ployz service inspect nosuch
 stderr:
 ```
 error: No Service named nosuch in Environment production
-valid: api, postgres, web, worker
+valid: web, postgres, redis, worker, api
 ```
 
 ### deploy an unknown Service 
@@ -114,7 +114,7 @@ $ ployz deploy --expect-version 1:1:0.0
 stderr:
 ```
 error: The Environment changed after this review. Review the latest changes and try again
-next: ployz deploy --expect-version 39:16:0.28
+next: ployz deploy --expect-version 40:16:0.26
 ```
 
 ### deployment show of an unknown id 
@@ -145,27 +145,27 @@ next: ployz deployment ls
 ### deployment cancel of an applied Deployment 
 
 ```console
-$ ployz deployment cancel 0d3dbff3-2ba6-4e79-a301-da532e3665d6
+$ ployz deployment cancel 97ef0635-e637-491b-a6f9-b81bf29d92bf
 # exit 1
 ```
 
 stderr:
 ```
 error: This Deployment already ended
-next: ployz deployment show 33
+next: ployz deployment show 31
 ```
 
 ### deployment start of an applied Deployment 
 
 ```console
-$ ployz deployment start 0d3dbff3-2ba6-4e79-a301-da532e3665d6
+$ ployz deployment start 97ef0635-e637-491b-a6f9-b81bf29d92bf
 # exit 1
 ```
 
 stderr:
 ```
 error: This Deployment already ended
-next: ployz deployment show 33
+next: ployz deployment show 31
 ```
 
 ### domain check of an unknown domain 
@@ -178,7 +178,7 @@ $ ployz domain check nosuch.example.com
 stderr:
 ```
 error: No such domain in Environment production
-valid: api.ada.ployz.test, acme.com
+valid: acme.com, web.ada.ployz.test
 ```
 
 ### domain set on an unknown Service 
@@ -191,7 +191,7 @@ $ ployz domain set nosuch foo
 stderr:
 ```
 error: No Service named nosuch in Environment production
-valid: api, postgres, web, worker
+valid: web, postgres, redis, worker, api
 ```
 
 ### domain rm of an unknown domain 
@@ -204,7 +204,7 @@ $ ployz domain rm nosuch.example.com
 stderr:
 ```
 error: No such domain in Environment production
-valid: api.ada.ployz.test, acme.com
+valid: acme.com, web.ada.ployz.test
 ```
 
 ### server show of an unknown Server 
@@ -270,7 +270,7 @@ stderr:
 ```
 error: No Environment named nosuch in Project shop
 next: ployz env ls --project shop
-valid: fix-api, hotfix, production, search, staging
+valid: fix-api, production, search, staging
 ```
 
 ### logs --since garbage 
@@ -296,7 +296,7 @@ $ ployz --json logs nosuch
 
 stdout:
 ```
-{"error":{"cause":[],"code":"not_found","details":{"valid_children":["api","postgres","web","worker"]},"message":"No Service named nosuch in Environment production"}}
+{"error":{"cause":[],"code":"not_found","details":{"valid_children":["api","postgres","redis","web","worker"]},"message":"No Service named nosuch in Environment production"}}
 ```
 
 ### exec in an unknown Service --json
@@ -344,8 +344,8 @@ $ ployz --json logs worker --tail 2
 
 stdout:
 ```
-{"container":"c72c2a83b060bfe3b4b903510d2fc6c5a4db5b0e68e28c0a6d11e3ad06d3d29d","container_id":"c72c2a83b060bfe3b4b903510d2fc6c5a4db5b0e68e28c0a6d11e3ad06d3d29d","deployment":"0d3dbff3-2ba6-4e79-a301-da532e3665d6","hook":null,"level":"info","line":"2026/10/20 17:14:14 Starting up on port 80","machine":"machine-1","message":"2026/10/20 17:14:14 Starting up on port 80\n","namespace":"shop-production","replica":"ployz-create-af57ae4c8ee193deb9af715b3ade4e060cb09821ea5c48dfe127555471401bf9","service":"worker","stream":"stderr","timestamp":"2026-10-20T17:14:14.658771335+00:00","ts":"2026-10-20T17:14:14.658771335Z"}
-{"container":"c72c2a83b060bfe3b4b903510d2fc6c5a4db5b0e68e28c0a6d11e3ad06d3d29d","container_id":"c72c2a83b060bfe3b4b903510d2fc6c5a4db5b0e68e28c0a6d11e3ad06d3d29d","deployment":"0d3dbff3-2ba6-4e79-a301-da532e3665d6","exit":{"code":2,"oom_killed":false},"hook":null,"machine":"machine-1","namespace":"shop-production","replica":"ployz-create-af57ae4c8ee193deb9af715b3ade4e060cb09821ea5c48dfe127555471401bf9","service":"worker","timestamp":"2026-10-20T17:15:10.417908542+00:00","ts":"2026-10-20T17:15:10.417908542Z"}
+{"container":"8bfa5b7325b339683fa99688de674007ea64906dc097b7b56d56a7d77804ed6e","container_id":"8bfa5b7325b339683fa99688de674007ea64906dc097b7b56d56a7d77804ed6e","deployment":"97ef0635-e637-491b-a6f9-b81bf29d92bf","hook":null,"level":"info","line":"2026/10/20 22:45:53 Starting up on port 80","machine":"machine-1","message":"2026/10/20 22:45:53 Starting up on port 80\n","namespace":"shop-production","replica":"ployz-create-7d3f5b67ce06153b8fbc57aee4a12762ed82636395e66984de94aad6e04aff4d","service":"worker","stream":"stderr","timestamp":"2026-10-20T22:45:53.308776595+00:00","ts":"2026-10-20T22:45:53.308776595Z"}
+{"container":"8bfa5b7325b339683fa99688de674007ea64906dc097b7b56d56a7d77804ed6e","container_id":"8bfa5b7325b339683fa99688de674007ea64906dc097b7b56d56a7d77804ed6e","deployment":"97ef0635-e637-491b-a6f9-b81bf29d92bf","exit":{"code":2,"oom_killed":false},"hook":null,"machine":"machine-1","namespace":"shop-production","replica":"ployz-create-7d3f5b67ce06153b8fbc57aee4a12762ed82636395e66984de94aad6e04aff4d","service":"worker","timestamp":"2026-10-20T22:46:41.632036503+00:00","ts":"2026-10-20T22:46:41.632036503Z"}
 ```
 
 ### service restart of an unknown Service --json
@@ -357,7 +357,7 @@ $ ployz --json service restart nosuch
 
 stdout:
 ```
-{"error":{"cause":[],"code":"not_found","details":{"valid_children":["api","postgres","web","worker"]},"message":"No Service named nosuch in Environment production"}}
+{"error":{"cause":[],"code":"not_found","details":{"valid_children":["api","postgres","redis","web","worker"]},"message":"No Service named nosuch in Environment production"}}
 ```
 
 ### service inspect of an unknown Service --json
@@ -369,7 +369,7 @@ $ ployz --json service inspect nosuch
 
 stdout:
 ```
-{"error":{"cause":[],"code":"not_found","details":{"valid_children":["api","postgres","web","worker"]},"message":"No Service named nosuch in Environment production"}}
+{"error":{"cause":[],"code":"not_found","details":{"valid_children":["web","postgres","redis","worker","api"]},"message":"No Service named nosuch in Environment production"}}
 ```
 
 ### deploy an unknown Service --json
@@ -381,7 +381,7 @@ $ ployz --json deploy nosuch
 
 stdout:
 ```
-{"error":{"cause":[],"code":"not_found","details":{"services":["api","postgres","web","worker"]},"message":"No Service named nosuch to deploy"}}
+{"error":{"cause":[],"code":"not_found","details":{"services":["web","postgres","redis","worker","api"]},"message":"No Service named nosuch to deploy"}}
 ```
 
 ### deploy with a stale --expect-version --json
@@ -393,7 +393,7 @@ $ ployz --json deploy --expect-version 1:1:0.0
 
 stdout:
 ```
-{"error":{"cause":[],"code":"conflict","details":{"diff":{"version":"39:16:0.28"},"next":"ployz deploy --expect-version 39:16:0.28"},"message":"The Environment changed after this review. Review the latest changes and try again"}}
+{"error":{"cause":[],"code":"conflict","details":{"diff":{"version":"40:16:0.26"},"next":"ployz deploy --expect-version 40:16:0.26"},"message":"The Environment changed after this review. Review the latest changes and try again"}}
 ```
 
 ### deployment show of an unknown id --json
@@ -423,25 +423,25 @@ stdout:
 ### deployment cancel of an applied Deployment --json
 
 ```console
-$ ployz --json deployment cancel 0d3dbff3-2ba6-4e79-a301-da532e3665d6
+$ ployz --json deployment cancel 97ef0635-e637-491b-a6f9-b81bf29d92bf
 # exit 1
 ```
 
 stdout:
 ```
-{"error":{"cause":[],"code":"conflict","details":{"deployment":"0d3dbff3-2ba6-4e79-a301-da532e3665d6","next":"ployz deployment show 33"},"message":"This Deployment already ended"}}
+{"error":{"cause":[],"code":"conflict","details":{"deployment":"97ef0635-e637-491b-a6f9-b81bf29d92bf","next":"ployz deployment show 31"},"message":"This Deployment already ended"}}
 ```
 
 ### deployment start of an applied Deployment --json
 
 ```console
-$ ployz --json deployment start 0d3dbff3-2ba6-4e79-a301-da532e3665d6
+$ ployz --json deployment start 97ef0635-e637-491b-a6f9-b81bf29d92bf
 # exit 1
 ```
 
 stdout:
 ```
-{"error":{"cause":[],"code":"conflict","details":{"deployment":"0d3dbff3-2ba6-4e79-a301-da532e3665d6","next":"ployz deployment show 33"},"message":"This Deployment already ended"}}
+{"error":{"cause":[],"code":"conflict","details":{"deployment":"97ef0635-e637-491b-a6f9-b81bf29d92bf","next":"ployz deployment show 31"},"message":"This Deployment already ended"}}
 ```
 
 ### domain check of an unknown domain --json
@@ -453,7 +453,7 @@ $ ployz --json domain check nosuch.example.com
 
 stdout:
 ```
-{"error":{"cause":[],"code":"not_found","details":{"valid_children":["api.ada.ployz.test","acme.com"]},"message":"No such domain in Environment production"}}
+{"error":{"cause":[],"code":"not_found","details":{"valid_children":["acme.com","web.ada.ployz.test"]},"message":"No such domain in Environment production"}}
 ```
 
 ### domain set on an unknown Service --json
@@ -465,7 +465,7 @@ $ ployz --json domain set nosuch foo
 
 stdout:
 ```
-{"error":{"cause":[],"code":"not_found","details":{"valid_children":["api","postgres","web","worker"]},"message":"No Service named nosuch in Environment production"}}
+{"error":{"cause":[],"code":"not_found","details":{"valid_children":["web","postgres","redis","worker","api"]},"message":"No Service named nosuch in Environment production"}}
 ```
 
 ### domain rm of an unknown domain --json
@@ -477,7 +477,7 @@ $ ployz --json domain rm nosuch.example.com
 
 stdout:
 ```
-{"error":{"cause":[],"code":"not_found","details":{"valid_children":["api.ada.ployz.test","acme.com"]},"message":"No such domain in Environment production"}}
+{"error":{"cause":[],"code":"not_found","details":{"valid_children":["acme.com","web.ada.ployz.test"]},"message":"No such domain in Environment production"}}
 ```
 
 ### server show of an unknown Server --json
@@ -537,7 +537,7 @@ $ ployz --json ps --env nosuch
 
 stdout:
 ```
-{"error":{"cause":[],"code":"not_found","details":{"next":"ployz env ls --project shop","valid_children":["fix-api","hotfix","production","search","staging"]},"message":"No Environment named nosuch in Project shop"}}
+{"error":{"cause":[],"code":"not_found","details":{"next":"ployz env ls --project shop","valid_children":["fix-api","production","search","staging"]},"message":"No Environment named nosuch in Project shop"}}
 ```
 
 ### logs --since garbage --json
