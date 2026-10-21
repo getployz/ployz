@@ -1,13 +1,12 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::{
-    ContainerAction, ContainerId, ContainerRuntimeObservation, CopyRotation, DataLoss,
-    DependencyCondition, HookContainer, IngressHost, MachineId, MachineObservation,
-    MembershipObservation, Namespace, ObservedDataLoss, PreservedVolume, PruneRefusal,
-    QualifiedService, RequestedServiceSpec, ServiceContainer, ServiceId, ServiceMode, ServiceName,
-    ServiceObservation, ServicePlacementEligibility, ServicePlacementIneligibleReason, UpdateOrder,
-    VolumeToCreate, explicit_ingress_hosts, hostname_owners, machine_matches_placement,
-    same_service_mode_kind,
+    ContainerAction, ContainerId, CopyRotation, DataLoss, DependencyCondition, HookContainer,
+    IngressHost, MachineId, MachineObservation, MembershipObservation, Namespace, ObservedDataLoss,
+    PreservedVolume, PruneRefusal, QualifiedService, RequestedServiceSpec, ServiceContainer,
+    ServiceId, ServiceMode, ServiceName, ServiceObservation, ServicePlacementEligibility,
+    ServicePlacementIneligibleReason, UpdateOrder, VolumeToCreate, explicit_ingress_hosts,
+    hostname_owners, machine_matches_placement, same_service_mode_kind,
 };
 
 use super::{
@@ -230,6 +229,18 @@ fn service_group(
     };
     let rollout_removal =
         |operation: &DeployOperation| TaskKind::of(operation) == TaskKind::Unroute;
+    // A copy of a Service the Deploy removes goes Out beside its siblings, so
+    // no Out waits on a route a sibling still In keeps.
+    let retirement = |operation: &DeployOperation| {
+        service.is_none()
+            && matches!(
+                operation,
+                DeployOperation::RemoveContainer {
+                    purpose: ployz_core::RemoveContainerPurpose::Retire,
+                    ..
+                }
+            )
+    };
     let publish = service.is_some()
         && indexed()
             .any(|(_, operation)| starts_container(operation) || rollout_removal(operation));
@@ -239,16 +250,16 @@ fn service_group(
             .is_some_and(|spec| spec.update.order == UpdateOrder::Rolling)
     });
     let mut steps: Vec<Step> = Vec::new();
-    let mut starts: Vec<usize> = Vec::new();
-    let flush = |steps: &mut Vec<Step>, starts: &mut Vec<usize>| {
+    let mut at_once: Vec<usize> = Vec::new();
+    let flush = |steps: &mut Vec<Step>, at_once: &mut Vec<usize>| {
         if !rolling {
-            if !starts.is_empty() {
-                steps.push(Step::Parallel(std::mem::take(starts)));
+            if !at_once.is_empty() {
+                steps.push(Step::Parallel(std::mem::take(at_once)));
             }
             return;
         }
         let mut machines: Vec<(MachineId, Vec<usize>)> = Vec::new();
-        for index in starts.drain(..) {
+        for index in at_once.drain(..) {
             let machine = operations
                 .get(index)
                 .expect("group ranges index this plan's operations")
@@ -268,14 +279,14 @@ fn service_group(
     for (index, operation) in indexed() {
         if publish && rollout_removal(operation) {
             removals.push(Step::Serial(index));
-        } else if starts_container(operation) {
-            starts.push(index);
+        } else if starts_container(operation) || retirement(operation) {
+            at_once.push(index);
         } else {
-            flush(&mut steps, &mut starts);
+            flush(&mut steps, &mut at_once);
             steps.push(Step::Serial(index));
         }
     }
-    flush(&mut steps, &mut starts);
+    flush(&mut steps, &mut at_once);
     let mut groups = vec![ServiceGroup {
         service: service.clone(),
         dependencies,
@@ -903,20 +914,9 @@ fn removal_operations(
         .flat_map(|service| service.containers_for(ContainerAction::Remove))
         .collect();
     // A Pending sibling keeps proxies on the last routed copy, whose Out then
-    // never confirms, and so does an In sibling that cannot serve, unless the
-    // copy set Out has exited. Pending copies go first, then exited copies,
-    // then the rest that cannot serve.
-    retiring.sort_by_key(|container| {
-        let observation = container.as_observation();
-        (
-            *observation.rotation() != CopyRotation::Pending,
-            !matches!(
-                observation.runtime,
-                ContainerRuntimeObservation::Exited { .. }
-            ),
-            observation.runtime.may_serve(),
-        )
-    });
+    // never confirms, so Pending copies go first.
+    retiring
+        .sort_by_key(|container| *container.as_observation().rotation() != CopyRotation::Pending);
     retiring
         .into_iter()
         .map(|container| {

@@ -528,6 +528,53 @@ async fn a_removal_whose_out_no_proxy_confirms_fails_the_deploy() {
     client.assert_done();
 }
 
+/// Every proxy routes both copies of a Service whose copies all exited. Each
+/// Out waits on the route that a sibling still In keeps, so the removal sets
+/// every copy Out before it waits on any.
+#[tokio::test(start_paused = true)]
+async fn removing_a_service_sets_every_copy_out_before_waiting_on_any() {
+    let machine = machine('1');
+    let first = container('a');
+    let second = container('b');
+    let retire = |container_id| DeployOperation::RemoveContainer {
+        machine_id: machine,
+        container_id,
+        purpose: ployz_core::RemoveContainerPurpose::Retire,
+    };
+    let plan = vec![retire(first), retire(second)];
+    let client = Scripted::new(vec![
+        observed(Call::Inspect(machine, first), exited(1)),
+        observed(Call::Inspect(machine, second), exited(1)),
+        ok(Call::Remove(machine, second)),
+        ok(Call::Remove(machine, first)),
+    ])
+    .with_copy(&machine, &first, CopyRotation::In)
+    .with_copy(&machine, &second, CopyRotation::In);
+    client.routes(&api(), false);
+    for id in [first, second] {
+        client.record(id, |copy| copy.stopped = true);
+    }
+    let groups = crate::deploy::planning::test_groups(&plan);
+
+    let outcome = execute_groups(&plan, groups, &client).await;
+
+    assert!(
+        matches!(outcome, DeployOutcome::Success { .. }),
+        "{outcome:?}"
+    );
+    let moves = client.moves();
+    let last_out = moves
+        .iter()
+        .rposition(|applied| matches!(applied, Move::To(_, CopyRotation::Out)))
+        .unwrap();
+    let first_gone = moves
+        .iter()
+        .position(|applied| matches!(applied, Move::Gone(_)))
+        .unwrap();
+    assert!(last_out < first_gone, "{moves:?}");
+    client.assert_done();
+}
+
 #[tokio::test]
 async fn a_removal_of_the_last_in_copy_is_refused() {
     let machine = machine('1');

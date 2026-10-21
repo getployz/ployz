@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use super::support::*;
-use ployz::deploy::preview_deploy;
+use ployz::deploy::{Step, plan_deploy, preview_deploy};
 use ployz_core::{
     ContainerKind, ContainerRuntimeObservation, DependencyCondition, DockerVolumeId,
     MachineFailure, PruneRefusal, QualifiedService, RpcError, RpcErrorCode, ServiceDependency,
@@ -650,37 +650,7 @@ fn a_removal_retires_a_stray_pending_copy_before_any_routed_one() {
 }
 
 #[test]
-fn a_removal_retires_a_copy_that_cannot_serve_before_a_serving_one() {
-    let retired = removal_order(
-        ployz_core::ContainerRuntimeObservation::Running {
-            health: ployz_core::HealthObservation::Healthy,
-        },
-        ployz_core::ContainerRuntimeObservation::Exited { code: 1 },
-    );
-
-    // While an In sibling that cannot serve remains, proxies keep the running
-    // copy once it is Out, so its Out could never be confirmed unlisted.
-    assert_eq!(retired, [container_id('c'), container_id('a')]);
-}
-
-#[test]
-fn a_removal_retires_an_exited_copy_before_a_restarting_one() {
-    let retired = removal_order(
-        ployz_core::ContainerRuntimeObservation::Restarting,
-        ployz_core::ContainerRuntimeObservation::Exited { code: 1 },
-    );
-
-    // Proxies drop a copy set Out only once it has exited, so the exited copy
-    // goes first and the restarting one meets no In sibling.
-    assert_eq!(retired, [container_id('c'), container_id('a')]);
-}
-
-/// The order a removal retires In copy `a` on the first Machine and `c` on the
-/// second, observed in the given runtimes.
-fn removal_order(
-    a: ployz_core::ContainerRuntimeObservation,
-    c: ployz_core::ContainerRuntimeObservation,
-) -> Vec<ContainerId> {
+fn a_removal_retires_every_copy_of_a_service_in_one_step() {
     let debug = spec("debug");
     let service = service_id('b');
     let routed = |hex, machine_hex, runtime| {
@@ -694,21 +664,19 @@ fn removal_order(
     };
     let snapshot = DeploySnapshot {
         machines: vec![machine('1', "first"), machine('2', "second")],
-        containers: vec![routed('a', '1', a), routed('c', '2', c)],
+        containers: vec![
+            routed('a', '1', ContainerRuntimeObservation::Restarting),
+            routed('c', '2', ContainerRuntimeObservation::Exited { code: 1 }),
+        ],
         ..Default::default()
     };
     let intent =
         DeployIntent::apply_all(Namespace::parse("app").unwrap(), [], PlanOptions::default());
 
-    let plan = preview_deploy(&intent, &snapshot).unwrap();
+    let plan = plan_deploy(&intent, &snapshot).unwrap();
 
-    operations(&plan)
-        .iter()
-        .map(|operation| {
-            let DeployOperation::RemoveContainer { container_id, .. } = operation else {
-                panic!("only removals are planned: {operation:?}");
-            };
-            *container_id
-        })
-        .collect()
+    let Some(tail) = plan.groups().last() else {
+        panic!("expected a removal group");
+    };
+    assert_eq!(tail.steps, [Step::Parallel(vec![0, 1])]);
 }

@@ -153,10 +153,6 @@ mod rule_f {
         observed(copy, ContainerRuntimeObservation::Exited { code: 1 })
     }
 
-    fn restarting(copy: ContainerObservation) -> ContainerObservation {
-        observed(copy, ContainerRuntimeObservation::Restarting)
-    }
-
     fn observed(
         mut copy: ContainerObservation,
         runtime: ContainerRuntimeObservation,
@@ -220,87 +216,101 @@ mod rule_f {
     }
 
     #[test]
-    fn an_exited_out_copy_leaves_the_route_beside_an_exited_in_sibling() {
-        let current = routed([
-            copy(1, machine('a'), CopyRotation::In),
-            copy(2, machine('b'), CopyRotation::In),
-        ]);
-
-        let routes = next(
+    fn an_out_copy_that_exits_and_recovers_stays_routed_beside_an_exited_in_sibling() {
+        let current = routed([copy(1, machine('a'), CopyRotation::In)]);
+        let while_running = next(
+            [
+                copy(1, machine('a'), CopyRotation::Out),
+                exited(copy(2, machine('b'), CopyRotation::In)),
+            ],
+            &[],
+            &current,
+        );
+        let while_exited = next(
             [
                 exited(copy(1, machine('a'), CopyRotation::Out)),
                 exited(copy(2, machine('b'), CopyRotation::In)),
             ],
             &[],
-            &current,
+            &while_running,
         );
 
-        assert_eq!(ids(&routes), Some(BTreeSet::from([2])));
-    }
-
-    #[test]
-    fn a_restarting_out_copy_keeps_the_route_beside_an_exited_in_sibling() {
-        let current = routed([
-            copy(1, machine('a'), CopyRotation::In),
-            copy(2, machine('b'), CopyRotation::In),
-        ]);
-
-        let routes = next(
-            [
-                restarting(copy(1, machine('a'), CopyRotation::Out)),
-                exited(copy(2, machine('b'), CopyRotation::In)),
-            ],
-            &[],
-            &current,
-        );
-
-        assert_eq!(ids(&routes), Some(BTreeSet::from([1, 2])));
-    }
-
-    #[test]
-    fn an_out_copy_that_restarts_and_recovers_stays_routed_beside_an_exited_in_sibling() {
-        let current = routed([
-            copy(1, machine('a'), CopyRotation::In),
-            copy(2, machine('b'), CopyRotation::In),
-        ]);
-
-        let while_restarting = next(
-            [
-                restarting(copy(1, machine('a'), CopyRotation::Out)),
-                exited(copy(2, machine('b'), CopyRotation::In)),
-            ],
-            &[],
-            &current,
-        );
         let recovered = next(
             [
                 copy(1, machine('a'), CopyRotation::Out),
                 exited(copy(2, machine('b'), CopyRotation::In)),
             ],
             &[],
-            &while_restarting,
+            &while_exited,
         );
 
-        assert_eq!(ids(&recovered), Some(BTreeSet::from([1, 2])));
+        assert_eq!(ids(&recovered), Some(BTreeSet::from([1])));
     }
 
     #[test]
-    fn a_running_out_copy_keeps_the_route_beside_an_exited_in_sibling() {
-        let current = routed([
-            copy(1, machine('a'), CopyRotation::In),
-            copy(2, machine('b'), CopyRotation::In),
-        ]);
+    fn an_out_copy_in_any_runtime_keeps_the_route_beside_an_exited_in_sibling() {
+        let current = routed([copy(1, machine('a'), CopyRotation::In)]);
 
-        let routes = next(
-            [
-                copy(1, machine('a'), CopyRotation::Out),
-                exited(copy(2, machine('b'), CopyRotation::In)),
-            ],
+        for runtime in runtimes() {
+            let routes = next(
+                [
+                    observed(copy(1, machine('a'), CopyRotation::Out), runtime.clone()),
+                    exited(copy(2, machine('b'), CopyRotation::In)),
+                ],
+                &[],
+                &current,
+            );
+
+            assert_eq!(ids(&routes), Some(BTreeSet::from([1])), "{runtime}");
+        }
+        let unobserved = next(
+            [exited(copy(2, machine('b'), CopyRotation::In))],
             &[],
             &current,
         );
+        assert_eq!(ids(&unobserved), Some(BTreeSet::from([1])));
+    }
 
-        assert_eq!(ids(&routes), Some(BTreeSet::from([1, 2])));
+    #[test]
+    fn every_copy_out_in_any_runtime_routes_nothing() {
+        let first = copy(1, machine('a'), CopyRotation::In);
+        let second = copy(2, machine('b'), CopyRotation::In);
+
+        for current in [
+            routed([first.clone()]),
+            routed([second.clone()]),
+            routed([first, second]),
+        ] {
+            for runtime in runtimes() {
+                let routes = next(
+                    [
+                        observed(copy(1, machine('a'), CopyRotation::Out), runtime.clone()),
+                        exited(copy(2, machine('b'), CopyRotation::Out)),
+                    ],
+                    &[],
+                    &current,
+                );
+
+                assert_eq!(ids(&routes), Some(BTreeSet::new()), "{runtime}");
+            }
+        }
+    }
+
+    fn runtimes() -> [ContainerRuntimeObservation; 8] {
+        [
+            ContainerRuntimeObservation::Running {
+                health: HealthObservation::Healthy,
+            },
+            ContainerRuntimeObservation::Created,
+            ContainerRuntimeObservation::Restarting,
+            ContainerRuntimeObservation::Paused,
+            ContainerRuntimeObservation::Exited { code: 1 },
+            ContainerRuntimeObservation::Removing,
+            ContainerRuntimeObservation::Dead,
+            ContainerRuntimeObservation::Unknown {
+                raw: json!("future"),
+            },
+        ]
     }
 
     #[test]
