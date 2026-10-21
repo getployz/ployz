@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { and, eq, sql } from "drizzle-orm";
 import * as tar from "tar";
-import { Cause, Effect, Exit, Layer, Schema } from "effect";
+import { Cause, Effect, Exit, Schema } from "effect";
 import { Inngest } from "inngest";
 import type { PolarService } from "#/modules/billing/polar-provider.server";
 import { startFakeHostedDns } from "#/modules/cluster-domain/hosted-dns.test-fixture";
@@ -22,7 +22,7 @@ import type { Caller } from "#/modules/identity/actor";
 import { organizationSupportAccess } from "#/modules/support-access/tables";
 import { permissionsOf } from "#/modules/organization/permissions";
 import * as ids from "#/test/ids";
-import { enrollStoreServer, seedStoreOrganization, storeTestCloud } from "#/test/store-cloud";
+import { enrollStoreServer, seedStoreOrganization, storeTestCloudWith } from "#/test/store-cloud";
 import { handleConfigRequest } from "#/routes/api/config/-config.handler";
 import { runStoreDeployment } from "#/modules/config-store/store-deployment.server";
 import { uploadChunk } from "#/modules/config-store/tables";
@@ -71,18 +71,17 @@ const github = fakeGithubApi({
 });
 
 /** Cloud with the Config Store in its database. */
-const cloudLayer = Effect.fn(function* (
+const cloudServices = Effect.fn(function* (
   overrides: { readonly polar?: PolarService; readonly hostedDnsUrl?: string } = {},
   inngest = new Inngest({ id: "config-store-test" }),
 ) {
-  const services = yield* storeTestCloud({
+  return yield* storeTestCloudWith(AuthLive, {
     github: github.service,
     inngest,
     // No Hosted DNS answers unless a test starts one.
     env: { PLOYZ_HOSTED_DNS_URL: overrides.hostedDnsUrl ?? "http://127.0.0.1:9/" },
     polar: overrides.polar ?? { mode: "self_hosted" },
   });
-  return Layer.merge(AuthLive.pipe(Layer.provide(services)), services);
 });
 
 /** The fields these tests read from Store results and refusals. */
@@ -170,7 +169,7 @@ it.live(
   "the CLI reads and writes its own Organization's Config Store over HTTPS",
   () =>
     Effect.gen(function* () {
-      const layer = yield* cloudLayer();
+      const cloud = yield* cloudServices();
       yield* Effect.gen(function* () {
         const alice = yield* signUp("alice");
         const bob = yield* signUp("bob");
@@ -214,7 +213,7 @@ it.live(
         assert.strictEqual(invalid.json.error?.code, "invalid_argument");
         assert.strictEqual((yield* request("claim", alice, get(null))).status, 404);
         assert.strictEqual((yield* request("read", alice, undefined, "GET")).status, 404);
-      }).pipe(Effect.provide(layer));
+      }).pipe(Effect.provide(cloud));
     }),
   60_000,
 );
@@ -223,7 +222,7 @@ it.live(
   "a write over the body cap is refused with the cap, and nothing is staged",
   () =>
     Effect.gen(function* () {
-      const layer = yield* cloudLayer();
+      const cloud = yield* cloudServices();
       yield* Effect.gen(function* () {
         const alice = yield* signUp("alice");
         assert.strictEqual((yield* request("write", alice, shop)).status, 200);
@@ -237,7 +236,7 @@ it.live(
         assert.strictEqual(huge.json.error?.message, "The request is over 4 MiB.");
         assert.deepStrictEqual(huge.json.error?.details, { max_bytes: 4 * 1024 * 1024 });
         assert.deepStrictEqual((yield* request("read", alice, get("web.env.HUGE"))).json.settings ?? [], []);
-      }).pipe(Effect.provide(layer));
+      }).pipe(Effect.provide(cloud));
     }),
   60_000,
 );
@@ -246,7 +245,7 @@ it.live(
   "a browser's cookie signs no config request in, so a page on another site can't write through it",
   () =>
     Effect.gen(function* () {
-      const layer = yield* cloudLayer();
+      const cloud = yield* cloudServices();
       yield* Effect.gen(function* () {
         const alice = yield* signUpBoth("alice");
         const forged = new Headers({ cookie: alice.cookie, "sec-fetch-site": "cross-site", origin: "https://evil.example" });
@@ -254,7 +253,7 @@ it.live(
         assert.strictEqual((yield* request("read", alice.session, get(null))).status, 404);
         assert.strictEqual((yield* send("write", new Headers({ cookie: alice.cookie, "sec-fetch-site": "same-origin" }), shop)).status, 401);
         assert.strictEqual((yield* request("write", alice.session, shop)).status, 200);
-      }).pipe(Effect.provide(layer));
+      }).pipe(Effect.provide(cloud));
     }),
   60_000,
 );
@@ -263,7 +262,7 @@ it.live(
   "the dashboard reaches the Store as a member of the Organization it names, refusals intact",
   () =>
     Effect.gen(function* () {
-      const layer = yield* cloudLayer();
+      const cloud = yield* cloudServices();
       yield* Effect.gen(function* () {
         const alice = yield* resolveCaller(signedIn(yield* signUp("alice")));
         const bob = yield* resolveCaller(signedIn(yield* signUp("bob")));
@@ -285,7 +284,7 @@ it.live(
         // Naming an Organization you're not a member of is refused before the Store is asked.
         const foreign = yield* Effect.exit(callStoreAsMember(bob, slug, { operation: "read", query: get(null) }));
         assert.isTrue(Exit.isFailure(foreign) && Cause.squash(foreign.cause) instanceof NotFound);
-      }).pipe(Effect.provide(layer));
+      }).pipe(Effect.provide(cloud));
     }),
   60_000,
 );
@@ -294,7 +293,7 @@ it.live(
   "a member stages but can't delete an Environment or a Project or set the Build Order; an admin can",
   () =>
     Effect.gen(function* () {
-      const layer = yield* cloudLayer();
+      const cloud = yield* cloudServices();
       yield* Effect.gen(function* () {
         const alice = yield* resolveCaller(signedIn(yield* signUp("alice")));
         const bobSession = yield* signUp("bob");
@@ -323,7 +322,7 @@ it.live(
         assert.isTrue((yield* writeStoreAsMember(bob, slug, deleteStaging)).ok, "an admin deletes the Environment");
         assert.isTrue((yield* writeStoreAsMember(bob, slug, deleteShop)).ok, "an admin deletes the Project");
         assert.isTrue((yield* writeStoreAsMember(bob, slug, buildOrder)).ok, "an admin sets the Build Order");
-      }).pipe(Effect.provide(layer));
+      }).pipe(Effect.provide(cloud));
     }),
   60_000,
 );
@@ -374,7 +373,7 @@ it.live(
   "a new Project's production is Protected, and only an owner or admin changes its source or its protection",
   () =>
     Effect.gen(function* () {
-      const layer = yield* cloudLayer();
+      const cloud = yield* cloudServices();
       yield* Effect.gen(function* () {
         const { alice, bob, slug, protection, role } = yield* protectedShop();
 
@@ -399,7 +398,7 @@ it.live(
         assert.isTrue((yield* writeStoreAsMember(bob, slug, branch("main"))).ok, "a member changes the branch once it isn't Protected");
         const values = yield* callStoreAsMember(alice, slug, { operation: "read", query: get("web") });
         assert.deepInclude(values.ok && values.value.view === "environment" ? values.value.values : null, { branch: "main" });
-      }).pipe(Effect.provide(layer));
+      }).pipe(Effect.provide(cloud));
     }),
   60_000,
 );
@@ -408,7 +407,7 @@ it.live(
   "only an owner or admin makes a Deploy token for a Protected Environment",
   () =>
     Effect.gen(function* () {
-      const layer = yield* cloudLayer();
+      const cloud = yield* cloudServices();
       yield* Effect.gen(function* () {
         const { session, bob, organizationId, slug, role } = yield* protectedShop();
         yield* activeIn(bob.userId, organizationId, slug);
@@ -424,7 +423,7 @@ it.live(
         assert.strictEqual(yield* minted(session), "minted");
         yield* role("admin");
         assert.strictEqual(yield* minted(bob.session), "minted");
-      }).pipe(Effect.provide(layer));
+      }).pipe(Effect.provide(cloud));
     }),
   60_000,
 );
@@ -433,7 +432,7 @@ it.live(
   "the CLI's write skips the dashboard's role check, a Protected Environment's source and protection still need an owner or admin, and its unprotect waits on a human",
   () =>
     Effect.gen(function* () {
-      const layer = yield* cloudLayer();
+      const cloud = yield* cloudServices();
       yield* Effect.gen(function* () {
         const { alice, bob, organizationId, slug, protection, role } = yield* protectedShop();
         yield* activeIn(bob.userId, organizationId, slug);
@@ -458,7 +457,7 @@ it.live(
         assert.isTrue((yield* decideApproval({ ...alice, via: "dashboard" }, approvalId, { approve: { digest } })).ok);
         assert.strictEqual((yield* write(protect(false), approvalId)).status, 200, "an admin unprotects production from the CLI once approved");
         assert.deepStrictEqual(yield* protection(), [["production", false]]);
-      }).pipe(Effect.provide(layer));
+      }).pipe(Effect.provide(cloud));
     }),
   60_000,
 );
@@ -467,7 +466,7 @@ it.live(
   "a repository a member changes in a Branch syncs into Protected production only for an owner or admin",
   () =>
     Effect.gen(function* () {
-      const layer = yield* cloudLayer();
+      const cloud = yield* cloudServices();
       yield* Effect.gen(function* () {
         const { alice, bob, slug, role } = yield* protectedShop();
         const { drizzle } = yield* Database;
@@ -495,7 +494,7 @@ it.live(
         assert.isTrue((yield* writeStoreAsMember(bob, slug, save)).ok, "an admin saves it");
         const values = yield* callStoreAsMember(alice, slug, { operation: "read", query: get("web") });
         assert.deepInclude(values.ok && values.value.view === "environment" ? values.value.values : null, { repository: "acme/docs" });
-      }).pipe(Effect.provide(layer));
+      }).pipe(Effect.provide(cloud));
     }),
   60_000,
 );
@@ -522,7 +521,7 @@ it.live(
   "an agent's unprotect waits on one human approval, which holds for that protection only",
   () =>
     Effect.gen(function* () {
-      const layer = yield* cloudLayer();
+      const cloud = yield* cloudServices();
       yield* Effect.gen(function* () {
         const { alice, organizationId, slug, protection } = yield* protectedShop();
         const agent = { ...alice, via: "agent" as const };
@@ -552,7 +551,7 @@ it.live(
         const again = yield* ask("again", first.id);
         assert.notStrictEqual(again.id, first.id, "the old approval doesn't lift the new protection");
         assert.deepStrictEqual(yield* protection(), [["production", true]]);
-      }).pipe(Effect.provide(layer));
+      }).pipe(Effect.provide(cloud));
     }),
   60_000,
 );
@@ -561,7 +560,7 @@ it.live(
   "an unprotect from `ployz mcp` asks again after the Environment is protected again",
   () =>
     Effect.gen(function* () {
-      const layer = yield* cloudLayer();
+      const cloud = yield* cloudServices();
       yield* Effect.gen(function* () {
         const { alice, session, slug, protection } = yield* protectedShop();
         const mcp = (approvalId: string | null) => {
@@ -583,7 +582,7 @@ it.live(
         const again = yield* mcp(approvalId);
         assert.strictEqual(again.json.error?.code, "approval_required", JSON.stringify(again.json));
         assert.deepStrictEqual(yield* protection(), [["production", true]]);
-      }).pipe(Effect.provide(layer));
+      }).pipe(Effect.provide(cloud));
     }),
   60_000,
 );
@@ -592,7 +591,7 @@ it.live(
   "a member's agent asking to unprotect is refused, and no human is asked",
   () =>
     Effect.gen(function* () {
-      const layer = yield* cloudLayer();
+      const cloud = yield* cloudServices();
       yield* Effect.gen(function* () {
         const { alice, bob, organizationId, slug, protection } = yield* protectedShop();
         const agent = { ...alice, userId: bob.userId, role: "member" as const, via: "agent" as const };
@@ -607,7 +606,7 @@ it.live(
         assert.deepStrictEqual([fromMcp.json.error?.code, fromMcp.json.error?.message], ["forbidden", adminOnly]);
         assert.deepStrictEqual(yield* unprotectApprovals(organizationId), []);
         assert.deepStrictEqual(yield* protection(), [["production", true]]);
-      }).pipe(Effect.provide(layer));
+      }).pipe(Effect.provide(cloud));
     }),
   60_000,
 );
@@ -631,7 +630,7 @@ it.live(
   "support doesn't change Protected production's source or protection, or remove its Project",
   () =>
     Effect.gen(function* () {
-      const layer = yield* cloudLayer();
+      const cloud = yield* cloudServices();
       yield* Effect.gen(function* () {
         const { alice, organizationId, slug, protection } = yield* protectedShop();
         const { caller: staff } = yield* supportIn(alice, organizationId, slug);
@@ -652,7 +651,7 @@ it.live(
         assert.deepStrictEqual(yield* projects(), ["shop"]);
         const values = yield* callStoreAsMember(alice, slug, { operation: "read", query: get("web") });
         assert.deepInclude(values.ok && values.value.view === "environment" ? values.value.values : null, { branch: "main" });
-      }).pipe(Effect.provide(layer));
+      }).pipe(Effect.provide(cloud));
     }),
   60_000,
 );
@@ -661,7 +660,7 @@ it.live(
   "support's agent asking to unprotect is refused, and no human is asked",
   () =>
     Effect.gen(function* () {
-      const layer = yield* cloudLayer();
+      const cloud = yield* cloudServices();
       yield* Effect.gen(function* () {
         const { alice, organizationId, slug, protection } = yield* protectedShop();
         const { caller: staff, session } = yield* supportIn(alice, organizationId, slug);
@@ -677,7 +676,7 @@ it.live(
         assert.strictEqual(fromMcp.status, 403);
         assert.deepStrictEqual(yield* unprotectApprovals(organizationId), []);
         assert.deepStrictEqual(yield* protection(), [["production", true]]);
-      }).pipe(Effect.provide(layer));
+      }).pipe(Effect.provide(cloud));
     }),
   60_000,
 );
@@ -709,7 +708,7 @@ it.live(
   "an agent's unprotect the protection changed under after Cloud decided is refused, approved or not",
   () =>
     Effect.gen(function* () {
-      const layer = yield* cloudLayer();
+      const cloud = yield* cloudServices();
       yield* Effect.gen(function* () {
         const { alice, session, organizationId, slug, protection } = yield* protectedShop();
         const agent = { ...alice, via: "agent" as const };
@@ -743,7 +742,7 @@ it.live(
         assert.isTrue(fromMcp());
         assert.deepStrictEqual(yield* protection(), [["production", true]]);
         vi.restoreAllMocks();
-      }).pipe(Effect.provide(layer));
+      }).pipe(Effect.provide(cloud));
     }),
   60_000,
 );
@@ -784,7 +783,7 @@ it.live(
   "an agent's approved unprotect of the default is refused when another Environment became the default before it lands",
   () =>
     Effect.gen(function* () {
-      const layer = yield* cloudLayer();
+      const cloud = yield* cloudServices();
       yield* Effect.gen(function* () {
         const { alice, session, organizationId, slug } = yield* protectedShop();
         const store = yield* cloudStore;
@@ -823,7 +822,7 @@ it.live(
           assert.deepStrictEqual(yield* listing(), [["production", false, true], ["staging", true, true]], surface);
         }
         assert.isTrue((yield* writeStoreAsMember(alice, slug, protect(true))).ok);
-      }).pipe(Effect.provide(layer));
+      }).pipe(Effect.provide(cloud));
     }),
   60_000,
 );
@@ -832,7 +831,7 @@ it.live(
   "an agent's unprotect of an Environment Cloud can't find is refused, even when it's created before the write lands",
   () =>
     Effect.gen(function* () {
-      const layer = yield* cloudLayer();
+      const cloud = yield* cloudServices();
       yield* Effect.gen(function* () {
         const { alice, session, organizationId, protection } = yield* protectedShop();
         const agent = { ...alice, via: "agent" as const };
@@ -852,7 +851,7 @@ it.live(
         }
         const { drizzle } = yield* Database;
         assert.deepStrictEqual(yield* drizzle.select().from(operationApprovals).where(eq(operationApprovals.organizationId, organizationId)), []);
-      }).pipe(Effect.provide(layer));
+      }).pipe(Effect.provide(cloud));
     }),
   60_000,
 );
@@ -861,7 +860,7 @@ it.live(
   "an agent's unprotect is refused with the listing's own refusal when Cloud can't list Environments, and writes nothing",
   () =>
     Effect.gen(function* () {
-      const layer = yield* cloudLayer();
+      const cloud = yield* cloudServices();
       yield* Effect.gen(function* () {
         const { alice, session, organizationId, protection } = yield* protectedShop();
         const store = yield* cloudStore;
@@ -887,7 +886,7 @@ it.live(
         assert.deepStrictEqual(yield* protection(), [["production", true]]);
         const { drizzle } = yield* Database;
         assert.deepStrictEqual(yield* drizzle.select().from(operationApprovals).where(eq(operationApprovals.organizationId, organizationId)), []);
-      }).pipe(Effect.provide(layer));
+      }).pipe(Effect.provide(cloud));
     }),
   60_000,
 );
@@ -896,7 +895,7 @@ it.live(
   "someone no longer a member may not protect, and Cloud's own write still may",
   () =>
     Effect.gen(function* () {
-      const layer = yield* cloudLayer();
+      const cloud = yield* cloudServices();
       yield* Effect.gen(function* () {
         const { bob, organizationId, slug, protection, role } = yield* protectedShop();
         yield* role("admin");
@@ -908,7 +907,7 @@ it.live(
 
         assert.isTrue((yield* callStore(organizationId, null, { operation: "write", command: protect(false) })).ok, "Cloud itself unprotects");
         assert.deepStrictEqual(yield* protection(), [["production", false]]);
-      }).pipe(Effect.provide(layer));
+      }).pipe(Effect.provide(cloud));
     }),
   60_000,
 );
@@ -917,7 +916,7 @@ it.live(
   "a member's repository change in a Protected Environment is refused before Cloud asks GitHub about it",
   () =>
     Effect.gen(function* () {
-      const layer = yield* cloudLayer();
+      const cloud = yield* cloudServices();
       yield* Effect.gen(function* () {
         const { bob, slug } = yield* protectedShop();
         const asked = () => github.calls.filter((call) => call.path.startsWith("/repos/acme/down")).length;
@@ -927,7 +926,7 @@ it.live(
         };
         assert.deepStrictEqual(refusalOf(yield* writeStoreAsMember(bob, slug, down)), ["forbidden", adminOnly]);
         assert.strictEqual(asked(), before, "GitHub was never asked");
-      }).pipe(Effect.provide(layer));
+      }).pipe(Effect.provide(cloud));
     }),
   60_000,
 );
@@ -936,7 +935,7 @@ it.live(
   "Store writes reach Cloud's change log once committed, and a refused write logs nothing",
   () =>
     Effect.gen(function* () {
-      const layer = yield* cloudLayer();
+      const cloud = yield* cloudServices();
       yield* Effect.gen(function* () {
         const alice = yield* signUp("alice");
         const { drizzle } = yield* Database;
@@ -969,7 +968,7 @@ it.live(
         assert.strictEqual((yield* request("write", alice, { command: "publish", environment: here, version: null, accept_volume_loss: [] })).status, 200);
         // Every write locks its Environment's row, which logs the Environment too.
         assert.sameMembers(yield* logged(), [`config_environment: ${ENVIRONMENT}`, `config_saved: ${ENVIRONMENT}`]);
-      }).pipe(Effect.provide(layer));
+      }).pipe(Effect.provide(cloud));
     }),
   60_000,
 );
@@ -986,7 +985,7 @@ it.live(
         sent.push(event);
         return { ids: [] };
       });
-      const layer = yield* cloudLayer({}, inngest);
+      const cloud = yield* cloudServices({}, inngest);
       yield* Effect.gen(function* () {
         const alice = yield* signUp("alice");
         yield* enrollStoreServer((yield* resolveCaller(signedIn(alice))).organization.id);
@@ -1032,7 +1031,7 @@ it.live(
           error: { code: "conflict", details: { next: "ployz server add" } },
         });
         assert.strictEqual(sent.length, 3);
-      }).pipe(Effect.provide(layer));
+      }).pipe(Effect.provide(cloud));
     }),
   60_000,
 );
@@ -1047,7 +1046,7 @@ it.live(
         sent.push(event);
         return { ids: [] };
       });
-      const layer = yield* cloudLayer({}, inngest);
+      const cloud = yield* cloudServices({}, inngest);
       yield* Effect.gen(function* () {
         const alice = yield* signUp("alice");
         const organizationId = (yield* resolveCaller(signedIn(alice))).organization.id;
@@ -1068,7 +1067,7 @@ it.live(
         const sync: ConfigCommand = { command: "sync", from: fixWeb, into: production, version, close_after: true };
         assert.deepInclude((yield* request("write", alice, sync)).json, { written: "synced" });
         expect(sent).toContainEqual(sweep);
-      }).pipe(Effect.provide(layer));
+      }).pipe(Effect.provide(cloud));
     }),
   60_000,
 );
@@ -1077,7 +1076,7 @@ it.live(
   "a Deploy meets the copies it takes before the Store sees it, on every path to the Store",
   () =>
     Effect.gen(function* () {
-      const layer = yield* cloudLayer();
+      const cloud = yield* cloudServices();
       yield* Effect.gen(function* () {
         const alice = yield* signUp("alice");
         const organizationId = (yield* resolveCaller(signedIn(alice))).organization.id;
@@ -1098,7 +1097,7 @@ it.live(
         assert.strictEqual(admitted.status, 503);
         assert.strictEqual(admitted.json.error?.code, "unavailable");
         assert.strictEqual((yield* request("read", alice, { query: "deployment", id: "00000000-0000-4000-8000-000000000101" })).status, 404);
-      }).pipe(Effect.provide(layer));
+      }).pipe(Effect.provide(cloud));
     }),
   60_000,
 );
@@ -1107,7 +1106,7 @@ it.live(
   "removing the last Server lets Cloud go of its Cluster, and a Deploy after it asks for a Server",
   () =>
     Effect.gen(function* () {
-      const layer = yield* cloudLayer();
+      const cloud = yield* cloudServices();
       yield* Effect.gen(function* () {
         const alice = yield* signUp("alice");
         const organizationId = (yield* resolveCaller(signedIn(alice))).organization.id;
@@ -1192,7 +1191,7 @@ it.live(
         assert.strictEqual(replay.kind, "kept");
         assert.strictEqual((yield* drizzle.select().from(organizationPairing)).length, 1);
         assert.strictEqual((yield* drizzle.select().from(organizationMachine)).length, 1);
-      }).pipe(Effect.provide(layer));
+      }).pipe(Effect.provide(cloud));
     }),
   60_000,
 );
@@ -1201,7 +1200,7 @@ it.live(
   "a removal retried after a provider failure sends the same removal again, and a run that lost the attempt sends none",
   () =>
     Effect.gen(function* () {
-      const layer = yield* cloudLayer();
+      const cloud = yield* cloudServices();
       yield* Effect.gen(function* () {
         const alice = yield* signUp("alice");
         const caller = yield* resolveCaller(signedIn(alice));
@@ -1252,7 +1251,7 @@ it.live(
         const superseded = yield* remove("run-stale");
         assert.strictEqual(superseded.kind, "superseded");
         assert.strictEqual(sent.length, 2);
-      }).pipe(Effect.provide(layer));
+      }).pipe(Effect.provide(cloud));
     }),
   60_000,
 );
@@ -1261,7 +1260,7 @@ it.live(
   "a Server that reset before its Forget failed is forgotten without another removal, and keeps the Leave's warning",
   () =>
     Effect.gen(function* () {
-      const layer = yield* cloudLayer();
+      const cloud = yield* cloudServices();
       yield* Effect.gen(function* () {
         const alice = yield* signUp("alice");
         const caller = yield* resolveCaller(signedIn(alice));
@@ -1310,7 +1309,7 @@ it.live(
         assert.strictEqual(removed.resetWarning, resetWarning);
         const release = yield* releaseServerActivity({ ...removal, ...removed });
         assert.strictEqual(release.kind, "kept");
-      }).pipe(Effect.provide(layer));
+      }).pipe(Effect.provide(cloud));
     }),
   60_000,
 );
@@ -1319,7 +1318,7 @@ it.live(
   "a Git-backed Service connects only repositories and branches Cloud checked for the Organization",
   () =>
     Effect.gen(function* () {
-      const layer = yield* cloudLayer();
+      const cloud = yield* cloudServices();
       yield* Effect.gen(function* () {
         const alice = yield* signUp("alice");
         assert.strictEqual((yield* request("write", alice, shop)).status, 200);
@@ -1371,7 +1370,7 @@ it.live(
         const down = yield* request("write", alice, git("api", "acme/down"));
         assert.strictEqual(down.status, 503);
         assert.strictEqual(down.json.error?.code, "unavailable");
-      }).pipe(Effect.provide(layer));
+      }).pipe(Effect.provide(cloud));
     }),
   60_000,
 );
@@ -1393,7 +1392,7 @@ it.live(
         listActiveSubscriptions: () => Effect.die("not used"),
         createCustomerPortal: () => Effect.die("not used"),
       };
-      const layer = yield* cloudLayer({ polar: hosted, hostedDnsUrl: hostedDns.url }, inngest);
+      const cloud = yield* cloudServices({ polar: hosted, hostedDnsUrl: hostedDns.url }, inngest);
       yield* Effect.gen(function* () {
         const alice = yield* signUp("alice");
         yield* enrollStoreServer((yield* resolveCaller(signedIn(alice))).organization.id);
@@ -1480,7 +1479,7 @@ it.live(
         const checked = yield* request("read", alice, { query: "domain", environment: here, domain: "web" });
         assert.strictEqual(checked.json.domain?.hostname, hostname);
         assert.deepStrictEqual(sent.map((event) => event.name), ["cluster-domain/sync.requested"]);
-      }).pipe(Effect.provide(layer));
+      }).pipe(Effect.provide(cloud));
     }).pipe(Effect.scoped),
   60_000,
 );
@@ -1489,7 +1488,7 @@ it.live(
   "a committed write answers as committed when rereading a shown view fails, and leaves that view to the tab",
   () =>
     Effect.gen(function* () {
-      const layer = yield* cloudLayer();
+      const cloud = yield* cloudServices();
       yield* Effect.gen(function* () {
         const alice = yield* signUp("alice");
         yield* request("write", alice, shop);
@@ -1509,7 +1508,7 @@ it.live(
           "only the views that reread answer; the tab refetches the domains view");
         const read = yield* request("read", alice, get("web.replicas"));
         assert.strictEqual(read.json.settings?.[0]?.value, 2);
-      }).pipe(Effect.provide(layer));
+      }).pipe(Effect.provide(cloud));
     }).pipe(Effect.scoped),
   60_000,
 );
@@ -1541,7 +1540,7 @@ it.live(
     Effect.gen(function* () {
       const inngest = new Inngest({ id: "config-store-test" });
       vi.spyOn(inngest, "send").mockResolvedValue({ ids: [] });
-      const layer = yield* cloudLayer({}, inngest);
+      const cloud = yield* cloudServices({}, inngest);
       yield* Effect.gen(function* () {
         const alice = yield* signUp("alice");
         yield* enrollStoreServer((yield* resolveCaller(signedIn(alice))).organization.id);
@@ -1730,7 +1729,7 @@ it.live(
         assert.strictEqual(selects, 2);
         assert.strictEqual(extracted, undefined);
         assert.strictEqual(yield* extractUpload(organizationId, raced), undefined);
-      }).pipe(Effect.provide(layer));
+      }).pipe(Effect.provide(cloud));
     }).pipe(Effect.scoped),
   60_000,
 );
@@ -1741,7 +1740,7 @@ it.live(
     Effect.gen(function* () {
       const inngest = new Inngest({ id: "config-store-test" });
       vi.spyOn(inngest, "send").mockResolvedValue({ ids: [] });
-      const layer = yield* cloudLayer({}, inngest);
+      const cloud = yield* cloudServices({}, inngest);
       yield* Effect.gen(function* () {
         const alice = yield* signUp("alice");
         const { id: organizationId } = (yield* resolveCaller(signedIn(alice))).organization;
@@ -1794,7 +1793,7 @@ it.live(
         const ran = yield* Effect.promise(() => store.read(organizationId, { query: "deployment", id: settingsOnly }));
         assert.strictEqual(ran.upload?.digest, "b".repeat(64));
         assert.isUndefined(ran.chooses_upload_at_start);
-      }).pipe(Effect.provide(layer));
+      }).pipe(Effect.provide(cloud));
     }).pipe(Effect.scoped),
   60_000,
 );
@@ -1803,7 +1802,7 @@ it.live(
   "a Read token can't upload source, and nothing is kept",
   () =>
     Effect.gen(function* () {
-      const layer = yield* cloudLayer();
+      const cloud = yield* cloudServices();
       yield* Effect.gen(function* () {
         const alice = yield* signUp("alice");
         yield* enrollStoreServer((yield* resolveCaller(signedIn(alice))).organization.id);
@@ -1817,7 +1816,7 @@ it.live(
         expect(refused.json.error).toMatchObject({ code: "forbidden", message: "This token's grant doesn't include changes:deploy." });
         const { drizzle } = yield* Database;
         assert.deepStrictEqual(yield* drizzle.select().from(uploadChunk).where(eq(uploadChunk.deploymentId, deploymentId)), []);
-      }).pipe(Effect.provide(layer));
+      }).pipe(Effect.provide(cloud));
     }),
   60_000,
 );
@@ -1826,7 +1825,7 @@ it.live(
   "a user's write carries what they hold: none named is a defect, and callStoreBy sends the role's set",
   () =>
     Effect.gen(function* () {
-      const layer = yield* cloudLayer();
+      const cloud = yield* cloudServices();
       yield* Effect.gen(function* () {
         const organizationId = "00000000-0000-4000-8000-00000000c001";
         const owner = yield* seedStoreOrganization(organizationId);
@@ -1847,7 +1846,7 @@ it.live(
         assert.isFalse(refused.ok);
         if (!refused.ok) assert.deepInclude(refused.refusal, { code: "forbidden", message: "Needs org:settings" });
         assert.isTrue((yield* callStoreBy(organizationId, by(owner, "owner"), buildOrder)).ok);
-      }).pipe(Effect.provide(layer));
+      }).pipe(Effect.provide(cloud));
     }),
   60_000,
 );
@@ -1856,7 +1855,7 @@ it.live(
   "a Deploy staging token deploys staging, and the Store refuses it production without writing",
   () =>
     Effect.gen(function* () {
-      const layer = yield* cloudLayer();
+      const cloud = yield* cloudServices();
       yield* Effect.gen(function* () {
         const alice = yield* signUp("alice");
         const staging = { project: "shop", environment: "staging" };
@@ -1879,7 +1878,7 @@ it.live(
         const landed = yield* request("write", secret, { command: "edit", environment: staging, expect: null, changes: [{ op: "set", path: "web.replicas", value: "3" }] });
         assert.strictEqual(landed.status, 200);
         assert.deepStrictEqual(landed.json.staged, ["web.replicas"]);
-      }).pipe(Effect.provide(layer));
+      }).pipe(Effect.provide(cloud));
     }),
   60_000,
 );
@@ -1910,10 +1909,7 @@ const ceilingShop = Effect.fn(function* (grant: TokenGrant, kind: "cli" | "agent
   });
   return { secret, headers, state, approvals };
 });
-const ceilingLayer = Effect.gen(function* () {
-  const cloud = yield* storeTestCloud();
-  return Layer.mergeAll(AuthLive.pipe(Layer.provide(cloud)), cloud);
-});
+const ceilingCloud = storeTestCloudWith(AuthLive);
 const stagingOnly = "This token can deploy only to staging.";
 
 it.live("a token that may protect only staging protects staging, asks a human to unprotect it, and production refuses", () =>
@@ -1931,7 +1927,7 @@ it.live("a token that may protect only staging protects staging, asks a human to
       assert.deepStrictEqual([asked.status, asked.json.error?.code], [409, "approval_required"]);
       assert.deepStrictEqual(yield* state, [["production", true], ["staging", true]]);
       assert.lengthOf(yield* approvals, 1);
-    }).pipe(Effect.provide(yield* ceilingLayer));
+    }).pipe(Effect.provide(yield* ceilingCloud));
   }), 60_000);
 
 it.live("an agent token's unprotect outside its Environments is refused before it asks a human, on the config API and the sidebar", () =>
@@ -1948,5 +1944,5 @@ it.live("an agent token's unprotect outside its Environments is refused before i
       assert.deepStrictEqual(sidebar, { outcome: { ok: false, refusal: { code: "forbidden", message: stagingOnly, details: { environments: ["staging"] } } } });
       assert.deepStrictEqual(yield* approvals, []);
       assert.deepStrictEqual(yield* state, [["production", true], ["staging", false]]);
-    }).pipe(Effect.provide(yield* ceilingLayer));
+    }).pipe(Effect.provide(yield* ceilingCloud));
   }), 60_000);

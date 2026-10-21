@@ -38,7 +38,7 @@ mod endpoint;
 pub(super) mod enroll;
 pub(super) mod forget;
 mod helpers;
-mod init;
+pub(crate) mod init;
 pub(super) mod reject;
 mod remove;
 mod show;
@@ -231,19 +231,76 @@ pub(super) async fn reach(
     matches: &ArgMatches,
     context: Option<&str>,
 ) -> Result<Option<Reach>, Error> {
-    if matches.get_one::<String>("connect").is_none() && context.is_none() {
-        let store = CredentialStore::beside(&super::config_path(matches)?);
+    reach_or_silent(matches, context)
+        .await
+        .map_err(|unreached| unreached.error)
+}
+
+/// Why [`reach_or_silent`] reached no Server, and whether that is because none answered.
+pub(super) struct Unreached {
+    pub(super) error: Error,
+    pub(super) silent: Option<Silent>,
+}
+
+impl From<Error> for Unreached {
+    fn from(error: Error) -> Self {
+        Self {
+            error,
+            silent: None,
+        }
+    }
+}
+
+/// [`reach`], telling a connection no Server answered apart from other failures. A route
+/// that enters by a Unix socket is never [`Silent`]: that is this host's own daemon, which
+/// `status` reports as this Server.
+pub(super) async fn reach_or_silent(
+    matches: &ArgMatches,
+    context: Option<&str>,
+) -> Result<Option<Reach>, Unreached> {
+    let direct = matches.get_one::<String>("connect").map(String::as_str);
+    let config = super::config_path(matches)?;
+    if direct.is_none() && context.is_none() {
+        let store = CredentialStore::beside(&config);
         if let Ok(credential) = cloud_account::from_env(&store).await {
-            return match cloud_account::server_access(&credential).await {
-                Ok(access) => Ok(dial(matches, access).await?.map(Reach::Dial)),
+            let access = match cloud_account::server_access(&credential).await {
+                Ok(access) => access,
                 Err(StoreCallError::Refused(error)) if error.code.as_str() == "forbidden" => {
-                    Ok(Some(Reach::Ask(credential)))
+                    return Ok(Some(Reach::Ask(credential)));
                 }
-                Err(error) => Err(error.into()),
+                Err(error) => return Err(Error::from(error).into()),
+            };
+            let socket = by_socket(&access.connections);
+            return match dial(matches, access).await {
+                Ok(client) => Ok(client.map(Reach::Dial)),
+                Err(error) => Err(Unreached::of(error, socket)),
             };
         }
     }
-    Ok(connect_or_none(matches, context).await?.map(Reach::Dial))
+    let socket = crate::connect::resolve_connections(
+        &config,
+        direct,
+        context,
+        std::path::Path::new(crate::connect::DEFAULT_LOCAL_SOCKET),
+    )
+    .is_ok_and(|selected| by_socket(&selected.connections));
+    match connect_or_none(matches, context).await {
+        Ok(client) => Ok(client.map(Reach::Dial)),
+        Err(error) => Err(Unreached::of(error, socket)),
+    }
+}
+
+impl Unreached {
+    fn of(error: Error, socket: bool) -> Self {
+        let silent = if socket { None } else { Silent::of(&error) };
+        Self { error, silent }
+    }
+}
+
+fn by_socket(connections: &[crate::context::Connection]) -> bool {
+    connections
+        .iter()
+        .any(|connection| matches!(connection.transport(), crate::context::Transport::Unix(_)))
 }
 
 /// What a forget reaches.
@@ -501,7 +558,7 @@ fn no_reachable_server(
     Error::detailed_caused(
         RpcErrorCode::Unavailable,
         message,
-        json!({ "unreachable": unreachable }),
+        json!({ "unreachable": unreachable, "servers": shown }),
         cause,
     )
 }
@@ -512,6 +569,70 @@ pub(super) fn servers_unanswered(report: &RpcError) -> bool {
     report.code == RpcErrorCode::Unavailable
         && report.details.get("unreachable").is_some()
         && report.details.get("refused").is_none()
+}
+
+/// The Servers of a Cluster none of whose Servers answered, by name where the failure
+/// says which; empty when it doesn't.
+pub(super) struct Silent(Vec<String>);
+
+impl Silent {
+    /// Whether `error` is a connection no Server answered: Servers Cloud knows that
+    /// didn't, or a dial whose every connection went unanswered. `None` when a daemon
+    /// answered, or the failure is about something else, such as Cloud itself.
+    pub(super) fn of(error: &Error) -> Option<Self> {
+        let report = error.report();
+        if servers_unanswered(&report) {
+            let names = report.details.get("servers").and_then(Value::as_array);
+            return Some(Self(
+                names
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|name| Some(name.as_str()?.to_owned()))
+                    .collect(),
+            ));
+        }
+        let ConnectError::AllFailed {
+            reached: false,
+            attempts,
+            server,
+            ..
+        } = error.connect_error()?
+        else {
+            return None;
+        };
+        // With more than one connection, the one Server named is only the last tried.
+        Some(Self(if *attempts == 1 {
+            server.iter().cloned().collect()
+        } else {
+            Vec::new()
+        }))
+    }
+
+    pub(super) fn names(&self) -> &[String] {
+        &self.0
+    }
+
+    /// What to check, for the Server or Servers named.
+    pub(super) fn next(&self) -> &'static str {
+        match self.0.as_slice() {
+            [_] => "Check that its Ployz daemon is running.",
+            _ => "Check that the Ployz daemon is running on your Servers.",
+        }
+    }
+}
+
+impl std::fmt::Display for Silent {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.0.as_slice() {
+            [] => formatter.write_str("No Server is answering"),
+            [one] => write!(formatter, "Server {one} isn't answering"),
+            many => write!(
+                formatter,
+                "None of your Servers is answering ({})",
+                super::joined(many)
+            ),
+        }
+    }
 }
 
 pub(super) struct ConnectionOptions {
@@ -747,10 +868,12 @@ async fn apply_update(
 }
 
 /// A committed Server change whose Ingress Proxy follow-up failed: name it and the exact rerun.
-pub(super) fn ingress_incomplete(committed: &str, error: Error, next: String) -> Error {
-    error
-        .context(format!("{committed}; the Ingress Proxy did not follow."))
-        .hint(Hint::Next(next))
+pub(crate) fn ingress_incomplete(committed: &str, error: Error, next: String) -> Error {
+    let headline = super::ingress_headline(
+        &format!("{committed}; the Ingress Proxy did not follow"),
+        &error,
+    );
+    error.context(headline).hint(Hint::Next(next))
 }
 
 fn parse_update(matches: &ArgMatches) -> Result<MachineUpdate, Error> {
@@ -1248,6 +1371,40 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn silent_servers_are_named_as_cloud_names_them() {
+        let matches = crate::cli::command()
+            .try_get_matches_from(["ployz", "status"])
+            .unwrap();
+        let (held, gone) = ("a".repeat(32), "b".repeat(32));
+        let access = |unreachable: Vec<&String>| -> cloud_account::ServerAccess {
+            serde_json::from_value(json!({
+                "connections": [
+                    { "machine_id": held, "unix": "/nonexistent/ployz-test/daemon.sock" }
+                ],
+                "unreachable": unreachable,
+                "names": { held.clone(): "web-1" },
+            }))
+            .unwrap()
+        };
+        let silent = |access| async {
+            let Err(error) = dial(leaf_matches(&matches), access).await else {
+                panic!("dialed a Server that is not there");
+            };
+            Silent::of(&error).expect("no Server answered")
+        };
+
+        let one = silent(access(Vec::new())).await;
+        assert_eq!(one.to_string(), "Server web-1 isn't answering");
+        assert_eq!(one.next(), "Check that its Ployz daemon is running.");
+        let both = silent(access(vec![&gone])).await;
+        assert_eq!(
+            both.to_string(),
+            format!("None of your Servers is answering (web-1, {gone})")
+        );
+        assert_eq!(both.names(), ["web-1".to_owned(), gone]);
+    }
+
+    #[tokio::test]
     async fn a_cluster_whose_servers_all_fail_to_answer_comes_back_unanswered() {
         let matches = crate::cli::command()
             .try_get_matches_from(["ployz", "server", "forget", "web-1"])
@@ -1316,5 +1473,6 @@ mod tests {
         );
         assert_eq!(report.details.get("unreachable"), Some(&json!([gone])));
         assert!(!servers_unanswered(&report), "{report:?}");
+        assert!(Silent::of(&error).is_none(), "{report:?}");
     }
 }

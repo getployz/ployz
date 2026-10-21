@@ -224,10 +224,10 @@ at a time: a second one reads **Queued · Waiting on web-1**. While a drain runs
 **Drain** row counts the services left to move and lists them as **Pending**; each one leaves the
 list as it leaves the server. You can leave the page while one runs.
 If your servers don't answer when a drain's turn comes, as while one restarts, the drain reads
-**Queued** and tries again 20 seconds after each try. It starts once they answer. While it waits,
-it doesn't hold up the organization's other drains: they can start and run, and while one runs, the
-waiting drain reads **Queued · Waiting on** that drain's server. It waits up to 15 minutes from when
-you confirmed, and other drains ending don't extend that. If your servers still don't answer by
+**Waiting for your servers to answer** and tries again 20 seconds after each try. It starts once
+they answer. While it waits, it doesn't hold up the organization's other drains: they can start and
+run, and it keeps that label rather than **Queued**. It waits up to 15 minutes from when you
+confirmed, and other drains ending don't extend that. If your servers still don't answer by
 then, the drain doesn't start and reads **Drain didn't start. Try again.** Nothing on the server
 changed. A drain whose turn comes more than 15 minutes after you confirmed still starts if your
 servers answer at once. If they don't, it doesn't start.
@@ -543,6 +543,17 @@ Removing or forgetting a server Ployz Cloud manages always goes through Ployz Cl
 its back would leave that record behind.
 Ctrl-C stops following the removal but doesn't stop it: it keeps running in Ployz Cloud, and the
 server stays listed, since the removal can still fail.
+
+If Ployz Cloud runs out of retries after it sent the server its reset, the removal didn't finish,
+and Ployz can't say how far it got: the server may have reset, and Ployz Cloud may already have
+dropped it. `ployz server rm` says the removal didn't finish and prints `ployz server forget web-2`
+as its next step, and the **Remove** dialog says the same and points at **Forget server**. If the
+server is gone but `ployz server ls` (or the **Servers** page) still lists it,
+[forget it](#forget-a-server-that-is-gone); if it still answers, remove it again; if it's no longer
+listed, there is nothing left to forget. A removal that runs out of retries before it reaches the
+server only shows its failure. `ployz server rm` stops following a removal after 10 minutes. It
+then says the removal keeps running in Ployz Cloud, and to forget the server if the removal fails
+and the server is gone but still listed.
 
 Ployz stays installed on a removed server, so you can add it again later. To remove Ployz itself,
 run `sudo ployz-uninstall` on the server after you remove it. Docker, your images and your volume

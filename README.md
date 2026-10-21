@@ -71,9 +71,11 @@ You need a Linux server with systemd that you can reach as root over SSH. See th
 
 1. Install the CLI.
    ```sh
-   curl -fsSL https://ployz.sh | sh
-   brew install getployz/ployz/ployz   # or with Homebrew
+   curl -fsSL https://ployz.sh | sh -s -- beta
    ```
+
+   Ployz Cloud enrolls servers only from 0.3.0-beta.6 on. The stable release and Homebrew are
+   still on 0.2, so install the beta.
 
 2. Sign in to Ployz Cloud.
    ```sh

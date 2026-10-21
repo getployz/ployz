@@ -1113,32 +1113,21 @@ impl Run {
         let (_, run) = match stopped.entry(*container_id) {
             std::collections::btree_map::Entry::Occupied(read) => read.into_mut(),
             std::collections::btree_map::Entry::Vacant(unread) => {
-                let (log, exit_code) = self.failed_log(client, scrub, machine, *container_id).await;
-                let last_line = match &log {
-                    LogText::Shown(excerpt) => excerpt.lines().last().cloned(),
-                    LogText::Withheld { .. } => None,
-                };
-                unread.insert((
-                    log,
-                    LastRun {
-                        exit_code,
-                        last_line,
-                    },
-                ))
+                unread.insert(self.failed_log(client, scrub, machine, *container_id).await)
             }
         };
         *last_run = Some(run.clone());
     }
 
-    /// The failed Container's scrubbed tail, and the code of its newest stored exit.
+    /// The failed Container's scrubbed tail, and the run its newest stored exit ended.
     async fn failed_log(
         &self,
         client: &Client,
         scrub: &Scrub,
         machine: MachineId,
         container: ContainerId,
-    ) -> (LogText, Option<i64>) {
-        let withheld = |why| (LogText::Withheld { why }, None);
+    ) -> (LogText, LastRun) {
+        let withheld = |why| (LogText::Withheld { why }, LastRun::default());
         let Some(env) = super::container_env(client, machine, container).await else {
             return withheld(Withheld::NoSecretContext);
         };
@@ -1150,15 +1139,15 @@ impl Run {
             return withheld(Withheld::Unanswered);
         };
         match self.settled_sealed_names(&scrub.environment, names).await {
-            Some(names) => (
-                super::tail_excerpt(tail.frames, &scrub.values(&names, env)),
-                tail.exit_code,
-            ),
+            Some(names) => tail.scrubbed(&scrub.values(&names, env)),
             None => (
                 LogText::Withheld {
                     why: Withheld::NoSecretContext,
                 },
-                tail.exit_code,
+                LastRun {
+                    exit_code: tail.exit_code(),
+                    last_line: None,
+                },
             ),
         }
     }

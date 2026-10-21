@@ -9,6 +9,7 @@ import { CloudStore } from "#/modules/config-store/store-sdk.server";
 import { InngestClient } from "#/modules/inngest/client";
 import { createCancelServerDrain, createCloseStaleServerDrains, createDrainServer } from "#/modules/machines/server-drain.inngest";
 import { DRAIN_PENDING_LIMIT_MS, DRAIN_RUNNING_LIMIT_MS } from "#/modules/machines/server-drain";
+import { drainView } from "#/modules/machines/server-drain-view";
 import {
   executeDrainOnce, latestDrainOf, listLatestServerDrains, readCliServerDrain, requestCliServerDrain, requestServerDrain,
 } from "#/modules/machines/server-drain.server";
@@ -79,6 +80,8 @@ describe("drain-server", () => {
   let harness: PostgresTestHarness;
   /** The Namespaces the Config Store says the Organization's Environments own. */
   let namespaces: string[];
+  /** Whether the Config Store fails its read. */
+  let storeDown: boolean;
   let drainCalls: Array<[string, DrainScope]>;
   /** What the Engine answers a Drain with. */
   let drainAnswer: () => Effect.Effect<DrainReport, PloyzSdkError>;
@@ -99,7 +102,10 @@ describe("drain-server", () => {
       Effect.provideService(InngestClient, inngest),
       Effect.provideService(CloudStore, {
         open: Effect.succeed(asTestDouble<ConfigStore>()({
-          read: async () => ({ namespaces: namespaces.map((namespace) => ({ namespace })) }),
+          read: async () => {
+            if (storeDown) throw new Error("config store unavailable");
+            return { namespaces: namespaces.map((namespace) => ({ namespace })) };
+          },
         })),
       }),
       Effect.provideService(OrganizationRuntime, {
@@ -178,6 +184,7 @@ describe("drain-server", () => {
 
   beforeEach(async () => {
     namespaces = ["shop-production"];
+    storeDown = false;
     frame = frameOf("replicated");
     silentOpens = 0;
     unpaired = false;
@@ -236,7 +243,7 @@ describe("drain-server", () => {
       name: "server/drain.requested",
       data: { attemptId: requestId, organizationId, machineId },
     };
-    expect(await request()).toEqual({ drain: { attemptId: requestId, state: "pending", requestedAt: expect.any(String) } });
+    expect(await request()).toEqual({ drain: { attemptId: requestId, state: "pending", requestedAt: expect.any(String), serversSilent: false } });
     expect(send.mock.calls).toEqual([[event]]);
 
     expect(await request(secondTab)).toMatchObject({ drain: { attemptId: requestId, state: "pending" } });
@@ -389,6 +396,41 @@ describe("drain-server", () => {
     expect(sleeps(output)).toHaveLength(5);
     expect(drainCalls).toEqual([[machineId, { scope: "services", services: ["shop-production/api"] }]]);
     expect(await rows()).toMatchObject([{ state: "finished", end_code: null, report: partialReport }]);
+  });
+
+  it("reads waiting for its servers, not queued behind another Drain that runs meanwhile, until its servers answer", async () => {
+    const other = "00000000-0000-4000-8000-0000000000b1";
+    const serverNames = new Map([[web1.id, web1.name], [web2.id, web2.name], [otherMachineId, "web-3"]]);
+    const viewOf = async () => drainView({ server: web2, latest: await latest(), serverNames, requested: null });
+    await request();
+    await request(other, otherMachineId);
+    await claim(other, "run-other");
+    expect(await viewOf()).toEqual({ kind: "queued", behind: "web-3" });
+
+    silentOpens = 1;
+    const seen: unknown[] = [];
+    whileWaiting = async () => { seen.push(await viewOf()); };
+    drainAnswer = () => Effect.promise(async () => {
+      seen.push(await viewOf());
+      return partialReport;
+    });
+    await drain();
+
+    expect(seen).toEqual([{ kind: "waiting" }, { kind: "running", since: expect.any(String) }]);
+  });
+
+  it("stops reading waiting once its servers answer, even when a later step of that try fails and is retried", async () => {
+    const viewOf = async () => drainView({ server: web2, latest: await latest(), serverNames: new Map(), requested: null });
+    await request();
+    await harness.pool.query(`update server_drain_attempt set inngest_run_id = 'run-1' where id = $1`, [requestId]);
+    silentOpens = 1;
+    expect(await runEffect(executeDrainOnce(request0, "run-1", { waited: false }))).toEqual({ attemptId: requestId, state: "pending" });
+    expect(await viewOf()).toEqual({ kind: "waiting" });
+
+    storeDown = true;
+    await expect(runEffect(executeDrainOnce(request0, "run-1", { waited: true }))).rejects.toThrow();
+
+    expect(await viewOf()).toEqual({ kind: "queued", behind: null });
   });
 
   it("stops waiting once the request is older than the pending limit, and ends never started", async () => {
@@ -718,7 +760,7 @@ describe("drain-server", () => {
     await request(secondTab);
 
     expect(await latest()).toEqual({
-      [machineId]: { attemptId: secondTab, state: "pending", requestedAt: expect.any(String) },
+      [machineId]: { attemptId: secondTab, state: "pending", requestedAt: expect.any(String), serversSilent: false },
     });
   });
 

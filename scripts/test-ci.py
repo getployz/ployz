@@ -18,7 +18,7 @@ class CiTest(unittest.TestCase):
         cases = [
             (["core/DESIGN.md"], {"contracts"}),
             (["docs/user/services/domains.md"], {"contracts", "rust-lint", "rust-tests"}),
-            (["docs/agents/domain.md"], {"contracts"}),
+            (["docs/agents/landing.md"], {"contracts"}),
             (["core/relay/compose.yaml"], {"contracts"}),
             (["dashboard/src/app.tsx"], {"contracts", "cloud"}),
             (["core/crates/ployz/tests/management_connect.rs"], {"contracts", "rust-lint", "rust-tests", "macos-cli"}),
