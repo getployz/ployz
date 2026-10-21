@@ -1,6 +1,6 @@
 import type { ExpectedCopy, MachineName, SlotRole, Snapshot, SnapshotGuid, VolumeCopy } from "@ployz/sdk";
 import { planResize, type ResizePhase } from "#/modules/volume-run/resize";
-import { type AnsweredMember, copyName, type Member, type ReleasePlan, type VolumeRunArgs, type VolumeRunInput } from "#/modules/volume-run/volume-run";
+import { type AnsweredMember, copyName, heardFrom, type Member, type ReleasePlan, type VolumeRunArgs, type VolumeRunInput } from "#/modules/volume-run/volume-run";
 
 /** `cutting` is a read-only root: a cut began on it and has not renamed it to a slot yet. */
 export type Role = "writer" | "cutting" | "mirror" | "empty" | "unanswered";
@@ -116,10 +116,9 @@ export function planFromCopies(input: PlanInput, members: readonly Member[]): Pl
   const cutting = withRole("cutting");
   const mirrors = withRole("mirror");
   const silent = members.filter((member): member is Exclude<Member, AnsweredMember> => !member.answered);
-  const unanswered = silent.find((member) => member.lack !== undefined) ?? silent[0];
-  const unknown = (member: Exclude<Member, AnsweredMember>) => member.lack === undefined
-    ? refuse("unanswered", `${member.machine.name} did not answer; ${name}'s copies are unknown`)
-    : refuse("server_lacks", member.lack);
+  const unanswered = silent.find((member) => member.lack !== undefined) ?? silent.find((member) => heardFrom(member) === "silent") ?? silent[0];
+  const unknown = (member: Exclude<Member, AnsweredMember>) => member.lack !== undefined ? refuse("server_lacks", member.lack)
+    : refuse("unanswered", `${member.machine.name}${heardFrom(member) === "waiting" ? "'s report hasn't arrived" : " did not answer"}; ${name}'s copies are unknown`);
   const unfinishedCuts = () => {
     // As `oldCopy` reads roots, the cut at the highest epoch began last, so its writes are the ones to keep.
     const keptFirst = (a: AnsweredMember, b: AnsweredMember) => epochOf(b) - epochOf(a) || Number(holds(b)) - Number(holds(a)) || byServer(a, b);

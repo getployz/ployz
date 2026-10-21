@@ -53,8 +53,14 @@ export type Snapshot = {
   readonly bytes: number;
 };
 
+/**
+ * What the primary's Server said of it: `live` on its own report of a writable root, `read_only` when the root it reports
+ * is read-only, as a cut leaves it, else what was heard instead of a report.
+ */
+export type LiveState = "live" | "read_only" | Exclude<Heard, "answered">;
+
 /** The primary's Server: the one that reports it, else the one the applied placement names, which hasn't. */
-export type PrimaryServer = ServerRef & { readonly heard: Heard };
+export type PrimaryServer = ServerRef & { readonly state: LiveState };
 
 export type LiveCopy = {
   readonly server: PrimaryServer | null;
@@ -75,10 +81,14 @@ export const STALE_AFTER_MS = 60 * 60_000;
 
 export const COPY_WORDS = { mirror: "Mirror", offsite: "Offsite", old: "Old copy" } as const satisfies Record<VolumeCopy["kind"], string>;
 export const STAGED_WORDS = { new: "New", removing: "Removing", primary: "Primary" } as const satisfies Record<StagedCopy, string>;
-/** The primary's badge: Live only on its Server's own report. Not answering names no time, since nothing says when it stopped. */
-export const HEARD_WORDS = {
-  answered: "Live", lacks: "Needs a newer Ployz", silent: "Not answering", waiting: "Waiting for its report",
-} as const satisfies Record<Heard, string>;
+/**
+ * The primary's badge: Live only on its Server's own report of a writable root. Not answering names no time, since nothing
+ * says when it stopped. Needs a newer Ployz only once its release is known to be behind.
+ */
+export const LIVE_WORDS = {
+  live: "Live", read_only: "Read-only", outdated: "Needs a newer Ployz", lacks: "Can't report this copy", silent: "Not answering",
+  waiting: "Waiting for its report",
+} as const satisfies Record<LiveState, string>;
 
 const age = (at: Date, now: Date) => (now.getTime() - at.getTime() < 60_000 ? "just now" : formatRelativeTime(at, now));
 

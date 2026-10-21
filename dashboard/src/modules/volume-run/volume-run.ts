@@ -104,6 +104,8 @@ export type Member =
       readonly machine: { readonly id: MachineId; readonly name: MachineName };
       readonly answered: false;
       readonly lack?: string;
+      /** The lack is the Server's release being behind its line's latest, so an upgrade brings what it lacks. */
+      readonly outdated?: true;
       /** The frame lists the Machine only by id: its report hasn't arrived, which is not the same as not answering. */
       readonly incomplete?: true;
     };
@@ -111,13 +113,16 @@ export type AnsweredMember = Extract<Member, { answered: true }>;
 
 /**
  * What this observer heard from a member's Server just now. Only `answered` reports the copy. A Server that `lacks` the
- * capability answered without reporting it. One the frame lists only by id is `waiting`: its report hasn't arrived,
- * which says nothing about whether it answers.
+ * capability answered without reporting it, and is `outdated` when its release is behind. One the frame lists only by
+ * id is `waiting`: its report hasn't arrived, which says nothing about whether it answers.
  */
-export type Heard = "answered" | "lacks" | "silent" | "waiting";
+export type Heard = "answered" | "outdated" | "lacks" | "silent" | "waiting";
 
-export const heardFrom = (member: Member): Heard =>
-  member.answered ? "answered" : member.lack !== undefined ? "lacks" : member.incomplete ? "waiting" : "silent";
+export function heardFrom(member: Member): Heard {
+  if (member.answered) return "answered";
+  if (member.lack !== undefined) return member.outdated ? "outdated" : "lacks";
+  return member.incomplete ? "waiting" : "silent";
+}
 
 /**
  * The members that didn't report their copy, by why: what each lacking Server lacks, silent Servers' names, and whether

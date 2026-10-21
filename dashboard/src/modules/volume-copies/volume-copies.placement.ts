@@ -4,7 +4,7 @@ import {
 } from "#/modules/volume-placement/volume-placement";
 import { runWords } from "#/modules/volume-run/volume-copies";
 import { copyName, type Heard, heardFrom, type Member, type VolumeRunView } from "#/modules/volume-run/volume-run";
-import type { MirrorCopy, OldCopy, PrimaryServer, StagedCopy, VolumeCopies } from "./volume-copies";
+import type { MirrorCopy, OldCopy, PrimaryServer, ServerRef, StagedCopy, VolumeCopies } from "./volume-copies";
 
 /** What the mirror syncs last saw of one mirror. A pull that lands later never clears an older failure. */
 export type MirrorStatusView = {
@@ -74,8 +74,16 @@ export function copiesFromPlacement(input: {
     busy: busyOn(item.server.name),
   });
 
-  const primary: PrimaryServer | null = observed.primary !== null ? { ...observed.primary, heard: "answered" }
-    : form.primary.change === null ? { ...form.primary.server, heard: heard(form.primary.server.id) }
+  const readOnly = (id: MachineId) => members.some((member) =>
+    member.answered && member.machine.id === id && member.view.copy?.kind === "root" && member.view.copy.readonly);
+  // A placement's primary that answered without a root holds no live copy, so Live names nobody.
+  const unreported = (server: ServerRef): PrimaryServer | null => {
+    const from = heard(server.id);
+    return from === "answered" ? null : { id: server.id, name: server.name, state: from };
+  };
+  const primary: PrimaryServer | null = observed.primary !== null
+    ? { ...observed.primary, state: readOnly(observed.primary.id) ? "read_only" : "live" }
+    : form.primary.change === null ? unreported(form.primary.server)
     : null;
   const seed = row?.staged?.seed;
   return {

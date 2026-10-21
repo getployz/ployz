@@ -1363,7 +1363,7 @@ export const observeVolumeMembers = Effect.fn("VolumeRun.observeMembers")(functi
     const ref: MachineRef = { id: machine.id, name: machine.name };
     const server = { name: machine.name, daemonVersion: machine.runtime.daemon_version };
     const lacks = (capability: string, kind: VolumeRunKind | undefined) => lackSentence(organizationId, capability, server, kind).pipe(
-      Effect.map((lack): Member => ({ machine: ref, answered: false, lack })),
+      Effect.map((said): Member => ({ machine: ref, answered: false, ...said })),
     );
     /** Named by the verb, not the run, so a resize says which direction the Server lacks: "Volume shrink needs a newer Ployz on db-1." */
     const lacksVerb = (requirement: Requirement) => lacks(requirement.capability, undefined);
@@ -1406,9 +1406,9 @@ const lackSentence = Effect.fn("VolumeRun.lackSentence")(function* (
     Effect.orElseSucceed(() => null),
   );
   const needs = `${feature.feature} ${feature.plural ? "need" : "needs"} a newer Ployz on ${server.name}.`;
-  if (release === null) return needs;
-  if (isBehind(server.daemonVersion, release)) return `${needs} ${release} is out.`;
-  return isCurrent(server.daemonVersion, release) ? `${feature.feature} ${feature.plural ? "are" : "is"} not in Ployz ${server.daemonVersion} on ${server.name} yet.` : needs;
+  if (release === null) return { lack: needs };
+  if (isBehind(server.daemonVersion, release)) return { lack: `${needs} ${release} is out.`, outdated: true as const };
+  return { lack: isCurrent(server.daemonVersion, release) ? `${feature.feature} ${feature.plural ? "are" : "is"} not in Ployz ${server.daemonVersion} on ${server.name} yet.` : needs };
 });
 
 export const observeMembers = Effect.fn("VolumeRun.observe")(function* (ctx: RunContext, inngestRunId: string) {

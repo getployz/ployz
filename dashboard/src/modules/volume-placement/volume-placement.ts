@@ -155,9 +155,12 @@ export function oldCopies(observed: ObservedPlacement, row: PlacementRow | null)
  * What the next Deploy aims for: the staged placement, else what is applied. With no primary answering, the silent
  * Server is presumed to hold it. Null when no Server holds the Volume.
  */
+/** The Server taken for the primary while none reports one: the first that didn't answer, as Copies names it under Live. */
+const unreportedPrimary = (observed: ObservedPlacement): MachineRef | null => observed.unanswered[0] ?? null;
+
 export function targetPlacement(observed: ObservedPlacement, row: PlacementRow | null): Placement | null {
   if (row?.staged != null) return stagedPlacement(observed, row.staged);
-  const primary = observed.primary ?? observed.unanswered[0] ?? null;
+  const primary = observed.primary ?? unreportedPrimary(observed);
   if (primary === null) return null;
   return { primary: primary.id, mirrors: appliedMirrors(observed, row), deletes: [] };
 }
@@ -356,6 +359,9 @@ export function recovery(
   const copy = observed.copies.find((each) => each.kind === "slot" && applied.includes(each.server.id));
   if (copy === undefined) return null;
   const { server: mirror, newest: lostAfter } = copy;
+  // Only a silent primary leads to Forget or Use mirror: one whose report is on its way may still hold the writer.
+  const primary = members.find((member) => member.machine.id === unreportedPrimary(observed)?.id);
+  if (primary !== undefined && heardFrom(primary) === "waiting") return { kind: "wait", mirror, lostAfter };
   const silent = members.filter((member) => heardFrom(member) === "silent").map((member) => member.machine);
   if (silent.length > 0) return { kind: "forget", down: silent, mirror, lostAfter };
   if (members.some((member) => heardFrom(member) === "waiting")) return { kind: "wait", mirror, lostAfter };

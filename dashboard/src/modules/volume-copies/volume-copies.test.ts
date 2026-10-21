@@ -20,12 +20,12 @@ const old: OldCopy = { kind: "old", id: "web-3", server: server("web-3"), name: 
 
 const pgData = (elsewhere: VolumeCopies["elsewhere"], live: Partial<VolumeCopies["live"]> = {}): VolumeCopies => ({
   volume: { id: "v1", name: "pg-data" },
-  live: { server: { ...server("web-1"), heard: "answered" }, restore: null, moveTo: null, busy: null, snapshots: snapshots(13), ...live },
+  live: { server: { ...server("web-1"), state: "live" }, restore: null, moveTo: null, busy: null, snapshots: snapshots(13), ...live },
   elsewhere,
 });
 const redisData: VolumeCopies = {
   volume: { id: "v2", name: "redis-data" },
-  live: { server: { ...server("web-2"), heard: "answered" }, restore: null, moveTo: null, busy: null, snapshots: snapshots(4) },
+  live: { server: { ...server("web-2"), state: "live" }, restore: null, moveTo: null, busy: null, snapshots: snapshots(4) },
   elsewhere: [],
 };
 

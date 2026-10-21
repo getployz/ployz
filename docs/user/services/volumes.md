@@ -145,6 +145,12 @@ mirror's age turns amber with a **⚠** once it is more than an hour old.
 
 While a server's report is still on its way, Copies doesn't say the server is down. Its primary
 reads **Waiting for its report**, and a mirror on it says it is waiting for its server's report.
+Until that report arrives, Copies offers no way to forget another server.
+
+Under **Live**, the primary reads **Live** only while its server reports it writable. During a
+move, while writes pause on the server it leaves, it reads **Read-only**. A server whose Ployz is
+behind the latest release reads **Needs a newer Ployz**. One that can't report the copy for
+another reason reads **Can't report this copy**.
 
 Copy changes, like a new mirror or a restore, go out with your next deploy. **Redeploy** on a past
 deployment ships what that deployment froze, so it leaves them staged and says **Copies wait for

@@ -43,7 +43,7 @@ it("zooms out only as far as a box needs to fit beside the pane, then pans the l
 it("widens a node's box by the copies hung under it, so revealing it keeps every card in view", () => {
   const server = { id: "web-2" as MachineId, name: "web-2" };
   const copies: VolumeCopies = {
-    volume: { id: "v", name: "v" }, live: { server: { ...server, heard: "answered" }, restore: null, moveTo: null, busy: null, snapshots: null },
+    volume: { id: "v", name: "v" }, live: { server: { ...server, state: "live" }, restore: null, moveTo: null, busy: null, snapshots: null },
     elsewhere: [1, 2, 3].map((n) => ({ kind: "mirror", id: `m${n}`, server, name: `m${n}`, refreshedAt: null, skipped: null, staged: null, busy: null })),
   };
   const node = (hang: readonly VolumeCopies[]) =>
@@ -55,7 +55,7 @@ it("widens a node's box by the copies hung under it, so revealing it keeps every
 it("fits the whole canvas with the copies hung under a node in view, not just its card", () => {
   const server = { id: "web-2" as MachineId, name: "web-2" };
   const copies: VolumeCopies = {
-    volume: { id: "v", name: "v" }, live: { server: { ...server, heard: "answered" }, restore: null, moveTo: null, busy: null, snapshots: null },
+    volume: { id: "v", name: "v" }, live: { server: { ...server, state: "live" }, restore: null, moveTo: null, busy: null, snapshots: null },
     elsewhere: [1, 2, 3].map((n) => ({ kind: "mirror", id: `m${n}`, server, name: `m${n}`, refreshedAt: null, skipped: null, staged: null, busy: null })),
   };
   const hung = asTestDouble<CanvasResourceNode>()({ position: { x: 0, y: 0 }, measured: { width: 288, height: 300 }, data: { hang: [copies] } });
