@@ -803,6 +803,89 @@ mod tests {
         );
     }
 
+    fn routing_a_removed_copy(
+        listed_machines: Vec<MachineObservation>,
+        unanswered: &[&Machine],
+        removed_at: [u8; 4],
+    ) -> Check {
+        let [one, two, three] = machines();
+        judge(Observed {
+            machines: listed_machines,
+            copies: Copies::Listed {
+                live: listing(unanswered),
+                reads: vec![(
+                    web([routed_on(&one, '1'), routed_on(&three, '3')]),
+                    Ok(routes_as_ployzd_answers(
+                        &[
+                            (&one, &['1', '3']),
+                            (&two, &['1', '3']),
+                            (&three, &['1', '3']),
+                        ],
+                        &[],
+                    )),
+                )],
+                routed: BTreeMap::from([(
+                    two.id,
+                    web_routed_at(&[('1', [10, 210, 0, 1]), ('0', removed_at)]),
+                )]),
+            },
+        })
+    }
+
+    #[test]
+    fn status_names_a_machine_whose_proxy_routes_a_copy_its_owner_removed() {
+        let [one, two, three] = machines();
+        let check =
+            routing_a_removed_copy(listed(&[&one, &two, &three], &[]), &[], [10, 210, 12, 5]);
+
+        assert_eq!(
+            serde_json::to_value(&check.attention).unwrap(),
+            json!([{
+                "reason": "routes_stale_address",
+                "message": "machine-2 routes a copy to 10.210.12.5, which its owner does not report. Check its network.",
+                "service": "app/web",
+                "machine": "machine-2",
+                "addresses": ["10.210.12.5"],
+            }])
+        );
+    }
+
+    #[test]
+    fn status_names_no_machine_for_a_removed_copy_whose_owner_did_not_answer() {
+        let [one, two, three] = machines();
+        let check = routing_a_removed_copy(
+            listed(&[&one, &two, &three], &[]),
+            &[&three],
+            [10, 210, 12, 5],
+        );
+
+        assert_eq!(serde_json::to_value(&check.attention).unwrap(), json!([]));
+    }
+
+    #[test]
+    fn status_names_no_machine_for_a_removed_copy_whose_owner_is_down() {
+        let [one, two, three] = machines();
+        let check = routing_a_removed_copy(listed(&[&one, &two], &[&three]), &[], [10, 210, 12, 5]);
+
+        assert!(
+            check
+                .attention
+                .iter()
+                .all(|attention| attention.reason == "machine_down"),
+            "{}",
+            serde_json::to_value(&check.attention).unwrap()
+        );
+    }
+
+    #[test]
+    fn status_names_no_machine_for_a_removed_copy_at_an_address_no_machine_owns() {
+        let [one, two, three] = machines();
+        let check =
+            routing_a_removed_copy(listed(&[&one, &two, &three], &[]), &[], [10, 210, 99, 5]);
+
+        assert_eq!(serde_json::to_value(&check.attention).unwrap(), json!([]));
+    }
+
     fn checked_with_an_old_copy(rotation: CopyRotation) -> Check {
         let [one, two, three] = machines();
         checked(
