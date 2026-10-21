@@ -1028,7 +1028,7 @@ pub(crate) async fn follow_removal(
 }
 
 /// Stopped watching a removal that is still running. It may yet fail unfinished, as
-/// [`follow_removal`] says when it does.
+/// [`follow_removal`] says when it does. No `next`: nothing is to run while it runs.
 fn removal_unsettled(name: &MachineName) -> RpcError {
     RpcError {
         code: ployz_core::RpcErrorCode::Unavailable,
@@ -1037,7 +1037,7 @@ fn removal_unsettled(name: &MachineName) -> RpcError {
              The dashboard's Servers page shows when it's done. If it fails and the Server \
              is gone but `ployz server ls` still lists it, forget it."
         ),
-        details: forget_next(name),
+        details: serde_json::Value::Null,
         cause: Vec::new(),
     }
 }
@@ -1357,7 +1357,7 @@ mod tests {
     use crate::cloud_login::tests::fake_cloud;
 
     #[test]
-    fn a_removal_the_cli_stopped_waiting_on_says_to_forget_a_server_that_is_gone() {
+    fn a_removal_the_cli_stopped_waiting_on_says_when_to_forget_but_not_to_now() {
         let name = MachineName::parse("web-2").unwrap();
         let unsettled = removal_unsettled(&name);
         assert!(
@@ -1375,10 +1375,8 @@ mod tests {
             "{}",
             unsettled.message
         );
-        assert_eq!(
-            unsettled.details.get("next"),
-            Some(&serde_json::json!("ployz server forget web-2"))
-        );
+        // The removal still runs, so forgetting now would only find it in progress.
+        assert_eq!(unsettled.details.get("next"), None);
     }
 
     #[test]
