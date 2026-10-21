@@ -95,6 +95,9 @@ You need a Linux server with systemd that you can reach as root over SSH. See th
    ployz env pr you/shop --on --from production --copy postgres --setup 'shop=pnpm db:seed'
    ```
 
+   `ployz up` names the service after your app's directory, here `shop`. The preview copies a
+   [`postgres` service](docs/user/services/databases.md) you've added.
+
 ## How it works
 
 Each server runs a small Ployz daemon next to Docker. Your servers share a WireGuard network and
