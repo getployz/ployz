@@ -124,6 +124,7 @@ struct JoinInner {
     fail_target_inspect: AtomicBool,
     fail_list_on: Mutex<Option<MachineId>>,
     assigned_membership: Mutex<MembershipObservation>,
+    listed: Mutex<Vec<MachineObservation>>,
 }
 
 impl JoinDaemon {
@@ -163,6 +164,7 @@ impl JoinDaemon {
                 fail_target_inspect: AtomicBool::new(false),
                 fail_list_on: Mutex::new(None),
                 assigned_membership: Mutex::new(MembershipObservation::Up),
+                listed: Mutex::new(Vec::new()),
             }),
         }
     }
@@ -304,6 +306,12 @@ impl JoinDaemon {
     /// Set the entry Machine's membership observation for the assigned Machine.
     pub fn with_membership(self, membership: MembershipObservation) -> Self {
         *self.inner.assigned_membership.lock().unwrap() = membership;
+        self
+    }
+
+    /// List `machine` beside the assigned Machine and the visible peers.
+    pub fn listing(self, machine: MachineObservation) -> Self {
+        self.inner.listed.lock().unwrap().push(machine);
         self
     }
 
@@ -795,6 +803,7 @@ impl FakeMachine for JoinDaemon {
                 .cloned()
                 .map(up_machine),
         );
+        machines.extend(self.inner.listed.lock().unwrap().iter().cloned());
         rpc_ok(MachineList {
             enrollment: Some(ployz_core::EnrollmentSnapshot {
                 network: "10.210.0.0/16".parse().unwrap(),

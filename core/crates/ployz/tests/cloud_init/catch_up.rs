@@ -10,7 +10,8 @@ use super::harness::{
 };
 use ployz::context::{Config, Connection, Context};
 use ployz_core::{
-    ContainerId, ContainerObservation, MembershipObservation, Namespace, ServiceId, ServiceName,
+    ContainerId, ContainerObservation, Machine, MachineId, MachineName, MachineObservation,
+    MembershipObservation, Namespace, ServiceId, ServiceName, WireGuardPublicKey,
 };
 use serde_json::json;
 
@@ -105,8 +106,10 @@ async fn machine_add_retries_catch_up_and_reports_failure() {
 #[tokio::test]
 async fn machine_add_reports_omitted_targets_before_catch_up() {
     for membership in [MembershipObservation::Down, MembershipObservation::Unknown] {
-        let (output, entry, target) =
-            machine_add_with_membership(Fault::Healthy, Fault::Healthy, membership).await;
+        let (output, entry, target) = machine_add_with(Fault::Healthy, Fault::Healthy, |entry| {
+            entry.with_membership(membership)
+        })
+        .await;
         assert!(!output.status.success());
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(stderr.contains("partial Service observations"), "{stderr}");
@@ -116,6 +119,36 @@ async fn machine_add_reports_omitted_targets_before_catch_up() {
         assert_eq!(entry.ensure_attempts(), 0);
         target.join_request();
     }
+}
+
+#[tokio::test]
+async fn machine_add_plans_catch_up_past_an_unarrived_registration() {
+    let registered = Machine {
+        id: MachineId::parse("c".repeat(32)).unwrap(),
+        name: MachineName::parse("claim-only").unwrap(),
+        subnet: "10.210.3.0/24".parse().unwrap(),
+        public_key: WireGuardPublicKey([3; 32]),
+        ..founder_machine()
+    };
+    let (output, entry, target) = machine_add_with(Fault::Healthy, Fault::Healthy, |entry| {
+        entry.listing(MachineObservation::new(
+            registered,
+            MembershipObservation::Down,
+        ))
+    })
+    .await;
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{stderr}");
+    assert!(entry.ensure_attempts() > 0);
+    assert!(
+        stderr.contains("Server claim-only never joined"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("server forget claim-only --confirm dead"),
+        "{stderr}"
+    );
+    target.join_request();
 }
 
 async fn cloud_join(target_failures: Fault, ensure_failures: Fault) -> (Output, JoinDaemon) {
@@ -171,21 +204,21 @@ async fn machine_add(
     target_failures: Fault,
     ensure_failures: Fault,
 ) -> (Output, JoinDaemon, JoinDaemon) {
-    machine_add_with_membership(target_failures, ensure_failures, MembershipObservation::Up).await
+    machine_add_with(target_failures, ensure_failures, |entry| entry).await
 }
 
-async fn machine_add_with_membership(
+async fn machine_add_with(
     target_failures: Fault,
     ensure_failures: Fault,
-    membership: MembershipObservation,
+    entry: impl FnOnce(JoinDaemon) -> JoinDaemon,
 ) -> (Output, JoinDaemon, JoinDaemon) {
     let founder = founder_machine();
     let mut registration = registration();
     registration.visible_peers = vec![founder.clone()];
+    // The joiner has published its own row, which names its daemon version.
+    registration.assigned_machine.runtime.daemon_version = env!("CARGO_PKG_VERSION").into();
     let entry = with_faults(
-        JoinDaemon::new(registration.clone())
-            .with_containers(globals_on(&founder))
-            .with_membership(membership),
+        entry(JoinDaemon::new(registration.clone()).with_containers(globals_on(&founder))),
         target_failures,
         ensure_failures,
     );
@@ -233,6 +266,7 @@ async fn machine_add_with_membership(
     for hint in stderr.lines().filter_map(|line| {
         line.strip_prefix("retry: ")
             .or_else(|| line.strip_prefix("inspect: "))
+            .or_else(|| line.strip_prefix("next: "))
     }) {
         let args = shell_words::split(hint).unwrap();
         let parsed = ployz::cli::command().try_get_matches_from(args).unwrap();
