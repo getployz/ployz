@@ -1082,3 +1082,32 @@ fn a_cancelled_deployment_still_names_a_real_failure_and_an_older_stores_reason(
     assert!(shown.contains("\n  web: Cancelled\n"), "{shown}");
     assert!(followed.contains("error: web: Cancelled.\n"), "{followed}");
 }
+
+#[test]
+fn deployment_show_reads_a_node_the_cancel_stopped_cancelled_beside_a_real_failure() {
+    let (shown, _) = shown_and_followed(&cancelled("web: Cancelled", &[], true, false));
+    assert!(
+        shown.contains("\n  api: deployed\n  web: cancelled\n"),
+        "{shown}"
+    );
+    let (shown, _) = shown_and_followed(&cancelled(
+        "api: create Container failed",
+        &["no space left on device"],
+        false,
+        true,
+    ));
+    assert!(
+        shown.contains("\n  api: failed\n  web: cancelled\n"),
+        "{shown}"
+    );
+    // A Store from before Cancelled nodes marks no node, so web reads failed.
+    let mut older = cancelled("web: Cancelled", &[], false, false);
+    for node in &mut older.nodes {
+        node.cancelled = false;
+    }
+    let (shown, _) = shown_and_followed(&older);
+    assert!(
+        shown.contains("\n  api: deployed\n  web: failed\n"),
+        "{shown}"
+    );
+}

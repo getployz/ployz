@@ -1398,11 +1398,12 @@ pub(super) fn say_view(view: &DeploymentView) {
         ));
     }
     for node in &view.nodes {
-        crate::ui::stream(format_args!(
-            "  {}: {}",
-            node.node.name(),
+        let outcome = if node.outcome == ployz_store::NodeStatus::Failed && node.cancelled {
+            "cancelled".to_owned()
+        } else {
             super::store::word(&node.outcome)
-        ));
+        };
+        crate::ui::stream(format_args!("  {}: {outcome}", node.node.name()));
     }
     for build in &view.builds {
         let commit = build.commit.as_ref().map_or("the upload", |commit| {
