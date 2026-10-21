@@ -137,8 +137,13 @@ function PendingCard({ organizationSlug, approval }: { organizationSlug: string;
 function ChangeLines({ label, changes, className }: { label?: string; changes: ChangeLine[]; className: string }) {
   const id = useId();
   const list = (
-    <ul aria-labelledby={label ? id : undefined} className={cn("flex flex-col gap-0.5 font-mono text-xs", className)}>
-      {changes.map((change) => <li key={change.key}>{change.mark} {change.node} {change.text}</li>)}
+    <ul aria-labelledby={label ? id : undefined} className={cn("flex flex-col gap-0.5 text-xs", className)}>
+      {changes.map((change) => (
+        <li key={change.key}>
+          {change.mark} {change.node} <span className={cn(change.variable && "font-mono")}>{change.name}</span>
+          {change.values === "" ? null : <> <span className="font-mono">{change.values}</span></>}
+        </li>
+      ))}
     </ul>
   );
   if (!label) return list;

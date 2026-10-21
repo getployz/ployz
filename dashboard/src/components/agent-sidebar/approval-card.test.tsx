@@ -41,6 +41,9 @@ function show(seed: ApprovalView, onSettled = vi.fn()) {
   return { onSettled, card: () => screen.getByLabelText("Deploy shop/production needs approval") };
 }
 
+/** A change line by its whole text: its name and values sit in their own spans. */
+const line = (pattern: RegExp) => (_: string, element: Element | null) => element?.tagName === "LI" && pattern.test(element.textContent ?? "");
+
 const answered = (status: ApprovalView["status"], reason: string | null = null) =>
   ({ ok: true as const, approval: { ...approval, status, reason, decided_at: "2026-10-08T12:01:00.000Z" } }) as never;
 
@@ -50,7 +53,7 @@ it("leads with what the plan destroys and folds the rest to a count", () => {
   expect(within(card).getByRole("list", { name: "Destroys" }).textContent).toBe("Deletes volume pg-data. Not recoverable.");
   expect(within(card).queryByText(/1 → 2/)).toBeNull();
   fireEvent.click(within(card).getByText("1 other change"));
-  expect(within(card).getByText(/web .*1 → 2/)).toBeTruthy();
+  expect(within(card).getByText(line(/web .*1 → 2/))).toBeTruthy();
 });
 
 const restoreOf = (at: number) => ({ ...approval, review: { ...approval.review, effects: [{
@@ -234,8 +237,8 @@ it("says who asked, and shows the change their ask saves apart from what else it
   expect(card.getByRole("list", { name: "Saves" }).textContent).toBe("+ api LINUS_CHANGE requested");
   expect(card.getByText("Saves")).toBeTruthy();
   fireEvent.click(card.getByText("2 other changes"));
-  expect(card.getByText(/api new service/)).toBeTruthy();
-  expect(card.getByText(/web .*1 → 2/)).toBeTruthy();
+  expect(card.getByText(line(/api new service/))).toBeTruthy();
+  expect(card.getByText(line(/web .*1 → 2/))).toBeTruthy();
 });
 
 it("lists a Sync's changes without claiming it saves the target's unsaved edit", () => {
@@ -254,7 +257,7 @@ it("lists a Sync's changes without claiming it saves the target's unsaved edit",
   const card = within(screen.getByLabelText("Sync shop/production needs approval"));
   expect(card.queryByText("Saves")).toBeNull();
   expect(card.queryByText(/redis/)).toBeNull();
-  expect(card.getByText(/web .*1 → 2/)).toBeTruthy();
+  expect(card.getByText(line(/web .*1 → 2/))).toBeTruthy();
 });
 
 it("leaves the asker's own card unsigned, waiting on someone who can protect it", () => {

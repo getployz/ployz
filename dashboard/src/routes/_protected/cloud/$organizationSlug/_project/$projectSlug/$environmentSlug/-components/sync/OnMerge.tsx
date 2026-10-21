@@ -113,8 +113,9 @@ function OnMergeRow({ row, rows, organizationSlug, store, into }: {
   const pendingRows = useStoreMergeRowsPending(organizationSlug, store);
   const saving = pendingRows.has(row.row) || row.requires !== null && pendingRows.has(row.requires);
   const [editing, setEditing] = useState(false);
-  const { name } = row.name === null ? { name: row.node }
-    : isFile(row) ? { name: row.name.slice("files.".length) } : settingName(row.name);
+  // A variable's key and a file's path are machine values; a node's name and a Setting's title are not.
+  const { name, variable: mono } = row.name === null ? { name: row.node, variable: false }
+    : isFile(row) ? { name: row.name.slice("files.".length), variable: true } : settingName(row.name);
   const excluded = row.ride === "excluded";
   const removal = isRemoval(row);
   const kept = row.ride === "kept";
@@ -128,7 +129,7 @@ function OnMergeRow({ row, rows, organizationSlug, store, into }: {
     <li className={cn("grid grid-cols-[6rem_minmax(0,9rem)_minmax(0,1fr)_auto] items-center gap-x-3 border-b px-4 py-2 last:border-b-0",
       excluded && "text-muted-foreground", saving && "opacity-60")} aria-busy={saving}>
       <span className="truncate text-xs text-muted-foreground">{row.node}</span>
-      <span className={cn("truncate font-mono text-xs", excluded && "opacity-60")}>{removal ? null : name}</span>
+      <span className={cn("truncate text-xs", mono && "font-mono", excluded && "opacity-60")}>{removal ? null : name}</span>
       <span className={cn("flex min-w-0 flex-wrap items-center gap-1.5 font-mono text-xs", excluded && "opacity-60")}>
         {kept ? <Badge variant="secondary">Kept</Badge> : removal ? <Removal row={row} /> : <RowValue row={row} preview={preview} />}
         {excluded ? <Badge variant="secondary">Excluded</Badge> : null}
