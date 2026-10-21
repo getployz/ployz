@@ -152,7 +152,8 @@ after a reload and in other tabs, as long as the failed deployment is the newest
 deployment's page shows its status, who started it and, if it failed, the reason in red under the
 header. A service that failed on its own reads Failed, and its failure is the reason, even when
 you cancelled the deployment while it ran. A cancelled deployment shows no reason when nothing in
-it failed on its own. Below that is one card for each build, service, volume and config it
+it failed on its own. `ployz deployment show` does the same, and `ployz deploy` then ends with
+`Deployment #7 was cancelled.` Below that is one card for each build, service, volume and config it
 touched, laid out left to right in the order they deploy. Click a card to see each server's progress and its
 [logs](../observe/logs.md). A build's card shows the build output, and a service's card shows what
 its new containers printed. A failed deployment opens on the card that failed.

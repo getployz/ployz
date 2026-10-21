@@ -1006,15 +1006,18 @@ fn cancelled(reason: &str, cause: &[&str], marker: bool, api_failed: bool) -> De
     let mut cancelled = serde_json::to_value(view(7, DeploymentStatus::Cancelled)).unwrap();
     let mut outcome = json!({"type": "executed", "summary": {}, "reason": reason, "cause": cause});
     if marker {
-        outcome["cancelled"] = json!(true);
+        outcome
+            .as_object_mut()
+            .unwrap()
+            .insert("cancelled".to_owned(), json!(true));
     }
-    cancelled["outcome"] = outcome;
+    *cancelled.get_mut("outcome").unwrap() = outcome;
     let api = if api_failed {
         json!({"type": "service", "id": "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee", "name": "api", "outcome": "failed", "rows": [{"machine_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "server": "fsn-1", "state": "failed", "reason": "create Container failed", "cause": ["no space left on device"], "step": "create", "log": null, "history": null, "started_at": 1, "finished_at": 2}]})
     } else {
         json!({"type": "service", "id": "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee", "name": "api", "outcome": "deployed", "rows": [{"machine_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "server": "fsn-1", "state": "completed", "log": null, "history": null, "started_at": 1, "finished_at": 2}]})
     };
-    cancelled["nodes"] = json!([
+    *cancelled.get_mut("nodes").unwrap() = json!([
         api,
         {"type": "service", "id": "dddddddd-dddd-4ddd-8ddd-dddddddddddd", "name": "web", "outcome": "failed", "cancelled": true, "rows": [{"machine_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "server": "fsn-1", "state": "failed", "reason": "Cancelled", "cause": [], "step": "create", "cancelled": true, "log": null, "history": null, "started_at": 1, "finished_at": 2}]}
     ]);

@@ -1339,6 +1339,7 @@ pub(super) fn say_view(view: &DeploymentView) {
         | ployz_store::Outcome::Executed {
             reason: Some(reason),
             cause,
+            cancelled: false,
             ..
         },
     ) = &view.deployment.outcome

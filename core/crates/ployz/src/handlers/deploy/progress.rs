@@ -423,10 +423,15 @@ fn failure(view: &DeploymentView, command: impl Fn(&[&str]) -> String) -> Failur
             ployz_store::Outcome::Executed {
                 reason: Some(reason),
                 cause,
+                cancelled: false,
                 ..
             }
             | ployz_store::Outcome::NotExecuted { reason, cause, .. },
         ) => (reason.clone(), cause.clone()),
+        _ if view.deployment.status == DeploymentStatus::Cancelled => (
+            format!("Deployment {} was cancelled.", view.deployment.label()),
+            Vec::new(),
+        ),
         _ => (
             format!("Deployment {} did not complete.", view.deployment.label()),
             Vec::new(),
