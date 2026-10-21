@@ -5038,6 +5038,24 @@ fn a_config_lists_as_new_until_deployed_and_its_change_names_the_services_it_res
 }
 
 #[test]
+fn a_size_the_store_refuses_never_says_it_was_staged() {
+    let store = &Target::Local(tempfile::tempdir().unwrap());
+    ok(store, &["project", "new", "shop"]);
+    ok(store, &["service", "add", "web", "--image", "web:1"]);
+    ok(store, &["volume", "add", "data", "--docker"]);
+    applied(store, "production");
+    let home = tempfile::tempdir().unwrap();
+    let (code, stderr) = person(
+        store,
+        home.path(),
+        &["volume", "set", "data", "--size", "10", "--wait"],
+    );
+    assert_ne!(code, Some(0), "{stderr}");
+    assert!(stderr.contains("keeps its storage"), "{stderr}");
+    assert!(!stderr.contains("Nothing to wait for"), "{stderr}");
+}
+
+#[test]
 fn a_verb_that_changes_nothing_says_so_and_keeps_the_revision() {
     let store = &Target::Local(tempfile::tempdir().unwrap());
     let human = |args: &[&str]| {
