@@ -15,6 +15,7 @@ import {
   placementTargets,
   placementForm,
   recovery,
+  serversAnswer,
   mirroredVolumes,
   oldCopies,
   mirrorResourceId,
@@ -104,6 +105,20 @@ describe("observePlacement", () => {
 
   it("has no primary when only slots answer", () => {
     expect(primary([member("web-1", "mirror"), member("web-2", "behind")])).toBeNull();
+  });
+});
+
+describe("serversAnswer", () => {
+  const { machine } = member("web-2", "unanswered");
+
+  it("holds while every Server answers, one that lacks copies included", () => {
+    expect(serversAnswer([member("web-1", "writer"), member("web-2", "mirror")])).toBe(true);
+    expect(serversAnswer([member("web-1", "writer"), { machine, answered: false, lack: "Volume copies need a newer Ployz on web-2." }])).toBe(true);
+  });
+
+  it("fails while a Server is silent or its report hasn't arrived, since a Deploy plans from neither", () => {
+    expect(serversAnswer([member("web-1", "writer"), member("web-2", "unanswered")])).toBe(false);
+    expect(serversAnswer([member("web-1", "writer"), { machine, answered: false, incomplete: true }])).toBe(false);
   });
 });
 
