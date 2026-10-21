@@ -893,8 +893,8 @@ fn check_removals(intent: &DeployIntent) -> Result<(), PlanError> {
 /// Removals of every copy of each obsolete Service, and the steps that run
 /// them from index `first` on. A Pending copy keeps every proxy on the last
 /// routed copy, so Pending copies go first, one at a time. The rest go Out in
-/// one step: a copy still In keeps every proxy on an Out sibling, whose own
-/// wait then never ends.
+/// one step: a copy still In that cannot serve keeps every proxy on an Out
+/// sibling, whose own wait then never ends.
 fn removal_operations(
     services: &[ServiceObservation],
     obsolete: &[QualifiedService],

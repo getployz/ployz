@@ -698,6 +698,7 @@ fn a_removal_removes_pending_copies_one_at_a_time_before_the_rest_go_out_togethe
             copy('b', '2', ployz_core::CopyRotation::Pending),
             copy('c', '2', ployz_core::CopyRotation::In),
             copy('d', '1', ployz_core::CopyRotation::Pending),
+            copy('e', '1', ployz_core::CopyRotation::In),
         ],
         ..Default::default()
     };
@@ -711,6 +712,10 @@ fn a_removal_removes_pending_copies_one_at_a_time_before_the_rest_go_out_togethe
     };
     assert_eq!(
         tail.steps,
-        [Step::Serial(0), Step::Serial(1), Step::Parallel(vec![2, 3])]
+        [
+            Step::Serial(0),
+            Step::Serial(1),
+            Step::Parallel(vec![2, 3, 4])
+        ]
     );
 }
