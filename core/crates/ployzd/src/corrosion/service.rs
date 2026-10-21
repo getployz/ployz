@@ -369,13 +369,12 @@ fn sync_writes(dir: &Path) -> Result<(), SyncWritesError> {
     };
     for entry in fs::read_dir(dir).map_err(failed)? {
         let entry = entry.map_err(failed)?;
-        let file_type = entry.file_type().map_err(failed)?;
-        let flagged = if file_type.is_dir() {
-            sync_writes(&entry.path())
-        } else if file_type.is_file() {
-            set_sync_flag(&entry.path(), OFlags::empty())
-        } else {
-            Ok(())
+        let path = entry.path();
+        let flagged = match entry.file_type() {
+            Ok(file_type) if file_type.is_dir() => sync_writes(&path),
+            Ok(file_type) if file_type.is_file() => set_sync_flag(&path, OFlags::empty()),
+            Ok(_) => Ok(()),
+            Err(source) => Err(SyncWritesError { path, source }),
         };
         match flagged {
             Err(error) if error.source.kind() == std::io::ErrorKind::NotFound => {}

@@ -7,6 +7,7 @@
 # 60 s later it fails when any Machine holds a different clock or value for one of <machine>'s
 # container rows, or when any proxy routes an address on <machine> that is not an In copy there.
 set -euo pipefail
+trap 'echo "could not run: line $LINENO"; exit 2' ERR
 cd "$(dirname "$0")/../.."
 run=$1
 vc() { scripts/verify-cluster "$@"; }
@@ -16,7 +17,7 @@ names=$(jq -r '.machines[].name' "$run")
 store() { vc exec "$run" "$1" -- sqlite3 -readonly /var/lib/ployz/corrosion/store.db "$2"; }
 upstreams() {
   vc exec "$run" "$1" -- curl -sf --unix-socket /run/ployz/ingress/caddy/admin.sock http://localhost/config/ \
-    | jq -er '[..|objects|select(.handler=="reverse_proxy")|.upstreams[].dial|sub(":[0-9]+$"; "")]|.[]'
+    | jq -r '[..|objects|select(.handler=="reverse_proxy")|.upstreams[].dial|sub(":[0-9]+$"; "")]|.[]'
 }
 down() {
   for _ in $(seq 90); do
