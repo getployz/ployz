@@ -18,7 +18,25 @@ cd "$(dirname "$0")/.."
 core=$PWD
 
 context=$(mktemp -d)
-trap 'rm -rf "$context"; docker image rm "$source" "$pinned" >/dev/null 2>&1 || true' EXIT
+prime_pid=
+cleanup() {
+    # A prime container still holds $source, so stop the prime and wait for it
+    # to remove its container before untagging.
+    if [ -n "$prime_pid" ]; then
+        kill "$prime_pid" 2>/dev/null || true
+        wait "$prime_pid" 2>/dev/null || true
+    fi
+    rm -rf "$context"
+    for owned in "$source" "$pinned"; do
+        docker image inspect "$owned" >/dev/null 2>&1 || continue
+        docker image rm "$owned" >/dev/null 2>&1 \
+            || { sleep 2; docker image rm "$owned" >/dev/null; } \
+            || echo "could not remove $owned; remove it with: docker image rm $owned" >&2
+    done
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 # A provenance attestation carries the build time, so the id would change on
 # every cached build and force a fresh prime.
 docker build --provenance=false --tag "$source" --file crates/ployz-testkit/Dockerfile "$core" >&2
@@ -26,7 +44,12 @@ source_id=$(docker image inspect --format '{{.Id}}' "$source")
 read -r base_id primed_from < <(docker image inspect --format '{{.Id}} {{index .Config.Labels "dev.ployz.testkit.primed-from"}}' "$base" 2>/dev/null) || true
 if [ "${primed_from:-}" != "$source_id" ]; then
     echo "priming $base from $source_id" >&2
-    base_id=$(scripts/prime-testkit-image.sh "$source_id" "$base")
+    # In the background, so a signal reaches cleanup without waiting for it.
+    scripts/prime-testkit-image.sh "$source_id" "$base" >"$context/base.id" &
+    prime_pid=$!
+    wait "$prime_pid"
+    prime_pid=
+    base_id=$(cat "$context/base.id")
 fi
 docker tag "$base_id" "$pinned"
 
