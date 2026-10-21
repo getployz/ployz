@@ -14,27 +14,9 @@
   <a href="https://ployz.dev">Website</a> · <a href="#quick-start">Quick start</a> · <a href="#use-it-with-your-agent">Agents</a> · <a href="#status">Status</a> · <a href="#self-hosting-the-dashboard">Self-host</a>
 </p>
 
-<p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/readme/ployz-up-dark.svg">
-    <img src="docs/readme/ployz-up-light.svg" width="760" alt="A terminal running ployz up --server root@your-server. Ployz installs itself, builds the app, deploys it and prints its https address.">
-  </picture>
-  <br>
-  <sub><code>ployz up --server root@…</code> on a fresh server, from the first command to the https address.</sub>
-</p>
-
 Ployz turns Linux servers you rent into a deployment platform. It builds your app, gives it an
 https address and runs its databases and workers next to it. Every pull request can get its own
 environment. Start with one server and add more when you need them.
-
-<p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/readme/canvas-dark.png">
-    <img src="docs/readme/canvas-light.png" width="760" alt="The Ployz dashboard canvas with the service that ployz up created and its https address.">
-  </picture>
-  <br>
-  <sub>The canvas that run produced. The CLI and the dashboard edit the same project.</sub>
-</p>
 
 <p align="center">
   The workflow of the hosted platforms you like, on servers you rent.
