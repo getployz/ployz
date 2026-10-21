@@ -333,7 +333,8 @@ const stillCovered = Effect.fn("ServerDrain.stillCovered")(function* (
  * know what moved) but never another answer, and a Drain with no answer in a day ends lost here.
  *
  * A Cluster that doesn't answer before the claim leaves the row pending and marks it silent, for the run to try again
- * after a wait, until `DRAIN_PENDING_LIMIT_MS` after the request. Past that, a silent Cluster ends the row
+ * after a wait, until `DRAIN_PENDING_LIMIT_MS` after the request. A try that reaches the Cluster unmarks it first, so
+ * a step after that which fails and retries doesn't read as silent. Past the limit, a silent Cluster ends the row
  * `not_started` here, so no retry can drain it later, and a try after a wait ends it without asking. A first try past
  * it still drains if the Cluster answers, as a Drain whose turn came late always has.
  */
@@ -375,6 +376,8 @@ export const executeDrainOnce = Effect.fn("ServerDrain.execute")(function* (
     return current;
   }
   const { session, frame } = reached.value;
+  yield* drizzle.update(serverDrainAttempt).set({ serversSilent: false })
+    .where(and(owned, eq(serverDrainAttempt.state, "pending"), eq(serverDrainAttempt.serversSilent, true)));
   const { covered, moves } = yield* stillCovered(request, frame, row?.planDigest ?? null);
   if (!covered) {
     yield* drizzle.update(serverDrainAttempt)
