@@ -1033,3 +1033,26 @@ fn a_restarting_target_behind_a_live_entry_is_still_resent() {
         assert_eq!(error.code.retry(), Retry::Now, "{error:?}");
     }
 }
+
+#[tokio::test(start_paused = true)]
+async fn a_call_to_a_daemon_that_went_silent_fails_within_its_bound() {
+    let (client, _silent_daemon) = tokio::io::duplex(64 * 1024);
+    let channel = connect_stream(client, Duration::from_secs(5))
+        .await
+        .unwrap();
+    let mut rpc = ployz_core::MachineRpcClient::new(channel);
+    let request =
+        ployz_core::op::DescribeContract::into_request(ployz_core::DescribeContractRequest {})
+            .encode()
+            .unwrap();
+    let started = tokio::time::Instant::now();
+    let outcome = tokio::time::timeout(Duration::from_secs(3600), rpc.describe_contract(request))
+        .await
+        .expect("a silent daemon held the call for an hour");
+    assert!(outcome.is_err());
+    assert!(
+        started.elapsed() <= Duration::from_secs(60),
+        "failed only after {:?}",
+        started.elapsed()
+    );
+}
