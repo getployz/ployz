@@ -179,8 +179,9 @@ impl ApiClient {
 
     /// Open a subscription and drain its initial snapshot.
     ///
-    /// Only the opening is bounded: a quiet table sends nothing after its
-    /// snapshot, so callers re-read on their own interval instead.
+    /// Only the opening is bounded. A quiet table sends nothing after its
+    /// snapshot, so a caller that must notice a stream gone silent re-reads
+    /// on its own interval.
     ///
     /// # Errors
     ///
