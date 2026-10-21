@@ -571,6 +571,9 @@ impl Plan {
                 value: Cell::Absent,
             });
         }
+        if let Some(base) = base.as_mut() {
+            forget_gone(base, &self.from, &next);
+        }
         let next = parse_environment_intent(json!(next))?;
         let base = base.unwrap_or_else(|| {
             let mut base = self.from.clone();
@@ -951,6 +954,41 @@ pub fn dependents(env: &Intent, lineage: &str) -> Vec<RowId> {
     rows.sort();
     rows.dedup();
     rows
+}
+
+/// Drop from `base` every node neither side holds, and its mounts. Plans never read
+/// one, and a node added later under its name would otherwise clash with it there.
+fn forget_gone(base: &mut Intent, from: &Intent, next: &Intent) {
+    let held: BTreeSet<String> = nodes(from)
+        .into_keys()
+        .chain(nodes(next).into_keys())
+        .map(str::to_owned)
+        .collect();
+    let (volumes, configs): (Vec<_>, Vec<_>) = (
+        base.volumes
+            .iter()
+            .filter(|v| !held.contains(&v.resource_lineage_id))
+            .map(|v| v.resource_id.clone())
+            .collect(),
+        base.configs
+            .iter()
+            .filter(|c| !held.contains(&c.resource_lineage_id))
+            .map(|c| c.resource_id.clone())
+            .collect(),
+    );
+    base.services.retain(|s| held.contains(&s.lineage_id));
+    base.volumes
+        .retain(|v| held.contains(&v.resource_lineage_id));
+    base.configs
+        .retain(|c| held.contains(&c.resource_lineage_id));
+    for service in &mut base.services {
+        service
+            .volume_attachments
+            .retain(|a| !volumes.contains(&a.volume_resource_id));
+        service
+            .config_attachments
+            .retain(|a| !configs.contains(&a.config_resource_id));
+    }
 }
 
 /// A base that predates a row's node (or the Volume it mounts) starts it from `into`'s.
