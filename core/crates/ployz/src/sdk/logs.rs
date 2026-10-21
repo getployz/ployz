@@ -507,8 +507,8 @@ impl From<LogText> for AgentTail {
 /// as its Machine reports them, or of every env value when `sealed` is None. The env is
 /// read here and never leaves, and not at all when `sealed` names nothing. A Container
 /// whose env cannot be read, as after a redeploy removed it, has its lines left out and
-/// is named in [`AgentTail::withheld`]; the text is withheld only when no Container's env
-/// can be read. None when `selector` picks no lines there. The error says why the Machine
+/// is named in [`AgentTail::withheld`]; the text is withheld when no Container's env can
+/// be read. None when `selector` picks no lines there. The error says why the Machine
 /// did not answer in time.
 pub(crate) async fn service_tail(
     client: &Client,
@@ -564,9 +564,12 @@ pub(crate) async fn service_tail(
             readable.push(*container);
         }
         if readable.is_empty() {
-            return Ok(Some(AgentTail::from(LogText::Withheld {
-                why: Withheld::NoSecretContext,
-            })));
+            return Ok(Some(AgentTail {
+                text: LogText::Withheld {
+                    why: Withheld::NoSecretContext,
+                },
+                withheld,
+            }));
         }
         let frames = frames(
             newest
