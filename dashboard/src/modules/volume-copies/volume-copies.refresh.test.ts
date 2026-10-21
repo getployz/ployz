@@ -52,6 +52,10 @@ describe("skippedWords", () => {
     );
   });
 
+  it("says a mirror's Server needs a newer Ployz when it answers without reporting the copy", () => {
+    expect(skippedWords(mirror(minutesAgo(135), { skipped: "lacks" }), now)).toMatch(/^web-2 needs a newer Ployz\. Ployz retries/);
+  });
+
   it("names no time when rounds skipped the Volume before its Server went silent", () => {
     const at = new Date("2026-10-12T14:35:00Z");
     const words = skippedWords(mirror(at, { skipped: "silent" }), new Date("2026-10-12T15:38:49Z"));

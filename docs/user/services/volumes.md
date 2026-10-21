@@ -104,7 +104,8 @@ The services that mount the volume stop until the server is back. Nothing moves 
 server on its own, and neither the CLI nor Ployz Cloud [moves](move-a-volume.md) a volume while
 its server is down: that server may still be writing to it. With a mirror, the volume's
 **Copies** says "web-1 is not answering", which changes are lost from, and that the mirror can
-take over once web-1 is forgotten.
+take over once web-1 is forgotten. Under **Live**, web-1 reads **Not answering** instead of
+**Live**. It names no time: Ployz doesn't know when web-1 stopped.
 
 1. Wait if web-1 is coming back. When it answers again, its services start and nothing is lost.
 2. If it's gone for good, an owner or admin
@@ -141,6 +142,9 @@ look under **Copies**. An old copy never refreshes, so it doesn't protect the da
 records which of its copies is a mirror and which is an old copy, so a mirror made with
 `ployz volume mirror` refreshes like any other, and a move from the CLI leaves an old copy too. A
 mirror's age turns amber with a **⚠** once it is more than an hour old.
+
+While a server's report is still on its way, Copies doesn't say the server is down. Its primary
+reads **Waiting for its report**, and a mirror on it says it is waiting for its server's report.
 
 Copy changes, like a new mirror or a restore, go out with your next deploy. **Redeploy** on a past
 deployment ships what that deployment froze, so it leaves them staged and says **Copies wait for

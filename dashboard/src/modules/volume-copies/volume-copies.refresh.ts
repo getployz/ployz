@@ -15,6 +15,13 @@ export function mirrorLast(copy: MirrorCopy, now: Date): MirrorLast {
   return { spin: false, words, stale: isStale(copy, now) };
 }
 
+const SKIPPED_WORDS = {
+  lacks: (server) => `${server} needs a newer Ployz.`,
+  silent: (server) => `${server} is not answering.`,
+  waiting: () => "Waiting for its server's report.",
+  failed: () => "The last refresh failed.",
+} as const satisfies Record<NonNullable<MirrorCopy["skipped"]>, (server: string) => string>;
+
 /**
  * Why a mirror is behind, or null while its rounds land. Names no time: a round skips a Volume whose Server is silent or
  * that a Deploy holds, so the last good round says nothing about when the Server stopped answering.
@@ -22,7 +29,7 @@ export function mirrorLast(copy: MirrorCopy, now: Date): MirrorLast {
 export function skippedWords(copy: MirrorCopy, now: Date): string | null {
   if (copy.skipped === null || copy.busy !== null || copy.refreshedAt === null || !isStale(copy, now)) return null;
   const behind = span(Math.round((now.getTime() - copy.refreshedAt.getTime()) / 60_000));
-  const cause = copy.skipped === "silent" ? `${copy.server.name} is not answering.` : "The last refresh failed.";
+  const cause = SKIPPED_WORDS[copy.skipped](copy.server.name);
   return `${cause} Ployz retries every ${MIRROR_ROUND_MINUTES} minutes. Until it catches up, a failover loses ${behind} of writes.`;
 }
 

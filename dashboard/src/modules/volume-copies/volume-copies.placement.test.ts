@@ -17,6 +17,8 @@ const row = (mirrors: string[], staged: { primary: string; mirrors?: string[]; d
   deploymentId: null,
 });
 type Run = ReturnType<typeof run> | null;
+const lacking = (server: string): Member =>
+  ({ machine: { id: id(server), name: server }, answered: false, lack: `Volume copies need a newer Ployz on ${server}.` });
 const status = (server: string, seen: Partial<Omit<MirrorStatusView, "machine">>): MirrorStatusView =>
   ({ machine: id(server), okAt: null, matchedAt: null, failedAt: null, failure: null, ...seen });
 const copies = (placement: PlacementRow | null, members = [member("web-1", "writer"), member("web-2", "mirror")], active: Run = null, statuses: MirrorStatusView[] = []) => {
@@ -111,6 +113,14 @@ describe("copiesFromPlacement", () => {
     expect(mirrored(member("web-1", "unanswered"))).toEqual({ id: id("web-1"), name: "web-1", heard: "silent" });
     const unlisted: Member = { machine: { id: id("web-1"), name: id("web-1") }, answered: false, incomplete: true };
     expect(mirrored(unlisted)).toEqual({ id: id("web-1"), name: id("web-1"), heard: "waiting" });
+    expect(mirrored(lacking("web-1")))
+      .toEqual({ id: id("web-1"), name: "web-1", heard: "lacks" });
+  });
+
+  it("ages a mirror whose Server can't report it from the last sync that found it current, and says why", () => {
+    const seen = status("web-2", { okAt: "2026-10-09T00:00:00.000Z", matchedAt: "2026-10-09T00:00:00.000Z" });
+    expect(copies(row(["web-2"]), [member("web-1", "writer"), lacking("web-2")], null, [seen]).elsewhere[0])
+      .toMatchObject({ kind: "mirror", skipped: "lacks", refreshedAt: new Date("2026-10-09T00:00:00.000Z") });
   });
 
   it("marks a silent mirror skipped with no age when no sync ever found it current", () => {

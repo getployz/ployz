@@ -91,6 +91,19 @@ describe("the mirror sync", () => {
     `);
   });
 
+  it("skips while a Server lacks copies, a lack before a silence, then names the silent, then waits for a report, asking nobody", async () => {
+    const silent = member("web-3", "unanswered");
+    const lacking: Member = { machine: member("web-2", "unanswered").machine, answered: false, lack: "Volume copies need a newer Ployz on web-2." };
+    const waiting: Member = { machine: member("web-4", "unanswered").machine, answered: false, incomplete: true };
+    members = [member("web-1", "writer"), silent, lacking, waiting];
+    expect((await sync()).lines).toEqual(["skipped db: Volume copies need a newer Ployz on web-2."]);
+    members = [member("web-1", "writer"), silent, waiting];
+    expect((await sync()).lines).toEqual(["skipped db, web-3 isn't answering"]);
+    members = [member("web-1", "writer"), waiting];
+    expect((await sync()).lines).toEqual(["skipped db, waiting for every server's report"]);
+    expect(asked).toEqual([]);
+  });
+
   it("refreshes a CLI mirror on a restored Volume", async () => {
     await harness.pool.query(`update volume_placement set mirrors = '[]'`);
     expect((await sync()).lines).toEqual(["db-web-2 is pulling w-1-5"]);

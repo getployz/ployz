@@ -3,8 +3,8 @@ import {
   appliedMirrors, detachedName, observePlacement, type PlacementItem, type PlacementRow, type PlacementVolume, placementForm,
 } from "#/modules/volume-placement/volume-placement";
 import { runWords } from "#/modules/volume-run/volume-copies";
-import { copyName, type Member, type VolumeRunView } from "#/modules/volume-run/volume-run";
-import type { MirrorCopy, OldCopy, StagedCopy, VolumeCopies } from "./volume-copies";
+import { copyName, type Heard, heardFrom, type Member, type VolumeRunView } from "#/modules/volume-run/volume-run";
+import type { MirrorCopy, OldCopy, PrimaryServer, StagedCopy, VolumeCopies } from "./volume-copies";
 
 /** What the mirror syncs last saw of one mirror. A pull that lands later never clears an older failure. */
 export type MirrorStatusView = {
@@ -32,7 +32,8 @@ export function copiesFromPlacement(input: {
   const observed = observePlacement(members);
   const moving = form.primary.change !== null && row?.staged?.seed === undefined;
   const promoted = moving && appliedMirrors(observed, row).includes(form.primary.server.id);
-  const silent = new Set(members.filter((member) => !member.answered).map((member) => member.machine.id));
+  const said = new Map(members.map((member) => [member.machine.id, heardFrom(member)]));
+  const heard = (id: MachineId): Heard => said.get(id) ?? "silent";
   const pullOf = (id: MachineId) => {
     const member = members.find((each) => each.machine.id === id);
     return member?.answered === true && member.view.copy?.kind === "slot" ? member.view.copy.pull : null;
@@ -46,7 +47,7 @@ export function copiesFromPlacement(input: {
     return null;
   };
   const mirror = (item: PlacementItem, staged: StagedCopy | null): MirrorCopy => {
-    const quiet = silent.has(item.server.id);
+    const from = heard(item.server.id);
     const status = input.statuses.find((each) => each.machine === item.server.id);
     const matchedAt = status?.matchedAt == null ? null : new Date(status.matchedAt);
     const pull = pullOf(item.server.id);
@@ -56,8 +57,8 @@ export function copiesFromPlacement(input: {
       id: item.server.id,
       server: item.server,
       name: copyName(volume.name, item.server.name),
-      refreshedAt: quiet ? matchedAt : syncedAt(item.newest, matchedAt),
-      skipped: quiet ? "silent" : failed ? "failed" : null,
+      refreshedAt: from === "answered" ? syncedAt(item.newest, matchedAt) : matchedAt,
+      skipped: from !== "answered" ? from : failed ? "failed" : null,
       staged,
       busy: active?.kind === "sync" || (pull !== null && pull.failure === null) ? "Refreshing" : busyOn(item.server.name),
     };
@@ -73,11 +74,14 @@ export function copiesFromPlacement(input: {
     busy: busyOn(item.server.name),
   });
 
+  const primary: PrimaryServer | null = observed.primary !== null ? { ...observed.primary, heard: "answered" }
+    : form.primary.change === null ? { ...form.primary.server, heard: heard(form.primary.server.id) }
+    : null;
   const seed = row?.staged?.seed;
   return {
     volume: { id: volume.id, name: volume.name },
     live: {
-      server: observed.primary ?? (form.primary.change === null ? form.primary.server : null),
+      server: primary,
       restore: seed === undefined ? null : { label: seed.point.name },
       moveTo: moving ? form.primary.server : null,
       busy: active !== null && ["move", "release", "restore", "seed", "deploy"].includes(active.kind) ? runWords(active) : null,

@@ -7,7 +7,9 @@ import { epochOf, planFromCopies } from "#/modules/volume-run/plan";
 import { runWords } from "#/modules/volume-run/volume-copies";
 import { rustMachineIdSchema } from "#/modules/machines/enrollment";
 import type { RuntimeVolumeCopy } from "#/modules/runtime/runtime.collection";
-import { type AnsweredMember, type Member, parseDockerVolumeName, RUN_FEATURES, type VolumeRunInput, type VolumeRunView } from "#/modules/volume-run/volume-run";
+import {
+  type AnsweredMember, heardFrom, type Member, parseDockerVolumeName, RUN_FEATURES, type VolumeRunInput, type VolumeRunView,
+} from "#/modules/volume-run/volume-run";
 
 export type MachineRef = { readonly id: MachineId; readonly name: MachineName };
 export type PlacementVolume = { readonly id: string; readonly name: string };
@@ -354,10 +356,9 @@ export function recovery(
   const copy = observed.copies.find((each) => each.kind === "slot" && applied.includes(each.server.id));
   if (copy === undefined) return null;
   const { server: mirror, newest: lostAfter } = copy;
-  const unanswered = members.filter((member): member is Extract<Member, { answered: false }> => !member.answered && member.lack === undefined);
-  const silent = unanswered.filter((member) => member.incomplete === undefined).map((member) => member.machine);
+  const silent = members.filter((member) => heardFrom(member) === "silent").map((member) => member.machine);
   if (silent.length > 0) return { kind: "forget", down: silent, mirror, lostAfter };
-  if (unanswered.length > 0) return { kind: "wait", mirror, lostAfter };
+  if (members.some((member) => heardFrom(member) === "waiting")) return { kind: "wait", mirror, lostAfter };
   if (row?.staged?.primary === mirror.id) return null;
   return { kind: "restore", mirror, lostAfter, stage: restoreStage(volume, members, mirror, applied, accepting, owed, floorless) };
 }

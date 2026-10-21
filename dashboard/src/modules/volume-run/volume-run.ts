@@ -109,6 +109,33 @@ export type Member =
     };
 export type AnsweredMember = Extract<Member, { answered: true }>;
 
+/**
+ * What this observer heard from a member's Server just now. Only `answered` reports the copy. A Server that `lacks` the
+ * capability answered without reporting it. One the frame lists only by id is `waiting`: its report hasn't arrived,
+ * which says nothing about whether it answers.
+ */
+export type Heard = "answered" | "lacks" | "silent" | "waiting";
+
+export const heardFrom = (member: Member): Heard =>
+  member.answered ? "answered" : member.lack !== undefined ? "lacks" : member.incomplete ? "waiting" : "silent";
+
+/**
+ * The members that didn't report their copy, by why: what each lacking Server lacks, silent Servers' names, and whether
+ * a report is still on its way. A lack comes first, as the planner refuses: waiting never clears it.
+ */
+export function unheardOf(members: readonly Member[]) {
+  const lacks: string[] = [];
+  const silent: string[] = [];
+  let waiting = false;
+  for (const member of members) {
+    if (member.answered) continue;
+    if (member.lack !== undefined) lacks.push(member.lack);
+    else if (member.incomplete) waiting = true;
+    else silent.push(member.machine.name);
+  }
+  return { lacks, silent, waiting };
+}
+
 export function managementAddress(publicKey: readonly number[]): string {
   const bytes = [0xfd, 0xcc, ...publicKey.slice(0, 14)];
   if (bytes.length !== 16) throw new Error("A WireGuard public key has 32 bytes.");

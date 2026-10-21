@@ -18,7 +18,7 @@ import { type RoleGate, useRoleGate } from "#/modules/organization/members.queri
 import { requirements, serverSupports } from "#/modules/runtime/daemon-compat";
 import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
 import {
-  addableCopies, cardLine, COPY_WORDS, isStale, type MirrorCopy, type OldCopy, STAGED_WORDS, type StagedCopy,
+  addableCopies, cardLine, COPY_WORDS, HEARD_WORDS, isStale, type MirrorCopy, type OldCopy, STAGED_WORDS, type StagedCopy,
   type VolumeCopies, type VolumeCopy,
 } from "#/modules/volume-copies/volume-copies";
 import { useRefreshMirror } from "#/modules/volume-copies/volume-copies.hooks";
@@ -32,7 +32,7 @@ import {
 import { useDeleteCopy, useStagePlacement, useStageRestore } from "#/modules/volume-placement/volume-placement.hooks";
 import { useVolumePlacements } from "#/modules/volume-placement/volume-placement.queries";
 import { holdersOf } from "#/modules/volume-run/resize-check";
-import type { Member, VolumeRunView } from "#/modules/volume-run/volume-run";
+import type { Heard, Member, VolumeRunView } from "#/modules/volume-run/volume-run";
 import { useActiveVolumeRuns, useVolumeMembers, useVolumeOwed } from "#/modules/volume-run/volume-run.queries";
 
 /** A Volume as the Copies tab shows it: who mounts it names who its Primary runs. */
@@ -41,6 +41,7 @@ export type CopiesVolume = PlacementVolume & { readonly mounts: readonly { reado
 export type CopyServer = { readonly id: string; readonly name: string; readonly storage: "stateless" | "ready" | "pool" | null };
 
 const STAGED_STATE = { new: "success", removing: "destructive", primary: "changed" } as const satisfies Record<StagedCopy, string>;
+const HEARD_STATE = { answered: "success", lacks: "warning", silent: "destructive", waiting: "outline" } as const satisfies Record<Heard, string>;
 
 /** Everything the Copies tab reads and writes, gathered once so the header's safety line and the tab agree. */
 export function useVolumeCopies(organizationSlug: string, environment: EnvironmentRef, volume: CopiesVolume) {
@@ -211,7 +212,7 @@ function CopiesView({ volume, members, row, rows, owed, copies, target, servers,
           <ItemTitle>{live.server?.name ?? "No primary"}</ItemTitle>
           <ItemDescription>{live.busy ? <Busy words={live.busy} /> : live.moveTo ? `Moving to ${live.moveTo.name} · on deploy` : "Primary"}</ItemDescription>
         </ItemContent>
-        {live.server ? <ItemActions><Badge variant="success">Live</Badge></ItemActions> : null}
+        {live.server ? <ItemActions><Badge variant={HEARD_STATE[live.server.heard]}>{HEARD_WORDS[live.server.heard]}</Badge></ItemActions> : null}
       </Item>
       {live.restore ? <Item role="listitem" variant="outline" size="sm" state="changed" data-staged="restore">
         <ItemContent>

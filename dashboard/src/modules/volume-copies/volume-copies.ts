@@ -1,5 +1,6 @@
 import type { MachineId, MachineName } from "@ployz/sdk";
 import { Schema } from "effect";
+import type { Heard } from "#/modules/volume-run/volume-run";
 import { formatRelativeTime } from "#/utils/relative-time";
 
 export type ServerRef = { readonly id: MachineId; readonly name: MachineName };
@@ -19,7 +20,7 @@ export type MirrorCopy = CopyBase & {
   readonly name: string;
   readonly refreshedAt: Date | null;
   /** Why the last refresh did not land, so the age keeps growing until it catches up. */
-  readonly skipped: "silent" | "failed" | null;
+  readonly skipped: Exclude<Heard, "answered"> | "failed" | null;
 };
 
 export type OffsiteCopy = CopyBase & {
@@ -52,8 +53,11 @@ export type Snapshot = {
   readonly bytes: number;
 };
 
+/** The primary's Server: the one that reports it, else the one the applied placement names, which hasn't. */
+export type PrimaryServer = ServerRef & { readonly heard: Heard };
+
 export type LiveCopy = {
-  readonly server: ServerRef | null;
+  readonly server: PrimaryServer | null;
   readonly restore: { readonly label: string } | null;
   readonly moveTo: ServerRef | null;
   readonly busy: string | null;
@@ -71,6 +75,10 @@ export const STALE_AFTER_MS = 60 * 60_000;
 
 export const COPY_WORDS = { mirror: "Mirror", offsite: "Offsite", old: "Old copy" } as const satisfies Record<VolumeCopy["kind"], string>;
 export const STAGED_WORDS = { new: "New", removing: "Removing", primary: "Primary" } as const satisfies Record<StagedCopy, string>;
+/** The primary's badge: Live only on its Server's own report. Not answering names no time, since nothing says when it stopped. */
+export const HEARD_WORDS = {
+  answered: "Live", lacks: "Needs a newer Ployz", silent: "Not answering", waiting: "Waiting for its report",
+} as const satisfies Record<Heard, string>;
 
 const age = (at: Date, now: Date) => (now.getTime() - at.getTime() < 60_000 ? "just now" : formatRelativeTime(at, now));
 
