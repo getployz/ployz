@@ -276,7 +276,6 @@ select.input { appearance: auto; }
       <div class="tabs" style="margin-top:4px">
         <button class="tab on" data-tab="shell">Shell</button>
         <button class="tab" data-tab="cloud">cloud-init</button>
-        <button class="tab" data-tab="tf">Terraform</button>
       </div>
       <div class="code"><button class="btn" id="copy">Copy</button><span id="cmd-text"></span></div>
       <p class="hint" id="done-hint">Installs Docker and Ployz. Nothing joins until you say so.</p>
@@ -732,10 +731,9 @@ const TOKEN = "pflt_Kq7v2HxR9mLt4Wn8bZ3cYp6D";
 const VERSION = "0.4.2";
 function cmds(tok) {
   return {
-    // As install-lines.ts: the Shell line asks for the token on the terminal; the others have none, so pass it.
+    // As install-lines.ts: the Shell line asks for the token on the terminal; cloud-init has none, so it passes it.
     shell: `curl -fsSL https://ployz.sh | sudo sh -s -- ${VERSION} --enroll`,
     cloud: `#cloud-config\nruncmd:\n  - curl -fsSL https://ployz.sh | PLOYZ_FLEET_TOKEN=${tok} sh -s -- ${VERSION}`,
-    tf: `variable "ployz_fleet_token" {\n  type      = string\n  sensitive = true\n  default   = "${tok}"\n}\n\nresource "hcloud_server" "web" {\n  count       = 200\n  server_type = "cpx41"\n  image       = "ubuntu-24.04"\n  user_data   = <<-EOT\n    #cloud-config\n    runcmd:\n      - curl -fsSL https://ployz.sh | PLOYZ_FLEET_TOKEN=\${var.ployz_fleet_token} sh -s -- ${VERSION}\n  EOT\n}`,
   };
 }
 let mintAuto = false, mintExp = "1 day";

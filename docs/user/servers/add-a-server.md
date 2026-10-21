@@ -70,7 +70,7 @@ Once you have a server, or one is waiting, make more tokens with **Add servers**
 4. Open a shell on the server, as root or as a user with `sudo`, and paste the line. When it asks
    for the Fleet Token, paste the token. The prompt doesn't show what you paste, so the token stays
    out of shell history and the process list. To put it in user data instead, take it from the
-   **cloud-init** or **Terraform** tab; each holds the same token. Not on Ubuntu, Debian or Amazon
+   **cloud-init** tab; it holds the same token. Not on Ubuntu, Debian or Amazon
    Linux, or can't run ZFS? See [Start without ZFS](#start-without-zfs).
 
 ![The Add servers dialog with its install line and the token to paste](../images/add-servers-dialog.png)

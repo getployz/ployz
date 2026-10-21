@@ -20,7 +20,6 @@ export function InstallTabs({ target }: { target: InstallTarget }) {
       <TabsList>
         <TabsTrigger value="shell">Shell</TabsTrigger>
         <TabsTrigger value="cloud-init">cloud-init</TabsTrigger>
-        <TabsTrigger value="terraform">Terraform</TabsTrigger>
       </TabsList>
       <TabsContent value="shell" className="flex flex-col gap-2">
         <CopyBlock value={lines.shell} />
@@ -28,7 +27,6 @@ export function InstallTabs({ target }: { target: InstallTarget }) {
         <CopyBlock value={target.token} />
       </TabsContent>
       <TabsContent value="cloud-init"><CopyBlock value={lines.cloudInit} /></TabsContent>
-      <TabsContent value="terraform"><CopyBlock value={lines.terraform} /></TabsContent>
     </Tabs>
   );
 }
