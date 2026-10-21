@@ -635,7 +635,7 @@ async fn remove_machine_membership_refuses_a_server_whose_storage_cannot_be_read
     server.abort();
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn remove_machine_membership_refuses_a_server_that_answered_before_going_quiet() {
     let (_description, peer, mut service) = cluster_with_a_held_peer(MembershipObservation::Up);
     service.storage_unavailable_for = 1;
@@ -668,7 +668,7 @@ async fn remove_machine_membership_removes_a_server_that_does_not_answer() {
     server.abort();
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn remove_machine_membership_forgets_an_up_server_that_never_replies() {
     let (_description, peer, mut service) = cluster_with_a_held_peer(MembershipObservation::Up);
     service.storage_hangs_after = Some(0);

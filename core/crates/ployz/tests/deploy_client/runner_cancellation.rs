@@ -116,8 +116,7 @@ async fn cancel_during_image_only_preview_stops_the_rpc_without_admitting_work()
 async fn taken_over_mid_create() -> (Arc<ConfigStore>, Actor, DeploymentId) {
     let (store, actor, id) = deployment();
     let service = DeployService::new(machine('a', "entry")).hold_health();
-    let mutations = service.mutating_rpcs();
-    let (address, server) = listening(service).await;
+    let (address, server) = listening(service.clone()).await;
     let running = tokio::spawn(ployz::sdk::run_deployment(
         Arc::clone(&store),
         id.clone(),
@@ -125,13 +124,9 @@ async fn taken_over_mid_create() -> (Arc<ConfigStore>, Actor, DeploymentId) {
         vec![ployz::context::Connection::tcp(address)],
         Ok(Default::default()),
     ));
-    tokio::time::timeout(Duration::from_secs(10), async {
-        while mutations.load(std::sync::atomic::Ordering::SeqCst) == 0 {
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-    })
-    .await
-    .expect("the run starts executing");
+    tokio::time::timeout(Duration::from_secs(10), service.health_waited())
+        .await
+        .expect("the run starts executing");
     let next = DeploymentId::parse("00000000-0000-4000-8000-000000000102").unwrap();
     store
         .write_trusted(
@@ -223,8 +218,7 @@ async fn a_takeover_nobody_cancelled_records_no_row_or_node_cancelled() {
 async fn cancel_during_a_create_records_the_work_it_stopped_cancelled_not_failed() {
     let (store, actor, id) = deployment();
     let service = DeployService::new(machine('a', "entry")).hold_health();
-    let mutations = service.mutating_rpcs();
-    let (address, server) = listening(service).await;
+    let (address, server) = listening(service.clone()).await;
     let running = tokio::spawn(ployz::sdk::run_deployment(
         Arc::clone(&store),
         id.clone(),
@@ -232,13 +226,9 @@ async fn cancel_during_a_create_records_the_work_it_stopped_cancelled_not_failed
         vec![ployz::context::Connection::tcp(address)],
         Ok(Default::default()),
     ));
-    tokio::time::timeout(Duration::from_secs(10), async {
-        while mutations.load(std::sync::atomic::Ordering::SeqCst) == 0 {
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-    })
-    .await
-    .expect("the run starts creating");
+    tokio::time::timeout(Duration::from_secs(10), service.health_waited())
+        .await
+        .expect("the run starts creating");
     store
         .write(
             &actor,
@@ -312,8 +302,7 @@ async fn cancel_during_cleanup_records_each_copy_left_running_by_machine_name() 
         .with_machines(vec![entry, edge.clone()])
         .never_unroute_on(edge.machine.id);
     service.listed_containers().lock().unwrap().push(old);
-    let unrouted = service.unrouted();
-    let (address, server) = listening(service).await;
+    let (address, server) = listening(service.clone()).await;
     let running = tokio::spawn(ployz::sdk::run_deployment(
         Arc::clone(&store),
         id.clone(),
@@ -321,13 +310,9 @@ async fn cancel_during_cleanup_records_each_copy_left_running_by_machine_name() 
         vec![ployz::context::Connection::tcp(address)],
         Ok(Default::default()),
     ));
-    tokio::time::timeout(Duration::from_secs(10), async {
-        while !unrouted.lock().unwrap().contains(&old_id) {
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-    })
-    .await
-    .expect("cleanup takes the old copy out of rotation");
+    tokio::time::timeout(Duration::from_secs(10), service.unrouted_copy(&old_id))
+        .await
+        .expect("cleanup takes the old copy out of rotation");
     store
         .write(
             &actor,

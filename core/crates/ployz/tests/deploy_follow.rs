@@ -106,6 +106,12 @@ fn replacement() -> Reply {
     }
 }
 
+/// The CLI is another process, seen only through its requests, its events file and its exit.
+fn real_wait(duration: Duration) {
+    // real-wait: the CLI process and its signal owner report nothing this test can await
+    std::thread::sleep(duration);
+}
+
 fn interrupt(pid: u32) -> Instant {
     let sent = Instant::now();
     assert!(
@@ -145,6 +151,8 @@ fn serve(
     events: &std::path::Path,
 ) -> (Exchange, Option<Instant>) {
     let requested = Instant::now();
+    // An accepted socket inherits the listener's nonblocking mode on macOS.
+    stream.set_nonblocking(false).unwrap();
     stream
         .set_read_timeout(Some(Duration::from_secs(5)))
         .unwrap();
@@ -185,9 +193,9 @@ fn serve(
     if matches!(reply.interrupt, Some(Interrupt::DuringRead)) {
         sent = Some(interrupt(pid));
         // The response races with the independently driven signal owner, not another key press.
-        std::thread::sleep(Duration::from_millis(50));
+        real_wait(Duration::from_millis(50));
     }
-    std::thread::sleep(reply.delay);
+    real_wait(reply.delay);
     let body = reply.body.to_string();
     write!(stream, "HTTP/1.1 {} Reply\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", reply.status, body.len()).unwrap();
     stream.flush().unwrap();
@@ -196,9 +204,9 @@ fn serve(
         let deadline = Instant::now() + Duration::from_secs(2);
         while std::fs::metadata(events).map_or(0, |events| events.len()) == 0 {
             assert!(Instant::now() < deadline, "CLI did not consume its view");
-            std::thread::sleep(Duration::from_millis(1));
+            real_wait(Duration::from_millis(1));
         }
-        std::thread::sleep(delay);
+        real_wait(delay);
         sent = Some(interrupt(pid));
     }
     (
@@ -242,6 +250,7 @@ fn cli_run(replies: Vec<Reply>, root: &std::path::Path, args: &[&str]) -> Run {
         VecDeque::from(replies),
         root,
         &args,
+        &[],
         Duration::from_secs(20),
     )
 }
@@ -251,13 +260,14 @@ fn scripted_run(
     mut script: impl Script,
     root: &std::path::Path,
     args: &[&str],
+    env: &[(&str, &str)],
     deadline: Duration,
 ) -> Run {
     let events = root.join("events.ndjson");
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     listener.set_nonblocking(true).unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
-    let mut child = Command::new(env!("CARGO_BIN_EXE_ployz"))
+    let child = Command::new(env!("CARGO_BIN_EXE_ployz"))
         .current_dir(root)
         .env("PLOYZ_CONFIG", root.join("default.yaml"))
         .env_remove("PLOYZ_STORE")
@@ -265,6 +275,7 @@ fn scripted_run(
         .env_remove("PLOYZ_CONTEXT")
         .env("PLOYZ_TOKEN", "test-follow-token")
         .env("PLOYZ_CLOUD_URL", url)
+        .envs(env.iter().copied())
         .arg("--ployz-config")
         .arg(root.join("selected team.yaml"))
         .arg("--color=never")
@@ -293,7 +304,7 @@ fn scripted_run(
                     signal = signal.or(sent);
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                    std::thread::sleep(Duration::from_millis(5))
+                    real_wait(Duration::from_millis(5))
                 }
                 Err(error) => panic!("{error}"),
             }
@@ -301,19 +312,20 @@ fn scripted_run(
         script.finished();
         (exchanges, signal)
     });
-    let deadline = Instant::now() + deadline + Duration::from_secs(2);
-    while child.try_wait().unwrap().is_none() {
-        if Instant::now() >= deadline {
-            child.kill().unwrap();
-            child.wait().unwrap();
-            let _ = done.send(());
-            let _ = server.join();
-            panic!("CLI exceeded its follow deadline");
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    let exited = Instant::now();
-    let output = child.wait_with_output().unwrap();
+    let (exit, exited) = mpsc::channel();
+    std::thread::spawn(move || {
+        let output = child.wait_with_output();
+        let _ = exit.send((Instant::now(), output));
+    });
+    let Ok((exited, output)) = exited.recv_timeout(deadline + Duration::from_secs(2)) else {
+        let _ = Command::new("kill")
+            .args(["-KILL", &pid.to_string()])
+            .status();
+        let _ = done.send(());
+        let _ = server.join();
+        panic!("CLI exceeded its follow deadline");
+    };
+    let output = output.unwrap();
     done.send(()).unwrap();
     let (exchanges, signal) = server.join().unwrap();
     use std::os::unix::process::ExitStatusExt;
@@ -922,13 +934,16 @@ fn a_superseded_narrowed_deploy_stops_when_the_newer_one_ships_none_of_its_nodes
 struct Unclaimed {
     ahead: Option<DeploymentView>,
     listed: bool,
-    started: Instant,
+    admitted: Option<Instant>,
 }
 
 impl Script for Unclaimed {
     fn reply(&mut self, kind: &str) -> Reply {
         match kind {
-            "admit" => admitted(),
+            "admit" => {
+                self.admitted = Some(Instant::now());
+                admitted()
+            }
             "deployments" => {
                 self.listed = true;
                 let ours = view(7, DeploymentStatus::Queued);
@@ -946,8 +961,12 @@ impl Script for Unclaimed {
                     ..replacement()
                 }
             }
-            // Past the 30s wait a CLI that never lists the Deployments still ends.
-            _ if self.listed || self.started.elapsed() > Duration::from_secs(34) => {
+            // Past the CLI's 1s wait and a poll, a CLI that never lists the Deployments still ends.
+            _ if self.listed
+                || self
+                    .admitted
+                    .is_some_and(|admitted| admitted.elapsed() > Duration::from_secs(4)) =>
+            {
                 observed(7, DeploymentStatus::Applied)
             }
             _ => observed(7, DeploymentStatus::Queued),
@@ -963,11 +982,12 @@ fn left_queued(ahead: Option<DeploymentView>) -> String {
         Unclaimed {
             ahead,
             listed: false,
-            started: Instant::now(),
+            admitted: None,
         },
         root.path(),
         &["deploy", "--project", "shop", "--env", "production"],
-        Duration::from_secs(45),
+        &[("PLOYZ_DEPLOY_UNCLAIMED_SECONDS", "1")],
+        Duration::from_secs(15),
     );
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
     assert!(output.status.success(), "{stderr}");

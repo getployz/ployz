@@ -1091,6 +1091,7 @@ fn an_approval_racing_news_of_a_push_refuses_the_head_it_moved_from() {
                 },
             )
         });
+        // real-wait: the approval blocks on a Postgres row lock in another connection, which reports nothing
         std::thread::sleep(std::time::Duration::from_millis(300));
         held.commit().unwrap();
         approval.join().unwrap()

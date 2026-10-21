@@ -75,6 +75,7 @@ fi
     let deadline = Instant::now() + Duration::from_secs(5);
     while !host.file("clearing").exists() {
         assert!(Instant::now() < deadline, "cache clear did not start");
+        // real-wait: the stand-in docker script reports progress only by creating a file
         std::thread::sleep(Duration::from_millis(20));
     }
     assert!(matches!(
