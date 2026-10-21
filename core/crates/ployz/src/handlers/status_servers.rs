@@ -7,7 +7,7 @@ use ployz_core::{
     ContainerAddress, ContainerId, CopyRotation, EnvironmentValues, LiveServices, MachineId,
     MachineName, MachineObservation, MachineTarget, MembershipObservation, Namespace,
     QualifiedService, ReadRoutedAddressesRequest, RoutedAddresses, RoutesRead, RpcError,
-    ServiceContainer, ServiceObservation, Unacked, op, serving_containers,
+    RpcErrorCode, ServiceContainer, ServiceObservation, Unacked, op, serving_containers,
 };
 use ployz_store::{DeploymentStatus, DeploymentSummary};
 use serde::Serialize;
@@ -146,6 +146,28 @@ async fn observe(
             copies: Copies::RollingOut(deployment),
         });
     }
+    // Read before listing, so a routed copy the listing lacks was removed, not created since.
+    let routed = {
+        let client = &*client;
+        let up = machines
+            .iter()
+            .filter(|observed| observed.membership != MembershipObservation::Down)
+            .map(|observed| observed.machine.id);
+        stream::iter(up)
+            .map(|machine| async move {
+                let routed = client
+                    .invoke::<op::ReadRoutedAddresses>(
+                        ReadRoutedAddressesRequest {},
+                        &MachineTarget::from(&machine),
+                        Some(crate::connect::TARGET_RPC_TIMEOUT),
+                    )
+                    .await;
+                (machine, routed)
+            })
+            .buffered(READS_AT_ONCE)
+            .collect()
+            .await
+    };
     let live = match client
         .live_services_from(&machines, EnvironmentValues::Redacted)
         .await
@@ -188,25 +210,7 @@ async fn observe(
             None => Vec::new(),
         }
     };
-    let answered = live
-        .containers
-        .successes
-        .iter()
-        .map(|answered| answered.machine_id);
-    let routed = stream::iter(answered)
-        .map(|machine| async move {
-            let routed = client
-                .invoke::<op::ReadRoutedAddresses>(
-                    ReadRoutedAddressesRequest {},
-                    &MachineTarget::from(&machine),
-                    Some(crate::connect::TARGET_RPC_TIMEOUT),
-                )
-                .await;
-            (machine, routed)
-        })
-        .buffered(READS_AT_ONCE)
-        .collect();
-    let (reads, routed) = futures_util::join!(reads, routed);
+    let reads = reads.await;
     Ok(Observed {
         machines,
         copies: Copies::Listed {
@@ -299,10 +303,6 @@ fn judge(observed: Observed) -> Check {
             routed,
         } => (live, reads, routed),
     };
-    let routed: BTreeMap<MachineId, RoutedAddresses> = routed
-        .into_iter()
-        .filter_map(|(machine, routed)| Some((machine, routed.ok()?)))
-        .collect();
     let unanswered: Vec<MachineId> = live
         .containers
         .failures
@@ -314,10 +314,24 @@ fn judge(observed: Observed) -> Check {
     if !unanswered.is_empty() {
         check.unseen.push(Unseen::Unanswered(unanswered.clone()));
     }
-    let unconfirmed: BTreeSet<MachineId> = routed
-        .iter()
-        .filter(|(machine, routed)| routed.routes.is_none() && !down.contains(machine))
-        .map(|(machine, _)| *machine)
+    let mut unconfirmed = BTreeSet::new();
+    let routed: BTreeMap<MachineId, RoutedAddresses> = routed
+        .into_iter()
+        .filter(|(machine, _)| !down.contains(machine) && !unanswered.contains(machine))
+        .filter_map(|(machine, routed)| match routed {
+            Ok(routed) => {
+                if routed.routes.is_none() {
+                    unconfirmed.insert(machine);
+                }
+                Some((machine, routed))
+            }
+            // An older Server lacks the check, and status claims nothing for it.
+            Err(error) if error.code == RpcErrorCode::Unsupported => None,
+            Err(_) => {
+                unconfirmed.insert(machine);
+                None
+            }
+        })
         .collect();
     if !unconfirmed.is_empty() {
         check.unseen.push(Unseen::Unconfirmed(unconfirmed));
@@ -331,13 +345,13 @@ fn judge(observed: Observed) -> Check {
             Ok(read) => down.union(&read.down).copied().collect(),
             Err(_) => down.clone(),
         };
-        let owners: Vec<(Ipv4Net, MachineId)> = machines
+        let owners: Vec<Ipv4Net> = machines
             .iter()
             .filter(|observed| {
                 !unchecked.contains(&observed.machine.id)
                     && !unanswered.contains(&observed.machine.id)
             })
-            .map(|observed| (observed.machine.subnet.into(), observed.machine.id))
+            .map(|observed| observed.machine.subnet.into())
             .collect();
         for (machine, addresses) in stale_addresses(&service, &routed, &unchecked, &owners) {
             let attention =
@@ -439,7 +453,7 @@ fn stale_addresses(
     service: &ServiceObservation,
     routed: &BTreeMap<MachineId, RoutedAddresses>,
     down: &BTreeSet<MachineId>,
-    owners: &[(Ipv4Net, MachineId)],
+    owners: &[Ipv4Net],
 ) -> BTreeMap<MachineId, BTreeSet<ContainerAddress>> {
     let reported: BTreeMap<ContainerId, ContainerAddress> = serving_containers(&service.containers)
         .iter()
@@ -454,7 +468,7 @@ fn stale_addresses(
     let removed = |copy: &ContainerId, address: &ContainerAddress| {
         !listed.contains(copy)
             && !reported.values().any(|reported| reported == address)
-            && owners.iter().any(|(subnet, _)| subnet.contains(&address.0))
+            && owners.iter().any(|subnet| subnet.contains(&address.0))
     };
     routed
         .iter()
