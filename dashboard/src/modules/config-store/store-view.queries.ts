@@ -420,12 +420,12 @@ export function useCachedStoreView<Q extends ConfigQuery>(organizationSlug: stri
 }
 
 /**
- * `useCachedStoreView`, where a view that has no answer and whose read has failed reads `{ ok: false }`, not unread.
- * Each refetch puts an unanswered query back to pending, so only its count of errors remembers the failure.
+ * `useCachedStoreView`, with whether its latest read failed. Each refetch puts an unanswered query back to pending, so
+ * only the read times remember a failure.
  */
-export function useCachedStoreRead<Q extends ConfigQuery>(organizationSlug: string, query: Q | null): StoreResult<StoreViewOf<Q>> | { ok: false } | undefined {
+export function useCachedStoreRead<Q extends ConfigQuery>(organizationSlug: string, query: Q | null): { result: StoreResult<StoreViewOf<Q>> | undefined; failed: boolean } {
   const read = useCachedQuery(organizationSlug, query);
-  return read?.data ?? (read && read.errorUpdateCount > 0 ? { ok: false } : undefined);
+  return { result: read?.data, failed: read !== undefined && read.errorUpdatedAt > read.dataUpdatedAt };
 }
 
 function useCachedQuery<Q extends ConfigQuery>(organizationSlug: string, query: Q | null) {

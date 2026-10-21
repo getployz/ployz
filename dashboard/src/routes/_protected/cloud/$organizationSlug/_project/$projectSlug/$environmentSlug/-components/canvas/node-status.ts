@@ -1,6 +1,7 @@
 import type { DeploymentSummary, DeploymentView, DomainRow, ReviewLifecycleKind, ServiceListing } from "@ployz/sdk";
 import { plural } from "#/lib/plural";
 import { shippedService } from "#/modules/config-store/store-deployments";
+import type { StoreResult } from "#/modules/config-store/store.contract";
 import type { Marker } from "#/modules/metrics/metrics-model";
 import type { RuntimeServiceRecord } from "#/modules/runtime/runtime.collection";
 import type { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
@@ -32,10 +33,6 @@ export const NO_MOUNTS_CONFIGURED = line("No mounts configured", "idle");
  */
 export type DeployEffect = "restarts" | "leaves" | "undecided" | "unreadable";
 
-/**
- * What whole, current evidence naming no container of a Service says, by what the running Deploy does to it: one it
- * starts reads Starting, one it may start waits, one whose Deploy can't be read says so, and only one it leaves is down.
- */
 const NO_CONTAINER = {
   restarts: line("Starting", "quiet"),
   undecided: line("Checking", "pending"),
@@ -46,7 +43,6 @@ const NO_CONTAINER = {
 /**
  * What evidence says of a Service (`runtime`, null when none names it; `whole`, no Server is missing from it;
  * `offline`, the Servers whose containers are only as they last reported them).
- * `noContainer`: what whole evidence naming no container says; `rolling`: a Deploy restarts its replicas.
  */
 function evidenceLine(runtime: Pick<RuntimeServiceRecord, "containers"> | null, whole: boolean, offline: ReadonlySet<string>, desiredReplicas: number | null, rolling: boolean, noContainer: RuntimeLine) {
   if ((!runtime || runtime.containers.length === 0) && !whole) return line("Deployed", "quiet");
@@ -76,8 +72,8 @@ export type RuntimeLens = Pick<ReturnType<typeof useRuntimeLens>, "status" | "in
 /**
  * A Service's status line: what runs now, from runtime evidence. Staged work never replaces it, and it never guesses:
  * before evidence it waits, and evidence that isn't current reads grey with its age.
- * `deploy`: what the running Deploy does to it. Current, whole evidence that names no container of it reads Starting
- * when the Deploy restarts it, and waits while that's undecided; evidence that isn't current keeps its last word;
+ * `deploy`: what the running Deploy does to it, which picks what current, whole evidence naming no container of it
+ * reads (`NO_CONTAINER`); evidence that isn't current keeps its last word;
  * any container it has still says what it says: a Service already down stays down.
  * `desiredReplicas`: how many it asks for, when known; fewer serving reads Degraded, except while a Deploy rolls them.
  */
@@ -204,9 +200,8 @@ export function stagedChip(change: ReviewLifecycleKind, changeCount: number): De
 /**
  * A Service's chip: anything about Deploys. A Deploy in flight that targets it (running, else queued), else what the
  * next Deploy does to it. `inFlight`: the Environment's Deployments in flight; one naming no Services deploys every one.
- * `deploy`: what the running one does to it. Only a Service it restarts reads Deploying, so a chip never shows it before
- * the evidence and drops it after: one the Deploy targets but leaves running (only snapshots its Volume, or nothing
- * changed) is not Deploying; one it restarts without naming it (a Service that references a selected one) is.
+ * `deploy`: what the running one does to it. Only a Service it restarts reads Deploying, whether or not the Deploy
+ * names it.
  */
 export function deployChip(
   service: Pick<ServiceListing, "name" | "change">,
@@ -220,22 +215,27 @@ export function deployChip(
   return service.change === null ? null : stagedChip(service.change, changeCount);
 }
 
-/** The Deploy in flight that runs: a queued one starts nothing yet. */
 export function runningDeployment<D extends Pick<DeploymentSummary, "status">>(inFlight: readonly D[]): D | null {
   return inFlight.find((deployment) => deployment.status !== "queued") ?? null;
 }
 
 /**
- * What the running Deploy does to the Service `name`, from its view: null when no Deploy runs, undefined until read,
- * `ok: false` when refused or its read failed. Until its runner records the plan every node reads Pending, so only a
- * Service it built a new image for restarts and every other waits: a build still running, or one that reused an image,
- * says nothing of the plan.
+ * What the `running` Deploy does to the Service `name`, from its view as last read and whether that read `failed`.
+ * Until its runner records the plan every node reads Pending, so only a Service it built a new image for restarts and
+ * every other waits: a build still running, or one that reused an image, says nothing of the plan.
  */
-export function deployEffect(name: string, view: { ok: true; value: Pick<DeploymentView, "nodes" | "preview" | "builds"> } | { ok: false } | undefined | null): DeployEffect {
-  if (view === null) return "leaves";
-  if (view === undefined) return "undecided";
-  if (!view.ok) return "unreadable";
-  const { nodes, preview, builds } = view.value;
+export function deployEffect(
+  name: string,
+  running: Pick<DeploymentSummary, "services" | "ships"> | null,
+  { result, failed }: { result: StoreResult<Pick<DeploymentView, "nodes" | "preview" | "builds">> | undefined; failed: boolean },
+): DeployEffect {
+  if (running === null || !shippedService(running, name)) return "leaves";
+  if (result !== undefined && !result.ok) return "unreadable";
+  const effect = result === undefined ? "undecided" : planned(name, result.value);
+  return effect === "undecided" && failed ? "unreadable" : effect;
+}
+
+function planned(name: string, { nodes, preview, builds }: Pick<DeploymentView, "nodes" | "preview" | "builds">): DeployEffect {
   if (preview === null) return builds.some((build) => build.service === name && build.status === "built") ? "restarts" : "undecided";
   return nodes.some((node) => node.type === "service" && node.name === name && node.outcome !== "unchanged") ? "restarts" : "leaves";
 }

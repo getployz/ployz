@@ -121,7 +121,7 @@ it("moves an open Deployment on from Queued when the change stream never says it
   }
 });
 
-it("reads a chrome view unread until its first answer, refused once its read fails, and still refused while changes reread it", async () => {
+it("tells a chrome view's failed read from an unread one, across rereads, after an answer, and until a read succeeds", async () => {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const scope = { queryClient, sessionId: "session", userId: "user" };
   vi.spyOn(scopes, "useCollectionScope").mockReturnValue(scope);
@@ -130,16 +130,20 @@ it("reads a chrome view unread until its first answer, refused once its read fai
     new Promise((answer, fail) => { reads.push({ fail: () => fail(new Error("Failed to fetch")), answer }); }) as never);
   const wrapper = ({ children }: { children: ReactNode }) => <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>;
   const shown = renderHook(() => useCachedStoreRead("acme", deploymentQuery("dep-18")), { wrapper });
+  const changed = () => act(() => applyOrganizationChanges(["store_deployment"], "acme", scope));
   await waitFor(() => expect(reads).toHaveLength(1));
-  expect(shown.result.current).toBeUndefined();
+  expect(shown.result.current).toEqual({ result: undefined, failed: false });
 
   await act(async () => reads[0]?.fail());
-  await waitFor(() => expect(shown.result.current).toEqual({ ok: false }));
-
-  act(() => applyOrganizationChanges(["store_deployment"], "acme", scope));
+  await waitFor(() => expect(shown.result.current).toEqual({ result: undefined, failed: true }));
+  changed();
   await waitFor(() => expect(reads).toHaveLength(2));
-  expect(shown.result.current).toEqual({ ok: false });
+  expect(shown.result.current.failed).toBe(true);
 
   await act(async () => reads[1]?.answer(deployment("running")));
-  await waitFor(() => expect(shown.result.current).toMatchObject({ ok: true, value: { status: "running" } }));
+  await waitFor(() => expect(shown.result.current).toMatchObject({ result: { ok: true, value: { status: "running" } }, failed: false }));
+  changed();
+  await waitFor(() => expect(reads).toHaveLength(3));
+  await act(async () => reads[2]?.fail());
+  await waitFor(() => expect(shown.result.current).toMatchObject({ result: { ok: true, value: { status: "running" } }, failed: true }));
 });

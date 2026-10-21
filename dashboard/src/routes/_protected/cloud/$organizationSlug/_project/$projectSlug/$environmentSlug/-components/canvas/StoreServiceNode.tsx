@@ -40,7 +40,7 @@ export function StoreServiceCard({ service, domains, changeCount, runtimeIdentit
   const { name, leaving } = usePendingNode("service", service.name);
   const running = runningDeployment(inFlight);
   const view = useCachedStoreRead(params.organizationSlug, running === null ? null : deploymentQuery(running.id));
-  const deploy = deployEffect(service.name, running === null ? null : view);
+  const deploy = deployEffect(service.name, running, view);
   const chip = deployChip(service, changeCount, inFlight, deploy);
   const status = runtimeLine(service, runtime, { lens: runtimeLens, desiredReplicas, deploy });
   const scope = { organizationSlug: params.organizationSlug, environmentId };
