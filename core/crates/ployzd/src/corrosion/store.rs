@@ -102,6 +102,10 @@ impl MachinePublicationGuard<'_> {
                     "DELETE FROM containers WHERE machine_id = ?",
                     [json!(machine_id)],
                 ),
+                Statement::new(
+                    "DELETE FROM ingress_routes WHERE machine_id = ?",
+                    [json!(machine_id)],
+                ),
                 Statement::new("DELETE FROM machines WHERE id = ?", [json!(machine_id)]),
             ])
             .await

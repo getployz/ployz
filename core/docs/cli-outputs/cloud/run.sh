@@ -53,6 +53,8 @@ c() { "$cap" "$CAPTURES/$1.md" "$2" -- "${@:3}"; }          # read-only: pipe + 
 m() { CAP_TTY=0 "$cap" "$CAPTURES/$1.md" "$2" -- "${@:3}"; } # mutating: pipe only
 need() { CAP_MUST=1 "$@"; } # a capture later captures depend on; its failure stops the run
 note() { printf '%s\n\n' "$2" >>"$CAPTURES/$1.md"; }
+# shellcheck source=../approve.sh
+source "$DOCS/approve.sh"
 
 up() {
   cloud_started=1 # anything at dashboard/.verify/run from here on is ours
@@ -190,7 +192,7 @@ c org "org rm ada --confirm ada (has Projects)" $P org rm ada --confirm ada
 c org "org rm ada --confirm ada --json (has Projects)" $P org rm ada --confirm ada --json
 c org "org rm babbage while acting in ada" $P org rm babbage --confirm babbage
 "$REAL" org use babbage >/dev/null
-m org "org rm babbage --confirm babbage (empty, acting in it)" $P org rm babbage --confirm babbage
+CAP_TIMEOUT=120 approved babbage "$CAPTURES/org.md" "org rm babbage --confirm babbage (empty, acting in it; Ada approves it)" -- $P org rm babbage --confirm babbage
 c org "org ls after removal" $P org ls
 c org "status after removing the acting Organization" $P status
 "$REAL" org use ada >/dev/null 2>&1 || true
