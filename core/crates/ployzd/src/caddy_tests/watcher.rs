@@ -1509,7 +1509,7 @@ async fn routed_addresses_claim_nothing_after_a_failed_write_without_the_admin()
     assert_eq!(
         published.borrow().addresses,
         None,
-        "a Caddy that restarted from the failed write's file may not serve 10.210.1.2"
+        "this rewrite went without the admin, so a running Caddy may still serve its last load"
     );
 
     shutdown.cancel();
@@ -1527,10 +1527,7 @@ async fn routed_addresses_are_empty_on_a_machine_that_takes_no_ingress() {
         server,
         directory,
     } = watcher_fixture().await;
-    let machine = Machine {
-        accepts_ingress: false,
-        ..machine
-    };
+    state.machine.lock().unwrap().accepts_ingress = false;
     state.containers.lock().unwrap().remove(1);
     let caddyfile = directory.join(CONFIG_FILE);
     let (route_publishes, mut published) =
@@ -1601,7 +1598,7 @@ async fn routed_addresses_claim_nothing_without_the_admin_on_a_machine_that_take
 }
 
 #[tokio::test]
-async fn routed_addresses_are_empty_once_web_traffic_off_stops_caddy() {
+async fn routed_addresses_are_empty_while_the_ingress_container_is_stopped() {
     let WatcherFixture {
         machine,
         state,
@@ -1711,6 +1708,47 @@ async fn routed_addresses_are_empty_once_a_loaded_caddy_stops() {
     std::fs::remove_dir_all(directory).unwrap();
 }
 
+#[tokio::test]
+async fn routed_addresses_are_empty_once_ingress_is_turned_off_and_its_caddy_removed() {
+    let WatcherFixture {
+        machine,
+        state,
+        address,
+        server,
+        directory,
+    } = watcher_fixture().await;
+    let caddyfile = directory.join(CONFIG_FILE);
+    let (route_publishes, mut published) =
+        tokio::sync::watch::channel(crate::ingress::PublishedRoutes::default());
+    let shutdown = CancellationToken::new();
+    let watcher = tokio::spawn(watch_caddy(
+        machine.clone(),
+        ReplicatedStore::new(ApiClient::http1(address, &"a".repeat(64)).unwrap()),
+        no_down,
+        caddyfile.clone(),
+        route_publishes,
+        shutdown.clone(),
+        || std::future::ready(Ok(None::<TestAdmin>)),
+    ));
+    wait_for_caddyfile(&caddyfile, "10.210.1.2:80").await;
+
+    state.machine.lock().unwrap().accepts_ingress = false;
+    state.containers.lock().unwrap().remove(1);
+    state.send(b"{\"change\":{}}\n");
+    timeout(
+        Duration::from_secs(5),
+        published.wait_for(|published| published.addresses == Some(BTreeMap::new())),
+    )
+    .await
+    .expect("this Machine no longer takes ingress and runs no Caddy, so it routes nothing")
+    .unwrap();
+
+    shutdown.cancel();
+    watcher.await.unwrap().unwrap();
+    server.abort();
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
 const CHALLENGE: &str = r#"{"challenge_token":"LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0","challenge_response":"LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}"#;
 
 fn no_down() -> std::future::Ready<Result<BTreeSet<MachineId>, CorrosionError>> {
@@ -1782,6 +1820,7 @@ async fn watcher_fixture() -> WatcherFixture {
         transactions: Arc::new(Mutex::new(Vec::new())),
         lose_next_transaction_response: Arc::new(AtomicBool::new(false)),
         fail_queries: Arc::new(AtomicBool::new(false)),
+        machine: Arc::new(Mutex::new(machine.clone())),
     };
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -1870,6 +1909,7 @@ struct WatchState {
     transactions: Arc<Mutex<Vec<Vec<Statement>>>>,
     lose_next_transaction_response: Arc<AtomicBool>,
     fail_queries: Arc<AtomicBool>,
+    machine: Arc<Mutex<Machine>>,
 }
 
 impl WatchState {
@@ -2041,6 +2081,12 @@ async fn query(State(state): State<WatchState>, body: Bytes) -> Response {
                     json!(serde_json::to_string(container).unwrap()),
                 ]
             }),
+        )
+    } else if statement.query == "SELECT info FROM machines WHERE id = ?" {
+        let machine = state.machine.lock().unwrap();
+        events(
+            &["info"],
+            [vec![json!(serde_json::to_string(&*machine).unwrap())]],
         )
     } else if statement.query == "SELECT hostname, body FROM certificates ORDER BY hostname" {
         let certificates = state.certificates.lock().unwrap();

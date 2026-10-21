@@ -323,12 +323,7 @@ fn judge(observed: Observed) -> Check {
             Ok(RoutedAddresses {
                 routes: Some(routes),
             }) => {
-                confirmed.insert(
-                    machine,
-                    RoutedAddresses {
-                        routes: Some(routes),
-                    },
-                );
+                confirmed.insert(machine, routes);
             }
             // An older Server lacks the check, and status claims nothing for it.
             Err(error) if error.code == RpcErrorCode::Unsupported => {}
@@ -456,7 +451,10 @@ fn judge(observed: Observed) -> Check {
 /// answered and is up, since only that Machine could still report it.
 fn stale_addresses(
     service: &ServiceObservation,
-    routed: &BTreeMap<MachineId, RoutedAddresses>,
+    routed: &BTreeMap<
+        MachineId,
+        BTreeMap<QualifiedService, BTreeMap<ContainerId, ContainerAddress>>,
+    >,
     down: &BTreeSet<MachineId>,
     owners: &[Ipv4Net],
 ) -> BTreeMap<MachineId, BTreeSet<ContainerAddress>> {
@@ -480,8 +478,6 @@ fn stale_addresses(
         .filter(|(machine, _)| !down.contains(machine))
         .filter_map(|(machine, routed)| {
             let stale: BTreeSet<ContainerAddress> = routed
-                .routes
-                .as_ref()?
                 .get(&service.identity)?
                 .iter()
                 .filter(|(copy, address)| match reported.get(*copy) {

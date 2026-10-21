@@ -315,12 +315,13 @@ Status skips this check while a deploy is in progress. Right after a deploy or a
 hasn't caught up can still route a replica that was just removed, so the line can show briefly and
 go away by itself. Run status again before you act.
 
-When status warns that `web-3 has not confirmed what its proxy serves`, web-3's daemon has just
-started, it wrote a new proxy config without reaching the proxy, or status couldn't read what web-3
-routes. Until the proxy loads a config
-web-3 can see, status doesn't check what web-3 routes. The warning goes away once the proxy
-answers, usually within 2 seconds of a daemon restart or upgrade. If it stays, web-3's proxy isn't
-answering its daemon. See [Troubleshooting servers](servers.md).
+When status warns that `web-3 has not confirmed what its proxy serves`, one of three things
+happened. Web-3's daemon has just started. It wrote a new proxy config without reaching the proxy.
+Or status couldn't read what web-3 routes within 3 seconds, which a slow link between servers can
+cause. Until web-3's proxy loads a config web-3 can see, status doesn't check what web-3 routes.
+The warning goes away once the proxy answers, usually within 2 seconds of a daemon restart or
+upgrade. If it stays, web-3's proxy isn't answering its daemon. See
+[Troubleshooting servers](servers.md).
 
 - **Check web-3's network.** Your servers need UDP port 51820 open between them. See
   [Troubleshooting servers](servers.md).

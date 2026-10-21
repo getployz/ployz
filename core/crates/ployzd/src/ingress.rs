@@ -386,18 +386,32 @@ fn creation_key(container: &ServiceContainer) -> (i64, &str) {
     )
 }
 
-/// True when no Caddy can serve on this Machine: its newest ingress container is stopped,
+/// True when no Caddy can serve on this Machine: every ingress container here is stopped,
 /// or it has none and takes no ingress.
-fn serves_nothing(machine: &Machine, containers: &[ServiceContainer]) -> bool {
-    match local_ingress(machine, containers) {
-        Some(caddy) => matches!(
-            caddy.as_observation().runtime,
-            ContainerRuntimeObservation::Created
-                | ContainerRuntimeObservation::Exited { .. }
-                | ContainerRuntimeObservation::Dead
-        ),
-        None => !machine.accepts_ingress,
+fn serves_nothing(
+    machine: &MachineId,
+    takes_ingress: bool,
+    containers: &[ServiceContainer],
+) -> bool {
+    let mut local = containers
+        .iter()
+        .map(ServiceContainer::as_observation)
+        .filter(|observation| observation.machine_id == *machine && is_system_ingress(observation))
+        .peekable();
+    if local.peek().is_none() {
+        return !takes_ingress;
     }
+    local.all(|observation| at_rest(&observation.runtime))
+}
+
+/// True when a container's process isn't running and can serve nothing.
+pub(crate) fn at_rest(runtime: &ContainerRuntimeObservation) -> bool {
+    matches!(
+        runtime,
+        ContainerRuntimeObservation::Created
+            | ContainerRuntimeObservation::Exited { .. }
+            | ContainerRuntimeObservation::Dead
+    )
 }
 
 fn newest_local_ingress(machine: &Machine, containers: &[ServiceContainer]) -> Option<ContainerId> {
@@ -482,6 +496,14 @@ where
         };
         loop {
             down.update(load_down().await);
+            // Read each pass, since turning the role off doesn't restart the daemon.
+            let takes_ingress = !matches!(
+                replicated.machine(machine.id.as_str()).await,
+                Ok(Some(Machine {
+                    accepts_ingress: false,
+                    ..
+                }))
+            );
             let input = match (
                 replicated.containers().await,
                 replicated.certificate_state().await,
@@ -494,7 +516,7 @@ where
                         IngressProjection::derive(&machine, &containers, &certificates, &routes);
                     Ok((
                         newest_local_ingress(&machine, &containers),
-                        serves_nothing(&machine, &containers),
+                        serves_nothing(&machine.id, takes_ingress, &containers),
                         routed_addresses(&projection, &routes),
                         projection,
                         routes,
@@ -528,10 +550,12 @@ where
                                         admin.as_ref(),
                                     )
                                     .await;
-                                    // A failed write may still have replaced the file Caddy
-                                    // restarts from, so no earlier load is known to hold.
-                                    if applied.is_ok() || admin.is_none() {
-                                        last_input = applied.is_ok().then_some(input);
+                                    // A refused load leaves the earlier one serving. Any other
+                                    // failure may have replaced the file Caddy restarts from.
+                                    match (&applied, admin.is_some()) {
+                                        (Ok(()), _) => last_input = Some(input),
+                                        (Err(ApplyError::BeforeServing(_)), true) => {}
+                                        (Err(_), _) => last_input = None,
                                     }
                                     applied
                                 };
@@ -540,9 +564,6 @@ where
                             Err(error) => (false, Err(ApplyError::BeforeServing(error))),
                         }
                     };
-                    if matches!(result, Err(ApplyError::AfterServing(_))) {
-                        last_input = None;
-                    }
                     // Without the admin, a running Caddy serves what it last loaded or, after a
                     // restart, the Caddyfile, so the record claims nothing.
                     if !(through_admin && matches!(result, Err(ApplyError::BeforeServing(_)))) {
