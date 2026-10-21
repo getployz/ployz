@@ -289,7 +289,7 @@ fn leave(root: &ArgMatches, removal: Removal) -> Result<(), Error> {
     runtime.block_on(async {
         let mut reset_failure = None;
         let mut cloud_released = None;
-        let mut cloud_kept = false;
+        let mut cloud_kept = None;
 
         // TODO: do not reroute away from the current entry before removal.
         if let (Some(credential), Some(id)) = (&cloud, &run) {
@@ -297,8 +297,8 @@ fn leave(root: &ArgMatches, removal: Removal) -> Result<(), Error> {
             reset_failure = removed.reset_warning;
             if let Release::Kept { reason } = &removed.release {
                 crate::ui::warn(format!("Cloud keeps its hold on the Cluster: {reason}"));
-                cloud_kept = true;
             }
+            cloud_kept = Some(matches!(removed.release, Release::Kept { .. }));
             cloud_released = Some(removed.release == Release::Released);
         } else if removal == Removal::Forget {
             client
@@ -340,8 +340,7 @@ fn leave(root: &ArgMatches, removal: Removal) -> Result<(), Error> {
             crate::ui::hint(&Hint::Next("ployz server add".into()));
         }
         if let Some(reason) = &reset_failure
-            && cloud_released.is_some()
-            && !cloud_kept
+            && cloud_kept == Some(false)
         {
             // Cloud lets go only of a Server the Cluster already forgot, so only its reset is in doubt.
             crate::ui::warn(crate::ui::sentence(format!(
@@ -379,6 +378,7 @@ fn leave(root: &ArgMatches, removal: Removal) -> Result<(), Error> {
             "data_loss": observed.data_loss,
             "under_replicated": replicated_services,
             "cloud_released": cloud_released,
+            "cloud_kept": cloud_kept,
             "next": (cloud_released == Some(true)).then_some("ployz server add"),
         }))?;
         let config = options.load_or_empty_config().map_err(|error| Error::from(error).context("Server removed; local context cleanup failed."))?;

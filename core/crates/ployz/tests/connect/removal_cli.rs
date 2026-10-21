@@ -579,6 +579,9 @@ async fn a_server_already_gone_from_the_cluster_says_cloud_let_go_and_its_reset_
     );
     assert!(!stderr.contains("keeps its hold"), "{stderr}");
     assert!(!stderr.contains("not fully cleaned up"), "{stderr}");
+    // `--json` tells a dropped row from a kept hold too.
+    let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(result.get("cloud_kept"), Some(&json!(false)), "{result}");
 }
 
 #[tokio::test]
@@ -593,6 +596,8 @@ async fn the_last_server_already_gone_from_the_cluster_says_cloud_keeps_its_hold
     )
     .await;
     assert_eq!(output.status.code(), Some(3), "{output:?}");
+    let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(result.get("cloud_kept"), Some(&json!(true)), "{result}");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         stderr.contains("! Cloud keeps its hold on the Cluster: its reset didn't finish (its reset couldn't be confirmed: it was already gone from the Cluster), so it may still hold Cloud's key."),
