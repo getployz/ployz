@@ -1,5 +1,5 @@
 //! Once per daemon start, set Out each In copy on this Machine whose Service has
-//! a newer In copy of another shape that every live proxy routes. A Machine
+//! a newer In copy that replaces it and that every live proxy routes. A Machine
 //! powered off during a Deploy comes back with its old copy In, and proxies would
 //! route it again. The pass decides only after this Machine has caught up with a
 //! peer's store and its own ingress has published since, and it never stops a
@@ -15,7 +15,7 @@ use std::{
 use ployz_core::{
     CodecError, ContainerId, ContainerKind, ContainerLocator, ContainerObservation, ContainerWant,
     CopyRotation, EnsuredContainer, Gen, ListMachinesRequest, MACHINE_API_PORT, MachineId,
-    MachineRpcClient, QualifiedService, op,
+    MachineRpcClient, QualifiedService, SpecChange, compare_specs, op,
 };
 use tokio::{sync::watch, time::Instant};
 use tonic::transport::Endpoint;
@@ -25,6 +25,7 @@ use crate::{
         AdminClient, Error as CorrosionError, IngressRouteRow, MachineView, ReplicatedStore,
         wait_for_catch_up,
     },
+    docker::LABEL_RECREATE_DIGEST,
     ingress::PublishedRoutes,
     machine::{LocalMachine, LocalMachineError},
     route_acks::{Ackers, Membership, routed, sample_ackers},
@@ -57,8 +58,8 @@ pub(crate) struct Observed {
     pub(crate) membership: Membership,
 }
 
-/// A local In copy, and the gen of the newest In sibling of another shape every
-/// live proxy routes.
+/// A local In copy, and the gen of the newest In sibling that replaces it and
+/// every live proxy routes.
 #[derive(Debug, Eq, PartialEq)]
 pub(crate) struct Superseded {
     pub(crate) service: QualifiedService,
@@ -93,7 +94,6 @@ pub(crate) fn superseded(
         .filter(|copy| copy.machine_id == *local)
         .filter_map(|copy| {
             let service = copy.identity();
-            let shape = copy.resolved_spec.published_serving_shape();
             let mut routes = routed(routes.clone(), &service);
             routes.insert(*local, own.get(&service).cloned().unwrap_or_default());
             let acked = |sibling: &ContainerId| {
@@ -113,7 +113,7 @@ pub(crate) fn superseded(
                     sibling.container_id != copy.container_id
                         && sibling.identity() == service
                         && sibling.copy_gen() > copy.copy_gen()
-                        && sibling.resolved_spec.published_serving_shape() != shape
+                        && replaces(sibling, copy)
                         && acked(&sibling.container_id)
                 })
                 .map(|sibling| sibling.copy_gen())
@@ -125,6 +125,19 @@ pub(crate) fn superseded(
             })
         })
         .collect()
+}
+
+/// Whether a Deploy that wanted `newer` would have replaced `older` rather than
+/// kept it. A Container from a daemon that predates the digest label is judged
+/// on what the row shows.
+fn replaces(newer: &ContainerObservation, older: &ContainerObservation) -> bool {
+    let digests = (
+        newer.labels.get(LABEL_RECREATE_DIGEST),
+        older.labels.get(LABEL_RECREATE_DIGEST),
+    );
+    compare_specs(&older.resolved_spec, &newer.resolved_spec.to_requested())
+        == SpecChange::NeedsRecreate
+        || matches!(digests, (Some(newer), Some(older)) if newer != older)
 }
 
 /// Runs the whole pass under one [`BOOT_PASS_WAIT`] deadline, and stops it there.
