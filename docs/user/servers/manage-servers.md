@@ -220,6 +220,14 @@ the drain doesn't start; open it again to see what stops now. Drains in one orga
 at a time: a second one reads **Queued · Waiting on web-1**. While a drain runs, the
 **Drain** row counts the services left to move and lists them as **Pending**; each one leaves the
 list as it leaves the server. You can leave the page while one runs.
+If your servers don't answer when a drain's turn comes, as while one restarts, the drain reads
+**Queued** and tries again 20 seconds after each try. It starts once they answer. While it waits,
+it doesn't hold up the organization's other drains: they can start and run, and while one runs, the
+waiting drain reads **Queued · Waiting on** that drain's server. It waits up to 15 minutes from when
+you confirmed, and other drains ending don't extend that. If your servers still don't answer by
+then, the drain doesn't start and reads **Drain didn't start. Try again.** Nothing on the server
+changed. A drain whose turn comes more than 15 minutes after you confirmed still starts if your
+servers answer at once. If they don't, it doesn't start.
 
 While a server drains, you can't turn **Run services here** back on for it: Cloud refuses the
 change until the drain ends. Turning services on for another server waits until
@@ -489,9 +497,11 @@ needs a newer Ployz on web-1". Upgrade that server, then remove again.
 run there, **Remove server** says how many, next to a **Drain** button. If only services whose
 volume is on the server are left, it names them: draining won't move them. It also names services
 no project owns, which draining leaves. `ployz server rm`
-warns about services a drain could still move off it and prints the drain command. It leaves out
-what a drain won't move: services with a volume or bind mount on the server, global services, and
-Ployz's own ingress. On your last server it skips that warning.
+warns about services a drain could still move off it and, while it still asks you to confirm,
+prints the drain command. With `--confirm` it doesn't ask, so it keeps the warning but leaves out
+the drain command. The warning leaves out what a drain won't move: services with a volume or bind
+mount on the server, global services, and Ployz's own ingress. On your last server it skips that
+warning. After the removal it warns which replicated services may now run short of replicas.
 Ployz's build cache isn't one of the volumes you confirm losing.
 Otherwise services that ran only on that server stop. Your next deploy replaces its replicas on your other
 servers, except for services whose volume was on it (see

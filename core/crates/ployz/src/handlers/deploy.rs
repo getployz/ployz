@@ -764,11 +764,20 @@ fn follow(
             && unclaimed.is_some_and(|after| std::time::Instant::now() >= after)
         {
             unclaimed = None;
-            ui::note(format_args!(
-                "No Server has started Deployment {} yet; it stays queued until one does.",
-                current.view.deployment.label()
-            ));
-            ui::hint(&Hint::Inspect("ployz server ls".into()));
+            if let Some(ahead) = ahead(store, &current.view) {
+                ui::note(format_args!(
+                    "Deployment {} waits for Deployment {} to finish.",
+                    current.view.deployment.label(),
+                    ahead.label()
+                ));
+                ui::hint(&Hint::Inspect(hint_for(matches, &ahead)));
+            } else {
+                ui::note(format_args!(
+                    "No Server has started Deployment {} yet; it stays queued until one does.",
+                    current.view.deployment.label()
+                ));
+                ui::hint(&Hint::Inspect("ployz server ls".into()));
+            }
         }
         if !current.view.deployment.status.in_flight() || runner.is_some_and(OwnedRunner::finished)
         {
@@ -781,6 +790,26 @@ fn follow(
             }
         });
     }
+}
+
+/// The oldest Deployment in `view`'s Environment still in flight ahead of it, which it waits behind.
+/// A failed read names none: the follow's next read reports it.
+fn ahead(store: &Store, view: &DeploymentView) -> Option<DeploymentSummary> {
+    let page = store
+        .read(&DeploymentsQuery {
+            environment: EnvironmentRef {
+                project: Some(view.environment.project.clone()),
+                environment: Some(view.environment.name.clone()),
+            },
+            limit: None,
+            cursor: None,
+        })
+        .ok()?;
+    let ours = view.deployment.number?;
+    page.in_flight
+        .into_iter()
+        .filter(|older| older.number.is_some_and(|number| number < ours))
+        .min_by_key(|older| older.number)
 }
 
 /// What took superseded `view`'s place, among the latest and those in flight.
