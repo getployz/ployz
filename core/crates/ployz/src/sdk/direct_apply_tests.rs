@@ -74,3 +74,16 @@ async fn an_ingress_follow_up_that_keeps_restarting_prints_its_exit_and_last_lin
     );
     assert_eq!(failure.causes(), ["token=[redacted]"]);
 }
+
+/// The last line is the one the exited run printed, not the next run's first.
+#[tokio::test]
+async fn a_direct_apply_whose_container_restarted_names_the_exited_runs_last_line() {
+    let failure =
+        failed_apply(support::DeployService::new(support::machine('a', "one")).reboot_containers())
+            .await;
+    assert_eq!(
+        failure.message,
+        "web: The Container exited with code 1 and is restarting."
+    );
+    assert_eq!(failure.cause, ["token=[redacted]"]);
+}

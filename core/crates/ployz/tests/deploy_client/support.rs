@@ -65,6 +65,8 @@ pub(super) struct DeployService {
     runtime: ContainerRuntimeObservation,
     /// Docker OOM-killed a process of each Container, as its inspect reports.
     oom_killed: bool,
+    /// Docker restarted each Container after its exit, and the new run printed `booting`.
+    rebooted: bool,
     /// When a Starting Container turns healthy and starts serving.
     healthy_at: Option<tokio::time::Instant>,
     /// The Machine answers an In ask without a health verdict and leaves the copy where it was.
@@ -150,6 +152,7 @@ impl DeployService {
                 health: HealthObservation::Healthy,
             },
             oom_killed: false,
+            rebooted: false,
             healthy_at: None,
             unread_health: false,
             effective_healthcheck: None,
@@ -318,6 +321,14 @@ impl DeployService {
     /// Containers crash and Docker keeps restarting them.
     pub(super) fn restart_containers(mut self) -> Self {
         self.runtime = ContainerRuntimeObservation::Restarting;
+        self
+    }
+
+    /// Containers crash, and Docker restarts them so each new run prints `booting`
+    /// after the stored exit.
+    pub(super) fn reboot_containers(mut self) -> Self {
+        self.runtime = ContainerRuntimeObservation::Restarting;
+        self.rebooted = true;
         self
     }
 
@@ -1127,6 +1138,14 @@ impl FakeMachine for DeployService {
             exit_code: Some(1),
             oom_killed: false,
         });
+        if self.rebooted {
+            stored.push(ployz_core::HistoryRow::Line {
+                container_id,
+                ts: 14,
+                stream: ployz_core::HistoryStream::Stdout,
+                text: b"booting".to_vec(),
+            });
+        }
         stored.reverse();
         let total = stored.len();
         let from = history.cursor.map_or(0, |cursor| cursor.parse().unwrap());

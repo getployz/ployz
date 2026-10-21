@@ -1506,6 +1506,22 @@ async fn failed_deploy_whose_container_ran_out_of_memory_says_so() {
 /// headline Cloud joins from them reads as the crash and not `restarting`.
 #[tokio::test]
 async fn failed_deploy_whose_container_keeps_restarting_names_its_exit_and_last_line() {
+    restarting_deploy_names_its_exit_and_last_line(
+        DeployService::new(machine('a', "one")).restart_containers(),
+    )
+    .await;
+}
+
+/// The last line is the one the exited run printed, not the next run's first.
+#[tokio::test]
+async fn failed_deploy_whose_container_restarted_names_the_exited_runs_last_line() {
+    restarting_deploy_names_its_exit_and_last_line(
+        DeployService::new(machine('a', "one")).reboot_containers(),
+    )
+    .await;
+}
+
+async fn restarting_deploy_names_its_exit_and_last_line(service: DeployService) {
     use ployz_store::{
         Actor, Admit, ConfigStore, CreateProject, CreateService, Deploy, DeploymentId,
         DeploymentStatus, EnvironmentId, EnvironmentRef, OrganizationId, Outcome, ProjectId,
@@ -1555,7 +1571,6 @@ async fn failed_deploy_whose_container_keeps_restarting_names_its_exit_and_last_
             &Trusted::default(),
         )
         .unwrap();
-    let service = DeployService::new(machine('a', "one")).restart_containers();
     let (address, server) = listening(service).await;
 
     let summary = ployz::sdk::run_deployment(
