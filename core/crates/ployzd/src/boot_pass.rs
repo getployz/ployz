@@ -13,7 +13,7 @@ use std::{
 
 use ployz_core::{
     CodecError, ContainerId, ContainerKind, ContainerLocator, ContainerObservation, ContainerWant,
-    CopyRotation, EnsuredContainer, Gen, ListMachinesRequest, MACHINE_API_PORT, MachineId,
+    CopyRotation, EnsuredContainer, Gen, ListMachinesRequest, MACHINE_API_PORT, Machine, MachineId,
     MachineRpcClient, QualifiedService, op,
 };
 use tokio::{sync::watch, time::Instant};
@@ -21,8 +21,8 @@ use tonic::transport::Endpoint;
 
 use crate::{
     corrosion::{
-        AdminClient, Error as CorrosionError, IngressRouteRow, MachineView, ReplicatedStore,
-        wait_for_catch_up,
+        AdminClient, Error as CorrosionError, IngressRouteRow, MachineView, ReplicatedObservations,
+        ReplicatedStore, wait_for_catch_up,
     },
     ingress::PublishedRoutes,
     machine::{LocalMachine, LocalMachineError},
@@ -36,8 +36,8 @@ const PEER_RETRY: Duration = Duration::from_secs(1);
 
 pub(crate) trait BootHost: Send + Sync {
     fn machine_id(&self) -> MachineId;
-    /// One round over the peers. The first answer wins, and `None` means none answered.
-    fn peer_targets(&self) -> impl Future<Output = Option<BTreeMap<String, i64>>> + Send;
+    /// One round over the peers. The first answer wins.
+    fn peer_targets(&self) -> impl Future<Output = Peers> + Send;
     fn local_actor(&self) -> impl Future<Output = Result<String, CorrosionError>> + Send;
     fn catch_up(
         &self,
@@ -48,6 +48,18 @@ pub(crate) trait BootHost: Send + Sync {
         &self,
         want: ContainerWant,
     ) -> impl Future<Output = Result<EnsuredContainer, LocalMachineError>> + Send;
+}
+
+#[derive(Clone)]
+pub(crate) enum Peers {
+    /// This Machine founded the Cluster, and its Machine list names no other
+    /// Machine and has no partly replicated row. An empty list counts too. A
+    /// joiner is never alone: its first read can predate its peers' rows.
+    Alone,
+    /// The Machine list is unread, or no peer answered.
+    Silent,
+    /// A peer's store versions.
+    Answered(BTreeMap<String, i64>),
 }
 
 pub(crate) struct Observed {
@@ -160,10 +172,16 @@ async fn pass<H: BootHost>(
         std::future::pending::<()>().await;
     }
     let mut target = loop {
-        if let Some(target) = host.peer_targets().await {
-            break target;
+        match host.peer_targets().await {
+            Peers::Answered(target) => break target,
+            Peers::Alone => {
+                tracing::info!(
+                    "boot pass skipped, this Machine is the only one in its Machine list"
+                );
+                return Ok(());
+            }
+            Peers::Silent => tokio::time::sleep(PEER_RETRY).await,
         }
-        tokio::time::sleep(PEER_RETRY).await;
     };
     // A power cut can lose this Machine's last commits, which only its own later
     // writes would replace, so its own actor is never a target.
@@ -223,6 +241,19 @@ fn actor_key(actor: &str) -> String {
     actor.replace('-', "").to_ascii_lowercase()
 }
 
+fn alone(
+    machines: &ReplicatedObservations<Machine, MachineId>,
+    local: &MachineId,
+    bootstrap: &[Machine],
+) -> bool {
+    bootstrap.is_empty()
+        && machines.incomplete_ids.is_empty()
+        && machines
+            .observations
+            .iter()
+            .all(|machine| machine.id == *local)
+}
+
 pub(crate) struct DaemonHost {
     pub(crate) machine_id: MachineId,
     pub(crate) machine: LocalMachine,
@@ -236,8 +267,17 @@ impl BootHost for DaemonHost {
         self.machine_id
     }
 
-    async fn peer_targets(&self) -> Option<BTreeMap<String, i64>> {
-        let machines = self.machines.current()?;
+    async fn peer_targets(&self) -> Peers {
+        let Some(machines) = self.machines.current() else {
+            return Peers::Silent;
+        };
+        if alone(
+            &machines,
+            &self.machine_id,
+            self.machine.record().bootstrap(),
+        ) {
+            return Peers::Alone;
+        }
         for peer in machines
             .observations
             .iter()
@@ -248,7 +288,7 @@ impl BootHost for DaemonHost {
             match tokio::time::timeout(PEER_TIMEOUT, target_versions(address)).await {
                 Ok(Ok(target)) => {
                     tracing::info!("boot pass read store versions from {}", peer.name);
-                    return Some(target);
+                    return Peers::Answered(target);
                 }
                 Ok(Err(error)) => {
                     tracing::debug!(error = %ployz_core::error_chain::inline(&error), "boot pass could not ask {}", peer.name);
@@ -256,7 +296,7 @@ impl BootHost for DaemonHost {
                 Err(_) => tracing::debug!("boot pass timed out asking {}", peer.name),
             }
         }
-        None
+        Peers::Silent
     }
 
     async fn local_actor(&self) -> Result<String, CorrosionError> {
