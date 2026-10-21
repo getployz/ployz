@@ -21,8 +21,7 @@ export const Route = createFileRoute(
   loader: ({ params, context }) => Promise.all([
     prefetchStoreConfig(context, params.organizationSlug,
       { project: params.projectSlug, environment: params.environmentSlug }, params.resourceId),
-    prefetchRemote(context, volumePlacementsQueryOptions(params.organizationSlug)),
-    prefetchRemote(context, organizationMembersQueryOptions(params.organizationSlug)),
+    prefetchRemote(context, volumePlacementsQueryOptions(params.organizationSlug), organizationMembersQueryOptions(params.organizationSlug)),
   ]),
   pendingComponent: CanvasInspectorPending,
   errorComponent: () => <CanvasInspectorError noun="Resource" />,

@@ -435,9 +435,10 @@ describe("recovery", () => {
     expect(recover(forgotten, row(["web-2"]), false, ids("web-1"))).toMatchObject({ kind: "restore", stage: { refused: "web-2 doesn't run Services." } });
   });
 
-  it("is null once the row stages the mirror as primary", () => {
+  it("is null once the row stages the mirror as primary, but still asks to forget a silent Server first", () => {
     expect(recover(forgotten, row(["web-2"], { primary: "web-2" }))).toBeNull();
-    expect(recover([member("web-1", "unanswered"), mirrorAsOf("web-2", at)], row(["web-2"], { primary: "web-2" }))).toBeNull();
+    expect(recover([member("web-1", "unanswered"), mirrorAsOf("web-2", at)], row(["web-2"], { primary: "web-2" })))
+      .toMatchObject({ kind: "forget", down: [{ name: "web-1" }] });
   });
 });
 

@@ -350,10 +350,11 @@ export function recovery(
   if (observed.primary !== null) return null;
   const applied = appliedMirrors(observed, row);
   const copy = observed.copies.find((each) => each.kind === "slot" && applied.includes(each.server.id));
-  if (copy === undefined || row?.staged?.primary === copy.server.id) return null;
+  if (copy === undefined) return null;
   const { server: mirror, newest: lostAfter } = copy;
   const silent = members.filter((member) => !member.answered && member.lack === undefined).map((member) => member.machine);
   if (silent.length > 0) return { kind: "forget", down: silent, mirror, lostAfter };
+  if (row?.staged?.primary === mirror.id) return null;
   return { kind: "restore", mirror, lostAfter, stage: restoreStage(volume, members, mirror, applied, accepting, owed, floorless) };
 }
 
