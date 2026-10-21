@@ -41,7 +41,7 @@
   --info-foreground: hsl(0 0% 100%);
   --info-soft: hsl(220 80% 95%);
   --info-border: hsl(220 80% 85%);
-  /* Intent Pink (DESIGN.md): staged intent. `--changed-deep` is the accessible text on staged surfaces. */
+  /* Changed: staged, not deployed yet. `--changed-deep` is the accessible text on staged surfaces. */
   --changed: #d0268c;
   --changed-deep: #a80068;
   --changed-foreground: hsl(0 0% 100%);
