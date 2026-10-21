@@ -312,7 +312,11 @@ fn judge(observed: Observed) -> Check {
     let mut unjudged = ServicesByFact(Vec::new());
     let mut down_to_reader = ServicesByFact(Vec::new());
     for (service, read) in reads {
-        for (machine, addresses) in stale_addresses(&service, &routed, &down) {
+        let unchecked: BTreeSet<MachineId> = match &read {
+            Ok(read) => down.union(&read.down).copied().collect(),
+            Err(_) => down.clone(),
+        };
+        for (machine, addresses) in stale_addresses(&service, &routed, &unchecked) {
             let attention =
                 stale_address(service.identity.clone(), check.name(&machine), addresses);
             check.attention.push(attention);
