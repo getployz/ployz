@@ -67,6 +67,8 @@ pub(super) struct DeployService {
     oom_killed: bool,
     /// Docker restarted each Container after its exit, and the new run printed `booting`.
     rebooted: bool,
+    /// Between that exit and `booting`, a run exited having printed nothing.
+    silent_run: bool,
     /// When a Starting Container turns healthy and starts serving.
     healthy_at: Option<tokio::time::Instant>,
     /// The Machine answers an In ask without a health verdict and leaves the copy where it was.
@@ -153,6 +155,7 @@ impl DeployService {
             },
             oom_killed: false,
             rebooted: false,
+            silent_run: false,
             healthy_at: None,
             unread_health: false,
             effective_healthcheck: None,
@@ -330,6 +333,13 @@ impl DeployService {
         self.runtime = ContainerRuntimeObservation::Restarting;
         self.rebooted = true;
         self
+    }
+
+    /// Like [`Self::reboot_containers`], with a run that exited printing nothing
+    /// between the crash and `booting`.
+    pub(super) fn reboot_containers_through_a_silent_run(mut self) -> Self {
+        self.silent_run = true;
+        self.reboot_containers()
     }
 
     /// Containers exit 137 with Docker's inspect saying it OOM-killed them.
@@ -1138,10 +1148,18 @@ impl FakeMachine for DeployService {
             exit_code: Some(1),
             oom_killed: false,
         });
+        if self.silent_run {
+            stored.push(ployz_core::HistoryRow::Exit {
+                container_id,
+                ts: 14,
+                exit_code: Some(1),
+                oom_killed: false,
+            });
+        }
         if self.rebooted {
             stored.push(ployz_core::HistoryRow::Line {
                 container_id,
-                ts: 14,
+                ts: 15,
                 stream: ployz_core::HistoryStream::Stdout,
                 text: b"booting".to_vec(),
             });

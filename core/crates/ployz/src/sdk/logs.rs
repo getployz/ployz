@@ -409,11 +409,13 @@ pub(crate) struct Tail {
     exit: Option<Exit>,
 }
 
-/// A stored exit, and how many of the tail's newest lines the next run printed after it.
+/// A stored exit, how many of the tail's newest lines the next run printed after it,
+/// and, when the exit before it was read, how many lines came after that one.
 #[derive(Clone, Copy)]
 struct Exit {
     code: Option<i64>,
     lines_after: usize,
+    run_from: Option<usize>,
 }
 
 impl Tail {
@@ -422,13 +424,22 @@ impl Tail {
     }
 
     /// The tail scrubbed of `sealed`, and the run its newest exit ended: that code and
-    /// the last line that run printed, not one the next run printed after it.
+    /// the last line that run printed, not one the run before or after it printed.
     pub(crate) fn scrubbed(self, sealed: &SealedValues) -> (LogText, LastRun) {
-        let ran = self
+        let total = self.frames.len();
+        let (from, to) = self.exit.map_or((0, total), |exit| {
+            (
+                exit.run_from.map_or(0, |after| total.saturating_sub(after)),
+                total.saturating_sub(exit.lines_after),
+            )
+        });
+        let run = self
             .frames
-            .len()
-            .saturating_sub(self.exit.map_or(0, |exit| exit.lines_after));
-        let last_line = match tail_excerpt(self.frames.iter().take(ran).cloned(), sealed) {
+            .get(from..to)
+            .unwrap_or_default()
+            .iter()
+            .cloned();
+        let last_line = match tail_excerpt(run, sealed) {
             LogText::Shown(excerpt) => excerpt.lines().last().cloned(),
             LogText::Withheld { .. } => None,
         };
@@ -675,12 +686,18 @@ async fn newest_lines(
                         cause: Vec::new(),
                     });
                 }
-                HistoryRow::Exit { exit_code, .. } => {
-                    exit.get_or_insert(Exit {
-                        code: exit_code,
-                        lines_after: newest.len(),
-                    });
-                }
+                HistoryRow::Exit { exit_code, .. } => match &mut exit {
+                    None => {
+                        exit = Some(Exit {
+                            code: exit_code,
+                            lines_after: newest.len(),
+                            run_from: None,
+                        });
+                    }
+                    Some(newer) => {
+                        newer.run_from.get_or_insert(newest.len());
+                    }
+                },
                 HistoryRow::Container(_) | HistoryRow::Gap { .. } | HistoryRow::Heartbeat => {}
             }
         }
