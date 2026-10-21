@@ -929,9 +929,10 @@ impl ConnectError {
         matches!(self, Self::Rpc(error) if error.budget_expired || error.routed_unanswered)
     }
 
-    /// A daemon sent this status itself, so the target was not silent.
+    /// A daemon sent this status itself, so the target was not silent. A call on
+    /// a closed session never left this client, so nothing replied to it.
     pub(crate) fn target_replied(&self) -> bool {
-        matches!(self, Self::Rpc(_)) && !self.unreplied()
+        matches!(self, Self::Rpc(error) if !error.session_closed) && !self.unreplied()
     }
 
     /// The call went out and no status came back: the client's connection dropped, its

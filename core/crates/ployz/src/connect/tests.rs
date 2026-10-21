@@ -909,6 +909,49 @@ fn only_a_target_reply_outlasts_a_later_silence() {
 }
 
 #[test]
+fn a_closed_session_does_not_outlast_a_later_silence() {
+    let closed = || {
+        ConnectError::Rpc(TransportError {
+            session_closed: true,
+            ..TransportError::from(tonic::Status::unavailable("transport error"))
+        })
+    };
+    let budget_spent = || {
+        ConnectError::Rpc(TransportError::budget_expired(
+            "target Machine RPC timed out",
+        ))
+    };
+    let routed_silence = || {
+        ConnectError::from(ployz_core::rpc::target_unanswered_status(&io::Error::from(
+            io::ErrorKind::TimedOut,
+        )))
+    };
+    let machine = MachineId::parse("b".repeat(32)).unwrap();
+    for silence in [budget_spent(), routed_silence()] {
+        // As `call_retried`: the closed session first, then the redialled target is silent.
+        let mut reply = None;
+        let error = keep_target_reply(&mut reply, closed());
+        assert!(!error.target_replied(), "no daemon sent it");
+        assert!(
+            !error.unreplied(),
+            "it never left, so it cannot have landed"
+        );
+        if error.target_replied() {
+            reply = Some(error);
+        }
+        let kept = keep_target_reply(&mut reply, silence);
+        assert!(kept.target_unanswered(), "{kept}");
+        let error = crate::cluster::answered_by(&machine, kept);
+        assert!(!on_closed_session(&error), "{error:?}");
+        assert_eq!(
+            error.code.retry(),
+            Retry::Now,
+            "the Deploy waits out the target"
+        );
+    }
+}
+
+#[test]
 fn a_named_context_without_a_config_is_not_found_rather_than_unconfigured() {
     let dir = tempfile::tempdir().unwrap();
     let config = dir.path().join("config.yaml");
@@ -955,6 +998,7 @@ async fn a_call_after_the_stream_closed_is_marked_and_stays_unavailable() {
     assert!(!closed.unanswered, "a call on a closed session never left");
     let connect = ConnectError::Rpc(closed);
     assert_eq!(connect.retry(), Retry::Now, "a redial opens a new stream");
+    assert!(!connect.target_replied(), "no daemon sent it");
     let error = rpc_error(connect);
     assert_eq!(error.code, RpcErrorCode::Unavailable);
     assert!(on_closed_session(&error), "{error:?}");
