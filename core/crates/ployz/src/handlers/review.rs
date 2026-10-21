@@ -116,7 +116,7 @@ pub(super) fn diff(root: &ArgMatches) -> Result<(), Error> {
                 from(Some(&change.row))
             ));
             for row in &change.settings {
-                for line in super::store::changed(row) {
+                for line in super::store::changed(row, &change.settings) {
                     crate::ui::stream(format_args!("  {line}{}", from(row.row.as_ref())));
                 }
             }
@@ -203,6 +203,13 @@ pub(super) fn discard(root: &ArgMatches) -> Result<(), Error> {
         version: matches.get_one::<String>("version").cloned(),
     };
     let store = store(root)?;
+    let staged = store
+        .read(&DiffQuery {
+            environment: discard.environment.clone(),
+        })
+        .map(|view| view.review_changes())
+        .unwrap_or_default();
+    let shown = |paths: &[String]| ployz_store::NodeChange::shown_paths(&staged, paths);
     let discarded = store
         .try_write(&discard)
         .map_err(|error| store.fail(with_refresh_hint(error, matches, "diff")))?;
@@ -229,6 +236,23 @@ pub(super) fn discard(root: &ArgMatches) -> Result<(), Error> {
             Some(path) if backs.is_empty() => source_of_create(&store, matches, path)?,
             _ => None,
         };
+        let at = path.as_ref().map(|path| {
+            let configs = store
+                .read(&ployz_store::ConfigsQuery {
+                    environment: discard.environment.clone(),
+                })
+                .map(|view| view.configs)
+                .unwrap_or_default();
+            ployz_store::NodeChange::shown_paths_by(&[path.to_string()], |id| {
+                ployz_store::NodeChange::config_named(&staged, id).or_else(|| {
+                    configs
+                        .iter()
+                        .find(|listing| listing.config.id.as_str() == id)
+                        .map(|listing| listing.config.name.clone())
+                })
+            })
+            .concat()
+        });
         return crate::ui::finish(&Next::new(&result, None), || {
             if let (Some(path), Some(service)) = (&path, &runs) {
                 crate::ui::stream(format_args!(
@@ -238,7 +262,7 @@ pub(super) fn discard(root: &ArgMatches) -> Result<(), Error> {
             } else if backs.is_empty() {
                 crate::ui::stream(format_args!(
                     "Nothing staged{} in {where_}; nothing to discard.",
-                    path.map_or_else(String::new, |path| format!(" at {path}"))
+                    at.map_or_else(String::new, |at| format!(" at {at}"))
                 ));
             } else {
                 crate::ui::stream(format_args!(
@@ -251,7 +275,10 @@ pub(super) fn discard(root: &ArgMatches) -> Result<(), Error> {
     let hint = next(matches, &["diff"]);
     crate::ui::finish(&Next::new(&result, Some(hint.clone())), || {
         match (&path, discarded.dropped.as_slice()) {
-            (Some(path), _) => crate::ui::stream(format_args!("Discarded {path} in {where_}.")),
+            (Some(path), _) => crate::ui::stream(format_args!(
+                "Discarded {} in {where_}.",
+                shown(&[path.to_string()]).concat()
+            )),
             (None, []) => {
                 crate::ui::stream(format_args!("Discarded every staged change in {where_}."))
             }
@@ -263,7 +290,7 @@ pub(super) fn discard(root: &ArgMatches) -> Result<(), Error> {
                 } else {
                     "changes"
                 },
-                dropped.join(", ")
+                shown(dropped).join(", ")
             )),
         }
         comes_back(&backs, saved);
@@ -370,12 +397,31 @@ fn summary(revision: &ployz_store::SavedRevision) -> String {
     if revision.predecessor.is_none() {
         return "first version".to_owned();
     }
+    let listed = |change: &ployz_store::NodeChange| {
+        change.lifecycle == ReviewLifecycleKind::Update && !change.settings.is_empty()
+    };
+    let updated: Vec<_> = revision
+        .changes
+        .iter()
+        .filter(|change| listed(change))
+        .cloned()
+        .collect();
+    let labels = ployz_store::NodeChange::labels(&updated);
     let changed: Vec<String> = revision
         .changes
         .iter()
         .flat_map(|change| {
-            if change.lifecycle == ReviewLifecycleKind::Update && !change.settings.is_empty() {
-                change.settings.iter().map(|row| row.path.clone()).collect()
+            if listed(change) {
+                change
+                    .settings
+                    .iter()
+                    .map(|row| {
+                        labels
+                            .get(&row.path)
+                            .cloned()
+                            .unwrap_or_else(|| row.path.clone())
+                    })
+                    .collect()
             } else {
                 vec![format!(
                     "{} ({})",
@@ -455,6 +501,7 @@ pub(super) fn history(root: &ArgMatches) -> Result<(), Error> {
     })?;
     if matches.get_flag("preview") {
         return crate::ui::finish(&preview, || {
+            let labels = ployz_store::NodeChange::labels(&preview.changes);
             for change in &preview.changes {
                 crate::ui::stream(format_args!(
                     "{} ({})",
@@ -464,13 +511,14 @@ pub(super) fn history(root: &ArgMatches) -> Result<(), Error> {
                 for row in &change.settings {
                     crate::ui::stream(format_args!(
                         "  {}: {} → {}",
-                        row.path,
+                        labels.get(&row.path).unwrap_or(&row.path),
                         super::store::shown(&row.before),
                         super::store::shown(&row.after)
                     ));
                 }
             }
-            for path in &preview.overwritten {
+            for path in ployz_store::NodeChange::shown_paths(&preview.changes, &preview.overwritten)
+            {
                 crate::ui::stream(format_args!("  overwrites draft {path}"));
             }
             crate::ui::stream(format_args!("Review version: {}", preview.version));
