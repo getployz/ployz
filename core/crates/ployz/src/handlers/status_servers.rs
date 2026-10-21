@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use clap::ArgMatches;
 use futures_util::{StreamExt, stream};
+use ipnet::Ipv4Net;
 use ployz_core::{
     ContainerAddress, ContainerId, CopyRotation, EnvironmentValues, LiveServices, MachineId,
     MachineName, MachineObservation, MachineTarget, MembershipObservation, Namespace,
@@ -305,7 +306,7 @@ fn judge(observed: Observed) -> Check {
         .filter(|machine| !down.contains(machine))
         .collect();
     if !unanswered.is_empty() {
-        check.unseen.push(Unseen::Unanswered(unanswered));
+        check.unseen.push(Unseen::Unanswered(unanswered.clone()));
     }
     let mut unreported = BTreeSet::new();
     let mut unread = ServicesByFact(Vec::new());
@@ -316,7 +317,15 @@ fn judge(observed: Observed) -> Check {
             Ok(read) => down.union(&read.down).copied().collect(),
             Err(_) => down.clone(),
         };
-        for (machine, addresses) in stale_addresses(&service, &routed, &unchecked) {
+        let owners: Vec<(Ipv4Net, MachineId)> = machines
+            .iter()
+            .filter(|observed| {
+                !unchecked.contains(&observed.machine.id)
+                    && !unanswered.contains(&observed.machine.id)
+            })
+            .map(|observed| (observed.machine.subnet.into(), observed.machine.id))
+            .collect();
+        for (machine, addresses) in stale_addresses(&service, &routed, &unchecked, &owners) {
             let attention =
                 stale_address(service.identity.clone(), check.name(&machine), addresses);
             check.attention.push(attention);
@@ -409,16 +418,30 @@ fn judge(observed: Observed) -> Check {
     check
 }
 
+/// Addresses each live Server routes for this Service that no owner reports. A copy no
+/// Machine lists counts only when its address falls in the subnet of a Machine that
+/// answered and is up, since only that Machine could still report it.
 fn stale_addresses(
     service: &ServiceObservation,
     routed: &BTreeMap<MachineId, RoutedAddresses>,
     down: &BTreeSet<MachineId>,
+    owners: &[(Ipv4Net, MachineId)],
 ) -> BTreeMap<MachineId, BTreeSet<ContainerAddress>> {
     let reported: BTreeMap<ContainerId, ContainerAddress> = serving_containers(&service.containers)
         .iter()
         .filter(|serving| !down.contains(&serving.as_observation().machine_id))
         .map(|serving| (serving.as_observation().container_id, serving.address()))
         .collect();
+    let listed: BTreeSet<ContainerId> = service
+        .containers
+        .iter()
+        .map(|copy| copy.as_observation().container_id)
+        .collect();
+    let removed = |copy: &ContainerId, address: &ContainerAddress| {
+        !listed.contains(copy)
+            && !reported.values().any(|reported| reported == address)
+            && owners.iter().any(|(subnet, _)| subnet.contains(&address.0))
+    };
     routed
         .iter()
         .filter(|(machine, _)| !down.contains(machine))
@@ -427,10 +450,9 @@ fn stale_addresses(
                 .routes
                 .get(&service.identity)?
                 .iter()
-                .filter(|(copy, address)| {
-                    reported
-                        .get(*copy)
-                        .is_some_and(|reported| reported != *address)
+                .filter(|(copy, address)| match reported.get(*copy) {
+                    Some(reported) => reported != *address,
+                    None => removed(copy, address),
                 })
                 .map(|(_, address)| *address)
                 .collect();
