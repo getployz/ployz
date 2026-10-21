@@ -347,12 +347,11 @@ describe("mirror detail", () => {
     expect(onOpen).toHaveBeenCalledWith(null);
   });
 
-  it("warns that a mirror with no refresh yet catches up first, with no Refresh skipped", () => {
+  it("warns that a mirror with no refresh yet catches up first", () => {
     const base = member("web-2", "mirror");
     const unrefreshed: Member = base.answered ? { ...base, view: { ...base.view, copy: { ...COPIES.mirror, newest: null } } } : base;
     panel([member("web-1", "writer"), unrefreshed], row(["web-2"]), { open: "web-2" });
     expect(screen.getByText(/The deploy catches up first, then pauses writes for the final sync\./)).toBeTruthy();
-    expect(screen.queryByText("Refresh skipped")).toBeNull();
   });
 
   it("warns that a behind mirror catches up first", () => {

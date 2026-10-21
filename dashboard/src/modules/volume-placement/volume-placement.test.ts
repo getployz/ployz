@@ -153,6 +153,12 @@ describe("placementChanges", () => {
     expect(steps(members, row(["web-2"], { primary: "web-2" }))).toEqual([{ kind: "restore", args: { from: "web-2" } }]);
   });
 
+  it("restores over the first Server that didn't answer, not one presumed because it lacks a capability, which may hold only a copy", () => {
+    const lacking: Member = { machine: { id: id("web-3"), name: "web-3" }, answered: false, lack: "Mirror refresh is not in Ployz 0.3.0 on web-3." };
+    const [change] = changes([member("web-1", "unanswered"), mirrorAsOf("web-2", at), lacking], row(["web-2"], { primary: "web-2" }));
+    expect(change).toMatchObject({ kind: "move", how: "restore", from: { name: "web-1" } });
+  });
+
   it("treats a copy its Server records as an old copy as detached, whatever the dashboard lists", () => {
     expect(detachedCopies(observePlacement([member("web-2", "writer"), member("web-1", "old")])).map((copy) => copy.server.name)).toEqual(["web-1"]);
     expect(detachedCopies(observePlacement([member("web-2", "writer"), member("web-1", "mirror")]))).toEqual([]);
@@ -385,6 +391,12 @@ describe("editPlacement", () => {
     const members = [member("web-1", "writer"), member("web-2", "mirror"), pooled("web-3")];
     expect(editPlacement(target(members, row(["web-2"])), { kind: "move", to: id("web-2") })).toEqual({ primary: id("web-2"), mirrors: [], deletes: [] });
     expect(editPlacement(target(members, row(["web-2"])), { kind: "move", to: id("web-3") })).toEqual({ primary: id("web-3"), mirrors: [id("web-2")], deletes: [] });
+  });
+
+  it("stages an edit over the first Server that didn't answer, not one presumed because it lacks a capability", () => {
+    const lacking: Member = { machine: { id: id("web-3"), name: "web-3" }, answered: false, lack: "Mirror refresh is not in Ployz 0.3.0 on web-3." };
+    const members = [member("web-1", "unanswered"), mirrorAsOf("web-2", at), lacking];
+    expect(editPlacement(target(members, row(["web-2"])), { kind: "remove_mirror", server: id("web-2") })).toEqual({ primary: id("web-1"), mirrors: [], deletes: [] });
   });
 
   it("builds on what is already staged", () => {
