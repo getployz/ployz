@@ -412,6 +412,15 @@ describe("editPlacement", () => {
     expect(target([member("web-1", "unanswered"), mirrorAsOf("web-2", at), lacking], row(["web-2"])).primary).toBe(id("web-3"));
   });
 
+  it("stages a Copies edit on the holder main stages, not a Server whose report is on its way, so it plans no move once reports settle", () => {
+    // The observer lists the frame's Servers, a silent one among them, and appends one it names only by id.
+    const unlisted: Member = { machine: { id: id("web-3"), name: id("web-3") }, answered: false, incomplete: true };
+    const staged = editPlacement(target([member("web-1", "unanswered"), mirrorAsOf("web-2", at), unlisted], row(["web-2"])), { kind: "remove_mirror", server: id("web-2") });
+    const settled = [member("web-1", "unanswered"), mirrorAsOf("web-2", at), pooled("web-3")];
+    expect(changes(settled, { ...row(["web-2"]), staged }).map((change) => change.kind)).toEqual(["remove_mirror"]);
+    expect(staged).toEqual({ primary: id("web-1"), mirrors: [], deletes: [] });
+  });
+
   it("builds on what is already staged", () => {
     const members = [member("web-1", "writer"), member("web-2", "mirror"), pooled("web-3")];
     const staged = editPlacement(target(members, row(["web-2"], { primary: "web-3", mirrors: ["web-2"] })), { kind: "remove_mirror", server: id("web-2") });
