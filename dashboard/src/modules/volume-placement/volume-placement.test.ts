@@ -311,6 +311,12 @@ describe("dropChange", () => {
     expect(drop(members, placement, "move")).toEqual({ primary: id("web-1"), mirrors: [id("web-2")], deletes: [id("web-3")] });
   });
 
+  it("returns a failed move with no Server it left to the presumed primary, never a Server the Volume records as a mirror", () => {
+    const members = [member("web-2", "unanswered"), member("web-1", "unanswered"), pooled("web-3"), pooled("web-4")];
+    expect(drop(members, row(["web-2"], { primary: "web-3", mirrors: ["web-2", "web-4"] }), "move"))
+      .toEqual({ primary: id("web-1"), mirrors: [id("web-2"), id("web-4")], deletes: [] });
+  });
+
   describe("a change the Servers no longer show, since it landed despite the failure", () => {
     const landed = { kind: "delete_copy", server: id("web-3") } as const;
     const members = [member("web-1", "writer"), member("web-2", "mirror"), pooled("web-3"), pooled("web-4")];
@@ -398,6 +404,11 @@ describe("editPlacement", () => {
     const members = [lacking, member("web-1", "unanswered"), mirrorAsOf("web-2", at)];
     expect(editPlacement(target(members, row(["web-2", "web-3"])), { kind: "remove_mirror", server: id("web-2") }))
       .toEqual({ primary: id("web-1"), mirrors: [id("web-3")], deletes: [] });
+  });
+
+  it("stages an edit over a Server that lacks a capability rather than a silent one, when neither is a recorded mirror", () => {
+    const lacking: Member = { machine: { id: id("web-3"), name: "web-3" }, answered: false, lack: "Mirror refresh is not in Ployz 0.3.0 on web-3." };
+    expect(target([member("web-1", "unanswered"), mirrorAsOf("web-2", at), lacking], row(["web-2"])).primary).toBe(id("web-3"));
   });
 
   it("builds on what is already staged", () => {
