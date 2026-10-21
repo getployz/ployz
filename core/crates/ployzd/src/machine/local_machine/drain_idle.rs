@@ -51,16 +51,17 @@ pub(super) fn holds_connection(
 /// inbound connection, after adding their listening ports to `listening`. A
 /// dual-stack listener sits in `tcp6` while its IPv4 connections may sit in `tcp`, so
 /// the listening ports come from every table. An outbound connection's local port is
-/// ephemeral and not one the namespace listens on. A copy may close a listener
+/// usually ephemeral and not one the namespace listens on. A copy may close a listener
 /// before the drain begins and still answer what it accepted, so a port below the
 /// ephemeral range counts unseen, and before any listener is seen every port does.
 /// A connection from loopback is the copy talking to itself, as nginx to php-fpm,
-/// so it holds nothing.
+/// so it holds nothing, and a listener on loopback, such as Docker's DNS server on
+/// 127.0.0.11, only ever accepts those, so it is not counted as one.
 fn serves_connection(tables: &[&str], listening: &mut BTreeSet<u16>) -> bool {
     let rows = || tables.iter().flat_map(|table| sockets(table));
     listening.extend(
         rows()
-            .filter(|socket| socket.state == LISTEN)
+            .filter(|socket| socket.state == LISTEN && !from_loopback(socket.local))
             .map(|socket| socket.port),
     );
     rows().any(|socket| {
@@ -73,6 +74,7 @@ fn serves_connection(tables: &[&str], listening: &mut BTreeSet<u16>) -> bool {
 }
 
 struct Socket<'table> {
+    local: &'table str,
     port: u16,
     remote: &'table str,
     state: &'table str,
@@ -82,9 +84,10 @@ fn sockets(table: &str) -> impl Iterator<Item = Socket<'_>> {
     table.lines().skip(1).filter_map(|row| {
         let mut columns = row.split_whitespace().skip(1);
         let (local, remote, state) = (columns.next()?, columns.next()?, columns.next()?);
-        let (_, port) = local.rsplit_once(':')?;
+        let (local, port) = local.rsplit_once(':')?;
         let (remote, _) = remote.rsplit_once(':')?;
         Some(Socket {
+            local,
             port: u16::from_str_radix(port, 16).ok()?,
             remote,
             state,
@@ -128,6 +131,9 @@ mod tests {
     const TCP_INBOUND_8080: &str = "   1: 0A010005:1F90 0A010002:C350 01 00000000:00000000 02:000AFC7E 00000000     0        0 1002 1 0000000000000000 20 4 30 10 -1";
     const TCP6_LISTENER_80: &str = "   0: 00000000000000000000000000000000:0050 00000000000000000000000000000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 2001 1 0000000000000000 100 0 0 10 0";
     const TCP6_INBOUND_80: &str = "   1: 0000000000000000FFFF00000501010A:0050 0000000000000000FFFF00000201010A:D431 01 00000000:00000000 02:000AFC7E 00000000     0        0 2002 1 0000000000000000 20 4 30 10 -1";
+    /// Docker's DNS server, which listens on 127.0.0.11 in every copy on a user-defined
+    /// bridge such as `ployz`.
+    const TCP_DOCKER_DNS: &str = "   9: 0B00007F:AD4B 00000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 1009 1 0000000000000000 100 0 0 10 0";
     /// The copy's own connection to a database on 10.1.0.9:5432, from an ephemeral port.
     const TCP_OUTBOUND: &str = "   2: 0A010005:A2C4 0A010009:1538 01 00000000:00000000 02:000AFC7E 00000000     0        0 1003 1 0000000000000000 20 4 30 10 -1";
 
@@ -211,7 +217,7 @@ mod tests {
 
     #[test]
     fn drain_idle_counts_a_connection_accepted_before_the_listener_closed() {
-        let tcp = table(TCP_HEADER, &[TCP_INBOUND_8080]);
+        let tcp = table(TCP_HEADER, &[TCP_DOCKER_DNS, TCP_INBOUND_8080]);
         assert!(serves(&[&tcp, TCP6_HEADER]));
     }
 
@@ -229,9 +235,35 @@ mod tests {
     }
 
     #[test]
-    fn drain_idle_counts_an_outside_connection_of_a_copy_that_never_listened() {
-        let tcp = table(TCP_HEADER, &[TCP_OUTBOUND]);
+    fn drain_idle_counts_a_connection_above_the_ephemeral_floor_whose_only_listener_closed() {
+        let tcp = table(
+            TCP_HEADER,
+            &[
+                TCP_DOCKER_DNS,
+                // A request accepted on 0.0.0.0:40000, whose listener has closed.
+                "   1: 0A010005:9C40 0A010002:C350 01 00000000:00000000 02:000AFC7E 00000000     0        0 1002 1 0000000000000000 20 4 30 10 -1",
+            ],
+        );
         assert!(serves(&[&tcp, TCP6_HEADER]));
+    }
+
+    #[test]
+    fn drain_idle_counts_an_outside_connection_of_a_copy_that_never_listened() {
+        let tcp = table(TCP_HEADER, &[TCP_DOCKER_DNS, TCP_OUTBOUND]);
+        assert!(serves(&[&tcp, TCP6_HEADER]));
+    }
+
+    #[test]
+    fn drain_idle_tells_inbound_from_outbound_at_the_ephemeral_floor() {
+        let at = |port: &str, row: &str| {
+            format!(
+                "   {row}: 0A010005:{port} 0A010002:C350 01 00000000:00000000 02:000AFC7E 00000000     0        0 1 1 0000000000000000 20 4 30 10 -1"
+            )
+        };
+        let below = table(TCP_HEADER, &[TCP_LISTENER_8080, &at("7FFF", "1")]);
+        assert!(serves(&[&below, TCP6_HEADER]), "32767 is inbound");
+        let floor = table(TCP_HEADER, &[TCP_LISTENER_8080, &at("8000", "1")]);
+        assert!(!serves(&[&floor, TCP6_HEADER]), "32768 is outbound");
     }
 
     #[test]
@@ -239,6 +271,7 @@ mod tests {
         let tcp = table(
             TCP_HEADER,
             &[
+                TCP_DOCKER_DNS,
                 "   1: 0A010005:A2C5 0A010009:1538 02 00000000:00000000 01:00000064 00000000     0        0 1 1 0000000000000000 20 4 30 10 -1",
                 "   2: 0100007F:B3A0 0100007F:2328 01 00000000:00000000 02:000AFC7E 00000000     0        0 2 1 0000000000000000 20 4 30 10 -1",
             ],
