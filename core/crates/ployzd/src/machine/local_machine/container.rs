@@ -461,10 +461,11 @@ impl LocalMachine {
             .await?))
     }
 
-    /// Ends once the copy holds no inbound connection, one from off its loopback on a
-    /// port it listened on at any read of this drain. A copy with no listener reads
-    /// idle at once. A copy whose sockets cannot be read never reads idle, so its drain
-    /// waits the full cap.
+    /// Ends once the copy holds no connection it may still answer, per
+    /// `drain_idle::holds_connection`, with the listening ports remembered across the
+    /// drain's reads. A copy with no connection from off its loopback reads idle at
+    /// once. A copy whose sockets cannot be read never reads idle, so its drain waits
+    /// the full cap.
     ///
     /// Every Service copy joins the Ployz network, so its pid's tables list only its
     /// own sockets. A copy in the host's namespace would list the host's, and read

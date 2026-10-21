@@ -21,12 +21,12 @@ const LISTEN: &str = "0A";
 /// that listener closed.
 const FIRST_EPHEMERAL_PORT: u16 = 32768;
 
-/// Whether the namespace `pid` lives in, under the `proc_root` procfs mount, has an
-/// inbound TCP connection the copy may still answer: one from off the namespace's
-/// loopback, on a port in `listening` or below the ephemeral range, or on any port
-/// while `listening` is empty. This read adds the ports it sees listening to `listening`, so a drain that keeps
-/// the set across its reads still counts a port whose listener closed while a
-/// connection to it lives.
+/// Whether the namespace `pid` lives in, under the `proc_root` procfs mount, has a
+/// TCP connection the copy may still answer: one from off the namespace's loopback,
+/// on a port in `listening` or below the ephemeral range, or on any port while
+/// `listening` is empty. This read adds the ports it sees listening to `listening`,
+/// so a drain that keeps the set across its reads still counts a port whose
+/// listener closed while a connection to it lives.
 ///
 /// # Errors
 ///
@@ -235,6 +235,21 @@ mod tests {
     }
 
     #[test]
+    fn drain_idle_finds_nothing_in_a_copy_that_never_listened_and_only_dials_or_talks_to_itself() {
+        let tcp = table(
+            TCP_HEADER,
+            &[
+                "   1: 0A010005:A2C5 0A010009:1538 02 00000000:00000000 01:00000064 00000000     0        0 1 1 0000000000000000 20 4 30 10 -1",
+                "   2: 0100007F:B3A0 0100007F:2328 01 00000000:00000000 02:000AFC7E 00000000     0        0 2 1 0000000000000000 20 4 30 10 -1",
+            ],
+        );
+        assert!(
+            !serves(&[&tcp, TCP6_HEADER]),
+            "SYN_SENT and loopback hold nothing"
+        );
+    }
+
+    #[test]
     fn drain_idle_finds_nothing_in_a_copy_without_sockets() {
         assert!(!serves(&[TCP_HEADER, TCP6_HEADER]));
     }
@@ -314,7 +329,7 @@ mod tests {
     }
 
     #[test]
-    fn drain_idle_counts_a_live_request_whose_client_half_closed() {
+    fn drain_idle_reads_a_live_half_closed_request_in_an_answering_state() {
         use std::io::{Read, Write};
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
