@@ -1,4 +1,4 @@
-use std::{io, net::SocketAddr, pin::Pin, time::Duration};
+use std::{io, net::SocketAddr, pin::Pin, sync::Arc, time::Duration};
 
 use bytes::Bytes;
 use futures_util::{Stream, StreamExt, TryStreamExt};
@@ -11,6 +11,11 @@ use tokio_util::{
 };
 
 use super::Error;
+
+/// Queries and transactions this client keeps in flight at once. Corrosion sheds
+/// every request past 128 in flight on a route with an immediate 503, and a
+/// Deploy's rotation guards can fan out far more reads than that.
+const MAX_IN_FLIGHT: usize = 32;
 
 #[derive(Clone, Debug, Serialize)]
 pub(crate) struct Statement {
@@ -31,6 +36,7 @@ impl Statement {
 pub(crate) struct ApiClient {
     base_url: Url,
     client: Client,
+    in_flight: Arc<tokio::sync::Semaphore>,
 }
 
 impl ApiClient {
@@ -70,7 +76,11 @@ impl ApiClient {
             .default_headers(headers)
             .retry(retry)
             .build()?;
-        Ok(Self { base_url, client })
+        Ok(Self {
+            base_url,
+            client,
+            in_flight: Arc::new(tokio::sync::Semaphore::new(MAX_IN_FLIGHT)),
+        })
     }
 
     pub(crate) async fn execute(
@@ -80,6 +90,7 @@ impl ApiClient {
         let statements = statements.into_iter().collect::<Vec<_>>();
         // ponytail: finite query responses are buffered; stream events if store size makes this measurable.
         let (status, body) = super::within_io_timeout(async {
+            let _permit = self.in_flight.acquire().await.expect("never closed");
             let response = self
                 .client
                 .post(self.base_url.join("v1/transactions").expect("static path"))
@@ -126,6 +137,7 @@ impl ApiClient {
 
     pub(crate) async fn query(&self, statement: Statement) -> Result<QueryResult, Error> {
         let (status, body) = super::within_io_timeout(async {
+            let _permit = self.in_flight.acquire().await.expect("never closed");
             let response = self
                 .client
                 .post(self.base_url.join("v1/queries").expect("static path"))
