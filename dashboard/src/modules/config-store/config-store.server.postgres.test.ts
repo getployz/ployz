@@ -1367,9 +1367,9 @@ it.live(
   "a Server already gone from the Cluster loses Cloud's row and its device keys while other Servers keep the Cluster",
   () =>
     Effect.gen(function* () {
-      const layer = yield* cloudLayer();
+      const cloud = yield* cloudServices();
       const other = ids.machineId("1");
-      const after = yield* removeForgottenServer([other]).pipe(Effect.provide(layer));
+      const after = yield* removeForgottenServer([other]).pipe(Effect.provide(cloud));
       assert.strictEqual(after.settled?.state, "succeeded");
       assert.deepStrictEqual(after.settled?.result, {
         resetWarning: "its reset couldn't be confirmed: it was already gone from the Cluster",
@@ -1386,8 +1386,8 @@ it.live(
   "the last Server already gone from the Cluster keeps Cloud's hold, as its reset couldn't be confirmed",
   () =>
     Effect.gen(function* () {
-      const layer = yield* cloudLayer();
-      const after = yield* removeForgottenServer([]).pipe(Effect.provide(layer));
+      const cloud = yield* cloudServices();
+      const after = yield* removeForgottenServer([]).pipe(Effect.provide(cloud));
       assert.strictEqual(after.settled?.state, "succeeded");
       assert.strictEqual(after.settled?.result?.release.kind, "kept");
       assert.deepStrictEqual(after.servers, [ids.machineId("0")]);
