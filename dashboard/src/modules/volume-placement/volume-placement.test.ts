@@ -386,6 +386,18 @@ describe("recovery", () => {
     expect(found).toMatchObject({ kind: "forget", down: [{ name: "web-1" }] });
   });
 
+  const unlisted = (server: string): Member => ({ machine: { id: id(server), name: id(server) }, answered: false, incomplete: true });
+
+  it("waits for a Server the frame lists only by id, with no Forget: its report is incomplete, not silence", () => {
+    const found = recover([unlisted("web-1"), mirrorAsOf("web-2", at)], row(["web-2"]));
+    expect(found).toEqual({ kind: "wait", mirror: { id: id("web-2"), name: "web-2" }, lostAfter: at });
+  });
+
+  it("still asks to forget a silent Server while another's report is incomplete, naming only the silent one", () => {
+    const found = recover([member("web-1", "unanswered"), mirrorAsOf("web-2", at), unlisted("web-3")], row(["web-2"]));
+    expect(found).toMatchObject({ kind: "forget", down: [{ name: "web-1" }] });
+  });
+
   it("refuses the restore with the lacking Server's upgrade sentence once nothing is silent", () => {
     expect(recover([mirrorAsOf("web-2", at), lacking("web-3")], row(["web-2"])))
       .toMatchObject({ kind: "restore", stage: { refused: "Volume move needs a newer Ployz on web-3." } });

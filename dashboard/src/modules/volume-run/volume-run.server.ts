@@ -1358,7 +1358,7 @@ export const observeVolumeMembers = Effect.fn("VolumeRun.observeMembers")(functi
   const frame = yield* session.watchFirstFrame(RUNTIME_FRAME_TIMEOUT_MS).pipe(clusterRead);
   // A Docker-only Machine holds no copy and may not serve the verb, so it must not block the run.
   const managed = frame.machines.filter((observed) => observed.storage?.state !== "stateless");
-  const unlisted = frame.incomplete_ids.machines.map((id): Member => ({ machine: { id, name: id }, answered: false }));
+  const unlisted = frame.incomplete_ids.machines.map((id): Member => ({ machine: { id, name: id }, answered: false, incomplete: true }));
   const listed = yield* Effect.forEach(managed, ({ machine }) => {
     const ref: MachineRef = { id: machine.id, name: machine.name };
     const server = { name: machine.name, daemonVersion: machine.runtime.daemon_version };

@@ -104,6 +104,8 @@ export type Member =
       readonly machine: { readonly id: MachineId; readonly name: MachineName };
       readonly answered: false;
       readonly lack?: string;
+      /** The frame lists the Machine only by id: its report hasn't arrived, which is not the same as not answering. */
+      readonly incomplete?: true;
     };
 export type AnsweredMember = Extract<Member, { answered: true }>;
 

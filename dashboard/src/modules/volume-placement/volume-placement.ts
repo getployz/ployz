@@ -331,6 +331,8 @@ export function mirrorsAfter(mirrors: readonly MachineId[], change: PlacementCha
 
 export type Recovery =
   | { readonly kind: "forget"; readonly down: readonly MachineRef[]; readonly mirror: MachineRef; readonly lostAfter: Date | null }
+  /** A member's report is incomplete: not silence, so nothing to forget yet and nothing to stage. */
+  | { readonly kind: "wait"; readonly mirror: MachineRef; readonly lostAfter: Date | null }
   | {
     readonly kind: "restore";
     readonly mirror: MachineRef;
@@ -352,8 +354,10 @@ export function recovery(
   const copy = observed.copies.find((each) => each.kind === "slot" && applied.includes(each.server.id));
   if (copy === undefined) return null;
   const { server: mirror, newest: lostAfter } = copy;
-  const silent = members.filter((member) => !member.answered && member.lack === undefined).map((member) => member.machine);
+  const unanswered = members.filter((member): member is Extract<Member, { answered: false }> => !member.answered && member.lack === undefined);
+  const silent = unanswered.filter((member) => member.incomplete === undefined).map((member) => member.machine);
   if (silent.length > 0) return { kind: "forget", down: silent, mirror, lostAfter };
+  if (unanswered.length > 0) return { kind: "wait", mirror, lostAfter };
   if (row?.staged?.primary === mirror.id) return null;
   return { kind: "restore", mirror, lostAfter, stage: restoreStage(volume, members, mirror, applied, accepting, owed, floorless) };
 }

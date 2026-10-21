@@ -205,6 +205,16 @@ describe("VolumeCopiesPanel", () => {
     expect(screen.getByRole<HTMLButtonElement>("button", { name: "Use mirror" }).disabled).toBe(true);
   });
 
+  it("waits for a Server's report when the frame lists it only by id, with no Forget link and no Use mirror", () => {
+    const unlisted: Member = { machine: { id: id("web-1"), name: id("web-1") }, answered: false, incomplete: true };
+    panel([unlisted, mirrorAsOf("web-2", fiveAgo())], row(["web-2"]));
+    expect(screen.getByText("Waiting for every server's report")).toBeTruthy();
+    expect(screen.getByText("The mirror on web-2 can take over once every server has reported.", { exact: false })).toBeTruthy();
+    expect(screen.queryByText(/not answering/)).toBeNull();
+    expect(screen.queryByRole("link")).toBeNull();
+    expect(useMirror()).toBeNull();
+  });
+
   it("says the mirror's Server needs a newer Ployz instead of offering a restore the Deploy refuses", () => {
     panel([mirrorAsOf("web-2", fiveAgo())], row(["web-2"]), { floorless: ["web-2"] });
     expect(screen.getByText(/Using a mirror needs a newer Ployz on web-2\.$/)).toBeTruthy();
