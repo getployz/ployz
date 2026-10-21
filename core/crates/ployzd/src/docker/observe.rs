@@ -7,9 +7,9 @@ use std::{
 use bollard::query_parameters::EventsOptionsBuilder;
 use futures_util::StreamExt;
 use ployz_core::{
-    CADDY_ADMIN_ENV, ContainerId, ContainerKind, ContainerObservation, ContainerRuntimeObservation,
-    CopyRole, DockerVolume, DockerVolumeName, DockerVolumeStorageObservation, LocalMachinePhase,
-    MIRROR_ROOT, VolumeInventory,
+    CADDY_ADMIN_ENV, ContainerId, ContainerKind, ContainerObservation, CopyRole, DockerVolume,
+    DockerVolumeName, DockerVolumeStorageObservation, LocalMachinePhase, MIRROR_ROOT,
+    VolumeInventory,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -571,14 +571,9 @@ fn stranded_ingress(observations: &[ContainerObservation], complete: bool) -> Op
         observation.kind == ContainerKind::ServiceContainer
             && crate::ingress::is_system_ingress(observation)
     });
-    let at_rest = ingresses.clone().all(|observation| {
-        matches!(
-            observation.runtime,
-            ContainerRuntimeObservation::Created
-                | ContainerRuntimeObservation::Exited { .. }
-                | ContainerRuntimeObservation::Dead
-        )
-    });
+    let at_rest = ingresses
+        .clone()
+        .all(|observation| crate::ingress::at_rest(&observation.runtime));
     let newest = ingresses
         .max_by_key(|observation| (observation.created_at_unix_nanos, observation.container_id))?;
     at_rest.then_some(newest.container_id)

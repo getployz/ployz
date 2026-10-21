@@ -166,16 +166,16 @@ where
     .await
 }
 
-/// Render and apply one already-derived projection through Caddy.
+/// Render one already-derived projection and load it when Caddy runs, returning the
+/// Caddyfile to persist.
 ///
 /// # Errors
 ///
-/// Returns a filesystem, validation, or acknowledged-load error.
-pub(crate) async fn reconcile<A: CaddyAdmin>(
+/// Returns a validation or acknowledged-load error.
+pub(crate) async fn load<A: CaddyAdmin>(
     projection: &IngressProjection,
-    config_file: &Path,
     admin: Option<&A>,
-) -> Result<(), Error> {
+) -> Result<String, Error> {
     let timestamp = Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true);
     let caddyfile = render_caddyfile(projection, &timestamp);
     tracing::info!(routes = %route_summary(projection), "ingress config");
@@ -183,11 +183,10 @@ pub(crate) async fn reconcile<A: CaddyAdmin>(
         let json = admin.adapt(&caddyfile).await?;
         admin.load(&json).await?;
     }
-    write_caddyfile(config_file, &caddyfile)?;
-    Ok(())
+    Ok(caddyfile)
 }
 
-fn write_caddyfile(path: &Path, caddyfile: &str) -> Result<(), Error> {
+pub(crate) fn write_caddyfile(path: &Path, caddyfile: &str) -> Result<(), Error> {
     let directory = path
         .parent()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "Caddyfile has no parent"))?;
@@ -269,14 +268,14 @@ https:// {{\n\
 }}\n"
     );
     if projection.sites.iter().any(|site| {
-        site.route(HttpProtocol::Http).is_some()
+        site.proxied(HttpProtocol::Http).is_some()
             || site.challenge().is_some()
-            || (site.route(HttpProtocol::Https).is_some() && site.material().is_some())
+            || site.proxied(HttpProtocol::Https).is_some()
     }) {
         output.push_str("\n# Sites generated from Service ports.\n");
     }
     for site in &projection.sites {
-        let https = site.material().zip(site.route(HttpProtocol::Https));
+        let https = site.https();
         let published = |endpoints| {
             let publication = site
                 .publication
@@ -291,7 +290,7 @@ https:// {{\n\
         };
         // An https-only hostname redirects http to https; the challenge and verify probe stay on http.
         // A challenge-only http site publishes nothing else, so it answers like the catch-all.
-        let http = match (site.route(HttpProtocol::Http), https) {
+        let http = match (site.proxied(HttpProtocol::Http), https) {
             (Some(endpoints), _) => Some((published(endpoints), proxy(endpoints))),
             // The redirect's trace reports the https route it sends visitors to.
             (None, Some((_, endpoints))) => {
@@ -341,7 +340,7 @@ fn route_summary(projection: &IngressProjection) -> String {
     let mut summary = String::new();
     for site in &projection.sites {
         for (protocol, scheme) in [(HttpProtocol::Http, "http"), (HttpProtocol::Https, "https")] {
-            let Some(endpoints) = site.route(protocol) else {
+            let Some(endpoints) = site.proxied(protocol) else {
                 continue;
             };
             let upstreams = endpoints

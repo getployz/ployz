@@ -2939,3 +2939,59 @@ async fn an_operator_endpoint_reaches_this_machines_wireguard_and_never_names_it
     assert_eq!(plane.await.unwrap(), [(known, selected.endpoint)]);
     std::fs::remove_dir_all(data_dir).ok();
 }
+
+mod read_routed_addresses {
+    use ployz_core::{
+        ContainerAddress, QualifiedService, ReadRoutedAddressesRequest, RoutedAddresses,
+    };
+    use tokio::sync::watch;
+
+    use super::*;
+    use crate::ingress::PublishedRoutes;
+
+    fn service() -> MachineService {
+        let dir = std::env::temp_dir().join(format!("ployzd-routed-{}", MachineId::random()));
+        let store = RecordOwner::spawn(LocalMachineStore::open(&dir).unwrap()).unwrap();
+        MachineService::with_cluster(store, None)
+    }
+
+    async fn read(service: &MachineService) -> RoutedAddresses {
+        let request = op::ReadRoutedAddresses::into_request(ReadRoutedAddressesRequest {});
+        service
+            .read_routed_addresses(Request::new(request.encode().unwrap()))
+            .await
+            .unwrap()
+            .into_inner()
+            .decode_response()
+            .unwrap()
+            .decode::<op::ReadRoutedAddresses>()
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_proxy_that_never_published_claims_no_address() {
+        assert_eq!(read(&service()).await, RoutedAddresses::default());
+    }
+
+    #[tokio::test]
+    async fn read_answers_the_addresses_the_proxy_last_applied() {
+        let web = QualifiedService::parse("app/web").unwrap();
+        let copy = ContainerId::parse("a".repeat(64)).unwrap();
+        let (publishes, published) = watch::channel(PublishedRoutes::default());
+        let service = MachineService {
+            published_routes: published,
+            ..service()
+        };
+        let routed = |octet: u8| {
+            BTreeMap::from([(
+                web.clone(),
+                BTreeMap::from([(copy, ContainerAddress([10, 210, 2, octet].into()))]),
+            )])
+        };
+        for octet in [2, 3] {
+            publishes.send_modify(|published| published.addresses = Some(routed(octet)));
+        }
+
+        assert_eq!(read(&service).await.routes, Some(routed(3)));
+    }
+}

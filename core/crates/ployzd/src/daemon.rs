@@ -302,6 +302,8 @@ impl Daemon {
         let running_builds = builds.running_builds();
         builds.follow(local.watch());
         let (endpoint_chooser, endpoint_choices) = tokio::sync::mpsc::channel(8);
+        let (route_publishes, published_routes) =
+            tokio::sync::watch::channel(crate::ingress::PublishedRoutes::default());
         let machine_api = MachineApi::builder(local.clone())
             .with_endpoint_chooser(endpoint_chooser)
             .with_volume_plugin(plugin.clone())
@@ -315,6 +317,7 @@ impl Daemon {
             .with_optional_containers(containers.clone())
             .with_observe_socket(observe_socket)
             .with_image_ingest(Arc::clone(&ingest))
+            .with_published_routes(published_routes.clone())
             .build();
 
         let rpc = Server::builder()
@@ -347,8 +350,6 @@ impl Daemon {
         let socket_path = config.socket.clone();
         let ingress_admin = corrosion.as_ref().map(RunningCorrosion::admin_client);
         let boot_admin = corrosion.as_ref().map(RunningCorrosion::admin_client);
-        let (route_publishes, published_routes) =
-            tokio::sync::watch::channel(crate::ingress::PublishedRoutes::default());
         let local_for_servers = local.clone();
         let shutdown_for_servers = shutdown.clone();
         let servers = tokio::spawn(async move {

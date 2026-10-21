@@ -1,15 +1,13 @@
-//! The Server check of `ployz status`: no Server answering its one connection, each Down
-//! Machine, and each live Machine whose proxy lacks a Service's In copies or still routes
-//! its Out or Held ones. What the check could not see is a warning, never an all-clear.
-
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use clap::ArgMatches;
 use futures_util::{StreamExt, stream};
+use ipnet::Ipv4Net;
 use ployz_core::{
-    ContainerId, CopyRotation, EnvironmentValues, LiveServices, MachineId, MachineName,
-    MachineObservation, MembershipObservation, Namespace, QualifiedService, RoutesRead, RpcError,
-    ServiceContainer, ServiceObservation, Unacked, serving_containers,
+    ContainerAddress, ContainerId, CopyRotation, EnvironmentValues, LiveServices, MachineId,
+    MachineName, MachineObservation, MachineTarget, MembershipObservation, Namespace,
+    QualifiedService, ReadRoutedAddressesRequest, RoutedAddresses, RoutesRead, RpcError,
+    RpcErrorCode, ServiceContainer, ServiceObservation, Unacked, op, serving_containers,
 };
 use ployz_store::{DeploymentStatus, DeploymentSummary};
 use serde::Serialize;
@@ -23,6 +21,8 @@ use crate::context::ContextError;
 pub(super) const UNCHECKED: &str = "Could not check which Servers picked up the new copies";
 
 const READS_AT_ONCE: usize = 8;
+/// A routed-address read answers from memory. A slow one warns rather than holding up the listing.
+const ROUTED_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
 
 #[derive(Serialize)]
 #[serde(untagged)]
@@ -34,6 +34,11 @@ pub(super) enum Subject {
     },
     Down {
         machine: MachineName,
+    },
+    StaleAddress {
+        service: QualifiedService,
+        machine: String,
+        addresses: Vec<ContainerAddress>,
     },
     /// The Servers that didn't answer, by name where known.
     Unanswered {
@@ -126,6 +131,8 @@ enum Copies {
         /// Each Service of the namespace that has serving copies, with its routes as
         /// one Server reads them.
         reads: Vec<(ServiceObservation, Result<RoutesRead, RpcError>)>,
+        /// Each routed-address read, taken before the listing from every Machine it asks.
+        routed: BTreeMap<MachineId, Result<RoutedAddresses, RpcError>>,
     },
 }
 
@@ -141,6 +148,28 @@ async fn observe(
             copies: Copies::RollingOut(deployment),
         });
     }
+    // Read before listing, so a routed copy the listing lacks was removed, not created since.
+    let routed = {
+        let client = &*client;
+        let up = machines
+            .iter()
+            .filter(|observed| observed.invites_rpc())
+            .map(|observed| observed.machine.id);
+        stream::iter(up)
+            .map(|machine| async move {
+                let routed = client
+                    .invoke::<op::ReadRoutedAddresses>(
+                        ReadRoutedAddressesRequest {},
+                        &MachineTarget::from(&machine),
+                        Some(ROUTED_READ_TIMEOUT),
+                    )
+                    .await;
+                (machine, routed)
+            })
+            .buffer_unordered(READS_AT_ONCE)
+            .collect()
+            .await
+    };
     let live = match client
         .live_services_from(&machines, EnvironmentValues::Redacted)
         .await
@@ -183,7 +212,11 @@ async fn observe(
     };
     Ok(Observed {
         machines,
-        copies: Copies::Listed { live, reads },
+        copies: Copies::Listed {
+            live,
+            reads,
+            routed,
+        },
     })
 }
 
@@ -198,6 +231,8 @@ enum Unseen {
     Unlisted(Error),
     Unanswered(Vec<MachineId>),
     Unreported(BTreeSet<MachineId>),
+    /// Live Machines whose daemon can't confirm what their proxy serves.
+    Unconfirmed(BTreeSet<MachineId>),
     Unread {
         services: Vec<QualifiedService>,
         error: RpcError,
@@ -252,7 +287,7 @@ fn judge(observed: Observed) -> Check {
             .map(|observed| (observed.machine.id, observed.machine.name.clone()))
             .collect(),
     };
-    let (live, reads) = match copies {
+    let (live, reads, routed) = match copies {
         Copies::RollingOut(deployment) => {
             check.unseen.push(Unseen::RollingOut(deployment));
             return check;
@@ -261,7 +296,11 @@ fn judge(observed: Observed) -> Check {
             check.unseen.push(Unseen::Unlisted(error));
             return check;
         }
-        Copies::Listed { live, reads } => (live, reads),
+        Copies::Listed {
+            live,
+            reads,
+            routed,
+        } => (live, reads, routed),
     };
     let unanswered: Vec<MachineId> = live
         .containers
@@ -272,13 +311,55 @@ fn judge(observed: Observed) -> Check {
         .filter(|machine| !down.contains(machine))
         .collect();
     if !unanswered.is_empty() {
-        check.unseen.push(Unseen::Unanswered(unanswered));
+        check.unseen.push(Unseen::Unanswered(unanswered.clone()));
+    }
+    let mut unconfirmed = BTreeSet::new();
+    let mut confirmed = BTreeMap::new();
+    for (machine, read) in routed {
+        if down.contains(&machine) || unanswered.contains(&machine) {
+            continue;
+        }
+        match read {
+            Ok(RoutedAddresses {
+                routes: Some(routes),
+            }) => {
+                confirmed.insert(machine, routes);
+            }
+            // An older Server lacks the check, and status claims nothing for it.
+            Err(error) if error.code == RpcErrorCode::Unsupported => {}
+            Ok(RoutedAddresses { routes: None }) | Err(_) => {
+                unconfirmed.insert(machine);
+            }
+        }
+    }
+    let routed = confirmed;
+    if !unconfirmed.is_empty() {
+        check.unseen.push(Unseen::Unconfirmed(unconfirmed));
     }
     let mut unreported = BTreeSet::new();
     let mut unread = ServicesByFact(Vec::new());
     let mut unjudged = ServicesByFact(Vec::new());
     let mut down_to_reader = ServicesByFact(Vec::new());
     for (service, read) in reads {
+        let unchecked: BTreeSet<MachineId> = match &read {
+            Ok(read) => down.union(&read.down).copied().collect(),
+            Err(_) => down.clone(),
+        };
+        let subnets: Vec<(Ipv4Net, bool)> = machines
+            .iter()
+            .map(|observed| {
+                let id = &observed.machine.id;
+                (
+                    observed.machine.subnet.into(),
+                    !unchecked.contains(id) && !unanswered.contains(id),
+                )
+            })
+            .collect();
+        for (machine, addresses) in stale_addresses(&service, &routed, &unchecked, &subnets) {
+            let attention =
+                stale_address(service.identity.clone(), check.name(&machine), addresses);
+            check.attention.push(attention);
+        }
         let read = match read {
             Ok(read) => read,
             Err(error) => {
@@ -367,6 +448,89 @@ fn judge(observed: Observed) -> Check {
     check
 }
 
+/// Addresses each live Server routes for this Service that no owner reports. A copy no
+/// Machine lists counts only when every Machine whose subnet holds its address answered
+/// and is up, since any of them could still report it. `subnets` pairs each Machine's
+/// subnet with whether it answered and is up.
+fn stale_addresses(
+    service: &ServiceObservation,
+    routed: &BTreeMap<
+        MachineId,
+        BTreeMap<QualifiedService, BTreeMap<ContainerId, ContainerAddress>>,
+    >,
+    down: &BTreeSet<MachineId>,
+    subnets: &[(Ipv4Net, bool)],
+) -> BTreeMap<MachineId, BTreeSet<ContainerAddress>> {
+    let reported: BTreeMap<ContainerId, ContainerAddress> = serving_containers(&service.containers)
+        .iter()
+        .filter(|serving| !down.contains(&serving.as_observation().machine_id))
+        .map(|serving| (serving.as_observation().container_id, serving.address()))
+        .collect();
+    let listed: BTreeSet<ContainerId> = service
+        .containers
+        .iter()
+        .map(|copy| copy.as_observation().container_id)
+        .collect();
+    let owners_answered = |address: &ContainerAddress| {
+        let mut holders = subnets
+            .iter()
+            .filter(|(subnet, _)| subnet.contains(&address.0))
+            .peekable();
+        holders.peek().is_some() && holders.all(|(_, answered)| *answered)
+    };
+    let removed = |copy: &ContainerId, address: &ContainerAddress| {
+        !listed.contains(copy)
+            && !reported.values().any(|reported| reported == address)
+            && owners_answered(address)
+    };
+    routed
+        .iter()
+        .filter(|(machine, _)| !down.contains(machine))
+        .filter_map(|(machine, routed)| {
+            let stale: BTreeSet<ContainerAddress> = routed
+                .get(&service.identity)?
+                .iter()
+                .filter(|(copy, address)| match reported.get(*copy) {
+                    Some(reported) => reported != *address,
+                    None => removed(copy, address),
+                })
+                .map(|(_, address)| *address)
+                .collect();
+            (!stale.is_empty()).then_some((*machine, stale))
+        })
+        .collect()
+}
+
+fn stale_address(
+    service: QualifiedService,
+    machine: String,
+    addresses: BTreeSet<ContainerAddress>,
+) -> Attention {
+    let addresses: Vec<ContainerAddress> = addresses.into_iter().collect();
+    let (copies, owners) = match addresses.as_slice() {
+        [_] => ("a copy", "its owner does"),
+        _ => ("copies", "their owners do"),
+    };
+    let listed = addresses
+        .iter()
+        .map(|address| address.0.to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    Attention {
+        reason: "routes_stale_address".to_owned(),
+        message: format!(
+            "{machine} routes {copies} to {listed}, which {owners} not report. Check its network."
+        ),
+        deployment: None,
+        next: None,
+        subject: Some(Subject::StaleAddress {
+            service,
+            machine,
+            addresses,
+        }),
+    }
+}
+
 fn not_picked_up(service: QualifiedService, machines: Vec<String>) -> Attention {
     let (have, its) = match machines.as_slice() {
         [_] => ("has", "its"),
@@ -425,6 +589,16 @@ impl Check {
                     };
                     crate::ui::warn(format!(
                         "{} {has} not reported which copies {it} {routes}.",
+                        self.names(machines)
+                    ));
+                }
+                Unseen::Unconfirmed(machines) => {
+                    let (has, its, proxy, it) = match machines.len() {
+                        1 => ("has", "its", "proxy serves", "it"),
+                        _ => ("have", "their", "proxies serve", "them"),
+                    };
+                    crate::ui::warn(format!(
+                        "{} {has} not confirmed what {its} {proxy}, so status is not checking {it} for stale addresses.",
                         self.names(machines)
                     ));
                 }
@@ -563,13 +737,42 @@ mod tests {
         machines: Vec<MachineObservation>,
         reads: Vec<(ServiceObservation, Result<RoutesRead, RpcError>)>,
     ) -> Check {
+        checked_routing(machines, reads, BTreeMap::new())
+    }
+
+    fn checked_routing(
+        machines: Vec<MachineObservation>,
+        reads: Vec<(ServiceObservation, Result<RoutesRead, RpcError>)>,
+        routed: BTreeMap<MachineId, RoutedAddresses>,
+    ) -> Check {
         judge(Observed {
             machines,
             copies: Copies::Listed {
                 live: listing(&[]),
                 reads,
+                routed: routed
+                    .into_iter()
+                    .map(|(machine, routed)| (machine, Ok(routed)))
+                    .collect(),
             },
         })
+    }
+
+    fn web_routed_at(copies: &[(char, [u8; 4])]) -> RoutedAddresses {
+        RoutedAddresses {
+            routes: Some(BTreeMap::from([(
+                qualified("app", "web"),
+                copies
+                    .iter()
+                    .map(|(hex, address)| {
+                        (
+                            container_id(*hex),
+                            ContainerAddress(Ipv4Addr::from(*address)),
+                        )
+                    })
+                    .collect(),
+            )])),
+        }
     }
 
     fn warned(check: &Check) -> Vec<String> {
@@ -628,6 +831,283 @@ mod tests {
         assert_eq!(
             super::super::link::rendered(check.attention),
             "organization  ?\nsigned in as  local\nweb           machine-3 has not picked up the new copies. Check its network.\n"
+        );
+    }
+
+    #[test]
+    fn status_names_a_machine_whose_proxy_routes_a_copy_at_an_address_its_owner_does_not_report() {
+        let [one, two, three] = machines();
+        let check = checked_routing(
+            listed(&[&one, &two, &three], &[]),
+            vec![(
+                web([routed_on(&one, '1'), routed_on(&two, '2')]),
+                Ok(routes_as_ployzd_answers(
+                    &[
+                        (&one, &['1', '2']),
+                        (&two, &['1', '2']),
+                        (&three, &['1', '2']),
+                    ],
+                    &[],
+                )),
+            )],
+            BTreeMap::from([
+                (
+                    one.id,
+                    web_routed_at(&[('1', [10, 210, 0, 1]), ('2', [10, 210, 0, 1])]),
+                ),
+                (
+                    three.id,
+                    web_routed_at(&[('1', [10, 210, 2, 2]), ('2', [10, 210, 0, 1])]),
+                ),
+            ]),
+        );
+
+        assert_eq!(
+            serde_json::to_value(&check.attention).unwrap(),
+            json!([{
+                "reason": "routes_stale_address",
+                "message": "machine-3 routes a copy to 10.210.2.2, which its owner does not report. Check its network.",
+                "service": "app/web",
+                "machine": "machine-3",
+                "addresses": ["10.210.2.2"],
+            }])
+        );
+        assert_eq!(
+            super::super::link::rendered(check.attention),
+            "organization  ?\nsigned in as  local\nweb           machine-3 routes a copy to 10.210.2.2, which its owner does not report. Check its network.\n"
+        );
+    }
+
+    fn routing_a_removed_copy(
+        listed_machines: Vec<MachineObservation>,
+        unanswered: &[&Machine],
+        removed_at: [u8; 4],
+    ) -> Check {
+        let [one, two, three] = machines();
+        judge(Observed {
+            machines: listed_machines,
+            copies: Copies::Listed {
+                live: listing(unanswered),
+                reads: vec![(
+                    web([routed_on(&one, '1'), routed_on(&three, '3')]),
+                    Ok(routes_as_ployzd_answers(
+                        &[
+                            (&one, &['1', '3']),
+                            (&two, &['1', '3']),
+                            (&three, &['1', '3']),
+                        ],
+                        &[],
+                    )),
+                )],
+                routed: BTreeMap::from([(
+                    two.id,
+                    Ok(web_routed_at(&[('1', [10, 210, 0, 1]), ('0', removed_at)])),
+                )]),
+            },
+        })
+    }
+
+    #[test]
+    fn status_names_a_machine_whose_proxy_routes_a_copy_its_owner_removed() {
+        let [one, two, three] = machines();
+        let check =
+            routing_a_removed_copy(listed(&[&one, &two, &three], &[]), &[], [10, 210, 12, 5]);
+
+        assert_eq!(
+            serde_json::to_value(&check.attention).unwrap(),
+            json!([{
+                "reason": "routes_stale_address",
+                "message": "machine-2 routes a copy to 10.210.12.5, which its owner does not report. Check its network.",
+                "service": "app/web",
+                "machine": "machine-2",
+                "addresses": ["10.210.12.5"],
+            }])
+        );
+    }
+
+    #[test]
+    fn status_names_no_machine_for_a_removed_copy_whose_owner_did_not_answer() {
+        let [one, two, three] = machines();
+        let check = routing_a_removed_copy(
+            listed(&[&one, &two, &three], &[]),
+            &[&three],
+            [10, 210, 12, 5],
+        );
+
+        assert_eq!(serde_json::to_value(&check.attention).unwrap(), json!([]));
+    }
+
+    #[test]
+    fn status_names_no_machine_for_a_removed_copy_when_an_unanswered_machine_shares_its_subnet() {
+        let [mut one, two, three] = machines();
+        one.subnet = three.subnet;
+        let check = routing_a_removed_copy(
+            listed(&[&one, &two, &three], &[]),
+            &[&three],
+            [10, 210, 12, 5],
+        );
+
+        assert_eq!(serde_json::to_value(&check.attention).unwrap(), json!([]));
+    }
+
+    #[test]
+    fn status_names_no_machine_for_a_removed_copy_when_a_down_machine_shares_its_subnet() {
+        let [mut one, two, three] = machines();
+        one.subnet = three.subnet;
+        let check = routing_a_removed_copy(listed(&[&one, &two], &[&three]), &[], [10, 210, 12, 5]);
+
+        assert!(
+            check
+                .attention
+                .iter()
+                .all(|attention| attention.reason == "machine_down"),
+            "{}",
+            serde_json::to_value(&check.attention).unwrap()
+        );
+    }
+
+    #[test]
+    fn status_names_no_machine_for_a_removed_copy_whose_owner_is_down() {
+        let [one, two, three] = machines();
+        let check = routing_a_removed_copy(listed(&[&one, &two], &[&three]), &[], [10, 210, 12, 5]);
+
+        assert!(
+            check
+                .attention
+                .iter()
+                .all(|attention| attention.reason == "machine_down"),
+            "{}",
+            serde_json::to_value(&check.attention).unwrap()
+        );
+    }
+
+    #[test]
+    fn status_names_no_machine_for_a_removed_copy_whose_owner_the_reader_calls_down() {
+        let [one, two, three] = machines();
+        let check = judge(Observed {
+            machines: listed(&[&one, &two, &three], &[]),
+            copies: Copies::Listed {
+                live: listing(&[]),
+                reads: vec![(
+                    web([routed_on(&one, '1'), routed_on(&three, '3')]),
+                    Ok(routes_as_ployzd_answers(
+                        &[(&one, &['1', '3']), (&two, &['1', '3'])],
+                        &[&three],
+                    )),
+                )],
+                routed: BTreeMap::from([(
+                    two.id,
+                    Ok(web_routed_at(&[
+                        ('1', [10, 210, 0, 1]),
+                        ('0', [10, 210, 12, 5]),
+                    ])),
+                )]),
+            },
+        });
+
+        assert!(
+            check
+                .attention
+                .iter()
+                .all(|attention| attention.reason != "routes_stale_address"),
+            "{}",
+            serde_json::to_value(&check.attention).unwrap()
+        );
+    }
+
+    #[test]
+    fn status_names_no_machine_whose_listing_failed_for_what_its_proxy_routes() {
+        let [one, two, three] = machines();
+        let check = routing_a_removed_copy(
+            listed(&[&one, &two, &three], &[]),
+            &[&two],
+            [10, 210, 12, 5],
+        );
+
+        assert_eq!(serde_json::to_value(&check.attention).unwrap(), json!([]));
+        assert_eq!(
+            warned(&check),
+            [
+                "machine-2 did not answer, so status may miss Servers that have not picked up the new copies."
+            ]
+        );
+    }
+
+    #[test]
+    fn status_names_no_machine_for_a_removed_copy_at_an_address_no_machine_owns() {
+        let [one, two, three] = machines();
+        let check =
+            routing_a_removed_copy(listed(&[&one, &two, &three], &[]), &[], [10, 210, 99, 5]);
+
+        assert_eq!(serde_json::to_value(&check.attention).unwrap(), json!([]));
+    }
+
+    #[test]
+    fn status_warns_that_it_skips_a_machine_whose_proxy_config_is_unconfirmed() {
+        let [one, two, three] = machines();
+        let check = checked_routing(
+            listed(&[&one, &two, &three], &[]),
+            vec![(
+                web([routed_on(&one, '1'), routed_on(&three, '3')]),
+                Ok(routes_as_ployzd_answers(
+                    &[
+                        (&one, &['1', '3']),
+                        (&two, &['1', '3']),
+                        (&three, &['1', '3']),
+                    ],
+                    &[],
+                )),
+            )],
+            BTreeMap::from([
+                (one.id, web_routed_at(&[('1', [10, 210, 0, 1])])),
+                (two.id, RoutedAddresses { routes: None }),
+            ]),
+        );
+
+        assert_eq!(serde_json::to_value(&check.attention).unwrap(), json!([]));
+        assert_eq!(
+            warned(&check),
+            [
+                "machine-2 has not confirmed what its proxy serves, so status is not checking it for stale addresses."
+            ]
+        );
+    }
+
+    #[test]
+    fn status_warns_that_it_skips_a_machine_whose_routed_addresses_it_could_not_read() {
+        let [one, two, three] = machines();
+        let mut unsupported = unavailable("unknown method");
+        unsupported.code = RpcErrorCode::Unsupported;
+        let check = judge(Observed {
+            machines: listed(&[&one, &two, &three], &[]),
+            copies: Copies::Listed {
+                live: listing(&[]),
+                reads: vec![(
+                    web([routed_on(&one, '1'), routed_on(&three, '3')]),
+                    Ok(routes_as_ployzd_answers(
+                        &[
+                            (&one, &['1', '3']),
+                            (&two, &['1', '3']),
+                            (&three, &['1', '3']),
+                        ],
+                        &[],
+                    )),
+                )],
+                routed: BTreeMap::from([
+                    (one.id, Ok(web_routed_at(&[('1', [10, 210, 0, 1])]))),
+                    (two.id, Err(unavailable("deadline exceeded"))),
+                    (three.id, Err(unsupported)),
+                ]),
+            },
+        });
+
+        assert_eq!(serde_json::to_value(&check.attention).unwrap(), json!([]));
+        assert_eq!(
+            warned(&check),
+            [
+                "machine-2 has not confirmed what its proxy serves, so status is not checking it for stale addresses."
+            ],
+            "an older Server that lacks the check stays silent"
         );
     }
 
@@ -853,6 +1333,42 @@ mod tests {
     }
 
     #[test]
+    fn status_names_no_stale_address_for_a_machine_only_the_reader_calls_down() {
+        let [one, two, three] = machines();
+        let check = checked_routing(
+            listed(&[&one, &two, &three], &[]),
+            vec![(
+                web([routed_on(&one, '1'), routed_on(&three, '3')]),
+                Ok(routes_as_ployzd_answers(
+                    &[(&one, &['1']), (&two, &['1'])],
+                    &[&three],
+                )),
+            )],
+            BTreeMap::from([
+                (
+                    two.id,
+                    web_routed_at(&[('1', [10, 210, 0, 1]), ('3', [10, 210, 2, 2])]),
+                ),
+                (
+                    three.id,
+                    web_routed_at(&[('1', [10, 210, 2, 2]), ('3', [10, 210, 0, 1])]),
+                ),
+            ]),
+        );
+
+        assert!(
+            check.attention.is_empty(),
+            "no routes_stale_address row for what machine-3 routes or for its copies"
+        );
+        assert_eq!(
+            warned(&check),
+            [
+                "The Server status asked sees machine-3 Down, so status is not checking what it routes or who routes its copies of web."
+            ]
+        );
+    }
+
+    #[test]
     fn a_service_whose_copies_are_all_on_down_machines_warns_nothing() {
         let [one, two, three] = machines();
         let mut read = routes_as_ployzd_answers(&[(&one, &[])], &[&two, &three]);
@@ -893,6 +1409,7 @@ mod tests {
             copies: Copies::Listed {
                 live: listing(&[&two, &three]),
                 reads: Vec::new(),
+                routed: BTreeMap::new(),
             },
         });
 

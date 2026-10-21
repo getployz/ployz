@@ -22,11 +22,11 @@ use serde_json::Value;
 use thiserror::Error;
 
 use crate::{
-    AdvertisedEndpoint, CapabilityName, CertificateHost, ContainerId, ContainerKind,
-    ContainerObservation, Machine, MachineId, MachineLogService, MachineName, MachineObservation,
-    MachineRuntime, MachineUpdate, ManagementCapability, ManagementClientLabel, Namespace,
-    PinnedAddresses, PullPolicy, QualifiedService, ResolvedServiceSpec, SelectedEndpoint,
-    StorageChoice, WireGuardPublicKey,
+    AdvertisedEndpoint, CapabilityName, CertificateHost, ContainerAddress, ContainerId,
+    ContainerKind, ContainerObservation, Machine, MachineId, MachineLogService, MachineName,
+    MachineObservation, MachineRuntime, MachineUpdate, ManagementCapability, ManagementClientLabel,
+    Namespace, PinnedAddresses, PullPolicy, QualifiedService, ResolvedServiceSpec,
+    SelectedEndpoint, StorageChoice, WireGuardPublicKey,
 };
 
 mod docker;
@@ -1354,6 +1354,19 @@ pub struct RoutesRead {
     pub down: BTreeSet<MachineId>,
 }
 
+/// Read the address this Machine's proxy routes each copy at.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ReadRoutedAddressesRequest {}
+
+/// What this Machine's proxy serves, per Service and copy. `None` when this daemon
+/// can't confirm what its proxy serves, such as before its first load or after it
+/// wrote a config the proxy may or may not have read.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct RoutedAddresses {
+    #[serde(default)]
+    pub routes: Option<BTreeMap<QualifiedService, BTreeMap<ContainerId, ContainerAddress>>>,
+}
+
 /// A listed Machine whose proxy has not acked the copies a reader waits for.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Unacked {
@@ -1498,6 +1511,7 @@ define_responses! {
     BuildGrantInspected(BuildGrantInspected) => "build_grant_inspected";
     CertificateMaterialPublished(CertificateMaterialPublished) => "certificate_material_published";
     RoutesRead(RoutesRead) => "routes_read";
+    RoutedAddresses(RoutedAddresses) => "routed_addresses";
     MachineUpdated(MachineUpdated) => "machine_updated";
     MachineUpgradeAttempt(MachineUpgradeAttempt) => "machine_upgrade_attempt";
     Left(Left) => "left";
