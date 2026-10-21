@@ -1704,8 +1704,7 @@ fn read_meta(dir: &Path) -> io::Result<Option<ContainerMeta>> {
     }
 }
 
-/// Writes the env once: Docker never changes a Container's env, and a write
-/// that failed is retried on the next inspect.
+// Docker never changes a Container's env, so the first write stands.
 fn keep_env(id: &ContainerId, dir: &Path, inspected: &ContainerInspectResponse) {
     if dir.join(ENV_FILE).exists() {
         return;
