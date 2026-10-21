@@ -54,7 +54,7 @@ A failure's first line is our sentence about the domain thing, capitalized and e
 
 The command that fixes or follows a failure is a typed hint, `Failure::hint(Hint::Next | Inspect | Retry | Undo | Closest | Valid)`, never prose in the message. Human output prints each hint on its own line: `next:`, `inspect:`, `retry:`, `undo:` and `valid:` lead with their label, and the near-miss prints unlabelled as `did you mean NAME?`. Only `inspect:` can repeat, so `valid:` prints once. JSON carries the hints in `details`.
 
-JSON fields are only added, never renamed or repurposed; before 0.2.0 a field may be renamed or reshaped outright, with no compatibility alias. A short flag has one meaning across the whole tree.
+JSON fields are only added, never renamed or repurposed; before 0.3.0 a field may be renamed or reshaped outright, with no compatibility alias. A short flag has one meaning across the whole tree.
 
 ## Async
 
