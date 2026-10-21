@@ -177,42 +177,56 @@ impl ApiClient {
         Ok(QueryResult { columns, rows })
     }
 
+    /// Open a subscription and drain its initial snapshot.
+    ///
+    /// Only the opening is bounded. A quiet table sends nothing after its
+    /// snapshot, so a caller that must notice a stream gone silent re-reads
+    /// on its own interval.
+    ///
+    /// # Errors
+    ///
+    /// Returns a timed-out I/O error when Corrosion does not finish the
+    /// snapshot within the I/O timeout, and otherwise any request or protocol
+    /// failure.
     pub(crate) async fn subscribe(&self, statement: Statement) -> Result<Subscription, Error> {
-        let response = self
-            .client
-            .post(self.base_url.join("v1/subscriptions").expect("static path"))
-            .json(&statement)
-            .send()
-            .await?;
-        let status = response.status();
-        if !status.is_success() {
-            return Err(Error::Api(format!(
-                "HTTP {status}: {}",
-                response.text().await?
-            )));
-        }
-        let chunks: ByteStream = Box::pin(response.bytes_stream().map_err(io::Error::other));
-        let mut subscription = Subscription {
-            lines: FramedRead::new(
-                StreamReader::new(chunks),
-                LinesCodec::new_with_max_length(8 * 1024 * 1024),
-            ),
-            snapshot_in_progress: false,
-        };
-        match subscription.next_event().await? {
-            QueryEvent::Columns(_) => {
-                subscription.snapshot_in_progress = true;
-                subscription.finish_snapshot().await?;
-                Ok(subscription)
+        super::within_io_timeout(async {
+            let response = self
+                .client
+                .post(self.base_url.join("v1/subscriptions").expect("static path"))
+                .json(&statement)
+                .send()
+                .await?;
+            let status = response.status();
+            if !status.is_success() {
+                return Err(Error::Api(format!(
+                    "HTTP {status}: {}",
+                    response.text().await?
+                )));
             }
-            QueryEvent::Change(_) => Err(Error::Protocol(
-                "subscription change preceded end-of-query".into(),
-            )),
-            QueryEvent::Error(error) => Err(Error::Api(error)),
-            QueryEvent::Row(_, _) | QueryEvent::EndOfQuery { .. } => Err(Error::Protocol(
-                "subscription snapshot event arrived without columns".into(),
-            )),
-        }
+            let chunks: ByteStream = Box::pin(response.bytes_stream().map_err(io::Error::other));
+            let mut subscription = Subscription {
+                lines: FramedRead::new(
+                    StreamReader::new(chunks),
+                    LinesCodec::new_with_max_length(8 * 1024 * 1024),
+                ),
+                snapshot_in_progress: false,
+            };
+            match subscription.next_event().await? {
+                QueryEvent::Columns(_) => {
+                    subscription.snapshot_in_progress = true;
+                    subscription.finish_snapshot().await?;
+                    Ok(subscription)
+                }
+                QueryEvent::Change(_) => Err(Error::Protocol(
+                    "subscription change preceded end-of-query".into(),
+                )),
+                QueryEvent::Error(error) => Err(Error::Api(error)),
+                QueryEvent::Row(_, _) | QueryEvent::EndOfQuery { .. } => Err(Error::Protocol(
+                    "subscription snapshot event arrived without columns".into(),
+                )),
+            }
+        })
+        .await
     }
 }
 
@@ -456,6 +470,45 @@ mod tests {
         .await
         .expect("hung query must fail")
         .expect_err("hung query must fail");
+        assert!(
+            matches!(error, super::Error::Io(ref error) if error.kind() == std::io::ErrorKind::TimedOut),
+            "{error}"
+        );
+        server.abort();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn subscribe_times_out_when_the_snapshot_never_finishes() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(
+                listener,
+                Router::new().route(
+                    "/v1/subscriptions",
+                    post(|| async {
+                        let columns = futures_util::stream::once(async {
+                            Ok::<_, Infallible>(Bytes::from_static(b"{\"columns\":[\"id\"]}\n"))
+                        });
+                        Body::from_stream(futures_util::StreamExt::chain(
+                            columns,
+                            futures_util::stream::pending(),
+                        ))
+                    }),
+                ),
+            )
+            .await
+            .unwrap();
+        });
+        let client = ApiClient::http1(address, &"a".repeat(64)).unwrap();
+        let error = tokio::time::timeout(
+            IO_TIMEOUT + Duration::from_secs(1),
+            client.subscribe(Statement::new("SELECT id FROM test", [])),
+        )
+        .await
+        .expect("stalled subscription snapshot must fail")
+        .err()
+        .expect("stalled subscription snapshot must fail");
         assert!(
             matches!(error, super::Error::Io(ref error) if error.kind() == std::io::ErrorKind::TimedOut),
             "{error}"
