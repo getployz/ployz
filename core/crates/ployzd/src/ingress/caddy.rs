@@ -248,6 +248,8 @@ https:// {{\n\
 }}\n\
 \n\
 (common_proxy) {{\n\
+\t# A slow upstream holds more requests open, so least_conn sends it fewer new ones.\n\
+\tlb_policy least_conn\n\
 \t# Retry failed requests up to lb_retries times against other available upstreams.\n\
 \tlb_retries 3\n\
 \t# Passive health checking: an upstream failing max_fails requests within fail_duration is\n\
@@ -259,6 +261,11 @@ https:// {{\n\
 \theader_up X-Forwarded-For {{client_ip}}\n\
 \theader_up X-Forwarded-Host {{hostport}}\n\
 \theader_up X-Forwarded-Proto {{scheme}}\n\
+\t# A powered-off upstream's Machine never answers the dial; give up fast and retry another.\n\
+\t# A request sent on an idle kept-alive connection to it still waits about 14s for retransmits.\n\
+\ttransport http {{\n\
+\t\tdial_timeout 1s\n\
+\t}}\n\
 }}\n"
     );
     if projection.sites.iter().any(|site| {
