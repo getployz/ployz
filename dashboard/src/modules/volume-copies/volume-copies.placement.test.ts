@@ -137,6 +137,17 @@ describe("copiesFromPlacement", () => {
     expect(model.live.moveTo).toBeNull();
   });
 
+  it("keeps a staged primary the Volume records as a mirror under Elsewhere while Live names a Server it can't rule out", () => {
+    const staged = row(["web-2"], { primary: "web-2" });
+    const unlisted: Member = { machine: { id: id("web-1"), name: id("web-1") }, answered: false, incomplete: true };
+    const pending = copies(staged, [member("web-2", "unanswered"), unlisted]);
+    expect(pending.live.server).toEqual({ id: id("web-1"), name: id("web-1"), state: "waiting" });
+    expect(summary(pending)).toEqual(["mirror web-2 primary -"]);
+    const lacks = copies(staged, [member("web-2", "unanswered"), lacking("web-1")]);
+    expect(lacks.live.server).toEqual({ id: id("web-1"), name: "web-1", state: "lacks" });
+    expect(summary(lacks)).toEqual(["mirror web-2 primary -"]);
+  });
+
   it("names a primary whose root its Server reports read-only, as a cut leaves it, not Live", () => {
     expect(copies(row(["web-2"]), [member("web-1", "cut"), member("web-2", "mirror")]).live.server)
       .toEqual({ id: id("web-1"), name: "web-1", state: "read_only" });

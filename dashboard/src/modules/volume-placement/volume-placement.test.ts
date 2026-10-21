@@ -407,6 +407,7 @@ describe("editPlacement", () => {
   });
 
   it("stages an edit over a Server that lacks a capability rather than a silent one, when neither is a recorded mirror", () => {
+    // Either may hold the writer, so this pins a guess Copies shares with Live, not a preference.
     const lacking: Member = { machine: { id: id("web-3"), name: "web-3" }, answered: false, lack: "Mirror refresh is not in Ployz 0.3.0 on web-3." };
     expect(target([member("web-1", "unanswered"), mirrorAsOf("web-2", at), lacking], row(["web-2"])).primary).toBe(id("web-3"));
   });
