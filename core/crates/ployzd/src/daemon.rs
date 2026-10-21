@@ -460,16 +460,6 @@ impl Daemon {
                 ) else {
                     return Ok(());
                 };
-                let alone = tokio::select! {
-                    () = shutdown.cancelled() => return Ok(()),
-                    alone = crate::boot_pass::alone(&machines, local_id) => alone,
-                };
-                if alone {
-                    tracing::info!(
-                        "boot pass skipped, this Machine is the only one in its Machine list"
-                    );
-                    return Ok(());
-                }
                 let first_synced = runtime.first_synced();
                 let host = crate::boot_pass::DaemonHost {
                     machine_id: local_id,

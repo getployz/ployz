@@ -13,7 +13,7 @@ use ployz_core::{
 use serde_json::json;
 use tokio::{sync::watch, time::Instant};
 
-use super::{BOOT_PASS_WAIT, BootHost, Observed, run};
+use super::{BOOT_PASS_WAIT, BootHost, Observed, Peers, run};
 use crate::{
     corrosion::{
         Error as CorrosionError, IngressRouteAck, IngressRouteRow, ReplicatedObservations,
@@ -171,7 +171,7 @@ impl Cluster {
 #[derive(Clone)]
 struct FakeHost {
     local: MachineId,
-    targets: watch::Receiver<Option<BTreeMap<String, i64>>>,
+    targets: watch::Receiver<Peers>,
     local_actor: &'static str,
     /// `None` is a store already caught up to any target.
     store: Option<ReplicatedStore>,
@@ -183,7 +183,7 @@ impl FakeHost {
     fn new(local: &Machine, observed: Observed) -> Self {
         Self {
             local: local.id,
-            targets: watch::channel(Some(BTreeMap::new())).1,
+            targets: watch::channel(Peers::Answered(BTreeMap::new())).1,
             local_actor: LOCAL_ACTOR,
             store: None,
             observed: Arc::new(Mutex::new(Some(observed))),
@@ -201,7 +201,7 @@ impl BootHost for FakeHost {
         self.local
     }
 
-    async fn peer_targets(&self) -> Option<BTreeMap<String, i64>> {
+    async fn peer_targets(&self) -> Peers {
         self.targets.borrow().clone()
     }
 
@@ -276,6 +276,78 @@ async fn pass(local: &Machine, observed: Observed) -> Vec<ContainerWant> {
     let host = FakeHost::new(local, observed);
     run(host.clone(), synced(), published(own)).await;
     host.wants()
+}
+
+mod alone {
+    use super::*;
+    use crate::boot_pass::alone;
+
+    fn list(
+        machines: &[&Machine],
+        incomplete_ids: Vec<MachineId>,
+    ) -> ReplicatedObservations<Machine, MachineId> {
+        ReplicatedObservations {
+            observations: machines.iter().map(|machine| (*machine).clone()).collect(),
+            incomplete_ids,
+        }
+    }
+
+    #[test]
+    fn only_this_machine() {
+        let cluster = Cluster::new();
+
+        assert!(alone(
+            &list(&[&cluster.local], Vec::new()),
+            &cluster.local.id
+        ));
+        assert!(alone(&list(&[], Vec::new()), &cluster.local.id));
+        assert!(!alone(
+            &list(&[&cluster.local, &cluster.peer], Vec::new()),
+            &cluster.local.id
+        ));
+        assert!(!alone(
+            &list(&[&cluster.local], vec![cluster.peer.id]),
+            &cluster.local.id
+        ));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn skips_at_once() {
+        let cluster = Cluster::new();
+        let host = FakeHost {
+            targets: watch::channel(Peers::Alone).1,
+            ..FakeHost::new(&cluster.local, cluster.acked_everywhere())
+        };
+        let started = Instant::now();
+
+        run(host.clone(), synced(), published(BTreeMap::new())).await;
+
+        assert_eq!(started.elapsed(), Duration::ZERO);
+        assert!(host.wants().is_empty());
+        assert!(
+            host.observed.lock().unwrap().is_some(),
+            "the pass never read the store"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn skips_once_the_last_peer_leaves() {
+        let cluster = Cluster::new();
+        let (peers, targets) = watch::channel(Peers::Silent);
+        let host = FakeHost {
+            targets,
+            ..FakeHost::new(&cluster.local, cluster.acked_everywhere())
+        };
+        let started = Instant::now();
+        let running = tokio::spawn(run(host.clone(), synced(), published(BTreeMap::new())));
+
+        tokio::time::sleep(Duration::from_secs(10)).await;
+        peers.send_replace(Peers::Alone);
+        running.await.unwrap();
+
+        assert!(started.elapsed() < Duration::from_secs(12));
+        assert!(host.wants().is_empty());
+    }
 }
 
 #[tokio::test(start_paused = true)]
@@ -380,7 +452,7 @@ async fn waits_for_peer_targets_and_catch_up() {
     let cluster = Cluster::new();
     let observed = cluster.acked_everywhere();
     let own = own_acks(&cluster.local, &observed);
-    let (peer, targets) = watch::channel(None);
+    let (peer, targets) = watch::channel(Peers::Silent);
     let host = FakeHost {
         targets,
         store: Some(store),
@@ -390,7 +462,7 @@ async fn waits_for_peer_targets_and_catch_up() {
 
     tokio::time::sleep(Duration::from_millis(1500)).await;
     assert!(host.wants().is_empty(), "no peer has answered yet");
-    peer.send_replace(Some(BTreeMap::from([(ACTOR.to_owned(), 5)])));
+    peer.send_replace(Peers::Answered(BTreeMap::from([(ACTOR.to_owned(), 5)])));
     tokio::time::sleep(Duration::from_millis(1500)).await;
     assert!(host.wants().is_empty(), "the store is behind the peer");
     db.execute("UPDATE crsql_db_versions SET db_version = 5", [])
@@ -458,7 +530,7 @@ async fn acks_only_from_a_publish_rendered_after_catch_up() {
         BTreeSet::from([cluster.old.container_id, cluster.new.container_id]),
     )]);
     let host = FakeHost {
-        targets: watch::channel(Some(BTreeMap::from([(ACTOR.to_owned(), 5)]))).1,
+        targets: watch::channel(Peers::Answered(BTreeMap::from([(ACTOR.to_owned(), 5)]))).1,
         store: Some(store),
         ..FakeHost::new(&cluster.local, observed)
     };
@@ -492,7 +564,7 @@ async fn catch_up_skips_this_machines_own_actor() {
     let own = own_acks(&cluster.local, &observed);
     // A power cut lost this Machine's last two commits, which the peer still holds.
     let host = FakeHost {
-        targets: watch::channel(Some(BTreeMap::from([
+        targets: watch::channel(Peers::Answered(BTreeMap::from([
             (ACTOR.to_owned(), 27),
             (PEER_ACTOR.to_owned(), 4),
         ])))
@@ -551,7 +623,7 @@ async fn waits_for_two_publishes_after_catch_up() {
 async fn no_reachable_peer_does_nothing() {
     let cluster = Cluster::new();
     let host = FakeHost {
-        targets: watch::channel(None).1,
+        targets: watch::channel(Peers::Silent).1,
         ..FakeHost::new(&cluster.local, cluster.acked_everywhere())
     };
     let started = Instant::now();
