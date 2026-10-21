@@ -44,7 +44,7 @@ type BottomBarProps = {
   totalChanges: number;
   /** What the bar counts as changes: edits not yet saved. Defaults to `totalChanges`. */
   stagedChanges?: number;
-  /** The latest Save when it is all there is to deploy: part of it neither runs nor ships in a Deploy in flight. */
+  /** The latest Save when it is all there is to deploy: part of it is neither applied nor shipped by a Deploy in flight, which may ship the rest. */
   undeployedSave?: number | null;
   canSave: boolean;
   /** Deploys, with the user's Deploy message (blank for none). */

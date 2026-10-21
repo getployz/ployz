@@ -53,9 +53,11 @@ To undo, click **Discard** beside a change, or open **⋮** and choose **Discard
 rollback. Discarding a service or volume you never deployed deletes it. Discard does not save a
 version. When part of your latest saved version is not deployed, for example because its deploy failed,
 the bottom bar shows **Save #4 not deployed** with **Deploy** instead of a change count. While a
-deploy of it runs or waits, for example `ployz deploy web` deploying only web, the bar shows that deploy's
-status, like **Deploying · Save #4**, with **Deploy next** for the rest. Neither its **⋮** menu nor
-Details offers **Discard all** then, since nothing is left to discard.
+deploy of it is queued or running, for example `ployz deploy web` deploying only web, the bar shows
+that deploy's status instead, **Queued**, **Preparing** or **Deploying · Save #4**, with **Deploy
+next** for the rest. A deploy still waiting for CI isn't queued yet, so the bar keeps **Save #4 not
+deployed**. Neither its **⋮** menu nor Details offers **Discard all** then, since nothing is left to
+discard.
 A new service's change starts with what it runs, its image or its repository and branch, such as
 `web.image: null → "nginx:1"`. Those rows have no Discard of their own: discard the service.
 `ployz discard web.image` says so and names the command, `ployz discard web`.
