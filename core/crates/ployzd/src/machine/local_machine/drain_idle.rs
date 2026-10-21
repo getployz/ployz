@@ -55,21 +55,25 @@ pub(super) fn holds_connection(
 /// before the drain begins and still answer what it accepted, so a port below the
 /// ephemeral range counts unseen, and before any listener is seen every port does.
 /// A connection from loopback is the copy talking to itself, as nginx to php-fpm,
-/// so it holds nothing, and a listener on loopback, such as Docker's DNS server on
-/// 127.0.0.11, only ever accepts those, so it is not counted as one.
+/// so it holds nothing. A listener on loopback, such as Docker's DNS server on
+/// 127.0.0.11, is not counted as one, since only a NAT inside the copy brings it an
+/// outside client. A connection with a loopback local address and an outside remote
+/// counts whatever its port for that reason. A copy that dials its own address from
+/// a socket bound to loopback looks the same, and waits the full drain, as on main.
 fn serves_connection(tables: &[&str], listening: &mut BTreeSet<u16>) -> bool {
     let rows = || tables.iter().flat_map(|table| sockets(table));
     listening.extend(
         rows()
-            .filter(|socket| socket.state == LISTEN && !from_loopback(socket.local))
+            .filter(|socket| socket.state == LISTEN && !is_loopback(socket.local))
             .map(|socket| socket.port),
     );
     rows().any(|socket| {
         ANSWERING.contains(&socket.state)
             && (socket.port < FIRST_EPHEMERAL_PORT
                 || listening.is_empty()
-                || listening.contains(&socket.port))
-            && !from_loopback(socket.remote)
+                || listening.contains(&socket.port)
+                || is_loopback(socket.local))
+            && !is_loopback(socket.remote)
     })
 }
 
@@ -97,8 +101,8 @@ fn sockets(table: &str) -> impl Iterator<Item = Socket<'_>> {
 
 /// Whether `address`, as the kernel prints it, is 127.0.0.0/8, `::1` or
 /// `::ffff:127.x.x.x`. The kernel prints each 32-bit word of the address in host
-/// order. An address that does not parse reads as remote.
-fn from_loopback(address: &str) -> bool {
+/// order. An address that does not parse is not loopback.
+fn is_loopback(address: &str) -> bool {
     let word = |at: usize| -> Option<[u8; 4]> {
         let word = u32::from_str_radix(address.get(at * 8..at * 8 + 8)?, 16).ok()?;
         Some(word.to_ne_bytes())
@@ -248,6 +252,21 @@ mod tests {
     }
 
     #[test]
+    fn drain_idle_counts_an_outside_connection_redirected_to_a_loopback_listener() {
+        let tcp = table(
+            TCP_HEADER,
+            &[
+                TCP_DOCKER_DNS,
+                TCP_LISTENER_8080,
+                // An app on 127.0.0.1:40000 that a DNAT inside the copy sends outside clients to.
+                "   3: 0100007F:9C40 00000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 1005 1 0000000000000000 100 0 0 10 0",
+                "   4: 0100007F:9C40 0A010002:C350 01 00000000:00000000 02:000AFC7E 00000000     0        0 1006 1 0000000000000000 20 4 30 10 -1",
+            ],
+        );
+        assert!(serves(&[&tcp, TCP6_HEADER]));
+    }
+
+    #[test]
     fn drain_idle_counts_an_outside_connection_of_a_copy_that_never_listened() {
         let tcp = table(TCP_HEADER, &[TCP_DOCKER_DNS, TCP_OUTBOUND]);
         assert!(serves(&[&tcp, TCP6_HEADER]));
@@ -348,7 +367,7 @@ mod tests {
             let tcp = fs::read_to_string("/proc/self/net/tcp").unwrap();
             sockets(&tcp)
                 .find(|socket| socket.port == port && socket.state == "01")
-                .map(|socket| from_loopback(socket.remote))
+                .map(|socket| is_loopback(socket.remote))
         };
         assert_eq!(served(), None);
 
