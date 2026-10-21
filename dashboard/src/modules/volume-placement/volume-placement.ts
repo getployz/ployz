@@ -32,6 +32,8 @@ export type ObservedPlacement = {
   readonly waiting: readonly MachineRef[];
   /** Of `unanswered`, the Servers that are up but lack a capability to report their copy. */
   readonly lacking: readonly MachineRef[];
+  /** Of `unanswered`, the Servers whose last report in the Runtime Watch held a mirror. */
+  readonly lastMirrors: readonly MachineId[];
   /** Every Server in the cluster, answering or not. */
   readonly members: readonly MachineId[];
 };
@@ -137,16 +139,19 @@ export function observePlacement(members: readonly Member[]): ObservedPlacement 
     unanswered: members.filter((member) => !member.answered).map((member) => member.machine),
     waiting: members.filter((member) => heardFrom(member) === "waiting").map((member) => member.machine),
     lacking: members.filter((member) => ["lacks", "outdated"].includes(heardFrom(member))).map((member) => member.machine),
+    lastMirrors: members.flatMap((member) => !member.answered && member.lastMirror ? [member.machine.id] : []),
     members: members.map((member) => member.machine.id),
   };
 }
 
 /**
  * The copies that refresh, by Server: the slots their Servers record as mirrors. A Server that does not answer says
- * nothing, so the mirror the row last recorded there stands until it answers.
+ * nothing, so the mirror last known there stands until it answers: the one the row records, or the one its last report
+ * held, as a mirror made with `ployz volume mirror` leaves no row.
  */
 export function appliedMirrors(observed: ObservedPlacement, row: PlacementRow | null): readonly MachineId[] {
-  const silent = (row?.mirrors ?? []).filter((id) => observed.unanswered.some((server) => server.id === id));
+  const known = new Set([...row?.mirrors ?? [], ...observed.lastMirrors]);
+  const silent = [...known].filter((id) => observed.unanswered.some((server) => server.id === id));
   return [...observed.copies.filter((copy) => copy.kind === "slot" && copy.role === "mirror").map((copy) => copy.server.id), ...silent];
 }
 

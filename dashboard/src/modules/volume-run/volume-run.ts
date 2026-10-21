@@ -108,6 +108,8 @@ export type Member =
       readonly outdated?: true;
       /** The frame lists the Machine only by id: its report hasn't arrived, which is not the same as not answering. */
       readonly incomplete?: true;
+      /** The Runtime Watch's last record of this Server's copy is a mirror: what it held when it last reported. */
+      readonly lastMirror?: true;
     };
 export type AnsweredMember = Extract<Member, { answered: true }>;
 

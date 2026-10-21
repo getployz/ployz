@@ -1343,14 +1343,24 @@ const isDestination = (run: VolumeLaneInput, machine: { readonly id: MachineId; 
 /** A run as the observe step reads it: a resize carries the size the Store records, which decides its direction. */
 type ObservedRun = Exclude<VolumeLaneInput, { kind: "resize" }> | (Extract<VolumeLaneInput, { kind: "resize" }> & { readonly recordedBytes: number });
 
+const storageOf = (volumes: readonly DockerVolume[], machineId: MachineId, dockerVolume: string) =>
+  volumes.find((volume) => volume.id.machine_id === machineId && volume.id.name === dockerVolume)?.storage;
+
 const boundOf = (volumes: readonly DockerVolume[], machineId: MachineId, dockerVolume: string) => {
-  const storage = volumes.find((volume) => volume.id.machine_id === machineId && volume.id.name === dockerVolume)?.storage;
+  const storage = storageOf(volumes, machineId, dockerVolume);
   return storage?.kind === "provisioned" ? storage.bound_bytes : null;
+};
+
+/** A slot no step marked, as an older daemon made it, is a mirror. */
+const lastMirror = (volumes: readonly DockerVolume[], machineId: MachineId, dockerVolume: string) => {
+  const storage = storageOf(volumes, machineId, dockerVolume);
+  return storage?.kind === "provisioned" && storage.role === "slot" && (storage.slot_role ?? "mirror") === "mirror";
 };
 
 /**
  * Each managed Server's copy of `dockerVolume`; a Server that doesn't answer in time is a member that didn't answer.
- * So is one the frame lists only by id: it is still in the cluster, so a mirror on it is not gone.
+ * So is one the frame lists only by id: it is still in the cluster, so a mirror on it is not gone. Each that didn't
+ * answer keeps what the frame last recorded of it: a mirror there still counts.
  * For a run, a Server that holds a copy or receives one and lacks the generation floor is a member that lacks it.
  */
 export const observeVolumeMembers = Effect.fn("VolumeRun.observeMembers")(function* (organizationId: string, dockerVolume: string, run?: ObservedRun) {
@@ -1392,7 +1402,8 @@ export const observeVolumeMembers = Effect.fn("VolumeRun.observeMembers")(functi
       Effect.orElseSucceed((): Member => ({ machine: ref, answered: false })),
     );
   }, { concurrency: "unbounded" });
-  return [...listed, ...unlisted];
+  return [...listed, ...unlisted].map((member): Member =>
+    !member.answered && lastMirror(frame.volumes, member.machine.id, dockerVolume) ? { ...member, lastMirror: true } : member);
 }, Effect.scoped);
 
 const lackSentence = Effect.fn("VolumeRun.lackSentence")(function* (
