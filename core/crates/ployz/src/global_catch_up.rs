@@ -380,7 +380,7 @@ pub(crate) async fn follow_globals(
     client: &mut Client,
     assigned: &Machine,
     command: impl Fn(&[&str]) -> String,
-) -> Result<(), CatchUpError> {
+) -> Result<Vec<serde_json::Value>, CatchUpError> {
     use crate::ui::progress::{Disposition, Frame, Progress, Row, Run, State, Subject, Timing};
     let signal = crate::cancellation::interrupted()
         .map_err(|error| CatchUpError::new(error.into(), Vec::new()))?;
@@ -455,17 +455,27 @@ pub(crate) async fn follow_globals(
             Disposition::Settled
         },
     );
+    let mut unarrived = Vec::new();
     for (id, name) in not_arrived {
         crate::ui::warn(format!(
             "Server {name} shows no sign it ever joined, so Global catch-up did not wait on it."
         ));
-        crate::ui::hint(&crate::ui::Hint::Next(command(&[
-            "server",
-            "forget",
-            id.as_str(),
-            "--confirm",
-            "dead",
-        ])));
+        let next = command(&["server", "forget", id.as_str(), "--confirm", "dead"]);
+        crate::ui::hint(&crate::ui::Hint::Next(next.clone()));
+        unarrived.push(serde_json::json!({ "id": id, "name": name, "next": next }));
+    }
+    result.map(|()| unarrived)
+}
+
+/// Add the Unarrived Servers catch-up skipped to a join result, when there are any.
+pub(crate) fn with_unarrived(
+    mut result: serde_json::Value,
+    unarrived: &[serde_json::Value],
+) -> serde_json::Value {
+    if !unarrived.is_empty()
+        && let Some(fields) = result.as_object_mut()
+    {
+        fields.insert("unarrived".into(), unarrived.into());
     }
     result
 }

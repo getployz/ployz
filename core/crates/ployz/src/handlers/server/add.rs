@@ -88,6 +88,7 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
         Ok::<_, Error>(assigned)
     })?;
     // The Machine joined: everything after is a follow-up that makes the result partial.
+    let mut unarrived = Vec::new();
     let follow_up = (|| {
         connection = connection.with_machine_id(assigned.id);
         config.save_connection(&context_name, connection.clone())?;
@@ -108,7 +109,7 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
                 .await,
             )
         })?;
-        catch_up.map_err(|error| {
+        unarrived = catch_up.map_err(|error| {
             crate::global_catch_up::joined_catch_up_error(error, &assigned, |args| {
                 super::super::recovery_command(matches, &context_name, args)
             })
@@ -118,7 +119,10 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
         Ok(())
     })();
     crate::ui::emit_committed(
-        json!({ "server": super::server_json(&assigned) }),
+        crate::global_catch_up::with_unarrived(
+            json!({ "server": super::server_json(&assigned) }),
+            &unarrived,
+        ),
         follow_up,
     )
 }

@@ -351,8 +351,11 @@ where
     ui::stream(format_args!("Joined Server {}.", assigned.name));
     // The join is committed; a catch-up failure makes it partial.
     Ok(ui::emit_committed(
-        serde_json::json!({ "server": super::server::server_json(&assigned), "founded": false }),
-        catch_up.map_err(|error| {
+        crate::global_catch_up::with_unarrived(
+            serde_json::json!({ "server": super::server::server_json(&assigned), "founded": false }),
+            catch_up.as_deref().unwrap_or_default(),
+        ),
+        catch_up.map(drop).map_err(|error| {
             crate::global_catch_up::joined_catch_up_error(error, &assigned, |args| {
                 super::rerun(matches, args)
             })
