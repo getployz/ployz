@@ -1009,14 +1009,15 @@ pub(crate) async fn follow_removal(
         Ok(Some(RemovalRun::Succeeded(removal))) => Ok(removal),
         Ok(None) => Err(StoreCallError::Refused(removal_unsettled(name))),
         Err(StoreCallError::Refused(refused))
-            if refused.details.get("reset_unknown") == Some(&serde_json::Value::Bool(true)) =>
+            if refused.details.get("unfinished") == Some(&serde_json::Value::Bool(true)) =>
         {
+            // Any step after the reset was sent may be the one that ran out: the Server may
+            // have reset and Cloud dropped it, or neither.
             Err(StoreCallError::Refused(RpcError {
                 code: ployz_core::RpcErrorCode::Unavailable,
                 message: format!(
-                    "Cloud's removal of Server {name} ran out of retries before the Server \
-                     answered, so whether it reset is unknown and Cloud still lists it. If the \
-                     Server is gone, forget it."
+                    "Cloud's removal of Server {name} didn't finish: it ran out of retries. If \
+                     the Server is gone but `ployz server ls` still lists it, forget it."
                 ),
                 details: forget_next(name),
                 cause: vec![refused.message],
@@ -1026,15 +1027,15 @@ pub(crate) async fn follow_removal(
     }
 }
 
-/// Stopped watching a removal that is still running. It may yet fail without knowing
-/// whether the Server reset, as [`follow_removal`] says when it does.
+/// Stopped watching a removal that is still running. It may yet fail unfinished, as
+/// [`follow_removal`] says when it does.
 fn removal_unsettled(name: &MachineName) -> RpcError {
     RpcError {
         code: ployz_core::RpcErrorCode::Unavailable,
         message: format!(
             "Cloud is still removing Server {name}; it finishes on its own. \
              The dashboard's Servers page shows when it's done. If it fails and the Server \
-             is gone, forget it."
+             is gone but `ployz server ls` still lists it, forget it."
         ),
         details: forget_next(name),
         cause: Vec::new(),
@@ -1363,6 +1364,14 @@ mod tests {
             unsettled
                 .message
                 .contains("Cloud is still removing Server web-2"),
+            "{}",
+            unsettled.message
+        );
+        // A Server Cloud already dropped isn't found by forget, so only a listed one is sent there.
+        assert!(
+            unsettled
+                .message
+                .contains("is gone but `ployz server ls` still lists it"),
             "{}",
             unsettled.message
         );

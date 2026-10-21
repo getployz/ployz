@@ -451,14 +451,10 @@ async fn cloud_removes_its_last_server_for_the_cli() {
     );
 }
 
-#[tokio::test]
-async fn a_cloud_removal_whose_retries_ran_out_says_to_forget_a_server_that_is_gone() {
-    // Cloud refuses a sent removal that ran out of retries as `GET server-removals/:id`, its reset unknown.
-    let (cloud, _, _) = fake_cloud_settling(
-        "503 Service Unavailable",
-        r#"{"error":{"code":"unavailable","message":"Machine remove retries were exhausted.","details":{"reset_unknown":true}}}"#,
-        false,
-    );
+/// `server rm` of the last Server whose Cloud removal ended `failed / retry_exhausted`, as
+/// Cloud refuses it on `GET server-removals/:id`. Its error, after a failed exit.
+async fn removal_ran_out(refusal: &'static str) -> serde_json::Value {
+    let (cloud, _, _) = fake_cloud_settling("503 Service Unavailable", refusal, false);
     let (output, _) = remove_last_cloud_server(
         &[("PLOYZ_TOKEN", "ployz_acme"), ("PLOYZ_CLOUD_URL", &cloud)],
         &["--confirm", "one", "--accept-volume-loss", "data"],
@@ -471,13 +467,31 @@ async fn a_cloud_removal_whose_retries_ran_out_says_to_forget_a_server_that_is_g
         Some(&json!("unavailable")),
         "{error}"
     );
-    let message = error
+    error
+}
+
+fn message(error: &serde_json::Value) -> &str {
+    error
         .pointer("/error/message")
         .and_then(serde_json::Value::as_str)
-        .unwrap_or_default();
-    // Whether the Server reset is unknown, so the CLI never says it was removed.
+        .unwrap_or_default()
+}
+
+#[tokio::test]
+async fn a_sent_cloud_removal_whose_retries_ran_out_says_to_forget_a_server_that_is_gone() {
+    let error = removal_ran_out(
+        r#"{"error":{"code":"unavailable","message":"Machine remove retries were exhausted.","details":{"unfinished":true}}}"#,
+    )
+    .await;
+    let message = message(&error);
+    assert!(message.contains("didn't finish"), "{message}");
+    // A step after the Server's reply may be the one that ran out: the reset may be
+    // confirmed and Cloud's row dropped, so the CLI claims neither way.
+    for unbacked in ["unknown", "answered", "Cloud still lists", "Removed"] {
+        assert!(!message.contains(unbacked), "{message}");
+    }
     assert!(
-        message.contains("unknown") && !message.contains("Removed"),
+        message.contains("If the Server is gone but `ployz server ls` still lists it"),
         "{message}"
     );
     assert_eq!(
@@ -485,6 +499,16 @@ async fn a_cloud_removal_whose_retries_ran_out_says_to_forget_a_server_that_is_g
         Some(&json!("ployz server forget one")),
         "{error}"
     );
+}
+
+#[tokio::test]
+async fn a_cloud_removal_that_sent_nothing_says_only_its_failure() {
+    let error = removal_ran_out(
+        r#"{"error":{"code":"unavailable","message":"Machine remove retries were exhausted.","details":null}}"#,
+    )
+    .await;
+    assert_eq!(message(&error), "Machine remove retries were exhausted.");
+    assert_eq!(error.pointer("/error/details/next"), None, "{error}");
 }
 
 #[tokio::test]
