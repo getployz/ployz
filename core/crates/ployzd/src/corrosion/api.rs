@@ -12,9 +12,11 @@ use tokio_util::{
 
 use super::Error;
 
-/// Queries and transactions this client keeps in flight at once. Corrosion sheds
-/// every request past 128 in flight on a route with an immediate 503, and a
-/// Deploy's rotation guards can fan out far more reads than that.
+/// Requests this client keeps in flight at once on each of Corrosion's query and
+/// transaction routes. Corrosion sheds every request past 128 in flight on a
+/// route with an immediate 503, and a Deploy's rotation guards can fan out far
+/// more reads than that. Each route gets its own gate, so writes never queue
+/// behind a burst of reads.
 const MAX_IN_FLIGHT: usize = 32;
 
 #[derive(Clone, Debug, Serialize)]
@@ -36,7 +38,8 @@ impl Statement {
 pub(crate) struct ApiClient {
     base_url: Url,
     client: Client,
-    in_flight: Arc<tokio::sync::Semaphore>,
+    queries: Arc<tokio::sync::Semaphore>,
+    transactions: Arc<tokio::sync::Semaphore>,
 }
 
 impl ApiClient {
@@ -79,7 +82,8 @@ impl ApiClient {
         Ok(Self {
             base_url,
             client,
-            in_flight: Arc::new(tokio::sync::Semaphore::new(MAX_IN_FLIGHT)),
+            queries: Arc::new(tokio::sync::Semaphore::new(MAX_IN_FLIGHT)),
+            transactions: Arc::new(tokio::sync::Semaphore::new(MAX_IN_FLIGHT)),
         })
     }
 
@@ -87,11 +91,11 @@ impl ApiClient {
     /// slot against it. A wait that runs out names this daemon's own queue, not
     /// Corrosion.
     async fn bounded<T>(
-        &self,
+        gate: &tokio::sync::Semaphore,
         request: impl std::future::Future<Output = Result<T, Error>>,
     ) -> Result<T, Error> {
         let deadline = tokio::time::Instant::now() + super::IO_TIMEOUT;
-        let permit = tokio::time::timeout_at(deadline, self.in_flight.acquire()).await;
+        let permit = tokio::time::timeout_at(deadline, gate.acquire()).await;
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
         let (Ok(permit), false) = (permit, remaining.is_zero()) else {
             return Err(Error::Io(io::Error::new(
@@ -116,19 +120,18 @@ impl ApiClient {
     ) -> Result<(), Error> {
         let statements = statements.into_iter().collect::<Vec<_>>();
         // ponytail: finite query responses are buffered; stream events if store size makes this measurable.
-        let (status, body) = self
-            .bounded(async {
-                let response = self
-                    .client
-                    .post(self.base_url.join("v1/transactions").expect("static path"))
-                    .json(&statements)
-                    .send()
-                    .await?;
-                let status = response.status();
-                let body = response.bytes().await?;
-                Ok::<_, Error>((status, body))
-            })
-            .await?;
+        let (status, body) = Self::bounded(&self.transactions, async {
+            let response = self
+                .client
+                .post(self.base_url.join("v1/transactions").expect("static path"))
+                .json(&statements)
+                .send()
+                .await?;
+            let status = response.status();
+            let body = response.bytes().await?;
+            Ok::<_, Error>((status, body))
+        })
+        .await?;
         let decoded = serde_json::from_slice::<ExecResponse>(&body);
         if !status.is_success() {
             return Err(decoded
@@ -163,19 +166,18 @@ impl ApiClient {
     }
 
     pub(crate) async fn query(&self, statement: Statement) -> Result<QueryResult, Error> {
-        let (status, body) = self
-            .bounded(async {
-                let response = self
-                    .client
-                    .post(self.base_url.join("v1/queries").expect("static path"))
-                    .json(&statement)
-                    .send()
-                    .await?;
-                let status = response.status();
-                let body = response.bytes().await?;
-                Ok::<_, Error>((status, body))
-            })
-            .await?;
+        let (status, body) = Self::bounded(&self.queries, async {
+            let response = self
+                .client
+                .post(self.base_url.join("v1/queries").expect("static path"))
+                .json(&statement)
+                .send()
+                .await?;
+            let status = response.status();
+            let body = response.bytes().await?;
+            Ok::<_, Error>((status, body))
+        })
+        .await?;
         if !status.is_success() {
             return Err(Error::Api(format!(
                 "HTTP {status}: {}",
