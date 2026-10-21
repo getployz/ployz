@@ -536,12 +536,6 @@ async fn removing_a_service_sets_every_copy_out_before_waiting_on_any() {
     let machine = machine('1');
     let first = container('a');
     let second = container('b');
-    let retire = |container_id| DeployOperation::RemoveContainer {
-        machine_id: machine,
-        container_id,
-        purpose: ployz_core::RemoveContainerPurpose::Retire,
-    };
-    let plan = vec![retire(first), retire(second)];
     let client = Scripted::new(vec![
         observed(Call::Inspect(machine, first), exited(1)),
         observed(Call::Inspect(machine, second), exited(1)),
@@ -554,9 +548,8 @@ async fn removing_a_service_sets_every_copy_out_before_waiting_on_any() {
     for id in [first, second] {
         client.record(id, |copy| copy.stopped = true);
     }
-    let groups = crate::deploy::planning::test_groups(&plan);
 
-    let outcome = execute_groups(&plan, groups, &client).await;
+    let outcome = remove_everything(&client).await;
 
     assert!(
         matches!(outcome, DeployOutcome::Success { .. }),
@@ -572,6 +565,38 @@ async fn removing_a_service_sets_every_copy_out_before_waiting_on_any() {
         .position(|applied| matches!(applied, Move::Gone(_)))
         .unwrap();
     assert!(last_out < first_gone, "{moves:?}");
+    client.assert_done();
+}
+
+/// A Pending copy keeps every proxy on the last routed copy, so its removal
+/// runs to the end before any sibling goes Out, however long it takes. No
+/// sibling's wait runs out on its account.
+#[tokio::test(start_paused = true)]
+async fn a_slow_pending_removal_completes_before_any_sibling_goes_out() {
+    let machine = machine('1');
+    let pending = container('a');
+    let routed = container('b');
+    let client = Scripted::new(vec![
+        observed(Call::Inspect(machine, pending), running()),
+        ok_after(
+            Call::Remove(machine, pending),
+            2 * crate::deploy::cleanup::ACK_WAIT,
+        ),
+        observed(Call::Inspect(machine, routed), running()),
+        ok(Call::Remove(machine, routed)),
+    ])
+    .with_copy(&machine, &pending, CopyRotation::Pending)
+    .with_copy(&machine, &routed, CopyRotation::In);
+    client.routes(&api(), false);
+
+    let outcome = remove_everything(&client).await;
+
+    assert!(
+        matches!(outcome, DeployOutcome::Success { .. }),
+        "{outcome:?}"
+    );
+    let moves = client.moves();
+    assert_eq!(moves.first(), Some(&Move::Gone(pending)), "{moves:?}");
     client.assert_done();
 }
 
@@ -853,6 +878,25 @@ async fn a_failed_deploy_keeps_the_services_it_removes() {
     );
     assert_eq!(outcome.services(), ended(&[("api", ServiceResult::Old)]));
     client.assert_done();
+}
+
+/// Runs the Deploy that removes every Service `client` holds copies of, with
+/// the steps the planner gives it.
+async fn remove_everything(client: &Scripted) -> DeployOutcome<ExecutionError> {
+    let intent = crate::deploy::DeployIntent::apply_all(
+        test_namespace(),
+        [],
+        crate::deploy::PlanOptions::default(),
+    );
+    let plan = crate::deploy::plan_deploy(&intent, &client.snapshot()).unwrap();
+    super::super::execute_operation_sequence(
+        &plan,
+        &run_id(),
+        client,
+        &CancellationToken::new(),
+        None,
+    )
+    .await
 }
 
 fn execute_groups<C: MachineOperations>(

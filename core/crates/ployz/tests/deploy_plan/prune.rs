@@ -680,3 +680,37 @@ fn a_removal_retires_every_copy_of_a_service_in_one_step() {
     };
     assert_eq!(tail.steps, [Step::Parallel(vec![0, 1])]);
 }
+
+#[test]
+fn a_removal_removes_pending_copies_one_at_a_time_before_the_rest_go_out_together() {
+    let debug = spec("debug");
+    let service = service_id('b');
+    let copy = |hex, machine_hex, rotation| {
+        let mut copy = container(hex, machine_hex, &debug, &service);
+        copy.try_update(|parts| parts.rotation = Some(rotation))
+            .unwrap();
+        copy
+    };
+    let snapshot = DeploySnapshot {
+        machines: vec![machine('1', "first"), machine('2', "second")],
+        containers: vec![
+            copy('a', '1', ployz_core::CopyRotation::In),
+            copy('b', '2', ployz_core::CopyRotation::Pending),
+            copy('c', '2', ployz_core::CopyRotation::In),
+            copy('d', '1', ployz_core::CopyRotation::Pending),
+        ],
+        ..Default::default()
+    };
+    let intent =
+        DeployIntent::apply_all(Namespace::parse("app").unwrap(), [], PlanOptions::default());
+
+    let plan = plan_deploy(&intent, &snapshot).unwrap();
+
+    let Some(tail) = plan.groups().last() else {
+        panic!("expected a removal group");
+    };
+    assert_eq!(
+        tail.steps,
+        [Step::Serial(0), Step::Serial(1), Step::Parallel(vec![2, 3])]
+    );
+}

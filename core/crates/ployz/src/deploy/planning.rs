@@ -229,18 +229,6 @@ fn service_group(
     };
     let rollout_removal =
         |operation: &DeployOperation| TaskKind::of(operation) == TaskKind::Unroute;
-    // A copy of a Service the Deploy removes goes Out beside its siblings, so
-    // no Out waits on a route a sibling still In keeps.
-    let retirement = |operation: &DeployOperation| {
-        service.is_none()
-            && matches!(
-                operation,
-                DeployOperation::RemoveContainer {
-                    purpose: ployz_core::RemoveContainerPurpose::Retire,
-                    ..
-                }
-            )
-    };
     let publish = service.is_some()
         && indexed()
             .any(|(_, operation)| starts_container(operation) || rollout_removal(operation));
@@ -250,16 +238,16 @@ fn service_group(
             .is_some_and(|spec| spec.update.order == UpdateOrder::Rolling)
     });
     let mut steps: Vec<Step> = Vec::new();
-    let mut at_once: Vec<usize> = Vec::new();
-    let flush = |steps: &mut Vec<Step>, at_once: &mut Vec<usize>| {
+    let mut starts: Vec<usize> = Vec::new();
+    let flush = |steps: &mut Vec<Step>, starts: &mut Vec<usize>| {
         if !rolling {
-            if !at_once.is_empty() {
-                steps.push(Step::Parallel(std::mem::take(at_once)));
+            if !starts.is_empty() {
+                steps.push(Step::Parallel(std::mem::take(starts)));
             }
             return;
         }
         let mut machines: Vec<(MachineId, Vec<usize>)> = Vec::new();
-        for index in at_once.drain(..) {
+        for index in starts.drain(..) {
             let machine = operations
                 .get(index)
                 .expect("group ranges index this plan's operations")
@@ -279,14 +267,14 @@ fn service_group(
     for (index, operation) in indexed() {
         if publish && rollout_removal(operation) {
             removals.push(Step::Serial(index));
-        } else if starts_container(operation) || retirement(operation) {
-            at_once.push(index);
+        } else if starts_container(operation) {
+            starts.push(index);
         } else {
-            flush(&mut steps, &mut at_once);
+            flush(&mut steps, &mut starts);
             steps.push(Step::Serial(index));
         }
     }
-    flush(&mut steps, &mut at_once);
+    flush(&mut steps, &mut starts);
     let mut groups = vec![ServiceGroup {
         service: service.clone(),
         dependencies,
@@ -781,8 +769,8 @@ fn assemble_plan(
     let mut operations = service_operations;
     let prelude = operations.len() - before_volumes;
     let preserved_volumes = preserved_owned_volumes(&intent.namespace, &target, snapshot);
-    let tail_start = operations.len();
-    operations.extend(removal_operations(&services, &retiring));
+    let (removals, tail) = removal_operations(&services, &retiring, operations.len());
+    operations.extend(removals);
     let mut groups = Vec::new();
     if prelude > 0 {
         groups.extend(service_group(&operations, None, Vec::new(), 0..prelude));
@@ -798,14 +786,13 @@ fn assemble_plan(
             .collect();
         groups.extend(service_group(&operations, Some(name), dependencies, range));
     }
-    if tail_start < operations.len() {
-        let every_service = requested.iter().map(|spec| spec.name.clone()).collect();
-        groups.extend(service_group(
-            &operations,
-            None,
-            every_service,
-            tail_start..operations.len(),
-        ));
+    if !tail.is_empty() {
+        groups.push(ServiceGroup {
+            service: None,
+            dependencies: requested.iter().map(|spec| spec.name.clone()).collect(),
+            steps: tail,
+            publish: false,
+        });
     }
     Ok(Planned {
         operations,
@@ -903,22 +890,31 @@ fn check_removals(intent: &DeployIntent) -> Result<(), PlanError> {
     Ok(())
 }
 
+/// Removals of every copy of each obsolete Service, and the steps that run
+/// them from index `first` on. A Pending copy keeps every proxy on the last
+/// routed copy, so Pending copies go first, one at a time. The rest go Out in
+/// one step: a copy still In keeps every proxy on an Out sibling, whose own
+/// wait then never ends.
 fn removal_operations(
     services: &[ServiceObservation],
     obsolete: &[QualifiedService],
-) -> Vec<DeployOperation> {
+    first: usize,
+) -> (Vec<DeployOperation>, Vec<Step>) {
     let obsolete = obsolete.iter().collect::<BTreeSet<_>>();
-    let mut retiring: Vec<_> = services
+    let (pending, rest): (Vec<_>, Vec<_>) = services
         .iter()
         .filter(|service| obsolete.contains(&service.identity))
         .flat_map(|service| service.containers_for(ContainerAction::Remove))
-        .collect();
-    // A Pending sibling keeps proxies on the last routed copy, whose Out then
-    // never confirms, so Pending copies go first.
-    retiring
-        .sort_by_key(|container| *container.as_observation().rotation() != CopyRotation::Pending);
-    retiring
+        .partition(|container| *container.as_observation().rotation() == CopyRotation::Pending);
+    let serial = first..first + pending.len();
+    let at_once = serial.end..serial.end + rest.len();
+    let mut steps: Vec<Step> = serial.map(Step::Serial).collect();
+    if !at_once.is_empty() {
+        steps.push(Step::Parallel(at_once.collect()));
+    }
+    let operations = pending
         .into_iter()
+        .chain(rest)
         .map(|container| {
             let observation = container.as_observation();
             DeployOperation::RemoveContainer {
@@ -927,7 +923,8 @@ fn removal_operations(
                 purpose: ployz_core::RemoveContainerPurpose::Retire,
             }
         })
-        .collect()
+        .collect();
+    (operations, steps)
 }
 
 fn order_included<'intent>(

@@ -2300,7 +2300,6 @@ async fn execute_operation<C: MachineOperations>(
                     rows.leave_running(progress, &copy, Left::Refused(refusal.clone()));
                     Err(machine_error(MachineAction::RemoveContainer, refusal.into_error()).into())
                 }
-                // The next removal waits on this Out being seen through.
                 Ok(cleanup::Step::NotConfirmed(machines)) => {
                     let error = machine_error(
                         MachineAction::RemoveContainer,
