@@ -528,6 +528,59 @@ async fn a_server_cloud_manages_is_forgotten_through_cloud() {
 }
 
 #[tokio::test]
+async fn a_server_already_gone_from_the_cluster_says_cloud_let_go_and_its_reset_is_unconfirmed() {
+    let (cloud, _, _) = fake_cloud(
+        r#"{"state":"succeeded","reset_warning":"its reset couldn't be confirmed: it was already gone from the Cluster","release":{"kind":"others_remain"}}"#,
+        false,
+    );
+    let mut service = DiscoveryService::new(test_description());
+    // A Server whose ID starts with `b` never answers this fake; this one answers, holding Volume `data`.
+    service.machines.push(machine('c', "two"));
+    let (output, _) = remove_cloud_server(
+        service,
+        "two",
+        &[("PLOYZ_TOKEN", "ployz_acme"), ("PLOYZ_CLOUD_URL", &cloud)],
+        &["--confirm", "two", "--accept-volume-loss", "data"],
+    )
+    .await;
+    // The reset is still in doubt, so the removal is partial.
+    assert_eq!(output.status.code(), Some(3), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("Removed Server two."), "{stderr}");
+    assert!(
+        stderr.contains(
+            "! Cloud let go of Server two, but its reset couldn't be confirmed: it was already gone from the Cluster."
+        ),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("keeps its hold"), "{stderr}");
+    assert!(!stderr.contains("not fully cleaned up"), "{stderr}");
+}
+
+#[tokio::test]
+async fn the_last_server_already_gone_from_the_cluster_says_cloud_keeps_its_hold() {
+    let (cloud, _, _) = fake_cloud(
+        r#"{"state":"succeeded","reset_warning":"its reset couldn't be confirmed: it was already gone from the Cluster","release":{"kind":"kept","reason":"its reset didn't finish (its reset couldn't be confirmed: it was already gone from the Cluster), so it may still hold Cloud's key."}}"#,
+        false,
+    );
+    let (output, _) = remove_last_cloud_server(
+        &[("PLOYZ_TOKEN", "ployz_acme"), ("PLOYZ_CLOUD_URL", &cloud)],
+        &["--confirm", "one", "--accept-volume-loss", "data"],
+    )
+    .await;
+    assert_eq!(output.status.code(), Some(3), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("! Cloud keeps its hold on the Cluster: its reset didn't finish (its reset couldn't be confirmed: it was already gone from the Cluster), so it may still hold Cloud's key."),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("! Server one was not fully cleaned up or reset: its reset couldn't be confirmed: it was already gone from the Cluster. Reset does not erase volume data."),
+        "{stderr}"
+    );
+}
+
+#[tokio::test]
 async fn an_agent_gets_the_approval_a_cloud_removal_needs() {
     let (cloud, asked, _) = fake_cloud(
         r#"{"state":"succeeded","reset_warning":null,"release":{"kind":"others_remain"}}"#,

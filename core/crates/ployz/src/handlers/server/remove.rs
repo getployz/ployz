@@ -289,6 +289,7 @@ fn leave(root: &ArgMatches, removal: Removal) -> Result<(), Error> {
     runtime.block_on(async {
         let mut reset_failure = None;
         let mut cloud_released = None;
+        let mut cloud_kept = false;
 
         // TODO: do not reroute away from the current entry before removal.
         if let (Some(credential), Some(id)) = (&cloud, &run) {
@@ -296,6 +297,7 @@ fn leave(root: &ArgMatches, removal: Removal) -> Result<(), Error> {
             reset_failure = removed.reset_warning;
             if let Release::Kept { reason } = &removed.release {
                 crate::ui::warn(format!("Cloud keeps its hold on the Cluster: {reason}"));
+                cloud_kept = true;
             }
             cloud_released = Some(removed.release == Release::Released);
         } else if removal == Removal::Forget {
@@ -337,7 +339,16 @@ fn leave(root: &ArgMatches, removal: Removal) -> Result<(), Error> {
             crate::ui::stream("Cloud let go of the Cluster: this Organization has no Server now. Its Environments keep their config; nothing runs until you add a Server.");
             crate::ui::hint(&Hint::Next("ployz server add".into()));
         }
-        if let Some(reason) = &reset_failure {
+        if let Some(reason) = &reset_failure
+            && cloud_released.is_some()
+            && !cloud_kept
+        {
+            // Cloud lets go only of a Server the Cluster already forgot, so only its reset is in doubt.
+            crate::ui::warn(crate::ui::sentence(format!(
+                "Cloud let go of Server {}, but {reason}",
+                selected.name
+            )));
+        } else if let Some(reason) = &reset_failure {
             crate::ui::warn(crate::ui::then_sentence(
                 &crate::ui::with_reason(
                     format_args!("Server {} was not fully cleaned up or reset", selected.name),

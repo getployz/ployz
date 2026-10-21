@@ -527,6 +527,12 @@ If the server resets but your other servers can't forget it, `ployz server rm` s
 reset but is still listed." and prints `ployz server forget web-2` to finish. Ployz Cloud
 finishes such a removal on its own.
 
+A Ployz Cloud removal that retries can find the server already gone from the cluster. Ployz then
+can't confirm the server reset. Cloud drops its record of the server, and `ployz server rm` says
+"Cloud let go of Server web-2, but its reset couldn't be confirmed: it was already gone from the
+Cluster." and exits with code 3. Your last server is the exception: Cloud keeps its hold on the
+cluster and says why.
+
 `sudo systemctl stop ployz.socket ployz` stops Ployz's control of the server. Stop the socket too:
 any `ployz` command on the server starts Ployz again through it. Your services, their private DNS,
 the private network and the server's place in the cluster keep running until the server reboots or
