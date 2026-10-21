@@ -553,15 +553,22 @@ describe("volume runs", () => {
       ...["fsn-2", "fsn-3"].flatMap((server) => [`04-forget-${server}`, `03-forget-${server}`])]
       .flatMap((id) => Array.from({ length: 6 }, (_, check) => `${id}-wait-${check + 1}`)),
     ...Array.from({ length: 8 }, (_, check) => `01-wait-${check}`),
-    ...["fsn-1", "fsn-2", "fsn-3"].flatMap((server) => [0, 1, 2].flatMap((index) =>
-      Array.from({ length: 119 }, (_, check) => `03-${index}-size-${idOf(server)}-wait-${check + 1}`))),
   ].map((id) => ({ id, handler: () => undefined }));
-  const execute = (runRowId: string, runId = "run-1", steps?: Array<{ id: string; handler: () => object | undefined }>, volume = volumeId, took?: string, attempt = 0) => new InngestTestEngine({
-    function: createRunVolume(new Inngest({ id: "test" }), runEffect),
-    events: [{ name: "volume/run.requested", data: { organizationId, environment: "env-1", volumeId: volume, runId: runRowId, took } }],
-    transformCtx: (ctx) => ({ ...mockCtx(ctx), runId, attempt }),
-    steps: [...(steps ?? []), ...sleeps],
-  }).execute();
+  /**
+   * Only a resize reaches these. The engine rebuilds every mock on each of a run's executions, so giving all 1071 to
+   * every run made the six-hour mirror test take seconds on them alone.
+   */
+  const sizeSleeps = ["fsn-1", "fsn-2", "fsn-3"].flatMap((server) => [0, 1, 2].flatMap((index) =>
+    Array.from({ length: 119 }, (_, check) => ({ id: `03-${index}-size-${idOf(server)}-wait-${check + 1}`, handler: () => undefined }))));
+  const execute = async (runRowId: string, runId = "run-1", steps?: Array<{ id: string; handler: () => object | undefined }>, volume = volumeId, took?: string, attempt = 0) => {
+    const { rows: [row] } = await harness.pool.query<{ kind: string }>("select kind from volume_run where id = $1", [runRowId]);
+    return new InngestTestEngine({
+      function: createRunVolume(new Inngest({ id: "test" }), runEffect),
+      events: [{ name: "volume/run.requested", data: { organizationId, environment: "env-1", volumeId: volume, runId: runRowId, took } }],
+      transformCtx: (ctx) => ({ ...mockCtx(ctx), runId, attempt }),
+      steps: [...(steps ?? []), ...sleeps, ...(row?.kind === "resize" ? sizeSleeps : [])],
+    }).execute();
+  };
   /** Runs the row as Inngest would from the event its request sent, `took` and all. */
   const deliver = (runRowId: string, runId = "run-1") => {
     const event = send.mock.calls.flatMap(([sent]) => [sent].flat()).find((sent) => sent.id === `volume-run-${runRowId}`);
