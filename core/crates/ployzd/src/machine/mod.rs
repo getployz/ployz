@@ -704,23 +704,13 @@ mod tests {
     }
 
     #[test]
-    fn runtime_names_the_store_filesystem_before_and_after_the_store_exists() {
+    fn store_filesystem_is_named_before_and_after_the_store_exists() {
         let root = tempfile::tempdir().unwrap();
         let expected = filesystem_name(rustix::fs::statfs(root.path()).unwrap().f_type as u32);
-        assert!(!expected.is_empty());
-        assert_eq!(
-            local_runtime(root.path()).store_filesystem.as_deref(),
-            Some(expected.as_str())
-        );
+        assert_eq!(store_filesystem(root.path()), Some(expected.clone()));
         fs::create_dir(root.path().join("corrosion")).unwrap();
-        assert_eq!(
-            local_runtime(root.path()).store_filesystem.as_deref(),
-            Some(expected.as_str())
-        );
-        assert_eq!(
-            local_runtime(&root.path().join("missing")).store_filesystem,
-            None
-        );
+        assert_eq!(store_filesystem(root.path()), Some(expected));
+        assert_eq!(store_filesystem(&root.path().join("missing")), None);
     }
 
     #[tokio::test]

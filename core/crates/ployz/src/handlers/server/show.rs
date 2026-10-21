@@ -109,12 +109,8 @@ fn daemon_skew_warning(machines: &[MachineObservation], cli_version: &str) -> Op
 
 /// Filesystems that refuse, or don't pass on, the flag that makes the store write
 /// synchronously, by the name the daemon reports and the name a person knows.
-const POWER_CUT_STORES: [(&str, &str); 4] = [
-    ("zfs", "ZFS"),
-    ("btrfs", "Btrfs"),
-    ("tmpfs", "tmpfs"),
-    ("overlay", "overlay"),
-];
+const POWER_CUT_STORES: [(&str, &str); 3] =
+    [("zfs", "ZFS"), ("btrfs", "Btrfs"), ("tmpfs", "tmpfs")];
 
 /// The filesystem a Server keeps its state on, named as a person knows it when it can
 /// lose its last changes in a power cut.
@@ -626,6 +622,7 @@ mod tests {
                 on("web-1", Some("ext4")),
                 on("web-2", None),
                 on("web-3", Some("0x1234abcd")),
+                on("web-4", Some("overlay")),
             ]),
             None
         );
