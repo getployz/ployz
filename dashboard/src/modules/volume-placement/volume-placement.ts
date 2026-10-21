@@ -362,17 +362,17 @@ export function recovery(
   const copy = observed.copies.find((each) => each.kind === "slot" && applied.includes(each.server.id));
   if (copy === undefined) return null;
   const { server: mirror, newest: lostAfter } = copy;
-  // Only a silent primary leads to Forget: one whose report is on its way may still hold the writer, and one that answered
-  // it lacks a capability is up, so the restore's refusal names what it lacks.
+  // What was heard from the presumed primary decides, as Live shows it. Silent: Forget, naming every silent Server, since
+  // each holds the stage back. Report on its way: wait, as it may still hold the writer. Lacking a capability: it is up,
+  // so the restore's refusal names what it lacks.
   const presumed = presumedPrimary(observed, row?.staged?.primary ?? null);
   const primary = members.find((member) => member.machine.id === presumed?.id);
   const heard = primary === undefined ? null : heardFrom(primary);
   if (heard === "waiting") return { kind: "wait", mirror, lostAfter };
-  const silent = heard === null || heard === "silent"
-    ? members.filter((member) => heardFrom(member) === "silent").map((member) => member.machine)
-    : [];
-  if (silent.length > 0) return { kind: "forget", down: silent, mirror, lostAfter };
-  if (members.some((member) => heardFrom(member) === "waiting")) return { kind: "wait", mirror, lostAfter };
+  if (heard === "silent") {
+    const down = members.filter((member) => heardFrom(member) === "silent").map((member) => member.machine);
+    return { kind: "forget", down, mirror, lostAfter };
+  }
   if (row?.staged?.primary === mirror.id) return null;
   return { kind: "restore", mirror, lostAfter, stage: restoreStage(volume, members, mirror, applied, accepting, owed, floorless) };
 }
