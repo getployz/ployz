@@ -385,8 +385,9 @@ function CopyView({ volume, members, row, rows, owed, copies, copy, accepting, u
   const observed = observePlacement(members);
   const target = targetPlacement(observed, row);
   const applied = appliedMirrors(observed, row);
-  // A staged mirror is Details' to discard, and a Deploy running the placement holds it.
-  const offered = !blocked && copy.staged === null && !deploying ? target : null;
+  // A staged mirror is Details' to discard, and a Deploy running the placement holds it. A mirror the target holds as its
+  // primary, while Live names another Server, has no edit of its own.
+  const offered = !blocked && copy.staged === null && !deploying && target?.primary !== copy.server.id ? target : null;
   const movable = placementTargets(volume, members, row, accepting, owed).move.some((machine) => machine.id === copy.server.id);
   const promote = offered !== null && movable ? editPlacement(offered, { kind: "move", to: copy.server.id }) : null;
   const remove = offered === null ? null : editPlacement(offered, { kind: "remove_mirror", server: copy.server.id });

@@ -157,7 +157,8 @@ web-1 is up, and may still hold the volume. Copies names such a server under **L
 that isn't answering. A server the volume records as its mirror is named under **Live** only when
 no other server is likelier to hold the volume. One staged to become the primary counts as one
 that may hold it, as a failed move returns there. Otherwise it is listed under **Elsewhere**, even
-when it is staged to become the primary.
+when it is staged to become the primary. While your next deploy keeps it as the primary, it offers
+no **Make primary** or **Remove mirror**.
 
 Under **Live**, the primary reads **Live** only while its server reports it writable. During a
 move, while writes pause on the server it leaves, it reads **Read-only**. A server whose Ployz is
