@@ -11,6 +11,9 @@ pub const HEALTH_POLL_INTERVAL: Duration = Duration::from_secs(1);
 /// How long a Container without a healthcheck must stay up to count as started. One
 /// second catches a copy that exits on start; a crash after it is not caught.
 pub const DEFAULT_HEALTH_MONITOR: Duration = Duration::from_secs(1);
+/// How long a Container with a healthcheck may read unhealthy or not running before a
+/// wait fails it, since a check can recover.
+pub const HEALTHCHECK_RUNTIME_GRACE: Duration = Duration::from_secs(5);
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum HealthPoll {
@@ -26,12 +29,25 @@ pub enum HealthExpectation {
     Healthy,
 }
 
-/// The window `spec` asks a Container without a healthcheck to stay up through.
+/// The window `spec` asks a Container to stay up through, or its default.
 #[must_use]
 pub fn health_monitor(spec: &ResolvedServiceSpec) -> Duration {
-    spec.update
-        .monitor_millis
-        .map_or(DEFAULT_HEALTH_MONITOR, Duration::from_millis)
+    spec.update.monitor_millis.map_or_else(
+        || default_monitor(spec.container.healthcheck.as_ref()),
+        Duration::from_millis,
+    )
+}
+
+/// The window when nothing asks for one: the short stayed-up watch without a
+/// healthcheck, the runtime grace with one.
+#[must_use]
+pub fn default_monitor(healthcheck: Option<&HealthcheckSpec>) -> Duration {
+    match healthcheck {
+        Some(HealthcheckSpec::Configured(_) | HealthcheckSpec::Http(_)) => {
+            HEALTHCHECK_RUNTIME_GRACE
+        }
+        Some(HealthcheckSpec::Disabled) | None => DEFAULT_HEALTH_MONITOR,
+    }
 }
 
 /// The longest the Machine waits on a Container started from `spec` before it
@@ -565,6 +581,27 @@ mod tests {
                 .poll(&starting, Duration::ZERO)
                 .1,
             healthcheck_deadline(None)
+        );
+    }
+
+    #[test]
+    fn a_configured_check_reported_unhealthy_keeps_its_runtime_grace_by_default() {
+        let spec = service_spec(Some(configured_check(60_000)), None);
+        let check = spec.container.healthcheck.clone().unwrap();
+        let unhealthy = details(
+            running(HealthObservation::Unhealthy),
+            Some(check.clone()),
+            None,
+        );
+        assert_eq!(
+            ReadyWait::new(Some(&check), health_monitor(&spec))
+                .poll(&unhealthy, Duration::from_secs(2))
+                .0,
+            HealthPoll::PendingUntil(HEALTHCHECK_RUNTIME_GRACE)
+        );
+        assert_eq!(
+            health_monitor(&service_spec(None, None)),
+            DEFAULT_HEALTH_MONITOR
         );
     }
 

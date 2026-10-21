@@ -1,8 +1,8 @@
 use std::future::Future;
 
 use ployz_core::{
-    ContainerDetails, ContainerId, DEFAULT_HEALTH_MONITOR, HEALTH_POLL_INTERVAL, HealthFailure,
-    HealthPoll, InspectContainerRequest, MachineId, MachineTarget, ReadyWait, RpcError, op,
+    ContainerDetails, ContainerId, HEALTH_POLL_INTERVAL, HealthFailure, HealthPoll,
+    InspectContainerRequest, MachineId, MachineTarget, ReadyWait, RpcError, default_monitor, op,
 };
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
@@ -21,12 +21,18 @@ async fn wait_until_ready<E, F: Future<Output = Result<ContainerDetails, E>>>(
     cancellation: &CancellationToken,
     mut inspect: impl FnMut() -> F,
 ) -> Result<(), HealthWaitError<E>> {
-    let mut wait = ReadyWait::new(None, DEFAULT_HEALTH_MONITOR);
+    let mut wait = None;
     loop {
         if cancellation.is_cancelled() {
             return Err(HealthWaitError::Health(HealthFailure::Cancelled));
         }
         let details = inspect().await.map_err(HealthWaitError::Inspect)?;
+        let wait = wait.get_or_insert_with(|| {
+            ReadyWait::new(
+                None,
+                default_monitor(details.container.effective_healthcheck.as_ref()),
+            )
+        });
         let elapsed = started.elapsed();
         let wake = match wait.poll(&details, elapsed).0 {
             HealthPoll::Complete => return Ok(()),
@@ -69,8 +75,9 @@ mod tests {
     use std::{num::NonZeroU16, time::Duration};
 
     use ployz_core::{
-        ConfiguredHealthcheck, ContainerRuntimeObservation, HealthObservation, HealthcheckCommand,
-        HealthcheckSpec, HttpHealthcheck, healthcheck_deadline,
+        ConfiguredHealthcheck, ContainerRuntimeObservation, DEFAULT_HEALTH_MONITOR,
+        HEALTHCHECK_RUNTIME_GRACE, HealthObservation, HealthcheckCommand, HealthcheckSpec,
+        HttpHealthcheck, healthcheck_deadline,
     };
 
     use super::*;
@@ -122,6 +129,32 @@ mod tests {
         .await;
         assert!(result.is_ok());
         assert_eq!(waited, Duration::from_secs(45));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_checked_container_that_recovers_inside_its_runtime_grace_is_ready() {
+        let healthcheck = HealthcheckSpec::Configured(ConfiguredHealthcheck {
+            test: HealthcheckCommand::parse(["CMD", "true"]).unwrap(),
+            interval_millis: None,
+            timeout_millis: None,
+            start_period_millis: None,
+            start_interval_millis: None,
+            retries: None,
+            deadline_millis: Some(60_000),
+        });
+        let (result, waited) = wait(|elapsed| {
+            details(
+                if elapsed < HEALTHCHECK_RUNTIME_GRACE - Duration::from_secs(1) {
+                    HealthObservation::Unhealthy
+                } else {
+                    HealthObservation::Healthy
+                },
+                Some(healthcheck.clone()),
+            )
+        })
+        .await;
+        assert!(result.is_ok(), "{result:?}");
+        assert_eq!(waited, HEALTHCHECK_RUNTIME_GRACE - Duration::from_secs(1));
     }
 
     #[tokio::test(start_paused = true)]
