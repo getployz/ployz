@@ -79,6 +79,8 @@ describe("drain-server", () => {
   let harness: PostgresTestHarness;
   /** The Namespaces the Config Store says the Organization's Environments own. */
   let namespaces: string[];
+  /** Whether the Config Store fails its read. */
+  let storeDown: boolean;
   let drainCalls: Array<[string, DrainScope]>;
   /** What the Engine answers a Drain with. */
   let drainAnswer: () => Effect.Effect<DrainReport, PloyzSdkError>;
@@ -99,7 +101,10 @@ describe("drain-server", () => {
       Effect.provideService(InngestClient, inngest),
       Effect.provideService(CloudStore, {
         open: Effect.succeed(asTestDouble<ConfigStore>()({
-          read: async () => ({ namespaces: namespaces.map((namespace) => ({ namespace })) }),
+          read: async () => {
+            if (storeDown) throw new Error("config store unavailable");
+            return { namespaces: namespaces.map((namespace) => ({ namespace })) };
+          },
         })),
       }),
       Effect.provideService(OrganizationRuntime, {
@@ -178,6 +183,7 @@ describe("drain-server", () => {
 
   beforeEach(async () => {
     namespaces = ["shop-production"];
+    storeDown = false;
     frame = frameOf("replicated");
     silentOpens = 0;
     unpaired = false;
@@ -376,6 +382,20 @@ describe("drain-server", () => {
     await drain();
 
     expect(seen).toEqual([{ kind: "waiting" }, { kind: "running", since: expect.any(String) }]);
+  });
+
+  it("stops reading waiting once its servers answer, even when a later step of that try fails and is retried", async () => {
+    const viewOf = async () => drainView({ server: web2, latest: await latest(), serverNames: new Map(), requested: null });
+    await request();
+    await harness.pool.query(`update server_drain_attempt set inngest_run_id = 'run-1' where id = $1`, [requestId]);
+    silentOpens = 1;
+    expect(await runEffect(executeDrainOnce(request0, "run-1", { waited: false }))).toEqual({ attemptId: requestId, state: "pending" });
+    expect(await viewOf()).toEqual({ kind: "waiting" });
+
+    storeDown = true;
+    await expect(runEffect(executeDrainOnce(request0, "run-1", { waited: true }))).rejects.toThrow();
+
+    expect(await viewOf()).toEqual({ kind: "queued", behind: null });
   });
 
   it("stops waiting once the request is older than the pending limit, and ends never started", async () => {
