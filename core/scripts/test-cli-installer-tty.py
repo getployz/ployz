@@ -1,7 +1,10 @@
 """Runs the Shell install line's `sh -s -- VERSION --enroll` with the script on a pipe, as `curl | sh` does,
-on a real terminal that types the Fleet Token the instant the prompt shows, and with no terminal at all."""
+on a real terminal that types the Fleet Token the instant the prompt shows, and with no terminal at all.
+It also cancels once at each syscall the shell makes between showing the prompt and blocking on the terminal."""
 
+import ctypes
 import hashlib
+import itertools
 import os
 import pty
 import select
@@ -18,6 +21,43 @@ from pathlib import Path
 SOURCE = Path(sys.argv[1]).read_bytes()
 TOKEN = 'pflt_' + 'a' * 43
 ARGS = ['-s', '--', '1.2.3', '--enroll']
+PROMPT = b'Fleet Token (from Servers in Ployz Cloud): '
+WRITE_SYSCALL = {'x86_64': 1, 'aarch64': 64}[os.uname().machine]
+PTRACE_TRACEME, PTRACE_DETACH, PTRACE_SYSCALL, PTRACE_SETOPTIONS = 0, 17, 24, 0x4200
+PTRACE_O_TRACESYSGOOD, PTRACE_O_TRACEEXEC, PTRACE_O_EXITKILL = 0x1, 0x10, 0x100000
+libc = ctypes.CDLL(None, use_errno=True)
+libc.ptrace.argtypes = [ctypes.c_long, ctypes.c_long, ctypes.c_void_p, ctypes.c_void_p]
+
+
+def ptrace(request, pid, data=0):
+    if libc.ptrace(request, pid, None, data or None) == -1:
+        error = ctypes.get_errno()
+        raise OSError(error, os.strerror(error))
+
+
+def syscall_args(pid):
+    return [int(field, 0) for field in Path(f'/proc/{pid}/syscall').read_text().split()[:4]]
+
+
+def writes_prompt(pid):
+    number, _, buffer, length = syscall_args(pid)
+    if number != WRITE_SYSCALL:
+        return False
+    with open(f'/proc/{pid}/mem', 'rb') as memory:
+        memory.seek(buffer)
+        return PROMPT in memory.read(length)
+
+
+def time_out(*_):
+    raise TimeoutError
+
+
+signal.signal(signal.SIGALRM, time_out)
+
+
+def pending(pid, number):
+    fields = dict(line.split(':', 1) for line in Path(f'/proc/{pid}/status').read_text().splitlines())
+    return any(int(fields[key], 16) >> (number - 1) & 1 for key in ('SigPnd', 'ShdPnd'))
 
 
 def stub(path, text):
@@ -66,6 +106,84 @@ def run(shell, env, mode):
     return rc
 
 
+def cancel_mid_prompt(shell, env, mode, nth):
+    """Holds the shell at the nth syscall it starts after writing the prompt, as a busy CPU can, and cancels once there.
+    Returns whether the shell had already blocked before that syscall, and what went wrong, if anything."""
+    number = {'term': signal.SIGTERM, 'ctrl-c': signal.SIGINT}[mode]
+    script_read, script_write = os.pipe()
+    pid, master = pty.fork()
+    if pid == 0:
+        os.close(script_write)
+        os.dup2(script_read, 0)
+        os.close(script_read)
+        libc.ptrace(PTRACE_TRACEME, 0, None, None)
+        os.kill(os.getpid(), signal.SIGSTOP)
+        os.execve(shell, [shell, *ARGS], env)
+    os.close(script_read)
+    os.write(script_write, SOURCE)
+    os.close(script_write)
+
+    def next_stop(timeout):
+        signal.setitimer(signal.ITIMER_REAL, timeout)
+        try:
+            return os.waitpid(pid, 0)[1]
+        except TimeoutError:
+            return None
+        finally:
+            signal.setitimer(signal.ITIMER_REAL, 0)
+
+    os.waitpid(pid, 0)
+    ptrace(PTRACE_SETOPTIONS, pid, PTRACE_O_TRACESYSGOOD | PTRACE_O_TRACEEXEC | PTRACE_O_EXITKILL)
+    entering, prompted, seen, forward, held, blocked = True, False, 0, 0, None, False
+    while seen < nth:
+        ptrace(PTRACE_SYSCALL, pid, forward)
+        forward = 0
+        status = next_stop(.5 if prompted else 10)
+        if status is None:
+            assert prompted, f'{shell} {mode}: never wrote the prompt'
+            blocked = True
+            break
+        assert os.WIFSTOPPED(status), f'{shell} {mode}: exited before the prompt was cancelled'
+        stop = os.WSTOPSIG(status)
+        if stop == signal.SIGTRAP | 0x80:
+            if entering and prompted:
+                seen += 1
+                held = syscall_args(pid)[0]
+            elif entering:
+                prompted = writes_prompt(pid)
+            entering = not entering
+        elif stop != signal.SIGTRAP:
+            forward = stop
+    echo_at_cancel = bool(termios.tcgetattr(master)[3] & termios.ECHO)
+    if mode == 'term':
+        os.kill(pid, number)
+    else:
+        os.write(master, b'\x03')
+    where = f'while blocked in syscall {held}' if blocked else f'at syscall {held}, the {nth} after the prompt'
+    if blocked:
+        while (stop := os.WSTOPSIG(next_stop(10) or 0)) != number:
+            assert stop, f'{shell} {mode}: the signal never reached the shell'
+            ptrace(PTRACE_SYSCALL, pid, 0 if stop in (signal.SIGTRAP, signal.SIGTRAP | 0x80) else stop)
+        ptrace(PTRACE_DETACH, pid, number)
+    else:
+        deadline = time.monotonic() + 10
+        while not pending(pid, number):
+            assert time.monotonic() < deadline, f'{shell} {mode}: the signal never reached the shell'
+            time.sleep(.001)
+        ptrace(PTRACE_DETACH, pid)
+    status = next_stop(10)
+    echo_after = bool(termios.tcgetattr(master)[3] & termios.ECHO)
+    os.close(master)
+    if status is None:
+        os.kill(pid, signal.SIGKILL)
+        os.waitpid(pid, 0)
+        return blocked, f'{shell} {mode} {where}: still running 10s later, echo {"on" if echo_after else "off"}'
+    rc = os.waitstatus_to_exitcode(status)
+    if echo_at_cancel or not echo_after or rc != 130:
+        return blocked, f'{shell} {mode} {where}: exit {rc}, echo at cancel {echo_at_cancel}, after {echo_after}'
+    return blocked, None
+
+
 with tempfile.TemporaryDirectory() as tmp:
     root = Path(tmp)
     for directory in ['bin', 'release', 'install', 'dev']:
@@ -101,6 +219,7 @@ cp "$FAKE_RELEASE/${url##*/}" "$output"
                PROBE_ARGV=str(root / 'argv'), PROBE_STDIN=str(root / 'stdin'))
 
     shells = [shell for shell in ['/bin/sh', shutil.which('dash'), shutil.which('bash')] if shell]
+    late_cancels = []
     for shell in dict.fromkeys(shells):
         for attempt in range(5):
             assert run(shell, env, 'type') == 0, shell
@@ -109,6 +228,13 @@ cp "$FAKE_RELEASE/${url##*/}" "$output"
             assert TOKEN not in (root / 'argv').read_text(), shell
         assert run(shell, env, 'ctrl-c') == 130, shell
         assert run(shell, env, 'term') == 130, shell
+        for mode in ['ctrl-c', 'term']:
+            for nth in itertools.count(1):
+                blocked, failure = cancel_mid_prompt(shell, env, mode, nth)
+                if failure:
+                    late_cancels.append(failure)
+                if failure or blocked:
+                    break
         (root / 'install/ployz').unlink()
         detached = subprocess.run([shell, *ARGS], input=SOURCE, env=env, capture_output=True, start_new_session=True)
         assert detached.returncode == 1, (shell, detached)
@@ -121,4 +247,5 @@ cp "$FAKE_RELEASE/${url##*/}" "$output"
         assert b'Fleet Token (from Servers in Ployz Cloud)' not in headless.stdout + headless.stderr, shell
         assert (root / 'stdin').read_text() == TOKEN + '\n', shell
         assert TOKEN not in (root / 'argv').read_text(), shell
+    assert not late_cancels, 'one cancel at the prompt did not end the install:\n' + '\n'.join(late_cancels)
     print('install.sh keeps the Fleet Token off the terminal in', ', '.join(dict.fromkeys(shells)))
