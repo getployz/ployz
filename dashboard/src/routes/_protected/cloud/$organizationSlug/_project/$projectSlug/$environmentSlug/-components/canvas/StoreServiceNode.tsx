@@ -53,8 +53,7 @@ export function StoreServiceCard({ service, domains, changeCount, runtimeIdentit
   const subtitle = domain ? <CardDescription className={cn("truncate", domain.live && "text-foreground")}>{domain.hostname}</CardDescription> : null;
   // A Deploy in flight takes the chip, so staged work beside it keeps its own word on the pink card.
   const staged = service.change === null || chip?.kind === "staged" ? null : stagedChip(service.change, changeCount);
-  // Stacked, so two chips take no more width from the name than the widest one.
-  const chipBadge = <span className="flex shrink-0 flex-col items-end gap-1"><DeployChip chip={chip} /><DeployChip chip={staged} /></span>;
+  const chips = chip === null && staged === null ? null : <><DeployChip chip={chip} /><DeployChip chip={staged} /></>;
   const navigate = useNavigate();
   // Secrets it has no value for: deploys skip them, so the card counts them and opens its variables.
   const unset = notSetLabel(notSet);
@@ -93,7 +92,7 @@ export function StoreServiceCard({ service, domains, changeCount, runtimeIdentit
             <CardContent className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-x-3">
               <div className="row-span-2">{icon}</div>
               {title}
-              <div className="justify-self-end">{chipBadge}</div>
+              <div className="flex flex-col items-end gap-1 justify-self-end">{chips}</div>
               <div className="min-w-0">{subtitle}</div>
               <StatusLine status={status} issues={issues} onIssues={openMonitoring} className="justify-self-end" />
             </CardContent>
@@ -102,8 +101,9 @@ export function StoreServiceCard({ service, domains, changeCount, runtimeIdentit
               <div className="flex items-start gap-3">
                 {icon}
                 <div className="min-w-0 flex-1 overflow-hidden">{title}{subtitle}</div>
-                {chipBadge}
               </div>
+              {/* A row of their own, so a running Deploy's clock never squeezes a long name. */}
+              {chips === null ? null : <div className="flex flex-wrap gap-1">{chips}</div>}
             </CardHeader>
             <CardContent className="flex items-center justify-between gap-2"><StatusLine status={status} issues={issues} onIssues={openMonitoring} />{notSetChip}</CardContent>
           </>}
