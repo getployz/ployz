@@ -35,6 +35,7 @@ async function request(harness: PostgresTestHarness, machineId: MachineId) {
       organizationId,
       requestedByUserId: userId,
       machineId,
+      serverName: null,
       confirmDataLoss: [],
     }),
   );
@@ -77,6 +78,7 @@ describe("machine removal durable ownership", () => {
         organizationId,
         requestedByUserId: userId,
         machineId: ids.machineId("a"),
+        serverName: null,
         confirmDataLoss: [],
       }).pipe(Effect.provideService(InngestClient, failingInngest)),
     );
@@ -95,6 +97,7 @@ describe("machine removal durable ownership", () => {
           organizationId,
           requestedByUserId: userId,
           machineId: ids.machineId("a"),
+          serverName: null,
           confirmDataLoss: [],
         }),
       ),

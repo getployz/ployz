@@ -1,6 +1,6 @@
-//! The Server check of `ployz status`: each Down Machine, and each live Machine whose
-//! proxy lacks a Service's In copies or still routes its Out or Held ones. What the
-//! check could not see is a warning, never an all-clear.
+//! The Server check of `ployz status`: no Server answering its one connection, each Down
+//! Machine, and each live Machine whose proxy lacks a Service's In copies or still routes
+//! its Out or Held ones. What the check could not see is a warning, never an all-clear.
 
 use std::collections::{BTreeSet, HashMap};
 
@@ -15,7 +15,7 @@ use ployz_store::{DeploymentStatus, DeploymentSummary};
 use serde::Serialize;
 
 use super::link::Attention;
-use super::server::{self, Reach};
+use super::server::{self, Reach, Unreached};
 use super::{Error, leaf_matches};
 use crate::cloud_login::LoginError;
 use crate::context::ContextError;
@@ -35,6 +35,10 @@ pub(super) enum Subject {
     Down {
         machine: MachineName,
     },
+    /// The Servers that didn't answer, by name where known.
+    Unanswered {
+        servers: Vec<String>,
+    },
 }
 
 pub(super) fn attention(
@@ -46,16 +50,18 @@ pub(super) fn attention(
     let context = leaf.get_one::<String>("context").map(String::as_str);
     let named = context.is_some() || leaf.get_one::<String>("connect").is_some();
     let rolling_out = rolling_out(deploying);
-    let observed = super::runtime().and_then(|runtime| {
-        runtime.block_on(async {
-            match server::reach(leaf, context).await? {
-                Some(Reach::Dial(mut client)) => {
-                    observe(&mut client, namespace, rolling_out).await.map(Some)
+    let observed = super::runtime()
+        .map_err(Unreached::from)
+        .and_then(|runtime| {
+            runtime.block_on(async {
+                match server::reach_or_silent(leaf, context).await? {
+                    Some(Reach::Dial(mut client)) => {
+                        Ok(Some(observe(&mut client, namespace, rolling_out).await?))
+                    }
+                    Some(Reach::Ask(_)) | None => Ok(None),
                 }
-                Some(Reach::Ask(_)) | None => Ok(None),
-            }
-        })
-    });
+            })
+        });
     match observed {
         Ok(Some(observed)) => {
             let check = judge(observed);
@@ -63,8 +69,20 @@ pub(super) fn attention(
             check.attention
         }
         Ok(None) => Vec::new(),
-        Err(error) if !named && nothing_set_up(&error) => Vec::new(),
-        Err(error) => {
+        Err(Unreached {
+            silent: Some(silent),
+            ..
+        }) => vec![Attention {
+            reason: "no_server_answers".to_owned(),
+            message: format!("{silent}. {}", silent.next()),
+            deployment: None,
+            next: None,
+            subject: Some(Subject::Unanswered {
+                servers: silent.names().to_vec(),
+            }),
+        }],
+        Err(Unreached { error, .. }) if !named && nothing_set_up(&error) => Vec::new(),
+        Err(Unreached { error, .. }) => {
             crate::ui::warn_cause(UNCHECKED, &error);
             Vec::new()
         }
