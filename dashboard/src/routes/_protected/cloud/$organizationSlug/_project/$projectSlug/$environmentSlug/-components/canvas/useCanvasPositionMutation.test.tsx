@@ -56,7 +56,9 @@ it.each([false, true])("applies committed sibling writes and preserves the batch
   const writeFailure = new Error("service write rejected");
   let finishSibling = () => {};
   const sibling = new Promise<void>((resolve) => { finishSibling = resolve; });
-  const transaction = createTransaction({ autoCommit: false, mutationFn: () => persistCanvasPositionBatch([
+  let started = () => {};
+  const inFlight = new Promise<void>((resolve) => { started = resolve; });
+  const transaction = createTransaction({ autoCommit: false, mutationFn: () => (started(), persistCanvasPositionBatch([
     Promise.reject(writeFailure),
     sibling.then(() => {
       const original = saved.find((row) => row.resourceType === "volume");
@@ -65,15 +67,14 @@ it.each([false, true])("applies committed sibling writes and preserves the batch
       saved = saved.map((row) => row.resourceType === "volume" ? data : row);
       return { data };
     }),
-  ], collection) });
+  ], collection)) });
   transaction.mutate(() => {
     collection.update("service:service", (row) => { row.x = 10; row.y = 10; });
     collection.update("volume:volume", (row) => { row.x = 20; row.y = 20; });
   });
   try {
     const outcome = transaction.commit().catch((error: Error) => error);
-    // Let the first rejection settle while its sibling is still in flight.
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await inFlight;
     const readsBeforeSibling = read.mock.calls.length;
     if (refreshFails) read.mockRejectedValue(new Error("refresh failed"));
     finishSibling();

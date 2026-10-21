@@ -224,7 +224,14 @@ const holdNextTransaction = (database: Effect.Success<typeof Database>, at: "sta
   return { held, release, restore: () => spy.mockRestore() };
 };
 
-const sleep = (ms: number) => Effect.promise(() => new Promise((resolve) => setTimeout(resolve, ms)));
+const untilRow = (query: ReturnType<typeof sql>) => Effect.gen(function* () {
+  const { drizzle } = yield* Database;
+  yield* Effect.promise(() => vi.waitFor(async () => expect(await Effect.runPromise(drizzle.execute(query, "objects"))).not.toHaveLength(0), { timeout: 5_000 }));
+});
+
+const tokenLapsed = untilRow(sql`select 1 from ${organizationToken} having bool_and(${organizationToken.expiresAt} <= clock_timestamp())`);
+
+const waitingOnLock = untilRow(sql`select 1 from pg_stat_activity where datname = current_database() and wait_event_type = 'Lock'`);
 
 const expireSoon = Effect.gen(function* () {
   const { drizzle } = yield* Database;
@@ -345,9 +352,11 @@ it.live("a claim that committed while teardown waited on the Organization keeps 
     const claimed = Effect.runPromiseWith(services)(claimAs(person, secret));
     yield* Effect.promise(() => claim.held);
     claim.restore();
-    yield* sleep(1_600);
-    const step = Effect.runPromise(tearDown(services));
-    yield* sleep(300);
+    yield* tokenLapsed;
+    let settled = false;
+    const step = Effect.runPromise(tearDown(services)).finally(() => { settled = true; });
+    yield* waitingOnLock;
+    expect(settled).toBe(false);
     claim.release();
     yield* Effect.promise(() => claimed);
     expect((yield* Effect.promise(() => step)).result).toEqual({ organizationId: ORGANIZATION, state: "claimed", did: "nothing" });
@@ -370,7 +379,7 @@ it.live("a claim checked after the token ran out is refused even when its transa
     const claimed = Effect.runPromiseWith(services)(Effect.result(claimAs(person, secret)));
     yield* Effect.promise(() => claim.held);
     claim.restore();
-    yield* sleep(1_600);
+    yield* tokenLapsed;
     const original = store.write.bind(store);
     const write = vi.spyOn(store, "write").mockImplementationOnce(async (...args) => {
       claim.release();

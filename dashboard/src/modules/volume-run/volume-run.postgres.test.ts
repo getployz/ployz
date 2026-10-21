@@ -537,15 +537,11 @@ describe("volume runs", () => {
     if (!result.ok) throw new Error(result.refusal.message);
     return result.run;
   };
-  const waitingOnLock = async () => {
-    for (let poll = 0; poll < 200; poll++) {
-      const { rows: waiting } = await harness.pool.query(
-        "select 1 from pg_stat_activity where datname = current_database() and wait_event_type = 'Lock'");
-      if (waiting.length > 0) return;
-      await new Promise((resolve) => setTimeout(resolve, 25));
-    }
-    throw new Error("nothing waited on the held row lock");
-  };
+  const waitingOnLock = () => vi.waitFor(async () => {
+    const { rows: waiting } = await harness.pool.query(
+      "select 1 from pg_stat_activity where datname = current_database() and wait_event_type = 'Lock'");
+    if (waiting.length === 0) throw new Error("nothing waited on the held row lock");
+  }, { timeout: 5_000, interval: 25 });
   const settled = ["05-cut", "07-start", "03-start", "04-resume", "05-resume", "03-restore", "03-demote", "03-reset-forget-mirror", "03-reset-forget-writer", "04-forget"];
   const sleeps = [
     ...["03-r0", "03-r1", "03-r2", "06-final"].flatMap((prefix) => Array.from({ length: 9 }, (_, poll) => `${prefix}-backoff-${poll}`)),

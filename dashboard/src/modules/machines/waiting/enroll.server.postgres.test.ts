@@ -574,7 +574,7 @@ it("waits for a reject in flight before planning, and skips the host it rejected
     await rejecting.query("begin");
     await rejecting.query("update waiting_server set rejected_at = now() where id = $1", [a.id]);
     const planning = run(enroll([a, b], { first: b.id }));
-    await new Promise((resolve) => setTimeout(resolve, 300));
+    await lockWaits(1);
     await rejecting.query("commit");
     const started = await planning;
     expect(started.attempts.map((attempt) => attempt.waitingServerId)).toEqual([b.id]);
@@ -712,14 +712,12 @@ it("clears the Organization's tokens when a full removal resumes a stuck dead-cl
   expect((await harness.pool.query("select 1 from machine_enrollment_token")).rows).toEqual([]);
 });
 
-const waitFor = async (event: string) => {
-  for (let i = 0; i < 100; i++) {
-    const { rows } = await harness.pool.query("select 1 from pg_stat_activity where datname = current_database() and wait_event = $1", [event]);
-    if (rows.length > 0) return;
-    await new Promise((resolve) => setTimeout(resolve, 20));
-  }
-  throw new Error(`nothing waited on ${event}`);
-};
+const polling = { timeout: 5_000, interval: 20 };
+
+const waitFor = (event: string) => vi.waitFor(async () => {
+  const { rows } = await harness.pool.query("select 1 from pg_stat_activity where datname = current_database() and wait_event = $1", [event]);
+  if (rows.length === 0) throw new Error(`nothing waited on ${event}`);
+}, polling);
 
 it("locks waiting servers in id order when rejecting, so a concurrent enroll does not deadlock", async () => {
   const [a, b] = await waiting("heap-first-big-id", "heap-second-small-id");
@@ -756,16 +754,12 @@ it("locks waiting servers in id order when rejecting, so a concurrent enroll doe
   }
 }, 15_000);
 
-const lockWaits = async (count: number) => {
-  for (let i = 0; i < 300; i++) {
-    const { rows } = await harness.pool.query<{ n: number }>(
-      "select count(*)::int as n from pg_stat_activity where datname = current_database() and wait_event_type = 'Lock'",
-    );
-    if ((rows[0]?.n ?? 0) >= count) return;
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
-  throw new Error(`fewer than ${count} waited on a lock`);
-};
+const lockWaits = (count: number) => vi.waitFor(async () => {
+  const { rows } = await harness.pool.query<{ n: number }>(
+    "select count(*)::int as n from pg_stat_activity where datname = current_database() and wait_event_type = 'Lock'",
+  );
+  if ((rows[0]?.n ?? 0) < count) throw new Error(`fewer than ${count} waited on a lock`);
+}, polling);
 
 it("ends a rejected host's open attempt while a probe selection waits on the same rows, without a deadlock", async () => {
   const [a, b] = await waiting("heap-first-big-id", "heap-second-small-id");
@@ -868,7 +862,6 @@ it("locks attempts in id order when the stale sweep ends them, so a concurrent F
 it("keeps an attempt an enroll committed while an expired-token check-in waited on it", async () => {
   const [a] = await waiting("expiry-race");
   if (a === undefined) throw new Error("one host");
-  await harness.pool.query("update fleet_token set expires_at = clock_timestamp() + interval '1 second'");
   const gate = await harness.pool.connect();
   await gate.query("select pg_advisory_lock(934125)");
   await harness.pool.query(`
@@ -881,11 +874,7 @@ it("keeps an attempt an enroll committed while an expired-token check-in waited 
   try {
     const enrolling = run(enroll([a]));
     await waitFor("advisory");
-    for (let i = 0; i < 100; i++) {
-      const { rows } = await harness.pool.query<{ expired: boolean }>("select expires_at < clock_timestamp() as expired from fleet_token");
-      if (rows[0]?.expired === true) break;
-      await new Promise((resolve) => setTimeout(resolve, 20));
-    }
+    await harness.pool.query("update fleet_token set expires_at = clock_timestamp() - interval '1 second'");
     const checking = checkin(a);
     await waitFor("transactionid");
     await gate.query("select pg_advisory_unlock(934125)");
@@ -920,11 +909,11 @@ it("holds Enroll behind Forget Servers before the first server founds, so no att
     await waitFor("advisory");
     let settled = false;
     const enrolling = failure(enroll([b])).finally(() => { settled = true; });
-    for (let i = 0; i < 100 && !settled; i++) {
+    await vi.waitFor(async () => {
+      if (settled) return;
       const { rows } = await harness.pool.query("select 1 from pg_stat_activity where datname = current_database() and wait_event = 'advisory'");
-      if (rows.length >= 2) break;
-      await new Promise((resolve) => setTimeout(resolve, 20));
-    }
+      expect(rows.length).toBeGreaterThanOrEqual(2);
+    }, polling);
     await gate.query("select pg_advisory_unlock(934128)");
     expect(await forgetting).toMatchObject({ ok: true });
     expect(await enrolling).toBeNull();
@@ -1036,7 +1025,9 @@ it("holds Fleet Token creation behind an Organization removal", async () => {
     let created = false;
     const creating = failure(createFleetToken(ada, { organizationSlug: "ada", name: "rack-2", expiresIn: "1d", autoEnroll: null }))
       .finally(() => { created = true; });
-    for (let i = 0; i < 100 && !created && (await advisoryWaiters()) < 2; i++) await new Promise((resolve) => setTimeout(resolve, 20));
+    await vi.waitFor(async () => {
+      if (!created) expect(await advisoryWaiters()).toBeGreaterThanOrEqual(2);
+    }, polling);
     expect(created).toBe(false);
     await gate.query("select pg_advisory_unlock(934138)");
     expect(await removing).toBeNull();
