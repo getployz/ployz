@@ -1,5 +1,5 @@
 import "@tanstack/react-start/server-only";
-import type { MachineId, Operation, RunState, Subject } from "@ployz/sdk";
+import type { MachineId, Operation, RunState, Subject, UnknownEnd } from "@ployz/sdk";
 import { and, asc, desc, eq, inArray } from "drizzle-orm";
 import { Effect, Schema } from "effect";
 import { Uuid } from "#/lib/schema";
@@ -32,10 +32,13 @@ const RUN_STATES = {
 
 const seconds = (at: Date) => Math.floor(at.getTime() / 1000);
 
-const operation = (row: { attempt: string; run: string; state: keyof typeof RUN_STATES; requestedAt: Date; endedAt: Date | null; reason: string | null }): Operation => ({
+const operation = (row: {
+  attempt: string; run: string; state: keyof typeof RUN_STATES; end?: UnknownEnd; requestedAt: Date; endedAt: Date | null; reason: string | null;
+}): Operation => ({
   attempt: row.attempt,
   run: row.run,
   state: RUN_STATES[row.state],
+  end: row.end,
   requested_at: seconds(row.requestedAt),
   ended_at: row.endedAt === null ? null : seconds(row.endedAt),
   reason: row.reason,
@@ -95,7 +98,13 @@ const serverOperations = Effect.fn("OperationHistory.server")(function* (
   const now = Date.now();
   return [
     ...drains.map((row) => operation({
-      attempt: row.id, run: `drain ${name}`, state: row.state, requestedAt: row.requestedAt, endedAt: row.endedAt, reason: drainEndMessage(row),
+      attempt: row.id,
+      run: `drain ${name}`,
+      state: row.state,
+      end: row.endCode === "lost" || row.endCode === "interrupted" ? row.endCode : undefined,
+      requestedAt: row.requestedAt,
+      endedAt: row.endedAt,
+      reason: drainEndMessage(row),
     })),
     ...removals.map((row) => operation({
       attempt: row.id, run: `remove ${name}`, state: row.state, requestedAt: row.createdAt, endedAt: row.terminalAt, reason: row.failureMessage,
