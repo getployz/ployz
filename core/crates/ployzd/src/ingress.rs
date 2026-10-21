@@ -482,6 +482,9 @@ where
                         Ok(())
                     }
                     .await;
+                    if matches!(result, Err(ApplyError::AfterServing(_))) {
+                        last_input = None;
+                    }
                     if !matches!(result, Err(ApplyError::BeforeServing(_))) {
                         route_publishes.send_if_modified(|publishes| {
                             let changed = publishes.addresses != addresses;
