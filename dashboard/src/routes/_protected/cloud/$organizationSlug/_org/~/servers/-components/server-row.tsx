@@ -13,7 +13,7 @@ export type ServerRowState = "online" | "building" | "offline" | "unknown" | "up
 
 const STATES = {
   online: { word: null, dot: "bg-success", tone: "" },
-  building: { word: "Building", dot: "bg-success", tone: "text-muted-foreground" },
+  building: { word: "Building", dot: "bg-info", tone: "text-muted-foreground" },
   offline: { word: "Offline", dot: "bg-destructive", tone: "text-destructive" },
   unknown: { word: "Unknown", dot: "bg-muted-foreground", tone: "text-muted-foreground" },
   upgrading: { word: "Upgrading", dot: "animate-pulse bg-info", tone: "text-info" },

@@ -106,7 +106,7 @@ export function SessionList({ sessions, currentSessionId, onSignOut }: {
           hint={[row.ipAddress, `Active ${formatRelativeTime(new Date(row.lastActiveAt))}`].filter(Boolean).join(" · ")}
           commit={row.id === currentSessionId || row.cli ? "none" : "change"}
           actions={row.id === currentSessionId
-            ? <Badge variant="success">This device</Badge>
+            ? <Badge variant="secondary">This device</Badge>
             : row.cli
               ? <Badge variant="outline">CLI</Badge>
               : (
