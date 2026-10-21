@@ -33,7 +33,7 @@ report.
 | --- | --- |
 | `server` | The ID of the server that answered. It stays the same when you rename the server. |
 | `deploy` | The deployment of the newest replica of the service on this domain. It is empty when Ployz can't tell. It can be newer than the replicas taking traffic, for example while a deploy rolls out. |
-| `replicas` | How many replicas of the service each server holds, as `server:count` pairs. Stopped replicas count too, so this shows where the service is placed, not how many are healthy. |
+| `replicas` | How many replicas of the service each server holds, as `server:count` pairs. Stopped replicas count too, and so do old replicas a deploy left running, so this shows where the service is placed, not how many are healthy or which version answers. |
 | `status` | `ok`, `NOT_RUNNING` or `NOT_DEPLOYED`. See below. |
 | `ip` | The address your server sees the request come from. Behind a proxy, this is the proxy. |
 | `http` | The HTTP version of the request, like `HTTP/2.0`. |

@@ -3,17 +3,17 @@ import { InngestTestEngine, mockCtx } from "@inngest/test";
 import { Effect, Fiber } from "effect";
 import { TestClock } from "effect/testing";
 import { Inngest } from "inngest";
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
 import { CloudStore } from "#/modules/config-store/store-sdk.server";
 import { InngestClient } from "#/modules/inngest/client";
 import { createCancelServerDrain, createCloseStaleServerDrains, createDrainServer } from "#/modules/machines/server-drain.inngest";
-import { DRAIN_RUNNING_LIMIT_MS } from "#/modules/machines/server-drain";
+import { DRAIN_PENDING_LIMIT_MS, DRAIN_RUNNING_LIMIT_MS } from "#/modules/machines/server-drain";
 import {
-  executeDrainOnce, latestDrainOf, listLatestServerDrains, requestCliServerDrain, requestServerDrain,
+  executeDrainOnce, latestDrainOf, listLatestServerDrains, readCliServerDrain, requestCliServerDrain, requestServerDrain,
 } from "#/modules/machines/server-drain.server";
 import { applyServerPolicyChangeActivity, requestServerPolicyChange } from "#/modules/machines/server-policy.server";
-import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
+import { OrganizationRuntime, type ScopedRuntimeClientSession } from "#/modules/runtime/organization-runtime.server";
 import { PloyzProviderError, type PloyzSdkError, type PloyzSession } from "#/modules/runtime/ployz.server";
 import type { Database } from "#/server/database.server";
 import { serverDrainAttempt } from "#/modules/machines/tables";
@@ -84,6 +84,14 @@ describe("drain-server", () => {
   let updates: unknown[][];
   /** What the Engine shows Cloud of the cluster when a Drain plans. */
   let frame: RuntimeWatchView;
+  /** How many more times Cloud finds the cluster not answering. */
+  let silentOpens: number;
+  /** Whether the Organization has no Cluster paired. */
+  let unpaired: boolean;
+  /** What happens while the run waits for a silent Server. */
+  let whileWaiting: () => Promise<void>;
+  /** What happens while Cloud waits for the cluster that doesn't answer. */
+  let whileSilent: () => void;
 
   const runEffect = makeInngestEffectRunner(<A, E>(operation: Effect.Effect<A, E, Database | OrganizationRuntime | InngestClient | CloudStore>) =>
     harness.runEffect(operation.pipe(
@@ -95,7 +103,11 @@ describe("drain-server", () => {
       }),
       Effect.provideService(OrganizationRuntime, {
         cancel: () => Effect.void,
-        open: () => Effect.succeed({ status: "connected" as const, connected: asTestDouble<PloyzSession>()({
+        open: (): Effect.Effect<ScopedRuntimeClientSession> => unpaired ? Effect.succeed({ status: "no_connection" as const }) : silentOpens > 0 ? Effect.sync(() => {
+          silentOpens -= 1;
+          whileSilent();
+          return { status: "unreachable" as const, error: null };
+        }) : Effect.succeed({ status: "connected" as const, connected: asTestDouble<PloyzSession>()({
           drainMachine: (machine: string, scope: DrainScope) => {
             drainCalls.push([machine, scope]);
             return drainAnswer();
@@ -113,6 +125,8 @@ describe("drain-server", () => {
     function: createDrainServer(new Inngest({ id: "test" }), runEffect),
     events: [{ name: "server/drain.requested", data: { attemptId, organizationId, machineId: machine } }],
     transformCtx: (ctx) => ({ ...mockCtx(ctx), runId }),
+    // Each wait for a silent Server ends at once.
+    steps: Array.from({ length: 10 }, (_, tried) => ({ id: `wait-for-server-${tried + 1}`, handler: () => whileWaiting() })),
   }).execute();
   /** The cancellation Inngest sends for `runId`, naming the event that started it. */
   const cancel = (runId: string, functionId = "test-drain-server", attemptId = requestId) => new InngestTestEngine({
@@ -139,6 +153,22 @@ describe("drain-server", () => {
     `update server_drain_attempt set inngest_run_id = $2, state = 'running', started_at = now() where id = $1`, [id, runId]);
   const request0 = { attemptId: requestId, organizationId, machineId };
   const sweep = () => new InngestTestEngine({ function: createCloseStaleServerDrains(new Inngest({ id: "test" }), runEffect) }).execute();
+  /** Each durable wait the run took. */
+  const sleeps = (output: Awaited<ReturnType<typeof drain>>) => vi.mocked(output.ctx.step.sleep).mock.calls;
+  /** Inngest gave up on the run, as it does once a step fails past its retries. */
+  const failRun = (runId = "run-drain") =>
+    invokeOnFailure(createDrainServer(new Inngest({ id: "test" }), runEffect), runId, { name: "server/drain.requested", data: request0 });
+  /** Age the Drain's request by `ms`. */
+  const age = async (ms: number) => {
+    await harness.pool.query(
+      `update server_drain_attempt set requested_at = requested_at - make_interval(secs => $1) where id = $2`, [ms / 1_000, requestId]);
+  };
+  /** Another Drain in the Organization, on web-3, that ended `ago` ms ago. */
+  const endedAgo = (ago: number) => harness.pool.query(
+    `insert into server_drain_attempt (id, organization_id, machine_id, state, inngest_run_id, requested_at, started_at, ended_at, end_code)
+     values ('00000000-0000-4000-8000-0000000000e1', $1, $2, 'unknown', 'run-ahead', now() - interval '1 hour', now() - interval '1 hour',
+             now() - make_interval(secs => $3), 'lost')`,
+    [organizationId, otherMachineId, ago / 1_000]);
   /** Each row's state by the last two characters of its id. */
   const states = (all: Array<{ id: string; state: string }>) => Object.fromEntries(all.map(({ id, state }) => [id.slice(-2), state]));
 
@@ -148,6 +178,10 @@ describe("drain-server", () => {
   beforeEach(async () => {
     namespaces = ["shop-production"];
     frame = frameOf("replicated");
+    silentOpens = 0;
+    unpaired = false;
+    whileWaiting = async () => {};
+    whileSilent = () => {};
     drainCalls = [];
     drainAnswer = () => Effect.succeed(partialReport);
     updates = [];
@@ -310,15 +344,170 @@ describe("drain-server", () => {
     } });
   });
 
+  it("waits out a Server silent for longer than Inngest's retries, and drains once it answers", async () => {
+    await request();
+    // A step gets one try and 3 retries; the Server stays silent for more tries than that.
+    silentOpens = 5;
+    const output = await drain();
+
+    expect(output.result).toEqual({ attemptId: requestId, state: "finished" });
+    expect(sleeps(output)).toHaveLength(5);
+    expect(drainCalls).toEqual([[machineId, { scope: "services", services: ["shop-production/api"] }]]);
+    expect(await rows()).toMatchObject([{ state: "finished", end_code: null, report: partialReport }]);
+  });
+
+  it("stops waiting once the request is older than the pending limit, and ends never started", async () => {
+    await request();
+    silentOpens = Number.POSITIVE_INFINITY;
+    // Each wait ages the request by a third of the limit.
+    whileWaiting = () => age(DRAIN_PENDING_LIMIT_MS / 3);
+    const output = await drain();
+
+    expect(output.result).toEqual({ attemptId: requestId, state: "failed" });
+    expect(sleeps(output)).toHaveLength(3);
+    expect(drainCalls).toEqual([]);
+    expect(await rows()).toMatchObject([{ state: "failed", end_code: "not_started", started_at: null }]);
+    expect(await runEffect(readCliServerDrain(organizationId, requestId)))
+      .toEqual({ state: "ended", code: "not_started", message: "The drain never started." });
+    expect((await sweep()).result).toEqual({ failed: 0, unknown: 0 });
+  });
+
+  it("ends never started when its Server answers only after the pending limit, without asking the Engine", async () => {
+    await request();
+    silentOpens = 1;
+    whileWaiting = () => age(DRAIN_PENDING_LIMIT_MS + 60_000);
+    const output = await drain();
+
+    expect(output.result).toEqual({ attemptId: requestId, state: "failed" });
+    expect(sleeps(output)).toHaveLength(1);
+    expect(drainCalls).toEqual([]);
+    expect(await rows()).toMatchObject([{ state: "failed", end_code: "not_started", started_at: null }]);
+    expect((await sweep()).result).toEqual({ failed: 0, unknown: 0 });
+  });
+
+  it.each([
+    ["behind a Drain that just ended", 30_000],
+    ["so late that even the sweep's limit has passed", DRAIN_PENDING_LIMIT_MS + 60_000],
+  ])("drains a request whose turn comes late %s when its Server answers at once", async (_, aheadEnded) => {
+    await request();
+    await age(DRAIN_PENDING_LIMIT_MS + 5 * 60_000);
+    await endedAgo(aheadEnded);
+    const output = await drain();
+
+    expect(output.result).toEqual({ attemptId: requestId, state: "finished" });
+    expect(sleeps(output)).toEqual([]);
+    expect(drainCalls).toHaveLength(1);
+  });
+
+  it("ends never started on its first try when the request is past the limit and its Server is silent, so no retry drains it", async () => {
+    await request();
+    await age(DRAIN_PENDING_LIMIT_MS + 60_000);
+    silentOpens = 1;
+    const first = await drain();
+
+    expect(first.result).toEqual({ attemptId: requestId, state: "failed" });
+    expect(sleeps(first)).toEqual([]);
+    expect(await rows()).toMatchObject([{ state: "failed", end_code: "not_started", started_at: null }]);
+    // The Server answers by the time Inngest retries the step.
+    expect(await runEffect(executeDrainOnce(request0, "run-drain", { waited: false }))).toEqual({ attemptId: requestId, state: "failed" });
+    expect(drainCalls).toEqual([]);
+    expect((await sweep()).result).toEqual({ failed: 0, unknown: 0 });
+  });
+
+  it.each([
+    ["on its first try", 0],
+    ["on a try after a wait", 1],
+  ])("ends never started %s when its Server's silence outlasts the pending limit, without waiting again", async (_, waits) => {
+    await request();
+    await age(DRAIN_PENDING_LIMIT_MS - 30_000);
+    silentOpens = Number.POSITIVE_INFINITY;
+    const now = Date.now;
+    const clock = vi.spyOn(Date, "now");
+    onTestFinished(() => clock.mockRestore());
+    let reads = 0;
+    // The try starts 30 s before the limit, and the Server's silence comes back 30 s after it.
+    whileSilent = () => {
+      reads += 1;
+      if (reads === waits + 1) clock.mockImplementation(() => now() + 60_000);
+    };
+    const output = await drain();
+
+    expect(output.result).toEqual({ attemptId: requestId, state: "failed" });
+    expect(sleeps(output)).toHaveLength(waits);
+    expect(drainCalls).toEqual([]);
+    expect(await rows()).toMatchObject([{ state: "failed", end_code: "not_started", started_at: null }]);
+  });
+
+  it("keeps its deadline at the request's pending limit while the Organization's other Drains end", async () => {
+    await request();
+    silentOpens = 3;
+    let waits = 0;
+    whileWaiting = async () => {
+      waits += 1;
+      await age(10 * 60_000);
+      await harness.pool.query(
+        `insert into server_drain_attempt (id, organization_id, machine_id, state, inngest_run_id, requested_at, started_at, ended_at, end_code)
+         values ($1, $2, $3, 'unknown', $4, now() - interval '1 hour', now() - interval '1 minute', now() - interval '30 seconds', 'lost')`,
+        [`00000000-0000-4000-8000-0000000000f${waits}`, organizationId, otherMachineId, `run-other-${waits}`],
+      );
+    };
+    const output = await drain();
+
+    expect(output.result).toEqual({ attemptId: requestId, state: "failed" });
+    expect(sleeps(output)).toHaveLength(2);
+    expect(drainCalls).toEqual([]);
+    expect((await rows()).find(({ id }) => id === requestId)).toMatchObject({ state: "failed", end_code: "not_started", started_at: null });
+  });
+
+  it("fails at once, without waiting, when the Organization has no Cluster paired", async () => {
+    await request();
+    unpaired = true;
+    const output = await drain();
+
+    expect(output.error).toBeDefined();
+    expect(sleeps(output)).toEqual([]);
+    expect(drainCalls).toEqual([]);
+    await failRun();
+    expect(await rows()).toMatchObject([{ state: "failed", end_code: "not_started" }]);
+  });
+
+  it("never waits once it asked the Engine: a Server lost mid-drain ends the row refused, as before", async () => {
+    drainAnswer = () => Effect.fail(new PloyzProviderError({ operation: "drain machine", cause: { message: "connection reset" } }));
+    await request();
+    const output = await drain();
+
+    expect(output.result).toEqual({ attemptId: requestId, state: "failed" });
+    expect(sleeps(output)).toEqual([]);
+    expect(drainCalls).toHaveLength(1);
+    expect(await rows()).toMatchObject([{ state: "failed", end_code: "refused", refusal_message: "connection reset" }]);
+  });
+
+  it("a waiting run and the sweep end the row once: the run that wakes after the sweep finds it ended", async () => {
+    await request();
+    await harness.pool.query(
+      `update server_drain_attempt set inngest_run_id = 'run-1', requested_at = now() - make_interval(secs => $1)`,
+      [DRAIN_PENDING_LIMIT_MS / 1_000 + 60],
+    );
+    expect((await sweep()).result).toEqual({ failed: 1, unknown: 0 });
+    const swept = await rows();
+
+    // The Server answers again by the time the run wakes.
+    expect(await runEffect(executeDrainOnce(request0, "run-1", { waited: false }))).toEqual({ attemptId: requestId, state: "failed" });
+    expect(drainCalls).toEqual([]);
+    await failRun("run-1");
+    expect(await rows()).toEqual(swept);
+    expect(swept).toMatchObject([{ state: "failed", end_code: "not_started" }]);
+  });
+
   it("a retried execute step that finds the row running closes it unknown and never asks the Engine", async () => {
     await request();
     await claim(requestId, "run-1");
 
-    expect(await runEffect(executeDrainOnce(request0, "run-1"))).toEqual({ attemptId: requestId, state: "unknown" });
+    expect(await runEffect(executeDrainOnce(request0, "run-1", { waited: false }))).toEqual({ attemptId: requestId, state: "unknown" });
     expect(drainCalls).toEqual([]);
     expect(await rows()).toMatchObject([{ state: "unknown", end_code: "lost", refusal_message: null, ended_at: expect.any(Date) }]);
 
-    expect(await runEffect(executeDrainOnce(request0, "run-1"))).toEqual({ attemptId: requestId, state: "unknown" });
+    expect(await runEffect(executeDrainOnce(request0, "run-1", { waited: false }))).toEqual({ attemptId: requestId, state: "unknown" });
     expect(drainCalls).toEqual([]);
   });
 
@@ -328,7 +517,7 @@ describe("drain-server", () => {
     const [{ inngest_run_id: runId } = { inngest_run_id: null }] = await rows();
     if (runId === null) return expect.fail("the run binds its row");
 
-    expect(await runEffect(executeDrainOnce(request0, runId)))
+    expect(await runEffect(executeDrainOnce(request0, runId, { waited: false })))
       .toEqual({ attemptId: requestId, state: "finished" });
     expect(drainCalls).toHaveLength(1);
     expect((await rows())[0]?.report).toEqual(partialReport);
@@ -384,7 +573,7 @@ describe("drain-server", () => {
     await harness.pool.query(`update server_drain_attempt set inngest_run_id = 'run-1' where id = $1`, [requestId]);
 
     const ended = await runEffect(Effect.gen(function* () {
-      const fiber = yield* Effect.forkChild(executeDrainOnce(request0, "run-1"));
+      const fiber = yield* Effect.forkChild(executeDrainOnce(request0, "run-1", { waited: false }));
       yield* Effect.promise(() => engineAsked);
       yield* TestClock.adjust(DRAIN_RUNNING_LIMIT_MS);
       return yield* Fiber.join(fiber);
