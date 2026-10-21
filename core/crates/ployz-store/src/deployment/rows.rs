@@ -811,12 +811,14 @@ pub(super) fn record(
     Ok(())
 }
 
+type FailedAndCancelled = (Vec<(ServiceName, Failure)>, BTreeSet<ServiceName>);
+
 /// Each row that failed on its own, by runtime Service and first to fail on its own
 /// first, then the runtime Services one of whose rows the Deployment's cancel stopped.
 pub(super) fn failed_or_cancelled(
     tx: &mut dyn Tx,
     stored: &Stored,
-) -> Result<(Vec<(ServiceName, Failure)>, BTreeSet<ServiceName>), RpcError> {
+) -> Result<FailedAndCancelled, RpcError> {
     let found = tx.query(
         "SELECT service, machine, state, finished, history FROM config_deployment_row \
          WHERE deployment_id = ?1",
