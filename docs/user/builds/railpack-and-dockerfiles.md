@@ -131,6 +131,7 @@ To deploy a Dockerfile service, switch it to Railpack, or run it on one kind of 
   Railpack and with Dockerfiles.
 - **Keep secrets on your computer** by listing them in `.gitignore`. A `.dockerignore` keeps a
   file out of your image, but `ployz up` still uploads it. In a Git checkout, `ployz up` leaves
-  out every file Git ignores, so add `.env` to `.gitignore`. Outside a Git checkout it uploads
+  out every file Git ignores, so add `.env` to `.gitignore`. If you committed `.env` before,
+  Git still keeps it, so also run `git rm --cached .env`. Outside a Git checkout it uploads
   every file, so move `.env` out of the directory first. See
   [Deploy a directory](../cli/overview.md#deploy-a-directory).
