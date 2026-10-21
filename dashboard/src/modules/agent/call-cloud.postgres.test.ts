@@ -153,6 +153,33 @@ describe("callCloud", () => {
       });
     }));
 
+  // Catches a failed Drain missing from the answer once later runs fill the limit the agent asked for.
+  it.live("answers a Server's operations with its newest Drain with a verdict, past the limit", () =>
+    Effect.gen(function* () {
+      const services = yield* Layer.build(yield* storeTestCloud());
+      const userId = yield* seedStoreOrganization(ORGANIZATION).pipe(Effect.provide(services));
+      yield* enrollStoreServer(ORGANIZATION, { secret: "ppair_fixture_store", server: MACHINE }).pipe(Effect.provide(services));
+      const { drizzle } = yield* Database.pipe(Effect.provide(services));
+      yield* drizzle.update(organizationMachine).set({ machineName: "machine-1" as MachineName });
+      const longAgo = new Date(Date.now() - 60_000);
+      yield* drizzle.insert(serverDrainAttempt).values({
+        id: DRAIN, organizationId: ORGANIZATION, machineId: MACHINE, requestedByUserId: userId, state: "failed", endCode: "not_started", requestedAt: longAgo, endedAt: longAgo,
+      });
+      yield* drizzle.insert(machineRemoveAttempt).values({ organizationId: ORGANIZATION, machineId: MACHINE, requestedByUserId: userId, confirmDataLoss: [] });
+      const caller: Caller = { ...member, userId };
+
+      const heard = yield* callCloud(caller, { ask: { query: "operations", subject: { kind: "server", machine: MACHINE }, attempt: null, limit: 1 } })
+        .pipe(runtime({ status: "unreachable", error: null }, []), Effect.provide(services));
+
+      expect(heard).toEqual({
+        ok: true,
+        value: {
+          operations: [expect.objectContaining({ run: "remove machine-1" })],
+          settled_drain: expect.objectContaining({ attempt: DRAIN, run: "drain machine-1", state: "failed" }),
+        },
+      });
+    }));
+
   // Catches an act's reply naming its Server by a name Cloud kept before a rename reached it.
   it.live("names an act's Server by the name the act resolved, over a stale one Cloud kept", () =>
     Effect.gen(function* () {
