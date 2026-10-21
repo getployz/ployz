@@ -1801,6 +1801,82 @@ async fn routed_addresses_claim_nothing_while_this_machine_has_no_row() {
     std::fs::remove_dir_all(directory).unwrap();
 }
 
+#[tokio::test]
+async fn routed_addresses_claim_nothing_once_a_new_caddy_replaces_the_one_that_loaded_them() {
+    let WatcherFixture {
+        machine,
+        state,
+        address,
+        server,
+        directory,
+    } = watcher_fixture().await;
+    let api = state.api_container();
+    let (load_tx, mut loads) = mpsc::unbounded_channel();
+    let admin = TestAdmin { loads: load_tx };
+    let (route_publishes, mut published) =
+        tokio::sync::watch::channel(crate::ingress::PublishedRoutes::default());
+    let shutdown = CancellationToken::new();
+    let caddyfile = directory.join(CONFIG_FILE);
+    let watcher = tokio::spawn(watch_caddy(
+        machine.clone(),
+        ReplicatedStore::new(ApiClient::http1(address, &"a".repeat(64)).unwrap()),
+        no_down,
+        caddyfile.clone(),
+        route_publishes,
+        shutdown.clone(),
+        move || std::future::ready(Ok(Some(admin.clone()))),
+    ));
+    assert!(next_load(&mut loads).await.contains("10.210.1.2:80"));
+    state.wait_for_ack_transactions(1).await;
+    let first = std::fs::read_to_string(&caddyfile).unwrap();
+
+    std::fs::create_dir(caddyfile.with_extension("tmp")).unwrap();
+    state.set_address(api.container_id, [10, 210, 1, 7]);
+    assert!(next_load(&mut loads).await.contains("10.210.1.7:80"));
+    timeout(
+        Duration::from_secs(5),
+        published.wait_for(|published| {
+            published.addresses.as_ref().is_some_and(|addresses| {
+                addresses
+                    .get(&api.identity())
+                    .and_then(|copies| copies.get(&api.container_id))
+                    == Some(&ContainerAddress([10, 210, 1, 7].into()))
+            })
+        }),
+    )
+    .await
+    .expect("the running Caddy loaded 10.210.1.7")
+    .unwrap();
+    assert_eq!(std::fs::read_to_string(&caddyfile).unwrap(), first);
+
+    std::fs::remove_dir_all(directory.join("certs")).unwrap();
+    std::fs::write(directory.join("certs"), b"blocks certificate preparation").unwrap();
+    *state
+        .containers
+        .lock()
+        .unwrap()
+        .get_mut(1)
+        .expect("watch fixture has an ingress container") =
+        reserved(observation(10, &machine.id, "ingress", None, Vec::new()));
+    state.send(b"{\"change\":{}}\n");
+    timeout(
+        Duration::from_secs(5),
+        published.wait_for(|published| published.addresses.is_none()),
+    )
+    .await
+    .expect("the new Caddy started from a file holding 10.210.1.2, so the record claims nothing")
+    .unwrap();
+    assert!(
+        loads.try_recv().is_err(),
+        "the new Caddy has loaded nothing"
+    );
+
+    shutdown.cancel();
+    watcher.await.unwrap().unwrap();
+    server.abort();
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
 const CHALLENGE: &str = r#"{"challenge_token":"LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0","challenge_response":"LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}"#;
 
 fn no_down() -> std::future::Ready<Result<BTreeSet<MachineId>, CorrosionError>> {

@@ -470,6 +470,8 @@ where
     // Every Caddy reload clears passive health counts and re-arms a dead upstream, so an
     // unchanged input is never reloaded.
     let mut last_input = None;
+    // The Caddy whose admin confirmed the published addresses.
+    let mut recorded_by = None;
     let mut acked = BTreeMap::new();
     // Kept while every copy is out of reach.
     let mut routed = ProxyRoutes::new();
@@ -564,14 +566,19 @@ where
                             Err(error) => (false, Err(ApplyError::BeforeServing(error))),
                         }
                     };
-                    // Without the admin, a running Caddy serves what it last loaded or, after a
-                    // restart, the Caddyfile, so the record claims nothing.
-                    if !(through_admin && matches!(result, Err(ApplyError::BeforeServing(_)))) {
+                    // A refused load leaves the record standing only while the Caddy that
+                    // confirmed it still runs. A new Caddy serves its Caddyfile.
+                    let refused =
+                        through_admin && matches!(result, Err(ApplyError::BeforeServing(_)));
+                    if !(refused && recorded_by.is_some() && recorded_by == caddy) {
+                        // Without the admin, a running Caddy serves what it last loaded or, after
+                        // a restart, the Caddyfile, so the record claims nothing.
                         let addresses = if through_admin {
-                            Some(addresses)
+                            (!refused).then_some(addresses)
                         } else {
                             no_caddy.then(BTreeMap::new)
                         };
+                        recorded_by = caddy.filter(|_| through_admin && addresses.is_some());
                         route_publishes.send_if_modified(|publishes| {
                             let changed = publishes.addresses != addresses;
                             publishes.addresses = addresses;

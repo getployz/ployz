@@ -345,15 +345,17 @@ fn judge(observed: Observed) -> Check {
             Ok(read) => down.union(&read.down).copied().collect(),
             Err(_) => down.clone(),
         };
-        let owners: Vec<Ipv4Net> = machines
+        let subnets: Vec<(Ipv4Net, bool)> = machines
             .iter()
-            .filter(|observed| {
-                !unchecked.contains(&observed.machine.id)
-                    && !unanswered.contains(&observed.machine.id)
+            .map(|observed| {
+                let id = &observed.machine.id;
+                (
+                    observed.machine.subnet.into(),
+                    !unchecked.contains(id) && !unanswered.contains(id),
+                )
             })
-            .map(|observed| observed.machine.subnet.into())
             .collect();
-        for (machine, addresses) in stale_addresses(&service, &routed, &unchecked, &owners) {
+        for (machine, addresses) in stale_addresses(&service, &routed, &unchecked, &subnets) {
             let attention =
                 stale_address(service.identity.clone(), check.name(&machine), addresses);
             check.attention.push(attention);
@@ -447,8 +449,9 @@ fn judge(observed: Observed) -> Check {
 }
 
 /// Addresses each live Server routes for this Service that no owner reports. A copy no
-/// Machine lists counts only when its address falls in the subnet of a Machine that
-/// answered and is up, since only that Machine could still report it.
+/// Machine lists counts only when every Machine whose subnet holds its address answered
+/// and is up, since any of them could still report it. `subnets` pairs each Machine's
+/// subnet with whether it answered and is up.
 fn stale_addresses(
     service: &ServiceObservation,
     routed: &BTreeMap<
@@ -456,7 +459,7 @@ fn stale_addresses(
         BTreeMap<QualifiedService, BTreeMap<ContainerId, ContainerAddress>>,
     >,
     down: &BTreeSet<MachineId>,
-    owners: &[Ipv4Net],
+    subnets: &[(Ipv4Net, bool)],
 ) -> BTreeMap<MachineId, BTreeSet<ContainerAddress>> {
     let reported: BTreeMap<ContainerId, ContainerAddress> = serving_containers(&service.containers)
         .iter()
@@ -468,10 +471,17 @@ fn stale_addresses(
         .iter()
         .map(|copy| copy.as_observation().container_id)
         .collect();
+    let owners_answered = |address: &ContainerAddress| {
+        let mut holders = subnets
+            .iter()
+            .filter(|(subnet, _)| subnet.contains(&address.0))
+            .peekable();
+        holders.peek().is_some() && holders.all(|(_, answered)| *answered)
+    };
     let removed = |copy: &ContainerId, address: &ContainerAddress| {
         !listed.contains(copy)
             && !reported.values().any(|reported| reported == address)
-            && owners.iter().any(|subnet| subnet.contains(&address.0))
+            && owners_answered(address)
     };
     routed
         .iter()
@@ -925,6 +935,35 @@ mod tests {
         );
 
         assert_eq!(serde_json::to_value(&check.attention).unwrap(), json!([]));
+    }
+
+    #[test]
+    fn status_names_no_machine_for_a_removed_copy_when_an_unanswered_machine_shares_its_subnet() {
+        let [mut one, two, three] = machines();
+        one.subnet = three.subnet;
+        let check = routing_a_removed_copy(
+            listed(&[&one, &two, &three], &[]),
+            &[&three],
+            [10, 210, 12, 5],
+        );
+
+        assert_eq!(serde_json::to_value(&check.attention).unwrap(), json!([]));
+    }
+
+    #[test]
+    fn status_names_no_machine_for_a_removed_copy_when_a_down_machine_shares_its_subnet() {
+        let [mut one, two, three] = machines();
+        one.subnet = three.subnet;
+        let check = routing_a_removed_copy(listed(&[&one, &two], &[&three]), &[], [10, 210, 12, 5]);
+
+        assert!(
+            check
+                .attention
+                .iter()
+                .all(|attention| attention.reason == "machine_down"),
+            "{}",
+            serde_json::to_value(&check.attention).unwrap()
+        );
     }
 
     #[test]

@@ -308,8 +308,8 @@ reads for it.
 `ployz status` prints this when web-3's proxy sends a replica's traffic to an address that the
 server running the replica doesn't report for it. This happens when the replica's address changed,
 or the replica was removed, and web-3 hasn't caught up, so visitors who reach web-3 can fail to
-reach `web`. A server that doesn't answer the check adds no line. Status names no server for a
-replica whose own server didn't answer or is Down.
+reach `web`. A server that doesn't answer the check adds no line. For a removed replica, status
+names no server when any server that may have run the replica didn't answer or is Down.
 
 Status skips this check while a deploy is in progress. Right after a deploy or a move, a proxy that
 hasn't caught up can still route a replica that was just removed, so the line can show briefly and
