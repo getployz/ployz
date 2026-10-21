@@ -191,14 +191,14 @@ Dominant: a trailing `next: <command>` line. Every hint is a line of its own, la
 
 | Form | Count | Example | Capture |
 |---|---|---|---|
-| `next:` | 143 in 22 files | `next: ployz login` | [cloud/errors.md](cloud/errors.md) |
+| `next:` | 142 in 22 files | `next: ployz login` | [cloud/errors.md](cloud/errors.md) |
 | `valid:` | 35 in 11 files | `valid: api, postgres, redis, web, worker` | [cloud-cluster/errors.md](cloud-cluster/errors.md) |
 | `inspect:` | 14 in 8 files | `inspect: ployz server ls` | [cluster/errors.md](cluster/errors.md) |
 | `retry:` | 13 in 9 files | `retry: ployz project rm scratch1 --confirm scratch1` | [store/project.md](store/project.md) |
 | `undo:` | 9 in 4 files | `undo: ployz history undo 7 --project shop --env production` | [cloud-cluster/deploy.md](cloud-cluster/deploy.md) |
 
 - `next:` targets vary in scope: `ployz diff --project shop`, `ployz diff`, `ployz deploy --project shop`.
-- Human output prints fewer hints than the JSON carries. 53 of 126 JSON success objects have a top-level `next`. 87 of 258 human successes print `next:`.
+- Human output prints fewer hints than the JSON carries. 53 of 126 JSON success objects have a top-level `next`. 86 of 258 human successes print `next:`.
 - `valid:` shows eight choices, then `and N more`: `valid: cpuLimit, healthcheck, image, maxRetries, memLimit, preDeployCommand, privateDns, registryCredential, and 18 more` ([store/settings.md](store/settings.md)). A near miss adds an unlabeled line above it: `did you mean replicas?`.
 
 ## 8. Identifiers
@@ -333,7 +333,7 @@ Five earlier questions are settled in the code, each as its option B or close to
 
 Still open:
 
-1. **Should human output print every `next` the JSON carries?** 53 JSON successes carry `next`; 87 human ones print it.
+1. **Should human output print every `next` the JSON carries?** 53 JSON successes carry `next`; 86 human ones print it.
    A. Yes, always.
    B. Only when the next step is not obvious (for example after a stage, say "deploy").
    C. Never on success; hints only on errors.
