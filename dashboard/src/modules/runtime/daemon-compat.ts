@@ -1,3 +1,4 @@
+// The one map from features to Server capabilities. Cloud code names a capability, never a release number.
 import type { CapabilityName } from "@ployz/sdk/capabilities";
 import { Data } from "effect";
 
