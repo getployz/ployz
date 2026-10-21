@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { MachineId } from "@ployz/sdk";
 import type { DataLossIdentity } from "#/modules/runtime/data-loss-identity";
 import { requirements, ServerLacks } from "#/modules/runtime/daemon-compat";
-import { removalLack, toMachineRemoveAttemptView } from "./machine-removal";
+import { removalFailureMessage, removalLack, toMachineRemoveAttemptView } from "./machine-removal";
 
 const entry = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" as MachineId;
 
@@ -11,6 +11,7 @@ describe("toMachineRemoveAttemptView", () => {
     id: "11111111-1111-4111-8111-111111111111",
     machineId: entry,
     missingIdentities: null,
+    failureCode: null,
     failureMessage: null,
     result: null,
   };
@@ -61,12 +62,14 @@ describe("toMachineRemoveAttemptView", () => {
       toMachineRemoveAttemptView({
         ...base,
         state: "failed",
+        failureCode: "server_lacks",
         failureMessage: "sdk_not_shipped",
       }),
     ).toEqual({
       id: base.id,
       machineId: entry,
       state: "failed",
+      failureCode: "server_lacks",
       failureMessage: "sdk_not_shipped",
     });
   });
@@ -101,5 +104,22 @@ describe("removalLack", () => {
   it("names Forget on an entry that lacks it", () => {
     const servers = [{ id: "target", capabilities: listed }, { id: "entry", capabilities: lacking }];
     expect(removalLack(servers, removal)).toEqual(new ServerLacks({ machineId: "entry", capability: "ployz.machine.forget.v1" }));
+  });
+});
+
+describe("removalFailureMessage", () => {
+  it("leaves a removal whose retries ran out unknown, and names Forget for a Server that is gone", () => {
+    const message = removalFailureMessage("web-2", {
+      failureCode: "retry_exhausted",
+      failureMessage: "Machine remove retries were exhausted.",
+    });
+    expect(message).toContain("web-2");
+    expect(message).toContain("Forget server");
+    expect(message).not.toMatch(/removed/i);
+  });
+
+  it("says a refusal as the Server gave it", () => {
+    expect(removalFailureMessage("web-2", { failureCode: "conflict", failureMessage: "A copy is still writing." }))
+      .toBe("A copy is still writing.");
   });
 });

@@ -1004,19 +1004,49 @@ pub(crate) async fn follow_removal(
         &doing,
         Some(deadline),
     )
-    .await?
+    .await
     {
-        Some(RemovalRun::Succeeded(removal)) => Ok(removal),
-        None => Err(StoreCallError::Refused(RpcError {
-            code: ployz_core::RpcErrorCode::Unavailable,
-            message: format!(
-                "Cloud is still removing Server {name}; it finishes on its own. \
-                 The dashboard's Servers page shows when it's done."
-            ),
-            details: serde_json::Value::Null,
-            cause: Vec::new(),
-        })),
+        Ok(Some(RemovalRun::Succeeded(removal))) => Ok(removal),
+        Ok(None) => Err(StoreCallError::Refused(removal_unsettled(name))),
+        Err(StoreCallError::Refused(refused))
+            if refused
+                .details
+                .get("failure_code")
+                .and_then(serde_json::Value::as_str)
+                == Some("retry_exhausted") =>
+        {
+            Err(StoreCallError::Refused(RpcError {
+                code: ployz_core::RpcErrorCode::Unavailable,
+                message: format!(
+                    "Cloud's removal of Server {name} ran out of retries before the Server \
+                     answered, so whether it reset is unknown and Cloud still lists it. If the \
+                     Server is gone, forget it."
+                ),
+                details: forget_next(name),
+                cause: vec![refused.message],
+            }))
+        }
+        Err(error) => Err(error),
     }
+}
+
+/// Stopped watching a removal that is still running. It may yet fail without knowing
+/// whether the Server reset, as [`follow_removal`] says when it does.
+fn removal_unsettled(name: &MachineName) -> RpcError {
+    RpcError {
+        code: ployz_core::RpcErrorCode::Unavailable,
+        message: format!(
+            "Cloud is still removing Server {name}; it finishes on its own. \
+             The dashboard's Servers page shows when it's done. If it fails and the Server \
+             is gone, forget it."
+        ),
+        details: forget_next(name),
+        cause: Vec::new(),
+    }
+}
+
+fn forget_next(name: &MachineName) -> serde_json::Value {
+    serde_json::json!({ "next": format!("ployz server forget {name}") })
 }
 
 /// Call `/api/cli/<path>`, answered as its reply or as Cloud's refusal, verbatim.
@@ -1328,6 +1358,23 @@ fn answer<T: DeserializeOwned>(
 mod tests {
     use super::*;
     use crate::cloud_login::tests::fake_cloud;
+
+    #[test]
+    fn a_removal_the_cli_stopped_waiting_on_says_to_forget_a_server_that_is_gone() {
+        let name = MachineName::parse("web-2").unwrap();
+        let unsettled = removal_unsettled(&name);
+        assert!(
+            unsettled
+                .message
+                .contains("Cloud is still removing Server web-2"),
+            "{}",
+            unsettled.message
+        );
+        assert_eq!(
+            unsettled.details.get("next"),
+            Some(&serde_json::json!("ployz server forget web-2"))
+        );
+    }
 
     #[test]
     fn a_name_that_is_not_text_costs_only_that_name() {

@@ -530,7 +530,8 @@ function serverRemoval(attempt: MachineRemoveAttemptView) {
       });
     case "failed":
     case "cancelled":
-      return refusal({ code: "unavailable", message: attempt.failureMessage, details: null });
+      // `retry_exhausted` never heard whether the Server reset: the CLI says so, and how to forget a Server that is gone.
+      return refusal({ code: "unavailable", message: attempt.failureMessage, details: { failure_code: attempt.failureCode } });
     default: {
       const _exhaustive: never = attempt;
       throw new Error(`Unhandled machine remove attempt: ${String(_exhaustive)}`);

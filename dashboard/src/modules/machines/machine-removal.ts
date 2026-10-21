@@ -86,14 +86,26 @@ export type MachineRemoveAttemptView =
       id: string;
       machineId: string;
       state: "failed" | "cancelled";
+      failureCode: string;
       failureMessage: string;
     };
+
+/**
+ * What a failed removal tells the person who asked for it. One whose retries ran out never heard whether its Server reset,
+ * so Cloud still lists it: a Server that is gone is forgotten instead.
+ */
+export function removalFailureMessage(name: string, attempt: { failureCode: string; failureMessage: string }) {
+  return attempt.failureCode === "retry_exhausted"
+    ? `Ployz Cloud couldn't tell whether ${name} reset, so it's still listed. If ${name} is gone, forget it with Forget server.`
+    : attempt.failureMessage;
+}
 
 export function toMachineRemoveAttemptView(attempt: {
   id: string;
   machineId: string;
   state: MachineRemoveAttemptState;
   missingIdentities: DataLossIdentity[] | null;
+  failureCode: string | null;
   failureMessage: string | null;
   result: MachineRemoveResult | null;
 }): MachineRemoveAttemptView {
@@ -129,13 +141,14 @@ export function toMachineRemoveAttemptView(attempt: {
     }
     case "failed":
     case "cancelled": {
-      if (attempt.failureMessage === null || attempt.failureMessage === "") {
+      if (attempt.failureCode === null || attempt.failureMessage === null || attempt.failureMessage === "") {
         throw new Error(`${attempt.state} attempt has no failure message.`);
       }
       return {
         id: attempt.id,
         machineId: attempt.machineId,
         state: attempt.state,
+        failureCode: attempt.failureCode,
         failureMessage: attempt.failureMessage,
       };
     }

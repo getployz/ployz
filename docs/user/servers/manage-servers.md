@@ -544,6 +544,14 @@ its back would leave that record behind.
 Ctrl-C stops following the removal but doesn't stop it: it keeps running in Ployz Cloud, and the
 server stays listed, since the removal can still fail.
 
+If Ployz Cloud runs out of retries before the server answers its removal, Ployz can't tell whether
+the server reset, so it stays listed. `ployz server rm` says so and prints `ployz server forget
+web-2` as its next step, and the **Remove** dialog says the same and points at **Forget server**.
+If the server is gone, [forget it](#forget-a-server-that-is-gone); if it still answers, remove it
+again. `ployz server rm` stops following a removal after 10 minutes. It then says the removal
+keeps running in Ployz Cloud, and it prints the same forget command for when the removal fails and
+the server is gone.
+
 Ployz stays installed on a removed server, so you can add it again later. To remove Ployz itself,
 run `sudo ployz-uninstall` on the server after you remove it. Docker, your images and your volume
 data stay on the disk.

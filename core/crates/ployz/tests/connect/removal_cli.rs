@@ -335,6 +335,15 @@ type Reads = std::sync::Arc<std::sync::atomic::AtomicUsize>;
 const ASKED: &str = r#"{"error":{"code":"approval_required","message":"A human must approve this first: this removal takes Server two out","details":{"approval_id":"apr_9","approval":"remove:abc","effects":[{"kind":"removes_server","name":"two","node":"b","path":"servers/b"}],"operation":{"verb":"remove","name":"two"}}}}"#;
 const ASKED_FORGET: &str = r#"{"error":{"code":"approval_required","message":"A human must approve this first: this forget takes Server two out","details":{"approval_id":"apr_9","approval":"forget:abc","effects":[{"kind":"removes_server","name":"two","node":"b","path":"servers/b"}],"operation":{"verb":"forget","name":"two"}}}}"#;
 fn fake_cloud(settled: &'static str, gated: bool) -> (String, Asked, Reads) {
+    fake_cloud_settling("200 OK", settled, gated)
+}
+
+/// [`fake_cloud`] whose removal reads answer `status`, as Cloud refuses a removal that ended without succeeding.
+fn fake_cloud_settling(
+    status: &'static str,
+    settled: &'static str,
+    gated: bool,
+) -> (String, Asked, Reads) {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let cloud = format!("http://{}", listener.local_addr().unwrap());
     let asked = std::sync::Arc::new(std::sync::Mutex::new(
@@ -378,7 +387,7 @@ fn fake_cloud(settled: &'static str, gated: bool) -> (String, Asked, Reads) {
                 }
             } else if line.starts_with("GET /api/cli/server-removals/r1 ") {
                 read.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                ("200 OK", settled)
+                (status, settled)
             } else {
                 ("404 Not Found", r#"{"code":"NOT_FOUND"}"#)
             };
@@ -439,6 +448,42 @@ async fn cloud_removes_its_last_server_for_the_cli() {
     assert!(
         stderr.contains("is the last Server: whatever runs on it stops"),
         "{stderr}"
+    );
+}
+
+#[tokio::test]
+async fn a_cloud_removal_whose_retries_ran_out_says_to_forget_a_server_that_is_gone() {
+    // Cloud's reply as `GET server-removals/:id` refuses a `failed / retry_exhausted` attempt.
+    let (cloud, _, _) = fake_cloud_settling(
+        "503 Service Unavailable",
+        r#"{"error":{"code":"unavailable","message":"Machine remove retries were exhausted.","details":{"failure_code":"retry_exhausted"}}}"#,
+        false,
+    );
+    let (output, _) = remove_last_cloud_server(
+        &[("PLOYZ_TOKEN", "ployz_acme"), ("PLOYZ_CLOUD_URL", &cloud)],
+        &["--confirm", "one", "--accept-volume-loss", "data"],
+    )
+    .await;
+    assert_ne!(output.status.code(), Some(0), "{output:?}");
+    let error: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        error.pointer("/error/code"),
+        Some(&json!("unavailable")),
+        "{error}"
+    );
+    let message = error
+        .pointer("/error/message")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+    // Whether the Server reset is unknown, so the CLI never says it was removed.
+    assert!(
+        message.contains("unknown") && !message.contains("Removed"),
+        "{message}"
+    );
+    assert_eq!(
+        error.pointer("/error/details/next"),
+        Some(&json!("ployz server forget one")),
+        "{error}"
     );
 }
 
