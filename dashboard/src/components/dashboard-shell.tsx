@@ -39,6 +39,8 @@ export function DashboardShell({
   const page = useAgentPage(scope);
   const [dock, setDock] = useState<HTMLElement | null>(null);
   const placeLabel = places.find((place) => place.current)?.label ?? getDashboardSectionLabel(section);
+  // Pages behind the Org Store gate own their h1, so its loading and error states stand in with the place's name.
+  const gateHeading = <h1 className={scope.kind === "environment" ? "sr-only" : "text-2xl font-semibold"}>{placeLabel}</h1>;
   return (
     <AgentDock.Provider value={dock}>
     <div className="flex h-dvh min-h-0 overflow-hidden">
@@ -82,8 +84,8 @@ export function DashboardShell({
               className="min-h-0 min-w-0 flex-1 overflow-y-auto"
             >
               {/* The one Org Store gate: pages below it read org rows synchronously; chrome above it never waits. */}
-              <CatchBoundary getResetKey={() => scope.organizationSlug} errorComponent={OrgStoreError}>
-                <Suspense fallback={<div className="p-4 md:p-6"><RouteContentSkeleton /></div>}>
+              <CatchBoundary getResetKey={() => scope.organizationSlug} errorComponent={(props) => <OrgStoreError {...props} heading={gateHeading} />}>
+                <Suspense fallback={<div className="flex flex-col gap-4 p-4 md:p-6">{gateHeading}<RouteContentSkeleton /></div>}>
                   <OrgStoreGate organizationSlug={scope.organizationSlug}>{children}</OrgStoreGate>
                 </Suspense>
               </CatchBoundary>
@@ -103,10 +105,11 @@ function OrgStoreGate({ organizationSlug, children }: { organizationSlug: string
   return children;
 }
 
-function OrgStoreError({ reset }: ErrorComponentProps) {
+function OrgStoreError({ reset, heading }: ErrorComponentProps & { heading: ReactNode }) {
   const queries = useQueryErrorResetBoundary();
   return (
-    <div className="p-4 md:p-6">
+    <div className="flex flex-col gap-4 p-4 md:p-6">
+      {heading}
       <RouteErrorAlert
         title="Organization data couldn’t load"
         description="Projects, services, and deployments are unavailable right now. Try loading them again."

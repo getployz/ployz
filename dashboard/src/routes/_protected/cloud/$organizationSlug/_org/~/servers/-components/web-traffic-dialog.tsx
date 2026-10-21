@@ -42,7 +42,7 @@ export function WebTrafficDialog({ serverName, domains, partial, reach, open, on
                 {domains.map((domain) => (
                   <Item key={domain} variant="outline" size="xs" data-row={domain}>
                     <ItemContent className="min-w-0">
-                      <ItemTitle>{domain}</ItemTitle>
+                      <ItemTitle className="font-mono">{domain}</ItemTitle>
                     </ItemContent>
                   </Item>
                 ))}
