@@ -1,5 +1,5 @@
 import "@tanstack/react-start/server-only";
-import { and, eq, isNotNull, isNull, not, sql } from "drizzle-orm";
+import { and, eq, isNotNull, isNull, not, sql, type SQLWrapper } from "drizzle-orm";
 import { Cause, Clock, Effect, Schema } from "effect";
 import type { MachineId } from "#/db/tables";
 import type { StoreRefusal } from "#/modules/config-store/store.contract";
@@ -40,19 +40,22 @@ const lockCredential = (credentialId: string, mode: "exclusive" | "shared") => E
  * holder's row before its Set, with no key yet, and another first use in flight waits for the key the claimant
  * stores. The claim is a row, not a lock, so no connection is held while the Server answers, and a Server that hangs
  * holds up nobody else. A revoked row owes its Server a Clear, which a first use that finds one runs itself unless
- * a sweep is already running it; either way nothing Sets the slot until that Clear is answered. Every Set or Clear
- * in flight is named on the row by the request that runs it, so a store or delete by one that outlived its lease
- * touches nothing a successor took. The lease outlasts any one call and its close, so a live claimant is never
- * taken over. The token orders what Cloud stores, not what reaches the Server: a Set or Clear the abort failed to
- * stop can still land late, as on main. A Clear's delete takes only a row still revoked: a key provisioned over
- * the row meanwhile, as an instance from before the claim column does without touching it, stays recorded for
- * its own Clear.
+ * a sweep is already running it; either way nothing Sets the slot until that Clear is answered. A Set or Clear in
+ * flight is named on the row by the request that runs it, for as long as that request waits on it: a call that
+ * timed out gives up its name while its request may still reach the Server. A claimant that stalls past the lease
+ * is taken over, and the name fences it: its store or delete then touches nothing a successor took. The token orders
+ * what Cloud stores, not what reaches the Server: the daemon finishes work it admitted, so a Set or Clear whose
+ * caller timed out can land after a successor's, as on main. A Clear's delete takes only a row still revoked: a key
+ * provisioned over the row meanwhile, as an instance from before the claim column does without touching it, is a
+ * live holder again until its credential loses authorization and the next sweep Clears it.
  */
 const CLAIM_LEASE_MS = SERVER_TIMEOUT_MS * 3;
 const CLAIM_POLL = "200 millis";
+/** Timestamps the lease compares come from one clock, the database's, whatever instance wrote them. */
+const now = sql`clock_timestamp()`;
 /** Nobody acts on the row's slot now, or whoever did has outlived the lease. */
-const unheld = (now: Date) =>
-  sql`(${serverAccess.claim} is null or ${serverAccess.updatedAt} < ${new Date(now.getTime() - CLAIM_LEASE_MS)})`;
+const unheld = sql`(${serverAccess.claim} is null
+  or ${serverAccess.updatedAt} < ${now} - make_interval(secs => ${sql.raw(String(CLAIM_LEASE_MS / 1000))}))`;
 
 /** What a Server gave one holder: its key, or what it said instead, or neither when nothing came in time. */
 type Provisioned = { readonly capability: string | null; readonly refused: string | null; readonly revoked: boolean };
@@ -107,7 +110,7 @@ export const provideServerAccess = Effect.fn("ServerAccess.provide")(function* (
   ))).map((row) => [row.machineId, row.encryptedCapability]));
   const label = serverAccessLabel(caller.credential.id);
   // Every Server at once, so the Cluster time is one dial and Set plus one close (12 s) inside the CLI's 15 s request.
-  // One waiting for another's Set waits out that Set's timeout at most.
+  // One waiting for another's Set waits until its own deadline at most.
   const results = yield* Effect.forEach(loaded.connections, (cloud) => Effect.gen(function* () {
     const machineId = cloud.machine_id;
     if (machineId === undefined) return yield* Effect.die("an Organization connection names its Machine");
@@ -133,8 +136,16 @@ export const provideServerAccess = Effect.fn("ServerAccess.provide")(function* (
       const timeLeft = Clock.currentTimeMillis.pipe(Effect.map((now) => Math.max(1, deadline - now)));
       const token = crypto.randomUUID();
       const holding = eq(serverAccess.claim, token);
+      let reclaiming = false;
       while (true) {
-        const now = new Date();
+        // The row this request held went from under it, as a revocation does: no second Set for a credential that
+        // no longer authorizes one.
+        if (reclaiming) {
+          const [checked] = yield* drizzle.select({
+            authorized: sql<boolean>`${authorizedBy(caller.userId, caller.organization.id, caller.credential.kind, caller.credential.id)}`,
+          }).from(member).where(and(eq(member.userId, caller.userId), eq(member.organizationId, caller.organization.id)));
+          if (checked?.authorized !== true) return { capability: null, refused: null, revoked: true };
+        }
         const claimed = yield* drizzle.insert(serverAccess).values({
           organizationId: caller.organization.id,
           machineId,
@@ -146,7 +157,7 @@ export const provideServerAccess = Effect.fn("ServerAccess.provide")(function* (
         }).onConflictDoUpdate({
           target: [serverAccess.organizationId, serverAccess.credentialId, serverAccess.machineId],
           set: { claim: token, updatedAt: now },
-          setWhere: sql`${serverAccess.encryptedCapability} is null and ${serverAccess.revokedAt} is null and ${unheld(now)}`,
+          setWhere: sql`${serverAccess.encryptedCapability} is null and ${serverAccess.revokedAt} is null and ${unheld}`,
         }).returning({ machineId: serverAccess.machineId });
         if (claimed.length > 0) {
           const management = yield* answered(client.setManagementClient(label).pipe(Effect.timeout(yield* timeLeft)));
@@ -160,17 +171,18 @@ export const provideServerAccess = Effect.fn("ServerAccess.provide")(function* (
           const stored = yield* database.transaction(Effect.gen(function* () {
             const { drizzle: tx } = yield* Database;
             yield* lockCredential(caller.credential.id, "shared");
-            const kept = yield* tx.update(serverAccess).set({ encryptedCapability, claim: null, updatedAt: new Date() })
+            const kept = yield* tx.update(serverAccess).set({ encryptedCapability, claim: null, updatedAt: now })
               .where(and(holder, holding, isNull(serverAccess.revokedAt)))
               .returning({ machineId: serverAccess.machineId });
             if (kept.length === 0) return null;
             const revoked = (yield* tx.update(serverAccess)
-              .set({ revokedAt: new Date(), encryptedCapability: null, claim: null, updatedAt: new Date() })
+              .set({ revokedAt: now, encryptedCapability: null, claim: null, updatedAt: now })
               .where(and(holder, not(stillAuthorized)))
               .returning({ machineId: serverAccess.machineId })).length > 0;
             return { capability: management.value, refused: null, revoked };
           }));
           if (stored !== null) return stored;
+          reclaiming = true;
           continue;
         }
         const [row] = yield* drizzle.select({ encryptedCapability: serverAccess.encryptedCapability, revokedAt: serverAccess.revokedAt })
@@ -180,7 +192,7 @@ export const provideServerAccess = Effect.fn("ServerAccess.provide")(function* (
         }
         if (row?.revokedAt != null) {
           const leased = yield* drizzle.update(serverAccess).set({ claim: token, updatedAt: now })
-            .where(and(holder, isNotNull(serverAccess.revokedAt), unheld(now))).returning({ machineId: serverAccess.machineId });
+            .where(and(holder, isNotNull(serverAccess.revokedAt), unheld)).returning({ machineId: serverAccess.machineId });
           if (leased.length > 0) {
             const cleared = yield* answered(client.clearManagementClient(label).pipe(Effect.timeout(yield* timeLeft)));
             if (cleared.value === null) {
@@ -189,6 +201,7 @@ export const provideServerAccess = Effect.fn("ServerAccess.provide")(function* (
             }
             yield* drizzle.delete(serverAccess).where(and(holder, holding, isNotNull(serverAccess.revokedAt)));
             yield* drizzle.update(serverAccess).set({ claim: null }).where(and(holder, holding));
+            reclaiming = true;
             continue;
           }
         }
@@ -218,15 +231,17 @@ export const provideServerAccess = Effect.fn("ServerAccess.provide")(function* (
 });
 
 /** Checked at statement time, not transaction start, so a check after a Set sees an expiry during it. */
-const stillAuthorized = sql`(exists (select 1 from ${member}
-    where ${member.userId} = ${serverAccess.userId} and ${member.organizationId} = ${serverAccess.organizationId}
+const authorizedBy = (userId: SQLWrapper | string, organizationId: SQLWrapper | string, credentialKind: SQLWrapper | string, credentialId: SQLWrapper | string) =>
+  sql`(exists (select 1 from ${member}
+    where ${member.userId} = ${userId} and ${member.organizationId} = ${organizationId}
       and ${member.role} in ('owner', 'admin'))
-  and ((${serverAccess.credentialKind} = 'session' and exists (select 1 from ${session}
-      where ${session.id} = ${serverAccess.credentialId} and ${session.expiresAt} > clock_timestamp()))
-    or (${serverAccess.credentialKind} = 'token' and exists (select 1 from ${organizationToken}
-      where ${organizationToken.id} = ${serverAccess.credentialId}
-        and ${organizationToken.organizationId} = ${serverAccess.organizationId}
-        and ${organizationToken.expiresAt} > clock_timestamp()))))`;
+  and ((${credentialKind}::text = 'session' and exists (select 1 from ${session}
+      where ${session.id} = ${credentialId} and ${session.expiresAt} > ${now}))
+    or (${credentialKind}::text = 'token' and exists (select 1 from ${organizationToken}
+      where ${organizationToken.id} = ${credentialId}
+        and ${organizationToken.organizationId} = ${organizationId}
+        and ${organizationToken.expiresAt} > ${now}))))`;
+const stillAuthorized = authorizedBy(serverAccess.userId, serverAccess.organizationId, serverAccess.credentialKind, serverAccess.credentialId);
 
 /**
  * Revoke every holder in `scope` whose credential no longer authorizes it (logout, deletion, expiry, membership
@@ -245,7 +260,7 @@ export const retireServerAccess = Effect.fn("ServerAccess.retire")(function* (
     if (credentialId !== undefined) yield* lockCredential(credentialId, "exclusive");
     const { drizzle: tx } = yield* Database;
     yield* tx.update(serverAccess)
-      .set({ revokedAt: new Date(), encryptedCapability: null, claim: null, updatedAt: new Date() })
+      .set({ revokedAt: now, encryptedCapability: null, claim: null, updatedAt: now })
       .where(and(isNull(serverAccess.revokedAt), not(stillAuthorized), scope));
   }));
   const pending = yield* drizzle.select({
@@ -266,10 +281,9 @@ export const retireServerAccess = Effect.fn("ServerAccess.retire")(function* (
       eq(serverAccess.machineId, row.machineId),
     );
     const token = crypto.randomUUID();
-    const now = new Date();
     // A Clear already in flight on this slot, a sweep's or a first use's, confirms or retries on its own.
     const leased = yield* drizzle.update(serverAccess).set({ claim: token, updatedAt: now })
-      .where(and(holder, isNotNull(serverAccess.revokedAt), unheld(now))).returning({ machineId: serverAccess.machineId });
+      .where(and(holder, isNotNull(serverAccess.revokedAt), unheld)).returning({ machineId: serverAccess.machineId });
     if (leased.length === 0) return { machineId: row.machineId, confirmed: false };
     const cleared = yield* Effect.scoped(Effect.gen(function* () {
       const management = yield* decryptPairingSecret(row.cloud);

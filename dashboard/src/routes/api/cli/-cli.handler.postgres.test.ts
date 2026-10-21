@@ -1174,6 +1174,99 @@ it.live(
 );
 
 it.live(
+  "a first use takes over a keyless claim whose holder outlived the lease and Sets itself",
+  () =>
+    Effect.gen(function* () {
+      const fake = fakeServers();
+      const layer = yield* cliLayer(fake.layer);
+      yield* Effect.gen(function* () {
+        const database = yield* Database;
+        const alice = yield* signUp("alice");
+        const machine = ids.machineId("00000000000000000000000000001283");
+        yield* enroll(alice.organization.id, machine, true);
+        const server = { online: true as const, slots: new Map<string, string>() };
+        fake.servers.set(machine, server);
+        yield* cli("POST", "server-access", alice);
+        // A claimant that crashed 31 s ago, its Set never stored: the row is a claim nobody will finish.
+        yield* database.drizzle.update(serverAccess)
+          .set({ encryptedCapability: null, claim: "crashed", updatedAt: new Date(Date.now() - 31_000) })
+          .where(eq(serverAccess.organizationId, alice.organization.id));
+
+        const taken = (yield* cli("POST", "server-access", alice)).json.connections?.[0]?.management ?? assert.fail("no key");
+        assert.strictEqual(fake.sets(), 2);
+        assert.deepStrictEqual([...server.slots.values()], [taken]);
+        const [row] = yield* database.drizzle.select({ claim: serverAccess.claim }).from(serverAccess)
+          .where(eq(serverAccess.organizationId, alice.organization.id));
+        assert.strictEqual(row?.claim, null);
+      }).pipe(Effect.provide(layer));
+    }),
+  30_000,
+);
+
+it.live(
+  "the sweep takes over a revoked row whose Clear's holder outlived the lease and Clears it",
+  () =>
+    Effect.gen(function* () {
+      const fake = fakeServers();
+      const layer = yield* cliLayer(fake.layer);
+      yield* Effect.gen(function* () {
+        const database = yield* Database;
+        const alice = yield* signUp("alice");
+        const machine = ids.machineId("00000000000000000000000000001284");
+        yield* enroll(alice.organization.id, machine, true);
+        const server = { online: true as const, slots: new Map<string, string>() };
+        fake.servers.set(machine, server);
+        yield* cli("POST", "server-access", alice);
+        // A Clear whose runner crashed 31 s ago: the row is revoked, still named, the key still on the Server.
+        yield* database.drizzle.update(serverAccess)
+          .set({ encryptedCapability: null, revokedAt: new Date(), claim: "crashed", updatedAt: new Date(Date.now() - 31_000) })
+          .where(eq(serverAccess.organizationId, alice.organization.id));
+
+        const swept = yield* retireServerAccess();
+        assert.deepStrictEqual(swept.confirmed, [machine]);
+        assert.strictEqual(fake.clears(), 1);
+        assert.strictEqual(server.slots.size, 0);
+        assert.deepStrictEqual(yield* database.drizzle.select().from(serverAccess).where(eq(serverAccess.organizationId, alice.organization.id)), []);
+      }).pipe(Effect.provide(layer));
+    }),
+  30_000,
+);
+
+it.live(
+  "a claimant whose row a revocation removed while its Set's reply was in flight stops unauthorized rather than Setting again",
+  () =>
+    Effect.gen(function* () {
+      const fake = fakeServers();
+      const layer = yield* cliLayer(fake.layer);
+      yield* Effect.gen(function* () {
+        const database = yield* Database;
+        const alice = yield* signUp("alice");
+        const machine = ids.machineId("00000000000000000000000000001285");
+        yield* enroll(alice.organization.id, machine, true);
+        let answerFirst = () => undefined as void;
+        const holdSetReply = new Promise<void>((resolve) => { answerFirst = resolve; });
+        const server = { online: true as const, slots: new Map<string, string>(), holdSetReply };
+        fake.servers.set(machine, server);
+        const first = yield* Effect.forkChild(cli("POST", "server-access", alice));
+        yield* Effect.promise(() => vi.waitFor(() => assert.strictEqual(fake.sets(), 1), { timeout: 10_000 }));
+
+        // Alice's access is revoked and confirmed while her Set's reply is in flight; the row is gone when it lands.
+        yield* database.drizzle.update(member).set({ role: "member" }).where(eq(member.organizationId, alice.organization.id));
+        yield* retireServerAccess();
+        assert.strictEqual(server.slots.size, 0);
+        assert.deepStrictEqual(yield* database.drizzle.select().from(serverAccess).where(eq(serverAccess.organizationId, alice.organization.id)), []);
+
+        answerFirst();
+        const reply = yield* Fiber.join(first);
+        assert.strictEqual(reply.status, 401, reply.text);
+        assert.strictEqual(fake.sets(), 1);
+        assert.strictEqual(server.slots.size, 0);
+      }).pipe(Effect.provide(layer));
+    }),
+  30_000,
+);
+
+it.live(
   "a first use whose Set never answers leaves a revocation recorded over its claim for the sweep to clear",
   () =>
     Effect.gen(function* () {
