@@ -482,6 +482,7 @@ where
             };
             match input {
                 Ok((caddy, addresses, projection, routes)) => {
+                    let caddy_runs = caddy.is_some();
                     let loaded = last_input
                         .as_ref()
                         .is_some_and(|last: &CaddyInput| last.loaded(&projection, caddy.as_ref()));
@@ -510,11 +511,15 @@ where
                     if matches!(result, Err(ApplyError::AfterServing(_))) {
                         last_input = None;
                     }
-                    // Without the admin, only the Caddyfile is written, and a running Caddy keeps
-                    // serving the config it last loaded.
-                    if through_admin && !matches!(result, Err(ApplyError::BeforeServing(_))) {
+                    // Without the admin, Caddy serves what it last loaded until it restarts from
+                    // the file just written, so the record claims nothing.
+                    if !matches!(result, Err(ApplyError::BeforeServing(_))) {
+                        let addresses = if through_admin {
+                            Some(addresses)
+                        } else {
+                            (!caddy_runs).then(BTreeMap::new)
+                        };
                         route_publishes.send_if_modified(|publishes| {
-                            let addresses = Some(addresses);
                             let changed = publishes.addresses != addresses;
                             publishes.addresses = addresses;
                             changed

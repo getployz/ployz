@@ -228,6 +228,8 @@ enum Unseen {
     Unlisted(Error),
     Unanswered(Vec<MachineId>),
     Unreported(BTreeSet<MachineId>),
+    /// Live Machines whose daemon can't confirm what their proxy serves.
+    Unconfirmed(BTreeSet<MachineId>),
     Unread {
         services: Vec<QualifiedService>,
         error: RpcError,
@@ -307,6 +309,14 @@ fn judge(observed: Observed) -> Check {
         .collect();
     if !unanswered.is_empty() {
         check.unseen.push(Unseen::Unanswered(unanswered.clone()));
+    }
+    let unconfirmed: BTreeSet<MachineId> = routed
+        .iter()
+        .filter(|(machine, routed)| routed.routes.is_none() && !down.contains(machine))
+        .map(|(machine, _)| *machine)
+        .collect();
+    if !unconfirmed.is_empty() {
+        check.unseen.push(Unseen::Unconfirmed(unconfirmed));
     }
     let mut unreported = BTreeSet::new();
     let mut unread = ServicesByFact(Vec::new());
@@ -550,6 +560,16 @@ impl Check {
                     };
                     crate::ui::warn(format!(
                         "{} {has} not reported which copies {it} {routes}.",
+                        self.names(machines)
+                    ));
+                }
+                Unseen::Unconfirmed(machines) => {
+                    let (has, its, proxy, it) = match machines.len() {
+                        1 => ("has", "its", "proxy serves", "it"),
+                        _ => ("have", "their", "proxies serve", "them"),
+                    };
+                    crate::ui::warn(format!(
+                        "{} {has} not confirmed what {its} {proxy}, so status is not checking {it} for stale addresses.",
                         self.names(machines)
                     ));
                 }
