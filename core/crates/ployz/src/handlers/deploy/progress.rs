@@ -43,6 +43,9 @@ pub(super) fn frame(view: &DeploymentView) -> Frame {
         let mut row = service_row(
             QualifiedService::new(view.namespace.clone(), name.clone()),
             depth,
+            view.preview
+                .as_ref()
+                .and_then(|preview| preview.placed_on.get(runtime)),
             node.rows.iter().map(|row| Replica {
                 machine: row.machine_id,
                 state: &row.state,

@@ -260,6 +260,7 @@ fn graph_frame(groups: &[ServiceGroup], services: &[(&str, &[&str])]) -> Frame {
                 service_row(
                     QualifiedService::new(namespace.clone(), name.clone()),
                     Some(depths.get(&name).copied().unwrap_or(0)),
+                    None,
                     states.iter().map(|state| Replica {
                         machine: MachineId::random(),
                         state,
@@ -1098,15 +1099,22 @@ fn a_machine_away_during_cleanup_is_named_once_under_the_copies_left_on_it() {
 
 /// The Servers the summary counts once every planned operation of `plan` completed.
 fn servers_after(plan: &crate::deploy::DeployPlan) -> usize {
+    servers_ending(plan, |_| OperationStatus::Completed)
+}
+
+/// The Servers the summary counts once each planned row of `plan` ends as `end` says.
+fn servers_ending(
+    plan: &crate::deploy::DeployPlan,
+    end: impl Fn(&OperationRow) -> OperationStatus,
+) -> usize {
     let preview = plan.preview();
     let mut direct = Direct::new(preview, "Deploying app".into());
     let done: Vec<_> = preview
         .operations
         .iter()
-        .cloned()
         .map(|row| OperationRow {
-            status: OperationStatus::Completed,
-            ..row
+            status: end(row),
+            ..row.clone()
         })
         .collect();
     direct.observe(&done);
@@ -1114,10 +1122,10 @@ fn servers_after(plan: &crate::deploy::DeployPlan) -> usize {
     let [row] = frame.rows.as_slice() else {
         panic!("{:?}", frame.rows);
     };
-    match &row.subject {
-        Subject::Service(graph) => graph.machines.len(),
-        other => panic!("{other:?}"),
-    }
+    let Subject::Service(graph) = &row.subject else {
+        panic!("{row:?}");
+    };
+    graph.machines.len()
 }
 
 #[test]
@@ -1139,5 +1147,16 @@ fn the_summary_counts_every_server_a_scaled_service_runs_on() {
         servers_after(&replicated_plan(8, &[], 3)),
         3,
         "5 of 8 Servers run none"
+    );
+    let failed = servers_ending(&kept, |row| {
+        if row.index == 0 {
+            OperationStatus::Failed { error: denied() }
+        } else {
+            OperationStatus::Completed
+        }
+    });
+    assert_eq!(
+        failed, 7,
+        "a failed Deploy counts only the Servers it worked on"
     );
 }

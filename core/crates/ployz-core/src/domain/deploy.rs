@@ -636,6 +636,10 @@ pub struct DeployPreview {
     /// unless the Deploy skips health checks.
     #[serde(default)]
     pub dependencies: Vec<(ServiceName, ServiceName)>,
+    /// The Servers each deployed Service has a copy on once every operation
+    /// completes: copies the Deploy keeps, and copies it starts or updates.
+    #[serde(default)]
+    pub placed_on: BTreeMap<ServiceName, BTreeSet<MachineId>>,
 }
 
 /// One managed Docker Volume current observations indicate a container operation would create.
@@ -706,6 +710,7 @@ impl DeployPreview {
             prune_refusal: None,
             depths: BTreeMap::new(),
             dependencies: Vec::new(),
+            placed_on: BTreeMap::new(),
         }
     }
 

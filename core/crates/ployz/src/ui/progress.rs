@@ -104,6 +104,8 @@ pub(crate) struct GraphService {
     /// Servers stopping or removing an old Container.
     pub draining: usize,
     pub work: Work,
+    /// Servers the Service runs on once this Deploy completed it, kept copies included;
+    /// until then, and for a removal, the Servers the Deploy works on.
     pub machines: BTreeSet<MachineId>,
 }
 
