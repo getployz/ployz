@@ -8,13 +8,13 @@ babbage        Babbage Labs              -
   "organizations": [
     {
       "current": true,
-      "id": "5e293990-09ad-45c1-b636-6444de4fb848",
+      "id": "272b2d2d-c2f1-4da3-8c1b-bd2895683240",
       "name": "Ada Lovelace's Projects",
       "slug": "ada"
     },
     {
       "current": false,
-      "id": "47e4dfcf-7e63-44d0-9a6e-f183ca472a51",
+      "id": "12a598c2-c836-47d2-9a0b-62471a62ae28",
       "name": "Babbage Labs",
       "slug": "babbage"
     }
@@ -86,13 +86,12 @@ next: ployz org use babbage
 
 === org ls after removal :: $ ployz org ls
 ORGANIZATION   NAME                      CURRENT
-ada            Ada Lovelace's Projects   -
-babbage        Babbage Labs              ✔ current
+ada            Ada Lovelace's Projects   ✔ current
 
 === status after removing the acting Organization :: $ ployz status
-cloud            http://localhost:35249
-organization     babbage
+cloud            http://localhost:33247
+organization     ada
 signed in as     ada@example.com
-needs attention  This Organization has no Project yet
-next: ployz project new NAME
+needs attention  Name a Project: this Organization has more than one
+next: ployz link --project PROJECT
 
