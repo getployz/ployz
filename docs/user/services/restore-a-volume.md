@@ -51,6 +51,11 @@ not mounted. Delete it from its **Settings** tab when you no longer need it.
   arrived, the points list without **Restore**. A restore staged just as a server stops answering
   is refused with "Your servers aren't answering. Try again once they are." The deploy would fail,
   since it can't tell what that server holds.
+- **A restore the deploy would refuse isn't staged.** The point says why in place of **Restore**,
+  like "Volume restore is not available on web-2." for a server that holds a copy on a Ployz too old
+  to take part, or "data has two writers, data-web-1 and data-web-2". Staging gives the same refusal,
+  naming the server's version when Ployz knows it: "Volume restore needs a newer Ployz on web-2.
+  0.3.1 is out." when a newer release is out.
 - **The original's server must answer** for the copy to run. If the point's mirror is gone by then,
   the deploy fails and names the point.
 - **When the volume's server is gone,** restore its copy on another server in place instead, from

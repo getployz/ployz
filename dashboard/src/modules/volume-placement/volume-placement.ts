@@ -431,6 +431,30 @@ function restoreStage(
   return { placement: { primary: mirror.id, mirrors: [], deletes: [] }, mirrors: applied };
 }
 
+/** Whether Copies offers a Restore point, and the planner's refusal when the Deploy's seed run would refuse it. */
+export type SeedOffer = { readonly offered: boolean; readonly refused: string | null };
+
+/**
+ * Whether Copies offers a Restore point, as the Deploy's seed run plans it, and the planner's refusal when it would
+ * refuse. As the run's observer reads them, a Server without the generation floor (`floorless`) that holds a copy lacks
+ * what the run needs. Nothing is offered while a Server is silent or its report is on its way, nor unless the primary's
+ * Ployz can restore (`restorable`).
+ */
+export function seedOffer(
+  volume: PlacementVolume, members: readonly Member[], restorable: readonly MachineId[], floorless: readonly MachineId[],
+): SeedOffer {
+  if (!serversAnswer(members)) return { offered: false, refused: null };
+  const observed = members.map((member): Member => member.answered && member.view.copy !== null && floorless.includes(member.machine.id)
+    ? { machine: member.machine, answered: false, lack: `${RUN_FEATURES.seed} is not available on ${member.machine.name}.` }
+    : member);
+  // The plan's refusal reads the copies alone, not where the point goes.
+  const into = { volumeId: "", dockerVolume: "", name: "" };
+  const planned = planFromCopies({ kind: "seed", args: { into, guid: "", name: "" }, volumeName: volume.name, orphan: false }, observed);
+  if (!planned.ok) return { offered: false, refused: planned.refusal.message };
+  const primary = observePlacement(members).primary;
+  return { offered: primary !== null && restorable.includes(primary.id), refused: null };
+}
+
 export type PlacementTargets = { readonly move: readonly MachineRef[]; readonly mirror: readonly MachineRef[] };
 
 /**
