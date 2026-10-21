@@ -11,9 +11,9 @@
 //! previews still hold values; the rest are left byte for byte, so a rerun
 //! changes nothing. A rewrite empties only those values in the stored JSON and is
 //! kept only if the result then passes the same check; one that doesn't is left
-//! as stored and counted as unreadable. Each write applies only if
-//! the row still holds what was read, so a Deployment recording evidence at the
-//! same moment keeps its write and the next run picks the row up.
+//! as stored and counted as unreadable. Each rewrite first locks the
+//! Deployment's Environment as every Store writer does, then reads the row again,
+//! so no writer that loaded the old run can save it back over the scrub.
 
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -93,45 +93,65 @@ fn connect(url: &str) -> Result<Client, String> {
         .map_err(|error| format!("could not connect: {error}"))
 }
 
+/// Rewrite Deployment `id` under its Environment's lock (`scope::lock_all`), from
+/// the run as it stands once the lock is held.
+fn rewrite(db: &mut Client, id: &str, environment: &str) -> Result<Stored, String> {
+    let failed = |error: postgres::Error| format!("could not scrub Deployment {id}: {error}");
+    let mut tx = db.transaction().map_err(failed)?;
+    tx.batch_execute("SET LOCAL lock_timeout = 10000")
+        .map_err(failed)?;
+    tx.execute(
+        "UPDATE config_environment SET working_revision = working_revision WHERE id = $1",
+        &[&environment],
+    )
+    .map_err(failed)?;
+    let stored: String = tx
+        .query_one("SELECT run FROM config_deployment WHERE id = $1", &[&id])
+        .map_err(failed)?
+        .get(0);
+    let outcome = scrub(&stored);
+    if let Stored::Scrubbed(scrubbed) = &outcome {
+        tx.execute(
+            "UPDATE config_deployment SET run = $1 WHERE id = $2",
+            &[scrubbed, &id],
+        )
+        .map_err(failed)?;
+    }
+    tx.commit().map_err(failed)?;
+    Ok(outcome)
+}
+
 fn run(dry_run: bool) -> Result<bool, String> {
     let url = std::env::var("PLOYZ_STORE_URL").map_err(|_| "set PLOYZ_STORE_URL".to_owned())?;
     let mut db = connect(&url)?;
     let rows = db
-        .query("SELECT id, run FROM config_deployment ORDER BY id", &[])
+        .query(
+            "SELECT id, environment_id, run FROM config_deployment ORDER BY id",
+            &[],
+        )
         .map_err(|error| format!("could not read Deployments: {error}"))?;
-    let (mut changed, mut unreadable, mut moved_on) = (0usize, 0usize, 0usize);
+    let (mut changed, mut unreadable) = (0usize, 0usize);
     for row in &rows {
         let id: String = row.get(0);
-        let stored: String = row.get(1);
-        match scrub(&stored) {
+        let environment: String = row.get(1);
+        let stored = match scrub(row.get(2)) {
+            Stored::Scrubbed(_) if !dry_run => rewrite(&mut db, &id, &environment)?,
+            stored @ (Stored::Clean | Stored::Scrubbed(_) | Stored::Unreadable) => stored,
+        };
+        match stored {
             Stored::Clean => {}
             Stored::Unreadable => unreadable += 1,
-            Stored::Scrubbed(_) if dry_run => changed += 1,
-            Stored::Scrubbed(scrubbed) => {
-                let written = db
-                    .execute(
-                        "UPDATE config_deployment SET run = $1 WHERE id = $2 AND run = $3",
-                        &[&scrubbed, &id, &stored],
-                    )
-                    .map_err(|error| format!("could not write Deployment {id}: {error}"))?;
-                match written {
-                    0 => moved_on += 1,
-                    _ => changed += 1,
-                }
-            }
+            Stored::Scrubbed(_) => changed += 1,
         }
     }
     match dry_run {
         true => println!("would scrub {changed} Deployment previews"),
         false => println!("scrubbed {changed} Deployment previews"),
     }
-    if moved_on > 0 {
-        println!("{moved_on} changed while this ran; run it again");
-    }
     if unreadable > 0 {
         println!("{unreadable} runs could not be read and were left as stored");
     }
-    Ok(moved_on == 0 && unreadable == 0)
+    Ok(unreadable == 0)
 }
 
 fn main() -> ExitCode {
