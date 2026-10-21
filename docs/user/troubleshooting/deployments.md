@@ -246,20 +246,22 @@ answer: an old version of your app, a redirect, or a 404 from something else on 
 wait several minutes and then fail with the message above. On an earlier Ployz release, web-2 could
 lose its last changes when the power went, and your other servers kept an out-of-date view of its
 replicas. Ployz now saves each change on the server before the others see it, so this no longer
-starts. A view that went out of date before you upgraded stays until a deploy replaces it.
+starts. A view that went out of date before you upgraded stays until web-2 reports those replicas
+again.
 
 1. [Upgrade Ployz](../servers/manage-servers.md#upgrade-ployz-on-a-server) on every server.
-2. Deploy the services that run on web-2 again. With nothing staged, click **Redeploy** on the
-   newest deployment, or run:
+2. [Restart](../services/services.md#restart-stop-or-open-a-shell) each service that runs on
+   web-2: open the service, click **⋮**, then **Restart**. Or run:
 
    ```sh
-   ployz deploy web
+   ployz service restart web
    ```
 
-The deploy replaces web-2's replicas, and every server sends requests to the new ones.
+The restart makes web-2 report its replicas again, and every server sends requests to them. A
+deploy or **Redeploy** with nothing changed doesn't help, because it leaves the replicas as they are.
 
 A server whose root disk uses ZFS or Btrfs can still lose its last changes in a power cut. If that
-happens, deploy the services on it again, as above.
+happens, restart the services on it, as above.
 
 ## A server hasn't picked up the new version
 
