@@ -54,8 +54,8 @@ const MAX_CONCURRENT_HANDSHAKES: usize = 64;
 const IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 /// How long a client may take to open its first stream and prove its key.
 const PROOF_TIMEOUT: Duration = Duration::from_secs(10);
-/// How long a revoked connection may take to drain and acknowledge before it closes.
-const REVOCATION_DELIVERY_TIMEOUT: Duration = Duration::from_secs(5);
+/// How long a revoked or shut-down connection may take to drain and acknowledge before it closes.
+const DELIVERY_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Where the management endpoint binds and which relay it uses.
 ///
@@ -315,10 +315,11 @@ fn refusal(record: &LocalMachineRecord, remote: &[u8; 32]) -> Option<VarInt> {
 
 /// Why an admitted connection stopped being served.
 enum Ended {
-    /// The peer closed, the connection failed, or the transport shut down.
+    /// The peer closed, the connection failed, or the transport shut down; on shutdown,
+    /// delivery of the bytes already sent was awaited for up to `DELIVERY_TIMEOUT`.
     Closed,
     /// A record change revoked the key; delivery of the bytes already sent was awaited
-    /// for up to `REVOCATION_DELIVERY_TIMEOUT`.
+    /// for up to `DELIVERY_TIMEOUT`.
     Revoked,
 }
 
@@ -372,23 +373,20 @@ where
             tracing::debug!(error = %ployz_core::error_chain::inline(&error), "management connection failed while draining");
         }
     };
-    let Ended::Revoked = ended else {
-        drained.await;
-        return ended;
-    };
-    // Closing discards unacknowledged data, so wait until the peer holds every byte,
-    // including the caller's own Clear response. The key can no longer run any RPC,
-    // and the bound keeps revocation prompt when a peer never acknowledges.
+    // Dropping the connection discards unacknowledged data, so wait until the peer holds
+    // every byte: the caller's own Clear response, or the Leave reply whose reset is
+    // shutting the daemon down. The bound keeps revocation and shutdown prompt when a
+    // peer never acknowledges.
     let delivered = async {
         drained.await;
         let outcome = acknowledged.await;
-        tracing::debug!(?outcome, "revoked management stream delivery settled");
+        tracing::debug!(?outcome, "management stream delivery settled");
     };
-    if tokio::time::timeout(REVOCATION_DELIVERY_TIMEOUT, delivered)
+    if tokio::time::timeout(DELIVERY_TIMEOUT, delivered)
         .await
         .is_err()
     {
-        tracing::debug!("revoked management client did not acknowledge in time");
+        tracing::debug!("management client did not acknowledge in time");
     }
     ended
 }
