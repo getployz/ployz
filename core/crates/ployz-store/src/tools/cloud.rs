@@ -187,6 +187,12 @@ pub struct Mirror {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 pub struct OperationsAnswer {
     pub operations: Vec<Operation>,
+    /// On a Server's history, its newest Drain with a verdict (done, failed, or `unknown` with
+    /// an `end`), however many runs came after it. Absent when it has none, and from a Cloud
+    /// from before it, whose answer holds only what `operations` lists.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub settled_drain: Option<Operation>,
 }
 
 /// One requested operation and how it ended so far. An [`Act`](super::Act)
@@ -201,6 +207,11 @@ pub struct Operation {
     /// What was asked, in words, e.g. `restart web`.
     pub run: String,
     pub state: RunState,
+    /// On an `unknown` run, how it ended, when Cloud knows. A field beside
+    /// `unknown`, not a state, so a reader from before it still decodes the answer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub end: Option<UnknownEnd>,
     pub requested_at: Timestamp,
     pub ended_at: Option<Timestamp>,
     pub reason: Option<String>,
@@ -227,6 +238,16 @@ impl RunState {
     pub const fn ended(self) -> bool {
         !matches!(self, Self::Accepted | Self::Running)
     }
+}
+
+/// How a run Cloud has no verdict on ended. Either way it may have done anything.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum UnknownEnd {
+    /// Cloud lost track of the run, or got no answer in time.
+    Lost,
+    /// The run was cancelled while it worked.
+    Interrupted,
 }
 
 /// What one Server did for an operation.

@@ -29,6 +29,8 @@ enrolls automatically at most once per token, and an enrollment you start under 
 counts as that once. After a failed or cancelled enrollment the host stays in Waiting until
 you enroll it again. Ployz remembers this by the host's own key, so a host that left Waiting
 and later checks in with the same token again still waits for you.
+That includes a server you removed or forgot: once Ployz Cloud no longer lists it,
+`sudo ployz server checkin --install` on the reset host puts it back in Waiting.
 Successful joins count for the token's lifetime, including after their waiting rows age out
 after seven days or a joined server is removed. Hosts beyond the limit stay in Waiting and
 can be enrolled manually. Manual enrolls of its hosts use its capacity too and can take the

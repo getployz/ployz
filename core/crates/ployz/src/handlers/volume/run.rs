@@ -6,7 +6,7 @@
 use std::time::Duration;
 
 use clap::{ArgMatches, Command};
-use ployz_core::{MachineName, ProvisionedVolumeMaximumBytes, RpcError, RpcErrorCode};
+use ployz_core::{MachineName, ProvisionedVolumeMaximumBytes, RpcErrorCode};
 use ployz_store::{
     EnvironmentId, EnvironmentName, EnvironmentSummary, ProjectName, VolumeId, VolumeName,
     VolumeQuery, VolumeView, VolumesQuery,
@@ -177,6 +177,13 @@ pub(crate) enum RunAsk {
         #[serde(skip_serializing_if = "Option::is_none")]
         confirm: Option<String>,
     },
+    /// `--if-old-copy`: a kind of its own, so a Cloud from before it refuses the request
+    /// rather than dropping the restriction and deleting a live mirror.
+    DeleteOldCopy {
+        slot: MachineName,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        confirm: Option<String>,
+    },
     Move {
         to: MachineName,
     },
@@ -191,6 +198,59 @@ pub(crate) enum RunAsk {
 
 #[derive(Debug, PartialEq)]
 pub(crate) struct Full;
+
+impl RunAsk {
+    /// A removal's slot, its typed confirmation, and whether it is limited to an old copy.
+    fn removal(&self) -> Option<(&MachineName, Option<&str>, bool)> {
+        match self {
+            Self::DeleteMirror { slot, confirm } => Some((slot, confirm.as_deref(), false)),
+            Self::DeleteOldCopy { slot, confirm } => Some((slot, confirm.as_deref(), true)),
+            Self::Mirror { .. }
+            | Self::Sync { .. }
+            | Self::Move { .. }
+            | Self::Release
+            | Self::Restore { .. }
+            | Self::Resize { .. } => None,
+        }
+    }
+}
+
+/// An older Cloud's refusal of `--if-old-copy`: its body schema knows no `delete_old_copy`.
+fn predates_if_old_copy(ask: &RunAsk, error: &StoreCallError) -> Option<Error> {
+    let RunAsk::DeleteOldCopy { .. } = ask else {
+        return None;
+    };
+    let StoreCallError::Refused(refusal) = error else {
+        return None;
+    };
+    (refusal.code == RpcErrorCode::InvalidArgument).then(|| {
+        Error::coded(
+            RpcErrorCode::Unsupported,
+            format!(
+                "This Ployz Cloud predates --if-old-copy, so nothing was deleted ({}). Update Ployz Cloud to delete only an old copy.",
+                refusal.message
+            ),
+        )
+    })
+}
+
+/// The `volume mirror rm` line that asks again to remove `volume`'s copy on `slot`.
+fn removal_words(
+    volume: &VolumeName,
+    slot: &MachineName,
+    if_old_copy: bool,
+    confirm: Option<&str>,
+) -> Vec<String> {
+    let mut words = ["volume", "mirror", "rm"].map(str::to_owned).to_vec();
+    words.push(format!("{volume}-{slot}"));
+    if if_old_copy {
+        words.push("--if-old-copy".to_owned());
+    }
+    if let Some(confirm) = confirm {
+        words.extend(["--confirm".to_owned(), confirm.to_owned()]);
+    }
+    words
+}
 
 impl Serialize for Full {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
@@ -300,7 +360,7 @@ pub(crate) fn mirror_command(command: Command) -> Command {
             .args_conflicts_with_subcommands(true)
             .subcommand_negates_reqs(true),
     )
-    .arg(positional("volume", true))
+    .arg(positional("volume", true).help("Volume name"))
     .arg(
         value("to", None)
             .value_name("SERVER")
@@ -322,6 +382,9 @@ pub(crate) fn remove_mirror_command(command: Command) -> Command {
                 .value_name("VOLUME")
                 .help("The Volume's name, to delete a Mirror that is its only copy left"),
         )
+        .arg(switch("if-old-copy", None).help(
+            "Delete it only while it is an old copy a move left; refused once it is the live Mirror",
+        ))
         .arg(approval_arg())
         .arg(wait_flag())
 }
@@ -330,7 +393,7 @@ pub(crate) fn sync_command(command: Command) -> Command {
     store::scoped(command
             .about("Hand a Volume's Mirror what changed since its last pull (Ployz Cloud); the dashboard's Volume page follows the download"),
     )
-    .arg(positional("volume", true))
+    .arg(positional("volume", true).help("Volume name"))
     .arg(switch("full", None).help("Copy everything again as a run, for a Mirror that fell behind for good"))
     .arg(wait_flag().requires("full"))
 }
@@ -339,7 +402,7 @@ pub(crate) fn move_command(command: Command) -> Command {
     store::scoped(command
             .about("Move a Volume and its Service onto another Server (Ployz Cloud); the Service stops for the last copy"),
     )
-    .arg(positional("volume", true))
+    .arg(positional("volume", true).help("Volume name"))
     .arg(
         value("to", None)
             .value_name("SERVER")
@@ -353,7 +416,7 @@ pub(crate) fn release_command(command: Command) -> Command {
     store::scoped(command
             .about("Stop what runs on a Volume and start its Service again where it was; a Move past its handover finishes there (Ployz Cloud)"),
     )
-    .arg(positional("volume", true))
+    .arg(positional("volume", true).help("Volume name"))
     .arg(approval_arg())
     .arg(wait_flag())
 }
@@ -362,7 +425,7 @@ pub(crate) fn restore_command(command: Command) -> Command {
     store::scoped(command.about(
         "Make a Server's copy of a Volume its writer when no Server holds one (Ployz Cloud)",
     ))
-    .arg(positional("volume", true))
+    .arg(positional("volume", true).help("Volume name"))
     .arg(
         value("from", None)
             .value_name("SERVER")
@@ -374,7 +437,7 @@ pub(crate) fn restore_command(command: Command) -> Command {
 
 pub(crate) fn runs_command(command: Command) -> Command {
     store::scoped(command.about("List a Volume's runs, or show one (Ployz Cloud)"))
-        .arg(positional("volume", true))
+        .arg(positional("volume", true).help("Volume name"))
         .arg(positional("run", false).help("A run ID, to show that run"))
 }
 
@@ -535,6 +598,7 @@ pub(crate) fn remove_mirror(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let mirror = super::super::required(matches, "mirror")?;
     let confirm = matches.get_one::<String>("confirm").cloned();
+    let if_old_copy = matches.get_flag("if-old-copy");
     let store = store::store(root)?;
     cloud(store.backend())?;
     let listed = store.read(&VolumesQuery {
@@ -549,9 +613,16 @@ pub(crate) fn remove_mirror(root: &ArgMatches) -> Result<(), Error> {
     let started = format!("deletion of Mirror {mirror}");
     request(root, &volume, started, |environment| RunRequest {
         environment,
-        ask: RunAsk::DeleteMirror {
-            slot: slot.clone(),
-            confirm: confirm.clone(),
+        ask: if if_old_copy {
+            RunAsk::DeleteOldCopy {
+                slot: slot.clone(),
+                confirm: confirm.clone(),
+            }
+        } else {
+            RunAsk::DeleteMirror {
+                slot: slot.clone(),
+                confirm: confirm.clone(),
+            }
         },
     })
 }
@@ -604,13 +675,12 @@ fn request_located(
         project: environment.project,
         environment: environment.name,
     });
-    let confirming = matches!(asked.ask, RunAsk::DeleteMirror { confirm: None, .. });
     let run = match approved(runtime, credential, matches, volume, volume_id, &asked)? {
         Ok(run) => run,
-        Err(StoreCallError::Refused(refusal)) if already(&asked.ask, &refusal) => {
-            return crate::ui::done(&refusal, format_args!("{}.", refusal.message));
+        Err(error) => {
+            return Err(predates_if_old_copy(&asked.ask, &error)
+                .unwrap_or_else(|| refused(store, matches, error, &asked.ask, volume)));
         }
-        Err(error) => return Err(refused(store, matches, error, confirming, volume)),
     };
     let follow = store::next(
         matches,
@@ -645,30 +715,22 @@ fn approved(
     volume_id: &VolumeId,
     asked: &RunRequest,
 ) -> Result<Result<VolumeRun, StoreCallError>, Error> {
-    let (verb, mut words) = match &asked.ask {
-        RunAsk::Release => (
+    let (verb, mut words) = if let Some((slot, confirm, if_old_copy)) = asked.ask.removal() {
+        (
+            Verb::RemoveMirror,
+            removal_words(volume, slot, if_old_copy, confirm),
+        )
+    } else if asked.ask == RunAsk::Release {
+        (
             Verb::Release,
             vec![
                 "volume".to_owned(),
                 "release".to_owned(),
                 volume.to_string(),
             ],
-        ),
-        RunAsk::DeleteMirror { slot, confirm } => {
-            let mut words = ["volume", "mirror", "rm"].map(str::to_owned).to_vec();
-            words.push(format!("{volume}-{slot}"));
-            if let Some(confirm) = confirm {
-                words.extend(["--confirm".to_owned(), confirm.clone()]);
-            }
-            (Verb::RemoveMirror, words)
-        }
-        RunAsk::Mirror { .. }
-        | RunAsk::Sync { .. }
-        | RunAsk::Move { .. }
-        | RunAsk::Restore { .. }
-        | RunAsk::Resize { .. } => {
-            return Ok(runtime.block_on(start(credential, volume_id, asked, None)));
-        }
+        )
+    } else {
+        return Ok(runtime.block_on(start(credential, volume_id, asked, None)));
     };
     words.push("--approval".to_owned());
     let retry = |id: &str| {
@@ -689,13 +751,6 @@ fn approved(
             other => Ok(other),
         },
     )
-}
-
-/// A resize Cloud refuses because every copy already has that size: nothing to do.
-fn already(ask: &RunAsk, refusal: &RpcError) -> bool {
-    matches!(ask, RunAsk::Resize { .. })
-        && refusal.code == RpcErrorCode::Conflict
-        && refusal.details.get("settled") == Some(&serde_json::Value::Bool(true))
 }
 
 fn ended(run: &VolumeRun, started: &str, follow: String) -> Result<(), Error> {
@@ -750,25 +805,17 @@ fn refused(
     store: &store::Store<'_>,
     matches: &ArgMatches,
     error: StoreCallError,
-    confirming: bool,
+    ask: &RunAsk,
     volume: &VolumeName,
 ) -> Error {
     let confirm = matches!(&error, StoreCallError::Refused(refusal) if refusal.code == RpcErrorCode::ConfirmationRequired);
     let failure = store.fail(error);
-    if confirming && confirm {
-        let mirror = super::super::required(matches, "mirror").unwrap_or_default();
-        let retry = store::next(
-            matches,
-            &[
-                "volume",
-                "mirror",
-                "rm",
-                &mirror,
-                "--confirm",
-                volume.as_str(),
-            ],
-        );
-        return failure.hint(Hint::Retry(retry));
+    if let Some((slot, None, if_old_copy)) = ask.removal()
+        && confirm
+    {
+        let words = removal_words(volume, slot, if_old_copy, Some(volume.as_str()));
+        let words: Vec<&str> = words.iter().map(String::as_str).collect();
+        return failure.hint(Hint::Retry(store::next(matches, &words)));
     }
     failure
 }

@@ -9,5 +9,6 @@ describe("runWords", () => {
     expect(runWords(run("sync", { full: true }, "running"))).toBe("Refreshing mirror");
     expect(runWords(run("delete_mirror", { slot: "web-2", confirmed_name: null }, "running"))).toBe("Deleting the copy on web-2");
     expect(runWords(run("restore", { from: "web-2" }, "requested"))).toBe("Using mirror on web-2");
+    expect(runWords(run("resize", { maximum_bytes: 8_000_000_000 }, "running"))).toBe("Resizing to 8 GB");
   });
 });

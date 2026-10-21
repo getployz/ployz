@@ -61,7 +61,7 @@ it("Discard all discards one restore at a time, so no sibling finds the Environm
   act(() => result.current.discardAll(async () => undefined));
 
   await waitFor(() => expect(discarded).toHaveBeenCalledTimes(1));
-  await new Promise((resolve) => setTimeout(resolve, 0));
+  await act(async () => undefined);
   expect(discarded).toHaveBeenCalledTimes(1);
   act(() => ends[0]?.());
   await waitFor(() => expect(discarded).toHaveBeenCalledTimes(2));

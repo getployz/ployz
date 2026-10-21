@@ -27,7 +27,11 @@ pub(crate) fn command(command: Command) -> Command {
             positional("pattern", true)
                 .help("A name, a glob such as 'web-*', or a waiting server's id"),
         )
-        .arg(switch("yes", Some('y')).env(env::AUTO_CONFIRM))
+        .arg(
+            switch("yes", Some('y'))
+                .env(env::AUTO_CONFIRM)
+                .help("Reject the matches without asking"),
+        )
 }
 
 pub(crate) fn reject(root: &ArgMatches) -> Result<(), Error> {

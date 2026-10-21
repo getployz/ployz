@@ -205,10 +205,11 @@ pub enum VolumeCopy {
         /// The `SetVolumeCopy` pull in flight, from its start until its prune is done.
         #[serde(default)]
         pull: Option<Pull>,
-        /// What this Machine recorded the slot as. Older daemons omit it.
-        #[serde(default)]
-        #[ts(as = "Option<SlotRole>", optional)]
-        role: SlotRole,
+        /// What this Machine recorded the slot as. Older daemons omit it, and it stays
+        /// omitted: an unreported role is unknown, not a Mirror.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        role: Option<SlotRole>,
     },
 }
 
@@ -459,22 +460,11 @@ pub fn no_writer_message(name: &str, copies: &[KnownCopy]) -> String {
             "Volume {name} has no writer; {} holds its only copy. Make it the writer: ployz volume restore {name} --from {}",
             only.machine, only.machine
         ),
-        // Copies carry no age, so the operator picks which one to keep.
-        _ => {
-            let removals = copies
-                .iter()
-                .map(|copy| {
-                    format!(
-                        "ployz volume mirror rm {name}-{} --confirm {name}",
-                        copy.machine
-                    )
-                })
-                .collect::<Vec<_>>()
-                .join(", ");
-            format!(
-                "Volume {name} has no writer; it is held as {listed}. Restore needs a single copy: keep the newest, remove each other one ({removals}), then run ployz volume restore {name} --from <server you kept>"
-            )
-        }
+        // Copies carry no age, so the operator picks which one to keep. They carry no slot
+        // role either, so no removal line is printed: run late, it could delete a live mirror.
+        _ => format!(
+            "Volume {name} has no writer; it is held as {listed}. Restore needs a single copy: keep the newest, delete each other one from the Volume's page in Ployz Cloud, which shows whether it is a mirror or an old copy, then run ployz volume restore {name} --from <server you kept>"
+        ),
     }
 }
 
@@ -500,7 +490,7 @@ mod tests {
             newest: None,
             resume_token: None,
             pull: None,
-            role: SlotRole::Mirror,
+            role: Some(SlotRole::Mirror),
         };
         let known = |role| {
             vec![KnownCopy {
@@ -573,8 +563,13 @@ mod tests {
                     copy("nbg-3", CopyRole::Slot),
                 ]
             ),
-            "Volume data has no writer; it is held as fsn-2 (copy), hel-1 (copy), nbg-3 (copy). Restore needs a single copy: keep the newest, remove each other one (ployz volume mirror rm data-fsn-2 --confirm data, ployz volume mirror rm data-hel-1 --confirm data, ployz volume mirror rm data-nbg-3 --confirm data), then run ployz volume restore data --from <server you kept>"
+            "Volume data has no writer; it is held as fsn-2 (copy), hel-1 (copy), nbg-3 (copy). Restore needs a single copy: keep the newest, delete each other one from the Volume's page in Ployz Cloud, which shows whether it is a mirror or an old copy, then run ployz volume restore data --from <server you kept>"
         );
+        let several = no_writer_message(
+            "data",
+            &[copy("fsn-2", CopyRole::Slot), copy("hel-1", CopyRole::Slot)],
+        );
+        assert!(!several.contains("mirror rm"), "{several}");
         assert_eq!(
             no_writer_message("data", &[]),
             "Volume data has no writer and no Server holds a copy of it"

@@ -47,7 +47,7 @@ export type VolumeRunArgs = {
     readonly name: string;
   };
   /**
-   * The size every copy is asked to hold, in whole bytes, as `SetVolumeSizeRequest` names it. The size it grows from
+   * The size every copy is asked to hold, in whole bytes, as `SetVolumeSizeRequest` names it. The size it moves from
    * is the row's `recordedBytes`, read from the Store when the run was requested.
    */
   resize: { readonly maximum_bytes: number };
@@ -91,6 +91,8 @@ export type Member =
       readonly view: VolumeCopyView;
       /** A Server without the generation floor; it holds no copy and is not the run's destination. */
       readonly floorless?: boolean;
+      /** For a resize, the copy's bound in the Runtime Watch frame; null when the frame shows no sized copy here. */
+      readonly boundBytes?: number | null;
     }
   | {
       readonly machine: { readonly id: MachineId; readonly name: MachineName };

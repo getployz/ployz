@@ -1022,6 +1022,16 @@ it.live(
         const superseded = yield* request("write", alice, { ...start, deployment: admit.id });
         assert.strictEqual(superseded.status, 409);
         assert.strictEqual(sent.length, 3);
+
+        // Its last Server left: Deploy now refuses as a Deploy does, and hands nothing to the worker.
+        const { drizzle } = yield* Database;
+        yield* drizzle.delete(organizationMachine);
+        const serverless = yield* request("write", alice, start);
+        assert.strictEqual(serverless.status, 409);
+        expect(serverless.json).toMatchObject({
+          error: { code: "conflict", details: { next: "ployz server add" } },
+        });
+        assert.strictEqual(sent.length, 3);
       }).pipe(Effect.provide(layer));
     }),
   60_000,
@@ -1129,7 +1139,7 @@ it.live(
         const userId = (yield* resolveCaller(signedIn(alice))).userId;
         let runs = 0;
         const removeServer = (server: MachineId, noReset: boolean) => Effect.gen(function* () {
-          const removal = { organizationId, machineId: server, confirmDataLoss: [], noReset };
+          const removal = { organizationId, machineId: server, serverName: null, confirmDataLoss: [], noReset };
           const attempt = yield* requestMachineRemoveAttempt({ ...removal, requestedByUserId: userId });
           const inngestRunId = `run-${++runs}`;
           yield* prepareMachineRemoveAttemptActivity({ attemptId: attempt.id, inngestRunId, now: new Date() });
@@ -1216,7 +1226,7 @@ it.live(
           cancel: () => Effect.void,
           open: () => Effect.succeed({ status: "connected" as const, connected }),
         };
-        const removal = { organizationId, machineId, confirmDataLoss: [], noReset: false };
+        const removal = { organizationId, machineId, serverName: null, confirmDataLoss: [], noReset: false };
         const attempt = yield* requestMachineRemoveAttempt({ ...removal, requestedByUserId: caller.userId });
         const inngestRunId = "run-retry";
         yield* prepareMachineRemoveAttemptActivity({ attemptId: attempt.id, inngestRunId, now: new Date() });
@@ -1281,7 +1291,7 @@ it.live(
           cancel: () => Effect.void,
           open: () => Effect.succeed({ status: "connected" as const, connected }),
         };
-        const removal = { organizationId, machineId, confirmDataLoss: [], noReset: false };
+        const removal = { organizationId, machineId, serverName: null, confirmDataLoss: [], noReset: false };
         const attempt = yield* requestMachineRemoveAttempt({ ...removal, requestedByUserId: caller.userId });
         const inngestRunId = "run-left";
         yield* prepareMachineRemoveAttemptActivity({ attemptId: attempt.id, inngestRunId, now: new Date() });

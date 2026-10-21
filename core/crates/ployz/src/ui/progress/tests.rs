@@ -107,6 +107,7 @@ fn a_removed_service_counts_as_removed_in_the_summary() {
         crate::deploy::service_row(
             QualifiedService::parse("shop/web").unwrap(),
             None,
+            None,
             [crate::deploy::Replica {
                 machine: MachineId::random(),
                 state,
@@ -136,20 +137,27 @@ fn a_removed_service_counts_as_removed_in_the_summary() {
     assert!(!text.contains("deployed"), "{text}");
 }
 
+/// Between two copies' removals, one copy is gone and the other has not begun:
+/// the row still reads as removing.
 #[test]
 fn a_removal_that_has_begun_reads_as_removing_not_starting() {
-    let machine = MachineId::random();
-    let removal = |state| {
+    use ployz_store::RowState;
+    let machines = [MachineId::random(), MachineId::random()];
+    let removal = |states: [&RowState; 2]| {
         let row = crate::deploy::service_row(
             QualifiedService::parse("shop/api").unwrap(),
             None,
-            [crate::deploy::Replica {
-                machine,
-                state,
-                timing: Timing::Unavailable,
-                starts: false,
-                updates: false,
-            }],
+            None,
+            machines
+                .iter()
+                .zip(states)
+                .map(|(machine, state)| crate::deploy::Replica {
+                    machine: *machine,
+                    state,
+                    timing: Timing::Unavailable,
+                    starts: false,
+                    updates: false,
+                }),
         );
         Frame {
             run: Run::Direct(Namespace::parse("shop").unwrap()),
@@ -158,29 +166,36 @@ fn a_removal_that_has_begun_reads_as_removing_not_starting() {
             notices: Vec::new(),
         }
     };
-    let running = |phase| ployz_store::RowState::Running {
-        phase,
+    let removing = RowState::Running {
+        phase: RowPhase::RemovingContainer,
         serving: false,
     };
     let text = plain(
-        removal(&ployz_store::RowState::Pending),
+        removal([&RowState::Pending, &RowState::Pending]),
         vec![
-            (1, Message::Update(removal(&running(RowPhase::Starting)))),
+            (1, Message::Update(removal([&removing, &RowState::Pending]))),
             (
                 2,
-                Message::Update(removal(&running(RowPhase::RemovingContainer))),
+                Message::Update(removal([&RowState::Completed, &RowState::Pending])),
             ),
             (
                 3,
+                Message::Update(removal([&RowState::Completed, &removing])),
+            ),
+            (
+                4,
                 Message::Finish(
-                    removal(&ployz_store::RowState::Completed),
+                    removal([&RowState::Completed, &RowState::Completed]),
                     Disposition::Settled,
                 ),
             ),
         ],
     );
     assert!(!text.contains("starting"), "{text}");
-    assert_eq!(text.matches("api: removing 0/1").count(), 1, "{text}");
+    assert!(text.contains("api: waiting to remove 0/2"), "{text}");
+    assert!(text.contains("api: removing 0/2"), "{text}");
+    assert!(text.contains("api: removing 1/2"), "{text}");
+    assert!(text.contains("api: removed 2/2"), "{text}");
 }
 
 #[test]
@@ -691,6 +706,7 @@ fn service(name: &str, depth: u32, servers: usize, state: &ployz_store::RowState
     crate::deploy::service_row(
         QualifiedService::parse(format!("shop/{name}")).unwrap(),
         Some(depth),
+        None,
         (0..servers).map(|_| crate::deploy::Replica {
             machine: MachineId::random(),
             state,
@@ -710,7 +726,7 @@ fn an_overflowing_view_drops_switched_rows_before_a_deeper_failure() {
         log: None,
         unanswered: false,
         out_of_memory: None,
-        cancelled: false,
+        stopped_by: ployz_store::StoppedBy::NOTHING,
     };
     let mut rows: Vec<_> = (0..12)
         .map(|i| service(&format!("svc{i}"), 0, 1, &ployz_store::RowState::Completed))
@@ -746,7 +762,7 @@ fn an_overflowing_view_puts_finished_ingress_repairs_after_a_failure() {
         log: None,
         unanswered: false,
         out_of_memory: None,
-        cancelled: false,
+        stopped_by: ployz_store::StoppedBy::NOTHING,
     };
     let mut rows: Vec<_> = (0..12)
         .map(|n| Row {

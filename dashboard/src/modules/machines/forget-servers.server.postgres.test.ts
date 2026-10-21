@@ -97,12 +97,11 @@ it.live("Forget Servers answers within its Cluster time, and aborts the connecti
   })));
   yield* Effect.gen(function* () {
     const { userId } = yield* seeded();
-    const held = Effect.promise(() => new Promise<"held">((resolve) => { setTimeout(() => resolve("held"), 10_000); }));
     const answer = yield* Effect.gen(function* () {
       const fiber = yield* Effect.forkDetach(forgetServers({ userId, organizationId: ORGANIZATION }));
       yield* Deferred.await(closing);
       yield* TestClock.adjust(FORGET_CLUSTER_BUDGET_MS);
-      return yield* Effect.raceFirst(Fiber.join(fiber), held);
+      return yield* Fiber.join(fiber);
     }).pipe(Effect.provide(TestClock.layer()));
     expect(answer).toMatchObject({ ok: false, refusal: { code: "conflict", details: { answered: ["machine-1"] } } });
     expect(signals.map((signal) => signal.aborted)).toEqual([true]);

@@ -253,13 +253,7 @@ async fn assert_machine_rename_preserves_containers(
     );
     assert_success(ployz(
         address,
-        [
-            "machine",
-            "update",
-            machine_id.as_str(),
-            "--name",
-            "machine-1",
-        ],
+        ["server", "set", machine_id.as_str(), "--name", "machine-1"],
     ));
     wait_for_machine_name(client, machine_id, "machine-1").await;
 }

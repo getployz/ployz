@@ -76,6 +76,7 @@ fn each_volume_run_command_parses_to_its_own_handler() {
         "data-web-2",
         "--confirm",
         "data",
+        "--if-old-copy",
     ])
     .unwrap();
     assert_eq!(path(&remove), "volume mirror rm");
@@ -88,6 +89,7 @@ fn each_volume_run_command_parses_to_its_own_handler() {
         leaf.get_one::<String>("confirm").map(String::as_str),
         Some("data")
     );
+    assert!(leaf.get_flag("if-old-copy"));
 
     let sync = parsed(&["ployz", "volume", "sync", "data", "--full"]).unwrap();
     assert_eq!(path(&sync), "volume sync");
@@ -230,7 +232,22 @@ fn a_deployed_volume_resizes_only_with_ployz_cloud() {
     };
     let moving = moving.report();
     assert_eq!(error.code, RpcErrorCode::Unsupported);
-    assert_eq!((error.code, &error.message), (moving.code, &moving.message));
+    assert_eq!(
+        (&error.code, &error.message),
+        (&moving.code, &moving.message)
+    );
+    let settle = super::super::set_storage(
+        &root,
+        &store,
+        VolumeName::parse("data").unwrap(),
+        ployz_core::config::VolumeKind::provisioned_default(),
+    )
+    .unwrap_err()
+    .report();
+    assert_eq!(
+        (&settle.code, &settle.message),
+        (&moving.code, &moving.message)
+    );
 }
 
 #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
@@ -265,6 +282,17 @@ async fn each_kind_posts_only_its_own_fields() {
             },
             json!({ "environment": { "project": "shop", "environment": "production" }, "kind": "delete_mirror", "slot": "web-2", "confirm": "data" }),
             json!({ "slot": "web-2", "confirmed_name": "data" }),
+        ),
+        (
+            RunRequest {
+                environment: named(),
+                ask: RunAsk::DeleteOldCopy {
+                    slot: MachineName::parse("web-1").unwrap(),
+                    confirm: None,
+                },
+            },
+            json!({ "environment": { "project": "shop", "environment": "production" }, "kind": "delete_old_copy", "slot": "web-1" }),
+            json!({ "slot": "web-1" }),
         ),
         (
             RunRequest {
@@ -322,6 +350,88 @@ async fn each_kind_posts_only_its_own_fields() {
         assert_eq!(started.state, MaybeKnown::Known(VolumeRunState::Requested));
         assert_eq!(serde_json::to_value(started.kind).unwrap(), json!(kind));
     }
+}
+
+#[test]
+fn a_removal_s_retry_line_keeps_if_old_copy() {
+    let volume = VolumeName::parse("data").unwrap();
+    let slot = MachineName::parse("web-1").unwrap();
+    assert_eq!(
+        removal_words(&volume, &slot, true, Some("data")).join(" "),
+        "volume mirror rm data-web-1 --if-old-copy --confirm data"
+    );
+    assert_eq!(
+        removal_words(&volume, &slot, false, None).join(" "),
+        "volume mirror rm data-web-1"
+    );
+}
+
+/// A Cloud from before `--if-old-copy`: it knows these kinds only, and drops fields it doesn't know.
+fn cloud_before_if_old_copy() -> String {
+    fake_cloud(|_, sent| {
+        let sent: Value = serde_json::from_str(sent).unwrap();
+        let kind = sent
+            .get("kind")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned();
+        let known = [
+            "mirror",
+            "sync",
+            "delete_mirror",
+            "move",
+            "release",
+            "restore",
+            "resize",
+        ];
+        if known.contains(&kind.as_str()) {
+            return (200, json!({ "run": run("requested", &kind, json!({})) }));
+        }
+        (
+            422,
+            json!({ "_tag": "PublicError", "code": "VALIDATION_FAILED", "message": "A volume run takes its environment and what to run." }),
+        )
+    })
+}
+
+#[tokio::test]
+async fn an_old_copy_delete_fails_closed_on_a_cloud_from_before_if_old_copy() {
+    let cloud = cloud_before_if_old_copy();
+    let slot = MachineName::parse("web-1").unwrap();
+    let flagged = RunAsk::DeleteOldCopy {
+        slot: slot.clone(),
+        confirm: None,
+    };
+    let request = RunRequest {
+        environment: named(),
+        ask: flagged,
+    };
+    let error = start(&token(&cloud), &volume(), &request, None)
+        .await
+        .unwrap_err();
+    let refused = predates_if_old_copy(&request.ask, &error)
+        .expect("an older Cloud's refusal of --if-old-copy is named")
+        .report();
+    assert_eq!(refused.code, RpcErrorCode::Unsupported);
+    assert!(
+        refused.message.contains("--if-old-copy"),
+        "{}",
+        refused.message
+    );
+    assert!(
+        refused.message.contains("nothing was deleted"),
+        "{}",
+        refused.message
+    );
+
+    let bare = RunRequest {
+        environment: named(),
+        ask: RunAsk::DeleteMirror {
+            slot,
+            confirm: None,
+        },
+    };
+    assert!(start(&token(&cloud), &volume(), &bare, None).await.is_ok());
 }
 
 #[tokio::test]
@@ -480,39 +590,6 @@ fn a_resize_reads_back_its_size_and_names_it_when_it_fails() {
         error.message,
         "The resize of Volume data to 20 GB failed: db-1 has no room to grow data to 20 GB (it lacks 4 GB)"
     );
-}
-
-#[test]
-fn only_a_resize_cloud_finds_already_done_is_no_failure() {
-    let refusal = |code, details| RpcError {
-        code,
-        message: "data is already 20 GB".to_owned(),
-        details,
-        cause: Vec::new(),
-    };
-    let resize = RunAsk::Resize {
-        maximum_bytes: twenty_gb(),
-    };
-    let moving = RunAsk::Move {
-        to: MachineName::parse("web-2").unwrap(),
-    };
-    let settled = json!({ "settled": true });
-    assert!(already(
-        &resize,
-        &refusal(RpcErrorCode::Conflict, settled.clone())
-    ));
-    assert!(!already(
-        &moving,
-        &refusal(RpcErrorCode::Conflict, settled.clone())
-    ));
-    assert!(!already(
-        &resize,
-        &refusal(RpcErrorCode::Conflict, Value::Null)
-    ));
-    assert!(!already(
-        &resize,
-        &refusal(RpcErrorCode::InvalidArgument, settled)
-    ));
 }
 
 #[test]

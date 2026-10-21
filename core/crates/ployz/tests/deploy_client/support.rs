@@ -315,6 +315,12 @@ impl DeployService {
         self
     }
 
+    /// Containers crash and Docker keeps restarting them.
+    pub(super) fn restart_containers(mut self) -> Self {
+        self.runtime = ContainerRuntimeObservation::Restarting;
+        self
+    }
+
     /// Containers exit 137 with Docker's inspect saying it OOM-killed them.
     pub(super) fn oom_kill_containers(mut self) -> Self {
         self.runtime = ContainerRuntimeObservation::Exited { code: 137 };

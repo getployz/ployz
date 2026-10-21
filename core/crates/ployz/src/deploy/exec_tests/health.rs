@@ -387,6 +387,7 @@ async fn a_failed_verdict_fails_the_start_naming_the_container_without_polling_i
                 last_check: Some(last_check),
             },
             out_of_memory: None,
+            last_run: None,
         }
     );
     assert!(
@@ -435,6 +436,7 @@ async fn a_timed_out_verdict_fails_the_start() {
                         last_check: None,
                     },
                     out_of_memory: None,
+                    last_run: None,
                 },
                 ..
             },
@@ -495,6 +497,7 @@ async fn a_verdict_docker_killed_out_of_memory_fails_with_the_memory_limit() {
                     last_check: Some(last_check.clone()),
                 },
                 out_of_memory,
+                last_run: None,
             }
         );
         client.assert_done();
@@ -680,6 +683,7 @@ async fn restored_oom_limit(replacement_mib: i64) {
             out_of_memory: Some(OutOfMemory {
                 memory_bytes: Some(old_limit),
             }),
+            last_run: None,
         }
     );
     client.assert_done();

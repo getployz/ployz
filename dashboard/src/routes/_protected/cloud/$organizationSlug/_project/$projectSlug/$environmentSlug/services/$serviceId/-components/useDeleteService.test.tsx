@@ -48,7 +48,8 @@ it.each([
     render(<RouterProvider router={router} />);
     fireEvent.click(await screen.findByRole("button", { name: "Remove" }));
     await vi.waitFor(() => expect(commands.map((command) => command.command)).toEqual(sent));
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    const serviceRemoved = commit.mock.results[0]?.value.isPersisted.promise;
+    await serviceRemoved?.catch(() => {});
     expect(commands.slice(1)).toEqual(accepted ? [{ command: "remove_volume", environment, volume: "db-data" }] : []);
   } finally {
     cleanup();

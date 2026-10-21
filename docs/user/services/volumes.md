@@ -50,10 +50,33 @@ Ployz grows each mirror first and the copy your service writes to last. If one s
 a copy has no room, Ployz refuses the whole resize, names that server, and the volume keeps its
 old limit. `ployz volume runs data` shows how a resize went. The new limit isn't a staged
 change: `ployz diff` shows nothing, and your next deploy leaves the service's container alone.
-Shrinking a deployed volume isn't supported yet. A Docker volume has no limit to grow.
+A Docker volume has no limit to grow. A version saved before a resize, grow or shrink, deploys
+at the size the volume holds now.
 
-If you restore an older revision that asked for a smaller limit, the servers keep the size they
-hold. The panel shows the smaller one; enter the held size to stage it back.
+To shrink a deployed volume, run the same command with a smaller number:
+
+```sh
+# Shrink the data volume to 8 GB on every server that holds a copy
+ployz volume set data --size 8 --wait
+```
+
+Ployz shrinks the copy your service writes to first, then each mirror. A volume can't shrink
+below what it holds plus some headroom: 10% or 1 GB, whichever is larger. If a server's copy
+holds too much for the new limit, Ployz names the server and the smallest size it accepts,
+rounded up to a whole GB, and stops; a server whose Ployz is too old to shrink is named too. If the
+copy your service writes to refuses, the volume keeps its old limit. If a mirror refuses after that
+copy shrank, the volume has its new limit: free space in it, run `ployz volume sync data` so the
+mirror's copy follows, then run the same `ployz volume set` again. A shrink asked while a deploy
+of the environment is in flight is refused before any copy changes and names that deployment: run
+the same command again when it ends. A shrunk volume has less free space, so it may fill up sooner.
+
+Running `ployz volume set data --size 8` with the size the volume already has asks every server
+to hold that size. That is how to finish a shrink a mirror refused or one that was interrupted:
+a copy still larger is shrunk to it. It only lowers a copy, judged from Ployz's latest reading of
+each server's copy. If a server holds less than the
+volume's limit, Ployz refuses and tells you to run `ployz volume set` with the size that server
+holds, then again with the size you want, to grow it. If Ployz has no fresh reading of a server's copy,
+it refuses and asks you to try again in a moment.
 
 The dashboard doesn't show how full a volume is yet:
 
@@ -131,8 +154,10 @@ Run the `ployz volume restore` line it prints to make that copy the writer again
 While one of your servers is offline, the deploy can't tell whether that server holds the writer,
 so it names that server instead and suggests no restore. See
 [When a server goes down](scaling.md#when-a-server-goes-down).
-If several servers hold copies, keep the newest and remove the others with the `ployz volume mirror rm` lines it names. A volume
-that is [mid-move](move-a-volume.md#when-a-move-stops) refuses too, and names the
+If several servers hold copies, it names them. Keep the newest and delete the others from the
+volume's page in Ployz Cloud, which shows whether each is a mirror or an old copy. The error prints
+no `ployz volume mirror rm` line for them, because such a line run later could delete a copy that
+has since become the mirror. A volume that is [mid-move](move-a-volume.md#when-a-move-stops) refuses too, and names the
 `ployz volume release` line that stops the move. A move that stopped before its first snapshot
 has nothing to release, so it names the `ployz volume move` line that runs the move again.
 

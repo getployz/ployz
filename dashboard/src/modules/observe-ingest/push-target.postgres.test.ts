@@ -114,8 +114,7 @@ it.live("a capability published while Cloud dials leaves the Machine pending for
 
 it.live("a sweep finishes within its Cluster time, and aborts each connection, when a Machine's session never closes", () => Effect.gen(function* () {
   const { aborts, confirmed, sweep } = yield* setup(undefined, () => new Promise<void>(() => {}));
-  const held = Effect.promise(() => new Promise<"held">((resolve) => { setTimeout(() => resolve("held"), SESSION_CLOSE_CLUSTER_MS + 8_000); }));
-  const outcomes = yield* Effect.raceFirst(sweep(), held);
+  const outcomes = yield* sweep().pipe(Effect.timeout(SESSION_CLOSE_CLUSTER_MS + 8_000));
   expect(outcomes).toEqual(expect.arrayContaining([{ machineId: CURRENT, delivery: "set" }, { machineId: OLD, delivery: "lacks" }]));
   expect((yield* confirmed()).find((row) => row.machineId === CURRENT)?.pushTarget).toBe(url(CURRENT));
   expect(aborts.aborted()).toEqual([true, true, true]);

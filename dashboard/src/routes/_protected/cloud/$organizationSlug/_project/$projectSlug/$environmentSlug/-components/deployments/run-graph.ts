@@ -47,6 +47,9 @@ export const failedAtLabels = {
   volume: "volume",
 } satisfies Record<FailedAt, string>;
 
+/** Work Ployz stopped rather than work that failed: the Deployment's cancel, or the Deployment losing its runner. */
+export const rowStopped = (row: ServerRow) => row.state === "failed" && (row.cancelled === true || row.interrupted === true);
+
 export function rowLabel(row: ServerRow): string {
   switch (row.state) {
     case "pending": return "Pending";
@@ -54,6 +57,7 @@ export function rowLabel(row: ServerRow): string {
     case "completed": return "Done";
     case "failed":
       if (row.cancelled) return "Cancelled";
+      if (row.interrupted) return "Interrupted";
       return row.step ? `Failed at ${failedAtLabels[row.step]}` : "Failed";
     case "not_attempted": return "Not attempted";
     case "unknown": return "Unknown";
@@ -67,7 +71,7 @@ export function rowLight(row: ServerRow): NodeLight {
     case "pending": return "queued";
     case "running": return "deploying";
     case "completed": return "deployed";
-    case "failed": return row.cancelled ? "not_applied" : "failed";
+    case "failed": return rowStopped(row) ? "not_applied" : "failed";
     case "not_attempted": return "not_applied";
     case "unknown": return "unknown";
     default:

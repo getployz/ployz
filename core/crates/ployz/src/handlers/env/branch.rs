@@ -381,11 +381,10 @@ fn sync_lines(row: &SyncRow) -> Vec<String> {
         (NodeName::Config(_), Some(field)) => {
             vec![store::config_field_changed(field, &row.into, &row.from)]
         }
-        _ => store::changed(&setting_change(
-            row.at.to_string(),
-            row.into.clone(),
-            row.from.clone(),
-        )),
+        _ => store::changed(
+            &setting_change(row.at.to_string(), row.into.clone(), row.from.clone()),
+            &[],
+        ),
     }
 }
 
@@ -400,7 +399,7 @@ fn created_lines(whole: &SyncRow) -> Vec<String> {
     };
     ployz_store::introduced_source(service.as_str(), lineage, &source)
         .iter()
-        .flat_map(store::changed)
+        .flat_map(|row| store::changed(row, &[]))
         .collect()
 }
 

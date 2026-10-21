@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { controlPlaneStatements, editUptimeCheckStatement } from "#/modules/uptime/incident-fence";
 import { type PostgresTestHarness, startPostgresTestHarness } from "#/test/postgres";
 
@@ -54,14 +54,12 @@ function edit(checkId: string, enabled = true) {
   }));
 }
 
-async function waitForLockWaiter() {
-  for (let attempt = 0; attempt < 40; attempt += 1) {
+function waitForLockWaiter() {
+  return vi.waitFor(async () => {
     const { rows } = await harness.pool.query<{ waiting: number }>(
       "select count(*)::int as waiting from pg_stat_activity where datname = current_database() and wait_event_type = 'Lock'");
-    if (one(rows).waiting > 0) return;
-    await new Promise((resolve) => setTimeout(resolve, 50));
-  }
-  throw new Error("the close never waited on the uncommitted bump");
+    expect(one(rows).waiting, "the close never waited on the uncommitted bump").toBeGreaterThan(0);
+  }, { timeout: 2_000 });
 }
 
 async function state(checkId: string) {

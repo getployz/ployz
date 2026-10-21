@@ -421,6 +421,7 @@ async fn cloud_removes_its_last_server_for_the_cli() {
         Some(&json!("data")),
         "{body}"
     );
+    assert_eq!(body.get("server_name"), Some(&json!("one")), "{body}");
     let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(
         result.get("next"),
@@ -472,7 +473,7 @@ async fn a_server_cloud_manages_is_forgotten_through_cloud() {
         )),
         "{line}"
     );
-    assert_eq!(body, &json!({}));
+    assert_eq!(body, &json!({ "server_name": "two" }));
     let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(
         result.get("cloud_released"),

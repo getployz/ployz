@@ -20,3 +20,5 @@ Never add `#[ignore = "informing"]` unless that test binary is in `scripts/run-l
   `docker run -d --rm --name store-pg -p 127.0.0.1:5433:5432 -e POSTGRES_PASSWORD=postgres postgres:16-alpine` then
   `PLOYZ_STORE_TEST_POSTGRES=postgres://postgres:postgres@127.0.0.1:5433 cargo nextest run -p ployz-store`.
 - Dashboard's native SDK after a Rust change: `scripts/build-cloud-sdk.sh`.
+- Informing cluster suites need a testkit image of this checkout. `scripts/testkit-image.sh` builds it from `crates/ployz-testkit/Dockerfile` and pulls no testkit image. The first base build takes minutes, and later ones hit Docker's cache. `scripts/run-layer3-tests.sh` calls it. For one suite:
+  `PLOYZ_TESTKIT_IMAGE=$(scripts/testkit-image.sh ployz-testkit-checkout:dev) cargo test -p ployz --test workflow_layer3 -- --ignored --test-threads=1`.

@@ -102,25 +102,28 @@ it("releases the runtime as soon as the viewer cancels an idle stream", async ()
 
 it("releases the runtime once when the viewer cancels a running stream", async () => {
   let closed = 0;
-  const events = { [Symbol.asyncIterator]() { return { next: () => new Promise<IteratorResult<never>>(() => {}) }; } };
+  let pulled = false;
+  const events = { [Symbol.asyncIterator]() { return { next: () => { pulled = true; return new Promise<IteratorResult<never>>(() => {}); } }; } };
   const response = containerLogResponse(new Request("http://localhost/logs"), events, async () => { closed++; });
   const reader = response.body?.getReader();
-  // Let the stream start pulling, so both the cancel and the stream's own end release it.
-  await new Promise((resolve) => setTimeout(resolve, 10));
+  await reader?.read();
+  const read = reader?.read();
+  await vi.waitFor(() => expect(pulled).toBe(true));
   await reader?.cancel();
-  await new Promise((resolve) => setTimeout(resolve, 10));
+  expect(await read).toMatchObject({ done: true });
   expect(closed).toBe(1);
 });
 
 it("releases the runtime once and ends the stream when the request aborts during a hung read", async () => {
   let closed = 0;
-  const events = { [Symbol.asyncIterator]() { return { next: () => new Promise<IteratorResult<never>>(() => {}) }; } };
+  let pulled = false;
+  const events = { [Symbol.asyncIterator]() { return { next: () => { pulled = true; return new Promise<IteratorResult<never>>(() => {}); } }; } };
   const request = new AbortController();
   const response = containerLogResponse(new Request("http://localhost/logs", { signal: request.signal }), events, async () => { closed++; });
   const reader = response.body?.getReader();
   await reader?.read();
   const read = reader?.read();
-  await new Promise((resolve) => setTimeout(resolve, 10));
+  await vi.waitFor(() => expect(pulled).toBe(true));
   request.abort();
   expect(await read).toMatchObject({ done: true });
   expect(closed).toBe(1);
@@ -134,32 +137,31 @@ it("releases the runtime when the request aborts while the viewer isn't reading"
   }
   const request = new AbortController();
   containerLogResponse(new Request("http://localhost/logs", { signal: request.signal }), events(), async () => { closed++; });
-  // The first record fills the stream's queue, so nothing is pulling when the request aborts.
-  await new Promise((resolve) => setTimeout(resolve, 10));
   request.abort();
-  await new Promise((resolve) => setTimeout(resolve, 10));
   expect(closed).toBe(1);
 });
 
 it("closes support's stream with hidden once the Organization hides its logs, even while lines keep coming", async () => {
   const record = (message: string): LogEvent => ({ type: "source_error", machineId: "m", containerId: "c", message });
   let released = false;
-  async function* flood(): AsyncIterable<LogEvent> {
-    try {
-      for (let line = 0; ; line++) {
-        yield record(`line ${line}`);
-        await new Promise(resolve => setTimeout(resolve, 1));
-      }
-    } finally { released = true; }
-  }
-  const answers = [true, false];
-  const seen: string[] = [];
-  for await (const event of whileLogsShown(flood(), async () => answers.shift() ?? false, 10)) seen.push(event.type);
-  expect(seen.at(-1)).toBe("hidden");
-  expect(seen.filter(type => type === "hidden")).toHaveLength(1);
-  expect(seen.length).toBeGreaterThan(2);
-  // The upstream is released once the read in flight settles.
-  await vi.waitFor(() => expect(released).toBe(true));
+  vi.useFakeTimers();
+  try {
+    async function* flood(): AsyncIterable<LogEvent> {
+      try {
+        for (let line = 0; line < 1_000; line++) {
+          yield record(`line ${line}`);
+          vi.setSystemTime(Date.now() + 1);
+        }
+      } finally { released = true; }
+    }
+    const answers = [true, false];
+    const seen: string[] = [];
+    for await (const event of whileLogsShown(flood(), async () => answers.shift() ?? false, 10)) seen.push(event.type);
+    expect(seen.at(-1)).toBe("hidden");
+    expect(seen.filter(type => type === "hidden")).toHaveLength(1);
+    expect(seen.length).toBeGreaterThan(2);
+    await vi.waitFor(() => expect(released).toBe(true));
+  } finally { vi.useRealTimers(); }
 });
 
 it("ends support's stream without hidden when what it may see can't be read, so the reconnect asks again", async () => {
