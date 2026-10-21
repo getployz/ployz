@@ -25,6 +25,7 @@ Every rule here is checkable. A reviewer confirms it from a screenshot or a grep
    To check, grep `src/` for `text-lg`, `text-xl`, `text-3xl` and `text-\[`.
 
 4. **Each page has exactly one h1.** It is 24px semibold (`text-2xl font-semibold`). Section headings are smaller.
+   The canvas is the one exception. It fills the page and the top bar already names the Environment, so its h1 is `sr-only`.
    To check, count `<h1>` elements per route. There is one, and no other heading is 24px.
 
 5. **Mono is for machine values only.** Use `font-mono` for IDs, hashes, commands, env keys and values, image refs and logs. Never use it for names, labels, numbers or prose.
