@@ -71,8 +71,12 @@ pub type ProxyRoutes = BTreeMap<QualifiedService, Vec<ServingContainer>>;
 /// none, it keeps its `current` route while a copy that route lists is out of
 /// view or some copy is In or Pending, so lag, Down owners and health blips
 /// never empty it. Keeping it never keeps a copy its owner Held, so a
-/// stop-first stop withdraws its copy while new copies are still Pending. It
-/// empties once every copy in view is Held or Out. A Service
+/// stop-first stop withdraws its copy while new copies are still Pending, nor
+/// a copy set Out that it observes exited, so a removal withdraws an exited
+/// copy while its exited sibling is still In. A copy set Out in any other
+/// state stays, as a running one is the one fallback while its sibling exits,
+/// and a restarting one may run again. It empties once every copy in view is
+/// Held or Out. A Service
 /// missing from `current` has never been routed by this proxy, as after a
 /// restart, and routes its Serving Containers on any Machine instead. A Service
 /// with no observed copy has no route, and the Ingress Proxy Service never has one.
@@ -130,8 +134,16 @@ fn next_route(
         .iter()
         .filter(|routed| {
             !siblings.iter().any(|sibling| {
-                sibling.as_observation().container_id == routed.as_observation().container_id
-                    && matches!(sibling.as_observation().rotation(), CopyRotation::Held(_))
+                let observation = sibling.as_observation();
+                observation.container_id == routed.as_observation().container_id
+                    && match observation.rotation() {
+                        CopyRotation::Held(_) => true,
+                        CopyRotation::Out => matches!(
+                            observation.runtime,
+                            ContainerRuntimeObservation::Exited { .. }
+                        ),
+                        CopyRotation::Pending | CopyRotation::In => false,
+                    }
             })
         })
         .cloned()
