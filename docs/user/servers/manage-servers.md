@@ -530,7 +530,7 @@ finishes such a removal on its own.
 A Ployz Cloud removal that retries can find the server already gone from the cluster. Ployz then
 can't confirm the server reset. Cloud drops its record of the server, and `ployz server rm` says
 "Cloud let go of Server web-2, but its reset couldn't be confirmed: it was already gone from the
-Cluster." and exits with code 3. Your last server is the exception: Cloud keeps its hold on the
+Cluster. Reset does not erase volume data." and exits with code 3. Your last server is the exception: Cloud keeps its hold on the
 cluster and says why. With `--json`, `cloud_kept` says which of the two happened.
 
 `sudo systemctl stop ployz.socket ployz` stops Ployz's control of the server. Stop the socket too:

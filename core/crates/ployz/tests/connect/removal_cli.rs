@@ -573,7 +573,7 @@ async fn a_server_already_gone_from_the_cluster_says_cloud_let_go_and_its_reset_
     assert!(stderr.contains("Removed Server two."), "{stderr}");
     assert!(
         stderr.contains(
-            "! Cloud let go of Server two, but its reset couldn't be confirmed: it was already gone from the Cluster."
+            "! Cloud let go of Server two, but its reset couldn't be confirmed: it was already gone from the Cluster. Reset does not erase volume data."
         ),
         "{stderr}"
     );

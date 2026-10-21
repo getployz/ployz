@@ -343,10 +343,10 @@ fn leave(root: &ArgMatches, removal: Removal) -> Result<(), Error> {
             && cloud_kept == Some(false)
         {
             // Cloud lets go only of a Server the Cluster already forgot, so only its reset is in doubt.
-            crate::ui::warn(crate::ui::sentence(format!(
-                "Cloud let go of Server {}, but {reason}",
-                selected.name
-            )));
+            crate::ui::warn(crate::ui::then_sentence(
+                &format!("Cloud let go of Server {}, but {reason}", selected.name),
+                "Reset does not erase volume data.",
+            ));
         } else if let Some(reason) = &reset_failure {
             crate::ui::warn(crate::ui::then_sentence(
                 &crate::ui::with_reason(
