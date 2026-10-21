@@ -16,7 +16,7 @@ use ployz_core::{
     CodecError, ContainerId, ContainerKind, ContainerLocator, ContainerObservation, ContainerWant,
     CopyRotation, EnsuredContainer, EnvironmentValues, Gen, ListContainersRequest,
     ListMachinesRequest, MACHINE_API_PORT, MachineId, MachineRpcClient, QualifiedService,
-    SpecChange, compare_specs, op,
+    RUNTIME_WATCH_MESSAGE_SIZE_LIMIT, SpecChange, compare_specs, op,
 };
 use tokio::{sync::watch, time::Instant};
 use tonic::transport::Endpoint;
@@ -423,6 +423,7 @@ async fn full_list(address: SocketAddr) -> Result<Vec<ContainerObservation>, Pee
         environment: EnvironmentValues::Included,
     };
     Ok(MachineRpcClient::new(channel)
+        .max_decoding_message_size(RUNTIME_WATCH_MESSAGE_SIZE_LIMIT)
         .list_containers(op::ListContainers::into_request(request).encode()?)
         .await?
         .into_inner()
