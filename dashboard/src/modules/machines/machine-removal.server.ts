@@ -329,6 +329,7 @@ export const enqueueMachineRemove = Effect.fn("MachineRemoval.enqueue")(
       organizationId: organization.id,
       requestedByUserId: actor.userId,
       machineId: input.machineId,
+      serverName: plan.name,
       confirmDataLoss: [...input.confirmDataLoss],
     });
   },

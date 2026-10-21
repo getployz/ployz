@@ -1,5 +1,5 @@
 import "@tanstack/react-start/server-only";
-import type { DrainReport, DrainScope, QualifiedService, RuntimeWatchView } from "@ployz/sdk";
+import type { DrainReport, DrainScope, MachineName, QualifiedService, RuntimeWatchView } from "@ployz/sdk";
 import { and, desc, eq, inArray, isNull, lt, or, sql } from "drizzle-orm";
 import { Clock, Data, Effect, Option, Schedule, Schema } from "effect";
 import type { MachineId } from "#/db/tables";
@@ -136,6 +136,7 @@ export const requestServerDrain = Effect.fn("ServerDrain.request")(function* (ca
       id: input.requestId,
       organizationId,
       machineId: input.machineId,
+      serverName: plan.name || null,
       requestedByUserId: caller.userId,
       targets: [...plan.targets],
       approvalId: gated.approvalId,
@@ -163,6 +164,8 @@ export const requestCliServerDrain = Effect.fn("ServerDrain.requestCli")(functio
     readonly targets: readonly QualifiedService[];
     readonly approvalId: string | null;
     readonly planDigest: string;
+    /** The name the caller showed for the Server, which its run keeps; null when it showed none. */
+    readonly serverName: MachineName | null;
   },
 ) {
   const { drizzle } = yield* Database;
@@ -170,6 +173,7 @@ export const requestCliServerDrain = Effect.fn("ServerDrain.requestCli")(functio
     id: input.attemptId,
     organizationId: caller.organizationId,
     machineId: input.machineId,
+    serverName: input.serverName || null,
     requestedByUserId: caller.userId,
     targets: [...input.targets],
     approvalId: input.approvalId,

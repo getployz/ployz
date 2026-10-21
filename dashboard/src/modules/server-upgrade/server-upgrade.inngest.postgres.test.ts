@@ -28,6 +28,7 @@ import {
   setServerUpgradeSettings,
 } from "#/modules/server-upgrade/server-upgrade.server";
 import { admitOperation } from "#/modules/operations/keyed.server";
+import { operationsOn } from "#/modules/operations/operation-history.server";
 import { AppConfig } from "#/server/config.server";
 import type { Database } from "#/server/database.server";
 import { makeInngestEffectRunner, type runInngestEffect } from "#/server/run.server";
@@ -146,6 +147,16 @@ describe("roll-out-server-upgrade", () => {
     target_version: string | null; outcome: string; stage: string | null; error: string | null; ended_at: Date | null;
   }>;
 
+  /** Cloud keeps `name` for web-1, as it enrolled or as the Cluster last reported it. */
+  const keep = (name: string) => harness.pool.query(
+    `insert into organization_machine (organization_id, machine_id, cluster_key, encrypted_capability, machine_name)
+     values ($1, $2, $3, $4, $5)
+     on conflict (organization_id, machine_id) do update set machine_name = excluded.machine_name`,
+    [organizationId, machineId, "a".repeat(64), {}, name],
+  );
+  const runNames = async () =>
+    (await runEffect(operationsOn(organizationId, { kind: "server", machine: machineId }, null, 5))).map(({ run }) => run);
+
   beforeAll(async () => { harness = await startPostgresTestHarness(); }, 60_000);
   afterAll(async () => { await harness?.stop(); });
 
@@ -176,6 +187,17 @@ describe("roll-out-server-upgrade", () => {
       insert into member (id, organization_id, user_id, role, created_at)
       values (gen_random_uuid(), '${organizationId}', '${userId}', 'member', now());
     `);
+  });
+
+  // Catches a scheduled upgrade stored under the name Cloud kept before a rename reached it, not the one its run observed.
+  it("names a scheduled upgrade by the Server's name in the frame while Cloud still keeps its old one", async () => {
+    await keep("old");
+
+    expect((await rollOut(null, "automatic")).result).toMatchObject({ results: [{ machineId, outcome: "succeeded" }] });
+
+    expect(await runNames()).toEqual(["upgrade web-1"]);
+    await keep("web-1");
+    expect(await runNames()).toEqual(["upgrade web-1"]);
   });
 
   it("records a manual attempt, requests it along stable, and polls it to success", async () => {
@@ -772,6 +794,15 @@ describe("roll-out-server-upgrade", () => {
       if (!answer.ok) throw new Error(answer.refusal.message);
       return answer.id;
     };
+
+    // Catches a CLI upgrade stored under the name Cloud kept before a rename reached it, not the one the CLI resolved.
+    it("names its run by the Server's name in the frame while Cloud still keeps its old one", async () => {
+      await keep("old");
+
+      await requested();
+
+      expect(await runNames()).toEqual(["upgrade web-1"]);
+    });
 
     it("reads running from its request on, and the run claims and settles that attempt", async () => {
       const id = await requested();
