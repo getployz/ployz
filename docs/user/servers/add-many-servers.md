@@ -41,9 +41,9 @@ count past N. Revoke stops new arrivals while open enrollments finish.
 1. Open **Servers** and click **Add servers**.
 2. Name the token and choose an expiry of 1 day, 7 days or 30 days. Click **Create**.
 3. Copy the install line and the token while they are visible. Ployz shows the token once. The
-   **cloud-init** and **Terraform** tabs carry the same token in the line.
+   **cloud-init** tab carries the same token in the line.
 4. Run the **Shell** line on each host as root or with `sudo`, and paste the token when it asks.
-   For user data, use the cloud-init or Terraform example instead; it has no terminal to ask at.
+   For user data, use the cloud-init example instead; it has no terminal to ask at.
    The line returns once check-in is running.
 5. Return to **Servers**. Hosts appear under **Waiting to join** in arrival order. **Installing Docker**
    shows preparation. **Ready** means Docker is installed. Where the

@@ -61,10 +61,11 @@ it("shows the token exactly once in each tab", async () => {
   await mintWith();
   await screen.findByRole("tab", { name: "Shell" });
 
-  for (const tab of ["Shell", "cloud-init", "Terraform"]) {
+  for (const tab of ["Shell", "cloud-init"]) {
     await act(async () => fireEvent.click(screen.getByRole("tab", { name: tab })));
     expect(occurrences(screen.getByRole("tabpanel").textContent ?? ""), tab).toBe(1);
   }
+  expect(screen.getAllByRole("tab").map((tab) => tab.textContent)).toEqual(["Shell", "cloud-init"]);
 });
 
 it("says the line is shown once and when it expires", async () => {
