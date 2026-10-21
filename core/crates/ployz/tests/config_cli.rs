@@ -402,6 +402,7 @@ struct Approvals {
     asking: std::sync::Mutex<usize>,
     calls: std::sync::Mutex<Vec<(String, String, Value)>>,
     runs: std::sync::Mutex<Vec<String>>,
+    bodies: std::sync::Mutex<Vec<Value>>,
 }
 
 impl Approvals {
@@ -468,6 +469,10 @@ impl Approvals {
         self.runs.lock().unwrap().clone()
     }
 
+    fn bodies(&self) -> Vec<Value> {
+        self.bodies.lock().unwrap().clone()
+    }
+
     fn run(&self, method: &str, route: &str, body: &[u8], approval: Option<&str>) -> (u16, Value) {
         let carried = approval
             .map(|id| format!(" approved by {id}"))
@@ -477,6 +482,7 @@ impl Approvals {
             .unwrap()
             .push(format!("{method} {route}{carried}"));
         let body: Value = serde_json::from_slice(body).unwrap_or(Value::Null);
+        self.bodies.lock().unwrap().push(body.clone());
         let segments: Vec<&str> = route.split('/').collect();
         match (method, segments.as_slice()) {
             ("POST", ["servers", BUSY_SERVER, "drain"]) => (202, json!({ "id": "drn_running" })),
@@ -5748,6 +5754,7 @@ fn signed_in_a_drain_runs_in_cloud() {
             "GET server-drains/drn_1".to_owned(),
         ]
     );
+    assert_eq!(approvals.bodies()[0], json!({ "server_name": "web-1" }));
 }
 
 #[test]
@@ -5767,6 +5774,10 @@ fn signed_in_an_upgrade_runs_in_cloud_along_the_release_channel() {
             format!("POST servers/{CLOUD_SERVER}/upgrade"),
             "GET server-upgrades/upg_1".to_owned(),
         ]
+    );
+    assert_eq!(
+        approvals.bodies()[0],
+        json!({ "channel": "stable", "server_name": "web-1" })
     );
 
     let mismatch = error(&target, &["server", "upgrade", "beta", CLOUD_SERVER]);

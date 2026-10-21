@@ -107,14 +107,13 @@ export const settledDrain = Effect.fn("OperationHistory.settledDrain")(function*
     or(inArray(serverDrainAttempt.state, ["finished", "failed", "cancelled"]), inArray(serverDrainAttempt.endCode, ["lost", "interrupted"])),
   )).orderBy(desc(serverDrainAttempt.requestedAt), asc(serverDrainAttempt.id)).limit(1);
   if (row === undefined) return null;
-  return drainOperation(row, known || ((yield* serverNames(organizationId, [machine])).get(machine) ?? machine));
+  return drainOperation(row, row.serverName || known || ((yield* serverNames(organizationId, [machine])).get(machine) ?? machine));
 });
 
 const serverOperations = Effect.fn("OperationHistory.server")(function* (
   organizationId: string, machine: MachineId, attempt: string | null, limit: number, known: string | null,
 ) {
   const { drizzle } = yield* Database;
-  const name = known || ((yield* serverNames(organizationId, [machine])).get(machine) ?? machine);
   const uuid = attempt !== null && isUuid(attempt) ? attempt : null;
   const hex = attempt?.replaceAll("-", "").toLowerCase() ?? null;
   const drains = attempt !== null && uuid === null ? [] : yield* drizzle.select({ row: serverDrainAttempt, at: micros(serverDrainAttempt.requestedAt) }).from(serverDrainAttempt).where(and(
@@ -133,14 +132,19 @@ const serverOperations = Effect.fn("OperationHistory.server")(function* (
     hex === null ? undefined : eq(serverUpgradeAttempt.attemptId, hex),
   )).orderBy(desc(serverUpgradeAttempt.startedAt), sql`${serverUpgradeAttempt.attemptId} collate "C"`).limit(limit);
   const now = Date.now();
+  // A row keeps the name its run started under, even on a replayed act; older rows have none, so Cloud looks it up for them.
+  const looked = known || [...drains, ...removals, ...upgrades].every(({ row }) => row.serverName !== null)
+    ? undefined
+    : (yield* serverNames(organizationId, [machine])).get(machine);
+  const name = (row: { serverName: string | null }) => row.serverName || known || looked || machine;
   return [
-    ...drains.map(({ row, at }) => ({ at, operation: drainOperation(row, name) })),
+    ...drains.map(({ row, at }) => ({ at, operation: drainOperation(row, name(row)) })),
     ...removals.map(({ row, at }) => ({ at, operation: operation({
-      attempt: row.id, run: `remove ${name}`, state: row.state, requestedAt: row.createdAt, endedAt: row.terminalAt, reason: row.failureMessage,
+      attempt: row.id, run: `remove ${name(row)}`, state: row.state, requestedAt: row.createdAt, endedAt: row.terminalAt, reason: row.failureMessage,
     }) })),
     ...upgrades.map(({ row, at }) => ({ at, operation: operation({
       attempt: dashedAttempt(row.attemptId),
-      run: `upgrade ${name}`,
+      run: `upgrade ${name(row)}`,
       state: row.outcome === "running" && outlivedObservation(row.startedAt, now) ? "unknown" : row.outcome,
       requestedAt: row.startedAt,
       endedAt: row.endedAt,
