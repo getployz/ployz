@@ -129,10 +129,11 @@ describe("protected pairing removal", () => {
     fake.endpoint.closeHangs = true;
     const runtime = fake.makeRuntime();
     try {
-      const held = new Promise<"held">((resolve) => { setTimeout(() => resolve("held"), SESSION_CLOSE_CLUSTER_MS + 8_000); });
-      expect(await Promise.race([runtime.runPromise(revokeOrganizationPairing(organizationId)), held])).toEqual({
+      const started = performance.now();
+      expect(await runtime.runPromise(revokeOrganizationPairing(organizationId))).toEqual({
         confirmed: true, endpoints: [{ machineId, status: "confirmed" }],
       });
+      expect(performance.now() - started).toBeLessThan(SESSION_CLOSE_CLUSTER_MS + 8_000);
       expect(fake.aborts.aborted()).toEqual([true]);
     } finally { await runtime.dispose(); }
   }, 30_000);

@@ -4,7 +4,7 @@ import { type SQL, sql } from "drizzle-orm";
 import { Effect, Layer } from "effect";
 import { describe, expect } from "vitest";
 import { machineRemoveAttempt, serverDrainAttempt } from "#/modules/machines/tables";
-import { operationsOn } from "#/modules/operations/operation-history.server";
+import { operationsOn, settledDrain } from "#/modules/operations/operation-history.server";
 import { serverUpgradeAttempt } from "#/modules/server-upgrade/tables";
 import { Database } from "#/server/database.server";
 import { seedStoreOrganization, storeTestCloud } from "#/test/store-cloud";
@@ -91,5 +91,62 @@ describe("operationsOn a Server", () => {
 
       expect(yield* read(5)).toEqual(["a10b0000-0000-4000-8000-000000000000", "a2b00000-0000-4000-8000-000000000000"]);
       expect(yield* read(1)).toEqual(["a10b0000-0000-4000-8000-000000000000"]);
+    }));
+});
+
+const second = (at: number) => new Date(Date.UTC(2026, 9, 20, 12, 0, at));
+type Drain = Pick<typeof serverDrainAttempt.$inferInsert, "id" | "state" | "endCode" | "inngestRunId" | "startedAt" | "endedAt" | "requestedAt" | "serverName">;
+const failed = (id: string, at: number): Drain => ({ id, state: "failed", endCode: "not_started", endedAt: second(at), requestedAt: second(at) });
+const lost = (id: string, at: number): Drain => ({
+  id, state: "unknown", endCode: "lost", inngestRunId: `run-${id}`, startedAt: second(at), endedAt: second(at), requestedAt: second(at),
+});
+
+/** A Server whose `drains` came first and `later` upgrades followed them, read through `settledDrain`. */
+const drained = (drains: readonly Drain[], later: number) =>
+  Effect.gen(function* () {
+    const services = yield* Layer.build(yield* storeTestCloud());
+    const userId = yield* seedStoreOrganization(ORGANIZATION).pipe(Effect.provide(services));
+    const { drizzle } = yield* Database.pipe(Effect.provide(services));
+    for (const drain of drains) {
+      yield* drizzle.insert(serverDrainAttempt).values({ ...drain, organizationId: ORGANIZATION, machineId: MACHINE, requestedByUserId: userId });
+    }
+    for (let at = 0; at < later; at++) {
+      yield* drizzle.insert(serverUpgradeAttempt).values({
+        organizationId: ORGANIZATION, machineId: MACHINE, attemptId: at.toString(16).padStart(32, "0"), trigger: "manual", requestedByUserId: userId,
+        channel: "stable", fromVersion: "0.5.0", outcome: "succeeded", inngestRunId: `upgrade-${at}`, startedAt: second(30 + at), endedAt: second(30 + at),
+      });
+    }
+    return yield* settledDrain(ORGANIZATION, MACHINE, "machine-1").pipe(Effect.provide(services));
+  });
+
+describe("settledDrain", () => {
+  // Catches a failed Drain read off the page of a Server's latest runs, which twenty later runs fill.
+  it.live("names the newest Drain with a verdict past twenty later runs", () =>
+    Effect.gen(function* () {
+      const pending: Drain = { id: FIRST, requestedAt: second(59) };
+
+      expect(yield* drained([failed(THIRD, 1), pending], 25))
+        .toEqual(expect.objectContaining({ attempt: THIRD, run: "drain machine-1", state: "failed", reason: "The drain never started." }));
+      expect(yield* drained([failed(THIRD, 1), lost(FIRST, 2)], 25))
+        .toEqual(expect.objectContaining({ attempt: FIRST, state: "unknown", end: "lost" }));
+    }));
+
+  // Catches the settled Drain renamed to the Server's current name while the history keeps the one its run started under.
+  it.live("names the Drain as its run started, as the history does", () =>
+    Effect.gen(function* () {
+      expect(yield* drained([{ ...failed(THIRD, 1), serverName: "box-node-09c8" }], 0))
+        .toEqual(expect.objectContaining({ attempt: THIRD, run: "drain box-node-09c8" }));
+    }));
+
+  it.live("names none when no Drain has a verdict", () =>
+    Effect.gen(function* () {
+      expect(yield* drained([{ id: THIRD, requestedAt: second(1) }], 3)).toBeNull();
+    }));
+
+  // Catches Drains requested at one instant picked in another order than `operationsOn` lists them.
+  it.live("breaks a tie at one instant by attempt, as the history does", () =>
+    Effect.gen(function* () {
+      expect(yield* drained([failed(THIRD, 1), lost(FIRST, 1)], 0)).toEqual(expect.objectContaining({ attempt: FIRST }));
+      expect(yield* drained([lost(FIRST, 1), failed(THIRD, 1)], 0)).toEqual(expect.objectContaining({ attempt: FIRST }));
     }));
 });

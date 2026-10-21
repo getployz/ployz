@@ -1,6 +1,5 @@
-## Running it
-
-- `scripts/verify/up.sh` runs a seeded, signed-in dashboard for this checkout, even a fresh worktree: it installs `node_modules` and builds the native SDK. To verify UI changes in a browser, use the `verify-dashboard` skill.
+- `scripts/verify/up.sh` runs a seeded, signed-in dashboard for this checkout, even a fresh worktree. Verify UI in a browser with the `verify-dashboard` skill.
+- Locally, run `pnpm typecheck`, `pnpm lint` and `pnpm exec vitest run <changed test files>`. Keep `pnpm pr:check` aligned with the PR CI checks.
 
 <!-- intent-skills:start -->
 ## Skill Loading
@@ -11,36 +10,21 @@ When framework guidance is needed:
 - Multiple matches: prefer the most specific local skill for the package or concern you are changing; load additional skills only when the task spans multiple packages or concerns.
 <!-- intent-skills:end -->
 
+To update intents, edit the block above after `pnpm dlx @tanstack/intent@latest list`. `install` only prints guidance.
 
 # Rules
 
-- **No network requests in `beforeLoad` on client-side navigations.** `beforeLoad` is on the hot path of every navigation. Only the initial SSR load may hit the network. For subsequent navigations, the data must already be available client-side (e.g. via `createIsomorphicFn`, cached state, or a store).
+- Reading data, changing loaders, or adding pending UI follows [CODING_STANDARDS.md](CODING_STANDARDS.md). Client navigations never hit the network in `beforeLoad`.
+- React Compiler is on. Don't add `useMemo` or `useCallback`.
+- shadcn changes go through the `shadcn` skill first. Use stock composition, variants and sizes. No custom text sizes, padding overrides, or colours.
+- An Inngest function that owns rows with active statuses persists its `runId` and marks the row terminal on `inngest/function.cancelled`. Build it with `attemptLifecycle` (`src/modules/inngest/attempt-lifecycle.ts`).
+- A new Environment Resource type starts in `environment-resource-types.ts`, then its config parser in `environment-resource-node.ts` and its lifecycle diff in `environment-change-set.ts`. Adapters use that parser rather than re-enumerating types. A change to a service's container template (e.g. mounts) is a service-owned diff row.
+- TanStack DB adds `$synced`, `$origin`, `$key` and `$collectionId` to every live-query row, `.select(...)` rows included. Parse whole rows with `parseLiveQueryRow(schema, row)` from `#/lib/tanstack-db`, and strip them with `withoutVirtualProps(row)` before `insert` or `writeUpsert`.
 
-## Route Data Loading
+# Effect
 
-- When reading data, changing loaders, or adding pending UI, follow [CODING_STANDARDS.md](CODING_STANDARDS.md): Org Store, Runtime, or Remote Read; data files only; loaders only `require*`/`prefetch*` and preload the page; writes are optimistic and never awaited by UI.
-
-- **`pnpm pr:check` is the stage list CI runs; GitHub runs it, not you.** Locally, run `pnpm typecheck`, `pnpm lint` and `pnpm exec vitest run <changed test files>`. Keep the script aligned with the PR CI checks when those change.
-- **Inngest workflows that own durable rows must not leave ambiguous active state.** If an Inngest function creates or manages a row with statuses like `pending`/`running`, persist the Inngest `runId` on that row and handle `inngest/function.cancelled` so manual cancellation marks the row `cancelled` or another terminal status. Runtime cancellation may not undo remote side effects, but the cloud row must not remain active forever. Build a new one with `attemptLifecycle` (`src/modules/inngest/attempt-lifecycle.ts`), as server-upgrade and drain-server do: it builds the run's failure handler, its cancel handler and its hourly stale-row sweep, and `createFunctions` registers all three.
-- **When changing shadcn components or their composition, use the `shadcn` skill first and follow its rules.** Prefer stock component composition, variants, and sizes before adding custom classes. Especially don't use custom text sizes, custom padding overrides like pb-2, and any colours like bg-primary/20.
-
-
-
-
-- **When I ask to update intents, use `npx @tanstack/intent@latest list` to inspect the current skills, then update the `intent-skills` block in `AGENTS.md` unless I ask for a different target file.** `npx @tanstack/intent@latest install` is guidance output here, not an automatic updater.
-- **Use `npx @tanstack/intent@latest list` to inspect available skills when needed.** Use `--json` only if machine-readable output helps.
-- **Use `npx @tanstack/intent@latest stale` only when I ask to check for outdated skill docs.**
-Adding an Environment Resource type starts in `environment-resource-types.ts`, then adds its strict config parser to `environment-resource-node.ts` and its lifecycle diff to `environment-change-set.ts`. Database constraints, collection projection, and canvas rendering still add their natural integration, but adapters must use the spine's config parser rather than re-enumerating resource types. Resource lifecycle diffs are resource-owned; anything that changes a service's container template (e.g. mounts) is a service-owned diff row so it is not double-counted.
-
-We use react compiler - no need for memo/callback etc.
-
-TanStack DB adds `$synced`, `$origin`, `$key`, and `$collectionId` to every final live-query row, including rows built with `.select(...)`. Pass whole live rows through `parseLiveQueryRow(schema, row)` from `#/lib/tanstack-db`; use `withoutVirtualProps(row)` when no schema parse is needed. Keep schemas strict—these helpers remove only TanStack's four virtual keys. The type-aware boundary test rejects direct `parse`/`safeParse` calls on whole live rows.
-Never spread a live row into `insert` or `writeUpsert`; call `withoutVirtualProps(row)` first.
-
-# Effect boundary conventions
-
-- Model fallible application work as named `Effect` operations with capability-owned typed errors. Keep provider SDKs, SQL promises, and other throwing APIs behind `Effect.tryPromise` at their owning boundary.
-- Provide database, authentication, configuration, Inngest, and provider clients through the shared application runtime. Do not create resources at import time or add mutable test bindings.
-- Decode untrusted input with Effect Schema at the boundary. Server functions use the Actor middleware and the common public-error encoder; raw API routes use the shared HTTP public-error boundary.
-- Inngest functions keep explicit triggers, steps, concurrency, and retry policy. Convert typed non-retriable failures to `NonRetriableError` only at the Inngest step boundary.
-- Use `Effect.Result` only when a value representation is required by a protocol or callback. Prefer composing the `Effect` itself within application code.
+- Fallible work is a named `Effect` with capability-owned typed errors. Throwing APIs sit behind `Effect.tryPromise` at their owning boundary.
+- Database, auth, config, Inngest and provider clients come from the shared application runtime. No resources at import time, no mutable test bindings.
+- Decode untrusted input with Effect Schema at the boundary. Server functions use the Actor middleware and the common public-error encoder. Raw API routes use the shared HTTP public-error boundary.
+- Inngest functions keep explicit triggers, steps, concurrency and retry policy. Convert typed non-retriable failures to `NonRetriableError` only at the step boundary.
+- Use `Effect.Result` only when a protocol or callback needs a value. Otherwise compose the `Effect`.

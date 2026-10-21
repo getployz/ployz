@@ -1,4 +1,3 @@
-import { setTimeout as sleep } from "node:timers/promises";
 import { afterEach, expect, it, vi } from "vitest";
 import { handleOrgChangesRequest, type OrgChangesHandlerDeps } from "#/routes/api/org/-changes.handler";
 import { NotFound, Unauthorized } from "#/server/public-error";
@@ -43,7 +42,6 @@ it.each([
 });
 
 it("starts at the current horizon even with a Last-Event-ID, names changed collections, pings, and disables proxy buffering", async () => {
-  // Polls wait on real 250 ms timers (node:timers/promises); only the heartbeat timer is faked.
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   const readChanges = vi.fn<OrgChangesHandlerDeps["readChanges"]>()
     .mockResolvedValueOnce({ cursor: "50", collections: ["environment_canvas_node_position"] })
@@ -61,16 +59,17 @@ it("starts at the current horizon even with a Last-Event-ID, names changed colle
   expect(readChanges).toHaveBeenNthCalledWith(1, { organizationId: "org-1", since: "42" });
   expect(events.text).toContain('event: changes\ndata: {"collections":["environment_canvas_node_position"]}\n\n');
   expect(events.text).not.toContain("id: ");
-  await vi.waitFor(() => expect(readChanges).toHaveBeenNthCalledWith(2, { organizationId: "org-1", since: "50" }));
+  await vi.advanceTimersByTimeAsync(250);
+  expect(readChanges).toHaveBeenNthCalledWith(2, { organizationId: "org-1", since: "50" });
   expect(events.text).not.toContain("event: ping");
   await vi.advanceTimersByTimeAsync(15_000);
   await events.until("event: ping\ndata: {}\n\n");
   // Quiet polls advance the cursor without emitting events.
   expect(events.text.match(/event: changes/g)).toHaveLength(1);
-  await vi.waitFor(() => expect(readChanges).toHaveBeenLastCalledWith({ organizationId: "org-1", since: "51" }));
+  expect(readChanges).toHaveBeenLastCalledWith({ organizationId: "org-1", since: "51" });
   await events.cancel();
   const calls = readChanges.mock.calls.length;
-  await sleep(600);
+  await vi.advanceTimersByTimeAsync(600);
   expect(readChanges).toHaveBeenCalledTimes(calls);
 });
 

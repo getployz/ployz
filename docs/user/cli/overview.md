@@ -308,6 +308,18 @@ stderr, such as `No Services in production yet.`; piped, it also prints the head
 A single record, such as
 `ployz status`, prints one `label = value` line per field when piped.
 
+`ployz status` lists what needs you under **needs attention**: a deployment that didn't complete,
+a reference to a removed service, or `Server web-1 isn't answering` when none of the servers a
+deploy would reach answers. With `--json` these are the `attention` rows; that one has reason
+`no_server_answers` and names the servers in `servers`. It comes from the same single connection
+status makes to check your servers (below), not a separate one. A server that accepts the
+connection but never answers takes 5 seconds to give up on, and status tries each server once.
+A check that can't finish adds no row and warns `Could not check which Servers picked up the new
+copies` instead, so no row doesn't prove a server answered. A context or `--connect` that reaches the daemon on this host through its local
+socket never gets this row; the **this server** line covers it. Signed in to Cloud, status asks
+Cloud for server access once per run. The first `ployz status` or other server command for a
+sign-in or token also waits while Cloud sets up your access on each server.
+
 `ployz status` works signed out too. It shows what it can and says `signed in as no one`. On a
 server waiting for approval, it leads with a **this server** line: `Installing Docker`,
 `Building ZFS`, `Waiting for approval`, `No cluster yet`, `Blocked`, `Rejected`, `Token expired`, `Token revoked`,

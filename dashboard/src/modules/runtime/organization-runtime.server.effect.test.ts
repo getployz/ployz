@@ -548,6 +548,7 @@ it.effect("coalesces the frames a slow write outlasts, writing only the latest n
 /** A Cluster whose connections query waits for the test to answer it, and whose first frame comes once `framed` resolves. */
 const slowQuery = Effect.gen(function* () {
   const queries = yield* Queue.unbounded<() => void>();
+  const watching = yield* Deferred.make<void>();
   let interrupted = 0;
   let finished = 0;
   const layer = (framed: Promise<void>) => makeOrganizationRuntimeLayer(
@@ -562,13 +563,14 @@ const slowQuery = Effect.gen(function* () {
       close: async () => {},
       runtime: {
         watch: async function* (): AsyncGenerator<RuntimeWatchView> {
+          Effect.runSync(Deferred.succeed(watching, undefined));
           await framed;
           yield runtimeWatchFrameFixture();
         },
       },
     }),
   })));
-  return { layer, queries, interrupted: () => interrupted, finished: () => finished };
+  return { layer, queries, watching, interrupted: () => interrupted, finished: () => finished };
 });
 
 it.effect("a look-once frame whose connections query takes 8 seconds lets the query finish and reads the frame", () =>
@@ -595,7 +597,7 @@ it.effect("a look-once frame that never comes fails after 5 seconds of Cluster t
     const query = yield* Queue.take(cluster.queries);
     yield* TestClock.adjust("8 seconds");
     query();
-    yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 0)));
+    yield* Deferred.await(cluster.watching);
     yield* TestClock.adjust("5 seconds");
     assert.isTrue((yield* Fiber.join(looking)) instanceof ClusterOutOfTime);
     assert.strictEqual(cluster.interrupted(), 0);
@@ -604,14 +606,15 @@ it.effect("a look-once frame that never comes fails after 5 seconds of Cluster t
 
 it.effect("Cluster reads in flight together spend their budget once, and time between reads spends none of it", () =>
   Effect.gen(function* () {
+    const lastRead = yield* Deferred.make<void>();
     const reading = Effect.gen(function* () {
       yield* Effect.all([clusterRead(Effect.sleep("6 seconds")), clusterRead(Effect.sleep("6 seconds"))], { concurrency: "unbounded" });
       yield* Effect.sleep("100 seconds");
-      return yield* clusterRead(Effect.never);
+      return yield* clusterRead(Deferred.succeed(lastRead, undefined).pipe(Effect.andThen(Effect.never)));
     }).pipe(withClusterBudget(10_000), Effect.flip, Effect.forkChild);
     const read = yield* reading;
     yield* TestClock.adjust("106 seconds");
-    yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 0)));
+    yield* Effect.raceFirst(Deferred.await(lastRead), Fiber.await(read));
     assert.isUndefined(read.pollUnsafe());
     yield* TestClock.adjust("4 seconds");
     assert.isTrue((yield* Fiber.join(read)) instanceof ClusterOutOfTime);

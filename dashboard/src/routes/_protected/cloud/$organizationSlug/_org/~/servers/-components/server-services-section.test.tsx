@@ -100,6 +100,17 @@ describe("Services section", () => {
     expect(screen.getByRole("switch").getAttribute("aria-disabled")).toBe("true");
   });
 
+  it("says a queued Drain waits behind another, and one whose servers don't answer waits for them", () => {
+    rows({ view: { kind: "queued", behind: "web-1" } });
+    expect(screen.getByText("Queued · Waiting on web-1")).toBeTruthy();
+    expect((screen.getByRole("button", { name: /Draining…/ }) as HTMLButtonElement).disabled).toBe(true);
+    cleanup();
+    rows({ view: { kind: "waiting" } });
+    expect(screen.getByText("Waiting for your servers to answer")).toBeTruthy();
+    expect(screen.queryByText(/Queued/)).toBeNull();
+    expect((screen.getByRole("button", { name: /Draining…/ }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
   it("lists what a running Drain still has to move, and counts it", () => {
     const left: DrainRow = { key: "shop/postgres", name: "postgres", namespace: "shop", global: false, tone: "neutral", label: "Pending", reason: null, pinned: false };
     rows({ view: view({ attemptId: "a1", state: "running", startedAt: at }), left: [left] });

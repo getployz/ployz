@@ -82,7 +82,8 @@ command is counted as **cancelled**, never as one that ran. When the agent deplo
 line shows the deployment's status, like **Deploying** and then **Deployed**, and a link to the deployment once it exists.
 When it starts a run on a server or volume, like a restart or a mirror, the card shows the run's
 name and its state when Cloud took it, like **Queued · restart web**. Ask the agent how the run
-went to see where it got to.
+went to see where it got to. A run on a server keeps the name the server had when the run started,
+even after the server is renamed or removed.
 A restart goes one container at a time, across every server, and starts each container again,
 even when stopping it failed. A container counts as back once it passes its healthcheck, like a
 deploy waits for. If a container doesn't come back, the restart stops there and leaves the rest

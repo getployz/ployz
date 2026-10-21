@@ -750,7 +750,7 @@ fn volume_copy(held: Held, machine: Machine) -> Option<VolumeCopy> {
             newest: newest.map(snapshot),
             resume_token: None,
             pull: None,
-            role: SlotRole::Mirror,
+            role: Some(SlotRole::Mirror),
         }),
     }
 }

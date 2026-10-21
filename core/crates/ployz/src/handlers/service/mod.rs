@@ -707,7 +707,7 @@ pub(super) fn port_forward_command(command: Command) -> Command {
         command,
         "Forward a local port to a Service's container until interrupted",
     ))
-    .arg(positional("service", true))
+    .arg(positional("service", true).help("Service name"))
     .arg(positional("port", true).help("REMOTE, or LOCAL:REMOTE; LOCAL 0 picks a free port"))
 }
 
@@ -716,6 +716,7 @@ fn services() -> Arg {
         .required(true)
         .num_args(1..)
         .action(ArgAction::Append)
+        .help("Service names")
 }
 
 pub(super) fn restart_command(command: Command) -> Command {
@@ -739,6 +740,14 @@ pub(super) fn stop_command(command: Command) -> Command {
 fn stop_flags(command: Command) -> Command {
     super::store::scoped(command)
         .arg(services())
-        .arg(value("signal", None).default_value("SIGTERM"))
-        .arg(value("timeout", Some('t')).default_value("10"))
+        .arg(
+            value("signal", None)
+                .default_value("SIGTERM")
+                .help("Signal sent to stop each container"),
+        )
+        .arg(
+            value("timeout", Some('t'))
+                .default_value("10")
+                .help("Seconds to wait after the signal before killing it"),
+        )
 }
