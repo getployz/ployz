@@ -177,17 +177,28 @@ struct FakeHost {
     /// `None` is a store already caught up to any target.
     store: Option<ReplicatedStore>,
     observed: Arc<Mutex<Option<Observed>>>,
+    /// What each Machine answers for its full Containers; a Machine missing here does not answer.
+    full: BTreeMap<MachineId, Vec<ContainerObservation>>,
     wants: Arc<Mutex<Vec<ContainerWant>>>,
 }
 
 impl FakeHost {
     fn new(local: &Machine, observed: Observed) -> Self {
+        let full =
+            observed
+                .containers
+                .iter()
+                .fold(BTreeMap::<_, Vec<_>>::new(), |mut full, copy| {
+                    full.entry(copy.machine_id).or_default().push(copy.clone());
+                    full
+                });
         Self {
             local: local.id,
             targets: watch::channel(Some(BTreeMap::new())).1,
             local_actor: LOCAL_ACTOR,
             store: None,
             observed: Arc::new(Mutex::new(Some(observed))),
+            full,
             wants: Arc::default(),
         }
     }
@@ -224,6 +235,10 @@ impl BootHost for FakeHost {
             .unwrap()
             .take()
             .expect("the pass reads the store once"))
+    }
+
+    async fn full_copies(&self, machine: MachineId) -> Option<Vec<ContainerObservation>> {
+        self.full.get(&machine).cloned()
     }
 
     async fn ensure(&self, want: ContainerWant) -> Result<EnsuredContainer, LocalMachineError> {
@@ -346,47 +361,63 @@ fn memory(copy: ContainerObservation, bytes: i64) -> ContainerObservation {
     })
 }
 
-fn digest(mut copy: ContainerObservation, value: &str) -> ContainerObservation {
-    copy.try_update(|parts| {
-        parts
-            .labels
-            .insert(crate::docker::LABEL_RECREATE_DIGEST.into(), value.into());
+fn greeting(copy: ContainerObservation, value: &str) -> ContainerObservation {
+    respec(copy, |spec| {
+        spec.container
+            .environment
+            .insert("GREETING".into(), value.into());
     })
-    .unwrap();
-    copy
 }
 
-fn routed_everywhere(
-    cluster: &Cluster,
-    older: &ContainerObservation,
-    newer: &ContainerObservation,
-) -> Observed {
-    observed(
+/// A store row keeps no environment.
+fn row(copy: &ContainerObservation) -> ContainerObservation {
+    respec(copy.clone(), |spec| spec.container.environment.clear())
+}
+
+/// The local copy and a peer's newer copy, each routed by every proxy. The store
+/// holds their rows, and each owner answers with the full copy unless `answers`
+/// says otherwise.
+async fn replaced_by_with(
+    older: impl FnOnce(ContainerObservation) -> ContainerObservation,
+    newer: impl FnOnce(ContainerObservation) -> ContainerObservation,
+    peer_answers: bool,
+) -> bool {
+    let cluster = Cluster::new();
+    let older = older(copy(1, &cluster.local, 1));
+    let newer = newer(copy(2, &cluster.peer, 2));
+    let observed = observed(
         &cluster.local,
         &[&cluster.local, &cluster.peer, &cluster.proxy],
         &[],
-        vec![older.clone(), newer.clone()],
+        vec![row(&older), row(&newer)],
         routes(&[
-            (&cluster.local, &[older, newer]),
-            (&cluster.peer, &[older, newer]),
-            (&cluster.proxy, &[older, newer]),
+            (&cluster.local, &[&older, &newer]),
+            (&cluster.peer, &[&older, &newer]),
+            (&cluster.proxy, &[&older, &newer]),
         ]),
-    )
+    );
+    let own = own_acks(&cluster.local, &observed);
+    let mut full = BTreeMap::from([(cluster.local.id, vec![older.clone()])]);
+    if peer_answers {
+        full.insert(cluster.peer.id, vec![newer]);
+    }
+    let host = FakeHost {
+        full,
+        ..FakeHost::new(&cluster.local, observed)
+    };
+    run(host.clone(), synced(), published(own)).await;
+    match host.wants().as_slice() {
+        [] => false,
+        [want] if *want == out(&older) => true,
+        other => panic!("unexpected wants {other:?}"),
+    }
 }
 
 async fn replaced_by(
     older: impl FnOnce(ContainerObservation) -> ContainerObservation,
     newer: impl FnOnce(ContainerObservation) -> ContainerObservation,
 ) -> bool {
-    let cluster = Cluster::new();
-    let older = older(copy(1, &cluster.local, 1));
-    let newer = newer(copy(2, &cluster.peer, 2));
-    let wants = pass(&cluster.local, routed_everywhere(&cluster, &older, &newer)).await;
-    match wants.as_slice() {
-        [] => false,
-        [want] if *want == out(&older) => true,
-        other => panic!("unexpected wants {other:?}"),
-    }
+    replaced_by_with(older, newer, true).await
 }
 
 #[tokio::test(start_paused = true)]
@@ -420,25 +451,30 @@ async fn replaced_by_a_lowered_memory_limit() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn kept_beside_a_raised_memory_limit() {
-    assert!(!replaced_by(|copy| memory(copy, 1 << 29), |copy| memory(copy, 1 << 30)).await);
+async fn replaced_by_a_raised_memory_limit() {
+    assert!(replaced_by(|copy| memory(copy, 1 << 29), |copy| memory(copy, 1 << 30)).await);
 }
 
 #[tokio::test(start_paused = true)]
-async fn replaced_by_other_environment_or_config_content() {
-    assert!(replaced_by(|copy| digest(copy, "a"), |copy| digest(copy, "b")).await);
+async fn replaced_by_other_environment_values() {
+    assert!(replaced_by(|copy| greeting(copy, "old"), |copy| greeting(copy, "new")).await);
 }
 
 #[tokio::test(start_paused = true)]
-async fn kept_beside_an_equal_digest() {
-    assert!(!replaced_by(|copy| digest(copy, "a"), |copy| digest(copy, "a")).await);
+async fn kept_beside_equal_environment_values() {
+    assert!(!replaced_by(|copy| greeting(copy, "same"), |copy| greeting(copy, "same")).await);
 }
 
 #[tokio::test(start_paused = true)]
-async fn kept_when_either_copy_predates_the_digest() {
-    assert!(!replaced_by(|copy| copy, |copy| copy).await);
-    assert!(!replaced_by(|copy| copy, |copy| digest(copy, "b")).await);
-    assert!(!replaced_by(|copy| digest(copy, "a"), |copy| copy).await);
+async fn kept_when_the_newer_copys_owner_does_not_answer() {
+    assert!(
+        !replaced_by_with(
+            |copy| greeting(copy, "old"),
+            |copy| greeting(copy, "new"),
+            false
+        )
+        .await
+    );
 }
 
 #[tokio::test(start_paused = true)]
@@ -460,9 +496,13 @@ async fn superseded_by_the_newest_replacing_gen() {
         ]),
     );
     let own = own_acks(&cluster.local, &observed);
+    let full = BTreeMap::from([
+        (cluster.local.id, vec![older.clone()]),
+        (cluster.peer.id, vec![kept.clone(), replacing.clone()]),
+    ]);
 
     assert_eq!(
-        super::superseded(&cluster.local.id, &observed, &own),
+        super::superseded(&cluster.local.id, &observed, &own, &full),
         vec![super::Superseded {
             service: api(),
             container: older.container_id,

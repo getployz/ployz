@@ -70,7 +70,6 @@ pub const LABEL_HOOK: &str = "ployz.service.hook";
 /// Deployment attempt that created a Service Container.
 pub const LABEL_DEPLOYMENT: &str = "ployz.deployment.id";
 pub const LABEL_GEN: &str = "ployz.gen";
-pub const LABEL_RECREATE_DIGEST: &str = "ployz.recreate.digest";
 pub const LABEL_HOOK_PRE_DEPLOY: &str = "pre-deploy";
 
 #[derive(Clone)]
@@ -1040,23 +1039,6 @@ fn label_gen(labels: &HashMap<String, String>) -> Gen {
         .get(LABEL_GEN)
         .and_then(|label| label.parse().ok())
         .map_or(Gen::FIRST, Gen::new)
-}
-
-/// Covers what `compare_specs` reads and `observe::redacted_container` drops from
-/// the store row. One hash over the whole keeps every value out of the row.
-pub(crate) fn recreate_digest(spec: &ployz_core::ResolvedServiceSpec) -> String {
-    use sha2::{Digest, Sha256};
-    let configs = spec.mount_graph.config_graph().configs();
-    let inputs = (
-        &spec.container.environment,
-        spec.pre_deploy.as_ref().map(|hook| &hook.environment),
-        configs
-            .iter()
-            .map(|config| (&config.name, &config.content))
-            .collect::<Vec<_>>(),
-    );
-    let bytes = serde_json::to_vec(&inputs).expect("recreate inputs serialize");
-    hex::encode(Sha256::digest(bytes))
 }
 
 fn required_label<'a>(
@@ -2546,32 +2528,6 @@ mod tests {
         )
         .unwrap();
         assert_eq!(projected(&inspected), expected_typed_projection());
-    }
-
-    #[test]
-    fn recreate_digest_follows_every_value_a_published_row_drops() {
-        let spec = |token: &str, hook: &str, config: &[u8]| -> ResolvedServiceSpec {
-            serde_json::from_value(serde_json::json!({
-                "service_id": "c".repeat(32),
-                "name": "api",
-                "mode": { "mode": "replicated", "replicas": 1 },
-                "container": {
-                    "image": "alpine:3.23.3",
-                    "pull_policy": "missing",
-                    "environment": { "TOKEN": token },
-                    "config_mounts": [{ "config_name": "settings", "target": "/etc/settings.conf" }]
-                },
-                "configs": [{ "name": "settings", "content": config }],
-                "pre_deploy": { "command": ["migrate"], "environment": { "TOKEN": hook } }
-            }))
-            .unwrap()
-        };
-        let base = recreate_digest(&spec("a", "a", b"a"));
-
-        assert_eq!(base, recreate_digest(&spec("a", "a", b"a")));
-        assert_ne!(base, recreate_digest(&spec("b", "a", b"a")));
-        assert_ne!(base, recreate_digest(&spec("a", "b", b"a")));
-        assert_ne!(base, recreate_digest(&spec("a", "a", b"b")));
     }
 }
 
