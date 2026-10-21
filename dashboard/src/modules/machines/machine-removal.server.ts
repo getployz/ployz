@@ -186,22 +186,28 @@ export const releaseLeavingLanesActivity = (input: {
   organizationId: string; machineId: MachineId; name: string | null; writes: readonly string[];
 }) => releaseLanesOff(input.organizationId, { id: input.machineId, name: input.name }, input.writes);
 
+/** The SDK's reset warning for a Server the Cluster had already forgotten (ployz `RESET_UNCONFIRMED`). */
+const RESET_UNCONFIRMED = "its reset couldn't be confirmed: it was already gone from the Cluster";
+
 /**
  * What a removed Server leaves of Cloud's hold. A reset that didn't finish is a partial outcome: the Server may keep
  * Cloud's key, so Cloud keeps its row and its pairing. Otherwise `dropRemovedServer` drops the Server's row of the
  * witnessed pairing. When a reset took that pairing's last Server, the Store lets go of everything that ran, and then
- * Cloud forgets the pairing. A Server taken out without a reset loses its row but never lets go of the Cluster.
+ * Cloud forgets the pairing. A Server taken out without a reset loses its row but never lets go of the Cluster. A Server
+ * the Cluster had already forgotten is listed nowhere else, so its row goes while other Servers keep the pairing; as
+ * the last, Cloud keeps its hold.
  */
 export const releaseServerActivity = Effect.fn("MachineRemoval.release")(function* (input: {
   organizationId: string; machineId: MachineId; generation: string; resetWarning: string | null; noReset: boolean;
 }) {
-  if (input.resetWarning !== null) {
-    return {
-      kind: "kept",
-      reason: `its reset didn't finish (${input.resetWarning}), so it may still hold Cloud's key.`,
-    } satisfies ServerRelease;
-  }
-  const dropped = yield* dropRemovedServer({ ...input, removal: input.noReset ? "membership" : "reset" });
+  const kept = {
+    kind: "kept",
+    reason: `its reset didn't finish (${input.resetWarning}), so it may still hold Cloud's key.`,
+  } satisfies ServerRelease;
+  const unconfirmed = input.resetWarning === RESET_UNCONFIRMED;
+  if (input.resetWarning !== null && !unconfirmed) return kept;
+  const dropped = yield* dropRemovedServer({ ...input, removal: input.noReset ? "membership" : unconfirmed ? "unconfirmed" : "reset" });
+  if (dropped.kind === "unconfirmed_last") return kept;
   if (dropped.kind !== "last") return dropped;
   // The Store lets go first, while the pairing still fences a replacement: if this fails, nothing more is deleted and
   // the step retries; a replay finding the pairing gone skips it.
