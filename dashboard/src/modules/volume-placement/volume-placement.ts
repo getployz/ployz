@@ -28,6 +28,8 @@ export type ObservedPlacement = {
   readonly primary: MachineRef | null;
   readonly copies: readonly ObservedCopy[];
   readonly unanswered: readonly MachineRef[];
+  /** The unanswered Servers whose report is on its way, which may still hold the writer. */
+  readonly waiting: readonly MachineId[];
   /** Every Server in the cluster, answering or not. */
   readonly members: readonly MachineId[];
 };
@@ -122,6 +124,7 @@ export function observePlacement(members: readonly Member[]): ObservedPlacement 
     primary: primary?.machine ?? null,
     copies,
     unanswered: members.filter((member) => !member.answered).map((member) => member.machine),
+    waiting: members.filter((member) => heardFrom(member) === "waiting").map((member) => member.machine.id),
     members: members.map((member) => member.machine.id),
   };
 }
@@ -152,12 +155,17 @@ export function oldCopies(observed: ObservedPlacement, row: PlacementRow | null)
 }
 
 /**
- * The Server presumed to hold the primary: the one that reports it, else, with none answering, one that didn't: the
- * staged primary when it is one of them, since a failed move returns there, else the first. Copies names it under Live,
- * the recovery alert reads it, and a staged placement that keeps it is no move.
+ * The Server presumed to hold the primary: the one that reports it, else, with none answering, one that didn't. One
+ * whose report is on its way comes before a silent one, as it may still hold the writer, while the observer lists it
+ * last. Among those, the staged primary comes first, since a failed move returns there, else the first listed. Copies
+ * names it under Live, the recovery alert reads it, and a staged placement that keeps it is no move.
  */
-export const presumedPrimary = (observed: ObservedPlacement, staged: MachineId | null): MachineRef | null =>
-  observed.primary ?? observed.unanswered.find((server) => server.id === staged) ?? observed.unanswered[0] ?? null;
+export function presumedPrimary(observed: ObservedPlacement, staged: MachineId | null): MachineRef | null {
+  if (observed.primary !== null) return observed.primary;
+  const waiting = observed.unanswered.filter((server) => observed.waiting.includes(server.id));
+  const pool = waiting.length > 0 ? waiting : observed.unanswered;
+  return pool.find((server) => server.id === staged) ?? pool[0] ?? null;
+}
 
 /**
  * What the next Deploy aims for: the staged placement, else what is applied. With no primary answering, the silent
@@ -341,6 +349,15 @@ export type Recovery =
   | { readonly kind: "forget"; readonly down: readonly MachineRef[]; readonly mirror: MachineRef; readonly lostAfter: Date | null }
   /** A member's report is incomplete: not silence, so nothing to forget yet and nothing to stage. */
   | { readonly kind: "wait"; readonly mirror: MachineRef; readonly lostAfter: Date | null }
+  /** The presumed primary's Server answered without reporting its copy: it is up, so neither Forget nor a restore. */
+  | {
+    readonly kind: "unreported";
+    readonly server: MachineRef;
+    readonly heard: "lacks" | "outdated";
+    readonly lack: string;
+    readonly mirror: MachineRef;
+    readonly lostAfter: Date | null;
+  }
   | {
     readonly kind: "restore";
     readonly mirror: MachineRef;
@@ -362,16 +379,21 @@ export function recovery(
   const copy = observed.copies.find((each) => each.kind === "slot" && applied.includes(each.server.id));
   if (copy === undefined) return null;
   const { server: mirror, newest: lostAfter } = copy;
-  // What was heard from the presumed primary decides, as Live shows it. Silent: Forget, naming every silent Server, since
-  // each holds the stage back. Report on its way: wait, as it may still hold the writer. Lacking a capability: it is up,
-  // so the restore's refusal names what it lacks.
+  // While any report is on its way, it may come from the writer, whichever Server is presumed primary: wait. Then what
+  // was heard from the presumed primary decides, as Live shows it. Silent: Forget, naming every silent Server, since
+  // each holds the stage back. Lacking a capability: it is up, so say what it lacks.
+  if (members.some((member) => heardFrom(member) === "waiting")) return { kind: "wait", mirror, lostAfter };
   const presumed = presumedPrimary(observed, row?.staged?.primary ?? null);
   const primary = members.find((member) => member.machine.id === presumed?.id);
-  const heard = primary === undefined ? null : heardFrom(primary);
-  if (heard === "waiting") return { kind: "wait", mirror, lostAfter };
-  if (heard === "silent") {
-    const down = members.filter((member) => heardFrom(member) === "silent").map((member) => member.machine);
-    return { kind: "forget", down, mirror, lostAfter };
+  if (primary !== undefined && !primary.answered) {
+    const heard = heardFrom(primary);
+    if (heard === "silent") {
+      const down = members.filter((member) => heardFrom(member) === "silent").map((member) => member.machine);
+      return { kind: "forget", down, mirror, lostAfter };
+    }
+    if ((heard === "lacks" || heard === "outdated") && primary.lack !== undefined) {
+      return { kind: "unreported", server: primary.machine, heard, lack: primary.lack, mirror, lostAfter };
+    }
   }
   if (row?.staged?.primary === mirror.id) return null;
   return { kind: "restore", mirror, lostAfter, stage: restoreStage(volume, members, mirror, applied, accepting, owed, floorless) };

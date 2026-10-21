@@ -419,8 +419,9 @@ When a server's release can't serve a feature, the feature names that server:
   Every volume move, mirror, sync, release, restore and mirror removal, and a Deploy that restores
   a volume onto a new server, also needs every server that holds or receives the volume to run a
   Ployz new enough to refuse a request from an older run. The message names what you ran and the
-  server to upgrade: "Volume move needs a newer Ployz on web-1", "Mirror removal needs a newer
-  Ployz on web-2".
+  server: "Volume move needs a newer Ployz on web-1. 0.3.1 is out." when that server's release is
+  behind your channel's. When Ployz can't tell, it says only what is missing: "Mirror removal is not
+  in Ployz 0.3.0 on web-2."
 - **Drain** in Ployz Cloud names the servers to upgrade before it changes anything:
   "Drains need a newer Ployz on web-1".
 - **Upgrade** off Ployz 0.2.4 that stops partway while the old Ployz keeps running looks like it's

@@ -1405,10 +1405,12 @@ const lackSentence = Effect.fn("VolumeRun.lackSentence")(function* (
     Effect.flatMap((channel) => channelRelease(channel, line).pipe(Effect.timeout(OBSERVE_TIMEOUT))),
     Effect.orElseSucceed(() => null),
   );
-  const needs = `${feature.feature} ${feature.plural ? "need" : "needs"} a newer Ployz on ${server.name}.`;
-  if (release === null) return { lack: needs };
-  if (isBehind(server.daemonVersion, release)) return { lack: `${needs} ${release} is out.`, outdated: true as const };
-  return { lack: isCurrent(server.daemonVersion, release) ? `${feature.feature} ${feature.plural ? "are" : "is"} not in Ployz ${server.daemonVersion} on ${server.name} yet.` : needs };
+  // A newer Ployz is claimed only on proof the Server's release is behind; otherwise the sentence says only what it lacks.
+  const missing = `${feature.feature} ${feature.plural ? "are" : "is"} not ${server.daemonVersion === "" ? "available" : `in Ployz ${server.daemonVersion}`} on ${server.name}`;
+  if (release !== null && isBehind(server.daemonVersion, release)) {
+    return { lack: `${feature.feature} ${feature.plural ? "need" : "needs"} a newer Ployz on ${server.name}. ${release} is out.`, outdated: true as const };
+  }
+  return { lack: release !== null && isCurrent(server.daemonVersion, release) ? `${missing} yet.` : `${missing}.` };
 });
 
 export const observeMembers = Effect.fn("VolumeRun.observe")(function* (ctx: RunContext, inngestRunId: string) {

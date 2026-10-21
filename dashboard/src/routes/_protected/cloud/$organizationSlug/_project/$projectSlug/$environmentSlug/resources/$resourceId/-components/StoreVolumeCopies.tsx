@@ -160,6 +160,13 @@ function RecoveryAlert({ organizationSlug, forgetGate, volume, disabled, deployi
       <AlertDescription>Copies shows what you can do once every server has reported.</AlertDescription>
     </Alert>;
   }
+  if (recovered.kind === "unreported") {
+    const { server, heard, lack } = recovered;
+    return <Alert>
+      <AlertTitle>{server.name} {heard === "outdated" ? "needs a newer Ployz" : "can't report this copy"}</AlertTitle>
+      <AlertDescription>{`Copies can't tell whether ${server.name} still holds ${volume.name}'s primary. ${lack}`}</AlertDescription>
+    </Alert>;
+  }
   if (recovered.kind === "forget") {
     const { down } = recovered;
     const names = down.map((server) => server.name).join(" and ");
@@ -386,7 +393,8 @@ function CopyView({ volume, members, row, rows, owed, copies, copy, accepting, u
   const locked = disabled || deploying;
   const live = copies.live.server?.name ?? "the live server";
   const services = [...new Set(volume.mounts.map((mount) => mount.service))].join(", ") || volume.name;
-  const stale = isStale(copy, now);
+  // Refresh skipped needs a refresh to have been skipped: a mirror with no recorded refresh only says why.
+  const stale = copy.refreshedAt !== null && isStale(copy, now);
   const shown = refreshing && copy.busy === null ? { ...copy, busy: "Refreshing" } : copy;
   const last = mirrorLast(shown, now);
   const skipped = skippedWords(shown, now);

@@ -148,7 +148,12 @@ when the server stopped.
 
 While a server's report is still on its way, Copies doesn't say the server is down. A primary on
 it reads **Waiting for its report**, and a mirror on it says it is waiting for its server's report.
-Until the primary's report arrives, Copies offers no way to forget a server.
+That server may still hold the primary, so Copies names it under **Live** before a server that
+isn't answering. While any server's report is on its way, Copies offers no way to forget a server.
+
+When the primary's server answers but can't report its copy, Copies says so, like "web-1 can't
+report this copy" or "web-1 needs a newer Ployz", and offers neither a Forget nor **Use mirror**:
+web-1 is up, and may still hold the volume.
 
 Under **Live**, the primary reads **Live** only while its server reports it writable. During a
 move, while writes pause on the server it leaves, it reads **Read-only**. A server whose Ployz is
