@@ -1,9 +1,17 @@
 import { it } from "@effect/vitest";
-import { type ConfigCommand, type ConfigStore, type CreateVolume, type Mount, RpcError } from "@ployz/sdk";
+import {
+  type Client, type ConfigCommand, type ConfigStore, type CreateVolume, type MachineId, type Mount, RpcError, type RuntimeWatchView,
+} from "@ployz/sdk";
 import { sql } from "drizzle-orm";
-import { Effect, Option } from "effect";
+import { Effect, Layer, Option } from "effect";
 import { expect, vi } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
+import { requirements } from "#/modules/runtime/daemon-compat";
+import { makeOrganizationRuntimeLayer } from "#/modules/runtime/organization-runtime.server";
+import { makePloyzLayer } from "#/modules/runtime/ployz.server";
+import {
+  runtimeWatchFrameFixture, runtimeWatchMachineFixture, runtimeWatchMachineObservationFixture,
+} from "#/modules/runtime/runtime-watch-frame.test-fixture";
 import { failStoreDeploymentUnrun } from "#/modules/config-store/store-deployment.server";
 import { CloudStore, cloudStore, storeTry } from "#/modules/config-store/store-sdk.server";
 import { volumePlacement } from "#/modules/volume-placement/tables";
@@ -14,8 +22,9 @@ import {
   discardPlacement, listPlacements, stageRestore, stampPlacements, writeAdmitted, type PlacementWrite,
 } from "#/modules/volume-placement/volume-placement.server";
 import type { Member } from "#/modules/volume-run/volume-run";
-import { member } from "#/modules/volume-run/volume-run.test-fixture";
+import { COPIES, member } from "#/modules/volume-run/volume-run.test-fixture";
 import { Database } from "#/server/database.server";
+import { noPairingChanges } from "#/test/organization-runtime";
 import { acmeWeb, seedStoreOrganization, storeTestCloud } from "#/test/store-cloud";
 
 const ORGANIZATION = "00000000-0000-4000-8000-00000000d001";
@@ -100,13 +109,37 @@ it.live("refuses a restore while a Server is silent or its report hasn't arrived
   expect(yield* listPlacements(ORGANIZATION).pipe(Effect.provide(services))).toEqual([]);
 }));
 
+/**
+ * A Cluster of box-1, holding data's writer with the generation floor, and box-2, holding its mirror on a Ployz that moves
+ * volumes without it, as 0.3.0-beta.1 does. Its version is unknown, so the lack names no release and reads no channel.
+ */
+const floorlessMirror = (() => {
+  const key = Array.from({ length: 32 }, () => 1);
+  const server = (id: string, name: string, capabilities: string[]) => {
+    const machine = runtimeWatchMachineFixture(id, name);
+    return runtimeWatchMachineObservationFixture({ machine: { ...machine, public_key: key, runtime: { ...machine.runtime, daemon_version: "", capabilities } } });
+  };
+  const frame = runtimeWatchFrameFixture({ machines: [server("1".repeat(32), "box-1", [requirements.volumeFloor.capability]), server("2".repeat(32), "box-2", [requirements.volumeMove.capability])] });
+  return makeOrganizationRuntimeLayer(() => Effect.succeed({ kind: "ready", generation: "current", connections: [{ management: "ployz1:preferred" }] }), noPairingChanges)
+    .pipe(Layer.provide(makePloyzLayer({
+      connect: async () => asTestDouble<Client>()({
+        close: async () => {},
+        volumeSwitch: async (machine: MachineId) => ({ copy: machine.startsWith("1") ? COPIES.writer : COPIES.mirror }),
+        runtime: { watch: async function* (): AsyncGenerator<RuntimeWatchView> { yield frame; } },
+      }),
+    })));
+})();
+
+it.live("refuses a restore while a Server holding a copy lacks the generation floor, as the seed run's own observer reads it", () => Effect.gen(function* () {
+  const { services } = yield* deployedShop();
+  expect(yield* stageRestore(ORGANIZATION, null, { volumeId: SOURCE, environment: shop, ...point }).pipe(Effect.provide(floorlessMirror), Effect.provide(services)))
+    .toMatchObject({ ok: false, refusal: { code: "unsupported", message: "Volume restore is not available on box-2." } });
+  expect(yield* listPlacements(ORGANIZATION).pipe(Effect.provide(services))).toEqual([]);
+}));
+
 it.live("refuses a restore the Deploy's seed run would refuse, as it observes the members, and stages nothing", () => Effect.gen(function* () {
   const { services } = yield* deployedShop();
-  const { machine } = member("web-2", "mirror");
-  // The seed run's observer reads a Server without the generation floor that holds a copy as one that lacks it.
-  const floorless: Member = { machine, answered: false, lack: "Volume restore is not in Ployz 0.3.0-beta.4 on web-2." };
   const refusals: [Member[], { code: string; message: string }][] = [
-    [[member("web-1", "writer"), floorless], { code: "unsupported", message: "Volume restore is not in Ployz 0.3.0-beta.4 on web-2." }],
     [[member("web-1", "writer"), member("web-2", "writer")], { code: "conflict", message: "data has two writers, data-web-1 and data-web-2" }],
     [[member("web-1", "writer", { epoch: 8 }), member("web-2", "writer", { epoch: 3 })], {
       code: "conflict", message: "data-web-2 is an old primary that came back; restore once a mirror refresh makes it a mirror",

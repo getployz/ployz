@@ -52,8 +52,8 @@ not mounted. Delete it from its **Settings** tab when you no longer need it.
   is refused with "Your servers aren't answering. Try again once they are." The deploy would fail,
   since it can't tell what that server holds.
 - **A restore the deploy would refuse isn't staged.** The point says why in place of **Restore**,
-  like "Volume restore is not available on web-2." for a server that holds a copy on a Ployz too old
-  to take part, or "data has two writers, data-web-1 and data-web-2". Staging refuses the same way
+  like "Volume restore is not available on web-2." for a server that holds a copy but whose Ployz
+  doesn't report it can take part, or "data has two writers, data-web-1 and data-web-2". Staging refuses the same way
   and names the server's version when Ployz knows it, like "Volume restore is not in Ployz
   0.3.0-beta.1 on web-2 yet.", or "Volume restore needs a newer Ployz on web-2. 0.3.1 is out." once
   a newer release is out.
