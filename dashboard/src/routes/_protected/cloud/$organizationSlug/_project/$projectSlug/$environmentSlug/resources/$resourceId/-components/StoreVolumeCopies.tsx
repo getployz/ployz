@@ -19,7 +19,7 @@ import { requirements, serverSupports } from "#/modules/runtime/daemon-compat";
 import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
 import {
   addableCopies, cardLine, COPY_WORDS, isStale, LIVE_WORDS, type LiveState, type MirrorCopy, type OldCopy, STAGED_WORDS, type StagedCopy,
-  unheardReason, type VolumeCopies, type VolumeCopy,
+  nothingElsewhere, unheardReason, type VolumeCopies, type VolumeCopy,
 } from "#/modules/volume-copies/volume-copies";
 import { useRefreshMirror } from "#/modules/volume-copies/volume-copies.hooks";
 import { copiesFromPlacement } from "#/modules/volume-copies/volume-copies.placement";
@@ -210,9 +210,6 @@ function CopiesView({ volume, members, row, rows, owed, copies, target, servers,
   const mirrorOn = placementTargets(volume, members, row, accepting, owed).mirror.filter((server) => server.id !== target.primary);
   const canAdd = !blocked && mirrorOn.length > 0 && addableCopies(copies, ["mirror"]).length > 0;
   const { live } = copies;
-  const liveName = live.server?.name ?? "its server";
-  // A silent Live Server says nothing about what is outside it.
-  const unheard = members.filter((member) => !member.answered && member.machine.id !== live.server?.id).map((member) => member.machine.name);
 
   return <div className="flex flex-col gap-4">
     {alert}
@@ -234,9 +231,7 @@ function CopiesView({ volume, members, row, rows, owed, copies, target, servers,
     </Group>
     <Group label="Elsewhere">
       {copies.elsewhere.length === 0
-        ? <p className="text-sm text-muted-foreground">{unheard.length > 0
-          ? `${unheard.join(" and ")} ${unheard.length === 1 ? "hasn't" : "haven't"} reported, so Copies can't say what is outside ${liveName}.`
-          : `Nothing outside ${liveName}. If ${liveName} dies, ${volume.name} goes with it.`}</p>
+        ? <p className="text-sm text-muted-foreground">{nothingElsewhere(copies)}</p>
         : copies.elsewhere.map((copy) => <CopyRow key={copy.id} copy={copy} now={now} locked={locked} blocked={blocked}
           onOpen={() => { if (copy.kind === "mirror") onOpen(copy.server.id); }} onDelete={copy.kind === "old" ? () => setDeleting(copy) : null}
           restore={copy.kind === "old" ? restoreOffer(volume, members, rows, copy.server.id, disabled || deploying, restore) : null} seeds={seeds} />)}
@@ -305,7 +300,7 @@ function CopyRow({ copy, now, locked, blocked, onOpen, onDelete, restore = null,
   const description = line.spin ? <Busy words={line.words} />
     : copy.staged === "new" ? `${COPY_WORDS[copy.kind]} · on deploy`
     : <>
-      {[line.words, copy.kind === "mirror" ? "15 min" : null].filter(Boolean).join(" · ")}
+      {[line.words, copy.kind === "mirror" && !copy.lastReported ? "15 min" : null].filter(Boolean).join(" · ")}
       {line.age ? <> · <span className={cn(line.stale && "text-warning")}>{line.stale ? <TriangleAlertIcon className="mr-1 inline size-3.5" /> : null}{copy.kind === "old" && copy.since ? lossMoment(copy.since, now) : line.age}</span></> : null}
       {unheard ? ` · ${unheard}` : null}
     </>;

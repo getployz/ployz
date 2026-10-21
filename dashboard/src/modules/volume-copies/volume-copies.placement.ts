@@ -59,6 +59,7 @@ export function copiesFromPlacement(input: {
       name: copyName(volume.name, item.server.name),
       refreshedAt: from === "answered" ? syncedAt(item.newest, matchedAt) : matchedAt,
       skipped: from !== "answered" ? from : failed ? "failed" : null,
+      lastReported: observed.lastMirrors.includes(item.server.id) && !(row?.mirrors ?? []).includes(item.server.id),
       staged,
       busy: active?.kind === "sync" || (pull !== null && pull.failure === null) ? "Refreshing" : busyOn(item.server.name),
     };
@@ -105,6 +106,10 @@ export function copiesFromPlacement(input: {
       ...promoted ? [mirror(form.primary, "primary")] : outranked ? [mirror(form.primary, row?.staged?.primary === form.primary.server.id ? "primary" : null)] : [],
       ...form.detached.map(old),
     ],
+    unheard: members.flatMap((member) => {
+      const from = heard(member.machine.id);
+      return from === "answered" || member.machine.id === primary?.id ? [] : [{ ...member.machine, heard: from }];
+    }),
   };
 }
 

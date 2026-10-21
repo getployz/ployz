@@ -86,17 +86,27 @@ describe("VolumeCopiesPanel", () => {
     expect(stage).toHaveBeenCalledWith({ primary: id("web-1"), mirrors: [id("web-3")], deletes: [] }, []);
   });
 
-  it("keeps a mirror made with the CLI listed while its Server is silent, from that Server's last report", () => {
+  it("lists a mirror made with the CLI while its Server is silent as last reported, never as held now", () => {
     const lastMirror: Member = { machine: { id: id("web-2"), name: "web-2" }, answered: false, lastMirror: true };
     panel([member("web-1", "writer"), lastMirror], null, { matchedAt: new Date(NOW.getTime() - 135 * 60_000).toISOString() });
-    expect(rows("Elsewhere")).toEqual([expect.stringMatching(/^web-2Mirror · 15 min · .*2 hours/)]);
+    expect(rows("Elsewhere")).toEqual([expect.stringMatching(/^web-2Mirror · last reported by web-2 · .*2 hours.* · Not answering/)]);
+    expect(rows("Elsewhere")[0]).not.toMatch(/15 min/);
     expect(screen.queryByText(/^Nothing outside/)).toBeNull();
     expect(screen.queryByRole("button", { name: "Add copy" })).toBeNull();
   });
 
-  it("says which Server hasn't reported rather than that nothing is outside the primary", () => {
-    panel([member("web-1", "writer"), member("web-2", "unanswered")], null);
-    expect(screen.getByText("web-2 hasn't reported, so Copies can't say what is outside web-1.")).toBeTruthy();
+  it("keeps a silent mirror the row records worded as a mirror, since a Deploy put it there", () => {
+    panel([member("web-1", "writer"), member("web-2", "unanswered")], row(["web-2"]), { matchedAt: new Date(NOW.getTime() - 135 * 60_000).toISOString() });
+    expect(rows("Elsewhere")).toEqual([expect.stringMatching(/^web-2Mirror · 15 min · /)]);
+  });
+
+  it("says what was heard from each Server outside Live rather than that nothing is outside it", () => {
+    const waiting: Member = { machine: { id: id("web-3"), name: "web-3" }, answered: false, incomplete: true };
+    const lacking: Member = { machine: { id: id("web-4"), name: "web-4" }, answered: false, lack: "Volume move is not in Ployz 0.3.0 on web-4." };
+    panel([member("web-1", "writer"), member("web-2", "unanswered"), waiting, lacking], null);
+    expect(screen.getByText(
+      "web-2 is not answering and web-3's report hasn't arrived and web-4 can't report this copy, so Copies can't say what is outside web-1.",
+    )).toBeTruthy();
     expect(screen.queryByText(/^Nothing outside/)).toBeNull();
   });
 

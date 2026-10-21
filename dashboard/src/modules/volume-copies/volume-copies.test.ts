@@ -11,7 +11,7 @@ const snapshots = (n: number): Snapshot[] =>
   Array.from({ length: n }, (_, i) => ({ id: `s${i}`, at: today("05:00"), kind: "hourly", note: null, kept: false, bytes: 20e6 }));
 
 const mirror = (refreshedAt: Date, extra: Partial<MirrorCopy> = {}): MirrorCopy => ({
-  kind: "mirror", id: "web-2", server: server("web-2"), name: "pg-data-web-2", refreshedAt, skipped: null, staged: null, busy: null, ...extra,
+  kind: "mirror", id: "web-2", server: server("web-2"), name: "pg-data-web-2", refreshedAt, skipped: null, lastReported: false, staged: null, busy: null, ...extra,
 });
 const offsite: OffsiteCopy = {
   kind: "offsite", id: "acme-backups", bucket: "acme-backups", region: "eu-central-1", keep: 7, uploadedAt: today("07:04"), staged: null, busy: null,
@@ -22,11 +22,13 @@ const pgData = (elsewhere: VolumeCopies["elsewhere"], live: Partial<VolumeCopies
   volume: { id: "v1", name: "pg-data" },
   live: { server: { ...server("web-1"), state: "live" }, restore: null, moveTo: null, busy: null, snapshots: snapshots(13), ...live },
   elsewhere,
+  unheard: [],
 });
 const redisData: VolumeCopies = {
   volume: { id: "v2", name: "redis-data" },
   live: { server: { ...server("web-2"), state: "live" }, restore: null, moveTo: null, busy: null, snapshots: snapshots(4) },
   elsewhere: [],
+  unheard: [],
 };
 
 describe("protected", () => {
