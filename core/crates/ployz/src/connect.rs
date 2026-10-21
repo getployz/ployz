@@ -49,11 +49,13 @@ pub(crate) const UNARY_RETRY_DELAYS: [Duration; 3] = [
 
 pub(crate) const TARGET_RPC_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// While a call is open, the client pings the entry daemon this often, and a ping
-/// unanswered for [`KEEP_ALIVE_TIMEOUT`] fails the call: an entry that lost power
-/// or its network ends a Deploy within about 30s instead of hanging it.
+/// While a call is open and nothing was read for this long, the client pings the
+/// entry daemon, and a ping unanswered for [`KEEP_ALIVE_TIMEOUT`] fails the call: an
+/// entry that lost power or its network ends a Deploy in 60-70s instead of hanging it.
 const KEEP_ALIVE_INTERVAL: Duration = Duration::from_secs(10);
-const KEEP_ALIVE_TIMEOUT: Duration = Duration::from_secs(20);
+/// A ping queues behind an upload's unacknowledged bytes, up to the daemon's 1 MiB
+/// window, so this also sets the slowest uplink an upload survives: about 17 KB/s.
+const KEEP_ALIVE_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Bounds how long a connect waits for the entry daemon to confirm itself.
 ///
