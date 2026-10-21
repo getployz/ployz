@@ -101,7 +101,7 @@ function fakeSession(database: PostgresTestHarness["database"]) {
     beforeRegister: async (_assignment: EnrollmentAssignment) => {},
   };
   /** The Machines each Runtime Watch frame reports, as `[id, name]`. */
-  const cluster = { frames: [] as Array<Array<[string, string]>> };
+  const cluster = { frames: [] as Array<Array<[string, string]>>, snapshot };
   const coordinator = enrollmentTestClient(database, async (options) => {
     connected.push(options);
     aborts.watch(options.signal);
@@ -112,7 +112,7 @@ function fakeSession(database: PostgresTestHarness["database"]) {
         closed += 1;
         return connection.closeHangs ? new Promise<void>(() => {}) : Promise.resolve();
       },
-      observeEnrollment: async () => { observations += 1; return snapshot; },
+      observeEnrollment: async () => { observations += 1; return cluster.snapshot; },
       register: async (assignment: EnrollmentAssignment) => {
         registerCalls += 1;
         published.push(assignment);
@@ -1143,6 +1143,26 @@ describe("organization enrollment coordinator", () => {
     expect(first).toMatchObject({ success: { kind: "join" } });
     expect(again).toEqual(first);
     expect(new Set(fake.published.map((assignment) => JSON.stringify(assignment))).size).toBe(1);
+  });
+
+  it("answers a rerun for a Server that already joined from its own row, without registering it again", async () => {
+    const fake = fakeSession(harness.database);
+    const founder = await pendingFounder(fake);
+    await fake.coordinator.publish({ ...founder, capability });
+    await fake.coordinator.completeFounding(founder);
+    const token = await issueToken();
+    const first = await fake.coordinator.enroll({ token, identity: identity(1) });
+    const registered = fake.published[0]?.machine;
+    if (!Result.isSuccess(first) || first.success.kind !== "join" || !registered) throw new Error("expected a join");
+    // The Server joined and published its own row; its publish callback to Cloud was lost.
+    const joined = { ...registered, runtime: { ...registered.runtime, daemon_version: "0.9.0" } };
+    fake.cluster.snapshot = { ...snapshot, machines: [joined], target_versions: { machines: 7 } };
+    for (const rerun of [token, await issueToken()]) {
+      expect(await fake.coordinator.enroll({ token: rerun, identity: identity(1) })).toMatchObject({
+        success: { kind: "join", registration: { assigned_machine: joined, visible_peers: [], target_versions: { machines: 7 } } },
+      });
+    }
+    expect(fake.registerCalls()).toBe(1);
   });
 
   it("never lets a joiner token take or resume the Founding Claim", async () => {

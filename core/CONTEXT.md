@@ -196,6 +196,10 @@ _Avoid_: Deployment (the record), reconciliation loop
 A bounded membership-command operation that establishes this Machine's running Service Container for every observed eligible Global before the command completes. Unknown eligibility or incomplete placement is a reported outcome; it is not a Cluster-wide Deploy and has no background retry.
 _Avoid_: scheduler, Cluster-wide Deploy
 
+**Unarrived Machine**:
+A registered Machine with no sign, to this observer, that it ever ran: it does not invite RPC, the Entry's Corrosion admin never recorded it, and its row names no daemon version. This observer has no sign it ever held a Service Container either, so Global catch-up reports it and does not wait on it; another observer may know better. It stays in the Cluster until forgotten.
+_Avoid_: claim-only Machine, dead Machine
+
 **Global slot convergence**:
 A bounded client attempt for a dispatched Global slot: establish it when eligible, retire it when definitely ineligible, or hold it unchanged when eligibility is unknown. Its observations and lifecycle actions are separate operations, not one atomic decision.
 _Avoid_: Background maintenance, Cluster-wide reconciler, scheduler
