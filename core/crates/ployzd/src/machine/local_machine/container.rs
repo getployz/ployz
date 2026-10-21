@@ -35,6 +35,9 @@ use crate::machine::{STORAGE_OBSERVATION_TIMEOUT, local_storage};
 /// A settle inspects local Docker, so a short poll costs little and sets how late a
 /// verdict is seen. Remote health waits keep `HEALTH_POLL_INTERVAL`.
 const SETTLE_POLL: Duration = Duration::from_millis(100);
+/// How long an inspect started near or past the settle deadline may still answer, so
+/// a slow Docker cannot turn a healthy copy into a timeout while a stalled one still ends.
+const SETTLE_INSPECT_GRACE: Duration = Duration::from_secs(1);
 
 #[cfg(test)]
 static SETTLES: std::sync::Mutex<std::collections::BTreeMap<ContainerId, usize>> =
@@ -779,7 +782,7 @@ impl LocalMachine {
             // Docker can stall an inspect of a Container it OOM-killed, and the
             // verdict still answers by the deadline.
             let Ok(inspected) = tokio::time::timeout_at(
-                started + limit,
+                (started + limit).max(tokio::time::Instant::now() + SETTLE_INSPECT_GRACE),
                 containers.inspect_managed_run(container_id, &machine_id),
             )
             .await

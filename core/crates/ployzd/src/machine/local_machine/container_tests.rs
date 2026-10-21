@@ -1195,7 +1195,8 @@ mod settled {
 
     #[tokio::test]
     async fn ensure_settled_times_out_on_time_for_a_container_killed_out_of_memory() {
-        // The kill shows before the 1.9s deadline and every inspect after it stalls.
+        // The kill shows before the 1.9s deadline and every inspect after it stalls, so
+        // the stalled one ends within its grace past the deadline.
         let (health, waited) = ensure_stalling_after_oom(
             settled_run(1_900),
             Duration::from_millis(1_450),
@@ -1209,7 +1210,7 @@ mod settled {
         );
         assert!(health.oom_killed(), "{health:?}");
         assert!(
-            waited >= Duration::from_millis(1_800) && waited < Duration::from_millis(2_900),
+            waited >= Duration::from_millis(1_800) && waited < Duration::from_millis(3_900),
             "waited {waited:?}"
         );
     }
