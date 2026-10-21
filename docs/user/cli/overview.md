@@ -343,12 +343,26 @@ and
 When a service serves fewer replicas than its last deploy gave it, `ployz status` names it and
 each replica that isn't serving, in the words `ployz ps` uses, like
 `web = Serving 1 of 3 copies. web-1 restarting, web-2 draining.` A replica can be restarting,
-exited, unhealthy, or draining: out of routing but still running. With `--json` the row has reason
+exited, unhealthy, starting, or draining. A starting replica shows as `running, starting` while it
+is still inside its health check's start period, and the line clears once the check passes. A
+draining replica is out of routing but still running. With `--json` the row has reason
 `copies_not_serving`, the `service`, how many replicas are `serving`, how many it `wanted`, and
-`copies`, each with its `machine`, `container`, `rotation` and `runtime`. Its `next` is
-`ployz logs web` when a named replica is still in routing, else `ployz deploy web`. Old
-replicas still draining beside a full set of new ones, as just after a deploy, add no row. While a deployment runs, status skips this check and warns that it did. A replica
-removed outside Ployz, for example with `docker rm`, is unseen, so status can't name it. See
+`copies`, each with its `machine`, `container`, `rotation` and `runtime`. `wanted` is how many of
+the replicas status could see should be serving. A server that is down or didn't answer isn't
+seen. A down server shows as **Down**, and status warns about one that didn't answer. Its `next` is `ployz logs web` when a named replica
+is still in routing, else `ployz deploy web`. Old replicas still draining beside a full set of new
+ones, as just after a deploy, add no row. While a deployment runs, status skips this check and
+warns that it did.
+
+This check has limits:
+
+- A replica removed outside Ployz, for example with `docker rm`, is unseen, so status can't name
+  it.
+- A global service's draining replica isn't named.
+- After a scale-down that changed only the replica count, a replica left draining can be named
+  until the next deploy removes it.
+
+See
 [Status says a service serves fewer copies than it should](../troubleshooting/deployments.md#status-says-a-service-serves-fewer-copies-than-it-should).
 
 A `read` or `deploy` token without server access doesn't show these lines yet. To check this, `ployz status`

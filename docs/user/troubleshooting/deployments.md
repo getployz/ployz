@@ -226,8 +226,9 @@ It names each replica that doesn't serve, with the state `ployz ps` shows for it
 ended **Deployed** doesn't watch its replicas after they start, so a replica that crashes later
 shows up here.
 
-- **Restarting, exited, or unhealthy.** The replica crashes or fails its health check. Read why
-  in its logs, then fix the app and deploy again:
+- **Restarting, exited, unhealthy, or `running, starting`.** The replica crashes or fails its
+  health check. `running, starting` clears on its own once the replica passes its check within its
+  start period. If it stays, read why in its logs, then fix the app and deploy again:
 
   ```sh
   ployz logs api
@@ -236,8 +237,9 @@ shows up here.
   `exited with code 0` means your app stopped on its own without an error. A start command that
   finishes, instead of running a server, does that.
 - **Draining.** The replica is out of routing but still running, and too few replicas in routing
-  are left. An older Ployz daemon could leave replicas like that after it restarted. Deploy the
-  service again, with nothing changed, to start the replicas it is short:
+  are left. An older Ployz daemon could leave replicas like that after it restarted.
+  `ployz deploy api` deploys what is staged for the service. With nothing staged, it starts the
+  replicas the service is short:
 
   ```sh
   ployz deploy api
