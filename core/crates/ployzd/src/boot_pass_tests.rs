@@ -641,6 +641,17 @@ async fn kept_when_the_newer_copys_owner_does_not_answer() {
     );
 }
 
+#[test]
+fn counts_a_copy_whose_newest_sibling_went_unconfirmed_as_unjudged() {
+    let cluster = Cluster::new();
+    let observed = cluster.acked_everywhere();
+    let own = own_acks(&cluster.local, &observed);
+    let candidates = super::candidates(&cluster.local.id, &observed, &own);
+    let specs = BTreeMap::from([(cluster.old.container_id, cluster.old.resolved_spec.clone())]);
+
+    assert_eq!(super::superseded(&candidates, &specs), (Vec::new(), 1));
+}
+
 #[tokio::test(start_paused = true)]
 async fn kept_when_this_machine_cannot_read_its_copy() {
     let cluster = Cluster::new();

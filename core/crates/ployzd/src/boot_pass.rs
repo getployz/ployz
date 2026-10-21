@@ -168,12 +168,14 @@ fn candidates<'a>(
 /// and then id ascending. Every Machine ranks the same view the same way, so two
 /// Machines never both drop a copy the other keeps, and a surplus copy on a Machine
 /// that is not restarting stays until the next Deploy. A copy whose spec is missing
-/// leaves M, so it only ever keeps C In. A Global Service counts nothing.
+/// leaves M, so it only ever keeps C In. A Global Service counts nothing. Also
+/// returns how many copies it could not judge.
 pub(crate) fn superseded(
     candidates: &[Candidate<'_>],
     specs: &BTreeMap<ContainerId, ResolvedServiceSpec>,
-) -> Vec<Superseded> {
-    candidates
+) -> (Vec<Superseded>, usize) {
+    let mut unjudged = 0;
+    let superseded = candidates
         .iter()
         .filter_map(|candidate| {
             let copy = candidate.copy;
@@ -184,6 +186,7 @@ pub(crate) fn superseded(
                         copy.identity(),
                         copy.container_id
                     );
+                    unjudged += 1;
                     false
                 })
                 .then(|| Superseded {
@@ -195,7 +198,8 @@ pub(crate) fn superseded(
                         .map_or(copy.copy_gen(), |newest| newest.copy_gen()),
                 })
         })
-        .collect()
+        .collect();
+    (superseded, unjudged)
 }
 
 /// Whether [`superseded`] sets `copy` Out, or why it cannot decide.
@@ -348,8 +352,12 @@ async fn pass<H: BootHost>(
     .into_iter()
     .flatten()
     .collect();
-    let superseded = superseded(&candidates, &specs);
-    if superseded.is_empty() {
+    let (superseded, unjudged) = superseded(&candidates, &specs);
+    if unjudged > 0 {
+        tracing::info!(
+            "boot pass could not judge {unjudged} In copies here, their specs went unconfirmed"
+        );
+    } else if superseded.is_empty() {
         tracing::info!("boot pass found no In copy here that a Deploy would replace");
     }
     for Superseded {
