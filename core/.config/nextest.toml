@@ -10,5 +10,7 @@ test(=created_but_unverified_volume_fails_the_container_operation)
 | test(=checkin::tests::a_delayed_handout_reports_failed_ports_after_cloud_has_finished_attempting)
 | test(=an_unmounted_config_edits_while_another_service_mounts_too_much)
 | test(=build::tests::client_waits_past_connection_deadline_and_uploads_only_after_admission)
+| test(=a_deploy_queued_behind_one_in_flight_says_which_it_waits_for)
+| test(=a_deploy_queued_with_nothing_ahead_says_no_server_started_it)
 """
 priority = 100

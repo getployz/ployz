@@ -850,6 +850,7 @@ async fn global_stop_first_retry_replays_retained_candidate_with_no_free_endpoin
                 r#gen: ployz_core::Gen::FIRST,
                 slot: slot_key(
                     &test_namespace(),
+                    &spec.name,
                     ContainerKind::ServiceContainer,
                     crate::cluster::global_creation_key(spec),
                 ),

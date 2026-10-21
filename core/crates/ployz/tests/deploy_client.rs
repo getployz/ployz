@@ -1901,111 +1901,119 @@ async fn cloud_runner_builds_nothing_on_servers_the_build_order_leaves_out() {
     };
     use std::sync::Arc;
 
-    let store =
-        Arc::new(ConfigStore::open("sqlite::memory:", SealingKey::new(b"cloud").unwrap()).unwrap());
-    let who = Actor::system(OrganizationId::parse("org").unwrap());
-    store
-        .write(
-            &who,
-            &CreateProject {
-                id: ProjectId::parse("00000000-0000-4000-8000-000000000001").unwrap(),
-                name: ProjectName::parse("shop").unwrap(),
-                default_environment: EnvironmentId::parse("00000000-0000-4000-8000-000000000002")
+    for skipped in [
+        "acme/web has no build workflow",
+        "acme/web has no build workflow.",
+    ] {
+        let store = Arc::new(
+            ConfigStore::open("sqlite::memory:", SealingKey::new(b"cloud").unwrap()).unwrap(),
+        );
+        let who = Actor::system(OrganizationId::parse("org").unwrap());
+        store
+            .write(
+                &who,
+                &CreateProject {
+                    id: ProjectId::parse("00000000-0000-4000-8000-000000000001").unwrap(),
+                    name: ProjectName::parse("shop").unwrap(),
+                    default_environment: EnvironmentId::parse(
+                        "00000000-0000-4000-8000-000000000002",
+                    )
                     .unwrap(),
-            },
-        )
-        .unwrap();
-    let trusted = Trusted {
-        repositories: vec![AuthorizedRepository {
-            repository: ployz_store::RepositoryName::parse("acme/web").unwrap(),
-            repository_id: ployz_store::RepositoryId::parse(11).unwrap(),
-            access: ServiceGitAccess::GithubInstallation { installation_id: 7 },
-            default_branch: ployz_store::BranchName::parse("main").unwrap(),
-            branches: Vec::new(),
-        }],
-        ..Trusted::default()
-    };
-    store
-        .write_trusted(
-            &who,
-            &CreateGitService {
-                id: ServiceLineageId::parse("00000000-0000-4000-8000-000000000003").unwrap(),
-                environment: EnvironmentRef::default(),
-                name: ployz_core::ServiceName::parse("web").unwrap(),
+                },
+            )
+            .unwrap();
+        let trusted = Trusted {
+            repositories: vec![AuthorizedRepository {
                 repository: ployz_store::RepositoryName::parse("acme/web").unwrap(),
-                branch: None,
-            },
-            &trusted,
-        )
-        .unwrap();
-    store
-        .write(
-            &who,
-            &Command::SetBuildOrder(SetBuildOrder {
-                build_order: Some(BuildOrder::GithubOnly),
-            }),
-        )
-        .unwrap();
-    let id = DeploymentId::parse("00000000-0000-4000-8000-000000000101").unwrap();
-    store
-        .write_trusted(
-            &who,
-            &Admit::Deploy(Deploy {
-                id: id.clone(),
-                environment: EnvironmentRef::default(),
-                services: Vec::new(),
-                version: None,
-                upload: None,
-                accept_volume_loss: Vec::new(),
-                message: None,
-            }),
-            &Trusted::default(),
-        )
-        .unwrap();
-    let web = ployz_core::ServiceName::parse("web").unwrap();
-    store
-        .pin(
-            &id,
-            &[(
-                web.clone(),
-                ployz_store::CommitSha::parse("a".repeat(40)).unwrap(),
-            )]
-            .into(),
-        )
-        .unwrap();
-    let build = GithubBuildId {
-        deployment: id.clone(),
-        service: web,
-    };
-    let skipped = GithubEnd::Skipped {
-        message: "acme/web has no build workflow".into(),
-    };
-    store.github_end(&build, None, &skipped).unwrap();
+                repository_id: ployz_store::RepositoryId::parse(11).unwrap(),
+                access: ServiceGitAccess::GithubInstallation { installation_id: 7 },
+                default_branch: ployz_store::BranchName::parse("main").unwrap(),
+                branches: Vec::new(),
+            }],
+            ..Trusted::default()
+        };
+        store
+            .write_trusted(
+                &who,
+                &CreateGitService {
+                    id: ServiceLineageId::parse("00000000-0000-4000-8000-000000000003").unwrap(),
+                    environment: EnvironmentRef::default(),
+                    name: ployz_core::ServiceName::parse("web").unwrap(),
+                    repository: ployz_store::RepositoryName::parse("acme/web").unwrap(),
+                    branch: None,
+                },
+                &trusted,
+            )
+            .unwrap();
+        store
+            .write(
+                &who,
+                &Command::SetBuildOrder(SetBuildOrder {
+                    build_order: Some(BuildOrder::GithubOnly),
+                }),
+            )
+            .unwrap();
+        let id = DeploymentId::parse("00000000-0000-4000-8000-000000000101").unwrap();
+        store
+            .write_trusted(
+                &who,
+                &Admit::Deploy(Deploy {
+                    id: id.clone(),
+                    environment: EnvironmentRef::default(),
+                    services: Vec::new(),
+                    version: None,
+                    upload: None,
+                    accept_volume_loss: Vec::new(),
+                    message: None,
+                }),
+                &Trusted::default(),
+            )
+            .unwrap();
+        let web = ployz_core::ServiceName::parse("web").unwrap();
+        store
+            .pin(
+                &id,
+                &[(
+                    web.clone(),
+                    ployz_store::CommitSha::parse("a".repeat(40)).unwrap(),
+                )]
+                .into(),
+            )
+            .unwrap();
+        let build = GithubBuildId {
+            deployment: id.clone(),
+            service: web,
+        };
+        let skipped = GithubEnd::Skipped {
+            message: skipped.into(),
+        };
+        store.github_end(&build, None, &skipped).unwrap();
 
-    let (address, server) = listening(DeployService::new(machine('a', "one"))).await;
-    let summary = ployz::sdk::run_deployment(
-        Arc::clone(&store),
-        id.clone(),
-        RunnerId::parse("cloud-run-1").unwrap(),
-        vec![ployz::context::Connection::tcp(address)],
-        Ok(Default::default()),
-    )
-    .await
-    .unwrap();
-    assert_eq!(summary.status, DeploymentStatus::Failed);
-    let Some(Outcome::NotExecuted { reason, .. }) = store
-        .read(&who, &ployz_store::DeploymentQuery { id: id.clone() })
-        .unwrap()
-        .deployment
-        .outcome
-    else {
-        panic!("nothing ran")
-    };
-    assert_eq!(
-        reason,
-        "Build failed. web: acme/web has no build workflow. No other Builder in your Build Order can take it"
-    );
-    server.abort();
+        let (address, server) = listening(DeployService::new(machine('a', "one"))).await;
+        let summary = ployz::sdk::run_deployment(
+            Arc::clone(&store),
+            id.clone(),
+            RunnerId::parse("cloud-run-1").unwrap(),
+            vec![ployz::context::Connection::tcp(address)],
+            Ok(Default::default()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(summary.status, DeploymentStatus::Failed);
+        let Some(Outcome::NotExecuted { reason, .. }) = store
+            .read(&who, &ployz_store::DeploymentQuery { id: id.clone() })
+            .unwrap()
+            .deployment
+            .outcome
+        else {
+            panic!("nothing ran")
+        };
+        assert_eq!(
+            reason,
+            "Build failed. web: acme/web has no build workflow. No other Builder in your Build Order can take it"
+        );
+        server.abort();
+    }
 }
 
 #[tokio::test]

@@ -91,14 +91,13 @@ fn leave(root: &ArgMatches, removal: Removal) -> Result<(), Error> {
         let observation =
             crate::cluster::visible_machine(&MachineTarget::parse(&selector)?, &machines)?;
         let selected = observation.machine.clone();
-        let current = client
+        let mut current = client
             .call::<op::DescribeContract>(DescribeContractRequest {}, None)
             .await?
             .machine_id;
         if selected.id == current && machines.len() > 1 {
-            return Err(Error::conflict(
-                "the current entry Server cannot be removed while another Server is visible",
-            ));
+            (client, current) =
+                super::connect_avoiding(matches, options.context(), &selected).await?;
         }
         let hold = refuse_last_managed(&client, &machines, selected.id).await?;
         let held = match removal {
@@ -183,13 +182,15 @@ fn leave(root: &ArgMatches, removal: Removal) -> Result<(), Error> {
             under_replicated(replicated_services_on(&selected.id, &live), last);
         Ok::<_, Error>((cloud, observed, services, movable, replicated_services))
     })?;
-    if !movable.is_empty() {
-        crate::ui::warn(format!(
-            "Server {} is running Services: {}.",
-            selected.name,
-            super::super::joined(&movable)
-        ));
-        crate::ui::hint(&Hint::Next(format!("ployz server drain {}", selected.name)));
+    if let Some((warning, drain)) = running_services(
+        selected.name.as_str(),
+        &movable,
+        matches.get_one::<String>("confirm").is_some(),
+    ) {
+        crate::ui::warn(warning);
+        if let Some(drain) = drain {
+            crate::ui::hint(&drain);
+        }
     }
     if hold == CloudHold::Last {
         crate::ui::warn(format!(
@@ -337,7 +338,13 @@ fn leave(root: &ArgMatches, removal: Removal) -> Result<(), Error> {
             crate::ui::hint(&Hint::Next("ployz server add".into()));
         }
         if let Some(reason) = &reset_failure {
-            crate::ui::warn(format!("Server {} was not fully cleaned up or reset: {reason}. Reset does not erase volume data.", selected.name));
+            crate::ui::warn(crate::ui::then_sentence(
+                &crate::ui::with_reason(
+                    format_args!("Server {} was not fully cleaned up or reset", selected.name),
+                    reason,
+                ),
+                "Reset does not erase volume data.",
+            ));
         } else {
             for loss in &observed.data_loss {
                 crate::ui::stream(format_args!(
@@ -441,6 +448,26 @@ async fn cloud_manages(
         .management_clients
         .iter()
         .any(|label| label.as_str() == "cloud"))
+}
+
+/// The warning that the Server runs Services a drain could move off it, with the drain
+/// command only while the removal still asks: a typed `--confirm` goes ahead and leaves
+/// no Server to drain.
+fn running_services(
+    server: &str,
+    movable: &[QualifiedService],
+    confirmed: bool,
+) -> Option<(String, Option<Hint>)> {
+    if movable.is_empty() {
+        return None;
+    }
+    Some((
+        format!(
+            "Server {server} is running Services: {}.",
+            super::super::joined(movable)
+        ),
+        (!confirmed).then(|| Hint::Next(format!("ployz server drain {server}"))),
+    ))
 }
 
 /// Each of the `docker` Volumes that keeps a Volume's data, by that Volume's name, so
@@ -579,7 +606,8 @@ mod tests {
 
     use super::{
         VolumeOwner, machine_removal_refusal, movable_services_on, qualified_labels,
-        replicated_services_on, reset_removal_refusal, services_on, under_replicated,
+        replicated_services_on, reset_removal_refusal, running_services, services_on,
+        under_replicated,
     };
     use crate::ui::Hint;
 
@@ -744,6 +772,21 @@ mod tests {
             movable_services_on(&machine_id('a'), &live),
             [QualifiedService::parse("app/api").unwrap()]
         );
+    }
+
+    #[test]
+    fn rm_warns_of_running_services_but_suggests_a_drain_only_while_it_still_asks() {
+        let web = [QualifiedService::parse("app/web").unwrap()];
+        let warning = "Server gamma is running Services: app/web.".to_owned();
+        assert_eq!(
+            running_services("gamma", &web, false),
+            Some((
+                warning.clone(),
+                Some(Hint::Next("ployz server drain gamma".into()))
+            ))
+        );
+        assert_eq!(running_services("gamma", &web, true), Some((warning, None)));
+        assert_eq!(running_services("gamma", &[], false), None);
     }
 
     #[test]
