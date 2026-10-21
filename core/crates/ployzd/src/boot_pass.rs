@@ -1,5 +1,6 @@
 //! Once per daemon start, set Out each In copy on this Machine that a Deploy
-//! would make anew beside the newest In copies every live proxy routes. A Machine
+//! would make anew, or that its Service has more of than it asks for, beside the
+//! newest In copies every live proxy routes. A Machine
 //! powered off during a Deploy comes back with its old copy In, and proxies would
 //! route it again. The pass decides only after this Machine has caught up with a
 //! peer's store and its own ingress has published since, and it never stops a
@@ -17,7 +18,8 @@ use ployz_core::{
     CodecError, ContainerId, ContainerKind, ContainerLocator, ContainerObservation, ContainerWant,
     CopyRotation, EnsuredContainer, Gen, InspectContainerRequest, ListMachinesRequest,
     MACHINE_API_PORT, MachineId, MachineRpcClient, QualifiedService,
-    RUNTIME_WATCH_MESSAGE_SIZE_LIMIT, ResolvedServiceSpec, SpecChange, compare_specs, op,
+    RUNTIME_WATCH_MESSAGE_SIZE_LIMIT, ResolvedServiceSpec, ServiceMode, SpecChange, compare_specs,
+    op,
 };
 use tokio::{sync::watch, time::Instant};
 use tonic::transport::Endpoint;
@@ -77,15 +79,28 @@ pub(crate) struct Superseded {
     pub(crate) by: Gen,
 }
 
-/// A local In copy and its newest In siblings.
-type Candidate<'a> = (&'a ContainerObservation, Vec<&'a ContainerObservation>);
+/// A local In copy and the other In copies of its Service that every live proxy
+/// routes.
+pub(crate) struct Candidate<'a> {
+    copy: &'a ContainerObservation,
+    /// Those of the newest gen, newer than `copy`.
+    newest: Vec<&'a ContainerObservation>,
+    routed: Vec<&'a ContainerObservation>,
+}
 
-/// Each local In copy beside the newest gen of its newer In siblings that every
-/// live proxy routes. A Machine list that is only partly replicated, or never read,
-/// yields nothing, and a copy on a Down Machine serves no one. This Machine's own
-/// acks come from `own`, what its ingress published since it started, because its
-/// row in the store may predate a power-off.
-fn routed_newest<'a>(
+impl<'a> Candidate<'a> {
+    /// Every copy whose full spec the judgement reads.
+    fn rows(&self) -> impl Iterator<Item = &'a ContainerObservation> + '_ {
+        std::iter::once(self.copy).chain(self.routed.iter().copied())
+    }
+}
+
+/// Each local In copy that has a newer In sibling every live proxy routes. A
+/// Machine list that is only partly replicated, or never read, yields nothing, and
+/// a copy on a Down Machine serves no one. This Machine's own acks come from `own`,
+/// what its ingress published since it started, because its row in the store may
+/// predate a power-off.
+fn candidates<'a>(
     local: &MachineId,
     Observed {
         containers,
@@ -120,61 +135,111 @@ fn routed_newest<'a>(
                     })
                     .is_empty()
             };
-            let newer = containers
+            let routed = containers
                 .iter()
                 .filter(serving)
                 .filter(|sibling| {
                     sibling.container_id != copy.container_id
                         && sibling.identity() == service
-                        && sibling.copy_gen() > copy.copy_gen()
                         && acked(&sibling.container_id)
                 })
                 .collect::<Vec<_>>();
-            let newest = newer.iter().map(|sibling| sibling.copy_gen()).max()?;
-            let newest = newer
-                .into_iter()
-                .filter(|sibling| sibling.copy_gen() == newest)
-                .collect();
-            Some((copy, newest))
+            let newest = routed.iter().map(|sibling| sibling.copy_gen()).max()?;
+            let newest = routed
+                .iter()
+                .copied()
+                .filter(|sibling| sibling.copy_gen() == newest && newest > copy.copy_gen())
+                .collect::<Vec<_>>();
+            (!newest.is_empty()).then_some(Candidate {
+                copy,
+                newest,
+                routed,
+            })
         })
         .collect()
 }
 
-/// The local In copies a Deploy would make anew to match their newest siblings,
-/// judged on the full specs in `specs`. The newest gen came from one Deploy, so
-/// siblings built from different Deploy input decide nothing. A limits-only difference keeps the copy,
-/// since an in-place update that missed it leaves no other copy in its place. A
-/// copy missing from `specs` decides nothing.
+/// The local In copies to set Out, judged on the full specs in `specs`, each read
+/// from the copy's owner. A local copy C is judged only when its newest siblings,
+/// built by one Deploy, agree on that Deploy's input W. C goes Out when a Deploy of
+/// W would make a new Container in its place. Otherwise, when W is Replicated with
+/// R replicas, let M be C and every other routed In copy of the Service whose spec
+/// W would not recreate. C goes Out when it ranks past R in M, by gen descending
+/// and then id ascending. Every Machine ranks the same view the same way, so two
+/// Machines never both drop a copy the other keeps, and a surplus copy on a Machine
+/// that is not restarting stays until the next Deploy. A copy whose spec is missing
+/// leaves M, so it only ever keeps C In. A Global Service counts nothing.
 pub(crate) fn superseded(
     candidates: &[Candidate<'_>],
     specs: &BTreeMap<ContainerId, ResolvedServiceSpec>,
 ) -> Vec<Superseded> {
     candidates
         .iter()
-        .filter_map(|(copy, newest)| {
-            let current = specs.get(&copy.container_id)?;
-            let (first, rest) = newest.split_first()?;
-            let wanted = specs.get(&first.container_id)?.to_requested();
-            let agree = rest.iter().all(|sibling| {
-                specs
-                    .get(&sibling.container_id)
-                    .is_some_and(|spec| spec.to_requested() == wanted)
-            });
-            if !agree {
-                tracing::info!(
-                    "boot pass left {}/{} in: its newest siblings disagree or did not answer",
-                    copy.identity(),
-                    copy.container_id
-                );
-                return None;
-            }
-            (compare_specs(current, &wanted) == SpecChange::NeedsRecreate).then(|| Superseded {
-                service: copy.identity(),
-                container: copy.container_id,
-                by: first.copy_gen(),
-            })
+        .filter_map(|candidate| {
+            let copy = candidate.copy;
+            judge(candidate, specs)
+                .unwrap_or_else(|why| {
+                    tracing::info!(
+                        "boot pass left {}/{} in: {why}",
+                        copy.identity(),
+                        copy.container_id
+                    );
+                    false
+                })
+                .then(|| Superseded {
+                    service: copy.identity(),
+                    container: copy.container_id,
+                    by: candidate
+                        .newest
+                        .first()
+                        .map_or(copy.copy_gen(), |newest| newest.copy_gen()),
+                })
         })
         .collect()
+}
+
+/// Whether [`superseded`] sets `copy` Out, or why it cannot decide.
+fn judge(
+    Candidate {
+        copy,
+        newest,
+        routed,
+    }: &Candidate<'_>,
+    specs: &BTreeMap<ContainerId, ResolvedServiceSpec>,
+) -> Result<bool, &'static str> {
+    let spec = |copy: &ContainerObservation| specs.get(&copy.container_id);
+    let current = spec(copy).ok_or("this Machine could not read it")?;
+    let mut newest = newest
+        .iter()
+        .map(|sibling| spec(sibling).map(ResolvedServiceSpec::to_requested));
+    let wanted = newest
+        .next()
+        .flatten()
+        .ok_or("its newest sibling's owner did not confirm it")?;
+    if !newest.all(|sibling| sibling.as_ref() == Some(&wanted)) {
+        return Err("its newest siblings disagree or did not answer");
+    }
+    if compare_specs(current, &wanted) == SpecChange::NeedsRecreate {
+        return Ok(true);
+    }
+    let ServiceMode::Replicated { replicas } = wanted.mode else {
+        return Ok(false);
+    };
+    let mut kept = routed
+        .iter()
+        .copied()
+        .filter(|sibling| {
+            spec(sibling)
+                .is_some_and(|spec| compare_specs(spec, &wanted) != SpecChange::NeedsRecreate)
+        })
+        .chain(std::iter::once(*copy))
+        .collect::<Vec<_>>();
+    kept.sort_by_key(|kept| (std::cmp::Reverse(kept.copy_gen()), kept.container_id));
+    let rank = kept
+        .iter()
+        .position(|kept| kept.container_id == copy.container_id)
+        .unwrap_or_default();
+    Ok(u32::try_from(rank).is_ok_and(|rank| rank >= replicas.get()))
 }
 
 /// `row`'s full spec as its owner answers for it, retried until `retry_until`.
@@ -269,10 +334,10 @@ async fn pass<H: BootHost>(
     };
     tracing::info!("boot pass saw this Machine's routes published after catch-up");
     let observed = host.observe().await?;
-    let candidates = routed_newest(&host.machine_id(), &observed, &own);
+    let candidates = candidates(&host.machine_id(), &observed, &own);
     let rows = candidates
         .iter()
-        .flat_map(|(copy, newest)| std::iter::once(*copy).chain(newest.iter().copied()))
+        .flat_map(Candidate::rows)
         .map(|row| (row.container_id, row))
         .collect::<BTreeMap<_, _>>();
     let retry_until = deadline.checked_sub(OUT_MARGIN).unwrap_or(deadline);
