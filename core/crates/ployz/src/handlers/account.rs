@@ -51,7 +51,7 @@ pub(super) fn token_list_command(command: Command) -> Command {
 pub(super) fn token_remove_command(command: Command) -> Command {
     command
         .about("Revoke a token or sign out a device, at once")
-        .arg(positional("id", true))
+        .arg(positional("id", true).help("The token or device ID, from ployz token ls"))
 }
 
 pub(super) fn org_group(command: Command) -> Command {
@@ -95,7 +95,7 @@ pub(super) fn org_build_order_command(command: Command) -> Command {
                     "github-then-servers",
                     "servers-then-github",
                     "github-only",
-                ]))
+                ]).help("The Build Order to set; without it, shows the current one"))
 }
 
 pub(super) fn org_leave_command(command: Command) -> Command {

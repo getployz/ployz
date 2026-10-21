@@ -555,7 +555,7 @@ pub(crate) fn failed_on(tx: &mut dyn Tx, id: &DeploymentId) -> Result<Vec<String
             matches!(
                 row.state,
                 super::RowState::Failed {
-                    cancelled: false,
+                    stopped_by: crate::StoppedBy::NOTHING,
                     ..
                 }
             )

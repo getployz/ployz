@@ -537,15 +537,11 @@ describe("volume runs", () => {
     if (!result.ok) throw new Error(result.refusal.message);
     return result.run;
   };
-  const waitingOnLock = async () => {
-    for (let poll = 0; poll < 200; poll++) {
-      const { rows: waiting } = await harness.pool.query(
-        "select 1 from pg_stat_activity where datname = current_database() and wait_event_type = 'Lock'");
-      if (waiting.length > 0) return;
-      await new Promise((resolve) => setTimeout(resolve, 25));
-    }
-    throw new Error("nothing waited on the held row lock");
-  };
+  const waitingOnLock = () => vi.waitFor(async () => {
+    const { rows: waiting } = await harness.pool.query(
+      "select 1 from pg_stat_activity where datname = current_database() and wait_event_type = 'Lock'");
+    if (waiting.length === 0) throw new Error("nothing waited on the held row lock");
+  }, { timeout: 5_000, interval: 25 });
   const settled = ["05-cut", "07-start", "03-start", "04-resume", "05-resume", "03-restore", "03-demote", "03-reset-forget-mirror", "03-reset-forget-writer", "04-forget"];
   const sleeps = [
     ...["03-r0", "03-r1", "03-r2", "06-final"].flatMap((prefix) => Array.from({ length: 9 }, (_, poll) => `${prefix}-backoff-${poll}`)),
@@ -553,15 +549,22 @@ describe("volume runs", () => {
       ...["fsn-2", "fsn-3"].flatMap((server) => [`04-forget-${server}`, `03-forget-${server}`])]
       .flatMap((id) => Array.from({ length: 6 }, (_, check) => `${id}-wait-${check + 1}`)),
     ...Array.from({ length: 8 }, (_, check) => `01-wait-${check}`),
-    ...["fsn-1", "fsn-2", "fsn-3"].flatMap((server) => [0, 1, 2].flatMap((index) =>
-      Array.from({ length: 119 }, (_, check) => `03-${index}-size-${idOf(server)}-wait-${check + 1}`))),
   ].map((id) => ({ id, handler: () => undefined }));
-  const execute = (runRowId: string, runId = "run-1", steps?: Array<{ id: string; handler: () => object | undefined }>, volume = volumeId, took?: string, attempt = 0) => new InngestTestEngine({
-    function: createRunVolume(new Inngest({ id: "test" }), runEffect),
-    events: [{ name: "volume/run.requested", data: { organizationId, environment: "env-1", volumeId: volume, runId: runRowId, took } }],
-    transformCtx: (ctx) => ({ ...mockCtx(ctx), runId, attempt }),
-    steps: [...(steps ?? []), ...sleeps],
-  }).execute();
+  /**
+   * Only a resize reaches these. The engine rebuilds every mock on each of a run's executions, so giving all 1071 to
+   * every run made the six-hour mirror test take seconds on them alone.
+   */
+  const sizeSleeps = ["fsn-1", "fsn-2", "fsn-3"].flatMap((server) => [0, 1, 2].flatMap((index) =>
+    Array.from({ length: 119 }, (_, check) => ({ id: `03-${index}-size-${idOf(server)}-wait-${check + 1}`, handler: () => undefined }))));
+  const execute = async (runRowId: string, runId = "run-1", steps?: Array<{ id: string; handler: () => object | undefined }>, volume = volumeId, took?: string, attempt = 0) => {
+    const { rows: [row] } = await harness.pool.query<{ kind: string }>("select kind from volume_run where id = $1", [runRowId]);
+    return new InngestTestEngine({
+      function: createRunVolume(new Inngest({ id: "test" }), runEffect),
+      events: [{ name: "volume/run.requested", data: { organizationId, environment: "env-1", volumeId: volume, runId: runRowId, took } }],
+      transformCtx: (ctx) => ({ ...mockCtx(ctx), runId, attempt }),
+      steps: [...(steps ?? []), ...sleeps, ...(row?.kind === "resize" ? sizeSleeps : [])],
+    }).execute();
+  };
   /** Runs the row as Inngest would from the event its request sent, `took` and all. */
   const deliver = (runRowId: string, runId = "run-1") => {
     const event = send.mock.calls.flatMap(([sent]) => [sent].flat()).find((sent) => sent.id === `volume-run-${runRowId}`);
@@ -2329,7 +2332,7 @@ describe("volume runs", () => {
 
       await execute(admitted.run.id);
 
-      expect(sent.find((request) => request.want.kind === "forget")?.expect).toEqual({ kind: "mirror", newest: base.guid, slot: "7", role: "old_copy" });
+      expect(verbs.filter((verb) => verb.startsWith("forget"))).toEqual([]);
       expect(machines[1]?.copy).toEqual(slotCopy(base, null, "7", "mirror"));
       expect(await rows()).toMatchObject([{ state: "failed", message: "data-fsn-2 is no longer an old copy, so nothing was deleted" }]);
     });
@@ -3518,6 +3521,31 @@ describe("volume runs", () => {
       });
       expect(await rows()).toEqual([]);
       expect(send).not.toHaveBeenCalled();
+    });
+
+    it("mirror rm --if-old-copy is refused once its old copy became the mirror, and writes no run", async () => {
+      machines = [
+        { name: "fsn-1", pool: true, copy: writerCopy() },
+        { name: "fsn-2", pool: true, copy: slotCopy(base, null, "7", "mirror") },
+      ];
+
+      const admitted = await run({ kind: "delete_mirror", args: { slot: "fsn-2", confirmed_name: null, role: "old_copy" } });
+
+      expect(admitted).toEqual({ ok: false, refusal: { code: "conflict", message: "data-fsn-2 is no longer an old copy, so nothing was deleted", details: null } });
+      expect(await rows()).toEqual([]);
+    });
+
+    it("mirror rm --if-old-copy of a real old copy starts its delete, named for an old copy", async () => {
+      machines = [
+        { name: "fsn-1", pool: true, copy: writerCopy() },
+        { name: "fsn-2", pool: true, copy: slotCopy(base, null, "7", "old_copy") },
+      ];
+
+      const admitted = await run({ kind: "delete_mirror", args: { slot: "fsn-2", confirmed_name: null, role: "old_copy" } });
+
+      expect(admitted).toMatchObject({ ok: true });
+      expect((await harness.pool.query("select kind, state, args from volume_run")).rows)
+        .toMatchObject([{ kind: "delete_mirror", state: "requested", args: { slot: "fsn-2", role: "old_copy" } }]);
     });
 
     it("a Mirror Remove on a busy Volume is refused as busy before it asks", async () => {

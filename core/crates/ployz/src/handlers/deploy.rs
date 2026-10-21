@@ -128,7 +128,11 @@ pub(super) fn redeploy_command(command: Command) -> Command {
          --accept-volume-loss.",
     )))
     .arg(id())
-    .arg(switch("yes", Some('y')).env(crate::cli::env::AUTO_CONFIRM))
+    .arg(
+        switch("yes", Some('y'))
+            .env(crate::cli::env::AUTO_CONFIRM)
+            .help("Roll back without asking"),
+    )
     .arg(crate::cli::volume_acceptance().help(format!(
         "{}; --yes cannot bypass this",
         crate::cli::VOLUME_ACCEPTANCE
@@ -932,7 +936,7 @@ fn plan(matches: &ArgMatches, store: &Store, services: Vec<ServiceName>) -> Resu
                 super::store::word(&change.lifecycle)
             ));
             for row in &change.settings {
-                for line in super::store::changed(row) {
+                for line in super::store::changed(row, &change.settings) {
                     crate::ui::stream(format_args!("  {line}"));
                 }
             }
@@ -1161,7 +1165,8 @@ pub(super) fn deployment_id(
     Ok(found.deployment.id)
 }
 
-/// A refused redeploy, start or cancel points at the Deployment's current state.
+/// A refused redeploy, start or cancel points at the Deployment's current state,
+/// unless the Store names what to run next, such as `ployz server add`.
 fn refused<'a>(
     matches: &'a ArgMatches,
     store: &'a Store,
@@ -1170,7 +1175,9 @@ fn refused<'a>(
     move |error| {
         store.fail(super::store::with_next(
             error,
-            |refusal| refusal.code == RpcErrorCode::Conflict,
+            |refusal| {
+                refusal.code == RpcErrorCode::Conflict && refusal.details.get("next").is_none()
+            },
             || {
                 store
                     .read(&ployz_store::DeploymentQuery { id: id.clone() })
@@ -1339,6 +1346,7 @@ pub(super) fn say_view(view: &DeploymentView) {
         | ployz_store::Outcome::Executed {
             reason: Some(reason),
             cause,
+            cancelled: false,
             ..
         },
     ) = &view.deployment.outcome

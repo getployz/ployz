@@ -21,11 +21,13 @@ import { makePloyzLayer, Ployz, RpcError } from "#/modules/runtime/ployz.server"
 import { OrganizationRuntime, OrganizationRuntimeLive } from "#/modules/runtime/organization-runtime.server";
 import type { PloyzSession } from "#/modules/runtime/ployz.server";
 import { DEFAULT_SERVER_UPGRADE_SETTINGS } from "#/modules/server-upgrade/server-upgrade";
+import { runtimeWatchMachineFixture, runtimeWatchMachineObservationFixture } from "#/modules/runtime/runtime-watch-frame.test-fixture";
 import { decideApproval } from "#/modules/approvals/approvals.server";
 import { operationApprovals } from "#/modules/approvals/tables";
 import type { Caller } from "#/modules/identity/actor";
 import { forgetServers } from "#/modules/machines/forget-servers.server";
 import { forgetServer } from "#/modules/operations/operations.server";
+import { operationsOn } from "#/modules/operations/operation-history.server";
 import { removeOrganizationAsMember } from "#/modules/organization/organization-removal.server";
 import { callStore, readStore } from "#/modules/config-store/config-store.server";
 import { permissionsOf } from "#/modules/organization/permissions";
@@ -629,6 +631,7 @@ const cliVolumeRunBodies: ReadonlyArray<CliBody> = [
   { environment: { project: "shop", environment: "production" }, kind: "mirror", to: "web-2" },
   { environment: { project: "shop", environment: "production" }, kind: "sync", full: true },
   { environment: { project: "shop", environment: "production" }, kind: "delete_mirror", slot: "web-2", confirm: "data" },
+  { environment: { project: "shop", environment: "production" }, kind: "delete_old_copy", slot: "web-2" },
   { environment: { project: "shop", environment: "production" }, kind: "move", to: "web-2" },
   { environment: { project: "shop", environment: "production" }, kind: "release" },
   { environment: { project: "shop", environment: "production" }, kind: "restore", from: "web-2" },
@@ -1563,7 +1566,12 @@ it.live(
           [403, "This token's grant doesn't include services:control."]);
         assert.deepStrictEqual(refusedWith(yield* cli("POST", "volumes/vol-1/sync", { bearer: deployer.secret }, { environment: production })),
           [403, "This token can deploy only to staging."]);
-        for (const body of cliVolumeRunBodies.filter(({ kind }) => kind !== "delete_mirror")) {
+        const deletes = ({ kind }: CliBody) => kind === "delete_mirror" || kind === "delete_old_copy";
+        for (const body of cliVolumeRunBodies.filter(deletes)) {
+          assert.deepStrictEqual(refusedWith(yield* cli("POST", "volumes/vol-1/runs", { bearer: reader }, body)),
+            [403, "This token's grant doesn't include volumes:delete-copy."], JSON.stringify(body));
+        }
+        for (const body of cliVolumeRunBodies.filter((body) => !deletes(body))) {
           assert.deepStrictEqual(refusedWith(yield* cli("POST", "volumes/vol-1/runs", { bearer: reader }, body)),
             [403, "This token's grant doesn't include services:control."], JSON.stringify(body));
           assert.deepStrictEqual(refusedWith(yield* cli("POST", "volumes/vol-1/runs", { bearer: deployer.secret }, body)),
@@ -1920,6 +1928,88 @@ it.live(
     }),
   60_000,
 );
+
+// Catches a CLI drain stored under the name Cloud kept before a rename reached it, not the one the CLI resolved its Server by.
+it.live(
+  "a CLI drain names its run by the Server's name in the frame while Cloud still keeps its old one",
+  () =>
+    Effect.gen(function* () {
+      const inngest = new Inngest({ id: "cli-drain-name-test" });
+      vi.spyOn(inngest, "send").mockResolvedValue({ ids: [] });
+      const layer = yield* cliLayer(fakeServers().layer, { runtime: operationClusterOf({ destroys: false, namespace: "left-behind" }), inngest });
+      yield* Effect.gen(function* () {
+        const { drizzle } = yield* Database;
+        const alice = yield* signUp("alice");
+        yield* drizzle.execute(sql`insert into organization_machine (organization_id, machine_id, cluster_key, encrypted_capability, machine_name)
+          values (${alice.organization.id}, ${fra1}, ${"a".repeat(64)}, '{}', 'old')
+          on conflict (organization_id, machine_id) do update set machine_name = excluded.machine_name`);
+
+        const drained = yield* cli("POST", `servers/${fra1}/drain`, alice);
+
+        assert.strictEqual(drained.status, 202, drained.text);
+        const runs = yield* operationsOn(alice.organization.id, { kind: "server", machine: fra1 }, null, 5);
+        assert.deepStrictEqual(runs.map(({ run }) => run), ["drain fra-1"]);
+      }).pipe(Effect.provide(layer));
+    }),
+  60_000,
+);
+
+const renamedCluster = Layer.succeed(OrganizationRuntime, {
+  cancel: () => Effect.void,
+  open: () => Effect.succeed({
+    status: "connected" as const,
+    connected: asTestDouble<PloyzSession>()({
+      watchFirstFrame: () => Effect.succeed(asTestDouble<RuntimeWatchView>()({
+        machines: [runtimeWatchMachineObservationFixture({ machine: runtimeWatchMachineFixture(fra1, "new"), membership: "up" })],
+        services: [],
+      })),
+      dataLossIfNamespaceDestroyed: () => Effect.succeed({ data_loss: [] }),
+    }),
+  }),
+});
+
+const shownServerRuns: readonly { verb: string; run: string; method: string; path: string; body: CliBody }[] = [
+  { verb: "drain", run: "drain", method: "POST", path: `servers/${fra1}/drain`, body: {} },
+  { verb: "remove", run: "remove", method: "DELETE", path: `servers/${fra1}`, body: { confirm_data_loss: { confirmed: [] } } },
+  { verb: "forget", run: "remove", method: "POST", path: `servers/${fra1}/forget`, body: {} },
+  { verb: "upgrade", run: "upgrade", method: "POST", path: `servers/${fra1}/upgrade`, body: { channel: DEFAULT_SERVER_UPGRADE_SETTINGS.channel } },
+];
+
+for (const operation of shownServerRuns) {
+  // Catches a CLI run stored under the frame's name when the Server was renamed after the CLI resolved and showed it.
+  it.live(
+    `a CLI ${operation.verb} names its run by the Server name the CLI showed, and an older CLI's by the frame's`,
+    () =>
+      Effect.gen(function* () {
+        const inngest = new Inngest({ id: `cli-${operation.verb}-shown-name-test` });
+        vi.spyOn(inngest, "send").mockResolvedValue({ ids: [] });
+        const layer = yield* cliLayer(fakeServers().layer, { runtime: renamedCluster, inngest });
+        yield* Effect.gen(function* () {
+          const runNames = (organizationId: string) =>
+            operationsOn(organizationId, { kind: "server", machine: fra1 }, null, 5).pipe(Effect.map((runs) => runs.map(({ run }) => run)));
+          const started = Effect.fn(function* (as: As, body: CliBody) {
+            const asked = yield* cli(operation.method, operation.path, as, body);
+            if (asked.json.error?.code !== "approval_required") return asked;
+            const details = asked.json.error.details ?? assert.fail("no details");
+            const approvalId = details.approval_id ?? assert.fail("no approval id");
+            yield* cli("POST", `approvals/${approvalId}`, as, { approve: { digest: details.approval ?? "" } });
+            return yield* cli(operation.method, operation.path, { ...as, approval: approvalId }, body);
+          });
+
+          const alice = yield* signUp("alice");
+          const shown = yield* started(alice, { ...operation.body, server_name: "old" });
+          assert.include([200, 202], shown.status, shown.text);
+          assert.deepStrictEqual(yield* runNames(alice.organization.id), [`${operation.run} old`]);
+
+          const bob = yield* signUp("bob");
+          const older = yield* started(bob, operation.body);
+          assert.include([200, 202], older.status, older.text);
+          assert.deepStrictEqual(yield* runNames(bob.organization.id), [`${operation.run} new`]);
+        }).pipe(Effect.provide(layer));
+      }),
+    60_000,
+  );
+}
 
 it.live(
   "a request key admits one operation: a replay answers its attempt, another request under it conflicts, a malformed one refuses",

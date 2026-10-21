@@ -72,6 +72,7 @@ fn deploy_failures_keep_runtime_exit_and_secondary_stop_causes() {
             last_check: None,
         },
         out_of_memory: None,
+        last_run: None,
     }
     .to_string();
     assert!(

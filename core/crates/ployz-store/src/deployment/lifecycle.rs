@@ -1027,16 +1027,20 @@ fn retried(
 }
 
 /// A queued Deployment of `who`'s Organization, checked that a runner may still
-/// claim it. Nothing changes: the caller hands it to a runner.
+/// claim it and a Server could run it. Nothing changes: the caller hands it to a runner.
 pub(crate) fn start(
     tx: &mut dyn Tx,
     who: &Actor,
     id: &DeploymentId,
+    trusted: &crate::Trusted,
 ) -> Result<DeploymentSummary, RpcError> {
     owned(tx, who, id)?;
     let stored = locked(tx, id)?;
     match stored.summary.status {
-        DeploymentStatus::Queued => Ok(stored.summary),
+        DeploymentStatus::Queued => {
+            trusted.runnable()?;
+            Ok(stored.summary)
+        }
         DeploymentStatus::Running | DeploymentStatus::Cancelling => Err(error::conflict(
             "This Deployment is already running",
             json!({ "deployment": id }),
@@ -1410,7 +1414,47 @@ pub(crate) fn record(
                 running(&stored)?;
             }
             let success = matches!(*outcome, DeployOutcome::Success { .. });
-            let (reason, cause) = failure(&outcome, &stored.nodes, &preview.operations)
+            let mut projection =
+                project_runtime_outcome(preview, json!({ "version": 1, "outcome": outcome }))
+                    .map_err(|_| invalid_evidence("Deploy Outcome"))?;
+            super::rows::record(tx, &stored, &progress)?;
+            let (failed, stopped) = super::rows::failed_or_cancelled(tx, &stored)?;
+            let failed_on_its_own =
+                |service: &ServiceName| failed.iter().any(|(s, _)| s == service);
+            // The runner names only the first failure it saw. A Service that failed
+            // on its own beside it reaches the outcome as never attempted, and a
+            // cancel named before it would hide why the run failed.
+            for (service, _) in &failed {
+                if projection.unattempted_services.contains(service) {
+                    projection.unattempted_services.retain(|s| s != service);
+                    projection.failed_services.push(service.clone());
+                }
+            }
+            projection.failed_services.sort();
+            let named_cancel = matches!(
+                &*outcome,
+                DeployOutcome::Failed {
+                    failed: FailedOperation::Operation { error, .. }
+                        | FailedOperation::Replacement { error, .. },
+                    ..
+                } if error.cancelled()
+            );
+            let real = failed
+                .first()
+                .filter(|_| named_cancel)
+                .map(|(service, failure)| Failure {
+                    reason: format!(
+                        "{}: {}",
+                        current_name(&stored.nodes, service),
+                        failure.reason
+                    )
+                    .chars()
+                    .take(500)
+                    .collect(),
+                    cause: failure.cause.clone(),
+                });
+            let (reason, cause) = real
+                .or_else(|| failure(&outcome, &stored.nodes, &preview.operations))
                 .or_else(|| {
                     success
                         .then(|| undeleted(&stored.nodes, &removed, &preview.operations))
@@ -1419,26 +1463,20 @@ pub(crate) fn record(
                 .map_or((None, Vec::new()), |failure| {
                     (Some(failure.reason), failure.cause)
                 });
-            let projection =
-                project_runtime_outcome(preview, json!({ "version": 1, "outcome": outcome }))
-                    .map_err(|_| invalid_evidence("Deploy Outcome"))?;
-            super::rows::record(tx, &stored, &progress)?;
-            // The Deployment's cancel stopped the run, and each Service it left
-            // unfinished, unless one of its rows failed on its own.
-            let cancelled = if stored.summary.status == DeploymentStatus::Cancelling
-                && matches!(
-                    &*outcome,
-                    DeployOutcome::Failed {
-                        failed: FailedOperation::Operation { error, .. }
-                            | FailedOperation::Replacement { error, .. },
-                        ..
-                    } if error.cancelled()
-                ) {
-                let failed = super::rows::failed(tx, &stored)?;
+            let cancelling = stored.summary.status == DeploymentStatus::Cancelling;
+            // The Deployment's cancel stopped the operation the run failed on.
+            let stopped_by_cancel = cancelling && named_cancel;
+            // Each Service it left unfinished that the cancel stopped: every one when
+            // it stopped the run, else those whose rows it stopped, and never one with
+            // a row that failed on its own.
+            let cancelled = if cancelling {
                 projection
                     .failed_services
                     .iter()
-                    .filter(|service| !failed.contains(*service))
+                    .filter(|service| {
+                        !failed_on_its_own(service)
+                            && (stopped_by_cancel || stopped.contains(*service))
+                    })
                     .cloned()
                     .collect()
             } else {
@@ -1506,6 +1544,7 @@ pub(crate) fn record(
                     | DeployOutcome::Success { .. }
                     | DeployOutcome::Interrupted { .. } => Vec::new(),
                 },
+                cancelled: stopped_by_cancel && failed.is_empty(),
             };
             super::rows::settle(tx, &stored)?;
             stored.run.nodes = nodes;

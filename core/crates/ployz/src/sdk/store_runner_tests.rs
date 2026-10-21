@@ -542,10 +542,12 @@ async fn an_older_containers_failed_tail_is_scrubbed_of_the_value_its_machine_re
 
     let older = run
         .failed_log(&client, &scrub, machine, container_id('c'))
-        .await;
+        .await
+        .0;
     let unreadable = run
         .failed_log(&client, &scrub, machine, container_id('d'))
-        .await;
+        .await
+        .0;
     session.close().await;
     server.abort();
 
@@ -581,7 +583,8 @@ async fn a_name_sealed_after_the_claim_is_scrubbed_from_a_failed_tail() {
 
     let log = run
         .failed_log(&client, &scrub, machine, container_id('c'))
-        .await;
+        .await
+        .0;
     session.close().await;
     server.abort();
 
@@ -614,10 +617,12 @@ async fn an_image_supplied_value_sealed_after_the_claim_is_scrubbed_from_a_faile
 
     let log = run
         .failed_log(&client, &scrub, machine, container_id('c'))
-        .await;
+        .await
+        .0;
     let unreadable = run
         .failed_log(&client, &scrub, machine, container_id('d'))
-        .await;
+        .await
+        .0;
     session.close().await;
     server.abort();
 
