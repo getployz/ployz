@@ -845,6 +845,7 @@ mod tests {
         let store = store();
         store.file(&cid(1), "meta.json", 10, 0);
         store.file(&cid(1), "gaps.jsonl", 10, 0);
+        store.file(&cid(1), "env.json", 10, 0);
         store.file(&cid(2), "meta.json", 10, 0);
         store.file(&cid(3), "meta.json", 10, 0);
         store.file(&cid(3), "1-30.log", 10, 0);
