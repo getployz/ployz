@@ -330,7 +330,6 @@ async fn last_cloud_managed_server_asks_for_cloud_before_any_confirmation() {
 }
 
 type Asked = std::sync::Arc<std::sync::Mutex<Vec<(String, serde_json::Value)>>>;
-/// Woken by each read of the removal Cloud runs.
 type Reads = std::sync::Arc<tokio::sync::Notify>;
 
 const ASKED: &str = r#"{"error":{"code":"approval_required","message":"A human must approve this first: this removal takes Server two out","details":{"approval_id":"apr_9","approval":"remove:abc","effects":[{"kind":"removes_server","name":"two","node":"b","path":"servers/b"}],"operation":{"verb":"remove","name":"two"}}}}"#;

@@ -209,7 +209,6 @@ impl FakeCluster {
         self.kv.lock().unwrap().tokens.clone()
     }
 
-    /// Resolves once `count` subscription requests have arrived since start.
     pub(crate) async fn subscriptions(&self, count: usize) {
         let mut subscribed = self.kv.lock().unwrap().subscribed.subscribe();
         subscribed.wait_for(|seen| *seen >= count).await.unwrap();

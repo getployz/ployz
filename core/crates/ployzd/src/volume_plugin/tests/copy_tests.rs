@@ -1257,8 +1257,6 @@ async fn departure_during_a_receive_stops_it_and_destroys_the_mirror() {
     server.abort();
 }
 
-/// Probes every 10ms for up to ten seconds, and answers the first value `probe` gives, or
-/// None when it never gave one.
 pub(super) async fn poll<T>(mut probe: impl AsyncFnMut() -> Option<T>) -> Option<T> {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
     loop {
@@ -1274,16 +1272,12 @@ pub(super) async fn poll<T>(mut probe: impl AsyncFnMut() -> Option<T>) -> Option
     }
 }
 
-/// Waits for `done`, and fails the test naming `what` if it never is.
 pub(super) async fn eventually(what: &str, mut done: impl FnMut() -> bool) {
     if poll(async || done().then_some(())).await.is_none() {
         panic!("{what} never happened");
     }
 }
 
-/// Lets requests already sent act for `long`. Neither the plugin's unix socket nor fake
-/// ZFS's child processes signal how far a request got, and an effect that must not
-/// happen has no event to await.
 pub(super) async fn let_requests_act(long: Duration) {
     // real-wait: a request's progress through the plugin and fake ZFS emits no event.
     tokio::time::sleep(long).await;

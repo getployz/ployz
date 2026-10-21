@@ -136,7 +136,6 @@ impl Harness {
         .await;
     }
 
-    /// Waits for the process to finish `count` more ticks.
     async fn ticks(&self, count: u64) {
         let mut ticks = self.keeper.subscribe_ticks();
         let from = *ticks.borrow_and_update();
@@ -548,9 +547,6 @@ async fn wait_for_free_port(listen: SocketAddrV4) {
     .await;
 }
 
-/// Retries `check` until it passes, panicking with its last failure after
-/// `SETTLE`. It reads what emits no event: answers over UDP, the fake
-/// Corrosion's subscriptions, a port a forked child may still hold.
 async fn eventually<F, Fut>(mut check: F)
 where
     F: FnMut() -> Fut,

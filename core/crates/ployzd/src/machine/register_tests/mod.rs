@@ -311,7 +311,6 @@ async fn replayed_enroll_republishes_runtime_over_a_register_row() {
     let _ = std::fs::remove_dir_all(target_dir);
 }
 
-/// Polls `done` until it holds, for five seconds.
 async fn eventually<F, Fut>(mut done: F) -> Result<(), tokio::time::error::Elapsed>
 where
     F: FnMut() -> Fut,

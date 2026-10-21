@@ -407,7 +407,6 @@ fn only_a_call_that_got_no_status_back_is_unreplied() {
     }
 }
 
-/// Polls the OS until `ready` yields a value.
 async fn poll_os<T>(mut ready: impl FnMut() -> Option<T>) -> T {
     loop {
         if let Some(value) = ready() {
@@ -418,7 +417,6 @@ async fn poll_os<T>(mut ready: impl FnMut() -> Option<T>) -> T {
     }
 }
 
-/// Waits until no process has `pid`.
 async fn exited(pid: u32) {
     poll_os(|| {
         let alive = StdCommand::new("kill")

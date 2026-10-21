@@ -487,7 +487,6 @@ fn healthcheck(command: &str, retries: u32) -> ployz_core::HealthcheckSpec {
     })
 }
 
-/// Pauses before the next poll of the cluster.
 async fn poll_again(interval: Duration) {
     // real-wait: polls the real cluster's RPC for a state change it does not stream
     tokio::time::sleep(interval).await;

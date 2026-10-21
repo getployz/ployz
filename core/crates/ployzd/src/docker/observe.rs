@@ -1139,7 +1139,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(data_dir);
     }
 
-    /// Lets the observers trade requests with the loopback fakes on the wall clock.
     async fn wall_clock(duration: std::time::Duration) {
         // real-wait: the fake Docker and Corrosion answer over loopback sockets, and paused time would jump past their replies.
         tokio::time::sleep(duration).await;

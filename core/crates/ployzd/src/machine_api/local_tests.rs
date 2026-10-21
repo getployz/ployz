@@ -874,7 +874,6 @@ mod set_volume_copy {
         );
     }
 
-    /// Blocks a plugin route's worker until the test releases it.
     fn hold_route(released: &std::sync::Mutex<std::sync::mpsc::Receiver<()>>) {
         tokio::task::block_in_place(|| {
             released
@@ -885,7 +884,6 @@ mod set_volume_copy {
         });
     }
 
-    /// The fake Docker records each request as it arrives and emits no event for it.
     async fn requested(fake: &FakeDocker, method: http::Method, suffix: &str) {
         let arrived = || {
             fake.requests

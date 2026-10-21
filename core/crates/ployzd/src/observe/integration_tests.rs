@@ -200,7 +200,6 @@ async fn every_line_through_six_rotations_and_removal_is_stored_exactly_once() {
     assert!(Path::new(&dir).join("meta.json").exists());
 }
 
-/// Gives the harvester wall-clock time to tail what real Docker wrote.
 async fn let_harvester_run(duration: Duration) {
     // real-wait: real Docker writes the log files the harvester tails; neither signals progress.
     tokio::time::sleep(duration).await;

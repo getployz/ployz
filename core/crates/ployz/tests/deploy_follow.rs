@@ -106,7 +106,6 @@ fn replacement() -> Reply {
     }
 }
 
-/// The CLI is another process, seen only through its requests, its events file and its exit.
 fn real_wait(duration: Duration) {
     // real-wait: the CLI process and its signal owner report nothing this test can await
     std::thread::sleep(duration);

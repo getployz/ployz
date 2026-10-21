@@ -1339,7 +1339,6 @@ where
     .unwrap();
 }
 
-/// Gives real Docker and Corrosion wall-clock time to act.
 async fn wall_clock(duration: Duration) {
     // real-wait: Docker and Corrosion are real processes behind sockets; nothing in-process signals their progress.
     tokio::time::sleep(duration).await;

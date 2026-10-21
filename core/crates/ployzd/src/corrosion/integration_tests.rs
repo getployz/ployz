@@ -490,7 +490,6 @@ fn container(machine_id: &MachineId, suffix: &str) -> ContainerObservation {
     .unwrap()
 }
 
-/// Gives a real Corrosion, or a refused address, wall-clock time to answer.
 async fn wall_clock(duration: Duration) {
     // real-wait: Corrosion runs in a container behind real sockets; nothing in-process signals its progress.
     tokio::time::sleep(duration).await;

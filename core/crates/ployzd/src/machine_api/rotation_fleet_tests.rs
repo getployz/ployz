@@ -185,8 +185,6 @@ impl Fleet {
         .unwrap_or_else(|_| panic!("{container} never published an address"));
     }
 
-    /// Wait until the cluster's row for `container` satisfies `done`, rereading it on
-    /// every Container change.
     async fn container_until(
         &self,
         container: ContainerId,
@@ -201,7 +199,6 @@ impl Fleet {
         .await
     }
 
-    /// Start every Machine's Ingress watcher, returning what each one publishes.
     async fn run_ingress(&self) -> (MachineView, Vec<watch::Receiver<PublishedRoutes>>) {
         let machines = MachineView::start(self.store.clone(), self.shutdown.clone());
         tokio::time::timeout(
@@ -244,7 +241,6 @@ impl Fleet {
         AdminClient::new(self.dir.join("admin.sock"))
     }
 
-    /// Wait until every Ingress in `publishes` has acked `containers` for `service`.
     /// A watcher writes its ack rows before it announces the publish.
     async fn acked_by_all(
         &self,

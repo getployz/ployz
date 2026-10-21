@@ -66,7 +66,6 @@ pub(super) struct DeployService {
     oom_killed: bool,
     /// Once released, a Starting Container turns healthy and starts serving.
     health_release: Option<Arc<tokio::sync::watch::Sender<bool>>>,
-    /// Woken each time a health wait begins.
     health_waits: Arc<tokio::sync::Notify>,
     /// The Machine answers an In ask without a health verdict and leaves the copy where it was.
     unread_health: bool,
@@ -96,7 +95,6 @@ pub(super) struct DeployService {
     rotations: Arc<Mutex<BTreeMap<ContainerId, Rotated>>>,
     /// Copies that were In and left: a proxy that never drops a route keeps them.
     unrouted: Arc<Mutex<BTreeSet<ContainerId>>>,
-    /// Woken each time a copy is taken out of rotation.
     unroutes: Arc<tokio::sync::Notify>,
     /// What each proxy last routed, kept by the real rule.
     served: Arc<Mutex<BTreeMap<MachineId, ployz_core::ProxyRoutes>>>,
@@ -404,7 +402,6 @@ impl DeployService {
         self.unrouted.clone()
     }
 
-    /// Returns once `container_id` has been taken out of rotation.
     pub(super) async fn unrouted_copy(&self, container_id: &ContainerId) {
         loop {
             let unrouted = self.unroutes.notified();

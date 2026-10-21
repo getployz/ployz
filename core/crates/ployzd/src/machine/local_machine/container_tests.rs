@@ -833,7 +833,6 @@ mod settled {
         run(new)
     }
 
-    /// Waits until `ready` holds.
     async fn eventually(mut ready: impl FnMut() -> bool) {
         while !ready() {
             // real-wait: the daemon changes this state over the fake Docker's real TCP
@@ -842,9 +841,6 @@ mod settled {
         }
     }
 
-    /// The daemon's requests reach the fake Docker over a real TCP socket, and admission
-    /// queues them in turn. Neither signals a request that has landed or queued, so this
-    /// gives every started request time to.
     async fn let_requests_land() {
         // real-wait: requests travel the fake Docker's TCP socket and admission's queue,
         // which emit no event.
