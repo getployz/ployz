@@ -154,7 +154,7 @@ function fakedTimers(call: ESTree.CallExpression): ReadonlySet<string> {
   const options = objectArguments(call)[0];
   if (options === undefined) return timerFunctions;
   const advances = literalProperty(options, "shouldAdvanceTime");
-  if (advances?.type === "Literal" && advances.value === true) return new Set();
+  if (advances !== null && !(advances.type === "Literal" && advances.value === false)) return new Set();
   const toFake = literalProperty(options, "toFake");
   if (toFake === null) return options.properties.some((property) => property.type === "SpreadElement") ? new Set() : timerFunctions;
   if (toFake.type !== "ArrayExpression") return new Set();

@@ -143,6 +143,14 @@ tester.run("no-real-time-wait-in-tests", noRealTimeWaitInTestsRule, {
     },
     {
       filename,
+      code: `it("may advance with the wall clock", async () => {
+        vi.useFakeTimers({ shouldAdvanceTime: advance });
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      });`,
+      errors: [{ messageId: "realClock" }],
+    },
+    {
+      filename,
       code: `it("fakes too late", async () => {
         await new Promise((resolve) => setTimeout(resolve, 10));
         vi.useFakeTimers();
