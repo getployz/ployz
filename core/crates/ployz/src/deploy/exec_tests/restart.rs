@@ -274,31 +274,35 @@ async fn storage_preparation_lost_to_a_daemon_restart_is_resent() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_create_whose_connection_drops_is_resent_and_adopts_its_copy() {
+async fn a_create_whose_connection_drops_fails_without_waiting_out_a_restart() {
     let machine = machine('1');
     let plan = vec![run(&machine, spec(Some(0), None, None), false)];
-    let lost = crate::cluster::answered_by(
-        &machine,
-        crate::connect::ConnectError::from(tonic::Status::from_error(Box::new(
-            std::io::Error::new(std::io::ErrorKind::ConnectionAborted, "connection lost"),
-        ))),
-    );
-    let call = || Call::Run(machine, ContainerKind::ServiceContainer);
+    let dropped = |message| {
+        crate::cluster::answered_by(
+            &machine,
+            crate::connect::ConnectError::from(tonic::Status::from_error(Box::new(
+                std::io::Error::new(std::io::ErrorKind::NotConnected, message),
+            ))),
+        )
+    };
     let client = Scripted::new(vec![
-        Step(call(), Reply::Error(lost)),
-        created(call(), &container('a')),
+        Step(
+            Call::Run(machine, ContainerKind::ServiceContainer),
+            Reply::Error(dropped("connection lost")),
+        ),
+        Step(
+            Call::DiscardSlot(machine, ContainerKind::ServiceContainer),
+            Reply::Error(dropped("transport session closed")),
+        ),
     ]);
+    let started = tokio::time::Instant::now();
 
     let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
 
     assert!(
-        matches!(outcome, DeployOutcome::Success { .. }),
+        matches!(outcome, DeployOutcome::Failed { .. }),
         "{outcome:?}"
     );
-    let slots = client.slots.lock().unwrap();
-    let [first, second] = slots.as_slice() else {
-        panic!("expected two creations, got {slots:?}");
-    };
-    assert_eq!(first, second);
+    assert!(started.elapsed() < RESTART_WAIT, "{:?}", started.elapsed());
     client.assert_done();
 }

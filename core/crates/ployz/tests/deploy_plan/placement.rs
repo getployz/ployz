@@ -1867,15 +1867,17 @@ fn a_matching_copy_another_run_left_pending_is_replaced_not_counted_as_serving()
 }
 
 #[test]
-fn a_new_spec_removes_the_copies_a_failed_run_of_another_spec_left_pending() {
-    for replicas in [1, 2] {
+fn the_next_deploy_removes_the_copies_a_failed_run_left_pending() {
+    for (replicas, same_spec) in [(1, false), (2, false), (1, true), (2, true)] {
         let requested = requested(ServiceMode::Replicated {
             replicas: NonZeroU32::new(replicas).unwrap(),
         });
         let mut serving = requested.clone();
         serving.container.image = "ghcr.io/getployz/api:old".into();
         let mut failed = requested.clone();
-        failed.container.image = "ghcr.io/getployz/api:failed".into();
+        if !same_spec {
+            failed.container.image = "ghcr.io/getployz/api:failed".into();
+        }
         let service = service_id('a');
         let copy = |hex, spec, rotation| {
             let mut copy = container(hex, '1', spec, &service);
@@ -1908,7 +1910,7 @@ fn a_new_spec_removes_the_copies_a_failed_run_of_another_spec_left_pending() {
                         | DeployOperation::RemoveContainer { container_id: old_container_id, .. }
                         if *old_container_id == id
                 )),
-                "replicas {replicas}: {id} stays: {operations:?}"
+                "replicas {replicas}, same spec {same_spec}: {id} stays: {operations:?}"
             );
         }
     }
