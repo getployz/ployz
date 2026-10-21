@@ -359,6 +359,7 @@ This check has limits:
 - A replica removed outside Ployz, for example with `docker rm`, is unseen, so status can't name
   it.
 - A global service's draining replica isn't named.
+- While any server is down or didn't answer, a draining replica isn't named.
 - After a scale-down that changed only the replica count, a replica left draining can be named
   until the next deploy removes it.
 
