@@ -747,15 +747,16 @@ const ANSWERING: Duration = Duration::from_secs(6);
 
 /// The Servers a deploy from here would reach, when none of them answers. One bounded
 /// connection, as `deploy --plan` makes; one that runs out of time, or fails for another
-/// reason, says nothing.
+/// reason, says nothing. A local socket isn't dialed: this Server is reported apart.
 fn silent_servers(matches: &ArgMatches) -> Option<super::server::Silent> {
     let context = matches
         .try_get_one::<String>("context")
         .ok()
         .flatten()
         .map(String::as_str);
+    let probe = super::server::connect_remote(matches, context);
     super::runtime().ok()?.block_on(async {
-        match tokio::time::timeout(ANSWERING, super::server::connect(matches, context)).await {
+        match tokio::time::timeout(ANSWERING, probe).await {
             Ok(Err(error)) => super::server::Silent::of(&error),
             Ok(Ok(_)) | Err(_) => None,
         }

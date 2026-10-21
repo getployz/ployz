@@ -1342,6 +1342,28 @@ fn status_names_the_server_that_isnt_answering() {
 }
 
 #[test]
+fn status_leaves_a_local_socket_to_this_servers_row() {
+    let (store, home) = no_server_answering();
+    let socket = home.path().join("missing.sock");
+    std::fs::write(
+        home.path().join("config.yaml"),
+        format!(
+            "current_context: lab\ncontexts:\n  lab:\n    connections:\n      - unix: {}\n        machine_id: 0123456789abcdef0123456789abcdef\n        name: machine-1\n",
+            socket.display()
+        ),
+    )
+    .unwrap();
+    let (status, _) = run_in(&store, &home, &["--json", "status"]);
+    let status: Value = serde_json::from_str(&status).unwrap();
+    assert_eq!(status["attention"], json!([]), "{status}");
+
+    let connect = format!("unix://{}", socket.display());
+    let (status, _) = run_in(&store, &home, &["--json", "status", "--connect", &connect]);
+    let status: Value = serde_json::from_str(&status).unwrap();
+    assert_eq!(status["attention"], json!([]), "{status}");
+}
+
+#[test]
 fn the_plan_warns_the_deploy_cant_run_while_no_server_answers() {
     let (store, home) = no_server_answering();
     let warning = "Server machine-1 isn't answering, so this deploy can't run until it does. \

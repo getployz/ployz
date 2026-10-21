@@ -119,6 +119,43 @@ pub(super) async fn connect_or_none(
     super::connect_context(matches, context).await.map(Some)
 }
 
+/// [`connect_or_none`] for a look at whether the Servers answer, or `None` without dialing
+/// when the route enters by a Unix socket: that is this host's own daemon, which `status`
+/// reports as this Server.
+pub(super) async fn connect_remote(
+    matches: &ArgMatches,
+    context: Option<&str>,
+) -> Result<Option<Client>, Error> {
+    let direct = matches.get_one::<String>("connect").map(String::as_str);
+    if direct.is_none() && context.is_none() {
+        let store = CredentialStore::beside(&super::config_path(matches)?);
+        match cloud_account::from_env(&store).await {
+            Ok(credential) => {
+                return dial(matches, cloud_account::server_access(&credential).await?).await;
+            }
+            Err(LoginError::SignedOut) => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    let selected = crate::connect::resolve_connections(
+        &super::config_path(matches)?,
+        direct,
+        context,
+        std::path::Path::new(crate::connect::DEFAULT_LOCAL_SOCKET),
+    )?;
+    if selected
+        .connections
+        .iter()
+        .any(|connection| matches!(connection.transport(), crate::context::Transport::Unix(_)))
+    {
+        return Ok(None);
+    }
+    let connector = SystemConnector::default().with_ssh_timeout(crate::cli::ssh_timeout(matches));
+    Ok(Some(
+        crate::connect::connect_selected_with(selected, Arc::new(connector)).await?,
+    ))
+}
+
 /// The credential Cloud runs a Server operation under: signed in, with neither `--connect`
 /// nor `--context` naming a Cluster to dial, the same rule [`connect`] follows.
 pub(super) fn cloud_runs(
