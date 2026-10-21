@@ -2842,6 +2842,31 @@ mod tests {
         );
     }
 
+    // Catches a removed Container that Docker started with no env keeping none, which
+    // withholds its lines instead of showing them.
+    #[tokio::test]
+    async fn a_removed_container_started_without_an_env_keeps_an_empty_one() {
+        let host = host();
+        let id = host.container(&[lines(T0 + 1, 3)]);
+        let mut running = host.harvester();
+        running.harvester.rescan();
+        let Inspected::Found(mut inspected) = managed(3) else {
+            unreachable!("managed is found");
+        };
+        inspected.config.as_mut().unwrap().env = None;
+
+        running
+            .harvester
+            .on_inspected(id, Inspected::Found(inspected));
+        host.remove_from_docker();
+        running.harvester.on_inspected(id, Inspected::Gone);
+
+        assert_eq!(
+            host.env().map(RetainedEnv::into_values),
+            Some(BTreeMap::new())
+        );
+    }
+
     // Catches a Container whose env.json went missing, as when its first write failed,
     // never getting it back while Docker still has the Container.
     #[tokio::test]
