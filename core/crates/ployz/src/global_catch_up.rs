@@ -47,9 +47,16 @@ impl std::fmt::Display for CatchUpError {
     }
 }
 
+/// What every Server runs, with each Server's name.
+pub(crate) struct Observed {
+    live: LiveServices<RpcError>,
+    names: Names,
+    /// Omitted Servers that are Unarrived Machines, which hold no copy to wait on.
+    unarrived: Names,
+}
+
 pub(crate) trait CatchUpClient {
-    /// What every Server runs, with each Server's name.
-    async fn live_services(&mut self) -> Result<(LiveServices<RpcError>, Names), Failure>;
+    async fn live_services(&mut self) -> Result<Observed, Failure>;
     async fn bridge_capacity(
         &mut self,
         machine_id: &MachineId,
@@ -84,17 +91,24 @@ pub(crate) trait CatchUpClient {
 }
 
 impl CatchUpClient for Client {
-    async fn live_services(&mut self) -> Result<(LiveServices<RpcError>, Names), Failure> {
+    async fn live_services(&mut self) -> Result<Observed, Failure> {
         let machines = self.machines().await.map_err(Failure::from)?;
         let live = self
             .live_services_from(&machines, EnvironmentValues::Included)
             .await
             .map_err(Failure::from)?;
-        let names = machines
-            .into_iter()
-            .map(|machine| (machine.machine.id, machine.machine.name))
-            .collect();
-        Ok((live, names))
+        let named = |machine: &ployz_core::MachineObservation| {
+            (machine.machine.id, machine.machine.name.clone())
+        };
+        Ok(Observed {
+            live,
+            names: machines.iter().map(named).collect(),
+            unarrived: machines
+                .iter()
+                .filter(|machine| machine.unarrived())
+                .map(named)
+                .collect(),
+        })
     }
 
     async fn bridge_capacity(
@@ -357,12 +371,15 @@ pub(crate) enum CatchUpFact {
     Excluded(QualifiedService),
     Running(QualifiedService),
     Failed(QualifiedService),
+    /// Omitted Unarrived Machines the plan did not wait on.
+    NotArrived(Names),
 }
 
 /// Follow target-only catch-up with the shared progress block.
 pub(crate) async fn follow_globals(
     client: &mut Client,
     assigned: &Machine,
+    command: impl Fn(&[&str]) -> String,
 ) -> Result<(), CatchUpError> {
     use crate::ui::progress::{Disposition, Frame, Progress, Row, Run, State, Subject, Timing};
     let signal = crate::cancellation::interrupted()
@@ -374,8 +391,13 @@ pub(crate) async fn follow_globals(
         notices: Vec::new(),
     };
     let mut progress = Progress::start(frame.clone());
+    let mut not_arrived = Names::new();
     let result = catch_up_globals(client, assigned, &signal, |fact| {
         let (identity, state) = match fact {
+            CatchUpFact::NotArrived(names) => {
+                not_arrived = names;
+                return;
+            }
             CatchUpFact::Identified(services) => {
                 frame.rows = services
                     .into_iter()
@@ -433,6 +455,18 @@ pub(crate) async fn follow_globals(
             Disposition::Settled
         },
     );
+    for (_, name) in not_arrived {
+        crate::ui::warn(format!(
+            "Server {name} never joined, so Global catch-up did not wait on it."
+        ));
+        crate::ui::hint(&crate::ui::Hint::Next(command(&[
+            "server",
+            "forget",
+            name.as_str(),
+            "--confirm",
+            "dead",
+        ])));
+    }
     result
 }
 
@@ -539,17 +573,26 @@ fn not_in_message(health: Option<HealthVerdict>) -> String {
 async fn observe_complete<C: CatchUpClient>(
     client: &mut C,
     cancel: &CancellationToken,
+    observe: &mut impl FnMut(CatchUpFact),
 ) -> Result<LiveServices<RpcError>, CatchUpError> {
     let cancelled = || CatchUpError::new(Failure::cancelled(), Vec::new());
     for attempt in 1..=OBSERVATION_ATTEMPTS {
-        let (live, names) = tokio::select! {
+        let Observed {
+            mut live,
+            names,
+            unarrived,
+        } = tokio::select! {
             biased;
             () = cancel.cancelled() => return Err(cancelled()),
             live = client.live_services() => {
                 live.map_err(|error| CatchUpError::new(error, Vec::new()))?
             }
         };
+        live.containers
+            .omissions
+            .retain(|id| !unarrived.iter().any(|(unarrived, _)| unarrived == id));
         if live.containers.all_targets_succeeded() {
+            observe(CatchUpFact::NotArrived(unarrived));
             return Ok(live);
         }
         if attempt == OBSERVATION_ATTEMPTS {
@@ -577,7 +620,7 @@ pub(crate) async fn catch_up_globals<C: CatchUpClient>(
     cancel: &CancellationToken,
     mut observe: impl FnMut(CatchUpFact),
 ) -> Result<(), CatchUpError> {
-    let live = observe_complete(client, cancel).await?;
+    let live = observe_complete(client, cancel, &mut observe).await?;
     let services = live.services();
     let sources = sources(&services);
     let mut unresolved: Vec<QualifiedService> = sources

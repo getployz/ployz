@@ -333,7 +333,10 @@ where
     progress(EnrollStage::Publishing);
     // Mint a fresh capability; Cloud verifies replacements when enrollment resumes.
     let capability = set_cloud_management_client(matches, &mut ready).await?;
-    let catch_up = crate::global_catch_up::follow_globals(&mut ready, &assigned).await;
+    let catch_up = crate::global_catch_up::follow_globals(&mut ready, &assigned, |args| {
+        super::rerun(matches, args)
+    })
+    .await;
     // Cloud may use the replacement after publication, revoking this key.
     // A committed join remains enrolled even when Global catch-up needs a separate retry.
     cloud_enroll::publish(

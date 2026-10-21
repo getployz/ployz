@@ -657,6 +657,17 @@ impl MachineObservation {
         )
     }
 
+    /// An Unarrived Machine: omitted, never recorded by this observer's admin, and with
+    /// no daemon version in its row. A registrar writes an empty runtime, and a daemon
+    /// publishes its own row, version included, only once it participates, so this
+    /// observer has no sign the Machine ever ran and it holds no Service Container.
+    #[must_use]
+    pub fn unarrived(&self) -> bool {
+        !self.invites_rpc()
+            && self.membership_evidence.is_none()
+            && self.machine.runtime.daemon_version.is_empty()
+    }
+
     /// Start an observer-relative Machine view with optional observations absent.
     #[must_use]
     pub fn new(machine: Machine, membership: MembershipObservation) -> Self {
@@ -888,7 +899,8 @@ mod placement_tests {
     use crate::{MachineId, MachineName, MachineSubnet, Placement, WireGuardPublicKey};
 
     use super::{
-        BuildConcurrency, BuildConcurrencyUpdate, Machine, MachineUpdate, machine_matches_placement,
+        BuildConcurrency, BuildConcurrencyUpdate, Machine, MachineObservation, MachineUpdate,
+        MembershipEvidence, MembershipObservation, machine_matches_placement,
     };
 
     fn machine(hex: char, name: &str) -> Machine {
@@ -967,6 +979,25 @@ mod placement_tests {
         let cleared = update(&set, BuildConcurrencyUpdate::Automatic);
         assert_eq!(cleared.build_concurrency, None);
         assert_eq!(usize::from(cleared.effective_build_concurrency()), 4);
+    }
+
+    #[test]
+    fn only_an_omitted_row_with_no_sign_of_running_is_unarrived() {
+        let registered =
+            MachineObservation::new(machine('a', "claimed"), MembershipObservation::Down);
+        assert!(registered.unarrived());
+
+        let mut recorded = registered.clone();
+        recorded.membership_evidence = Some(MembershipEvidence::Down);
+        assert!(!recorded.unarrived(), "the admin recorded it, even as Down");
+
+        let mut published = registered.clone();
+        published.machine.runtime.daemon_version = "0.3.0".into();
+        assert!(!published.unarrived(), "the Machine published its own row");
+
+        let mut answering = registered;
+        answering.membership = MembershipObservation::Up;
+        assert!(!answering.unarrived(), "it invites RPC");
     }
 
     #[test]

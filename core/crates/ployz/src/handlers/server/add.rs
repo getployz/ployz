@@ -101,7 +101,12 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
 
         let catch_up = runtime.block_on(async {
             let mut entry = super::super::reconnect_client(matches, options.context()).await?;
-            Ok::<_, Error>(crate::global_catch_up::follow_globals(&mut entry, &assigned).await)
+            Ok::<_, Error>(
+                crate::global_catch_up::follow_globals(&mut entry, &assigned, |args| {
+                    super::super::recovery_command(matches, &context_name, args)
+                })
+                .await,
+            )
         })?;
         catch_up.map_err(|error| {
             crate::global_catch_up::joined_catch_up_error(error, &assigned, |args| {

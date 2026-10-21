@@ -267,6 +267,15 @@ async fn replayed_enroll_republishes_runtime_over_a_register_row() {
     republished()
         .await
         .expect("the joined Machine publishes itself");
+    let published = replicated
+        .machine(identity.machine_id.as_str())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        !published.runtime.daemon_version.is_empty(),
+        "a self-published row names its daemon version; an empty one reads as Unarrived"
+    );
     // Settle the way a live cluster has: the Machines view holds the served row.
     let mut settled = view.watch();
     tokio::time::timeout(

@@ -3,8 +3,8 @@ pub mod local;
 
 use crate::connect::{Client, ConnectError};
 use ployz_core::{
-    EnrollmentAssignment, EnrollmentSnapshot, ListMachinesRequest, Registered, RpcError,
-    RpcErrorCode, op,
+    EnrollmentAssignment, EnrollmentSnapshot, ListMachinesRequest, MachineRuntime, Registered,
+    RpcError, RpcErrorCode, op,
 };
 
 /// Observe the Entry Machine's enrollment facts before taking an operator lock.
@@ -46,7 +46,8 @@ pub async fn publish_enrollment(
     })?;
     let mut request = assignment.request.clone();
     request.assigned_subnet = Some(assignment.machine.subnet);
-    request.runtime.clone_from(&assignment.machine.runtime);
+    // Only the Machine reports its runtime; an empty one marks a row it has not published.
+    request.runtime = MachineRuntime::default();
     entry
         .call_unretried::<op::Register>(request, None, crate::cluster::LIVE_MUTATION_REPLY_TIMEOUT)
         .await

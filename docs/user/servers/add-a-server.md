@@ -306,6 +306,10 @@ these there:
   [The server's disk is filling up](../troubleshooting/servers.md#the-servers-disk-is-filling-up).
 - **Pinning your own Caddy?** `--ingress-image` needs Caddy 2.8 or newer. Ployz refuses an older
   version tag.
+- **A server that never joined doesn't hold up the next one.** If a token was used but its server
+  never joined, `ployz server ls` lists it as down with no version. The next `ployz server add`
+  doesn't wait on it: it warns `Server web-3 never joined` and prints
+  `ployz server forget web-3 --confirm dead` to take it out.
 - **Client IPs stay out of Ployz's ingress logs, not your app's.** Caddy passes the client IP to
   your app in `X-Forwarded-For`. If your app logs requests, its logs, and the Log Store's copy of
   them, can hold client IPs and user agents. Those logs are yours to manage.
