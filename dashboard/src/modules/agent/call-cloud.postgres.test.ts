@@ -93,6 +93,24 @@ describe("callCloud", () => {
       expect(yield* read(OTHER_DRAIN)).toEqual([expect.objectContaining({ state: "failed", reason: "Drains need a newer Ployz on machine-1." })]);
     }));
 
+  // Catches a lost Drain and an interrupted one reaching the agent tools as the same `unknown`, told apart only by words.
+  it.live("names how a Drain with no verdict ended", () =>
+    Effect.gen(function* () {
+      const services = yield* Layer.build(yield* storeTestCloud());
+      const userId = yield* seedStoreOrganization(ORGANIZATION).pipe(Effect.provide(services));
+      const { drizzle } = yield* Database.pipe(Effect.provide(services));
+      const ran = (inngestRunId: string) => ({ state: "unknown", inngestRunId, startedAt: new Date(), endedAt: new Date() }) as const;
+      yield* drizzle.insert(serverDrainAttempt).values([
+        { id: DRAIN, organizationId: ORGANIZATION, machineId: MACHINE, requestedByUserId: userId, ...ran("run-1"), endCode: "lost" },
+        { id: OTHER_DRAIN, organizationId: ORGANIZATION, machineId: MACHINE, requestedByUserId: userId, ...ran("run-2"), endCode: "interrupted" },
+      ]);
+      const read = (attempt: string) =>
+        operationsOn(ORGANIZATION, { kind: "server", machine: MACHINE }, attempt, 1, "machine-1").pipe(Effect.provide(services));
+
+      expect(yield* read(DRAIN)).toEqual([expect.objectContaining({ state: "unknown", end: "lost" })]);
+      expect(yield* read(OTHER_DRAIN)).toEqual([expect.objectContaining({ state: "unknown", end: "interrupted" })]);
+    }));
+
   const LOGS: CloudQuery = {
     query: "logs",
     namespace: "shop-production",

@@ -5405,6 +5405,43 @@ fn a_cancelled_queued_deploy_no_longer_chooses_its_upload_as_it_starts() {
 }
 
 #[test]
+fn a_claimed_deployment_reads_preparing_until_its_runner_records_a_deploy_preview() {
+    let (store, who) = shop();
+    let queued = admit(&store, &who, 1, &[], None).unwrap();
+    assert!(!queued.preparing, "a queued Deployment has not started");
+    let a = runner("runner-a");
+    let read = |store: &ConfigStore| {
+        store
+            .read(&who, &ployz_store::DeploymentQuery { id: id(1) })
+            .unwrap()
+            .deployment
+    };
+    let claimed = store.claim(&id(1), &a).unwrap();
+    assert!(claimed.deployment.preparing);
+    assert!(
+        read(&store).preparing,
+        "a read shows what the claim answered"
+    );
+    assert!(
+        store.claim(&id(1), &a).unwrap().deployment.preparing,
+        "renewing the claim before the preview still prepares"
+    );
+    store
+        .record(&id(1), &a, RunEvidence::Prepared(preview(&["web", "api"])))
+        .unwrap();
+    let running = read(&store);
+    assert_eq!(running.status, DeploymentStatus::Running);
+    assert!(
+        !running.preparing,
+        "a recorded Deploy Preview ends preparation"
+    );
+    store
+        .record(&id(1), &a, succeeded(&["web", "api"]))
+        .unwrap();
+    assert!(!read(&store).preparing);
+}
+
+#[test]
 fn cloud_keeps_every_upload_a_queued_deploy_may_start_from_until_it_ends() {
     let (store, who) = shop();
     store
