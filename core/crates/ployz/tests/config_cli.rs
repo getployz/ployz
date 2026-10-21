@@ -3102,6 +3102,16 @@ fn the_catalog_describes_settings_without_a_store() {
             .iter()
             .any(|arg| arg.get("name") == Some(&json!("--patch")))
     );
+    let project_rm = commands
+        .iter()
+        .find(|entry| entry.get("command") == Some(&json!("project rm")))
+        .unwrap();
+    assert!(
+        project_rm["args"].as_array().unwrap().iter().any(
+            |arg| arg["name"] == json!("NAME") && arg["help"] == json!("The Project to remove")
+        ),
+        "{project_rm}"
+    );
     let completion = commands
         .iter()
         .find(|entry| entry.get("command") == Some(&json!("completion")))
