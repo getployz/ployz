@@ -1,13 +1,19 @@
+//! The Server check of `ployz status`: no Server answering its one connection, each Down
+//! Machine, each Service serving fewer copies than it should, and each live Machine whose
+//! proxy lacks a Service's In copies or still routes its Out or Held ones. What the check
+//! could not see is a warning, never an all-clear.
+
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use clap::ArgMatches;
 use futures_util::{StreamExt, stream};
 use ipnet::Ipv4Net;
 use ployz_core::{
-    ContainerAddress, ContainerId, CopyRotation, EnvironmentValues, LiveServices, MachineId,
-    MachineName, MachineObservation, MachineTarget, MembershipObservation, Namespace,
-    QualifiedService, ReadRoutedAddressesRequest, RoutedAddresses, RoutesRead, RpcError,
-    RpcErrorCode, ServiceContainer, ServiceObservation, Unacked, op, serving_containers,
+    ContainerAddress, ContainerId, ContainerObservation, ContainerRuntimeObservation, CopyRotation,
+    EnvironmentValues, LiveServices, MachineId, MachineName, MachineObservation, MachineTarget,
+    MembershipObservation, Namespace, QualifiedService, ReadRoutedAddressesRequest,
+    RoutedAddresses, RoutesRead, RpcError, RpcErrorCode, ServiceContainer, ServiceMode,
+    ServiceObservation, Unacked, op, serving_containers,
 };
 use ployz_store::{DeploymentStatus, DeploymentSummary};
 use serde::Serialize;
@@ -18,7 +24,8 @@ use super::{Error, leaf_matches};
 use crate::cloud_login::LoginError;
 use crate::context::ContextError;
 
-pub(super) const UNCHECKED: &str = "Could not check which Servers picked up the new copies";
+pub(super) const UNCHECKED: &str =
+    "Could not check which copies serve or which Servers picked up the new copies";
 
 const READS_AT_ONCE: usize = 8;
 /// A routed-address read answers from memory. A slow one warns rather than holding up the listing.
@@ -32,6 +39,12 @@ pub(super) enum Subject {
         /// Each such Machine by name, else by ID when the Machine list lacks it.
         machines: Vec<String>,
     },
+    NotServing {
+        service: QualifiedService,
+        serving: usize,
+        wanted: usize,
+        copies: Vec<NotServingCopy>,
+    },
     Down {
         machine: MachineName,
     },
@@ -44,6 +57,14 @@ pub(super) enum Subject {
     Unanswered {
         servers: Vec<String>,
     },
+}
+
+#[derive(Serialize)]
+pub(super) struct NotServingCopy {
+    machine: String,
+    container: ContainerId,
+    rotation: CopyRotation,
+    runtime: ContainerRuntimeObservation,
 }
 
 pub(super) fn attention(
@@ -69,7 +90,7 @@ pub(super) fn attention(
         });
     match observed {
         Ok(Some(observed)) => {
-            let check = judge(observed);
+            let check = judge(observed, namespace, |words| super::store::next(leaf, words));
             check.warn();
             check.attention
         }
@@ -260,7 +281,7 @@ impl<Fact: PartialEq> ServicesByFact<Fact> {
     }
 }
 
-fn judge(observed: Observed) -> Check {
+fn judge(observed: Observed, namespace: &Namespace, next: impl Fn(&[&str]) -> String) -> Check {
     let Observed { machines, copies } = observed;
     let down: BTreeSet<MachineId> = machines
         .iter()
@@ -310,6 +331,19 @@ fn judge(observed: Observed) -> Check {
         .chain(live.containers.omissions.iter().copied())
         .filter(|machine| !down.contains(machine))
         .collect();
+    let complete = live.containers.failures.is_empty()
+        && live.containers.omissions.iter().all(|omitted| {
+            machines
+                .iter()
+                .any(|observed| observed.machine.id == *omitted && observed.unarrived())
+        });
+    for service in live.services() {
+        if service.identity.namespace == *namespace
+            && let Some(short) = check.not_serving(service, &down, complete, &next)
+        {
+            check.attention.push(short);
+        }
+    }
     if !unanswered.is_empty() {
         check.unseen.push(Unseen::Unanswered(unanswered.clone()));
     }
@@ -556,7 +590,126 @@ fn service_names(services: &[QualifiedService]) -> String {
         .join(", ")
 }
 
+/// An Out copy still running stands in for a missing In copy only when every copy was
+/// seen, so a partial list never names a copy as draining. Each Held copy cancels one Out
+/// stand-in, never an In copy, so a restart beside a leftover Out copy raises no row.
+fn shortfall<'service>(
+    service: &'service ServiceObservation,
+    down: &BTreeSet<MachineId>,
+    complete: bool,
+) -> Option<(usize, usize, Vec<&'service ContainerObservation>)> {
+    let up: Vec<&ServiceContainer> = service
+        .containers
+        .iter()
+        .filter(|copy| !down.contains(&copy.as_observation().machine_id))
+        .collect();
+    let serving: BTreeSet<ContainerId> = serving_containers(up.iter().copied())
+        .iter()
+        .map(|serving| serving.as_observation().container_id)
+        .collect();
+    let held = up
+        .iter()
+        .filter(|copy| matches!(copy.as_observation().rotation(), CopyRotation::Held(_)))
+        .count();
+    let candidates: Vec<&ContainerObservation> = up
+        .iter()
+        .map(|copy| copy.as_observation())
+        .filter(|copy| match copy.rotation() {
+            CopyRotation::In => !copy.stopped,
+            CopyRotation::Out => {
+                matches!(copy.runtime, ContainerRuntimeObservation::Running { .. })
+            }
+            CopyRotation::Pending | CopyRotation::Held(_) => false,
+        })
+        .collect();
+    let mode = candidates
+        .iter()
+        .max_by_key(|copy| {
+            (
+                *copy.rotation() == CopyRotation::In,
+                copy.created_at_unix_nanos,
+                copy.container_id,
+            )
+        })?
+        .resolved_spec
+        .mode
+        .clone();
+    let replicated = matches!(mode, ServiceMode::Replicated { .. });
+    let mut kept: Vec<&ContainerObservation> = candidates
+        .into_iter()
+        .filter(|copy| *copy.rotation() == CopyRotation::In || (complete && replicated))
+        .collect();
+    let kept_in = kept
+        .iter()
+        .filter(|copy| *copy.rotation() == CopyRotation::In)
+        .count();
+    let wanted = match mode {
+        ServiceMode::Replicated { replicas } => usize::try_from(replicas.get())
+            .unwrap_or(usize::MAX)
+            .min(kept_in + (kept.len() - kept_in).saturating_sub(held)),
+        ServiceMode::Global => kept_in,
+    };
+    if serving.len() >= wanted {
+        return None;
+    }
+    kept.retain(|copy| !serving.contains(&copy.container_id));
+    kept.sort_by_key(|copy| (copy.machine_id, copy.container_id));
+    Some((serving.len(), wanted, kept))
+}
+
 impl Check {
+    fn not_serving(
+        &self,
+        service: ServiceObservation,
+        down: &BTreeSet<MachineId>,
+        complete: bool,
+        next: impl Fn(&[&str]) -> String,
+    ) -> Option<Attention> {
+        let (serving, wanted, kept) = shortfall(&service, down, complete)?;
+        let states: Vec<String> = kept
+            .iter()
+            .map(|copy| {
+                let words = match copy.rotation() {
+                    CopyRotation::Out => "draining".to_owned(),
+                    CopyRotation::In | CopyRotation::Pending | CopyRotation::Held(_) => {
+                        super::service::process_state(copy)
+                    }
+                };
+                format!("{} {words}", self.name(&copy.machine_id))
+            })
+            .collect();
+        let name = service.identity.name.as_str();
+        let hint = if kept.iter().any(|copy| *copy.rotation() == CopyRotation::In) {
+            next(&["logs", name])
+        } else {
+            next(&["deploy", name])
+        };
+        Some(Attention {
+            reason: "copies_not_serving".to_owned(),
+            message: format!(
+                "Serving {serving} of {wanted} {}. {}.",
+                if wanted == 1 { "copy" } else { "copies" },
+                states.join(", ")
+            ),
+            deployment: None,
+            next: Some(hint),
+            subject: Some(Subject::NotServing {
+                service: service.identity.clone(),
+                serving,
+                wanted,
+                copies: kept
+                    .into_iter()
+                    .map(|copy| NotServingCopy {
+                        machine: self.name(&copy.machine_id),
+                        container: copy.container_id,
+                        rotation: copy.rotation().clone(),
+                        runtime: copy.runtime.clone(),
+                    })
+                    .collect(),
+            }),
+        })
+    }
+
     fn name(&self, machine: &MachineId) -> String {
         self.names
             .get(machine)
@@ -575,11 +728,11 @@ impl Check {
         for unseen in &self.unseen {
             match unseen {
                 Unseen::RollingOut(deployment) => crate::ui::warn(format!(
-                    "Not checking which Servers picked up the new copies while deployment {deployment} is in progress."
+                    "Not checking which copies serve or which Servers picked up the new copies while deployment {deployment} is in progress."
                 )),
                 Unseen::Unlisted(error) => crate::ui::warn_cause(UNCHECKED, error),
                 Unseen::Unanswered(machines) => crate::ui::warn(format!(
-                    "{} did not answer, so status may miss Servers that have not picked up the new copies.",
+                    "{} did not answer, so status may miss copies that do not serve and Servers that have not picked up the new copies.",
                     self.names(machines)
                 )),
                 Unseen::Unreported(machines) => {
@@ -603,7 +756,10 @@ impl Check {
                     ));
                 }
                 Unseen::Unread { services, error } => crate::ui::warn_cause(
-                    format_args!("{UNCHECKED} of {}", service_names(services)),
+                    format_args!(
+                        "Could not check which Servers picked up the new copies of {}",
+                        service_names(services)
+                    ),
                     error,
                 ),
                 Unseen::Unjudged { services, machines } => crate::ui::warn(format!(
@@ -631,986 +787,5 @@ impl Check {
 }
 
 #[cfg(test)]
-mod tests {
-    use std::net::Ipv4Addr;
-
-    use ployz_core::{
-        ContainerAddress, ContainerObservation, DeploymentLogId, Machine, MachineFailure,
-        PartialResult, RpcErrorCode, service_containers,
-    };
-    use serde_json::json;
-
-    use super::*;
-    use crate::global_fixtures::{container_id, machine, qualified, running_on, service_id};
-
-    fn machines() -> [Machine; 3] {
-        [
-            machine('a', "machine-1"),
-            machine('b', "machine-2"),
-            machine('c', "machine-3"),
-        ]
-    }
-
-    fn rotated_on(machine: &Machine, hex: char, rotation: CopyRotation) -> ContainerObservation {
-        let mut copy = running_on(machine, hex);
-        copy.try_update(|parts| {
-            parts.rotation = Some(rotation);
-            parts.address = Some(ContainerAddress(Ipv4Addr::new(10, 210, 0, 1)));
-        })
-        .unwrap();
-        copy
-    }
-
-    fn routed_on(machine: &Machine, hex: char) -> ContainerObservation {
-        rotated_on(machine, hex, CopyRotation::In)
-    }
-
-    fn held() -> CopyRotation {
-        CopyRotation::Held(DeploymentLogId::parse("run").unwrap())
-    }
-
-    fn service(name: &str, id: char, copies: [ContainerObservation; 2]) -> ServiceObservation {
-        ServiceObservation {
-            identity: qualified("app", name),
-            service_id: service_id(id),
-            containers: service_containers(copies),
-            hook_containers: Vec::new(),
-        }
-    }
-
-    fn web(copies: [ContainerObservation; 2]) -> ServiceObservation {
-        service("web", 'a', copies)
-    }
-
-    fn routes_as_ployzd_answers(acked: &[(&Machine, &[char])], down: &[&Machine]) -> RoutesRead {
-        RoutesRead {
-            routes: acked
-                .iter()
-                .map(|(machine, copies)| {
-                    let copies = copies.iter().copied().map(container_id).collect();
-                    (machine.id, Some(copies))
-                })
-                .collect(),
-            complete: true,
-            down: down.iter().map(|machine| machine.id).collect(),
-        }
-    }
-
-    fn listed(up: &[&Machine], down: &[&Machine]) -> Vec<MachineObservation> {
-        let up = up
-            .iter()
-            .map(|machine| (machine, MembershipObservation::Up));
-        let down = down
-            .iter()
-            .map(|machine| (machine, MembershipObservation::Down));
-        up.chain(down)
-            .map(|(machine, membership)| MachineObservation::new((*machine).clone(), membership))
-            .collect()
-    }
-
-    fn unavailable(message: &str) -> RpcError {
-        RpcError {
-            code: RpcErrorCode::Unavailable,
-            message: message.to_owned(),
-            details: serde_json::Value::Null,
-            cause: Vec::new(),
-        }
-    }
-
-    fn listing(failed: &[&Machine]) -> LiveServices<RpcError> {
-        LiveServices {
-            containers: PartialResult {
-                successes: Vec::new(),
-                failures: failed
-                    .iter()
-                    .map(|machine| MachineFailure {
-                        machine_id: machine.id,
-                        error: unavailable("connection refused"),
-                    })
-                    .collect(),
-                omissions: Vec::new(),
-            },
-        }
-    }
-
-    fn checked(
-        machines: Vec<MachineObservation>,
-        reads: Vec<(ServiceObservation, Result<RoutesRead, RpcError>)>,
-    ) -> Check {
-        checked_routing(machines, reads, BTreeMap::new())
-    }
-
-    fn checked_routing(
-        machines: Vec<MachineObservation>,
-        reads: Vec<(ServiceObservation, Result<RoutesRead, RpcError>)>,
-        routed: BTreeMap<MachineId, RoutedAddresses>,
-    ) -> Check {
-        judge(Observed {
-            machines,
-            copies: Copies::Listed {
-                live: listing(&[]),
-                reads,
-                routed: routed
-                    .into_iter()
-                    .map(|(machine, routed)| (machine, Ok(routed)))
-                    .collect(),
-            },
-        })
-    }
-
-    fn web_routed_at(copies: &[(char, [u8; 4])]) -> RoutedAddresses {
-        RoutedAddresses {
-            routes: Some(BTreeMap::from([(
-                qualified("app", "web"),
-                copies
-                    .iter()
-                    .map(|(hex, address)| {
-                        (
-                            container_id(*hex),
-                            ContainerAddress(Ipv4Addr::from(*address)),
-                        )
-                    })
-                    .collect(),
-            )])),
-        }
-    }
-
-    fn warned(check: &Check) -> Vec<String> {
-        check.warn();
-        let (_, json) = crate::ui::captured(|| crate::ui::show(&json!({})));
-        json.and_then(|json| json.get("warnings").cloned())
-            .map(|warnings| serde_json::from_value(warnings).unwrap())
-            .unwrap_or_default()
-    }
-
-    #[test]
-    fn status_names_no_machine_when_every_proxy_acks_the_new_copies() {
-        let [one, two, three] = machines();
-        let check = checked(
-            listed(&[&one, &two, &three], &[]),
-            vec![(
-                web([routed_on(&one, '1'), routed_on(&two, '2')]),
-                Ok(routes_as_ployzd_answers(
-                    &[
-                        (&one, &['1', '2']),
-                        (&two, &['1', '2']),
-                        (&three, &['1', '2']),
-                    ],
-                    &[],
-                )),
-            )],
-        );
-
-        assert!(check.attention.is_empty());
-        assert!(warned(&check).is_empty());
-    }
-
-    #[test]
-    fn status_names_a_live_machine_whose_proxy_lacks_a_new_copy() {
-        let [one, two, three] = machines();
-        let check = checked(
-            listed(&[&one, &two, &three], &[]),
-            vec![(
-                web([routed_on(&one, '1'), routed_on(&two, '2')]),
-                Ok(routes_as_ployzd_answers(
-                    &[(&one, &['1', '2']), (&two, &['1', '2']), (&three, &['0'])],
-                    &[],
-                )),
-            )],
-        );
-
-        assert_eq!(
-            serde_json::to_value(&check.attention).unwrap(),
-            json!([{
-                "reason": "routes_not_acked",
-                "message": "machine-3 has not picked up the new copies. Check its network.",
-                "service": "app/web",
-                "machines": ["machine-3"],
-            }])
-        );
-        assert_eq!(
-            super::super::link::rendered(check.attention),
-            "organization  ?\nsigned in as  local\nweb           machine-3 has not picked up the new copies. Check its network.\n"
-        );
-    }
-
-    #[test]
-    fn status_names_a_machine_whose_proxy_routes_a_copy_at_an_address_its_owner_does_not_report() {
-        let [one, two, three] = machines();
-        let check = checked_routing(
-            listed(&[&one, &two, &three], &[]),
-            vec![(
-                web([routed_on(&one, '1'), routed_on(&two, '2')]),
-                Ok(routes_as_ployzd_answers(
-                    &[
-                        (&one, &['1', '2']),
-                        (&two, &['1', '2']),
-                        (&three, &['1', '2']),
-                    ],
-                    &[],
-                )),
-            )],
-            BTreeMap::from([
-                (
-                    one.id,
-                    web_routed_at(&[('1', [10, 210, 0, 1]), ('2', [10, 210, 0, 1])]),
-                ),
-                (
-                    three.id,
-                    web_routed_at(&[('1', [10, 210, 2, 2]), ('2', [10, 210, 0, 1])]),
-                ),
-            ]),
-        );
-
-        assert_eq!(
-            serde_json::to_value(&check.attention).unwrap(),
-            json!([{
-                "reason": "routes_stale_address",
-                "message": "machine-3 routes a copy to 10.210.2.2, which its owner does not report. Check its network.",
-                "service": "app/web",
-                "machine": "machine-3",
-                "addresses": ["10.210.2.2"],
-            }])
-        );
-        assert_eq!(
-            super::super::link::rendered(check.attention),
-            "organization  ?\nsigned in as  local\nweb           machine-3 routes a copy to 10.210.2.2, which its owner does not report. Check its network.\n"
-        );
-    }
-
-    fn routing_a_removed_copy(
-        listed_machines: Vec<MachineObservation>,
-        unanswered: &[&Machine],
-        removed_at: [u8; 4],
-    ) -> Check {
-        let [one, two, three] = machines();
-        judge(Observed {
-            machines: listed_machines,
-            copies: Copies::Listed {
-                live: listing(unanswered),
-                reads: vec![(
-                    web([routed_on(&one, '1'), routed_on(&three, '3')]),
-                    Ok(routes_as_ployzd_answers(
-                        &[
-                            (&one, &['1', '3']),
-                            (&two, &['1', '3']),
-                            (&three, &['1', '3']),
-                        ],
-                        &[],
-                    )),
-                )],
-                routed: BTreeMap::from([(
-                    two.id,
-                    Ok(web_routed_at(&[('1', [10, 210, 0, 1]), ('0', removed_at)])),
-                )]),
-            },
-        })
-    }
-
-    #[test]
-    fn status_names_a_machine_whose_proxy_routes_a_copy_its_owner_removed() {
-        let [one, two, three] = machines();
-        let check =
-            routing_a_removed_copy(listed(&[&one, &two, &three], &[]), &[], [10, 210, 12, 5]);
-
-        assert_eq!(
-            serde_json::to_value(&check.attention).unwrap(),
-            json!([{
-                "reason": "routes_stale_address",
-                "message": "machine-2 routes a copy to 10.210.12.5, which its owner does not report. Check its network.",
-                "service": "app/web",
-                "machine": "machine-2",
-                "addresses": ["10.210.12.5"],
-            }])
-        );
-    }
-
-    #[test]
-    fn status_names_no_machine_for_a_removed_copy_whose_owner_did_not_answer() {
-        let [one, two, three] = machines();
-        let check = routing_a_removed_copy(
-            listed(&[&one, &two, &three], &[]),
-            &[&three],
-            [10, 210, 12, 5],
-        );
-
-        assert_eq!(serde_json::to_value(&check.attention).unwrap(), json!([]));
-    }
-
-    #[test]
-    fn status_names_no_machine_for_a_removed_copy_when_an_unanswered_machine_shares_its_subnet() {
-        let [mut one, two, three] = machines();
-        one.subnet = three.subnet;
-        let check = routing_a_removed_copy(
-            listed(&[&one, &two, &three], &[]),
-            &[&three],
-            [10, 210, 12, 5],
-        );
-
-        assert_eq!(serde_json::to_value(&check.attention).unwrap(), json!([]));
-    }
-
-    #[test]
-    fn status_names_no_machine_for_a_removed_copy_when_a_down_machine_shares_its_subnet() {
-        let [mut one, two, three] = machines();
-        one.subnet = three.subnet;
-        let check = routing_a_removed_copy(listed(&[&one, &two], &[&three]), &[], [10, 210, 12, 5]);
-
-        assert!(
-            check
-                .attention
-                .iter()
-                .all(|attention| attention.reason == "machine_down"),
-            "{}",
-            serde_json::to_value(&check.attention).unwrap()
-        );
-    }
-
-    #[test]
-    fn status_names_no_machine_for_a_removed_copy_whose_owner_is_down() {
-        let [one, two, three] = machines();
-        let check = routing_a_removed_copy(listed(&[&one, &two], &[&three]), &[], [10, 210, 12, 5]);
-
-        assert!(
-            check
-                .attention
-                .iter()
-                .all(|attention| attention.reason == "machine_down"),
-            "{}",
-            serde_json::to_value(&check.attention).unwrap()
-        );
-    }
-
-    #[test]
-    fn status_names_no_machine_for_a_removed_copy_whose_owner_the_reader_calls_down() {
-        let [one, two, three] = machines();
-        let check = judge(Observed {
-            machines: listed(&[&one, &two, &three], &[]),
-            copies: Copies::Listed {
-                live: listing(&[]),
-                reads: vec![(
-                    web([routed_on(&one, '1'), routed_on(&three, '3')]),
-                    Ok(routes_as_ployzd_answers(
-                        &[(&one, &['1', '3']), (&two, &['1', '3'])],
-                        &[&three],
-                    )),
-                )],
-                routed: BTreeMap::from([(
-                    two.id,
-                    Ok(web_routed_at(&[
-                        ('1', [10, 210, 0, 1]),
-                        ('0', [10, 210, 12, 5]),
-                    ])),
-                )]),
-            },
-        });
-
-        assert!(
-            check
-                .attention
-                .iter()
-                .all(|attention| attention.reason != "routes_stale_address"),
-            "{}",
-            serde_json::to_value(&check.attention).unwrap()
-        );
-    }
-
-    #[test]
-    fn status_names_no_machine_whose_listing_failed_for_what_its_proxy_routes() {
-        let [one, two, three] = machines();
-        let check = routing_a_removed_copy(
-            listed(&[&one, &two, &three], &[]),
-            &[&two],
-            [10, 210, 12, 5],
-        );
-
-        assert_eq!(serde_json::to_value(&check.attention).unwrap(), json!([]));
-        assert_eq!(
-            warned(&check),
-            [
-                "machine-2 did not answer, so status may miss Servers that have not picked up the new copies."
-            ]
-        );
-    }
-
-    #[test]
-    fn status_names_no_machine_for_a_removed_copy_at_an_address_no_machine_owns() {
-        let [one, two, three] = machines();
-        let check =
-            routing_a_removed_copy(listed(&[&one, &two, &three], &[]), &[], [10, 210, 99, 5]);
-
-        assert_eq!(serde_json::to_value(&check.attention).unwrap(), json!([]));
-    }
-
-    #[test]
-    fn status_warns_that_it_skips_a_machine_whose_proxy_config_is_unconfirmed() {
-        let [one, two, three] = machines();
-        let check = checked_routing(
-            listed(&[&one, &two, &three], &[]),
-            vec![(
-                web([routed_on(&one, '1'), routed_on(&three, '3')]),
-                Ok(routes_as_ployzd_answers(
-                    &[
-                        (&one, &['1', '3']),
-                        (&two, &['1', '3']),
-                        (&three, &['1', '3']),
-                    ],
-                    &[],
-                )),
-            )],
-            BTreeMap::from([
-                (one.id, web_routed_at(&[('1', [10, 210, 0, 1])])),
-                (two.id, RoutedAddresses { routes: None }),
-            ]),
-        );
-
-        assert_eq!(serde_json::to_value(&check.attention).unwrap(), json!([]));
-        assert_eq!(
-            warned(&check),
-            [
-                "machine-2 has not confirmed what its proxy serves, so status is not checking it for stale addresses."
-            ]
-        );
-    }
-
-    #[test]
-    fn status_warns_that_it_skips_a_machine_whose_routed_addresses_it_could_not_read() {
-        let [one, two, three] = machines();
-        let mut unsupported = unavailable("unknown method");
-        unsupported.code = RpcErrorCode::Unsupported;
-        let check = judge(Observed {
-            machines: listed(&[&one, &two, &three], &[]),
-            copies: Copies::Listed {
-                live: listing(&[]),
-                reads: vec![(
-                    web([routed_on(&one, '1'), routed_on(&three, '3')]),
-                    Ok(routes_as_ployzd_answers(
-                        &[
-                            (&one, &['1', '3']),
-                            (&two, &['1', '3']),
-                            (&three, &['1', '3']),
-                        ],
-                        &[],
-                    )),
-                )],
-                routed: BTreeMap::from([
-                    (one.id, Ok(web_routed_at(&[('1', [10, 210, 0, 1])]))),
-                    (two.id, Err(unavailable("deadline exceeded"))),
-                    (three.id, Err(unsupported)),
-                ]),
-            },
-        });
-
-        assert_eq!(serde_json::to_value(&check.attention).unwrap(), json!([]));
-        assert_eq!(
-            warned(&check),
-            [
-                "machine-2 has not confirmed what its proxy serves, so status is not checking it for stale addresses."
-            ],
-            "an older Server that lacks the check stays silent"
-        );
-    }
-
-    fn checked_with_an_old_copy(rotation: CopyRotation) -> Check {
-        let [one, two, three] = machines();
-        checked(
-            listed(&[&one, &two, &three], &[]),
-            vec![(
-                web([routed_on(&one, '1'), rotated_on(&two, '0', rotation)]),
-                Ok(routes_as_ployzd_answers(
-                    &[(&one, &['1']), (&two, &['1']), (&three, &['1', '0'])],
-                    &[],
-                )),
-            )],
-        )
-    }
-
-    #[test]
-    fn status_names_a_live_machine_whose_proxy_still_routes_an_out_copy() {
-        let check = checked_with_an_old_copy(CopyRotation::Out);
-
-        assert_eq!(
-            serde_json::to_value(&check.attention).unwrap(),
-            json!([{
-                "reason": "routes_not_acked",
-                "message": "machine-3 has not picked up the new copies. Check its network.",
-                "service": "app/web",
-                "machines": ["machine-3"],
-            }])
-        );
-        assert!(warned(&check).is_empty());
-    }
-
-    #[test]
-    fn status_names_a_live_machine_whose_proxy_still_routes_a_held_copy() {
-        let check = checked_with_an_old_copy(held());
-
-        assert_eq!(
-            serde_json::to_value(&check.attention).unwrap(),
-            json!([{
-                "reason": "routes_not_acked",
-                "message": "machine-3 has not picked up the new copies. Check its network.",
-                "service": "app/web",
-                "machines": ["machine-3"],
-            }])
-        );
-        assert!(warned(&check).is_empty());
-    }
-
-    #[test]
-    fn status_names_once_each_machine_that_lacks_a_new_copy_or_routes_an_old_one() {
-        let [one, two, three] = machines();
-        let check = checked(
-            listed(&[&one, &two, &three], &[]),
-            vec![(
-                web([
-                    routed_on(&one, '1'),
-                    rotated_on(&two, '0', CopyRotation::Out),
-                ]),
-                Ok(routes_as_ployzd_answers(
-                    &[(&one, &['1']), (&two, &['0']), (&three, &['1', '0'])],
-                    &[],
-                )),
-            )],
-        );
-
-        assert_eq!(
-            serde_json::to_value(&check.attention).unwrap(),
-            json!([{
-                "reason": "routes_not_acked",
-                "message": "machine-2, machine-3 have not picked up the new copies. Check their network.",
-                "service": "app/web",
-                "machines": ["machine-2", "machine-3"],
-            }])
-        );
-    }
-
-    #[test]
-    fn status_names_no_machine_for_routing_an_out_copy_on_a_down_machine() {
-        let [one, two, three] = machines();
-        let check = checked(
-            listed(&[&one, &three], &[&two]),
-            vec![(
-                web([
-                    routed_on(&one, '1'),
-                    rotated_on(&two, '0', CopyRotation::Out),
-                ]),
-                Ok(routes_as_ployzd_answers(
-                    &[(&one, &['1']), (&three, &['1', '0'])],
-                    &[],
-                )),
-            )],
-        );
-
-        assert_eq!(
-            serde_json::to_value(&check.attention).unwrap(),
-            json!([{
-                "reason": "machine_down",
-                "message": "Down. Its copies serve again once it's back.",
-                "machine": "machine-2",
-            }])
-        );
-        assert!(warned(&check).is_empty());
-    }
-
-    #[test]
-    fn a_proxy_keeping_an_out_copy_while_every_in_copy_is_down_is_not_named() {
-        let [one, two, three] = machines();
-        let check = checked(
-            listed(&[&one, &three], &[&two]),
-            vec![(
-                web([
-                    routed_on(&two, '1'),
-                    rotated_on(&one, '0', CopyRotation::Out),
-                ]),
-                Ok(routes_as_ployzd_answers(
-                    &[(&one, &['0']), (&three, &['0'])],
-                    &[],
-                )),
-            )],
-        );
-
-        assert_eq!(check.attention.len(), 1, "only machine-2's Down row");
-        assert!(warned(&check).is_empty());
-    }
-
-    #[test]
-    fn status_names_no_machine_when_every_proxy_routes_only_the_new_copy() {
-        let [one, two, three] = machines();
-        let check = checked(
-            listed(&[&one, &two, &three], &[]),
-            vec![(
-                web([
-                    routed_on(&one, '1'),
-                    rotated_on(&two, '0', CopyRotation::Out),
-                ]),
-                Ok(routes_as_ployzd_answers(
-                    &[(&one, &['1']), (&two, &['1']), (&three, &['1'])],
-                    &[],
-                )),
-            )],
-        );
-
-        assert!(check.attention.is_empty());
-        assert!(warned(&check).is_empty());
-    }
-
-    #[test]
-    fn status_shows_a_machine_down_on_the_entry_and_the_reader_as_down_only() {
-        let [one, two, three] = machines();
-        let check = checked(
-            listed(&[&one, &two], &[&three]),
-            vec![(
-                web([routed_on(&one, '1'), routed_on(&three, '3')]),
-                Ok(routes_as_ployzd_answers(
-                    &[(&one, &['1']), (&two, &['1'])],
-                    &[&three],
-                )),
-            )],
-        );
-
-        assert_eq!(
-            serde_json::to_value(&check.attention).unwrap(),
-            json!([{
-                "reason": "machine_down",
-                "message": "Down. Its copies serve again once it's back.",
-                "machine": "machine-3",
-            }])
-        );
-        assert!(warned(&check).is_empty());
-        assert_eq!(
-            super::super::link::rendered(check.attention),
-            "organization  ?\nsigned in as  local\nmachine-3     Down. Its copies serve again once it's back.\n"
-        );
-    }
-
-    #[test]
-    fn status_shows_a_machine_down_only_on_the_entry_as_down_and_never_as_not_picking_up() {
-        let [one, two, three] = machines();
-        let check = checked(
-            listed(&[&one, &two], &[&three]),
-            vec![(
-                web([routed_on(&one, '1'), routed_on(&three, '3')]),
-                Ok(routes_as_ployzd_answers(
-                    &[(&one, &['1']), (&two, &['1']), (&three, &[])],
-                    &[],
-                )),
-            )],
-        );
-
-        assert_eq!(
-            serde_json::to_value(&check.attention).unwrap(),
-            json!([{
-                "reason": "machine_down",
-                "message": "Down. Its copies serve again once it's back.",
-                "machine": "machine-3",
-            }])
-        );
-        assert!(warned(&check).is_empty());
-    }
-
-    #[test]
-    fn status_warns_it_skips_a_machine_only_the_reader_calls_down() {
-        let [one, two, three] = machines();
-        let check = checked(
-            listed(&[&one, &two, &three], &[]),
-            vec![(
-                web([routed_on(&one, '1'), routed_on(&three, '3')]),
-                Ok(routes_as_ployzd_answers(
-                    &[(&one, &['1']), (&two, &['1'])],
-                    &[&three],
-                )),
-            )],
-        );
-
-        assert!(check.attention.is_empty(), "no routes_not_acked row");
-        assert_eq!(
-            warned(&check),
-            [
-                "The Server status asked sees machine-3 Down, so status is not checking what it routes or who routes its copies of web."
-            ]
-        );
-    }
-
-    #[test]
-    fn status_names_no_stale_address_for_a_machine_only_the_reader_calls_down() {
-        let [one, two, three] = machines();
-        let check = checked_routing(
-            listed(&[&one, &two, &three], &[]),
-            vec![(
-                web([routed_on(&one, '1'), routed_on(&three, '3')]),
-                Ok(routes_as_ployzd_answers(
-                    &[(&one, &['1']), (&two, &['1'])],
-                    &[&three],
-                )),
-            )],
-            BTreeMap::from([
-                (
-                    two.id,
-                    web_routed_at(&[('1', [10, 210, 0, 1]), ('3', [10, 210, 2, 2])]),
-                ),
-                (
-                    three.id,
-                    web_routed_at(&[('1', [10, 210, 2, 2]), ('3', [10, 210, 0, 1])]),
-                ),
-            ]),
-        );
-
-        assert!(
-            check.attention.is_empty(),
-            "no routes_stale_address row for what machine-3 routes or for its copies"
-        );
-        assert_eq!(
-            warned(&check),
-            [
-                "The Server status asked sees machine-3 Down, so status is not checking what it routes or who routes its copies of web."
-            ]
-        );
-    }
-
-    #[test]
-    fn a_service_whose_copies_are_all_on_down_machines_warns_nothing() {
-        let [one, two, three] = machines();
-        let mut read = routes_as_ployzd_answers(&[(&one, &[])], &[&two, &three]);
-        read.complete = false;
-        let check = checked(
-            listed(&[&one, &two], &[&three]),
-            vec![(
-                web([routed_on(&three, '3'), routed_on(&three, '4')]),
-                Ok(read),
-            )],
-        );
-
-        assert_eq!(check.attention.len(), 1, "only machine-3's Down row");
-        assert!(warned(&check).is_empty());
-    }
-
-    #[test]
-    fn status_shows_a_down_machine_when_no_service_has_copies() {
-        let [one, two, three] = machines();
-
-        let check = checked(listed(&[&one, &two], &[&three]), Vec::new());
-
-        assert_eq!(
-            serde_json::to_value(&check.attention).unwrap(),
-            json!([{
-                "reason": "machine_down",
-                "message": "Down. Its copies serve again once it's back.",
-                "machine": "machine-3",
-            }])
-        );
-    }
-
-    #[test]
-    fn status_says_the_check_is_partial_when_a_live_machine_did_not_list_its_copies() {
-        let [one, two, three] = machines();
-        let check = judge(Observed {
-            machines: listed(&[&one, &two], &[&three]),
-            copies: Copies::Listed {
-                live: listing(&[&two, &three]),
-                reads: Vec::new(),
-                routed: BTreeMap::new(),
-            },
-        });
-
-        assert_eq!(check.attention.len(), 1, "only machine-3's Down row");
-        assert_eq!(
-            warned(&check),
-            [
-                "machine-2 did not answer, so status may miss Servers that have not picked up the new copies."
-            ]
-        );
-    }
-
-    #[test]
-    fn a_failed_routes_read_warns_for_its_service_and_keeps_the_down_row() {
-        let [one, two, three] = machines();
-        let check = checked(
-            listed(&[&one, &two], &[&three]),
-            vec![(
-                web([routed_on(&one, '1'), routed_on(&two, '2')]),
-                Err(unavailable("store not ready")),
-            )],
-        );
-
-        assert_eq!(
-            serde_json::to_value(&check.attention).unwrap(),
-            json!([{
-                "reason": "machine_down",
-                "message": "Down. Its copies serve again once it's back.",
-                "machine": "machine-3",
-            }])
-        );
-        assert_eq!(
-            warned(&check),
-            ["Could not check which Servers picked up the new copies of web: store not ready"]
-        );
-    }
-
-    #[test]
-    fn a_read_that_lacks_the_full_machine_list_is_never_an_all_clear() {
-        let [one, two, three] = machines();
-        let mut read = routes_as_ployzd_answers(&[(&one, &['1', '2']), (&two, &['1', '2'])], &[]);
-        read.complete = false;
-        let check = checked(
-            listed(&[&one, &two, &three], &[]),
-            vec![(web([routed_on(&one, '1'), routed_on(&two, '2')]), Ok(read))],
-        );
-
-        assert!(check.attention.is_empty());
-        assert_eq!(
-            warned(&check),
-            ["Could not check whether every Server picked up the new copies of web."]
-        );
-    }
-
-    #[test]
-    fn a_machine_whose_routes_row_has_not_arrived_is_unreported_not_stale() {
-        let [one, two, three] = machines();
-        let mut read = routes_as_ployzd_answers(&[(&one, &['1', '2']), (&two, &['1', '2'])], &[]);
-        read.routes.insert(three.id, None);
-        let check = checked(
-            listed(&[&one, &two, &three], &[]),
-            vec![(web([routed_on(&one, '1'), routed_on(&two, '2')]), Ok(read))],
-        );
-
-        assert!(check.attention.is_empty(), "no routes_not_acked row");
-        assert_eq!(
-            warned(&check),
-            ["machine-3 has not reported which copies it routes."]
-        );
-    }
-
-    #[test]
-    fn a_read_that_lacks_the_full_machine_list_warns_once_for_every_service() {
-        let [one, two, three] = machines();
-        let mut read = routes_as_ployzd_answers(&[(&one, &['1', '2']), (&two, &['1', '2'])], &[]);
-        read.complete = false;
-        let copies = || [routed_on(&one, '1'), routed_on(&two, '2')];
-        let check = checked(
-            listed(&[&one, &two, &three], &[]),
-            vec![
-                (service("web", 'a', copies()), Ok(read.clone())),
-                (service("api", 'b', copies()), Ok(read.clone())),
-                (service("worker", 'c', copies()), Ok(read)),
-            ],
-        );
-
-        assert_eq!(
-            warned(&check),
-            ["Could not check whether every Server picked up the new copies of web, api, worker."]
-        );
-    }
-
-    #[test]
-    fn the_same_read_error_for_several_services_warns_once() {
-        let [one, two, three] = machines();
-        let copies = || [routed_on(&one, '1'), routed_on(&two, '2')];
-        let check = checked(
-            listed(&[&one, &two, &three], &[]),
-            vec![
-                (
-                    service("web", 'a', copies()),
-                    Err(unavailable("store not ready")),
-                ),
-                (
-                    service("api", 'b', copies()),
-                    Err(unavailable("store not ready")),
-                ),
-            ],
-        );
-
-        assert_eq!(
-            warned(&check),
-            ["Could not check which Servers picked up the new copies of web, api: store not ready"]
-        );
-    }
-
-    fn deployment(number: u64, status: &str) -> DeploymentSummary {
-        serde_json::from_value(json!({
-            "id": "00000000-0000-4000-8000-000000000101",
-            "environment_id": "00000000-0000-4000-8000-000000000002",
-            "number": number, "status": status, "saved": 1, "services": [],
-            "runner": null, "upload": null, "remove": false, "admitted_by": null,
-            "admitted_at": 0, "started_at": null, "ended_at": null, "message": null,
-            "push": null, "ci": null, "in_flight": true, "outcome": null,
-        }))
-        .unwrap()
-    }
-
-    #[test]
-    fn a_queued_deployment_does_not_turn_the_check_off() {
-        assert_eq!(rolling_out(&[deployment(12, "queued")]), None);
-    }
-
-    #[test]
-    fn while_a_deployment_rolls_out_status_says_it_skips_the_check() {
-        let [one, two, three] = machines();
-        let deploying = [deployment(13, "queued"), deployment(12, "running")];
-        let check = judge(Observed {
-            machines: listed(&[&one, &two], &[&three]),
-            copies: Copies::RollingOut(rolling_out(&deploying).unwrap()),
-        });
-
-        assert_eq!(
-            serde_json::to_value(&check.attention).unwrap(),
-            json!([{
-                "reason": "machine_down",
-                "message": "Down. Its copies serve again once it's back.",
-                "machine": "machine-3",
-            }])
-        );
-        assert_eq!(
-            warned(&check),
-            [
-                "Not checking which Servers picked up the new copies while deployment #12 is in progress."
-            ]
-        );
-    }
-
-    fn status_warnings(config: &std::path::Path, flags: &[&str]) -> Vec<String> {
-        let mut args = vec![
-            "ployz",
-            "status",
-            "--ployz-config",
-            config.to_str().unwrap(),
-        ];
-        args.extend(flags);
-        let root = crate::cli::command().try_get_matches_from(args).unwrap();
-        let namespace = qualified("app", "web").namespace;
-        assert!(attention(&root, &namespace, &[]).is_empty());
-        let (_, json) = crate::ui::captured(|| crate::ui::show(&json!({})));
-        json.and_then(|json| json.get("warnings").cloned())
-            .map(|warnings| serde_json::from_value(warnings).unwrap())
-            .unwrap_or_default()
-    }
-
-    #[test]
-    fn status_warns_when_the_context_it_was_given_does_not_exist() {
-        let dir = tempfile::tempdir().unwrap();
-        let config = dir.path().join("config.yaml");
-        std::fs::write(&config, "contexts:\n  prod:\n    connections: []\n").unwrap();
-
-        let warnings = status_warnings(&config, &["--context", "typo"]);
-
-        let [warning] = warnings.as_slice() else {
-            panic!("one warning: {warnings:?}");
-        };
-        assert!(
-            warning.starts_with(&format!("{UNCHECKED}: context typo not found")),
-            "{warning}"
-        );
-    }
-
-    #[test]
-    fn status_checks_nothing_and_says_nothing_with_no_server_set_up() {
-        if std::path::Path::new(crate::connect::DEFAULT_LOCAL_SOCKET).exists()
-            || std::env::var_os(crate::cli::env::TOKEN).is_some()
-        {
-            return;
-        }
-        let dir = tempfile::tempdir().unwrap();
-
-        assert!(status_warnings(&dir.path().join("config.yaml"), &[]).is_empty());
-    }
-}
+#[path = "status_servers_tests.rs"]
+mod tests;

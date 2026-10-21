@@ -252,7 +252,8 @@ A drain that stops early marks the service it was moving **Interrupted** and the
 reached **Not attempted**; those still run on the server. If a server's proxy doesn't confirm the
 switch in time, the moved service's old container keeps running on the drained server and the row says
 so; the next drain removes it, along with any old container an earlier drain left there. While an old
-container is out of routing but still running, `ployz ps` marks it **draining**.
+container is out of routing but still running, `ployz ps` marks it **draining**. `ployz status`
+names a draining container only when the service has too few others serving.
 If anything stayed or failed, the drain stopped early, or it couldn't check what's left on the server, the button
 reads **Drain again**. Turning services back on doesn't move anything back.
 

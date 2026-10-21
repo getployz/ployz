@@ -314,8 +314,8 @@ deploy would reach answers. With `--json` these are the `attention` rows; that o
 `no_server_answers` and names the servers in `servers`. It comes from the same single connection
 status makes to check your servers (below), not a separate one. A server that accepts the
 connection but never answers takes 5 seconds to give up on, and status tries each server once.
-A check that can't finish adds no row and warns `Could not check which Servers picked up the new
-copies` instead, so no row doesn't prove a server answered. A context or `--connect` that reaches the daemon on this host through its local
+A check that can't finish adds no row and warns `Could not check which copies serve or which
+Servers picked up the new copies` instead, so no row doesn't prove a server answered. A context or `--connect` that reaches the daemon on this host through its local
 socket never gets this row; the **this server** line covers it. Signed in to Cloud, status asks
 Cloud for server access once per run. The first `ployz status` or other server command for a
 sign-in or token also waits while Cloud sets up your access on each server.
@@ -339,7 +339,35 @@ that's down shows as **Down** instead. See
 [A server hasn't picked up the new version](../troubleshooting/deployments.md#a-server-hasnt-picked-up-the-new-version)
 and
 [A server routes a replica at an old address](../troubleshooting/deployments.md#a-server-routes-a-replica-at-an-old-address).
-A `read` or `deploy` token without server access doesn't show this line yet. To check this, `ployz status`
+
+When a service serves fewer replicas than its last deploy gave it, `ployz status` names it and
+each replica that isn't serving, in the words `ployz ps` uses, like
+`web = Serving 1 of 3 copies. web-1 restarting, web-2 draining.` A replica can be restarting,
+exited, unhealthy, starting, or draining. A starting replica shows as `running, starting` while it
+is still inside its health check's start period, and the line clears once the check passes. A
+draining replica is out of routing but still running. With `--json` the row has reason
+`copies_not_serving`, the `service`, how many replicas are `serving`, how many it `wanted`, and
+`copies`, each with its `machine`, `container`, `rotation` and `runtime`. `wanted` is how many of
+the replicas status could see should be serving. A server that is down or didn't answer isn't
+seen. A down server shows as **Down**, and status warns about one that didn't answer. Its `next`
+is `ployz logs web` when a named replica is still in routing, else `ployz deploy web`. Old
+replicas still draining beside a full set of new ones, as just after a deploy, add no row. While
+a deployment runs, status skips this check and warns that it did.
+
+This check has limits:
+
+- A replica removed outside Ployz, for example with `docker rm`, is unseen, so status can't name
+  it.
+- A global service's draining replica isn't named.
+- While a server that has joined is down, or any server didn't answer, a draining replica isn't
+  named.
+- After a scale-down that changed only the replica count, a replica left draining can be named
+  until the next deploy removes it.
+
+See
+[Status says a service serves fewer copies than it should](../troubleshooting/deployments.md#status-says-a-service-serves-fewer-copies-than-it-should).
+
+A `read` or `deploy` token without server access doesn't show these lines yet. To check this, `ployz status`
 reaches your servers the way `ployz ps` does, so it takes the same `--context` and
 `--ssh-timeout` options.
 
