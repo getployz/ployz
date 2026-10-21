@@ -1,5 +1,5 @@
 use std::{
-    cell::Cell,
+    cell::{Cell, RefCell},
     net::{TcpListener as StdTcpListener, UdpSocket as StdUdpSocket},
 };
 
@@ -29,6 +29,9 @@ thread_local! {
     /// Delays every bind by this long, the way a loaded host delays `open`.
     pub(super) static BIND_STALL: Cell<Duration> = const { Cell::new(Duration::ZERO) };
     pub(super) static STALL_PORT: Cell<Option<Port>> = const { Cell::new(None) };
+    /// Hears each bind begin, which tells a test the binds before it have been handed out.
+    pub(super) static BIND_BEGAN: RefCell<Option<std::sync::mpsc::Sender<()>>> =
+        const { RefCell::new(None) };
 }
 
 pub(super) struct BindFaults {
@@ -36,6 +39,7 @@ pub(super) struct BindFaults {
     ipv6_error: Option<i32>,
     stall: Duration,
     port: Option<Port>,
+    began: Option<std::sync::mpsc::Sender<()>>,
 }
 
 impl BindFaults {
@@ -45,15 +49,20 @@ impl BindFaults {
             ipv6_error: IPV6_FAILS_WITH.get(),
             stall: BIND_STALL.get(),
             port: STALL_PORT.get(),
+            began: BIND_BEGAN.with_borrow(Clone::clone),
         }
     }
 
     pub(super) fn enter(self) -> Self {
+        if let Some(began) = &self.began {
+            let _ = began.send(());
+        }
         Self {
             only_v6: ONLY_V6_BY_DEFAULT.replace(self.only_v6),
             ipv6_error: IPV6_FAILS_WITH.replace(self.ipv6_error),
             stall: BIND_STALL.replace(self.stall),
             port: STALL_PORT.replace(self.port),
+            began: BIND_BEGAN.replace(self.began.clone()),
         }
     }
 }
@@ -64,6 +73,7 @@ impl Drop for BindFaults {
         IPV6_FAILS_WITH.set(self.ipv6_error);
         BIND_STALL.set(self.stall);
         STALL_PORT.set(self.port);
+        BIND_BEGAN.set(self.began.take());
     }
 }
 
@@ -122,15 +132,11 @@ fn bindable(port: u16) -> bool {
     })
 }
 
+/// `open` binds and listens before it returns, so one connect finds the listener.
 async fn greeting_from(port: u16) -> Vec<u8> {
-    let deadline = Instant::now() + PATIENCE;
-    let mut stream = loop {
-        if let Ok(stream) = TcpStream::connect(("127.0.0.1", port)).await {
-            break stream;
-        }
-        assert!(Instant::now() < deadline, "nothing listened on {port}");
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    };
+    let mut stream = TcpStream::connect(("127.0.0.1", port))
+        .await
+        .unwrap_or_else(|error| panic!("nothing listened on {port}: {error}"));
     let mut read = Vec::new();
     stream.read_to_end(&mut read).await.unwrap();
     read
@@ -196,7 +202,8 @@ async fn every_socket_closes_when_the_window_ends_and_the_report_stays() {
         .await;
     greeting_from(tcp).await;
 
-    eventually(|| bindable(tcp) && bindable(udp)).await;
+    probes.finish().await;
+    assert!(bindable(tcp) && bindable(udp));
     assert_eq!(probes.report().await.unwrap().handout, "short");
 }
 
@@ -410,8 +417,9 @@ async fn only_a_host_without_ipv6_falls_back_to_ipv4() {
     assert!(probes.report().await.unwrap().bind_failed.is_empty());
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn a_window_still_open_reports_nothing_and_close_forgets_it() {
+    let _ticker = crate::checkin::tests::tick_through_io();
     let port = free_port();
     let mut probes = Probes::default();
     probes
@@ -432,7 +440,7 @@ async fn a_window_still_open_reports_nothing_and_close_forgets_it() {
     assert_eq!(probes.report().await, None);
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn a_cancelled_finish_leaves_no_window_holding_the_ports() {
     let port = free_port();
     let mut probes = Probes::default();
@@ -471,7 +479,7 @@ async fn a_window_that_runs_out_is_saved_for_the_next_process() {
     assert_eq!(probes.report().await.unwrap().handout, "short");
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn a_slow_save_holds_no_port_and_no_check_in() {
     let dir = tempfile::tempdir().unwrap();
     let saved = dir.path().join("probe.json");
@@ -484,7 +492,7 @@ async fn a_slow_save_holds_no_port_and_no_check_in() {
         let _ = released.recv_timeout(Duration::from_secs(3));
     });
     holding.recv().unwrap();
-    let opened = Instant::now();
+    let opened = std::time::Instant::now();
     let mut probes = Probes::load(saved.clone());
     probes
         .open(
@@ -494,7 +502,7 @@ async fn a_slow_save_holds_no_port_and_no_check_in() {
         )
         .await;
 
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    let report = ended(&mut probes, Duration::from_millis(500)).await;
 
     assert!(
         opened.elapsed() < Duration::from_millis(1_500),
@@ -502,15 +510,24 @@ async fn a_slow_save_holds_no_port_and_no_check_in() {
     );
     assert!(TcpStream::connect(("127.0.0.1", tcp)).await.is_err());
     assert!(bindable(tcp) && bindable(udp));
-    assert!(!saved.exists());
-    let report = tokio::time::timeout(Duration::from_millis(500), probes.report())
-        .await
-        .expect("the report waits on no save");
-    assert_eq!(report.unwrap().handout, "slow");
+    assert!(!saved.exists(), "the report waits on no save");
+    assert_eq!(report.handout, "slow");
     release.send(()).unwrap();
     disk.join().unwrap();
     probes.finish().await;
     assert_eq!(Probes::load(saved).report().await.unwrap().handout, "slow");
+}
+
+/// Moves paused time past a window's end and waits for its report. A stalled save holds a
+/// blocking task, which freezes paused time, so the clock moves by hand.
+async fn ended(probes: &mut Probes, past: Duration) -> Report {
+    tokio::time::advance(past).await;
+    loop {
+        if let Some(report) = probes.report().await {
+            return report;
+        }
+        tokio::task::yield_now().await;
+    }
 }
 
 /// Stalls every save until the returned sender drops or `seconds` pass.
@@ -526,7 +543,7 @@ fn stall_saves(seconds: u64) -> (std::sync::mpsc::Sender<()>, std::thread::JoinH
     (release, disk)
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn a_replacement_listens_at_once_while_the_old_window_is_still_saving() {
     let dir = tempfile::tempdir().unwrap();
     let saved = dir.path().join("probe.json");
@@ -540,9 +557,10 @@ async fn a_replacement_listens_at_once_while_the_old_window_is_still_saving() {
             Instant::now(),
         )
         .await;
-    tokio::time::sleep(Duration::from_millis(400)).await;
+    ended(&mut probes, Duration::from_millis(400)).await;
+    assert!(probes.saving.is_some(), "the old window is still saving");
 
-    let handed = Instant::now();
+    let handed = std::time::Instant::now();
     probes
         .open(
             handout("new", 400, &[Port::Tcp(new)], &[]),
@@ -560,8 +578,7 @@ async fn a_replacement_listens_at_once_while_the_old_window_is_still_saving() {
         greeting_from(new).await,
         greeting("new", key().public_hex(), new).into_bytes()
     );
-    tokio::time::sleep(Duration::from_millis(600)).await;
-    let report = probes.report().await.unwrap();
+    let report = ended(&mut probes, Duration::from_millis(600)).await;
     assert_eq!(report.handout, "new");
     assert!(report.bind_failed.is_empty());
     drop(release);
@@ -582,23 +599,6 @@ async fn a_later_slow_bind_does_not_extend_an_earlier_listener() {
     BIND_STALL.set(Duration::from_millis(1_600));
     LEAD.set(Some(Duration::from_millis(300)));
     let started = std::time::Instant::now();
-    let observer = std::thread::spawn(move || {
-        std::thread::sleep(Duration::from_millis(100));
-        assert!(std::net::TcpStream::connect(("127.0.0.1", first)).is_ok());
-        assert!(!bindable(udp));
-        std::thread::sleep(
-            (started + Duration::from_millis(1_100))
-                .saturating_duration_since(std::time::Instant::now()),
-        );
-        assert!(
-            std::net::TcpStream::connect(("127.0.0.1", first)).is_err(),
-            "the earlier listener outlived its window"
-        );
-        assert!(
-            bindable(first) && bindable(udp),
-            "ports were not released at expiry"
-        );
-    });
     let mut probes = Probes::default();
     probes
         .open(
@@ -612,14 +612,24 @@ async fn a_later_slow_bind_does_not_extend_an_earlier_listener() {
             Instant::now(),
         )
         .await;
+    // `open` gave up on the stalled bind at its deadline, inside the window.
+    assert!(std::net::TcpStream::connect(("127.0.0.1", first)).is_ok());
+    assert!(!bindable(udp));
     probes.finish().await;
     let elapsed = started.elapsed();
-    observer.join().unwrap();
     assert!(
         elapsed < Duration::from_millis(1_200),
         "report finished after {elapsed:?}"
     );
-    assert!(bindable(udp) && bindable(first) && bindable(second));
+    assert!(
+        std::net::TcpStream::connect(("127.0.0.1", first)).is_err(),
+        "the earlier listener outlived its window"
+    );
+    assert!(
+        bindable(first) && bindable(udp),
+        "ports were not released at expiry"
+    );
+    assert!(bindable(second));
     assert_eq!(
         probes.report().await.unwrap().bind_failed,
         [format!("tcp:{second}")]
@@ -633,8 +643,12 @@ async fn a_listener_greets_cloud_while_a_later_bind_stalls() {
     BIND_STALL.set(Duration::from_millis(1_500));
     LEAD.set(Some(Duration::from_millis(1_000)));
     let expected = greeting("stalled", key().public_hex(), first).into_bytes();
+    let (began, binds) = std::sync::mpsc::channel();
+    BIND_BEGAN.set(Some(began));
     let cloud = std::thread::spawn(move || {
-        std::thread::sleep(Duration::from_millis(200));
+        // The second bind begins only once the first is listening and handed to the window.
+        binds.recv().unwrap();
+        binds.recv().unwrap();
         let mut stream = std::net::TcpStream::connect(("127.0.0.1", first)).unwrap();
         stream.set_read_timeout(Some(CLOUD_READS_FOR)).unwrap();
         let mut read = vec![0; GREETING_CHARS];
@@ -710,12 +724,6 @@ async fn a_bind_after_d8_s_only_attempt_reports_failed_in_a_short_window() {
     BIND_STALL.set(Duration::from_millis(1_200));
     let mut probes = Probes::load(dir.path().join("probe.json"));
     let sent = std::time::Instant::now();
-    let observer = std::thread::spawn(move || {
-        std::thread::sleep(
-            (sent + Duration::from_secs(1)).saturating_duration_since(std::time::Instant::now()),
-        );
-        assert!(std::net::TcpStream::connect(("127.0.0.1", tcp)).is_err());
-    });
 
     probes
         .open(
@@ -725,8 +733,12 @@ async fn a_bind_after_d8_s_only_attempt_reports_failed_in_a_short_window() {
         )
         .await;
 
+    assert!(
+        sent.elapsed() < Duration::from_millis(1_200),
+        "open waited on the stalled bind"
+    );
+    assert!(std::net::TcpStream::connect(("127.0.0.1", tcp)).is_err());
     probes.finish().await;
-    observer.join().unwrap();
     assert_eq!(
         probes.report().await.unwrap().bind_failed,
         [format!("tcp:{tcp}")]
@@ -751,7 +763,7 @@ async fn windows_without_a_usable_d8_attempt_report_every_port_failed() {
     }
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn a_dropped_owner_s_save_never_lands_over_a_newer_window() {
     let dir = tempfile::tempdir().unwrap();
     let saved = dir.path().join("probe.json");
@@ -765,7 +777,8 @@ async fn a_dropped_owner_s_save_never_lands_over_a_newer_window() {
             Instant::now(),
         )
         .await;
-    tokio::time::sleep(Duration::from_millis(400)).await;
+    ended(&mut dropped, Duration::from_millis(400)).await;
+    let old_save = dropped.saving.take().expect("the old window is saving");
     drop(dropped);
 
     let mut probes = Probes::load(saved.clone());
@@ -779,8 +792,7 @@ async fn a_dropped_owner_s_save_never_lands_over_a_newer_window() {
     probes.close().await;
     drop(release);
     disk.join().unwrap();
-    tokio::time::sleep(Duration::from_millis(100)).await;
-    drop(SAVES.lock().unwrap());
+    old_save.await.unwrap();
 
     assert!(!saved.exists());
     assert_eq!(Probes::load(saved).report().await, None);
