@@ -83,6 +83,8 @@ const encryption = makeSecretEncryption("fixture-server-access-encryption-123456
 function fakeServers() {
   const servers = new Map<string, {
     online: boolean | "hangs" | "refuses" | "drops"; slots: Map<string, string>; closeHangs?: boolean;
+    /** The next Set waits for this before it reaches the Server, as one held up on the wire would. */
+    holdSet?: Promise<void>;
     /** The next Set stages its key, as a daemon does, then holds its reply until this settles. */
     holdSetReply?: Promise<void>;
     /** The next Clear waits for this before it takes the slot, as one held up on the wire would. */
@@ -111,6 +113,9 @@ function fakeServers() {
             throw new RpcError({ code: "unavailable", message: "connection reset", details: null, unanswered: true });
           }
           sets += 1;
+          const onWire = server.holdSet;
+          server.holdSet = undefined;
+          await onWire;
           const capability = `ployz1:${connection?.machine_id}:${label}:${sets}`;
           server.slots.set(label, capability);
           const held = server.holdSetReply;
@@ -1261,6 +1266,42 @@ it.live(
         assert.strictEqual(reply.status, 401, reply.text);
         assert.strictEqual(fake.sets(), 1);
         assert.strictEqual(server.slots.size, 0);
+      }).pipe(Effect.provide(layer));
+    }),
+  30_000,
+);
+
+it.live(
+  "a Set that reaches the Server after a revocation Cleared it is recorded revoked and Cleared rather than left live",
+  () =>
+    Effect.gen(function* () {
+      const fake = fakeServers();
+      const layer = yield* cliLayer(fake.layer);
+      yield* Effect.gen(function* () {
+        const database = yield* Database;
+        const alice = yield* signUp("alice");
+        const machine = ids.machineId("00000000000000000000000000001286");
+        yield* enroll(alice.organization.id, machine, true);
+        let deliverSet = () => undefined as void;
+        const holdSet = new Promise<void>((resolve) => { deliverSet = resolve; });
+        const server = { online: true as const, slots: new Map<string, string>(), holdSet };
+        fake.servers.set(machine, server);
+        const first = yield* Effect.forkChild(cli("POST", "server-access", alice));
+        yield* Effect.promise(() => vi.waitFor(() => assert.strictEqual(fake.sets(), 1), { timeout: 10_000 }));
+
+        // Alice's access is revoked, Cleared and forgotten while her Set is still on the wire; it lands on an empty slot.
+        yield* database.drizzle.update(member).set({ role: "member" }).where(eq(member.organizationId, alice.organization.id));
+        yield* retireServerAccess();
+        assert.strictEqual(fake.clears(), 1);
+        assert.deepStrictEqual(yield* database.drizzle.select().from(serverAccess).where(eq(serverAccess.organizationId, alice.organization.id)), []);
+
+        deliverSet();
+        const reply = yield* Fiber.join(first);
+        assert.strictEqual(reply.status, 401, reply.text);
+        assert.strictEqual(fake.sets(), 1);
+        assert.strictEqual(server.slots.size, 0);
+        assert.strictEqual(fake.clears(), 2);
+        assert.deepStrictEqual(yield* database.drizzle.select().from(serverAccess).where(eq(serverAccess.organizationId, alice.organization.id)), []);
       }).pipe(Effect.provide(layer));
     }),
   30_000,

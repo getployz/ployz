@@ -137,14 +137,29 @@ export const provideServerAccess = Effect.fn("ServerAccess.provide")(function* (
       const token = crypto.randomUUID();
       const holding = eq(serverAccess.claim, token);
       let reclaiming = false;
+      let landed = false;
       while (true) {
-        // The row this request held went from under it, as a revocation does: no second Set for a credential that
-        // no longer authorizes one.
+        // The row this request held went from under it, as a revocation does, or this request Cleared a revoked row
+        // itself: no second Set for a credential that no longer authorizes one. A Set this request landed is
+        // recorded revoked, so retireServerAccess below, or the sweep, Clears it.
         if (reclaiming) {
           const [checked] = yield* drizzle.select({
             authorized: sql<boolean>`${authorizedBy(caller.userId, caller.organization.id, caller.credential.kind, caller.credential.id)}`,
           }).from(member).where(and(eq(member.userId, caller.userId), eq(member.organizationId, caller.organization.id)));
-          if (checked?.authorized !== true) return { capability: null, refused: null, revoked: true };
+          if (checked?.authorized !== true) {
+            if (landed) {
+              yield* drizzle.insert(serverAccess).values({
+                organizationId: caller.organization.id,
+                machineId,
+                credentialId: caller.credential.id,
+                credentialKind: caller.credential.kind,
+                userId: caller.userId,
+                revokedAt: now,
+                updatedAt: now,
+              }).onConflictDoNothing({ target: [serverAccess.organizationId, serverAccess.credentialId, serverAccess.machineId] });
+            }
+            return { capability: null, refused: null, revoked: true };
+          }
         }
         const claimed = yield* drizzle.insert(serverAccess).values({
           organizationId: caller.organization.id,
@@ -167,6 +182,7 @@ export const provideServerAccess = Effect.fn("ServerAccess.provide")(function* (
               .where(and(holder, holding, isNull(serverAccess.encryptedCapability), isNull(serverAccess.revokedAt)));
             return { capability: null, refused: management.refused, revoked: false };
           }
+          landed = true;
           const encryptedCapability = encryption.encrypt(management.value);
           const stored = yield* database.transaction(Effect.gen(function* () {
             const { drizzle: tx } = yield* Database;
