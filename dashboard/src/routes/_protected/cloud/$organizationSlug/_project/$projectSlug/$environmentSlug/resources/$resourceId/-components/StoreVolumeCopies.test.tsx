@@ -142,6 +142,12 @@ describe("VolumeCopiesPanel", () => {
     expect(screen.queryByRole("button", { name: "Restore from web-3" })).toBeNull();
   });
 
+  it("says on an old copy's row why its point can't be restored when the seed run would refuse it", () => {
+    panel([member("web-1", "writer"), oldAsOf("web-3", new Date(NOW.getTime() - 3_600_000))], row([]), { floorless: ["web-3"] });
+    expect(screen.queryByRole("button", { name: "Restore from web-3" })).toBeNull();
+    expect(group("Elsewhere").getByText("Volume restore is not available on web-3.")).toBeTruthy();
+  });
+
   it("shows a staged mirror green with New and no action, Was or Undo", () => {
     panel([member("web-1", "writer"), pooled("web-2")], row([], { primary: "web-1", mirrors: ["web-2"] }));
     const item = group("Elsewhere").getByRole("listitem");
