@@ -951,3 +951,16 @@ async fn a_call_after_the_stream_closed_is_final() {
         "{error:?}"
     );
 }
+
+#[test]
+fn a_restarting_target_behind_a_live_entry_is_still_resent() {
+    let refused = io::Error::from(io::ErrorKind::ConnectionRefused);
+    for status in [
+        ployz_core::rpc::target_unanswered_status(&refused),
+        ployz_core::rpc::target_unreached_status(&refused),
+        tonic::Status::unavailable("daemon is restarting"),
+    ] {
+        let error = rpc_error(ConnectError::from(status));
+        assert_eq!(error.code.retry(), Retry::Now, "{error:?}");
+    }
+}
