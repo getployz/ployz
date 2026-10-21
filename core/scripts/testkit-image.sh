@@ -8,10 +8,12 @@ set -euo pipefail
 #   PLOYZ_TESTKIT_IMAGE=$(scripts/testkit-image.sh ployz-testkit-checkout:dev)
 tag=${1:?usage: scripts/testkit-image.sh TAG}
 base=ghcr.io/getployz/ployz-testkit:main
-core=$(cd "$(dirname "$0")/.." && pwd)
+# From core/, so rustup takes the pinned rust-toolchain.toml.
+cd "$(dirname "$0")/.."
+core=$PWD
 
-cargo build --locked --manifest-path "$core/Cargo.toml" --package ployz --package ployzd >&2
-target=$(cargo metadata --format-version 1 --no-deps --manifest-path "$core/Cargo.toml" | jq -r .target_directory)
+cargo build --locked --package ployz --package ployzd >&2
+target=$(cargo metadata --format-version 1 --no-deps | jq -r .target_directory)
 docker image inspect "$base" >/dev/null 2>&1 || docker pull "$base" >&2
 
 context=$(mktemp -d)
