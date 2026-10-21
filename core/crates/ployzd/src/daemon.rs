@@ -565,14 +565,11 @@ impl Daemon {
         };
         tracing::info!(reason = reason.as_str(), "shutting down");
         self.shutdown.cancel();
-        // Reset must not wait for active Machine API connections.
-        // CLI wait_phase has 60s to see Uninitialized after systemd restarts us.
+        // A reset drains too: the Leave that asked for it is still sending its reply, the
+        // caller's only proof of the reset. The bound keeps a held connection from holding
+        // the reset; CLI wait_phase has 60s to see Uninitialized after systemd restarts us.
         let (server_result, ()) = tokio::join!(
-            stop_servers(
-                completed_servers,
-                &mut servers,
-                (!resetting).then_some(SERVER_DRAIN),
-            ),
+            stop_servers(completed_servers, &mut servers, SERVER_DRAIN),
             self.dns.stopping(resetting),
         );
         if let Err(error) = server_result {
@@ -631,14 +628,12 @@ const SERVER_DRAIN: Duration = Duration::from_secs(5);
 async fn stop_servers(
     completed: Option<io::Result<()>>,
     servers: &mut JoinHandle<io::Result<()>>,
-    drain: Option<Duration>,
+    drain: Duration,
 ) -> io::Result<()> {
     if let Some(result) = completed {
         return result;
     }
-    if let Some(drain) = drain
-        && let Ok(result) = tokio::time::timeout(drain, &mut *servers).await
-    {
+    if let Ok(result) = tokio::time::timeout(drain, &mut *servers).await {
         return join_servers(result);
     }
     servers.abort();
