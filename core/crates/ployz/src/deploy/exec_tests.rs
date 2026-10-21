@@ -197,6 +197,16 @@ enum Move {
     Gone(ContainerId),
 }
 
+#[derive(Clone, Copy, Debug)]
+enum Store {
+    /// Holds no rows, as a copy that appears only after the read.
+    Empty,
+    /// Holds a row for every recorded copy, answering Machine or not.
+    Copies,
+    Fails,
+    Silent,
+}
+
 enum Decision {
     Met,
     Write(CopyRotation),
@@ -265,6 +275,9 @@ struct Scripted {
     blipped_entry_reads: Mutex<usize>,
     /// What each proxy last routed, kept by the real rule.
     served: Mutex<BTreeMap<MachineId, ployz_core::ProxyRoutes>>,
+    /// What the entry Machine's store answers.
+    store: Store,
+    store_reads: Mutex<usize>,
     moves: Mutex<Vec<Move>>,
     /// Each live proxy's route once each move was applied.
     listed: Mutex<Vec<BTreeMap<MachineId, Option<BTreeSet<ContainerId>>>>>,
@@ -308,6 +321,8 @@ impl Scripted {
             cut_off_after: None,
             blipped_entry_reads: Mutex::new(0),
             served: Mutex::new(BTreeMap::new()),
+            store: Store::Empty,
+            store_reads: Mutex::new(0),
             moves: Mutex::new(Vec::new()),
             listed: Mutex::new(Vec::new()),
         }
@@ -1093,6 +1108,23 @@ impl MachineOperations for Scripted {
         }
     }
 
+    async fn replicated_containers(&self) -> Result<Vec<ContainerObservation>, RpcError> {
+        *self.store_reads.lock().unwrap() += 1;
+        match self.store {
+            Store::Empty => Ok(Vec::new()),
+            Store::Copies => Ok(self
+                .copies
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|(_, copy)| copy.present)
+                .map(|(id, copy)| copy.proxied(id))
+                .collect()),
+            Store::Fails => Err(unavailable("the store read failed")),
+            Store::Silent => std::future::pending().await,
+        }
+    }
+
     async fn ensure_container(
         &self,
         machine_id: &MachineId,
@@ -1308,6 +1340,8 @@ fn id_of(locator: &ContainerLocator) -> ContainerId {
 mod dispatch;
 #[path = "exec_tests/flip.rs"]
 mod flip;
+#[path = "exec_tests/gen_floor.rs"]
+mod gen_floor;
 #[path = "exec_tests/health.rs"]
 mod health;
 #[path = "exec_tests/hooks.rs"]

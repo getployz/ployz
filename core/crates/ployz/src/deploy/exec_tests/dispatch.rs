@@ -799,6 +799,9 @@ async fn global_stop_first_retry_replays_retained_candidate_with_no_free_endpoin
                         }
                         other => panic!("unexpected want: {other:?}"),
                     },
+                    RpcRequestBody::RuntimeWatch(_) => {
+                        return Err(tonic::Status::unimplemented("no store in this fixture"));
+                    }
                     other => panic!("unexpected mutation: {other:?}"),
                 };
                 Ok(Response::new(response.encode().unwrap()))

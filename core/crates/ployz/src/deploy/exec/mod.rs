@@ -21,8 +21,8 @@ use ployz_core::{
     MembershipObservation, Namespace, NewContainer, OperationPhase, OutOfMemory, PortPublication,
     PullPolicy, QualifiedService, ReadRoutesRequest, RemoveContainerPurpose, RemoveVolumeRequest,
     ResolvedServiceSpec, Retry, RoutesRead, RpcError, RpcErrorCode, RunRotation, RunTarget,
-    ServiceId, ServiceName, ServiceOutcome, SlotKey, StopOptions, TransportProtocol,
-    UpdateContainerLimitsRequest, UpdateOrder, op,
+    RuntimeWatchRequest, ServiceId, ServiceName, ServiceOutcome, SlotKey, StopOptions,
+    TransportProtocol, UpdateContainerLimitsRequest, UpdateOrder, decode_runtime_watch_frame, op,
 };
 use sha2::{Digest, Sha256};
 use tokio::sync::mpsc::UnboundedSender;
@@ -46,6 +46,8 @@ use health::wait_healthy;
 
 const DEFAULT_HOOK_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 const RESTART_WAIT: Duration = Duration::from_secs(60);
+/// How long a Deploy waits on the entry Machine's store for its gen floor.
+const STORED_GENS_WAIT: Duration = Duration::from_secs(5);
 const RESTART_POLL: Duration = Duration::from_millis(250);
 
 struct Stop {
@@ -132,6 +134,9 @@ pub(crate) trait MachineOperations {
         &self,
         service: &QualifiedService,
     ) -> Result<Vec<ContainerObservation>, RpcError>;
+    /// Every Container row in the entry Machine's store, which keeps the rows of
+    /// a Machine that does not answer.
+    async fn replicated_containers(&self) -> Result<Vec<ContainerObservation>, RpcError>;
     async fn ensure_container(
         &self,
         machine_id: &MachineId,
@@ -252,6 +257,31 @@ impl MachineOperations for Client {
                     && container.resolved_spec.name == service.name
             })
             .collect())
+    }
+
+    async fn replicated_containers(&self) -> Result<Vec<ContainerObservation>, RpcError> {
+        let payload = op::RuntimeWatch::into_request(RuntimeWatchRequest {})
+            .encode()
+            .map_err(|error| RpcError::from(ConnectError::from(error)))?;
+        let mut stream = self
+            .runtime_watch_stream(payload)
+            .await
+            .map_err(|error| error.to_rpc_error())?;
+        let Some(frame) = stream
+            .message()
+            .await
+            .map_err(|status| TransportError::from_stream_status(status).to_rpc_error())?
+        else {
+            return Err(RpcError {
+                code: RpcErrorCode::Unavailable,
+                message: "Runtime Watch ended before its first frame".into(),
+                details: serde_json::Value::Null,
+                cause: Vec::new(),
+            });
+        };
+        decode_runtime_watch_frame(&frame)
+            .map(|frame| frame.containers)
+            .map_err(|error| crate::ui::rpc_error(RpcErrorCode::Internal, &error))
     }
 
     async fn ensure_container(
@@ -491,6 +521,7 @@ macro_rules! restart_policy {
 restart_policy! {
     wait fn prepare_volumes(&self, machine_id: &MachineId, specs: &[ployz_core::ServiceStorageSpec]) -> Result<ployz_core::PreparedVolumes, RpcError>;
     wait fn service_containers(&self, service: &QualifiedService) -> Result<Vec<ContainerObservation>, RpcError>;
+    once("a failed read leaves the gen to the live answers") fn replicated_containers(&self) -> Result<Vec<ContainerObservation>, RpcError>;
     wait fn ensure_container(&self, machine_id: &MachineId, want: ContainerWant) -> Result<(ContainerNow, Option<HealthVerdict>), RpcError>;
     wait fn inspect_container(&self, machine_id: &MachineId, container_id: &ContainerId) -> Result<ContainerDetails, RpcError>;
     wait fn remove_volume(&self, id: &DockerVolumeId) -> Result<(), RpcError>;
@@ -1588,6 +1619,7 @@ struct Rows<'a> {
     /// inspect its copy can still name it.
     services: BTreeMap<usize, &'a ServiceName>,
     gens: tokio::sync::Mutex<BTreeMap<QualifiedService, Gen>>,
+    stored_gens: tokio::sync::OnceCell<BTreeMap<QualifiedService, Gen>>,
     stop_first: Vec<StopFirstStep<'a>>,
 }
 
@@ -1690,6 +1722,7 @@ impl<'a> Rows<'a> {
             names,
             services,
             gens: tokio::sync::Mutex::new(BTreeMap::new()),
+            stored_gens: tokio::sync::OnceCell::new(),
             stop_first,
         }
     }
@@ -1915,6 +1948,7 @@ impl<'a> Rows<'a> {
         &self,
         client: &C,
         service: &QualifiedService,
+        cancellation: &CancellationToken,
     ) -> Result<Gen, ExecutionError> {
         let mut gens = self.gens.lock().await;
         if let Some(r#gen) = gens.get(service) {
@@ -1924,14 +1958,66 @@ impl<'a> Rows<'a> {
             .service_containers(service)
             .await
             .map_err(|error| machine_error(MachineAction::ListContainers, error))?;
+        let stored = self
+            .stored_gens(client, cancellation)
+            .await?
+            .get(service)
+            .copied();
         let highest = copies
             .iter()
             .filter(|copy| copy.kind == ContainerKind::ServiceContainer)
-            .map(|copy| copy.copy_gen().get())
+            .map(|copy| copy.copy_gen())
+            .chain(stored)
             .max();
-        let r#gen = highest.map_or(Gen::FIRST, |highest| Gen::new(highest + 1));
+        let r#gen = highest.map_or(Gen::FIRST, |highest| Gen::new(highest.get() + 1));
         gens.insert(service.clone(), r#gen);
         Ok(r#gen)
+    }
+
+    /// The highest gen of each Service in the entry Machine's store, read once per
+    /// Deploy. The store keeps the rows of a Machine that did not answer, and a new
+    /// copy at or below one of those is refused In or never replaces it. A read
+    /// that fails or outlasts [`STORED_GENS_WAIT`] leaves the gen to the live answers.
+    async fn stored_gens<C: MachineOperations>(
+        &self,
+        client: &C,
+        cancellation: &CancellationToken,
+    ) -> Result<&BTreeMap<QualifiedService, Gen>, ExecutionError> {
+        self.stored_gens
+            .get_or_try_init(|| async {
+                let read = tokio::select! {
+                    biased;
+                    () = cancellation.cancelled() => return Err(ExecutionError::Cancelled),
+                    read = tokio::time::timeout(STORED_GENS_WAIT, client.replicated_containers()) => read,
+                };
+                let containers = match read {
+                    Ok(Ok(containers)) => containers,
+                    Ok(Err(error)) => {
+                        tracing::warn!(
+                            error = %error.message,
+                            "couldn't read the entry Machine's store; new gens follow the live answers only"
+                        );
+                        return Ok(BTreeMap::new());
+                    }
+                    Err(_) => {
+                        tracing::warn!(
+                            wait = ?STORED_GENS_WAIT,
+                            "the entry Machine's store didn't answer in time; new gens follow the live answers only"
+                        );
+                        return Ok(BTreeMap::new());
+                    }
+                };
+                let mut highest = BTreeMap::new();
+                for copy in containers
+                    .iter()
+                    .filter(|copy| copy.kind == ContainerKind::ServiceContainer)
+                {
+                    let r#gen = highest.entry(copy.identity()).or_insert(Gen::FIRST);
+                    *r#gen = (*r#gen).max(copy.copy_gen());
+                }
+                Ok(highest)
+            })
+            .await
     }
 
     #[expect(
@@ -2131,7 +2217,9 @@ async fn execute_operation<C: MachineOperations>(
             skip_health_monitor,
         } => {
             let slot = slots.slot(ContainerKind::ServiceContainer, spec, index, None);
-            let r#gen = rows.gen_for(client, &rows.service(spec)).await?;
+            let r#gen = rows
+                .gen_for(client, &rows.service(spec), cancellation)
+                .await?;
             run_container(
                 client,
                 index,
@@ -2238,7 +2326,7 @@ async fn execute_operation<C: MachineOperations>(
                 Some(replacement.old_container_id),
             );
             let r#gen = rows
-                .gen_for(client, &rows.service(&replacement.spec))
+                .gen_for(client, &rows.service(&replacement.spec), cancellation)
                 .await?;
             if replacement.spec.update.order.stops_first() {
                 let old = rows

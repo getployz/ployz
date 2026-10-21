@@ -46,6 +46,10 @@ impl MachineOperations for Recording {
         self.fake.service_containers(service).await
     }
 
+    async fn replicated_containers(&self) -> Result<Vec<ContainerObservation>, RpcError> {
+        self.fake.replicated_containers().await
+    }
+
     async fn ensure_container(
         &self,
         machine_id: &MachineId,

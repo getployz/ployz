@@ -244,6 +244,18 @@ pub(super) enum SwitchFailure {
     Taken(Arc<tokio::sync::Notify>),
 }
 
+/// The first frame of a store with no rows, as a daemon answers at once.
+pub(super) fn empty_watch_frame() -> RuntimeWatchFrame {
+    RuntimeWatchFrame {
+        machines: Vec::new(),
+        containers: Vec::new(),
+        volumes: Vec::new(),
+        certificates: Vec::new(),
+        incomplete_ids: ployz_core::RuntimeWatchIncompleteIds::default(),
+        observed_at: String::new(),
+    }
+}
+
 impl DiscoveryService {
     pub(super) fn new(description: ContractDescription) -> Self {
         Self {
