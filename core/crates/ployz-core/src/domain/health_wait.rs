@@ -8,8 +8,9 @@ use crate::{
 };
 
 pub const HEALTH_POLL_INTERVAL: Duration = Duration::from_secs(1);
-/// How long a Container without a healthcheck must stay up to count as started.
-pub const DEFAULT_HEALTH_MONITOR: Duration = Duration::from_secs(5);
+/// How long a Container without a healthcheck must stay up to count as started. One
+/// second catches a copy that exits on start; a crash after it is not caught.
+pub const DEFAULT_HEALTH_MONITOR: Duration = Duration::from_secs(1);
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum HealthPoll {

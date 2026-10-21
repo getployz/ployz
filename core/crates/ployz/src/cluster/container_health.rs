@@ -165,7 +165,7 @@ mod tests {
     async fn a_container_without_a_healthcheck_that_dies_inside_the_monitor_window_fails() {
         let (result, waited) = wait(|elapsed| {
             let mut details = details(HealthObservation::NotConfigured, None);
-            if elapsed >= Duration::from_secs(2) {
+            if elapsed >= Duration::from_millis(500) {
                 details
                     .container
                     .try_update(|parts| {
@@ -180,14 +180,14 @@ mod tests {
             result,
             Err(HealthWaitError::Health(HealthFailure::Runtime { .. }))
         ));
-        assert_eq!(waited, Duration::from_secs(2));
+        assert_eq!(waited, DEFAULT_HEALTH_MONITOR);
     }
 
     #[tokio::test(start_paused = true)]
     async fn a_container_restarted_between_running_looks_fails_as_restarting() {
         let (result, waited) = wait(|elapsed| {
             let mut details = details(HealthObservation::NotConfigured, None);
-            let restarts = i64::try_from(elapsed.as_secs() / 3).unwrap();
+            let restarts = i64::try_from(elapsed.as_millis() / 600).unwrap();
             details.run = Some(ployz_core::ContainerRun {
                 restart_count: restarts,
                 started_at_unix_nanos: restarts,
@@ -202,7 +202,7 @@ mod tests {
                 ..
             }))
         ));
-        assert_eq!(waited, Duration::from_secs(3));
+        assert_eq!(waited, DEFAULT_HEALTH_MONITOR);
     }
 
     #[tokio::test(start_paused = true)]

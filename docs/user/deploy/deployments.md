@@ -292,8 +292,8 @@ Until you deploy again, that server can keep answering with the old version. See
 - **Set a health check.** Under **Settings → Deploy**, set **Healthcheck** to an HTTP path like
   `/up` or a command like `pg_isready -h 127.0.0.1`. A new replica is ready when the path answers
   with a 2xx status or the command exits 0. A redirect, to `https://` or `/login` for example,
-  fails the check. Without a health check, the old replica stops a few seconds after the new one
-  starts, ready or not. The databases Ployz creates come with one.
+  fails the check. Without a health check, the old replica stops about a second after the new one
+  starts, ready or not, and a new replica that crashes after that second is not caught. The databases Ployz creates come with one.
 - **A service with a [volume](../services/volumes.md) has a short gap.** Its old replica stops
   first, so two never write the same files. To change that, see
   [Choose how a deploy replaces replicas](#choose-how-a-deploy-replaces-replicas).

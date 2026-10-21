@@ -935,7 +935,7 @@ mod settled {
             "expected a Healthy verdict, got {reply:?}"
         );
         assert!(
-            waited >= Duration::from_secs(5) && waited < Duration::from_secs(6),
+            waited >= Duration::from_secs(1) && waited < Duration::from_secs(3),
             "waited {waited:?}"
         );
     }
