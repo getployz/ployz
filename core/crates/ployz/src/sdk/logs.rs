@@ -625,8 +625,8 @@ fn unavailable(message: String) -> RpcError {
 }
 
 /// The env that scrubs a Container's lines: Docker's, or the one its Machine's
-/// Log Store kept once Docker no longer answers for it. `None` when neither
-/// answers, which withholds the lines.
+/// Log Store kept once the Machine answers that the Container is gone. `None`
+/// when neither answers, which withholds the lines.
 pub(crate) async fn container_env(
     client: &Client,
     machine: MachineId,
@@ -642,8 +642,10 @@ pub(crate) async fn container_env(
             Some(TAIL_READ),
         )
         .await;
-    if let Ok(details) = inspected {
-        return details.environment;
+    match inspected {
+        Ok(details) => return details.environment,
+        Err(error) if error.code == RpcErrorCode::NotFound => {}
+        Err(_) => return None,
     }
     client
         .invoke::<op::RetainedEnv>(
