@@ -1320,6 +1320,117 @@ async fn returning_to_the_last_written_config_reloads_caddy_after_a_failed_caddy
     std::fs::remove_dir_all(directory).unwrap();
 }
 
+#[tokio::test]
+async fn routed_addresses_leave_out_an_https_route_caddy_has_no_certificate_for() {
+    let WatcherFixture {
+        machine,
+        state,
+        address,
+        server,
+        directory,
+    } = watcher_fixture().await;
+    state.mutate(|parts| {
+        parts.resolved_spec.ports = vec![ingress("secure.example.com", 8443, HttpProtocol::Https)];
+    });
+    let (load_tx, mut load_rx) = mpsc::unbounded_channel();
+    let admin = TestAdmin { loads: load_tx };
+    let (route_publishes, published) =
+        tokio::sync::watch::channel(crate::ingress::PublishedRoutes::default());
+    let shutdown = CancellationToken::new();
+    let watcher = tokio::spawn(watch_caddy(
+        machine.clone(),
+        ReplicatedStore::new(ApiClient::http1(address, &"a".repeat(64)).unwrap()),
+        no_down,
+        directory.join(CONFIG_FILE),
+        route_publishes,
+        shutdown.clone(),
+        move || std::future::ready(Ok(Some(admin.clone()))),
+    ));
+
+    let loaded = next_load(&mut load_rx).await;
+    state.wait_for_ack_transactions(1).await;
+    settle().await;
+    assert!(!loaded.contains("10.210.1.2:8443"), "{loaded}");
+    assert_eq!(
+        published.borrow().addresses,
+        BTreeMap::new(),
+        "Caddy proxies nothing for secure.example.com until it has a certificate"
+    );
+
+    shutdown.cancel();
+    watcher.await.unwrap().unwrap();
+    server.abort();
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[tokio::test]
+async fn routed_addresses_wait_for_caddy_to_load_a_config_written_without_its_admin() {
+    let WatcherFixture {
+        machine,
+        state,
+        address,
+        server,
+        directory,
+    } = watcher_fixture().await;
+    let api = state.api_container();
+    let (load_tx, mut load_rx) = mpsc::unbounded_channel();
+    let admin = TestAdmin { loads: load_tx };
+    let admin_up = Arc::new(AtomicBool::new(true));
+    let caddyfile = directory.join(CONFIG_FILE);
+    let (route_publishes, mut published) =
+        tokio::sync::watch::channel(crate::ingress::PublishedRoutes::default());
+    let shutdown = CancellationToken::new();
+    let watcher = tokio::spawn(watch_caddy(
+        machine.clone(),
+        ReplicatedStore::new(ApiClient::http1(address, &"a".repeat(64)).unwrap()),
+        no_down,
+        caddyfile.clone(),
+        route_publishes,
+        shutdown.clone(),
+        {
+            let admin_up = Arc::clone(&admin_up);
+            move || std::future::ready(Ok(admin_up.load(Ordering::SeqCst).then(|| admin.clone())))
+        },
+    ));
+    assert!(next_load(&mut load_rx).await.contains("10.210.1.2:80"));
+    state.wait_for_ack_transactions(1).await;
+
+    admin_up.store(false, Ordering::SeqCst);
+    state.set_address(api.container_id, [10, 210, 1, 7]);
+    wait_for_caddyfile(&caddyfile, "10.210.1.7:80").await;
+    settle().await;
+    assert_eq!(
+        published.borrow().addresses,
+        BTreeMap::from([(
+            api.identity(),
+            BTreeMap::from([(api.container_id, api.address.unwrap())])
+        )]),
+        "the running Caddy still serves 10.210.1.2"
+    );
+
+    admin_up.store(true, Ordering::SeqCst);
+    state.send(b"{\"change\":{}}\n");
+    assert!(next_load(&mut load_rx).await.contains("10.210.1.7:80"));
+    timeout(
+        Duration::from_secs(5),
+        published.wait_for(|published| {
+            published.addresses
+                == BTreeMap::from([(
+                    api.identity(),
+                    BTreeMap::from([(api.container_id, ContainerAddress([10, 210, 1, 7].into()))]),
+                )])
+        }),
+    )
+    .await
+    .expect("Caddy loaded 10.210.1.7, so it is recorded")
+    .unwrap();
+
+    shutdown.cancel();
+    watcher.await.unwrap().unwrap();
+    server.abort();
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
 const CHALLENGE: &str = r#"{"challenge_token":"LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0","challenge_response":"LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}"#;
 
 fn no_down() -> std::future::Ready<Result<BTreeSet<MachineId>, CorrosionError>> {
