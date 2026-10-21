@@ -119,6 +119,18 @@ describe("copiesFromPlacement", () => {
     expect(mirrored(outdated("web-1"))).toEqual({ id: id("web-1"), name: "web-1", state: "outdated" });
   });
 
+  it("never names a Server the Volume records as a mirror as its primary while another may hold it", () => {
+    // A silent writer beside a recorded mirror whose Server lacks a capability: the mirror stays Elsewhere.
+    const beside = copies(row(["web-2"]), [member("web-1", "unanswered"), lacking("web-2")]);
+    expect(beside.live.server).toEqual({ id: id("web-1"), name: "web-1", state: "silent" });
+    expect(summary(beside)).toEqual(["mirror web-2 - -"]);
+    // A silent recorded mirror listed before the writer whose report is on its way, as the observer lists them.
+    const unlisted: Member = { machine: { id: id("web-1"), name: id("web-1") }, answered: false, incomplete: true };
+    const pending = copies(row(["web-2"]), [member("web-2", "unanswered"), unlisted]);
+    expect(pending.live.server).toEqual({ id: id("web-1"), name: id("web-1"), state: "waiting" });
+    expect(summary(pending)).toEqual(["mirror web-2 - -"]);
+  });
+
   it("names a primary whose root its Server reports read-only, as a cut leaves it, not Live", () => {
     expect(copies(row(["web-2"]), [member("web-1", "cut"), member("web-2", "mirror")]).live.server)
       .toEqual({ id: id("web-1"), name: "web-1", state: "read_only" });
