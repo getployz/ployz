@@ -272,10 +272,10 @@ describe("deployChip", () => {
   });
 
   it("says what the next Deploy does otherwise", () => {
-    expect(deployChip({ ...service, change: "create" }, 0, [])).toEqual({ kind: "staged", label: "New", variant: "success" });
-    expect(deployChip({ ...service, change: "update" }, 1, [])).toEqual({ kind: "staged", label: "1 change", variant: "info" });
-    expect(deployChip({ ...service, change: "update" }, 3, [])).toEqual({ kind: "staged", label: "3 changes", variant: "info" });
-    expect(deployChip({ ...service, change: "update" }, 0, [])).toEqual({ kind: "staged", label: "Changed", variant: "info" });
+    expect(deployChip({ ...service, change: "create" }, 0, [])).toEqual({ kind: "staged", label: "New", variant: "changed" });
+    expect(deployChip({ ...service, change: "update" }, 1, [])).toEqual({ kind: "staged", label: "1 change", variant: "changed" });
+    expect(deployChip({ ...service, change: "update" }, 3, [])).toEqual({ kind: "staged", label: "3 changes", variant: "changed" });
+    expect(deployChip({ ...service, change: "update" }, 0, [])).toEqual({ kind: "staged", label: "Changed", variant: "changed" });
     expect(deployChip({ ...service, change: "delete" }, 0, [])).toEqual({ kind: "staged", label: "Removing", variant: "destructive" });
   });
 
@@ -283,14 +283,14 @@ describe("deployChip", () => {
     const running = [deployment("running", [])];
     expect(deployChip(service, 0, running, new Set(["web"]))).toEqual({ kind: "deploying", since: 100 });
     expect(deployChip(service, 0, running, new Set(["api"]))).toBeNull();
-    expect(deployChip({ ...service, change: "update" }, 1, running, new Set())).toEqual({ kind: "staged", label: "1 change", variant: "info" });
+    expect(deployChip({ ...service, change: "update" }, 1, running, new Set())).toEqual({ kind: "staged", label: "1 change", variant: "changed" });
     expect(deployChip(service, 0, [...running, deployment("queued", ["web"])], new Set())).toEqual({ kind: "queued" });
   });
 
   it("waits for the running Deploy's plan before it shows Deploying", () => {
     const running = [deployment("running", [])];
     expect(deployChip(service, 0, running, null)).toBeNull();
-    expect(deployChip({ ...service, change: "update" }, 1, running, null)).toEqual({ kind: "staged", label: "1 change", variant: "info" });
+    expect(deployChip({ ...service, change: "update" }, 1, running, null)).toEqual({ kind: "staged", label: "1 change", variant: "changed" });
     expect(deployChip(service, 0, [...running, deployment("queued", ["web"])], null)).toEqual({ kind: "queued" });
   });
 
@@ -348,8 +348,8 @@ describe("restartedServices", () => {
 
 describe("stagedSurface", () => {
   it("is green for a new node, blue for a change and red for a removal", () => {
-    expect(stagedSurface("create")).toBe("success");
-    expect(stagedSurface("update")).toBe("info");
+    expect(stagedSurface("create")).toBe("changed");
+    expect(stagedSurface("update")).toBe("changed");
     expect(stagedSurface("delete")).toBe("destructive");
     expect(stagedSurface(null)).toBeUndefined();
   });

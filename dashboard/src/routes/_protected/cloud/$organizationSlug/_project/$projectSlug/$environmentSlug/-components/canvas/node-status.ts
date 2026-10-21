@@ -160,11 +160,10 @@ export function publicDomain(domains: readonly DomainRow[]) {
   return shown?.hostname ? { hostname: shown.hostname, live: shown.status !== "setting_up" } : null;
 }
 
-/** What the next Deploy does to a node, in colour: green when it creates it, blue when it changes it, red when it removes it. */
-export type StagedColour = "success" | "info" | "destructive";
+export type StagedColour = "changed" | "destructive";
 
 const stagedColour = (change: ReviewLifecycleKind): StagedColour =>
-  change === "create" ? "success" : change === "delete" ? "destructive" : "info";
+  change === "delete" ? "destructive" : "changed";
 
 /**
  * A node's chip: a Deploy in flight that targets it, running since `since` (Unix seconds) or queued, else what the next
@@ -175,12 +174,13 @@ export type DeployChipState =
   | { kind: "queued" }
   | { kind: "staged"; label: string; variant: StagedColour };
 
-/** What the next Deploy does to a node, as its chip says it. */
+/** What the next Deploy does to a node, in one word. Every staged surface says it, so colour never speaks alone. */
+export const stagedWord = (change: ReviewLifecycleKind) =>
+  change === "create" ? "New" : change === "delete" ? "Removing" : "Changed";
+
 export function stagedChip(change: ReviewLifecycleKind, changeCount: number): DeployChipState {
-  const variant = stagedColour(change);
-  if (change === "create") return { kind: "staged", label: "New", variant };
-  if (change === "delete") return { kind: "staged", label: "Removing", variant };
-  return { kind: "staged", label: changeCount === 0 ? "Changed" : plural(changeCount, "change"), variant };
+  const label = change === "update" && changeCount > 0 ? plural(changeCount, "change") : stagedWord(change);
+  return { kind: "staged", label, variant: stagedColour(change) };
 }
 
 /**

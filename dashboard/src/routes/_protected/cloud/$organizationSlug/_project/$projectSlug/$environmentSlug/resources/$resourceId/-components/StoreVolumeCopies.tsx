@@ -37,7 +37,7 @@ export type CopiesVolume = PlacementVolume & { readonly mounts: readonly { reado
 
 export type CopyServer = { readonly id: string; readonly name: string; readonly storage: "stateless" | "ready" | "pool" | null };
 
-const STAGED_STATE = { new: "success", removing: "destructive", primary: "changed" } as const satisfies Record<StagedCopy, string>;
+const STAGED_STATE = { new: "changed", removing: "destructive", primary: "changed" } as const satisfies Record<StagedCopy, string>;
 
 /** Everything the Copies tab reads and writes, gathered once so the header's safety line and the tab agree. */
 export function useVolumeCopies(organizationSlug: string, environment: EnvironmentRef, volume: CopiesVolume) {

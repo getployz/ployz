@@ -12,7 +12,7 @@ import { PickedNode } from "./PickableNode";
 import { useNodePick } from "../new-branch/branch-picking";
 import { getServiceIcon } from "./service-node-helpers";
 import { DeployChip, STAGED_CLASSES, StatusLine } from "./node-status-view";
-import { deployChip, nodeIssues, notSetLabel, restartedServices, publicDomain, runtimeLine, stagedSurface } from "./node-status";
+import { deployChip, nodeIssues, notSetLabel, restartedServices, publicDomain, runtimeLine, stagedChip, stagedSurface } from "./node-status";
 import { RuntimeLensContext } from "./RuntimeLensProvider";
 import { ServiceTrays } from "./VolumeTray";
 import { CopyHang } from "./MirrorNode";
@@ -51,7 +51,9 @@ export function StoreServiceCard({ service, domains, changeCount, runtimeIdentit
   const icon = <Avatar><AvatarFallback>{getServiceIcon({ source: { type: service.source } })}</AvatarFallback></Avatar>;
   const title = <CardTitle className={cn("truncate", surface && STAGED_CLASSES[surface].name)}>{name}</CardTitle>;
   const subtitle = domain ? <CardDescription className={cn("truncate", domain.live && "text-foreground")}>{domain.hostname}</CardDescription> : null;
-  const chipBadge = <DeployChip chip={chip} />;
+  // A Deploy in flight takes the chip, so staged work beside it keeps its own word on the pink card.
+  const staged = service.change === null || chip?.kind === "staged" ? null : stagedChip(service.change, changeCount);
+  const chipBadge = <span className="flex shrink-0 items-center gap-1"><DeployChip chip={chip} /><DeployChip chip={staged} /></span>;
   const navigate = useNavigate();
   // Secrets it has no value for: deploys skip them, so the card counts them and opens its variables.
   const unset = notSetLabel(notSet);
