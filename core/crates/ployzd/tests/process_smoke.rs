@@ -329,19 +329,24 @@ fn wait_and_stderr(child: &mut Child, stage: &str) -> String {
 }
 
 fn wait_for_exit(child: &mut Child, stage: &str) -> (ExitStatus, String) {
+    let mut status = None;
+    until_child(&format!("ployzd did not exit after {stage}"), || {
+        status = child.try_wait().unwrap();
+        status.is_some()
+    });
+    let mut stderr = String::new();
+    if let Some(mut output) = child.stderr.take() {
+        output.read_to_string(&mut stderr).unwrap();
+    }
+    (status.unwrap(), stderr)
+}
+
+fn until_child(stuck: &str, mut done: impl FnMut() -> bool) {
     let deadline = Instant::now() + Duration::from_secs(5);
-    loop {
-        match child.try_wait().unwrap() {
-            Some(status) => {
-                let mut stderr = String::new();
-                if let Some(mut output) = child.stderr.take() {
-                    output.read_to_string(&mut stderr).unwrap();
-                }
-                return (status, stderr);
-            }
-            None if Instant::now() < deadline => thread::sleep(Duration::from_millis(10)),
-            None => panic!("ployzd did not exit after {stage}"),
-        }
+    while !done() {
+        assert!(Instant::now() < deadline, "{stuck}");
+        // real-wait: ployzd and systemd-socket-activate are child processes observed only by exit and files.
+        thread::sleep(Duration::from_millis(10));
     }
 }
 
@@ -363,11 +368,7 @@ fn socket_activated(sockets: &[&Path], args: &[&str]) -> ChildGuard {
             .unwrap(),
     );
     let first = sockets.first().expect("at least one socket");
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while !first.exists() {
-        assert!(Instant::now() < deadline, "systemd socket was not created");
-        thread::sleep(Duration::from_millis(10));
-    }
+    until_child("systemd socket was not created", || first.exists());
     child
 }
 

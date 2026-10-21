@@ -34,6 +34,8 @@ struct ClusterKv {
     subscriptions: bool,
     snapshots_fail: bool,
     tokens: Vec<String>,
+    /// Counts subscription requests, so a test awaits a subscribe instead of polling.
+    subscribed: tokio::sync::watch::Sender<usize>,
     held: Option<HeldQuery>,
 }
 
@@ -61,6 +63,7 @@ impl ClusterKv {
             subscriptions,
             snapshots_fail: false,
             tokens: Vec::new(),
+            subscribed: tokio::sync::watch::Sender::new(0),
             held: None,
         }
     }
@@ -127,6 +130,8 @@ pub(crate) struct FakeCluster {
     address: SocketAddr,
     kv: Arc<Mutex<ClusterKv>>,
     runtime: Option<tokio::runtime::Runtime>,
+    /// Disconnects once the serving task, and with it the listener, is dropped.
+    serving: Option<std::sync::mpsc::Receiver<()>>,
 }
 
 impl FakeCluster {
@@ -136,6 +141,7 @@ impl FakeCluster {
             address: listener.local_addr().unwrap(),
             kv: Arc::new(Mutex::new(ClusterKv::new(true))),
             runtime: None,
+            serving: None,
         };
         cluster.serve(listener);
         cluster
@@ -153,9 +159,13 @@ impl FakeCluster {
         ReplicatedStore::new(ApiClient::http1(self.address, &self.token()).unwrap())
     }
 
+    /// Returns once the address is free to bind again.
     pub(crate) fn stop(&mut self) {
         if let Some(runtime) = self.runtime.take() {
             runtime.shutdown_background();
+        }
+        if let Some(serving) = self.serving.take() {
+            let _ = serving.recv();
         }
     }
 
@@ -199,6 +209,12 @@ impl FakeCluster {
         self.kv.lock().unwrap().tokens.clone()
     }
 
+    /// Resolves once `count` subscription requests have arrived since start.
+    pub(crate) async fn subscriptions(&self, count: usize) {
+        let mut subscribed = self.kv.lock().unwrap().subscribed.subscribe();
+        subscribed.wait_for(|seen| *seen >= count).await.unwrap();
+    }
+
     fn serve(&mut self, listener: std::net::TcpListener) {
         listener.set_nonblocking(true).unwrap();
         let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -207,11 +223,14 @@ impl FakeCluster {
             .build()
             .unwrap();
         let kv = self.kv.clone();
+        let (serving, stopped) = std::sync::mpsc::channel();
         runtime.spawn(async move {
+            let _serving = serving;
             let listener = TcpListener::from_std(listener).unwrap();
             axum::serve(listener, router(kv)).await.unwrap();
         });
         self.runtime = Some(runtime);
+        self.serving = Some(stopped);
     }
 }
 
@@ -259,6 +278,7 @@ async fn subscriptions(
 ) -> Result<Body, StatusCode> {
     let statement: Statement = serde_json::from_slice(&body).unwrap();
     let mut kv = kv.lock().unwrap();
+    kv.subscribed.send_modify(|seen| *seen += 1);
     if let Some(token) = headers
         .get(header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok())

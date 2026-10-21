@@ -54,10 +54,8 @@ async fn running_build_finishes_after_build_acceptance_is_revoked() {
     .unwrap();
     fs::write(fixture.root.join("hold-build"), "").unwrap();
     let revoke = async {
-        tokio::time::timeout(Duration::from_secs(10), async {
-            while !fixture.root.join("executed").exists() {
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
+        until_fake_docker(Duration::from_secs(10), || {
+            fixture.root.join("executed").exists()
         })
         .await
         .unwrap();
@@ -181,10 +179,8 @@ async fn capability_check_cancellation_confirms_cleanup_or_retains_quarantine() 
             }]))
             .await;
         assert!(matches!(event(&mut response).await, Event::Admitted { .. }));
-        tokio::time::timeout(Duration::from_secs(5), async {
-            while !fixture.root.join("checking").exists() {
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
+        until_fake_docker(Duration::from_secs(5), || {
+            fixture.root.join("checking").exists()
         })
         .await
         .unwrap();

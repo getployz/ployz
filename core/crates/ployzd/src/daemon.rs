@@ -1393,7 +1393,7 @@ mod tests {
         assert!(!wait_for_participation(records, shutdown).await.unwrap());
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn socket_wait_connects_once_the_listener_appears() {
         let root = TestDir::new("ployzd-socket-wait-ready");
         fs::create_dir_all(&root.0).unwrap();

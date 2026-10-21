@@ -279,53 +279,35 @@ mod tests {
         server.abort();
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn a_steady_stream_of_changes_cannot_defer_the_re_read_past_the_limit() {
-        let (replicated, server) = fake_cluster::store_with_subscriptions().await;
-        let shutdown = CancellationToken::new();
-        let view = MachineView::start(replicated.clone(), shutdown.clone());
-        let mut latest = view.watch();
-        tokio::time::timeout(Duration::from_secs(2), async {
-            latest.wait_for(Option::is_some).await.unwrap();
-        })
-        .await
-        .unwrap();
-
         // Change rows faster than the quiet window for longer than the limit.
-        let writer = tokio::spawn({
-            let replicated = replicated.clone();
-            async move {
-                for octet in 1..=60 {
-                    replicated
-                        .publish_local_machine(&machine(&format!("m{octet}"), octet))
-                        .await
-                        .unwrap();
-                    tokio::time::sleep(Duration::from_millis(50)).await;
-                }
+        let (changes, received) = tokio::sync::mpsc::unbounded_channel();
+        let writer = tokio::spawn(async move {
+            for _ in 0..60 {
+                changes
+                    .send(Ok(bytes::Bytes::from_static(b"{\"change\":null}\n")))
+                    .unwrap();
+                tokio::time::sleep(Duration::from_millis(50)).await;
             }
         });
-        let observed = tokio::time::timeout(Duration::from_millis(2900), async {
-            latest
-                .wait_for(|snapshot| {
-                    snapshot
-                        .as_ref()
-                        .is_some_and(|snapshot| !snapshot.observations.is_empty())
-                })
-                .await
-                .unwrap()
-                .clone()
-        })
+        let mut subscription = crate::corrosion::api::Subscription::streaming(
+            tokio_stream::wrappers::UnboundedReceiverStream::new(received),
+        );
+        let started = tokio::time::Instant::now();
+
+        let wake = tokio::time::timeout(
+            Duration::from_millis(2900),
+            super::wait(&mut subscription, &CancellationToken::new()),
+        )
         .await
-        .expect("the limit publishes a snapshot while writes continue")
-        .unwrap();
-        assert!(!observed.observations.is_empty());
+        .expect("the limit wakes the view while writes continue");
+        assert!(matches!(wake, super::Wake::Changed));
+        assert_eq!(started.elapsed(), super::DEBOUNCE_LIMIT);
         assert!(
             !writer.is_finished(),
-            "the snapshot arrived while writes were still flowing"
+            "the wake arrived while writes were still flowing"
         );
-
         writer.abort();
-        shutdown.cancel();
-        server.abort();
     }
 }

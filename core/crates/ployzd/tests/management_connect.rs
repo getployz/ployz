@@ -1186,13 +1186,10 @@ fn cloud() -> ManagementClientLabel {
 }
 
 async fn revoked(channel: Channel) {
-    tokio::time::timeout(Duration::from_secs(10), async {
-        while describe(channel.clone()).await.is_ok() {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
+    eventually("a revoked key's connection must stop serving", async || {
+        describe(channel.clone()).await.is_err()
     })
-    .await
-    .expect("a revoked key's connection must stop serving");
+    .await;
 }
 
 fn connection(capability: &ManagementCapability) -> Connection {
@@ -1253,13 +1250,21 @@ async fn describe(channel: Channel) -> Result<MachineId, tonic::Status> {
 }
 
 async fn wait_until(predicate: impl Fn() -> bool) {
+    eventually("observable connection state did not settle", async || {
+        predicate()
+    })
+    .await;
+}
+
+async fn eventually(stuck: &str, mut done: impl AsyncFnMut() -> bool) {
     tokio::time::timeout(Duration::from_secs(10), async {
-        while !predicate() {
+        while !done().await {
+            // real-wait: the daemon serves over real sockets on a multi-thread runtime; no in-process event exposes this state.
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
     })
     .await
-    .expect("observable connection state did not settle");
+    .expect(stuck);
 }
 
 struct RequestGate {
