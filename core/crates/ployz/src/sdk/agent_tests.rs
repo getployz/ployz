@@ -735,7 +735,7 @@ async fn a_failed_tail_without_sealed_values_shows_env_values_and_redacts_secret
     .await
     .unwrap();
 
-    let log = crate::sdk::failed_tail(
+    let (log, _) = crate::sdk::failed_tail(
         &session.client().unwrap(),
         one.machine.id,
         container_id('c'),

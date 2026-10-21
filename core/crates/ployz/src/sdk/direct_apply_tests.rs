@@ -25,8 +25,8 @@ async fn a_direct_apply_whose_container_keeps_restarting_names_its_exit_and_last
     );
     assert_eq!(failure.cause, ["token=[redacted]"]);
     assert_eq!(
-        failure.details["outcome"]["failed"]["error"]["last_run"],
-        serde_json::json!({ "exit_code": 1, "last_line": "token=[redacted]" })
+        failure.details.pointer("/outcome/failed/error/last_run"),
+        Some(&serde_json::json!({ "exit_code": 1, "last_line": "token=[redacted]" }))
     );
 }
 

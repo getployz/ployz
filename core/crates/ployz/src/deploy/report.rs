@@ -8,8 +8,8 @@ use crate::{
     },
 };
 use ployz_core::{
-    ContainerId, DeployOperation, DeployOutcome, ExecutionError, FailedOperation, MachineId,
-    Namespace, OperationPhase, OperationRow, OperationStatus, QualifiedService,
+    ContainerId, DeployOperation, DeployOutcome, ExecutionError, FailedOperation, HealthFailure,
+    MachineId, Namespace, OperationPhase, OperationRow, OperationStatus, QualifiedService,
     ReplacementCompensation, RestoreAttempt, RpcError, RpcErrorCode, ServiceName, StopAttempt,
 };
 use ployz_store::tools::SealedValues;
@@ -405,9 +405,29 @@ impl Direct {
         }
     }
 
-    /// Each failed row's Container tail with secret-shaped text redacted. A direct apply
+    /// Each failed row's Container tail with secret-shaped text redacted, giving the
+    /// stopped Container `outcome` failed on the last run its tail shows. A direct apply
     /// has no Store, so it has no Sealed values to scrub.
-    pub(super) async fn tails(&self, client: &Client) -> Vec<LogTail> {
+    pub(super) async fn tails(
+        &self,
+        client: &Client,
+        outcome: &mut DeployOutcome<ExecutionError>,
+    ) -> Vec<LogTail> {
+        let mut stopped = None;
+        if let DeployOutcome::Failed {
+            failed:
+                FailedOperation::Operation { error, .. } | FailedOperation::Replacement { error, .. },
+            ..
+        } = outcome
+            && let ExecutionError::Health {
+                container_id,
+                failure: HealthFailure::Runtime { .. },
+                last_run,
+                ..
+            } = error
+        {
+            stopped = Some((*container_id, last_run));
+        }
         let mut tails = Vec::new();
         for (row, _) in self
             .rows
@@ -416,10 +436,20 @@ impl Direct {
         {
             let log = match self.tracker.container(row) {
                 None => None,
-                Some(container) => Some(
-                    crate::sdk::failed_tail(client, row.machine, container, &SealedValues::none())
-                        .await,
-                ),
+                Some(container) => {
+                    let (log, run) = crate::sdk::failed_tail(
+                        client,
+                        row.machine,
+                        container,
+                        &SealedValues::none(),
+                    )
+                    .await;
+                    if let Some((_, last_run)) = stopped.as_mut().filter(|(id, _)| *id == container)
+                    {
+                        **last_run = Some(run);
+                    }
+                    Some(log)
+                }
             };
             tails.push(LogTail {
                 service: QualifiedService::new(self.namespace.clone(), row.service.clone()),

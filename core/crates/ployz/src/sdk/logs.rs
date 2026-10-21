@@ -1,10 +1,10 @@
 //! On-demand Container log transport for SDK readers.
 use futures_util::future::join_all;
 use ployz_core::{
-    ContainerId, HistoryContainer, HistoryGapReason, HistoryRow, HistoryStream, LiveLogTarget,
-    LogBody, LogDirection, LogEntry, LogHistoryRequest, LogLevel, LogMetadata, LogsOptions,
-    MachineId, MachineLogService, MachineTarget, OpaquePayload, RpcError, RpcErrorCode,
-    TailLogsRequest, log_level, op,
+    ContainerId, HistoryContainer, HistoryGapReason, HistoryRow, HistoryStream, LastRun,
+    LiveLogTarget, LogBody, LogDirection, LogEntry, LogHistoryRequest, LogLevel, LogMetadata,
+    LogsOptions, MachineId, MachineLogService, MachineTarget, OpaquePayload, RpcError,
+    RpcErrorCode, TailLogsRequest, log_level, op,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -385,17 +385,34 @@ const TAIL_FETCH: u16 = 200;
 const TAIL_KEEP: u16 = 10;
 
 /// The last lines of failed Container `container` on `machine`, scrubbed of
-/// `sealed`. Unread, they are unanswered.
+/// `sealed`, and the last run they show. Unread, they are unanswered.
 pub(crate) async fn failed_tail(
     client: &Client,
     machine: MachineId,
     container: ContainerId,
     sealed: &SealedValues,
-) -> LogText {
-    match tail_frames(client, machine, container).await {
-        Some(tail) => tail_excerpt(tail.frames, sealed),
-        None => LogText::Withheld {
-            why: Withheld::Unanswered,
+) -> (LogText, LastRun) {
+    let (log, exit_code) = match tail_frames(client, machine, container).await {
+        Some(tail) => (tail_excerpt(tail.frames, sealed), tail.exit_code),
+        None => (
+            LogText::Withheld {
+                why: Withheld::Unanswered,
+            },
+            None,
+        ),
+    };
+    let run = last_run(&log, exit_code);
+    (log, run)
+}
+
+/// A failed Container's last run: the code of its newest stored exit, and the newest
+/// line of its scrubbed `log`.
+pub(crate) fn last_run(log: &LogText, exit_code: Option<i64>) -> LastRun {
+    LastRun {
+        exit_code,
+        last_line: match log {
+            LogText::Shown(excerpt) => excerpt.lines().last().cloned(),
+            LogText::Withheld { .. } => None,
         },
     }
 }

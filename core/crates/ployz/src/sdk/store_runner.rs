@@ -1114,17 +1114,8 @@ impl Run {
             std::collections::btree_map::Entry::Occupied(read) => read.into_mut(),
             std::collections::btree_map::Entry::Vacant(unread) => {
                 let (log, exit_code) = self.failed_log(client, scrub, machine, *container_id).await;
-                let last_line = match &log {
-                    LogText::Shown(excerpt) => excerpt.lines().last().cloned(),
-                    LogText::Withheld { .. } => None,
-                };
-                unread.insert((
-                    log,
-                    LastRun {
-                        exit_code,
-                        last_line,
-                    },
-                ))
+                let run = super::last_run(&log, exit_code);
+                unread.insert((log, run))
             }
         };
         *last_run = Some(run.clone());
