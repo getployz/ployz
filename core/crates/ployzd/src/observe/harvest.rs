@@ -2834,6 +2834,10 @@ mod tests {
 
         assert_eq!(host.held(), 1);
         assert_eq!(
+            fs::metadata(host.dir().join(ENV_FILE)).unwrap().mode() & 0o777,
+            0o600
+        );
+        assert_eq!(
             host.env().map(RetainedEnv::into_values),
             Some(BTreeMap::from([
                 ("TOKEN".to_owned(), "live-only-sentinel".to_owned()),
