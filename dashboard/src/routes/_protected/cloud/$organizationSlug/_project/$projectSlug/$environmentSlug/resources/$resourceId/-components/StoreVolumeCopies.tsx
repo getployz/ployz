@@ -203,7 +203,7 @@ type Resolved = CopiesPanelProps & {
   members: readonly Member[]; row: PlacementRow | null; copies: VolumeCopies; now: Date; seeds: boolean; seedRefused: string | null;
 };
 
-function CopiesView({ volume, members, row, rows, owed, copies, target, servers, accepting, upgrade, seeds, disabled, deploying, stage, restore, deleteCopy, onOpen, now,
+function CopiesView({ volume, members, row, rows, owed, copies, target, servers, accepting, upgrade, seeds, seedRefused, disabled, deploying, stage, restore, deleteCopy, onOpen, now,
   alert, needs }: Resolved & { target: Placement; alert: ReactNode; needs: ReactNode }) {
   const [adding, setAdding] = useState(false);
   const [deleting, setDeleting] = useState<OldCopy | null>(null);
@@ -240,7 +240,8 @@ function CopiesView({ volume, members, row, rows, owed, copies, target, servers,
         ? <p className="text-sm text-muted-foreground">Nothing outside {liveName}. If {liveName} dies, {volume.name} goes with it.</p>
         : copies.elsewhere.map((copy) => <CopyRow key={copy.id} copy={copy} now={now} locked={locked} blocked={blocked}
           onOpen={() => { if (copy.kind === "mirror") onOpen(copy.server.id); }} onDelete={copy.kind === "old" ? () => setDeleting(copy) : null}
-          restore={copy.kind === "old" ? restoreOffer(volume, members, rows, copy.server.id, disabled || deploying, restore) : null} seeds={seeds} />)}
+          restore={copy.kind === "old" ? restoreOffer(volume, members, rows, copy.server.id, disabled || deploying, restore) : null} seeds={seeds}
+          seedRefused={seedRefused} />)}
     </Group>
     {canAdd ? <Button variant="outline" className="border-dashed" disabled={locked} onClick={() => setAdding(true)}>
       <PlusIcon data-icon="inline-start" />Add copy
@@ -288,9 +289,9 @@ type RestoreOffer = ReturnType<typeof restoreOffer>;
 
 /**
  * One copy away from the live Server. A mirror opens; an old copy restores its point on deploy, or goes at once. A
- * restore already staged reads Staged even while `seeds` offers no new one.
+ * restore already staged reads Staged even while `seeds` offers no new one; otherwise `seedRefused` says why there is none.
  */
-function CopyRow({ copy, now, locked, blocked, onOpen, onDelete, restore = null, seeds = false }: {
+function CopyRow({ copy, now, locked, blocked, onOpen, onDelete, restore = null, seeds = false, seedRefused = null }: {
   copy: VolumeCopy;
   now: Date;
   locked: boolean;
@@ -299,6 +300,7 @@ function CopyRow({ copy, now, locked, blocked, onOpen, onDelete, restore = null,
   onDelete: (() => void) | null;
   restore?: RestoreOffer;
   seeds?: boolean;
+  seedRefused?: string | null;
 }) {
   const line = cardLine(copy, now);
   const unheard = unheardReason(copy);
@@ -320,7 +322,8 @@ function CopyRow({ copy, now, locked, blocked, onOpen, onDelete, restore = null,
       {badge}
       {copy.kind === "mirror" ? <ChevronRightIcon className="size-4 text-muted-foreground" /> : null}
       {restore?.staged ? <span className="text-sm text-muted-foreground">Staged</span>
-        : restore && seeds ? <Button variant="outline" size="xs" aria-label={`Restore from ${title}`} disabled={restore.disabled} onClick={restore.stage}>Restore</Button> : null}
+        : restore && seeds ? <Button variant="outline" size="xs" aria-label={`Restore from ${title}`} disabled={restore.disabled} onClick={restore.stage}>Restore</Button>
+        : restore && seedRefused !== null ? <span className="text-sm text-muted-foreground">{seedRefused}</span> : null}
       {onDelete && copy.staged === null && copy.busy === null && !blocked
         ? <Button variant="ghost" size="icon-xs" aria-label={`Delete copy on ${title}`} disabled={locked} onClick={onDelete}><XIcon /></Button> : null}
     </ItemActions>
