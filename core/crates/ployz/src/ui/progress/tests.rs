@@ -138,6 +138,53 @@ fn a_removed_service_counts_as_removed_in_the_summary() {
 }
 
 #[test]
+fn a_removal_that_has_begun_reads_as_removing_not_starting() {
+    let machine = MachineId::random();
+    let removal = |state| {
+        let row = crate::deploy::service_row(
+            QualifiedService::parse("shop/api").unwrap(),
+            None,
+            [crate::deploy::Replica {
+                machine,
+                state,
+                timing: Timing::Unavailable,
+                starts: false,
+                updates: false,
+            }],
+        );
+        Frame {
+            run: Run::Direct(Namespace::parse("shop").unwrap()),
+            title: "Deploying shop".into(),
+            rows: vec![row],
+            notices: Vec::new(),
+        }
+    };
+    let running = |phase| ployz_store::RowState::Running {
+        phase,
+        serving: false,
+    };
+    let text = plain(
+        removal(&ployz_store::RowState::Pending),
+        vec![
+            (1, Message::Update(removal(&running(RowPhase::Starting)))),
+            (
+                2,
+                Message::Update(removal(&running(RowPhase::RemovingContainer))),
+            ),
+            (
+                3,
+                Message::Finish(
+                    removal(&ployz_store::RowState::Completed),
+                    Disposition::Settled,
+                ),
+            ),
+        ],
+    );
+    assert!(!text.contains("starting"), "{text}");
+    assert_eq!(text.matches("api: removing 0/1").count(), 1, "{text}");
+}
+
+#[test]
 fn phase_and_detail_changes_are_preserved_and_restart_quiet_period() {
     let initial = frame(State::Pending);
     let mut starting = initial.clone();

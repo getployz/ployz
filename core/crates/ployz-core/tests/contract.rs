@@ -1617,11 +1617,13 @@ fn ensure_container_names_the_want_the_observation_and_the_refusal_on_the_wire()
     .unwrap();
     let slot = SlotKey {
         namespace: Namespace::parse("shop").unwrap(),
+        service: spec.name.clone(),
         kind: ContainerKind::ServiceContainer,
         creation_key: CreationKey::try_from("deploy/slot-1".to_owned()).unwrap(),
     };
     let slot_json = json!({
         "namespace": "shop",
+        "service": "api",
         "kind": "service_container",
         "creation_key": "deploy/slot-1"
     });

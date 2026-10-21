@@ -57,6 +57,24 @@ your app didn't answer.
 4. **Check the server running it is up.** A replica on a server that's down or out of reach
    doesn't answer either. See [Troubleshooting servers](servers.md).
 
+When a server running one of your replicas powers off, a new connection to it gives up after one
+second and the request goes to another replica. A request that had already reached it, or that
+went out on a connection the web server keeps open to it, waits about 14 seconds. Then a `GET`,
+like a page load, goes to another replica, and anything else, like a form post, gets
+`504 · NO_RESPONSE`. Your app may have handled it before the connection broke, so check whether
+it went through, like whether the order exists, before you send it again.
+
+The same 14-second limit applies to visitors. When a visitor's connection stops acknowledging
+data for about 13 seconds, say a phone on a bad network in the middle of a download, the web
+server drops it, and the visitor's browser or app has to retry.
+
+On a server upgraded from an earlier release, the web server Ployz already ran there keeps the
+old behavior: a request that had reached the powered-off server can hang for about 15 minutes.
+That lasts until the web server is created again. To do that now, open the server's page, turn
+**Takes web traffic** off, then on again. While it's off, that server doesn't answer on ports 80
+and 443, so do one server at a time. Servers you run without Ployz Cloud have no command for this
+yet ([#2526](https://github.com/getployz/ployz/issues/2526)).
+
 ## This app isn't running
 
 You'll see `503 · NOT_RUNNING`. The service has no healthy replica, so there's nothing to send
@@ -64,7 +82,7 @@ the request to. The page reloads itself every 10 seconds.
 
 - **A deploy is in progress.** The page goes away once the first replica passes its health
   check.
-- **The service is stopped.** Deploy it, or run `ployz service start <name>`. See
+- **The service is stopped.** Run `ployz service start <name>`, or deploy it. See
   [Restart, stop or open a shell](../services/services.md#restart-stop-or-open-a-shell).
 - **Every replica fails its health check.** See
   [Troubleshooting deployments](deployments.md).

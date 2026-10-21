@@ -141,6 +141,7 @@ impl GraphService {
         let word = match state {
             State::Pending if self.work == Work::Remove => "waiting to remove",
             State::Pending => "waiting",
+            State::Running(RowPhase::Starting) if self.work == Work::Remove => "removing",
             State::Running(_) if self.work == Work::Remove => state.word(),
             State::Running(_) if self.work == Work::Retire => "switched",
             State::Running(phase) => match phase {
