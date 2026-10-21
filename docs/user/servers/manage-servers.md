@@ -220,6 +220,14 @@ the drain doesn't start; open it again to see what stops now. Drains in one orga
 at a time: a second one reads **Queued · Waiting on web-1**. While a drain runs, the
 **Drain** row counts the services left to move and lists them as **Pending**; each one leaves the
 list as it leaves the server. You can leave the page while one runs.
+If your servers don't answer when a drain's turn comes, as while one restarts, the drain reads
+**Queued** and tries again 20 seconds after each try. It starts once they answer. While it waits,
+it doesn't hold up the organization's other drains: they can start and run, and while one runs, the
+waiting drain reads **Queued · Waiting on** that drain's server. It waits up to 15 minutes from when
+you confirmed, and other drains ending don't extend that. If your servers still don't answer by
+then, the drain doesn't start and reads **Drain didn't start. Try again.** Nothing on the server
+changed. A drain whose turn comes more than 15 minutes after you confirmed still starts if your
+servers answer at once. If they don't, it doesn't start.
 
 While a server drains, you can't turn **Run services here** back on for it: Cloud refuses the
 change until the drain ends. Turning services on for another server waits until
@@ -500,6 +508,9 @@ servers, except for services whose volume was on it (see
 [When a server goes down](../services/scaling.md#when-a-server-goes-down)). Removing your last
 server stops everything; your projects and settings stay, and the bottom bar shows **Add servers**
 until you [add one](add-a-server.md).
+
+On a server that joined from a Fleet Token, `sudo ployz status` then says
+`this server = Not in a Cluster`.
 
 The reset first stops every copy in progress on the server. If one doesn't stop within 30 seconds,
 the removal fails and names its volume; remove the server again.
