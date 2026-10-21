@@ -2,7 +2,7 @@ import { gzipSync } from "node:zlib";
 import { it } from "@effect/vitest";
 import { InngestTestEngine } from "@inngest/test";
 import type { ConfigCommand, ConfigTrusted } from "@ployz/sdk";
-import { Effect, Layer, Schema } from "effect";
+import { Effect, Schema } from "effect";
 import { Inngest } from "inngest";
 import { eq } from "drizzle-orm";
 import { Header } from "tar";
@@ -47,7 +47,7 @@ it.live(
   "Cloud's worker runs an admitted Deployment once, honours a cancel, and no step carries its secrets",
   () =>
     Effect.gen(function* () {
-      const services = yield* Layer.build(yield* storeTestCloud());
+      const services = yield* storeTestCloud();
       yield* seedStoreOrganization(ORGANIZATION).pipe(Effect.provide(services));
       const store = yield* cloudStore.pipe(Effect.provide(services));
       const write = (command: ConfigCommand) => Effect.promise(() => store.write(ORGANIZATION, command));
@@ -156,7 +156,7 @@ it.live(
 );
 
 it.live("a first Server's join deploys each published Environment once, and leaves an unpublished one", () => Effect.gen(function* () {
-  const services = yield* Layer.build(yield* storeTestCloud());
+  const services = yield* storeTestCloud();
   yield* Effect.all([seedStoreOrganization(ORGANIZATION), enrollStoreServer(ORGANIZATION)]).pipe(Effect.provide(services));
   const store = yield* cloudStore.pipe(Effect.provide(services));
   const write = (command: ConfigCommand) => Effect.promise(() => store.write(ORGANIZATION, command));
@@ -211,7 +211,7 @@ it.live(
   () =>
     Effect.gen(function* () {
       const state = { branchGone: false, heads: 0, archives: [] as string[] };
-      const services = yield* Layer.build(yield* storeTestCloud({ github: github(state) }));
+      const services = yield* storeTestCloud({ github: github(state) });
       yield* seedStoreOrganization(ORGANIZATION).pipe(Effect.provide(services));
       const store = yield* cloudStore.pipe(Effect.provide(services));
       const write = (command: ConfigCommand, trusted?: ConfigTrusted) =>
@@ -261,7 +261,7 @@ it.live(
     Effect.gen(function* () {
       const inngest = new Inngest({ id: "store-deployment-mail-test" });
       const send = vi.spyOn(inngest, "send").mockResolvedValue({ ids: [] });
-      const services = yield* Layer.build(yield* storeTestCloud({ github: github({ branchGone: false, heads: 0, archives: [] }), inngest }));
+      const services = yield* storeTestCloud({ github: github({ branchGone: false, heads: 0, archives: [] }), inngest });
       const ada = yield* seedStoreOrganization(ORGANIZATION).pipe(Effect.provide(services));
       const [bob, cy] = yield* Effect.gen(function* () {
         const { drizzle } = yield* Database;

@@ -2,7 +2,7 @@ import { InngestTestEngine, mockCtx } from "@inngest/test";
 import type { ConfigCommand, ConfigStore, ConfigTrusted, EnvironmentRef } from "@ployz/sdk";
 import type { AnyTextAdapter, StreamChunk } from "@tanstack/ai";
 import { sql } from "drizzle-orm";
-import { Effect, Layer } from "effect";
+import { Effect } from "effect";
 import { Inngest } from "inngest";
 import { vi } from "vitest";
 import { agentChat } from "#/modules/agent/agent-chat.server";
@@ -88,7 +88,7 @@ export const evalFixture = Effect.fn("Eval.fixture")(function* (scenario?: Fleet
     return { ids: [] };
   });
   const fleet = scenario === undefined ? null : yield* startFleet(scenario);
-  const services = yield* Layer.build(yield* storeTestCloud({ inngest, fleet }));
+  const services = yield* storeTestCloud({ inngest, fleet });
   const provided = <A, E, R>(effect: Effect.Effect<A, E, R>) => effect.pipe(Effect.provide(services));
   // SAFETY: the fixture's services provide everything an Inngest function's effects need.
   const runEffect = makeInngestEffectRunner(<A, E>(effect: Effect.Effect<A, E, never>) => Effect.runPromise(provided(effect))) as typeof runInngestEffect;

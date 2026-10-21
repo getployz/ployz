@@ -1,7 +1,7 @@
 import { it } from "@effect/vitest";
 import { type ConfigCommand, type ConfigStore, type CreateVolume, type Mount, RpcError } from "@ployz/sdk";
 import { sql } from "drizzle-orm";
-import { Effect, Layer, Option } from "effect";
+import { Effect, Option } from "effect";
 import { expect, vi } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
 import { failStoreDeploymentUnrun } from "#/modules/config-store/store-deployment.server";
@@ -28,12 +28,9 @@ const admitDeploy = (store: ConfigStore, id: string) => store.write(ORGANIZATION
   command: "admit", admit: "deploy", id, environment: shop, services: [], version: null, accept_volume_loss: [],
 }, { ...acmeWeb(), servers: 1 });
 
-/**
- * Organization ORGANIZATION with project shop, Service web (and any of `writers`), and Volume `data` deployed as `volume` says.
- * Its services are built once, as Cloud's are. Providing the Layer itself would open a new Config Store on every call.
- */
+/** Organization ORGANIZATION with project shop, Service web (and any of `writers`), and Volume `data` deployed as `volume` says. */
 const deployedShop = Effect.fn(function* (volume: Partial<CreateVolume> = {}, writers: string[] = []) {
-  const services = yield* Layer.build(yield* storeTestCloud());
+  const services = yield* storeTestCloud();
   yield* seedStoreOrganization(ORGANIZATION).pipe(Effect.provide(services));
   const store = yield* cloudStore.pipe(Effect.provide(services));
   yield* Effect.promise(async () => {

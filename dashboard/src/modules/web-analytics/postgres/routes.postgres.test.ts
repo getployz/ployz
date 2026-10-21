@@ -1,5 +1,5 @@
 import { it } from "@effect/vitest";
-import { Effect, Layer } from "effect";
+import { Effect } from "effect";
 import { expect } from "vitest";
 import { analyticsRequest, type RequestKind } from "#/modules/web-analytics/tables";
 import { Database } from "#/server/database.server";
@@ -15,7 +15,7 @@ type Hit = { path: string; status?: number; durationMs?: number; kind?: RequestK
 
 const seed = Effect.fn(function* (hits: ReadonlyArray<Hit>) {
   forgetPartitions();
-  const services = yield* Layer.build(yield* storeTestCloud({ env: { ANALYTICS_ENABLED: "true" } }));
+  const services = yield* storeTestCloud({ env: { ANALYTICS_ENABLED: "true" } });
   const provide = <A, E, R>(effect: Effect.Effect<A, E, R>) => effect.pipe(Effect.provide(services), Effect.orDie);
   yield* provide(Effect.gen(function* () {
     yield* ensurePartitions([dayOf(START)]);

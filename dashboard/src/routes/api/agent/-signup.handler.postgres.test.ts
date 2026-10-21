@@ -1,6 +1,6 @@
 import { it } from "@effect/vitest";
 import { eq, sql } from "drizzle-orm";
-import { Effect, Layer } from "effect";
+import { Effect } from "effect";
 import { expect } from "vitest";
 import { resolveCaller } from "#/modules/identity/caller.server";
 import { member, organizationToken, user } from "#/modules/identity/tables";
@@ -10,7 +10,7 @@ import { handleAgentSignup, signupMethodNotAllowed } from "#/routes/api/agent/-s
 import { observedIp } from "#/routes/api/checkin/-handler";
 import { AuthLive } from "#/server/auth.server";
 import { Database } from "#/server/database.server";
-import { storeTestCloud } from "#/test/store-cloud";
+import { storeTestCloudWith } from "#/test/store-cloud";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -22,8 +22,7 @@ interface SignupBody {
 }
 
 const inCloud = <A, E, R>(body: Effect.Effect<A, E, R>) => Effect.gen(function* () {
-  const cloud = yield* storeTestCloud();
-  return yield* body.pipe(Effect.provide(Layer.mergeAll(AuthLive.pipe(Layer.provide(cloud)), cloud)));
+  return yield* body.pipe(Effect.provide(yield* storeTestCloudWith(AuthLive)));
 });
 
 const signUp = Effect.fn(function* (ip: string) {

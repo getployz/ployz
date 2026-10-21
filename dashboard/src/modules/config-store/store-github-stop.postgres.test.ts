@@ -1,7 +1,7 @@
 import { FULL_GRANT } from "#/modules/identity/token-grant";
 import { it } from "@effect/vitest";
 import type { ConfigCommand } from "@ployz/sdk";
-import { Effect, Layer } from "effect";
+import { Effect } from "effect";
 import { Inngest } from "inngest";
 import { expect, vi } from "vitest";
 import { checkStoreGithubBuild } from "#/modules/config-store/store-github-builds.server";
@@ -49,7 +49,7 @@ for (const { stop, failed } of cases) {
       const github = fakeGithubApiBy(({ path }) => path === CANCEL ? {} : undefined);
       const inngest = new Inngest({ id: "store-github-stop" });
       const sent = vi.spyOn(inngest, "send").mockResolvedValue({ ids: [] });
-      const services = yield* Layer.build(yield* storeTestCloud({ github: github.service, inngest }));
+      const services = yield* storeTestCloud({ github: github.service, inngest });
       const provided = <A, E, R>(program: Effect.Effect<A, E, R>) => program.pipe(Effect.provide(services));
       const run: StoreEffectRunner = (program) => Effect.runPromise(provided(program));
       const userId = yield* provided(seedStoreOrganization(ORGANIZATION));
