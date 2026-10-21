@@ -218,6 +218,28 @@ describe("VolumeCopiesPanel", () => {
     expect(rows("Live")).toEqual([`${id("web-1")}PrimaryWaiting for its report`]);
   });
 
+  it("names the Primary whose report is pending, not a silent Server listed before it, and waits with no Forget", () => {
+    // observeVolumeMembers lists the frame's Servers, silent ones among them, and appends those it names only by id.
+    const unlisted: Member = { machine: { id: id("web-1"), name: id("web-1") }, answered: false, incomplete: true };
+    panel([mirrorAsOf("web-2", fiveAgo()), member("web-3", "unanswered"), unlisted], row(["web-2"]));
+    expect(rows("Live")).toEqual([`${id("web-1")}PrimaryWaiting for its report`]);
+    expect(screen.getByText("Waiting for every server's report")).toBeTruthy();
+    expect(screen.queryByText(/take over|Forget|not answering/)).toBeNull();
+  });
+
+  it("says what the presumed primary's Server can't do instead of claiming the Volume has no primary", () => {
+    const lacking: Member = { machine: member("web-1", "unanswered").machine, answered: false, lack: "Volume move is not in Ployz 0.3.0 on web-1." };
+    panel([lacking, mirrorAsOf("web-2", fiveAgo())], row(["web-2"]));
+    expect(screen.getByText("web-1 can't report this copy")).toBeTruthy();
+    expect(screen.getByText(/Volume move is not in Ployz 0\.3\.0 on web-1\.$/)).toBeTruthy();
+    expect(screen.queryByText("data has no primary")).toBeNull();
+    expect(screen.getByRole("alert").className).not.toContain("text-destructive");
+    expect(useMirror()).toBeNull();
+    cleanup();
+    panel([{ ...lacking, lack: "Volume move needs a newer Ployz on web-1. 0.3.1 is out.", outdated: true }, mirrorAsOf("web-2", fiveAgo())], row(["web-2"]));
+    expect(screen.getByText("web-1 needs a newer Ployz")).toBeTruthy();
+  });
+
   it("names a Primary whose root is read-only Read-only under Live, not Live", () => {
     panel([member("web-1", "cut"), mirrorAsOf("web-2", fiveAgo())], row(["web-2"]));
     expect(rows("Live")).toEqual(["web-1PrimaryRead-only"]);
@@ -360,6 +382,12 @@ describe("mirror detail", () => {
     panel(silent(), row(["web-2"]), { open: "web-2", matchedAt: matchedAgo(9) });
     expect(screen.getByText("web-2 is not answering.")).toBeTruthy();
     expect(screen.getByText("9 minutes ago")).toBeTruthy();
+    expect(screen.queryByText("Refresh skipped")).toBeNull();
+  });
+
+  it("says a never-refreshed mirror's Server isn't answering without claiming a refresh was skipped", () => {
+    panel(silent(), row(["web-2"]), { open: "web-2" });
+    expect(screen.getByText("web-2 is not answering.")).toBeTruthy();
     expect(screen.queryByText("Refresh skipped")).toBeNull();
   });
 
