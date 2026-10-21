@@ -25,16 +25,17 @@ CAPTURES=$("$DOCS/capture-dir.sh" "${1:-}") || exit 1
 WORK=$(mktemp -d /tmp/pz-cloud-capture.XXXXXX) || exit 1
 readonly CAPTURES WORK
 cloud_started=0
-server_aside=0
+# shellcheck source=server-aside.sh
+source "$DOCS/cloud/server-aside.sh"
 finish() {
-  if [ "$server_aside" = 1 ]; then
-    restore_server || echo "restoring the seed's Server failed; Cloud counts no Server" >&2
-  fi
+  local status=$?
+  if ! restore_server_on_exit && [ "$status" = 0 ]; then status=1; fi
   if [ "$cloud_started" = 1 ] && [ "${KEEP:-0}" != 1 ]; then
     (cd "$DASH" || exit 1; scripts/verify/down.sh) >/dev/null 2>&1 || true
     echo "dashboard stopped"
   fi
   rm -rf "$WORK"
+  exit "$status"
 }
 trap finish EXIT
 echo "raw captures in $CAPTURES"
@@ -72,20 +73,6 @@ up() {
   echo "Cloud at $U"
 }
 sql() { docker exec "$pg" psql -q -v ON_ERROR_STOP=1 -U postgres -d ployz_cloud -c "$1"; }
-# Sets the seed's Server row aside, so Cloud counts no Server until restore_server,
-# which finish also runs, so an interrupt leaves the Server in place.
-set_server_aside() {
-  server_aside=1
-  sql "CREATE TABLE capture_server AS SELECT * FROM organization_machine WHERE organization_id = '$org';
-    DELETE FROM organization_machine WHERE organization_id = '$org'" >/dev/null
-}
-restore_server() {
-  sql "SET client_min_messages = warning;
-    CREATE TABLE IF NOT EXISTS capture_server (LIKE organization_machine);
-    INSERT INTO organization_machine SELECT * FROM capture_server ON CONFLICT DO NOTHING;
-    DROP TABLE capture_server" >/dev/null
-  server_aside=0
-}
 api() { curl -sf -b "better-auth.session_token=$cookie" -H "Origin: $U" -H 'content-type: application/json' "$@"; }
 approve() {
   api "$U/api/auth/device?user_code=$1" >/dev/null || { echo "approve: device lookup failed for $1" >&2; exit 1; }
