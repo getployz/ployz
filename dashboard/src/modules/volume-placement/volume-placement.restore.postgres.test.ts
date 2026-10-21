@@ -466,7 +466,7 @@ it.live("waits for the admission's stamp before judging a Deploy's restore, when
     advancing = Effect.runPromise(advancePlacement(ORGANIZATION, deployment, null, byVolume, () => Effect.succeed([])).pipe(Effect.provide(services)));
     let done = false;
     void advancing.finally(() => { done = true; });
-    while (!done && !(await lockWaits(services))) await new Promise((resolve) => setTimeout(resolve, 10));
+    await vi.waitFor(async () => { if (!done) expect(await lockWaits(services)).toBe(true); }, { timeout: 20_000, interval: 10 });
     return written;
   });
 

@@ -138,6 +138,7 @@ describe("connectOnce", () => {
     for (const byte of greeting) {
       if (socket.destroyed) return;
       socket.write(byte);
+      // oxlint-disable-next-line anti-slop/no-real-time-wait-in-tests -- the drip is the slow peer under test: connectOnce's deadlines are wall-clock timers on a real socket, and a reset-per-read deadline only shows when bytes keep arriving across it
       await new Promise((resolve) => setTimeout(resolve, 40));
     }
   };
@@ -167,14 +168,18 @@ describe("connectOnce", () => {
   });
 
   it("never follows a redirect", async () => {
-    let followed = 0;
-    const elsewhere = await listen(() => (followed += 1));
+    const followers: Array<number | undefined> = [];
+    const elsewhere = await listen((socket) => followers.push(socket.remotePort));
     const port = await listen((socket) =>
       socket.end(`HTTP/1.1 301 Moved Permanently\r\nLocation: http://127.0.0.1:${elsewhere}/\r\n\r\n`),
     );
     expect((await connectOnce("127.0.0.1", port, NONCE)).seen).toBe("other_listener");
-    await new Promise((resolve) => setTimeout(resolve, 100));
-    expect(followed).toBe(0);
+    const sentinel = connect({ host: "127.0.0.1", port: elsewhere });
+    sentinel.on("error", () => {});
+    await vi.waitFor(() => expect(followers).toContain(sentinel.localPort));
+    const sentinelPort = sentinel.localPort;
+    sentinel.destroy();
+    expect(followers).toEqual([sentinelPort]);
   });
 
   it("reads at most 64 bytes of a large greeting", async () => {

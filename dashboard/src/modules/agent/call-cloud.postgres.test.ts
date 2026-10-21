@@ -1,10 +1,11 @@
 import { createHash } from "node:crypto";
 import { it } from "@effect/vitest";
 import type { Act, CloudQuery, LogsAnswer, MachineId, MachineName, RuntimeWatchView, ServerRef, ServiceVerb, VolumeId, VolumeRun } from "@ployz/sdk";
-import { sql } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { Effect, Layer, Schema } from "effect";
 import { Inngest } from "inngest";
 import { describe, expect, vi } from "vitest";
+import { asRecord } from "#/lib/json";
 import { asTestDouble } from "#/lib/test-double";
 import { callCloud, NO_SERVERS_MESSAGE } from "#/modules/agent/call-cloud.server";
 import { decideApproval, operationDigest } from "#/modules/approvals/approvals.server";
@@ -15,6 +16,7 @@ import { dropRemovedServer } from "#/modules/machines/pairing-removal.server";
 import { machineEnrollmentToken, machineRemoveAttempt, organizationMachine, serverDrainAttempt } from "#/modules/machines/tables";
 import { attemptIdOf } from "#/modules/operations/keyed.server";
 import { operationsOn } from "#/modules/operations/operation-history.server";
+import { operationRequest } from "#/modules/operations/tables";
 import { serviceAct } from "#/modules/service-act/tables";
 import { operationApprovals } from "#/modules/approvals/tables";
 import { cloudStore } from "#/modules/config-store/store-sdk.server";
@@ -563,9 +565,13 @@ describe("callCloud", () => {
         data: { organizationId: ORGANIZATION, machineId: MACHINE, change: { acceptsServices: false, acceptsIngress: false, buildConcurrency: 2 } },
       })]]);
       // Catches a replayed act queuing the change again, or answering a different time, however long after the first.
-      yield* Effect.sleep("1100 millis");
+      const [admitted] = yield* Effect.gen(function* () {
+        const { drizzle } = yield* Database;
+        return yield* drizzle.update(operationRequest).set({ createdAt: sql`${operationRequest.createdAt} - interval '1 hour'` })
+          .where(eq(operationRequest.organizationId, ORGANIZATION)).returning({ createdAt: operationRequest.createdAt });
+      }).pipe(Effect.provide(services));
       const replayed = yield* callCloud(caller, { act }).pipe(runtime(observing(true), []), Effect.provide(services));
-      expect(replayed).toEqual(heard);
+      expect(replayed).toEqual({ ...heard, value: { ...asRecord(heard.ok ? heard.value : null), requested_at: Math.floor((admitted?.createdAt.getTime() ?? 0) / 1000) } });
       expect(send).toHaveBeenCalledTimes(1);
       // Catches the same attempt reused for another change, which would answer as the first one ran.
       const reused = yield* callCloud(caller, { act: { ...act, action: { ...set, accepts_services: true } } })

@@ -104,7 +104,6 @@ describe("dialogs opened without a Trigger", () => {
 
     await waitFor(() => expect(screen.queryByRole("button", { name: "Config" })).toBeNull());
     const name = screen.getByRole("textbox", { name: "Name" });
-    await new Promise((resolve) => setTimeout(resolve, 50));
-    expect(document.activeElement).toBe(name);
+    await waitFor(() => expect(document.activeElement).toBe(name));
   });
 });
