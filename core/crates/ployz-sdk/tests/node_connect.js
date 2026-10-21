@@ -38,6 +38,7 @@ const sdk = require(dir);
 
 const abortListeners = signal => getEventListeners(signal, "abort").length;
 const tick = () => new Promise(resolve => setImmediate(resolve));
+const activeTimeouts = () => process.getActiveResourcesInfo().filter(resource => resource === "Timeout").length;
 
 test("an abort during close reaches the native session, and a second abort changes nothing", async () => {
   const abort = new AbortController();
@@ -99,6 +100,7 @@ async function stopWhileConnectingThenFailClose(signal, timeoutMs, stopConnectin
   let arrive;
   connecting = () => new Promise(resolve => (arrive = resolve));
   try {
+    const timeouts = activeTimeouts();
     const connected = sdk.connect({ connections: [{ tcp: "127.0.0.1:1" }], signal, timeoutMs });
     await stopConnecting();
     arrive((session = new NativeClient()));
@@ -110,6 +112,7 @@ async function stopWhileConnectingThenFailClose(signal, timeoutMs, stopConnectin
     await tick();
     assert.deepEqual(unhandled, [], "the failed close left no unhandled rejection");
     assert.equal(abortListeners(signal), 0, "a failed close still lets go of the session");
+    assert.equal(activeTimeouts(), timeouts, "connect left no timer behind");
   } finally {
     connecting = arriveAtOnce;
     process.off("unhandledRejection", record);
@@ -131,8 +134,6 @@ test("a deadline while connecting rejects as exceeded even when the native close
     { message: "session deadline exceeded" },
   );
 });
-
-const activeTimeouts = () => process.getActiveResourcesInfo().filter(resource => resource === "Timeout").length;
 
 async function stopWhileConnectingThenCloseHangs(signal, timeoutMs, stopConnecting, expected) {
   const unhandled = [];
