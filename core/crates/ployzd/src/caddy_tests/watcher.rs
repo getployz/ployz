@@ -1527,7 +1527,13 @@ async fn routed_addresses_are_empty_on_a_machine_that_takes_no_ingress() {
         server,
         directory,
     } = watcher_fixture().await;
-    state.machine.lock().unwrap().accepts_ingress = false;
+    state
+        .machine
+        .lock()
+        .unwrap()
+        .as_mut()
+        .expect("watch fixture has a Machine row")
+        .accepts_ingress = false;
     state.containers.lock().unwrap().remove(1);
     let caddyfile = directory.join(CONFIG_FILE);
     let (route_publishes, mut published) =
@@ -1732,7 +1738,13 @@ async fn routed_addresses_are_empty_once_ingress_is_turned_off_and_its_caddy_rem
     ));
     wait_for_caddyfile(&caddyfile, "10.210.1.2:80").await;
 
-    state.machine.lock().unwrap().accepts_ingress = false;
+    state
+        .machine
+        .lock()
+        .unwrap()
+        .as_mut()
+        .expect("watch fixture has a Machine row")
+        .accepts_ingress = false;
     state.containers.lock().unwrap().remove(1);
     state.send(b"{\"change\":{}}\n");
     timeout(
@@ -1742,6 +1754,46 @@ async fn routed_addresses_are_empty_once_ingress_is_turned_off_and_its_caddy_rem
     .await
     .expect("this Machine no longer takes ingress and runs no Caddy, so it routes nothing")
     .unwrap();
+
+    shutdown.cancel();
+    watcher.await.unwrap().unwrap();
+    server.abort();
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[tokio::test]
+async fn routed_addresses_claim_nothing_while_this_machine_has_no_row() {
+    let WatcherFixture {
+        machine,
+        state,
+        address,
+        server,
+        directory,
+    } = watcher_fixture().await;
+    *state.machine.lock().unwrap() = None;
+    state.containers.lock().unwrap().remove(1);
+    let caddyfile = directory.join(CONFIG_FILE);
+    let (route_publishes, published) =
+        tokio::sync::watch::channel(crate::ingress::PublishedRoutes::default());
+    let shutdown = CancellationToken::new();
+    let watcher = tokio::spawn(watch_caddy(
+        machine.clone(),
+        ReplicatedStore::new(ApiClient::http1(address, &"a".repeat(64)).unwrap()),
+        no_down,
+        caddyfile.clone(),
+        route_publishes,
+        shutdown.clone(),
+        || std::future::ready(Ok(None::<TestAdmin>)),
+    ));
+
+    wait_for_caddyfile(&caddyfile, "10.210.1.2:80").await;
+    state.wait_for_ack_transactions(1).await;
+    settle().await;
+    assert_eq!(
+        published.borrow().addresses,
+        None,
+        "without its row this Machine can't tell that it takes no ingress"
+    );
 
     shutdown.cancel();
     watcher.await.unwrap().unwrap();
@@ -1820,7 +1872,7 @@ async fn watcher_fixture() -> WatcherFixture {
         transactions: Arc::new(Mutex::new(Vec::new())),
         lose_next_transaction_response: Arc::new(AtomicBool::new(false)),
         fail_queries: Arc::new(AtomicBool::new(false)),
-        machine: Arc::new(Mutex::new(machine.clone())),
+        machine: Arc::new(Mutex::new(Some(machine.clone()))),
     };
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -1909,7 +1961,7 @@ struct WatchState {
     transactions: Arc<Mutex<Vec<Vec<Statement>>>>,
     lose_next_transaction_response: Arc<AtomicBool>,
     fail_queries: Arc<AtomicBool>,
-    machine: Arc<Mutex<Machine>>,
+    machine: Arc<Mutex<Option<Machine>>>,
 }
 
 impl WatchState {
@@ -2086,7 +2138,9 @@ async fn query(State(state): State<WatchState>, body: Bytes) -> Response {
         let machine = state.machine.lock().unwrap();
         events(
             &["info"],
-            [vec![json!(serde_json::to_string(&*machine).unwrap())]],
+            machine
+                .iter()
+                .map(|machine| vec![json!(serde_json::to_string(machine).unwrap())]),
         )
     } else if statement.query == "SELECT hostname, body FROM certificates ORDER BY hostname" {
         let certificates = state.certificates.lock().unwrap();
