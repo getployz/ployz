@@ -111,7 +111,10 @@ take over once web-1 is forgotten.
    [forgets it](../servers/manage-servers.md#forget-a-server-that-is-gone) on its server page.
    Copies links there.
 3. Back under **Copies**, click **Use mirror**. It stages the mirror as the primary and says
-   which changes are lost: the writes since the mirror's last refresh.
+   which changes are lost: the writes since the mirror's last refresh. The button shows only
+   while the mirror is the volume's last copy. If an old copy from an earlier move also remains,
+   Copies says so instead of offering it: delete that copy first, with
+   `ployz volume mirror rm data-web-3 --if-old-copy`, and **Use mirror** appears.
 4. Deploy. The deploy asks you to confirm **Data loss**, makes the mirror the volume, and starts
    the services that mount it on that server.
 
