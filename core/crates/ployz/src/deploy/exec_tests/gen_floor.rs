@@ -1,7 +1,13 @@
 use super::*;
 
 fn new_gen(client: &Scripted, container_id: &ContainerId) -> Gen {
-    client.copies.lock().unwrap()[container_id].r#gen
+    client
+        .copies
+        .lock()
+        .unwrap()
+        .get(container_id)
+        .unwrap()
+        .r#gen
 }
 
 #[tokio::test]

@@ -10,7 +10,7 @@ use ployz_core::{
 };
 use tokio::time::timeout;
 
-use super::support::DiscoveryService;
+use super::support::{DiscoveryService, empty_watch_frame};
 use super::unix_session::{self, UnixSession};
 
 #[tokio::test]
@@ -115,12 +115,9 @@ async fn close_drops_the_session_and_repeated_lifecycle_works() {
 async fn deploy_returns_success_for_a_completed_run() {
     let description = advertised_description();
     let session = UnixSession::start().await;
-    let _machine = session
-        .spawn_machine(
-            description.machine_id,
-            DiscoveryService::new(description.clone()),
-        )
-        .await;
+    let service = DiscoveryService::new(description.clone());
+    service.emit_watch_frame_on_open(empty_watch_frame());
+    let _machine = session.spawn_machine(description.machine_id, service).await;
     let client = unix_session::connect(&session.directory, description.machine_id.as_str())
         .await
         .unwrap();
@@ -156,6 +153,7 @@ async fn deploy_reports_volume_ensure_as_the_container_operation_failure() {
     let description = advertised_description();
     let session = UnixSession::start().await;
     let mut service = DiscoveryService::new(description.clone());
+    service.emit_watch_frame_on_open(empty_watch_frame());
     service.create_container_error = Some(RpcError {
         code: RpcErrorCode::Conflict,
         message: "Volume Ensure failed".into(),
@@ -305,12 +303,9 @@ async fn preview_namespace_removal_reserved_is_a_typed_rpc_error() {
 async fn preview_then_confirm_executes_the_shown_plan() {
     let description = advertised_description();
     let session = UnixSession::start().await;
-    let _machine = session
-        .spawn_machine(
-            description.machine_id,
-            DiscoveryService::new(description.clone()),
-        )
-        .await;
+    let service = DiscoveryService::new(description.clone());
+    service.emit_watch_frame_on_open(empty_watch_frame());
+    let _machine = session.spawn_machine(description.machine_id, service).await;
     let client = unix_session::connect(&session.directory, description.machine_id.as_str())
         .await
         .unwrap();
@@ -671,6 +666,7 @@ async fn sdk_close_interrupts_running_deploy_with_uncertain_error() {
     let session = UnixSession::start().await;
     let received = std::sync::Arc::new(tokio::sync::Notify::new());
     let mut service = DiscoveryService::new(description.clone());
+    service.emit_watch_frame_on_open(empty_watch_frame());
     service.create_container_blocked = Some(received.clone());
     let _machine = session.spawn_machine(description.machine_id, service).await;
     let client = unix_session::connect(&session.directory, description.machine_id.as_str())
