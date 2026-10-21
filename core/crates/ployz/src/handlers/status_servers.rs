@@ -129,7 +129,8 @@ enum Copies {
         /// Each Service of the namespace that has serving copies, with its routes as
         /// one Server reads them.
         reads: Vec<(ServiceObservation, Result<RoutesRead, RpcError>)>,
-        routed: BTreeMap<MachineId, RoutedAddresses>,
+        /// Each Machine's routed-address read, for Machines that answered the listing.
+        routed: BTreeMap<MachineId, Result<RoutedAddresses, RpcError>>,
     },
 }
 
@@ -204,7 +205,6 @@ async fn observe(
             (machine, routed)
         })
         .buffered(READS_AT_ONCE)
-        .filter_map(|(machine, routed)| async move { Some((machine, routed.ok()?)) })
         .collect();
     let (reads, routed) = futures_util::join!(reads, routed);
     Ok(Observed {
@@ -299,6 +299,10 @@ fn judge(observed: Observed) -> Check {
             routed,
         } => (live, reads, routed),
     };
+    let routed: BTreeMap<MachineId, RoutedAddresses> = routed
+        .into_iter()
+        .filter_map(|(machine, routed)| Some((machine, routed.ok()?)))
+        .collect();
     let unanswered: Vec<MachineId> = live
         .containers
         .failures
@@ -721,7 +725,10 @@ mod tests {
             copies: Copies::Listed {
                 live: listing(&[]),
                 reads,
-                routed,
+                routed: routed
+                    .into_iter()
+                    .map(|(machine, routed)| (machine, Ok(routed)))
+                    .collect(),
             },
         })
     }
@@ -869,7 +876,7 @@ mod tests {
                 )],
                 routed: BTreeMap::from([(
                     two.id,
-                    web_routed_at(&[('1', [10, 210, 0, 1]), ('0', removed_at)]),
+                    Ok(web_routed_at(&[('1', [10, 210, 0, 1]), ('0', removed_at)])),
                 )]),
             },
         })
@@ -957,6 +964,44 @@ mod tests {
             [
                 "machine-2 has not confirmed what its proxy serves, so status is not checking it for stale addresses."
             ]
+        );
+    }
+
+    #[test]
+    fn status_warns_that_it_skips_a_machine_whose_routed_addresses_it_could_not_read() {
+        let [one, two, three] = machines();
+        let mut unsupported = unavailable("unknown method");
+        unsupported.code = RpcErrorCode::Unsupported;
+        let check = judge(Observed {
+            machines: listed(&[&one, &two, &three], &[]),
+            copies: Copies::Listed {
+                live: listing(&[]),
+                reads: vec![(
+                    web([routed_on(&one, '1'), routed_on(&three, '3')]),
+                    Ok(routes_as_ployzd_answers(
+                        &[
+                            (&one, &['1', '3']),
+                            (&two, &['1', '3']),
+                            (&three, &['1', '3']),
+                        ],
+                        &[],
+                    )),
+                )],
+                routed: BTreeMap::from([
+                    (one.id, Ok(web_routed_at(&[('1', [10, 210, 0, 1])]))),
+                    (two.id, Err(unavailable("deadline exceeded"))),
+                    (three.id, Err(unsupported)),
+                ]),
+            },
+        });
+
+        assert_eq!(serde_json::to_value(&check.attention).unwrap(), json!([]));
+        assert_eq!(
+            warned(&check),
+            [
+                "machine-2 has not confirmed what its proxy serves, so status is not checking it for stale addresses."
+            ],
+            "an older Server that lacks the check stays silent"
         );
     }
 

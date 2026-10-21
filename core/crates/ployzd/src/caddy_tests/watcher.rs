@@ -1453,6 +1453,62 @@ async fn routed_addresses_claim_nothing_while_caddy_may_serve_a_config_written_w
 }
 
 #[tokio::test]
+async fn routed_addresses_claim_nothing_after_a_failed_write_without_the_admin() {
+    let WatcherFixture {
+        machine,
+        state,
+        address,
+        server,
+        directory,
+    } = watcher_fixture().await;
+    let api = state.api_container();
+    let (load_tx, mut load_rx) = mpsc::unbounded_channel();
+    let admin = TestAdmin { loads: load_tx };
+    let admin_up = Arc::new(AtomicBool::new(true));
+    let caddyfile = directory.join(CONFIG_FILE);
+    let (route_publishes, mut published) =
+        tokio::sync::watch::channel(crate::ingress::PublishedRoutes::default());
+    let shutdown = CancellationToken::new();
+    let watcher = tokio::spawn(watch_caddy(
+        machine.clone(),
+        ReplicatedStore::new(ApiClient::http1(address, &"a".repeat(64)).unwrap()),
+        no_down,
+        caddyfile.clone(),
+        route_publishes,
+        shutdown.clone(),
+        {
+            let admin_up = Arc::clone(&admin_up);
+            move || std::future::ready(Ok(admin_up.load(Ordering::SeqCst).then(|| admin.clone())))
+        },
+    ));
+    assert!(next_load(&mut load_rx).await.contains("10.210.1.2:80"));
+    timeout(
+        Duration::from_secs(5),
+        published.wait_for(|published| published.addresses.is_some()),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+
+    admin_up.store(false, Ordering::SeqCst);
+    std::fs::remove_file(&caddyfile).unwrap();
+    std::fs::create_dir_all(&caddyfile).unwrap();
+    state.set_address(api.container_id, [10, 210, 1, 7]);
+    timeout(
+        Duration::from_secs(5),
+        published.wait_for(|published| published.addresses.is_none()),
+    )
+    .await
+    .expect("a failed write may still have replaced the file Caddy restarts from")
+    .unwrap();
+
+    shutdown.cancel();
+    watcher.await.unwrap().unwrap();
+    server.abort();
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[tokio::test]
 async fn routed_addresses_are_empty_on_a_machine_with_no_caddy() {
     let WatcherFixture {
         machine,
