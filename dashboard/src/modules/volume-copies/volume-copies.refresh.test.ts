@@ -63,6 +63,12 @@ describe("skippedWords", () => {
     expect(skippedWords(mirror(minutesAgo(135), { skipped: "lacks" }), now)).toMatch(/^web-2 can't report this copy\. Ployz retries/);
   });
 
+  it("says a mirror's Server isn't answering however fresh the mirror, with no loss before it is behind", () => {
+    expect(skippedWords(mirror(minutesAgo(9), { skipped: "silent" }), now)).toBe("web-2 is not answering.");
+    expect(skippedWords(mirror(null, { skipped: "silent" }), now)).toBe("web-2 is not answering.");
+    expect(skippedWords(mirror(minutesAgo(9), { skipped: "lacks" }), now)).toBe("web-2 can't report this copy.");
+  });
+
   it("names no time when rounds skipped the Volume before its Server went silent", () => {
     const at = new Date("2026-10-12T14:35:00Z");
     const words = skippedWords(mirror(at, { skipped: "silent" }), new Date("2026-10-12T15:38:49Z"));
@@ -72,8 +78,8 @@ describe("skippedWords", () => {
 
   it("says nothing while rounds land, the mirror is fresh, or a round runs", () => {
     expect(skippedWords(mirror(minutesAgo(135)), now)).toBeNull();
-    expect(skippedWords(mirror(minutesAgo(20), { skipped: "silent" }), now)).toBeNull();
+    expect(skippedWords(mirror(minutesAgo(20), { skipped: "failed" }), now)).toBeNull();
     expect(skippedWords(mirror(minutesAgo(135), { skipped: "silent", busy: "Refreshing" }), now)).toBeNull();
-    expect(skippedWords(mirror(null, { skipped: "silent" }), now)).toBeNull();
+    expect(skippedWords(mirror(null, { skipped: "failed" }), now)).toBeNull();
   });
 });

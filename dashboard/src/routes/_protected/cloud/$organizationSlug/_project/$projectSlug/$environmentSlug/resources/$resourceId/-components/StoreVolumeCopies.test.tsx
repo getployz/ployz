@@ -353,6 +353,16 @@ describe("mirror detail", () => {
   const matchedAgo = (minutes: number) => new Date(NOW.getTime() - minutes * 60_000).toISOString();
   const refreshNow = () => screen.getByRole("button", { name: "Refresh now" }) as HTMLButtonElement;
 
+  it("says a mirror's Server isn't answering on its row and in its detail minutes after it stopped, beside its age", () => {
+    panel(silent(), row(["web-2"]), { matchedAt: matchedAgo(9) });
+    expect(rows("Elsewhere")).toEqual(["web-2Mirror · 15 min · 9 minutes ago · Not answering"]);
+    cleanup();
+    panel(silent(), row(["web-2"]), { open: "web-2", matchedAt: matchedAgo(9) });
+    expect(screen.getByText("web-2 is not answering.")).toBeTruthy();
+    expect(screen.getByText("9 minutes ago")).toBeTruthy();
+    expect(screen.queryByText("Refresh skipped")).toBeNull();
+  });
+
   it("runs a round on Refresh now", () => {
     const { refresh } = panel(fresh(), row(["web-2"]), { open: "web-2" });
     expect(screen.getByText("5 minutes ago")).toBeTruthy();
