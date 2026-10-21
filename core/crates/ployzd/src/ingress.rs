@@ -194,6 +194,22 @@ impl IngressSite {
         }
     }
 
+    /// The HTTPS route with the certificate Caddy serves it under. Without material,
+    /// Caddy renders no HTTPS site, so the route proxies nothing.
+    #[must_use]
+    pub(super) fn https(&self) -> Option<(&CertificateMaterial, &[IngressEndpoint])> {
+        self.material().zip(self.route(HttpProtocol::Https))
+    }
+
+    /// Ordered endpoints Caddy proxies to for one HTTP protocol.
+    #[must_use]
+    pub(super) fn proxied(&self, protocol: HttpProtocol) -> Option<&[IngressEndpoint]> {
+        match protocol {
+            HttpProtocol::Http => self.route(HttpProtocol::Http),
+            HttpProtocol::Https => self.https().map(|(_, endpoints)| endpoints),
+        }
+    }
+
     #[must_use]
     pub(super) fn challenge(&self) -> Option<&CertificateChallenge> {
         self.certificate
@@ -451,29 +467,32 @@ where
                     let containers = service_containers(containers.observations);
                     let routes =
                         proxy_routes(&containers, |machine| down.contains(machine), &routed);
+                    let projection =
+                        IngressProjection::derive(&machine, &containers, &certificates, &routes);
                     Ok((
-                        IngressProjection::derive(&machine, &containers, &certificates, &routes),
                         newest_local_ingress(&machine, &containers),
-                        routed_addresses(&containers, &routes),
+                        routed_addresses(&projection, &routes),
+                        projection,
                         routes,
                     ))
                 }
                 (Err(error), _) | (_, Err(error)) => Err(io::Error::other(error)),
             };
             match input {
-                Ok((projection, caddy, addresses, routes)) => {
-                    let loaded = last_input
+                Ok((caddy, addresses, projection, routes)) => {
+                    let mut through_admin = last_input
                         .as_ref()
                         .is_some_and(|last: &CaddyInput| last.loaded(&projection, caddy.as_ref()));
                     let result = async {
-                        if loaded {
+                        if through_admin {
                             return Ok(());
                         }
                         let admin = connect().await.map_err(ApplyError::BeforeServing)?;
+                        through_admin = admin.is_some();
                         let input = CaddyInput {
                             projection,
                             caddy,
-                            through_admin: admin.is_some(),
+                            through_admin,
                         };
                         if last_input.as_ref() != Some(&input) {
                             apply_caddy(&input.projection, &config_file, admin.as_ref()).await?;
@@ -485,7 +504,8 @@ where
                     if matches!(result, Err(ApplyError::AfterServing(_))) {
                         last_input = None;
                     }
-                    if !matches!(result, Err(ApplyError::BeforeServing(_))) {
+                    // Without the admin, a running Caddy keeps serving the config it last loaded.
+                    if through_admin && !matches!(result, Err(ApplyError::BeforeServing(_))) {
                         route_publishes.send_if_modified(|publishes| {
                             let changed = publishes.addresses != addresses;
                             publishes.addresses = addresses;
@@ -555,26 +575,28 @@ fn route_acks(routes: &ProxyRoutes) -> BTreeMap<QualifiedService, IngressRouteAc
 }
 
 fn routed_addresses(
-    containers: &[ServiceContainer],
+    projection: &IngressProjection,
     routes: &ProxyRoutes,
 ) -> BTreeMap<QualifiedService, BTreeMap<ContainerId, ContainerAddress>> {
-    let owners = hostname_owners(containers.iter().map(ServiceContainer::as_observation));
+    let proxied: BTreeSet<_> = projection
+        .sites
+        .iter()
+        .filter_map(|site| {
+            let owner = &site.publication.as_ref()?.owner;
+            let endpoints = [HttpProtocol::Http, HttpProtocol::Https]
+                .into_iter()
+                .filter_map(|protocol| site.proxied(protocol))
+                .flatten();
+            Some(endpoints.map(move |endpoint| (owner, endpoint.address)))
+        })
+        .flatten()
+        .collect();
     routes
         .iter()
         .filter_map(|(service, route)| {
             let addresses: BTreeMap<_, _> = route
                 .iter()
-                .filter(|serving| {
-                    serving
-                        .as_observation()
-                        .resolved_spec
-                        .ports
-                        .iter()
-                        .any(|port| {
-                            matches!(port, PortPublication::Ingress { hostname, .. }
-                            if owners.get(hostname) == Some(service))
-                        })
-                })
+                .filter(|serving| proxied.contains(&(service, serving.address())))
                 .map(|serving| (serving.as_observation().container_id, serving.address()))
                 .collect();
             (!addresses.is_empty()).then(|| (service.clone(), addresses))

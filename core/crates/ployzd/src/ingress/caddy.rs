@@ -268,14 +268,14 @@ https:// {{\n\
 }}\n"
     );
     if projection.sites.iter().any(|site| {
-        site.route(HttpProtocol::Http).is_some()
+        site.proxied(HttpProtocol::Http).is_some()
             || site.challenge().is_some()
-            || (site.route(HttpProtocol::Https).is_some() && site.material().is_some())
+            || site.proxied(HttpProtocol::Https).is_some()
     }) {
         output.push_str("\n# Sites generated from Service ports.\n");
     }
     for site in &projection.sites {
-        let https = site.material().zip(site.route(HttpProtocol::Https));
+        let https = site.https();
         let published = |endpoints| {
             let publication = site
                 .publication
@@ -290,7 +290,7 @@ https:// {{\n\
         };
         // An https-only hostname redirects http to https; the challenge and verify probe stay on http.
         // A challenge-only http site publishes nothing else, so it answers like the catch-all.
-        let http = match (site.route(HttpProtocol::Http), https) {
+        let http = match (site.proxied(HttpProtocol::Http), https) {
             (Some(endpoints), _) => Some((published(endpoints), proxy(endpoints))),
             // The redirect's trace reports the https route it sends visitors to.
             (None, Some((_, endpoints))) => {
