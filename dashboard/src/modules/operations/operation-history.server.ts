@@ -107,7 +107,7 @@ export const settledDrain = Effect.fn("OperationHistory.settledDrain")(function*
     or(inArray(serverDrainAttempt.state, ["finished", "failed", "cancelled"]), inArray(serverDrainAttempt.endCode, ["lost", "interrupted"])),
   )).orderBy(desc(serverDrainAttempt.requestedAt), asc(serverDrainAttempt.id)).limit(1);
   if (row === undefined) return null;
-  return drainOperation(row, known || ((yield* serverNames(organizationId, [machine])).get(machine) ?? machine));
+  return drainOperation(row, row.serverName || known || ((yield* serverNames(organizationId, [machine])).get(machine) ?? machine));
 });
 
 const serverOperations = Effect.fn("OperationHistory.server")(function* (
