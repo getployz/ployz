@@ -21,6 +21,8 @@ use crate::context::ContextError;
 pub(super) const UNCHECKED: &str = "Could not check which Servers picked up the new copies";
 
 const READS_AT_ONCE: usize = 8;
+/// A routed-address read answers from memory. A slow one warns rather than holding up the listing.
+const ROUTED_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
 
 #[derive(Serialize)]
 #[serde(untagged)]
@@ -129,7 +131,7 @@ enum Copies {
         /// Each Service of the namespace that has serving copies, with its routes as
         /// one Server reads them.
         reads: Vec<(ServiceObservation, Result<RoutesRead, RpcError>)>,
-        /// Each Machine's routed-address read, for Machines that answered the listing.
+        /// Each routed-address read, taken before the listing from every Machine it asks.
         routed: BTreeMap<MachineId, Result<RoutedAddresses, RpcError>>,
     },
 }
@@ -151,7 +153,7 @@ async fn observe(
         let client = &*client;
         let up = machines
             .iter()
-            .filter(|observed| observed.membership != MembershipObservation::Down)
+            .filter(|observed| observed.invites_rpc())
             .map(|observed| observed.machine.id);
         stream::iter(up)
             .map(|machine| async move {
@@ -159,7 +161,7 @@ async fn observe(
                     .invoke::<op::ReadRoutedAddresses>(
                         ReadRoutedAddressesRequest {},
                         &MachineTarget::from(&machine),
-                        Some(crate::connect::TARGET_RPC_TIMEOUT),
+                        Some(ROUTED_READ_TIMEOUT),
                     )
                     .await;
                 (machine, routed)
@@ -190,27 +192,24 @@ async fn observe(
             && !serving_containers(&service.containers).is_empty()
     });
     let client = &*client;
-    let reads = async {
-        match reader {
-            Some(reader) => {
-                stream::iter(services)
-                    .map(|service| async move {
-                        let read = crate::deploy::MachineOperations::read_routes(
-                            client,
-                            &reader,
-                            &service.identity,
-                        )
-                        .await;
-                        (service, read)
-                    })
-                    .buffered(READS_AT_ONCE)
-                    .collect()
-                    .await
-            }
-            None => Vec::new(),
+    let reads = match reader {
+        Some(reader) => {
+            stream::iter(services)
+                .map(|service| async move {
+                    let read = crate::deploy::MachineOperations::read_routes(
+                        client,
+                        &reader,
+                        &service.identity,
+                    )
+                    .await;
+                    (service, read)
+                })
+                .buffered(READS_AT_ONCE)
+                .collect()
+                .await
         }
+        None => Vec::new(),
     };
-    let reads = reads.await;
     Ok(Observed {
         machines,
         copies: Copies::Listed {
@@ -315,24 +314,30 @@ fn judge(observed: Observed) -> Check {
         check.unseen.push(Unseen::Unanswered(unanswered.clone()));
     }
     let mut unconfirmed = BTreeSet::new();
-    let routed: BTreeMap<MachineId, RoutedAddresses> = routed
-        .into_iter()
-        .filter(|(machine, _)| !down.contains(machine) && !unanswered.contains(machine))
-        .filter_map(|(machine, routed)| match routed {
-            Ok(routed) => {
-                if routed.routes.is_none() {
-                    unconfirmed.insert(machine);
-                }
-                Some((machine, routed))
+    let mut confirmed = BTreeMap::new();
+    for (machine, read) in routed {
+        if down.contains(&machine) || unanswered.contains(&machine) {
+            continue;
+        }
+        match read {
+            Ok(RoutedAddresses {
+                routes: Some(routes),
+            }) => {
+                confirmed.insert(
+                    machine,
+                    RoutedAddresses {
+                        routes: Some(routes),
+                    },
+                );
             }
             // An older Server lacks the check, and status claims nothing for it.
-            Err(error) if error.code == RpcErrorCode::Unsupported => None,
-            Err(_) => {
+            Err(error) if error.code == RpcErrorCode::Unsupported => {}
+            Ok(RoutedAddresses { routes: None }) | Err(_) => {
                 unconfirmed.insert(machine);
-                None
             }
-        })
-        .collect();
+        }
+    }
+    let routed = confirmed;
     if !unconfirmed.is_empty() {
         check.unseen.push(Unseen::Unconfirmed(unconfirmed));
     }
@@ -972,6 +977,24 @@ mod tests {
                 .all(|attention| attention.reason != "routes_stale_address"),
             "{}",
             serde_json::to_value(&check.attention).unwrap()
+        );
+    }
+
+    #[test]
+    fn status_names_no_machine_whose_listing_failed_for_what_its_proxy_routes() {
+        let [one, two, three] = machines();
+        let check = routing_a_removed_copy(
+            listed(&[&one, &two, &three], &[]),
+            &[&two],
+            [10, 210, 12, 5],
+        );
+
+        assert_eq!(serde_json::to_value(&check.attention).unwrap(), json!([]));
+        assert_eq!(
+            warned(&check),
+            [
+                "machine-2 did not answer, so status may miss Servers that have not picked up the new copies."
+            ]
         );
     }
 

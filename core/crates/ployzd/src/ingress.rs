@@ -1,9 +1,10 @@
 //! Observer-local ingress derivation, watching, and shared filesystem state.
 
 use ployz_core::{
-    CertificateHost, ContainerAddress, ContainerId, ContainerObservation, DeploymentLogId,
-    HttpProtocol, IngressHost, Machine, MachineId, PortPublication, ProxyRoutes, QualifiedService,
-    ServiceContainer, hostname_owners, proxy_routes, service_containers,
+    CertificateHost, ContainerAddress, ContainerId, ContainerObservation,
+    ContainerRuntimeObservation, DeploymentLogId, HttpProtocol, IngressHost, Machine, MachineId,
+    PortPublication, ProxyRoutes, QualifiedService, ServiceContainer, hostname_owners,
+    proxy_routes, service_containers,
 };
 use serde::Serialize;
 use std::{
@@ -385,7 +386,28 @@ fn creation_key(container: &ServiceContainer) -> (i64, &str) {
     )
 }
 
+/// True when no Caddy can serve on this Machine: its newest ingress container is stopped,
+/// or it has none and takes no ingress.
+fn serves_nothing(machine: &Machine, containers: &[ServiceContainer]) -> bool {
+    match local_ingress(machine, containers) {
+        Some(caddy) => matches!(
+            caddy.as_observation().runtime,
+            ContainerRuntimeObservation::Created
+                | ContainerRuntimeObservation::Exited { .. }
+                | ContainerRuntimeObservation::Dead
+        ),
+        None => !machine.accepts_ingress,
+    }
+}
+
 fn newest_local_ingress(machine: &Machine, containers: &[ServiceContainer]) -> Option<ContainerId> {
+    local_ingress(machine, containers).map(|container| container.as_observation().container_id)
+}
+
+fn local_ingress<'container>(
+    machine: &Machine,
+    containers: &'container [ServiceContainer],
+) -> Option<&'container ServiceContainer> {
     containers
         .iter()
         .filter(|container| {
@@ -393,7 +415,6 @@ fn newest_local_ingress(machine: &Machine, containers: &[ServiceContainer]) -> O
             observation.machine_id == machine.id && is_system_ingress(observation)
         })
         .max_by(|left, right| creation_key(left).cmp(&creation_key(right)))
-        .map(|container| container.as_observation().container_id)
 }
 
 /// What the Caddyfile was last written from. A write while Caddy's admin socket is down
@@ -473,6 +494,7 @@ where
                         IngressProjection::derive(&machine, &containers, &certificates, &routes);
                     Ok((
                         newest_local_ingress(&machine, &containers),
+                        serves_nothing(&machine, &containers),
                         routed_addresses(&projection, &routes),
                         projection,
                         routes,
@@ -481,8 +503,7 @@ where
                 (Err(error), _) | (_, Err(error)) => Err(io::Error::other(error)),
             };
             match input {
-                Ok((caddy, addresses, projection, routes)) => {
-                    let no_caddy = caddy.is_none() && !machine.accepts_ingress;
+                Ok((caddy, no_caddy, addresses, projection, routes)) => {
                     let loaded = last_input
                         .as_ref()
                         .is_some_and(|last: &CaddyInput| last.loaded(&projection, caddy.as_ref()));

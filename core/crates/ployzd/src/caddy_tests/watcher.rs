@@ -16,8 +16,9 @@ use axum::{
 };
 use futures_util::StreamExt;
 use ployz_core::{
-    AdvertisedEndpoint, ContainerAddress, ContainerId, ContainerObservation, CopyRotation,
-    HttpProtocol, MACHINE_API_PORT, Machine, MachineId, MachineName, WireGuardPublicKey,
+    AdvertisedEndpoint, ContainerAddress, ContainerId, ContainerObservation,
+    ContainerRuntimeObservation, CopyRotation, HttpProtocol, MACHINE_API_PORT, Machine, MachineId,
+    MachineName, WireGuardPublicKey,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -1592,6 +1593,52 @@ async fn routed_addresses_claim_nothing_without_the_admin_on_a_machine_that_take
         None,
         "a Caddy this Machine has not observed yet may already serve the file"
     );
+
+    shutdown.cancel();
+    watcher.await.unwrap().unwrap();
+    server.abort();
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[tokio::test]
+async fn routed_addresses_are_empty_once_web_traffic_off_stops_caddy() {
+    let WatcherFixture {
+        machine,
+        state,
+        address,
+        server,
+        directory,
+    } = watcher_fixture().await;
+    state
+        .containers
+        .lock()
+        .unwrap()
+        .get_mut(1)
+        .expect("watch fixture has an ingress container")
+        .try_update(|parts| parts.runtime = ContainerRuntimeObservation::Exited { code: 0 })
+        .unwrap();
+    let caddyfile = directory.join(CONFIG_FILE);
+    let (route_publishes, mut published) =
+        tokio::sync::watch::channel(crate::ingress::PublishedRoutes::default());
+    let shutdown = CancellationToken::new();
+    let watcher = tokio::spawn(watch_caddy(
+        machine.clone(),
+        ReplicatedStore::new(ApiClient::http1(address, &"a".repeat(64)).unwrap()),
+        no_down,
+        caddyfile.clone(),
+        route_publishes,
+        shutdown.clone(),
+        || std::future::ready(Ok(None::<TestAdmin>)),
+    ));
+
+    wait_for_caddyfile(&caddyfile, "10.210.1.2:80").await;
+    timeout(
+        Duration::from_secs(5),
+        published.wait_for(|published| published.addresses == Some(BTreeMap::new())),
+    )
+    .await
+    .expect("a stopped Caddy serves nothing, so status has nothing to warn about")
+    .unwrap();
 
     shutdown.cancel();
     watcher.await.unwrap().unwrap();
