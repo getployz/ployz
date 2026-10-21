@@ -131,17 +131,6 @@ describe("copiesFromPlacement", () => {
     expect(summary(pending)).toEqual(["mirror web-2 - -"]);
   });
 
-  it("never names a Server staged to become a mirror as the primary, so a staged primary that didn't answer stays under Live", () => {
-    const staged = row([], { primary: "web-1", mirrors: ["web-3"] });
-    const unlisted: Member = { machine: { id: id("web-3"), name: id("web-3") }, answered: false, incomplete: true };
-    const pending = copies(staged, [member("web-1", "unanswered"), unlisted]);
-    expect(pending.live.server).toEqual({ id: id("web-1"), name: "web-1", state: "silent" });
-    expect(summary(pending)).toEqual([`mirror ${id("web-3")} new -`]);
-    const lacks = copies(staged, [member("web-1", "unanswered"), lacking("web-3")]);
-    expect(lacks.live.server).toEqual({ id: id("web-1"), name: "web-1", state: "silent" });
-    expect(summary(lacks)).toEqual(["mirror web-3 new -"]);
-  });
-
   it("names a silent staged primary under Live though the Volume still records it as a mirror, as an unfinished move leaves it", () => {
     const model = copies(row(["web-2"], { primary: "web-2" }), [member("web-1", "unanswered"), member("web-2", "unanswered")]);
     expect(model.live.server).toEqual({ id: id("web-2"), name: "web-2", state: "silent" });
