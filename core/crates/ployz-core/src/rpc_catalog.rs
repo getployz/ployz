@@ -82,6 +82,7 @@ macro_rules! rpc_catalog {
                 PublishCertificateMaterial: (publish_certificate_material, "PublishCertificateMaterial", PublishCertificateMaterialRequest, "publish_certificate_material", CertificateMaterialPublished, PUBLISH_CERTIFICATE_MATERIAL_CAPABILITY, "ployz.certificates.publish.v1", Cluster),
                 ReadRoutes: (read_routes, "ReadRoutes", ReadRoutesRequest, "read_routes", RoutesRead, READ_ROUTES_CAPABILITY, "ployz.serving.routes.v1", Cluster),
                 MetricHistory: (metric_history, "MetricHistory", MetricHistoryRequest, "metric_history", MetricHistoryReply, METRIC_HISTORY_CAPABILITY, "ployz.metrics.history.v1", Container),
+                RetainedEnv: (retained_env, "RetainedEnv", RetainedEnvRequest, "retained_env", RetainedEnvReply, RETAINED_ENV_CAPABILITY, "ployz.logs.retained-env.v1", Container),
             }
             server_streaming {
                 LogHistory: (log_history, "LogHistory", LogHistoryRequest, "log_history", LOG_HISTORY_CAPABILITY, "ployz.logs.history.v2", Container),

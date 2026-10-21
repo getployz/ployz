@@ -2,17 +2,17 @@
 //! deadline, and a store that does not answer is unavailable, so one Machine
 //! without ployz-observe fails alone.
 
-use std::{io, path::PathBuf, time::Duration};
+use std::{collections::BTreeMap, io, path::PathBuf, time::Duration};
 
 use ployz_core::{
-    LogHistoryRequest, OpaquePayload,
+    ContainerId, LogHistoryRequest, OpaquePayload,
     metrics::{MetricHistoryReply, MetricHistoryRequest},
 };
 use tokio::{net::UnixStream, sync::mpsc};
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::Status;
 
-use super::serve::{MetricsAnswer, Request, read_frame, write_frame};
+use super::serve::{EnvAnswer, MetricsAnswer, Request, read_frame, write_frame};
 use crate::logs::RpcStream;
 
 const DEADLINE: Duration = Duration::from_secs(3);
@@ -80,6 +80,29 @@ impl ObserveClient {
             Err(error) => Err(Status::internal(format!(
                 "unreadable metrics answer: {error}"
             ))),
+        }
+    }
+
+    /// Reads the env the store kept for a Container; `None` when it kept none.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Unavailable` when ployz-observe does not answer within 3 s or
+    /// cannot read its store.
+    pub async fn retained_env(
+        &self,
+        container: ContainerId,
+    ) -> Result<Option<BTreeMap<String, String>>, Status> {
+        let mut stream = self.send(&Request::Env(container)).await?;
+        let frame = deadline(read_frame(&mut stream, MAX_ROW))
+            .await?
+            .ok_or_else(|| Status::unavailable("ployz-observe closed without answering"))?;
+        match serde_json::from_slice(&frame) {
+            Ok(EnvAnswer::Reply(env)) => Ok(env),
+            Ok(EnvAnswer::Failed(error)) => Err(Status::unavailable(format!(
+                "ployz-observe cannot read the container's env: {error}"
+            ))),
+            Err(error) => Err(Status::internal(format!("unreadable env answer: {error}"))),
         }
     }
 
