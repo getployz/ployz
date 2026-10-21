@@ -85,10 +85,16 @@ export const STAGED_WORDS = { new: "New", removing: "Removing", primary: "Primar
  * The primary's badge: Live only on its Server's own report of a writable root. Not answering names no time, since nothing
  * says when it stopped. Needs a newer Ployz only once its release is known to be behind.
  */
-export const LIVE_WORDS = {
-  live: "Live", read_only: "Read-only", outdated: "Needs a newer Ployz", lacks: "Can't report this copy", silent: "Not answering",
-  waiting: "Waiting for its report",
-} as const satisfies Record<LiveState, string>;
+const UNHEARD_WORDS = {
+  outdated: "Needs a newer Ployz", lacks: "Can't report this copy", silent: "Not answering", waiting: "Waiting for its report",
+} as const satisfies Record<Exclude<Heard, "answered">, string>;
+export const LIVE_WORDS = { live: "Live", read_only: "Read-only", ...UNHEARD_WORDS } as const satisfies Record<LiveState, string>;
+
+/** Why a mirror's Server didn't report it just now, said beside its age however fresh: the age is only its last match. */
+export function unheardReason(copy: VolumeCopy): string | null {
+  if (copy.kind !== "mirror" || copy.busy !== null || copy.skipped === null || copy.skipped === "failed") return null;
+  return UNHEARD_WORDS[copy.skipped];
+}
 
 const age = (at: Date, now: Date) => (now.getTime() - at.getTime() < 60_000 ? "just now" : formatRelativeTime(at, now));
 

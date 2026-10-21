@@ -19,7 +19,7 @@ import { requirements, serverSupports } from "#/modules/runtime/daemon-compat";
 import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
 import {
   addableCopies, cardLine, COPY_WORDS, isStale, LIVE_WORDS, type LiveState, type MirrorCopy, type OldCopy, STAGED_WORDS, type StagedCopy,
-  type VolumeCopies, type VolumeCopy,
+  unheardReason, type VolumeCopies, type VolumeCopy,
 } from "#/modules/volume-copies/volume-copies";
 import { useRefreshMirror } from "#/modules/volume-copies/volume-copies.hooks";
 import { copiesFromPlacement } from "#/modules/volume-copies/volume-copies.placement";
@@ -285,12 +285,14 @@ function CopyRow({ copy, now, locked, blocked, onOpen, onDelete, restore = null 
   restore?: RestoreOffer;
 }) {
   const line = cardLine(copy, now);
+  const unheard = unheardReason(copy);
   const title = copy.kind === "offsite" ? copy.bucket : copy.server.name;
   const description = line.spin ? <Busy words={line.words} />
     : copy.staged === "new" ? `${COPY_WORDS[copy.kind]} · on deploy`
     : <>
       {[line.words, copy.kind === "mirror" ? "15 min" : null].filter(Boolean).join(" · ")}
       {line.age ? <> · <span className={cn(line.stale && "text-warning")}>{line.stale ? <TriangleAlertIcon className="mr-1 inline size-3.5" /> : null}{copy.kind === "old" && copy.since ? lossMoment(copy.since, now) : line.age}</span></> : null}
+      {unheard ? ` · ${unheard}` : null}
     </>;
   const badge = copy.staged ? <Badge variant={STAGED_STATE[copy.staged]}>{STAGED_WORDS[copy.staged]}</Badge> : null;
   const content = <>

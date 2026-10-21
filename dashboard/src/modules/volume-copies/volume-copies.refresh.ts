@@ -25,13 +25,13 @@ const SKIPPED_WORDS = {
 
 /**
  * Why a mirror is behind, or null while its rounds land. Names no time: a round skips a Volume whose Server is silent or
- * that a Deploy holds, so the last good round says nothing about when the Server stopped answering. A report still on
- * its way is said at once, with no age to measure it by.
+ * that a Deploy holds, so the last good round says nothing about when the Server stopped answering. A Server that didn't
+ * report the mirror is said at once; what a failover loses is said only once the mirror is behind.
  */
 export function skippedWords(copy: MirrorCopy, now: Date): string | null {
   if (copy.skipped === null || copy.busy !== null) return null;
   const cause = SKIPPED_WORDS[copy.skipped](copy.server.name);
-  if (copy.refreshedAt === null || !isStale(copy, now)) return copy.skipped === "waiting" ? cause : null;
+  if (copy.refreshedAt === null || !isStale(copy, now)) return copy.skipped === "failed" ? null : cause;
   const behind = span(Math.round((now.getTime() - copy.refreshedAt.getTime()) / 60_000));
   return `${cause} Ployz retries every ${MIRROR_ROUND_MINUTES} minutes. Until it catches up, a failover loses ${behind} of writes.`;
 }
