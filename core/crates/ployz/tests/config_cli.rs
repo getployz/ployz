@@ -1838,6 +1838,7 @@ fn starting_a_queued_deployment_with_no_server_left_refuses_at_once() {
             started.kill().unwrap();
             panic!("deployment start was still following a Deployment no Server can run");
         }
+        // real-wait: polls the CLI child, which signals nothing before it exits.
         std::thread::sleep(std::time::Duration::from_millis(100));
     }
     let output = started.wait_with_output().unwrap();

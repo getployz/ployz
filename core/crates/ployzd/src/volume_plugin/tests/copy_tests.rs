@@ -1260,11 +1260,11 @@ async fn departure_during_a_receive_stops_it_and_destroys_the_mirror() {
 pub(super) async fn poll<T>(mut probe: impl AsyncFnMut() -> Option<T>) -> Option<T> {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
     loop {
-        if let Some(value) = probe().await {
-            return Some(value);
-        }
-        if tokio::time::Instant::now() >= deadline {
-            return None;
+        match tokio::time::timeout_at(deadline, probe()).await {
+            Ok(Some(value)) => return Some(value),
+            Err(_) => return None,
+            Ok(None) if tokio::time::Instant::now() >= deadline => return None,
+            Ok(None) => {}
         }
         // real-wait: fake ZFS runs as real child processes behind the plugin's unix socket,
         // and neither signals when the state a test waits on lands.

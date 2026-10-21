@@ -820,7 +820,14 @@ async fn certificate_only_reload_writes_no_ack() {
     ));
     next_load(&mut load_rx).await;
     state.wait_for_ack_transactions(1).await;
-    let first_pass = published.borrow_and_update().count;
+    let first_pass = timeout(
+        Duration::from_secs(5),
+        published.wait_for(|publishes| publishes.count >= 1),
+    )
+    .await
+    .expect("startup's publish pass never finished")
+    .unwrap()
+    .count;
 
     state.write_certificate("example.com", CHALLENGE);
     let challenged = next_load(&mut load_rx).await;

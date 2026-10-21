@@ -27,8 +27,13 @@ use syn::visit::Visit;
 const MARKER: &str = "real-wait:";
 
 fn main() -> ExitCode {
+    let dirs: Vec<PathBuf> = env::args().skip(1).map(PathBuf::from).collect();
+    if dirs.is_empty() {
+        eprintln!("real-wait-lint: name at least one crate directory");
+        return ExitCode::from(2);
+    }
     let mut findings = Vec::new();
-    for dir in env::args().skip(1).map(PathBuf::from) {
+    for dir in dirs {
         if let Err(error) = check_crate(&dir, &mut findings) {
             eprintln!("real-wait-lint: {error}");
             return ExitCode::from(2);
@@ -52,6 +57,9 @@ fn main() -> ExitCode {
 }
 
 fn check_crate(dir: &Path, findings: &mut Vec<String>) -> Result<(), String> {
+    if !dir.join("Cargo.toml").is_file() {
+        return Err(format!("{} is not a crate directory", dir.display()));
+    }
     let all_test = dir
         .file_name()
         .and_then(|name| name.to_str())

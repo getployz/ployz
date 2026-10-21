@@ -2643,7 +2643,7 @@ fn the_first_real_failure_names_the_reason_though_a_cancel_finished_another_row_
     let failed = json!({"type": "failed", "error": create_error()});
     let mut tracker = RowTracker::default();
     let mut report = |rows: &[(&str, &str, Value)]| tracker.changes(&progress(rows));
-    // The Store records times in whole seconds.
+    // real-wait: the Store stamps rows with the wall clock in whole seconds.
     let next_second = || std::thread::sleep(std::time::Duration::from_secs(1));
     let web_stopped = report(&[
         ("web", "alpha", cancelled.clone()),
