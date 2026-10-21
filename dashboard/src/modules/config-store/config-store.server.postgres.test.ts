@@ -1343,7 +1343,7 @@ const removeForgottenServer = Effect.fn(function* (others: readonly MachineId[])
     removeMachine: () => Effect.succeed({ reset_warning: "its reset couldn't be confirmed: it was already gone from the Cluster" }),
   });
   const runtime = { cancel: () => Effect.void, open: () => Effect.succeed({ status: "connected" as const, connected }) };
-  const removal = { organizationId, machineId, confirmDataLoss: [], noReset: false };
+  const removal = { organizationId, machineId, serverName: null, confirmDataLoss: [], noReset: false };
   const attempt = yield* requestMachineRemoveAttempt({ ...removal, requestedByUserId: caller.userId });
   const inngestRunId = "run-forgotten";
   yield* prepareMachineRemoveAttemptActivity({ attemptId: attempt.id, inngestRunId, now: new Date() });
