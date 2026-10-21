@@ -1,5 +1,5 @@
-//! Once per daemon start, set Out each In copy on this Machine whose Service has
-//! a newer In copy that replaces it and that every live proxy routes. A Machine
+//! Once per daemon start, set Out each In copy on this Machine that a Deploy
+//! would make anew beside the newest In copies every live proxy routes. A Machine
 //! powered off during a Deploy comes back with its old copy In, and proxies would
 //! route it again. The pass decides only after this Machine has caught up with a
 //! peer's store and its own ingress has published since, and it never stops a
@@ -12,11 +12,12 @@ use std::{
     time::Duration,
 };
 
+use futures_util::future::join_all;
 use ployz_core::{
     CodecError, ContainerId, ContainerKind, ContainerLocator, ContainerObservation, ContainerWant,
-    CopyRotation, EnsuredContainer, EnvironmentValues, Gen, ListContainersRequest,
-    ListMachinesRequest, MACHINE_API_PORT, MachineId, MachineRpcClient, QualifiedService,
-    RUNTIME_WATCH_MESSAGE_SIZE_LIMIT, SpecChange, compare_specs, op,
+    CopyRotation, EnsuredContainer, Gen, InspectContainerRequest, ListMachinesRequest,
+    MACHINE_API_PORT, MachineId, MachineRpcClient, QualifiedService,
+    RUNTIME_WATCH_MESSAGE_SIZE_LIMIT, ResolvedServiceSpec, SpecChange, compare_specs, op,
 };
 use tokio::{sync::watch, time::Instant};
 use tonic::transport::Endpoint;
@@ -34,8 +35,10 @@ use crate::{
 /// The executor's `ACK_WAIT`, which ployzd cannot import.
 pub(crate) const BOOT_PASS_WAIT: Duration = Duration::from_secs(300);
 const PEER_TIMEOUT: Duration = Duration::from_secs(2);
-const FULL_COPIES_TIMEOUT: Duration = Duration::from_secs(10);
+const INSPECT_TIMEOUT: Duration = Duration::from_secs(10);
 const PEER_RETRY: Duration = Duration::from_secs(1);
+/// Retries end this long before the deadline, so the Outs they decide still go.
+const OUT_MARGIN: Duration = Duration::from_secs(30);
 
 pub(crate) trait BootHost: Send + Sync {
     fn machine_id(&self) -> MachineId;
@@ -47,12 +50,13 @@ pub(crate) trait BootHost: Send + Sync {
         target: &BTreeMap<String, i64>,
     ) -> impl Future<Output = Result<(), CorrosionError>> + Send;
     fn observe(&self) -> impl Future<Output = Result<Observed, CorrosionError>> + Send;
-    /// `machine`'s managed Containers with their environment and Config content,
-    /// which a store row drops. `None` means it did not answer.
-    fn full_copies(
+    /// `container` as `machine` observes it now, with the environment and Config
+    /// content a store row drops. `None` means it did not answer.
+    fn inspect(
         &self,
         machine: MachineId,
-    ) -> impl Future<Output = Option<Vec<ContainerObservation>>> + Send;
+        container: ContainerId,
+    ) -> impl Future<Output = Option<ContainerObservation>> + Send;
     fn ensure(
         &self,
         want: ContainerWant,
@@ -65,8 +69,7 @@ pub(crate) struct Observed {
     pub(crate) membership: Membership,
 }
 
-/// A local In copy, and the gen of the newest In sibling that replaces it and
-/// every live proxy routes.
+/// A local In copy, and the gen of the newest In siblings every live proxy routes.
 #[derive(Debug, Eq, PartialEq)]
 pub(crate) struct Superseded {
     pub(crate) service: QualifiedService,
@@ -74,12 +77,15 @@ pub(crate) struct Superseded {
     pub(crate) by: Gen,
 }
 
-/// Each local In copy beside its newer In siblings that every live proxy routes. A
-/// Machine list that is only partly replicated, or never read, yields nothing, and a
-/// copy on a Down Machine serves no one. This Machine's own acks come from `own`,
-/// what its ingress published since it started, because its row in the store may
-/// predate a power-off.
-fn routed_newer<'a>(
+/// A local In copy and its newest In siblings.
+type Candidate<'a> = (&'a ContainerObservation, Vec<&'a ContainerObservation>);
+
+/// Each local In copy beside the newest gen of its newer In siblings that every
+/// live proxy routes. A Machine list that is only partly replicated, or never read,
+/// yields nothing, and a copy on a Down Machine serves no one. This Machine's own
+/// acks come from `own`, what its ingress published since it started, because its
+/// row in the store may predate a power-off.
+fn routed_newest<'a>(
     local: &MachineId,
     Observed {
         containers,
@@ -87,7 +93,7 @@ fn routed_newer<'a>(
         membership,
     }: &'a Observed,
     own: &BTreeMap<QualifiedService, BTreeSet<ContainerId>>,
-) -> Vec<(&'a ContainerObservation, Vec<&'a ContainerObservation>)> {
+) -> Vec<Candidate<'a>> {
     if !matches!(&membership.ackers, Ackers::Known(proxies) if !proxies.is_empty()) {
         return Vec::new();
     }
@@ -100,7 +106,7 @@ fn routed_newer<'a>(
         .iter()
         .filter(serving)
         .filter(|copy| copy.machine_id == *local)
-        .map(|copy| {
+        .filter_map(|copy| {
             let service = copy.identity();
             let mut routes = routed(routes.clone(), &service);
             routes.insert(*local, own.get(&service).cloned().unwrap_or_default());
@@ -123,47 +129,83 @@ fn routed_newer<'a>(
                         && sibling.copy_gen() > copy.copy_gen()
                         && acked(&sibling.container_id)
                 })
+                .collect::<Vec<_>>();
+            let newest = newer.iter().map(|sibling| sibling.copy_gen()).max()?;
+            let newest = newer
+                .into_iter()
+                .filter(|sibling| sibling.copy_gen() == newest)
                 .collect();
-            (copy, newer)
+            Some((copy, newest))
         })
         .collect()
 }
 
-/// The local In copies to set Out: each beside a routed newer sibling that a
-/// Deploy would act on, judged on the full specs in `full` as the Deploy judges
-/// them. A copy whose owner is missing from `full` decides nothing.
+/// The local In copies a Deploy would make anew to match their newest siblings,
+/// judged on the full specs in `specs`. The newest gen came from one Deploy, so
+/// siblings that disagree decide nothing. A limits-only difference keeps the copy,
+/// since an in-place update that missed it leaves no other copy in its place. A
+/// copy missing from `specs` decides nothing.
 pub(crate) fn superseded(
-    local: &MachineId,
-    observed: &Observed,
-    own: &BTreeMap<QualifiedService, BTreeSet<ContainerId>>,
-    full: &BTreeMap<MachineId, Vec<ContainerObservation>>,
+    candidates: &[Candidate<'_>],
+    specs: &BTreeMap<ContainerId, ResolvedServiceSpec>,
 ) -> Vec<Superseded> {
-    let spec = |copy: &ContainerObservation| {
-        full.get(&copy.machine_id)?
-            .iter()
-            .find(|full| full.container_id == copy.container_id)
-            .map(|full| &full.resolved_spec)
-    };
-    routed_newer(local, observed, own)
-        .into_iter()
-        .filter_map(|(copy, newer)| {
-            let current = spec(copy)?;
-            let by = newer
-                .into_iter()
-                .filter(|sibling| {
-                    spec(sibling).is_some_and(|wanted| {
-                        compare_specs(current, &wanted.to_requested()) != SpecChange::UpToDate
-                    })
-                })
-                .map(|sibling| sibling.copy_gen())
-                .max()?;
-            Some(Superseded {
+    candidates
+        .iter()
+        .filter_map(|(copy, newest)| {
+            let current = specs.get(&copy.container_id)?;
+            let (first, rest) = newest.split_first()?;
+            let wanted = specs.get(&first.container_id)?.to_requested();
+            let agree = rest.iter().all(|sibling| {
+                specs
+                    .get(&sibling.container_id)
+                    .is_some_and(|spec| compare_specs(spec, &wanted) == SpecChange::UpToDate)
+            });
+            if !agree {
+                tracing::info!(
+                    "boot pass left {}/{} in: its newest siblings disagree or did not answer",
+                    copy.identity(),
+                    copy.container_id
+                );
+                return None;
+            }
+            (compare_specs(current, &wanted) == SpecChange::NeedsRecreate).then(|| Superseded {
                 service: copy.identity(),
                 container: copy.container_id,
-                by,
+                by: first.copy_gen(),
             })
         })
         .collect()
+}
+
+/// `row`'s full spec as its owner answers for it, retried until `retry_until`.
+/// `None` when the owner never answers, or answers that the copy is not the In
+/// copy at the gen the row shows.
+async fn confirmed<H: BootHost>(
+    host: &H,
+    row: &ContainerObservation,
+    retry_until: Instant,
+) -> Option<ResolvedServiceSpec> {
+    let (machine, container) = (row.machine_id, row.container_id);
+    loop {
+        if let Some(answer) = host.inspect(machine, container).await {
+            if answer.machine_id == machine
+                && *answer.rotation() == CopyRotation::In
+                && answer.copy_gen() == row.copy_gen()
+            {
+                return Some(answer.into_parts().resolved_spec);
+            }
+            tracing::info!(
+                "boot pass trusts no row for {container}: {machine} no longer reports it In at gen {}",
+                row.copy_gen()
+            );
+            return None;
+        }
+        if Instant::now() + PEER_RETRY > retry_until {
+            tracing::info!("boot pass could not read {container} from {machine}");
+            return None;
+        }
+        tokio::time::sleep(PEER_RETRY).await;
+    }
 }
 
 /// Runs the whole pass under one [`BOOT_PASS_WAIT`] deadline, and stops it there.
@@ -174,7 +216,7 @@ pub(crate) async fn run<H: BootHost>(
 ) {
     let deadline = Instant::now() + BOOT_PASS_WAIT;
     let mut sent = 0;
-    let pass = pass(&host, first_synced, route_publishes, &mut sent);
+    let pass = pass(&host, first_synced, route_publishes, deadline, &mut sent);
     match tokio::time::timeout_at(deadline, pass).await {
         Ok(Ok(())) => {}
         Ok(Err(error)) => {
@@ -197,6 +239,7 @@ async fn pass<H: BootHost>(
     host: &H,
     mut first_synced: watch::Receiver<bool>,
     mut route_publishes: watch::Receiver<PublishedRoutes>,
+    deadline: Instant,
     sent: &mut usize,
 ) -> Result<(), CorrosionError> {
     if first_synced.wait_for(|synced| *synced).await.is_err() {
@@ -226,28 +269,23 @@ async fn pass<H: BootHost>(
     };
     tracing::info!("boot pass saw this Machine's routes published after catch-up");
     let observed = host.observe().await?;
-    let local = host.machine_id();
-    let owners = routed_newer(&local, &observed, &own)
-        .into_iter()
-        .filter(|(_, newer)| !newer.is_empty())
-        .flat_map(|(copy, newer)| {
-            std::iter::once(copy.machine_id).chain(newer.into_iter().map(|copy| copy.machine_id))
-        })
-        .collect::<BTreeSet<_>>();
-    let mut full = BTreeMap::new();
-    for owner in owners {
-        match host.full_copies(owner).await {
-            Some(copies) => {
-                full.insert(owner, copies);
-            }
-            None => tracing::info!(
-                "boot pass could not read {owner}'s Containers, so its copies replace nothing here"
-            ),
-        }
-    }
-    let superseded = superseded(&local, &observed, &own, &full);
+    let candidates = routed_newest(&host.machine_id(), &observed, &own);
+    let rows = candidates
+        .iter()
+        .flat_map(|(copy, newest)| std::iter::once(*copy).chain(newest.iter().copied()))
+        .map(|row| (row.container_id, row))
+        .collect::<BTreeMap<_, _>>();
+    let retry_until = deadline.checked_sub(OUT_MARGIN).unwrap_or(deadline);
+    let specs = join_all(rows.into_iter().map(|(container, row)| async move {
+        Some((container, confirmed(host, row, retry_until).await?))
+    }))
+    .await
+    .into_iter()
+    .flatten()
+    .collect();
+    let superseded = superseded(&candidates, &specs);
     if superseded.is_empty() {
-        tracing::info!("boot pass found no In copy here that a newer one replaces everywhere");
+        tracing::info!("boot pass found no In copy here that a Deploy would replace");
     }
     for Superseded {
         service,
@@ -350,15 +388,19 @@ impl BootHost for DaemonHost {
         })
     }
 
-    async fn full_copies(&self, machine: MachineId) -> Option<Vec<ContainerObservation>> {
+    async fn inspect(
+        &self,
+        machine: MachineId,
+        container: ContainerId,
+    ) -> Option<ContainerObservation> {
         if machine == self.machine_id {
             return self
                 .machine
                 .containers()?
-                .list_managed(&machine)
+                .inspect_managed(&container, &machine)
                 .await
                 .inspect_err(|error| {
-                    tracing::debug!(error = %ployz_core::error_chain::inline(error), "boot pass could not list this Machine's Containers");
+                    tracing::debug!(error = %ployz_core::error_chain::inline(error), "boot pass could not inspect {container}");
                 })
                 .ok();
         }
@@ -368,14 +410,17 @@ impl BootHost for DaemonHost {
             .iter()
             .find(|peer| peer.id == machine)?;
         let address = SocketAddr::new(IpAddr::V6(peer.management_address().0), MACHINE_API_PORT);
-        match tokio::time::timeout(FULL_COPIES_TIMEOUT, full_list(address)).await {
-            Ok(Ok(copies)) => Some(copies),
+        match tokio::time::timeout(INSPECT_TIMEOUT, inspect_on(address, container)).await {
+            Ok(Ok(copy)) => Some(copy),
             Ok(Err(error)) => {
-                tracing::debug!(error = %ployz_core::error_chain::inline(&error), "boot pass could not list {}'s Containers", peer.name);
+                tracing::debug!(error = %ployz_core::error_chain::inline(&error), "boot pass could not inspect {container} on {}", peer.name);
                 None
             }
             Err(_) => {
-                tracing::debug!("boot pass timed out listing {}'s Containers", peer.name);
+                tracing::debug!(
+                    "boot pass timed out inspecting {container} on {}",
+                    peer.name
+                );
                 None
             }
         }
@@ -390,7 +435,7 @@ impl BootHost for DaemonHost {
 enum PeerError {
     #[error("could not reach the peer")]
     Connect(#[from] tonic::transport::Error),
-    #[error("the peer refused ListMachines")]
+    #[error("the peer refused the request")]
     Rpc(#[from] tonic::Status),
     #[error("the peer's answer did not decode")]
     Codec(#[from] CodecError),
@@ -414,22 +459,24 @@ async fn target_versions(address: SocketAddr) -> Result<BTreeMap<String, i64>, P
         .ok_or(PeerError::NoEnrollment)
 }
 
-/// Like [`target_versions`], over the mesh with no iroh connection.
-async fn full_list(address: SocketAddr) -> Result<Vec<ContainerObservation>, PeerError> {
+/// Like [`target_versions`], over the mesh with no iroh connection. The answer
+/// keeps the environment and Config content.
+async fn inspect_on(
+    address: SocketAddr,
+    container_id: ContainerId,
+) -> Result<ContainerObservation, PeerError> {
     let channel = Endpoint::from_shared(format!("http://{address}"))?
         .connect()
         .await?;
-    let request = ListContainersRequest {
-        environment: EnvironmentValues::Included,
-    };
+    let request = InspectContainerRequest { container_id };
     Ok(MachineRpcClient::new(channel)
         .max_decoding_message_size(RUNTIME_WATCH_MESSAGE_SIZE_LIMIT)
-        .list_containers(op::ListContainers::into_request(request).encode()?)
+        .inspect_container(op::InspectContainer::into_request(request).encode()?)
         .await?
         .into_inner()
         .decode_response()?
-        .decode::<op::ListContainers>()?
-        .containers)
+        .decode::<op::InspectContainer>()?
+        .container)
 }
 
 #[cfg(test)]
