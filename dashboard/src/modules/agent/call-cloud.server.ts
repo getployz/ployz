@@ -12,7 +12,7 @@ import { countOrganizationMachines, loadOrganizationConnections } from "#/module
 import { UNREACHABLE_MESSAGE } from "#/modules/machines/server-operations.server";
 import type { ServerPolicyChange } from "#/modules/machines/server-policy";
 import { admittedAt, type Admission } from "#/modules/operations/keyed.server";
-import { dashedAttempt, operationsOn, serverNames } from "#/modules/operations/operation-history.server";
+import { dashedAttempt, operationsOn, serverNames, settledDrain } from "#/modules/operations/operation-history.server";
 import {
   actService,
   cleanNamespace,
@@ -203,10 +203,11 @@ const ask = Effect.fn("CallCloud.ask")(function* (caller: Caller, query: CloudQu
       return yield* runtimeRead(caller, query, "metrics:read", query.subject.kind === "service" ? query.subject.namespace : null);
     case "copies":
       return yield* copies(caller, query.namespace, query.volume);
-    case "operations":
-      return yield* operationsOn(organizationId, query.subject, query.attempt, query.limit).pipe(
-        Effect.map((operations) => answer<OperationsAnswer>({ operations })),
-      );
+    case "operations": {
+      const operations = yield* operationsOn(organizationId, query.subject, query.attempt, query.limit);
+      const settled = query.subject.kind === "server" && query.attempt === null ? yield* settledDrain(organizationId, query.subject.machine, null) : null;
+      return answer<OperationsAnswer>(settled === null ? { operations } : { operations, settled_drain: settled });
+    }
     case "logs":
       if (caller.support !== null && !caller.support.logs) {
         return refusal("forbidden", "This Organization doesn't show its container logs to Ployz support.");
