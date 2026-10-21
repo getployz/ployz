@@ -110,6 +110,22 @@ tester.run("no-real-time-wait-in-tests", noRealTimeWaitInTestsRule, {
     },
     {
       filename,
+      code: `it("fakes timers it cannot name", async () => {
+        vi.useFakeTimers({ toFake: timers });
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      });`,
+      errors: [{ messageId: "realClock" }],
+    },
+    {
+      filename,
+      code: `it("fakes timers through a spread", async () => {
+        vi.useFakeTimers({ ...options });
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      });`,
+      errors: [{ messageId: "realClock" }],
+    },
+    {
+      filename,
       code: `it("advances with the wall clock", async () => {
         vi.useFakeTimers({ shouldAdvanceTime: true });
         await new Promise((resolve) => setTimeout(resolve, 10));
