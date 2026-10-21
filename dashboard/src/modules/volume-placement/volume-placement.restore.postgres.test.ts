@@ -1,7 +1,7 @@
 import { it } from "@effect/vitest";
 import { type ConfigCommand, type ConfigStore, type CreateVolume, type Mount, RpcError } from "@ployz/sdk";
 import { sql } from "drizzle-orm";
-import { Effect, Option } from "effect";
+import { Effect, Layer, Option } from "effect";
 import { expect, vi } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
 import { failStoreDeploymentUnrun } from "#/modules/config-store/store-deployment.server";
@@ -28,9 +28,12 @@ const admitDeploy = (store: ConfigStore, id: string) => store.write(ORGANIZATION
   command: "admit", admit: "deploy", id, environment: shop, services: [], version: null, accept_volume_loss: [],
 }, { ...acmeWeb(), servers: 1 });
 
-/** Organization ORGANIZATION with project shop, Service web (and any of `writers`), and Volume `data` deployed as `volume` says. */
+/**
+ * Organization ORGANIZATION with project shop, Service web (and any of `writers`), and Volume `data` deployed as `volume` says.
+ * Its services are built once, as Cloud's are. Providing the Layer itself would open a new Config Store on every call.
+ */
 const deployedShop = Effect.fn(function* (volume: Partial<CreateVolume> = {}, writers: string[] = []) {
-  const services = yield* storeTestCloud();
+  const services = yield* Layer.build(yield* storeTestCloud());
   yield* seedStoreOrganization(ORGANIZATION).pipe(Effect.provide(services));
   const store = yield* cloudStore.pipe(Effect.provide(services));
   yield* Effect.promise(async () => {
@@ -47,6 +50,8 @@ const deployedShop = Effect.fn(function* (volume: Partial<CreateVolume> = {}, wr
   });
   return { services, store };
 });
+
+type Services = Effect.Success<ReturnType<typeof deployedShop>>["services"];
 
 const listed = (store: ConfigStore, name: string) => Effect.promise(async () =>
   (await store.read(ORGANIZATION, { query: "volumes", environment: shop })).volumes.find((volume) => volume.name === name));
@@ -130,12 +135,12 @@ const orphanedRestore = Effect.fn(function* () {
 });
 
 /** A Deploy takes every placement staged, as one admitted with nothing more staged would. */
-const stampStaged = (services: Effect.Success<ReturnType<typeof storeTestCloud>>, deployment: string) => Effect.gen(function* () {
+const stampStaged = (services: Services, deployment: string) => Effect.gen(function* () {
   const staged = (yield* listPlacements(ORGANIZATION)).filter((row) => row.staged !== null).map((row) => row.volumeId);
   yield* stampPlacements(ORGANIZATION, staged, deployment);
 }).pipe(Effect.provide(services));
 
-const stampedDeploy = (services: Effect.Success<ReturnType<typeof storeTestCloud>>, store: ConfigStore, deployment: string) => Effect.gen(function* () {
+const stampedDeploy = (services: Services, store: ConfigStore, deployment: string) => Effect.gen(function* () {
   const admitted = yield* Effect.promise(() => admitDeploy(store, deployment));
   if (admitted.written !== "deployment") throw new Error("expected a Deployment");
   yield* stampStaged(services, admitted.id);
@@ -168,7 +173,7 @@ it.live("drops a left-behind restore's row before asking the Servers, so a Serve
 const byVolume: MemberInspector = (_, _environment, id) => Effect.succeed(id === SOURCE ? [member("web-1", "writer")] : []);
 
 /** Lock waits in the database: a worker blocked on the admission's rows shows here. */
-const lockWaits = (services: Effect.Success<ReturnType<typeof storeTestCloud>>) => Effect.runPromise(Effect.gen(function* () {
+const lockWaits = (services: Services) => Effect.runPromise(Effect.gen(function* () {
   const [row] = yield* (yield* Database).drizzle.execute<{ waiting: number }>(sql`select count(*)::int as waiting from pg_locks where not granted
     and pid in (select pid from pg_stat_activity where datname = current_database())`, "objects");
   return (row?.waiting ?? 0) > 0;
