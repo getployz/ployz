@@ -3977,6 +3977,7 @@ dependencies = [
  "minisign-verify",
  "oci-spec",
  "prost",
+ "regex",
  "semver",
  "serde",
  "serde_json",

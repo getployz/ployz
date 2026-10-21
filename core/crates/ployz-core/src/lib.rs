@@ -21,6 +21,7 @@ mod release;
 pub mod routing;
 pub mod rpc;
 mod rpc_catalog;
+pub mod scrub;
 pub mod service;
 mod storage_capacity;
 pub mod stream;
