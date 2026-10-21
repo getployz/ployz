@@ -3,6 +3,7 @@
 //! and hide what they cannot check.
 use futures_util::FutureExt;
 use futures_util::future::{BoxFuture, Shared};
+use ployz_core::scrub::Scrubbed;
 use ployz_core::{
     ContainerId, HistoryRow, LogBody, LogEntry, LogLevel, LogMetadata, MachineId, RpcError,
     log_level,
@@ -471,8 +472,8 @@ impl LiveRead {
         }
     }
 
-    fn show(&mut self, channel: Channel, shown: Vec<u8>, source: LogMetadata, timestamp: i64) {
-        if shown.is_empty() {
+    fn show(&mut self, channel: Channel, shown: Scrubbed, source: LogMetadata, timestamp: i64) {
+        if shown.as_bytes().is_empty() {
             return;
         }
         self.hiding = false;
@@ -481,8 +482,8 @@ impl LiveRead {
             timestamp_nanos: timestamp.to_string(),
             channel: log_channel(channel),
             line: LogLine::Shown {
-                level: log_level(&shown),
-                message: String::from_utf8_lossy(&shown).into_owned(),
+                level: log_level(shown.as_bytes()),
+                message: String::from_utf8_lossy(shown.as_bytes()).into_owned(),
             },
         }));
     }

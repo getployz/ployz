@@ -90,7 +90,8 @@ fn no_secret_form_survives_random_logs() {
                 String::from_utf8(head).unwrap(),
                 String::from_utf8(tail).unwrap(),
             ];
-            let out = SealedForms::compile(&set).scrub(&frames.concat(), &mut 0);
+            let out = SealedForms::compile(&set).scrub(&frames.concat());
+            let out = String::from_utf8(out.into_bytes()).unwrap();
             for leaked in &forms {
                 assert!(
                     !out.contains(leaked.as_str()),
@@ -115,10 +116,12 @@ fn stream(frames: &[(Channel, &[u8])], forms: &SealedForms) -> Vec<(Channel, Vec
     let mut out: BTreeMap<Channel, Vec<u8>> = BTreeMap::new();
     for (channel, frame) in frames {
         let released = scrub.push(*channel, frame, forms);
-        out.entry(*channel).or_default().extend(released);
+        out.entry(*channel)
+            .or_default()
+            .extend(released.into_bytes());
     }
     for (channel, held) in scrub.finish(forms) {
-        out.entry(channel).or_default().extend(held);
+        out.entry(channel).or_default().extend(held.into_bytes());
     }
     out.into_iter().collect()
 }
@@ -172,8 +175,8 @@ fn random_frames_release_the_batch_scrub() {
         }
         let frames: Vec<&[u8]> = frames.iter().map(Vec::as_slice).collect();
         let out = stdout_of(&frames, &forms);
-        let batch = forms.scrub(&text, &mut 0);
-        assert_eq!(String::from_utf8(out).unwrap(), batch, "frames {frames:?}");
+        let batch = forms.scrub(&text);
+        assert_eq!(out, batch.as_bytes(), "frames {frames:?}");
     }
 }
 
@@ -202,12 +205,36 @@ fn discard_drops_one_channel_only() {
     let forms = SealedForms::compile(&secrets(&[("TOKEN", value)]));
     let (head, tail) = split_at_byte(value, 10);
     let mut scrub = FrameScrub::new();
-    assert!(scrub.push(Channel::Stdout, &head, &forms).is_empty());
-    assert!(scrub.push(Channel::Stderr, &head, &forms).is_empty());
+    assert!(
+        scrub
+            .push(Channel::Stdout, &head, &forms)
+            .as_bytes()
+            .is_empty()
+    );
+    assert!(
+        scrub
+            .push(Channel::Stderr, &head, &forms)
+            .as_bytes()
+            .is_empty()
+    );
     scrub.discard(Channel::Stdout);
-    assert!(scrub.push(Channel::Stdout, b"\n", &forms).is_empty());
-    assert!(scrub.push(Channel::Stderr, &tail, &forms).is_empty());
-    let out = scrub.finish(&forms);
+    assert!(
+        scrub
+            .push(Channel::Stdout, b"\n", &forms)
+            .as_bytes()
+            .is_empty()
+    );
+    assert!(
+        scrub
+            .push(Channel::Stderr, &tail, &forms)
+            .as_bytes()
+            .is_empty()
+    );
+    let out: Vec<(Channel, Vec<u8>)> = scrub
+        .finish(&forms)
+        .into_iter()
+        .map(|(channel, shown)| (channel, shown.into_bytes()))
+        .collect();
     assert_eq!(out, [(Channel::Stderr, b"[secret TOKEN]".to_vec())]);
 }
 
@@ -232,16 +259,16 @@ fn a_label_far_from_its_value_releases_at_the_cap() {
     let mut frame = b"TOKEN=".to_vec();
     frame.extend(vec![b' '; CARRY_CAP + 500]);
     let released = scrub.push(Channel::Stdout, &frame, &forms);
-    assert_eq!(released.len(), frame.len() - CARRY_CAP);
-    assert!(released.starts_with(b"TOKEN="));
+    assert_eq!(released.as_bytes().len(), frame.len() - CARRY_CAP);
+    assert!(released.as_bytes().starts_with(b"TOKEN="));
     let released = scrub.push(Channel::Stdout, b"ab12 tail\n", &forms);
-    assert_eq!(released.len(), CARRY_CAP + 10);
+    assert_eq!(released.as_bytes().len(), CARRY_CAP + 10);
     assert!(scrub.finish(&forms).is_empty());
     let mut scrub = FrameScrub::new();
     let near = scrub.push(Channel::Stdout, b"TOKEN=      ", &forms);
-    assert!(near.is_empty());
+    assert!(near.as_bytes().is_empty());
     let out = scrub.push(Channel::Stdout, b"  ab12 tail\n", &forms);
-    assert_eq!(out, b"TOKEN=        [secret TOKEN] tail\n");
+    assert_eq!(out.as_bytes(), b"TOKEN=        [secret TOKEN] tail\n");
 }
 
 #[test]
@@ -251,7 +278,7 @@ fn each_line_of_a_multiline_value_is_scrubbed() {
     assert!(forms.multiline());
     let text = "a line1-secret b\nc line2-secret d\n";
     let want = "a [secret CERT] b\nc [secret CERT] d\n";
-    assert_eq!(forms.scrub(text, &mut 0), want);
+    assert_eq!(forms.scrub(text).as_bytes(), want.as_bytes());
     let out = stdout_of(&[b"a line1-sec", b"ret b\nc line2-", b"secret d\n"], &forms);
     assert_eq!(String::from_utf8(out).unwrap(), want);
 }
@@ -261,7 +288,9 @@ fn a_line_end_releases_beside_a_multiline_value() {
     let forms = SealedForms::compile(&secrets(&[("CERT", "line1-secret\nline2-secret")]));
     let mut scrub = FrameScrub::new();
     assert_eq!(
-        scrub.push(Channel::Stdout, b"info line\n", &forms),
+        scrub
+            .push(Channel::Stdout, b"info line\n", &forms)
+            .as_bytes(),
         b"info line\n"
     );
     assert!(scrub.finish(&forms).is_empty());
@@ -276,9 +305,9 @@ fn a_multiline_value_split_across_frames_is_one_marker() {
         (b"a line1-secret\n", b"a ", b"line2-secret b\n"),
     ] {
         let mut scrub = FrameScrub::new();
-        let mut out = scrub.push(Channel::Stdout, head, &forms);
+        let mut out = scrub.push(Channel::Stdout, head, &forms).into_bytes();
         assert_eq!(out, shown);
-        out.extend(scrub.push(Channel::Stdout, tail, &forms));
+        out.extend(scrub.push(Channel::Stdout, tail, &forms).into_bytes());
         assert_eq!(String::from_utf8(out).unwrap(), "a [secret CERT] b\n");
         assert!(scrub.finish(&forms).is_empty());
     }
@@ -290,8 +319,16 @@ fn a_discard_veils_a_multiline_value_begun_in_the_veiled_bytes() {
     let mut scrub = FrameScrub::new();
     scrub.discard(Channel::Stdout);
     let frame = format!("{}abcde\nfghij\nklmno\n", "x".repeat(18));
-    assert_eq!(scrub.push(Channel::Stdout, frame.as_bytes(), &forms), b"");
-    assert_eq!(scrub.push(Channel::Stdout, b"later\n", &forms), b"later\n");
+    assert_eq!(
+        scrub
+            .push(Channel::Stdout, frame.as_bytes(), &forms)
+            .as_bytes(),
+        b""
+    );
+    assert_eq!(
+        scrub.push(Channel::Stdout, b"later\n", &forms).as_bytes(),
+        b"later\n"
+    );
     assert!(scrub.finish(&forms).is_empty());
 }
 
@@ -300,8 +337,8 @@ fn a_discard_veils_a_multiline_value_begun_in_the_veiled_bytes() {
 #[test]
 fn overlapping_forms_leave_no_byte_of_either() {
     let forms = SealedForms::compile(&secrets(&[("HEAD", "abcXYZ"), ("TAIL", "XYZdef")]));
-    let mut redacted = 0;
-    let out = forms.scrub("in abcXYZdef out", &mut redacted);
+    let scrubbed = forms.scrub("in abcXYZdef out");
+    let out = String::from_utf8(scrubbed.into_bytes()).unwrap();
     for piece in ["abc", "XYZ", "def"] {
         assert!(!out.contains(piece), "{piece:?} survived in {out:?}");
     }
@@ -309,7 +346,6 @@ fn overlapping_forms_leave_no_byte_of_either() {
         out.starts_with("in [secret ") && out.ends_with("] out"),
         "{out:?}"
     );
-    assert_eq!(redacted, 1);
     let streamed = stdout_of(&[b"in abcXY", b"Zdef out\n"], &forms);
     assert_eq!(String::from_utf8(streamed).unwrap(), format!("{out}\n"));
 }
@@ -317,16 +353,12 @@ fn overlapping_forms_leave_no_byte_of_either() {
 #[test]
 fn a_short_value_is_matched_only_with_its_label() {
     let forms = SealedForms::compile(&secrets(&[("PIN", "4821")]));
-    let mut redacted = 0;
-    let out = forms.scrub(
-        "PIN=4821 PIN : 4821 pin=4821 4821 XPIN=4821 PIN 4821",
-        &mut redacted,
-    );
+    let out = forms.scrub("PIN=4821 PIN : 4821 pin=4821 4821 XPIN=4821 PIN 4821");
     assert_eq!(
-        out,
-        "PIN=[secret PIN] PIN : [secret PIN] pin=4821 4821 XPIN=4821 PIN 4821"
+        out.as_bytes(),
+        b"PIN=[secret PIN] PIN : [secret PIN] pin=4821 4821 XPIN=4821 PIN 4821"
     );
-    assert_eq!(redacted, 2);
+    assert_eq!(out.redacted(), 2);
 }
 
 #[test]
@@ -342,4 +374,27 @@ fn a_label_split_across_frames_scrubs_its_value() {
             "split at {at}"
         );
     }
+}
+
+#[test]
+fn scrubbed_names_are_exactly_the_replaced_names() {
+    let forms = SealedForms::compile(&secrets(&[
+        ("API_KEY", "key-value-one"),
+        ("DB_PASS", "pass-value-two"),
+        ("UNSEEN", "never-printed-3"),
+    ]));
+    let out = forms.scrub("a key-value-one b pass-value-two c key-value-one");
+    let names: Vec<&str> = out.names().iter().map(String::as_str).collect();
+    assert_eq!(names, ["API_KEY", "DB_PASS"]);
+    assert_eq!(out.redacted(), 3);
+    let mut scrub = FrameScrub::new();
+    let first = scrub.push(Channel::Stdout, b"a key-value-one\n", &forms);
+    assert_eq!(first.names().iter().collect::<Vec<_>>(), ["API_KEY"]);
+    let second = scrub.push(Channel::Stdout, b"b pass-value-two\n", &forms);
+    assert_eq!(second.names().iter().collect::<Vec<_>>(), ["DB_PASS"]);
+    let third = scrub.push(Channel::Stdout, b"plain\n", &forms);
+    assert!(third.names().is_empty());
+    assert_eq!(third.redacted(), 0);
+    let hidden = stdout_of(&[b"tail key-val"], &forms);
+    assert_eq!(hidden, b"tail [secret API_KEY]");
 }

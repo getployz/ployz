@@ -188,13 +188,12 @@ impl SealedForms {
         Self::compile(&SealedValues::none())
     }
 
-    /// Replace every form in `text` with `[secret NAME]`, counting each into `redacted`.
+    /// Replace every form in `text` with `[secret NAME]`.
     #[must_use]
-    pub fn scrub(&self, text: &str, redacted: &mut u32) -> String {
+    pub fn scrub(&self, text: &str) -> Scrubbed {
         let bytes = text.as_bytes();
         let spans = self.find(bytes);
-        String::from_utf8(replaced(bytes, 0..bytes.len(), &spans, redacted))
-            .expect("replacing whole UTF-8 forms with ASCII keeps text valid")
+        Scrubbed::new(bytes, 0..bytes.len(), &spans)
     }
 
     /// Bytes of the longest form, a labelled one counted with no whitespace.
@@ -282,18 +281,16 @@ impl SealedForms {
     }
 
     /// Hide a trailing proper prefix of a form behind its marker, at the end of a stream.
-    fn hide_prefix(&self, text: &mut Vec<u8>) {
-        if let Some((cut, name)) = self.prefix_tail(text) {
-            text.truncate(text.len() - cut);
-            text.extend(marker(name));
+    fn hide_prefix(&self, shown: &mut Scrubbed) {
+        if let Some((cut, name)) = self.prefix_tail(&shown.bytes) {
+            shown.hide_tail(cut, name);
             return;
         }
         for form in self.labelled() {
-            let Some(cut) = form.pending_prefix(text) else {
+            let Some(cut) = form.pending_prefix(&shown.bytes) else {
                 continue;
             };
-            text.truncate(text.len() - cut);
-            text.extend(marker(&form.name));
+            shown.hide_tail(cut, &form.name);
             return;
         }
     }
@@ -391,28 +388,86 @@ fn marker(name: &str) -> Vec<u8> {
     format!("[secret {name}]").into_bytes()
 }
 
-/// `text[range]` with every span inside it replaced by its marker, each counted into
-/// `redacted`. A span never straddles either end of `range`.
-fn replaced(text: &[u8], range: Range<usize>, spans: &[Span<'_>], redacted: &mut u32) -> Vec<u8> {
-    let mut out = Vec::with_capacity(range.len());
-    let mut cursor = range.start;
-    for span in spans
-        .iter()
-        .filter(|span| range.start <= span.start && span.end <= range.end)
-    {
-        out.extend(
-            text.get(cursor..span.start + span.keep)
-                .expect("spans lie within the text, in order"),
+/// Log text with every Sealed form replaced by its marker. Built only by this module, so a
+/// reader or writer that takes one knows the bytes went through the scrubber.
+///
+/// Nothing outside the module can build one from raw bytes:
+///
+/// ```compile_fail
+/// let _ = ployz_core::scrub::Scrubbed {
+///     bytes: Vec::new(),
+///     names: std::collections::BTreeSet::new(),
+///     redacted: 0,
+/// };
+/// ```
+#[derive(Debug)]
+pub struct Scrubbed {
+    bytes: Vec<u8>,
+    names: BTreeSet<String>,
+    redacted: u32,
+}
+
+impl Scrubbed {
+    /// `text[range]` with every span inside it replaced by its marker. A span never
+    /// straddles either end of `range`.
+    fn new(text: &[u8], range: Range<usize>, spans: &[Span<'_>]) -> Self {
+        let mut shown = Self {
+            bytes: Vec::with_capacity(range.len()),
+            names: BTreeSet::new(),
+            redacted: 0,
+        };
+        let mut cursor = range.start;
+        for span in spans
+            .iter()
+            .filter(|span| range.start <= span.start && span.end <= range.end)
+        {
+            shown.bytes.extend(
+                text.get(cursor..span.start + span.keep)
+                    .expect("spans lie within the text, in order"),
+            );
+            shown.replace(span.name);
+            cursor = span.end;
+        }
+        shown.bytes.extend(
+            text.get(cursor..range.end)
+                .expect("the range lies within the text"),
         );
-        out.extend(marker(span.name));
-        *redacted += 1;
-        cursor = span.end;
+        shown
     }
-    out.extend(
-        text.get(cursor..range.end)
-            .expect("the range lies within the text"),
-    );
-    out
+
+    fn replace(&mut self, name: &str) {
+        self.bytes.extend(marker(name));
+        self.names.insert(name.to_owned());
+        self.redacted += 1;
+    }
+
+    /// Replace the last `cut` bytes, a proper prefix of one of `name`'s forms.
+    fn hide_tail(&mut self, cut: usize, name: &str) {
+        self.bytes.truncate(self.bytes.len() - cut);
+        self.replace(name);
+    }
+
+    #[must_use]
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+
+    #[must_use]
+    pub fn into_bytes(self) -> Vec<u8> {
+        self.bytes
+    }
+
+    /// The Sealed names whose forms were replaced in this batch.
+    #[must_use]
+    pub const fn names(&self) -> &BTreeSet<String> {
+        &self.names
+    }
+
+    /// How many forms were replaced in this batch.
+    #[must_use]
+    pub const fn redacted(&self) -> u32 {
+        self.redacted
+    }
 }
 
 /// One stream of a Container's output.
@@ -508,7 +563,7 @@ impl FrameScrub {
     /// oldest are scrubbed and released. A released chunk never ends inside a form or a UTF-8
     /// sequence the input had whole. After `discard`, the veil hides the start of what is
     /// released.
-    pub fn push(&mut self, channel: Channel, bytes: &[u8], forms: &SealedForms) -> Vec<u8> {
+    pub fn push(&mut self, channel: Channel, bytes: &[u8], forms: &SealedForms) -> Scrubbed {
         let carry = self.carry(channel);
         carry.held.extend_from_slice(bytes);
         let text = std::mem::take(&mut carry.held);
@@ -516,7 +571,7 @@ impl FrameScrub {
         let at = release_point(&text, forms, &spans);
         let from = carry.veil.shown_from(&text, at, forms.longest(), &spans);
         carry.held = text.get(at..).unwrap_or_default().to_vec();
-        replaced(&text, from..at, &spans, &mut 0)
+        Scrubbed::new(&text, from..at, &spans)
     }
 
     /// Drop what `channel` holds and veil what it shows next, for a frame hidden whole: a form
@@ -529,7 +584,7 @@ impl FrameScrub {
 
     /// End the stream: scrub what is held and hide any trailing prefix of a form.
     #[must_use]
-    pub fn finish(self, forms: &SealedForms) -> Vec<(Channel, Vec<u8>)> {
+    pub fn finish(self, forms: &SealedForms) -> Vec<(Channel, Scrubbed)> {
         [
             (Channel::Stdout, self.stdout),
             (Channel::Stderr, self.stderr),
@@ -542,9 +597,9 @@ impl FrameScrub {
             let from = carry
                 .veil
                 .shown_from(&carry.held, len, forms.longest(), &spans);
-            let mut out = replaced(&carry.held, from..len, &spans, &mut 0);
-            forms.hide_prefix(&mut out);
-            (channel, out)
+            let mut shown = Scrubbed::new(&carry.held, from..len, &spans);
+            forms.hide_prefix(&mut shown);
+            (channel, shown)
         })
         .collect()
     }

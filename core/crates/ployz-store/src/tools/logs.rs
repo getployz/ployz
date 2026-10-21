@@ -98,8 +98,10 @@ impl LogExcerpt {
         cap: LineCap,
     ) -> Self {
         let text: String = frames.into_iter().collect();
-        let mut redacted = 0;
-        let text = SealedForms::compile(sealed).scrub(&text, &mut redacted);
+        let scrubbed = SealedForms::compile(sealed).scrub(&text);
+        let mut redacted = scrubbed.redacted();
+        let text = String::from_utf8(scrubbed.into_bytes())
+            .expect("replacing whole UTF-8 forms with ASCII keeps text valid");
         let text = scrub_patterns(&text, &mut redacted);
         let (lines, cut) = capped(&text, cap);
         Self {
