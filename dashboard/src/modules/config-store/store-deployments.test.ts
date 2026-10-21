@@ -1,10 +1,12 @@
-import type { DeploymentView, DiffView, JsonValue, MachineId, Outcome, RowId, ServiceId, ServiceListing } from "@ployz/sdk";
+import { readFileSync } from "node:fs";
+import type { DeploymentView, DiffView, JsonValue, MachineId, NodeOutcome, Outcome, RowId, ServiceId, ServiceListing } from "@ployz/sdk";
 import { expect, it } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
 import {
   showCancelling,
   canFixOnBranch, changeGroups, deploymentWarningText, deploymentActions, deploymentByline, deploymentLight, deploymentStatusLabel, deploysLabel, missingDeployLogs, outcomeReason,
-  deploymentLabel, freshRollback, nodeLight, reviewGroups, rollbackConfirm, shippedService, shownValue, uploadLabel, warnedService,
+  deploymentLabel, freshRollback, nodeLight, nodeStatusLabels, reviewGroups, rollbackConfirm, shippedService, shownNodeStatus, shownValue,
+  uploadLabel, warnedService,
 } from "./store-deployments";
 
 // The grouping reads only the changes and each Service's id and source.
@@ -303,6 +305,26 @@ it("keeps the deepest preparation failure cause in the Deployment banner", () =>
   };
   expect(outcomeReason(outcome)).toBe("Could not prepare the deployment: registry denied access");
   expect(outcome.cause).toEqual(["could not pull the image", "registry denied access"]);
+});
+
+it("drops the header's reason when the Deployment's cancel stopped the work it names, and keeps a real failure's", () => {
+  const stopped: Outcome = { type: "executed", summary: null, reason: "web: Cancelled", cause: [], services: [] };
+  expect(outcomeReason({ ...stopped, cancelled: true })).toBeUndefined();
+  // A Store from before the marker sends none, so the line reads as it did.
+  expect(outcomeReason(stopped)).toBe("web: Cancelled");
+  expect(outcomeReason({ ...stopped, reason: "api: create Container failed", cause: ["no space left on device"] }))
+    .toBe("api: create Container failed: no space left on device");
+});
+
+it("names a real failure in the header beside the work a cancel stopped, as the Store records the run", () => {
+  // ployz-store's deployment test writes this snapshot: a cancel stops web while api's create fails on its own.
+  const snapshot = new URL("../../../../core/crates/ployz-store/tests/snapshots/cancel_beside_a_real_failure.json", import.meta.url);
+  const recorded = asTestDouble<{ outcome: Outcome; nodes: (Pick<NodeOutcome, "outcome" | "cancelled"> & { name: string })[] }>()<unknown>(
+    JSON.parse(readFileSync(snapshot, "utf8")),
+  );
+  expect(outcomeReason(recorded.outcome)).toBe("api: create Container failed: no space left on device");
+  expect(Object.fromEntries(recorded.nodes.map((node) => [node.name, nodeStatusLabels[shownNodeStatus(node)]])))
+    .toEqual({ api: "Failed", web: "Cancelled" });
 });
 
 it("preserves reasons without a cause and outcomes without a reason", () => {

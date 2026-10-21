@@ -8,6 +8,13 @@ log_dir=${PLOYZ_LAYER3_LOG_DIR:-target/layer3-logs}
 mkdir -p "$log_dir"
 failed=0
 
+# CI passes the image it built from this commit. Locally, build one from the checkout.
+if [ -z "${PLOYZ_TESTKIT_IMAGE:-}" ]; then
+    PLOYZ_TESTKIT_IMAGE=$(scripts/testkit-image.sh "ployz-testkit-checkout:layer3-$$")
+    export PLOYZ_TESTKIT_IMAGE
+    trap 'docker image rm "$PLOYZ_TESTKIT_IMAGE" >/dev/null 2>&1 || true' EXIT
+fi
+
 # Each suite gets 5 minutes unless its call sets SUITE_TIMEOUT. --nocapture
 # prints each failure as it happens, so a killed suite keeps its diagnostics.
 run_suite() {

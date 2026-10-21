@@ -1022,6 +1022,16 @@ it.live(
         const superseded = yield* request("write", alice, { ...start, deployment: admit.id });
         assert.strictEqual(superseded.status, 409);
         assert.strictEqual(sent.length, 3);
+
+        // Its last Server left: Deploy now refuses as a Deploy does, and hands nothing to the worker.
+        const { drizzle } = yield* Database;
+        yield* drizzle.delete(organizationMachine);
+        const serverless = yield* request("write", alice, start);
+        assert.strictEqual(serverless.status, 409);
+        expect(serverless.json).toMatchObject({
+          error: { code: "conflict", details: { next: "ployz server add" } },
+        });
+        assert.strictEqual(sent.length, 3);
       }).pipe(Effect.provide(layer));
     }),
   60_000,
