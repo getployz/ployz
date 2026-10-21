@@ -137,6 +137,8 @@ function DrainLine({ view, left }: { view: DrainView; left: number }) {
       return <>Starting…</>;
     case "queued":
       return view.behind === null ? <>Queued</> : <>Queued · Waiting on {view.behind}</>;
+    case "waiting":
+      return <>Waiting for your servers to answer</>;
     case "running":
       return <>Draining · {left === 0 ? "Finishing up" : `${left} left`} · Started <RelativeTime date={new Date(view.since)} /></>;
     case "finished":
