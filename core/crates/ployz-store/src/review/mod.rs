@@ -182,16 +182,47 @@ impl NodeChange {
         }
     }
 
-    /// `path` as people read it, named from whichever of `changes` holds it.
+    /// `paths`, shown together, as people read them: each Config, and each mount
+    /// whichever Service holds it, by the name `changes` know its id by, as
+    /// [`ployz_core::config::shown_paths`] reads them.
     #[must_use]
-    pub fn shown_path_in(changes: &[Self], path: &str) -> String {
-        changes
+    pub fn shown_paths(changes: &[Self], paths: &[String]) -> Vec<String> {
+        let named: Vec<(String, Option<ployz_core::ConfigName>)> = paths
             .iter()
-            .find_map(|change| {
-                let row = change.settings.iter().find(|row| row.path == path)?;
-                Some(change.shown_path(row))
+            .map(|path| match path.split_once("configs.@") {
+                Some(("", rest)) => {
+                    let (id, field) = rest
+                        .split_once('.')
+                        .map_or((rest, ""), |(id, field)| (id, field));
+                    let path = match Self::config_named(changes, id) {
+                        Some(name) if field.is_empty() => format!("configs.{name}"),
+                        Some(name) => format!("configs.{name}.{field}"),
+                        None => path.clone(),
+                    };
+                    (path, None)
+                }
+                Some((_, id)) => (path.clone(), Self::config_named(changes, id)),
+                None => (path.clone(), None),
             })
-            .unwrap_or_else(|| path.to_owned())
+            .collect();
+        let named: Vec<_> = named
+            .iter()
+            .map(|(path, name)| (path.as_str(), name.as_ref()))
+            .collect();
+        ployz_core::config::shown_paths(&named)
+    }
+
+    /// The name of the Config `id`, from its own change or a mount of it.
+    fn config_named(changes: &[Self], id: &str) -> Option<ployz_core::ConfigName> {
+        changes.iter().find_map(|change| {
+            if change.node.node_type == EnvironmentNodeType::Config && change.node.id == id {
+                return ployz_core::ConfigName::parse(&change.name).ok();
+            }
+            change.settings.iter().find_map(|row| {
+                let (_, mounted) = row.path.rsplit_once(".configs.@")?;
+                (mounted == id).then(|| row.config_name.clone()).flatten()
+            })
+        })
     }
 }
 

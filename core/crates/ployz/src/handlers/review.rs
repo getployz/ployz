@@ -203,15 +203,13 @@ pub(super) fn discard(root: &ArgMatches) -> Result<(), Error> {
         version: matches.get_one::<String>("version").cloned(),
     };
     let store = store(root)?;
-    let staged = match path {
-        Some(_) => Vec::new(),
-        None => store
-            .read(&DiffQuery {
-                environment: discard.environment.clone(),
-            })
-            .map(|view| view.review_changes())
-            .unwrap_or_default(),
-    };
+    let staged = store
+        .read(&DiffQuery {
+            environment: discard.environment.clone(),
+        })
+        .map(|view| view.review_changes())
+        .unwrap_or_default();
+    let shown = |paths: &[String]| ployz_store::NodeChange::shown_paths(&staged, paths);
     let discarded = store
         .try_write(&discard)
         .map_err(|error| store.fail(with_refresh_hint(error, matches, "diff")))?;
@@ -247,7 +245,10 @@ pub(super) fn discard(root: &ArgMatches) -> Result<(), Error> {
             } else if backs.is_empty() {
                 crate::ui::stream(format_args!(
                     "Nothing staged{} in {where_}; nothing to discard.",
-                    path.map_or_else(String::new, |path| format!(" at {path}"))
+                    path.map_or_else(String::new, |path| format!(
+                        " at {}",
+                        shown(&[path.to_string()]).concat()
+                    ))
                 ));
             } else {
                 crate::ui::stream(format_args!(
@@ -260,7 +261,10 @@ pub(super) fn discard(root: &ArgMatches) -> Result<(), Error> {
     let hint = next(matches, &["diff"]);
     crate::ui::finish(&Next::new(&result, Some(hint.clone())), || {
         match (&path, discarded.dropped.as_slice()) {
-            (Some(path), _) => crate::ui::stream(format_args!("Discarded {path} in {where_}.")),
+            (Some(path), _) => crate::ui::stream(format_args!(
+                "Discarded {} in {where_}.",
+                shown(&[path.to_string()]).concat()
+            )),
             (None, []) => {
                 crate::ui::stream(format_args!("Discarded every staged change in {where_}."))
             }
@@ -272,11 +276,7 @@ pub(super) fn discard(root: &ArgMatches) -> Result<(), Error> {
                 } else {
                     "changes"
                 },
-                dropped
-                    .iter()
-                    .map(|path| ployz_store::NodeChange::shown_path_in(&staged, path))
-                    .collect::<Vec<_>>()
-                    .join(", ")
+                shown(dropped).join(", ")
             )),
         }
         comes_back(&backs, saved);
@@ -487,8 +487,8 @@ pub(super) fn history(root: &ArgMatches) -> Result<(), Error> {
                     ));
                 }
             }
-            for path in &preview.overwritten {
-                let path = ployz_store::NodeChange::shown_path_in(&preview.changes, path);
+            for path in ployz_store::NodeChange::shown_paths(&preview.changes, &preview.overwritten)
+            {
                 crate::ui::stream(format_args!("  overwrites draft {path}"));
             }
             crate::ui::stream(format_args!("Review version: {}", preview.version));

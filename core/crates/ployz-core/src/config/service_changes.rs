@@ -44,30 +44,46 @@ pub struct ServiceSettingChange {
 }
 
 impl ServiceSettingChange {
-    /// Its path as people read it among `rows`, the others shown with it: a Config mount
-    /// as `SERVICE.configs.NAME`, by the id its path keeps only when it has no name, and
-    /// with a short id when another of `rows` would read the same.
+    /// Its path as people read it among `rows`, the others shown with it, as
+    /// [`shown_paths`] reads it.
     #[must_use]
     pub fn shown_path(&self, rows: &[Self]) -> String {
-        let Some((service, name, id)) = self.mount() else {
-            return self.path.clone();
-        };
-        let shared = rows.iter().any(|row| {
-            row.path != self.path
-                && row
-                    .mount()
-                    .is_some_and(|(other, named, _)| other == service && named == name)
-        });
-        match shared {
-            true => format!("{service}.configs.{name} (@{})", id.get(..8).unwrap_or(id)),
-            false => format!("{service}.configs.{name}"),
-        }
+        let among = rows
+            .iter()
+            .map(|row| (row.path.as_str(), row.config_name.as_ref()));
+        shown_among(&self.path, self.config_name.as_ref(), among)
     }
+}
 
-    /// A Config mount's Service, Config name and id.
-    fn mount(&self) -> Option<(&str, &crate::ConfigName, &str)> {
-        let (service, id) = self.path.split_once(".configs.@")?;
-        Some((service, self.config_name.as_ref()?, id))
+/// Setting paths shown together, each with its Config's name if it is a mount, as people
+/// read them: a Config mount as `SERVICE.configs.NAME`, by the id its path keeps only when
+/// it has no name, and with a short id when another of `paths` would read the same.
+#[must_use]
+pub fn shown_paths(paths: &[(&str, Option<&crate::ConfigName>)]) -> Vec<String> {
+    paths
+        .iter()
+        .map(|&(path, name)| shown_among(path, name, paths.iter().copied()))
+        .collect()
+}
+
+/// `path`, named `name`, as [`shown_paths`] reads it among `others`.
+fn shown_among<'a>(
+    path: &str,
+    name: Option<&crate::ConfigName>,
+    mut others: impl Iterator<Item = (&'a str, Option<&'a crate::ConfigName>)>,
+) -> String {
+    let (Some((service, id)), Some(name)) = (path.split_once(".configs.@"), name) else {
+        return path.to_owned();
+    };
+    let shared = others.any(|(other, named)| {
+        named == Some(name)
+            && other
+                .split_once(".configs.@")
+                .is_some_and(|(owner, other_id)| owner == service && other_id != id)
+    });
+    match shared {
+        true => format!("{service}.configs.{name} (@{})", id.get(..8).unwrap_or(id)),
+        false => format!("{service}.configs.{name}"),
     }
 }
 

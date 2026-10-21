@@ -241,7 +241,8 @@ pub(crate) fn stage(
         return Err(error::confirmation_required(
             format!(
                 "This History action overwrites draft changes to {}",
-                shown(prepared.overwritten(), &reviewed.view.review_changes())
+                NodeChange::shown_paths(&reviewed.view.review_changes(), prepared.overwritten())
+                    .join(", ")
             ),
             json!({ "history_preview": preview_of(&environment, &reviewed, &prepared, &query) }),
         ));
@@ -254,15 +255,6 @@ pub(crate) fn stage(
         changed,
         not_set,
     })
-}
-
-/// `paths` as people read them, named from `changes`.
-fn shown(paths: &[String], changes: &[NodeChange]) -> String {
-    paths
-        .iter()
-        .map(|path| NodeChange::shown_path_in(changes, path))
-        .collect::<Vec<_>>()
-        .join(", ")
 }
 
 /// The version saved at `revision`, as History shows it.
