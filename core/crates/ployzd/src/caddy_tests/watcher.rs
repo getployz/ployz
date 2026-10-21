@@ -1211,6 +1211,59 @@ async fn routed_addresses_follow_the_applied_config_even_when_the_ack_write_fail
     std::fs::remove_dir_all(directory).unwrap();
 }
 
+#[tokio::test]
+async fn routed_addresses_follow_a_loaded_config_even_when_the_caddyfile_write_fails() {
+    let WatcherFixture {
+        machine,
+        state,
+        address,
+        server,
+        directory,
+    } = watcher_fixture().await;
+    let api = state.api_container();
+    std::fs::create_dir_all(directory.join(CONFIG_FILE)).unwrap();
+    let (load_tx, mut load_rx) = mpsc::unbounded_channel();
+    let admin = TestAdmin { loads: load_tx };
+    let (route_publishes, mut published) =
+        tokio::sync::watch::channel(crate::ingress::PublishedRoutes::default());
+    let shutdown = CancellationToken::new();
+    let watcher = tokio::spawn(watch_caddy(
+        machine.clone(),
+        ReplicatedStore::new(ApiClient::http1(address, &"a".repeat(64)).unwrap()),
+        no_down,
+        directory.join(CONFIG_FILE),
+        route_publishes,
+        shutdown.clone(),
+        move || std::future::ready(Ok(Some(admin.clone()))),
+    ));
+
+    next_load(&mut load_rx).await;
+    let published = timeout(
+        Duration::from_secs(5),
+        published.wait_for(|published| !published.addresses.is_empty()),
+    )
+    .await
+    .expect("Caddy serves the loaded config, so its addresses are recorded")
+    .unwrap()
+    .clone();
+    assert_eq!(
+        published.addresses,
+        BTreeMap::from([(
+            api.identity(),
+            BTreeMap::from([(api.container_id, api.address.unwrap())])
+        )])
+    );
+    assert_eq!(
+        published.count, 0,
+        "nothing was acked after the failed write"
+    );
+
+    shutdown.cancel();
+    watcher.await.unwrap().unwrap();
+    server.abort();
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
 const CHALLENGE: &str = r#"{"challenge_token":"LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0","challenge_response":"LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}"#;
 
 fn no_down() -> std::future::Ready<Result<BTreeSet<MachineId>, CorrosionError>> {
