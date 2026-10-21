@@ -55,9 +55,10 @@ impl ServiceSettingChange {
     }
 }
 
-/// Setting paths shown together, each with its Config's name if it is a mount, as people
-/// read them: a Config mount as `SERVICE.configs.NAME`, by the id its path keeps only when
-/// it has no name, and with a short id when another of `paths` would read the same.
+/// Setting paths shown together, each with the name of the Config it addresses, as
+/// people read them: a Config as `configs.NAME`, a mount as `SERVICE.configs.NAME`, by
+/// the id the path keeps only when it has no name, and with a short id when another of
+/// `paths` would read the same.
 #[must_use]
 pub fn shown_paths(paths: &[(&str, Option<&crate::ConfigName>)]) -> Vec<String> {
     paths
@@ -72,19 +73,29 @@ fn shown_among<'a>(
     name: Option<&crate::ConfigName>,
     mut others: impl Iterator<Item = (&'a str, Option<&'a crate::ConfigName>)>,
 ) -> String {
-    let (Some((service, id)), Some(name)) = (path.split_once(".configs.@"), name) else {
+    let Some((label, id)) = named(path, name) else {
         return path.to_owned();
     };
-    let shared = others.any(|(other, named)| {
-        named == Some(name)
-            && other
-                .split_once(".configs.@")
-                .is_some_and(|(owner, other_id)| owner == service && other_id != id)
+    let shared = others.any(|(other, name)| {
+        named(other, name).is_some_and(|(same, other_id)| same == label && other_id != id)
     });
     match shared {
-        true => format!("{service}.configs.{name} (@{})", id.get(..8).unwrap_or(id)),
-        false => format!("{service}.configs.{name}"),
+        true => format!("{label} (@{})", id.get(..8).unwrap_or(id)),
+        false => label,
     }
+}
+
+/// `path` with the Config it addresses named `name`, and that Config's id.
+fn named<'a>(path: &'a str, name: Option<&crate::ConfigName>) -> Option<(String, &'a str)> {
+    let name = name?;
+    if let Some(rest) = path.strip_prefix("configs.@") {
+        return Some(match rest.split_once('.') {
+            Some((id, field)) => (format!("configs.{name}.{field}"), id),
+            None => (format!("configs.{name}"), rest),
+        });
+    }
+    let (service, id) = path.split_once(".configs.@")?;
+    Some((format!("{service}.configs.{name}"), id))
 }
 
 /// Each compared field and the Setting whose row it falls in.

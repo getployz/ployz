@@ -6,6 +6,8 @@ use ployz_core::{ConfigName, ServiceName};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{Value, json};
+use std::collections::BTreeMap;
+
 
 use super::machine::{Cx, Effect, Stop, Tool, at, written};
 use super::refusal::{Call, Refusal};
@@ -88,6 +90,7 @@ impl Tool for Review {
                 format!("{kind} {}", effect.name)
             })
             .collect::<Vec<_>>();
+        let labels = NodeChange::labels(&diff.changes);
         Ok(json!({
             "at": at(&diff.environment),
             "revision": diff.environment.revision.0,
@@ -97,7 +100,7 @@ impl Tool for Review {
                 "holds_staged": diff.published,
             })),
             "staged": diff.total_count,
-            "lines": diff.changes.iter().flat_map(lines).collect::<Vec<_>>(),
+            "lines": diff.changes.iter().flat_map(|change| lines(change, &labels)).collect::<Vec<_>>(),
             "asks_approval": !cx.is_local(),
             "destroys": destroys,
             "broken": diff.broken.iter().map(ToString::to_string).collect::<Vec<_>>(),
@@ -106,7 +109,7 @@ impl Tool for Review {
 }
 
 /// One node's change as plain lines: the node, then each Setting.
-fn lines(change: &NodeChange) -> Vec<String> {
+fn lines(change: &NodeChange, labels: &BTreeMap<String, String>) -> Vec<String> {
     let kind = match change.node.node_type {
         EnvironmentNodeType::Service => "service",
         EnvironmentNodeType::Volume => "volume",
@@ -140,7 +143,7 @@ fn lines(change: &NodeChange) -> Vec<String> {
             );
             continue;
         }
-        let path = change.shown_path(setting);
+        let path = labels.get(&setting.path).unwrap_or(&setting.path);
         lines.push(match setting.kind {
             ChangeKind::Add => format!("  set {path} = {}", shown(&setting.after)),
             ChangeKind::Remove => format!("  unset {path}"),
