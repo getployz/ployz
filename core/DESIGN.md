@@ -26,9 +26,9 @@ enrollment, the release source, and the Internal DNS spec and probe. The CLI
 is a client courtesy with ordinary deprecation. The Observe Store is
 disposable and outside the promise.
 
-**Before 0.3.0.** 0.3 is the first line the promise covers. A Machine on 0.2
-is outside it and may need re-enrolling to reach 0.3. Until 0.3.0 ships, any
-format the promise covers may still change.
+**Before 0.3.0.** 0.3.0 is the first release the promise covers. A Machine on
+a 0.2 release or a 0.3.0 beta is outside it and may need re-enrolling to reach
+0.3.0. Until 0.3.0 ships, any format the promise covers may still change.
 
 **Rules.** Frozen formats only gain optional fields with defaults. Nothing is
 renamed or repurposed, and readers ignore unknown fields. Replicated bodies

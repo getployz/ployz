@@ -76,7 +76,7 @@ fn sent(path: &str) -> Sent {
 }
 
 /// Exec and Build are bidirectional streams of `OpaquePayload`. A daemon
-/// from any 0.x release must keep reading these exact bytes on these exact paths.
+/// from 0.3.0 on must keep reading these exact bytes on these exact paths.
 #[tokio::test]
 async fn exec_and_build_keep_their_bidi_wire_bytes() {
     let recorder = Recorder::default();
