@@ -649,33 +649,22 @@ fn the_build_worker_reaches_the_image_servers_but_not_the_host_or_the_mesh() {
     let mut resolver = stream_server(&host, "127.0.0.53", 53);
     cgroup.connect(&host, "127.0.0.1", "127.0.0.53", 53);
     assert_eq!(resolver.peer(), "127.0.0.1");
-    ns(
-        &host,
-        "iptables",
-        &[
-            "-t",
-            "nat",
+    for protocol in ["tcp", "udp"] {
+        redirect(
+            &host,
+            "iptables",
+            protocol,
             "-A",
-            "OUTPUT",
-            "-d",
-            "127.0.0.11/32",
-            "-p",
-            "tcp",
-            "--dport",
-            "53",
-            "-j",
-            "DNAT",
-            "--to-destination",
+            "127.0.0.11",
             "127.0.0.11:5353",
-        ],
-    );
-    let mut embedded_resolver = stream_server(&host, "127.0.0.11", 5353);
-    cgroup.connect(&host, "127.0.0.1", "127.0.0.11", 53);
-    assert_eq!(
-        embedded_resolver.peer(),
-        "127.0.0.1",
-        "a loopback resolver behind DNAT, like Docker's embedded DNS"
-    );
+        );
+        let mut embedded_resolver = server(protocol, &host, "127.0.0.11", 5353);
+        assert!(
+            cgroup.reaches(protocol, &host, "127.0.0.1", "127.0.0.11", 53),
+            "the fenced worker could not reach Docker's embedded resolver over {protocol}"
+        );
+        assert_eq!(embedded_resolver.peer(), "127.0.0.1");
+    }
 
     for (namespace, interface, address) in [
         (&host, "ployz-wg", "10.210.0.1/16"),
@@ -687,52 +676,56 @@ fn the_build_worker_reaches_the_image_servers_but_not_the_host_or_the_mesh() {
             &["address", "add", address, "dev", interface],
         );
     }
-    for (program, original, namespace, target, source) in [
-        ("iptables", "127.0.0.12", &peer, "10.210.0.2", "10.210.0.1"),
-        ("iptables", "127.0.0.11", &host, "127.0.0.1", "127.0.0.1"),
-        ("ip6tables", "::1", &host, "fdcc::1", "fdcc::1"),
-    ] {
-        let port = if target == "127.0.0.1" {
-            51504
-        } else {
-            MACHINE_API_PORT
-        };
-        let destination = if target.contains(':') {
-            format!("[{target}]:{port}")
-        } else {
-            format!("{target}:{port}")
-        };
-        ns(
-            &host,
-            program,
-            &[
-                "-t",
-                "nat",
-                "-I",
-                "OUTPUT",
-                "-d",
-                original,
-                "-p",
-                "tcp",
-                "--dport",
-                "53",
-                "-j",
-                "DNAT",
-                "--to-destination",
-                &destination,
-            ],
-        );
-        let mut server = stream_server(namespace, target, port);
-        assert!(
-            !cgroup.connects(&host, source, original, 53),
-            "the fenced worker reached {destination} through a redirect of {original}:53"
-        );
-        connect(&host, source, original, 53);
-        assert_eq!(
-            server.peer(),
-            source,
-            "the redirect of {original}:53 did not reach {destination}"
-        );
+    for protocol in ["tcp", "udp"] {
+        for (program, original, namespace, target, port, source) in [
+            (
+                "iptables",
+                "127.0.0.12",
+                &peer,
+                "10.210.0.2",
+                MACHINE_API_PORT,
+                "10.210.0.1",
+            ),
+            (
+                "iptables",
+                "127.0.0.11",
+                &host,
+                "127.0.0.1",
+                51504,
+                "127.0.0.1",
+            ),
+            (
+                "ip6tables",
+                "::1",
+                &host,
+                "fdcc::1",
+                MACHINE_API_PORT,
+                "fdcc::1",
+            ),
+        ] {
+            let destination = if target.contains(':') {
+                format!("[{target}]:{port}")
+            } else {
+                format!("{target}:{port}")
+            };
+            redirect(&host, program, protocol, "-I", original, &destination);
+            let mut listener = server(protocol, namespace, target, port);
+            assert!(
+                !cgroup.reaches(protocol, &host, source, original, 53),
+                "the fenced worker reached {destination} over {protocol} through a redirect of {original}:53"
+            );
+            if protocol == "tcp" {
+                connect(&host, source, original, 53);
+            } else {
+                send_datagram(&host, source, original, 53);
+            }
+            assert_eq!(
+                listener.peer(),
+                source,
+                "the redirect of {original}:53 over {protocol} did not reach {destination}"
+            );
+            redirect(&host, program, protocol, "-D", original, &destination);
+        }
     }
 
     for (namespace, address, port) in [
@@ -771,6 +764,23 @@ impl Cgroup {
     /// Joins the cgroup before entering the namespace: `ip netns exec`
     /// remounts /sys, which hides the cgroup tree.
     fn connects(&self, namespace: &str, source: &str, target: &str, port: u16) -> bool {
+        self.reaches("tcp", namespace, source, target, port)
+    }
+
+    /// A UDP send the fence drops fails with EPERM.
+    fn reaches(
+        &self,
+        protocol: &str,
+        namespace: &str,
+        source: &str,
+        target: &str,
+        port: u16,
+    ) -> bool {
+        let script = if protocol == "udp" {
+            "import socket,sys; a,b,p=sys.argv[1:]; s=socket.socket(socket.AF_INET6 if ':' in a else socket.AF_INET,socket.SOCK_DGRAM); s.bind((a,0)); s.sendto(b'x',(b,int(p)))"
+        } else {
+            "import socket,sys; a,b,p=sys.argv[1:]; s=socket.socket(socket.AF_INET6 if ':' in a else socket.AF_INET); s.bind((a,0)); s.settimeout(1); s.connect((b,int(p)))"
+        };
         Command::new("sudo")
             .args([
                 "-n",
@@ -782,7 +792,7 @@ impl Cgroup {
                 namespace,
                 "python3",
                 "-c",
-                "import socket,sys; a,b,p=sys.argv[1:]; s=socket.socket(socket.AF_INET6 if ':' in a else socket.AF_INET); s.bind((a,0)); s.settimeout(1); s.connect((b,int(p)))",
+                script,
                 source,
                 target,
             ])
@@ -958,6 +968,43 @@ fn configure_link(namespace: &str, interface: &str, address: &str) {
         &["address", "add", address, "dev", interface],
     );
     ns(namespace, "ip", &["link", "set", interface, "up"]);
+}
+
+fn server(protocol: &str, namespace: &str, address: &str, port: u16) -> Server {
+    if protocol == "udp" {
+        datagram_server(namespace, address, port)
+    } else {
+        stream_server(namespace, address, port)
+    }
+}
+
+/// A nat OUTPUT DNAT of `original`:53, the way Docker's embedded DNS
+/// redirects its resolver.
+fn redirect(
+    namespace: &str,
+    program: &str,
+    protocol: &str,
+    action: &str,
+    original: &str,
+    destination: &str,
+) {
+    let mut args = vec!["-t", "nat", action, "OUTPUT"];
+    if action == "-I" {
+        args.push("1");
+    }
+    args.extend([
+        "-d",
+        original,
+        "-p",
+        protocol,
+        "--dport",
+        "53",
+        "-j",
+        "DNAT",
+        "--to-destination",
+        destination,
+    ]);
+    ns(namespace, program, &args);
 }
 
 fn send_datagram(namespace: &str, source: &str, target: &str, port: u16) {
