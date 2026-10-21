@@ -1485,12 +1485,84 @@ fn status_tries_each_silent_server_once_within_its_bound() {
         }]),
         "{status}"
     );
-    // The bound status gives the Servers, 15s, and slack for the process.
-    assert!(elapsed < std::time::Duration::from_secs(17), "{elapsed:?}");
+    // Each silent Server's 5s connect confirm, and slack for the process.
+    assert!(elapsed < std::time::Duration::from_secs(12), "{elapsed:?}");
     for (address, accepted) in [one, two] {
         let accepted = accepted.load(std::sync::atomic::Ordering::SeqCst);
         assert_eq!(accepted, 1, "{address}: {accepted} connections");
     }
+}
+
+#[test]
+fn status_keeps_a_down_server_past_a_slow_first_use_and_routes_read() {
+    let (store, home) = no_server_answering();
+    std::fs::remove_file(home.path().join("config.yaml")).unwrap();
+    // web-2 is Down, and web-1 serves one In copy of web, so status reads its routes.
+    let (sent, engine) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        runtime.block_on(async {
+            let mut service = engine::DiscoveryService::new(engine::test_description());
+            let mut down = engine::machine('c', "web-2");
+            down.membership = ployz_core::MembershipObservation::Down;
+            service.machines = vec![engine::machine('a', "web-1"), down];
+            service.routes_delay = std::time::Duration::from_secs(9);
+            let copy =
+                ployz_core::ContainerObservation::try_from(ployz_core::ContainerObservationParts {
+                    rotation: Some(ployz_core::CopyRotation::In),
+                    r#gen: None,
+                    container_id: ployz_core::ContainerId::parse("1".repeat(64)).unwrap(),
+                    display_name: "web-1".into(),
+                    created_at_unix_nanos: 1,
+                    machine_id: engine::machine_id('a'),
+                    namespace: ployz_core::Namespace::parse("shop-production").unwrap(),
+                    kind: ployz_core::ContainerKind::ServiceContainer,
+                    runtime: ployz_core::ContainerRuntimeObservation::Running {
+                        health: ployz_core::HealthObservation::Healthy,
+                    },
+                    effective_healthcheck: None,
+                    resolved_spec: serde_json::from_value(json!({
+                        "service_id": "b".repeat(32),
+                        "name": "web",
+                        "mode": { "mode": "replicated", "replicas": 1 },
+                        "container": { "image": "nginx:alpine", "pull_policy": "missing" }
+                    }))
+                    .unwrap(),
+                    address: Some(ployz_core::ContainerAddress("10.210.10.2".parse().unwrap())),
+                    labels: Default::default(),
+                    stopped: false,
+                })
+                .unwrap();
+            service.listed_containers.lock().unwrap().push(copy);
+            let (address, server) = engine::serve_discovery(service).await;
+            sent.send(address).unwrap();
+            server.await
+        })
+    });
+    let access = json!({ "connections": [{ "tcp": engine.recv().unwrap() }], "unreachable": [] });
+    // A first use that waits on Cloud's holder setup; together over 15s, each stage
+    // inside its own timeout.
+    let (cloud, asked) = server_access(access, std::time::Duration::from_secs(7));
+    let output = store
+        .command(home.path())
+        .env("PLOYZ_TOKEN", "ployz_alice")
+        .env("PLOYZ_CLOUD_URL", &cloud)
+        .args(["--json", "status"])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let status: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        status["attention"],
+        json!([{
+            "reason": "machine_down",
+            "message": "Down. Its copies serve again once it's back.",
+            "machine": "web-2",
+        }]),
+        "{status}"
+    );
+    assert_eq!(status.get("warnings"), None, "{status}");
+    assert_eq!(asked.load(std::sync::atomic::Ordering::SeqCst), 1);
 }
 
 #[test]

@@ -3,7 +3,6 @@
 //! its Out or Held ones. What the check could not see is a warning, never an all-clear.
 
 use std::collections::{BTreeSet, HashMap};
-use std::time::Duration;
 
 use clap::ArgMatches;
 use futures_util::{StreamExt, stream};
@@ -19,17 +18,11 @@ use super::link::Attention;
 use super::server::{self, Reach, Unreached};
 use super::{Error, leaf_matches};
 use crate::cloud_login::LoginError;
-use crate::connect::{CONNECT_CONFIRM_TIMEOUT, TARGET_RPC_TIMEOUT};
 use crate::context::ContextError;
 
 pub(super) const UNCHECKED: &str = "Could not check which Servers picked up the new copies";
 
 const READS_AT_ONCE: usize = 8;
-
-/// How long the whole check may take, from Cloud's Server Access to the last routes read:
-/// one silent Server's connect confirm and one target read past it. The connect and each
-/// read keep their own, tighter timeouts.
-const LOOK: Duration = CONNECT_CONFIRM_TIMEOUT.saturating_add(TARGET_RPC_TIMEOUT);
 
 #[derive(Serialize)]
 #[serde(untagged)]
@@ -61,21 +54,12 @@ pub(super) fn attention(
         .map_err(Unreached::from)
         .and_then(|runtime| {
             runtime.block_on(async {
-                let look = async {
-                    match server::reach_or_silent(leaf, context).await? {
-                        Some(Reach::Dial(mut client)) => {
-                            Ok(Some(observe(&mut client, namespace, rolling_out).await?))
-                        }
-                        Some(Reach::Ask(_)) | None => Ok(None),
+                match server::reach_or_silent(leaf, context).await? {
+                    Some(Reach::Dial(mut client)) => {
+                        Ok(Some(observe(&mut client, namespace, rolling_out).await?))
                     }
-                };
-                tokio::time::timeout(LOOK, look).await.unwrap_or_else(|_| {
-                    let waited = LOOK.as_secs();
-                    Err(Error::unavailable(format!(
-                        "the Servers did not finish answering within {waited}s"
-                    ))
-                    .into())
-                })
+                    Some(Reach::Ask(_)) | None => Ok(None),
+                }
             })
         });
     match observed {
