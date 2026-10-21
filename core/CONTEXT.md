@@ -197,7 +197,7 @@ A bounded membership-command operation that establishes this Machine's running S
 _Avoid_: scheduler, Cluster-wide Deploy
 
 **Unarrived Machine**:
-A registered Machine with no sign, to this observer, that it ever ran: it does not invite RPC, the Entry's Corrosion admin never recorded it, and its row names no daemon version. It holds no Service Container, so Global catch-up reports it and does not wait on it. It stays in the Cluster until forgotten.
+A registered Machine with no sign, to this observer, that it ever ran: it does not invite RPC, the Entry's Corrosion admin never recorded it, and its row names no daemon version. This observer has no sign it ever held a Service Container either, so Global catch-up reports it and does not wait on it; another observer may know better. It stays in the Cluster until forgotten.
 _Avoid_: claim-only Machine, dead Machine
 
 **Global slot convergence**:

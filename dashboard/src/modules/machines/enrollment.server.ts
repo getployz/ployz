@@ -665,14 +665,18 @@ export const enrollMachine = Effect.fn("MachineEnrollment.enrollMachine")(
           identity: request, snapshot,
         });
       }));
-      return { session, assignment };
+      return { session, snapshot, assignment };
     });
     return yield* Effect.scoped(Effect.gen(function* () {
-      const { session, assignment } = yield* prepareJoin.pipe(
+      const { session, snapshot, assignment } = yield* prepareJoin.pipe(
         Effect.onError(() => releaseUnsentJoinSlot(input.token, input.identity.machineId, token.organizationId, pairing.secret)),
       );
+      // A row with a daemon version was published by the Machine itself: it joined, and a Register would blank it.
+      const joined = snapshot.machines.find((machine) => machine.id === assignment.machine.id && machine.runtime.daemon_version !== "");
       // The assignment commits before dispatch; a lost response is never replayed.
-      const registration = yield* session.register(assignment);
+      const registration = joined
+        ? { assigned_machine: joined, visible_peers: snapshot.machines.filter((machine) => machine !== joined), target_versions: snapshot.target_versions }
+        : yield* session.register(assignment);
       return { kind: "join" as const, pairing, storage: request.storage, registration };
     }));
   },
