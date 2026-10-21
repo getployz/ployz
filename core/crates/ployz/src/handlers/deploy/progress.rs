@@ -929,6 +929,7 @@ mod tests {
                 cause: cause.clone(),
                 services: Vec::new(),
                 compensation: Vec::new(),
+                cancelled: false,
             });
             let rows = &mut view.nodes.first_mut().unwrap().rows;
             rows.truncate(1);

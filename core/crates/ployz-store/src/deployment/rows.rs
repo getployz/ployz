@@ -50,12 +50,9 @@ pub enum RowState {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[ts(optional)]
         out_of_memory: Option<OutOfMemory>,
-        /// The Deployment's cancel stopped this work while it ran, so it reads
-        /// Cancelled. A marker on Failed rather than a state of its own, so a reader
-        /// from before it reads Failed.
-        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-        #[ts(as = "Option<bool>", optional)]
-        cancelled: bool,
+        #[serde(flatten)]
+        #[ts(flatten)]
+        stopped_by: StoppedBy,
     },
     /// The Deployment stopped before this work finished.
     NotAttempted,
@@ -70,6 +67,38 @@ impl RowState {
             Self::Completed | Self::Failed { .. } | Self::NotAttempted | Self::Unknown
         )
     }
+}
+
+/// What stopped a Failed row's work that didn't fail on its own, so it reads
+/// other than Failed. Stored and sent as a marker beside `failed` rather than a
+/// state of its own, so a reader from before it reads Failed.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
+pub struct StoppedBy {
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[ts(as = "Option<bool>", optional)]
+    cancelled: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[ts(as = "Option<bool>", optional)]
+    interrupted: bool,
+}
+
+impl StoppedBy {
+    /// It failed on its own.
+    pub const NOTHING: Self = Self {
+        cancelled: false,
+        interrupted: false,
+    };
+    /// The Deployment's cancel stopped it.
+    pub const CANCEL: Self = Self {
+        cancelled: true,
+        interrupted: false,
+    };
+    /// The Deployment lost its runner, to another Deployment taking the
+    /// Environment over or to a lease that lapsed, so the runner stopped it.
+    pub const LOST_RUNNER: Self = Self {
+        cancelled: false,
+        interrupted: true,
+    };
 }
 
 /// The step a failed row's work was on.
@@ -257,7 +286,8 @@ pub struct ServerProgress {
     pub server: String,
     pub state: RowState,
     /// Only cancelled work stopped it. The Store marks it Cancelled when the
-    /// Deployment's cancel asked for that, and leaves it Failed otherwise.
+    /// Deployment's cancel asked for that, Interrupted when the Deployment lost
+    /// its runner, and leaves it Failed otherwise.
     #[serde(default)]
     pub stopped: bool,
 }
@@ -671,7 +701,7 @@ fn state(
                 | ExecutionError::NewerServing { .. }
                 | ExecutionError::Cancelled => None,
             },
-            cancelled: false,
+            stopped_by: StoppedBy::NOTHING,
         };
     }
     if let Some(phase) = running {
@@ -716,12 +746,23 @@ pub(super) fn record(
     rows: &[ServerProgress],
 ) -> Result<(), RpcError> {
     let now = now();
-    // Only the Deployment's own cancel makes the work it stopped read Cancelled.
-    let cancelling = stored.summary.status == DeploymentStatus::Cancelling;
+    // Only the Deployment's own cancel makes the work it stopped read Cancelled,
+    // and only losing its runner makes it read Interrupted.
+    let by = match stored.summary.status {
+        DeploymentStatus::Cancelling => StoppedBy::CANCEL,
+        DeploymentStatus::Unknown => StoppedBy::LOST_RUNNER,
+        DeploymentStatus::WaitingForCi
+        | DeploymentStatus::Queued
+        | DeploymentStatus::Running
+        | DeploymentStatus::Applied
+        | DeploymentStatus::Failed
+        | DeploymentStatus::Cancelled
+        | DeploymentStatus::Superseded => StoppedBy::NOTHING,
+    };
     for row in rows {
         let mut state = row.state.clone();
-        if let RowState::Failed { cancelled, .. } = &mut state {
-            *cancelled = row.stopped && cancelling;
+        if let RowState::Failed { stopped_by, .. } = &mut state {
+            *stopped_by = if row.stopped { by } else { StoppedBy::NOTHING };
         }
         let state = &state;
         let started = matches!(
@@ -770,25 +811,72 @@ pub(super) fn record(
     Ok(())
 }
 
-/// The runtime Services one of whose rows failed on its own.
-pub(super) fn failed(tx: &mut dyn Tx, stored: &Stored) -> Result<BTreeSet<ServiceName>, RpcError> {
+type FailedAndCancelled = (Vec<(ServiceName, Failure)>, BTreeSet<ServiceName>);
+
+/// Each row that failed on its own, by runtime Service and first to fail on its own
+/// first, then the runtime Services one of whose rows the Deployment's cancel stopped.
+pub(super) fn failed_or_cancelled(
+    tx: &mut dyn Tx,
+    stored: &Stored,
+) -> Result<FailedAndCancelled, RpcError> {
     let found = tx.query(
-        "SELECT service, state FROM config_deployment_row WHERE deployment_id = ?1",
+        "SELECT service, machine, state, finished, history FROM config_deployment_row \
+         WHERE deployment_id = ?1",
         &[stored.summary.id.as_str().into()],
     )?;
-    let mut failed = BTreeSet::new();
+    let (mut failed, mut cancelled) = (Vec::new(), BTreeSet::new());
     for row in &found {
-        if matches!(
-            row.json(1, "Deployment row")?,
-            RowState::Failed {
-                cancelled: false,
-                ..
+        let RowState::Failed {
+            reason,
+            cause,
+            stopped_by,
+            ..
+        } = row.json(2, "Deployment row")?
+        else {
+            continue;
+        };
+        let service = row.parse(0, "Deployment row")?;
+        match stopped_by {
+            StoppedBy::NOTHING => {
+                // A row the cancel stopped before it failed on its own keeps the
+                // cancel's finish time, so its own failure dates from its history.
+                let at = history(row, 4)?
+                    .as_deref()
+                    .and_then(failed_on_its_own)
+                    .or(row.optional_int(3)?);
+                let machine = row.text(1)?.to_owned();
+                failed.push((at, service, machine, Failure { reason, cause }));
             }
-        ) {
-            failed.insert(row.parse(0, "Deployment row")?);
+            StoppedBy::CANCEL => {
+                cancelled.insert(service);
+            }
+            _ => {}
         }
     }
-    Ok(failed)
+    failed.sort_by(|a, b| (a.0, &a.1, &a.2).cmp(&(b.0, &b.1, &b.2)));
+    let failed = failed
+        .into_iter()
+        .map(|(_, service, _, failure)| (service, failure))
+        .collect();
+    Ok((failed, cancelled))
+}
+
+/// When the row last began failing on its own.
+fn failed_on_its_own(history: &[RowTransition]) -> Option<i64> {
+    history
+        .iter()
+        .rev()
+        .take_while(|entry| {
+            matches!(
+                entry.state,
+                RowState::Failed {
+                    stopped_by: StoppedBy::NOTHING,
+                    ..
+                }
+            )
+        })
+        .last()
+        .map(|entry| entry.at)
 }
 
 pub(super) fn settle(tx: &mut dyn Tx, stored: &Stored) -> Result<(), RpcError> {
@@ -957,14 +1045,13 @@ pub(super) fn of_nodes(
 fn merge_mounting_row(kept: &mut ServerRow, row: &ServerRow) {
     let priority = |state: &RowState| match state {
         RowState::Failed {
-            cancelled: false, ..
+            stopped_by: StoppedBy::NOTHING,
+            ..
         } => 7,
         RowState::Unknown => 6,
         RowState::Running { .. } => 5,
         RowState::Pending => 4,
-        RowState::Failed {
-            cancelled: true, ..
-        } => 3,
+        RowState::Failed { .. } => 3,
         RowState::NotAttempted => 2,
         RowState::Completed => 1,
     };

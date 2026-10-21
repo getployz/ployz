@@ -150,8 +150,10 @@ after a reload and in other tabs, as long as the failed deployment is the newest
 
 **Runs**, under **Deployments** in the sidebar, lists every deployment, newest first. A
 deployment's page shows its status, who started it and, if it failed, the reason in red under the
-header. Below that is one card for each build, service, volume and config it touched, laid out left
-to right in the order they deploy. Click a card to see each server's progress and its
+header. A service that failed on its own reads Failed, and its failure is the reason, even when
+you cancelled the deployment while it ran. A cancelled deployment shows no reason when nothing in
+it failed on its own. Below that is one card for each build, service, volume and config it
+touched, laid out left to right in the order they deploy. Click a card to see each server's progress and its
 [logs](../observe/logs.md). A build's card shows the build output, and a service's card shows what
 its new containers printed. A failed deployment opens on the card that failed.
 
@@ -205,7 +207,13 @@ Work your cancel stopped reads **Cancelled** in the dashboard and `cancelled` in
 `--json`, its row keeps `"state": "failed"` with `"cancelled": true`, and so does its service:
 `"outcome": "failed"` with `"cancelled": true`. Older Ployz versions ignore the marker and read
 it Failed. Work that failed on its own reads Failed, even in a cancelled deployment. So does work
-Ployz stopped for another reason, such as another service failing.
+Ployz stopped for another reason, such as another service failing. A service reads **Cancelled**
+when your cancel stopped its work, even if another service failed.
+
+Work Ployz stopped because the deployment lost its runner reads **Interrupted** in the dashboard
+and `interrupted` in the CLI. That happens when another deployment takes the environment over, or
+when the runner stops reporting in time. The deployment then reads **Unknown**. In `--json`, the
+row keeps `"state": "failed"` with `"interrupted": true`, and older Ployz versions read it Failed.
 
 If the runner stops reporting, unfinished rows read `unknown`. Completed and failed rows keep
 their recorded outcomes.

@@ -13,7 +13,7 @@ use ployz_core::{
     ReplacementCompensation, RestoreAttempt, RpcError, RpcErrorCode, ServiceName, StopAttempt,
 };
 use ployz_store::tools::SealedValues;
-use ployz_store::{RowPhase, RowState, RowTracker, ServerProgress, starts_container};
+use ployz_store::{RowPhase, RowState, RowTracker, ServerProgress, StoppedBy, starts_container};
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, SystemTime};
 
@@ -131,7 +131,7 @@ pub(crate) fn service_row<'a>(
             matches!(
                 replica.state,
                 RowState::Failed {
-                    cancelled: false,
+                    stopped_by: StoppedBy::NOTHING,
                     ..
                 }
             )
@@ -191,6 +191,11 @@ pub(crate) fn service_row<'a>(
         | RowState::Unknown => None,
     };
     let all = |test: fn(&RowState) -> bool| replicas.iter().all(|replica| test(replica.state));
+    let any_stopped_by = |by: StoppedBy| {
+        replicas.iter().any(
+            |replica| matches!(replica.state, RowState::Failed { stopped_by, .. } if *stopped_by == by),
+        )
+    };
     let running = replicas
         .iter()
         .filter_map(work)
@@ -226,16 +231,10 @@ pub(crate) fn service_row<'a>(
         State::Pending
     } else if all(|state| matches!(state, RowState::Completed)) {
         State::Completed
-    } else if replicas.iter().any(|replica| {
-        matches!(
-            replica.state,
-            RowState::Failed {
-                cancelled: true,
-                ..
-            }
-        )
-    }) {
+    } else if any_stopped_by(StoppedBy::CANCEL) {
         State::Cancelled
+    } else if any_stopped_by(StoppedBy::LOST_RUNNER) {
+        State::Interrupted
     } else if replicas
         .iter()
         .any(|replica| matches!(replica.state, RowState::NotAttempted))
