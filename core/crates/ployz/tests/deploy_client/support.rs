@@ -24,9 +24,10 @@ use ployz_core::{
     MACHINE_STORAGE_OBSERVATION_CAPABILITY, Machine, MachineDetails, MachineId, MachineImages,
     MachineList, MachineName, MachineObservation, MachineRpcServer, MembershipObservation,
     Namespace, OpaquePayload, PROTOCOL_MAJOR, QualifiedService, RequestedServiceSpec,
-    ResolvedServiceSpec, ResolvedUpdateConfig, RotationEdge, RoutesRead, RpcError, RpcErrorCode,
-    RpcRequestBody, RpcResponse, RunTarget, ServiceId, ServiceMount, ServiceVolume,
-    ServiceVolumeGraph, ServiceVolumeReference, UpdateOrder, VolumeInventory, WireGuardPublicKey,
+    ResolvedServiceSpec, ResolvedUpdateConfig, RetainedEnvReply, RotationEdge, RoutesRead,
+    RpcError, RpcErrorCode, RpcRequestBody, RpcResponse, RunTarget, ServiceId, ServiceMount,
+    ServiceVolume, ServiceVolumeGraph, ServiceVolumeReference, UpdateOrder, VolumeInventory,
+    WireGuardPublicKey,
 };
 use ployz_testkit::{
     fake_machine::{Fake, FakeMachine, FakeStream},
@@ -80,6 +81,8 @@ pub(super) struct DeployService {
     pub(super) history_failures: BTreeMap<MachineId, String>,
     /// Containers the Machine can no longer inspect, as when one has been removed.
     pub(super) uninspectable: BTreeSet<ContainerId>,
+    /// The env the Log Store kept per Container; `None` is a daemon predating the route.
+    pub(super) retained_envs: Option<BTreeMap<ContainerId, BTreeMap<String, String>>>,
     start_error: Option<RpcError>,
     listing_failures: Vec<MachineId>,
     pub(super) listing_blocked: Option<Arc<tokio::sync::Notify>>,
@@ -163,6 +166,7 @@ impl DeployService {
             history_requests: Arc::new(Mutex::new(Vec::new())),
             history_failures: BTreeMap::new(),
             uninspectable: BTreeSet::new(),
+            retained_envs: Some(BTreeMap::new()),
             start_error: None,
             listing_failures: Vec::new(),
             listing_blocked: None,
@@ -848,6 +852,21 @@ impl FakeMachine for DeployService {
     ) -> Result<Response<OpaquePayload>, Status> {
         self.record_mutation();
         unused()
+    }
+    async fn retained_env(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        let Some(retained) = &self.retained_envs else {
+            return unused();
+        };
+        let RpcRequestBody::RetainedEnv(ask) = request.into_inner().decode_request().unwrap().body
+        else {
+            return Err(Status::invalid_argument("expected retained_env"));
+        };
+        encoded(RpcResponse::from(RetainedEnvReply {
+            environment: retained.get(&ask.container_id).cloned(),
+        }))
     }
     async fn inspect_container(
         &self,

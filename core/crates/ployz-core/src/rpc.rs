@@ -350,6 +350,19 @@ pub struct InspectContainerRequest {
     pub container_id: ContainerId,
 }
 
+/// The env the Log Store kept for a Container, read when Docker no longer answers for it.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct RetainedEnvRequest {
+    pub container_id: ContainerId,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct RetainedEnvReply {
+    /// `None` when the store holds no env for the Container; never copied into
+    /// replicated observations.
+    pub environment: Option<BTreeMap<String, String>>,
+}
+
 /// Exactly one update to a labelled Management Client slot: set it or clear it.
 ///
 /// Neither case carries a secret; `Set` returns the fresh client key in its capability.
@@ -1475,6 +1488,7 @@ define_responses! {
     Left(Left) => "left";
     Forgotten(Forgotten) => "forgotten";
     MetricHistoryReply(MetricHistoryReply) => "metric_history";
+    RetainedEnvReply(RetainedEnvReply) => "retained_env";
     Error(RpcError) => "error";
 }
 

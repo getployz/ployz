@@ -10,8 +10,8 @@ use ployz_core::{
     CapabilityAdvertisement, CertificateMaterialChange, CertificateMaterialPublished,
     ContainerList, ContainerObservation, ContractDescription, EndpointSelected, EnvironmentValues,
     LiveLogTarget, LocalMachinePhase, LogMetadata, LogOrigin, MachineLogService, MachineRpc,
-    OpaquePayload, PROTOCOL_MAJOR, RoutesRead, Rpc, RpcError, RpcErrorCode, RpcRequestBody,
-    RpcResponse, SelectEndpointRequest, op,
+    OpaquePayload, PROTOCOL_MAJOR, RetainedEnvReply, RoutesRead, Rpc, RpcError, RpcErrorCode,
+    RpcRequestBody, RpcResponse, SelectEndpointRequest, op,
 };
 use serde_json::Value;
 use tonic::{Request, Response, Status};
@@ -504,6 +504,16 @@ impl MachineRpc for MachineService {
         let request = expect::<op::MetricHistory>(request)?;
         request.validate().map_err(Status::invalid_argument)?;
         respond(self.observe.metrics(request).await?)
+    }
+
+    async fn retained_env(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        let request = expect::<op::RetainedEnv>(request)?;
+        respond(RetainedEnvReply {
+            environment: self.observe.retained_env(request.container_id).await?,
+        })
     }
 
     async fn tail_logs(
