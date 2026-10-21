@@ -85,9 +85,7 @@ function RouteComponent() {
   const stale = state === "stale";
   const { machine } = server;
   return (
-    <DashboardPage width="content">
-      {/* The top bar's crumb names the server. */}
-      <h1 className="sr-only">{server.name}</h1>
+    <DashboardPage width="content" title={server.name}>
       <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm">
         <ServerStatusLabel status={server.status} stale={stale} />
         {machine.publicIp ? (

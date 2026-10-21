@@ -96,9 +96,9 @@ function RunHeader({ deployment, graph, selected, search, onCancel }: {
         <div className="flex min-w-0 flex-1 flex-col">
           <span className="flex min-w-0 items-center gap-2 [&_svg]:size-4">
             <DeploymentStatusIcon status={deploymentLight(deployment)} />
-            <span className="truncate font-medium">
+            <h1 className="truncate font-medium">
               {deployment.message ? `${deploymentLabel(deployment)} · ${deployment.message}` : `Deployment ${deploymentLabel(deployment)}`}
-            </span>
+            </h1>
           </span>
           <p className="truncate text-xs text-muted-foreground">
             {deploymentStatusLabel(deployment)}

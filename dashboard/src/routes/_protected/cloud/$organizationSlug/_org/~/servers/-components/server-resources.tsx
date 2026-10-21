@@ -183,7 +183,7 @@ function MeterCard({ title, value, fraction, aside = false }: { title: string; v
         <h3 className="text-sm font-medium">{title}</h3>
         {aside && fraction !== null ? <span className="text-xs text-muted-foreground tabular-nums">{percentText(fraction)}</span> : null}
       </div>
-      <p className="truncate text-xl font-medium tabular-nums">{value}</p>
+      <p className="truncate text-2xl font-medium tabular-nums">{value}</p>
       {fraction === null ? <div aria-hidden className="h-1.5 w-full rounded-full bg-muted" /> : (
         <Meter.Root value={meterValue(fraction)} aria-label={title}>
           <Meter.Track className="h-1.5 w-full overflow-hidden rounded-full bg-muted">

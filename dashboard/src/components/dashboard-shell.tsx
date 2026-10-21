@@ -38,9 +38,7 @@ export function DashboardShell({
   const canvas = useCanvasShowing();
   const page = useAgentPage(scope);
   const [dock, setDock] = useState<HTMLElement | null>(null);
-  // The top bar names the place, so Billing, a section of Organization, reads Organization like its siblings.
-  // Architecture is only the fallback for a route no place claims, such as a miss, so it names nothing here.
-  const placeLabel = places.find((place) => place.current)?.label ?? (section === "architecture" ? null : getDashboardSectionLabel(section));
+  const placeLabel = places.find((place) => place.current)?.label ?? getDashboardSectionLabel(section);
   return (
     <AgentDock.Provider value={dock}>
     <div className="flex h-dvh min-h-0 overflow-hidden">
@@ -51,10 +49,11 @@ export function DashboardShell({
         {/* The one top bar, over the agent too, so its Agent button never moves. On phones it also carries the logo and the avatar, which live in the rail on desktop. */}
         <header className="flex h-12 shrink-0 items-center gap-2 border-b bg-background px-3 min-wf-nav:px-4">
           <HomeLink organizationSlug={scope.organizationSlug} className="min-wf-nav:hidden" />
+          {/* The bar navigates; each page names itself in its own h1 below it. */}
           {scope.kind === "environment"
             ? <EnvironmentCrumbs scope={scope} />
             : Crumb
-              // A detail page declares its crumb: `Servers / hel-1 ⌄`. The section reads as the list page's title, so it doesn't jump.
+              // A detail page declares its crumb: `Servers / hel-1 ⌄`.
               ? <Crumbs items={[
                   <Link key="section" {...getDashboardDestination(scope, section)}
                     className="truncate rounded-sm font-semibold text-foreground outline-none hover:underline focus-visible:ring-3 focus-visible:ring-ring/50">
@@ -62,7 +61,7 @@ export function DashboardShell({
                   </Link>,
                   <Crumb key="crumb" />,
                 ]} />
-              : placeLabel === null ? null : <h1 className="truncate text-sm font-semibold">{placeLabel}</h1>}
+              : null}
           <div className="ml-auto flex shrink-0 items-center gap-2">
             <AgentButton organizationSlug={scope.organizationSlug} chat={chat} onChat={onChat} />
             <div className="min-wf-nav:hidden"><DashboardAccountMenu scope={scope} /></div>

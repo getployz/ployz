@@ -52,20 +52,18 @@ function RouteComponent() {
   const canAdd = page.kind !== "first-run" || page.intake;
 
   return (
-    <DashboardPage width="content">
-      {/* The top bar names the page; each row carries its own status, so this bar holds only actions. */}
-      <div className="flex items-center justify-end gap-2">
-        {upgrade === null ? null : <ServersUpgradeBar organizationSlug={organizationSlug} upgrade={upgrade} />}
-        <Button variant="ghost" nativeButton={false} render={<Link to="/cloud/$organizationSlug/~/servers/tokens" params={{ organizationSlug }} />}>
-          Tokens
-        </Button>
-        {canAdd ? (
-          <AddServersDialog
-            organizationSlug={organizationSlug}
-            label={upgrade === null ? "Add servers" : <span className="max-sm:sr-only">Add servers</span>}
-          />
-        ) : null}
-      </div>
+    <DashboardPage width="content" title="Servers" actions={<>
+      {upgrade === null ? null : <ServersUpgradeBar organizationSlug={organizationSlug} upgrade={upgrade} />}
+      <Button variant="ghost" nativeButton={false} render={<Link to="/cloud/$organizationSlug/~/servers/tokens" params={{ organizationSlug }} />}>
+        Tokens
+      </Button>
+      {canAdd ? (
+        <AddServersDialog
+          organizationSlug={organizationSlug}
+          label={upgrade === null ? "Add servers" : <span className="max-sm:sr-only">Add servers</span>}
+        />
+      ) : null}
+    </>}>
       {waiting.isError || enrollments.isError ? (
         <p role="alert">
           Couldn’t load waiting servers or enrollments.{" "}

@@ -45,7 +45,7 @@ function RouteComponent() {
   const search = parseSearch(Route.useSearch());
   const navigate = Route.useNavigate();
   return (
-    <DashboardPage width="content">
+    <DashboardPage width="content" title="Analytics">
       <AnalyticsPage scope={{ organizationSlug, environmentId }} search={search}
         onSearch={(next) => navigate({
           search: {

@@ -30,7 +30,7 @@ export const Route = createFileRoute(
 
 function BillingPending() {
   return (
-    <DashboardPage width="content">
+    <DashboardPage width="content" title="Organization">
       <Skeleton className="h-5 w-72" />
       <div className="grid overflow-hidden rounded-xl border md:grid-cols-3">
         {[0, 1, 2].map((column) => (
@@ -47,7 +47,7 @@ function BillingPending() {
 
 function BillingError() {
   return (
-    <DashboardPage width="content">
+    <DashboardPage width="content" title="Organization">
       <RouteErrorAlert
         title="Billing couldn’t load"
         description="Subscription details are unavailable right now. Try loading them again."
@@ -79,7 +79,7 @@ function RouteComponent() {
   }
 
   return (
-    <DashboardPage width="content">
+    <DashboardPage width="content" title="Organization">
       <p className="text-muted-foreground">
         Ployz is free on your own servers, custom domains included. Paid plans are coming soon.
       </p>
@@ -179,7 +179,7 @@ function Plan({ plan, current, className }: { plan: PlanDetails; current: boolea
         {plan.soon ? <Badge variant="secondary">Coming soon</Badge> : null}
       </div>
       <div className="flex flex-col gap-1">
-        <p className="text-4xl font-semibold tracking-tight">
+        <p className="text-2xl font-semibold">
           {plan.price}
           <span className="text-muted-foreground text-sm font-normal"> {plan.per}</span>
         </p>

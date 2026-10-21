@@ -104,7 +104,7 @@ function MintFlow({ organizationSlug, mint, onDone }: { organizationSlug: string
               type="button"
               aria-pressed={expiresIn === lifetime}
               onClick={() => setExpiresIn(lifetime)}
-              className="h-7 rounded-md px-3 text-[13px] text-muted-foreground aria-pressed:bg-background aria-pressed:text-foreground aria-pressed:shadow-sm"
+              className="h-7 rounded-md px-3 text-sm text-muted-foreground aria-pressed:bg-background aria-pressed:text-foreground aria-pressed:shadow-sm"
             >
               {LIFETIME_LABELS[lifetime]}
             </button>

@@ -151,7 +151,7 @@ export function EnvironmentHistory({ revision: picked }: { revision?: number }) 
   const close = () => { request.current += 1; setReview({ kind: "closed" }); };
   const undoing = review.kind === "preview" && review.preview.action === "undo";
   return (
-    <DashboardPage width="content">
+    <DashboardPage width="content" title="Deployments">
       <div className="flex flex-col gap-3">
         {restoring && !(review.kind === "preview" && review.preview.overwritten.length) ? (
           <p role="status" className="flex items-center gap-2 text-sm text-muted-foreground"><Spinner />Restoring…</p>

@@ -96,11 +96,7 @@ function RouteComponent() {
   const deferredQuery = useDeferredValue(query);
 
   return (
-    <DashboardPage width="content">
-      {/* The top bar names the page. */}
-      <div className="flex justify-end">
-        <CreateProjectButton organizationSlug={organizationSlug} />
-      </div>
+    <DashboardPage width="content" title="Projects" actions={<CreateProjectButton organizationSlug={organizationSlug} />}>
       <div className="w-full sm:max-w-xs">
         <ResourcePageControls
           controlsLabel="Projects controls"

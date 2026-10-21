@@ -148,7 +148,7 @@ function OverviewCard({ label, value }: { label: string; value: ReactNode }) {
   return (
     <Card size="sm" className="gap-1 px-3">
       <span className="text-xs text-muted-foreground">{label}</span>
-      <span className="font-mono text-xl tabular-nums" data-analytics-total={label}>{value}</span>
+      <span className="font-mono text-2xl tabular-nums" data-analytics-total={label}>{value}</span>
     </Card>
   );
 }

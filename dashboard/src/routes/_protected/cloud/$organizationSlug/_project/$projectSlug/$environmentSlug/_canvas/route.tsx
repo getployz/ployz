@@ -22,8 +22,11 @@ export const Route = createFileRoute(
 });
 
 function CanvasLayout() {
+  const { environmentSlug } = Route.useParams();
   return (
     <div className="h-full overflow-hidden">
+      {/* The canvas fills the page and the top bar's crumbs name it, so its h1 is for screen readers. */}
+      <h1 className="sr-only">{environmentSlug}</h1>
       <Suspense fallback={<PendingCanvas />}>
         <EnvironmentCanvasScene />
       </Suspense>

@@ -29,7 +29,7 @@ function RouteComponent() {
   // The rail, or on phones the strip under the top bar, picks the section.
   const { scope: section = "environment" } = Route.useSearch();
   return (
-    <DashboardPage width="content">
+    <DashboardPage width="content" title="Settings">
       <StoreRenameLock className="flex flex-col gap-6">
         {section === "environment" ? <StoreEnvironmentSettings {...params} /> : <StoreProjectSettings {...params} />}
       </StoreRenameLock>

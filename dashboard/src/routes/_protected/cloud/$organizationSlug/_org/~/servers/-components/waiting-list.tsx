@@ -190,7 +190,7 @@ export function WaitingList({ organizationSlug, servers, now, token, hasFirst = 
                 type="button"
                 aria-pressed={filter === option.value}
                 onClick={() => setFilter(option.value)}
-                className="h-7 shrink-0 whitespace-nowrap rounded-md border border-transparent px-2.5 text-[13px] text-muted-foreground aria-pressed:border-border aria-pressed:bg-card aria-pressed:text-foreground"
+                className="h-7 shrink-0 whitespace-nowrap rounded-md border border-transparent px-2.5 text-sm text-muted-foreground aria-pressed:border-border aria-pressed:bg-card aria-pressed:text-foreground"
               >
                 {option.label} <span className="text-muted-foreground tabular-nums">{counts.get(option.value) ?? 0}</span>
               </button>
@@ -209,12 +209,12 @@ export function WaitingList({ organizationSlug, servers, now, token, hasFirst = 
             placeholder="Filter, or hz-fsn1-*"
             value={query}
             onChange={(event) => setQuery(event.target.value)}
-            className="h-7 w-40 text-[13px]"
+            className="h-7 w-40 text-sm"
           />
         </div>
       </div> : null}
       <div className="overflow-x-auto rounded-lg border">
-        <div role="table" aria-label="Waiting servers" className="text-[13px] sm:min-w-[680px]">
+        <div role="table" aria-label="Waiting servers" className="text-sm sm:min-w-[680px]">
           <div role="row" className={cn(GRID, "h-9 text-xs text-muted-foreground")}>
             <span role="columnheader">
               <Checkbox

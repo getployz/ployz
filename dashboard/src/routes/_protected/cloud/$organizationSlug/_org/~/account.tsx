@@ -11,7 +11,7 @@ export const Route = createFileRoute("/_protected/cloud/$organizationSlug/_org/~
 /** The signed-in user's own settings, the same in every Organization they belong to: one page, no sections in the rail. */
 function AccountPage() {
   return (
-    <DashboardPage width="content">
+    <DashboardPage width="content" title="Account">
       <AccountSections />
     </DashboardPage>
   );

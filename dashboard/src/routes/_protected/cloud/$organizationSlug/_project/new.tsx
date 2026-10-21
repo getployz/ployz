@@ -19,6 +19,7 @@ function RouteComponent() {
 
   return (
     <div className="relative flex h-full items-center justify-center overflow-hidden p-4">
+      <h1 className="sr-only">New project</h1>
       <div className="pointer-events-none absolute inset-0" aria-hidden="true">
         <ReactFlowProvider>
           <ReactFlow
