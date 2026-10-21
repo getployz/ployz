@@ -76,7 +76,7 @@ export function copiesFromPlacement(input: {
 
   const readOnly = (id: MachineId) => members.some((member) =>
     member.answered && member.machine.id === id && member.view.copy?.kind === "root" && member.view.copy.readonly);
-  // A placement's primary that answered without a root holds no live copy, so Live names nobody.
+  // Defensive: placementForm names an answering Server here only if it holds no root, and then Live names nobody.
   const unreported = (server: ServerRef): PrimaryServer | null => {
     const from = heard(server.id);
     return from === "answered" ? null : { id: server.id, name: server.name, state: from };

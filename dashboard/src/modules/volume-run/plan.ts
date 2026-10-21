@@ -115,8 +115,8 @@ export function planFromCopies(input: PlanInput, members: readonly Member[]): Pl
   const roots = withRole("writer", "cutting");
   const cutting = withRole("cutting");
   const mirrors = withRole("mirror");
-  const silent = members.filter((member): member is Exclude<Member, AnsweredMember> => !member.answered);
-  const unanswered = silent.find((member) => member.lack !== undefined) ?? silent.find((member) => heardFrom(member) === "silent") ?? silent[0];
+  const unheard = members.filter((member): member is Exclude<Member, AnsweredMember> => !member.answered);
+  const unanswered = unheard.find((member) => member.lack !== undefined) ?? unheard.find((member) => heardFrom(member) === "silent") ?? unheard[0];
   const unknown = (member: Exclude<Member, AnsweredMember>) => member.lack !== undefined ? refuse("server_lacks", member.lack)
     : refuse("unanswered", `${member.machine.name}${heardFrom(member) === "waiting" ? "'s report hasn't arrived" : " did not answer"}; ${name}'s copies are unknown`);
   const unfinishedCuts = () => {

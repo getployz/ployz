@@ -152,15 +152,20 @@ export function oldCopies(observed: ObservedPlacement, row: PlacementRow | null)
 }
 
 /**
+ * The Server presumed to hold the primary: the one that reports it, else, with none answering, one that didn't: the
+ * staged primary when it is one of them, since a failed move returns there, else the first. Copies names it under Live,
+ * the recovery alert reads it, and a staged placement that keeps it is no move.
+ */
+export const presumedPrimary = (observed: ObservedPlacement, staged: MachineId | null): MachineRef | null =>
+  observed.primary ?? observed.unanswered.find((server) => server.id === staged) ?? observed.unanswered[0] ?? null;
+
+/**
  * What the next Deploy aims for: the staged placement, else what is applied. With no primary answering, the silent
  * Server is presumed to hold it. Null when no Server holds the Volume.
  */
-/** The Server taken for the primary while none reports one: the first that didn't answer, as Copies names it under Live. */
-const unreportedPrimary = (observed: ObservedPlacement): MachineRef | null => observed.unanswered[0] ?? null;
-
 export function targetPlacement(observed: ObservedPlacement, row: PlacementRow | null): Placement | null {
   if (row?.staged != null) return stagedPlacement(observed, row.staged);
-  const primary = observed.primary ?? unreportedPrimary(observed);
+  const primary = presumedPrimary(observed, null);
   if (primary === null) return null;
   return { primary: primary.id, mirrors: appliedMirrors(observed, row), deletes: [] };
 }
@@ -212,9 +217,7 @@ export function placementChanges(volume: PlacementVolume, members: readonly Memb
   // A move to a mirror is unfinished while the row still lists that mirror, as only the move's last run takes it out:
   // once the target writes it holds the root, yet the next Deploy must finish the same move.
   const handing = observed.primary?.id === staged.primary && (row.mirrors ?? []).includes(staged.primary);
-  // With no primary answering, a silent Server presumed to hold the Volume is no move: the staged one when it is silent,
-  // since a failed move returns there, else the first, as targetPlacement presumes.
-  const holder = observed.primary ?? observed.unanswered.find((server) => server.id === staged.primary) ?? observed.unanswered[0] ?? null;
+  const holder = presumedPrimary(observed, staged.primary);
   const moving = holder?.id !== staged.primary || handing;
   // A mirror its answering Server no longer holds is already removed: a cancelled Deploy's late run took it.
   const gone = (id: MachineId) => copyOn(id) === undefined && members.some((member) => member.machine.id === id && member.answered);
@@ -360,7 +363,8 @@ export function recovery(
   if (copy === undefined) return null;
   const { server: mirror, newest: lostAfter } = copy;
   // Only a silent primary leads to Forget or Use mirror: one whose report is on its way may still hold the writer.
-  const primary = members.find((member) => member.machine.id === unreportedPrimary(observed)?.id);
+  const presumed = presumedPrimary(observed, row?.staged?.primary ?? null);
+  const primary = members.find((member) => member.machine.id === presumed?.id);
   if (primary !== undefined && heardFrom(primary) === "waiting") return { kind: "wait", mirror, lostAfter };
   const silent = members.filter((member) => heardFrom(member) === "silent").map((member) => member.machine);
   if (silent.length > 0) return { kind: "forget", down: silent, mirror, lostAfter };

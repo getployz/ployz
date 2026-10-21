@@ -133,10 +133,11 @@ export function unheardOf(members: readonly Member[]) {
   const silent: string[] = [];
   let waiting = false;
   for (const member of members) {
+    const heard = heardFrom(member);
     if (member.answered) continue;
-    if (member.lack !== undefined) lacks.push(member.lack);
-    else if (member.incomplete) waiting = true;
-    else silent.push(member.machine.name);
+    if (heard === "silent") silent.push(member.machine.name);
+    else if (heard === "waiting") waiting = true;
+    else if (member.lack !== undefined) lacks.push(member.lack);
   }
   return { lacks, silent, waiting };
 }

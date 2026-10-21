@@ -406,7 +406,7 @@ function CopyView({ volume, members, row, rows, owed, copies, copy, accepting, u
     </Row>
     {skipped === null ? null : <Field orientation="responsive">
       <FieldContent><FieldTitle>Status</FieldTitle><FieldDescription>{skipped}</FieldDescription></FieldContent>
-      <Badge variant="warning">Refresh skipped</Badge>
+      {stale ? <Badge variant="warning">Refresh skipped</Badge> : null}
     </Field>}
     {offer ? <Row title="Restore point">
       <span className="flex items-center gap-2">
