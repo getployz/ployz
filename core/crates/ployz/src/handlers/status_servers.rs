@@ -164,7 +164,7 @@ async fn observe(
                     .await;
                 (machine, routed)
             })
-            .buffered(READS_AT_ONCE)
+            .buffer_unordered(READS_AT_ONCE)
             .collect()
             .await
     };

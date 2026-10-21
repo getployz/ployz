@@ -1501,6 +1501,15 @@ async fn routed_addresses_claim_nothing_after_a_failed_write_without_the_admin()
     .await
     .expect("a failed write may still have replaced the file Caddy restarts from")
     .unwrap();
+    std::fs::remove_dir(&caddyfile).unwrap();
+    state.set_address(api.container_id, [10, 210, 1, 2]);
+    wait_for_caddyfile(&caddyfile, "10.210.1.2:80").await;
+    settle().await;
+    assert_eq!(
+        published.borrow().addresses,
+        None,
+        "a Caddy that restarted from the failed write's file may not serve 10.210.1.2"
+    );
 
     shutdown.cancel();
     watcher.await.unwrap().unwrap();

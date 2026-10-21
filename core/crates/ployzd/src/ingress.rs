@@ -499,9 +499,18 @@ where
                                 let result = if last_input.as_ref() == Some(&input) {
                                     Ok(())
                                 } else {
-                                    apply_caddy(&input.projection, &config_file, admin.as_ref())
-                                        .await
-                                        .map(|()| last_input = Some(input))
+                                    let applied = apply_caddy(
+                                        &input.projection,
+                                        &config_file,
+                                        admin.as_ref(),
+                                    )
+                                    .await;
+                                    // A failed write may still have replaced the file Caddy
+                                    // restarts from, so no earlier load is known to hold.
+                                    if applied.is_ok() || admin.is_none() {
+                                        last_input = applied.is_ok().then_some(input);
+                                    }
+                                    applied
                                 };
                                 (admin.is_some(), result)
                             }
