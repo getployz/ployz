@@ -285,7 +285,7 @@ export function BottomBar({
 /**
  * What the changes to deploy are: edits not yet saved, else the latest Save part of which is left to deploy, with the
  * oldest Deployment in flight that ships it, if any (one that takes the Environment off the Servers ships none);
- * `nothing` while only a save is left.
+ * `nothing` when neither, as when only what a Sync included is left to save.
  */
 type ToDeploy =
   | { kind: "changes"; count: number }

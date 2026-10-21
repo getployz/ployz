@@ -227,6 +227,14 @@ it("says a Deploy in flight ships the Save, as that Deployment's status reads, n
   }
 });
 
+it("words the Save by the oldest Deploy in flight that ships it", async () => {
+  stagedChanges = 0;
+  undeployedSave = 4;
+  active = [deployment(queued, "queued", 4, 4), deployment(running, "running", 3, 4)];
+  open(canvasUrl, [replicas], 1);
+  expect((await bar()).getAllByText("Deploying · Save #4")).toHaveLength(2);
+});
+
 it("names a Save not deployed while a Deploy of an older Save, or one taking the Environment off, runs", async () => {
   stagedChanges = 0;
   undeployedSave = 4;
@@ -253,7 +261,7 @@ it("names the Save not deployed under how its Deploy ended, with Save and Deploy
   expect(both.getByRole("button", { name: /^Deploy$/ })).toBeTruthy();
 });
 
-it("offers no Discard all while only a Save the Servers don't run is left", async () => {
+it("offers no Discard all while only a Save not deployed is left", async () => {
   stagedChanges = 0;
   undeployedSave = 4;
   open(canvasUrl, [replicas], 1);
@@ -262,7 +270,7 @@ it("offers no Discard all while only a Save the Servers don't run is left", asyn
   expect(screen.queryByRole("menuitem", { name: "Discard all changes" })).toBeNull();
 });
 
-it("leaves Discard all out of Details while only a Save the Servers don't run is left", async () => {
+it("leaves Discard all out of Details while only a Save not deployed is left", async () => {
   stagedChanges = 0;
   undeployedSave = 4;
   open(canvasUrl, [replicas], 1);
@@ -271,7 +279,7 @@ it("leaves Discard all out of Details while only a Save the Servers don't run is
   expect(screen.queryByRole("button", { name: "Discard all" })).toBeNull();
 });
 
-it("counts only staged changes when a Save isn't running too", async () => {
+it("counts only staged changes when a Save isn't deployed too", async () => {
   stagedChanges = 2;
   undeployedSave = 4;
   open(canvasUrl, [replicas, cache], 3);
