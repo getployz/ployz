@@ -1646,6 +1646,71 @@ async fn routed_addresses_are_empty_once_web_traffic_off_stops_caddy() {
     std::fs::remove_dir_all(directory).unwrap();
 }
 
+#[tokio::test]
+async fn routed_addresses_are_empty_once_a_loaded_caddy_stops() {
+    let WatcherFixture {
+        machine,
+        state,
+        address,
+        server,
+        directory,
+    } = watcher_fixture().await;
+    let (load_tx, mut load_rx) = mpsc::unbounded_channel();
+    let admin = TestAdmin { loads: load_tx };
+    let admin_up = Arc::new(AtomicBool::new(true));
+    let (route_publishes, mut published) =
+        tokio::sync::watch::channel(crate::ingress::PublishedRoutes::default());
+    let shutdown = CancellationToken::new();
+    let watcher = tokio::spawn(watch_caddy(
+        machine.clone(),
+        ReplicatedStore::new(ApiClient::http1(address, &"a".repeat(64)).unwrap()),
+        no_down,
+        directory.join(CONFIG_FILE),
+        route_publishes,
+        shutdown.clone(),
+        {
+            let admin_up = Arc::clone(&admin_up);
+            move || std::future::ready(Ok(admin_up.load(Ordering::SeqCst).then(|| admin.clone())))
+        },
+    ));
+    assert!(next_load(&mut load_rx).await.contains("10.210.1.2:80"));
+    timeout(
+        Duration::from_secs(5),
+        published.wait_for(|published| {
+            published
+                .addresses
+                .as_ref()
+                .is_some_and(|addresses| !addresses.is_empty())
+        }),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+
+    admin_up.store(false, Ordering::SeqCst);
+    state
+        .containers
+        .lock()
+        .unwrap()
+        .get_mut(1)
+        .expect("watch fixture has an ingress container")
+        .try_update(|parts| parts.runtime = ContainerRuntimeObservation::Exited { code: 0 })
+        .unwrap();
+    state.send(b"{\"change\":{}}\n");
+    timeout(
+        Duration::from_secs(5),
+        published.wait_for(|published| published.addresses == Some(BTreeMap::new())),
+    )
+    .await
+    .expect("the Caddy that loaded these routes stopped, so it serves nothing")
+    .unwrap();
+
+    shutdown.cancel();
+    watcher.await.unwrap().unwrap();
+    server.abort();
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
 const CHALLENGE: &str = r#"{"challenge_token":"LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0","challenge_response":"LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}"#;
 
 fn no_down() -> std::future::Ready<Result<BTreeSet<MachineId>, CorrosionError>> {

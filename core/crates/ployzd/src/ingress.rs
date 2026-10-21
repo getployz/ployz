@@ -504,9 +504,11 @@ where
             };
             match input {
                 Ok((caddy, no_caddy, addresses, projection, routes)) => {
-                    let loaded = last_input
-                        .as_ref()
-                        .is_some_and(|last: &CaddyInput| last.loaded(&projection, caddy.as_ref()));
+                    // A stopped Caddy no longer serves what it loaded.
+                    let loaded = !no_caddy
+                        && last_input.as_ref().is_some_and(|last: &CaddyInput| {
+                            last.loaded(&projection, caddy.as_ref())
+                        });
                     let (through_admin, result) = if loaded {
                         (true, Ok(()))
                     } else {
