@@ -40,7 +40,7 @@ environment. Start with one server and add more when you need them.
   it.
 - **One private network across your servers.** Add a server with `ployz server add`. Your servers
   share a WireGuard network, and a service runs up to 50 replicas across them. A service with a
-  volume runs one replica, on the server that holds its data.
+  volume runs on the server that holds its data, one replica by default.
 - **Apps that outlive Ployz Cloud.** Your apps keep running on your servers if Ployz Cloud is down
   or goes away. The engine and the dashboard are open source.
 
