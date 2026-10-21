@@ -258,8 +258,10 @@ A rollback that deletes volume data also needs `--accept-volume-loss <volume>` a
 
 Ployz starts the new replicas of a service alongside the old ones and waits until they're all
 healthy. Then every server starts sending the service's requests to the new replicas. Once every
-server has, the old replicas get no new requests, finish the ones they have for a few seconds,
-and stop. Your app keeps serving the whole time.
+server has, the old replicas get no new requests, finish the ones they have, and stop. An old
+replica with no open connection stops at once; one still answering a request gets up to
+3 seconds. A replica that listens on no port, such as a worker, gets the 3 seconds whenever it
+holds a connection to anything outside itself. Your app keeps serving the whole time.
 
 Ployz waits up to five minutes for each server to switch. If a server is cut off or powered off,
 the deploy keeps the new replicas, leaves the old one running there, exits 3, and says so. When
@@ -291,8 +293,8 @@ Until you deploy again, that server can keep answering with the old version. See
 - **Set a health check.** Under **Settings → Deploy**, set **Healthcheck** to an HTTP path like
   `/up` or a command like `pg_isready -h 127.0.0.1`. A new replica is ready when the path answers
   with a 2xx status or the command exits 0. A redirect, to `https://` or `/login` for example,
-  fails the check. Without a health check, the old replica stops a few seconds after the new one
-  starts, ready or not. The databases Ployz creates come with one.
+  fails the check. Without a health check, the old replica stops about a second after the new one
+  starts, ready or not, and a new replica that crashes after that second is not caught. The databases Ployz creates come with one.
 - **A service with a [volume](../services/volumes.md) has a short gap.** Its old replica stops
   first, so two never write the same files. To change that, see
   [Choose how a deploy replaces replicas](#choose-how-a-deploy-replaces-replicas).

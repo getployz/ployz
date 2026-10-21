@@ -565,7 +565,7 @@ impl Client {
     /// independently with bounded transient retries.
     /// Keep each probed target's success or typed failure.
     pub async fn list_volumes(
-        &mut self,
+        &self,
         machines: &[MachineObservation],
     ) -> PartialResult<VolumeInventory, RpcError> {
         let mut requests = Vec::new();
@@ -1195,16 +1195,16 @@ impl Client {
     /// Target-specific Container and Docker Volume failures and omissions stay
     /// on the snapshot so planning can derive observer-relative completeness.
     pub(crate) async fn deploy_snapshot(
-        &mut self,
+        &self,
         machines: Vec<MachineObservation>,
     ) -> Result<DeploySnapshot, ConnectError> {
-        let containers = self
-            .live_services_from(&machines, EnvironmentValues::Included)
-            .await?
-            .containers;
-        let volumes = self.list_volumes(&machines).await;
-        let capacity = capacity::observe(self, &machines).await;
-        snapshot_from_partial(machines, containers, volumes, capacity).map_err(ConnectError::Remote)
+        let (live, volumes, capacity) = tokio::join!(
+            self.live_services_from(&machines, EnvironmentValues::Included),
+            self.list_volumes(&machines),
+            capacity::observe(self, &machines),
+        );
+        snapshot_from_partial(machines, live?.containers, volumes, capacity)
+            .map_err(ConnectError::Remote)
     }
 }
 

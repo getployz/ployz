@@ -379,11 +379,15 @@ pub(super) fn execute(
     let signal = crate::cancellation::interrupted()?;
     let mut runner = match store.local() {
         // Admission can end it at once, with nothing to run.
-        Some(local) if admitted.status.in_flight() => Some(OwnedRunner {
-            store,
-            id: admitted.id.clone(),
-            handle: Some(run_here(matches, local, admitted, source)?),
-        }),
+        Some(local) if admitted.status.in_flight() => {
+            let ended = tokio_util::sync::CancellationToken::new();
+            Some(OwnedRunner {
+                store,
+                id: admitted.id.clone(),
+                handle: Some(run_here(matches, local, admitted, source, ended.clone())?),
+                ended,
+            })
+        }
         Some(_) | None => None,
     };
     let detached = runner.is_none() && matches.get_flag("detach");
@@ -519,6 +523,7 @@ fn run_here(
     local: &std::sync::Arc<ConfigStore>,
     admitted: &DeploymentSummary,
     source: Option<&Path>,
+    ended: tokio_util::sync::CancellationToken,
 ) -> Result<std::thread::JoinHandle<Result<DeploymentSummary, Error>>, Error> {
     let direct = matches.get_one::<String>("connect").map(String::as_str);
     let context = matches.get_one::<String>("context").map(String::as_str);
@@ -541,13 +546,19 @@ fn run_here(
     let (local, id) = (std::sync::Arc::clone(local), admitted.id.clone());
     let runtime = runtime()?;
     Ok(std::thread::spawn(move || {
-        Ok(runtime.block_on(crate::sdk::run_deployment(
-            local,
-            id,
-            runner,
-            connections,
-            Ok(sources),
-        ))?)
+        // Locals drop last to first, on a panic too. Dropping the runtime waits out its
+        // blocking tasks, so it goes before `ended` wakes following.
+        let _ended = ended.drop_guard();
+        let runtime = runtime;
+        runtime
+            .block_on(crate::sdk::run_deployment(
+                local,
+                id,
+                runner,
+                connections,
+                Ok(sources),
+            ))
+            .map_err(Error::from)
     }))
 }
 
@@ -568,6 +579,8 @@ struct OwnedRunner<'store, 'matches> {
     store: &'store Store<'matches>,
     id: DeploymentId,
     handle: Option<std::thread::JoinHandle<Result<DeploymentSummary, Error>>>,
+    /// Cancelled when the runner thread returns, so following wakes at once.
+    ended: tokio_util::sync::CancellationToken,
 }
 
 impl OwnedRunner<'_, '_> {
@@ -684,6 +697,9 @@ fn follow(
             .hint(Hint::Inspect(hint_for(matches, tracked)))
     };
     let mut unclaimed = Some(std::time::Instant::now() + UNCLAIMED);
+    let mut ended = runner
+        .map(|runner| runner.ended.clone())
+        .unwrap_or_default();
     loop {
         if signal.is_cancelled() {
             return followed.ok_or_else(Error::cancelled);
@@ -790,9 +806,14 @@ fn follow(
         wait_runtime.block_on(async {
             tokio::select! {
                 () = signal.cancelled() => {},
+                () = ended.cancelled() => {},
                 () = tokio::time::sleep(FOLLOW_POLL) => {},
             }
         });
+        // The thread may still be exiting; later reads fall back to the poll.
+        if ended.is_cancelled() {
+            ended = tokio_util::sync::CancellationToken::new();
+        }
     }
 }
 

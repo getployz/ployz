@@ -613,6 +613,28 @@ impl ContainerRuntime {
         Ok(ended.then(|| container_run(&inspected)).flatten())
     }
 
+    /// The host pid of the Container's process, or `None` when Docker reports none.
+    ///
+    /// # Errors
+    ///
+    /// Returns when Docker cannot inspect the Container.
+    pub async fn pid(&self, container_id: &ContainerId) -> Result<Option<u32>, Error> {
+        let inspected = decode_raw_inspect(
+            self.docker
+                .client
+                .inspect_container(container_id.as_str(), None)
+                .await,
+            container_id,
+        )?;
+        Ok(inspected
+            .state
+            .as_ref()
+            .and_then(|state| state.get("Pid"))
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|pid| u32::try_from(pid).ok())
+            .filter(|pid| *pid != 0))
+    }
+
     pub async fn inspect_managed(
         &self,
         container_id: &ContainerId,

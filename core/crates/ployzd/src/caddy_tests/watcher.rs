@@ -4,7 +4,7 @@ use super::{ingress, observation, reserved};
 use crate::{
     corrosion::{ApiClient, Error as CorrosionError, ReplicatedStore, fake_cluster::events},
     ingress::caddy::{CONFIG_FILE, CaddyAdmin, Error as CaddyError, run},
-    ingress::watch_caddy,
+    ingress::{WATCH_DEBOUNCE, watch_caddy},
 };
 use axum::{
     Router,
@@ -186,7 +186,7 @@ async fn first_snapshot_loads_immediately_and_bursts_load_only_the_latest_snapsh
     ));
     state.send(b"{\"change\":{}}\n");
     settle().await;
-    advance(Duration::from_millis(100)).await;
+    advance(WATCH_DEBOUNCE / 3).await;
     state.replace(observation(
         3,
         &machine.id,
@@ -198,7 +198,7 @@ async fn first_snapshot_loads_immediately_and_bursts_load_only_the_latest_snapsh
         b"{\"columns\":[\"id\",\"container\"]}\n{\"row\":[1,[\"replacement\",\"snapshot\"]]}\n",
     );
     settle().await;
-    advance(Duration::from_millis(200)).await;
+    advance(WATCH_DEBOUNCE * 2).await;
     settle().await;
     assert!(
         load_rx.try_recv().is_err(),
@@ -213,7 +213,7 @@ async fn first_snapshot_loads_immediately_and_bursts_load_only_the_latest_snapsh
     ));
     state.send(b"{\"row\":[1,[\"replacement\",\"snapshot\"]]}\n{\"eoq\":{\"time\":0.0}}\n");
     settle().await;
-    advance(Duration::from_millis(300)).await;
+    advance(WATCH_DEBOUNCE).await;
     resume();
     let after_snapshot = timeout(Duration::from_secs(1), load_rx.recv())
         .await
@@ -235,7 +235,7 @@ async fn first_snapshot_loads_immediately_and_bursts_load_only_the_latest_snapsh
     ));
     state.send(b"{\"change\":{}}\n");
     settle().await;
-    advance(Duration::from_millis(100)).await;
+    advance(WATCH_DEBOUNCE / 3).await;
     state.replace(observation(
         6,
         &machine.id,
@@ -245,7 +245,7 @@ async fn first_snapshot_loads_immediately_and_bursts_load_only_the_latest_snapsh
     ));
     state.send_certificates(b"{\"change\":{}}\n");
     settle().await;
-    advance(Duration::from_millis(100)).await;
+    advance(WATCH_DEBOUNCE / 3).await;
     state.replace(observation(
         7,
         &machine.id,
@@ -256,7 +256,7 @@ async fn first_snapshot_loads_immediately_and_bursts_load_only_the_latest_snapsh
     state.send(b"{\"change\":{}}\n");
     settle().await;
 
-    advance(Duration::from_millis(299)).await;
+    advance(WATCH_DEBOUNCE - Duration::from_millis(1)).await;
     settle().await;
     assert!(load_rx.try_recv().is_err(), "burst loaded before quiet");
     advance(Duration::from_millis(1)).await;
@@ -281,7 +281,7 @@ async fn first_snapshot_loads_immediately_and_bursts_load_only_the_latest_snapsh
     ));
     state.send(b"{\"change\":{}}\n");
     settle().await;
-    advance(Duration::from_millis(300)).await;
+    advance(WATCH_DEBOUNCE).await;
     resume();
     let isolated = timeout(Duration::from_secs(1), load_rx.recv())
         .await

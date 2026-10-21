@@ -484,6 +484,7 @@ pub(crate) fn with_unarrived(
 }
 
 const OBSERVATION_ATTEMPTS: u32 = 3;
+const OBSERVATION_RETRY: std::time::Duration = std::time::Duration::from_secs(1);
 
 const OUTDATED: &str = "a newer deploy replaced it while catching up; redeploy";
 
@@ -625,7 +626,7 @@ async fn observe_complete<C: CatchUpClient>(
         tokio::select! {
             biased;
             () = cancel.cancelled() => return Err(cancelled()),
-            () = tokio::time::sleep(cleanup::ACK_POLL) => {}
+            () = tokio::time::sleep(OBSERVATION_RETRY) => {}
         }
     }
     unreachable!("the last attempt returns")

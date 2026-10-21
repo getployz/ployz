@@ -145,7 +145,7 @@ fn every_reverse_proxy_balances_by_load_and_dials_briefly() {
     let common = automatic_site_block(&caddyfile, "(common_proxy)");
     assert!(common.contains("lb_policy least_conn"), "{common}");
     assert!(
-        common.contains("transport http { dial_timeout 1s }"),
+        common.contains("transport http { dial_timeout 500ms }"),
         "{common}"
     );
     let proxies = caddyfile

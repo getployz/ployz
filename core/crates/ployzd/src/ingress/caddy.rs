@@ -264,7 +264,7 @@ https:// {{\n\
 \t# A powered-off upstream's Machine never answers the dial; give up fast and retry another.\n\
 \t# A request sent on an idle kept-alive connection to it still waits about 14s for retransmits.\n\
 \ttransport http {{\n\
-\t\tdial_timeout 1s\n\
+\t\tdial_timeout 500ms\n\
 \t}}\n\
 }}\n"
     );
