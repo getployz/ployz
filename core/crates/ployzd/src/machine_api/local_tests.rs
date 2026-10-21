@@ -2974,7 +2974,7 @@ mod read_routed_addresses {
     }
 
     #[tokio::test]
-    async fn read_answers_the_addresses_the_last_publish_applied() {
+    async fn read_answers_the_addresses_the_proxy_last_applied() {
         let web = QualifiedService::parse("app/web").unwrap();
         let copy = ContainerId::parse("a".repeat(64)).unwrap();
         let (publishes, published) = watch::channel(PublishedRoutes::default());
@@ -2989,10 +2989,7 @@ mod read_routed_addresses {
             )])
         };
         for octet in [2, 3] {
-            publishes.send_modify(|published| {
-                published.count += 1;
-                published.routes = routed(octet);
-            });
+            publishes.send_modify(|published| published.addresses = routed(octet));
         }
 
         assert_eq!(read(&service).await.routes, routed(3));

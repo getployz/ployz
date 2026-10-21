@@ -1121,19 +1121,18 @@ async fn route_publishes_count_only_this_process() {
         .await
         .expect("failed load was not retried")
         .unwrap();
-    timeout(Duration::from_secs(5), published.changed())
-        .await
-        .expect("the first publish counts")
-        .unwrap();
-    let first_count = published.borrow_and_update().count;
-    assert!(first_count >= 1);
+    let first_count = timeout(
+        Duration::from_secs(5),
+        published.wait_for(|published| published.count >= 1),
+    )
+    .await
+    .expect("the first publish counts")
+    .unwrap()
+    .count;
     assert_eq!(
         published.borrow().routes,
-        BTreeMap::from([(
-            first.identity(),
-            BTreeMap::from([(first.container_id, first.address.unwrap())])
-        )]),
-        "the publish carries what this process acked, at the address it applied"
+        BTreeMap::from([(first.identity(), BTreeSet::from([first.container_id]))]),
+        "the publish carries what this process acked"
     );
     assert_eq!(state.ack_transactions(), 2);
     assert_eq!(state.last_acks(), vec![ack(&machine, &[&first])]);
@@ -1147,6 +1146,64 @@ async fn route_publishes_count_only_this_process() {
     .await
     .expect("a later publish counts again")
     .unwrap();
+
+    shutdown.cancel();
+    watcher.await.unwrap().unwrap();
+    server.abort();
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[tokio::test]
+async fn routed_addresses_follow_the_applied_config_even_when_the_ack_write_fails() {
+    let WatcherFixture {
+        machine,
+        state,
+        address,
+        server,
+        directory,
+    } = watcher_fixture().await;
+    let api = state.api_container();
+    state.containers.lock().unwrap().push(observation(
+        4,
+        &machine.id,
+        "db",
+        Some([10, 210, 1, 5]),
+        Vec::new(),
+    ));
+    state
+        .lose_next_transaction_response
+        .store(true, Ordering::SeqCst);
+    let (load_tx, mut load_rx) = mpsc::unbounded_channel();
+    let admin = TestAdmin { loads: load_tx };
+    let (route_publishes, published) =
+        tokio::sync::watch::channel(crate::ingress::PublishedRoutes::default());
+    let shutdown = CancellationToken::new();
+    let watcher = tokio::spawn(watch_caddy(
+        machine.clone(),
+        ReplicatedStore::new(ApiClient::http1(address, &"a".repeat(64)).unwrap()),
+        no_down,
+        directory.join(CONFIG_FILE),
+        route_publishes,
+        shutdown.clone(),
+        move || std::future::ready(Ok(Some(admin.clone()))),
+    ));
+
+    next_load(&mut load_rx).await;
+    state.wait_for_ack_transactions(1).await;
+    settle().await;
+    let published = published.borrow().clone();
+    assert_eq!(
+        published.count, 0,
+        "the lost ack write counted as a publish"
+    );
+    assert_eq!(
+        published.addresses,
+        BTreeMap::from([(
+            api.identity(),
+            BTreeMap::from([(api.container_id, api.address.unwrap())])
+        )]),
+        "Caddy routes the API copy, and the db copy has no ingress to route"
+    );
 
     shutdown.cancel();
     watcher.await.unwrap().unwrap();

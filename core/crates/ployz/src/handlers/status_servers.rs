@@ -166,30 +166,31 @@ async fn observe(
             && !serving_containers(&service.containers).is_empty()
     });
     let client = &*client;
-    let reads = match reader {
-        Some(reader) => {
-            stream::iter(services)
-                .map(|service| async move {
-                    let read = crate::deploy::MachineOperations::read_routes(
-                        client,
-                        &reader,
-                        &service.identity,
-                    )
-                    .await;
-                    (service, read)
-                })
-                .buffered(READS_AT_ONCE)
-                .collect()
-                .await
+    let reads = async {
+        match reader {
+            Some(reader) => {
+                stream::iter(services)
+                    .map(|service| async move {
+                        let read = crate::deploy::MachineOperations::read_routes(
+                            client,
+                            &reader,
+                            &service.identity,
+                        )
+                        .await;
+                        (service, read)
+                    })
+                    .buffered(READS_AT_ONCE)
+                    .collect()
+                    .await
+            }
+            None => Vec::new(),
         }
-        None => Vec::new(),
     };
-    let answered: Vec<MachineId> = live
+    let answered = live
         .containers
         .successes
         .iter()
-        .map(|answered| answered.machine_id)
-        .collect();
+        .map(|answered| answered.machine_id);
     let routed = stream::iter(answered)
         .map(|machine| async move {
             let routed = client
@@ -203,8 +204,8 @@ async fn observe(
         })
         .buffered(READS_AT_ONCE)
         .filter_map(|(machine, routed)| async move { Some((machine, routed.ok()?)) })
-        .collect()
-        .await;
+        .collect();
+    let (reads, routed) = futures_util::join!(reads, routed);
     Ok(Observed {
         machines,
         copies: Copies::Listed {

@@ -795,7 +795,7 @@ impl MachineRpc for MachineService {
     ) -> Result<Response<OpaquePayload>, Status> {
         expect::<op::ReadRoutedAddresses>(request)?;
         respond(RoutedAddresses {
-            routes: self.published_routes.borrow().routes.clone(),
+            routes: self.published_routes.borrow().addresses.clone(),
         })
     }
 }

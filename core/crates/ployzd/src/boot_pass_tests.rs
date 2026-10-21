@@ -288,22 +288,11 @@ fn synced() -> watch::Receiver<bool> {
     watch::channel(true).1
 }
 
-type Addressed = BTreeMap<QualifiedService, BTreeMap<ContainerId, ContainerAddress>>;
-
-fn addressed(acks: &BTreeMap<QualifiedService, BTreeSet<ContainerId>>) -> Addressed {
-    acks.iter()
-        .map(|(service, copies)| {
-            let address = ContainerAddress("10.210.0.2".parse().unwrap());
-            let copies = copies.iter().map(|copy| (*copy, address)).collect();
-            (service.clone(), copies)
-        })
-        .collect()
-}
-
+/// Ingress publishes again on its own every few seconds, so the pass never waits
+/// on a fake that has stopped publishing.
 fn published(
     routes: BTreeMap<QualifiedService, BTreeSet<ContainerId>>,
 ) -> watch::Receiver<PublishedRoutes> {
-    let routes = addressed(&routes);
     let (publishes, published) = watch::channel(PublishedRoutes::default());
     tokio::spawn(async move {
         while !publishes.is_closed() {
@@ -1100,7 +1089,6 @@ fn rendered_from(
     stale: BTreeMap<QualifiedService, BTreeSet<ContainerId>>,
     fresh: BTreeMap<QualifiedService, BTreeSet<ContainerId>>,
 ) -> watch::Receiver<PublishedRoutes> {
-    let (stale, fresh) = (addressed(&stale), addressed(&fresh));
     let (publishes, published) = watch::channel(PublishedRoutes::default());
     tokio::spawn(async move {
         let db = rusqlite::Connection::open(path).unwrap();
@@ -1206,11 +1194,12 @@ async fn catch_up_skips_this_machines_own_actor() {
 async fn waits_for_two_publishes_after_catch_up() {
     let cluster = Cluster::new();
     let observed = cluster.acked_everywhere();
-    let own = addressed(&own_acks(&cluster.local, &observed));
+    let own = own_acks(&cluster.local, &observed);
     let host = FakeHost::new(&cluster.local, observed);
     let (publishes, published) = watch::channel(PublishedRoutes {
         count: 1,
         routes: own.clone(),
+        ..PublishedRoutes::default()
     });
     let running = tokio::spawn(run(host.clone(), synced(), published));
     let publish = || {
