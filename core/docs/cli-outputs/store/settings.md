@@ -1119,7 +1119,7 @@ $ ployz schema
 # exit 0
 ```
 
-stdout (6629 lines, first 40 shown):
+stdout (6741 lines, first 40 shown):
 ```
 {
   "$defs": {
@@ -1171,7 +1171,7 @@ $ ployz --json schema
 # exit 0
 ```
 
-stdout (6629 lines, first 40 shown):
+stdout (6741 lines, first 40 shown):
 ```
 {
   "$defs": {

@@ -118,9 +118,29 @@ fn interrupt(pid: u32) -> Instant {
     sent
 }
 
+/// What the fake Cloud answers, one request at a time.
+trait Script: Send + 'static {
+    /// The reply to a request of `kind` (the query or command it names).
+    fn reply(&mut self, kind: &str) -> Reply;
+    /// Checked once the CLI exits.
+    fn finished(&self);
+}
+
+/// Replies in order: each request takes the next one.
+impl Script for VecDeque<Reply> {
+    fn reply(&mut self, _: &str) -> Reply {
+        self.pop_front()
+            .expect("unexpected request, possibly remote Cancel")
+    }
+
+    fn finished(&self) {
+        assert!(self.is_empty(), "CLI skipped a required request");
+    }
+}
+
 fn serve(
     mut stream: TcpStream,
-    reply: Reply,
+    script: &mut dyn Script,
     pid: u32,
     events: &std::path::Path,
 ) -> (Exchange, Option<Instant>) {
@@ -131,7 +151,6 @@ fn serve(
     let mut reader = BufReader::new(stream.try_clone().unwrap());
     let mut first = String::new();
     reader.read_line(&mut first).unwrap();
-    assert_eq!(first.split_whitespace().nth(1), Some(reply.path));
     let mut length = 0;
     loop {
         let mut line = String::new();
@@ -150,6 +169,8 @@ fn serve(
         .get("query")
         .or_else(|| body.get("command"))
         .and_then(Value::as_str);
+    let reply = script.reply(kind.unwrap_or_default());
+    assert_eq!(first.split_whitespace().nth(1), Some(reply.path));
     assert_eq!(kind, Some(reply.kind), "{body}");
     if matches!(reply.interrupt, Some(Interrupt::HangUp)) {
         return (
@@ -214,6 +235,24 @@ fn measured_run(replies: Vec<Reply>, root: &std::path::Path) -> Run {
 }
 
 fn cli_run(replies: Vec<Reply>, root: &std::path::Path, args: &[&str]) -> Run {
+    let args: Vec<&str> = std::iter::once("--json")
+        .chain(args.iter().copied())
+        .collect();
+    scripted_run(
+        VecDeque::from(replies),
+        root,
+        &args,
+        Duration::from_secs(20),
+    )
+}
+
+/// Runs the CLI against a fake Cloud answering from `script` for up to `deadline`.
+fn scripted_run(
+    mut script: impl Script,
+    root: &std::path::Path,
+    args: &[&str],
+    deadline: Duration,
+) -> Run {
     let events = root.join("events.ndjson");
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     listener.set_nonblocking(true).unwrap();
@@ -228,7 +267,7 @@ fn cli_run(replies: Vec<Reply>, root: &std::path::Path, args: &[&str]) -> Run {
         .env("PLOYZ_CLOUD_URL", url)
         .arg("--ployz-config")
         .arg(root.join("selected team.yaml"))
-        .args(["--json", "--color=never"])
+        .arg("--color=never")
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -239,10 +278,9 @@ fn cli_run(replies: Vec<Reply>, root: &std::path::Path, args: &[&str]) -> Run {
     let (done, stopped) = mpsc::channel();
     let server_events = events.clone();
     let server = std::thread::spawn(move || {
-        let mut replies = VecDeque::from(replies);
         let mut exchanges = Vec::new();
         let mut signal = None;
-        let deadline = Instant::now() + Duration::from_secs(20);
+        let deadline = Instant::now() + deadline;
         while stopped.try_recv().is_err() {
             assert!(
                 Instant::now() < deadline,
@@ -250,14 +288,7 @@ fn cli_run(replies: Vec<Reply>, root: &std::path::Path, args: &[&str]) -> Run {
             );
             match listener.accept() {
                 Ok((stream, _)) => {
-                    let (exchange, sent) = serve(
-                        stream,
-                        replies
-                            .pop_front()
-                            .expect("unexpected request, possibly remote Cancel"),
-                        pid,
-                        &server_events,
-                    );
+                    let (exchange, sent) = serve(stream, &mut script, pid, &server_events);
                     exchanges.push(exchange);
                     signal = signal.or(sent);
                 }
@@ -267,10 +298,10 @@ fn cli_run(replies: Vec<Reply>, root: &std::path::Path, args: &[&str]) -> Run {
                 Err(error) => panic!("{error}"),
             }
         }
-        assert!(replies.is_empty(), "CLI skipped a required request");
+        script.finished();
         (exchanges, signal)
     });
-    let deadline = Instant::now() + Duration::from_secs(22);
+    let deadline = Instant::now() + deadline + Duration::from_secs(2);
     while child.try_wait().unwrap().is_none() {
         if Instant::now() >= deadline {
             child.kill().unwrap();
@@ -884,4 +915,170 @@ fn a_superseded_narrowed_deploy_stops_when_the_newer_one_ships_none_of_its_nodes
         let newer = narrowed(8, DeploymentStatus::Applied, "client", nodes);
         ended_superseded(&superseded_by(&newer, read(&newer), false));
     }
+}
+
+/// Cloud keeps Deployment #7 queued until the CLI reads the Environment's
+/// Deployments, which list `ahead` with it; then #7 applies.
+struct Unclaimed {
+    ahead: Option<DeploymentView>,
+    listed: bool,
+    started: Instant,
+}
+
+impl Script for Unclaimed {
+    fn reply(&mut self, kind: &str) -> Reply {
+        match kind {
+            "admit" => admitted(),
+            "deployments" => {
+                self.listed = true;
+                let ours = view(7, DeploymentStatus::Queued);
+                let mut in_flight = vec![ours.deployment.clone()];
+                in_flight.extend(self.ahead.iter().map(|ahead| ahead.deployment.clone()));
+                Reply {
+                    body: serde_json::to_value(View::Deployments(Box::new(DeploymentsView {
+                        environment: ours.environment,
+                        deployments: in_flight.clone(),
+                        next_cursor: None,
+                        latest: Some(ours.deployment),
+                        in_flight,
+                    })))
+                    .unwrap(),
+                    ..replacement()
+                }
+            }
+            // Past the 30s wait a CLI that never lists the Deployments still ends.
+            _ if self.listed || self.started.elapsed() > Duration::from_secs(34) => {
+                observed(7, DeploymentStatus::Applied)
+            }
+            _ => observed(7, DeploymentStatus::Queued),
+        }
+    }
+
+    fn finished(&self) {}
+}
+
+fn left_queued(ahead: Option<DeploymentView>) -> String {
+    let root = tempfile::tempdir().unwrap();
+    let Run { output, .. } = scripted_run(
+        Unclaimed {
+            ahead,
+            listed: false,
+            started: Instant::now(),
+        },
+        root.path(),
+        &["deploy", "--project", "shop", "--env", "production"],
+        Duration::from_secs(45),
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert!(output.status.success(), "{stderr}");
+    stderr
+}
+
+#[test]
+fn a_deploy_queued_behind_one_in_flight_says_which_it_waits_for() {
+    let stderr = left_queued(Some(view(6, DeploymentStatus::Running)));
+    assert!(
+        stderr.contains("Deployment #7 waits for Deployment #6 to finish."),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("ployz deployment show 6 --project shop --env production"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("No Server has started"), "{stderr}");
+    assert!(!stderr.contains("server ls"), "{stderr}");
+}
+
+#[test]
+fn a_deploy_queued_with_nothing_ahead_says_no_server_started_it() {
+    let stderr = left_queued(None);
+    assert!(
+        stderr.contains("No Server has started Deployment #7 yet; it stays queued until one does."),
+        "{stderr}"
+    );
+    assert!(stderr.contains("ployz server ls"), "{stderr}");
+}
+
+/// Deployment #7, cancelled: the cancel stopped web, and api's create failed on its
+/// own when `api_failed`. `marker` is the Store's `cancelled` on the outcome, which a
+/// Store from before it never writes.
+fn cancelled(reason: &str, cause: &[&str], marker: bool, api_failed: bool) -> DeploymentView {
+    let mut cancelled = serde_json::to_value(view(7, DeploymentStatus::Cancelled)).unwrap();
+    let mut outcome = json!({"type": "executed", "summary": {}, "reason": reason, "cause": cause});
+    if marker {
+        outcome
+            .as_object_mut()
+            .unwrap()
+            .insert("cancelled".to_owned(), json!(true));
+    }
+    *cancelled.get_mut("outcome").unwrap() = outcome;
+    let api = if api_failed {
+        json!({"type": "service", "id": "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee", "name": "api", "outcome": "failed", "rows": [{"machine_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "server": "fsn-1", "state": "failed", "reason": "create Container failed", "cause": ["no space left on device"], "step": "create", "log": null, "history": null, "started_at": 1, "finished_at": 2}]})
+    } else {
+        json!({"type": "service", "id": "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee", "name": "api", "outcome": "deployed", "rows": [{"machine_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "server": "fsn-1", "state": "completed", "log": null, "history": null, "started_at": 1, "finished_at": 2}]})
+    };
+    *cancelled.get_mut("nodes").unwrap() = json!([
+        api,
+        {"type": "service", "id": "dddddddd-dddd-4ddd-8ddd-dddddddddddd", "name": "web", "outcome": "failed", "cancelled": true, "rows": [{"machine_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "server": "fsn-1", "state": "failed", "reason": "Cancelled", "cause": [], "step": "create", "cancelled": true, "log": null, "history": null, "started_at": 1, "finished_at": 2}]}
+    ]);
+    serde_json::from_value(cancelled).unwrap()
+}
+
+/// What a person reads from `deployment show` and from `deploy` following `view` to its end.
+fn shown_and_followed(view: &DeploymentView) -> (String, String) {
+    let root = tempfile::tempdir().unwrap();
+    let Run { output, .. } = scripted_run(
+        VecDeque::from([read(view)]),
+        root.path(),
+        &["deployment", "show", "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"],
+        Duration::from_secs(20),
+    );
+    assert!(output.status.success(), "{output:?}");
+    let shown = String::from_utf8(output.stdout).unwrap();
+    let Run { output, .. } = scripted_run(
+        VecDeque::from([admitted(), read(view)]),
+        root.path(),
+        &["deploy", "--project", "shop", "--env", "production"],
+        Duration::from_secs(20),
+    );
+    assert_eq!(output.status.code(), Some(3), "{output:?}");
+    (shown, String::from_utf8(output.stderr).unwrap())
+}
+
+#[test]
+fn a_cancelled_deployment_shows_no_reason_that_only_repeats_its_cancel() {
+    let (shown, followed) = shown_and_followed(&cancelled("web: Cancelled", &[], true, false));
+    assert!(
+        shown.starts_with("Deployment #7 of shop/production: cancelled\n"),
+        "{shown}"
+    );
+    assert!(!shown.contains("web: Cancelled"), "{shown}");
+    assert!(!followed.contains("web: Cancelled"), "{followed}");
+    assert!(
+        followed.contains("error: Deployment #7 was cancelled.\n"),
+        "{followed}"
+    );
+}
+
+#[test]
+fn a_cancelled_deployment_still_names_a_real_failure_and_an_older_stores_reason() {
+    let (shown, followed) = shown_and_followed(&cancelled(
+        "api: create Container failed",
+        &["no space left on device"],
+        false,
+        true,
+    ));
+    assert!(
+        shown.contains("  api: create Container failed\n    cause: no space left on device\n"),
+        "{shown}"
+    );
+    assert!(
+        followed
+            .contains("error: api: create Container failed.\n  cause: no space left on device\n"),
+        "{followed}"
+    );
+    // A Store from before the marker: the reason reads as it always has.
+    let (shown, followed) = shown_and_followed(&cancelled("web: Cancelled", &[], false, false));
+    assert!(shown.contains("\n  web: Cancelled\n"), "{shown}");
+    assert!(followed.contains("error: web: Cancelled.\n"), "{followed}");
 }

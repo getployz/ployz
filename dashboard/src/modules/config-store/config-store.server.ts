@@ -228,7 +228,7 @@ export const storeSystem = Effect.fn("ConfigStore.system")(function* (organizati
 /**
  * The trusted evidence `call` needs, as Cloud observes it itself: GitHub's for repository Services, what Cloud observes
  * of domains, for a Save or Deploy that removes deployed Volumes what the Servers hold of them, for a removal which Servers
- * didn't answer, and for an admission how many Servers could run it. Nothing here comes from the caller. Refused `unavailable` when GitHub or the Cluster Domain
+ * didn't answer, and for an admission or start how many Servers could run it. Nothing here comes from the caller. Refused `unavailable` when GitHub or the Cluster Domain
  * can't answer.
  */
 export const gatherTrusted = Effect.fn("ConfigStore.gatherTrusted")(function* (
@@ -245,9 +245,9 @@ export const gatherTrusted = Effect.fn("ConfigStore.gatherTrusted")(function* (
   );
   const volumes = yield* gatherVolumeEvidence(organizationId, call, read);
   const unanswered = yield* gatherUnanswered(organizationId, call, volumes);
-  // An admission carries how many Servers the Organization has enrolled, so the Store refuses one nothing could run.
-  const admits = call.operation === "write" && (call.command.command === "admit" || call.command.command === "remove"
-    || call.command.command === "approve_pull_request");
+  // An admission or start carries how many Servers the Organization has enrolled, so the Store refuses one nothing could run.
+  const admits = call.operation === "write" && (call.command.command === "admit" || call.command.command === "start"
+    || call.command.command === "remove" || call.command.command === "approve_pull_request");
   const servers = admits ? yield* countOrganizationMachines(organizationId) : undefined;
   const trusted: ConfigTrusted = { ...git, domains };
   if (volumes !== undefined) trusted.volumes = volumes;

@@ -104,6 +104,8 @@ pub(crate) struct GraphService {
     /// Servers stopping or removing an old Container.
     pub draining: usize,
     pub work: Work,
+    /// Servers the Service runs on once this Deploy completed it, kept copies included;
+    /// until then, and for a removal, the Servers the Deploy works on.
     pub machines: BTreeSet<MachineId>,
 }
 
@@ -121,7 +123,7 @@ pub(crate) enum Work {
 impl GraphService {
     fn mark(&self, state: &State) -> Option<&'static str> {
         match state {
-            State::Cancelled | State::NotAttempted => Some("⊘"),
+            State::Cancelled | State::Interrupted | State::NotAttempted => Some("⊘"),
             State::Running(_) if self.ready > 0 && self.ready < self.total => Some("◐"),
             State::Pending
             | State::Running(_)
@@ -139,7 +141,6 @@ impl GraphService {
         let word = match state {
             State::Pending if self.work == Work::Remove => "waiting to remove",
             State::Pending => "waiting",
-            State::Running(RowPhase::Starting) if self.work == Work::Remove => "removing",
             State::Running(_) if self.work == Work::Remove => state.word(),
             State::Running(_) if self.work == Work::Retire => "switched",
             State::Running(phase) => match phase {
@@ -163,13 +164,14 @@ impl GraphService {
             | State::Unchanged
             | State::Failed
             | State::Cancelled
+            | State::Interrupted
             | State::Warned
             | State::Unknown
             | State::Excluded => state.word(),
         };
         if self.total == 0 || (*state == State::NotAttempted && self.ready == 0) {
             word.to_owned()
-        } else if matches!(state, State::Failed | State::Cancelled) {
+        } else if matches!(state, State::Failed | State::Cancelled | State::Interrupted) {
             format!("{word} ({}/{} ready)", self.ready, self.total)
         } else if word == "switched" && self.in_place == self.total {
             format!("updated limits {}/{}", self.ready, self.total)
@@ -209,6 +211,8 @@ pub(crate) enum State {
     Warned,
     /// The Deployment's cancel stopped it while it ran.
     Cancelled,
+    /// The Deployment lost its runner, which stopped it while it ran.
+    Interrupted,
     NotAttempted,
     Unknown,
     Excluded,
@@ -241,6 +245,7 @@ impl State {
             Self::Failed => "failed",
             Self::Warned => "not running",
             Self::Cancelled => "cancelled",
+            Self::Interrupted => "interrupted",
             Self::NotAttempted => "not attempted",
             Self::Unknown => "unknown",
             Self::Excluded => "excluded",
@@ -252,7 +257,11 @@ impl State {
             Self::Completed | Self::ObservedRunning => Tone::Good,
             Self::Failed => Tone::Bad,
             Self::Pending | Self::Running(_) | Self::Unknown | Self::Warned => Tone::Change,
-            Self::Unchanged | Self::Cancelled | Self::NotAttempted | Self::Excluded => Tone::Muted,
+            Self::Unchanged
+            | Self::Cancelled
+            | Self::Interrupted
+            | Self::NotAttempted
+            | Self::Excluded => Tone::Muted,
         }
     }
 }
@@ -264,8 +273,13 @@ impl From<&ployz_store::RowState> for State {
             ployz_store::RowState::Running { phase, .. } => Self::Running(*phase),
             ployz_store::RowState::Completed => Self::Completed,
             ployz_store::RowState::Failed {
-                cancelled: true, ..
+                stopped_by: ployz_store::StoppedBy::CANCEL,
+                ..
             } => Self::Cancelled,
+            ployz_store::RowState::Failed {
+                stopped_by: ployz_store::StoppedBy::LOST_RUNNER,
+                ..
+            } => Self::Interrupted,
             ployz_store::RowState::Failed { .. } => Self::Failed,
             ployz_store::RowState::NotAttempted => Self::NotAttempted,
             ployz_store::RowState::Unknown => Self::Unknown,
@@ -755,7 +769,11 @@ fn mark(state: &State, tick: usize) -> &'static str {
         State::Running(_) => SPINNER.get(tick % SPINNER.len()).copied().unwrap_or("~"),
         State::Completed | State::ObservedRunning | State::Unchanged => "✔",
         State::Failed => "✘",
-        State::Pending | State::Cancelled | State::NotAttempted | State::Excluded => "·",
+        State::Pending
+        | State::Cancelled
+        | State::Interrupted
+        | State::NotAttempted
+        | State::Excluded => "·",
         State::Unknown | State::Warned => "!",
     }
 }
@@ -1010,6 +1028,7 @@ fn outcome(row: &Row) -> Option<&'static str> {
         State::Failed => Some("failed"),
         State::Warned => Some("warning"),
         State::Cancelled => Some("cancelled"),
+        State::Interrupted => Some("interrupted"),
         State::NotAttempted => Some("not attempted"),
         State::Unknown => Some("unknown"),
         State::Excluded => Some("excluded"),

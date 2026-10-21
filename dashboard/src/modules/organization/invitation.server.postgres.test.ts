@@ -66,6 +66,10 @@ const as = async (who: keyof typeof ids, name: keyof typeof COMMANDS, input: Jso
 const outcome = (effect: Effect.Effect<unknown, { readonly _tag: string }, Database | InngestClient | Auth | AppConfig>) =>
   run(effect.pipe(Effect.as("ok"), Effect.catch((error) => Effect.succeed(error._tag))));
 
+const lockWaiter = () => vi.waitFor(async () => {
+  expect((await harness.pool.query("select 1 from pg_stat_activity where datname = current_database() and wait_event_type = 'Lock'")).rowCount)
+    .toBeGreaterThan(0);
+});
 const tokenOf = (link: string) => new URL(link).pathname.split("/").at(-1) ?? "";
 
 const invite = async (who: keyof typeof ids, input: JsonValue) => {
@@ -163,7 +167,7 @@ describe("invite links", () => {
     const { revoke } = await harness.db.transaction(async (tx) => {
       await tx.select({ id: invitation.id }).from(invitation).where(eq(invitation.id, id)).for("update");
       const revoke = outcome(revokeInvite(ACME, id));
-      await new Promise((resolve) => setTimeout(resolve, 300));
+      await lockWaiter();
       await tx.update(invitation).set({ status: "accepted", acceptedByUserId: ids.bob }).where(eq(invitation.id, id));
       return { revoke };
     });
@@ -176,7 +180,7 @@ describe("invite links", () => {
     const { joined } = await harness.db.transaction(async (tx) => {
       await tx.update(member).set({ role: "member" }).where(and(eq(member.organizationId, ACME), eq(member.userId, ids.carol)));
       const joined = outcome(acceptInvite(tokenOf(link), ids.dan));
-      await new Promise((resolve) => setTimeout(resolve, 300));
+      await lockWaiter();
       return { joined };
     });
     expect(await joined).toBe("Conflict");

@@ -182,13 +182,15 @@ fn leave(root: &ArgMatches, removal: Removal) -> Result<(), Error> {
             under_replicated(replicated_services_on(&selected.id, &live), last);
         Ok::<_, Error>((cloud, observed, services, movable, replicated_services))
     })?;
-    if !movable.is_empty() {
-        crate::ui::warn(format!(
-            "Server {} is running Services: {}.",
-            selected.name,
-            super::super::joined(&movable)
-        ));
-        crate::ui::hint(&Hint::Next(format!("ployz server drain {}", selected.name)));
+    if let Some((warning, drain)) = running_services(
+        selected.name.as_str(),
+        &movable,
+        matches.get_one::<String>("confirm").is_some(),
+    ) {
+        crate::ui::warn(warning);
+        if let Some(drain) = drain {
+            crate::ui::hint(&drain);
+        }
     }
     if hold == CloudHold::Last {
         crate::ui::warn(format!(
@@ -274,11 +276,11 @@ fn leave(root: &ArgMatches, removal: Removal) -> Result<(), Error> {
             },
             async |approval| match removal {
                 Removal::Reset => {
-                    cloud_account::start_removal(credential, &selected.id, &confirmation, approval)
+                    cloud_account::start_removal(credential, &selected, &confirmation, approval)
                         .await
                 }
                 Removal::Forget => {
-                    cloud_account::start_forget(credential, &selected.id, approval).await
+                    cloud_account::start_forget(credential, &selected, approval).await
                 }
             },
         )?),
@@ -448,6 +450,26 @@ async fn cloud_manages(
         .any(|label| label.as_str() == "cloud"))
 }
 
+/// The warning that the Server runs Services a drain could move off it, with the drain
+/// command only while the removal still asks: a typed `--confirm` goes ahead and leaves
+/// no Server to drain.
+fn running_services(
+    server: &str,
+    movable: &[QualifiedService],
+    confirmed: bool,
+) -> Option<(String, Option<Hint>)> {
+    if movable.is_empty() {
+        return None;
+    }
+    Some((
+        format!(
+            "Server {server} is running Services: {}.",
+            super::super::joined(movable)
+        ),
+        (!confirmed).then(|| Hint::Next(format!("ployz server drain {server}"))),
+    ))
+}
+
 /// Each of the `docker` Volumes that keeps a Volume's data, by that Volume's name, so
 /// the list and `--accept-volume-loss` speak Volume names. Best effort: without a
 /// reachable Store, or for a Docker Volume no Environment owns, the Docker name stays.
@@ -584,7 +606,8 @@ mod tests {
 
     use super::{
         VolumeOwner, machine_removal_refusal, movable_services_on, qualified_labels,
-        replicated_services_on, reset_removal_refusal, services_on, under_replicated,
+        replicated_services_on, reset_removal_refusal, running_services, services_on,
+        under_replicated,
     };
     use crate::ui::Hint;
 
@@ -749,6 +772,21 @@ mod tests {
             movable_services_on(&machine_id('a'), &live),
             [QualifiedService::parse("app/api").unwrap()]
         );
+    }
+
+    #[test]
+    fn rm_warns_of_running_services_but_suggests_a_drain_only_while_it_still_asks() {
+        let web = [QualifiedService::parse("app/web").unwrap()];
+        let warning = "Server gamma is running Services: app/web.".to_owned();
+        assert_eq!(
+            running_services("gamma", &web, false),
+            Some((
+                warning.clone(),
+                Some(Hint::Next("ployz server drain gamma".into()))
+            ))
+        );
+        assert_eq!(running_services("gamma", &web, true), Some((warning, None)));
+        assert_eq!(running_services("gamma", &[], false), None);
     }
 
     #[test]

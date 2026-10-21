@@ -841,6 +841,44 @@ fn review_names_a_config_by_its_name() {
 }
 
 #[test]
+fn review_and_inspect_name_a_config_mount_by_its_config() {
+    let store = shop();
+    let service = json!({ "name": "web", "image": "traefik/whoami" });
+    call(&store, "service_add", service, "add-1").ok();
+    let config = json!({
+        "config": "sentry",
+        "files": { "config.yml": "a: 1" },
+        "service": "web",
+        "path": "/etc/sentry",
+    });
+    call(&store, "config_write", config, "write-1").ok();
+
+    let review = call(&store, "review", json!({}), "review-1").ok();
+    let lines = review["lines"].as_array().unwrap();
+    assert!(
+        lines
+            .iter()
+            .any(|line| line == r#"  set web.configs.sentry = "/etc/sentry""#),
+        "{review}"
+    );
+    assert!(!review.to_string().contains("configs.@"), "{review}");
+
+    let inspected = call(
+        &store,
+        "service_inspect",
+        json!({ "service": "web" }),
+        "inspect-1",
+    )
+    .ok();
+    let staged = inspected["staged"].as_array().unwrap();
+    assert!(
+        staged.iter().any(|path| path == "configs.sentry"),
+        "{inspected}"
+    );
+    assert!(!inspected.to_string().contains("configs.@"), "{inspected}");
+}
+
+#[test]
 fn discard_drops_a_staged_service() {
     let store = shop();
     call(
@@ -3342,17 +3380,44 @@ fn review_says_every_agent_deploy_asks_on_cloud_and_none_does_locally() {
 /// `server_show` for `web-1` when Cloud keeps `runs` on it, newest first,
 /// answering each read with as many as it asks for.
 fn shown_with_runs(runs: &[(&str, &str, Option<&str>)]) -> Value {
+    let runs = runs
+        .iter()
+        .map(|&(run, state, reason)| (run, state, None, reason))
+        .collect::<Vec<_>>();
+    shown_with_ends(&runs)
+}
+
+/// [`shown_with_runs`], where each run also carries the `end` Cloud names for it.
+fn shown_with_ends(runs: &[(&str, &str, Option<&str>, Option<&str>)]) -> Value {
+    shown_from(runs, false)
+}
+
+/// [`shown_with_ends`] from a Cloud that also names the Server's newest Drain with a verdict,
+/// however many runs it answers.
+fn shown_settled(runs: &[(&str, &str, Option<&str>, Option<&str>)]) -> Value {
+    shown_from(runs, true)
+}
+
+fn shown_from(runs: &[(&str, &str, Option<&str>, Option<&str>)], settles: bool) -> Value {
     let operations = runs
         .iter()
         .enumerate()
-        .map(|(at, (run, state, reason))| {
+        .map(|(at, (run, state, end, reason))| {
             json!({
                 "attempt": format!("00000000-0000-4000-8000-{at:012}"), "run": run,
-                "state": state, "requested_at": 100 - at, "ended_at": 100 - at,
+                "state": state, "end": end, "requested_at": 100 - at, "ended_at": 100 - at,
                 "reason": reason, "servers": [], "kept": [], "unanswered": [],
             })
         })
         .collect::<Vec<_>>();
+    let settled = operations.iter().find(|operation| {
+        operation["run"]
+            .as_str()
+            .is_some_and(|run| run.starts_with("drain "))
+            && (operation["state"] == "done"
+                || operation["state"] == "failed"
+                || (operation["state"] == "unknown" && !operation["end"].is_null()))
+    });
     let shown = drive(
         &shop(),
         in_org(),
@@ -3361,9 +3426,15 @@ fn shown_with_runs(runs: &[(&str, &str, Option<&str>)]) -> Value {
         "show-1",
         &mut |cloud| match cloud {
             Cloud::Ask(CloudQuery::Servers { .. }) => Ok(servers(&[("web-1", 'a')])),
-            Cloud::Ask(CloudQuery::Operations(query)) => Ok(json!({
-                "operations": operations.iter().take(usize::from(query.limit)).collect::<Vec<_>>(),
-            })),
+            Cloud::Ask(CloudQuery::Operations(query)) => {
+                let mut answer = json!({
+                    "operations": operations.iter().take(usize::from(query.limit)).collect::<Vec<_>>(),
+                });
+                if let (true, Some(settled)) = (settles, settled) {
+                    answer["settled_drain"] = settled.clone();
+                }
+                Ok(answer)
+            }
             Cloud::Ask(query) => panic!("unexpected read: {query:?}"),
             Cloud::Act(act) => panic!("a read acts on nothing: {act:?}"),
         },
@@ -3457,6 +3528,80 @@ fn server_show_keeps_a_failed_drain_a_later_superseded_drain_follows() {
     assert_eq!(superseded["failed_drain"]["reason"], never, "{superseded}");
 }
 
+const LOST: &str = "Cloud lost track of the drain; some services may have moved.";
+const INTERRUPTED: &str = "The drain was cancelled while it ran; some services may have moved.";
+
+// Catches a Drain that Cloud lost, or that was cancelled while it ran, going
+// unseen under a later run, though it may have moved services.
+#[test]
+fn server_show_keeps_a_lost_or_interrupted_drain_a_later_run_hides() {
+    for (end, reason) in [("lost", LOST), ("interrupted", INTERRUPTED)] {
+        let hidden = shown_with_ends(&[
+            ("upgrade web-1", "done", None, None),
+            ("drain web-1", "unknown", Some(end), Some(reason)),
+            ("drain web-1", "done", None, None),
+        ]);
+        assert_eq!(hidden["failed_drain"]["run"], "drain web-1", "{hidden}");
+        assert_eq!(hidden["failed_drain"]["state"], "unknown");
+        assert_eq!(hidden["failed_drain"]["outcome"], end);
+        assert_eq!(hidden["failed_drain"]["reason"], reason);
+    }
+}
+
+// Catches a lost Drain outliving a later Drain that finished, or repeating the
+// one `latest` already shows.
+#[test]
+fn server_show_clears_a_lost_drain_a_later_drain_finished() {
+    let drained_since = shown_with_ends(&[
+        ("upgrade web-1", "done", None, None),
+        ("drain web-1", "done", None, None),
+        ("drain web-1", "unknown", Some("lost"), Some(LOST)),
+    ]);
+    assert_eq!(
+        drained_since["failed_drain"],
+        Value::Null,
+        "{drained_since}"
+    );
+
+    let latest = shown_with_ends(&[("drain web-1", "unknown", Some("lost"), Some(LOST))]);
+    assert_eq!(latest["latest"]["reason"], LOST);
+    assert_eq!(latest["failed_drain"], Value::Null, "{latest}");
+}
+
+// Catches an older failed Drain showing over a newer lost one.
+#[test]
+fn server_show_shows_a_lost_drain_over_an_older_failed_one() {
+    let lost = shown_with_ends(&[
+        ("upgrade web-1", "done", None, None),
+        ("drain web-1", "unknown", Some("lost"), Some(LOST)),
+        (
+            "drain web-1",
+            "failed",
+            None,
+            Some("The drain never started."),
+        ),
+    ]);
+    assert_eq!(lost["failed_drain"]["outcome"], "lost", "{lost}");
+    assert_eq!(lost["failed_drain"]["reason"], LOST);
+
+    let failed = shown_with_ends(&[
+        ("upgrade web-1", "done", None, None),
+        (
+            "drain web-1",
+            "failed",
+            None,
+            Some("The drain never started."),
+        ),
+        (
+            "drain web-1",
+            "unknown",
+            Some("interrupted"),
+            Some(INTERRUPTED),
+        ),
+    ]);
+    assert_eq!(failed["failed_drain"]["outcome"], "failed", "{failed}");
+}
+
 // Catches an older failure showing over a newer one.
 #[test]
 fn server_show_shows_the_newest_failed_drain() {
@@ -3469,4 +3614,91 @@ fn server_show_shows_the_newest_failed_drain() {
         ("drain web-1", "failed", Some(never)),
     ]);
     assert_eq!(replaced["failed_drain"]["reason"], refused, "{replaced}");
+}
+
+/// `later` runs that are no Drain, then `drain`, newest first.
+fn under_later_runs<'run>(
+    later: usize,
+    drain: (&'run str, &'run str, Option<&'run str>, Option<&'run str>),
+) -> Vec<(&'run str, &'run str, Option<&'run str>, Option<&'run str>)> {
+    let mut runs = vec![("upgrade web-1", "done", None, None); later];
+    runs.push(drain);
+    runs
+}
+
+// Catches a failed Drain dropping out of `server_show` once twenty later runs
+// fill the page it reads, though nothing has drained the Server since.
+#[test]
+fn server_show_keeps_a_failed_drain_past_twenty_later_runs() {
+    let never = "The drain never started.";
+
+    let hidden = shown_settled(&under_later_runs(
+        25,
+        ("drain web-1", "failed", None, Some(never)),
+    ));
+    assert_eq!(hidden["latest"]["run"], "upgrade web-1");
+    assert_eq!(hidden["failed_drain"]["run"], "drain web-1", "{hidden}");
+    assert_eq!(hidden["failed_drain"]["outcome"], "failed");
+    assert_eq!(hidden["failed_drain"]["reason"], never);
+
+    let mut pending = vec![("drain web-1", "accepted", None, None); 21];
+    pending.push(("drain web-1", "failed", None, Some(never)));
+    let pending = shown_settled(&pending);
+    assert_eq!(pending["failed_drain"]["reason"], never, "{pending}");
+}
+
+// Catches a lost or interrupted Drain dropping out of `server_show` under twenty
+// later runs.
+#[test]
+fn server_show_keeps_a_lost_or_interrupted_drain_past_twenty_later_runs() {
+    for (end, reason) in [("lost", LOST), ("interrupted", INTERRUPTED)] {
+        let hidden = shown_settled(&under_later_runs(
+            20,
+            ("drain web-1", "unknown", Some(end), Some(reason)),
+        ));
+        assert_eq!(hidden["failed_drain"]["outcome"], end, "{hidden}");
+        assert_eq!(hidden["failed_drain"]["reason"], reason);
+    }
+}
+
+// Catches a failed Drain outliving a later Drain that finished past the page,
+// or repeating the one `latest` already shows.
+#[test]
+fn server_show_clears_a_failed_drain_a_drain_past_twenty_later_runs_finished() {
+    let mut drained_since = under_later_runs(20, ("drain web-1", "done", None, None));
+    drained_since.push((
+        "drain web-1",
+        "failed",
+        None,
+        Some("The drain never started."),
+    ));
+    let drained_since = shown_settled(&drained_since);
+    assert_eq!(
+        drained_since["failed_drain"],
+        Value::Null,
+        "{drained_since}"
+    );
+
+    let latest = shown_settled(&[("drain web-1", "unknown", Some("lost"), Some(LOST))]);
+    assert_eq!(latest["latest"]["reason"], LOST);
+    assert_eq!(latest["failed_drain"], Value::Null, "{latest}");
+}
+
+// Catches a Cloud from before the settled Drain losing what `server_show` read
+// from it: the Drain on its page.
+#[test]
+fn server_show_reads_its_page_from_a_cloud_that_names_no_settled_drain() {
+    let never = "The drain never started.";
+
+    let on_page = shown_with_ends(&under_later_runs(
+        19,
+        ("drain web-1", "failed", None, Some(never)),
+    ));
+    assert_eq!(on_page["failed_drain"]["reason"], never, "{on_page}");
+
+    let past_page = shown_with_ends(&under_later_runs(
+        20,
+        ("drain web-1", "failed", None, Some(never)),
+    ));
+    assert_eq!(past_page["failed_drain"], Value::Null, "{past_page}");
 }
