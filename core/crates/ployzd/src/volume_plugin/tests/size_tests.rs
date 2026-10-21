@@ -1,9 +1,9 @@
 //! SetVolumeSize over fake ZFS: `data` holds a 1 GiB bound on its root, or a 3 GiB bound
 //! on its mirror slot and its landed copy, and grows in place or shrinks when allowed.
 
-use std::time::Duration;
-
-use super::copy_tests::{SLOT, SLOT_FS, Source, landed, pull, puller, set_snapshots};
+use super::copy_tests::{
+    SLOT, SLOT_FS, Source, eventually, landed, poll, pull, puller, set_snapshots,
+};
 use super::first_pool_tests::start_pool_with_data;
 use super::inspect_tests::{set_property, start};
 use super::*;
@@ -209,14 +209,12 @@ async fn a_slot_receiving_is_refused_until_the_receive_lands() {
 
     fs::remove_file(test.0.join("props/stall-read")).unwrap();
     landed(&socket, "w-1-1").await;
-    let mut reply = post(&socket, "/Volume.Size.Set", grow(2 * GIB)).await;
-    for _ in 0..300 {
-        if reply.get("Ok").is_some() {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-        reply = post(&socket, "/Volume.Size.Set", grow(2 * GIB)).await;
-    }
+    let reply = poll(async || {
+        let reply = post(&socket, "/Volume.Size.Set", grow(2 * GIB)).await;
+        reply.get("Ok").is_some().then_some(reply)
+    })
+    .await
+    .expect("the grow never answered Ok");
     server.abort();
 
     assert_eq!(reply, json!({"Ok": {"bound_bytes": 2 * GIB}}));
@@ -401,24 +399,12 @@ async fn a_grow_a_first_receive_lands_during_raises_the_copy_it_landed() {
         let socket = socket.clone();
         async move { post(&socket, "/Volume.Size.Set", grow(2 * GIB)).await }
     });
-    for _ in 0..1000 {
-        if test.0.join("list-reached").exists() {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(5)).await;
-    }
-    assert!(
-        test.0.join("list-reached").exists(),
-        "the grow never listed the Pool"
-    );
+    eventually("the grow's list of the Pool", || {
+        test.0.join("list-reached").exists()
+    })
+    .await;
     fs::remove_file(test.0.join("receive-gate")).unwrap();
-    for _ in 0..1000 {
-        if !receives.running(&name) {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(5)).await;
-    }
-    assert!(!receives.running(&name), "the receive never finished");
+    eventually("the receive's finish", || !receives.running(&name)).await;
     fs::remove_file(test.0.join("list-gate")).unwrap();
     let reply = grow_during.await.unwrap();
     server.abort();

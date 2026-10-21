@@ -833,22 +833,40 @@ mod settled {
         run(new)
     }
 
+    /// Waits until `ready` holds.
+    async fn eventually(mut ready: impl FnMut() -> bool) {
+        while !ready() {
+            // real-wait: the daemon changes this state over the fake Docker's real TCP
+            // socket, or in work detached from the test, and neither signals it.
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    }
+
+    /// The daemon's requests reach the fake Docker over a real TCP socket, and admission
+    /// queues them in turn. Neither signals a request that has landed or queued, so this
+    /// gives every started request time to.
+    async fn let_requests_land() {
+        // real-wait: requests travel the fake Docker's TCP socket and admission's queue,
+        // which emit no event.
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
     async fn report_once_started(fake: &FakeDocker, state: Value) {
         let containers = fake.named_containers.as_ref().unwrap();
-        loop {
-            {
-                let mut containers = containers.lock().unwrap();
-                if let Some(current) = containers
-                    .values_mut()
-                    .filter_map(|container| container.get_mut("State"))
-                    .find(|current| current.get("Status") == Some(&Value::from("running")))
-                {
-                    *current = state;
-                    return;
-                }
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
+        let mut state = Some(state);
+        eventually(|| {
+            let mut containers = containers.lock().unwrap();
+            let Some(current) = containers
+                .values_mut()
+                .filter_map(|container| container.get_mut("State"))
+                .find(|current| current.get("Status") == Some(&Value::from("running")))
+            else {
+                return false;
+            };
+            *current = state.take().expect("reported once");
+            true
+        })
+        .await;
     }
 
     async fn ensure_reporting(want: ContainerWant, state: Value) -> (EnsuredContainer, Duration) {
@@ -959,7 +977,7 @@ mod settled {
             let local = local.clone();
             async move { local.ensure_container(run(new_container("started"))).await }
         });
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        let_requests_land().await;
         let new = new_container("started");
         let gone = tokio::spawn({
             let local = local.clone();
@@ -973,7 +991,7 @@ mod settled {
                     .await
             }
         });
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        let_requests_land().await;
         assert!(
             !gone.is_finished(),
             "the removal answered before the create ran"
@@ -1024,7 +1042,7 @@ mod settled {
             let local = local.clone();
             async move { local.ensure_container(run(new_container("started"))).await }
         });
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        let_requests_land().await;
         let new = new_container("started");
         let gone = tokio::spawn({
             let local = local.clone();
@@ -1038,7 +1056,8 @@ mod settled {
                     .await
             }
         });
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        // One turn lets the removal detach from this caller.
+        tokio::task::yield_now().await;
         gone.abort();
         assert!(gone.await.unwrap_err().is_cancelled());
 
@@ -1046,11 +1065,10 @@ mod settled {
         held.await.unwrap().unwrap();
         create.await.unwrap().unwrap();
         let named = fake.named_containers.as_ref().unwrap();
-        tokio::time::timeout(Duration::from_secs(5), async {
-            while !named.lock().unwrap().is_empty() {
-                tokio::time::sleep(Duration::from_millis(20)).await;
-            }
-        })
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            eventually(|| named.lock().unwrap().is_empty()),
+        )
         .await
         .expect("the abandoned removal still empties the slot");
         std::fs::remove_dir_all(data_dir).unwrap();
@@ -1134,10 +1152,10 @@ mod settled {
             .find_map(|container| container.get("Id")?.as_str().map(str::to_owned))
             .unwrap();
         let id = ployz_core::ContainerId::parse(id).unwrap();
-        while local.settles_for_test(&id) == 0 {
-            tokio::time::sleep(Duration::from_millis(1)).await;
-        }
+        eventually(|| local.settles_for_test(&id) > 0).await;
         let settling_since = std::time::Instant::now();
+        // real-wait: lands the state between the settle's polls, which run on the real
+        // clock against the fake Docker's TCP socket.
         tokio::time::sleep(after).await;
         report_once_started(&fake, state).await;
         let reply = tokio::time::timeout(Duration::from_secs(10), ensure)

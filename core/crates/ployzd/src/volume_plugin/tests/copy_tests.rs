@@ -847,46 +847,42 @@ pub(super) fn pull(target: &str) -> Value {
 /// Polls the copy until the pull landed `target` read-only or stopped with a failure.
 /// The receive shows `target` before the pull checks the copy's properties.
 pub(super) async fn landed(socket: &Path, target: &str) -> Value {
-    for _ in 0..300 {
+    poll(async || {
         let copy = post(socket, "/Volume.Copy.Inspect", json!({"name": "data"})).await;
-        if (copy.pointer("/Ok/newest/name") == Some(&json!(target))
+        ((copy.pointer("/Ok/newest/name") == Some(&json!(target))
             && copy.pointer("/Ok/readonly") == Some(&json!(true)))
             || copy
                 .pointer("/Ok/pull/failure")
-                .is_some_and(|failure| !failure.is_null())
-        {
-            return copy;
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-    panic!("the pull never settled");
+                .is_some_and(|failure| !failure.is_null()))
+        .then_some(copy)
+    })
+    .await
+    .expect("the pull never settled")
 }
 
 /// Polls the copy until the pull stopped with a failure. A copy the receive leaves writable
 /// still shows the target read-only for a moment before the pull checks its properties.
 async fn failed(socket: &Path) -> String {
-    for _ in 0..300 {
+    poll(async || {
         let copy = post(socket, "/Volume.Copy.Inspect", json!({"name": "data"})).await;
-        if let Some(failure) = copy.pointer("/Ok/pull/failure").and_then(Value::as_str) {
-            return failure.to_owned();
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-    panic!("the pull never failed");
+        copy.pointer("/Ok/pull/failure")
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+    })
+    .await
+    .expect("the pull never failed")
 }
 
 /// Resends the Pull until it finishes the landed receive. Inspect shows the target a
 /// moment before the receive task records its outcome, and a resend in that window
 /// still finds the receive running.
 async fn finished(socket: &Path, target: &str) -> Value {
-    for _ in 0..300 {
+    poll(async || {
         let reply = post(socket, "/Volume.Copy.Pull", pull(target)).await;
-        if reply.pointer("/Ok/pull") == Some(&Value::Null) {
-            return reply;
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-    panic!("the pull of {target} never finished");
+        (reply.pointer("/Ok/pull") == Some(&Value::Null)).then_some(reply)
+    })
+    .await
+    .unwrap_or_else(|| panic!("the pull of {target} never finished"))
 }
 
 #[tokio::test]
@@ -953,16 +949,11 @@ async fn a_stalled_receive_process_fails_the_pull_and_dies() {
         let failure = copy.pointer("/Ok/pull/failure").unwrap().as_str().unwrap();
         assert!(failure.contains("stalled"), "{marker}: {failure}");
         let pid = fs::read_to_string(test.0.join("props/receive-pid")).unwrap();
-        for _ in 0..100 {
-            if !Path::new(&format!("/proc/{}", pid.trim())).exists() {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-        assert!(
-            !Path::new(&format!("/proc/{}", pid.trim())).exists(),
-            "{marker}: receive child survived its deadline"
-        );
+        let proc = format!("/proc/{}", pid.trim());
+        eventually(&format!("{marker}: the receive child's exit"), || {
+            !Path::new(&proc).exists()
+        })
+        .await;
         let reply = post(&socket, "/Volume.Copy.Destroy", json!({"name": "data"})).await;
         assert!(reply.get("Ok").is_some(), "{marker}: {reply}");
         server.abort();
@@ -1118,12 +1109,10 @@ async fn a_pull_resent_with_its_first_expect_continues_a_full_send_that_emptied_
     let expect = mirror_expect(&machine.copy().await);
 
     machine.call("/Volume.Copy.Pull", pull("w-1-2")).await;
-    for _ in 0..300 {
-        if commands(&machine.test).contains("zfs destroy -r tank/ployz-mirror/data/fs") {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
+    eventually("the slot's destroy", || {
+        commands(&machine.test).contains("zfs destroy -r tank/ployz-mirror/data/fs")
+    })
+    .await;
     let copy = machine.copy().await;
     assert_eq!(copy.pointer("/Ok/newest"), Some(&Value::Null), "{copy}");
 
@@ -1268,15 +1257,36 @@ async fn departure_during_a_receive_stops_it_and_destroys_the_mirror() {
     server.abort();
 }
 
-/// Waits up to five seconds for `done`, and fails the test naming `what` if it never is.
-async fn eventually(what: &str, mut done: impl FnMut() -> bool) {
-    for _ in 0..500 {
-        if done() {
-            return;
+/// Probes every 10ms for up to ten seconds, and answers the first value `probe` gives, or
+/// None when it never gave one.
+pub(super) async fn poll<T>(mut probe: impl AsyncFnMut() -> Option<T>) -> Option<T> {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        if let Some(value) = probe().await {
+            return Some(value);
         }
+        if tokio::time::Instant::now() >= deadline {
+            return None;
+        }
+        // real-wait: fake ZFS runs as real child processes behind the plugin's unix socket,
+        // and neither signals when the state a test waits on lands.
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
-    panic!("{what} never happened");
+}
+
+/// Waits for `done`, and fails the test naming `what` if it never is.
+pub(super) async fn eventually(what: &str, mut done: impl FnMut() -> bool) {
+    if poll(async || done().then_some(())).await.is_none() {
+        panic!("{what} never happened");
+    }
+}
+
+/// Lets requests already sent act for `long`. Neither the plugin's unix socket nor fake
+/// ZFS's child processes signal how far a request got, and an effect that must not
+/// happen has no event to await.
+pub(super) async fn let_requests_act(long: Duration) {
+    // real-wait: a request's progress through the plugin and fake ZFS emits no event.
+    tokio::time::sleep(long).await;
 }
 
 /// Waits until the fake receive has made its dataset and set its properties, as a
@@ -1290,12 +1300,7 @@ pub(super) async fn receive_ready(test: &TestDir) -> String {
 /// Waits for the fake receive to start, and answers its pid.
 async fn receive_pid(test: &TestDir) -> String {
     let pid = test.0.join("props/receive-pid");
-    for _ in 0..300 {
-        if pid.exists() {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
+    eventually("the receive's start", || pid.exists()).await;
     fs::read_to_string(pid).unwrap().trim().to_owned()
 }
 
@@ -1900,7 +1905,7 @@ async fn panicked_with_a_held_child(receives: &Receives, name: &DockerVolumeName
             panic!("the receive task broke");
         }
     });
-    for _ in 0..500 {
+    for _ in 0..100 {
         if panicked.load(Ordering::SeqCst) {
             assert!(
                 receives.failure(name).is_none(),
@@ -1908,7 +1913,7 @@ async fn panicked_with_a_held_child(receives: &Receives, name: &DockerVolumeName
             );
             return;
         }
-        tokio::time::sleep(Duration::from_millis(10)).await;
+        tokio::task::yield_now().await;
     }
     panic!("the task never panicked");
 }
@@ -1980,16 +1985,13 @@ async fn departure_stops_a_pull_whose_writer_never_answers() {
     let (socket, server) = puller(&test, &["root"], source.port);
     let reply = post(&socket, "/Volume.Copy.Pull", pull("w-1-1")).await;
     assert_eq!(reply.pointer("/Ok/kind"), Some(&json!("slot")), "{reply}");
-    for _ in 0..300 {
-        if source
+    eventually("the writer's send request", || {
+        source
             .requests()
             .iter()
             .any(|uri| uri.starts_with("/volume-send/"))
-        {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
+    })
+    .await;
 
     let reply = tokio::time::timeout(
         Duration::from_secs(5),
@@ -2628,15 +2630,13 @@ async fn a_pull_resent_after_it_landed_finishes_it_whatever_the_expect_says() {
         "{started}"
     );
     landed(&b.socket, "w-1-2").await;
-    let mut finished = set_mirror(&b, &expect, "w-1-2").await;
     // Inspect shows the target before the receive task records its outcome.
-    for _ in 0..300 {
-        if finished.pointer("/Ok/pull") == Some(&Value::Null) {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-        finished = set_mirror(&b, &expect, "w-1-2").await;
-    }
+    let finished = poll(async || {
+        let reply = set_mirror(&b, &expect, "w-1-2").await;
+        (reply.pointer("/Ok/pull") == Some(&Value::Null)).then_some(reply)
+    })
+    .await
+    .expect("the pull of w-1-2 never finished");
     assert_eq!(
         finished.pointer("/Ok/pull"),
         Some(&Value::Null),
@@ -2824,18 +2824,16 @@ impl Cloud {
             want: mirror_want(Some(target)),
             run: None,
         };
-        for _ in 0..300 {
+        let finished = poll(async || {
             let reply = self.replay(&set).await;
             assert!(reply.get("Ok").is_some(), "{set:?}: {reply}");
-            if reply.pointer("/Ok/pull") == Some(&Value::Null)
-                && reply.pointer("/Ok/newest/name") == Some(&json!(target))
-            {
-                self.sent.push(set);
-                return;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-        panic!("the pull of {target} never finished");
+            (reply.pointer("/Ok/pull") == Some(&Value::Null)
+                && reply.pointer("/Ok/newest/name") == Some(&json!(target)))
+            .then_some(())
+        })
+        .await;
+        assert!(finished.is_some(), "the pull of {target} never finished");
+        self.sent.push(set);
     }
 
     fn running(&self, side: Side) -> &[&'static str] {
@@ -3413,18 +3411,19 @@ async fn drive(writing: Writing, test: &TestDir, socket: &Path, stop: Option<(&s
         fs::write(test.0.join("props/fail-skip"), earlier.to_string()).unwrap();
         fs::write(&fail, stop.strip_prefix("zfs ").unwrap()).unwrap();
     }
-    for _ in 0..300 {
+    let ended = poll(async || {
         if stop.is_some() && !fail.exists() {
-            return;
+            return Some(());
         }
         let reply = post(socket, route, request.clone()).await;
         if reply.get("Err").is_some() || writing.ended(&reply) {
             assert!(stop.is_some() || reply.get("Ok").is_some(), "{reply}");
-            return;
+            return Some(());
         }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-    panic!("{writing:?} never ended");
+        None
+    })
+    .await;
+    assert!(ended.is_some(), "{writing:?} never ended");
 }
 
 /// The departure's verdict on the copy `name` held: whether it destroyed a slot that held
