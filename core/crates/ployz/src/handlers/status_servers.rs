@@ -59,10 +59,8 @@ pub(super) enum Subject {
     },
 }
 
-/// A copy its owner keeps that does not serve.
 #[derive(Serialize)]
 pub(super) struct NotServingCopy {
-    /// Its Machine by name, else by ID when the Machine list lacks it.
     machine: String,
     container: ContainerId,
     rotation: CopyRotation,
@@ -592,12 +590,9 @@ fn service_names(services: &[QualifiedService]) -> String {
         .join(", ")
 }
 
-/// How many of a Service's seen copies serve, how many should, and the kept copies that
-/// do not, when fewer serve than should. A copy is kept when it is In and not stopped. An
-/// Out copy still running counts as kept only for a Replicated Service in a `complete`
-/// view: it stands in for a missing In copy only when every copy was seen. Each Held copy
-/// cancels one Out stand-in, never an In copy. The mode and the count come from the
-/// newest In copy that is not stopped, else the newest running Out copy.
+/// An Out copy still running stands in for a missing In copy only when every copy was
+/// seen, so a partial list never names a copy as draining. Each Held copy cancels one Out
+/// stand-in, never an In copy, so a restart beside a leftover Out copy raises no row.
 fn shortfall<'service>(
     service: &'service ServiceObservation,
     down: &BTreeSet<MachineId>,
@@ -663,7 +658,6 @@ fn shortfall<'service>(
 }
 
 impl Check {
-    /// The row for a Service serving fewer copies than it should, per [`shortfall`].
     fn not_serving(
         &self,
         service: ServiceObservation,

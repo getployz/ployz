@@ -144,7 +144,6 @@ fn web_routed_at(copies: &[(char, [u8; 4])]) -> RoutedAddresses {
     }
 }
 
-/// Judge what status observed for namespace `app`, with hints that name no scope.
 fn judged_in_app(observed: Observed) -> Check {
     judge(observed, &qualified("app", "web").namespace, |words| {
         format!("ployz {}", words.join(" "))
@@ -159,7 +158,6 @@ fn warned(check: &Check) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// A copy of `app/web` as its owner lists it, with the Deploy's `replicas` in its spec.
 fn web_copy(
     machine: &Machine,
     hex: char,
@@ -204,7 +202,6 @@ fn listed_copies(copies: Vec<ContainerObservation>) -> LiveServices<RpcError> {
     }
 }
 
-/// Judge the listing alone: no Service has a Serving Container whose routes were read.
 fn judged(machines: Vec<MachineObservation>, live: LiveServices<RpcError>) -> Check {
     judged_in_app(Observed {
         machines,
