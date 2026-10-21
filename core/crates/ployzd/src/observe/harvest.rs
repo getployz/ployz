@@ -1718,8 +1718,8 @@ fn keep_env(id: &ContainerId, dir: &Path, inspected: &ContainerInspectResponse) 
 }
 
 fn retained_env(inspected: &ContainerInspectResponse) -> Option<RetainedEnv> {
-    let entries = inspected.config.as_ref()?.env.as_deref()?;
-    RetainedEnv::from_inspected(entries)
+    let config = inspected.config.as_ref()?;
+    RetainedEnv::from_inspected(config.env.as_deref().unwrap_or_default())
 }
 
 fn write_meta(dir: &Path, meta: &ContainerMeta) -> io::Result<()> {
