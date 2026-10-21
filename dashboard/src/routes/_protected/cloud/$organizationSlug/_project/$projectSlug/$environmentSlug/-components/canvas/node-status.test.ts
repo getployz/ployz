@@ -52,7 +52,7 @@ describe("runtimeLine", () => {
     expect(runtimeLine(service, null, watch({ incomplete: true }))).toMatchObject({ word: "Deployed", down: false });
   });
 
-  it("says a grey Not seen running, not Crashed or Stopped, when none of its containers runs while a Server is missing from the evidence", () => {
+  it("says a grey Not seen running, not Crashed or Stopped, when none of its containers runs while the evidence is incomplete", () => {
     const partial = watch({ incomplete: true });
     const notSeen = { word: "Not seen running", tone: "quiet", down: false };
     expect(runtimeLine(service, runtime(container("exited"), container("restarting")), partial)).toMatchObject(notSeen);

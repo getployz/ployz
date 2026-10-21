@@ -58,7 +58,7 @@ export type RuntimeLens = Pick<ReturnType<typeof useRuntimeLens>, "status" | "in
 /**
  * A Service's status line: what runs now, from runtime evidence. Staged work never replaces it, and it never guesses:
  * before evidence it waits, and evidence that isn't current reads grey with its age.
- * `deploying`: a Deploy in flight restarts it. Current evidence that names no container of it then reads Starting, not Not running;
+ * `deploying`: a Deploy in flight restarts it. Current, whole evidence that names no container of it then reads Starting, not Not running;
  * evidence that isn't current keeps its last word;
  * any container it has still says what it says: a Service already down stays down.
  * `desiredReplicas`: how many it asks for, when known; fewer serving reads Degraded, except while a Deploy rolls them.
