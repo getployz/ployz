@@ -137,6 +137,28 @@ fn automatic_sites_render_routes_and_health_endpoint() {
         assert!(verify.contains(&format!("respond \"{local}\" 200")));
     }
 }
+
+#[test]
+fn every_reverse_proxy_balances_by_load_and_dials_briefly() {
+    let caddyfile = render_caddyfile(&renderer_projection(), "TIMESTAMP");
+
+    let common = automatic_site_block(&caddyfile, "(common_proxy)");
+    assert!(common.contains("lb_policy least_conn"), "{common}");
+    assert!(
+        common.contains("transport http { dial_timeout 1s }"),
+        "{common}"
+    );
+    let proxies = caddyfile
+        .lines()
+        .zip(caddyfile.lines().skip(1))
+        .filter(|(line, _)| line.trim_start().starts_with("reverse_proxy "))
+        .collect::<Vec<_>>();
+    assert!(proxies.len() >= 2, "{caddyfile}");
+    for (proxy, body) in proxies {
+        assert_eq!(body.trim(), "import common_proxy", "{proxy}");
+    }
+}
+
 #[test]
 fn every_site_answers_failures_with_the_error_page() {
     let caddyfile = render_caddyfile(&renderer_projection(), "TIMESTAMP");
