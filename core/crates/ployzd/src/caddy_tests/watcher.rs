@@ -1198,10 +1198,10 @@ async fn routed_addresses_follow_the_applied_config_even_when_the_ack_write_fail
     );
     assert_eq!(
         published.addresses,
-        BTreeMap::from([(
+        Some(BTreeMap::from([(
             api.identity(),
             BTreeMap::from([(api.container_id, api.address.unwrap())])
-        )]),
+        )])),
         "Caddy routes the API copy, and the db copy has no ingress to route"
     );
 
@@ -1240,7 +1240,7 @@ async fn routed_addresses_follow_a_loaded_config_even_when_the_caddyfile_write_f
     next_load(&mut load_rx).await;
     let published = timeout(
         Duration::from_secs(5),
-        published.wait_for(|published| !published.addresses.is_empty()),
+        published.wait_for(|published| published.addresses.is_some()),
     )
     .await
     .expect("Caddy serves the loaded config, so its addresses are recorded")
@@ -1248,10 +1248,10 @@ async fn routed_addresses_follow_a_loaded_config_even_when_the_caddyfile_write_f
     .clone();
     assert_eq!(
         published.addresses,
-        BTreeMap::from([(
+        Some(BTreeMap::from([(
             api.identity(),
             BTreeMap::from([(api.container_id, api.address.unwrap())])
-        )])
+        )]))
     );
     assert_eq!(
         published.count, 0,
@@ -1304,10 +1304,10 @@ async fn returning_to_the_last_written_config_reloads_caddy_after_a_failed_caddy
     let published = published
         .wait_for(|published| {
             published.addresses
-                == BTreeMap::from([(
+                == Some(BTreeMap::from([(
                     api.identity(),
                     BTreeMap::from([(api.container_id, api.address.unwrap())]),
-                )])
+                )]))
         })
         .await
         .unwrap()
@@ -1361,10 +1361,10 @@ async fn routed_addresses_leave_out_an_https_route_caddy_has_no_certificate_for(
         Duration::from_secs(5),
         published.wait_for(|published| {
             published.addresses
-                == BTreeMap::from([(
+                == Some(BTreeMap::from([(
                     web.identity(),
                     BTreeMap::from([(web.container_id, web.address.unwrap())]),
-                )])
+                )]))
         }),
     )
     .await
@@ -1415,10 +1415,10 @@ async fn routed_addresses_wait_for_caddy_to_load_a_config_written_without_its_ad
     settle().await;
     assert_eq!(
         published.borrow().addresses,
-        BTreeMap::from([(
+        Some(BTreeMap::from([(
             api.identity(),
             BTreeMap::from([(api.container_id, api.address.unwrap())])
-        )]),
+        )])),
         "the running Caddy still serves 10.210.1.2"
     );
 
@@ -1429,10 +1429,10 @@ async fn routed_addresses_wait_for_caddy_to_load_a_config_written_without_its_ad
         Duration::from_secs(5),
         published.wait_for(|published| {
             published.addresses
-                == BTreeMap::from([(
+                == Some(BTreeMap::from([(
                     api.identity(),
                     BTreeMap::from([(api.container_id, ContainerAddress([10, 210, 1, 7].into()))]),
-                )])
+                )]))
         }),
     )
     .await

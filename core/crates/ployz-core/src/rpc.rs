@@ -1343,12 +1343,13 @@ pub struct RoutesRead {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ReadRoutedAddressesRequest {}
 
-/// What this Machine's proxy last applied, per Service and copy. Empty before
-/// its first publish: it claims nothing.
+/// What this Machine's proxy serves, per Service and copy. `None` when this daemon
+/// can't confirm what its proxy serves, such as before its first load or after it
+/// wrote a config the proxy may or may not have read.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct RoutedAddresses {
     #[serde(default)]
-    pub routes: BTreeMap<QualifiedService, BTreeMap<ContainerId, ContainerAddress>>,
+    pub routes: Option<BTreeMap<QualifiedService, BTreeMap<ContainerId, ContainerAddress>>>,
 }
 
 /// A listed Machine whose proxy has not acked the copies a reader waits for.

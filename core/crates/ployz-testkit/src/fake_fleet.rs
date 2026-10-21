@@ -824,7 +824,12 @@ impl Fleet {
                 unary(self.ensure(target, container_id, &request.want)?)
             }
             RpcRequestBody::ReadRoutes(request) => unary(self.routes(&request.service).into()),
-            RpcRequestBody::ReadRoutedAddresses(_) => unary(RoutedAddresses::default().into()),
+            RpcRequestBody::ReadRoutedAddresses(_) => unary(
+                RoutedAddresses {
+                    routes: Some(BTreeMap::new()),
+                }
+                .into(),
+            ),
             RpcRequestBody::InspectStorage(_) => unary(self.by_id(target)?.storage().into()),
             RpcRequestBody::ListVolumes(_) => unary(
                 VolumeInventory {

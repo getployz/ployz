@@ -2989,9 +2989,9 @@ mod read_routed_addresses {
             )])
         };
         for octet in [2, 3] {
-            publishes.send_modify(|published| published.addresses = routed(octet));
+            publishes.send_modify(|published| published.addresses = Some(routed(octet)));
         }
 
-        assert_eq!(read(&service).await.routes, routed(3));
+        assert_eq!(read(&service).await.routes, Some(routed(3)));
     }
 }

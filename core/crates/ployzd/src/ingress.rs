@@ -51,7 +51,9 @@ use caddy::CaddyAdmin;
 pub(crate) struct PublishedRoutes {
     pub(crate) count: u64,
     pub(crate) routes: BTreeMap<QualifiedService, BTreeSet<ContainerId>>,
-    pub(crate) addresses: BTreeMap<QualifiedService, BTreeMap<ContainerId, ContainerAddress>>,
+    /// `None` while this process can't confirm what Caddy serves.
+    pub(crate) addresses:
+        Option<BTreeMap<QualifiedService, BTreeMap<ContainerId, ContainerAddress>>>,
 }
 
 /// Run the Caddy watcher.
@@ -512,6 +514,7 @@ where
                     // serving the config it last loaded.
                     if through_admin && !matches!(result, Err(ApplyError::BeforeServing(_))) {
                         route_publishes.send_if_modified(|publishes| {
+                            let addresses = Some(addresses);
                             let changed = publishes.addresses != addresses;
                             publishes.addresses = addresses;
                             changed

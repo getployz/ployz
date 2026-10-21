@@ -448,6 +448,7 @@ fn stale_addresses(
         .filter_map(|(machine, routed)| {
             let stale: BTreeSet<ContainerAddress> = routed
                 .routes
+                .as_ref()?
                 .get(&service.identity)?
                 .iter()
                 .filter(|(copy, address)| match reported.get(*copy) {
@@ -707,7 +708,7 @@ mod tests {
 
     fn web_routed_at(copies: &[(char, [u8; 4])]) -> RoutedAddresses {
         RoutedAddresses {
-            routes: BTreeMap::from([(
+            routes: Some(BTreeMap::from([(
                 qualified("app", "web"),
                 copies
                     .iter()
@@ -718,7 +719,7 @@ mod tests {
                         )
                     })
                     .collect(),
-            )]),
+            )])),
         }
     }
 
