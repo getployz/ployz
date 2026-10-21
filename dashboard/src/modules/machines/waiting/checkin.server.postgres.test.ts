@@ -111,10 +111,10 @@ const request = (token: string, host: Host, options: Send = {}) => {
     checkinKey: host.key,
     cliVersion: options.cliVersion ?? "0.3.0",
     report: { ...report, ...options.report, hostname: options.hostname ?? report.hostname },
-    ...(options.attempt === undefined ? {} : { attempt: options.attempt }),
   } as const;
   const withPrep: CheckinRequest = options.prep === undefined ? base : { ...base, prep: options.prep };
-  const checkin: CheckinRequest = options.probe === undefined ? withPrep : { ...withPrep, probe: options.probe };
+  const withProbe: CheckinRequest = options.probe === undefined ? withPrep : { ...withPrep, probe: options.probe };
+  const checkin: CheckinRequest = options.attempt === undefined ? withProbe : { ...withProbe, attempt: options.attempt };
   const body = Buffer.from(JSON.stringify(checkin));
   const timestamp = BigInt(Math.floor(Date.now() / 1000) + (options.skew ?? 0));
   const signature = sign(null, checkinMessage(host.key, timestamp, body), host.privateKey);
