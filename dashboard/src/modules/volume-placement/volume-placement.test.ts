@@ -398,6 +398,11 @@ describe("recovery", () => {
     expect(found).toEqual({ kind: "wait", mirror: { id: id("web-2"), name: "web-2" }, lostAfter: at });
   });
 
+  it("waits while a staged primary's report is incomplete, though another silent Server is listed first", () => {
+    const found = recover([member("web-3", "unanswered"), mirrorAsOf("web-2", at), unlisted("web-1")], row(["web-2"], { primary: "web-1", mirrors: ["web-2"] }));
+    expect(found).toEqual({ kind: "wait", mirror: { id: id("web-2"), name: "web-2" }, lostAfter: at });
+  });
+
   it("still asks to forget a silent Server while another's report is incomplete, naming only the silent one", () => {
     const found = recover([member("web-1", "unanswered"), mirrorAsOf("web-2", at), unlisted("web-3")], row(["web-2"]));
     expect(found).toMatchObject({ kind: "forget", down: [{ name: "web-1" }] });
