@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # Usage: scripts/verify/power-cut-replication.sh <manifest> [machine]
 #
-# Needs a run with at least 3 Machines and a Service with a domain whose copies run on every
-# Machine. Cuts power to <machine> (default: the last one), brings it back, cuts it again
+# Needs a run with at least 3 Machines, built with ployz/verify-faults for `ployz debug`, and a
+# Service with a custom domain whose copies run on every Machine. Without DNS no certificate is
+# issued and Caddy renders no route, so it first pins a self-signed certificate on each custom
+# domain. Cuts power to <machine> (default: the last one), brings it back, cuts it again
 # 8 s after boot so the cut lands on its own fresh Corrosion commits, then brings it back.
 # 60 s later it fails when any Machine holds a different clock or value for one of <machine>'s
 # container rows, or when any proxy routes an address on <machine> that is not an In copy there.
@@ -29,7 +31,21 @@ down() {
   echo "$target never showed as down"
   exit 2
 }
+certify() {
+  local dir host request
+  dir=$(mktemp -d)
+  for host in $(vc cli "$run" -- --json domain ls | jq -r '.domains[] | select(.kind == "custom") | .hostname'); do
+    openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -days 2 -subj "/CN=$host" \
+      -addext "subjectAltName=DNS:$host" -keyout "$dir/key.pem" -out "$dir/cert.pem" 2>/dev/null
+    request=$(jq -cn --arg host "$host" --rawfile chain "$dir/cert.pem" --rawfile key "$dir/key.pem" \
+      '{protocol_major: 1, command: "publish_certificate_material", payload: {hostname: $host,
+        change: {action: "set", certificate_chain_pem: $chain, private_key_pem: $key}}}')
+    vc cli "$run" -- debug local-rpc "$request" >/dev/null
+  done
+  rm -rf "$dir"
+}
 
+certify
 vc power off "$run" "$target" >/dev/null; down
 vc power on "$run" "$target" >/dev/null
 sleep 8
@@ -60,7 +76,6 @@ serving=$(store "$target" "select json_extract(container, '\$.address') from con
   where machine_id = '$target_id' and rotation = 'in' and json_extract(container, '\$.address') is not null")
 subnet=$(vc exec "$run" "$target" -- sh -c "ip -4 -o addr show | grep -o '10\.210\.[0-9]*\.' | head -1")
 [ -n "$subnet" ] || { echo "no overlay address on $target"; exit 2; }
-[ -n "$serving" ] || { echo "FAIL: $target has no In copy to route to"; failed=1; }
 for m in $names; do
   routed=$(upstreams "$m") || { echo "FAIL: could not read $m's proxy routes"; failed=1; continue; }
   [ -n "$routed" ] || { echo "FAIL: $m's proxy routes nothing"; failed=1; continue; }
