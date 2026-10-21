@@ -114,7 +114,9 @@ take over once web-1 is forgotten.
    which changes are lost: the writes since the mirror's last refresh. The button shows only
    while the mirror is the volume's last copy. If an old copy from an earlier move also remains,
    Copies says so instead of offering it: delete that copy first, with
-   `ployz volume mirror rm data-web-3 --if-old-copy`, and **Use mirror** appears.
+   `ployz volume mirror rm data-web-3 --if-old-copy --confirm data`, and **Use mirror** appears.
+   `--confirm` names the volume because, with no writer, the mirror and that old copy are all
+   that is left of it; without the flag the command refuses and prints this line.
 4. Deploy. The deploy asks you to confirm **Data loss**, makes the mirror the volume, and starts
    the services that mount it on that server.
 
