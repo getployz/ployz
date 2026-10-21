@@ -7,7 +7,7 @@ use ployz_build::{
     remote::{self, Definition, Event, Input, Outcome},
 };
 use ployz_core::{MachineId, MachineRpcClient, MachineTarget, OpaquePayload, apply_one_target};
-use ployz_testkit::{Cluster, ClusterPlan};
+use ployz_testkit::{Cluster, ClusterPlan, poll_until};
 use std::{collections::BTreeMap, fs, path::Path, time::Duration};
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
@@ -446,23 +446,23 @@ async fn prepared_build_is_delivered_to_its_destination_without_a_registry() {
 }
 
 async fn assert_temporary_tags_released(cluster: &Cluster) {
-    tokio::time::timeout(Duration::from_secs(10), async {
-        loop {
-            let mut empty = true;
+    poll_until(
+        Duration::from_secs(10),
+        "temporary Build tags are released on every Machine",
+        async || {
             for machine in 0..2 {
                 let tags = cluster
                     .machine_shell(machine, "docker image ls --format '{{.Tag}}'")
                     .unwrap();
-                empty &= !tags.lines().any(|tag| tag.starts_with("ployz-build-"));
+                if tags.lines().any(|tag| tag.starts_with("ployz-build-")) {
+                    return Err(format!("Machine {machine} still has:\n{tags}"));
+                }
             }
-            if empty {
-                return;
-            }
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
-    })
+            Ok(())
+        },
+    )
     .await
-    .expect("command left temporary Build tags on a Machine");
+    .unwrap();
 }
 
 /// Both testkit Machines run this host's kernel, so the derived platform is

@@ -13,7 +13,7 @@ use ployz_core::{
     MachineId, MembershipObservation, Namespace, RequestedServiceSpec, ResolvedServiceSpec,
     ServiceId, StopOptions, op,
 };
-use ployz_testkit::{Cluster, ClusterPlan};
+use ployz_testkit::{Cluster, ClusterPlan, poll_until};
 use tokio_util::sync::CancellationToken;
 
 #[tokio::test]
@@ -179,18 +179,16 @@ async fn certificate_material_in_cluster_state_is_served_without_restart() {
     let cluster = Cluster::create(plan).unwrap();
     cluster.wait_ready(Duration::from_secs(30)).await.unwrap();
     let first = cluster.initialize_first().await.unwrap();
-    tokio::time::timeout(Duration::from_secs(60), async {
-        loop {
-            if cluster
+    poll_until(
+        Duration::from_secs(60),
+        "the first Machine lists itself",
+        async || {
+            cluster
                 .machines(0)
                 .await
                 .is_ok_and(|machines| machines.len() == 1)
-            {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(250)).await;
-        }
-    })
+        },
+    )
     .await
     .unwrap();
     let direct = cluster.api_address(0).unwrap();
@@ -248,14 +246,18 @@ async fn certificate_material_in_cluster_state_is_served_without_restart() {
         &second_cert,
         &second_key,
     );
-    tokio::time::timeout(Duration::from_secs(60), async {
-        loop {
-            if curl_https(&cluster, 0, &second_cert).trim() == "ok" {
-                return;
+    poll_until(
+        Duration::from_secs(60),
+        "Machine 0 serves the second certificate",
+        async || {
+            let response = curl_https(&cluster, 0, &second_cert);
+            if response.trim() == "ok" {
+                Ok(())
+            } else {
+                Err(response)
             }
-            tokio::time::sleep(Duration::from_millis(250)).await;
-        }
-    })
+        },
+    )
     .await
     .unwrap();
     assert!(curl_https(&cluster, 0, &first_cert).trim() != "ok");
@@ -266,14 +268,18 @@ async fn certificate_material_in_cluster_state_is_served_without_restart() {
         config.contains("tls /config/caddy/certs/secure.example.test-")
     })
     .await;
-    tokio::time::timeout(Duration::from_secs(60), async {
-        loop {
-            if curl_https(&cluster, 1, &second_cert).trim() == "ok" {
-                return;
+    poll_until(
+        Duration::from_secs(60),
+        "Machine 1 serves the second certificate",
+        async || {
+            let response = curl_https(&cluster, 1, &second_cert);
+            if response.trim() == "ok" {
+                Ok(())
+            } else {
+                Err(response)
             }
-            tokio::time::sleep(Duration::from_millis(250)).await;
-        }
-    })
+        },
+    )
     .await
     .unwrap();
 }
@@ -503,22 +509,24 @@ fn run_cli(direct: &str, args: &[&str]) -> process::Output {
 }
 
 async fn wait_service(client: &mut ployz::connect::Client, name: &str, count: usize) -> ServiceId {
-    tokio::time::timeout(Duration::from_secs(60), async {
-        loop {
+    poll_until(
+        Duration::from_secs(60),
+        &format!("Service {name} lists {count} Containers"),
+        async || {
             let live = client
                 .live_services(ployz_core::EnvironmentValues::Redacted)
                 .await
                 .unwrap();
-            if let Some(service) = live.services().into_iter().find(|service| {
-                service.containers.first().is_some_and(|container| {
-                    container.as_observation().resolved_spec.name.as_str() == name
-                }) && service.containers.len() == count
-            }) {
-                return service.service_id;
-            }
-            tokio::time::sleep(Duration::from_millis(250)).await;
-        }
-    })
+            live.services()
+                .into_iter()
+                .find(|service| {
+                    service.containers.first().is_some_and(|container| {
+                        container.as_observation().resolved_spec.name.as_str() == name
+                    }) && service.containers.len() == count
+                })
+                .map(|service| service.service_id)
+        },
+    )
     .await
     .unwrap()
 }
@@ -575,6 +583,7 @@ async fn assert_start_first_gap(
             assert!(matches!(response.trim(), "old" | "new"), "{response:?}");
             tokio::select! {
                 result = deployed.changed() => if result.is_err() { break },
+                // real-wait: sampling the real proxy throughout the deploy is the assertion; the deploy emits no per-request event
                 () = tokio::time::sleep(Duration::from_millis(25)) => {}
             }
         }
@@ -706,19 +715,18 @@ async fn deploy(
 }
 
 async fn wait_down(cluster: &Cluster, machine: &Machine) {
-    tokio::time::timeout(Duration::from_secs(90), async {
-        loop {
-            if cluster.machines(0).await.is_ok_and(|observations| {
+    poll_until(
+        Duration::from_secs(90),
+        "Machine observed Down",
+        async || {
+            cluster.machines(0).await.is_ok_and(|observations| {
                 observations.iter().any(|observation| {
                     observation.machine.id == machine.id
                         && observation.membership == MembershipObservation::Down
                 })
-            }) {
-                return;
-            }
-            tokio::time::sleep(Duration::from_millis(250)).await;
-        }
-    })
+            })
+        },
+    )
     .await
     .unwrap();
 }
@@ -785,17 +793,18 @@ async fn wait_running(
     service_id: &ServiceId,
     count: usize,
 ) -> Vec<ployz_core::ContainerObservation> {
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
-    loop {
-        let live = client
-            .live_services(ployz_core::EnvironmentValues::Redacted)
-            .await
-            .unwrap();
-        if let Some(service) = live
-            .services()
-            .into_iter()
-            .find(|service| service.service_id == *service_id)
-        {
+    poll_until(
+        Duration::from_secs(60),
+        "Service becomes ready",
+        async || {
+            let live = client
+                .live_services(ployz_core::EnvironmentValues::Redacted)
+                .await
+                .unwrap();
+            let service = live
+                .services()
+                .into_iter()
+                .find(|service| service.service_id == *service_id)?;
             let running = service
                 .containers
                 .iter()
@@ -810,33 +819,27 @@ async fn wait_running(
                     )
                 })
                 .collect::<Vec<_>>();
-            if running.len() == count {
-                return running;
-            }
-        }
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "Service did not become ready"
-        );
-        tokio::time::sleep(Duration::from_millis(250)).await;
-    }
+            (running.len() == count).then_some(running)
+        },
+    )
+    .await
+    .unwrap()
 }
 
 async fn wait_config(cluster: &Cluster, index: usize, expected: impl Fn(&str) -> bool) -> String {
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
-    loop {
-        match cluster.ingress_proxy_config(index) {
-            Ok(config) if expected(&config) => return config,
-            Ok(config) if tokio::time::Instant::now() >= deadline => {
-                panic!("Ingress Proxy configuration did not converge:\n{config}")
-            }
-            Err(error) if tokio::time::Instant::now() >= deadline => {
-                panic!("Ingress Proxy configuration was unavailable: {error}")
-            }
-            _ => {}
-        }
-        tokio::time::sleep(Duration::from_millis(250)).await;
-    }
+    poll_until(
+        Duration::from_secs(60),
+        "Ingress Proxy configuration converges",
+        async || match cluster.ingress_proxy_config(index) {
+            Ok(config) if expected(&config) => Ok(config),
+            Ok(config) => Err(config),
+            Err(error) => Err(format!(
+                "Ingress Proxy configuration was unavailable: {error}"
+            )),
+        },
+    )
+    .await
+    .unwrap()
 }
 
 fn self_signed_material(hostname: &str, label: &str) -> (String, String) {
