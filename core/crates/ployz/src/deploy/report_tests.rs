@@ -275,9 +275,16 @@ fn graph_frame(groups: &[ServiceGroup], services: &[(&str, &[&str])]) -> Frame {
     }
 }
 
-/// The live view below its title line, without color.
+/// The live view below its title line, without color, with a running row's clock
+/// pinned at zero so the view reads the same however long the test takes.
 fn lines(frame: &Frame) -> Vec<String> {
-    crate::ui::progress::live_lines(frame, 0, 80, 40, false)
+    let mut frame = frame.clone();
+    for row in &mut frame.rows {
+        if let Timing::Started(_) = row.timing {
+            row.timing = Timing::Finished(Duration::ZERO);
+        }
+    }
+    crate::ui::progress::live_lines(&frame, 0, 80, 40, false)
         .into_iter()
         .skip(1)
         .collect()
