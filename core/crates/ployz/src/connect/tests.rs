@@ -1034,9 +1034,9 @@ fn a_restarting_target_behind_a_live_entry_is_still_resent() {
     }
 }
 
-#[tokio::test(start_paused = true)]
-async fn a_call_to_a_daemon_that_went_silent_fails_within_its_bound() {
-    let (client, _silent_daemon) = tokio::io::duplex(64 * 1024);
+/// Holds one call open on `client` for up to an hour: how long it took to fail, or
+/// `None` if it was still open.
+async fn held_call(client: tokio::io::DuplexStream) -> Option<Duration> {
     let channel = connect_stream(client, Duration::from_secs(5))
         .await
         .unwrap();
@@ -1046,13 +1046,37 @@ async fn a_call_to_a_daemon_that_went_silent_fails_within_its_bound() {
             .encode()
             .unwrap();
     let started = tokio::time::Instant::now();
-    let outcome = tokio::time::timeout(Duration::from_secs(3600), rpc.describe_contract(request))
+    let outcome =
+        tokio::time::timeout(Duration::from_secs(3600), rpc.describe_contract(request)).await;
+    outcome.ok().map(|reply| {
+        assert!(reply.is_err(), "a held call cannot succeed");
+        started.elapsed()
+    })
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_call_to_a_daemon_that_went_silent_fails_within_thirty_seconds() {
+    let (client, _silent_daemon) = tokio::io::duplex(64 * 1024);
+    let failed_after = held_call(client)
         .await
         .expect("a silent daemon held the call for an hour");
-    assert!(outcome.is_err());
     assert!(
-        started.elapsed() <= Duration::from_secs(60),
-        "failed only after {:?}",
-        started.elapsed()
+        (Duration::from_secs(20)..=Duration::from_secs(30)).contains(&failed_after),
+        "failed after {failed_after:?}"
     );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_daemon_that_answers_pings_may_hold_a_call_for_an_hour() {
+    let (client, daemon) = tokio::io::duplex(64 * 1024);
+    tokio::spawn(
+        hyper::server::conn::http2::Builder::new(hyper_util::rt::TokioExecutor::new())
+            .serve_connection(
+                TokioIo::new(daemon),
+                hyper::service::service_fn(|_| {
+                    std::future::pending::<Result<http::Response<String>, io::Error>>()
+                }),
+            ),
+    );
+    assert_eq!(held_call(client).await, None);
 }
