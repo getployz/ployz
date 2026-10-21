@@ -1,6 +1,8 @@
 //! Once per daemon start, set Out each In copy on this Machine whose Service has
-//! a newer In copy every live proxy routes. A Machine powered off during a Deploy
-//! comes back with its old copy In, and proxies would route it again. The pass
+//! a newer In copy of another shape that every live proxy routes. A Machine
+//! powered off during a Deploy comes back with its old copy In, and proxies would
+//! route it again. A copy a Deploy kept keeps its gen beside the newer copies it
+//! started, and shares their shape. The pass
 //! decides only after this Machine has caught up with a peer's store and its own
 //! ingress has published since, and it never stops a Container.
 
@@ -56,7 +58,8 @@ pub(crate) struct Observed {
     pub(crate) membership: Membership,
 }
 
-/// A local In copy, and the gen of the newest In sibling every live proxy routes.
+/// A local In copy, and the gen of the newest In sibling of another shape every
+/// live proxy routes.
 #[derive(Debug, Eq, PartialEq)]
 pub(crate) struct Superseded {
     pub(crate) service: QualifiedService,
@@ -91,6 +94,7 @@ pub(crate) fn superseded(
         .filter(|copy| copy.machine_id == *local)
         .filter_map(|copy| {
             let service = copy.identity();
+            let shape = copy.resolved_spec.published_serving_shape();
             let mut routes = routed(routes.clone(), &service);
             routes.insert(*local, own.get(&service).cloned().unwrap_or_default());
             let acked = |sibling: &ContainerId| {
@@ -110,6 +114,7 @@ pub(crate) fn superseded(
                     sibling.container_id != copy.container_id
                         && sibling.identity() == service
                         && sibling.copy_gen() > copy.copy_gen()
+                        && sibling.resolved_spec.published_serving_shape() != shape
                         && acked(&sibling.container_id)
                 })
                 .map(|sibling| sibling.copy_gen())
