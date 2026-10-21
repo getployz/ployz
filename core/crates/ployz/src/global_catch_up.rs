@@ -510,6 +510,7 @@ fn new_copy(source: &ContainerObservation) -> NewContainer {
     NewContainer {
         slot: SlotKey {
             namespace: source.namespace.clone(),
+            service: source.resolved_spec.name.clone(),
             kind: ContainerKind::ServiceContainer,
             creation_key: CreationKey::try_from(crate::cluster::global_creation_key(
                 &source.resolved_spec,

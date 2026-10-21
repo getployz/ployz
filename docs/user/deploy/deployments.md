@@ -130,6 +130,10 @@ An environment runs one deployment at a time. While one runs, **Deploy** reads *
 and yours waits as **Queued**. If you deploy again while one is waiting, the newest one takes its
 place.
 
+A deploy started outside that queue, say from a second computer's context, can still reach a
+service after a newer deploy did. It fails for that service and leaves the newer version serving.
+See [A newer deploy is already serving](../troubleshooting/deployments.md#a-newer-deploy-is-already-serving).
+
 On the canvas, **Deploying** shows only on the services the running deployment restarts. A service
 it leaves running keeps its staged changes on its card.
 
@@ -239,11 +243,30 @@ A rollback that deletes volume data also needs `--accept-volume-loss <volume>` a
 ## Deploy without downtime
 
 Ployz starts the new replicas of a service alongside the old ones and waits until they're all
-ready. Then every server switches the service's traffic to the new replicas at once, and the old
-replicas stop once every server has switched, so your app keeps serving. A server that stops
-answering holds the old replicas for at most five minutes; after that they stop anyway. Before
-any replica stops, its server marks it as stopping so every server taking web traffic stops
-sending it requests, and the replica stops a few seconds later.
+healthy. Then every server starts sending the service's requests to the new replicas. Once every
+server has, the old replicas get no new requests, finish the ones they have for a few seconds,
+and stop. Your app keeps serving the whole time.
+
+Ployz waits up to five minutes for each server to switch. If a server is cut off or powered off,
+the deploy keeps the new replicas, leaves the old one running there, exits 3, and says so. When
+web-2 was already down as the deploy started:
+
+```text
+! Once web-2 is back, a copy left running can answer beside the new copies, and a left worker still takes jobs, until the next deploy.
+```
+
+When web-2 stopped answering during the deploy:
+
+```text
+! my-app-production/web left running on web-2 (web-2 did not answer). The next deploy cleans it up.
+```
+
+If web-2 stops answering in the middle of the switch, the deploy can fail instead, with
+`failed (2/3 ready)`, and exit 1, even though the new replicas serve
+([#2600](https://github.com/getployz/ployz/issues/2600)). Deploy again once web-2 is back.
+
+Until you deploy again, that server can keep answering with the old version. See
+[Old and new versions answer at once](../troubleshooting/deployments.md#old-and-new-versions-answer-at-once).
 
 - **Set a health check.** Under **Settings → Deploy**, set **Healthcheck** to an HTTP path like
   `/up` or a command like `pg_isready -h 127.0.0.1`. A new replica is ready when the path answers
