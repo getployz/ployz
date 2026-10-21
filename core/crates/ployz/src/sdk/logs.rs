@@ -15,7 +15,7 @@ use ts_rs::TS;
 
 use super::{Session, invalid_argument};
 use crate::connect::{Client, ConnectError};
-use ployz_core::InspectContainerRequest;
+use ployz_core::{InspectContainerRequest, RetainedEnvRequest};
 use ployz_store::tools::{LineCap, LogExcerpt, LogText, SealedValues, Withheld};
 
 pub(super) const ROW_DEADLINE: Duration = Duration::from_secs(10);
@@ -624,22 +624,38 @@ fn unavailable(message: String) -> RpcError {
     }
 }
 
+/// The env that scrubs a Container's lines: Docker's, or the one its Machine's
+/// Log Store kept once Docker no longer answers for it. `None` when neither
+/// answers, which withholds the lines.
 pub(crate) async fn container_env(
     client: &Client,
     machine: MachineId,
     container: ContainerId,
 ) -> Option<BTreeMap<String, String>> {
-    client
+    let target = MachineTarget::from(&machine);
+    let inspected = client
         .invoke::<op::InspectContainer>(
             InspectContainerRequest {
                 container_id: container,
             },
-            &MachineTarget::from(&machine),
+            &target,
+            Some(TAIL_READ),
+        )
+        .await;
+    if let Ok(details) = inspected {
+        return details.environment;
+    }
+    client
+        .invoke::<op::RetainedEnv>(
+            RetainedEnvRequest {
+                container_id: container,
+            },
+            &target,
             Some(TAIL_READ),
         )
         .await
         .ok()
-        .and_then(|details| details.environment)
+        .and_then(|reply| reply.environment)
 }
 
 /// The newest `fetch` lines `selector` picks, newest first, and the code of the newest
