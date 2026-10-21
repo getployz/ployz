@@ -231,19 +231,76 @@ pub(super) async fn reach(
     matches: &ArgMatches,
     context: Option<&str>,
 ) -> Result<Option<Reach>, Error> {
-    if matches.get_one::<String>("connect").is_none() && context.is_none() {
-        let store = CredentialStore::beside(&super::config_path(matches)?);
+    reach_or_silent(matches, context)
+        .await
+        .map_err(|unreached| unreached.error)
+}
+
+/// Why [`reach_or_silent`] reached no Server, and whether that is because none answered.
+pub(super) struct Unreached {
+    pub(super) error: Error,
+    pub(super) silent: Option<Silent>,
+}
+
+impl From<Error> for Unreached {
+    fn from(error: Error) -> Self {
+        Self {
+            error,
+            silent: None,
+        }
+    }
+}
+
+/// [`reach`], telling a connection no Server answered apart from other failures. A route
+/// that enters by a Unix socket is never [`Silent`]: that is this host's own daemon, which
+/// `status` reports as this Server.
+pub(super) async fn reach_or_silent(
+    matches: &ArgMatches,
+    context: Option<&str>,
+) -> Result<Option<Reach>, Unreached> {
+    let direct = matches.get_one::<String>("connect").map(String::as_str);
+    let config = super::config_path(matches)?;
+    if direct.is_none() && context.is_none() {
+        let store = CredentialStore::beside(&config);
         if let Ok(credential) = cloud_account::from_env(&store).await {
-            return match cloud_account::server_access(&credential).await {
-                Ok(access) => Ok(dial(matches, access).await?.map(Reach::Dial)),
+            let access = match cloud_account::server_access(&credential).await {
+                Ok(access) => access,
                 Err(StoreCallError::Refused(error)) if error.code.as_str() == "forbidden" => {
-                    Ok(Some(Reach::Ask(credential)))
+                    return Ok(Some(Reach::Ask(credential)));
                 }
-                Err(error) => Err(error.into()),
+                Err(error) => return Err(Error::from(error).into()),
+            };
+            let socket = by_socket(&access.connections);
+            return match dial(matches, access).await {
+                Ok(client) => Ok(client.map(Reach::Dial)),
+                Err(error) => Err(Unreached::of(error, socket)),
             };
         }
     }
-    Ok(connect_or_none(matches, context).await?.map(Reach::Dial))
+    let socket = crate::connect::resolve_connections(
+        &config,
+        direct,
+        context,
+        std::path::Path::new(crate::connect::DEFAULT_LOCAL_SOCKET),
+    )
+    .is_ok_and(|selected| by_socket(&selected.connections));
+    match connect_or_none(matches, context).await {
+        Ok(client) => Ok(client.map(Reach::Dial)),
+        Err(error) => Err(Unreached::of(error, socket)),
+    }
+}
+
+impl Unreached {
+    fn of(error: Error, socket: bool) -> Self {
+        let silent = if socket { None } else { Silent::of(&error) };
+        Self { error, silent }
+    }
+}
+
+fn by_socket(connections: &[crate::context::Connection]) -> bool {
+    connections
+        .iter()
+        .any(|connection| matches!(connection.transport(), crate::context::Transport::Unix(_)))
 }
 
 /// What a forget reaches.
@@ -501,7 +558,7 @@ fn no_reachable_server(
     Error::detailed_caused(
         RpcErrorCode::Unavailable,
         message,
-        json!({ "unreachable": unreachable }),
+        json!({ "unreachable": unreachable, "servers": shown }),
         cause,
     )
 }
@@ -512,6 +569,70 @@ pub(super) fn servers_unanswered(report: &RpcError) -> bool {
     report.code == RpcErrorCode::Unavailable
         && report.details.get("unreachable").is_some()
         && report.details.get("refused").is_none()
+}
+
+/// The Servers of a Cluster none of whose Servers answered, by name where the failure
+/// says which; empty when it doesn't.
+pub(super) struct Silent(Vec<String>);
+
+impl Silent {
+    /// Whether `error` is a connection no Server answered: Servers Cloud knows that
+    /// didn't, or a dial whose every connection went unanswered. `None` when a daemon
+    /// answered, or the failure is about something else, such as Cloud itself.
+    pub(super) fn of(error: &Error) -> Option<Self> {
+        let report = error.report();
+        if servers_unanswered(&report) {
+            let names = report.details.get("servers").and_then(Value::as_array);
+            return Some(Self(
+                names
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|name| Some(name.as_str()?.to_owned()))
+                    .collect(),
+            ));
+        }
+        let ConnectError::AllFailed {
+            reached: false,
+            attempts,
+            server,
+            ..
+        } = error.connect_error()?
+        else {
+            return None;
+        };
+        // With more than one connection, the one Server named is only the last tried.
+        Some(Self(if *attempts == 1 {
+            server.iter().cloned().collect()
+        } else {
+            Vec::new()
+        }))
+    }
+
+    pub(super) fn names(&self) -> &[String] {
+        &self.0
+    }
+
+    /// What to check, for the Server or Servers named.
+    pub(super) fn next(&self) -> &'static str {
+        match self.0.as_slice() {
+            [_] => "Check that its Ployz daemon is running.",
+            _ => "Check that the Ployz daemon is running on your Servers.",
+        }
+    }
+}
+
+impl std::fmt::Display for Silent {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.0.as_slice() {
+            [] => formatter.write_str("No Server is answering"),
+            [one] => write!(formatter, "Server {one} isn't answering"),
+            many => write!(
+                formatter,
+                "None of your Servers is answering ({})",
+                super::joined(many)
+            ),
+        }
+    }
 }
 
 pub(super) struct ConnectionOptions {
@@ -896,7 +1017,7 @@ pub(super) fn clear_build_cache_command(command: Command) -> Command {
 pub(super) fn drain_command(command: Command) -> Command {
     base(command, "Stop placing Services on a Server and move its Services' Containers off it")
                 .long_about("Turn off the Server's services role, then move each replicated Service's Containers off it one at a time: a new Container starts on another Server from the same image and serves before the old one stops. No hooks run and no Deployment is recorded. Rerun to act on what remains. Turning the services role back on does not move anything back. Signed in to Cloud without --context or --connect, Cloud runs the drain, asking a human first when the Organization wants that.")
-                .arg(positional("server", true))
+                .arg(positional("server", true).help("Server name or ID"))
                 .arg(crate::cli::approval())
 }
 
@@ -905,12 +1026,16 @@ pub(super) fn show_command(command: Command) -> Command {
         command,
         "Show a Server: telemetry, round-trip times and its latest upgrade attempt, or a server waiting to join",
     )
-    .arg(positional("server", true))
+    .arg(positional("server", true).help("Server name or ID, or a server waiting to join"))
 }
 
 pub(super) fn machine_logs_command(command: Command) -> Command {
-    log_flags(base(command, "Show Server daemon logs"))
-        .arg(Arg::new("service").num_args(0..).action(ArgAction::Append))
+    log_flags(base(command, "Show Server daemon logs")).arg(
+        Arg::new("service")
+            .num_args(0..)
+            .action(ArgAction::Append)
+            .help("ployz, docker or corrosion [default: ployz]"),
+    )
 }
 
 pub(super) fn list_command(command: Command) -> Command {
@@ -926,7 +1051,7 @@ pub(super) fn remove_command(command: Command) -> Command {
     base(command, "Remove a Server")
                 .long_about("Remove a Server from the Cluster and reset it; for a Server that is gone or can't be reset, use ployz server forget. Type the Server's name with --confirm, or in a terminal when it asks; elsewhere it fails with confirmation_required, naming what goes and the exact command to retry. When Cloud manages the Server, Cloud removes it even with --context or --connect, asking a human first when the Organization wants that.")
                 .arg(value("confirm", None).value_name("SERVER").help("The Server's name, typed to confirm its removal"))
-                .arg(positional("server", true))
+                .arg(positional("server", true).help("Server name or ID"))
                 .arg(crate::cli::approval())
                 .arg(
                     volume_acceptance().help("Accept loss of Cluster access: repeat once per exact volume name; reset does not erase volume data on the host"),
@@ -936,9 +1061,9 @@ pub(super) fn remove_command(command: Command) -> Command {
 pub(super) fn set_command(command: Command) -> Command {
     machine_policy_flags(base(command, "Change a Server's name, labels, roles, public IP or build concurrency")
                 .long_about("Change a Server's name, labels, roles, public IP or build concurrency. --accepts-ingress=true also starts the Ingress Proxy on that Server; rerun the same command to finish a start that failed. --accepts-ingress=false stops advertising the Server in Hosted DNS from the next sync, but its Ingress Proxy keeps serving until `ployz server rm`."))
-                .arg(many("label-rm", None).value_name("KEY"))
-                .arg(value("name", None))
-                .arg(value("public-ip", None).value_name("IP|none"))
+                .arg(many("label-rm", None).value_name("KEY").help("Remove the label KEY; repeat for more"))
+                .arg(value("name", None).help("Its new name"))
+                .arg(value("public-ip", None).value_name("IP|none").help("The public IP it advertises; none advertises none"))
                 .arg(
                     value("build-concurrency", None)
                         .value_name("N|auto")
@@ -948,7 +1073,7 @@ pub(super) fn set_command(command: Command) -> Command {
                     "Where peers reach this Server over WireGuard; every other Server the command reaches dials the first one now, even if this Server is unreachable",
                 ))
                 .arg(ingress_image())
-                .arg(positional("server", true))
+                .arg(positional("server", true).help("Server name or ID"))
 }
 
 pub(super) fn upgrade_command(command: Command) -> Command {
@@ -958,7 +1083,8 @@ pub(super) fn upgrade_command(command: Command) -> Command {
                 .arg(
                     positional("version", true)
                         .value_name("VERSION")
-                        .value_parser(clap::value_parser!(ployz_core::MachineRelease)),
+                        .value_parser(clap::value_parser!(ployz_core::MachineRelease))
+                        .help("stable, beta, or an exact version such as 0.3.0"),
                 )
                 .arg(
                     positional("server", true)
@@ -983,7 +1109,7 @@ pub(super) fn provisioning_flags(command: Command) -> Command {
             value("name", None)
                 .help("Name the Server; it takes its hostname when omitted"),
         )
-        .arg(switch("no-install", None))
+        .arg(switch("no-install", None).help("Skip installing Ployz; the Server runs it already"))
         .arg(
             value("storage", None)
                 .value_parser(clap::value_parser!(ployz_core::StoragePreparation))
@@ -991,21 +1117,39 @@ pub(super) fn provisioning_flags(command: Command) -> Command {
                     "zfs sets up Managed volumes [Cloud default]; zfs:<device> uses an empty disk; none is Docker only",
                 ),
         )
-        .arg(value("public-ip", None).default_value("auto"))
+        .arg(
+            value("public-ip", None)
+                .default_value("auto")
+                .help("The public IP it advertises; auto finds it, none advertises none"),
+        )
         .arg(
             value("ssh-key", Some('i'))
                 .default_value("~/.ssh/id_ed25519")
-                .value_hint(ValueHint::FilePath),
+                .value_hint(ValueHint::FilePath)
+                .help("SSH private key for DESTINATION"),
         )
         .arg(
             value("version", None)
                 .env(env::DAEMON_VERSION)
                 .default_value(env!("CARGO_PKG_VERSION"))
-                .value_parser(clap::value_parser!(ployz_core::MachineRelease)),
+                .value_parser(clap::value_parser!(ployz_core::MachineRelease))
+                .help("Daemon release to install: stable, beta, or an exact version"),
         )
-        .arg(many("wg-endpoint", None))
-        .arg(value("wg-mtu", None).value_parser(clap::value_parser!(u32).range(1..)))
-        .arg(switch("yes", Some('y')).env(env::AUTO_CONFIRM))
+        .arg(
+            many("wg-endpoint", None)
+                .value_name("IP[:PORT]")
+                .help("Where peers reach this Server over WireGuard"),
+        )
+        .arg(
+            value("wg-mtu", None)
+                .value_parser(clap::value_parser!(u32).range(1..))
+                .help("MTU of this Server's WireGuard interface"),
+        )
+        .arg(
+            switch("yes", Some('y'))
+                .env(env::AUTO_CONFIRM)
+                .help("Don't ask: reset an initialized Server, and take --storage none unless given"),
+        )
 }
 
 #[cfg(test)]
@@ -1225,6 +1369,40 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn silent_servers_are_named_as_cloud_names_them() {
+        let matches = crate::cli::command()
+            .try_get_matches_from(["ployz", "status"])
+            .unwrap();
+        let (held, gone) = ("a".repeat(32), "b".repeat(32));
+        let access = |unreachable: Vec<&String>| -> cloud_account::ServerAccess {
+            serde_json::from_value(json!({
+                "connections": [
+                    { "machine_id": held, "unix": "/nonexistent/ployz-test/daemon.sock" }
+                ],
+                "unreachable": unreachable,
+                "names": { held.clone(): "web-1" },
+            }))
+            .unwrap()
+        };
+        let silent = |access| async {
+            let Err(error) = dial(leaf_matches(&matches), access).await else {
+                panic!("dialed a Server that is not there");
+            };
+            Silent::of(&error).expect("no Server answered")
+        };
+
+        let one = silent(access(Vec::new())).await;
+        assert_eq!(one.to_string(), "Server web-1 isn't answering");
+        assert_eq!(one.next(), "Check that its Ployz daemon is running.");
+        let both = silent(access(vec![&gone])).await;
+        assert_eq!(
+            both.to_string(),
+            format!("None of your Servers is answering (web-1, {gone})")
+        );
+        assert_eq!(both.names(), ["web-1".to_owned(), gone]);
+    }
+
+    #[tokio::test]
     async fn a_cluster_whose_servers_all_fail_to_answer_comes_back_unanswered() {
         let matches = crate::cli::command()
             .try_get_matches_from(["ployz", "server", "forget", "web-1"])
@@ -1293,5 +1471,6 @@ mod tests {
         );
         assert_eq!(report.details.get("unreachable"), Some(&json!([gone])));
         assert!(!servers_unanswered(&report), "{report:?}");
+        assert!(Silent::of(&error).is_none(), "{report:?}");
     }
 }

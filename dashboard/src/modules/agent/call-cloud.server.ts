@@ -274,10 +274,10 @@ const act = Effect.fn("CallCloud.act")(function* (caller: Caller, { attempt, dig
       return yield* admitted(admission, { kind: "service", environment: action.environment, service: action.service }, "Service");
     }
     case "drain":
-      return yield* admitted(yield* drainServer(caller, action.server.machine, call), { kind: "server", machine: action.server.machine }, "Server", action.server.name);
+      return yield* admitted(yield* drainServer(caller, action.server.machine, call, action.server.name), { kind: "server", machine: action.server.machine }, "Server", action.server.name);
     case "upgrade":
       return yield* admitted(
-        yield* upgradeServer(caller, { machineId: action.server.machine, channel: undefined }, call),
+        yield* upgradeServer(caller, { machineId: action.server.machine, channel: undefined }, call, action.server.name),
         { kind: "server", machine: action.server.machine },
         "Server",
         action.server.name,
@@ -301,7 +301,7 @@ const act = Effect.fn("CallCloud.act")(function* (caller: Caller, { attempt, dig
       if (connected === null) return yield* beforeWrite(notConnected(organizationId));
       const { data_loss } = yield* beforeWrite(connected.dataLossIfMachineRemoved(action.server.machine));
       return yield* admitted(
-        yield* removeServer(caller, action.server.machine, data_loss, call),
+        yield* removeServer(caller, action.server.machine, data_loss, call, action.server.name),
         { kind: "server", machine: action.server.machine },
         "Server",
         action.server.name,
@@ -309,7 +309,7 @@ const act = Effect.fn("CallCloud.act")(function* (caller: Caller, { attempt, dig
     }
     case "forget_server":
       return yield* admitted(
-        yield* forgetServer(caller, action.server.machine, call),
+        yield* forgetServer(caller, action.server.machine, call, action.server.name),
         { kind: "server", machine: action.server.machine },
         "Server",
         action.server.name,

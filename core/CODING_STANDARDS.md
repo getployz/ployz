@@ -52,7 +52,7 @@ The exit code comes from the code, through the one table in `ui::exit_code`: `in
 
 A failure's first line is our sentence about the domain thing, capitalized and ending with a period. The raw cause (OS, HTTP, Docker text) is the error's `#[source]`. Human output prints the deepest source on one `cause:` line, and `--json` lists every source in `cause`, outermost first; never interpolate a source into `#[error]`, and never flatten an error with `to_string()` on its way to a `Failure`. Wrap a lower failure with `Failure::context` to keep its code and chain it as the cause.
 
-The command that fixes or follows a failure is a typed hint, `Failure::hint(Hint::Next | Inspect | Retry | Undo | Closest | Valid)`, never prose in the message. Human output prints it as a labelled line; JSON carries it in `details`.
+The command that fixes or follows a failure is a typed hint, `Failure::hint(Hint::Next | Inspect | Retry | Undo | Closest | Valid)`, never prose in the message. Human output prints each hint on its own line: `next:`, `inspect:`, `retry:`, `undo:` and `valid:` lead with their label, and the near-miss prints unlabelled as `did you mean NAME?`. Only `inspect:` can repeat, so `valid:` prints once. JSON carries the hints in `details`.
 
 JSON fields are only added, never renamed or repurposed; before 0.2.0 a field may be renamed or reshaped outright, with no compatibility alias. A short flag has one meaning across the whole tree.
 

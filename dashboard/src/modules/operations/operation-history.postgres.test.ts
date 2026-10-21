@@ -95,7 +95,7 @@ describe("operationsOn a Server", () => {
 });
 
 const second = (at: number) => new Date(Date.UTC(2026, 9, 20, 12, 0, at));
-type Drain = Pick<typeof serverDrainAttempt.$inferInsert, "id" | "state" | "endCode" | "inngestRunId" | "startedAt" | "endedAt" | "requestedAt">;
+type Drain = Pick<typeof serverDrainAttempt.$inferInsert, "id" | "state" | "endCode" | "inngestRunId" | "startedAt" | "endedAt" | "requestedAt" | "serverName">;
 const failed = (id: string, at: number): Drain => ({ id, state: "failed", endCode: "not_started", endedAt: second(at), requestedAt: second(at) });
 const lost = (id: string, at: number): Drain => ({
   id, state: "unknown", endCode: "lost", inngestRunId: `run-${id}`, startedAt: second(at), endedAt: second(at), requestedAt: second(at),
@@ -129,6 +129,13 @@ describe("settledDrain", () => {
         .toEqual(expect.objectContaining({ attempt: THIRD, run: "drain machine-1", state: "failed", reason: "The drain never started." }));
       expect(yield* drained([failed(THIRD, 1), lost(FIRST, 2)], 25))
         .toEqual(expect.objectContaining({ attempt: FIRST, state: "unknown", end: "lost" }));
+    }));
+
+  // Catches the settled Drain renamed to the Server's current name while the history keeps the one its run started under.
+  it.live("names the Drain as its run started, as the history does", () =>
+    Effect.gen(function* () {
+      expect(yield* drained([{ ...failed(THIRD, 1), serverName: "box-node-09c8" }], 0))
+        .toEqual(expect.objectContaining({ attempt: THIRD, run: "drain box-node-09c8" }));
     }));
 
   it.live("names none when no Drain has a verdict", () =>

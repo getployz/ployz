@@ -54,7 +54,7 @@ export type EndedDrain = {
 
 /** One Server's latest Drain as the page reads it: each state with exactly its evidence. */
 export type LatestDrain =
-  | { readonly attemptId: string; readonly state: "pending"; readonly requestedAt: string }
+  | { readonly attemptId: string; readonly state: "pending"; readonly requestedAt: string; readonly serversSilent: boolean }
   | { readonly attemptId: string; readonly state: "running"; readonly startedAt: string }
   | { readonly attemptId: string; readonly state: "finished"; readonly endedAt: string; readonly report: DrainReport }
   | EndedDrain;

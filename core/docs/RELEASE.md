@@ -35,7 +35,7 @@ Automatic releases run the workflow version stored in the tagged commit. For rec
 
 ## Confidence before Publish
 
-`ci.yml` selects checks for PR and `main` changes and reports one `CI ready` result. Require that check in branch protection after the workflow lands. Rust lint and tests run independently; Cloud static checks, SDK preparation, frontend builds, and tests have separate results. The ignored cluster suite runs through `cluster.yml` nightly or by manual dispatch, with per-suite logs, five-minute suite limits, and no whole-batch retries. It is informing: a red nightly does not block a tag or Publish.
+`ci.yml` selects checks for PR and `main` changes and reports one `CI ready` result. Require that check in branch protection after the workflow lands. Rust lint and tests run independently; Cloud static checks, SDK preparation, frontend builds, and tests have separate results. No workflow runs the ignored cluster suite. Run it by hand with `core/scripts/run-layer3-tests.sh`, which builds a testkit image of the checkout and writes per-suite logs, with five-minute suite limits and no whole-batch retries. It is informing: a red run does not block a tag or Publish.
 
 The live agent eval runs only on a developer's machine, never in GitHub Actions, and no release waits on it. From `dashboard/`, `pnpm eval:live` runs every pinned model on every task, 8 trials each, and writes `evals/results/gate.json`, which lists every blocker against the floors in `evals/agent/metrics.ts`. Point `PLOYZ_EVAL_LAST` at an earlier run's `evals/results/summary.json` to also flag pass^1 drops. It needs Docker and signed-in `claude` and `codex` CLIs.
 

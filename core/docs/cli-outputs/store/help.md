@@ -401,7 +401,7 @@ Usage: ployz project rm [OPTIONS] <name>
 
 Arguments:
   <name>
-          
+          The Project to remove
 
 Options:
       --connect <connect>
