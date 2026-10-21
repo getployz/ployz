@@ -1372,26 +1372,8 @@ fn status_leaves_a_local_socket_cloud_hands_out_alone() {
         "connections": [{ "machine_id": "0123456789abcdef0123456789abcdef", "unix": socket }],
         "unreachable": [],
         "names": { "0123456789abcdef0123456789abcdef": "machine-1" },
-    })
-    .to_string();
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let cloud = format!("http://{}", listener.local_addr().unwrap());
-    std::thread::spawn(move || {
-        for stream in listener.incoming() {
-            let mut stream = stream.unwrap();
-            let mut reader = BufReader::new(stream.try_clone().unwrap());
-            let mut line = String::new();
-            while reader.read_line(&mut line).unwrap() > 2 {
-                line.clear();
-            }
-            write!(
-                stream,
-                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{access}",
-                access.len()
-            )
-            .unwrap();
-        }
     });
+    let (cloud, _) = server_access(access, std::time::Duration::ZERO);
     let output = store
         .command(home.path())
         .env("PLOYZ_TOKEN", "ployz_alice")
@@ -1402,6 +1384,113 @@ fn status_leaves_a_local_socket_cloud_hands_out_alone() {
     assert!(output.status.success(), "{output:?}");
     let status: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(status["attention"], json!([]), "{status}");
+}
+
+/// A Cloud that answers every `/api/cli/server-access` with `access` after `delay`, as
+/// one setting up a holder on each Server first does, and counts the asks.
+fn server_access(
+    access: Value,
+    delay: std::time::Duration,
+) -> (String, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+    let access = access.to_string();
+    let asked = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let cloud = format!("http://{}", listener.local_addr().unwrap());
+    let counted = asked.clone();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let mut stream = stream.unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            if line.starts_with("POST /api/cli/server-access ") {
+                counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+            while reader.read_line(&mut line).unwrap() > 2 {
+                line.clear();
+            }
+            std::thread::sleep(delay);
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{access}",
+                access.len()
+            )
+            .unwrap();
+        }
+    });
+    (cloud, asked)
+}
+
+#[test]
+fn status_asks_cloud_for_server_access_once() {
+    let access = json!({ "connections": [{ "tcp": engine() }], "unreachable": [] });
+    // A returning credential, then a first use that waits on Cloud's holder setup.
+    for delay in [0, 7].map(std::time::Duration::from_secs) {
+        let (store, home) = no_server_answering();
+        std::fs::remove_file(home.path().join("config.yaml")).unwrap();
+        let (cloud, asked) = server_access(access.clone(), delay);
+        let output = store
+            .command(home.path())
+            .env("PLOYZ_TOKEN", "ployz_alice")
+            .env("PLOYZ_CLOUD_URL", &cloud)
+            .args(["--json", "status"])
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{delay:?}: {output:?}");
+        assert_eq!(
+            asked.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "{delay:?}: {output:?}"
+        );
+    }
+}
+
+#[test]
+fn status_tries_each_silent_server_once_within_its_bound() {
+    let (store, home) = no_server_answering();
+    // Each accepts and holds the connection, never answering.
+    let silent = || {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let accepted = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = accepted.clone();
+        std::thread::spawn(move || {
+            let mut held = Vec::new();
+            for stream in listener.incoming() {
+                counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                held.push(stream.unwrap());
+            }
+        });
+        (address, accepted)
+    };
+    let (one, two) = (silent(), silent());
+    std::fs::write(
+        home.path().join("config.yaml"),
+        format!(
+            "current_context: lab\ncontexts:\n  lab:\n    connections:\n      - tcp: {}\n        machine_id: 0123456789abcdef0123456789abcdef\n        name: machine-1\n      - tcp: {}\n        machine_id: 1123456789abcdef0123456789abcdef\n        name: machine-2\n",
+            one.0, two.0
+        ),
+    )
+    .unwrap();
+    let started = std::time::Instant::now();
+    let (status, _) = run_in(&store, &home, &["--json", "status"]);
+    let elapsed = started.elapsed();
+    let status: Value = serde_json::from_str(&status).unwrap();
+    assert_eq!(
+        status["attention"],
+        json!([{
+            "reason": "no_server_answers",
+            "message": "No Server is answering. Check that the Ployz daemon is running on your Servers.",
+            "servers": [],
+        }]),
+        "{status}"
+    );
+    // The bound status gives the Servers, 15s, and slack for the process.
+    assert!(elapsed < std::time::Duration::from_secs(17), "{elapsed:?}");
+    for (address, accepted) in [one, two] {
+        let accepted = accepted.load(std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(accepted, 1, "{address}: {accepted} connections");
+    }
 }
 
 #[test]

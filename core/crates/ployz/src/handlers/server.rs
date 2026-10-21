@@ -119,49 +119,6 @@ pub(super) async fn connect_or_none(
     super::connect_context(matches, context).await.map(Some)
 }
 
-/// [`connect_or_none`] for a look at whether the Servers answer, or `None` without dialing
-/// when the route enters by a Unix socket: that is this host's own daemon, which `status`
-/// reports as this Server.
-pub(super) async fn connect_remote(
-    matches: &ArgMatches,
-    context: Option<&str>,
-) -> Result<Option<Client>, Error> {
-    let direct = matches.get_one::<String>("connect").map(String::as_str);
-    if direct.is_none() && context.is_none() {
-        let store = CredentialStore::beside(&super::config_path(matches)?);
-        match cloud_account::from_env(&store).await {
-            Ok(credential) => {
-                let access = cloud_account::server_access(&credential).await?;
-                if by_socket(&access.connections) {
-                    return Ok(None);
-                }
-                return dial(matches, access).await;
-            }
-            Err(LoginError::SignedOut) => {}
-            Err(error) => return Err(error.into()),
-        }
-    }
-    let selected = crate::connect::resolve_connections(
-        &super::config_path(matches)?,
-        direct,
-        context,
-        std::path::Path::new(crate::connect::DEFAULT_LOCAL_SOCKET),
-    )?;
-    if by_socket(&selected.connections) {
-        return Ok(None);
-    }
-    let connector = SystemConnector::default().with_ssh_timeout(crate::cli::ssh_timeout(matches));
-    Ok(Some(
-        crate::connect::connect_selected_with(selected, Arc::new(connector)).await?,
-    ))
-}
-
-fn by_socket(connections: &[crate::context::Connection]) -> bool {
-    connections
-        .iter()
-        .any(|connection| matches!(connection.transport(), crate::context::Transport::Unix(_)))
-}
-
 /// [`connect`] through any Server but `leaving`, and the Server it entered by.
 pub(super) async fn connect_avoiding(
     matches: &ArgMatches,
@@ -274,19 +231,76 @@ pub(super) async fn reach(
     matches: &ArgMatches,
     context: Option<&str>,
 ) -> Result<Option<Reach>, Error> {
-    if matches.get_one::<String>("connect").is_none() && context.is_none() {
-        let store = CredentialStore::beside(&super::config_path(matches)?);
+    reach_or_silent(matches, context)
+        .await
+        .map_err(|unreached| unreached.error)
+}
+
+/// Why [`reach_or_silent`] reached no Server, and whether that is because none answered.
+pub(super) struct Unreached {
+    pub(super) error: Error,
+    pub(super) silent: Option<Silent>,
+}
+
+impl From<Error> for Unreached {
+    fn from(error: Error) -> Self {
+        Self {
+            error,
+            silent: None,
+        }
+    }
+}
+
+/// [`reach`], telling a connection no Server answered apart from other failures. A route
+/// that enters by a Unix socket is never [`Silent`]: that is this host's own daemon, which
+/// `status` reports as this Server.
+pub(super) async fn reach_or_silent(
+    matches: &ArgMatches,
+    context: Option<&str>,
+) -> Result<Option<Reach>, Unreached> {
+    let direct = matches.get_one::<String>("connect").map(String::as_str);
+    let config = super::config_path(matches)?;
+    if direct.is_none() && context.is_none() {
+        let store = CredentialStore::beside(&config);
         if let Ok(credential) = cloud_account::from_env(&store).await {
-            return match cloud_account::server_access(&credential).await {
-                Ok(access) => Ok(dial(matches, access).await?.map(Reach::Dial)),
+            let access = match cloud_account::server_access(&credential).await {
+                Ok(access) => access,
                 Err(StoreCallError::Refused(error)) if error.code.as_str() == "forbidden" => {
-                    Ok(Some(Reach::Ask(credential)))
+                    return Ok(Some(Reach::Ask(credential)));
                 }
-                Err(error) => Err(error.into()),
+                Err(error) => return Err(Error::from(error).into()),
+            };
+            let socket = by_socket(&access.connections);
+            return match dial(matches, access).await {
+                Ok(client) => Ok(client.map(Reach::Dial)),
+                Err(error) => Err(Unreached::of(error, socket)),
             };
         }
     }
-    Ok(connect_or_none(matches, context).await?.map(Reach::Dial))
+    let socket = crate::connect::resolve_connections(
+        &config,
+        direct,
+        context,
+        std::path::Path::new(crate::connect::DEFAULT_LOCAL_SOCKET),
+    )
+    .is_ok_and(|selected| by_socket(&selected.connections));
+    match connect_or_none(matches, context).await {
+        Ok(client) => Ok(client.map(Reach::Dial)),
+        Err(error) => Err(Unreached::of(error, socket)),
+    }
+}
+
+impl Unreached {
+    fn of(error: Error, socket: bool) -> Self {
+        let silent = if socket { None } else { Silent::of(&error) };
+        Self { error, silent }
+    }
+}
+
+fn by_socket(connections: &[crate::context::Connection]) -> bool {
+    connections
+        .iter()
+        .any(|connection| matches!(connection.transport(), crate::context::Transport::Unix(_)))
 }
 
 /// What a forget reaches.

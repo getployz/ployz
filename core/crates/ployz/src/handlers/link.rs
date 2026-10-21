@@ -655,21 +655,6 @@ pub(super) fn status(root: &ArgMatches) -> Result<(), Error> {
             Err(error) => return Err(store.fail(error)),
         },
     };
-    let silent = match (&store, &diff) {
-        (Some(_), Some(_)) => silent_servers(matches),
-        _ => None,
-    };
-    if let Some(silent) = &silent {
-        attention.push(Attention {
-            reason: "no_server_answers".to_owned(),
-            message: format!("{silent}. {}", silent.next()),
-            deployment: None,
-            next: None,
-            subject: Some(Subject::Unanswered {
-                servers: silent.names().to_vec(),
-            }),
-        });
-    }
     let mut deploying = Vec::new();
     if let (Some(store), Some(_)) = (&store, &diff) {
         let page = store.read(&DeploymentsQuery {
@@ -721,8 +706,7 @@ pub(super) fn status(root: &ArgMatches) -> Result<(), Error> {
             subject: None,
         });
     }
-    // With no Server answering, the Server check would only wait on them again.
-    if let (Some(store), Some(_), None) = (&store, &diff, &silent) {
+    if let (Some(store), Some(_)) = (&store, &diff) {
         match store.try_read(&NamespaceQuery {
             environment: scope.at(),
         }) {
@@ -740,8 +724,8 @@ pub(super) fn status(root: &ArgMatches) -> Result<(), Error> {
         version: diff.version.clone(),
     });
     let hint = attention
-        .iter()
-        .find_map(|attention| attention.next.clone())
+        .first()
+        .and_then(|attention| attention.next.clone())
         .or_else(|| {
             staged
                 .as_ref()
@@ -770,28 +754,6 @@ pub(super) fn status(root: &ArgMatches) -> Result<(), Error> {
         crate::ui::hint(&Hint::Next(hint));
     }
     Ok(())
-}
-
-/// How long `ployz status` waits to learn whether a Server answers: past one connection's
-/// confirm timeout, far short of a deploy's wait for one.
-const ANSWERING: Duration = Duration::from_secs(6);
-
-/// The Servers a deploy from here would reach, when none of them answers. One bounded
-/// connection, as `deploy --plan` makes; one that runs out of time, or fails for another
-/// reason, says nothing. A local socket isn't dialed: this Server is reported apart.
-fn silent_servers(matches: &ArgMatches) -> Option<super::server::Silent> {
-    let context = matches
-        .try_get_one::<String>("context")
-        .ok()
-        .flatten()
-        .map(String::as_str);
-    let probe = super::server::connect_remote(matches, context);
-    super::runtime().ok()?.block_on(async {
-        match tokio::time::timeout(ANSWERING, probe).await {
-            Ok(Err(error)) => super::server::Silent::of(&error),
-            Ok(Ok(_)) | Err(_) => None,
-        }
-    })
 }
 
 /// How long `status` waits for this host's daemon to say whether it still runs a Machine.
