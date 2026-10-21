@@ -233,8 +233,8 @@ containers once they have finished, so `ployz ps` stops listing them. See
 ### Healthcheck
 
 A new replica must pass it before it takes traffic. Off by default, so an old replica stops about a
-second after the new one starts, ready or not. A new replica that crashes after that first second is
-not caught. Off also ignores a `HEALTHCHECK` in the image.
+second after the new one starts, ready or not. A new replica that crashes after that first second
+doesn't fail the deploy, and `ployz status` names it. Off also ignores a `HEALTHCHECK` in the image.
 
 - **HTTP path.** Enter a path like `/up`. It passes when that path answers with a 2xx status on
   the port your domains send traffic to; a redirect fails it. With no domain, or domains on

@@ -213,6 +213,39 @@ nothing to fix.
   ployz service restart api
   ```
 
+A service with some replicas still serving can crash in the rest. `ployz status` names those
+replicas. See
+[Status says a service serves fewer copies than it should](#status-says-a-service-serves-fewer-copies-than-it-should).
+
+## Status says a service serves fewer copies than it should
+
+`api = Serving 0 of 2 copies. web-1 exited with code 1, web-2 restarting.`
+
+`ployz status` prints this when fewer of a service's replicas serve than its last deploy gave it.
+It names each replica that doesn't serve, with the state `ployz ps` shows for it. A deploy that
+ended **Deployed** doesn't watch its replicas after they start, so a replica that crashes later
+shows up here.
+
+- **Restarting, exited, or unhealthy.** The replica crashes or fails its health check. Read why
+  in its logs, then fix the app and deploy again:
+
+  ```sh
+  ployz logs api
+  ```
+
+  `exited with code 0` means your app stopped on its own without an error. A start command that
+  finishes, instead of running a server, does that.
+- **Draining.** The replica is out of routing but still running, and too few replicas in routing
+  are left. An older Ployz daemon could leave replicas like that after it restarted. Deploy the
+  service again, with nothing changed, to start the replicas it is short:
+
+  ```sh
+  ployz deploy api
+  ```
+
+The line goes away once enough replicas serve. A replica removed outside Ployz, for example with
+`docker rm`, is unseen, so status can't name it.
+
 ## My service shows Not seen running
 
 Part of your servers' report hasn't arrived yet, and none of the replicas in the part that did

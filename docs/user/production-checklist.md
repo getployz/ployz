@@ -19,7 +19,8 @@ list. Each item links to the page that does it.
   [Back up a database](services/databases.md#back-up-a-database).
   Or keep your hosted database and [point your app at it](services/databases.md#use-a-managed-database-instead).
 - **Add a health check.** Without one, a new replica gets traffic about a second after it starts,
-  ready or not, and a crash after that second is not caught. See [Deploy without downtime](deploy/deployments.md#deploy-without-downtime).
+  ready or not. A crash after that second doesn't fail the deploy, and `ployz status` names the
+  replica. See [Deploy without downtime](deploy/deployments.md#deploy-without-downtime).
 - **Run two replicas on two servers.** With one replica on one server, one failure takes your
   app down. [Add a second server](servers/add-a-server.md), then
   [run more replicas](services/scaling.md#run-more-replicas). A service with a volume runs one
