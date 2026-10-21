@@ -157,7 +157,7 @@ Every warning starts uppercase or with a name. Under `--json` the same text also
 
 Human errors go to stderr as `error: <message>`. 185 human error lines and 78 JSON error objects were captured, and 12 human errors add a `  cause:` line.
 
-First-word casing: 126 start uppercase, 36 lowercase, 19 are clap's, and 3 start with `--confirm`.
+First-word casing: 127 start uppercase, 36 lowercase, 19 are clap's, and 3 start with `--confirm`.
 
 - Dominant, uppercase: `No Service named nope in Environment production` then `valid: web, db` ([store/service.md](store/service.md)). Most end without a period; some end with one, such as `Not signed in to Cloud.` ([cloud/errors.md](cloud/errors.md)).
 - Lowercase: `no Organization nope of yours` ([cloud/org.md](cloud/org.md)), `context nope not found in Ployz config …` ([store/context.md](store/context.md)), `at least one setting flag is required` ([cluster/server.md](cluster/server.md)). Most lowercase lines lead with a name: `staging is not a Branch`, `shop/production has no Deployment #99`, `worker: pull image failed.`

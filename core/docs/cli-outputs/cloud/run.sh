@@ -25,7 +25,11 @@ CAPTURES=$("$DOCS/capture-dir.sh" "${1:-}") || exit 1
 WORK=$(mktemp -d /tmp/pz-cloud-capture.XXXXXX) || exit 1
 readonly CAPTURES WORK
 cloud_started=0
+server_aside=0
 finish() {
+  if [ "$server_aside" = 1 ]; then
+    restore_server || echo "restoring the seed's Server failed; Cloud counts no Server" >&2
+  fi
   if [ "$cloud_started" = 1 ] && [ "${KEEP:-0}" != 1 ]; then
     (cd "$DASH" || exit 1; scripts/verify/down.sh) >/dev/null 2>&1 || true
     echo "dashboard stopped"
@@ -68,6 +72,20 @@ up() {
   echo "Cloud at $U"
 }
 sql() { docker exec "$pg" psql -q -v ON_ERROR_STOP=1 -U postgres -d ployz_cloud -c "$1"; }
+# Sets the seed's Server row aside, so Cloud counts no Server until restore_server,
+# which finish also runs, so an interrupt leaves the Server in place.
+set_server_aside() {
+  server_aside=1
+  sql "CREATE TABLE capture_server AS SELECT * FROM organization_machine WHERE organization_id = '$org';
+    DELETE FROM organization_machine WHERE organization_id = '$org'" >/dev/null
+}
+restore_server() {
+  sql "SET client_min_messages = warning;
+    CREATE TABLE IF NOT EXISTS capture_server (LIKE organization_machine);
+    INSERT INTO organization_machine SELECT * FROM capture_server ON CONFLICT DO NOTHING;
+    DROP TABLE capture_server" >/dev/null
+  server_aside=0
+}
 api() { curl -sf -b "better-auth.session_token=$cookie" -H "Origin: $U" -H 'content-type: application/json' "$@"; }
 approve() {
   api "$U/api/auth/device?user_code=$1" >/dev/null || { echo "approve: device lookup failed for $1" >&2; exit 1; }
@@ -244,10 +262,9 @@ c deploy "deployment show garbage id" $P deployment show not-an-id
 m deploy "deployment start 1 --detach" $P deployment start 1 --detach
 # Cloud counts the seed's Server, which never answers, so a start waits in the
 # queue. Set its row aside to capture the refusal a Server-less Organization gets.
-sql "CREATE TABLE capture_server AS SELECT * FROM organization_machine WHERE organization_id = '$org';
-  DELETE FROM organization_machine WHERE organization_id = '$org'" >/dev/null
+set_server_aside
 m deploy "deployment start 1 (follows; no Server enrolled)" $P deployment start 1
-sql "INSERT INTO organization_machine SELECT * FROM capture_server; DROP TABLE capture_server" >/dev/null
+restore_server
 m deploy "deployment cancel 1" $P deployment cancel 1
 m deploy "deployment cancel 1 again --json" $P deployment cancel 1 --json
 CAP_TIMEOUT=15 m deploy "deployment redeploy 1 --detach" $P deployment redeploy 1 --detach
