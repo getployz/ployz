@@ -890,18 +890,24 @@ async fn client_waits_past_connection_deadline_and_uploads_only_after_admission(
     // The active build holds a blocking task, which stops auto-advance, so the clock steps by hand.
     tokio::time::pause();
     tokio::time::advance(Duration::from_secs(11)).await;
-    for _ in 0..16 {
-        tokio::task::yield_now().await;
-    }
-    assert!(
-        !execution.is_finished(),
-        "client abandoned the configured queue wait"
-    );
-    assert!(
-        !fixture.root.join("build-upload/source").exists(),
-        "queued capture uploaded early"
-    );
     tokio::time::resume();
+    // An early upload crosses a blocking task, gRPC, and a server-side write on other threads.
+    let upload = fixture.root.join("build-upload/source");
+    ployz_testkit::hold_for(
+        Duration::from_secs(1),
+        "the queued client kept waiting without uploading",
+        async || {
+            if execution.is_finished() {
+                Err("client abandoned the configured queue wait")
+            } else if upload.exists() {
+                Err("queued capture uploaded early")
+            } else {
+                Ok(())
+            }
+        },
+    )
+    .await
+    .unwrap();
     drop(active);
     let _ = terminal(&mut response).await;
     assert_eq!(execution.await.unwrap().unwrap().len(), 1);
