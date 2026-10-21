@@ -1005,19 +1005,46 @@ pub(crate) async fn follow_removal(
         &doing,
         Some(deadline),
     )
-    .await?
+    .await
     {
-        Some(RemovalRun::Succeeded(removal)) => Ok(removal),
-        None => Err(StoreCallError::Refused(RpcError {
-            code: ployz_core::RpcErrorCode::Unavailable,
-            message: format!(
-                "Cloud is still removing Server {name}; it finishes on its own. \
-                 The dashboard's Servers page shows when it's done."
-            ),
-            details: serde_json::Value::Null,
-            cause: Vec::new(),
-        })),
+        Ok(Some(RemovalRun::Succeeded(removal))) => Ok(removal),
+        Ok(None) => Err(StoreCallError::Refused(removal_unsettled(name))),
+        Err(StoreCallError::Refused(refused))
+            if refused.details.get("unfinished") == Some(&serde_json::Value::Bool(true)) =>
+        {
+            // Any step after the reset was sent may be the one that ran out: the Server may
+            // have reset and Cloud dropped it, or neither.
+            Err(StoreCallError::Refused(RpcError {
+                code: ployz_core::RpcErrorCode::Unavailable,
+                message: format!(
+                    "Cloud's removal of Server {name} didn't finish: it ran out of retries. If \
+                     the Server is gone but `ployz server ls` still lists it, forget it."
+                ),
+                details: forget_next(name),
+                cause: vec![refused.message],
+            }))
+        }
+        Err(error) => Err(error),
     }
+}
+
+/// Stopped watching a removal that is still running. It may yet fail unfinished, as
+/// [`follow_removal`] says when it does. No `next`: nothing is to run while it runs.
+fn removal_unsettled(name: &MachineName) -> RpcError {
+    RpcError {
+        code: ployz_core::RpcErrorCode::Unavailable,
+        message: format!(
+            "Cloud is still removing Server {name}; it finishes on its own. \
+             The dashboard's Servers page shows when it's done. If it fails and the Server \
+             is gone but `ployz server ls` still lists it, forget it."
+        ),
+        details: serde_json::Value::Null,
+        cause: Vec::new(),
+    }
+}
+
+fn forget_next(name: &MachineName) -> serde_json::Value {
+    serde_json::json!({ "next": format!("ployz server forget {name}") })
 }
 
 /// Call `/api/cli/<path>`, answered as its reply or as Cloud's refusal, verbatim.
@@ -1329,6 +1356,29 @@ fn answer<T: DeserializeOwned>(
 mod tests {
     use super::*;
     use crate::cloud_login::tests::fake_cloud;
+
+    #[test]
+    fn a_removal_the_cli_stopped_waiting_on_says_when_to_forget_but_not_to_now() {
+        let name = MachineName::parse("web-2").unwrap();
+        let unsettled = removal_unsettled(&name);
+        assert!(
+            unsettled
+                .message
+                .contains("Cloud is still removing Server web-2"),
+            "{}",
+            unsettled.message
+        );
+        // A Server Cloud already dropped isn't found by forget, so only a listed one is sent there.
+        assert!(
+            unsettled
+                .message
+                .contains("is gone but `ployz server ls` still lists it"),
+            "{}",
+            unsettled.message
+        );
+        // The removal still runs, so forgetting now would only find it in progress.
+        assert_eq!(unsettled.details.get("next"), None);
+    }
 
     #[test]
     fn a_name_that_is_not_text_costs_only_that_name() {

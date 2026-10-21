@@ -86,15 +86,30 @@ export type MachineRemoveAttemptView =
       id: string;
       machineId: string;
       state: "failed" | "cancelled";
+      /**
+       * A reset sent to the Server whose run then ran out of retries. Any later step may be the one that ran out, so
+       * the Server may have reset, or not, and Cloud may or may not still list it.
+       */
+      unfinished: boolean;
       failureMessage: string;
     };
+
+/** What a failed removal tells the person who asked for it. A Server that is gone and still listed is forgotten. */
+export function removalFailureMessage(name: string, attempt: { unfinished: boolean; failureMessage: string }) {
+  return attempt.unfinished
+    ? `Removing ${name} didn't finish: Ployz Cloud ran out of retries. If ${name} is gone but still listed, forget it with Forget server.`
+    : attempt.failureMessage;
+}
 
 export function toMachineRemoveAttemptView(attempt: {
   id: string;
   machineId: string;
   state: MachineRemoveAttemptState;
   missingIdentities: DataLossIdentity[] | null;
+  failureCode: string | null;
   failureMessage: string | null;
+  removeSentAt: Date | null;
+  noReset: boolean;
   result: MachineRemoveResult | null;
 }): MachineRemoveAttemptView {
   switch (attempt.state) {
@@ -136,6 +151,9 @@ export function toMachineRemoveAttemptView(attempt: {
         id: attempt.id,
         machineId: attempt.machineId,
         state: attempt.state,
+        // Retries run out for any step, and the row doesn't say which; one before the reset was sent changed nothing.
+        unfinished: attempt.state === "failed" && attempt.failureCode === "retry_exhausted"
+          && attempt.removeSentAt !== null && !attempt.noReset,
         failureMessage: attempt.failureMessage,
       };
     }
