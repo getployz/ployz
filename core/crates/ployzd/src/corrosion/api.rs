@@ -83,25 +83,52 @@ impl ApiClient {
         })
     }
 
+    /// Run one request under the I/O timeout, counting the wait for an in-flight
+    /// slot against it. A wait that runs out names this daemon's own queue, not
+    /// Corrosion.
+    async fn bounded<T>(
+        &self,
+        request: impl std::future::Future<Output = Result<T, Error>>,
+    ) -> Result<T, Error> {
+        let deadline = tokio::time::Instant::now() + super::IO_TIMEOUT;
+        let permit = tokio::time::timeout_at(deadline, self.in_flight.acquire()).await;
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        let (Ok(permit), false) = (permit, remaining.is_zero()) else {
+            return Err(Error::Io(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "timed out waiting for a free Corrosion request slot",
+            )));
+        };
+        let _permit = permit.expect("the semaphore is never closed");
+        tokio::time::timeout(remaining, request)
+            .await
+            .unwrap_or_else(|_| {
+                Err(Error::Io(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "Corrosion I/O timed out",
+                )))
+            })
+    }
+
     pub(crate) async fn execute(
         &self,
         statements: impl IntoIterator<Item = Statement>,
     ) -> Result<(), Error> {
         let statements = statements.into_iter().collect::<Vec<_>>();
         // ponytail: finite query responses are buffered; stream events if store size makes this measurable.
-        let (status, body) = super::within_io_timeout(async {
-            let _permit = self.in_flight.acquire().await.expect("never closed");
-            let response = self
-                .client
-                .post(self.base_url.join("v1/transactions").expect("static path"))
-                .json(&statements)
-                .send()
-                .await?;
-            let status = response.status();
-            let body = response.bytes().await?;
-            Ok::<_, Error>((status, body))
-        })
-        .await?;
+        let (status, body) = self
+            .bounded(async {
+                let response = self
+                    .client
+                    .post(self.base_url.join("v1/transactions").expect("static path"))
+                    .json(&statements)
+                    .send()
+                    .await?;
+                let status = response.status();
+                let body = response.bytes().await?;
+                Ok::<_, Error>((status, body))
+            })
+            .await?;
         let decoded = serde_json::from_slice::<ExecResponse>(&body);
         if !status.is_success() {
             return Err(decoded
@@ -136,19 +163,19 @@ impl ApiClient {
     }
 
     pub(crate) async fn query(&self, statement: Statement) -> Result<QueryResult, Error> {
-        let (status, body) = super::within_io_timeout(async {
-            let _permit = self.in_flight.acquire().await.expect("never closed");
-            let response = self
-                .client
-                .post(self.base_url.join("v1/queries").expect("static path"))
-                .json(&statement)
-                .send()
-                .await?;
-            let status = response.status();
-            let body = response.bytes().await?;
-            Ok::<_, Error>((status, body))
-        })
-        .await?;
+        let (status, body) = self
+            .bounded(async {
+                let response = self
+                    .client
+                    .post(self.base_url.join("v1/queries").expect("static path"))
+                    .json(&statement)
+                    .send()
+                    .await?;
+                let status = response.status();
+                let body = response.bytes().await?;
+                Ok::<_, Error>((status, body))
+            })
+            .await?;
         if !status.is_success() {
             return Err(Error::Api(format!(
                 "HTTP {status}: {}",
@@ -537,6 +564,40 @@ mod tests {
             "{:?}",
             results.into_iter().find_map(Result::err)
         );
+        server.abort();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_query_that_never_gets_a_slot_names_the_queue() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(
+                listener,
+                Router::new().route(
+                    "/v1/queries",
+                    post(|| async { std::future::pending::<Body>().await }),
+                ),
+            )
+            .await
+            .unwrap();
+        });
+        let client = ApiClient::new(address, &"a".repeat(64)).unwrap();
+        let results = futures_util::future::join_all(
+            (0..=super::MAX_IN_FLIGHT).map(|_| client.query(Statement::new("SELECT 1", []))),
+        )
+        .await;
+        let messages = results
+            .into_iter()
+            .map(|result| {
+                ployz_core::error_chain::inline(&result.expect_err("hung query must fail"))
+            })
+            .collect::<Vec<_>>();
+        let queued = messages
+            .iter()
+            .filter(|message| message.contains("waiting for a free Corrosion request slot"))
+            .count();
+        assert_eq!(queued, 1, "{messages:?}");
         server.abort();
     }
 
