@@ -250,6 +250,7 @@ async fn l3_015_through_l3_024_exec_and_l3_069_logs_cross_the_real_docker_endpoi
             ExecResponseFrame::Stdout(output) => {
                 assert!(output.iter().all(|byte| *byte == 0));
                 bytes += output.len();
+                // real-wait: a slow reader makes real Docker exec output back up behind flow control.
                 tokio::time::sleep(Duration::from_millis(5)).await;
             }
             ExecResponseFrame::Exit(code) => exit = Some(code),

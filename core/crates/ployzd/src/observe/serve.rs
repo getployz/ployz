@@ -349,7 +349,7 @@ mod tests {
         assert_eq!(readers.available_permits(), 1);
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn a_page_keeps_its_reader_until_it_is_written() {
         let store = Store::new();
         let id = store.container('a', "web");

@@ -137,7 +137,7 @@ async fn every_line_through_six_rotations_and_removal_is_stored_exactly_once() {
         let crashes = Outbox::open(&store).unwrap();
         async move { Harvester::run(client, &docker_root, store, data_dir, crashes).await }
     });
-    tokio::time::sleep(Duration::from_secs(1)).await;
+    let_harvester_run(Duration::from_secs(1)).await;
 
     let script = format!(
         "awk 'BEGIN {{ pad = sprintf(\"%90s\", \"\"); \
@@ -151,9 +151,9 @@ async fn every_line_through_six_rotations_and_removal_is_stored_exactly_once() {
         .await
         .unwrap();
     let elapsed = started.elapsed();
-    tokio::time::sleep(Duration::from_secs(1)).await;
+    let_harvester_run(Duration::from_secs(1)).await;
     docker(&["rm", "-f", id.as_str()]);
-    tokio::time::sleep(Duration::from_secs(2)).await;
+    let_harvester_run(Duration::from_secs(2)).await;
     harvester.abort();
 
     let dir = store.container(&id);
@@ -198,4 +198,10 @@ async fn every_line_through_six_rotations_and_removal_is_stored_exactly_once() {
     assert_eq!(counts.len() as u64, LINES);
     assert!(gaps.is_empty(), "unexpected gaps: {gaps}");
     assert!(Path::new(&dir).join("meta.json").exists());
+}
+
+/// Gives the harvester wall-clock time to tail what real Docker wrote.
+async fn let_harvester_run(duration: Duration) {
+    // real-wait: real Docker writes the log files the harvester tails; neither signals progress.
+    tokio::time::sleep(duration).await;
 }

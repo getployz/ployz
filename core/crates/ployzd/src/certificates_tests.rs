@@ -42,6 +42,11 @@ fn policy_probe(seconds: u64) -> CertificatePolicy {
 async fn certificate_loop_outlives_corrosion_outages() {
     let mut cluster = FakeCluster::start();
     cluster.stop();
+    // While Corrosion is down, its address only accepts and drops, so the loop's first
+    // attempt provably fails before Corrosion comes back.
+    let down = tokio::net::TcpListener::bind(cluster.address())
+        .await
+        .unwrap();
     let shutdown = tokio_util::sync::CancellationToken::new();
     let runner = tokio::spawn(run(
         cluster.store(),
@@ -51,21 +56,19 @@ async fn certificate_loop_outlives_corrosion_outages() {
         shutdown.clone(),
     ));
 
-    tokio::time::sleep(Duration::from_millis(200)).await;
-    assert!(
-        !runner.is_finished(),
-        "Corrosion down at the first subscribe stopped the loop"
-    );
+    drop(down.accept().await.unwrap());
+    drop(down);
     cluster.restart();
-    subscribed(&cluster, 1).await;
+    subscribed(
+        &cluster,
+        1,
+        "Corrosion down at the first subscribe stopped the loop",
+    )
+    .await;
+    // Stopping severs the open subscription stream.
     cluster.stop();
-    tokio::time::sleep(Duration::from_millis(200)).await;
-    assert!(
-        !runner.is_finished(),
-        "a closed subscription stopped the loop"
-    );
     cluster.restart();
-    subscribed(&cluster, 2).await;
+    subscribed(&cluster, 2, "a closed subscription stopped the loop").await;
 
     shutdown.cancel();
     tokio::time::timeout(Duration::from_secs(1), runner)
@@ -74,14 +77,10 @@ async fn certificate_loop_outlives_corrosion_outages() {
         .unwrap();
 }
 
-async fn subscribed(cluster: &FakeCluster, count: usize) {
-    tokio::time::timeout(Duration::from_secs(10), async {
-        while cluster.subscription_tokens().len() < count {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("certificate loop did not subscribe");
+async fn subscribed(cluster: &FakeCluster, count: usize, stopped: &str) {
+    tokio::time::timeout(Duration::from_secs(10), cluster.subscriptions(count))
+        .await
+        .expect(stopped);
 }
 
 #[test]

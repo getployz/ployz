@@ -195,6 +195,19 @@ async fn terminal(response: &mut tonic::Streaming<OpaquePayload>) -> Outcome {
     }
 }
 
+async fn until_fake_docker(
+    limit: Duration,
+    mut done: impl FnMut() -> bool,
+) -> Result<(), tokio::time::error::Elapsed> {
+    tokio::time::timeout(limit, async {
+        while !done() {
+            // real-wait: the fake docker script is a child process whose only signal is the files it writes.
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+}
+
 fn failure(
     result: Result<Vec<ployz::build::BuiltService>, ployz::build::Error>,
 ) -> ployz::build::RemoteBuildFailure {
@@ -873,7 +886,13 @@ async fn client_waits_past_connection_deadline_and_uploads_only_after_admission(
             .await
     });
     observed.recv().await.unwrap();
-    tokio::time::sleep(Duration::from_secs(11)).await;
+    // Only the queue wait runs on paused time; the upload and fake docker after it are real IO.
+    // The active build holds a blocking task, which stops auto-advance, so the clock steps by hand.
+    tokio::time::pause();
+    tokio::time::advance(Duration::from_secs(11)).await;
+    for _ in 0..16 {
+        tokio::task::yield_now().await;
+    }
     assert!(
         !execution.is_finished(),
         "client abandoned the configured queue wait"
@@ -882,6 +901,7 @@ async fn client_waits_past_connection_deadline_and_uploads_only_after_admission(
         !fixture.root.join("build-upload/source").exists(),
         "queued capture uploaded early"
     );
+    tokio::time::resume();
     drop(active);
     let _ = terminal(&mut response).await;
     assert_eq!(execution.await.unwrap().unwrap().len(), 1);
@@ -959,15 +979,12 @@ async fn dropping_completed_build_releases_only_its_temporary_tags() {
         } else {
             drop(images);
         }
-        tokio::time::timeout(Duration::from_secs(3), async {
-            while fs::read_to_string(fixture.root.join("released-tags"))
+        until_fake_docker(Duration::from_secs(3), || {
+            fs::read_to_string(fixture.root.join("released-tags"))
                 .unwrap_or_default()
                 .lines()
                 .count()
-                < 2
-            {
-                tokio::time::sleep(Duration::from_millis(20)).await;
-            }
+                >= 2
         })
         .await
         .expect("completed Build leaked its retention tag");

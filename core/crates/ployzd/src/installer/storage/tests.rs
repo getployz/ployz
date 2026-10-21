@@ -681,6 +681,7 @@ esac"#,
                 .spawn()
                 .unwrap();
             while !held.exists() {
+                // real-wait: the flock child signals that it holds the lock only by touching a file.
                 std::thread::sleep(std::time::Duration::from_millis(10));
             }
             holder

@@ -224,6 +224,20 @@ pub(crate) struct Subscription {
 }
 
 impl Subscription {
+    /// A subscription already past its snapshot that reads raw event lines from `chunks`.
+    #[cfg(test)]
+    pub(crate) fn streaming(
+        chunks: impl Stream<Item = Result<Bytes, io::Error>> + Send + 'static,
+    ) -> Self {
+        Self {
+            lines: FramedRead::new(
+                StreamReader::new(Box::pin(chunks) as ByteStream),
+                LinesCodec::new_with_max_length(8 * 1024 * 1024),
+            ),
+            snapshot_in_progress: false,
+        }
+    }
+
     pub(crate) fn snapshot_in_progress(&self) -> bool {
         self.snapshot_in_progress
     }
