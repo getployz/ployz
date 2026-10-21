@@ -128,13 +128,23 @@ is_fleet_token() {
 read_fleet_token() {
     tty_mode=$(stty -g 2>/dev/null < "$TTY") ||
         error "No terminal to read the Fleet Token from. Set PLOYZ_FLEET_TOKEN in the root environment instead, as cloud-init does."
-    trap 'stty "$tty_mode" < "$TTY"; exit 130' HUP INT TERM
+    # A signal that lands just before a read of the terminal waits for Enter, but one during `wait` ends it.
+    # So a child reads the token and hands it back on a pipe whose name is gone before the prompt shows.
+    pipe_dir=$(mktemp -d)
+    mkfifo "$pipe_dir/token"
+    exec 3<> "$pipe_dir/token"
+    rm -r "$pipe_dir"
+    trap 'kill "${!:-}" 2>/dev/null || :; stty "$tty_mode" < "$TTY"' EXIT
+    trap 'exit 130' HUP INT TERM
     stty -echo < "$TTY" || error "Could not turn off echo on the terminal, so the Fleet Token isn't read from it."
     # The prompt waits until echo is off: a token pasted the moment it shows must not echo.
     printf 'Fleet Token (from Servers in Ployz Cloud): ' >> "$TTY"
-    read -r FLEET_TOKEN < "$TTY" || FLEET_TOKEN=
+    { read -r token < "$TTY" || token=; printf '%s\n' "$token" >&3; } &
+    wait "$!"
+    read -r FLEET_TOKEN <&3
+    exec 3<&-
     stty "$tty_mode" < "$TTY"
-    trap - HUP INT TERM
+    trap - EXIT HUP INT TERM
     printf '\n' >> "$TTY"
 }
 
