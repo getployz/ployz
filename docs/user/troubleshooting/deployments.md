@@ -229,13 +229,14 @@ for.
 
 ## Old and new versions answer at once
 
-`Once web-2 is back, it takes its replaced copies out of traffic if it can confirm the new ones. They keep running, and a left worker still takes jobs, until the next deploy.`
+`If web-2 restarts, it takes its replaced copies out of traffic once it can confirm the new ones. If it comes back without restarting, they keep answering beside the new copies. Either way they keep running, and a left worker still takes jobs, until the next deploy.`
 or `my-app-production/web left running on web-2 (web-2 did not answer). The next deploy cleans it up.`
 
 A deploy couldn't reach web-2 to retire its old replica, because web-2 was cut off or powered
-off. Until web-2 takes it out of traffic, that replica can answer beside the new ones, so visitors
-get either version, and an old worker takes jobs until the next deploy. A server that restarts takes its old replica out of
-traffic on its own within a few minutes, but the replica keeps running. That includes a replica a
+off. Once web-2 is back, that replica can answer beside the new ones, so visitors get either
+version, and an old worker takes jobs until the next deploy. A server that restarts takes its old
+replica out of traffic on its own within a few minutes, but the replica keeps running. A server
+that comes back from a network cut without restarting leaves it in traffic. That includes a replica a
 deploy replaced while the server was offline, even with nothing changed. It leaves the replica in
 traffic when the server running a newer replica doesn't answer, when the newer replicas differ
 from each other because a limit change reached only some of them, or when the deploy only raised
