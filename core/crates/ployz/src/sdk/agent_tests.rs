@@ -818,6 +818,69 @@ async fn a_removed_containers_lines_are_left_out_and_the_rest_still_shown() {
     );
 }
 
+// Catches a logs ask that leaves out the lines of a removed Container whose env the Log
+// Store kept, or shows them with their Sealed value in the clear.
+#[tokio::test]
+async fn a_removed_containers_lines_are_scrubbed_with_the_env_its_log_store_kept() {
+    let one = support::machine('a', "one");
+    let mut service = support::DeployService::new(one.clone());
+    let removed = ContainerId::parse("d".repeat(64)).unwrap();
+    service.uninspectable.insert(removed);
+    service.retained_envs.as_mut().unwrap().insert(
+        removed,
+        BTreeMap::from([
+            ("TOKEN".to_owned(), "live-only-sentinel".to_owned()),
+            ("PLAIN".to_owned(), "from-docker".to_owned()),
+        ]),
+    );
+
+    let [answer] = ask_logs(service, vec![logs_query(None, Some(&["TOKEN", "PLAIN"]))])
+        .await
+        .try_into()
+        .unwrap();
+
+    assert_eq!(
+        shown(&answer),
+        [(
+            "one".to_owned(),
+            vec![
+                "line 10".to_owned(),
+                "plain [secret PLAIN]".to_owned(),
+                "token=[secret TOKEN]".to_owned(),
+            ]
+        )]
+    );
+}
+
+// Catches a logs ask against a daemon that predates the retained env route treating its
+// refusal as anything but no env: the removed Container's lines stay left out.
+#[tokio::test]
+async fn a_daemon_without_the_retained_env_route_leaves_a_removed_containers_lines_out() {
+    let one = support::machine('a', "one");
+    let mut service = support::DeployService::new(one.clone());
+    service
+        .uninspectable
+        .insert(ContainerId::parse("d".repeat(64)).unwrap());
+    service.retained_envs = None;
+
+    let [answer] = ask_logs(service, vec![logs_query(None, Some(&["TOKEN"]))])
+        .await
+        .try_into()
+        .unwrap();
+
+    assert_eq!(
+        shown(&answer),
+        [(
+            "one".to_owned(),
+            vec![
+                "line 8".to_owned(),
+                "line 10".to_owned(),
+                "token=[secret TOKEN]".to_owned(),
+            ]
+        )]
+    );
+}
+
 // Catches a logs ask that shows lines when no Container's env could be read to scrub its
 // Sealed values, or withholds them from a Service with none.
 #[tokio::test]
