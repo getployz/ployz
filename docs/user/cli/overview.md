@@ -231,8 +231,8 @@ the way `ployz org rm` does, and prints which one.
 > [!WARNING]
 > In a Git checkout, `ployz up` uploads only the files Git keeps, tracked or not, and leaves out
 > `.git` and every file Git ignores, such as `.env` and `node_modules`. It stops if `git` can't
-> list them. If you committed `.env` before, Git still keeps it, so also run
-> `git rm --cached .env`. Outside a Git checkout it uploads every file in the directory, so move secrets out
+> list them. If you committed `.env` before, Git still keeps it, so add it to `.gitignore` and
+> run `git rm --cached .env`. Outside a Git checkout it uploads every file in the directory, so move secrets out
 > of it first.
 
 From your app's directory:
