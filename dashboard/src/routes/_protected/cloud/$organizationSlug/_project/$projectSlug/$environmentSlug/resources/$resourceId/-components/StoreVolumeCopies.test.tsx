@@ -86,6 +86,20 @@ describe("VolumeCopiesPanel", () => {
     expect(stage).toHaveBeenCalledWith({ primary: id("web-1"), mirrors: [id("web-3")], deletes: [] }, []);
   });
 
+  it("keeps a mirror made with the CLI listed while its Server is silent, from that Server's last report", () => {
+    const lastMirror: Member = { machine: { id: id("web-2"), name: "web-2" }, answered: false, lastMirror: true };
+    panel([member("web-1", "writer"), lastMirror], null, { matchedAt: new Date(NOW.getTime() - 135 * 60_000).toISOString() });
+    expect(rows("Elsewhere")).toEqual([expect.stringMatching(/^web-2Mirror · 15 min · .*2 hours/)]);
+    expect(screen.queryByText(/^Nothing outside/)).toBeNull();
+    expect(screen.queryByRole("button", { name: "Add copy" })).toBeNull();
+  });
+
+  it("says which Server hasn't reported rather than that nothing is outside the primary", () => {
+    panel([member("web-1", "writer"), member("web-2", "unanswered")], null);
+    expect(screen.getByText("web-2 hasn't reported, so Copies can't say what is outside web-1.")).toBeTruthy();
+    expect(screen.queryByText(/^Nothing outside/)).toBeNull();
+  });
+
   it("lists the mirror and the old copy elsewhere, and hides Add copy once a mirror exists", () => {
     const { onOpen } = panel([member("web-1", "writer"), mirrorAsOf("web-2", new Date(NOW.getTime() - 5 * 60_000)), member("web-3", "old")], row(["web-2"]));
     expect(rows("Elsewhere")).toEqual([expect.stringMatching(/^web-2Mirror · 15 min · 5 min/), expect.stringMatching(/^web-3Old copy · /)]);
