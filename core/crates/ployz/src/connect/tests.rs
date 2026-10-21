@@ -1066,6 +1066,31 @@ async fn a_call_to_a_daemon_that_went_silent_fails_within_its_keepalive_bound() 
 }
 
 #[tokio::test(start_paused = true)]
+async fn a_resend_after_a_keepalive_timeout_ends_on_the_closed_session() {
+    let (client, _silent_daemon) = tokio::io::duplex(64 * 1024);
+    let channel = connect_stream(client, Duration::from_secs(5))
+        .await
+        .unwrap();
+    let mut rpc = ployz_core::MachineRpcClient::new(channel);
+    let describe = || {
+        ployz_core::op::DescribeContract::into_request(ployz_core::DescribeContractRequest {})
+            .encode()
+            .unwrap()
+    };
+    let timed_out = rpc_error(ConnectError::from(
+        rpc.describe_contract(describe()).await.unwrap_err(),
+    ));
+    assert!(
+        crate::ui::chain_text(&timed_out).contains("keep-alive timed out"),
+        "{timed_out:?}"
+    );
+    let resent = rpc_error(ConnectError::from(
+        rpc.describe_contract(describe()).await.unwrap_err(),
+    ));
+    assert!(on_closed_session(&resent), "{resent:?}");
+}
+
+#[tokio::test(start_paused = true)]
 async fn a_daemon_that_answers_pings_may_hold_a_call_for_an_hour() {
     let (client, daemon) = tokio::io::duplex(64 * 1024);
     tokio::spawn(
