@@ -649,6 +649,33 @@ fn the_build_worker_reaches_the_image_servers_but_not_the_host_or_the_mesh() {
     let mut resolver = stream_server(&host, "127.0.0.53", 53);
     cgroup.connect(&host, "127.0.0.1", "127.0.0.53", 53);
     assert_eq!(resolver.peer(), "127.0.0.1");
+    ns(
+        &host,
+        "iptables",
+        &[
+            "-t",
+            "nat",
+            "-A",
+            "OUTPUT",
+            "-d",
+            "127.0.0.11/32",
+            "-p",
+            "tcp",
+            "--dport",
+            "53",
+            "-j",
+            "DNAT",
+            "--to-destination",
+            "127.0.0.11:5353",
+        ],
+    );
+    let mut embedded_resolver = stream_server(&host, "127.0.0.11", 5353);
+    cgroup.connect(&host, "127.0.0.1", "127.0.0.11", 53);
+    assert_eq!(
+        embedded_resolver.peer(),
+        "127.0.0.1",
+        "a loopback resolver behind DNAT, like Docker's embedded DNS"
+    );
 
     for (namespace, address, port) in [
         (&host, "127.0.0.1", 51504),

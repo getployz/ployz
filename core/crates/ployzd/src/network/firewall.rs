@@ -208,7 +208,9 @@ pub fn fence_builder(fence: &ployz_build::Fence) -> Result<(), String> {
     Ok(())
 }
 
-/// Loopback DNS passes, then `drops` fall on the worker's sockets alone. The
+/// Loopback DNS passes, matched on its original destination because a host
+/// resolver can sit behind a nat OUTPUT DNAT to another port, as Docker's
+/// embedded DNS does. Then `drops` fall on the worker's sockets alone. The
 /// cgroup sits on each drop, not on a leading RETURN: a SYN-ACK or reset the
 /// kernel sends without a full socket never matches a cgroup, so a negated
 /// match would fence every host listener's replies.
@@ -220,7 +222,11 @@ fn fenced(
 ) -> Vec<String> {
     let mut rules: Vec<String> = ["udp", "tcp"]
         .iter()
-        .map(|protocol| format!("-d {loopback} -p {protocol} --dport {DNS_PORT} -j RETURN"))
+        .map(|protocol| {
+            format!(
+                "-p {protocol} -m conntrack --ctorigdst {loopback} --ctorigdstport {DNS_PORT} -j RETURN"
+            )
+        })
         .collect();
     rules.extend(allowed.into_iter().map(|rule| format!("{rule} -j RETURN")));
     let cgroup = fence.cgroup.as_str();
@@ -539,8 +545,8 @@ mod tests {
         assert_eq!(
             ipv4_fence(&fence(vec![41_234])),
             [
-                "-d 127.0.0.0/8 -p udp --dport 53 -j RETURN",
-                "-d 127.0.0.0/8 -p tcp --dport 53 -j RETURN",
+                "-p udp -m conntrack --ctorigdst 127.0.0.0/8 --ctorigdstport 53 -j RETURN",
+                "-p tcp -m conntrack --ctorigdst 127.0.0.0/8 --ctorigdstport 53 -j RETURN",
                 "-d 127.0.0.1/32 -p tcp --dport 41234 -j RETURN",
                 "-m cgroup --path /system.slice/docker-abc.scope -m addrtype --dst-type LOCAL -j DROP",
                 "-m cgroup --path /system.slice/docker-abc.scope -o ployz-build+ -j DROP",
@@ -558,8 +564,8 @@ mod tests {
         assert_eq!(
             ipv6_fence(&fence(vec![41_234])),
             [
-                "-d ::1/128 -p udp --dport 53 -j RETURN",
-                "-d ::1/128 -p tcp --dport 53 -j RETURN",
+                "-p udp -m conntrack --ctorigdst ::1/128 --ctorigdstport 53 -j RETURN",
+                "-p tcp -m conntrack --ctorigdst ::1/128 --ctorigdstport 53 -j RETURN",
                 "-d fdcc::/16 -p tcp --dport 7572 -j RETURN",
                 "-m cgroup --path /system.slice/docker-abc.scope -m addrtype --dst-type LOCAL -j DROP",
                 "-m cgroup --path /system.slice/docker-abc.scope -d fdcc::/16 -j DROP",
