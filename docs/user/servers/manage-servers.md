@@ -497,9 +497,11 @@ needs a newer Ployz on web-1". Upgrade that server, then remove again.
 run there, **Remove server** says how many, next to a **Drain** button. If only services whose
 volume is on the server are left, it names them: draining won't move them. It also names services
 no project owns, which draining leaves. `ployz server rm`
-warns about services a drain could still move off it and prints the drain command. It leaves out
-what a drain won't move: services with a volume or bind mount on the server, global services, and
-Ployz's own ingress. On your last server it skips that warning.
+warns about services a drain could still move off it and, while it still asks you to confirm,
+prints the drain command. With `--confirm` it doesn't ask, so it keeps the warning but leaves out
+the drain command. The warning leaves out what a drain won't move: services with a volume or bind
+mount on the server, global services, and Ployz's own ingress. On your last server it skips that
+warning. After the removal it warns which replicated services may now run short of replicas.
 Ployz's build cache isn't one of the volumes you confirm losing.
 Otherwise services that ran only on that server stop. Your next deploy replaces its replicas on your other
 servers, except for services whose volume was on it (see

@@ -238,6 +238,8 @@ pub(crate) fn service_row<'a>(
         .any(|replica| matches!(replica.state, RowState::NotAttempted))
     {
         State::NotAttempted
+    } else if removal {
+        State::Running(RowPhase::RemovingContainer)
     } else {
         State::Running(RowPhase::Starting)
     };
