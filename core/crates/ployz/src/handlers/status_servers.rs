@@ -333,9 +333,12 @@ fn judge(observed: Observed, namespace: &Namespace, next: impl Fn(&[&str]) -> St
         .chain(live.containers.omissions.iter().copied())
         .filter(|machine| !down.contains(machine))
         .collect();
-    let complete = down.is_empty()
-        && live.containers.failures.is_empty()
-        && live.containers.omissions.is_empty();
+    let complete = live.containers.failures.is_empty()
+        && live.containers.omissions.iter().all(|omitted| {
+            machines
+                .iter()
+                .any(|observed| observed.machine.id == *omitted && observed.unarrived())
+        });
     for service in live.services() {
         if service.identity.namespace == *namespace
             && let Some(short) = check.not_serving(service, &down, complete, &next)
@@ -593,7 +596,8 @@ fn service_names(services: &[QualifiedService]) -> String {
 /// do not, when fewer serve than should. A copy is kept when it is In and not stopped. An
 /// Out copy still running counts as kept only for a Replicated Service in a `complete`
 /// view: it stands in for a missing In copy only when every copy was seen. Each Held copy
-/// explains one missing In copy.
+/// cancels one Out stand-in, never an In copy. The mode and the count come from the
+/// newest kept In copy, else the newest kept Out copy.
 fn shortfall<'service>(
     service: &'service ServiceObservation,
     down: &BTreeSet<MachineId>,
@@ -623,26 +627,32 @@ fn shortfall<'service>(
             CopyRotation::Pending | CopyRotation::Held(_) => false,
         })
         .collect();
-    let newest = |copies: &[&'service ContainerObservation]| {
-        copies
-            .iter()
-            .copied()
-            .max_by_key(|copy| (copy.created_at_unix_nanos, copy.container_id))
-    };
-    let replicated = matches!(
-        newest(&candidates)?.resolved_spec.mode,
-        ServiceMode::Replicated { .. }
-    );
+    let mode = candidates
+        .iter()
+        .max_by_key(|copy| {
+            (
+                *copy.rotation() == CopyRotation::In,
+                copy.created_at_unix_nanos,
+                copy.container_id,
+            )
+        })?
+        .resolved_spec
+        .mode
+        .clone();
+    let replicated = matches!(mode, ServiceMode::Replicated { .. });
     let mut kept: Vec<&ContainerObservation> = candidates
         .into_iter()
         .filter(|copy| *copy.rotation() == CopyRotation::In || (complete && replicated))
         .collect();
-    let wanted = match newest(&kept)?.resolved_spec.mode {
+    let kept_in = kept
+        .iter()
+        .filter(|copy| *copy.rotation() == CopyRotation::In)
+        .count();
+    let wanted = match mode {
         ServiceMode::Replicated { replicas } => usize::try_from(replicas.get())
             .unwrap_or(usize::MAX)
-            .saturating_sub(held)
-            .min(kept.len()),
-        ServiceMode::Global => kept.len(),
+            .min(kept_in + (kept.len() - kept_in).saturating_sub(held)),
+        ServiceMode::Global => kept_in,
     };
     if serving.len() >= wanted {
         return None;
