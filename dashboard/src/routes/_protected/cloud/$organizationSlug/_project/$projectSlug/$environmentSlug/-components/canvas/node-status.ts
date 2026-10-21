@@ -26,13 +26,31 @@ const line = (word: string, tone: Tone, down = false): RuntimeLine => ({ word, t
 export const NO_MOUNTS_CONFIGURED = line("No mounts configured", "idle");
 
 /**
+ * What the running Deploy does to a Service, if any runs: `restarts` it; `leaves` it as it is, as when none runs;
+ * `undecided` while the dashboard can't tell yet (its view unread, or no plan recorded and no new image built for it);
+ * `unreadable` when its view was refused or its read failed, so nothing will tell.
+ */
+export type DeployEffect = "restarts" | "leaves" | "undecided" | "unreadable";
+
+/**
+ * What whole, current evidence naming no container of a Service says, by what the running Deploy does to it: one it
+ * starts reads Starting, one it may start waits, one whose Deploy can't be read says so, and only one it leaves is down.
+ */
+const NO_CONTAINER = {
+  restarts: line("Starting", "quiet"),
+  undecided: line("Checking", "pending"),
+  unreadable: line("Status unavailable", "quiet"),
+  leaves: line("Not running", "bad", true),
+} satisfies Record<DeployEffect, RuntimeLine>;
+
+/**
  * What evidence says of a Service (`runtime`, null when none names it; `whole`, no Server is missing from it;
  * `offline`, the Servers whose containers are only as they last reported them).
- * `starting`: current evidence while a Deploy starts it; stale evidence keeps its last word.
+ * `noContainer`: what whole evidence naming no container says; `rolling`: a Deploy restarts its replicas.
  */
-function evidenceLine(runtime: Pick<RuntimeServiceRecord, "containers"> | null, whole: boolean, offline: ReadonlySet<string>, desiredReplicas: number | null, deploying: boolean, starting: boolean) {
+function evidenceLine(runtime: Pick<RuntimeServiceRecord, "containers"> | null, whole: boolean, offline: ReadonlySet<string>, desiredReplicas: number | null, rolling: boolean, noContainer: RuntimeLine) {
   if ((!runtime || runtime.containers.length === 0) && !whole) return line("Deployed", "quiet");
-  if (!runtime || runtime.containers.length === 0) return starting ? line("Starting", "quiet") : line("Not running", "bad", true);
+  if (!runtime || runtime.containers.length === 0) return noContainer;
   const containers = runtime.containers.filter((container) => !offline.has(container.machineId));
   // A Server missing from partial evidence may still serve it.
   if (containers.length === 0) return whole ? line("Server offline", "bad", true) : line("Server offline", "quiet");
@@ -45,7 +63,7 @@ function evidenceLine(runtime: Pick<RuntimeServiceRecord, "containers"> | null, 
   if (serving === 0) return line("Starting", "quiet");
   const checkFailing = running.some((container) => container.runtime?.health === "failing");
   // A replica missing from partial evidence may be healthy on the Server that didn't report.
-  if (whole && !deploying && desiredReplicas !== null && serving < desiredReplicas) return { ...line("Degraded", "warn"), checkFailing };
+  if (whole && !rolling && desiredReplicas !== null && serving < desiredReplicas) return { ...line("Degraded", "warn"), checkFailing };
   return { ...line("Online", "ok"), checkFailing };
 }
 
@@ -58,18 +76,19 @@ export type RuntimeLens = Pick<ReturnType<typeof useRuntimeLens>, "status" | "in
 /**
  * A Service's status line: what runs now, from runtime evidence. Staged work never replaces it, and it never guesses:
  * before evidence it waits, and evidence that isn't current reads grey with its age.
- * `deploying`: a Deploy in flight restarts it. Current, whole evidence that names no container of it then reads Starting, not Not running;
- * evidence that isn't current keeps its last word;
+ * `deploy`: what the running Deploy does to it. Current, whole evidence that names no container of it reads Starting
+ * when the Deploy restarts it, and waits while that's undecided; evidence that isn't current keeps its last word;
  * any container it has still says what it says: a Service already down stays down.
  * `desiredReplicas`: how many it asks for, when known; fewer serving reads Degraded, except while a Deploy rolls them.
  */
 export function runtimeLine(
   service: Pick<ServiceListing, "change" | "source">,
   runtime: Pick<RuntimeServiceRecord, "containers"> | null,
-  { lens, desiredReplicas, deploying }: { lens: RuntimeLens; desiredReplicas: number | null; deploying: boolean },
+  { lens, desiredReplicas, deploy }: { lens: RuntimeLens; desiredReplicas: number | null; deploy: DeployEffect },
 ): RuntimeLine {
+  const rolling = deploy === "restarts";
   // A new Service a failed Deploy still started has containers, and one a Deploy is starting has none yet: say what they do.
-  if (service.change === "create" && !runtime && !deploying) return line("Not deployed", "idle");
+  if (service.change === "create" && !runtime && deploy !== "restarts") return line("Not deployed", "idle");
   if (service.source === "empty") return line("No source", "idle");
   if (lens.noServers) return line("Needs a server", "idle");
   switch (lens.status) {
@@ -82,10 +101,10 @@ export function runtimeLine(
     case "unavailable":
       // The connection dropped: retain the last evidence, or explain why none is available.
       return lens.observedAt === null ? line("Status unavailable", "quiet")
-        : { ...evidenceLine(runtime, !lens.incomplete, lens.offline, desiredReplicas, deploying, false), tone: "quiet", down: false, since: new Date(lens.observedAt), checkFailing: false };
+        : { ...evidenceLine(runtime, !lens.incomplete, lens.offline, desiredReplicas, rolling, NO_CONTAINER.leaves), tone: "quiet", down: false, since: new Date(lens.observedAt), checkFailing: false };
     case "observed":
       // A Deploy that removes it stops it for good: nothing is starting.
-      return evidenceLine(runtime, !lens.incomplete, lens.offline, desiredReplicas, deploying, deploying && service.change !== "delete");
+      return evidenceLine(runtime, !lens.incomplete, lens.offline, desiredReplicas, rolling, NO_CONTAINER[service.change === "delete" ? "leaves" : deploy]);
   }
 }
 
@@ -185,31 +204,40 @@ export function stagedChip(change: ReviewLifecycleKind, changeCount: number): De
 /**
  * A Service's chip: anything about Deploys. A Deploy in flight that targets it (running, else queued), else what the
  * next Deploy does to it. `inFlight`: the Environment's Deployments in flight; one naming no Services deploys every one.
- * `restarting`: the Services the running Deploy stops or starts, null until its view is read. Only those read
- * Deploying, so a chip never shows it before the evidence and drops it after: one the Deploy targets but leaves running
- * (only snapshots its Volume, or nothing changed) is not Deploying; one it restarts without naming it (a Service that
- * references a selected one) is.
+ * `deploy`: what the running one does to it. Only a Service it restarts reads Deploying, so a chip never shows it before
+ * the evidence and drops it after: one the Deploy targets but leaves running (only snapshots its Volume, or nothing
+ * changed) is not Deploying; one it restarts without naming it (a Service that references a selected one) is.
  */
 export function deployChip(
   service: Pick<ServiceListing, "name" | "change">,
   changeCount: number,
   inFlight: readonly Pick<DeploymentSummary, "status" | "services" | "ships" | "started_at" | "admitted_at">[],
-  restarting: ReadonlySet<string> | null = null,
+  deploy: DeployEffect = "leaves",
 ): DeployChipState | null {
-  const running = inFlight.find((deployment) => deployment.status !== "queued");
-  if (running && restarting?.has(service.name)) return { kind: "deploying", since: running.started_at ?? running.admitted_at };
+  const running = runningDeployment(inFlight);
+  if (running && deploy === "restarts") return { kind: "deploying", since: running.started_at ?? running.admitted_at };
   if (inFlight.some((deployment) => deployment.status === "queued" && shippedService(deployment, service.name))) return { kind: "queued" };
   return service.change === null ? null : stagedChip(service.change, changeCount);
 }
 
+/** The Deploy in flight that runs: a queued one starts nothing yet. */
+export function runningDeployment<D extends Pick<DeploymentSummary, "status">>(inFlight: readonly D[]): D | null {
+  return inFlight.find((deployment) => deployment.status !== "queued") ?? null;
+}
+
 /**
- * The Services a Deploy stops or starts. Until its runner records the plan every node reads Pending, so only a Service
- * it built a new image for counts. A build still running may yet reuse an image and leave the Service running, so a
- * Service waits for its build to end or the plan, and its chip never comes off to come back.
+ * What the running Deploy does to the Service `name`, from its view: null when no Deploy runs, undefined until read,
+ * `ok: false` when refused or its read failed. Until its runner records the plan every node reads Pending, so only a
+ * Service it built a new image for restarts and every other waits: a build still running, or one that reused an image,
+ * says nothing of the plan.
  */
-export function restartedServices(deployment: Pick<DeploymentView, "nodes" | "preview" | "builds">): ReadonlySet<string> {
-  if (deployment.preview === null) return new Set(deployment.builds.flatMap((build) => build.status === "built" ? [build.service] : []));
-  return new Set(deployment.nodes.flatMap((node) => node.type === "service" && node.outcome !== "unchanged" ? [node.name] : []));
+export function deployEffect(name: string, view: { ok: true; value: Pick<DeploymentView, "nodes" | "preview" | "builds"> } | { ok: false } | undefined | null): DeployEffect {
+  if (view === null) return "leaves";
+  if (view === undefined) return "undecided";
+  if (!view.ok) return "unreadable";
+  const { nodes, preview, builds } = view.value;
+  if (preview === null) return builds.some((build) => build.service === name && build.status === "built") ? "restarts" : "undecided";
+  return nodes.some((node) => node.type === "service" && node.name === name && node.outcome !== "unchanged") ? "restarts" : "leaves";
 }
 
 /** A node's staged surface, in the colour of what the next Deploy does to it. */
