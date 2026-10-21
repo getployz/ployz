@@ -15,11 +15,16 @@ use std::{
 /// not yet acknowledged, and stopping the Container drops it.
 const ANSWERING: [&str; 6] = ["01", "03", "04", "08", "09", "0B"];
 const LISTEN: &str = "0A";
+/// The lowest port Linux gives an outbound connection in a new network namespace,
+/// where `net.ipv4.ip_local_port_range` starts at 32768 to 60999. A connection the
+/// copy accepted keeps its listener's port, so one below this is inbound even after
+/// that listener closed.
+const FIRST_EPHEMERAL_PORT: u16 = 32768;
 
 /// Whether the namespace `pid` lives in, under the `proc_root` procfs mount, has an
 /// inbound TCP connection the copy may still answer: one from off the namespace's
-/// loopback, on a port in `listening`, or on any port while `listening` is empty.
-/// This read adds the ports it sees listening to `listening`, so a drain that keeps
+/// loopback, on a port in `listening` or below the ephemeral range, or on any port
+/// while `listening` is empty. This read adds the ports it sees listening to `listening`, so a drain that keeps
 /// the set across its reads still counts a port whose listener closed while a
 /// connection to it lives.
 ///
@@ -46,11 +51,11 @@ pub(super) fn holds_connection(
 /// inbound connection, after adding their listening ports to `listening`. A
 /// dual-stack listener sits in `tcp6` while its IPv4 connections may sit in `tcp`, so
 /// the listening ports come from every table. An outbound connection's local port is
-/// ephemeral and usually not one the namespace listens on. A connection from
-/// loopback is the copy talking to itself, as nginx to php-fpm, so it holds nothing.
-/// Before any listener is seen no port can be told inbound, as for a copy that
-/// closed its listener before the drain began and still answers what it accepted,
-/// so every connection counts.
+/// ephemeral and not one the namespace listens on. A copy may close a listener
+/// before the drain begins and still answer what it accepted, so a port below the
+/// ephemeral range counts unseen, and before any listener is seen every port does.
+/// A connection from loopback is the copy talking to itself, as nginx to php-fpm,
+/// so it holds nothing.
 fn serves_connection(tables: &[&str], listening: &mut BTreeSet<u16>) -> bool {
     let rows = || tables.iter().flat_map(|table| sockets(table));
     listening.extend(
@@ -60,7 +65,9 @@ fn serves_connection(tables: &[&str], listening: &mut BTreeSet<u16>) -> bool {
     );
     rows().any(|socket| {
         ANSWERING.contains(&socket.state)
-            && (listening.is_empty() || listening.contains(&socket.port))
+            && (socket.port < FIRST_EPHEMERAL_PORT
+                || listening.is_empty()
+                || listening.contains(&socket.port))
             && !from_loopback(socket.remote)
     })
 }
@@ -205,6 +212,19 @@ mod tests {
     #[test]
     fn drain_idle_counts_a_connection_accepted_before_the_listener_closed() {
         let tcp = table(TCP_HEADER, &[TCP_INBOUND_8080]);
+        assert!(serves(&[&tcp, TCP6_HEADER]));
+    }
+
+    #[test]
+    fn drain_idle_counts_a_connection_whose_listener_closed_beside_another_listener() {
+        let tcp = table(
+            TCP_HEADER,
+            &[
+                TCP_INBOUND_8080,
+                // A metrics listener on 9100 the copy keeps open.
+                "   2: 00000000:238C 00000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 1004 1 0000000000000000 100 0 0 10 0",
+            ],
+        );
         assert!(serves(&[&tcp, TCP6_HEADER]));
     }
 
