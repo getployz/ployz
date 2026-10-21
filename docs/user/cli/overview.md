@@ -312,7 +312,10 @@ A single record, such as
 a reference to a removed service, or `Server web-1 isn't answering` when its connection to the servers
 a deploy would reach found none answering. It waits a few seconds for that; a check that runs out of
 time adds no row, so no row doesn't prove a server answered. With `--json` these are the `attention`
-rows; that one has reason `no_server_answers` and names the servers in `servers`.
+rows; that one has reason `no_server_answers` and names the servers in `servers`. A context or
+`--connect` that reaches the daemon on this host through its local socket isn't checked here; the
+**this server** line covers it. Signed in to Cloud, the first `ployz status` or other server
+command also sets up your access on each server, so it can take up to the same few seconds.
 
 `ployz status` works signed out too. It shows what it can and says `signed in as no one`. On a
 server waiting for approval, it leads with a **this server** line: `Installing Docker`,
