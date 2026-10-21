@@ -81,13 +81,14 @@ export const STALE_AFTER_MS = 60 * 60_000;
 
 export const COPY_WORDS = { mirror: "Mirror", offsite: "Offsite", old: "Old copy" } as const satisfies Record<VolumeCopy["kind"], string>;
 export const STAGED_WORDS = { new: "New", removing: "Removing", primary: "Primary" } as const satisfies Record<StagedCopy, string>;
+/** What a Server said instead of reporting its copy, on the primary's badge and a mirror's row alike. */
+const UNHEARD_WORDS = {
+  outdated: "Needs a newer Ployz", lacks: "Can't report this copy", silent: "Not answering", waiting: "Waiting for its report",
+} as const satisfies Record<Exclude<Heard, "answered">, string>;
 /**
  * The primary's badge: Live only on its Server's own report of a writable root. Not answering names no time, since nothing
  * says when it stopped. Needs a newer Ployz only once its release is known to be behind.
  */
-const UNHEARD_WORDS = {
-  outdated: "Needs a newer Ployz", lacks: "Can't report this copy", silent: "Not answering", waiting: "Waiting for its report",
-} as const satisfies Record<Exclude<Heard, "answered">, string>;
 export const LIVE_WORDS = { live: "Live", read_only: "Read-only", ...UNHEARD_WORDS } as const satisfies Record<LiveState, string>;
 
 /** Why a mirror's Server didn't report it just now, said beside its age however fresh: the age is only its last match. */

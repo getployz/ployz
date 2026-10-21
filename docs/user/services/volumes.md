@@ -142,8 +142,9 @@ look under **Copies**. An old copy never refreshes, so it doesn't protect the da
 records which of its copies is a mirror and which is an old copy, so a mirror made with
 `ployz volume mirror` refreshes like any other, and a move from the CLI leaves an old copy too. A
 mirror's age turns amber with a **⚠** once it is more than an hour old. When the mirror's server
-doesn't answer, its row says so beside that age at once, like "9 minutes ago · Not answering": the
-age is when the mirror last matched, not when the server stopped.
+doesn't report it, its row says why beside that age at once, like "9 minutes ago · Not answering",
+**Can't report this copy** or **Needs a newer Ployz**. The age is when the mirror last matched, not
+when the server stopped.
 
 While a server's report is still on its way, Copies doesn't say the server is down. A primary on
 it reads **Waiting for its report**, and a mirror on it says it is waiting for its server's report.

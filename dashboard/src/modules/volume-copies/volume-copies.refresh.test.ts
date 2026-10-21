@@ -76,7 +76,7 @@ describe("skippedWords", () => {
     expect(words).not.toMatch(/\d\d:\d\d/);
   });
 
-  it("says nothing while rounds land, the mirror is fresh, or a round runs", () => {
+  it("says nothing while rounds land, a fresh refresh failed, or a round runs", () => {
     expect(skippedWords(mirror(minutesAgo(135)), now)).toBeNull();
     expect(skippedWords(mirror(minutesAgo(20), { skipped: "failed" }), now)).toBeNull();
     expect(skippedWords(mirror(minutesAgo(135), { skipped: "silent", busy: "Refreshing" }), now)).toBeNull();
