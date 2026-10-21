@@ -769,8 +769,8 @@ fn assemble_plan(
     let mut operations = service_operations;
     let prelude = operations.len() - before_volumes;
     let preserved_volumes = preserved_owned_volumes(&intent.namespace, &target, snapshot);
-    let tail_start = operations.len();
-    operations.extend(removal_operations(&services, &retiring));
+    let (removals, tail) = removal_operations(&services, &retiring, operations.len());
+    operations.extend(removals);
     let mut groups = Vec::new();
     if prelude > 0 {
         groups.extend(service_group(&operations, None, Vec::new(), 0..prelude));
@@ -786,14 +786,13 @@ fn assemble_plan(
             .collect();
         groups.extend(service_group(&operations, Some(name), dependencies, range));
     }
-    if tail_start < operations.len() {
-        let every_service = requested.iter().map(|spec| spec.name.clone()).collect();
-        groups.extend(service_group(
-            &operations,
-            None,
-            every_service,
-            tail_start..operations.len(),
-        ));
+    if !tail.is_empty() {
+        groups.push(ServiceGroup {
+            service: None,
+            dependencies: requested.iter().map(|spec| spec.name.clone()).collect(),
+            steps: tail,
+            publish: false,
+        });
     }
     Ok(Planned {
         operations,
@@ -891,22 +890,31 @@ fn check_removals(intent: &DeployIntent) -> Result<(), PlanError> {
     Ok(())
 }
 
+/// Removals of every copy of each obsolete Service, and the steps that run
+/// them from index `first` on. A Pending copy keeps every proxy on the last
+/// routed copy, so Pending copies go first, one at a time. The rest go Out in
+/// one step: a copy still In that cannot serve keeps every proxy on an Out
+/// sibling, whose own wait then never ends.
 fn removal_operations(
     services: &[ServiceObservation],
     obsolete: &[QualifiedService],
-) -> Vec<DeployOperation> {
+    first: usize,
+) -> (Vec<DeployOperation>, Vec<Step>) {
     let obsolete = obsolete.iter().collect::<BTreeSet<_>>();
-    let mut retiring: Vec<_> = services
+    let (pending, rest): (Vec<_>, Vec<_>) = services
         .iter()
         .filter(|service| obsolete.contains(&service.identity))
         .flat_map(|service| service.containers_for(ContainerAction::Remove))
-        .collect();
-    // A Pending sibling keeps proxies on the last routed copy, whose Out then
-    // never confirms, so Pending copies go first.
-    retiring
-        .sort_by_key(|container| *container.as_observation().rotation() != CopyRotation::Pending);
-    retiring
+        .partition(|container| *container.as_observation().rotation() == CopyRotation::Pending);
+    let serial = first..first + pending.len();
+    let at_once = serial.end..serial.end + rest.len();
+    let mut steps: Vec<Step> = serial.map(Step::Serial).collect();
+    if !at_once.is_empty() {
+        steps.push(Step::Parallel(at_once.collect()));
+    }
+    let operations = pending
         .into_iter()
+        .chain(rest)
         .map(|container| {
             let observation = container.as_observation();
             DeployOperation::RemoveContainer {
@@ -915,7 +923,8 @@ fn removal_operations(
                 purpose: ployz_core::RemoveContainerPurpose::Retire,
             }
         })
-        .collect()
+        .collect();
+    (operations, steps)
 }
 
 fn order_included<'intent>(

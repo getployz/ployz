@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use super::support::*;
-use ployz::deploy::preview_deploy;
+use ployz::deploy::{Step, plan_deploy, preview_deploy};
 use ployz_core::{
     ContainerKind, ContainerRuntimeObservation, DependencyCondition, DockerVolumeId,
     MachineFailure, PruneRefusal, QualifiedService, RpcError, RpcErrorCode, ServiceDependency,
@@ -647,4 +647,75 @@ fn a_removal_retires_a_stray_pending_copy_before_any_routed_one() {
         })
         .collect();
     assert_eq!(retired, [container_id('c'), container_id('a')]);
+}
+
+#[test]
+fn a_removal_retires_every_copy_of_a_service_in_one_step() {
+    let debug = spec("debug");
+    let service = service_id('b');
+    let routed = |hex, machine_hex, runtime| {
+        let mut copy = container(hex, machine_hex, &debug, &service);
+        copy.try_update(|parts| {
+            parts.rotation = Some(ployz_core::CopyRotation::In);
+            parts.runtime = runtime;
+        })
+        .unwrap();
+        copy
+    };
+    let snapshot = DeploySnapshot {
+        machines: vec![machine('1', "first"), machine('2', "second")],
+        containers: vec![
+            routed('a', '1', ContainerRuntimeObservation::Restarting),
+            routed('c', '2', ContainerRuntimeObservation::Exited { code: 1 }),
+        ],
+        ..Default::default()
+    };
+    let intent =
+        DeployIntent::apply_all(Namespace::parse("app").unwrap(), [], PlanOptions::default());
+
+    let plan = plan_deploy(&intent, &snapshot).unwrap();
+
+    let Some(tail) = plan.groups().last() else {
+        panic!("expected a removal group");
+    };
+    assert_eq!(tail.steps, [Step::Parallel(vec![0, 1])]);
+}
+
+#[test]
+fn a_removal_removes_pending_copies_one_at_a_time_before_the_rest_go_out_together() {
+    let debug = spec("debug");
+    let service = service_id('b');
+    let copy = |hex, machine_hex, rotation| {
+        let mut copy = container(hex, machine_hex, &debug, &service);
+        copy.try_update(|parts| parts.rotation = Some(rotation))
+            .unwrap();
+        copy
+    };
+    let snapshot = DeploySnapshot {
+        machines: vec![machine('1', "first"), machine('2', "second")],
+        containers: vec![
+            copy('a', '1', ployz_core::CopyRotation::In),
+            copy('b', '2', ployz_core::CopyRotation::Pending),
+            copy('c', '2', ployz_core::CopyRotation::In),
+            copy('d', '1', ployz_core::CopyRotation::Pending),
+            copy('e', '1', ployz_core::CopyRotation::In),
+        ],
+        ..Default::default()
+    };
+    let intent =
+        DeployIntent::apply_all(Namespace::parse("app").unwrap(), [], PlanOptions::default());
+
+    let plan = plan_deploy(&intent, &snapshot).unwrap();
+
+    let Some(tail) = plan.groups().last() else {
+        panic!("expected a removal group");
+    };
+    assert_eq!(
+        tail.steps,
+        [
+            Step::Serial(0),
+            Step::Serial(1),
+            Step::Parallel(vec![2, 3, 4])
+        ]
+    );
 }
