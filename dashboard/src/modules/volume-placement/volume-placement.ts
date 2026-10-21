@@ -3,12 +3,12 @@ import { Option, Schema } from "effect";
 import type { DeletionItem } from "#/components/deletion-dialog";
 import type { ChangeGroup } from "#/modules/config-store/store-deployments";
 import { STALE_AFTER_MS } from "#/modules/volume-copies/volume-copies";
-import { epochOf, planFromCopies } from "#/modules/volume-run/plan";
+import { epochOf, planFromCopies, planSeed } from "#/modules/volume-run/plan";
 import { runWords } from "#/modules/volume-run/volume-copies";
 import { rustMachineIdSchema } from "#/modules/machines/enrollment";
 import type { RuntimeVolumeCopy } from "#/modules/runtime/runtime.collection";
 import {
-  type AnsweredMember, heardFrom, type Member, parseDockerVolumeName, RUN_FEATURES, type VolumeRunInput, type VolumeRunView, unheardOf,
+  type AnsweredMember, heardFrom, type Member, needsFloor, parseDockerVolumeName, RUN_FEATURES, type VolumeRunInput, type VolumeRunView, unheardOf,
 } from "#/modules/volume-run/volume-run";
 
 export type MachineRef = { readonly id: MachineId; readonly name: MachineName };
@@ -444,15 +444,15 @@ export function seedOffer(
   volume: PlacementVolume, members: readonly Member[], restorable: readonly MachineId[], floorless: readonly MachineId[],
 ): SeedOffer {
   if (!serversAnswer(members)) return { offered: false, refused: null };
-  const observed = members.map((member): Member => member.answered && member.view.copy !== null && floorless.includes(member.machine.id)
-    ? { machine: member.machine, answered: false, lack: `${RUN_FEATURES.seed} is not available on ${member.machine.name}.` }
-    : member);
-  // The plan's refusal reads the copies alone, not where the point goes.
-  const into = { volumeId: "", dockerVolume: "", name: "" };
-  const planned = planFromCopies({ kind: "seed", args: { into, guid: "", name: "" }, volumeName: volume.name, orphan: false }, observed);
+  // The plan reads the copies alone, not where the point goes.
+  const run = { kind: "seed", args: { into: { volumeId: "", dockerVolume: "", name: "" }, guid: "", name: "" } } as const;
+  const observed = members.map((member): Member =>
+    member.answered && floorless.includes(member.machine.id) && needsFloor(run, member.machine, member.view.copy)
+      ? { machine: member.machine, answered: false, lack: `${RUN_FEATURES.seed} is not available on ${member.machine.name}.` }
+      : member);
+  const planned = planSeed({ ...run, volumeName: volume.name, orphan: false }, observed);
   if (!planned.ok) return { offered: false, refused: planned.refusal.message };
-  const primary = observePlacement(members).primary;
-  return { offered: primary !== null && restorable.includes(primary.id), refused: null };
+  return { offered: restorable.includes(planned.source.machine.id), refused: null };
 }
 
 export type PlacementTargets = { readonly move: readonly MachineRef[]; readonly mirror: readonly MachineRef[] };

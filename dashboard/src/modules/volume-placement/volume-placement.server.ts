@@ -19,7 +19,7 @@ import { volumeRun } from "#/modules/volume-run/tables";
 import {
   admitRun, ClusterNotConnected, heldStorage, inspectVolumeCopies, nameRefusal, planVolumeRun, resolveVolume, storeRefusal, unreachable,
 } from "#/modules/volume-run/volume-run.server";
-import { planFromCopies } from "#/modules/volume-run/plan";
+import { planSeed } from "#/modules/volume-run/plan";
 import { whileLocked } from "#/server/advisory-lock.server";
 import { Database } from "#/server/database.server";
 
@@ -162,10 +162,9 @@ export const stageRestore = Effect.fn("VolumePlacement.stageRestore")(function* 
   const run = { kind: "seed", args: { into: { volumeId: id, dockerVolume: dockerVolumeName(namespace, id), name }, guid: input.guid, name: input.name } } as const;
   const members = yield* inspect(organizationId, input.environment, input.volumeId, run);
   if (!serversAnswer(members)) return { ok: false, refusal: UNANSWERED } satisfies PlacementWrite;
-  const planned = planFromCopies({ ...run, volumeName: source.volumeName, orphan: false }, members);
+  const planned = planSeed({ ...run, volumeName: source.volumeName, orphan: false }, members);
   if (!planned.ok) return { ok: false, refusal: storeRefusal(planned.refusal) } satisfies PlacementWrite;
-  if (planned.phase.kind !== "seed") return yield* Effect.die("a seed run planned another phase");
-  const primary = planned.phase.source.machine;
+  const primary = planned.source.machine;
   const commands: BatchCommand[] = [
     ...listed.mounts.map((mount): BatchCommand => ({ command: "edit", environment: input.environment, expect: null, changes: [mountChange(mount.service, listed.name, null)] })),
     {

@@ -55,8 +55,10 @@ import {
   type AnsweredMember,
   copyName,
   dockerVolumeName,
+  isDestination,
   managementAddress,
   type Member,
+  needsFloor,
   parseDockerVolumeName,
   RUN_FEATURES,
   type ServiceSpec,
@@ -1342,9 +1344,6 @@ export const removeContainer = Effect.fn("VolumeRun.removeContainer")(function* 
   );
 }, Effect.scoped);
 
-const isDestination = (run: VolumeLaneInput, machine: { readonly id: MachineId; readonly name: MachineName | null }) =>
-  (run.kind === "move" || run.kind === "mirror") && (run.args.machine === undefined ? run.args.to === machine.name : run.args.machine === machine.id);
-
 /** A run as the observe step reads it: a resize carries the size the Store records, which decides its direction. */
 export type ObservedRun = Exclude<VolumeLaneInput, { kind: "resize" }> | (Extract<VolumeLaneInput, { kind: "resize" }> & { readonly recordedBytes: number });
 
@@ -1381,7 +1380,7 @@ export const observeVolumeMembers = Effect.fn("VolumeRun.observeMembers")(functi
     return session.volumeSwitch(machine.id, { command: "inspect_volume_copy", payload: { name: dockerVolume } }).pipe(
       clusterRead,
       Effect.timeout(OBSERVE_TIMEOUT),
-      Effect.flatMap((view) => floorless && (view.copy !== null || isDestination(run, ref))
+      Effect.flatMap((view) => floorless && needsFloor(run, ref, view.copy)
         ? lacks(requirements.volumeFloor.capability, run?.kind)
         : unsized !== undefined && view.copy !== null
         ? lacksVerb(unsized)
