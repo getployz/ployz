@@ -64,14 +64,14 @@ function RouteComponent() {
   const server = servers.find((candidate) => candidate.machine.id === serverId);
 
   if (state === "loading") {
-    return <DashboardPage width="content"><ServerPageSkeleton /></DashboardPage>;
+    return <DashboardPage width="content" title="Server"><ServerPageSkeleton /></DashboardPage>;
   }
   if (state === "unreachable" || (state === "stale" && !server)) {
-    return <DashboardPage width="content"><ServersUnreachable organizationSlug={organizationSlug} /></DashboardPage>;
+    return <DashboardPage width="content" title="Server"><ServersUnreachable organizationSlug={organizationSlug} /></DashboardPage>;
   }
   if (!server) {
     return (
-      <DashboardPage width="content">
+      <DashboardPage width="content" title="Server">
         <Empty variant="first-run">
           <EmptyHeader>
             <EmptyTitle>This server is no longer in your organization</EmptyTitle>
