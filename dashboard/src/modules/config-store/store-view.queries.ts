@@ -419,11 +419,14 @@ export function useCachedStoreView<Q extends ConfigQuery>(organizationSlug: stri
   return useCachedQuery(organizationSlug, query)?.data;
 }
 
+/** A Store view as last read, if ever, and whether its latest read failed. */
+export type CachedStoreRead<T> = { result: StoreResult<T> | undefined; failed: boolean };
+
 /**
  * `useCachedStoreView`, with whether its latest read failed. Each refetch puts an unanswered query back to pending, so
  * only the read times remember a failure.
  */
-export function useCachedStoreRead<Q extends ConfigQuery>(organizationSlug: string, query: Q | null): { result: StoreResult<StoreViewOf<Q>> | undefined; failed: boolean } {
+export function useCachedStoreRead<Q extends ConfigQuery>(organizationSlug: string, query: Q | null): CachedStoreRead<StoreViewOf<Q>> {
   const read = useCachedQuery(organizationSlug, query);
   return { result: read?.data, failed: read !== undefined && read.errorUpdatedAt > read.dataUpdatedAt };
 }

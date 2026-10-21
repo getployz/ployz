@@ -1,7 +1,7 @@
 import type { DeploymentSummary, DeploymentView, DomainRow, ReviewLifecycleKind, ServiceListing } from "@ployz/sdk";
 import { plural } from "#/lib/plural";
 import { shippedService } from "#/modules/config-store/store-deployments";
-import type { StoreResult } from "#/modules/config-store/store.contract";
+import type { CachedStoreRead } from "#/modules/config-store/store-view.queries";
 import type { Marker } from "#/modules/metrics/metrics-model";
 import type { RuntimeServiceRecord } from "#/modules/runtime/runtime.collection";
 import type { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
@@ -227,7 +227,7 @@ export function runningDeployment<D extends Pick<DeploymentSummary, "status">>(i
 export function deployEffect(
   name: string,
   running: Pick<DeploymentSummary, "services" | "ships"> | null,
-  { result, failed }: { result: StoreResult<Pick<DeploymentView, "nodes" | "preview" | "builds">> | undefined; failed: boolean },
+  { result, failed }: CachedStoreRead<Pick<DeploymentView, "nodes" | "preview" | "builds">>,
 ): DeployEffect {
   if (running === null || !shippedService(running, name)) return "leaves";
   if (result !== undefined && !result.ok) return "unreadable";
