@@ -177,42 +177,55 @@ impl ApiClient {
         Ok(QueryResult { columns, rows })
     }
 
+    /// Open a subscription and drain its initial snapshot.
+    ///
+    /// Only the opening is bounded: a quiet table sends nothing after its
+    /// snapshot, so callers re-read on their own interval instead.
+    ///
+    /// # Errors
+    ///
+    /// Returns a timed-out I/O error when Corrosion does not finish the
+    /// snapshot within the I/O timeout, and otherwise any request or protocol
+    /// failure.
     pub(crate) async fn subscribe(&self, statement: Statement) -> Result<Subscription, Error> {
-        let response = self
-            .client
-            .post(self.base_url.join("v1/subscriptions").expect("static path"))
-            .json(&statement)
-            .send()
-            .await?;
-        let status = response.status();
-        if !status.is_success() {
-            return Err(Error::Api(format!(
-                "HTTP {status}: {}",
-                response.text().await?
-            )));
-        }
-        let chunks: ByteStream = Box::pin(response.bytes_stream().map_err(io::Error::other));
-        let mut subscription = Subscription {
-            lines: FramedRead::new(
-                StreamReader::new(chunks),
-                LinesCodec::new_with_max_length(8 * 1024 * 1024),
-            ),
-            snapshot_in_progress: false,
-        };
-        match subscription.next_event().await? {
-            QueryEvent::Columns(_) => {
-                subscription.snapshot_in_progress = true;
-                subscription.finish_snapshot().await?;
-                Ok(subscription)
+        super::within_io_timeout(async {
+            let response = self
+                .client
+                .post(self.base_url.join("v1/subscriptions").expect("static path"))
+                .json(&statement)
+                .send()
+                .await?;
+            let status = response.status();
+            if !status.is_success() {
+                return Err(Error::Api(format!(
+                    "HTTP {status}: {}",
+                    response.text().await?
+                )));
             }
-            QueryEvent::Change(_) => Err(Error::Protocol(
-                "subscription change preceded end-of-query".into(),
-            )),
-            QueryEvent::Error(error) => Err(Error::Api(error)),
-            QueryEvent::Row(_, _) | QueryEvent::EndOfQuery { .. } => Err(Error::Protocol(
-                "subscription snapshot event arrived without columns".into(),
-            )),
-        }
+            let chunks: ByteStream = Box::pin(response.bytes_stream().map_err(io::Error::other));
+            let mut subscription = Subscription {
+                lines: FramedRead::new(
+                    StreamReader::new(chunks),
+                    LinesCodec::new_with_max_length(8 * 1024 * 1024),
+                ),
+                snapshot_in_progress: false,
+            };
+            match subscription.next_event().await? {
+                QueryEvent::Columns(_) => {
+                    subscription.snapshot_in_progress = true;
+                    subscription.finish_snapshot().await?;
+                    Ok(subscription)
+                }
+                QueryEvent::Change(_) => Err(Error::Protocol(
+                    "subscription change preceded end-of-query".into(),
+                )),
+                QueryEvent::Error(error) => Err(Error::Api(error)),
+                QueryEvent::Row(_, _) | QueryEvent::EndOfQuery { .. } => Err(Error::Protocol(
+                    "subscription snapshot event arrived without columns".into(),
+                )),
+            }
+        })
+        .await
     }
 }
 
