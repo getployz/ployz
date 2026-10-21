@@ -160,7 +160,7 @@ pub(super) async fn attempt<H: Host>(
                 message,
             };
             let line = failure_line(&failure);
-            crate::ui::note(format!("{line}. Waiting for Cloud."));
+            crate::ui::note(crate::ui::then_sentence(&line, "Waiting for Cloud."));
             attempt.failure = Some(failure);
             status.answer = Seen::Wait;
             status.message = Some(line);

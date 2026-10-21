@@ -314,7 +314,6 @@ async fn a_held_copy_leaves_every_live_route_and_only_its_run_brings_it_back() {
             .call::<op::ReadRoutes>(
                 ReadRoutesRequest {
                     service: service.clone(),
-                    routes_only: true,
                 },
                 None,
             )

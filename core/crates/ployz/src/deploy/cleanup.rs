@@ -5,7 +5,7 @@ use ployz_core::{
     AnonymousVolumes, ContainerId, ContainerKind, ContainerLocator, ContainerObservation,
     ContainerRefusal, ContainerRefusalReason, ContainerWant, CopyRotation, DeploymentLogId, Drain,
     EnsuredContainer, HealthVerdict, MachineId, QualifiedService, ResolvedServiceSpec, RoutesRead,
-    RpcError, RpcErrorCode, RunRotation, RunTarget, StopOptions,
+    RpcError, RpcErrorCode, RunRotation, RunTarget, StopOptions, Unacked,
 };
 use serde_json::Value;
 use tokio::time::Instant;
@@ -13,6 +13,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::MachineOperations;
 use crate::connect::{TARGET_RPC_TIMEOUT, in_rpc_timeout, stop_rpc_timeout};
+use crate::ui::{then_sentence, with_reason};
 
 pub(crate) const ACK_POLL: Duration = Duration::from_secs(1);
 pub(crate) const ACK_WAIT: Duration = Duration::from_secs(300);
@@ -193,18 +194,15 @@ where
     }
 }
 
-fn still_waiting(
+pub(crate) fn still_waiting(
     read: &RoutesRead,
     satisfied: &impl Fn(&BTreeSet<ContainerId>) -> bool,
 ) -> Unconfirmed {
     let mut waiting = Unconfirmed::default();
-    for (machine, routed) in &read.routes {
-        if read.down.contains(machine) || routed.as_ref().is_some_and(satisfied) {
-            continue;
-        }
-        waiting.machines.push(*machine);
-        if routed.is_none() {
-            waiting.unanswered.push(*machine);
+    for unacked in read.unacked(satisfied) {
+        waiting.machines.push(unacked.machine());
+        if let Unacked::Unanswered(machine) = unacked {
+            waiting.unanswered.push(machine);
         }
     }
     waiting
@@ -465,9 +463,9 @@ pub(crate) async fn user_restart<C: MachineOperations>(
         ))),
         // The ask may have landed, so the copy is restored as if Held.
         Err(error) => Err(RpcError {
-            message: format!(
-                "Container {} was not restarted: {}",
-                copy.container_id, error.message
+            message: with_reason(
+                format_args!("Container {} was not restarted", copy.container_id),
+                &error.message,
             ),
             ..error
         }),
@@ -615,11 +613,14 @@ fn started(copy: &Copy, brought: BroughtIn) -> Result<UserStarted, RpcError> {
         // is named with the rotation it keeps.
         BroughtIn::Refused(refusal) if refusal.reason == ContainerRefusalReason::OlderThanIn => {
             let mut error = refusal.into_error();
-            error.message = format!(
-                "Container {} is left {} and not routed: {}. Remove it; the newer copy serves the Service.",
-                copy.container_id,
-                rotation_name(&copy.rotation),
-                error.message
+            error.message = then_sentence(
+                &format!(
+                    "Container {} is left {} and not routed: {}",
+                    copy.container_id,
+                    rotation_name(&copy.rotation),
+                    error.message
+                ),
+                "Remove it; the newer copy serves the Service.",
             );
             Err(error)
         }
@@ -656,24 +657,13 @@ async fn not_stopped<C: MachineOperations>(
         }
     };
     error.message = then_sentence(
-        &format!(
-            "Container {} was not stopped: {}",
-            copy.container_id, error.message
+        &with_reason(
+            format_args!("Container {} was not stopped", copy.container_id),
+            &error.message,
         ),
         back,
     );
     error
-}
-
-/// `next` follows `message` as its own sentence, with one break however
-/// `message` ended.
-fn then_sentence(message: &str, next: &str) -> String {
-    let message = message.trim_end();
-    match message.chars().last() {
-        None => next.to_owned(),
-        Some('.' | '?' | '!' | ':') => format!("{message} {next}"),
-        Some(_) => format!("{message}. {next}"),
-    }
 }
 
 fn left_running(copy: &Copy, rotation: &str, step: Step) -> Result<(), RpcError> {

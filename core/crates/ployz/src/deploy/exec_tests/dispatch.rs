@@ -447,7 +447,6 @@ async fn removal_sent(purpose: ployz_core::RemoveContainerPurpose) -> Vec<Contai
                     | RpcRequestBody::MintBuildGrant(_)
                     | RpcRequestBody::InspectBuildGrant(_)
                     | RpcRequestBody::PublishCertificateMaterial(_)
-                    | RpcRequestBody::PublishServingPointer(_)
                     | RpcRequestBody::ReadRoutes(_)
                     | RpcRequestBody::MetricHistory(_)
                     | RpcRequestBody::LogHistory(_)
@@ -851,6 +850,7 @@ async fn global_stop_first_retry_replays_retained_candidate_with_no_free_endpoin
                 r#gen: ployz_core::Gen::FIRST,
                 slot: slot_key(
                     &test_namespace(),
+                    &spec.name,
                     ContainerKind::ServiceContainer,
                     crate::cluster::global_creation_key(spec),
                 ),

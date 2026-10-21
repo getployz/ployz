@@ -397,7 +397,7 @@ mod plan {
         ContainerNow, ContainerObservation, ContainerObservationParts, ContainerRefusalReason,
         ContainerRuntimeObservation, ContainerWant, CreationKey, Drain, HealthObservation,
         LocalMachinePhase, MachineId, Namespace, NewContainer, ResolvedServiceSpec, RunRotation,
-        RunTarget, SlotKey, StopOptions,
+        RunTarget, ServiceName, SlotKey, StopOptions,
     };
     use serde_json::json;
 
@@ -420,6 +420,7 @@ mod plan {
     fn slot() -> SlotKey {
         SlotKey {
             namespace: Namespace::parse("app").unwrap(),
+            service: ServiceName::parse("api").unwrap(),
             kind: ContainerKind::ServiceContainer,
             creation_key: CreationKey::try_from("k1".to_owned()).unwrap(),
         }
@@ -706,7 +707,7 @@ async fn a_racing_create_that_adopts_an_exited_hook_does_not_start_it() {
         .with_containers(Some(runtime))
         .with_zpool("true");
     let new: NewContainer = serde_json::from_value(json!({
-        "slot": {"namespace":"app", "kind":"pre_deploy_hook", "creation_key":"h1"},
+        "slot": {"namespace":"app", "service":"api", "kind":"pre_deploy_hook", "creation_key":"h1"},
         "resolved_spec": spec_with_sources(vec![]),
         "gen": 1,
     }))
@@ -801,7 +802,7 @@ mod settled {
 
     fn new_container(answer: &str) -> NewContainer {
         serde_json::from_value(json!({
-            "slot": {"namespace":"app", "kind":"service_container", "creation_key":"s1"},
+            "slot": {"namespace":"app", "service":"api", "kind":"service_container", "creation_key":"s1"},
             "resolved_spec": spec_with_sources(vec![]),
             "gen": 1,
             "answer": answer,
@@ -1056,74 +1057,6 @@ mod settled {
     }
 
     #[tokio::test]
-    async fn removal_by_id_succeeds_when_the_retirer_removes_it_during_the_drain() {
-        let Settling {
-            local,
-            fake,
-            data_dir,
-        } = settling().await;
-        let EnsuredContainer::Ensured {
-            now: ContainerNow::Present(old),
-            ..
-        } = local
-            .ensure_container(run(new_container("started")))
-            .await
-            .unwrap()
-        else {
-            panic!("the old Container did not start");
-        };
-        let id = old.container_id;
-        let gone = tokio::spawn({
-            let local = local.clone();
-            async move {
-                local
-                    .ensure_container(ContainerWant::Gone {
-                        container: ployz_core::ContainerLocator::Id(id),
-                        drain: ployz_core::Drain::try_from(500).unwrap(),
-                        anonymous_volumes: ployz_core::AnonymousVolumes::Remove,
-                    })
-                    .await
-            }
-        });
-        let containers = local.containers.as_ref().unwrap();
-        tokio::time::timeout(Duration::from_secs(5), async {
-            while !containers.stopping_ids_for_test().contains(&id) {
-                tokio::time::sleep(Duration::from_millis(5)).await;
-            }
-        })
-        .await
-        .unwrap();
-        assert!(
-            local
-                .remove_drained_if(id, async { Ok(true) })
-                .await
-                .unwrap()
-        );
-
-        let reply = gone.await.unwrap().unwrap();
-
-        assert!(
-            matches!(
-                reply,
-                EnsuredContainer::Ensured {
-                    now: ContainerNow::Absent { .. },
-                    ..
-                }
-            ),
-            "expected the Container gone, got {reply:?}"
-        );
-        assert!(
-            fake.named_containers
-                .as_ref()
-                .unwrap()
-                .lock()
-                .unwrap()
-                .is_empty()
-        );
-        std::fs::remove_dir_all(data_dir).unwrap();
-    }
-
-    #[tokio::test]
     async fn ensure_settled_answers_failed_when_health_fails() {
         let (reply, _) = ensure_reporting(
             settled_run(60_000),
@@ -1340,7 +1273,7 @@ mod stopped_on_request {
                 .with_containers(Some(runtime.clone()))
                 .with_zpool("true");
             let new: NewContainer = serde_json::from_value(json!({
-                "slot": {"namespace":"app", "kind":"service_container", "creation_key":"s1"},
+                "slot": {"namespace":"app", "service":"api", "kind":"service_container", "creation_key":"s1"},
                 "resolved_spec": spec_with_sources(vec![]),
                 "gen": 1,
             }))

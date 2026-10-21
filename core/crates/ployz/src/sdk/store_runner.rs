@@ -1177,13 +1177,7 @@ fn interrupted(outcome: DeployOutcome<ExecutionError>) -> DeployOutcome<Executio
                 services,
             }
         }
-        DeployOutcome::Superseded {
-            completed,
-            unexecuted,
-            services,
-            ..
-        }
-        | DeployOutcome::Interrupted {
+        DeployOutcome::Interrupted {
             completed,
             unexecuted,
             services,
@@ -1248,13 +1242,13 @@ fn targets(
             _ => {}
         }
         if !source.builders.contains(&Builder::Servers) {
-            let why = source
-                .message
-                .as_deref()
-                .map_or_else(String::new, |message| format!("{message}. "));
             failed.push(format!(
-                "{}: {why}No other Builder in your Build Order can take it",
-                source.service
+                "{}: {}",
+                source.service,
+                crate::ui::then_sentence(
+                    source.message.as_deref().unwrap_or_default(),
+                    "No other Builder in your Build Order can take it",
+                )
             ));
             continue;
         }
