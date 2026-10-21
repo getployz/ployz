@@ -4,6 +4,7 @@ pub mod fake_acme;
 pub mod fake_fleet;
 pub mod fake_machine;
 mod machine_admin;
+mod poll;
 pub mod release_key;
 pub mod rotation;
 
@@ -25,6 +26,8 @@ use ployz_core::{
     RpcResponseBody, op,
 };
 use thiserror::Error;
+
+pub use poll::{Attempt, WaitError, hold_for, poll_until};
 
 pub const IMAGE: &str = "ghcr.io/getployz/ployz-testkit:main";
 pub const SERVICE_CONTAINER_IMAGE: &str = "alpine:3.23.3";
@@ -215,25 +218,17 @@ impl Cluster {
     pub async fn wait_ready(&self, timeout: Duration) -> Result<(), TestkitError> {
         let deadline = Instant::now() + timeout;
         for index in 0..self.plan.machines.len() {
-            loop {
-                let ready = match self.client(index).await {
-                    Ok(mut client) => client
-                        .describe_contract(
-                            op::DescribeContract::into_request(DescribeContractRequest {})
-                                .encode()?,
-                        )
-                        .await
-                        .is_ok(),
+            let request =
+                op::DescribeContract::into_request(DescribeContractRequest {}).encode()?;
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            poll_until(remaining, "Machine API answers", async || {
+                match self.client(index).await {
+                    Ok(mut client) => client.describe_contract(request.clone()).await.is_ok(),
                     Err(_) => false,
-                };
-                if ready {
-                    break;
                 }
-                if Instant::now() >= deadline {
-                    return Err(TestkitError::ReadinessTimeout(self.container_name(index)?));
-                }
-                tokio::time::sleep(Duration::from_millis(250)).await;
-            }
+            })
+            .await
+            .map_err(|_| self.readiness_timeout(index))?;
         }
         Ok(())
     }
@@ -833,18 +828,14 @@ touch /tmp/probe.done",
         phase: LocalMachinePhase,
         timeout: Duration,
     ) -> Result<ployz_core::MachineDetails, TestkitError> {
-        let deadline = Instant::now() + timeout;
-        loop {
-            if let Ok(details) = self.inspect(index).await
-                && details.phase == phase
-            {
-                return Ok(details);
-            }
-            if Instant::now() >= deadline {
-                return Err(TestkitError::ReadinessTimeout(self.container_name(index)?));
-            }
-            tokio::time::sleep(Duration::from_millis(250)).await;
-        }
+        poll_until(timeout, "Machine reaches the phase", async || {
+            self.inspect(index)
+                .await
+                .ok()
+                .filter(|details| details.phase == phase)
+        })
+        .await
+        .map_err(|_| self.readiness_timeout(index))
     }
 
     async fn wait_machine_count(
@@ -853,21 +844,16 @@ touch /tmp/probe.done",
         count: usize,
         timeout: Duration,
     ) -> Result<(), TestkitError> {
-        let deadline = Instant::now() + timeout;
-        loop {
-            if let Ok(machines) = self.machines(index).await
-                && machines.len() == count
-                && machines
-                    .iter()
-                    .all(|machine| machine.membership == MembershipObservation::Up)
-            {
-                return Ok(());
-            }
-            if Instant::now() >= deadline {
-                return Err(TestkitError::ReadinessTimeout(self.container_name(index)?));
-            }
-            tokio::time::sleep(Duration::from_millis(250)).await;
-        }
+        poll_until(timeout, "every Machine is Up", async || {
+            self.machines(index).await.is_ok_and(|machines| {
+                machines.len() == count
+                    && machines
+                        .iter()
+                        .all(|machine| machine.membership == MembershipObservation::Up)
+            })
+        })
+        .await
+        .map_err(|_| self.readiness_timeout(index))
     }
 
     async fn wait_store_version(
@@ -876,20 +862,13 @@ touch /tmp/probe.done",
         target: &BTreeMap<String, i64>,
         timeout: Duration,
     ) -> Result<(), TestkitError> {
-        let deadline = Instant::now() + timeout;
-        loop {
-            if self
-                .inspect(index)
+        poll_until(timeout, "store version reaches the target", async || {
+            self.inspect(index)
                 .await
                 .is_ok_and(|details| version_reached(&details.store_version, target))
-            {
-                return Ok(());
-            }
-            if Instant::now() >= deadline {
-                return Err(TestkitError::ReadinessTimeout(self.container_name(index)?));
-            }
-            tokio::time::sleep(Duration::from_millis(250)).await;
-        }
+        })
+        .await
+        .map_err(|_| self.readiness_timeout(index))
     }
 
     pub async fn inspect(&self, index: usize) -> Result<ployz_core::MachineDetails, TestkitError> {
@@ -938,6 +917,13 @@ touch /tmp/probe.done",
             .machines
             .get(index)
             .ok_or(TestkitError::MachineIndex(index))
+    }
+
+    fn readiness_timeout(&self, index: usize) -> TestkitError {
+        match self.container_name(index) {
+            Ok(name) => TestkitError::ReadinessTimeout(name),
+            Err(error) => error,
+        }
     }
 
     fn container_name(&self, index: usize) -> Result<String, TestkitError> {

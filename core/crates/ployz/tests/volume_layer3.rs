@@ -11,7 +11,7 @@ use ployz_core::{
     ContainerKind, DockerVolumeId, DockerVolumeName, ListMachinesRequest, Namespace,
     RemoveVolumesRequest, ResolvedServiceSpec, ServiceId, VolumeRemovalOutcome, op,
 };
-use ployz_testkit::{Cluster, ClusterPlan};
+use ployz_testkit::{Cluster, ClusterPlan, hold_for};
 use serde_json::json;
 
 /// L3-008, L3-013, L3-047..L3-055, L3-067, and the machine-local-volume negative family.
@@ -96,20 +96,31 @@ async fn volume_mounts_and_partial_results_stay_machine_local() {
         }
         mounted_containers.push((index, created));
     }
-    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    hold_for(
+        std::time::Duration::from_secs(2),
+        "each Service Container keeps its Volume on its own Machine",
+        async || {
+            for (index, container_id) in &mounted_containers {
+                let value = cluster.read_container_file(*index, container_id, "/data/value");
+                if !value
+                    .as_ref()
+                    .is_ok_and(|value| *value == format!("volume-{index}"))
+                {
+                    return Err(format!("Machine {index} read {value:?}"));
+                }
+                if cluster
+                    .read_container_file(1_usize - *index, container_id, "/data/value")
+                    .is_ok()
+                {
+                    return Err(format!("Service Container moved off Machine {index}"));
+                }
+            }
+            Ok(())
+        },
+    )
+    .await
+    .unwrap();
     for (index, container_id) in &mounted_containers {
-        assert_eq!(
-            cluster
-                .read_container_file(*index, container_id, "/data/value")
-                .unwrap(),
-            format!("volume-{index}")
-        );
-        assert!(
-            cluster
-                .read_container_file(1_usize - *index, container_id, "/data/value")
-                .is_err(),
-            "Service Container moved to the other Machine"
-        );
         cluster.remove_container(*index, container_id).unwrap();
     }
 

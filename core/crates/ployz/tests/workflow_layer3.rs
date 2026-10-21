@@ -11,7 +11,7 @@ use ployz::{
     sdk::Session,
 };
 use ployz_core::{DeployIntent, DeployOutcome, ListMachinesRequest, op};
-use ployz_testkit::{Cluster, ClusterPlan, SERVICE_CONTAINER_IMAGE};
+use ployz_testkit::{Cluster, ClusterPlan, SERVICE_CONTAINER_IMAGE, poll_until};
 
 /// L3-009..L3-010, L3-014, and L3-045..L3-046.
 #[tokio::test]
@@ -314,21 +314,15 @@ async fn wait_for_machine(
     client: &mut ployz::connect::Client,
     matches: impl Fn(&ployz_core::Machine) -> bool,
 ) {
-    tokio::time::timeout(Duration::from_secs(30), async {
-        loop {
-            if client
-                .call::<op::ListMachines>(ListMachinesRequest {}, None)
-                .await
-                .is_ok_and(|list| {
-                    list.machines
-                        .iter()
-                        .any(|machine| matches(&machine.machine))
-                })
-            {
-                return;
-            }
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
+    poll_until(Duration::from_secs(30), "a matching Machine", async || {
+        client
+            .call::<op::ListMachines>(ListMachinesRequest {}, None)
+            .await
+            .is_ok_and(|list| {
+                list.machines
+                    .iter()
+                    .any(|machine| matches(&machine.machine))
+            })
     })
     .await
     .unwrap();
@@ -338,18 +332,17 @@ async fn wait_for_live<T>(
     client: &mut ployz::connect::Client,
     mut select: impl FnMut(ployz_core::LiveServices<ployz_core::RpcError>) -> Option<T>,
 ) -> T {
-    tokio::time::timeout(Duration::from_secs(30), async {
-        loop {
-            if let Ok(live) = client
+    poll_until(
+        Duration::from_secs(30),
+        "the expected live Services",
+        async || {
+            client
                 .live_services(ployz_core::EnvironmentValues::Redacted)
                 .await
-                && let Some(value) = select(live)
-            {
-                return value;
-            }
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
-    })
+                .ok()
+                .and_then(&mut select)
+        },
+    )
     .await
     .unwrap()
 }

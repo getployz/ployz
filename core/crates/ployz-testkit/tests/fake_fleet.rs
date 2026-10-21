@@ -10,7 +10,7 @@ use std::{
     path::{Path, PathBuf},
     process::{Command, Stdio},
     sync::Arc,
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 use ployz::{
@@ -490,11 +490,11 @@ fn the_bin_serves_the_fleet_and_answers_control_lines() {
     assert!(!web_3.exists());
 
     drop(stdin);
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while child.try_wait().unwrap().is_none() {
-        assert!(Instant::now() < deadline, "the bin outlived its stdin");
-        std::thread::sleep(Duration::from_millis(50));
-    }
+    let (exited, exit) = std::sync::mpsc::channel();
+    std::thread::spawn(move || exited.send(child.wait()));
+    exit.recv_timeout(Duration::from_secs(10))
+        .expect("the bin outlived its stdin")
+        .unwrap();
     let entries = std::fs::read_to_string(&ledger)
         .unwrap()
         .lines()

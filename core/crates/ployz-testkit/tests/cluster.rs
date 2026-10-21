@@ -4,7 +4,7 @@ use ployz_core::{
     LocalMachinePhase, Machine, MachineId, MachineName, MachineObservation, MachineUpdate,
     ManagementAddress, MembershipObservation, PublicIpUpdate, UNREGISTRY_PORT, WireGuardPublicKey,
 };
-use ployz_testkit::{Cluster, ClusterPlan, join_request};
+use ployz_testkit::{Cluster, ClusterPlan, join_request, poll_until};
 
 fn image_ingest_catalog(cluster: &Cluster, index: usize, address: ManagementAddress) -> bool {
     cluster
@@ -86,22 +86,20 @@ async fn join_reaches_participating() {
             .await
             .unwrap();
 
-        tokio::time::timeout(Duration::from_secs(60), async {
-            loop {
-                if tokio::time::timeout(Duration::from_secs(1), cluster.inspect(1))
+        poll_until(
+            Duration::from_secs(60),
+            "daemon becomes participating after join",
+            async || {
+                tokio::time::timeout(Duration::from_secs(1), cluster.inspect(1))
                     .await
                     .is_ok_and(|details| {
                         details
                             .is_ok_and(|details| details.phase == LocalMachinePhase::Participating)
                     })
-                {
-                    break;
-                }
-                tokio::time::sleep(Duration::from_millis(250)).await;
-            }
-        })
+            },
+        )
         .await
-        .unwrap_or_else(|_| panic!("daemon did not become participating after join"));
+        .unwrap();
     }
 }
 
@@ -112,18 +110,16 @@ async fn failed_join_leaves_the_registered_ghost_until_teardown() {
     let cluster = Cluster::create(plan).unwrap();
     cluster.wait_ready(Duration::from_secs(30)).await.unwrap();
     let first = cluster.initialize_first().await.unwrap();
-    tokio::time::timeout(Duration::from_secs(60), async {
-        loop {
-            if cluster
+    poll_until(
+        Duration::from_secs(60),
+        "the first Machine lists itself",
+        async || {
+            cluster
                 .machines(0)
                 .await
                 .is_ok_and(|machines| machines.len() == 1)
-            {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(250)).await;
-        }
-    })
+        },
+    )
     .await
     .unwrap();
     let mut registered = cluster.register_second().await.unwrap();
@@ -350,11 +346,10 @@ async fn updates_removes_and_inspects_machine_network_state() {
         );
     }
 
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
-    loop {
+    poll_until(Duration::from_secs(60), "RTT samples appear", async || {
         let first_rtts = cluster.inspect_rtts(0).await.unwrap_or_default();
         let second_rtts = cluster.inspect_rtts(1).await.unwrap_or_default();
-        if first_rtts.iter().any(|observation| {
+        first_rtts.iter().any(|observation| {
             observation
                 .machine
                 .as_ref()
@@ -364,15 +359,10 @@ async fn updates_removes_and_inspects_machine_network_state() {
                 .machine
                 .as_ref()
                 .is_some_and(|peer| peer.id == first.id)
-        }) {
-            break;
-        }
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "RTT samples did not appear"
-        );
-        tokio::time::sleep(Duration::from_millis(500)).await;
-    }
+        })
+    })
+    .await
+    .unwrap();
 
     assert_partitioned_field_collisions_survive_convergence(&cluster, &first).await;
 
@@ -480,19 +470,16 @@ async fn wait_for(
     timeout: Duration,
     condition: impl Fn(&[MachineObservation]) -> bool,
 ) -> Vec<MachineObservation> {
-    let deadline = tokio::time::Instant::now() + timeout;
-    loop {
-        if let Ok(machines) = cluster.machines(entry).await
-            && condition(&machines)
-        {
-            return machines;
-        }
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "entry-relative replicated observations did not converge"
-        );
-        tokio::time::sleep(Duration::from_millis(250)).await;
-    }
+    poll_until(
+        timeout,
+        "entry-relative replicated observations converge",
+        async || match cluster.machines(entry).await {
+            Ok(machines) if condition(&machines) => Ok(machines),
+            observed => Err(format!("{observed:#?}")),
+        },
+    )
+    .await
+    .unwrap()
 }
 
 async fn update_eventually(
@@ -500,17 +487,13 @@ async fn update_eventually(
     target: &str,
     update: MachineUpdate,
 ) -> ployz_core::Machine {
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
-    loop {
-        if let Ok(machine) = cluster.update_machine(0, target, update.clone()).await {
-            return machine;
-        }
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "routed Machine update did not become reachable"
-        );
-        tokio::time::sleep(Duration::from_millis(250)).await;
-    }
+    poll_until(
+        Duration::from_secs(60),
+        "routed Machine update becomes reachable",
+        || cluster.update_machine(0, target, update.clone()),
+    )
+    .await
+    .unwrap()
 }
 
 #[tokio::test]
