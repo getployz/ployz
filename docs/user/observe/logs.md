@@ -60,17 +60,18 @@ no service arguments, and `--follow` still use live container discovery.
 ## Secrets in kept logs
 
 Each server keeps a removed container's output, and the variables it ran with, so its logs still
-read after a rollback or removal. They stay up to 30 days after the container's last line. They go
-sooner when logs and metrics fill their share of the disk, or when the disk drops below 10% free
-(at least 2 GB).
+read after a rollback or removal. Each log file stays up to 30 days after it was last written, so
+a container's older lines can go first. They go sooner when logs and metrics fill their share of
+the disk, or when the disk drops below 10% free (at least 2 GiB).
 
 Anything your app printed stays in those files, secrets included. The dashboard, an agent, and
 `ployz logs` through Ployz Cloud hide Sealed values when they show a line. A value shorter than 6
 characters is hidden only where its name labels it, as in `PIN=4821`. `ployz logs` run with
 server access, and the files on the server, keep the line as printed. They live in
 `/var/lib/docker/ployz-observe/v1/containers/<container id>/`, or under Docker's data directory
-if you moved it. Only root can read them: log files are `0640 root:root`, the `env.json` of
-variables is `0600 root:root`, and each container's folder is `0700`.
+if you moved it. The log files keep Docker's own permissions, `0640` and owned by root on a
+default Docker install. The `env.json` of variables is `0600`, and Ployz creates each container's
+folder as `0700`.
 
 Don't print secrets from your app. There's no setting today to delete kept logs early or keep them
 for less time. Keeping no secrets in logs on disk is planned after 0.3.0 in
