@@ -3,9 +3,9 @@ use std::net::Ipv4Addr;
 use std::num::NonZeroU32;
 
 use ployz_core::{
-    ContainerAddress, ContainerObservation, ContainerObservationParts, DeploymentLogId,
-    HealthObservation, Machine, MachineFailure, MachineSuccess, PartialResult, RpcErrorCode,
-    ServiceMode, ServiceName, service_containers,
+    ContainerAddress, ContainerKind, ContainerObservation, ContainerObservationParts,
+    DeploymentLogId, HealthObservation, Machine, MachineFailure, MachineSuccess, PartialResult,
+    RpcErrorCode, ServiceMode, ServiceName, service_containers,
 };
 use serde_json::json;
 
@@ -430,7 +430,7 @@ fn cut_for_a_volume_move(machine: &Machine) -> ContainerObservation {
         machine,
         '1',
         CopyRotation::In,
-        ContainerRuntimeObservation::Exited { code: 0 },
+        ContainerRuntimeObservation::Exited { code: 143 },
         1,
         1,
     )
@@ -445,13 +445,13 @@ fn status_names_the_copy_a_volume_move_cut_until_its_new_copy_is_in() {
         serde_json::to_value(&check.attention).unwrap(),
         json!([{
             "reason": "copies_not_serving",
-            "message": "Serving 0 of 1 copies. machine-1 exited with code 0.",
+            "message": "Serving 0 of 1 copy. machine-1 exited with code 143.",
             "next": "ployz logs web",
             "service": "app/web",
             "serving": 0,
             "wanted": 1,
             "copies": [
-                {"machine": "machine-1", "container": "1".repeat(64), "rotation": "in", "runtime": {"state": "exited", "code": 0}},
+                {"machine": "machine-1", "container": "1".repeat(64), "rotation": "in", "runtime": {"state": "exited", "code": 143}},
             ],
         }])
     );
@@ -496,7 +496,6 @@ fn a_crashing_copy_on_a_down_machine_shows_only_the_down_row() {
 #[test]
 fn status_names_a_global_service_with_a_copy_that_restarts() {
     let [one, two, _] = machines();
-    let global = |copy| edited(copy, |parts| parts.resolved_spec.mode = ServiceMode::Global);
     let check = judged_copies(vec![
         global(web_copy(&one, '1', CopyRotation::In, healthy(), 1, 1)),
         global(web_copy(
@@ -513,6 +512,198 @@ fn status_names_a_global_service_with_a_copy_that_restarts() {
         messages(&check),
         ["Serving 1 of 2 copies. machine-2 restarting."]
     );
+}
+
+fn global(copy: ContainerObservation) -> ContainerObservation {
+    edited(copy, |parts| parts.resolved_spec.mode = ServiceMode::Global)
+}
+
+#[test]
+fn a_global_copy_left_draining_on_a_drained_server_is_no_row() {
+    let [one, two, three] = machines();
+    let check = judged_copies(vec![
+        global(web_copy(&one, '1', CopyRotation::In, healthy(), 1, 2)),
+        global(web_copy(&two, '2', CopyRotation::In, healthy(), 1, 2)),
+        global(web_copy(&three, '3', CopyRotation::Out, healthy(), 1, 1)),
+    ]);
+
+    assert!(check.attention.is_empty());
+}
+
+#[test]
+fn a_global_copy_replaced_on_its_server_is_no_row() {
+    let [one, ..] = machines();
+    let check = judged_copies(vec![
+        global(web_copy(&one, '1', CopyRotation::Out, healthy(), 1, 1)),
+        global(web_copy(&one, '2', CopyRotation::In, healthy(), 1, 2)),
+    ]);
+
+    assert!(check.attention.is_empty());
+}
+
+#[test]
+fn a_copy_held_through_a_restart_beside_a_surplus_out_copy_is_no_row() {
+    let [one, two, three] = machines();
+    let check = judged_copies(vec![
+        web_copy(&one, '1', CopyRotation::In, healthy(), 2, 2),
+        web_copy(&two, '2', held(), healthy(), 2, 2),
+        web_copy(&three, '3', CopyRotation::Out, healthy(), 2, 1),
+    ]);
+
+    assert!(check.attention.is_empty());
+}
+
+#[test]
+fn a_leftover_out_copy_after_a_scale_down_is_named_until_a_deploy_removes_it() {
+    let [one, two, three] = machines();
+    let check = judged_copies(vec![
+        web_copy(&one, '1', CopyRotation::In, healthy(), 3, 2),
+        web_copy(&two, '2', CopyRotation::In, healthy(), 3, 2),
+        web_copy(&three, '3', CopyRotation::Out, healthy(), 3, 1),
+    ]);
+
+    assert_eq!(
+        messages(&check),
+        ["Serving 2 of 3 copies. machine-3 draining."]
+    );
+}
+
+#[test]
+fn the_count_comes_from_the_newest_kept_copy_not_from_a_failed_deploy() {
+    let [one, two, three] = machines();
+    let restarting = || ContainerRuntimeObservation::Restarting;
+    let check = judged_copies(vec![
+        web_copy(&one, '1', CopyRotation::In, healthy(), 4, 1),
+        web_copy(&two, '2', CopyRotation::In, healthy(), 4, 1),
+        web_copy(&three, '3', CopyRotation::In, restarting(), 4, 1),
+        web_copy(&one, '4', CopyRotation::In, restarting(), 4, 1),
+        web_copy(&two, '5', CopyRotation::Pending, healthy(), 2, 2),
+        web_copy(&three, '6', CopyRotation::Pending, healthy(), 2, 2),
+    ]);
+
+    assert_eq!(
+        messages(&check),
+        ["Serving 2 of 4 copies. machine-1 restarting, machine-3 restarting."]
+    );
+}
+
+#[test]
+fn a_hook_container_counts_neither_as_serving_nor_as_kept() {
+    let [one, two, three] = machines();
+    let hook = |copy| edited(copy, |parts| parts.kind = ContainerKind::PreDeployHook);
+    let check = judged_copies(vec![
+        web_copy(
+            &one,
+            '1',
+            CopyRotation::In,
+            ContainerRuntimeObservation::Restarting,
+            3,
+            1,
+        ),
+        hook(web_copy(&two, '2', CopyRotation::In, healthy(), 3, 2)),
+        hook(web_copy(
+            &three,
+            '3',
+            CopyRotation::In,
+            ContainerRuntimeObservation::Exited { code: 1 },
+            3,
+            2,
+        )),
+    ]);
+
+    assert_eq!(
+        messages(&check),
+        ["Serving 0 of 1 copy. machine-1 restarting."]
+    );
+}
+
+fn unanswered_by(mut live: LiveServices<RpcError>, machine: &Machine) -> LiveServices<RpcError> {
+    live.containers.failures.push(MachineFailure {
+        machine_id: machine.id,
+        error: unavailable("connection refused"),
+    });
+    live
+}
+
+const MACHINE_2_DID_NOT_ANSWER: &str = "machine-2 did not answer, so status may miss copies that do not serve and Servers that have not picked up the new copies.";
+
+#[test]
+fn a_crashing_copy_on_a_server_that_did_not_answer_is_only_a_warning() {
+    let [one, two, three] = machines();
+    let check = judged(
+        listed(&[&one, &two, &three], &[]),
+        unanswered_by(
+            listed_copies(vec![web_copy(&one, '1', CopyRotation::In, healthy(), 2, 1)]),
+            &two,
+        ),
+    );
+
+    assert!(check.attention.is_empty());
+    assert_eq!(warned(&check), [MACHINE_2_DID_NOT_ANSWER]);
+}
+
+#[test]
+fn an_out_copy_does_not_stand_in_for_a_copy_on_a_server_that_did_not_answer() {
+    let [one, two, three] = machines();
+    let check = judged(
+        listed(&[&one, &two, &three], &[]),
+        unanswered_by(
+            listed_copies(vec![
+                web_copy(&one, '1', CopyRotation::In, healthy(), 2, 2),
+                web_copy(&three, '3', CopyRotation::Out, healthy(), 2, 1),
+            ]),
+            &two,
+        ),
+    );
+
+    assert!(check.attention.is_empty());
+    assert_eq!(warned(&check), [MACHINE_2_DID_NOT_ANSWER]);
+}
+
+#[test]
+fn a_restarting_copy_is_named_against_the_copies_status_saw() {
+    let [one, two, three] = machines();
+    let check = judged(
+        listed(&[&one, &two, &three], &[]),
+        unanswered_by(
+            listed_copies(vec![web_copy(
+                &one,
+                '1',
+                CopyRotation::In,
+                ContainerRuntimeObservation::Restarting,
+                2,
+                1,
+            )]),
+            &two,
+        ),
+    );
+
+    assert_eq!(
+        messages(&check),
+        ["Serving 0 of 1 copy. machine-1 restarting."]
+    );
+    assert_eq!(warned(&check), [MACHINE_2_DID_NOT_ANSWER]);
+}
+
+#[test]
+fn an_out_copy_beside_a_down_server_leaves_only_the_down_row() {
+    let [one, two, three] = machines();
+    let check = judged(
+        listed(&[&one, &two], &[&three]),
+        listed_copies(vec![
+            web_copy(&one, '1', CopyRotation::In, healthy(), 3, 2),
+            web_copy(&one, '4', CopyRotation::In, healthy(), 3, 2),
+            web_copy(&two, '2', CopyRotation::Out, healthy(), 3, 1),
+            web_copy(&three, '3', CopyRotation::In, healthy(), 3, 2),
+        ]),
+    );
+
+    let reasons: Vec<&str> = check
+        .attention
+        .iter()
+        .map(|attention| attention.reason.as_str())
+        .collect();
+    assert_eq!(reasons, ["machine_down"]);
 }
 
 #[test]
@@ -570,7 +761,7 @@ fn status_names_an_in_copy_that_runs_unhealthy() {
 
     assert_eq!(
         messages(&check),
-        ["Serving 0 of 1 copies. machine-1 running, unhealthy."]
+        ["Serving 0 of 1 copy. machine-1 running, unhealthy."]
     );
 }
 

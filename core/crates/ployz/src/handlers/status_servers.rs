@@ -9,11 +9,11 @@ use clap::ArgMatches;
 use futures_util::{StreamExt, stream};
 use ipnet::Ipv4Net;
 use ployz_core::{
-    ContainerAddress, ContainerId, ContainerRuntimeObservation, CopyRotation, EnvironmentValues,
-    LiveServices, MachineId, MachineName, MachineObservation, MachineTarget, MembershipObservation,
-    Namespace, QualifiedService, ReadRoutedAddressesRequest, RoutedAddresses, RoutesRead, RpcError,
-    RpcErrorCode, ServiceContainer, ServiceMode, ServiceObservation, Unacked, op,
-    serving_containers,
+    ContainerAddress, ContainerId, ContainerObservation, ContainerRuntimeObservation, CopyRotation,
+    EnvironmentValues, LiveServices, MachineId, MachineName, MachineObservation, MachineTarget,
+    MembershipObservation, Namespace, QualifiedService, ReadRoutedAddressesRequest,
+    RoutedAddresses, RoutesRead, RpcError, RpcErrorCode, ServiceContainer, ServiceMode,
+    ServiceObservation, Unacked, op, serving_containers,
 };
 use ployz_store::{DeploymentStatus, DeploymentSummary};
 use serde::Serialize;
@@ -325,13 +325,6 @@ fn judge(observed: Observed, namespace: &Namespace, next: impl Fn(&[&str]) -> St
             routed,
         } => (live, reads, routed),
     };
-    for service in live.services() {
-        if service.identity.namespace == *namespace
-            && let Some(short) = check.not_serving(service, &down, &next)
-        {
-            check.attention.push(short);
-        }
-    }
     let unanswered: Vec<MachineId> = live
         .containers
         .failures
@@ -340,6 +333,16 @@ fn judge(observed: Observed, namespace: &Namespace, next: impl Fn(&[&str]) -> St
         .chain(live.containers.omissions.iter().copied())
         .filter(|machine| !down.contains(machine))
         .collect();
+    let complete = down.is_empty()
+        && live.containers.failures.is_empty()
+        && live.containers.omissions.is_empty();
+    for service in live.services() {
+        if service.identity.namespace == *namespace
+            && let Some(short) = check.not_serving(service, &down, complete, &next)
+        {
+            check.attention.push(short);
+        }
+    }
     if !unanswered.is_empty() {
         check.unseen.push(Unseen::Unanswered(unanswered.clone()));
     }
@@ -586,51 +589,79 @@ fn service_names(services: &[QualifiedService]) -> String {
         .join(", ")
 }
 
+/// How many of a Service's seen copies serve, how many should, and the kept copies that
+/// do not, when fewer serve than should. A copy is kept when it is In and not stopped. An
+/// Out copy still running counts as kept only for a Replicated Service in a `complete`
+/// view: it stands in for a missing In copy only when every copy was seen. Each Held copy
+/// explains one missing In copy.
+fn shortfall<'service>(
+    service: &'service ServiceObservation,
+    down: &BTreeSet<MachineId>,
+    complete: bool,
+) -> Option<(usize, usize, Vec<&'service ContainerObservation>)> {
+    let up: Vec<&ServiceContainer> = service
+        .containers
+        .iter()
+        .filter(|copy| !down.contains(&copy.as_observation().machine_id))
+        .collect();
+    let serving: BTreeSet<ContainerId> = serving_containers(up.iter().copied())
+        .iter()
+        .map(|serving| serving.as_observation().container_id)
+        .collect();
+    let held = up
+        .iter()
+        .filter(|copy| matches!(copy.as_observation().rotation(), CopyRotation::Held(_)))
+        .count();
+    let candidates: Vec<&ContainerObservation> = up
+        .iter()
+        .map(|copy| copy.as_observation())
+        .filter(|copy| match copy.rotation() {
+            CopyRotation::In => !copy.stopped,
+            CopyRotation::Out => {
+                matches!(copy.runtime, ContainerRuntimeObservation::Running { .. })
+            }
+            CopyRotation::Pending | CopyRotation::Held(_) => false,
+        })
+        .collect();
+    let newest = |copies: &[&'service ContainerObservation]| {
+        copies
+            .iter()
+            .copied()
+            .max_by_key(|copy| (copy.created_at_unix_nanos, copy.container_id))
+    };
+    let replicated = matches!(
+        newest(&candidates)?.resolved_spec.mode,
+        ServiceMode::Replicated { .. }
+    );
+    let mut kept: Vec<&ContainerObservation> = candidates
+        .into_iter()
+        .filter(|copy| *copy.rotation() == CopyRotation::In || (complete && replicated))
+        .collect();
+    let wanted = match newest(&kept)?.resolved_spec.mode {
+        ServiceMode::Replicated { replicas } => usize::try_from(replicas.get())
+            .unwrap_or(usize::MAX)
+            .saturating_sub(held)
+            .min(kept.len()),
+        ServiceMode::Global => kept.len(),
+    };
+    if serving.len() >= wanted {
+        return None;
+    }
+    kept.retain(|copy| !serving.contains(&copy.container_id));
+    kept.sort_by_key(|copy| (copy.machine_id, copy.container_id));
+    Some((serving.len(), wanted, kept))
+}
+
 impl Check {
-    /// The row for a Service serving fewer copies than the smaller of its Deploy's count
-    /// and the copies its owners keep: In and not stopped, or Out and still running.
+    /// The row for a Service serving fewer copies than it should, per [`shortfall`].
     fn not_serving(
         &self,
         service: ServiceObservation,
         down: &BTreeSet<MachineId>,
+        complete: bool,
         next: impl Fn(&[&str]) -> String,
     ) -> Option<Attention> {
-        let up: Vec<&ServiceContainer> = service
-            .containers
-            .iter()
-            .filter(|copy| !down.contains(&copy.as_observation().machine_id))
-            .collect();
-        let serving: BTreeSet<ContainerId> = serving_containers(up.iter().copied())
-            .iter()
-            .map(|serving| serving.as_observation().container_id)
-            .collect();
-        let mut kept: Vec<_> = up
-            .iter()
-            .map(|copy| copy.as_observation())
-            .filter(|copy| match copy.rotation() {
-                CopyRotation::In => !copy.stopped,
-                CopyRotation::Out => {
-                    matches!(copy.runtime, ContainerRuntimeObservation::Running { .. })
-                }
-                CopyRotation::Pending | CopyRotation::Held(_) => false,
-            })
-            .collect();
-        let wanted = match service
-            .newest_container()?
-            .as_observation()
-            .resolved_spec
-            .mode
-        {
-            ServiceMode::Replicated { replicas } => kept
-                .len()
-                .min(usize::try_from(replicas.get()).unwrap_or(usize::MAX)),
-            ServiceMode::Global => kept.len(),
-        };
-        if serving.len() >= wanted {
-            return None;
-        }
-        kept.retain(|copy| !serving.contains(&copy.container_id));
-        kept.sort_by_key(|copy| (copy.machine_id, copy.container_id));
+        let (serving, wanted, kept) = shortfall(&service, down, complete)?;
         let states: Vec<String> = kept
             .iter()
             .map(|copy| {
@@ -652,15 +683,15 @@ impl Check {
         Some(Attention {
             reason: "copies_not_serving".to_owned(),
             message: format!(
-                "Serving {} of {wanted} copies. {}.",
-                serving.len(),
+                "Serving {serving} of {wanted} {}. {}.",
+                if wanted == 1 { "copy" } else { "copies" },
                 states.join(", ")
             ),
             deployment: None,
             next: Some(hint),
             subject: Some(Subject::NotServing {
-                service: service.identity,
-                serving: serving.len(),
+                service: service.identity.clone(),
+                serving,
                 wanted,
                 copies: kept
                     .into_iter()
