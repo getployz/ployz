@@ -131,3 +131,52 @@ test("a deadline while connecting rejects as exceeded even when the native close
     { message: "session deadline exceeded" },
   );
 });
+
+const activeTimeouts = () => process.getActiveResourcesInfo().filter(resource => resource === "Timeout").length;
+
+async function stopWhileConnectingThenCloseHangs(signal, timeoutMs, stopConnecting, expected) {
+  const unhandled = [];
+  const record = reason => unhandled.push(reason);
+  process.on("unhandledRejection", record);
+  let arrive;
+  connecting = () => new Promise(resolve => (arrive = resolve));
+  try {
+    const timeouts = activeTimeouts();
+    const connected = sdk.connect({ connections: [{ tcp: "127.0.0.1:1" }], signal, timeoutMs });
+    await stopConnecting();
+    arrive((session = new NativeClient()));
+    await tick();
+    assert.equal(session.stops, 1, "connect closed the session that arrived after it stopped");
+    let hold;
+    const held = new Promise(resolve => (hold = setTimeout(resolve, 5_000, "held")));
+    const outcome = await Promise.race([connected.then(() => "connected", () => "rejected"), held]);
+    clearTimeout(hold);
+    assert.equal(outcome, "rejected", "connect gave up on a native close that never settles");
+    await assert.rejects(connected, expected);
+    session.failClose(new Error("native close failed late"));
+    await tick();
+    await tick();
+    assert.deepEqual(unhandled, [], "a close that fails after connect gave up left no unhandled rejection");
+    assert.equal(abortListeners(signal), 0, "connect let go of the signal without the close");
+    assert.equal(activeTimeouts(), timeouts, "connect left no timer behind");
+  } finally {
+    connecting = arriveAtOnce;
+    process.off("unhandledRejection", record);
+  }
+}
+
+test("an abort while connecting rejects with the abort reason even when the native close never settles", async () => {
+  const abort = new AbortController();
+  const reason = new Error("caller gave up");
+  await stopWhileConnectingThenCloseHangs(abort.signal, undefined, async () => abort.abort(reason), error => error === reason);
+});
+
+test("a deadline while connecting rejects as exceeded even when the native close never settles", async () => {
+  const abort = new AbortController();
+  await stopWhileConnectingThenCloseHangs(
+    abort.signal,
+    1,
+    () => new Promise(resolve => setTimeout(resolve, 20)),
+    { message: "session deadline exceeded" },
+  );
+});
