@@ -143,8 +143,8 @@ read_fleet_token() {
     wait "$!"
     read -r FLEET_TOKEN <&3
     exec 3<&-
-    trap - EXIT HUP INT TERM
     stty "$tty_mode" < "$TTY"
+    trap - EXIT HUP INT TERM
     printf '\n' >> "$TTY"
 }
 
