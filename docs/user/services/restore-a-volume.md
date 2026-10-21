@@ -47,6 +47,10 @@ not mounted. Delete it from its **Settings** tab when you no longer need it.
 - **A copy being deleted has no point to restore.** Restore on it says "This copy is being deleted."
 - **The new volume needs its own room.** It has the original's size limit. When the original's
   server cannot fit a second copy, the deploy fails and says how much space is missing.
+- **Every server must answer to stage a restore.** While one is offline, or its report hasn't
+  arrived, the points list without **Restore**. A restore staged just as a server stops answering
+  is refused with "Your servers aren't answering. Try again once they are." The deploy would fail,
+  since it can't tell what that server holds.
 - **The original's server must answer** for the copy to run. If the point's mirror is gone by then,
   the deploy fails and names the point.
 - **When the volume's server is gone,** restore its copy on another server in place instead, from

@@ -8,7 +8,7 @@ import { runWords } from "#/modules/volume-run/volume-copies";
 import { rustMachineIdSchema } from "#/modules/machines/enrollment";
 import type { RuntimeVolumeCopy } from "#/modules/runtime/runtime.collection";
 import {
-  type AnsweredMember, heardFrom, type Member, parseDockerVolumeName, RUN_FEATURES, type VolumeRunInput, type VolumeRunView,
+  type AnsweredMember, heardFrom, type Member, parseDockerVolumeName, RUN_FEATURES, type VolumeRunInput, type VolumeRunView, unheardOf,
 } from "#/modules/volume-run/volume-run";
 
 export type MachineRef = { readonly id: MachineId; readonly name: MachineName };
@@ -110,6 +110,15 @@ export const slotRole = (copy: Extract<VolumeCopy, { kind: "slot" }>): SlotRole 
 
 const toDate = (seconds: number | undefined) => (seconds === undefined ? null : new Date(seconds * 1000));
 const isRoot = (member: AnsweredMember) => member.view.copy?.kind === "root";
+
+/**
+ * Whether every member's Server answered, if only to say it lacks copies. A Deploy plans only from answers, so a Restore
+ * is offered and staged only while this holds: one staged past a silent Server or a missing report fails its Deploy.
+ */
+export function serversAnswer(members: readonly Member[]) {
+  const { silent, waiting } = unheardOf(members);
+  return silent.length === 0 && !waiting;
+}
 
 export function observePlacement(members: readonly Member[]): ObservedPlacement {
   const answered = members.filter((member): member is AnsweredMember => member.answered);

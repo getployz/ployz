@@ -26,7 +26,7 @@ import { copiesFromPlacement } from "#/modules/volume-copies/volume-copies.place
 import { MIRROR_ROUND_MINUTES, mirrorLast, skippedWords } from "#/modules/volume-copies/volume-copies.refresh";
 import { placementBlockers, placementServers, restoreOpen } from "#/modules/volume-placement/daemon-release";
 import {
-  appliedMirrors, editPlacement, lossMoment, observePlacement, type Placement, type PlacementEdit, type PlacementRow,
+  appliedMirrors, editPlacement, lossMoment, observePlacement, serversAnswer, type Placement, type PlacementEdit, type PlacementRow,
   placementTargets, type PlacementVolume, type Recovery, recovery, type RestorePoint, restorePoints, targetPlacement,
 } from "#/modules/volume-placement/volume-placement";
 import { useDeleteCopy, useStagePlacement, useStageRestore } from "#/modules/volume-placement/volume-placement.hooks";
@@ -76,7 +76,7 @@ export function useVolumeCopies(organizationSlug: string, environment: Environme
     accepting: members?.filter((member) => accepting.has(member.machine.id)).map((member) => member.machine.id) ?? [],
     floorless: members?.filter((member) => floorless.has(member.machine.id)).map((member) => member.machine.id) ?? [],
     upgrade: placementBlockers(lens.machines),
-    seeds: members !== undefined && restoreOpen(lens.machines, observePlacement(members).primary?.id ?? null),
+    seeds: members !== undefined && serversAnswer(members) && restoreOpen(lens.machines, observePlacement(members).primary?.id ?? null),
     disabled: placement.pending || restore.pending,
     deploying: row?.deploymentId != null && inFlight.some((deployment) => deployment.id === row.deploymentId),
     stage: placement.stage,
