@@ -15,8 +15,8 @@ done
 PLOYZ_VERSION=${PLOYZ_VERSION:-${VERSION_ARG:-stable}}
 INSTALL_BIN_DIR=${INSTALL_BIN_DIR:-/usr/local/bin}
 FLEET_TOKEN_FILE=${PLOYZ_TEST_ROOT:-}/etc/ployz/fleet-token
-# Unset first, so a name exported by the caller doesn't carry the token into ployz's environment.
-unset FLEET_TOKEN TTY
+# Unset first, so a name exported by the caller doesn't carry the token into ployz's or stty's environment.
+unset FLEET_TOKEN TTY token
 TTY=${PLOYZ_TEST_ROOT:-}/dev/tty
 FLEET_TOKEN=${PLOYZ_FLEET_TOKEN:-}
 unset PLOYZ_FLEET_TOKEN
@@ -140,7 +140,7 @@ read_fleet_token() {
     # The prompt waits until echo is off: a token pasted the moment it shows must not echo.
     printf 'Fleet Token (from Servers in Ployz Cloud): ' >> "$TTY"
     # The child also turns echo back on. bash 5.2 can spin forever on a SIGINT that lands as it starts waiting for a
-    # command, so this shell starts no wait between the Enter and echo coming back.
+    # command, so this shell starts no second wait after the token is read.
     { read -r token < "$TTY" || token=; printf '%s\n' "$token" >&3; exec stty "$tty_mode" < "$TTY"; } &
     wait "$!"
     read -r FLEET_TOKEN <&3
