@@ -109,7 +109,7 @@ it.live("refuses a restore the Deploy's seed run would refuse, as it observes th
     [[member("web-1", "writer"), floorless], { code: "unsupported", message: "Volume restore is not in Ployz 0.3.0-beta.4 on web-2." }],
     [[member("web-1", "writer"), member("web-2", "writer")], { code: "conflict", message: "data has two writers, data-web-1 and data-web-2" }],
     [[member("web-1", "writer", { epoch: 8 }), member("web-2", "writer", { epoch: 3 })], {
-      code: "conflict", message: "data-web-2 is an old primary that came back. The next mirror refresh makes it read-only; restore after that",
+      code: "conflict", message: "data-web-2 is an old primary that came back; restore once a mirror refresh makes it a mirror",
     }],
   ];
   for (const [members, refusal] of refusals) {

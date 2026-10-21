@@ -553,9 +553,9 @@ describe("seedOffer", () => {
     expect(offer([mirrorAsOf("web-2", at)])).toEqual({ offered: false, refused: "pg-data has no primary to restore from" });
   });
 
-  it("says the restore waits while an old primary that came back still takes writes, as the seed run would demote it and stop", () => {
+  it("says the restore waits for a mirror refresh beside an old primary that came back, as the seed run would demote it and stop", () => {
     const returned = [member("web-1", "writer", { epoch: 8 }), member("web-3", "writer", { epoch: 3 }), mirrorAsOf("web-2", at)];
-    const refused = "pg-data-web-3 is an old primary that came back. The next mirror refresh makes it read-only; restore after that";
+    const refused = "pg-data-web-3 is an old primary that came back; restore once a mirror refresh makes it a mirror";
     expect(offer(returned)).toEqual({ offered: false, refused });
     expect(offer([member("web-1", "writer"), member("web-3", "cut"), mirrorAsOf("web-2", at)])).toEqual({ offered: false, refused });
   });
