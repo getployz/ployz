@@ -393,8 +393,9 @@ function CopyView({ volume, members, row, rows, owed, copies, copy, accepting, u
   const locked = disabled || deploying;
   const live = copies.live.server?.name ?? "the live server";
   const services = [...new Set(volume.mounts.map((mount) => mount.service))].join(", ") || volume.name;
+  const stale = isStale(copy, now);
   // Refresh skipped needs a refresh to have been skipped: a mirror with no recorded refresh only says why.
-  const stale = copy.refreshedAt !== null && isStale(copy, now);
+  const skippedBadge = stale && copy.refreshedAt !== null;
   const shown = refreshing && copy.busy === null ? { ...copy, busy: "Refreshing" } : copy;
   const last = mirrorLast(shown, now);
   const skipped = skippedWords(shown, now);
@@ -416,7 +417,7 @@ function CopyView({ volume, members, row, rows, owed, copies, copy, accepting, u
     </Row>
     {skipped === null ? null : <Field orientation="responsive">
       <FieldContent><FieldTitle>Status</FieldTitle><FieldDescription>{skipped}</FieldDescription></FieldContent>
-      {stale ? <Badge variant="warning">Refresh skipped</Badge> : null}
+      {skippedBadge ? <Badge variant="warning">Refresh skipped</Badge> : null}
     </Field>}
     {offer ? <Row title="Restore point">
       <span className="flex items-center gap-2">
