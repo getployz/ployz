@@ -331,7 +331,7 @@ impl ContainerRuntime {
     async fn sync_observations(&self, sink: &ObservationSink) -> Result<(), Error> {
         let machine_id = sink.local.record().id();
         let creates = self.docker.creates();
-        let inventory = self.docker.managed_container_ids().await?;
+        let inventory = self.managed_inventory().await?;
         let mut live = LocalContainerSnapshot::from_inventory(inventory);
         let container_ids = live.ids().cloned().collect::<Vec<_>>();
         let mut observed = Vec::with_capacity(container_ids.len());
