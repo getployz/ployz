@@ -1243,7 +1243,16 @@ async fn a_log_stream_left_unread_leaves_room_for_the_next_call() {
         .await
         .unwrap();
     let _unread_logs = send(&mut channel, "/logs", Vec::new()).await;
-    let grant = send(&mut channel, "/grant", Vec::new()).await;
-    let grant = tokio::time::timeout(Duration::from_secs(10), grant.into_body().collect()).await;
-    assert!(grant.is_ok(), "the unread log stream starved the next call");
+    let grant = tokio::time::timeout(Duration::from_secs(10), async {
+        send(&mut channel, "/grant", Vec::new())
+            .await
+            .into_body()
+            .collect()
+            .await
+    })
+    .await;
+    assert!(
+        matches!(grant, Ok(Ok(_))),
+        "the unread log stream starved the next call: {grant:?}"
+    );
 }
