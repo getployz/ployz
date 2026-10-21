@@ -293,6 +293,17 @@ keep their old replicas. Once the server is back, deploy again to finish the res
 ployz deploy
 ```
 
+## My upload or log stream fails on a slow connection
+
+`keep-alive timed out`
+
+Your connection moves less than about 17 KB/s (140 kbit/s), so the server's answers to the CLI's
+checks wait behind your upload or download for more than a minute, and the CLI gives up as if the
+server had stopped answering. It happens during `ployz up` and builds that upload your code, and
+when a busy `ployz logs -f` waits on you, such as while you scroll it in `less`.
+
+Run the command again from a faster connection, such as a CI runner.
+
 ## A server hasn't picked up the new version
 
 `web = web-2 has not picked up the new copies. Check its network.`
