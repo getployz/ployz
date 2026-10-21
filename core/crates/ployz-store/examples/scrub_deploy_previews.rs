@@ -7,8 +7,11 @@
 //! PLOYZ_STORE_URL='postgres://…' cargo run -p ployz-store --example scrub_deploy_previews
 //! ```
 //!
-//! It prints counts only, never a value. A preview already in its redacted form
-//! is left byte for byte, so a rerun changes nothing. Each write applies only if
+//! It prints counts only, never a value. `redacted_runtime_preview` decides which
+//! previews still hold values; the rest are left byte for byte, so a rerun
+//! changes nothing. A rewrite empties only those values in the stored JSON and is
+//! kept only if the result then passes the same check; one that doesn't is left
+//! as stored and counted as unreadable. Each write applies only if
 //! the row still holds what was read, so a Deployment recording evidence at the
 //! same moment keeps its write and the next run picks the row up.
 
@@ -27,6 +30,33 @@ enum Stored {
     Unreadable,
 }
 
+fn redacted(preview: &Value) -> Option<bool> {
+    let decoded = serde_json::from_value::<DeployPreview>(preview.clone()).ok()?;
+    Some(redacted_runtime_preview(decoded.clone()) == decoded)
+}
+
+/// Empties the values `redacted_runtime_preview` clears, in place, so fields the
+/// current type no longer reads, or reads with defaults, keep what was stored.
+fn clear_values(preview: &mut Value) {
+    let operations = preview.get_mut("operations").and_then(Value::as_array_mut);
+    for row in operations.into_iter().flatten() {
+        let Some(spec) = row.pointer_mut("/operation/spec") else {
+            continue;
+        };
+        for path in ["/container/environment", "/pre_deploy/environment"] {
+            if let Some(environment) = spec.pointer_mut(path).and_then(Value::as_object_mut) {
+                environment.clear();
+            }
+        }
+        let configs = spec.get_mut("configs").and_then(Value::as_array_mut);
+        for config in configs.into_iter().flatten() {
+            if let Some(content) = config.get_mut("content") {
+                *content = Value::Array(Vec::new());
+            }
+        }
+    }
+}
+
 fn scrub(run: &str) -> Stored {
     let Ok(mut run) = serde_json::from_str::<Value>(run) else {
         return Stored::Unreadable;
@@ -34,17 +64,16 @@ fn scrub(run: &str) -> Stored {
     let Some(preview) = run.get_mut("preview").filter(|preview| !preview.is_null()) else {
         return Stored::Clean;
     };
-    let Ok(decoded) = serde_json::from_value::<DeployPreview>(preview.clone()) else {
-        return Stored::Unreadable;
-    };
-    let Ok(redacted) = serde_json::to_value(redacted_runtime_preview(decoded)) else {
-        return Stored::Unreadable;
-    };
-    if *preview == redacted {
-        return Stored::Clean;
+    match redacted(preview) {
+        None => return Stored::Unreadable,
+        Some(true) => return Stored::Clean,
+        Some(false) => {}
     }
-    *preview = redacted;
-    Stored::Scrubbed(run.to_string())
+    clear_values(preview);
+    match redacted(preview) {
+        Some(true) => Stored::Scrubbed(run.to_string()),
+        Some(false) | None => Stored::Unreadable,
+    }
 }
 
 fn connect(url: &str) -> Result<Client, String> {
