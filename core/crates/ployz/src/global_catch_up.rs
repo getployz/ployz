@@ -455,14 +455,14 @@ pub(crate) async fn follow_globals(
             Disposition::Settled
         },
     );
-    for (_, name) in not_arrived {
+    for (id, name) in not_arrived {
         crate::ui::warn(format!(
             "Server {name} shows no sign it ever joined, so Global catch-up did not wait on it."
         ));
         crate::ui::hint(&crate::ui::Hint::Next(command(&[
             "server",
             "forget",
-            name.as_str(),
+            id.as_str(),
             "--confirm",
             "dead",
         ])));

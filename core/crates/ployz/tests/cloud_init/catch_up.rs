@@ -146,7 +146,7 @@ async fn machine_add_plans_catch_up_past_an_unarrived_registration() {
         "{stderr}"
     );
     assert!(
-        stderr.contains("server forget claim-only --confirm dead"),
+        stderr.contains(&format!("server forget {} --confirm dead", "c".repeat(32))),
         "{stderr}"
     );
     target.join_request();
