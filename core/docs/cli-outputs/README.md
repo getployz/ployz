@@ -229,7 +229,7 @@ A failed Deployment exits 1, with its progress and the error on stderr: `Deployi
 
 ## 10. Human output that is really JSON
 
-- schema prints a 6629-line JSON Schema with or without `--json` ([store/settings.md](store/settings.md)).
+- schema prints a 6741-line JSON Schema with or without `--json` ([store/settings.md](store/settings.md)).
 - JSON inside human lines: `web.healthcheck = {"path":"/healthz","timeoutSeconds":300} (default -)` and `web.env.API_KEY = {"secret":true}` ([store/settings.md](store/settings.md)). diff values are JSON literals: `web.env.GREETING: null → "hello"` ([cloud-cluster/deploy.md](cloud-cluster/deploy.md)).
 
 ## 11. `--json` shape
@@ -264,7 +264,6 @@ Dominant: one pretty-printed object on stdout (126 of 130 success outputs). The 
 - Commands list the groups first (`cloud` to `volume`), then the verbs (`build` to `up`), each alphabetically, then `help`.
 - Every subcommand repeats the globals: `--connect <connect>`, `--ssh-timeout <SECONDS>`, `-c, --context <context>`, `--json` and `--color <WHEN>`.
 - Placeholders mix casing: `<name>`, `<context>`, `<connect>`, `<SECONDS>`, `<WHEN>`, `<REF>`.
-- project rm help leaves `<name>` with an empty description.
 - Top-level help ends with a `Settings catalog: …` line. `--version` prints `0.3.0-beta.6`.
 
 ## Likely bugs
@@ -273,7 +272,6 @@ Each item reproduces in a capture on main, at the line it cites.
 
 1. `exec` of a missing binary prints `OCI runtime exec failed: …` on stdout, exit 127. [cloud-cluster/errors.md:31](cloud-cluster/errors.md) **Kept: `exec` passes the remote command's output and exit code through.**
 2. `deployment start 1` with no Server follows until the capture's timeout kills it (exit 124), and prints nothing at all. [cloud/deploy.md:310](cloud/deploy.md) **Fixed: with no Server enrolled, start refuses at once like a Deploy, `next: ployz server add`. The capture's seed enrolls a Server that never answers and runs no worker, so its start still waits in the queue.**
-3. project rm help leaves the `<name>` argument with an empty description. [store/help.md:403](store/help.md)
 
 The earlier list's 32 items, rechecked against the same captures. Old items 23 and 29 are items 1 and 2 above.
 
