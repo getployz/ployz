@@ -150,8 +150,8 @@ export function observePlacement(members: readonly Member[]): ObservedPlacement 
  * held, as a mirror made with `ployz volume mirror` leaves no row.
  */
 export function appliedMirrors(observed: ObservedPlacement, row: PlacementRow | null): readonly MachineId[] {
-  const known = new Set([...row?.mirrors ?? [], ...observed.lastMirrors]);
-  const silent = [...known].filter((id) => observed.unanswered.some((server) => server.id === id));
+  const recorded = (row?.mirrors ?? []).filter((id) => observed.unanswered.some((server) => server.id === id));
+  const silent = [...new Set([...recorded, ...observed.lastMirrors])];
   return [...observed.copies.filter((copy) => copy.kind === "slot" && copy.role === "mirror").map((copy) => copy.server.id), ...silent];
 }
 

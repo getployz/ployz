@@ -211,7 +211,8 @@ function CopiesView({ volume, members, row, rows, owed, copies, target, servers,
   const canAdd = !blocked && mirrorOn.length > 0 && addableCopies(copies, ["mirror"]).length > 0;
   const { live } = copies;
   const liveName = live.server?.name ?? "its server";
-  const unheard = members.filter((member) => !member.answered).map((member) => member.machine.name);
+  // A silent Live Server says nothing about what is outside it.
+  const unheard = members.filter((member) => !member.answered && member.machine.id !== live.server?.id).map((member) => member.machine.name);
 
   return <div className="flex flex-col gap-4">
     {alert}

@@ -100,6 +100,11 @@ describe("VolumeCopiesPanel", () => {
     expect(screen.queryByText(/^Nothing outside/)).toBeNull();
   });
 
+  it("still says nothing is outside a silent primary once every other Server reports no copy", () => {
+    panel([member("web-1", "unanswered"), pooled("web-2")], row([]));
+    expect(screen.getByText("Nothing outside web-1. If web-1 dies, data goes with it.")).toBeTruthy();
+  });
+
   it("lists the mirror and the old copy elsewhere, and hides Add copy once a mirror exists", () => {
     const { onOpen } = panel([member("web-1", "writer"), mirrorAsOf("web-2", new Date(NOW.getTime() - 5 * 60_000)), member("web-3", "old")], row(["web-2"]));
     expect(rows("Elsewhere")).toEqual([expect.stringMatching(/^web-2Mirror · 15 min · 5 min/), expect.stringMatching(/^web-3Old copy · /)]);

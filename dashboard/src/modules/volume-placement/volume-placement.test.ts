@@ -51,6 +51,8 @@ const row = (mirrors: string[] | null, staged: { primary: string; mirrors?: stri
   deploymentId: null,
 });
 const pooled = (server: string) => member(server, "empty");
+/** A Server that didn't answer, whose last report in the Runtime Watch held a mirror, as `ployz volume mirror` leaves one. */
+const lastMirror = (server: string): Member => ({ machine: { id: id(server), name: server }, answered: false, lastMirror: true });
 const at = new Date(2026, 9, 10, 10, 36);
 const mirrorAsOf = (server: string, when: Date): Member => {
   const base = member(server, "mirror");
@@ -123,6 +125,13 @@ describe("serversAnswer", () => {
 });
 
 describe("placementChanges", () => {
+  it("keeps a silent Server's last-known mirror applied with no row, and removes it once a staged placement leaves it out", () => {
+    const members = [member("web-1", "writer"), lastMirror("web-2")];
+    expect(targetPlacement(observePlacement(members), null)).toEqual({ primary: id("web-1"), mirrors: [id("web-2")], deletes: [] });
+    expect(changes(members, row(null, { primary: "web-1" }))).toMatchObject([{ kind: "remove_mirror", server: { id: id("web-2") } }]);
+    expect(changes(members, row(null, { primary: "web-1", mirrors: ["web-2"] }))).toEqual([]);
+  });
+
   it("is empty when nothing is staged", () => {
     expect(changes([member("web-1", "writer"), member("web-2", "mirror")], row(["web-2"]))).toEqual([]);
   });
@@ -545,6 +554,11 @@ describe("placementTargets", () => {
     const targets = placementTargets(volume, members, row(["web-2"]), servers, false);
     expect(targets.move.map((server) => server.name)).toEqual(["web-2"]);
     expect(targets.mirror).toEqual([]);
+  });
+
+  it("offers no second mirror while a silent Server's last report holds one the row never recorded", () => {
+    const members = [member("web-1", "writer"), lastMirror("web-2"), pooled("web-3")];
+    expect(placementTargets(volume, members, null, servers, false).mirror).toEqual([]);
   });
 
   it("offers every other Server once the only other copy is detached, since the Deploy deletes it first", () => {
