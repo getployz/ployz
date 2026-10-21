@@ -8,34 +8,34 @@ log_dir=${PLOYZ_LAYER3_LOG_DIR:-target/layer3-logs}
 mkdir -p "$log_dir"
 failed=0
 
+# Build an image of this checkout unless the caller passes one.
+if [ -z "${PLOYZ_TESTKIT_IMAGE:-}" ]; then
+    PLOYZ_TESTKIT_IMAGE=$(scripts/testkit-image.sh "ployz-testkit-checkout:layer3-$$")
+    export PLOYZ_TESTKIT_IMAGE
+    trap 'docker image rm "$PLOYZ_TESTKIT_IMAGE" >/dev/null 2>&1 || true' EXIT
+fi
+
 # Each suite gets 5 minutes unless its call sets SUITE_TIMEOUT. --nocapture
 # prints each failure as it happens, so a killed suite keeps its diagnostics.
 run_suite() {
     local name=$1 started=$SECONDS status=0 result
     shift
     set -- "$@" --nocapture
-    printf '\n::group::%s\n' "$name"
+    printf '\n== %s\n' "$name"
     printf 'Reproduce: '
     printf '%q ' "$@"
     printf '\n'
     timeout --kill-after=10s "${SUITE_TIMEOUT:-5m}" "$@" 2>&1 | tee "$log_dir/$name.log" || status=$?
-    printf '::endgroup::\n'
     result=passed
     if [ "$status" -ne 0 ]; then
         result="failed (exit $status)"
         failed=1
-        printf '::error title=%s::%s; see cluster-test-logs/%s.log\n' "$name" "$result" "$name"
+        printf '%s %s; see %s/%s.log\n' "$name" "$result" "$log_dir" "$name" >&2
     fi
     printf '| %s | %s | %ss |\n' "$name" "$result" "$((SECONDS - started))" | tee -a "$log_dir/results.md"
-    if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
-        tail -1 "$log_dir/results.md" >> "$GITHUB_STEP_SUMMARY"
-    fi
 }
 
 printf '| Suite | Result | Duration |\n|---|---|---|\n' > "$log_dir/results.md"
-if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
-    cat "$log_dir/results.md" >> "$GITHUB_STEP_SUMMARY"
-fi
 
 timeout --kill-after=10s 10m cargo test --locked --no-run \
     --package ployz \

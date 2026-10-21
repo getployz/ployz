@@ -10,6 +10,7 @@ import type {
   SetVolumeCopyReply,
   SetVolumeCopyRequest,
   SetVolumeSizeReply,
+  SetVolumeSizeRequest,
   SlotRole,
   Snapshot,
   SystemEvent,
@@ -102,8 +103,10 @@ type FakeMachine = {
   stopped?: boolean;
   /** The gen floor every admitted set raises, as the daemon does; a set with a lower gen is stale. */
   floor?: number;
-  /** The size its copy holds; a set never lowers it. */
+  /** The size its copy holds; only a set that allows a shrink lowers it, as a daemon serving the shrink does. */
   bound?: number;
+  /** The smallest bound its data accepts; a shrink below it is refused `below_floor`, as the daemon's floor check does. */
+  needs?: number;
   /** Size requests it answers `switching` to before it holds the size. */
   switching?: number;
 };
@@ -190,6 +193,9 @@ describe("volume runs", () => {
   let openFault: ((open: number) => Error | "unreachable" | null) | null;
   let opens: number;
   let sent: SetVolumeCopyRequest[];
+  let sizes: SetVolumeSizeRequest[];
+  /** The running row's message each time a Machine was asked for a size. */
+  let sizing: (string | null)[];
   let held: Map<string, () => CopyRefusal | null>;
   /** The Project's name in the Store; a read of its Environment by another name is not found. */
   let storeProject: string;
@@ -199,6 +205,7 @@ describe("volume runs", () => {
   /** Every system event the Store recorded, and how it refuses the next one, if it does. */
   let storeEvents: SystemEvent[];
   let storeRefuse: ((event: SystemEvent) => InstanceType<typeof RpcError> | null) | null;
+  let storeInFlight: { id: string; number: number | null }[];
   /** The nodes every Deployment the Store reads back targets. */
   let deployNodes: Array<{ type: "volume" | "service"; id: string; name: string; outcome: "pending"; rows: [] }>;
 
@@ -365,6 +372,12 @@ describe("volume runs", () => {
         rotation: container.rotation,
         created_at_unix_nanos: container.created ?? 0,
       })),
+      volumes: machines.flatMap((fake) => fake.copy === null || fake.bound === undefined ? [] : [{
+        id: { machine_id: fake.id ?? idOf(fake.name), name: dockerVolume },
+        options: {},
+        labels: {},
+        storage: { kind: "provisioned", mountpoint: `/volumes/${dockerVolume}`, bound_bytes: fake.bound, used_bytes: 0 },
+      }]),
       incomplete_ids: { machines: [] },
     });
     },
@@ -402,8 +415,10 @@ describe("volume runs", () => {
         return Effect.succeed(inspect(fake));
       }
       if (request.command === "set_volume_size") {
-        const asked = request.payload.maximum_bytes;
+        const { payload } = request;
+        const asked = payload.maximum_bytes;
         verbs.push(`size@${fake.name}(${asked / GB})`);
+        sizes.push(payload);
         if (fake.capabilities?.includes(requirements.volumeSize.capability) === false) {
           return Effect.fail(new ServerLacks({ machineId: target, capability: requirements.volumeSize.capability }));
         }
@@ -411,11 +426,22 @@ describe("volume runs", () => {
           fake.switching = (fake.switching ?? 0) - 1;
           return fail(new RawFault({ code: "failed_precondition", message: "switching", details: { reason: "switching" } }));
         }
-        const fault = failNext.get(`size@${fake.name}`);
-        failNext.delete(`size@${fake.name}`);
-        if (fault !== undefined) return fail(fault);
-        fake.bound = Math.max(fake.bound ?? 0, asked);
-        return Effect.succeed({ bound_bytes: fake.bound });
+        return Effect.promise(() => harness.pool.query<{ message: string | null }>("select message from volume_run where state = 'running'")).pipe(
+          Effect.flatMap(({ rows: running }) => {
+            sizing.push(...running.map((row) => row.message));
+            const fault = failNext.get(`size@${fake.name}`);
+            failNext.delete(`size@${fake.name}`);
+            if (fault !== undefined) return fail(fault);
+            const bound = fake.bound ?? 0;
+            const shrinks = payload.allow_shrink === true && fake.capabilities?.includes(requirements.volumeShrink.capability) !== false;
+            if (asked < bound && !shrinks) return fail(new RawFault({ code: "failed_precondition", message: "shrink", details: { reason: "shrink", bound_bytes: bound } }));
+            if (asked < bound && fake.needs !== undefined && asked < fake.needs) {
+              return fail(new RawFault({ code: "failed_precondition", message: "below_floor", details: { reason: "below_floor", bound_bytes: bound, floor_bytes: fake.needs } }));
+            }
+            fake.bound = asked;
+            return Effect.succeed({ bound_bytes: asked });
+          }),
+        );
       }
       if (request.command !== "set_volume_copy") return Effect.die(new Error(`the run sent ${request.command}`));
       const { expect: expected, want } = request.payload;
@@ -483,6 +509,7 @@ describe("volume runs", () => {
               after?.();
               return answer;
             }
+            if (query.query === "deployments") return { in_flight: storeInFlight };
             if (query.query === "deployment") {
               return { id: query.id, status: "running", namespace: "shop-production", environment: { id: "env-1", project: storeProject, name: "production" }, nodes: deployNodes };
             }
@@ -510,15 +537,11 @@ describe("volume runs", () => {
     if (!result.ok) throw new Error(result.refusal.message);
     return result.run;
   };
-  const waitingOnLock = async () => {
-    for (let poll = 0; poll < 200; poll++) {
-      const { rows: waiting } = await harness.pool.query(
-        "select 1 from pg_stat_activity where datname = current_database() and wait_event_type = 'Lock'");
-      if (waiting.length > 0) return;
-      await new Promise((resolve) => setTimeout(resolve, 25));
-    }
-    throw new Error("nothing waited on the held row lock");
-  };
+  const waitingOnLock = () => vi.waitFor(async () => {
+    const { rows: waiting } = await harness.pool.query(
+      "select 1 from pg_stat_activity where datname = current_database() and wait_event_type = 'Lock'");
+    if (waiting.length === 0) throw new Error("nothing waited on the held row lock");
+  }, { timeout: 5_000, interval: 25 });
   const settled = ["05-cut", "07-start", "03-start", "04-resume", "05-resume", "03-restore", "03-demote", "03-reset-forget-mirror", "03-reset-forget-writer", "04-forget"];
   const sleeps = [
     ...["03-r0", "03-r1", "03-r2", "06-final"].flatMap((prefix) => Array.from({ length: 9 }, (_, poll) => `${prefix}-backoff-${poll}`)),
@@ -526,15 +549,22 @@ describe("volume runs", () => {
       ...["fsn-2", "fsn-3"].flatMap((server) => [`04-forget-${server}`, `03-forget-${server}`])]
       .flatMap((id) => Array.from({ length: 6 }, (_, check) => `${id}-wait-${check + 1}`)),
     ...Array.from({ length: 8 }, (_, check) => `01-wait-${check}`),
-    ...["fsn-1", "fsn-2", "fsn-3"].flatMap((server) => [0, 1, 2].flatMap((index) =>
-      Array.from({ length: 119 }, (_, check) => `03-${index}-size-${idOf(server)}-wait-${check + 1}`))),
   ].map((id) => ({ id, handler: () => undefined }));
-  const execute = (runRowId: string, runId = "run-1", steps?: Array<{ id: string; handler: () => object | undefined }>, volume = volumeId, took?: string, attempt = 0) => new InngestTestEngine({
-    function: createRunVolume(new Inngest({ id: "test" }), runEffect),
-    events: [{ name: "volume/run.requested", data: { organizationId, environment: "env-1", volumeId: volume, runId: runRowId, took } }],
-    transformCtx: (ctx) => ({ ...mockCtx(ctx), runId, attempt }),
-    steps: [...(steps ?? []), ...sleeps],
-  }).execute();
+  /**
+   * Only a resize reaches these. The engine rebuilds every mock on each of a run's executions, so giving all 1071 to
+   * every run made the six-hour mirror test take seconds on them alone.
+   */
+  const sizeSleeps = ["fsn-1", "fsn-2", "fsn-3"].flatMap((server) => [0, 1, 2].flatMap((index) =>
+    Array.from({ length: 119 }, (_, check) => ({ id: `03-${index}-size-${idOf(server)}-wait-${check + 1}`, handler: () => undefined }))));
+  const execute = async (runRowId: string, runId = "run-1", steps?: Array<{ id: string; handler: () => object | undefined }>, volume = volumeId, took?: string, attempt = 0) => {
+    const { rows: [row] } = await harness.pool.query<{ kind: string }>("select kind from volume_run where id = $1", [runRowId]);
+    return new InngestTestEngine({
+      function: createRunVolume(new Inngest({ id: "test" }), runEffect),
+      events: [{ name: "volume/run.requested", data: { organizationId, environment: "env-1", volumeId: volume, runId: runRowId, took } }],
+      transformCtx: (ctx) => ({ ...mockCtx(ctx), runId, attempt }),
+      steps: [...(steps ?? []), ...sleeps, ...(row?.kind === "resize" ? sizeSleeps : [])],
+    }).execute();
+  };
   /** Runs the row as Inngest would from the event its request sent, `took` and all. */
   const deliver = (runRowId: string, runId = "run-1") => {
     const event = send.mock.calls.flatMap(([sent]) => [sent].flat()).find((sent) => sent.id === `volume-run-${runRowId}`);
@@ -575,6 +605,8 @@ describe("volume runs", () => {
     openFault = null;
     opens = 0;
     sent = [];
+    sizes = [];
+    sizing = [];
     held = new Map();
     guids = 0;
     slotIds = 0;
@@ -585,6 +617,7 @@ describe("volume runs", () => {
     storeVolumes = [{ id: volumeId, name: "data", storage: { kind: "provisioned", maximumBytes: 5_000_000 } }];
     storeEvents = [];
     storeRefuse = null;
+    storeInFlight = [];
     deployNodes = [{ type: "service", id: "svc-web", name: "web", outcome: "pending", rows: [] }, { type: "volume", id: volumeId, name: "data", outcome: "pending", rows: [] }];
     machines = [
       { name: "fsn-1", pool: true, copy: writerCopy() },
@@ -2299,7 +2332,7 @@ describe("volume runs", () => {
 
       await execute(admitted.run.id);
 
-      expect(sent.find((request) => request.want.kind === "forget")?.expect).toEqual({ kind: "mirror", newest: base.guid, slot: "7", role: "old_copy" });
+      expect(verbs.filter((verb) => verb.startsWith("forget"))).toEqual([]);
       expect(machines[1]?.copy).toEqual(slotCopy(base, null, "7", "mirror"));
       expect(await rows()).toMatchObject([{ state: "failed", message: "data-fsn-2 is no longer an old copy, so nothing was deleted" }]);
     });
@@ -3027,11 +3060,11 @@ describe("volume runs", () => {
   const admit = (input: VolumeRunInput) => runEffect(runVolume(caller, { volumeId, environment, ...input }, { key: null, approvalId: null }));
 
   describe("resize", () => {
-    const serves = [requirements.volumeFloor.capability, requirements.volumeSize.capability];
+    const serves = [requirements.volumeFloor.capability, requirements.volumeSize.capability, requirements.volumeShrink.capability];
     const sized = (name: string, copy: VolumeCopy | null): FakeMachine => ({ name, pool: true, copy, capabilities: serves, bound: 10 * GB });
     const grow = (gigabytes: number): VolumeRunInput => ({ kind: "resize", args: { maximum_bytes: gigabytes * GB } });
     const bounds = () => Object.fromEntries(machines.map((fake) => [fake.name, (fake.bound ?? 0) / GB]));
-    const refusal = (details: { reason: string; bound_bytes?: number; capacity?: { code: string; required_growth_bytes?: number } }) =>
+    const refusal = (details: { reason: string; bound_bytes?: number; capacity?: { code: string; required_growth_bytes?: number }; floor_bytes?: number }) =>
       new RawFault({ code: "failed_precondition", message: details.reason, details });
     const recorded = { event: "volume_resized", environment: "env-1", volume: volumeId, from: 10 * GB, to: 20 * GB };
 
@@ -3047,6 +3080,8 @@ describe("volume runs", () => {
 
       expect(output.result).toEqual({ runId: run.id, resized: 20 * GB });
       expect(verbs).toEqual(["size@fsn-2(20)", "size@fsn-3(20)", "size@fsn-1(20)"]);
+      expect(sizing).toEqual(["Growing data to 20 GB on fsn-2", "Growing data to 20 GB on fsn-3", "Growing data to 20 GB on fsn-1"]);
+      expect(sizes).toStrictEqual(Array.from({ length: 3 }, () => ({ name: dockerVolume, maximum_bytes: 20 * GB })));
       expect(bounds()).toEqual({ "fsn-1": 20, "fsn-2": 20, "fsn-3": 20 });
       expect(storeEvents).toEqual([recorded]);
       expect(await rows()).toMatchObject([{ kind: "resize", state: "done", epoch: null, message: "data is 20 GB on fsn-2, fsn-3, fsn-1" }]);
@@ -3191,9 +3226,18 @@ describe("volume runs", () => {
       expect(await rows()).toMatchObject([{ state: "failed", message: "Volume resize needs a newer Ployz on fsn-3." }]);
     });
 
-    it("the size the Store already records is settled at admission", async () => {
-      expect(await admit(grow(10))).toEqual({ ok: false, refusal: { code: "conflict", message: "data already has 10 GB", details: { settled: true } } });
-      expect(await rows()).toEqual([]);
+    it("the size the Store already records asks the primary, then each mirror, to hold it, and records nothing", async () => {
+      const run = await requested(grow(10));
+
+      const output = await execute(run.id);
+
+      expect(output.result).toEqual({ runId: run.id, resized: 10 * GB });
+      expect(verbs).toEqual(["size@fsn-1(10)", "size@fsn-2(10)", "size@fsn-3(10)"]);
+      expect(sizing).toEqual(["Setting data to 10 GB on fsn-1", "Setting data to 10 GB on fsn-2", "Setting data to 10 GB on fsn-3"]);
+      expect(sizes).toStrictEqual(Array.from({ length: 3 }, () => ({ name: dockerVolume, maximum_bytes: 10 * GB, allow_shrink: true })));
+      expect(bounds()).toEqual({ "fsn-1": 10, "fsn-2": 10, "fsn-3": 10 });
+      expect(storeEvents).toEqual([]);
+      expect(await rows()).toMatchObject([{ state: "done", message: "data is 10 GB on fsn-1, fsn-2, fsn-3" }]);
     });
 
     it("is refused while a Move runs, and while a committed Move is owed its release", async () => {
@@ -3204,6 +3248,249 @@ describe("volume runs", () => {
 
       await harness.pool.query("update volume_run set state = 'cancelled', phase = 'committed', current = $2, finished_at = now() where id = $1", [move.id, idOf("fsn-2")]);
       expect(await request(grow(20))).toMatchObject({ ok: false, refusal: { code: "conflict", message: "data finishes on fsn-2; ployz volume release data finishes it now" } });
+      expect((await rows()).map((row) => row.kind)).toEqual(["move"]);
+    });
+
+    describe("to a smaller size", () => {
+      const shrink = (gigabytes: number): VolumeRunInput => ({ kind: "resize", args: { maximum_bytes: gigabytes * GB } });
+      const shrunk = { event: "volume_resized", environment: "env-1", volume: volumeId, from: 20 * GB, to: 10 * GB };
+      const floor = refusal({ reason: "below_floor", bound_bytes: 20 * GB, floor_bytes: 12 * GB });
+
+      beforeEach(() => {
+        storeVolumes = [{ id: volumeId, name: "data", storage: { kind: "provisioned", maximumBytes: 20 * GB }, recorded_storage: 20 * GB }];
+        for (const fake of machines) fake.bound = 20 * GB;
+      });
+
+      it("records the smaller size before any Machine is asked, then shrinks the primary, then each mirror", async () => {
+        let askedAtRecord: string[] | null = null;
+        storeRefuse = () => {
+          askedAtRecord ??= [...verbs];
+          return null;
+        };
+        const run = await requested(shrink(10));
+
+        const output = await execute(run.id);
+
+        expect(output.result).toEqual({ runId: run.id, resized: 10 * GB });
+        expect(askedAtRecord).toEqual([]);
+        expect(storeEvents).toEqual([shrunk]);
+        expect(verbs).toEqual(["size@fsn-1(10)", "size@fsn-2(10)", "size@fsn-3(10)"]);
+        expect(sizing).toEqual(["Shrinking data to 10 GB on fsn-1", "Shrinking data to 10 GB on fsn-2", "Shrinking data to 10 GB on fsn-3"]);
+        expect(sizes).toStrictEqual(Array.from({ length: 3 }, () => ({ name: dockerVolume, maximum_bytes: 10 * GB, allow_shrink: true })));
+        expect(bounds()).toEqual({ "fsn-1": 10, "fsn-2": 10, "fsn-3": 10 });
+        expect(await rows()).toMatchObject([{ state: "done", message: "data is 10 GB on fsn-1, fsn-2, fsn-3" }]);
+      });
+
+      it("a record the Store refuses while a Deployment is in flight ends the run failed, naming it, and asks no Machine", async () => {
+        storeRefuse = (event) => event.event === "volume_resized" && event.to < event.from
+          ? new RpcError({ code: "conflict", message: "Deployment #7 is in flight", details: { reason: "deploying", volume: volumeId, deployment: { id: "dep-7", number: 7 } } })
+          : null;
+        const run = await requested(shrink(10));
+
+        await execute(run.id);
+
+        expect(verbs).toEqual([]);
+        expect(storeEvents).toEqual([]);
+        expect(bounds()).toEqual({ "fsn-1": 20, "fsn-2": 20, "fsn-3": 20 });
+        expect(await rows()).toMatchObject([{
+          state: "failed",
+          message: "data stays 20 GB on fsn-1, fsn-2, fsn-3, because Deployment #7 is in flight; run ployz volume set data --size 10 again when it ends",
+        }]);
+      });
+
+      it("is refused at admission while a Deployment is in flight, in the Store's words; a grow and a settle are not", async () => {
+        storeInFlight = [{ id: "dep-7", number: 7 }];
+
+        expect(await admit(shrink(10))).toEqual({
+          ok: false,
+          refusal: { code: "conflict", message: "Deployment #7 is in flight; run ployz volume set data --size 10 again when it ends", details: { reason: "deploying", deployment: { id: "dep-7", number: 7 } } },
+        });
+        expect(verbs).toEqual([]);
+        expect(await rows()).toEqual([]);
+        expect(await request(shrink(20))).toMatchObject({ ok: true });
+        await harness.pool.query("update volume_run set state = 'cancelled', finished_at = now()");
+        expect(await request(shrink(30))).toMatchObject({ ok: true });
+      });
+
+      it("the primary below its floor undoes the record and names the floor in whole GB, asking no mirror", async () => {
+        failNext.set("size@fsn-1", refusal({ reason: "below_floor", bound_bytes: 20 * GB, floor_bytes: 12_300_000_000 }));
+        const run = await requested(shrink(10));
+
+        await execute(run.id);
+
+        expect(verbs).toEqual(["size@fsn-1(10)"]);
+        expect(storeEvents).toEqual([shrunk, { ...shrunk, from: 10 * GB, to: 20 * GB }]);
+        expect(bounds()).toEqual({ "fsn-1": 20, "fsn-2": 20, "fsn-3": 20 });
+        expect(await rows()).toMatchObject([{
+          state: "failed",
+          message: "fsn-1 can't shrink data to 10 GB; its data needs at least 13 GB. data stays 20 GB. fsn-2, fsn-3 were not asked. Shrink data to at least 13 GB instead, or free space in it on fsn-1, then run ployz volume set data --size 10 again.",
+        }]);
+      });
+
+      /**
+       * Whole-GB rounding leaves up to 1 GB of room for writes between the refusal and the retry; a larger write still
+       * refuses, naming the new floor.
+       */
+      it("the printed floor is accepted when typed back after a small write", async () => {
+        named("fsn-1").needs = 3_107_428_864;
+        const refused = await requested(shrink(3));
+
+        await execute(refused.id);
+
+        expect(await rows()).toMatchObject([{
+          state: "failed",
+          message: "fsn-1 can't shrink data to 3 GB; its data needs at least 4 GB. data stays 20 GB. fsn-2, fsn-3 were not asked. Shrink data to at least 4 GB instead, or free space in it on fsn-1, then run ployz volume set data --size 3 again.",
+        }]);
+        named("fsn-1").needs = 3_107_528_000;
+        const retried = await requested(shrink(4));
+
+        await execute(retried.id, "run-2");
+
+        expect(bounds()).toEqual({ "fsn-1": 4, "fsn-2": 4, "fsn-3": 4 });
+        expect(await rows()).toMatchObject([{ state: "failed" }, { id: retried.id, state: "done", message: "data is 4 GB on fsn-1, fsn-2, fsn-3" }]);
+      });
+
+      it("a mirror below its floor after the primary shrank keeps the record and says the primary holds it", async () => {
+        failNext.set("size@fsn-2", floor);
+        const run = await requested(shrink(10));
+
+        await execute(run.id);
+
+        expect(verbs).toEqual(["size@fsn-1(10)", "size@fsn-2(10)"]);
+        expect(storeEvents).toEqual([shrunk]);
+        expect(bounds()).toEqual({ "fsn-1": 10, "fsn-2": 20, "fsn-3": 20 });
+        expect(await rows()).toMatchObject([{
+          state: "failed",
+          message: "fsn-2 can't shrink data to 10 GB; its data needs at least 12 GB. data is 10 GB. fsn-1 already holds 10 GB; fsn-3 was not asked. Free space in data, run ployz volume sync data so fsn-2's copy follows, then run ployz volume set data --size 10 again.",
+        }]);
+      });
+
+      describe("then the same size again", () => {
+        beforeEach(async () => {
+          failNext.set("size@fsn-2", floor);
+          const run = await requested(shrink(10));
+          await execute(run.id);
+          storeVolumes = [{ id: volumeId, name: "data", storage: { kind: "provisioned", maximumBytes: 10 * GB }, recorded_storage: 10 * GB }];
+          verbs.length = 0;
+          sizing.length = 0;
+          storeEvents.length = 0;
+        });
+
+        it("shrinks the mirrors the refused shrink left larger, and records nothing", async () => {
+          const settle = await requested(shrink(10));
+
+          await execute(settle.id, "run-2");
+
+          expect(verbs).toEqual(["size@fsn-1(10)", "size@fsn-2(10)", "size@fsn-3(10)"]);
+          expect(sizing).toEqual(["Setting data to 10 GB on fsn-1", "Setting data to 10 GB on fsn-2", "Setting data to 10 GB on fsn-3"]);
+          expect(bounds()).toEqual({ "fsn-1": 10, "fsn-2": 10, "fsn-3": 10 });
+          expect(storeEvents).toEqual([]);
+          expect(await rows()).toMatchObject([{ state: "failed" }, { id: settle.id, state: "done", message: "data is 10 GB on fsn-1, fsn-2, fsn-3" }]);
+        });
+
+        it("a mirror still below its floor ends it naming that mirror, and the Store stays at the size", async () => {
+          failNext.set("size@fsn-2", floor);
+          const settle = await requested(shrink(10));
+
+          await execute(settle.id, "run-2");
+
+          expect(verbs).toEqual(["size@fsn-1(10)", "size@fsn-2(10)"]);
+          expect(bounds()).toEqual({ "fsn-1": 10, "fsn-2": 20, "fsn-3": 20 });
+          expect(storeEvents).toEqual([]);
+          expect(await rows()).toMatchObject([{ state: "failed" }, {
+            id: settle.id,
+            state: "failed",
+            message: "fsn-2 can't shrink data to 10 GB; its data needs at least 12 GB. data is 10 GB. fsn-1 already holds 10 GB; fsn-3 was not asked. Free space in data, run ployz volume sync data so fsn-2's copy follows, then run ployz volume set data --size 10 again.",
+          }]);
+        });
+      });
+
+      it("a primary that keeps failing without a refusal leaves the record in place once the run gives up, undoing nothing", async () => {
+        failNext.set("size@fsn-1", "down");
+        const run = await requested(shrink(10));
+
+        const output = await execute(run.id);
+
+        expect(output.error).toBeDefined();
+        expect(await rows()).toMatchObject([{ state: "running" }]);
+        await runEffect(closeVolumeRun("run-1", "failure"));
+
+        expect(verbs).toEqual(["size@fsn-1(10)"]);
+        expect(bounds()).toEqual({ "fsn-1": 20, "fsn-2": 20, "fsn-3": 20 });
+        expect(storeEvents).toEqual([shrunk]);
+        expect(await rows()).toMatchObject([{ state: "failed" }]);
+      });
+
+      it("a Store that recorded another size since the run read it ends the run before any Machine is asked", async () => {
+        storeRefuse = () => new RpcError({ code: "conflict", message: "size changed", details: { reason: "size_changed", volume: volumeId, recorded: { kind: "provisioned", maximumBytes: 30 * GB } } });
+        const run = await requested(shrink(10));
+
+        await execute(run.id);
+
+        expect(verbs).toEqual([]);
+        expect(bounds()).toEqual({ "fsn-1": 20, "fsn-2": 20, "fsn-3": 20 });
+        expect(await rows()).toMatchObject([{
+          state: "failed",
+          message: "data stays 20 GB on fsn-1, fsn-2, fsn-3, because the Store records data at 30 GB, not 20 GB; read its size again",
+        }]);
+      });
+
+      it("a holder without the shrink refuses it at admission, naming the Server, and still admits a grow", async () => {
+        named("fsn-2").capabilities = [requirements.volumeFloor.capability, requirements.volumeSize.capability];
+
+        expect(await admit(shrink(10))).toEqual({ ok: false, refusal: { code: "unsupported", message: "Volume shrink needs a newer Ployz on fsn-2.", details: null } });
+        expect(verbs).toEqual([]);
+        expect(await rows()).toEqual([]);
+
+        expect(await admit(grow(30))).toMatchObject({ ok: true });
+      });
+
+      it("a holder that lost the shrink since admission fails the run at its first look, asking no Server for a size", async () => {
+        const run = await requested(shrink(10));
+        named("fsn-3").capabilities = [requirements.volumeFloor.capability, requirements.volumeSize.capability];
+
+        await execute(run.id);
+
+        expect(verbs).toEqual([]);
+        expect(storeEvents).toEqual([]);
+        expect(await rows()).toMatchObject([{ state: "failed", message: "Volume shrink needs a newer Ployz on fsn-3." }]);
+      });
+
+      it("a stale replay left the Store larger than every copy: a settle refuses, asks no Machine and records nothing", async () => {
+        for (const fake of machines) fake.bound = 10 * GB;
+        const run = await requested(shrink(20));
+
+        await execute(run.id);
+
+        expect(verbs).toEqual([]);
+        expect(sizes).toEqual([]);
+        expect(storeEvents).toEqual([]);
+        expect(await rows()).toMatchObject([{
+          state: "failed",
+          message: "fsn-1, fsn-2 and fsn-3 hold data at 10 GB, below its recorded 20 GB. Run ployz volume set data --size 10 to record the size it holds, then ployz volume set data --size 20 to grow it",
+        }]);
+      });
+
+      it("a Store left larger than every copy by a stale record is set back to the held size, and no copy moves", async () => {
+        for (const fake of machines) fake.bound = 10 * GB;
+        const run = await requested(shrink(10));
+
+        const output = await execute(run.id);
+
+        expect(output.result).toEqual({ runId: run.id, resized: 10 * GB });
+        expect(storeEvents).toEqual([shrunk]);
+        expect(verbs).toEqual(["size@fsn-1(10)", "size@fsn-2(10)", "size@fsn-3(10)"]);
+        expect(bounds()).toEqual({ "fsn-1": 10, "fsn-2": 10, "fsn-3": 10 });
+        expect(await rows()).toMatchObject([{ state: "done", message: "data is 10 GB on fsn-1, fsn-2, fsn-3" }]);
+      });
+    });
+
+    it("a settle is refused while a Move runs, like any other resize", async () => {
+      const move = await requested({ kind: "move", args: { to: "fsn-2" } });
+      await running(move.id);
+
+      expect(await request(grow(10))).toMatchObject({ ok: false, refusal: { code: "conflict", message: volumeBusyMessage({ id: move.id, kind: "move", volumeName: "data" }) } });
+      expect(verbs).toEqual([]);
       expect((await rows()).map((row) => row.kind)).toEqual(["move"]);
     });
 
@@ -3234,6 +3521,31 @@ describe("volume runs", () => {
       });
       expect(await rows()).toEqual([]);
       expect(send).not.toHaveBeenCalled();
+    });
+
+    it("mirror rm --if-old-copy is refused once its old copy became the mirror, and writes no run", async () => {
+      machines = [
+        { name: "fsn-1", pool: true, copy: writerCopy() },
+        { name: "fsn-2", pool: true, copy: slotCopy(base, null, "7", "mirror") },
+      ];
+
+      const admitted = await run({ kind: "delete_mirror", args: { slot: "fsn-2", confirmed_name: null, role: "old_copy" } });
+
+      expect(admitted).toEqual({ ok: false, refusal: { code: "conflict", message: "data-fsn-2 is no longer an old copy, so nothing was deleted", details: null } });
+      expect(await rows()).toEqual([]);
+    });
+
+    it("mirror rm --if-old-copy of a real old copy starts its delete, named for an old copy", async () => {
+      machines = [
+        { name: "fsn-1", pool: true, copy: writerCopy() },
+        { name: "fsn-2", pool: true, copy: slotCopy(base, null, "7", "old_copy") },
+      ];
+
+      const admitted = await run({ kind: "delete_mirror", args: { slot: "fsn-2", confirmed_name: null, role: "old_copy" } });
+
+      expect(admitted).toMatchObject({ ok: true });
+      expect((await harness.pool.query("select kind, state, args from volume_run")).rows)
+        .toMatchObject([{ kind: "delete_mirror", state: "requested", args: { slot: "fsn-2", role: "old_copy" } }]);
     });
 
     it("a Mirror Remove on a busy Volume is refused as busy before it asks", async () => {

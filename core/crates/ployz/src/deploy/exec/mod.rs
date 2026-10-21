@@ -2080,13 +2080,20 @@ async fn execute_operation<C: MachineOperations>(
     slots: &Slots<'_>,
     rows: &Rows<'_>,
 ) -> Result<Ran, OperationFailure> {
-    // An in-place update starts nothing, so its row never reads as starting.
     progress.set_running(
         index,
-        if matches!(operation, DeployOperation::UpdateContainer(_)) {
-            OperationPhase::UpdatingContainer
-        } else {
-            OperationPhase::Starting
+        match operation {
+            DeployOperation::StopContainer { .. } | DeployOperation::StopHook { .. } => {
+                OperationPhase::StoppingContainer
+            }
+            DeployOperation::RemoveContainer { .. } => OperationPhase::RemovingContainer,
+            DeployOperation::RemoveVolume { .. } => OperationPhase::RemovingVolume,
+            DeployOperation::UpdateContainer(_) => OperationPhase::UpdatingContainer,
+            DeployOperation::PrepareVolumes { .. }
+            | DeployOperation::WaitHealthy { .. }
+            | DeployOperation::RunContainer { .. }
+            | DeployOperation::ReplaceContainer(_)
+            | DeployOperation::RunHook { .. } => OperationPhase::Starting,
         },
     );
     match operation {
@@ -2185,7 +2192,6 @@ async fn execute_operation<C: MachineOperations>(
                     return Err(error.into());
                 }
             };
-            progress.set_running(index, OperationPhase::RemovingContainer);
             let allow_empty = matches!(purpose, RemoveContainerPurpose::Retire);
             match cleanup::retire(client, &copy, allow_empty, (*purpose).into(), cancellation).await
             {
@@ -2273,13 +2279,10 @@ async fn execute_operation<C: MachineOperations>(
         DeployOperation::StopHook {
             machine_id,
             container_id,
-        } => {
-            progress.set_running(index, OperationPhase::StoppingContainer);
-            stop(client, machine_id, container_id, Drain::NONE, None)
-                .await
-                .map(|()| Ran::default())
-                .map_err(Into::into)
-        }
+        } => stop(client, machine_id, container_id, Drain::NONE, None)
+            .await
+            .map(|()| Ran::default())
+            .map_err(Into::into),
         DeployOperation::RunHook {
             machine_id,
             spec,
@@ -2300,12 +2303,9 @@ async fn execute_operation<C: MachineOperations>(
             .map(|()| Ran::default())
             .map_err(Into::into)
         }
-        DeployOperation::RemoveVolume { id } => {
-            progress.set_running(index, OperationPhase::RemovingVolume);
-            ignore_not_found(client.remove_volume(id).await)
-                .map(|()| Ran::default())
-                .map_err(|error| machine_error(MachineAction::RemoveVolume, error).into())
-        }
+        DeployOperation::RemoveVolume { id } => ignore_not_found(client.remove_volume(id).await)
+            .map(|()| Ran::default())
+            .map_err(|error| machine_error(MachineAction::RemoveVolume, error).into()),
     }
 }
 
@@ -2626,6 +2626,7 @@ pub(in crate::deploy) fn health_error(
         container_id,
         failure,
         out_of_memory,
+        last_run: None,
     }
 }
 
@@ -2653,6 +2654,7 @@ fn started_container(
             container_id,
             failure,
             out_of_memory,
+            last_run: None,
         }),
     }
 }

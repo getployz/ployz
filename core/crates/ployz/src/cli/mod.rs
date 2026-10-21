@@ -171,10 +171,25 @@ pub(crate) fn log_flags(command: Command) -> Command {
 
 pub(crate) fn machine_policy_flags(command: Command) -> Command {
     command
-        .arg(many("label-add", None).value_name("KEY=VALUE"))
+        .arg(
+            many("label-add", None)
+                .value_name("KEY=VALUE")
+                .help("Set the label KEY to VALUE; repeat for more"),
+        )
         .args(
-            ["accepts-builds", "accepts-services", "accepts-ingress"]
-                .map(|name| value(name, None).value_parser(clap::value_parser!(bool))),
+            [
+                ("accepts-builds", "Whether it runs Builds"),
+                ("accepts-services", "Whether it runs Services' Containers"),
+                (
+                    "accepts-ingress",
+                    "Whether it serves web traffic through the Ingress Proxy",
+                ),
+            ]
+            .map(|(name, help)| {
+                value(name, None)
+                    .value_parser(clap::value_parser!(bool))
+                    .help(help)
+            }),
         )
 }
 
@@ -229,20 +244,23 @@ pub(crate) fn volume_acceptance() -> Arg {
 }
 
 pub(crate) fn completion(command: Command) -> Command {
-    base(command, "Generate shell completion")
-        .arg(positional("shell", true).value_parser(clap::value_parser!(clap_complete::Shell)))
+    base(command, "Generate shell completion").arg(
+        positional("shell", true)
+            .value_parser(clap::value_parser!(clap_complete::Shell))
+            .help("The shell to generate it for"),
+    )
 }
 
 #[cfg(test)]
 mod tests {
-    /// Every command and global flag `--help` shows, without its one-line description.
+    /// Every command and argument `--help` shows, without its one-line description.
     fn undescribed(command: &clap::Command, path: &str, blank: &mut Vec<String>) {
         if command.get_about().is_none() {
             blank.push(path.to_owned());
         }
-        for arg in command.get_arguments().filter(|arg| arg.is_global_set()) {
+        for arg in command.get_arguments() {
             if !arg.is_hide_set() && arg.get_help().is_none() {
-                blank.push(format!("{path} --{}", arg.get_id()));
+                blank.push(format!("{path} {}", arg.get_id()));
             }
         }
         for sub in command.get_subcommands() {
@@ -251,7 +269,7 @@ mod tests {
     }
 
     #[test]
-    fn every_command_and_global_flag_has_a_description() {
+    fn every_command_and_argument_has_a_description() {
         let mut blank = Vec::new();
         let published = crate::published::Published::parse(include_bytes!(
             "../../tests/fixtures/published-manifest.json"

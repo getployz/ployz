@@ -13,7 +13,7 @@ use ployz_core::{
     ReplacementCompensation, RestoreAttempt, RpcError, RpcErrorCode, ServiceName, StopAttempt,
 };
 use ployz_store::tools::SealedValues;
-use ployz_store::{RowPhase, RowState, RowTracker, ServerProgress, starts_container};
+use ployz_store::{RowPhase, RowState, RowTracker, ServerProgress, StoppedBy, starts_container};
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, SystemTime};
 
@@ -106,9 +106,12 @@ enum Step {
     Retire,
 }
 
+/// `placed_on` is the Servers the plan leaves the Service on, when the plan is known.
+/// The row counts them once the Service completed, since only then do they hold.
 pub(crate) fn service_row<'a>(
     service: QualifiedService,
     depth: Option<u32>,
+    placed_on: Option<&BTreeSet<MachineId>>,
     replicas: impl IntoIterator<Item = Replica<'a>>,
 ) -> Row {
     let replicas: Vec<_> = replicas.into_iter().collect();
@@ -128,7 +131,7 @@ pub(crate) fn service_row<'a>(
             matches!(
                 replica.state,
                 RowState::Failed {
-                    cancelled: false,
+                    stopped_by: StoppedBy::NOTHING,
                     ..
                 }
             )
@@ -188,6 +191,11 @@ pub(crate) fn service_row<'a>(
         | RowState::Unknown => None,
     };
     let all = |test: fn(&RowState) -> bool| replicas.iter().all(|replica| test(replica.state));
+    let any_stopped_by = |by: StoppedBy| {
+        replicas.iter().any(
+            |replica| matches!(replica.state, RowState::Failed { stopped_by, .. } if *stopped_by == by),
+        )
+    };
     let running = replicas
         .iter()
         .filter_map(work)
@@ -223,21 +231,17 @@ pub(crate) fn service_row<'a>(
         State::Pending
     } else if all(|state| matches!(state, RowState::Completed)) {
         State::Completed
-    } else if replicas.iter().any(|replica| {
-        matches!(
-            replica.state,
-            RowState::Failed {
-                cancelled: true,
-                ..
-            }
-        )
-    }) {
+    } else if any_stopped_by(StoppedBy::CANCEL) {
         State::Cancelled
+    } else if any_stopped_by(StoppedBy::LOST_RUNNER) {
+        State::Interrupted
     } else if replicas
         .iter()
         .any(|replica| matches!(replica.state, RowState::NotAttempted))
     {
         State::NotAttempted
+    } else if removal {
+        State::Running(RowPhase::RemovingContainer)
     } else {
         State::Running(RowPhase::Starting)
     };
@@ -284,7 +288,10 @@ pub(crate) fn service_row<'a>(
             } else {
                 Work::Start
             },
-            machines: replicas.iter().map(|replica| replica.machine).collect(),
+            machines: match placed_on {
+                Some(placed_on) if state == State::Completed && !removal => placed_on.clone(),
+                _ => replicas.iter().map(|replica| replica.machine).collect(),
+            },
         }),
         detail: (failed > 0 && state.active()).then(|| format!("{failed} failed")),
         state,
@@ -301,6 +308,7 @@ pub(super) struct Direct {
     pub(super) operations: Vec<OperationRow>,
     notices: Vec<ployz_core::DeployWarning>,
     depths: BTreeMap<ServiceName, u32>,
+    placed_on: BTreeMap<ServiceName, BTreeSet<MachineId>>,
 }
 
 impl Direct {
@@ -313,6 +321,7 @@ impl Direct {
             operations: Vec::new(),
             notices: preview.warnings.clone(),
             depths: preview.depths.clone(),
+            placed_on: preview.placed_on.clone(),
         };
         direct.observe(&preview.operations);
         direct
@@ -358,6 +367,7 @@ impl Direct {
                 service_row(
                     QualifiedService::new(self.namespace.clone(), service.clone()),
                     self.depths.get(service).copied(),
+                    self.placed_on.get(service),
                     self.rows
                         .values()
                         .filter(|(row, _)| row.service == *service)

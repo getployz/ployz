@@ -8,12 +8,12 @@ use ployz_core::{
     BuildConcurrency, BuildConcurrencyUpdate, MachineLogService, Namespace, RpcErrorCode,
 };
 use schemars::JsonSchema;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use super::LineCap;
 use super::act::{Run, latest, operate, operations, resolve, roster, server_show, servers};
-use super::cloud::{LogsAnswer, Operation, OperationsAnswer, RunState, ServersAnswer};
+use super::cloud::{LogsAnswer, Operation, OperationsAnswer, RunState, ServersAnswer, UnknownEnd};
 use super::machine::{Cx, Effect, Stop, Tool, store};
 use super::refusal::{Call, Refusal};
 use super::step::{
@@ -32,24 +32,61 @@ const SETTABLE: [&str; 4] = [
     "build_concurrency",
 ];
 
-/// How many of a Server's runs `server_show` reads to find its newest Drain under later ones.
+/// How many of a Server's runs `server_show` reads to find its newest Drain under later ones,
+/// from a Cloud that doesn't name it.
 const RUNS_READ: u8 = 20;
 
-/// The Server's newest Drain, by the `drain <server>` Cloud names it, that ended done or failed,
-/// when it failed and a later run took `latest`. A Drain with no verdict yet or ever (accepted,
-/// running, unknown, superseded) neither clears nor replaces an older failure.
-fn failed_drain(operations: &[Operation]) -> Option<&Operation> {
-    let (at, drain) = operations.iter().enumerate().find(|(_, operation)| {
-        operation.run.starts_with("drain ")
-            && match operation.state {
-                RunState::Done | RunState::Failed => true,
-                RunState::Accepted
-                | RunState::Running
-                | RunState::Unknown
-                | RunState::Superseded => false,
-            }
-    })?;
-    (at > 0 && drain.state == RunState::Failed).then_some(drain)
+/// How a Drain ended, once it says: it drained the Server, or `failed_drain.outcome` names why
+/// it didn't.
+#[derive(Clone, Copy, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum DrainVerdict {
+    Drained,
+    Failed,
+    Lost,
+    Interrupted,
+}
+
+/// A Drain with no verdict yet or ever (accepted, running, superseded, or unknown with no end
+/// Cloud names) has none.
+const fn drain_verdict(operation: &Operation) -> Option<DrainVerdict> {
+    match (operation.state, operation.end) {
+        (RunState::Done, _) => Some(DrainVerdict::Drained),
+        (RunState::Failed, _) => Some(DrainVerdict::Failed),
+        (RunState::Unknown, Some(UnknownEnd::Lost)) => Some(DrainVerdict::Lost),
+        (RunState::Unknown, Some(UnknownEnd::Interrupted)) => Some(DrainVerdict::Interrupted),
+        (RunState::Accepted | RunState::Running | RunState::Superseded, _)
+        | (RunState::Unknown, None) => None,
+    }
+}
+
+/// The Server's newest Drain with a verdict, as Cloud names it, else as `page` lists it, when it
+/// drained nothing and a later run took `latest`, with its `outcome`. A Drain with no verdict
+/// neither clears nor replaces an older one.
+fn failed_drain(page: &OperationsAnswer) -> Option<Value> {
+    let (drain, verdict) = match &page.settled_drain {
+        Some(drain) => (drain, drain_verdict(drain)?),
+        None => page
+            .operations
+            .iter()
+            .filter(|operation| operation.run.starts_with("drain "))
+            .find_map(|operation| drain_verdict(operation).map(|verdict| (operation, verdict)))?,
+    };
+    let shown_as_latest = page
+        .operations
+        .first()
+        .is_some_and(|latest| latest.attempt == drain.attempt);
+    match verdict {
+        DrainVerdict::Drained => None,
+        DrainVerdict::Failed | DrainVerdict::Lost | DrainVerdict::Interrupted => (!shown_as_latest)
+            .then(|| {
+                let mut shown = latest(drain);
+                if let Some(fields) = shown.as_object_mut() {
+                    fields.insert("outcome".to_owned(), json!(verdict));
+                }
+                shown
+            }),
+    }
 }
 
 /// Every Namespace the Servers run with the Environment that owns it, if one does.
@@ -71,7 +108,7 @@ pub(crate) struct ServerShow {
 
 impl Tool for ServerShow {
     const NAME: &'static str = "server_show";
-    const DESCRIPTION: &'static str = "Your servers now: state, release, upgrade, drain, disk, what runs there, leftovers no Environment owns, latest operation, and a failed drain a later one hides.";
+    const DESCRIPTION: &'static str = "Your servers now: state, release, upgrade, drain, disk, what runs there, leftovers no Environment owns, latest operation, and a failed, lost or interrupted drain a later one hides.";
     const EFFECT: Effect = Effect::Read;
 
     fn example() -> Value {
@@ -138,10 +175,7 @@ impl Tool for ServerShow {
                         .as_ref()
                         .and_then(|page| page.operations.first())
                         .map(latest),
-                    "failed_drain": page
-                        .as_ref()
-                        .and_then(|page| failed_drain(&page.operations))
-                        .map(latest),
+                    "failed_drain": page.as_ref().and_then(failed_drain),
                 }))
             })
             .collect::<Result<Vec<_>, Stop>>()?;

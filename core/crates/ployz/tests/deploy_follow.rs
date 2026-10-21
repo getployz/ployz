@@ -1017,3 +1017,87 @@ fn a_deploy_queued_with_nothing_ahead_says_no_server_started_it() {
     );
     assert!(stderr.contains("ployz server ls"), "{stderr}");
 }
+
+/// Deployment #7, cancelled: the cancel stopped web, and api's create failed on its
+/// own when `api_failed`. `marker` is the Store's `cancelled` on the outcome, which a
+/// Store from before it never writes.
+fn cancelled(reason: &str, cause: &[&str], marker: bool, api_failed: bool) -> DeploymentView {
+    let mut cancelled = serde_json::to_value(view(7, DeploymentStatus::Cancelled)).unwrap();
+    let mut outcome = json!({"type": "executed", "summary": {}, "reason": reason, "cause": cause});
+    if marker {
+        outcome
+            .as_object_mut()
+            .unwrap()
+            .insert("cancelled".to_owned(), json!(true));
+    }
+    *cancelled.get_mut("outcome").unwrap() = outcome;
+    let api = if api_failed {
+        json!({"type": "service", "id": "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee", "name": "api", "outcome": "failed", "rows": [{"machine_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "server": "fsn-1", "state": "failed", "reason": "create Container failed", "cause": ["no space left on device"], "step": "create", "log": null, "history": null, "started_at": 1, "finished_at": 2}]})
+    } else {
+        json!({"type": "service", "id": "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee", "name": "api", "outcome": "deployed", "rows": [{"machine_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "server": "fsn-1", "state": "completed", "log": null, "history": null, "started_at": 1, "finished_at": 2}]})
+    };
+    *cancelled.get_mut("nodes").unwrap() = json!([
+        api,
+        {"type": "service", "id": "dddddddd-dddd-4ddd-8ddd-dddddddddddd", "name": "web", "outcome": "failed", "cancelled": true, "rows": [{"machine_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "server": "fsn-1", "state": "failed", "reason": "Cancelled", "cause": [], "step": "create", "cancelled": true, "log": null, "history": null, "started_at": 1, "finished_at": 2}]}
+    ]);
+    serde_json::from_value(cancelled).unwrap()
+}
+
+/// What a person reads from `deployment show` and from `deploy` following `view` to its end.
+fn shown_and_followed(view: &DeploymentView) -> (String, String) {
+    let root = tempfile::tempdir().unwrap();
+    let Run { output, .. } = scripted_run(
+        VecDeque::from([read(view)]),
+        root.path(),
+        &["deployment", "show", "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"],
+        Duration::from_secs(20),
+    );
+    assert!(output.status.success(), "{output:?}");
+    let shown = String::from_utf8(output.stdout).unwrap();
+    let Run { output, .. } = scripted_run(
+        VecDeque::from([admitted(), read(view)]),
+        root.path(),
+        &["deploy", "--project", "shop", "--env", "production"],
+        Duration::from_secs(20),
+    );
+    assert_eq!(output.status.code(), Some(3), "{output:?}");
+    (shown, String::from_utf8(output.stderr).unwrap())
+}
+
+#[test]
+fn a_cancelled_deployment_shows_no_reason_that_only_repeats_its_cancel() {
+    let (shown, followed) = shown_and_followed(&cancelled("web: Cancelled", &[], true, false));
+    assert!(
+        shown.starts_with("Deployment #7 of shop/production: cancelled\n"),
+        "{shown}"
+    );
+    assert!(!shown.contains("web: Cancelled"), "{shown}");
+    assert!(!followed.contains("web: Cancelled"), "{followed}");
+    assert!(
+        followed.contains("error: Deployment #7 was cancelled.\n"),
+        "{followed}"
+    );
+}
+
+#[test]
+fn a_cancelled_deployment_still_names_a_real_failure_and_an_older_stores_reason() {
+    let (shown, followed) = shown_and_followed(&cancelled(
+        "api: create Container failed",
+        &["no space left on device"],
+        false,
+        true,
+    ));
+    assert!(
+        shown.contains("  api: create Container failed\n    cause: no space left on device\n"),
+        "{shown}"
+    );
+    assert!(
+        followed
+            .contains("error: api: create Container failed.\n  cause: no space left on device\n"),
+        "{followed}"
+    );
+    // A Store from before the marker: the reason reads as it always has.
+    let (shown, followed) = shown_and_followed(&cancelled("web: Cancelled", &[], false, false));
+    assert!(shown.contains("\n  web: Cancelled\n"), "{shown}");
+    assert!(followed.contains("error: web: Cancelled.\n"), "{followed}");
+}

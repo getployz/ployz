@@ -207,6 +207,39 @@ describe("plan_from_copies_table", () => {
     });
   });
 
+  it.each([["move", move("fsn-3")], ["mirror", mirror("fsn-3")]])("names an old copy's removal with --if-old-copy when a %s finds one on a third Server", (_, input) => {
+    expect(planFromCopies(input, [member("fsn-1", "writer"), member("fsn-2", "old"), member("fsn-3", "empty")])).toEqual({
+      ok: false,
+      refusal: { code: "second_mirror", message: "data already has a copy on fsn-2, data-fsn-2", next: "ployz volume mirror rm data-fsn-2 --if-old-copy" },
+    });
+  });
+
+  it("refuses a delete admitted for an old copy once its slot holds the mirror, and deletes nothing", () => {
+    const oldCopy = (slot: string): PlanInput => ({ kind: "delete_mirror", args: { slot, confirmed_name: null, role: "old_copy" }, ...data });
+    expect(planFromCopies(oldCopy("fsn-2"), [member("fsn-1", "writer"), member("fsn-2", "mirror")])).toEqual({
+      ok: false,
+      refusal: { code: "role_changed", message: "data-fsn-2 is no longer an old copy, so nothing was deleted" },
+    });
+    expect(outcome(oldCopy("fsn-2"), [member("fsn-1", "writer"), member("fsn-2", "old")])).toBe("delete fsn-2 forget fsn-1");
+    expect(outcome(remove("fsn-2"), [member("fsn-1", "writer"), member("fsn-2", "mirror")])).toBe("delete fsn-2 forget fsn-1");
+    expect(outcome(remove("fsn-2"), [member("fsn-1", "writer"), member("fsn-2", "old")])).toBe("delete fsn-2 forget fsn-1");
+  });
+
+  it("leaves a slot whose Server reports no role to that Server's own check", () => {
+    const { role: _, ...unreported } = COPIES.mirror;
+    const silent: Member = { machine: member("fsn-2", "mirror").machine, address: "fdcc::1", answered: true, view: { copy: unreported }, floorless: false };
+    const input: PlanInput = { kind: "delete_mirror", args: { slot: "fsn-2", confirmed_name: null, role: "old_copy" }, ...data };
+    expect(outcome(input, [member("fsn-1", "writer"), silent])).toBe("delete fsn-2 forget fsn-1");
+  });
+
+  it("keeps --if-old-copy in the only-copy refusal of a delete admitted for an old copy", () => {
+    const input: PlanInput = { kind: "delete_mirror", args: { slot: "fsn-2", confirmed_name: null, role: "old_copy" }, ...data };
+    expect(planFromCopies(input, [member("fsn-2", "old")])).toEqual({
+      ok: false,
+      refusal: { code: "confirm_required", message: "data-fsn-2 is data's only copy; volume mirror rm data-fsn-2 --if-old-copy --confirm data" },
+    });
+  });
+
   it("names release, not the removal mirror rm refuses, when a move from a stopped cut finds a copy on a third Server", () => {
     expect(planFromCopies(move("fsn-3"), [member("fsn-1", "cut"), member("fsn-2", "mirror"), member("fsn-3", "empty")])).toEqual({
       ok: false,
@@ -385,6 +418,15 @@ describe("plan a resize", () => {
     expect(outcome(resize(20), copies)).toBe("grow 10->20 GB: mirror fsn-2, mirror fsn-3, primary fsn-1, record");
   });
 
+  it("records a smaller size first, then sets the primary, then every mirror", () => {
+    expect(outcome(resize(5), copies)).toBe("shrink 10->5 GB: record, primary fsn-1, mirror fsn-2, mirror fsn-3");
+  });
+
+  it("settles the size it already has on the primary, then every mirror, with no record", () => {
+    const held = [member("fsn-1", "writer", { bound: 10 * GB }), member("fsn-2", "mirror", { bound: 20 * GB }), member("fsn-3", "mirror", { bound: 10 * GB })];
+    expect(outcome(resize(10), held)).toBe("settle 10->10 GB: primary fsn-1, mirror fsn-2, mirror fsn-3");
+  });
+
   it("sets a lone primary, then records", () => {
     expect(outcome(resize(20), [member("fsn-1", "writer")])).toBe("grow 10->20 GB: primary fsn-1, record");
   });
@@ -404,17 +446,13 @@ describe("plan a resize", () => {
     ["an old copy beside the writer", resize(20), [member("fsn-1", "writer", { epoch: 2 }), member("fsn-2", "writer", { epoch: 1 })], "demote fsn-2 below fsn-1"],
     ["a Docker Volume", resize(20, { recordedBytes: 0, refquotaBytes: 0 }), copies, "refuse invalid"],
     ["a Volume no Deploy sized yet", resize(20, { recordedBytes: 0 }), copies, "refuse invalid"],
-    ["the size it already has", resize(10), copies, "refuse already_sized"],
-    ["a smaller size", resize(5), copies, "refuse invalid"],
   ])("refuses or demotes with %s", (_, input, members, expected) => {
     expect(outcome(input, members)).toBe(expected);
   });
 
-  it("names the Server that lacks the verb, the size it already has and the size it cannot shrink to", () => {
+  it("names the Server that lacks the verb and why a Volume has no size to change", () => {
     const lacking: Member = { machine: member("fsn-4", "unanswered").machine, answered: false, lack: "Volume resize needs a newer Ployz on fsn-4." };
     expect(planFromCopies(resize(20), [...copies, lacking])).toMatchObject({ ok: false, refusal: { message: "Volume resize needs a newer Ployz on fsn-4." } });
-    expect(planFromCopies(resize(10), copies)).toMatchObject({ ok: false, refusal: { code: "already_sized", message: "data already has 10 GB" } });
-    expect(planFromCopies(resize(5), copies)).toMatchObject({ ok: false, refusal: { message: "data has 10 GB; shrinking a deployed Volume isn't supported yet" } });
     expect(planFromCopies(resize(20, { recordedBytes: 0, refquotaBytes: 0 }), copies)).toMatchObject({ ok: false, refusal: { message: "data uses Docker storage, which has no size to change; add a Managed Volume for a sized one" } });
     expect(planFromCopies(resize(20, { recordedBytes: 0 }), copies)).toMatchObject({ ok: false, refusal: { message: "data has no deployed size to change yet; deploy it first" } });
   });
@@ -505,7 +543,7 @@ describe("follow every next step a refusal names", () => {
   // twin sets it, and `tied` then sees it.
   type Complete<T> = T extends string | number | bigint | boolean | null | undefined ? T : { [K in keyof T]-?: Complete<T[K]> };
   const twin = (id: string, floorless: boolean, copy: Complete<VolumeCopy>): AnsweredMember => ({
-    machine: { id: id.padEnd(32, "0") as MachineId, name: "twin" }, address: `fdcc::${id}`, answered: true, view: { copy }, floorless,
+    machine: { id: id.padEnd(32, "0") as MachineId, name: "twin" }, address: `fdcc::${id}`, answered: true, view: { copy }, floorless, boundBytes: floorless ? GB : null,
   } satisfies Required<AnsweredMember>);
   const at = (name: string, each: AnsweredMember): Member => ({ ...each, machine: { ...each.machine, name } });
   const newest = COPIES.mirror.newest;

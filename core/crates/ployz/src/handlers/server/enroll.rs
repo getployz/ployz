@@ -34,7 +34,10 @@ pub(crate) fn command(command: Command) -> Command {
         base(command, "Add a Server to your Organization")
             .long_about("Add a Server to your Organization through Cloud.\n\nWith DESTINATION, installs Ployz over SSH; without one, adds the Server this runs on.\n\nSigned in, it asks Cloud for an enrollment token. Signed out, it asks for one at a hidden prompt, or reads --token-stdin, --token-file or PLOYZ_ENROLL_TOKEN.\n\n--command prints one line to paste on the Server and the token beside it, then waits until it joins. With --json it returns both at once; --wait ENROLLMENT waits."),
     )
-    .arg(positional("destination", false))
+    .arg(
+        positional("destination", false)
+            .help("SSH destination such as root@host to install on; omit to add this Server"),
+    )
     .arg(
         switch("token-stdin", None)
             .help("Read the enrollment token from Cloud as one line on stdin")

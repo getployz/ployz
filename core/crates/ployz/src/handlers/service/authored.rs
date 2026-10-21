@@ -37,20 +37,20 @@ pub(crate) fn list_command(command: Command) -> Command {
 
 pub(crate) fn inspect_command(command: Command) -> Command {
     store::scoped(command.about("Show a Service, its Settings and staged changes"))
-        .arg(positional("service", true))
+        .arg(positional("service", true).help("Service name"))
 }
 
 pub(crate) fn rename_command(command: Command) -> Command {
     store::scoped(
         command.about("Rename a Service; its Private DNS name and references stay the same"),
     )
-    .arg(positional("service", true))
+    .arg(positional("service", true).help("Service name"))
     .arg(positional("name", true).help("The new name"))
 }
 
 pub(crate) fn remove_command(command: Command) -> Command {
     store::scoped(command.about("Remove a Service; it keeps running until a Deploy removes it"))
-        .arg(positional("service", true))
+        .arg(positional("service", true).help("Service name"))
 }
 
 /// Add an image, GitHub repository or empty Service to Working State.
@@ -176,7 +176,7 @@ pub(crate) fn inspect(root: &ArgMatches) -> Result<(), Error> {
         store::domain_list(&domains, service.name.as_str()),
     );
     for change in &view.changes {
-        for line in store::changed(change) {
+        for line in store::changed(change, &view.changes) {
             record.push("staged", line);
         }
     }

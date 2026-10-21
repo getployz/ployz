@@ -22,7 +22,7 @@ These scripts are dev tooling that an operator runs on their own checkout. They 
 
 - [store/run.sh](store/run.sh): needs only the debug binary `core/target/debug/ployz`; it runs against the hidden SQLite Store (`PLOYZ_STORE=sqlite:…`) under an isolated HOME.
 - [cloud/run.sh](cloud/run.sh): starts its own seeded local Cloud with `dashboard/scripts/verify/up.sh` and stops only that one at the end (`KEEP=1` leaves it running). It refuses to run while this checkout already has a verify Cloud (`dashboard/.verify/run`), because `up.sh` would wipe it, including the one `verify-cluster up --cloud` uses. Its org rm of babbage is approved the same way, as Ada ([approve.sh](approve.sh)).
-- [cluster/run.sh](cluster/run.sh): needs privileged Docker, `cargo build -p ployz -p ployzd`, and `docker pull ghcr.io/getployz/ployz-testkit:main`; it builds alpha, beta, gamma plus a lone `solo`, then tears them down. Its Cluster, image and HOME carry a random per-run id, so runs from two checkouts never collide. It stops when a setup capture that later captures depend on fails, such as `server add`.
+- [cluster/run.sh](cluster/run.sh): needs privileged Docker. It runs [scripts/testkit-image.sh](../../scripts/testkit-image.sh) to build the testkit base from `crates/ployz-testkit/Dockerfile` (cached as `ployz-testkit-base:local`, so only the first run is slow) and put this checkout's debug binaries and testkit entrypoint over it, then builds alpha, beta, gamma plus a lone `solo`, then tears them down. Its Cluster, image and HOME carry a random per-run id, so runs from two checkouts never collide. It stops when a setup capture that later captures depend on fails, such as `server add`.
 - [cloud-cluster/run.sh](cloud-cluster/run.sh): needs a paired run from `scripts/verify-cluster up --machines 1 --daemon checkout --cloud`, linked to `shop` and deployed as its header says; call it as `MANIFEST=…/cluster.json SECTIONS="deploy runtime domain env errors up" run.sh [PARENT]`. Without `MANIFEST` it takes the newest run, and without `SECTIONS` it runs all six. `up` appends to `deploy.md`, so it needs `deploy` earlier in the same run. Cloud asks a person to approve a removal from `ployz`, so for env rm, project rm and the deploys that remove a domain (including the old host when the generated domain changes) the driver approves, as the seed's owner Ada, the approval id the command itself prints, with `ployz org approval approve` on a terminal because it asks for the Organization's name ([approve.sh](approve.sh)). It refuses a run whose manifest lacks a `.cloud` block or whose `state` is not `ready` (a torn-down run keeps its manifest as `removed`), and one that does not answer.
 
 - [record.py](record.py): runs one command in a PTY and writes an asciicast, a GIF (`agg`) and a last-frame PNG (`ffmpeg`), as in `record.py --gif out.gif --png out.png -- 'ployz deploy'`. It writes nothing unless the command exits with `--expect-exit` (default 0), and replaces each output through a temp file and a rename. [prototype-media/make.sh](prototype-media/make.sh) uses it to re-record the prototype GIFs.
@@ -229,7 +229,7 @@ A failed Deployment exits 1, with its progress and the error on stderr: `Deployi
 
 ## 10. Human output that is really JSON
 
-- schema prints a 6629-line JSON Schema with or without `--json` ([store/settings.md](store/settings.md)).
+- schema prints a 6741-line JSON Schema with or without `--json` ([store/settings.md](store/settings.md)).
 - JSON inside human lines: `web.healthcheck = {"path":"/healthz","timeoutSeconds":300} (default -)` and `web.env.API_KEY = {"secret":true}` ([store/settings.md](store/settings.md)). diff values are JSON literals: `web.env.GREETING: null → "hello"` ([cloud-cluster/deploy.md](cloud-cluster/deploy.md)).
 
 ## 11. `--json` shape
@@ -264,7 +264,6 @@ Dominant: one pretty-printed object on stdout (126 of 130 success outputs). The 
 - Commands list the groups first (`cloud` to `volume`), then the verbs (`build` to `up`), each alphabetically, then `help`.
 - Every subcommand repeats the globals: `--connect <connect>`, `--ssh-timeout <SECONDS>`, `-c, --context <context>`, `--json` and `--color <WHEN>`.
 - Placeholders mix casing: `<name>`, `<context>`, `<connect>`, `<SECONDS>`, `<WHEN>`, `<REF>`.
-- project rm help leaves `<name>` with an empty description.
 - Top-level help ends with a `Settings catalog: …` line. `--version` prints `0.3.0-beta.6`.
 
 ## Likely bugs
@@ -272,8 +271,7 @@ Dominant: one pretty-printed object on stdout (126 of 130 success outputs). The 
 Each item reproduces in a capture on main, at the line it cites.
 
 1. `exec` of a missing binary prints `OCI runtime exec failed: …` on stdout, exit 127. [cloud-cluster/errors.md:31](cloud-cluster/errors.md) **Kept: `exec` passes the remote command's output and exit code through.**
-2. `deployment start 1` with no Server follows until the capture's timeout kills it (exit 124), and prints nothing at all. [cloud/deploy.md:310](cloud/deploy.md)
-3. project rm help leaves the `<name>` argument with an empty description. [store/help.md:403](store/help.md)
+2. `deployment start 1` with no Server follows until the capture's timeout kills it (exit 124), and prints nothing at all. [cloud/deploy.md:310](cloud/deploy.md) **Fixed: with no Server enrolled, start refuses at once like a Deploy, `next: ployz server add`. The capture's seed enrolls a Server that never answers and runs no worker, so its start still waits in the queue.**
 
 The earlier list's 32 items, rechecked against the same captures. Old items 23 and 29 are items 1 and 2 above.
 

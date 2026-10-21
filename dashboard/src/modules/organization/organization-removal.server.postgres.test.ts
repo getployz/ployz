@@ -264,9 +264,6 @@ describe("removeOrganization", () => {
     await harness.db.insert(organization).values({ id: NEW_KETTLE, name: "Kettle", slug: "kettle" });
     await harness.db.insert(member).values({ userId: jo, organizationId: NEW_KETTLE, role: "owner" });
 
-    const still = new Promise((resolve) => setTimeout(resolve, 2_000, "still open"));
-    const outcome = await Promise.race([ended, still]);
-    if (outcome !== "ended") await reader?.cancel();
-    expect(outcome).toBe("ended");
+    expect(await ended).toBe("ended");
   });
 });

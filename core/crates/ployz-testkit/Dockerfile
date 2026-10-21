@@ -1,9 +1,8 @@
 # syntax=docker/dockerfile:1
-# Host binaries: cargo build --locked --release --package ployz --package ployzd
-# then install them to crates/ployz-testkit/prebuilt/{ployz,ployzd}.
-# After docker build, prime the nested Docker graph into a tarball:
-#   IMAGE=<tag> scripts/prime-testkit-image.sh
-# Runtime glibc must match GitHub-hosted Ubuntu 24.04 (host cargo --release).
+# The testkit base: OS, Docker and the nested images, with no ployz binaries.
+# scripts/testkit-image.sh builds it, primes it with
+# scripts/prime-testkit-image.sh, and layers this checkout's ployz, ployzd and
+# entrypoint on top. Those host binaries need Ubuntu 24.04's glibc.
 FROM docker:29.1.3-dind AS docker-bin
 
 FROM ubuntu:24.04
@@ -18,16 +17,13 @@ RUN mkdir -p /opt/ployz/images \
  && skopeo copy docker://docker.io/library/alpine:3.23.3 docker-archive:/opt/ployz/images/alpine.tar:alpine:3.23.3 \
  && skopeo copy docker://docker.io/library/caddy:2.10.2 docker-archive:/opt/ployz/images/caddy.tar:caddy:2.10.2 \
  && skopeo copy docker://ghcr.io/psviderski/unregistry:0.4.1 docker-archive:/opt/ployz/images/unregistry.tar:ghcr.io/psviderski/unregistry:0.4.1
-COPY crates/ployz-testkit/prebuilt/ployz /usr/local/bin/ployz
-COPY crates/ployz-testkit/prebuilt/ployzd /usr/local/bin/ployzd
 COPY crates/ployz-testkit/entrypoint.sh /usr/local/bin/ployz-testkit-entrypoint
 COPY crates/ployz-testkit/journalctl /usr/local/bin/journalctl
 COPY crates/ployz-testkit/daemon.json /etc/docker/daemon.json
 COPY crates/ployz-testkit/daemon-overlay.json /etc/docker/daemon-overlay.json
 RUN chmod +x /usr/local/bin/ployz-testkit-entrypoint /usr/local/bin/journalctl \
  && dockerd --version \
- && wg --version \
- && ployzd version
+ && wg --version
 VOLUME ["/var/lib/ployz"]
 # Nested overlay cannot use a Docker graph committed into the image: snapshot
 # dirs split across image/container layers and `docker create` fails with

@@ -32,7 +32,7 @@ pub(crate) fn command(command: Command) -> Command {
          Without --confirm outside a terminal, either form fails with \
          confirmation_required, naming what goes and the exact command to retry.",
     )
-    .arg(positional("server", false))
+    .arg(positional("server", false).help("Server name or ID; omit to forget every Server"))
     .arg(value("confirm", None).value_name("NAME").help(
         "With a Server: its name, or dead for one that does not answer. Without: the \
          Organization's slug",

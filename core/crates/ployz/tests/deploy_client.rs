@@ -1482,15 +1482,131 @@ async fn failed_deploy_whose_container_ran_out_of_memory_says_so() {
                     memory_bytes: Some(ployz_core::ByteQuantity::try_from(16 << 20).unwrap()),
                 })]
             );
+            assert!(
+                cause.iter().any(|cause| cause.contains("exited with code")),
+                "{cause:?}"
+            );
         } else {
-            assert_eq!(reason, "web: The Container exited");
+            assert_eq!(reason, "web: The Container exited with code 1");
+            assert_eq!(cause, &["token=[redacted]"]);
             assert_eq!(rows, [None]);
         }
-        assert!(
-            cause.iter().any(|cause| cause.contains("exited with code")),
-            "{cause:?}"
-        );
     }
+}
+
+/// A Container Docker keeps restarting fails the Deployment with the exit code and
+/// last line its Server's Log Store holds, scrubbed like the row's log, so the
+/// headline Cloud joins from them reads as the crash and not `restarting`.
+#[tokio::test]
+async fn failed_deploy_whose_container_keeps_restarting_names_its_exit_and_last_line() {
+    use ployz_store::{
+        Actor, Admit, ConfigStore, CreateProject, CreateService, Deploy, DeploymentId,
+        DeploymentStatus, EnvironmentId, EnvironmentRef, OrganizationId, Outcome, ProjectId,
+        ProjectName, RowState, RunnerId, SealingKey, ServiceLineageId, Trusted,
+    };
+    use std::sync::Arc;
+
+    let store =
+        Arc::new(ConfigStore::open("sqlite::memory:", SealingKey::new(b"cloud").unwrap()).unwrap());
+    let who = Actor::system(OrganizationId::parse("org").unwrap());
+    store
+        .write(
+            &who,
+            &CreateProject {
+                id: ProjectId::parse("00000000-0000-4000-8000-000000000001").unwrap(),
+                name: ProjectName::parse("shop").unwrap(),
+                default_environment: EnvironmentId::parse("00000000-0000-4000-8000-000000000002")
+                    .unwrap(),
+            },
+        )
+        .unwrap();
+    store
+        .write(
+            &who,
+            &CreateService {
+                id: ServiceLineageId::parse("00000000-0000-4000-8000-000000000003").unwrap(),
+                environment: EnvironmentRef::default(),
+                name: ployz_core::ServiceName::parse("web").unwrap(),
+                image: Some("nginx".into()),
+                template: None,
+            },
+        )
+        .unwrap();
+    let id = DeploymentId::parse("00000000-0000-4000-8000-000000000101").unwrap();
+    store
+        .write_trusted(
+            &who,
+            &Admit::Deploy(Deploy {
+                id: id.clone(),
+                environment: EnvironmentRef::default(),
+                services: Vec::new(),
+                version: None,
+                upload: None,
+                accept_volume_loss: Vec::new(),
+                message: None,
+            }),
+            &Trusted::default(),
+        )
+        .unwrap();
+    let service = DeployService::new(machine('a', "one")).restart_containers();
+    let (address, server) = listening(service).await;
+
+    let summary = ployz::sdk::run_deployment(
+        Arc::clone(&store),
+        id.clone(),
+        RunnerId::parse("cloud-run-1").unwrap(),
+        vec![ployz::context::Connection::tcp(address)],
+        Ok(Default::default()),
+    )
+    .await
+    .unwrap();
+    server.abort();
+
+    assert_eq!(summary.status, DeploymentStatus::Failed);
+    let view = store
+        .read(&who, &ployz_store::DeploymentQuery { id })
+        .unwrap();
+    let Some(Outcome::Executed {
+        reason: Some(reason),
+        cause,
+        ..
+    }) = &view.deployment.outcome
+    else {
+        panic!(
+            "expected an executed failure, got {:?}",
+            view.deployment.outcome
+        );
+    };
+    assert_eq!(
+        reason,
+        "web: The Container exited with code 1 and is restarting"
+    );
+    assert_eq!(cause, &["token=[redacted]"]);
+    let headline = cause
+        .last()
+        .map_or_else(|| reason.clone(), |cause| format!("{reason}: {cause}"));
+    assert_eq!(
+        headline,
+        "web: The Container exited with code 1 and is restarting: token=[redacted]"
+    );
+    let rows = view
+        .nodes
+        .iter()
+        .flat_map(|node| &node.rows)
+        .filter_map(|row| {
+            let RowState::Failed { reason, cause, .. } = &row.state else {
+                return None;
+            };
+            Some((reason.as_str(), cause.clone()))
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        rows,
+        [(
+            "The Container exited with code 1 and is restarting",
+            vec!["token=[redacted]".to_owned()]
+        )]
+    );
 }
 
 #[tokio::test]

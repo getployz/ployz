@@ -4,8 +4,8 @@ use std::{collections::BTreeSet, time::Duration};
 
 use clap::ArgMatches;
 use ployz_core::{
-    Machine, MachineRelease, MachineTarget, MachineUpgradeAttempt, MachineUpgradeAttemptId,
-    MachineUpgradeOutcome, RequestMachineUpgradeRequest, RpcErrorCode, op,
+    Machine, MachineId, MachineRelease, MachineTarget, MachineUpgradeAttempt,
+    MachineUpgradeAttemptId, MachineUpgradeOutcome, RequestMachineUpgradeRequest, RpcErrorCode, op,
 };
 use reqwest::Method;
 use serde::{Deserialize, Serialize};
@@ -202,7 +202,7 @@ fn through_cloud(
             credential,
             Method::POST,
             &format!("servers/{id}/upgrade"),
-            &json!({ "channel": channel }),
+            &json!({ "channel": channel, "server_name": name }),
             None,
         ));
         let run = match started {
@@ -371,6 +371,14 @@ fn stopped(server: &str, upgrade: &CloudUpgrade) -> Option<Error> {
     Some(Error::coded(RpcErrorCode::Internal, message))
 }
 
+/// An upgrade attempt and the Server it ran on, as `--json` prints it.
+#[derive(Serialize)]
+struct Attempted {
+    server: MachineId,
+    #[serde(flatten)]
+    attempt: MachineUpgradeAttempt,
+}
+
 /// Upgrade each Server's daemon in order, stopping at the first failure; once all succeed,
 /// move the Ingress Proxy when any of them holds the ingress role. The result is `None`
 /// when nothing was committed.
@@ -388,7 +396,10 @@ async fn run_all(
         let stopped = match run_one(client, machine, release.clone(), attempt_id, &mut seen).await {
             Err(error) => {
                 // An accepted attempt is committed evidence: keep it in the result.
-                attempts.extend(seen);
+                attempts.extend(seen.map(|attempt| Attempted {
+                    server: machine.id,
+                    attempt,
+                }));
                 error
             }
             Ok(attempt) => {
@@ -426,7 +437,10 @@ async fn run_all(
                         unreachable!("run_one returns only terminal evidence")
                     }
                 };
-                attempts.push(attempt);
+                attempts.push(Attempted {
+                    server: machine.id,
+                    attempt,
+                });
                 match stopped {
                     Some(error) => error,
                     None => continue,
@@ -680,7 +694,14 @@ mod tests {
             _machine: &Machine,
             _wait: Duration,
         ) -> Result<MachineUpgradeAttempt, crate::setup_retry::Error<ConnectError>> {
-            panic!("terminal answers are not polled")
+            Err(crate::setup_retry::Error::Permanent(ConnectError::Remote(
+                RpcError {
+                    code: RpcErrorCode::Internal,
+                    message: "upgrade record is unreadable".into(),
+                    details: Value::Null,
+                    cause: Vec::new(),
+                },
+            )))
         }
 
         async fn move_ingress(&mut self, image: IngressImage) -> Result<Option<Outcome>, Error> {
@@ -757,6 +778,67 @@ mod tests {
         assert_eq!(result["attempts"].as_array().unwrap().len(), 2);
         assert_eq!(result["ingress"], Value::Null);
         assert_eq!(moved, [IngressImage::Latest]);
+    }
+
+    #[tokio::test]
+    async fn every_json_attempt_names_its_server_by_id() {
+        let failed = MachineUpgradeOutcome::Failed {
+            stage: ployz_core::MachineUpgradeStage::Launching,
+            error: "no systemd".into(),
+        };
+        let interrupted = MachineUpgradeOutcome::Interrupted {
+            stage: ployz_core::MachineUpgradeStage::Launching,
+        };
+        let (a, b, c) = (machine('a', 1), machine('b', 2), machine('c', 3));
+        let cases = [
+            (vec![a.clone()], vec![succeeded()], vec![("a", "succeeded")]),
+            (vec![a.clone()], vec![failed.clone()], vec![("a", "failed")]),
+            (
+                vec![a.clone()],
+                vec![interrupted.clone()],
+                vec![("a", "interrupted")],
+            ),
+            (
+                vec![a.clone()],
+                vec![MachineUpgradeOutcome::Accepted],
+                vec![("a", "accepted")],
+            ),
+            (
+                vec![a.clone(), b.clone(), c.clone()],
+                vec![succeeded(), succeeded(), failed],
+                vec![("a", "succeeded"), ("b", "succeeded"), ("c", "failed")],
+            ),
+            (
+                vec![a, b, c],
+                vec![succeeded(), interrupted],
+                vec![("a", "succeeded"), ("b", "interrupted")],
+            ),
+        ];
+        for (machines, outcomes, expected) in cases {
+            let (result, _, _) = run_sequence(&machines, outcomes, None).await;
+            let result = result.unwrap();
+            let attempts = result.pointer("/attempts").and_then(Value::as_array);
+            let named = attempts
+                .unwrap()
+                .iter()
+                .map(|attempt| {
+                    assert!(attempt.get("attempt_id").is_some(), "{attempt}");
+                    assert!(attempt.get("target").is_some(), "{attempt}");
+                    (
+                        attempt.get("server").cloned().unwrap_or_default(),
+                        attempt.get("outcome").cloned().unwrap_or_default(),
+                    )
+                })
+                .collect::<Vec<_>>();
+            let expected = expected
+                .into_iter()
+                .map(|(name, outcome)| {
+                    let id = MachineId::parse(name.repeat(32)).unwrap();
+                    (json!(id), json!(outcome))
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(named, expected, "{result}");
+        }
     }
 
     #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]

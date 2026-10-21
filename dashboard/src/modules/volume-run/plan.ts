@@ -14,11 +14,13 @@ export type RefusalCode =
   | "second_mirror"
   | "invalid"
   | "already_on"
-  | "already_sized"
+  | "held_below"
+  | "unobserved"
   | "no_mirror"
   | "no_copy"
   | "another_copy"
-  | "confirm_required";
+  | "confirm_required"
+  | "role_changed";
 
 /**
  * Where a Move continues from the copies it finds. `rounds` and `cut` start on A's root; `final` pulls the cut's
@@ -57,6 +59,11 @@ export type Planned =
  */
 export type PlanInput = (Exclude<VolumeRunInput, { kind: "resize" }> | (Extract<VolumeRunInput, { kind: "resize" }> & { readonly recordedBytes: number; readonly refquotaBytes: number }))
   & { readonly volumeName: string; readonly orphan: boolean };
+
+export const ROLE_NOUN = { mirror: "a mirror", old_copy: "an old copy" } as const satisfies Record<SlotRole, string>;
+
+/** `--if-old-copy` on a printed `mirror rm`, so the line deletes nothing once a mirror run made that copy the mirror. */
+const ifOldCopy = (role: SlotRole | "any" | undefined) => (role === "old_copy" ? " --if-old-copy" : "");
 
 export function roleOf(member: Member): Role {
   if (!member.answered) return "unanswered";
@@ -141,9 +148,13 @@ export function planFromCopies(input: PlanInput, members: readonly Member[]): Pl
     const { slot, confirmed_name } = input.args;
     const destroy = slot === null ? mirrors : mirrors.filter((member) => member.machine.name === slot);
     if (destroy.length === 0) return refuse("no_mirror", slot === null ? `${name} has no mirror` : `${name} has no mirror on ${slot}`);
+    if (role !== "any") {
+      const changed = destroy.find((member) => member.view.copy?.kind === "slot" && member.view.copy.role !== undefined && member.view.copy.role !== role);
+      if (changed !== undefined) return refuse("role_changed", `${named(changed)} is no longer ${ROLE_NOUN[role]}, so nothing was deleted`);
+    }
     if (roots.length === 0 && confirmed_name !== name) {
       const only = destroy.map(named).join(", ");
-      return refuse("confirm_required", `${only} is ${name}'s only copy; volume mirror rm ${only} --confirm ${name}`);
+      return refuse("confirm_required", `${only} is ${name}'s only copy; volume mirror rm ${only}${ifOldCopy(role)} --confirm ${name}`);
     }
     const [writer] = roots;
     return { ok: true, phase: { kind: "delete_mirror", destroy, forget: roots.length === 1 && writer !== undefined ? writer : null, role: role === "any" ? null : role } };
@@ -264,10 +275,11 @@ function cutStep(name: string, cut: AnsweredMember, slots: readonly AnsweredMemb
   return remove.length === 0 ? step : undefined;
 }
 
-/** A Server cannot tell a mirror from the copy a move left, so this names it a copy. */
+/** A Server older than slot roles cannot tell a mirror from the copy a move left, so this names it a copy. */
 function copyElsewhere(name: string, copy: Member): Refusal {
   const slot = copyName(name, copy.machine.name);
-  return { code: "second_mirror", message: `${name} already has a copy on ${copy.machine.name}, ${slot}`, next: `ployz volume mirror rm ${slot}` };
+  const role = copy.answered && copy.view.copy?.kind === "slot" ? copy.view.copy.role : undefined;
+  return { code: "second_mirror", message: `${name} already has a copy on ${copy.machine.name}, ${slot}`, next: `ployz volume mirror rm ${slot}${ifOldCopy(role)}` };
 }
 
 export const alreadyOn = (name: string, server: string): Refusal => ({ code: "already_on", message: `${name}'s writer is already on ${server}` });
