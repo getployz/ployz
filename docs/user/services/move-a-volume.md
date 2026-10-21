@@ -146,9 +146,9 @@ and stops it. It takes a last snapshot of the volume. `web-2` pulls that snapsho
 service there. Then Ployz removes the old server's container. Your service is down only from the
 stop to the start on `web-2`. In a test with an empty volume the move reported the service stopped
 for 13 seconds. While the old replica is stopped, `ployz status` names it as not serving, with the
-code it exited with. The row clears once the replica on `web-2` runs. A service that takes a while
-to stop or start doesn't fail the move. Ployz waits for Docker, up to ten minutes for each stop or
-start.
+code it exited with. Once the replica on `web-2` is running, the next `ployz status` no longer
+shows the row. A service that takes a while to stop or start doesn't fail the move. Ployz waits for
+Docker, up to ten minutes for each stop or start.
 
 `ployz volume move --wait` and `ployz volume runs data RUN` say each step as the move reaches it, and so
 does the bottom bar while a deploy moves the volume:
