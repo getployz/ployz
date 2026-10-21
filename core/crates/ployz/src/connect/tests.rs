@@ -1177,17 +1177,26 @@ async fn call(
     client: tokio::io::DuplexStream,
     body: Vec<u8>,
 ) -> (Channel, http::Response<tonic::body::Body>) {
-    use http_body_util::BodyExt;
     let mut channel = connect_stream(client, Duration::from_secs(5))
         .await
         .unwrap();
+    let response = send(&mut channel, "/call", body).await;
+    (channel, response)
+}
+
+/// Sends `body` to `path` on an open channel.
+async fn send(
+    channel: &mut Channel,
+    path: &str,
+    body: Vec<u8>,
+) -> http::Response<tonic::body::Body> {
+    use http_body_util::BodyExt;
     let body = http_body_util::Full::new(bytes::Bytes::from(body)).map_err(|never| match never {});
-    let request = http::Request::post("http://[::]:50051/call")
+    let request = http::Request::post(format!("http://[::]:50051{path}"))
         .body(tonic::body::Body::new(body))
         .unwrap();
-    let ready = tower::ServiceExt::ready(&mut channel).await.unwrap();
-    let response = tower::Service::call(ready, request).await.unwrap();
-    (channel, response)
+    let ready = tower::ServiceExt::ready(channel).await.unwrap();
+    tower::Service::call(ready, request).await.unwrap()
 }
 
 #[tokio::test(start_paused = true)]
@@ -1216,4 +1225,25 @@ async fn a_download_left_unread_on_a_20_kb_per_second_downlink_finishes() {
     tokio::time::sleep(Duration::from_secs(120)).await;
     let received = response.into_body().collect().await.unwrap().to_bytes();
     assert_eq!(received.len(), DOWNLOAD);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_log_stream_left_unread_leaves_room_for_the_next_call() {
+    use http_body_util::BodyExt;
+    let (client, daemon) = tokio::io::duplex(16 * 1024 * 1024);
+    serve(daemon, |request| async move {
+        let size = if request.uri().path() == "/logs" {
+            8 * 1024 * 1024
+        } else {
+            1
+        };
+        Ok(http::Response::new(vec![0; size].into()))
+    });
+    let mut channel = connect_stream(client, Duration::from_secs(5))
+        .await
+        .unwrap();
+    let _unread_logs = send(&mut channel, "/logs", Vec::new()).await;
+    let grant = send(&mut channel, "/grant", Vec::new()).await;
+    let grant = tokio::time::timeout(Duration::from_secs(10), grant.into_body().collect()).await;
+    assert!(grant.is_ok(), "the unread log stream starved the next call");
 }
