@@ -286,8 +286,8 @@ happens, restart the services on it, as above. `ployz server ls` names each such
 `cause: stream closed because of a broken pipe`
 
 The server your CLI connects through stopped answering for about a minute, so the deploy failed
-and exited 1, leaving your old replicas in place. Once the server is back, deploy again. Ployz
-finishes the switch and removes any new replica the failed deploy left behind:
+and exited 1. Services it had already switched run the new version, and the others keep their old
+replicas. Once the server is back, deploy again to finish the rest:
 
 ```sh
 ployz deploy
