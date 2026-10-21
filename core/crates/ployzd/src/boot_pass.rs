@@ -18,8 +18,8 @@ use ployz_core::{
     CodecError, ContainerId, ContainerKind, ContainerLocator, ContainerObservation, ContainerWant,
     CopyRotation, EnsuredContainer, Gen, InspectContainerRequest, ListMachinesRequest,
     MACHINE_API_PORT, Machine, MachineId, MachineRpcClient, QualifiedService,
-    RUNTIME_WATCH_MESSAGE_SIZE_LIMIT, ResolvedServiceSpec, ServiceMode, SpecChange, compare_specs,
-    op,
+    RUNTIME_WATCH_MESSAGE_SIZE_LIMIT, RequestedServiceSpec, ResolvedServiceSpec, ServiceMode,
+    SpecChange, compare_specs, op,
 };
 use tokio::{sync::watch, time::Instant};
 use tonic::transport::Endpoint;
@@ -77,6 +77,7 @@ pub(crate) enum Peers {
     Answered(BTreeMap<String, i64>),
 }
 
+#[derive(Clone)]
 pub(crate) struct Observed {
     pub(crate) containers: Vec<ContainerObservation>,
     pub(crate) routes: BTreeMap<(MachineId, QualifiedService), IngressRouteRow>,
@@ -171,17 +172,26 @@ fn candidates<'a>(
         .collect()
 }
 
-/// The local In copies to set Out, judged on the full specs in `specs`, each read
-/// from the copy's owner. A local copy C is judged only when its newest siblings,
-/// built by one Deploy, agree on that Deploy's input W. C goes Out when a Deploy of
-/// W would make a new Container in its place. Otherwise, when W is Replicated with
-/// R replicas, let M be C and every other routed In copy of the Service whose spec
-/// W would not recreate. C goes Out when it ranks past R in M, by gen descending
-/// and then id ascending. Every Machine ranks the same view the same way, so two
-/// Machines never both drop a copy the other keeps, and a surplus copy on a Machine
-/// that is not restarting stays until the next Deploy. A copy whose spec is missing
-/// leaves M, so it only ever keeps C In. A Global Service counts nothing. Also
-/// returns how many copies it could not judge.
+/// The local In copies to set Out, and how many copies it could not judge. The
+/// candidates come from the view read just before the Outs, while `specs` holds
+/// each copy's full spec as its owner confirmed it, read since an earlier view, so a
+/// copy the fetch never read cannot decide anything.
+///
+/// A local copy C is judged only when its newest siblings, all started by one
+/// Deploy, agree on that Deploy's input W, compared without the update order the
+/// planner resolves per copy. C goes Out when a Deploy of W would make a new
+/// Container in its place. Otherwise, when W is Replicated with R replicas, let M be
+/// C and every other routed In copy of the Service whose confirmed spec W would not
+/// recreate. C goes Out when more than R - 1 copies of M rank above it, by gen
+/// descending and then id ascending. Every Machine ranks the same view the same
+/// way, so two Machines never both drop a copy the other keeps. A Machine sets Out
+/// only its own copies, so a surplus copy on a Machine that is not restarting stays
+/// until it restarts or the next Deploy. A copy whose spec went unconfirmed leaves
+/// M, which only ever keeps C In. A Global Service uses only the first rule.
+///
+/// R is the replica count in W's spec. A replicas-only Deploy that starts no copy
+/// leaves every spec with the old count, so after scaling down without starting a
+/// copy, a returning Machine still counts the old R.
 pub(crate) fn superseded(
     candidates: &[Candidate<'_>],
     specs: &BTreeMap<ContainerId, ResolvedServiceSpec>,
@@ -214,6 +224,15 @@ pub(crate) fn superseded(
     (superseded, unjudged)
 }
 
+/// What a Deploy asked of a copy. The planner resolves each copy's update order on
+/// its own: a replacement whose predecessor holds a host port stops first, while a
+/// new copy starts first. So copies one Deploy started can differ there alone.
+fn deploy_input(spec: &ResolvedServiceSpec) -> RequestedServiceSpec {
+    let mut requested = spec.to_requested();
+    requested.update.order = None;
+    requested
+}
+
 /// Whether [`superseded`] sets `copy` Out, or why it cannot decide.
 fn judge(
     Candidate {
@@ -225,9 +244,7 @@ fn judge(
 ) -> Result<bool, &'static str> {
     let spec = |copy: &ContainerObservation| specs.get(&copy.container_id);
     let current = spec(copy).ok_or("this Machine could not read it")?;
-    let mut newest = newest
-        .iter()
-        .map(|sibling| spec(sibling).map(ResolvedServiceSpec::to_requested));
+    let mut newest = newest.iter().map(|sibling| spec(sibling).map(deploy_input));
     let wanted = newest
         .next()
         .flatten()
@@ -241,21 +258,17 @@ fn judge(
     let ServiceMode::Replicated { replicas } = wanted.mode else {
         return Ok(false);
     };
-    let mut kept = routed
+    let rank =
+        |copy: &ContainerObservation| (std::cmp::Reverse(copy.copy_gen()), copy.container_id);
+    let above = routed
         .iter()
-        .copied()
         .filter(|sibling| {
-            spec(sibling)
-                .is_some_and(|spec| compare_specs(spec, &wanted) != SpecChange::NeedsRecreate)
+            rank(sibling) < rank(copy)
+                && spec(sibling)
+                    .is_some_and(|spec| compare_specs(spec, &wanted) != SpecChange::NeedsRecreate)
         })
-        .chain(std::iter::once(*copy))
-        .collect::<Vec<_>>();
-    kept.sort_by_key(|kept| (std::cmp::Reverse(kept.copy_gen()), kept.container_id));
-    let rank = kept
-        .iter()
-        .position(|kept| kept.container_id == copy.container_id)
-        .unwrap_or_default();
-    Ok(u32::try_from(rank).is_ok_and(|rank| rank >= replicas.get()))
+        .count();
+    Ok(u32::try_from(above).is_ok_and(|above| above >= replicas.get()))
 }
 
 /// `row`'s full spec as its owner answers for it, retried until `retry_until`.
@@ -355,9 +368,9 @@ async fn pass<H: BootHost>(
         return std::future::pending().await;
     };
     tracing::info!("boot pass saw this Machine's routes published after catch-up");
+    let local = host.machine_id();
     let observed = host.observe().await?;
-    let candidates = candidates(&host.machine_id(), &observed, &own);
-    let rows = candidates
+    let rows = candidates(&local, &observed, &own)
         .iter()
         .flat_map(Candidate::rows)
         .map(|row| (row.container_id, row))
@@ -370,7 +383,11 @@ async fn pass<H: BootHost>(
     .into_iter()
     .flatten()
     .collect();
-    let (superseded, unjudged) = superseded(&candidates, &specs);
+    // The fetch can take minutes, and a Deploy meanwhile may have kept this
+    // Machine's copy and retired the siblings it was ranked against.
+    let observed = host.observe().await?;
+    let own = route_publishes.borrow().routes.clone();
+    let (superseded, unjudged) = superseded(&candidates(&local, &observed, &own), &specs);
     if unjudged > 0 {
         tracing::info!(
             "boot pass could not judge {unjudged} In copies here, their specs went unconfirmed"

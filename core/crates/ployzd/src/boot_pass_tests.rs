@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     num::NonZeroU32,
     sync::{Arc, Mutex},
     time::Duration,
@@ -10,7 +10,7 @@ use ployz_core::{
     ContainerNow, ContainerObservation, ContainerRuntimeObservation, ContainerWant, CopyRotation,
     EnsuredContainer, Gen, HealthObservation, Machine, MachineId, MachineName, MachineRuntime,
     MembershipEvidence, Namespace, PullPolicy, QualifiedService, ResolvedServiceSpec, ServiceMode,
-    WireGuardPublicKey,
+    UpdateOrder, WireGuardPublicKey,
 };
 use serde_json::json;
 use tokio::{sync::watch, time::Instant};
@@ -177,7 +177,9 @@ struct FakeHost {
     local_actor: &'static str,
     /// `None` is a store already caught up to any target.
     store: Option<ReplicatedStore>,
-    observed: Arc<Mutex<Option<Observed>>>,
+    /// The views the store gives, in order; the last one stays.
+    observed: Arc<Mutex<VecDeque<Observed>>>,
+    reads: Arc<Mutex<usize>>,
     /// What each owner answers for its Containers; a Container missing here gets no answer.
     answers: BTreeMap<ContainerId, ContainerObservation>,
     /// How many more times each Container's owner fails to answer before it does.
@@ -197,7 +199,8 @@ impl FakeHost {
             targets: watch::channel(Peers::Answered(BTreeMap::new())).1,
             local_actor: LOCAL_ACTOR,
             store: None,
-            observed: Arc::new(Mutex::new(Some(observed))),
+            observed: Arc::new(Mutex::new(VecDeque::from([observed]))),
+            reads: Arc::default(),
             answers,
             refusals: Arc::default(),
             wants: Arc::default(),
@@ -230,12 +233,14 @@ impl BootHost for FakeHost {
     }
 
     async fn observe(&self) -> Result<Observed, CorrosionError> {
-        Ok(self
-            .observed
-            .lock()
-            .unwrap()
-            .take()
-            .expect("the pass reads the store once"))
+        *self.reads.lock().unwrap() += 1;
+        let mut views = self.observed.lock().unwrap();
+        Ok(if views.len() > 1 {
+            views.pop_front()
+        } else {
+            views.front().cloned()
+        }
+        .expect("the store has a view"))
     }
 
     async fn inspect(
@@ -366,7 +371,7 @@ mod alone {
         assert_eq!(started.elapsed(), Duration::ZERO);
         assert!(host.wants().is_empty());
         assert!(
-            host.observed.lock().unwrap().is_some(),
+            *host.reads.lock().unwrap() == 0,
             "the pass never read the store"
         );
     }
@@ -662,7 +667,7 @@ async fn two_machines_judging_at_once_drop_one_copy() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn kept_when_an_unreadable_sibling_ranks_below_it() {
+async fn kept_when_an_unreadable_sibling_ranks_above_it() {
     let cluster = Cluster::new();
     let unreadable = copy(5, &cluster.peer, 1);
     let started = replicas(copy(7, &cluster.proxy, 2), 2);
@@ -675,6 +680,136 @@ async fn kept_when_an_unreadable_sibling_ranks_below_it() {
             vec![unreadable, started],
             |copy| (copy.machine_id != peer).then_some(copy)
         )
+        .await
+    );
+}
+
+/// One Machine cannot confirm the other's copy, so their views differ. However
+/// either decides, the Service keeps its 2 replicas.
+#[tokio::test(start_paused = true)]
+async fn two_machines_with_different_answers_keep_the_replica_count() {
+    let cluster = Cluster::new();
+    let here = copy(4, &cluster.local, 1);
+    let there = copy(5, &cluster.peer, 1);
+    let started = replicas(copy(7, &cluster.proxy, 2), 2);
+    let all = [&here, &there, &started];
+    let blind_to = |hidden: MachineId| {
+        move |copy: ContainerObservation| (copy.machine_id != hidden).then_some(copy)
+    };
+
+    for (here_sees, there_sees) in [
+        (blind_to(cluster.peer.id), blind_to(cluster.proxy.id)),
+        (blind_to(cluster.proxy.id), blind_to(cluster.local.id)),
+    ] {
+        let (here_outs, there_outs) = tokio::join!(
+            outs(host_for(&cluster, &cluster.local, &all, here_sees)),
+            outs(host_for(&cluster, &cluster.peer, &all, there_sees)),
+        );
+
+        assert!(all.len() - here_outs.len() - there_outs.len() >= 2);
+    }
+}
+
+/// Copies one Deploy started differ in update order alone when one replaced a copy
+/// holding a host port, which stops first, and the other is new, which starts first.
+#[tokio::test(start_paused = true)]
+async fn replaced_by_one_deploy_that_both_replaced_and_started_copies() {
+    let cluster = Cluster::new();
+    let order = |copy, order| respec(copy, |spec| spec.update.order = order);
+
+    assert!(
+        set_out_beside(
+            &cluster,
+            copy(1, &cluster.local, 1),
+            vec![
+                order(
+                    replicas(newer_image(copy(3, &cluster.peer, 2)), 2),
+                    UpdateOrder::StopFirst
+                ),
+                order(
+                    replicas(newer_image(copy(4, &cluster.proxy, 2)), 2),
+                    UpdateOrder::StartFirst
+                ),
+            ],
+            Some,
+        )
+        .await
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn kept_beside_an_identical_newer_copy_of_a_global_service() {
+    let cluster = Cluster::new();
+    let global = |copy| respec(copy, |spec| spec.mode = ServiceMode::Global);
+
+    assert!(
+        !set_out_beside(
+            &cluster,
+            global(copy(1, &cluster.local, 1)),
+            vec![global(copy(2, &cluster.peer, 2))],
+            Some,
+        )
+        .await
+    );
+}
+
+/// The pass ranks the local copy third of 2 when it starts fetching specs. Before it
+/// sends the Out, a Deploy has `then` happen. This Machine's ingress has routed
+/// every copy of both views.
+async fn set_out_after(then: impl FnOnce(&Cluster, &mut Vec<ContainerObservation>)) -> bool {
+    let cluster = Cluster::new();
+    let local = copy(6, &cluster.local, 1);
+    let mut copies = vec![
+        local.clone(),
+        copy(5, &cluster.peer, 1),
+        replicas(copy(7, &cluster.proxy, 2), 2),
+    ];
+    let (host, mut own) = host_for(
+        &cluster,
+        &cluster.local,
+        &copies.iter().collect::<Vec<_>>(),
+        Some,
+    );
+    then(&cluster, &mut copies);
+    let (later, later_own) = host_for(
+        &cluster,
+        &cluster.local,
+        &copies.iter().collect::<Vec<_>>(),
+        Some,
+    );
+    for (service, routed) in later_own {
+        own.entry(service).or_default().extend(routed);
+    }
+    let later = later.observed.lock().unwrap().pop_front().unwrap();
+    host.observed.lock().unwrap().push_back(later);
+    match outs((host, own)).await.as_slice() {
+        [] => false,
+        [want] if *want == out(&local) => true,
+        other => panic!("unexpected wants {other:?}"),
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn set_out_when_the_view_holds_until_the_out() {
+    assert!(set_out_after(|_, _| {}).await);
+}
+
+#[tokio::test(start_paused = true)]
+async fn kept_when_a_deploy_retires_the_newer_copy_during_the_fetch() {
+    assert!(
+        !set_out_after(|_, copies| {
+            copies.pop();
+        })
+        .await
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn kept_when_a_newer_gen_appears_during_the_fetch() {
+    assert!(
+        !set_out_after(|cluster, copies| {
+            copies.push(replicas(copy(8, &cluster.proxy, 3), 2));
+        })
         .await
     );
 }
