@@ -1,4 +1,4 @@
-import type { ChangeKind, MachineId, MachineName } from "@ployz/sdk";
+import type { ChangeKind, MachineId, MachineName, VolumeCopy } from "@ployz/sdk";
 import {
   appliedMirrors, detachedName, observePlacement, type PlacementItem, type PlacementRow, type PlacementVolume, placementForm, presumedPrimary,
 } from "#/modules/volume-placement/volume-placement";
@@ -34,9 +34,9 @@ export function copiesFromPlacement(input: {
   const promoted = moving && appliedMirrors(observed, row).includes(form.primary.server.id);
   const said = new Map(members.map((member) => [member.machine.id, heardFrom(member)]));
   const heard = (id: MachineId): Heard => said.get(id) ?? "silent";
-  const pullOf = (id: MachineId) => {
+  const slotOf = (id: MachineId) => {
     const member = members.find((each) => each.machine.id === id);
-    return member?.answered === true && member.view.copy?.kind === "slot" ? member.view.copy.pull : null;
+    return member?.answered === true && member.view.copy?.kind === "slot" ? member.view.copy : null;
   };
   const target = active === null ? null : runTarget(active);
 
@@ -50,8 +50,8 @@ export function copiesFromPlacement(input: {
     const from = heard(item.server.id);
     const status = input.statuses.find((each) => each.machine === item.server.id);
     const matchedAt = status?.matchedAt == null ? null : new Date(status.matchedAt);
-    const pull = pullOf(item.server.id);
-    const failed = pull?.failure != null || (status?.failedAt != null && (status.okAt === null || status.failedAt > status.okAt));
+    const slot = slotOf(item.server.id);
+    const failed = slot?.pull?.failure != null || (status?.failedAt != null && (status.okAt === null || status.failedAt > status.okAt));
     return {
       kind: "mirror",
       id: item.server.id,
@@ -60,7 +60,7 @@ export function copiesFromPlacement(input: {
       refreshedAt: from === "answered" ? syncedAt(item.newest, matchedAt) : matchedAt,
       skipped: from !== "answered" ? from : failed ? "failed" : null,
       staged,
-      busy: active?.kind === "sync" || (pull !== null && pull.failure === null) ? "Refreshing" : busyOn(item.server.name),
+      busy: active?.kind === "sync" || (slot !== null && pulling(slot)) ? "Refreshing" : busyOn(item.server.name),
     };
   };
   const old = (item: PlacementItem): OldCopy => ({
@@ -106,6 +106,11 @@ export function copiesFromPlacement(input: {
       ...form.detached.map(old),
     ],
   };
+}
+
+/** A Machine reports a landed pull until the same pull is asked for again, so a slot pulls only while short of its target. */
+function pulling({ pull, newest }: Extract<VolumeCopy, { kind: "slot" }>): boolean {
+  return pull !== null && pull.failure === null && newest?.name !== pull.target;
 }
 
 /**
