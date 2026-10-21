@@ -19,6 +19,8 @@ const row = (mirrors: string[], staged: { primary: string; mirrors?: string[]; d
 type Run = ReturnType<typeof run> | null;
 const lacking = (server: string): Member =>
   ({ machine: { id: id(server), name: server }, answered: false, lack: `Volume copies need a newer Ployz on ${server}.` });
+const outdated = (server: string): Member =>
+  ({ machine: { id: id(server), name: server }, answered: false, lack: `Volume copies need a newer Ployz on ${server}. 0.3.0 is out.`, outdated: true });
 const status = (server: string, seen: Partial<Omit<MirrorStatusView, "machine">>): MirrorStatusView =>
   ({ machine: id(server), okAt: null, matchedAt: null, failedAt: null, failure: null, ...seen });
 const copies = (placement: PlacementRow | null, members = [member("web-1", "writer"), member("web-2", "mirror")], active: Run = null, statuses: MirrorStatusView[] = []) => {
@@ -109,18 +111,25 @@ describe("copiesFromPlacement", () => {
 
   it("puts the primary under Live with what its Server said: live only on its own report", () => {
     const mirrored = (primary: Member) => copies(row(["web-2"]), [primary, member("web-2", "mirror")]).live.server;
-    expect(mirrored(member("web-1", "writer"))).toEqual({ id: id("web-1"), name: "web-1", heard: "answered" });
-    expect(mirrored(member("web-1", "unanswered"))).toEqual({ id: id("web-1"), name: "web-1", heard: "silent" });
+    expect(mirrored(member("web-1", "writer"))).toEqual({ id: id("web-1"), name: "web-1", state: "live" });
+    expect(mirrored(member("web-1", "unanswered"))).toEqual({ id: id("web-1"), name: "web-1", state: "silent" });
     const unlisted: Member = { machine: { id: id("web-1"), name: id("web-1") }, answered: false, incomplete: true };
-    expect(mirrored(unlisted)).toEqual({ id: id("web-1"), name: id("web-1"), heard: "waiting" });
-    expect(mirrored(lacking("web-1")))
-      .toEqual({ id: id("web-1"), name: "web-1", heard: "lacks" });
+    expect(mirrored(unlisted)).toEqual({ id: id("web-1"), name: id("web-1"), state: "waiting" });
+    expect(mirrored(lacking("web-1"))).toEqual({ id: id("web-1"), name: "web-1", state: "lacks" });
+    expect(mirrored(outdated("web-1"))).toEqual({ id: id("web-1"), name: "web-1", state: "outdated" });
+  });
+
+  it("names a primary whose root its Server reports read-only, as a cut leaves it, not Live", () => {
+    expect(copies(row(["web-2"]), [member("web-1", "cut"), member("web-2", "mirror")]).live.server)
+      .toEqual({ id: id("web-1"), name: "web-1", state: "read_only" });
   });
 
   it("ages a mirror whose Server can't report it from the last sync that found it current, and says why", () => {
     const seen = status("web-2", { okAt: "2026-10-09T00:00:00.000Z", matchedAt: "2026-10-09T00:00:00.000Z" });
     expect(copies(row(["web-2"]), [member("web-1", "writer"), lacking("web-2")], null, [seen]).elsewhere[0])
       .toMatchObject({ kind: "mirror", skipped: "lacks", refreshedAt: new Date("2026-10-09T00:00:00.000Z") });
+    expect(copies(row(["web-2"]), [member("web-1", "writer"), outdated("web-2")], null, [seen]).elsewhere[0])
+      .toMatchObject({ kind: "mirror", skipped: "outdated" });
   });
 
   it("marks a silent mirror skipped with no age when no sync ever found it current", () => {

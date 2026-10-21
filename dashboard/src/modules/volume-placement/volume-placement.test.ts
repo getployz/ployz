@@ -393,6 +393,11 @@ describe("recovery", () => {
     expect(found).toEqual({ kind: "wait", mirror: { id: id("web-2"), name: "web-2" }, lostAfter: at });
   });
 
+  it("waits while the primary's report is incomplete, with no Forget for another silent Server", () => {
+    const found = recover([unlisted("web-1"), mirrorAsOf("web-2", at), member("web-3", "unanswered")], row(["web-2"]));
+    expect(found).toEqual({ kind: "wait", mirror: { id: id("web-2"), name: "web-2" }, lostAfter: at });
+  });
+
   it("still asks to forget a silent Server while another's report is incomplete, naming only the silent one", () => {
     const found = recover([member("web-1", "unanswered"), mirrorAsOf("web-2", at), unlisted("web-3")], row(["web-2"]));
     expect(found).toMatchObject({ kind: "forget", down: [{ name: "web-1" }] });

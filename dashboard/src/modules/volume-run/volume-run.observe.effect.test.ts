@@ -195,6 +195,7 @@ it.effect("a Server's release channel query that takes 12 seconds finishes, and 
       machine: { id: machine.id, name: machine.name },
       answered: false,
       lack: "Volume move needs a newer Ployz on box-1. 0.2.0 is out.",
+      outdated: true,
     }]);
     assert.strictEqual(cluster.finished(), 1);
     assert.strictEqual(cluster.interrupted(), 0);

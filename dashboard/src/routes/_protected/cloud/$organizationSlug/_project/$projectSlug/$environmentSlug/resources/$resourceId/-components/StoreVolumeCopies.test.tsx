@@ -210,6 +210,19 @@ describe("VolumeCopiesPanel", () => {
     expect(screen.getByRole<HTMLButtonElement>("button", { name: "Use mirror" }).disabled).toBe(true);
   });
 
+  it("waits when the Primary's report hasn't arrived, with no Forget for another silent Server, as its Live row says", () => {
+    const unlisted: Member = { machine: { id: id("web-1"), name: id("web-1") }, answered: false, incomplete: true };
+    panel([unlisted, mirrorAsOf("web-2", fiveAgo()), member("web-3", "unanswered")], row(["web-2"]));
+    expect(screen.getByText("Waiting for every server's report")).toBeTruthy();
+    expect(screen.queryByText(/take over|Forget/)).toBeNull();
+    expect(rows("Live")).toEqual([`${id("web-1")}PrimaryWaiting for its report`]);
+  });
+
+  it("names a Primary whose root is read-only Read-only under Live, not Live", () => {
+    panel([member("web-1", "cut"), mirrorAsOf("web-2", fiveAgo())], row(["web-2"]));
+    expect(rows("Live")).toEqual(["web-1PrimaryRead-only"]);
+  });
+
   it("waits for a Server's report when the frame lists it only by id, with no Forget link and no Use mirror", () => {
     const unlisted: Member = { machine: { id: id("web-1"), name: id("web-1") }, answered: false, incomplete: true };
     panel([unlisted, mirrorAsOf("web-2", fiveAgo())], row(["web-2"]));

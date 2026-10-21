@@ -52,8 +52,15 @@ describe("skippedWords", () => {
     );
   });
 
-  it("says a mirror's Server needs a newer Ployz when it answers without reporting the copy", () => {
-    expect(skippedWords(mirror(minutesAgo(135), { skipped: "lacks" }), now)).toMatch(/^web-2 needs a newer Ployz\. Ployz retries/);
+  it("says a mirror waits for its server's report before any round matched it, or while it is still fresh", () => {
+    expect(skippedWords(mirror(null, { skipped: "waiting" }), now)).toBe("Waiting for its server's report.");
+    expect(skippedWords(mirror(minutesAgo(20), { skipped: "waiting" }), now)).toBe("Waiting for its server's report.");
+    expect(skippedWords(mirror(null, { skipped: "waiting", busy: "Refreshing" }), now)).toBeNull();
+  });
+
+  it("says a mirror's Server needs a newer Ployz only when its release is behind, else that it can't report the copy", () => {
+    expect(skippedWords(mirror(minutesAgo(135), { skipped: "outdated" }), now)).toMatch(/^web-2 needs a newer Ployz\. Ployz retries/);
+    expect(skippedWords(mirror(minutesAgo(135), { skipped: "lacks" }), now)).toMatch(/^web-2 can't report this copy\. Ployz retries/);
   });
 
   it("names no time when rounds skipped the Volume before its Server went silent", () => {
