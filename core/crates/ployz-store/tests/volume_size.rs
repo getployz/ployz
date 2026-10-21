@@ -15,10 +15,10 @@ use ployz_core::{
 use ployz_store::{
     Actor, Admit, Change, ConfigStore, CreateProject, CreateService, CreateVolume, Deploy,
     DeploymentId, DeploymentQuery, Discard, DiscardTarget, Edit, EnvironmentId, EnvironmentRef,
-    HistoryAction, HistoryPreviewQuery, Mount, OrganizationId, ProjectId, ProjectName, Publish,
-    RemoveVolume, Retry, Revision, RunEvidence, RunnerId, ServiceLineageId, SetVolumeStorage,
-    SettingPath, StageHistory, SystemEvent, Trusted, VolumeId, VolumeListing, VolumeName,
-    VolumeObservation, VolumeResized, VolumesQuery,
+    HistoryAction, HistoryPreviewQuery, Mount, NodeStatus, OrganizationId, ProjectId, ProjectName,
+    Publish, RemoveVolume, Retry, Revision, RunEvidence, RunnerId, ServiceLineageId,
+    SetVolumeStorage, SettingPath, StageHistory, SystemEvent, Trusted, VolumeId, VolumeListing,
+    VolumeName, VolumeObservation, VolumeResized, VolumesQuery,
 };
 use serde_json::{Value, json};
 
@@ -788,7 +788,7 @@ fn a_hand_typed_size_for_a_deployed_volume_points_at_volume_set() {
         ),
         (
             managed(5),
-            "data is deployed at 10 GB; a deployed Volume can't shrink yet",
+            "data is deployed at 10 GB; shrink it with ployz volume set data --size 5",
         ),
     ] {
         let refused = set_storage(&store, &who, "data", asked).unwrap_err();
@@ -830,26 +830,216 @@ fn a_replayed_intent_fits_at_or_below_the_lock() {
     );
 }
 
+/// Every Managed Volume size Deployment `n`'s Deploy Intent asks its Servers to hold,
+/// in GB.
+fn shipped_sizes(store: &ConfigStore, n: u8) -> Vec<u64> {
+    fn collect(value: &Value, sizes: &mut Vec<u64>) {
+        match value {
+            Value::Object(fields) => {
+                for (key, field) in fields {
+                    match field.as_u64() {
+                        Some(bytes) if key == "maximum_bytes" || key == "maximumBytes" => {
+                            sizes.push(bytes / 1_000_000_000);
+                        }
+                        _ => collect(field, sizes),
+                    }
+                }
+            }
+            Value::Array(items) => items.iter().for_each(|item| collect(item, sizes)),
+            Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {}
+        }
+    }
+    let claimed = store
+        .claim(&id(n), &RunnerId::parse("runner").unwrap())
+        .unwrap();
+    let mut sizes = Vec::new();
+    collect(&serde_json::to_value(&claimed.intent).unwrap(), &mut sizes);
+    sizes
+}
+
+/// Deployment `n` ships `data` at `size` GB, runs, and leaves the lock and Applied
+/// State there: a Deploy grows or shrinks nothing.
+fn deploys_at(store: &ConfigStore, who: &Actor, n: u8, size: u64) {
+    let shipped = shipped_sizes(store, n);
+    assert!(!shipped.is_empty(), "Deployment {n} ships a Managed Volume");
+    assert!(
+        shipped.iter().all(|&shipped| shipped == size),
+        "{shipped:?}"
+    );
+    run(store, n);
+    let listed = listing(store, who, "data");
+    assert_eq!(listed.volume.storage, managed(size));
+    assert_eq!(listed.recorded_storage, Some(gb(size)));
+    assert_eq!(storage_row(store, who), None);
+}
+
 #[test]
-fn a_replayed_intent_above_the_lock_is_refused() {
+fn a_replayed_intent_above_the_lock_deploys_at_the_held_size() {
     let (store, who) = shop(managed(20));
     deploy(&store, &who, 1);
     resize(&store, 20, 10).unwrap();
-    let message = "This revision asks 20 GB for data, which is deployed at 10 GB. Grow it first \
-                   with ployz volume set data --size 20";
-    let details = json!({
-        "volume": "data", "storage_locked": true,
-        "recorded": 10_000_000_000_u64, "asked": 20_000_000_000_u64
-    });
-    let refused = restore(&store, &who, revision_of(&store, &who, 1)).unwrap_err();
+    redeploy(&store, &who, 1, 2).unwrap();
+    deploys_at(&store, &who, 2, 10);
+
+    restore(&store, &who, revision_of(&store, &who, 1)).unwrap();
+    assert_eq!(
+        storage_row(&store, &who),
+        Some((storage_json(10), storage_json(20)))
+    );
+    admit(&store, &who, 3).unwrap();
+    let shipped = shipped_sizes(&store, 3);
+    assert_eq!(shipped.iter().max(), Some(&10));
+    run(&store, 3);
+    assert_eq!(listing(&store, &who, "data").recorded_storage, Some(gb(10)));
+}
+
+#[test]
+fn a_revision_saved_before_a_shrink_deploys_at_the_held_size() {
+    let (store, who) = shop(managed(5));
+    deploy(&store, &who, 1);
+    set(&store, &who, "web.image", json!("postgres:18"));
+    publish(&store, &who);
+    resize(&store, 5, 3).unwrap();
+    admit(&store, &who, 2).unwrap();
+    deploys_at(&store, &who, 2, 3);
+}
+
+#[test]
+fn a_deploy_with_nothing_staged_after_a_shrink_ships_at_the_held_size() {
+    let (store, who) = shop(managed(5));
+    publish(&store, &who);
+    deploy(&store, &who, 1);
+    resize(&store, 5, 3).unwrap();
+    admit(&store, &who, 2).unwrap();
+    assert_eq!(revision_of(&store, &who, 2), revision_of(&store, &who, 1));
+    deploys_at(&store, &who, 2, 3);
+}
+
+/// Deployment `n` runs with nothing to do, an empty preview then success, and
+/// settles every Node Outcome.
+fn runs_nothing(store: &ConfigStore, who: &Actor, n: u8) -> Vec<(String, NodeStatus)> {
+    let runner = RunnerId::parse("runner").unwrap();
+    store.claim(&id(n), &runner).unwrap();
+    let preview: DeployPreview = serde_json::from_value(json!({
+        "namespace": "shop-production", "operations": [], "warnings": [], "would_remove": [], "preserved_volumes": []
+    }))
+    .unwrap();
+    store
+        .record(&id(n), &runner, RunEvidence::Prepared(preview))
+        .unwrap();
+    let outcome: DeployOutcome<ployz_core::ExecutionError> =
+        serde_json::from_value(json!({ "type": "success", "completed": [] })).unwrap();
+    store
+        .record(
+            &id(n),
+            &runner,
+            RunEvidence::Executed {
+                progress: Vec::new(),
+                outcome: Box::new(outcome),
+                removed: Vec::new(),
+            },
+        )
+        .unwrap();
+    store
+        .read(who, &DeploymentQuery { id: id(n) })
+        .unwrap()
+        .nodes
+        .into_iter()
+        .map(|node| (node.node.name().to_owned(), node.outcome))
+        .collect()
+}
+
+fn unchanged() -> Vec<(String, NodeStatus)> {
+    vec![
+        ("web".to_owned(), NodeStatus::Unchanged),
+        ("data".to_owned(), NodeStatus::Unchanged),
+    ]
+}
+
+#[test]
+fn a_plain_deploy_after_a_shrink_settles_the_volume_unchanged() {
+    let (store, who) = shop(managed(5));
+    publish(&store, &who);
+    deploy(&store, &who, 1);
+    resize(&store, 5, 3).unwrap();
+    admit(&store, &who, 2).unwrap();
+    assert_eq!(runs_nothing(&store, &who, 2), unchanged());
+}
+
+#[test]
+fn a_plain_deploy_after_a_grow_settles_the_volume_unchanged() {
+    let (store, who) = shop(managed(5));
+    publish(&store, &who);
+    deploy(&store, &who, 1);
+    resize(&store, 5, 8).unwrap();
+    admit(&store, &who, 2).unwrap();
+    assert_eq!(runs_nothing(&store, &who, 2), unchanged());
+}
+
+/// Assert `refused` is the record refused while Deployment `n` is in flight.
+fn refused_while_deploying(refused: &RpcError, n: u8) {
     assert_eq!(refused.code, RpcErrorCode::Conflict);
-    assert_eq!(refused.message, message);
-    assert_eq!(refused.details, details);
-    let refused = redeploy(&store, &who, 1, 2).unwrap_err();
-    assert_eq!(refused.code, RpcErrorCode::Conflict);
-    assert_eq!(refused.message, message);
-    assert_eq!(refused.details, details);
-    assert_eq!(listing(&store, &who, "data").volume.storage, managed(10));
+    assert_eq!(
+        refused.details,
+        json!({
+            "reason": "deploying",
+            "volume": VOLUME,
+            "deployment": { "id": id(n), "number": n },
+        })
+    );
+    assert_eq!(
+        refused.message,
+        format!(
+            "Deployment #{n} is in flight; shrink data when it ends, or end it now with ployz \
+             deployment cancel {n}."
+        )
+    );
+}
+
+#[test]
+fn a_shrink_is_not_recorded_while_a_deployment_is_in_flight() {
+    let (store, who) = shop(managed(5));
+    publish(&store, &who);
+    deploy(&store, &who, 1);
+    admit(&store, &who, 2).unwrap();
+    // Queued, then claimed: both may still run, so both hold the size.
+    refused_while_deploying(&resize(&store, 5, 3).unwrap_err(), 2);
+    assert_eq!(shipped_sizes(&store, 2), vec![5]);
+    refused_while_deploying(&resize(&store, 5, 3).unwrap_err(), 2);
+    // The refusal commits nothing: the lock row, Applied State and Working State all
+    // still say 5, so Cloud's change log, read from Applied State, has no resize.
+    let listed = listing(&store, &who, "data");
+    assert_eq!(listed.recorded_storage, Some(gb(5)));
+    assert_eq!(listed.volume.storage, managed(5));
+    assert_eq!(storage_row(&store, &who), None);
+    assert_eq!(runs_nothing(&store, &who, 2), unchanged());
+    resize(&store, 5, 3).unwrap();
+    assert_eq!(listing(&store, &who, "data").recorded_storage, Some(gb(3)));
+}
+
+#[test]
+fn a_shrink_recorded_before_an_admission_is_the_size_its_claim_reads() {
+    let (store, who) = shop(managed(5));
+    publish(&store, &who);
+    deploy(&store, &who, 1);
+    resize(&store, 5, 3).unwrap();
+    admit(&store, &who, 2).unwrap();
+    deploys_at(&store, &who, 2, 3);
+}
+
+#[test]
+fn a_record_that_raises_or_replays_is_taken_while_a_deployment_is_in_flight() {
+    let (store, who) = shop(managed(5));
+    publish(&store, &who);
+    deploy(&store, &who, 1);
+    resize(&store, 5, 3).unwrap();
+    admit(&store, &who, 2).unwrap();
+    // The shrink's own record again is a replay; its undo and a grow raise the size.
+    resize(&store, 5, 3).unwrap();
+    resize(&store, 3, 5).unwrap();
+    resize(&store, 5, 8).unwrap();
+    assert_eq!(listing(&store, &who, "data").recorded_storage, Some(gb(8)));
+    refused_while_deploying(&resize(&store, 8, 5).unwrap_err(), 2);
 }
 
 #[test]

@@ -230,7 +230,22 @@ fn a_deployed_volume_resizes_only_with_ployz_cloud() {
     };
     let moving = moving.report();
     assert_eq!(error.code, RpcErrorCode::Unsupported);
-    assert_eq!((error.code, &error.message), (moving.code, &moving.message));
+    assert_eq!(
+        (&error.code, &error.message),
+        (&moving.code, &moving.message)
+    );
+    let settle = super::super::set_storage(
+        &root,
+        &store,
+        VolumeName::parse("data").unwrap(),
+        ployz_core::config::VolumeKind::provisioned_default(),
+    )
+    .unwrap_err()
+    .report();
+    assert_eq!(
+        (&settle.code, &settle.message),
+        (&moving.code, &moving.message)
+    );
 }
 
 #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
@@ -480,39 +495,6 @@ fn a_resize_reads_back_its_size_and_names_it_when_it_fails() {
         error.message,
         "The resize of Volume data to 20 GB failed: db-1 has no room to grow data to 20 GB (it lacks 4 GB)"
     );
-}
-
-#[test]
-fn only_a_resize_cloud_finds_already_done_is_no_failure() {
-    let refusal = |code, details| RpcError {
-        code,
-        message: "data is already 20 GB".to_owned(),
-        details,
-        cause: Vec::new(),
-    };
-    let resize = RunAsk::Resize {
-        maximum_bytes: twenty_gb(),
-    };
-    let moving = RunAsk::Move {
-        to: MachineName::parse("web-2").unwrap(),
-    };
-    let settled = json!({ "settled": true });
-    assert!(already(
-        &resize,
-        &refusal(RpcErrorCode::Conflict, settled.clone())
-    ));
-    assert!(!already(
-        &moving,
-        &refusal(RpcErrorCode::Conflict, settled.clone())
-    ));
-    assert!(!already(
-        &resize,
-        &refusal(RpcErrorCode::Conflict, Value::Null)
-    ));
-    assert!(!already(
-        &resize,
-        &refusal(RpcErrorCode::InvalidArgument, settled)
-    ));
 }
 
 #[test]
