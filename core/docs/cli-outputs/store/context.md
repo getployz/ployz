@@ -90,7 +90,7 @@ stdout:
   "attention": [],
   "deploying": [],
   "environment": {
-    "id": "c30e5c01-12b4-4a10-85d6-1fbf469f25b6",
+    "id": "aa00109c-d5ea-45af-acc0-43dc8afb8bb4",
     "name": "production",
     "project": "shop",
     "revision": 21
@@ -202,7 +202,7 @@ stdout:
   "attention": [],
   "deploying": [],
   "environment": {
-    "id": "c30e5c01-12b4-4a10-85d6-1fbf469f25b6",
+    "id": "aa00109c-d5ea-45af-acc0-43dc8afb8bb4",
     "name": "production",
     "project": "shop",
     "revision": 34
@@ -525,30 +525,30 @@ retry: ployz ctx use CONTEXT
 valid: dev, prod
 ```
 
-### ctx use picker (TTY, typed: 1)
+### ctx use picker (TTY, typed: <Down> <Enter>)
 
 ```console
 $ ployz ctx use
 [?25lSelect a context:
   dev
 > prod (current)
-[2A[2K[1B[2K[1B[2A  dev
-> prod (current)
-[3A[2K[1B[2K[1B[2K[1B[3ASelect a context: prod (current)
-[?25hCurrent context is now prod.
+[2A[2K[1B[2K[1B[2A> dev
+  prod (current)
+[3A[2K[1B[2K[1B[2K[1B[3ASelect a context: dev
+[?25hCurrent context is now dev.
 ```
 
-### ctx use picker, invalid choice (TTY, typed: 9)
+### ctx use picker ignores a digit (TTY, typed: 9)
 
 ```console
 $ ployz ctx use
 [?25lSelect a context:
-  dev
-> prod (current)
-[2A[2K[1B[2K[1B[2A  dev
-> prod (current)
-[3A[2K[1B[2K[1B[2K[1B[3ASelect a context: prod (current)
-[?25hCurrent context is now prod.
+> dev (current)
+  prod
+[2A[2K[1B[2K[1B[2A> dev (current)
+  prod
+[3A[2K[1B[2K[1B[2K[1B[3ASelect a context: dev (current)
+[?25hCurrent context is now dev.
 ```
 
 ### ctx rm
@@ -563,6 +563,11 @@ stdout:
 Removed context dev.
 ```
 
+stderr:
+```
+Current context is now unset.
+```
+
 ### ctx rm --json
 
 ```console
@@ -574,7 +579,7 @@ stdout:
 ```
 {
   "removed": "prod",
-  "was_current": true
+  "was_current": false
 }
 ```
 

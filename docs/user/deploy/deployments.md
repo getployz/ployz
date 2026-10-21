@@ -134,6 +134,11 @@ A deploy started outside that queue, say from a second computer's context, can s
 service after a newer deploy did. It fails for that service and leaves the newer version serving.
 See [A newer deploy is already serving](../troubleshooting/deployments.md#a-newer-deploy-is-already-serving).
 
+From the CLI, `ployz deploy` keeps following a queued deployment. If it is still queued after 30
+seconds, the CLI names the deployment it waits for, like `Deployment #2 waits for Deployment #1 to
+finish.`, with the `ployz deployment show` command for that one. If nothing is ahead of it, the CLI
+says no Server has started it yet and points at `ployz server ls`.
+
 On the canvas, **Deploying** shows only on the services the running deployment restarts. A service
 it leaves running keeps its staged changes on its card.
 
