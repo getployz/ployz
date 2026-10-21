@@ -188,11 +188,12 @@ describe("VolumeCopiesPanel", () => {
     expect(stage).toHaveBeenCalledWith({ primary: id("web-2"), mirrors: [], deletes: [] }, [id("web-2")]);
   });
 
-  it("keeps the silent Server's alert while another Server only needs an upgrade", () => {
-    const lacking = { ...member("web-3", "unanswered"), lack: "Volume move needs a newer Ployz on web-3." };
+  it("names the Server that can't report its copy, not a silent one, while that Server may hold the writer", () => {
+    const lacking: Member = { machine: member("web-3", "unanswered").machine, answered: false, lack: "Volume move is not in Ployz 0.3.0 on web-3." };
     panel([member("web-1", "unanswered"), mirrorAsOf("web-2", fiveAgo()), lacking], row(["web-2"]));
-    expect(screen.getByText("web-1 is not answering")).toBeTruthy();
-    expect(screen.getAllByRole("link").map((link) => link.textContent)).toEqual(["Forget web-1"]);
+    expect(screen.getByText("web-3 can't report this copy")).toBeTruthy();
+    expect(rows("Live")).toEqual(["web-3PrimaryCan't report this copy"]);
+    expect(screen.queryByRole("link")).toBeNull();
     expect(useMirror()).toBeNull();
   });
 
@@ -238,6 +239,13 @@ describe("VolumeCopiesPanel", () => {
     cleanup();
     panel([{ ...lacking, lack: "Volume move needs a newer Ployz on web-1. 0.3.1 is out.", outdated: true }, mirrorAsOf("web-2", fiveAgo())], row(["web-2"]));
     expect(screen.getByText("web-1 needs a newer Ployz")).toBeTruthy();
+  });
+
+  it("names the Primary whose report is pending beside a silent staged target, with no move the row didn't stage", () => {
+    const unlisted: Member = { machine: { id: id("web-1"), name: id("web-1") }, answered: false, incomplete: true };
+    panel([mirrorAsOf("web-2", fiveAgo()), member("web-3", "unanswered"), unlisted], row(["web-2"], { primary: "web-3", mirrors: ["web-2"] }));
+    expect(rows("Live")).toEqual([`${id("web-1")}PrimaryWaiting for its report`]);
+    expect(screen.queryByText(/No primary|Moving to/)).toBeNull();
   });
 
   it("names a Primary whose root is read-only Read-only under Live, not Live", () => {
@@ -337,6 +345,14 @@ describe("mirror detail", () => {
     expect(stage).toHaveBeenLastCalledWith({ primary: id("web-1"), mirrors: [], deletes: [] }, [id("web-2")]);
     fireEvent.click(screen.getByRole("button", { name: "Copies" }));
     expect(onOpen).toHaveBeenCalledWith(null);
+  });
+
+  it("warns that a mirror with no refresh yet catches up first, with no Refresh skipped", () => {
+    const base = member("web-2", "mirror");
+    const unrefreshed: Member = base.answered ? { ...base, view: { ...base.view, copy: { ...COPIES.mirror, newest: null } } } : base;
+    panel([member("web-1", "writer"), unrefreshed], row(["web-2"]), { open: "web-2" });
+    expect(screen.getByText(/The deploy catches up first, then pauses writes for the final sync\./)).toBeTruthy();
+    expect(screen.queryByText("Refresh skipped")).toBeNull();
   });
 
   it("warns that a behind mirror catches up first", () => {
