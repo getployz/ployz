@@ -2180,6 +2180,7 @@ describe("volume runs", () => {
       expect(await rows()).toMatchObject([{ state: "failed", message: "data-fsn-2 could not receive dep-10: disk full" }]);
     });
 
+    // Interim 20 s ceiling while fu-flake-volume-run-mirror-timeout fixes why this runs near 5 s on CI; that fix removes it.
     it("mirror: a pull that never lands gives up after six hours of checks backing off to five minutes", async () => {
       machines[1] = { name: "fsn-2", pool: true, copy: null, pullFault: { target: "dep-10", kind: "stall" } };
       const run = await requested({ kind: "mirror", args: { to: "fsn-2" } });
@@ -2189,7 +2190,7 @@ describe("volume runs", () => {
 
       expect(verbs.filter((verb) => verb === "pull@fsn-2(dep-10)")).toHaveLength(PATIENCE_WAITS.length + 1);
       expect(await rows()).toMatchObject([{ state: "failed", message: "data-fsn-2 has not finished dep-10 after 6h" }]);
-    });
+    }, 20_000);
 
     it("mirror: a pull the 5 s checks started replays none of its checks into the new schedule, so it lands instead of giving up", async () => {
       const run = await requested({ kind: "mirror", args: { to: "fsn-2" } });
