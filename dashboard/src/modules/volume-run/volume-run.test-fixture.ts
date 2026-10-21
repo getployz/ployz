@@ -22,9 +22,9 @@ export type Copy = keyof typeof COPIES | "empty" | "unanswered";
 
 /**
  * One Machine's answer for the Volume, named by its Server. `epoch` numbers a root's run of writes. `id` prefixes the
- * Machine id in place of the name, and `slot` names a slot copy's slot.
+ * Machine id in place of the name, `slot` names a slot copy's slot, and `bound` is the copy's bound in the frame.
  */
-export function member(server: string, copy: Copy, options: { epoch?: number; id?: string; slot?: string } = {}): Member {
+export function member(server: string, copy: Copy, options: { epoch?: number; id?: string; slot?: string; bound?: number } = {}): Member {
   const machine = { id: (options.id ?? server).padEnd(32, "0") as MachineId, name: server };
   if (copy === "unanswered") return { machine, answered: false };
   const answer: VolumeCopy | null = copy === "empty" ? null : COPIES[copy];
@@ -33,7 +33,8 @@ export function member(server: string, copy: Copy, options: { epoch?: number; id
       : answer?.kind === "slot" && options.slot !== undefined ? { ...answer, slot: options.slot }
       : answer,
   };
-  return { machine, address: "fdcc::1", answered: true, view };
+  const answered: Member = { machine, address: "fdcc::1", answered: true, view };
+  return options.bound === undefined ? answered : { ...answered, boundBytes: options.bound };
 }
 
 export const run = (kind: VolumeRunView["kind"], args: VolumeRunView["args"], state: VolumeRunView["state"]): VolumeRunView => ({
