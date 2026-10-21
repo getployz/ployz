@@ -1054,13 +1054,13 @@ async fn held_call(client: tokio::io::DuplexStream) -> Option<Duration> {
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_call_to_a_daemon_that_went_silent_fails_within_seventy_seconds() {
+async fn a_call_to_a_daemon_that_went_silent_fails_within_its_keepalive_bound() {
     let (client, _silent_daemon) = tokio::io::duplex(64 * 1024);
     let failed_after = held_call(client)
         .await
         .expect("a silent daemon held the call for an hour");
     assert!(
-        (Duration::from_secs(60)..=Duration::from_secs(70)).contains(&failed_after),
+        (KEEP_ALIVE_TIMEOUT..=KEEP_ALIVE_INTERVAL + KEEP_ALIVE_TIMEOUT).contains(&failed_after),
         "failed after {failed_after:?}"
     );
 }
@@ -1080,7 +1080,7 @@ async fn a_daemon_that_answers_pings_may_hold_a_call_for_an_hour() {
     assert_eq!(held_call(client).await, None);
 }
 
-/// Moves bytes from `from` to `to` at `bytes_per_second`, as a slow uplink drains the
+/// Moves bytes from `from` to `to` at `bytes_per_second`, as a slow link drains the
 /// buffers in front of it.
 async fn drain_slowly(
     mut from: impl AsyncRead + Unpin,
@@ -1102,42 +1102,93 @@ async fn drain_slowly(
     }
 }
 
-#[tokio::test(start_paused = true)]
-async fn an_upload_over_a_20_kb_per_second_uplink_finishes() {
-    const UPLOAD: usize = 2 * 1024 * 1024;
-    const WINDOW: u32 = 1024 * 1024;
+/// A client end and a daemon end joined by 4 MiB of buffering each way, as ssh and TCP
+/// buffer, with one direction slowed to `bytes_per_second`.
+fn slow_link(
+    slow: Direction,
+    bytes_per_second: usize,
+) -> (tokio::io::DuplexStream, tokio::io::DuplexStream) {
     let (client, client_far) = tokio::io::duplex(4 * 1024 * 1024);
     let (daemon, daemon_far) = tokio::io::duplex(4 * 1024 * 1024);
-    let (uplink, mut downlink) = tokio::io::split(client_far);
-    let (mut from_daemon, to_daemon) = tokio::io::split(daemon_far);
-    tokio::spawn(drain_slowly(uplink, to_daemon, 20 * 1024));
-    tokio::spawn(async move { tokio::io::copy(&mut from_daemon, &mut downlink).await });
+    let (mut uplink, mut downlink) = tokio::io::split(client_far);
+    let (mut from_daemon, mut to_daemon) = tokio::io::split(daemon_far);
+    match slow {
+        Direction::Up => {
+            tokio::spawn(drain_slowly(uplink, to_daemon, bytes_per_second));
+            tokio::spawn(async move { tokio::io::copy(&mut from_daemon, &mut downlink).await });
+        }
+        Direction::Down => {
+            tokio::spawn(async move { tokio::io::copy(&mut uplink, &mut to_daemon).await });
+            tokio::spawn(drain_slowly(from_daemon, downlink, bytes_per_second));
+        }
+    }
+    (client, daemon)
+}
+
+enum Direction {
+    Up,
+    Down,
+}
+
+/// Serves `daemon` with the window the daemon advertises.
+fn serve<F, R>(daemon: tokio::io::DuplexStream, handle: F)
+where
+    F: Fn(http::Request<hyper::body::Incoming>) -> R + Send + 'static,
+    R: Future<Output = Result<http::Response<http_body_util::Full<bytes::Bytes>>, io::Error>>
+        + Send
+        + 'static,
+{
     tokio::spawn(
         hyper::server::conn::http2::Builder::new(hyper_util::rt::TokioExecutor::new())
-            .initial_connection_window_size(WINDOW)
-            .initial_stream_window_size(WINDOW)
-            .serve_connection(
-                TokioIo::new(daemon),
-                hyper::service::service_fn(|request: http::Request<hyper::body::Incoming>| async {
-                    use http_body_util::BodyExt;
-                    let received = request.into_body().collect().await.unwrap().to_bytes();
-                    Ok::<_, io::Error>(http::Response::new(received.len().to_string()))
-                }),
-            ),
+            .initial_connection_window_size(ployz_core::RPC_WINDOW_BYTES)
+            .initial_stream_window_size(ployz_core::RPC_WINDOW_BYTES)
+            .serve_connection(TokioIo::new(daemon), hyper::service::service_fn(handle)),
     );
-    // Held for the whole upload, as the CLI holds its channel: once every handle is
-    // gone, hyper stops pinging and the test would prove nothing.
+}
+
+/// Sends `body` on a channel held for the whole call, as the CLI holds its channel:
+/// once every handle is gone, hyper stops pinging and a test would prove nothing.
+async fn call(
+    client: tokio::io::DuplexStream,
+    body: Vec<u8>,
+) -> (Channel, http::Response<tonic::body::Body>) {
+    use http_body_util::BodyExt;
     let mut channel = connect_stream(client, Duration::from_secs(5))
         .await
         .unwrap();
-    let body = http_body_util::Full::new(bytes::Bytes::from(vec![0; UPLOAD]))
-        .map_err(|never| match never {});
-    let request = http::Request::post("http://[::]:50051/upload")
+    let body = http_body_util::Full::new(bytes::Bytes::from(body)).map_err(|never| match never {});
+    let request = http::Request::post("http://[::]:50051/call")
         .body(tonic::body::Body::new(body))
         .unwrap();
     let ready = tower::ServiceExt::ready(&mut channel).await.unwrap();
     let response = tower::Service::call(ready, request).await.unwrap();
+    (channel, response)
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_upload_over_a_20_kb_per_second_uplink_finishes() {
     use http_body_util::BodyExt;
+    const UPLOAD: usize = 2 * 1024 * 1024;
+    let (client, daemon) = slow_link(Direction::Up, 20 * 1024);
+    serve(daemon, |request| async {
+        let received = request.into_body().collect().await.unwrap().to_bytes();
+        Ok(http::Response::new(received.len().to_string().into()))
+    });
+    let (_channel, response) = call(client, vec![0; UPLOAD]).await;
     let received = response.into_body().collect().await.unwrap().to_bytes();
     assert_eq!(received, UPLOAD.to_string());
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_download_left_unread_on_a_20_kb_per_second_downlink_finishes() {
+    use http_body_util::BodyExt;
+    const DOWNLOAD: usize = 3 * 1024 * 1024;
+    let (client, daemon) = slow_link(Direction::Down, 20 * 1024);
+    serve(daemon, |_| async {
+        Ok(http::Response::new(vec![0; DOWNLOAD].into()))
+    });
+    let (_channel, response) = call(client, Vec::new()).await;
+    tokio::time::sleep(Duration::from_secs(120)).await;
+    let received = response.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(received.len(), DOWNLOAD);
 }

@@ -130,6 +130,12 @@ pub use transport::{
 /// Maximum encoded Runtime Watch message size accepted by Cloud and sent by the daemon.
 pub const RUNTIME_WATCH_MESSAGE_SIZE_LIMIT: usize = 64 * 1024 * 1024;
 
+/// The HTTP/2 stream and connection window both ends of Machine RPC advertise. A
+/// keepalive ping waits behind up to this many unread bytes on a slow link, so this
+/// over the client's keepalive timeout is the slowest link a call survives. It also
+/// caps one call's throughput at this per round trip: about 80 Mbit/s at 100 ms.
+pub const RPC_WINDOW_BYTES: u32 = 1024 * 1024;
+
 impl OpaquePayload {
     #[must_use]
     pub fn new(json: Vec<u8>) -> Self {
