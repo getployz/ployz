@@ -27,17 +27,21 @@ readonly CAPTURES WORK
 cloud_started=0
 # shellcheck source=server-aside.sh
 source "$DOCS/cloud/server-aside.sh"
-finish() {
-  local status=$?
-  if ! restore_server_on_exit && [ "$status" = 0 ]; then status=1; fi
+# capture_traps' exit trap calls one of these.
+stop_cloud() {
   if [ "$cloud_started" = 1 ] && [ "${KEEP:-0}" != 1 ]; then
     (cd "$DASH" || exit 1; scripts/verify/down.sh) >/dev/null 2>&1 || true
     echo "dashboard stopped"
   fi
   rm -rf "$WORK"
-  exit "$status"
 }
-trap finish EXIT
+keep_cloud() {
+  echo "Cloud stays up, whatever KEEP says, so you can inspect it:" >&2
+  echo "  docker exec $pg psql -U postgres -d ployz_cloud -c 'TABLE capture_server' -c \"SELECT * FROM organization_machine WHERE organization_id = '$org'\"" >&2
+  echo "then tear it down: (cd $DASH && scripts/verify/down.sh)" >&2
+  rm -rf "$WORK"
+}
+capture_traps
 echo "raw captures in $CAPTURES"
 mkdir -p "$WORK/bin" "$WORK/app" "$WORK/up-app"
 cap=$DOCS/cap.sh
