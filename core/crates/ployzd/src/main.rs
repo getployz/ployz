@@ -342,8 +342,8 @@ async fn dial_stdio(path: &Path) -> io::Result<()> {
 }
 
 // The daemon's side closing ends the bridge, so a daemon restart closes the
-// SSH session and the client's call fails and is resent. Stdin closing first
-// only half-closes: the reply still flows back.
+// SSH session and the client's call fails instead of waiting forever. Stdin
+// closing first only half-closes: the reply still flows back.
 async fn bridge(
     mut input: impl AsyncRead + Unpin,
     mut output: impl AsyncWrite + Unpin,
