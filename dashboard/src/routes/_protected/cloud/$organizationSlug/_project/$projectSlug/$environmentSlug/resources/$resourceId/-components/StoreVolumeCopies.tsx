@@ -150,10 +150,11 @@ function RecoveryAlert({ organizationSlug, forgetGate, volume, disabled, deployi
   CopiesPanelProps & { recovery: Recovery; now: Date }) {
   const lost = recovered.lostAfter ? `Changes after ${lossMoment(recovered.lostAfter, now)} lost` : "Recent changes lost";
   const { mirror } = recovered;
+  // Not red: a report that hasn't arrived is no outage, and the row may be the primary's own Server, so nothing is promised.
   if (recovered.kind === "wait") {
-    return <Alert variant="destructive">
+    return <Alert>
       <AlertTitle>Waiting for every server's report</AlertTitle>
-      <AlertDescription>{`The mirror on ${mirror.name} can take over once every server has reported.`}</AlertDescription>
+      <AlertDescription>Copies shows what you can do once every server has reported.</AlertDescription>
     </Alert>;
   }
   if (recovered.kind === "forget") {

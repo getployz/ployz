@@ -209,8 +209,9 @@ describe("VolumeCopiesPanel", () => {
     const unlisted: Member = { machine: { id: id("web-1"), name: id("web-1") }, answered: false, incomplete: true };
     panel([unlisted, mirrorAsOf("web-2", fiveAgo())], row(["web-2"]));
     expect(screen.getByText("Waiting for every server's report")).toBeTruthy();
-    expect(screen.getByText("The mirror on web-2 can take over once every server has reported.", { exact: false })).toBeTruthy();
-    expect(screen.queryByText(/not answering/)).toBeNull();
+    expect(screen.getByText("Copies shows what you can do once every server has reported.")).toBeTruthy();
+    expect(screen.getByRole("alert").className).not.toContain("text-destructive");
+    expect(screen.queryByText(/not answering|take over/)).toBeNull();
     expect(screen.queryByRole("link")).toBeNull();
     expect(useMirror()).toBeNull();
   });
