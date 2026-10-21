@@ -317,19 +317,13 @@ impl Gaps {
                 flag(&refusal.naming(self.name(&failure.machine_id)).to_string());
                 continue;
             }
-            flag(&format!(
-                "{} did not answer; its rows are missing.",
-                self.name(&failure.machine_id)
-            ));
+            did_not_answer(&self.name(&failure.machine_id));
             if let Some(cause) = super::causes(&failure.error).last() {
                 note(format_args!("  {} {cause}", Tone::Bad.paint("cause:")));
             }
         }
         for machine_id in &self.omitted {
-            flag(&format!(
-                "{} did not answer; its rows are missing.",
-                self.name(machine_id)
-            ));
+            did_not_answer(&self.name(machine_id));
         }
     }
 
@@ -341,6 +335,27 @@ impl Gaps {
             Err(Failure::partial())
         }
     }
+}
+
+fn did_not_answer(server: &str) {
+    flag(&format!("{server} did not answer; its rows are missing."));
+}
+
+/// The end of a read Cloud fanned out for us: one warning per Server it names
+/// unanswered, as [`Gaps::warn`] gives, then the partial exit if any.
+///
+/// # Errors
+///
+/// Returns [`Failure::partial`] when a Server did not answer.
+pub(crate) fn unanswered<'a>(
+    servers: impl IntoIterator<Item = &'a MachineName>,
+) -> Result<(), Failure> {
+    let mut partial = Ok(());
+    for server in servers {
+        did_not_answer(server.as_str());
+        partial = Err(Failure::partial());
+    }
+    partial
 }
 
 /// Finish a fan-out: `{key: value, failures, omitted}` or `human`, then in either

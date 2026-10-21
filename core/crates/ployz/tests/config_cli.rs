@@ -332,7 +332,7 @@ fn serve(
 
 /// What this Cloud's Servers answer when Cloud reads them: `web-1` has one log line
 /// for runtime Service `web` and nothing for any other, `web-2` does not answer for
-/// `worker`, and no Server has a metric reading.
+/// `worker` or for containers, and no Server has a metric reading.
 fn servers_read(body: &[u8]) -> Value {
     let ask: Value = serde_json::from_slice(body).unwrap();
     let seen = json!({ "read_at": 0, "from": "server", "unanswered": [] });
@@ -352,9 +352,19 @@ fn servers_read(body: &[u8]) -> Value {
             };
             json!({ "servers": servers, "seen": seen, "notes": [] })
         }
+        Some("metrics") if ask["ask"]["subject"]["service"] == "worker" => json!({
+            "since": 0, "until": 0, "metrics": [], "oom_kills": 0, "exits": 0, "restarts": 0,
+            "events": [], "notes": ["web-2 did not answer: timed out"],
+            "seen": { "read_at": 0, "from": "server", "unanswered": ["web-2"] },
+        }),
         Some("metrics") => json!({
             "since": 0, "until": 0, "metrics": [], "oom_kills": 0, "exits": 0, "restarts": 0,
             "events": [], "notes": [], "seen": seen,
+        }),
+        Some("containers") => json!({
+            "containers": [],
+            "servers": ["web-1", "web-2"],
+            "seen": { "read_at": 0, "from": "server", "unanswered": ["web-2"] },
         }),
         other => panic!("this Cloud reads no {other:?}"),
     }
@@ -3996,7 +4006,7 @@ fn reading_through_cloud_refuses_a_name_nothing_answered_for() {
         );
     }
     ok(&linus, &["metrics", "web"]);
-    // Nothing printed, but why a Server did not answer for `worker` still shows.
+    // web-2 did not answer for `worker` and may hold its lines, so that outranks the refusal.
     let home = tempfile::tempdir().unwrap();
     let output = linus
         .command(home.path())
@@ -4010,9 +4020,10 @@ fn reading_through_cloud_refuses_a_name_nothing_answered_for() {
             String::from_utf8(output.stderr).unwrap()
         ),
         (
-            Some(1),
+            Some(3),
             String::new(),
-            "web-2 did not answer: timed out\nerror: No Service named nosvc in Environment production\nvalid: web, worker\n".to_owned()
+            "web-2 did not answer: timed out\n! web-2 did not answer; its rows are missing.\n"
+                .to_owned()
         )
     );
     // Lines for `web` already printed, so the refusal for `nosvc` comes after them.
@@ -4035,6 +4046,34 @@ fn reading_through_cloud_refuses_a_name_nothing_answered_for() {
                 .to_owned()
         )
     );
+}
+
+#[test]
+fn reading_through_cloud_exits_3_when_a_server_did_not_answer() {
+    let linus = Target::Cloud {
+        url: fake_cloud(),
+        token: "ployz_linus",
+    };
+    ok(&linus, &["project", "new", "shop"]);
+    ok(&linus, &["service", "add", "worker", "--image", "nginx:1"]);
+    for (args, note) in [
+        (&["logs", "worker"][..], "web-2 did not answer: timed out\n"),
+        (&["metrics", "worker"], "web-2 did not answer: timed out\n"),
+        (&["ps"], ""),
+    ] {
+        let (code, json) = ployz(Some(&linus), args);
+        assert_eq!(code, Some(3), "{args:?}: {json}");
+        let home = tempfile::tempdir().unwrap();
+        let output = linus.command(home.path()).args(args).output().unwrap();
+        let stderr = String::from_utf8(output.stderr).unwrap();
+        assert_eq!(output.status.code(), Some(3), "{args:?}: {stderr}");
+        assert!(
+            stderr.ends_with(&format!(
+                "{note}! web-2 did not answer; its rows are missing.\n"
+            )),
+            "{args:?}: {stderr}"
+        );
+    }
 }
 
 /// Run `ployz --json ARGS` in `dir` with a lasting `home`, where directory links live.
