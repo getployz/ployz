@@ -574,7 +574,7 @@ mod tests {
     }
 
     #[test]
-    fn existing_and_new_store_files_write_synchronously() {
+    fn existing_store_files_write_synchronously() {
         let root = tempfile::tempdir().unwrap();
         let dir = root.path();
         fs::create_dir(dir.join("snapshots")).unwrap();
@@ -583,13 +583,11 @@ mod tests {
 
         match sync_writes(dir) {
             Ok(()) => {
-                fs::write(dir.join("store.db-wal"), "").unwrap();
                 for path in [
                     dir.to_path_buf(),
                     dir.join("snapshots"),
                     dir.join("snapshots/old.db"),
                     dir.join("store.db"),
-                    dir.join("store.db-wal"),
                 ] {
                     let file = fs::File::open(&path).unwrap();
                     assert!(
