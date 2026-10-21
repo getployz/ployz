@@ -3,9 +3,10 @@
 # (alpha, beta, gamma, plus a lone solo).
 #
 # Prerequisites: Docker that can run --privileged containers.
-# scripts/testkit-image.sh builds this checkout's debug ployzd/ployz and
-# layers them and the testkit entrypoint over ghcr.io/getployz/ployz-testkit:main
-# as ployz-cli-capture:ID, so the daemon matches the CLI.
+# scripts/testkit-image.sh builds the testkit base from
+# crates/ployz-testkit/Dockerfile, then this checkout's debug ployzd/ployz, and
+# layers them and the testkit entrypoint over it as ployz-cli-capture:ID, so
+# the daemon matches the CLI.
 #
 # Nothing touches ~/.config/ployz or real Servers: HOME is a fresh
 # /tmp/ployz-cap-home-ID.XXXXXX, the Config Store is the hidden SQLite one

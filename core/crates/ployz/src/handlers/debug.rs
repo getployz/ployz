@@ -18,14 +18,14 @@ pub(super) fn group(command: Command) -> Command {
 pub(super) fn volume_rpc_command(command: Command) -> Command {
     base(command, "Send one unary Machine RPC as JSON and print its response")
         .long_about("Send one unary Machine RPC to a Server and print the response body. REQUEST is the JSON request body, for example {\"command\":\"inspect_volume_copy\",\"payload\":{\"name\":\"data\"}}. An error response fails the command with the error's code and details.")
-        .arg(positional("server", true))
-        .arg(positional("request", true).value_name("REQUEST"))
+        .arg(positional("server", true).help("Server name or ID"))
+        .arg(positional("request", true).value_name("REQUEST").help("The JSON request body"))
 }
 
 pub(super) fn local_rpc_command(command: Command) -> Command {
     base(command, "Send one unary Machine RPC to the dialed daemon, unrouted")
         .long_about("Send one unary Machine RPC to the daemon this CLI dials, with no routing, and print the response body. It reaches a Machine outside any cluster, which volume-rpc cannot route to. REQUEST is the JSON request body, as for volume-rpc.")
-        .arg(positional("request", true).value_name("REQUEST"))
+        .arg(positional("request", true).value_name("REQUEST").help("The JSON request body"))
 }
 
 pub(super) fn volume_rpc(root: &ArgMatches) -> Result<(), Error> {

@@ -128,7 +128,11 @@ pub(super) fn redeploy_command(command: Command) -> Command {
          --accept-volume-loss.",
     )))
     .arg(id())
-    .arg(switch("yes", Some('y')).env(crate::cli::env::AUTO_CONFIRM))
+    .arg(
+        switch("yes", Some('y'))
+            .env(crate::cli::env::AUTO_CONFIRM)
+            .help("Roll back without asking"),
+    )
     .arg(crate::cli::volume_acceptance().help(format!(
         "{}; --yes cannot bypass this",
         crate::cli::VOLUME_ACCEPTANCE
@@ -932,7 +936,7 @@ fn plan(matches: &ArgMatches, store: &Store, services: Vec<ServiceName>) -> Resu
                 super::store::word(&change.lifecycle)
             ));
             for row in &change.settings {
-                for line in super::store::changed(row) {
+                for line in super::store::changed(row, &change.settings) {
                     crate::ui::stream(format_args!("  {line}"));
                 }
             }

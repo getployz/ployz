@@ -746,9 +746,10 @@ describe("organization enrollment coordinator", () => {
     const attempt = await pendingFounder(fake);
     await fake.coordinator.publish({ ...attempt, capability });
     fake.connection.closeHangs = true;
-    const held = new Promise<"held">((resolve) => { setTimeout(() => resolve("held"), SESSION_CLOSE_CLUSTER_MS + 8_000); });
-    expect(await Promise.race([fake.coordinator.publish({ ...attempt, capability: "ployz1:rotated" }), held]))
+    const started = performance.now();
+    expect(await fake.coordinator.publish({ ...attempt, capability: "ployz1:rotated" }))
       .toMatchObject({ success: { machineId: attempt.machineId } });
+    expect(performance.now() - started).toBeLessThan(SESSION_CLOSE_CLUSTER_MS + 8_000);
     expect(fake.aborts.aborted().at(-1)).toBe(true);
   }, 30_000);
 
@@ -1535,8 +1536,7 @@ describe("organization enrollment coordinator", () => {
       try {
         await holder.query("begin");
         await holder.query("select 1 from organization_pairing where organization_id = $1 for update", [organizationId]);
-        const blocked = new Promise((resolve) => setTimeout(() => resolve("blocked"), 2_000));
-        expect(await Promise.race([enrollIn(fake, waiting, 5), blocked])).toEqual(queued(1));
+        expect(await enrollIn(fake, waiting, 5)).toEqual(queued(1));
       } finally {
         await holder.query("rollback");
         holder.release();

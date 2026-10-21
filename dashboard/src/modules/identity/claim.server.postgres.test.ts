@@ -1,8 +1,8 @@
 import { it } from "@effect/vitest";
 import { eq, sql } from "drizzle-orm";
-import { Effect, Exit, Layer, Redacted } from "effect";
+import { Deferred, Effect, Exit, Layer, Redacted } from "effect";
 import { Client } from "pg";
-import { expect } from "vitest";
+import { expect, vi } from "vitest";
 import { organizationBillingState } from "#/modules/billing/tables";
 import { gateOperation, type OperationAsked } from "#/modules/approvals/approvals.server";
 import { readStore } from "#/modules/config-store/config-store.server";
@@ -323,15 +323,23 @@ it.live("an anonymous token minted while the claim runs moves to the person inst
     const agent = yield* sandbox();
     const ada = yield* person("Ada", "ada@example.test");
     const database = yield* Database;
+    const inserted = yield* Deferred.make<void>();
+    const release = yield* Deferred.make<void>();
     const minted = database.transaction(Effect.gen(function* () {
       const { drizzle } = yield* Database;
       yield* drizzle.insert(organizationToken).values({
         organizationId: agent.organization.id, userId: agent.userId, name: "late", secretHash: "d".repeat(64), expiresAt: new Date(Date.now() + DAY_MS),
       });
-      yield* Effect.sleep("300 millis");
+      yield* Deferred.succeed(inserted, undefined);
+      yield* Deferred.await(release);
     }));
-    const claimed = Effect.sleep("100 millis").pipe(Effect.andThen(claimOrganization(ada.actor, agent.secret)));
-    const [mint, claim] = yield* Effect.all([Effect.exit(minted), Effect.exit(claimed)], { concurrency: "unbounded" });
+    const claimed = Deferred.await(inserted).pipe(Effect.andThen(claimOrganization(ada.actor, agent.secret)));
+    const waiting = sql`select 1 from pg_stat_activity where datname = current_database() and wait_event_type = 'Lock'`;
+    const parked = Deferred.await(inserted).pipe(
+      Effect.andThen(Effect.promise(() => vi.waitFor(async () => expect(await Effect.runPromise(database.drizzle.execute(waiting, "objects"))).not.toHaveLength(0)))),
+      Effect.andThen(Deferred.succeed(release, undefined)),
+    );
+    const [mint, claim] = yield* Effect.all([Effect.exit(minted), Effect.exit(claimed), parked], { concurrency: "unbounded" });
     expect(Exit.isSuccess(mint)).toBe(true);
     expect(Exit.isSuccess(claim)).toBe(true);
     const { drizzle } = yield* Database;

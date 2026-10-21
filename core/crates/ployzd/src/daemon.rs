@@ -565,14 +565,11 @@ impl Daemon {
         };
         tracing::info!(reason = reason.as_str(), "shutting down");
         self.shutdown.cancel();
-        // Reset must not wait for active Machine API connections.
-        // CLI wait_phase has 60s to see Uninitialized after systemd restarts us.
+        // A reset drains too: the Leave that asked for it is still sending its reply, the
+        // caller's only proof of the reset. The bound keeps a held connection from holding
+        // the reset; CLI wait_phase has 60s to see Uninitialized after systemd restarts us.
         let (server_result, ()) = tokio::join!(
-            stop_servers(
-                completed_servers,
-                &mut servers,
-                (!resetting).then_some(SERVER_DRAIN),
-            ),
+            stop_servers(completed_servers, &mut servers, SERVER_DRAIN),
             self.dns.stopping(resetting),
         );
         if let Err(error) = server_result {
@@ -631,14 +628,12 @@ const SERVER_DRAIN: Duration = Duration::from_secs(5);
 async fn stop_servers(
     completed: Option<io::Result<()>>,
     servers: &mut JoinHandle<io::Result<()>>,
-    drain: Option<Duration>,
+    drain: Duration,
 ) -> io::Result<()> {
     if let Some(result) = completed {
         return result;
     }
-    if let Some(drain) = drain
-        && let Ok(result) = tokio::time::timeout(drain, &mut *servers).await
-    {
+    if let Ok(result) = tokio::time::timeout(drain, &mut *servers).await {
         return join_servers(result);
     }
     servers.abort();
@@ -1192,6 +1187,79 @@ mod tests {
             .expect("reset shutdown must not wait on a held Machine API connection")
             .unwrap();
         assert!(!data_dir.exists());
+    }
+
+    /// Cloud sends Leave over the management transport, and its reply is Cloud's only
+    /// proof of the reset: for the last Server nothing is left to ask afterwards.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_leave_over_management_gets_its_reply_through_the_reset() {
+        use ployz::connect::{Connector as _, ManagementRelay, SystemConnector};
+
+        let (_relays, relay_url, _relay) = iroh::test_utils::run_relay_server().await.unwrap();
+        let root = TestDir::new("ployzd-daemon-leave-reply");
+        let (mut config, _) = test_config(&root.0, ContainerMode::Absent);
+        config.management = ManagementConfig {
+            relay_url: relay_url.clone(),
+            port: 0,
+            relay_tls: iroh::tls::CaTlsConfig::insecure_skip_verify(),
+        };
+        let daemon = Daemon::start(config).await.unwrap();
+        let client = iroh::SecretKey::generate();
+        let pending = *client.public().as_bytes();
+        let machine = daemon
+            .local
+            .mutate(move |store| {
+                store
+                    .stage_management_client(
+                        ployz_core::ManagementClientLabel::parse("cloud").unwrap(),
+                        pending,
+                    )
+                    .map(|()| store.record().management_secret().public_key())
+            })
+            .await
+            .unwrap()
+            .unwrap();
+        let capability = ployz_core::ManagementCapability::new(machine, client.to_bytes());
+        let channel = SystemConnector::new("/ployz-missing-ssh-client")
+            .with_management_relay(ManagementRelay::custom(
+                relay_url,
+                iroh::tls::CaTlsConfig::insecure_skip_verify(),
+            ))
+            .connect(
+                &ployz::context::Connection::management(capability.to_secret_string()).unwrap(),
+            )
+            .await
+            .unwrap();
+        daemon
+            .local
+            .mutate(LocalMachineStore::begin_reset)
+            .await
+            .unwrap()
+            .unwrap();
+        let waiting = tokio::spawn(daemon.wait());
+
+        let left = tokio::time::timeout(
+            std::time::Duration::from_secs(20),
+            MachineRpcClient::new(channel).leave(
+                op::Leave::into_request(LeaveRequest::default())
+                    .encode()
+                    .unwrap(),
+            ),
+        )
+        .await
+        .expect("the Leave reply must not wait out the connection's idle timeout")
+        .expect("the reset must not drop the Leave reply")
+        .into_inner()
+        .decode_response()
+        .unwrap();
+        assert_eq!(
+            left.decode::<op::Leave>().unwrap(),
+            ployz_core::Left::Left {
+                phase: ployz_core::LeftPhase::Resetting,
+                reset_warning: None,
+            }
+        );
+        waiting.await.unwrap().unwrap();
     }
 
     fn interrupted_reset(data_dir: &Path) -> (ployz_core::MachineId, InterruptedReset) {

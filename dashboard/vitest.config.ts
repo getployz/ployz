@@ -22,7 +22,7 @@ export default defineConfig({
         test: {
           ...sharedTestConfig,
           name: "unit",
-          include: ["src/**/*.test.{ts,tsx}"],
+          include: ["src/**/*.test.{ts,tsx}", "tools/**/*.test.ts"],
           exclude: ["**/*.postgres.test.ts", "**/*.static.test.ts"],
           maxWorkers: 4,
           isolate: false,

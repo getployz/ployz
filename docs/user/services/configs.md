@@ -109,6 +109,7 @@ separate configs. To keep the deleted config, first rename or discard its replac
 both under one name would conflict. CLI discard accepts `configs.@UUID` to select one exact
 config; a shared name is refused when it could select either config. A service mount can
 likewise be selected with `web.configs.@UUID`; discarding it preserves another config's mounts,
-even when the configs share a name.
+even when the configs share a name. `ployz diff` names a mount by its config, as `web.configs.sentry`;
+`ployz diff --json` keeps the exact `web.configs.@UUID` path beside `configName`.
 
 Next, [review your deployments](../deploy/deployments.md).

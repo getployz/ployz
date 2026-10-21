@@ -1,24 +1,18 @@
-import { setTimeout as sleep } from "node:timers/promises";
 import type { Client } from "@ployz/sdk";
-import { Duration, Effect, Exit, Layer, ManagedRuntime, Scope } from "effect";
-import { expect, it } from "vitest";
+import { Effect, Exit, Layer, ManagedRuntime, Scope, Tracer } from "effect";
+import { expect, it, vi } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
 import { startPostgresTestHarness } from "#/test/postgres";
 import { sendsNowhere } from "#/test/store-cloud";
 import { InngestClient } from "#/modules/inngest/client";
 import { hashEnrollmentToken } from "#/modules/machines/enrollment.server";
 import { disableOrganizationPairing } from "#/modules/machines/pairing-removal.server";
-import {
-  OrganizationRuntime,
-  OrganizationRuntimeLive,
-  PAIRING_CHANGE_POLL,
-} from "#/modules/runtime/organization-runtime.server";
+import { OrganizationRuntime, OrganizationRuntimeLive } from "#/modules/runtime/organization-runtime.server";
 import { makePloyzLayer } from "#/modules/runtime/ployz.server";
 import { Database } from "#/server/database.server";
 import { makeSecretEncryption, SecretEncryption } from "#/utils/encrypted-secret.server";
 
-// Two polls: every open session has read the log past the last commit.
-const settle = () => sleep(2 * Duration.toMillis(PAIRING_CHANGE_POLL) + 250);
+const checksPerWait = { timeout: 10_000 };
 
 it("closes every Cloud worker's session through the change log only after commit and preserves replacement pairings", async () => {
   const harness = await startPostgresTestHarness({ ownServer: true });
@@ -41,10 +35,18 @@ it("closes every Cloud worker's session through the change log only after commit
   }
   function worker() {
     const sessions: Array<{ closed: boolean }> = [];
+    let checks = 0;
+    const counting = Tracer.make({
+      span: (options) => {
+        if (options.name === "OrganizationChangeLog.readWindow") checks += 1;
+        return new Tracer.NativeSpan(options);
+      },
+    });
     const runtime = ManagedRuntime.make(OrganizationRuntimeLive.pipe(Layer.provideMerge(Layer.mergeAll(
       Layer.succeed(Database, harness.database),
       Layer.succeed(SecretEncryption, encryption),
       Layer.succeed(InngestClient, sendsNowhere()),
+      Layer.succeed(Tracer.Tracer, counting),
       makePloyzLayer({ connect: async () => {
         const session = { closed: false };
         sessions.push(session);
@@ -54,6 +56,7 @@ it("closes every Cloud worker's session through the change log only after commit
     return {
       runtime,
       sessions,
+      checks: () => checks,
       async open() {
         const scope = await Effect.runPromise(Scope.make());
         scopes.push(scope);
@@ -62,6 +65,16 @@ it("closes every Cloud worker's session through the change log only after commit
         }).pipe(Effect.provideService(Scope.Scope, scope)));
       },
     };
+  }
+  const checksUntilOneFinishedAfterTheCommit = 3;
+  async function checked() {
+    const since = workers.map((current) => current.checks());
+    await vi.waitFor(() => {
+      for (const [index, current] of workers.entries()) {
+        if (current.sessions.at(-1)?.closed) continue;
+        expect(current.checks() - (since[index] ?? 0)).toBeGreaterThanOrEqual(checksUntilOneFinishedAfterTheCommit);
+      }
+    }, checksPerWait);
   }
   try {
     await pair("old");
@@ -76,15 +89,14 @@ it("closes every Cloud worker's session through the change log only after commit
     } finally {
       transaction.release();
     }
-    await settle();
+    await checked();
     for (const current of workers) expect(current.sessions[0]?.closed).toBe(false);
 
     // The first worker removes the pairing; the second learns of it only through the log.
     const [remover, other] = workers;
     await remover?.runtime.runPromise(disableOrganizationPairing(organizationId));
     expect(remover?.sessions[0]?.closed).toBe(true);
-    await settle();
-    expect(other?.sessions[0]?.closed).toBe(true);
+    await vi.waitFor(() => expect(other?.sessions[0]?.closed).toBe(true), checksPerWait);
     for (const current of workers) {
       expect(await current.open()).toEqual({ status: "no_connection" });
       expect(current.sessions).toHaveLength(1);
@@ -94,7 +106,7 @@ it("closes every Cloud worker's session through the change log only after commit
     for (const current of workers) expect((await current.open()).status).toBe("connected");
     // A later pairing write that keeps the generation re-checks and keeps the session.
     await harness.pool.query("update organization_pairing set founder_machine_id = founder_machine_id where organization_id=$1", [organizationId]);
-    await settle();
+    await checked();
     for (const current of workers) expect(current.sessions.at(-1)?.closed).toBe(false);
   } finally {
     await Promise.all(scopes.map((scope) => Effect.runPromise(Scope.close(scope, Exit.void))));

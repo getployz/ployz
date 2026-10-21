@@ -1,4 +1,3 @@
-import { setTimeout as sleep } from "node:timers/promises";
 import { Effect } from "effect";
 import type { ChangeName } from "#/collections/read.contract";
 import { eventStreamResponse, sseEvent } from "#/server/event-stream";
@@ -46,6 +45,19 @@ function logReadFailure(cause: unknown) {
 
 async function* noEvents(): AsyncGenerator<string> {}
 
+// On the global setTimeout rather than node:timers/promises, which fake timers can't reach.
+function sleep(ms: number, signal: AbortSignal) {
+  return new Promise<void>((resolve) => {
+    const wake = () => {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", wake);
+      resolve();
+    };
+    const timer = setTimeout(wake, ms);
+    signal.addEventListener("abort", wake, { once: true });
+  });
+}
+
 // ponytail: one poll loop per open stream; move to one loop per instance if open tabs reach the thousands.
 async function* orgChangeEvents(organizationId: string, start: string, deps: OrgChangesHandlerDeps, signal: AbortSignal) {
   let cursor = start;
@@ -56,6 +68,6 @@ async function* orgChangeEvents(organizationId: string, start: string, deps: Org
     if (!changes) return;
     if (changes.collections.length > 0) yield sseEvent({ event: "changes", data: { collections: changes.collections } });
     cursor = changes.cursor;
-    await sleep(POLL_MS, undefined, { signal }).catch(() => {});
+    await sleep(POLL_MS, signal);
   }
 }
