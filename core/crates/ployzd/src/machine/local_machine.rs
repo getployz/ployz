@@ -112,10 +112,6 @@ pub enum Error {
     ClusterUnavailable,
     #[error("Docker is not available")]
     DockerUnavailable,
-    #[error("the roster row of lower Machine {0} is unreadable")]
-    UnreadableLowerMachine(MachineId),
-    #[error("the Machine at {} is active but has no readable roster row", .0.0)]
-    MissingPeerRow(ManagementAddress),
     #[error("at least one Machine update is required")]
     EmptyUpdate,
     #[error("push target {0}")]
@@ -629,51 +625,6 @@ impl LocalMachine {
             }
             .overlay(machines, &entry_id),
         })
-    }
-
-    /// The lowest-id Machine that invites RPC in this Machine's Membership Observation.
-    /// Only that Machine answers Serving Pointer reads and publishes, so every
-    /// compare-and-set it sees runs on one Corrosion node.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`Error::ClusterStoreUnavailable`] when the Cluster store is missing,
-    /// [`Error::Cluster`] when replicated or admin I/O fails, and
-    /// [`Error::UnreadableLowerMachine`] when a Machine below the publisher has a row this
-    /// Machine cannot decode, and [`Error::MissingPeerRow`] when an admin-active peer has no
-    /// readable row at all, since either Machine may be the publisher another Machine sees.
-    pub async fn pointer_publisher(&self) -> Result<MachineId, Error> {
-        let machines = self.replicated()?.machines().await?;
-        let states = self.membership_states().await?;
-        let record = self.record();
-        let local_id = record.id();
-        let known = machines
-            .observations
-            .iter()
-            .map(Machine::management_address)
-            .chain(record.machine().map(Machine::management_address))
-            .collect::<BTreeSet<_>>();
-        let publisher = synthesize_membership(machines.observations, &local_id, &states)
-            .iter()
-            .filter(|observation| observation.invites_rpc())
-            .map(|observation| observation.machine.id)
-            .min()
-            .unwrap_or(local_id);
-        if let Some(unreadable) = machines
-            .incomplete_ids
-            .into_iter()
-            .min()
-            .filter(|unreadable| *unreadable < publisher)
-        {
-            return Err(Error::UnreadableLowerMachine(unreadable));
-        }
-        if let Some((missing, _)) = states
-            .iter()
-            .find(|(address, evidence)| evidence.invites_rpc() && !known.contains(address))
-        {
-            return Err(Error::MissingPeerRow(*missing));
-        }
-        Ok(publisher)
     }
 
     async fn membership_states(

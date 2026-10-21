@@ -1808,6 +1808,41 @@ fn remove_container() -> Value {
 }
 
 #[test]
+fn a_claimed_deployment_reads_preparing_until_its_deploy_preview() {
+    let (store, id) = deploying();
+    let runner = RunnerId::parse("runner").unwrap();
+    let claimed = store.claim(&id, &runner).unwrap();
+    let shown = call(&store, "deployment_show", json!({}), "show-1").ok();
+    let listed = call(&store, "deployment_list", json!({}), "list-1").ok();
+    assert_eq!(
+        (&shown["status"], &shown["preparing"]),
+        (&json!("running"), &json!(true)),
+        "{shown}"
+    );
+    assert_eq!(listed["deployments"][0]["preparing"], true, "{listed}");
+
+    let preview: DeployPreview = serde_json::from_value(json!({
+        "namespace": claimed.intent.namespace,
+        "operations": [{
+            "index": 0, "machine_id": machine('a'), "service_name": "web",
+            "operation": remove_container(), "status": { "type": "pending" },
+        }],
+        "warnings": [], "would_remove": [], "preserved_volumes": [],
+    }))
+    .unwrap();
+    store
+        .record(&id, &runner, RunEvidence::Prepared(preview))
+        .unwrap();
+    let shown = call(&store, "deployment_show", json!({}), "show-2").ok();
+    let listed = call(&store, "deployment_list", json!({}), "list-2").ok();
+    assert!(shown.get("preparing").is_none(), "{shown}");
+    assert!(
+        listed["deployments"][0].get("preparing").is_none(),
+        "{listed}"
+    );
+}
+
+#[test]
 fn a_deployment_shows_its_progress_then_where_its_failure_logged() {
     let (store, id) = deploying();
     let runner = RunnerId::parse("runner").unwrap();
@@ -3302,4 +3337,136 @@ fn review_says_every_agent_deploy_asks_on_cloud_and_none_does_locally() {
     )
     .ok();
     assert_eq!(local["asks_approval"], json!(false), "{local}");
+}
+
+/// `server_show` for `web-1` when Cloud keeps `runs` on it, newest first,
+/// answering each read with as many as it asks for.
+fn shown_with_runs(runs: &[(&str, &str, Option<&str>)]) -> Value {
+    let operations = runs
+        .iter()
+        .enumerate()
+        .map(|(at, (run, state, reason))| {
+            json!({
+                "attempt": format!("00000000-0000-4000-8000-{at:012}"), "run": run,
+                "state": state, "requested_at": 100 - at, "ended_at": 100 - at,
+                "reason": reason, "servers": [], "kept": [], "unanswered": [],
+            })
+        })
+        .collect::<Vec<_>>();
+    let shown = drive(
+        &shop(),
+        in_org(),
+        "server_show",
+        json!({}),
+        "show-1",
+        &mut |cloud| match cloud {
+            Cloud::Ask(CloudQuery::Servers { .. }) => Ok(servers(&[("web-1", 'a')])),
+            Cloud::Ask(CloudQuery::Operations(query)) => Ok(json!({
+                "operations": operations.iter().take(usize::from(query.limit)).collect::<Vec<_>>(),
+            })),
+            Cloud::Ask(query) => panic!("unexpected read: {query:?}"),
+            Cloud::Act(act) => panic!("a read acts on nothing: {act:?}"),
+        },
+    )
+    .ok();
+    shown["servers"][0].clone()
+}
+
+// Catches a later run, such as an upgrade, hiding a Drain that failed, so the
+// Server reads as not draining with no word on why.
+#[test]
+fn server_show_keeps_a_failed_drain_a_later_run_hides() {
+    let never = "The drain never started.";
+
+    let hidden = shown_with_runs(&[
+        ("upgrade web-1", "done", None),
+        ("clean shop-old", "done", None),
+        ("drain web-1", "failed", Some(never)),
+    ]);
+    assert_eq!(hidden["latest"]["run"], "upgrade web-1");
+    assert_eq!(hidden["failed_drain"]["run"], "drain web-1", "{hidden}");
+    assert_eq!(hidden["failed_drain"]["state"], "failed");
+    assert_eq!(hidden["failed_drain"]["reason"], never);
+
+    let latest = shown_with_runs(&[("drain web-1", "failed", Some(never))]);
+    assert_eq!(latest["latest"]["reason"], never);
+    assert_eq!(latest["failed_drain"], Value::Null, "{latest}");
+
+    let drained_since = shown_with_runs(&[
+        ("upgrade web-1", "done", None),
+        ("drain web-1", "done", None),
+        ("drain web-1", "failed", Some(never)),
+    ]);
+    assert_eq!(
+        drained_since["failed_drain"],
+        Value::Null,
+        "{drained_since}"
+    );
+}
+
+// Catches a newer Drain that only got accepted clearing an older failure,
+// though nothing has drained the Server since.
+#[test]
+fn server_show_keeps_a_failed_drain_a_later_unfinished_drain_follows() {
+    let never = "The drain never started.";
+
+    let pending = shown_with_runs(&[
+        ("upgrade web-1", "done", None),
+        ("drain web-1", "accepted", None),
+        ("drain web-1", "failed", Some(never)),
+    ]);
+    assert_eq!(pending["failed_drain"]["run"], "drain web-1", "{pending}");
+    assert_eq!(pending["failed_drain"]["state"], "failed");
+    assert_eq!(pending["failed_drain"]["reason"], never);
+
+    let running = shown_with_runs(&[
+        ("drain web-1", "running", None),
+        ("drain web-1", "failed", Some(never)),
+    ]);
+    assert_eq!(running["latest"]["state"], "running");
+    assert_eq!(running["failed_drain"]["reason"], never, "{running}");
+}
+
+// Catches a newer Drain that Cloud lost clearing an older failure, so neither
+// Drain shows.
+#[test]
+fn server_show_keeps_a_failed_drain_a_later_lost_drain_follows() {
+    let never = "The drain never started.";
+
+    let lost = shown_with_runs(&[
+        ("upgrade web-1", "done", None),
+        ("drain web-1", "unknown", None),
+        ("drain web-1", "failed", Some(never)),
+    ]);
+    assert_eq!(lost["failed_drain"]["run"], "drain web-1", "{lost}");
+    assert_eq!(lost["failed_drain"]["state"], "failed");
+    assert_eq!(lost["failed_drain"]["reason"], never);
+}
+
+// Catches a newer superseded Drain clearing an older failure, though nothing
+// has drained the Server since.
+#[test]
+fn server_show_keeps_a_failed_drain_a_later_superseded_drain_follows() {
+    let never = "The drain never started.";
+
+    let superseded = shown_with_runs(&[
+        ("drain web-1", "superseded", None),
+        ("drain web-1", "failed", Some(never)),
+    ]);
+    assert_eq!(superseded["latest"]["state"], "superseded");
+    assert_eq!(superseded["failed_drain"]["reason"], never, "{superseded}");
+}
+
+// Catches an older failure showing over a newer one.
+#[test]
+fn server_show_shows_the_newest_failed_drain() {
+    let never = "The drain never started.";
+    let refused = "The drain was refused.";
+
+    let replaced = shown_with_runs(&[
+        ("upgrade web-1", "done", None),
+        ("drain web-1", "failed", Some(refused)),
+        ("drain web-1", "failed", Some(never)),
+    ]);
+    assert_eq!(replaced["failed_drain"]["reason"], refused, "{replaced}");
 }

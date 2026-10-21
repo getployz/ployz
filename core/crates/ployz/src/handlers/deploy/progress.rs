@@ -6,11 +6,13 @@ use crate::ui::{
     Hint,
     progress::{Detail, Diagnostic, Frame, LogTail, Row, Run, State, Subject, Timing},
 };
+use ployz_core::config::{RuntimeFailureKind, RuntimeOutcomeSummary};
 use ployz_core::{QualifiedService, RpcError, RpcErrorCode, config::MEM_LIMIT_MAX};
 use ployz_store::{
     BuildStatus, DeployedNode, DeploymentStatus, DeploymentSummary, DeploymentView,
     DeploymentWarning, FailedAt, IngressAction, IngressFailure, NodeOutcome, NodeStatus, RowState,
 };
+use serde::Deserialize;
 use std::time::{Duration, UNIX_EPOCH};
 
 pub(super) fn frame(view: &DeploymentView) -> Frame {
@@ -282,9 +284,9 @@ pub(super) fn value_warnings(view: &DeploymentView) -> Vec<String> {
 
 pub(super) fn ingress_warnings(view: &DeploymentView) -> Vec<String> {
     let unchecked = ingress_unchecked(view).map(|cause| {
-        format!(
-            "Couldn't check ingress: {}. Deploy again to retry.",
-            cause.trim_end_matches('.')
+        crate::ui::then_sentence(
+            &crate::ui::with_reason("Couldn't check ingress", cause),
+            "Deploy again to retry.",
         )
     });
     view.deployment
@@ -298,8 +300,12 @@ pub(super) fn ingress_warnings(view: &DeploymentView) -> Vec<String> {
                      See what holds it with `sudo ss -ltnp '( sport = :80 or sport = :443 )'`. \
                      Ployz starts ingress on its own once the port is free."
                 ),
-                IngressFailure::Failed { cause } => format!(
-                    "Ingress isn't running on {server}: {cause}. Deploy again to retry."
+                IngressFailure::Failed { cause } => crate::ui::then_sentence(
+                    &crate::ui::with_reason(
+                        format_args!("Ingress isn't running on {server}"),
+                        cause,
+                    ),
+                    "Deploy again to retry.",
                 ),
             })
         })
@@ -433,6 +439,14 @@ fn failure(view: &DeploymentView, command: impl Fn(&[&str]) -> String) -> Failur
         view.environment.name.as_str(),
     ];
     let deployment = target(&view.deployment);
+    let lost_to_newer = matches!(
+        &view.deployment.outcome,
+        Some(ployz_store::Outcome::Executed { summary, .. })
+            if matches!(
+                RuntimeOutcomeSummary::deserialize(summary),
+                Ok(RuntimeOutcomeSummary::Failed { reason: RuntimeFailureKind::NewerServing, .. })
+            )
+    );
     let mut diagnostic = Diagnostic::default();
     if let Some(ployz_store::Outcome::Executed { compensation, .. }) = &view.deployment.outcome {
         diagnostic.compensation = compensation
@@ -481,6 +495,9 @@ fn failure(view: &DeploymentView, command: impl Fn(&[&str]) -> String) -> Failur
                     message: format!("{name} on {}: {row_reason}.", row.server),
                     causes: row_cause.clone(),
                 });
+            }
+            if lost_to_newer {
+                continue;
             }
             diagnostic.logs.push(LogTail {
                 service: service.clone(),
@@ -557,7 +574,11 @@ fn failure(view: &DeploymentView, command: impl Fn(&[&str]) -> String) -> Failur
         bad_image |= pulled && !build_failed && built.is_none();
     }
     let mut failure = Failure::from(RpcError {
-        code: RpcErrorCode::Internal,
+        code: if lost_to_newer {
+            RpcErrorCode::Conflict
+        } else {
+            RpcErrorCode::Internal
+        },
         message: crate::ui::sentence(reason),
         cause,
         details: serde_json::Value::Null,
@@ -1023,6 +1044,36 @@ mod tests {
     }
 
     #[test]
+    fn a_deploy_a_newer_one_serves_past_is_a_conflict_without_the_losing_copys_logs() {
+        let mut view = view();
+        view.deployment.outcome = Some(
+            serde_json::from_value(json!({
+                "type": "executed",
+                "summary": {"type": "failed", "completed": 1, "unexecuted": 0, "reason": "newer_serving"},
+                "reason": "web: a newer deploy is already serving web",
+            }))
+            .unwrap(),
+        );
+        for row in failed_rows(&mut view) {
+            *row = None;
+        }
+        let failed = failure(&view, command);
+        assert_eq!(failed.report().code, RpcErrorCode::Conflict);
+        assert!(failed.is_outcome());
+        assert_eq!(crate::ui::exit_code(&failed.report().code), 1);
+        assert_eq!(failed.json().pointer("/details/progress/logs/0"), None);
+        let text = crate::ui::plain(&failed);
+        assert!(!text.contains("startup failed"), "{text}");
+        assert!(inspects(&failed).is_empty());
+        assert!(
+            failed
+                .hints()
+                .iter()
+                .any(|hint| matches!(hint, Hint::Retry(_)))
+        );
+    }
+
+    #[test]
     fn a_built_service_that_failed_to_pull_has_no_image_setting_to_inspect() {
         let mut view = view();
         for row in failed_rows(&mut view) {
@@ -1398,6 +1449,19 @@ mod tests {
             ingress_warnings(&view),
             ["Ingress isn't running on web-1: pull failed. Deploy again to retry."]
         );
+        view.deployment.ingress.first_mut().unwrap().failure = Some(IngressFailure::Failed {
+            cause: "pull failed.".into(),
+        });
+        assert_eq!(
+            ingress_warnings(&view),
+            ["Ingress isn't running on web-1: pull failed. Deploy again to retry."]
+        );
+        view.deployment.ingress.first_mut().unwrap().failure =
+            Some(IngressFailure::Failed { cause: " ".into() });
+        assert_eq!(
+            ingress_warnings(&view),
+            ["Ingress isn't running on web-1. Deploy again to retry."]
+        );
     }
 
     #[test]
@@ -1441,6 +1505,11 @@ mod tests {
                 "Couldn't check ingress: lab-1 went unobserved (connection refused). Deploy again to retry.",
                 "Couldn't check ingress: lab-2 went unobserved (no answer). Deploy again to retry."
             ]
+        );
+        view.deployment.warnings = vec![DeploymentWarning::IngressUnchecked { cause: "".into() }];
+        assert_eq!(
+            ingress_warnings(&view),
+            ["Couldn't check ingress. Deploy again to retry."]
         );
     }
 

@@ -196,36 +196,38 @@ impl Host for System {
     }
 
     async fn participating(&self) -> Option<String> {
-        use crate::context::{Connection, ConnectionSource, SelectedConnections};
-        use ployz_core::{InspectRequest, LocalMachinePhase, op};
+        let details = local_machine(PROBE_TIMEOUT).await?;
+        (details.phase == ployz_core::LocalMachinePhase::Participating).then(|| {
+            details
+                .machine
+                .map_or_else(|| self.hostname(), |machine| machine.name.to_string())
+        })
+    }
+}
 
-        let inspect = async {
-            let connection =
-                Connection::unix(Path::new(crate::connect::DEFAULT_LOCAL_SOCKET)).ok()?;
-            let mut client = crate::connect::connect_selected_with(
-                SelectedConnections {
-                    source: ConnectionSource::LocalSocket,
-                    connections: vec![connection],
-                },
-                std::sync::Arc::new(crate::connect::SystemConnector::default()),
-            )
-            .await
-            .ok()?;
-            let details = client
-                .call_repeatable::<op::Inspect>(InspectRequest::default(), None)
-                .await
-                .ok()?;
-            (details.phase == LocalMachinePhase::Participating).then(|| {
-                details
-                    .machine
-                    .map_or_else(|| self.hostname(), |machine| machine.name.to_string())
-            })
-        };
-        tokio::time::timeout(PROBE_TIMEOUT, inspect)
+/// What this host's daemon says of its Machine over the local socket, or none when it doesn't
+/// answer within `timeout`.
+pub(crate) async fn local_machine(timeout: Duration) -> Option<ployz_core::MachineDetails> {
+    use crate::context::{Connection, ConnectionSource, SelectedConnections};
+    use ployz_core::{InspectRequest, op};
+
+    let inspect = async {
+        let connection = Connection::unix(Path::new(crate::connect::DEFAULT_LOCAL_SOCKET)).ok()?;
+        let mut client = crate::connect::connect_selected_with(
+            SelectedConnections {
+                source: ConnectionSource::LocalSocket,
+                connections: vec![connection],
+            },
+            std::sync::Arc::new(crate::connect::SystemConnector::default()),
+        )
+        .await
+        .ok()?;
+        client
+            .call_repeatable::<op::Inspect>(InspectRequest::default(), None)
             .await
             .ok()
-            .flatten()
-    }
+    };
+    tokio::time::timeout(timeout, inspect).await.ok().flatten()
 }
 
 /// Kills the probe's whole process group, so a hung `docker` or `lsblk` under

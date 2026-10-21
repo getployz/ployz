@@ -336,6 +336,163 @@ async fn replacing_the_local_caddy_process_reloads_an_unchanged_projection() {
 }
 
 #[tokio::test]
+async fn a_write_without_an_admin_is_loaded_once_the_admin_answers() {
+    let WatcherFixture {
+        machine,
+        state,
+        address,
+        server,
+        directory,
+    } = watcher_fixture().await;
+    let (load_tx, mut load_rx) = mpsc::unbounded_channel();
+    let admin = TestAdmin { loads: load_tx };
+    let admin_up = Arc::new(AtomicBool::new(false));
+    let caddyfile = directory.join(CONFIG_FILE);
+    let shutdown = CancellationToken::new();
+    let watcher = tokio::spawn(watch_caddy(
+        machine,
+        ReplicatedStore::new(ApiClient::http1(address, &"a".repeat(64)).unwrap()),
+        no_down,
+        caddyfile.clone(),
+        tokio::sync::watch::channel(Default::default()).0,
+        shutdown.clone(),
+        {
+            let admin_up = Arc::clone(&admin_up);
+            move || std::future::ready(Ok(admin_up.load(Ordering::SeqCst).then(|| admin.clone())))
+        },
+    ));
+
+    wait_for_caddyfile(&caddyfile, "10.210.1.2:80").await;
+    admin_up.store(true, Ordering::SeqCst);
+    state.mutate(|container| {
+        container
+            .labels
+            .insert("unrelated.example/changed".into(), "true".into());
+    });
+    state.send(b"{\"change\":{}}\n");
+
+    let loaded = timeout(Duration::from_secs(1), load_rx.recv())
+        .await
+        .expect("an unchanged projection written without an admin was never loaded")
+        .unwrap();
+    assert!(loaded.contains("10.210.1.2:80"), "{loaded}");
+
+    shutdown.cancel();
+    watcher.await.unwrap().unwrap();
+    server.abort();
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[tokio::test]
+async fn a_store_read_error_does_not_reload_an_unchanged_projection() {
+    let WatcherFixture {
+        machine,
+        state,
+        address,
+        server,
+        directory,
+    } = watcher_fixture().await;
+    let (load_tx, mut load_rx) = mpsc::unbounded_channel();
+    let admin = TestAdmin { loads: load_tx };
+    let shutdown = CancellationToken::new();
+    let watcher = tokio::spawn(watch_caddy(
+        machine,
+        ReplicatedStore::new(ApiClient::http1(address, &"a".repeat(64)).unwrap()),
+        no_down,
+        directory.join(CONFIG_FILE),
+        tokio::sync::watch::channel(Default::default()).0,
+        shutdown.clone(),
+        move || std::future::ready(Ok(Some(admin.clone()))),
+    ));
+
+    timeout(Duration::from_millis(250), load_rx.recv())
+        .await
+        .expect("first load waited for debounce")
+        .unwrap();
+    state.fail_queries.store(true, Ordering::SeqCst);
+    state.send(b"{\"change\":{}}\n");
+    state.wait_for_container_queries(2).await;
+    state.fail_queries.store(false, Ordering::SeqCst);
+    state.send(b"{\"change\":{}}\n");
+    state.wait_for_container_queries(3).await;
+
+    assert!(
+        timeout(Duration::from_millis(500), load_rx.recv())
+            .await
+            .is_err(),
+        "a store read error reloaded an unchanged projection"
+    );
+
+    shutdown.cancel();
+    watcher.await.unwrap().unwrap();
+    server.abort();
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[tokio::test]
+async fn a_failed_admin_probe_on_a_loaded_input_neither_reloads_nor_holds_back_acks() {
+    let WatcherFixture {
+        machine,
+        state,
+        address,
+        server,
+        directory,
+    } = watcher_fixture().await;
+    let first = state.api_container();
+    let (load_tx, mut load_rx) = mpsc::unbounded_channel();
+    let admin = TestAdmin { loads: load_tx };
+    let probes = Arc::new(AtomicUsize::new(0));
+    state
+        .lose_next_transaction_response
+        .store(true, Ordering::SeqCst);
+    let shutdown = CancellationToken::new();
+    let watcher = tokio::spawn(watch_caddy(
+        machine.clone(),
+        ReplicatedStore::new(ApiClient::http1(address, &"a".repeat(64)).unwrap()),
+        no_down,
+        directory.join(CONFIG_FILE),
+        tokio::sync::watch::channel(Default::default()).0,
+        shutdown.clone(),
+        {
+            let probes = Arc::clone(&probes);
+            move || {
+                std::future::ready(if probes.fetch_add(1, Ordering::SeqCst) == 0 {
+                    Ok(Some(admin.clone()))
+                } else {
+                    Err(CaddyError::Admin("admin probe timed out".into()))
+                })
+            }
+        },
+    ));
+
+    next_load(&mut load_rx).await;
+    state.wait_for_ack_transactions(1).await;
+    state.mutate(|container| {
+        container
+            .labels
+            .insert("unrelated.example/changed".into(), "true".into());
+    });
+    state.send(b"{\"change\":{}}\n");
+
+    state.wait_for_ack_transactions(2).await;
+    assert_eq!(state.last_acks(), vec![ack(&machine, &[&first])]);
+    assert!(
+        load_rx.try_recv().is_err(),
+        "an unchanged, loaded input was posted to /load again"
+    );
+    assert_eq!(
+        probes.load(Ordering::SeqCst),
+        1,
+        "an unchanged, loaded input probed the admin"
+    );
+
+    shutdown.cancel();
+    watcher.await.unwrap().unwrap();
+    server.abort();
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[tokio::test]
 async fn periodic_resnapshot_recovers_a_missed_change_notification() {
     let WatcherFixture {
         machine,
@@ -923,7 +1080,7 @@ async fn route_publishes_count_only_this_process() {
         vec![ingress("example.com", 80, HttpProtocol::Http)],
     );
     state.transactions.lock().unwrap().push(vec![Statement {
-        query: "INSERT INTO ingress_routes (machine_id, service, deploy, containers) VALUES (?, ?, ?, ?)"
+        query: "INSERT INTO ingress_routes (machine_id, service, containers) VALUES (?, ?, ?)"
             .into(),
         params: ack(&machine, &[&stale]),
     }]);
@@ -1009,7 +1166,6 @@ fn ack(machine: &Machine, routed: &[&ContainerObservation]) -> Vec<Value> {
     vec![
         json!(machine.id),
         json!("app/api"),
-        json!("rotation"),
         json!(serde_json::to_string(&ids).unwrap()),
     ]
 }
@@ -1065,6 +1221,7 @@ async fn watcher_fixture() -> WatcherFixture {
         statements: Arc::new(Mutex::new(Vec::new())),
         transactions: Arc::new(Mutex::new(Vec::new())),
         lose_next_transaction_response: Arc::new(AtomicBool::new(false)),
+        fail_queries: Arc::new(AtomicBool::new(false)),
     };
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -1152,6 +1309,7 @@ struct WatchState {
     statements: Arc<Mutex<Vec<(Sent, String)>>>,
     transactions: Arc<Mutex<Vec<Vec<Statement>>>>,
     lose_next_transaction_response: Arc<AtomicBool>,
+    fail_queries: Arc<AtomicBool>,
 }
 
 impl WatchState {
@@ -1248,6 +1406,16 @@ impl WatchState {
             .collect()
     }
 
+    async fn wait_for_container_queries(&self, count: usize) {
+        timeout(Duration::from_secs(5), async {
+            while self.container_queries() < count {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("container query {count} was never sent"));
+    }
+
     async fn wait_for_ack_transactions(&self, count: usize) {
         timeout(Duration::from_secs(5), async {
             while self.ack_transactions() < count {
@@ -1279,13 +1447,17 @@ struct Statement {
     params: Vec<Value>,
 }
 
-async fn query(State(state): State<WatchState>, body: Bytes) -> Bytes {
+async fn query(State(state): State<WatchState>, body: Bytes) -> Response {
     let statement: Statement = serde_json::from_slice(&body).unwrap();
+    let fail = state.fail_queries.load(Ordering::SeqCst);
     state
         .statements
         .lock()
         .unwrap()
         .push((Sent::Query, statement.query.clone()));
+    if fail {
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    }
     if statement.query == "SELECT id, machine_id, container FROM containers ORDER BY id" {
         let containers = state.containers.lock().unwrap();
         events(
@@ -1309,6 +1481,7 @@ async fn query(State(state): State<WatchState>, body: Bytes) -> Bytes {
     } else {
         panic!("unexpected query {}", statement.query);
     }
+    .into_response()
 }
 
 async fn subscribe(State(state): State<WatchState>, body: Bytes) -> Response {

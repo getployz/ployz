@@ -151,7 +151,7 @@ async fn each_ready_start_waits_for_the_switch_before_it_completes() {
 }
 
 #[tokio::test]
-async fn a_newer_in_copy_reports_superseded_and_removes_the_new_copies() {
+async fn a_newer_in_copy_fails_the_deploy_naming_its_service_and_removes_the_new_copies() {
     let machine = machine('1');
     let plan = vec![run(&machine, spec(None, None, None), true)];
     let (newer, new) = (container('a'), container('b'));
@@ -165,15 +165,197 @@ async fn a_newer_in_copy_reports_superseded_and_removes_the_new_copies() {
 
     assert_eq!(
         outcome,
-        DeployOutcome::Superseded {
+        DeployOutcome::Failed {
             completed: Vec::new(),
-            service: api(),
-            unexecuted: plan,
-            services: ended(&[("api", ServiceResult::Old)]),
+            failed: FailedOperation::Operation {
+                operation: plan.first().cloned().unwrap(),
+                error: ExecutionError::NewerServing { service: api() },
+            },
+            unexecuted: Vec::new(),
+            services: ended(&[("api", ServiceResult::Newer)]),
         }
+    );
+    let failure = crate::deploy::report::failure(&outcome, &[], Vec::new());
+    let shown = crate::ui::plain(&failure);
+    assert_eq!(
+        shown.lines().next(),
+        Some("error: api: A newer deploy is already serving app/api."),
+        "{shown}"
+    );
+    assert!(!shown.contains("start"), "{shown}");
+    assert_eq!(failure.report().code, RpcErrorCode::Conflict);
+    assert_eq!(
+        failure
+            .diagnostic()
+            .and_then(|diagnostic| diagnostic.failed_machine),
+        None
     );
     assert!(client.brought_in().is_empty());
     assert_eq!(client.rotation(&newer), Some(CopyRotation::In));
+    client.assert_done();
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_newer_in_copy_removes_the_stop_first_copy_it_keeps_from_coming_back() {
+    let machine = machine('1');
+    let (old, newer, new) = (container('a'), container('c'), container('d'));
+    let plan = vec![global_replacement(&machine, &old, UpdateOrder::StopFirst)];
+    let client = Scripted::new(vec![
+        observed(Call::Inspect(machine, old), running()),
+        ok(Call::Stop(machine, old)),
+        created(Call::Run(machine, ContainerKind::ServiceContainer), &new),
+        ok(Call::Discard(machine, new)),
+        ok(Call::Remove(machine, old)),
+    ])
+    .with_copy(&machine, &old, CopyRotation::In)
+    .with_copy_at(&api(), &machine, &newer, CopyRotation::In, Gen::new(100));
+
+    let (outcome, warnings) =
+        execute_reported(&plan, &[machine], &client, &CancellationToken::new()).await;
+
+    assert!(
+        matches!(
+            &outcome,
+            DeployOutcome::Failed {
+                failed: FailedOperation::Operation {
+                    error: ExecutionError::NewerServing { .. },
+                    ..
+                },
+                ..
+            }
+        ),
+        "{outcome:?}"
+    );
+    assert_eq!(outcome.services(), ended(&[("api", ServiceResult::Newer)]));
+    let shown = crate::ui::plain(&crate::deploy::report::failure(&outcome, &[], Vec::new()));
+    for said in std::iter::once(&shown).chain(&warnings) {
+        assert!(!said.contains("start"), "{said}");
+    }
+    assert_eq!(
+        client.rotation(&old),
+        None,
+        "the old copy can never serve again"
+    );
+    assert_eq!(client.rotation(&newer), Some(CopyRotation::In));
+    client.assert_done();
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_old_copy_a_newer_copy_refuses_that_will_not_go_is_left_saying_why() {
+    let machine = machine('1');
+    let (old, newer, new) = (container('a'), container('c'), container('d'));
+    let plan = vec![global_replacement(&machine, &old, UpdateOrder::StopFirst)];
+    let client = Scripted::new(vec![
+        observed(Call::Inspect(machine, old), running()),
+        ok(Call::Stop(machine, old)),
+        created(Call::Run(machine, ContainerKind::ServiceContainer), &new),
+        ok(Call::Discard(machine, new)),
+        failed(Call::Remove(machine, old), "the disk is busy"),
+    ])
+    .with_copy(&machine, &old, CopyRotation::In)
+    .with_copy_at(&api(), &machine, &newer, CopyRotation::In, Gen::new(100));
+
+    let (_, warnings) =
+        execute_reported(&plan, &[machine], &client, &CancellationToken::new()).await;
+
+    assert_eq!(
+        warnings,
+        [left_running(
+            "machine-1",
+            "a newer deploy is already serving app/api, and removing it failed: the disk is busy"
+        )]
+    );
+    assert_eq!(client.rotation(&old), Some(CopyRotation::Out));
+    client.assert_done();
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_rolling_copy_a_newer_deploy_refuses_fails_its_own_step_and_the_next_never_runs() {
+    let (first, second) = (machine('1'), machine('2'));
+    let (old_first, old_second, newer, new) = (
+        container('a'),
+        container('b'),
+        container('c'),
+        container('d'),
+    );
+    let plan = vec![
+        global_replacement(&first, &old_first, UpdateOrder::Rolling),
+        global_replacement(&second, &old_second, UpdateOrder::Rolling),
+    ];
+    let client = Scripted::new(vec![
+        observed(Call::Inspect(first, old_first), running()),
+        ok(Call::Stop(first, old_first)),
+        created(Call::Run(first, ContainerKind::ServiceContainer), &new),
+        ok(Call::Discard(first, new)),
+        ok(Call::Remove(first, old_first)),
+    ])
+    .with_copy(&first, &old_first, CopyRotation::In)
+    .with_copy(&second, &old_second, CopyRotation::In)
+    .with_copy_at(&api(), &first, &newer, CopyRotation::In, Gen::new(100));
+
+    let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
+
+    assert_eq!(
+        outcome,
+        DeployOutcome::Failed {
+            completed: Vec::new(),
+            failed: FailedOperation::Operation {
+                operation: plan.first().cloned().unwrap(),
+                error: ExecutionError::NewerServing { service: api() },
+            },
+            unexecuted: plan.get(1..).unwrap().to_vec(),
+            services: ended(&[("api", ServiceResult::Newer)]),
+        }
+    );
+    client.assert_done();
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_rolling_copy_that_fails_health_fails_its_own_step_and_the_next_never_runs() {
+    let (first, second) = (machine('1'), machine('2'));
+    let (old_first, old_second, new) = (container('a'), container('b'), container('d'));
+    let plan = vec![
+        global_replacement(&first, &old_first, UpdateOrder::Rolling),
+        global_replacement(&second, &old_second, UpdateOrder::Rolling),
+    ];
+    let client = Scripted {
+        unhealthy_in: BTreeMap::from([(
+            new,
+            HealthVerdict::Failed {
+                observation: unhealthy(),
+                last_check: None,
+                oom_killed: false,
+            },
+        )]),
+        ..Scripted::new(vec![
+            observed(Call::Inspect(first, old_first), running()),
+            ok(Call::Stop(first, old_first)),
+            created(Call::Run(first, ContainerKind::ServiceContainer), &new),
+            ok(Call::Discard(first, new)),
+            ok(Call::Restart(first, old_first)),
+        ])
+    }
+    .with_copy(&first, &old_first, CopyRotation::In)
+    .with_copy(&second, &old_second, CopyRotation::In);
+
+    let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
+
+    assert!(
+        matches!(
+            &outcome,
+            DeployOutcome::Failed {
+                failed: FailedOperation::Operation {
+                    operation,
+                    error: ExecutionError::Health { container_id, .. },
+                },
+                unexecuted,
+                ..
+            } if Some(operation) == plan.first()
+                && *container_id == new
+                && unexecuted.as_slice() == plan.get(1..).unwrap()
+        ),
+        "{outcome:?}"
+    );
     client.assert_done();
 }
 

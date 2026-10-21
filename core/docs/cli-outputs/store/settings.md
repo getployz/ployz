@@ -281,7 +281,7 @@ $ ployz set web.replicaz=2
 stderr:
 ```
 error: Unknown Service Setting
-valid: did you mean replicas?
+did you mean replicas?
 valid: cpuLimit, healthcheck, image, maxRetries, memLimit, preDeployCommand, privateDns, registryCredential, and 18 more
 ```
 
@@ -902,7 +902,7 @@ $ ployz get web.replicaz
 stderr:
 ```
 error: Unknown Service Setting
-valid: did you mean replicas?
+did you mean replicas?
 valid: cpuLimit, healthcheck, image, maxRetries, memLimit, preDeployCommand, privateDns, registryCredential, and 18 more
 ```
 
@@ -971,7 +971,7 @@ $ ployz unset web.replicaz
 stderr:
 ```
 error: Unknown Service Setting
-valid: did you mean replicas?
+did you mean replicas?
 valid: cpuLimit, healthcheck, image, maxRetries, memLimit, preDeployCommand, privateDns, registryCredential, and 18 more
 ```
 
@@ -1057,7 +1057,7 @@ $ ployz explain web.replicaz
 stderr:
 ```
 error: Unknown Service Setting
-valid: did you mean replicas?
+did you mean replicas?
 valid: cpuLimit, healthcheck, image, maxRetries, memLimit, preDeployCommand, privateDns, registryCredential, and 18 more
 ```
 
@@ -1332,7 +1332,7 @@ $ ployz schema web.replicaz
 stderr:
 ```
 error: Unknown Service Setting. `ployz schema` takes SERVICE or SERVICE.SETTING; `ployz schema web` lists its Settings
-valid: did you mean replicas?
+did you mean replicas?
 valid: cpuLimit, healthcheck, image, maxRetries, memLimit, preDeployCommand, privateDns, registryCredential, and 18 more
 ```
 
