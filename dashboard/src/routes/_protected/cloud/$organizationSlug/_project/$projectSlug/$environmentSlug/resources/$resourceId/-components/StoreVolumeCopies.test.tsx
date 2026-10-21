@@ -1,7 +1,9 @@
 // @vitest-environment jsdom
+import { createMemoryHistory, createRootRoute, createRouter, RouterContextProvider } from "@tanstack/react-router";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { MachineId } from "@ployz/sdk";
+import type { RoleGate } from "#/modules/organization/members.queries";
 import { copiesFromPlacement } from "#/modules/volume-copies/volume-copies.placement";
 import type { PlacementRow } from "#/modules/volume-placement/volume-placement";
 import type { Member } from "#/modules/volume-run/volume-run";
@@ -34,6 +36,7 @@ const server = (name: string, storage: CopyServer["storage"] = "pool"): CopyServ
 
 function panel(members: Member[], placement: PlacementRow | null, options: {
   open?: string; upgrade?: string[]; servers?: CopyServer[]; matchedAt?: string; refreshing?: boolean; deploying?: boolean; owed?: boolean;
+  forgetGate?: RoleGate;
 } = {}) {
   const stage = vi.fn();
   const refresh = vi.fn();
@@ -42,11 +45,12 @@ function panel(members: Member[], placement: PlacementRow | null, options: {
   const onOpen = vi.fn();
   const copies = copiesFromPlacement({ volume, members, row: placement, active: null,
     statuses: options.matchedAt === undefined ? [] : [{ machine: id("web-2"), okAt: options.matchedAt, matchedAt: options.matchedAt, failedAt: null, failure: null }] });
-  render(<VolumeCopiesPanel volume={volume} members={members} rows={placement ? [placement] : []} running={null} owed={options.owed ?? false} copies={copies}
+  const router = createRouter({ routeTree: createRootRoute(), history: createMemoryHistory() });
+  render(<RouterContextProvider router={router}><VolumeCopiesPanel organizationSlug="ada" forgetGate={options.forgetGate ?? { allowed: true, reason: undefined }} volume={volume} members={members} rows={placement ? [placement] : []} running={null} owed={options.owed ?? false} copies={copies}
     servers={options.servers ?? members.map((entry) => server(entry.machine.name))} accepting={members.map((entry) => entry.machine.id)}
     upgrade={options.upgrade ?? []} seeds disabled={false} deploying={options.deploying ?? false} stage={stage} restore={restore}
     deleteCopy={deleteCopy} refresh={refresh} refreshing={options.refreshing ?? false}
-    open={options.open ? id(options.open) : null} onOpen={onOpen} />);
+    open={options.open ? id(options.open) : null} onOpen={onOpen} /></RouterContextProvider>);
   return { stage, deleteCopy, restore, onOpen, refresh };
 }
 const group = (label: string) => within(screen.getByRole("list", { name: label }));
@@ -142,15 +146,59 @@ describe("VolumeCopiesPanel", () => {
     expect(screen.queryByRole("button", { name: "Delete copy on web-3" })).toBeNull();
   });
 
-  it("offers Use mirror when the Primary is silent, but not while a committed Move is owed", () => {
-    const silent = [member("web-1", "unanswered"), mirrorAsOf("web-2", new Date(NOW.getTime() - 5 * 60_000))];
-    const { stage } = panel(silent, row(["web-2"]));
-    fireEvent.click(screen.getByRole("button", { name: "Use mirror" }));
-    expect(stage).toHaveBeenCalledWith(expect.objectContaining({ primary: id("web-2") }), [id("web-2")]);
-    cleanup();
-    panel(silent, row(["web-2"]), { owed: true });
+  const fiveAgo = () => new Date(NOW.getTime() - 5 * 60_000);
+  const useMirror = () => screen.queryByRole("button", { name: "Use mirror" });
+
+  it("sends an admin to forget the silent Primary's Server, with no Use mirror while it is silent", () => {
+    const { stage } = panel([member("web-1", "unanswered"), mirrorAsOf("web-2", fiveAgo())], row(["web-2"]));
     expect(screen.getByText("web-1 is not answering")).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Use mirror" })).toBeNull();
+    expect(screen.getByText(`Changes after ${clock.format(fiveAgo())} lost. The mirror on web-2 can take over once web-1 is forgotten.`, { exact: false })).toBeTruthy();
+    expect(screen.getByRole("link", { name: "Forget web-1" }).getAttribute("href")).toMatch(new RegExp(`/~/servers/${id("web-1")}$`));
+    expect(useMirror()).toBeNull();
+    expect(stage).not.toHaveBeenCalled();
+  });
+
+  it("tells a member an owner or admin has to forget the silent Server, with no link", () => {
+    panel([member("web-1", "unanswered"), mirrorAsOf("web-2", fiveAgo())], row(["web-2"]),
+      { forgetGate: { allowed: false, reason: "Only an owner or admin can forget servers." } });
+    expect(screen.getByText(/can take over once web-1 is forgotten\. Only an owner or admin can forget servers\.$/)).toBeTruthy();
+    expect(screen.queryByRole("link")).toBeNull();
+    expect(useMirror()).toBeNull();
+  });
+
+  it("names and links every silent Server, since each one holds Use mirror back", () => {
+    panel([member("web-1", "unanswered"), mirrorAsOf("web-2", fiveAgo()), member("web-3", "unanswered")], row(["web-2"]));
+    expect(screen.getByText("web-1 and web-3 are not answering")).toBeTruthy();
+    expect(screen.getByText(/once web-1 and web-3 are forgotten\./)).toBeTruthy();
+    expect(screen.getAllByRole("link").map((link) => link.textContent)).toEqual(["Forget web-1", "Forget web-3"]);
+    expect(useMirror()).toBeNull();
+  });
+
+  it("lists the surviving mirror once the silent Server is forgotten, and stages it as primary", () => {
+    const { stage } = panel([mirrorAsOf("web-2", fiveAgo())], row(["web-2"]));
+    expect(screen.getByText("data has no primary")).toBeTruthy();
+    expect(rows("Elsewhere")).toEqual([`web-2Mirror · ${clock.format(fiveAgo())}`]);
+    expect(screen.queryByText("No server reports a copy.")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Use mirror" }));
+    expect(stage).toHaveBeenCalledWith({ primary: id("web-2"), mirrors: [], deletes: [] }, [id("web-2")]);
+  });
+
+  it("says why it can't use the mirror while a committed Move is owed", () => {
+    panel([mirrorAsOf("web-2", fiveAgo())], row(["web-2"]), { owed: true });
+    expect(screen.getByText(/data's last move hasn't finished\.$/)).toBeTruthy();
+    expect(useMirror()).toBeNull();
+  });
+
+  it("shows the staged restore without an alert, the mirror as staged primary", () => {
+    panel([mirrorAsOf("web-2", fiveAgo())], row(["web-2"], { primary: "web-2" }));
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(rows("Live")).toEqual(["No primaryMoving to web-2 · on deployLive"]);
+    expect(group("Elsewhere").getByRole("listitem").getAttribute("data-staged")).toBe("primary");
+  });
+
+  it("says no server reports a copy of a Volume never deployed", () => {
+    panel([pooled("web-1"), pooled("web-2")], null);
+    expect(screen.getByText("No server reports a copy.")).toBeTruthy();
   });
 
   it("dates an old copy's and a silent Primary's restore point from another day", async () => {
@@ -161,7 +209,7 @@ describe("VolumeCopiesPanel", () => {
     expect(within(await screen.findByRole("alertdialog")).getByText(`web-3 · data · ${dated.format(at)}`)).toBeTruthy();
     cleanup();
     panel([member("web-1", "unanswered"), mirrorAsOf("web-2", at)], row(["web-2"]));
-    expect(screen.getByText(`Changes after ${dated.format(at)} lost`)).toBeTruthy();
+    expect(screen.getByText(`Changes after ${dated.format(at)} lost`, { exact: false })).toBeTruthy();
   });
 
   it("dates an old copy's restore point once the day turns, with the Servers' answer unchanged", () => {
@@ -182,7 +230,7 @@ describe("VolumeCopiesPanel", () => {
     expect(within(await screen.findByRole("alertdialog")).getByText(`web-3 · data · ${clock.format(at)}`)).toBeTruthy();
     cleanup();
     panel([member("web-1", "unanswered"), mirrorAsOf("web-2", at)], row(["web-2"]));
-    expect(screen.getByText(`Changes after ${clock.format(at)} lost`)).toBeTruthy();
+    expect(screen.getByText(`Changes after ${clock.format(at)} lost`, { exact: false })).toBeTruthy();
   });
 });
 

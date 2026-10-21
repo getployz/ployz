@@ -43,9 +43,10 @@ Details, and you drop it in Details. A deploy that removes a mirror asks you to 
   the server you move or mirror onto stays, so Ployz sends only what changed since.
 - When the primary's server stops answering, Copies says "web-1 is not answering" and when
   changes are lost from, for example "Changes after 10:36 lost", or "Changes after 8 Oct, 10:36
-  lost" when that was on an earlier day. **Use mirror**, or **Make
-  primary** on the mirror, moves the volume there at the next deploy, which asks you to confirm
-  **Data loss**.
+  lost" when that was on an earlier day. It offers no move while web-1 is silent, since web-1 may
+  still be writing. Once an owner or admin forgets web-1, **Use mirror** moves the volume to the
+  mirror at the next deploy, which asks you to confirm **Data loss**. See
+  [When its server goes down](volumes.md#when-its-server-goes-down).
 - **Drain** on a server page also moves each primary there off at the next deploy, to its mirror
   or else to the first other server that runs services. The page says "Next deploy moves 2
   volumes". Each environment's next deploy moves them.

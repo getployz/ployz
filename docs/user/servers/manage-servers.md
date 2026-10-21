@@ -568,7 +568,8 @@ data stay on the disk.
 ## Forget a server that is gone
 
 If a server is gone or can't be reset, forget it instead. Forgetting takes it out of the cluster
-without reaching it, and its volumes can't be recovered.
+without reaching it. The volumes it held come back only where they have a
+[mirror](../services/volumes.md#when-its-server-goes-down); the rest are lost with it.
 
 When the server is offline, its page shows **Forget web-2** under **Danger**. Click **Forget
 server**, type its name, then click **Forget**.

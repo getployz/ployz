@@ -1,4 +1,5 @@
-import { type ReactNode, useState } from "react";
+import { Fragment, type ReactNode, useState } from "react";
+import { Link } from "@tanstack/react-router";
 import { ChevronLeftIcon, ChevronRightIcon, PlusIcon, RefreshCwIcon, Trash2Icon, TriangleAlertIcon, XIcon } from "lucide-react";
 import type { EnvironmentRef, MachineId, MachineName } from "@ployz/sdk";
 import { ConfirmDialog } from "#/components/confirm-dialog";
@@ -13,6 +14,7 @@ import { Spinner } from "#/components/ui/spinner";
 import { useMinute } from "#/hooks/use-minute";
 import { cn } from "#/lib/utils";
 import { useInFlightDeployments } from "#/modules/config-store/store-view.queries";
+import { type RoleGate, useRoleGate } from "#/modules/organization/members.queries";
 import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
 import {
   addableCopies, cardLine, COPY_WORDS, isStale, type MirrorCopy, type OldCopy, STAGED_WORDS, type StagedCopy,
@@ -23,8 +25,8 @@ import { copiesFromPlacement } from "#/modules/volume-copies/volume-copies.place
 import { MIRROR_ROUND_MINUTES, mirrorLast, skippedWords } from "#/modules/volume-copies/volume-copies.refresh";
 import { placementBlockers, placementServers, restoreOpen } from "#/modules/volume-placement/daemon-release";
 import {
-  appliedMirrors, editPlacement, failover, lossMoment, observePlacement, type Placement, type PlacementEdit, type PlacementRow,
-  placementTargets, type PlacementVolume, type RestorePoint, restorePoints, targetPlacement,
+  appliedMirrors, editPlacement, lossMoment, observePlacement, type Placement, type PlacementEdit, type PlacementRow,
+  placementTargets, type PlacementVolume, type Recovery, recovery, type RestorePoint, restorePoints, targetPlacement,
 } from "#/modules/volume-placement/volume-placement";
 import { useDeleteCopy, useStagePlacement, useStageRestore } from "#/modules/volume-placement/volume-placement.hooks";
 import { useVolumePlacements } from "#/modules/volume-placement/volume-placement.queries";
@@ -56,6 +58,8 @@ export function useVolumeCopies(organizationSlug: string, environment: Environme
     : copiesFromPlacement({ volume, members, row, active: running, statuses: mirror.statuses });
   const accepting = placementServers(lens.machines);
   return {
+    organizationSlug,
+    forgetGate: useRoleGate(organizationSlug, "servers:remove", "Only an owner or admin can forget servers."),
     volume,
     members,
     rows,
@@ -80,6 +84,8 @@ export function useVolumeCopies(organizationSlug: string, environment: Environme
 export type VolumeCopiesData = ReturnType<typeof useVolumeCopies>;
 
 export type CopiesPanelProps = {
+  organizationSlug: string;
+  forgetGate: RoleGate;
   volume: CopiesVolume;
   members: readonly Member[] | undefined;
   rows: readonly PlacementRow[];
@@ -108,21 +114,69 @@ export type CopiesPanelProps = {
 
 /** A Volume's copies: the live one, and every place it survives if that Server dies. A mirror opens in detail. */
 export function VolumeCopiesPanel(props: CopiesPanelProps) {
-  const { volume, members, rows, copies, open, onOpen } = props;
+  const { volume, members, rows, copies, accepting, owed, open, onOpen } = props;
   const now = useMinute() ?? new Date();
   if (members === undefined) return <Empty variant="placeholder"><EmptyDescription>Waiting for your servers.</EmptyDescription></Empty>;
   const row = rows.find((entry) => entry.volumeId === volume.id) ?? null;
+  const recovered = recovery(volume, members, row, accepting, owed);
+  const alert = recovered === null ? null : <RecoveryAlert {...props} recovery={recovered} now={now} />;
   const target = targetPlacement(observePlacement(members), row);
-  if (copies === null || target === null) return <Empty variant="placeholder"><EmptyDescription>No server reports a copy.</EmptyDescription></Empty>;
+  if (copies === null || target === null) {
+    if (recovered?.kind !== "restore") return <Empty variant="placeholder"><EmptyDescription>No server reports a copy.</EmptyDescription></Empty>;
+    return <div className="flex flex-col gap-4">
+      {alert}
+      <Group label="Elsewhere">
+        <Item role="listitem" variant="outline" size="sm">
+          <ItemContent>
+            <ItemTitle>{recovered.mirror.name}</ItemTitle>
+            <ItemDescription>{[COPY_WORDS.mirror, recovered.lostAfter ? lossMoment(recovered.lostAfter, now) : null].filter(Boolean).join(" · ")}</ItemDescription>
+          </ItemContent>
+        </Item>
+      </Group>
+    </div>;
+  }
   const mirror = copies.elsewhere.find((copy): copy is MirrorCopy => copy.kind === "mirror" && copy.id === open);
   if (mirror !== undefined) return <CopyView {...props} members={members} row={row} copies={copies} copy={mirror} now={now} onBack={() => onOpen(null)} />;
-  return <CopiesView {...props} members={members} row={row} copies={copies} target={target} now={now} />;
+  return <CopiesView {...props} members={members} row={row} copies={copies} target={target} now={now} alert={alert} />;
+}
+
+function RecoveryAlert({ organizationSlug, forgetGate, volume, disabled, deploying, upgrade, stage, recovery: recovered, now }:
+  CopiesPanelProps & { recovery: Recovery; now: Date }) {
+  const lost = recovered.lostAfter ? `Changes after ${lossMoment(recovered.lostAfter, now)} lost` : "Recent changes lost";
+  const { mirror } = recovered;
+  if (recovered.kind === "forget") {
+    const { down } = recovered;
+    const names = down.map((server) => server.name).join(" and ");
+    const verb = down.length === 1 ? "is" : "are";
+    return <Alert variant="destructive">
+      <AlertTitle>{names} {verb} not answering</AlertTitle>
+      <AlertDescription>
+        {`${lost}. The mirror on ${mirror.name} can take over once ${names} ${verb} forgotten.`}
+        {forgetGate.allowed
+          ? down.map((server) => <Fragment key={server.id}>{" "}
+            <Link to="/cloud/$organizationSlug/~/servers/$serverId" params={{ organizationSlug, serverId: server.id }}>Forget {server.name}</Link>
+          </Fragment>)
+          : ` ${forgetGate.reason}`}
+      </AlertDescription>
+    </Alert>;
+  }
+  const { stage: staged } = recovered;
+  return <Alert variant="destructive">
+    <AlertTitle>{volume.name} has no primary</AlertTitle>
+    <AlertDescription>
+      {"refused" in staged ? `${lost}. ${staged.refused}` : `${lost}. Use mirror makes ${mirror.name} the primary at your next deploy.`}
+    </AlertDescription>
+    {"refused" in staged ? null : <AlertAction>
+      <Button variant="outline" size="sm" disabled={disabled || deploying || upgrade.length > 0}
+        onClick={() => stage(staged.placement, staged.mirrors)}>Use mirror</Button>
+    </AlertAction>}
+  </Alert>;
 }
 
 type Resolved = CopiesPanelProps & { members: readonly Member[]; row: PlacementRow | null; copies: VolumeCopies; now: Date };
 
-function CopiesView({ volume, members, row, rows, owed, copies, target, servers, accepting, upgrade, seeds, disabled, deploying, stage, restore, deleteCopy, onOpen, now }:
-  Resolved & { target: Placement }) {
+function CopiesView({ volume, members, row, rows, owed, copies, target, servers, accepting, upgrade, seeds, disabled, deploying, stage, restore, deleteCopy, onOpen, now,
+  alert }: Resolved & { target: Placement; alert: ReactNode }) {
   const [adding, setAdding] = useState(false);
   const [deleting, setDeleting] = useState<OldCopy | null>(null);
   const observed = observePlacement(members);
@@ -130,25 +184,18 @@ function CopiesView({ volume, members, row, rows, owed, copies, target, servers,
   const blocked = upgrade.length > 0;
   const locked = disabled || deploying || blocked;
   const edit = (change: PlacementEdit) => stage(editPlacement(target, change), applied);
-  const offer = failover(observed, row);
   const mirrorOn = placementTargets(volume, members, row, accepting, owed).mirror.filter((server) => server.id !== target.primary);
   const canAdd = !blocked && mirrorOn.length > 0 && addableCopies(copies, ["mirror"]).length > 0;
   const { live } = copies;
   const liveName = live.server?.name ?? "its server";
 
   return <div className="flex flex-col gap-4">
-    {offer ? <Alert variant="destructive">
-      <AlertTitle>{offer.down.name} is not answering</AlertTitle>
-      <AlertDescription>{offer.lostAfter ? `Changes after ${lossMoment(offer.lostAfter, now)} lost` : "Recent changes lost"}</AlertDescription>
-      {!owed && accepting.includes(offer.mirror.id) ? <AlertAction>
-        <Button variant="outline" size="sm" disabled={locked} onClick={() => edit({ kind: "move", to: offer.mirror.id })}>Use mirror</Button>
-      </AlertAction> : null}
-    </Alert> : null}
+    {alert}
     {upgrade.length ? <p className="text-sm text-muted-foreground">Upgrade {upgrade.join(", ")} to a newer Ployz</p> : null}
     <Group label="Live">
       <Item role="listitem" variant="outline" size="sm">
         <ItemContent>
-          <ItemTitle>{live.server?.name ?? "Unknown"}</ItemTitle>
+          <ItemTitle>{live.server?.name ?? "No primary"}</ItemTitle>
           <ItemDescription>{live.busy ? <Busy words={live.busy} /> : live.moveTo ? `Moving to ${live.moveTo.name} · on deploy` : "Primary"}</ItemDescription>
         </ItemContent>
         <ItemActions><Badge variant="success">Live</Badge></ItemActions>

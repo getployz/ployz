@@ -101,10 +101,22 @@ doesn't. Everything that mounts the volume still runs on its server.
 ## When its server goes down
 
 The services that mount the volume stop until the server is back. Nothing moves to another
-server on its own, and the CLI can't [move](move-a-volume.md) a volume while its server is down.
-With a mirror, **Use mirror** under the volume's **Copies** moves it there at your next deploy,
-losing the writes since the mirror's last refresh. To keep deploying your other services meanwhile,
-see [When a server goes down](scaling.md#when-a-server-goes-down).
+server on its own, and neither the CLI nor Ployz Cloud [moves](move-a-volume.md) a volume while
+its server is down: that server may still be writing to it. With a mirror, the volume's
+**Copies** says "web-1 is not answering", which changes are lost from, and that the mirror can
+take over once web-1 is forgotten.
+
+1. Wait if web-1 is coming back. When it answers again, its services start and nothing is lost.
+2. If it's gone for good, an owner or admin
+   [forgets it](../servers/manage-servers.md#forget-a-server-that-is-gone) on its server page.
+   Copies links there.
+3. Back under **Copies**, click **Use mirror**. It stages the mirror as the primary and says
+   which changes are lost: the writes since the mirror's last refresh.
+4. Deploy. The deploy asks you to confirm **Data loss**, makes the mirror the volume, and starts
+   the services that mount it on that server.
+
+To keep deploying your other services meanwhile, see
+[When a server goes down](scaling.md#when-a-server-goes-down).
 
 > [!WARNING]
 > A volume lives on one server. Add a [mirror](move-a-volume.md#mirror-a-volume) to keep a backup
@@ -151,9 +163,10 @@ Volume data has no writer; web-2 holds its only copy. Make it the writer: ployz 
 ```
 
 Run the `ployz volume restore` line it prints to make that copy the writer again, then deploy.
-While one of your servers is offline, the deploy can't tell whether that server holds the writer,
-so it names that server instead and suggests no restore. See
-[When a server goes down](scaling.md#when-a-server-goes-down).
+In Ployz Cloud, the volume's **Copies** lists the copy and **Use mirror** stages the same restore
+for your next deploy. While one of your servers is offline, the deploy can't tell whether that
+server holds the writer, so it names that server instead and suggests no restore. See
+[When its server goes down](#when-its-server-goes-down).
 If several servers hold copies, it names them. Keep the newest and delete the others from the
 volume's page in Ployz Cloud, which shows whether each is a mirror or an old copy. The error prints
 no `ployz volume mirror rm` line for them, because such a line run later could delete a copy that
