@@ -2,7 +2,7 @@ use super::{CONFIG_FILE, CaddyAdmin, Error, render_caddyfile};
 use crate::{
     corrosion::{CertificateChallenge, CertificateRow},
     ingress::{
-        IngressProjection, apply_caddy,
+        ApplyError, IngressProjection, apply_caddy,
         tests::{renderer_projection, test_material},
     },
 };
@@ -82,7 +82,9 @@ async fn reconcile<A: CaddyAdmin>(
         &service_containers(observations.iter().cloned()),
         certificates,
     );
-    apply_caddy(&projection, config_file, admin).await
+    apply_caddy(&projection, config_file, admin)
+        .await
+        .map_err(|(ApplyError::BeforeServing(error) | ApplyError::AfterServing(error))| error)
 }
 
 #[test]

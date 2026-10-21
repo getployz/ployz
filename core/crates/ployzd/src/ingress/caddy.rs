@@ -166,16 +166,16 @@ where
     .await
 }
 
-/// Render and apply one already-derived projection through Caddy.
+/// Render one already-derived projection and load it when Caddy runs, returning the
+/// Caddyfile to persist.
 ///
 /// # Errors
 ///
-/// Returns a filesystem, validation, or acknowledged-load error.
-pub(crate) async fn reconcile<A: CaddyAdmin>(
+/// Returns a validation or acknowledged-load error.
+pub(crate) async fn load<A: CaddyAdmin>(
     projection: &IngressProjection,
-    config_file: &Path,
     admin: Option<&A>,
-) -> Result<(), Error> {
+) -> Result<String, Error> {
     let timestamp = Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true);
     let caddyfile = render_caddyfile(projection, &timestamp);
     tracing::info!(routes = %route_summary(projection), "ingress config");
@@ -183,11 +183,10 @@ pub(crate) async fn reconcile<A: CaddyAdmin>(
         let json = admin.adapt(&caddyfile).await?;
         admin.load(&json).await?;
     }
-    write_caddyfile(config_file, &caddyfile)?;
-    Ok(())
+    Ok(caddyfile)
 }
 
-fn write_caddyfile(path: &Path, caddyfile: &str) -> Result<(), Error> {
+pub(crate) fn write_caddyfile(path: &Path, caddyfile: &str) -> Result<(), Error> {
     let directory = path
         .parent()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "Caddyfile has no parent"))?;

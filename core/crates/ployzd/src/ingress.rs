@@ -469,21 +469,26 @@ where
                         if loaded {
                             return Ok(());
                         }
-                        let admin = connect().await.map_err(io::Error::other)?;
+                        let admin = connect().await.map_err(ApplyError::BeforeServing)?;
                         let input = CaddyInput {
                             projection,
                             caddy,
                             through_admin: admin.is_some(),
                         };
                         if last_input.as_ref() != Some(&input) {
-                            apply_caddy(&input.projection, &config_file, admin.as_ref())
-                                .await
-                                .map_err(io::Error::other)?;
+                            apply_caddy(&input.projection, &config_file, admin.as_ref()).await?;
                             last_input = Some(input);
                         }
-                        Ok::<_, io::Error>(())
+                        Ok(())
                     }
                     .await;
+                    if !matches!(result, Err(ApplyError::BeforeServing(_))) {
+                        route_publishes.send_if_modified(|publishes| {
+                            let changed = publishes.addresses != addresses;
+                            publishes.addresses = addresses;
+                            changed
+                        });
+                    }
                     if let Err(error) = result {
                         eprintln!(
                             "failed to update Ingress Proxy configuration: {error}",
@@ -494,11 +499,6 @@ where
                         }
                         return Ok(());
                     }
-                    route_publishes.send_if_modified(|publishes| {
-                        let changed = publishes.addresses != addresses;
-                        publishes.addresses = addresses;
-                        changed
-                    });
                     let acks = route_acks(&routes);
                     let published = acks
                         .iter()
@@ -620,7 +620,17 @@ async fn publish_route_acks(
     }
 }
 
-/// Write shared certificate state and concretely reconcile Caddy.
+/// A failed Caddy apply, split by whether Caddy already serves the new config.
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum ApplyError {
+    #[error(transparent)]
+    BeforeServing(caddy::Error),
+    #[error(transparent)]
+    AfterServing(caddy::Error),
+}
+
+/// Write shared certificate state and concretely reconcile Caddy. Without a running
+/// Caddy, the new config serves once the Caddyfile Caddy starts from is written.
 ///
 /// # Errors
 ///
@@ -629,16 +639,25 @@ pub(crate) async fn apply_caddy<A: CaddyAdmin>(
     projection: &IngressProjection,
     config_file: &Path,
     admin: Option<&A>,
-) -> Result<(), caddy::Error> {
+) -> Result<(), ApplyError> {
     write_certificate_files(
         config_file,
         &projection.sites,
         0o600,
         prepare_directory,
         set_ployz_group,
-    )?;
-    caddy::reconcile(projection, config_file, admin).await?;
-    remove_stale_certificate_files(config_file, &projection.sites)?;
+    )
+    .map_err(|error| ApplyError::BeforeServing(error.into()))?;
+    let caddyfile = caddy::load(projection, admin)
+        .await
+        .map_err(ApplyError::BeforeServing)?;
+    caddy::write_caddyfile(config_file, &caddyfile).map_err(if admin.is_some() {
+        ApplyError::AfterServing
+    } else {
+        ApplyError::BeforeServing
+    })?;
+    remove_stale_certificate_files(config_file, &projection.sites)
+        .map_err(|error| ApplyError::AfterServing(error.into()))?;
     Ok(())
 }
 
