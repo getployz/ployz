@@ -25,6 +25,7 @@ pub async fn run(
                 r#gen: ployz_core::Gen::FIRST,
                 slot: SlotKey {
                     namespace,
+                    service: resolved_spec.name.clone(),
                     kind,
                     creation_key: CreationKey::try_from(uuid::Uuid::new_v4().to_string()).unwrap(),
                 },

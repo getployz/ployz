@@ -1650,7 +1650,7 @@ mod tests {
     }
 
     #[test]
-    fn only_the_system_ingress_migrates_queued_connections_when_the_kernel_can() {
+    fn only_the_system_ingress_gets_its_sysctls_at_create() {
         let machine_id = MachineId::parse("1".repeat(32)).unwrap();
         let gateway = MachineGateway(Ipv4Addr::new(10, 210, 0, 1));
         let ingress = ployz_core::QualifiedService::system_ingress();
@@ -1670,7 +1670,7 @@ mod tests {
                 &spec,
             )
             .unwrap();
-            create::migrate_ingress_requests(&mut body, namespace, &spec, kernel_supports);
+            create::ingress_sysctls(&mut body, namespace, &spec, kernel_supports);
             let host = body.host_config.unwrap();
             assert_eq!(host.log_config, Some(container_log_config()));
             host.sysctls
@@ -1678,12 +1678,18 @@ mod tests {
         let ingress_name = ingress.name.to_string();
         assert_eq!(
             sysctls(&ingress.namespace, &ingress_name, true),
+            Some(HashMap::from([
+                ("net.ipv4.tcp_migrate_req".into(), "1".into()),
+                ("net.ipv4.tcp_retries2".into(), "5".into()),
+            ]))
+        );
+        assert_eq!(
+            sysctls(&ingress.namespace, &ingress_name, false),
             Some(HashMap::from([(
-                "net.ipv4.tcp_migrate_req".into(),
-                "1".into()
+                "net.ipv4.tcp_retries2".into(),
+                "5".into()
             )]))
         );
-        assert_eq!(sysctls(&ingress.namespace, &ingress_name, false), None);
         assert_eq!(
             sysctls(
                 &ployz_core::Namespace::parse("app").unwrap(),

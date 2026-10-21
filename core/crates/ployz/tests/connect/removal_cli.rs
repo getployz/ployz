@@ -79,6 +79,55 @@ async fn machine_removal_reports_complete_and_partial_results() {
 }
 
 #[tokio::test]
+async fn a_reset_warning_and_the_volume_note_read_as_sentences() {
+    for (warning, read) in [
+        (
+            "Docker reset failed: busy volume",
+            "Server one was not fully cleaned up or reset: Docker reset failed: busy volume. Reset does not erase volume data.",
+        ),
+        (
+            "Docker reset failed: busy volume.",
+            "Server one was not fully cleaned up or reset: Docker reset failed: busy volume. Reset does not erase volume data.",
+        ),
+        (
+            "",
+            "Server one was not fully cleaned up or reset. Reset does not erase volume data.",
+        ),
+    ] {
+        let service = DiscoveryService::new(test_description());
+        *service.reset_warning.lock().unwrap() = Some(warning.to_owned());
+        let (address, server) = serve_discovery(service).await;
+        let config = std::env::temp_dir().join(format!(
+            "ployz-removal-warning-{}.yaml",
+            MachineId::random()
+        ));
+        let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
+            .args([
+                "--connect",
+                &format!("tcp://{address}"),
+                "--ployz-config",
+                config.to_str().unwrap(),
+                "server",
+                "rm",
+                "one",
+                "--confirm",
+                "one",
+                "--accept-volume-loss",
+                "data",
+            ])
+            .output()
+            .await
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains(&format!("! {read}\n")),
+            "{warning:?}: {stderr}"
+        );
+        server.abort();
+    }
+}
+
+#[tokio::test]
 async fn machine_reset_refuses_failed_service_observation_before_mutation() {
     let service = DiscoveryService::new(test_description());
     service.container_list_outcomes.lock().unwrap().insert(
@@ -541,6 +590,77 @@ async fn a_context_removes_a_server_cloud_does_not_manage_without_cloud() {
         "{:?}",
         removals.lock().unwrap()
     );
+}
+
+#[tokio::test]
+async fn the_entry_server_is_removed_through_another_server() {
+    let daemon = |id: char| {
+        let mut service = DiscoveryService::new(ContractDescription {
+            machine_id: machine_id(id),
+            ..test_description()
+        });
+        service.machines = vec![machine('a', "one"), machine('b', "two")];
+        service
+    };
+    let (entry, other) = (daemon('a'), daemon('b'));
+    let (entry_address, _entry) = serve_discovery(entry.clone()).await;
+    let (other_address, _other) = serve_discovery(other.clone()).await;
+    let config = std::env::temp_dir().join(format!("ployz-entry-{}.yaml", MachineId::random()));
+    std::fs::write(
+        &config,
+        format!(
+            "contexts:\n  lab:\n    connections:\n      - tcp: {entry_address}\n        machine_id: {}\n      - tcp: {other_address}\n        machine_id: {}\n",
+            machine_id('a'),
+            machine_id('b'),
+        ),
+    )
+    .unwrap();
+    let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .env_remove("PLOYZ_TOKEN")
+        .env("PLOYZ_CLOUD_URL", "http://127.0.0.1:9")
+        .args(["--ployz-config", config.to_str().unwrap(), "--json"])
+        .args(["server", "rm", "one", "--context", "lab"])
+        .args(["--confirm", "one", "--accept-volume-loss", "data"])
+        .output()
+        .await
+        .unwrap();
+    let context = std::fs::read_to_string(&config).unwrap();
+    let _ = std::fs::remove_file(&config);
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    assert!(entry.reset_machines.lock().unwrap().is_empty());
+    assert_eq!(*other.reset_machines.lock().unwrap(), [machine_id('a')]);
+    assert!(!context.contains(&machine_id('a').to_string()), "{context}");
+    assert!(context.contains(&machine_id('b').to_string()), "{context}");
+}
+
+#[tokio::test]
+async fn an_entry_server_dialled_alone_names_connecting_through_another() {
+    let mut service = DiscoveryService::new(ContractDescription {
+        machine_id: machine_id('a'),
+        ..test_description()
+    });
+    service.machines = vec![machine('a', "one"), machine('b', "two")];
+    let output = remove_server(
+        &service,
+        Dial::Connect,
+        "one",
+        &[],
+        &["--confirm", "one", "--accept-volume-loss", "data"],
+    )
+    .await;
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let error: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(error.pointer("/error/code"), Some(&json!("conflict")));
+    assert!(
+        error
+            .pointer("/error/message")
+            .unwrap()
+            .as_str()
+            .unwrap()
+            .contains("Connect through another Server"),
+        "{error}"
+    );
+    assert!(service.reset_machines.lock().unwrap().is_empty());
 }
 
 #[tokio::test]

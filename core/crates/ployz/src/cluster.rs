@@ -1404,11 +1404,15 @@ pub(crate) async fn refuse_last_managed(
         .await
         .map_err(|error| RpcError {
             code: RpcErrorCode::Unavailable,
-            message: format!(
-                "cannot read who manages Machine {selected}, the last Machine: {}. No changes made.",
-                crate::ui::row(&error)
+            message: crate::ui::then_sentence(
+                &format!(
+                    "cannot read who manages Machine {selected}, the last Machine: {}",
+                    crate::ui::row(&error)
+                ),
+                "No changes made.",
             ),
-            details: Value::Null, cause: Vec::new(),
+            details: Value::Null,
+            cause: Vec::new(),
         })?
         .management_clients;
     let cloud = holders.iter().any(|label| label.as_str() == "cloud");
