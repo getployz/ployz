@@ -281,6 +281,18 @@ A server whose root disk uses ZFS, Btrfs or tmpfs can still lose its last change
 happens, restart the services on it, as above. `ployz server ls` names each such server, and
 `ployz server show` adds a `store` line that says so.
 
+## My deploy failed when a server lost power or its network
+
+`cause: stream closed because of a broken pipe`
+
+The server your CLI connects through stopped answering for about 30 seconds, so the deploy failed
+and exited 1, leaving your old replicas in place. Once the server is back, deploy again. Ployz
+finishes the switch and removes any new replica the failed deploy left behind:
+
+```sh
+ployz deploy
+```
+
 ## A server hasn't picked up the new version
 
 `web = web-2 has not picked up the new copies. Check its network.`
