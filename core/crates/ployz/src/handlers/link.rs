@@ -889,9 +889,11 @@ fn status_record(status: &Status) -> Fields {
     }
     for attention in &status.attention {
         let label = match &attention.subject {
-            Some(Subject::NotPickedUp { service, .. } | Subject::StaleAddress { service, .. }) => {
-                Cow::Owned(service.name.to_string())
-            }
+            Some(
+                Subject::NotPickedUp { service, .. }
+                | Subject::StaleAddress { service, .. }
+                | Subject::NotServing { service, .. },
+            ) => Cow::Owned(service.name.to_string()),
             Some(Subject::Down { machine }) => Cow::Owned(machine.to_string()),
             Some(Subject::Unanswered { .. }) | None => Cow::Borrowed("needs attention"),
         };

@@ -77,7 +77,10 @@ impl ServiceObservation {
         })
     }
 
-    fn newest_container(&self) -> Option<&ServiceContainer> {
+    /// The Service Container created last, its Resolved Service Spec the one the latest
+    /// Deploy gave it.
+    #[must_use]
+    pub fn newest_container(&self) -> Option<&ServiceContainer> {
         self.containers.iter().max_by_key(|container| {
             let observation = container.as_observation();
             (

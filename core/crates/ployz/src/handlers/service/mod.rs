@@ -288,7 +288,7 @@ fn process_kind(container: ContainerRef<'_>) -> &'static str {
 
 /// A runtime state in words: `running`, `running, unhealthy`, `exited with code 1`,
 /// or `stopped` for a run its Machine stopped on request.
-fn process_state(observation: &ContainerObservation) -> String {
+pub(crate) fn process_state(observation: &ContainerObservation) -> String {
     match &observation.runtime {
         ContainerRuntimeObservation::Running {
             health: HealthObservation::NotConfigured,
