@@ -307,10 +307,9 @@ export const noRealTimeWaitInTestsRule = defineRule({
           testClockDrives.push(node);
           return;
         }
-        const isSleep = object === "Effect" && property === "sleep";
+        const alwaysWaits = object === "Effect" && (property === "sleep" || property === "delay");
         const isWait =
-          isSleep ||
-          (object === "Effect" && property === "delay") ||
+          alwaysWaits ||
           (object === "Schedule" && scheduleWaits.has(property));
         if (!isWait) return;
 
@@ -319,7 +318,7 @@ export const noRealTimeWaitInTestsRule = defineRule({
           context.report({ node: callee, messageId: "realClock" });
         } else if (tester === null) {
           testClockWaitsJudgedAtExit.push({ node: callee, messageId: "realClock" });
-        } else if (isSleep) {
+        } else if (alwaysWaits) {
           testClockWaitsJudgedAtExit.push({ node: callee, messageId: "undrivenTestClock" });
         }
       },

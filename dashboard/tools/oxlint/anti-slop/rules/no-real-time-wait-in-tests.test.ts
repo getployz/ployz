@@ -80,6 +80,11 @@ tester.run("no-real-time-wait-in-tests", noRealTimeWaitInTestsRule, {
     },
     {
       filename,
+      code: `it.effect("delays on an undriven clock", () => Effect.void.pipe(Effect.delay("1 second")));`,
+      errors: [{ messageId: "undrivenTestClock" }],
+    },
+    {
+      filename,
       code: `it("waits", async () => { await new Promise((resolve) => setTimeout(resolve, 300)); });`,
       errors: [{ messageId: "realClock" }],
     },
