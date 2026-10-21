@@ -7,7 +7,7 @@
 <p align="center">
   <strong>Rent a server. Get a cloud.</strong>
   <br>
-  Preview environments on servers you own. Fresh server to https in {{DEPLOY_TIME}}.
+  Preview environments on servers you own. One command from a fresh server to https.
 </p>
 
 <p align="center">
