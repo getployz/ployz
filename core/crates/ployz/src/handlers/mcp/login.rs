@@ -125,9 +125,12 @@ pub(crate) fn login(root: &ArgMatches) -> Result<(), Error> {
             Ok(saved) => saved,
             Err(error) => {
                 if let Err(revoking) = cloud_account::remove_token(credential, &made.id).await {
-                    ui::warn(format!(
-                        "Could not revoke the token {} just made: {revoking}. Run `ployz token rm {}`.",
-                        made.id, made.id
+                    ui::warn(ui::then_sentence(
+                        &format!(
+                            "Could not revoke the token {} just made: {revoking}",
+                            made.id
+                        ),
+                        &format!("Run `ployz token rm {}`.", made.id),
                     ));
                 }
                 return Err(error);

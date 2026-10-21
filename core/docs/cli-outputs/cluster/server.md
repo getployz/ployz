@@ -856,6 +856,11 @@ $ ployz server upgrade 0.2.3 gamma
 # exit 3
 ```
 
+stdout:
+```
+Server gamma failed to upgrade to 0.2.3 while launching.
+```
+
 stderr:
 ```
 error: Server gamma failed to upgrade to 0.2.3 while launching: could not inspect the Machine upgrade worker: No such file or directory (os error 2)
@@ -1016,7 +1021,6 @@ Removed Server gamma.
 stderr:
 ```
 ! Server gamma is running Services: shop-production/web.
-next: ployz server drain gamma
 ! Replicated Services may now be under-replicated: shop-production/web. Their replicas were not moved.
 ```
 

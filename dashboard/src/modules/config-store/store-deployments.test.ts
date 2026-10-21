@@ -208,9 +208,24 @@ it("words a push waiting for CI by how its CI stands, and lights it red once its
 });
 
 it("names an upload's provenance, and its uploader only when someone else started the Deployment", () => {
-  expect(uploadLabel({ digest: "d", base: { commit: "abc1234def", changed: true }, uploader: "nick" })).toBe("Uploaded by nick · abc1234 + changes");
-  expect(uploadLabel({ digest: "d", base: { commit: "abc1234def", changed: false }, uploader: "nick" }, "nick")).toBe("Uploaded · abc1234");
-  expect(uploadLabel({ digest: "d", base: null })).toBe("Uploaded");
+  expect(uploadLabel({ upload: { digest: "d", base: { commit: "abc1234def", changed: true }, uploader: "nick" } })).toBe("Uploaded by nick · abc1234 + changes");
+  expect(uploadLabel({ upload: { digest: "d", base: { commit: "abc1234def", changed: false }, uploader: "nick" } }, "nick")).toBe("Uploaded · abc1234");
+  expect(uploadLabel({ upload: { digest: "d", base: null } })).toBe("Uploaded");
+  expect(uploadLabel({ upload: null })).toBeNull();
+});
+
+it("says a waiting Deploy's upload is chosen for now, and again when it starts", () => {
+  const upload = { digest: "d", base: { commit: "abc1234def", changed: false }, uploader: "nick" };
+  expect(uploadLabel({ upload, chooses_upload_at_start: true })).toBe("Uploaded by nick · abc1234 for now; chosen again when it starts");
+  expect(uploadLabel({ upload, chooses_upload_at_start: false })).toBe("Uploaded by nick · abc1234");
+});
+
+it("reads a running Deployment as preparing until its runner records a Deploy Preview", () => {
+  const running = { status: "running", remove: false, outcome: null } as const;
+  expect(deploymentStatusLabel({ ...running, preparing: true })).toBe("Preparing");
+  expect(deploymentStatusLabel(running)).toBe("Deploying");
+  expect(deploymentStatusLabel({ ...running, remove: true, preparing: true })).toBe("Coming off the servers");
+  expect(deploymentLight({ status: "running" })).toBe("deploying");
 });
 
 const node = (name: string, outcome: DeploymentView["nodes"][number]["outcome"]) => ({ type: "service" as const, id: `id-${name}`, name, outcome, rows: [] });

@@ -145,7 +145,7 @@ fn diagnose(view: &DeploymentView, call: &Call) -> Option<[Call; 2]> {
 }
 
 fn summary(deployment: &DeploymentSummary) -> Value {
-    json!({
+    let mut summary = json!({
         "deployment": deployment.number,
         "status": deployment.status,
         "in_flight": deployment.in_flight,
@@ -154,7 +154,11 @@ fn summary(deployment: &DeploymentSummary) -> Value {
         "saved_revision": deployment.saved.0,
         "started_at": deployment.started_at,
         "ended_at": deployment.ended_at,
-    })
+    });
+    if let (true, Value::Object(object)) = (deployment.preparing, &mut summary) {
+        object.insert("preparing".into(), true.into());
+    }
+    summary
 }
 
 fn show(view: &DeploymentView) -> Value {
