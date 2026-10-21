@@ -824,7 +824,6 @@ impl Fleet {
                 unary(self.ensure(target, container_id, &request.want)?)
             }
             RpcRequestBody::ReadRoutes(request) => unary(self.routes(&request.service).into()),
-            // Fake copies carry no address, so no fake proxy routes one.
             RpcRequestBody::ReadRoutedAddresses(_) => unary(RoutedAddresses::default().into()),
             RpcRequestBody::InspectStorage(_) => unary(self.by_id(target)?.storage().into()),
             RpcRequestBody::ListVolumes(_) => unary(

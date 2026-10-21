@@ -44,10 +44,6 @@ pub(crate) mod caddy;
 
 use caddy::CaddyAdmin;
 
-/// What this process's ingress has published since it started: how many writes
-/// succeeded, and the Containers the last one acked per Service with the address
-/// it applied for each. A row already in Corrosion may predate a power-off, so
-/// only these count as this Machine's acks.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct PublishedRoutes {
     pub(crate) count: u64,

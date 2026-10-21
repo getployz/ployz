@@ -1,8 +1,3 @@
-//! The Server check of `ployz status`: no Server answering its one connection, each Down
-//! Machine, and each live Machine whose proxy lacks a Service's In copies, still routes
-//! its Out or Held ones, or routes a copy at an address its owner does not report. What
-//! the check could not see is a warning, never an all-clear.
-
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use clap::ArgMatches;
@@ -39,7 +34,6 @@ pub(super) enum Subject {
     },
     StaleAddress {
         service: QualifiedService,
-        /// The routing Machine by name, else by ID when the Machine list lacks it.
         machine: String,
         addresses: Vec<ContainerAddress>,
     },
@@ -134,7 +128,6 @@ enum Copies {
         /// Each Service of the namespace that has serving copies, with its routes as
         /// one Server reads them.
         reads: Vec<(ServiceObservation, Result<RoutesRead, RpcError>)>,
-        /// Each Machine that answered with the addresses its proxy last applied.
         routed: BTreeMap<MachineId, RoutedAddresses>,
     },
 }
@@ -411,8 +404,6 @@ fn judge(observed: Observed) -> Check {
     check
 }
 
-/// Each live Machine whose proxy routes a serving copy at an address other than the
-/// one its owner reports, with those addresses.
 fn stale_addresses(
     service: &ServiceObservation,
     routed: &BTreeMap<MachineId, RoutedAddresses>,

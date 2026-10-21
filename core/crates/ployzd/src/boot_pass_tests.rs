@@ -288,11 +288,8 @@ fn synced() -> watch::Receiver<bool> {
     watch::channel(true).1
 }
 
-/// Ingress publishes again on its own every few seconds, so the pass never waits
-/// on a fake that has stopped publishing.
 type Addressed = BTreeMap<QualifiedService, BTreeMap<ContainerId, ContainerAddress>>;
 
-/// The pass reads only which copies were acked, so any address will do.
 fn addressed(acks: &BTreeMap<QualifiedService, BTreeSet<ContainerId>>) -> Addressed {
     acks.iter()
         .map(|(service, copies)| {
