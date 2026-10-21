@@ -341,15 +341,24 @@ ployz deploy web
 `cause: connection to the daemon closed` or `cause: stream closed because of a broken pipe`
 
 Ployz restarted on the server your deploy connects through, as it does during an upgrade. The
-deploy fails within seconds and exits 1, and the deployment reads Failed. Your app keeps serving:
-the deploy left the old replica running, and may have left a new one beside it. Deploy again, or
-redeploy the failed deployment, and Ployz finishes the switch and removes the leftovers:
+deploy fails within about 15 seconds and exits 1, and the deployment reads Failed. Deploy again,
+or redeploy the failed deployment, and Ployz finishes the switch and removes what the failed deploy
+left behind:
 
 ```sh
 ployz deploy
 ```
 
+Do it right away when the service deploys **Stop first**, the default for a single replica with a
+volume ([Service settings](../services/settings.md)): the failed deploy may already have stopped the
+old replica, so the service is down until the next deploy. Otherwise the old replica keeps serving,
+sometimes beside a new one.
+
 When Ployz restarts on another server the deploy uses, the deploy waits for it and carries on.
+
+A server on an earlier Ployz release keeps the connection open when it restarts, so the deploy
+hangs on `still waiting:` instead of failing. That includes the restart that upgrades a server to
+this release. Stop the command and deploy again.
 
 ## My deployment stays Queued
 
