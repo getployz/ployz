@@ -51,9 +51,11 @@ behind. Saving again with no changes creates no new version. The CLI calls this
 To undo, click **Discard** beside a change, or open **⋮** and choose **Discard all changes**.
 **Discard all changes** returns everything to your latest saved version, including a staged
 rollback. Discarding a service or volume you never deployed deletes it. Discard does not save a
-version. When your latest saved version is not running, for example because its deploy failed,
-the bottom bar shows **#4 not running** with **Deploy** instead of a change count. Neither its **⋮**
-menu nor Details offers **Discard all** then, since nothing is left to discard.
+version. When part of your latest saved version is not deployed, for example because its deploy failed,
+the bottom bar shows **Save #4 not deployed** with **Deploy** instead of a change count. While a
+deploy of it runs, for example `ployz deploy web` deploying only web, the bar shows that deploy's
+status, like **Deploying · Save #4**, with **Deploy next** for the rest. Neither its **⋮** menu nor
+Details offers **Discard all** then, since nothing is left to discard.
 A new service's change starts with what it runs, its image or its repository and branch, such as
 `web.image: null → "nginx:1"`. Those rows have no Discard of their own: discard the service.
 `ployz discard web.image` says so and names the command, `ployz discard web`.

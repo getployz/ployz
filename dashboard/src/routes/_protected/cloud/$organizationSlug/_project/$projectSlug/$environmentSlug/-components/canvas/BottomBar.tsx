@@ -44,8 +44,8 @@ type BottomBarProps = {
   totalChanges: number;
   /** What the bar counts as changes: edits not yet saved. Defaults to `totalChanges`. */
   stagedChanges?: number;
-  /** The latest Save when it is all there is to deploy: the Servers don't run it yet. */
-  notRunning?: number | null;
+  /** The latest Save when it is all there is to deploy: part of it neither runs nor ships in a Deploy in flight. */
+  undeployedSave?: number | null;
   canSave: boolean;
   /** Deploys, with the user's Deploy message (blank for none). */
   onDeploy: (message: string) => void;
@@ -91,7 +91,7 @@ export function BottomBar({
   groups,
   totalChanges,
   stagedChanges = totalChanges,
-  notRunning = null,
+  undeployedSave = null,
   canSave,
   onDeploy,
   onSave,
@@ -212,9 +212,10 @@ export function BottomBar({
     return () => document.removeEventListener("keydown", deployOnShiftEnter);
   });
 
+  const subject = toDeploy(stagedChanges, undeployedSave, active);
   // With only a Save left to deploy, Discard all returns to that Save: nothing would change.
-  const nothingToDiscard = stagedChanges === 0 && notRunning !== null;
-  const counted = stagedChanges > 0 ? plural(stagedChanges, "change") : notRunning === null ? null : `#${notRunning} not running`;
+  const nothingToDiscard = subject.kind === "save";
+  const counted = countedWords(subject);
   const staged = hasChanges ? (
     <Row staged title={busy.has("discarding") ? "Discarding…" : ((counted ?? "Changes to save") + (notSet > 0 ? ` · ${notSet} not set` : ""))}
       shortTitle={counted ?? "To save"} detail={null}>
@@ -279,6 +280,34 @@ export function BottomBar({
         actionLabel="Discard all" variant="destructive" onConfirm={confirmDiscard} />
     </>
   );
+}
+
+/**
+ * What the changes to deploy are: edits not yet saved, else the latest Save part of which is left to deploy, with the
+ * oldest Deployment in flight that ships it, if any (one that takes the Environment off the Servers ships none);
+ * `nothing` while only a save is left.
+ */
+type ToDeploy =
+  | { kind: "changes"; count: number }
+  | { kind: "save"; save: number; shipping: DeploymentSummary | undefined }
+  | { kind: "nothing" };
+
+function toDeploy(stagedChanges: number, save: number | null, active: readonly DeploymentSummary[]): ToDeploy {
+  if (stagedChanges > 0) return { kind: "changes", count: stagedChanges };
+  if (save === null) return { kind: "nothing" };
+  return { kind: "save", save, shipping: active.find((deployment) => !deployment.remove && deployment.saved === save) };
+}
+
+/** The row's words for its changes. A Save is never "not running": beside Service cards that reads as an outage. */
+function countedWords(subject: ToDeploy) {
+  switch (subject.kind) {
+    case "changes":
+      return plural(subject.count, "change");
+    case "save":
+      return subject.shipping ? `${deploymentStatusLabel(subject.shipping)} · Save #${subject.save}` : `Save #${subject.save} not deployed`;
+    case "nothing":
+      return null;
+  }
 }
 
 /** Whether Alt is held, so a button can say what an Alt-click does. */
