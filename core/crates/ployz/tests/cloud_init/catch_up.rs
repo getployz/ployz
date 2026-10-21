@@ -141,7 +141,7 @@ async fn machine_add_plans_catch_up_past_an_unarrived_registration() {
     assert!(output.status.success(), "{stderr}");
     assert!(entry.ensure_attempts() > 0);
     assert!(
-        stderr.contains("Server claim-only never joined"),
+        stderr.contains("Server claim-only shows no sign it ever joined"),
         "{stderr}"
     );
     assert!(

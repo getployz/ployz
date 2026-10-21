@@ -457,7 +457,7 @@ pub(crate) async fn follow_globals(
     );
     for (_, name) in not_arrived {
         crate::ui::warn(format!(
-            "Server {name} never joined, so Global catch-up did not wait on it."
+            "Server {name} shows no sign it ever joined, so Global catch-up did not wait on it."
         ));
         crate::ui::hint(&crate::ui::Hint::Next(command(&[
             "server",
