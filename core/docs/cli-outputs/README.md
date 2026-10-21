@@ -192,14 +192,14 @@ Dominant: a trailing `next: <command>` line. Every hint is a labelled line of it
 | Form | Count | Example | Capture |
 |---|---|---|---|
 | `next:` | 142 in 22 files | `next: ployz login` | [cloud/errors.md](cloud/errors.md) |
-| `valid:` | 40 in 11 files | `valid: api, postgres, redis, web, worker` | [cloud-cluster/errors.md](cloud-cluster/errors.md) |
+| `valid:` | 35 in 11 files | `valid: api, postgres, redis, web, worker` | [cloud-cluster/errors.md](cloud-cluster/errors.md) |
 | `inspect:` | 14 in 8 files | `inspect: ployz server ls` | [cluster/errors.md](cluster/errors.md) |
 | `retry:` | 13 in 9 files | `retry: ployz project rm scratch1 --confirm scratch1` | [store/project.md](store/project.md) |
 | `undo:` | 9 in 4 files | `undo: ployz history undo 7 --project shop --env production` | [cloud-cluster/deploy.md](cloud-cluster/deploy.md) |
 
 - `next:` targets vary in scope: `ployz diff --project shop`, `ployz diff`, `ployz deploy --project shop`.
 - Human output prints fewer hints than the JSON carries. 53 of 126 JSON success objects have a top-level `next`. 87 of 258 human successes print `next:`.
-- `valid:` shows eight choices, then `and N more`: `valid: cpuLimit, healthcheck, image, maxRetries, memLimit, preDeployCommand, privateDns, registryCredential, and 18 more` ([store/settings.md](store/settings.md)). A near miss adds a line above it with the same label: `valid: did you mean replicas?`.
+- `valid:` shows eight choices, then `and N more`: `valid: cpuLimit, healthcheck, image, maxRetries, memLimit, preDeployCommand, privateDns, registryCredential, and 18 more` ([store/settings.md](store/settings.md)). A near miss adds an unlabeled line above it: `did you mean replicas?`.
 
 ## 8. Identifiers
 
@@ -208,7 +208,7 @@ Dominant: names (Project, Environment, Service, Server, Volume, Organization). M
 - UUIDs. token rm takes only the token's UUID: `token rm ci` fails with `no token or signed-in device ci in this Organization` ([cloud/token.md](cloud/token.md)).
 - Deployments have a number and a UUID, and `#N` also numbers saved versions: `Nothing changed on the Servers; Deployment #2 shipped version #1.` ([cloud-cluster/deploy.md](cloud-cluster/deploy.md)), `Saved version #1 of shop/production. Not deployed.` ([store/staging.md](store/staging.md)). A bad id exits 2 with `Expected a Deployment ID or number` ([cluster/deploy.md](cluster/deploy.md)).
 - 32-hex Machine ids. server show prints `id = 91e8bbd81cd34c59a186d49d3375bbe8` ([cluster/server.md](cluster/server.md)). A Server Cloud holds no name for goes by its id: `Server 0123456789abcdef0123456789abcdef couldn't give this command access: invalid management connections` ([cloud/deploy.md](cloud/deploy.md)).
-- Container ids. 12 hex in log lines (`web/b966ab89d05c`), 64 hex in JSON `container_id` ([cluster/ps-logs-exec.md](cluster/ps-logs-exec.md)). Human text names a container `ployz-create-<64 hex>` in port-forward and in exec on a stopped Service, whose cause then names a second 64-hex id ([cloud-cluster/errors.md](cloud-cluster/errors.md)).
+- Container ids. 12 hex in log lines (`web/b966ab89d05c`), 64 hex in JSON `container_id` ([cluster/ps-logs-exec.md](cluster/ps-logs-exec.md)). Human text names a container `ployz-create-<64 hex>` in port-forward and in exec on a stopped Service, whose cause then names a second 64-hex id ([cloud-cluster/errors.md](cloud-cluster/errors.md)). These captures predate #2560: main names a new keyed container after its Service, `<service>-<12 hex>`.
 - One Service, two ids. JSON has a UUID `id` and a hex runtime `service_id` ([cloud-cluster/runtime.md](cloud-cluster/runtime.md)).
 - Version strings. `14:1:0.1`, `16:7:0.10:3db84a7b2f1973e4`, `31:e25e4c887592ac4e` ([cloud-cluster/deploy.md](cloud-cluster/deploy.md), [cluster/volume.md](cluster/volume.md), [store/env.md](store/env.md)).
 - Runtime names. `shop-production/web` in success lines and warnings, `shop/production` in prose.
@@ -273,8 +273,7 @@ Each item reproduces in a capture on main, at the line it cites.
 
 1. `exec` of a missing binary prints `OCI runtime exec failed: …` on stdout, exit 127. [cloud-cluster/errors.md:31](cloud-cluster/errors.md) **Kept: `exec` passes the remote command's output and exit code through.**
 2. `deployment start 1` with no Server follows until the capture's timeout kills it (exit 124), and prints nothing at all. [cloud/deploy.md:310](cloud/deploy.md)
-3. `server upgrade 0.2.3 gamma` exits 3, the partial code, though nothing printed on stdout and its only Server failed. The handler's `emit_committed` counts the result as printed in human mode too. [cluster/server.md:852](cluster/server.md)
-4. project rm help leaves the `<name>` argument with an empty description. [store/help.md:403](store/help.md)
+3. project rm help leaves the `<name>` argument with an empty description. [store/help.md:403](store/help.md)
 
 The earlier list's 32 items, rechecked against the same captures. Old items 23 and 29 are items 1 and 2 above.
 
@@ -292,10 +291,10 @@ Fixed, each at the capture that shows it:
 - 12, `cannot Select a context…`: now `Choosing a context needs a terminal; name one instead.` [store/context.md:514](store/context.md)
 - 13, signed-out ps and logs reported a socket error: now `Not signed in to Cloud.` with `next: ployz login`. [cloud/errors.md:198](cloud/errors.md), [cloud/errors.md:223](cloud/errors.md)
 - 14, the server rm retry quoted `~`: now `retry: ployz server rm gamma --context default --confirm gamma`. [cluster/errors.md:40](cluster/errors.md)
-- 15, server rm removed first, then warned, and printed an empty `Volumes the Cluster loses (0)` list: it warns before it removes (`handlers/server/remove.rs`), and no empty list prints. The capture shows stdout and stderr apart, so their order on the page is not the order they ran in. [cluster/server.md:1004](cluster/server.md)
+- 15, server rm removed first, then warned, and printed an empty `Volumes the Cluster loses (0)` list: it warns before it removes (`handlers/server/remove.rs`), and no empty list prints. The capture shows stdout and stderr apart, so their order on the page is not the order they ran in. [cluster/server.md:1009](cluster/server.md)
 - 16, service restart warned twice: one warning. [cluster/errors.md:644](cluster/errors.md)
 - 17, logs exited 0 with a Machine down: exit 3 and a warning. [cluster/errors.md:609](cluster/errors.md)
-- 18, server drain `--json` printed `public_key` as bytes: a base64 string. [cluster/server.md:892](cluster/server.md)
+- 18, server drain `--json` printed `public_key` as bytes: a base64 string. [cluster/server.md:897](cluster/server.md)
 - 19, `server show nope --json` said `invalid_argument`: now `not_found`. [cloud-cluster/errors.md:483](cloud-cluster/errors.md)
 - 20, a registry error's newline broke the result: the cause is one line, `error from registry: denied; denied`. [cloud-cluster/deploy.md:1436](cloud-cluster/deploy.md)
 - 21, up printed `built ` with no detail: now `workspace built on machine-1.` [cloud-cluster/deploy.md:3066](cloud-cluster/deploy.md)
@@ -313,7 +312,10 @@ Intentional, per a rule the captures state:
 - 5, a Managed volume can't switch storage after a Deploy was requested: `Volume cache keeps its storage once a Deploy has been requested; add a new Volume for other storage`. [cluster/volume.md:229](cluster/volume.md)
 - 27, a malformed `--expect-version 1` exits 2 and a stale well-formed one exits 1. Exit 2 means the command line is wrong; a stale version is a conflict with the current state, which exits 1. [cloud/deploy.md:768](cloud/deploy.md), [cloud-cluster/errors.md:107](cloud-cluster/errors.md)
 
-Seen once, not reproduced: env rm's removal Deployment printed `  api: starting 0/1` before `  api: removing 0/1` in the previous capture; the recapture removes api without starting it. [cloud-cluster/env.md:573](cloud-cluster/env.md)
+Fixed on main after this list was drawn up:
+
+- `server upgrade 0.2.3 gamma` exited 3, the partial code, with nothing on stdout while its only Server failed. Since #2630 it names the Server on stdout: `Server gamma failed to upgrade to 0.2.3 while launching.` It still exits 3. [cluster/server.md:852](cluster/server.md)
+- env rm's removal Deployment printed `  api: starting 0/1` before `  api: removing 0/1` in an earlier capture. #2629 shows a begun removal as removing, and the recapture removes api without starting it. [cloud-cluster/env.md:573](cloud-cluster/env.md)
 
 Not rechecked, because no capture reaches it now:
 
@@ -336,7 +338,7 @@ Still open:
    B. Only when the next step is not obvious (for example after a stage, say "deploy").
    C. Never on success; hints only on errors.
 
-2. **Hex ids in human output.** Machine ids name Servers Cloud holds no name for, and 64-hex container ids appear in port-forward and exec errors.
+2. **Hex ids in human output.** Machine ids name Servers Cloud holds no name for, and 64-hex container ids appear in port-forward and exec errors in these captures (since #2560, new keyed containers are named `<service>-<12 hex>`).
    A. Names only; ids live in `--json` and inspect.
    B. Names first, with a short id where two things can share a name.
    C. Keep ids where they appear today.
