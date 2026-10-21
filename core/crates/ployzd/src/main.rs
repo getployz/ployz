@@ -142,6 +142,7 @@ enum ObserveCommand {
 
 fn main() -> ExitCode {
     let args = Args::parse();
+    let dial_stdio = matches!(args.command, Some(Command::DialStdio));
     let runtime = match tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -159,7 +160,12 @@ fn main() -> ExitCode {
             daemon_error_exit_code(&error)
         }
     };
-    runtime.shutdown_timeout(Duration::from_secs(5));
+    if dial_stdio {
+        // Its stdin read holds a blocking thread until the client closes stdin.
+        runtime.shutdown_background();
+    } else {
+        runtime.shutdown_timeout(Duration::from_secs(5));
+    }
     code
 }
 
