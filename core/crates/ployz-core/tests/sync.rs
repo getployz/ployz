@@ -2343,3 +2343,29 @@ fn nodes_removed_together_do_not_hold_each_other() {
         .collect();
     assert_eq!(left, [WEB, CACHE]);
 }
+
+#[test]
+fn a_new_node_named_as_a_renamed_one_was_keeps_the_renamed_ones_base() {
+    const NEW_DATA: &str = "a0000000-0000-4000-8000-000000000007";
+    let mut from = parent();
+    from["volumes"][0]["name"] = json!("parent-data");
+    from["volumes"].as_array_mut().unwrap().push(json!({
+        "resourceId": id(0xb000_0000, 31), "resourceLineageId": NEW_DATA,
+        "name": "data", "storage": {"kind": "docker"}}));
+    let mut into = branch();
+    into["volumes"][0]["name"] = json!("branch-data");
+
+    let applied = land(
+        &compare(Some(&parent()), &from, &into, Way::Sync),
+        &[format!("{NEW_DATA}:node"), format!("{DATA}:name")],
+    )
+    .unwrap();
+
+    let base = json_of(&applied.base);
+    let data = find(&base["volumes"], "resourceLineageId", DATA);
+    assert_eq!(data["name"], "parent-data");
+    assert_eq!(
+        find(&base["services"], "lineageId", API)["volumeAttachments"],
+        json!([{"volumeResourceId": data["resourceId"], "mountPath": "/data"}])
+    );
+}

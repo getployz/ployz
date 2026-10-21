@@ -945,5 +945,8 @@ fn a_left_out_service_the_parent_removes_and_undoes_stays_left_out() {
         .unwrap();
     deploy(&store, &who, "production", 3);
 
-    assert_eq!(incoming(&store, &who, "fix-web"), ["web.env.PLAIN production"]);
+    assert_eq!(
+        incoming(&store, &who, "fix-web"),
+        ["web.env.PLAIN production"]
+    );
 }

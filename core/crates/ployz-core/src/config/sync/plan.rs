@@ -693,9 +693,9 @@ impl Plan {
 
     /// Add `from`'s node at `lineage` to `next` (and `base`) as it needs to exist: fresh
     /// ids, no custom domains, `into`'s generated-address naming, its own credential, and
-    /// every setting that arrives as a row of its own at its default. A node of another
-    /// lineage the base still holds under its name goes: `from` holds the new node and
-    /// `next` no clash, so neither side holds the old one (#1473).
+    /// every setting that arrives as a row of its own at its default. A base node it
+    /// clashes with goes when neither side holds that node's lineage, as after the Parent
+    /// removed and re-added a node of the same name (#1473); no row reads it.
     fn introduce(
         &self,
         next: &mut Intent,
@@ -703,6 +703,11 @@ impl Plan {
         lineage: &str,
     ) -> Result<(), ConfigError> {
         let clash = || ConfigError::at("picks", "Name or private address is already used");
+        let held: BTreeSet<String> = nodes(&self.from)
+            .into_keys()
+            .chain(nodes(next).into_keys())
+            .map(str::to_owned)
+            .collect();
         if let Some(source) = volume(&self.from, lineage) {
             if next.volumes.iter().any(|v| v.name == source.name) {
                 return Err(clash());
@@ -714,7 +719,7 @@ impl Plan {
             };
             if let Some(base) = base {
                 forget_volumes(base, |v| {
-                    v.name == copy.name && v.resource_lineage_id != copy.resource_lineage_id
+                    v.name == copy.name && !held.contains(&v.resource_lineage_id)
                 });
                 base.volumes.push(copy.clone());
             }
@@ -732,7 +737,7 @@ impl Plan {
             };
             if let Some(base) = base {
                 forget_configs(base, |c| {
-                    c.name == copy.name && c.resource_lineage_id != copy.resource_lineage_id
+                    c.name == copy.name && !held.contains(&c.resource_lineage_id)
                 });
                 base.configs.push(copy.clone());
             }
@@ -778,7 +783,7 @@ impl Plan {
         }
         if let Some(base) = base {
             base.services.retain(|s| {
-                s.lineage_id == copy.lineage_id
+                held.contains(&s.lineage_id)
                     || (s.slug != copy.slug && s.config.private_dns != copy.config.private_dns)
             });
             base.services.push(copy.clone());
