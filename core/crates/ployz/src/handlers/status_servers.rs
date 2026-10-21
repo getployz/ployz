@@ -634,9 +634,12 @@ impl Check {
 mod tests {
     use std::net::Ipv4Addr;
 
+    use std::num::NonZeroU32;
+
     use ployz_core::{
-        ContainerAddress, ContainerObservation, DeploymentLogId, Machine, MachineFailure,
-        PartialResult, RpcErrorCode, service_containers,
+        ContainerAddress, ContainerObservation, ContainerRuntimeObservation, DeploymentLogId,
+        HealthObservation, Machine, MachineFailure, MachineSuccess, PartialResult, RpcErrorCode,
+        ServiceMode, ServiceName, service_containers,
     };
     use serde_json::json;
 
@@ -781,6 +784,146 @@ mod tests {
         json.and_then(|json| json.get("warnings").cloned())
             .map(|warnings| serde_json::from_value(warnings).unwrap())
             .unwrap_or_default()
+    }
+
+    /// A copy of `app/web` as its owner lists it, with the Deploy's `replicas` in its spec.
+    fn web_copy(
+        machine: &Machine,
+        hex: char,
+        rotation: CopyRotation,
+        runtime: ContainerRuntimeObservation,
+        replicas: u32,
+        created: i64,
+    ) -> ContainerObservation {
+        let mut copy = rotated_on(machine, hex, rotation);
+        copy.try_update(|parts| {
+            parts.runtime = runtime;
+            parts.created_at_unix_nanos = created;
+            parts.resolved_spec.name = ServiceName::parse("web").unwrap();
+            parts.resolved_spec.mode = ServiceMode::Replicated {
+                replicas: NonZeroU32::new(replicas).unwrap(),
+            };
+        })
+        .unwrap();
+        copy
+    }
+
+    fn listed_copies(copies: Vec<ContainerObservation>) -> LiveServices<RpcError> {
+        let mut by_machine: Vec<MachineSuccess<Vec<ContainerObservation>>> = Vec::new();
+        for copy in copies {
+            match by_machine
+                .iter_mut()
+                .find(|success| success.machine_id == copy.machine_id)
+            {
+                Some(success) => success.value.push(copy),
+                None => by_machine.push(MachineSuccess {
+                    machine_id: copy.machine_id,
+                    value: vec![copy],
+                }),
+            }
+        }
+        LiveServices {
+            containers: PartialResult {
+                successes: by_machine,
+                failures: Vec::new(),
+                omissions: Vec::new(),
+            },
+        }
+    }
+
+    /// Judge the listing alone: no Service has a Serving Container whose routes were read.
+    fn judged(machines: Vec<MachineObservation>, live: LiveServices<RpcError>) -> Check {
+        judge(Observed {
+            machines,
+            copies: Copies::Listed {
+                live,
+                reads: Vec::new(),
+            },
+        })
+    }
+
+    #[test]
+    fn status_names_a_service_whose_copies_crash() {
+        let [one, two, three] = machines();
+        let check = judged(
+            listed(&[&one, &two, &three], &[]),
+            listed_copies(vec![
+                web_copy(
+                    &one,
+                    '1',
+                    CopyRotation::In,
+                    ContainerRuntimeObservation::Restarting,
+                    2,
+                    1,
+                ),
+                web_copy(
+                    &two,
+                    '2',
+                    CopyRotation::In,
+                    ContainerRuntimeObservation::Exited { code: 1 },
+                    2,
+                    1,
+                ),
+            ]),
+        );
+
+        assert_eq!(
+            serde_json::to_value(&check.attention).unwrap(),
+            json!([{
+                "reason": "copies_not_serving",
+                "message": "Serving 0 of 2 copies. machine-1 restarting, machine-2 exited with code 1.",
+                "next": "ployz logs web",
+                "service": "app/web",
+                "serving": 0,
+                "wanted": 2,
+                "copies": [
+                    {"machine": "machine-1", "container": "1".repeat(64), "rotation": "in", "runtime": {"state": "restarting"}},
+                    {"machine": "machine-2", "container": "2".repeat(64), "rotation": "in", "runtime": {"state": "exited", "code": 1}},
+                ],
+            }])
+        );
+        assert!(warned(&check).is_empty());
+        assert_eq!(
+            super::super::link::rendered(check.attention),
+            "organization  ?\nsigned in as  local\nweb           Serving 0 of 2 copies. machine-1 restarting, machine-2 exited with code 1.\n"
+        );
+    }
+
+    #[test]
+    fn status_names_a_service_left_draining() {
+        let [one, two, three] = machines();
+        let running = || ContainerRuntimeObservation::Running {
+            health: HealthObservation::Healthy,
+        };
+        let check = judged(
+            listed(&[&one, &two, &three], &[]),
+            listed_copies(vec![
+                web_copy(&one, '1', CopyRotation::Out, running(), 3, 1),
+                web_copy(&two, '2', CopyRotation::Out, running(), 3, 1),
+                web_copy(&three, '3', CopyRotation::In, running(), 3, 2),
+            ]),
+        );
+
+        assert_eq!(
+            serde_json::to_value(&check.attention).unwrap(),
+            json!([{
+                "reason": "copies_not_serving",
+                "message": "Serving 1 of 3 copies. machine-1 draining, machine-2 draining.",
+                "next": "ployz deploy web",
+                "service": "app/web",
+                "serving": 1,
+                "wanted": 3,
+                "copies": [
+                    {"machine": "machine-1", "container": "1".repeat(64), "rotation": "out", "runtime": {"state": "running", "health": "healthy"}},
+                    {"machine": "machine-2", "container": "2".repeat(64), "rotation": "out", "runtime": {"state": "running", "health": "healthy"}},
+                ],
+            }])
+        );
+        assert!(warned(&check).is_empty());
+        assert_eq!(
+            super::super::link::rendered(check.attention),
+            "organization  ?\nsigned in as  local\nweb           Serving 1 of 3 copies. machine-1 draining, machine-2 draining.\n"
+        );
     }
 
     #[test]
