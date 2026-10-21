@@ -51,12 +51,12 @@ fn api() -> QualifiedService {
     QualifiedService::parse("app/api").unwrap()
 }
 
-fn copy(suffix: u8, machine: &Machine, r#gen: u64, image: &str) -> ContainerObservation {
+fn copy(suffix: u8, machine: &Machine, r#gen: u64) -> ContainerObservation {
     let resolved_spec: ResolvedServiceSpec = serde_json::from_value(json!({
         "service_id": "a".repeat(32),
         "name": "api",
         "mode": { "mode": "replicated", "replicas": 1 },
-        "container": { "image": image, "pull_policy": "missing" },
+        "container": { "image": "example.test/image", "pull_policy": "missing" },
     }))
     .unwrap();
     ContainerObservation::try_from(ployz_core::ContainerObservationParts {
@@ -142,8 +142,8 @@ struct Cluster {
 impl Cluster {
     fn new() -> Self {
         let (local, peer, proxy) = (machine("local", 1), machine("peer", 2), machine("proxy", 3));
-        let old = copy(1, &local, 1, "example.test/image:1");
-        let new = copy(2, &peer, 2, "example.test/image:2");
+        let old = copy(1, &local, 1);
+        let new = newer_image(copy(2, &peer, 2));
         Self {
             local,
             peer,
@@ -305,10 +305,16 @@ async fn higher_gen_missing_one_ack() {
     assert!(pass(&cluster.local, observed).await.is_empty());
 }
 
+fn newer_image(mut copy: ContainerObservation) -> ContainerObservation {
+    copy.try_update(|parts| parts.resolved_spec.container.image = "example.test/image:2".into())
+        .unwrap();
+    copy
+}
+
 #[tokio::test(start_paused = true)]
 async fn kept_beside_a_newer_gen_of_its_image() {
     let cluster = Cluster::new();
-    let kept = copy(1, &cluster.local, 1, "example.test/image:2");
+    let kept = newer_image(copy(1, &cluster.local, 1));
     let observed = observed(
         &cluster.local,
         &[&cluster.local, &cluster.peer, &cluster.proxy],
@@ -327,7 +333,7 @@ async fn kept_beside_a_newer_gen_of_its_image() {
 #[tokio::test(start_paused = true)]
 async fn equal_gen() {
     let cluster = Cluster::new();
-    let same = copy(2, &cluster.peer, 1, "example.test/image:2");
+    let same = copy(2, &cluster.peer, 1);
     let observed = observed(
         &cluster.local,
         &[&cluster.local, &cluster.peer, &cluster.proxy],
