@@ -15,6 +15,7 @@ import { useMinute } from "#/hooks/use-minute";
 import { cn } from "#/lib/utils";
 import { useInFlightDeployments } from "#/modules/config-store/store-view.queries";
 import { type RoleGate, useRoleGate } from "#/modules/organization/members.queries";
+import { requirements, serverSupports } from "#/modules/runtime/daemon-compat";
 import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
 import {
   addableCopies, cardLine, COPY_WORDS, isStale, type MirrorCopy, type OldCopy, STAGED_WORDS, type StagedCopy,
@@ -57,6 +58,7 @@ export function useVolumeCopies(organizationSlug: string, environment: Environme
   const copies = members === undefined ? null
     : copiesFromPlacement({ volume, members, row, active: running, statuses: mirror.statuses });
   const accepting = placementServers(lens.machines);
+  const floorless = new Set(lens.machines.filter((machine) => serverSupports(machine, requirements.volumeFloor) === false).map((machine) => machine.id));
   return {
     organizationSlug,
     forgetGate: useRoleGate(organizationSlug, "servers:remove", "Only an owner or admin can forget servers."),
@@ -69,6 +71,7 @@ export function useVolumeCopies(organizationSlug: string, environment: Environme
     holders: holdersOf(volume.id, members, lens.status === "observed" ? lens.machines : null, lens.volumeCopies),
     servers: lens.machines.filter((machine) => machine.acceptsServices),
     accepting: members?.filter((member) => accepting.has(member.machine.id)).map((member) => member.machine.id) ?? [],
+    floorless: members?.filter((member) => floorless.has(member.machine.id)).map((member) => member.machine.id) ?? [],
     upgrade: placementBlockers(lens.machines),
     seeds: members !== undefined && restoreOpen(lens.machines, observePlacement(members).primary?.id ?? null),
     disabled: placement.pending || restore.pending,
@@ -96,6 +99,7 @@ export type CopiesPanelProps = {
   servers: readonly CopyServer[];
   /** Servers that accept Services and run the volume verbs: the only ones a move or a mirror may name. */
   accepting: readonly MachineId[];
+  floorless: readonly MachineId[];
   upgrade: readonly string[];
   /** Whether the Primary's daemon can seed a restore. */
   seeds: boolean;
@@ -114,11 +118,11 @@ export type CopiesPanelProps = {
 
 /** A Volume's copies: the live one, and every place it survives if that Server dies. A mirror opens in detail. */
 export function VolumeCopiesPanel(props: CopiesPanelProps) {
-  const { volume, members, rows, copies, accepting, owed, open, onOpen } = props;
+  const { volume, members, rows, copies, accepting, owed, floorless, open, onOpen } = props;
   const now = useMinute() ?? new Date();
   if (members === undefined) return <Empty variant="placeholder"><EmptyDescription>Waiting for your servers.</EmptyDescription></Empty>;
   const row = rows.find((entry) => entry.volumeId === volume.id) ?? null;
-  const recovered = recovery(volume, members, row, accepting, owed);
+  const recovered = recovery(volume, members, row, accepting, owed, floorless);
   const alert = recovered === null ? null : <RecoveryAlert {...props} recovery={recovered} now={now} />;
   const target = targetPlacement(observePlacement(members), row);
   if (copies === null || target === null) {
@@ -198,7 +202,7 @@ function CopiesView({ volume, members, row, rows, owed, copies, target, servers,
           <ItemTitle>{live.server?.name ?? "No primary"}</ItemTitle>
           <ItemDescription>{live.busy ? <Busy words={live.busy} /> : live.moveTo ? `Moving to ${live.moveTo.name} · on deploy` : "Primary"}</ItemDescription>
         </ItemContent>
-        <ItemActions><Badge variant="success">Live</Badge></ItemActions>
+        {live.server ? <ItemActions><Badge variant="success">Live</Badge></ItemActions> : null}
       </Item>
       {live.restore ? <Item role="listitem" variant="outline" size="sm" state="changed" data-staged="restore">
         <ItemContent>

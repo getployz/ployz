@@ -36,7 +36,7 @@ const server = (name: string, storage: CopyServer["storage"] = "pool"): CopyServ
 
 function panel(members: Member[], placement: PlacementRow | null, options: {
   open?: string; upgrade?: string[]; servers?: CopyServer[]; matchedAt?: string; refreshing?: boolean; deploying?: boolean; owed?: boolean;
-  forgetGate?: RoleGate;
+  forgetGate?: RoleGate; floorless?: string[];
 } = {}) {
   const stage = vi.fn();
   const refresh = vi.fn();
@@ -47,7 +47,7 @@ function panel(members: Member[], placement: PlacementRow | null, options: {
     statuses: options.matchedAt === undefined ? [] : [{ machine: id("web-2"), okAt: options.matchedAt, matchedAt: options.matchedAt, failedAt: null, failure: null }] });
   const router = createRouter({ routeTree: createRootRoute(), history: createMemoryHistory() });
   render(<RouterContextProvider router={router}><VolumeCopiesPanel organizationSlug="ada" forgetGate={options.forgetGate ?? { allowed: true, reason: undefined }} volume={volume} members={members} rows={placement ? [placement] : []} running={null} owed={options.owed ?? false} copies={copies}
-    servers={options.servers ?? members.map((entry) => server(entry.machine.name))} accepting={members.map((entry) => entry.machine.id)}
+    servers={options.servers ?? members.map((entry) => server(entry.machine.name))} accepting={members.map((entry) => entry.machine.id)} floorless={(options.floorless ?? []).map(id)}
     upgrade={options.upgrade ?? []} seeds disabled={false} deploying={options.deploying ?? false} stage={stage} restore={restore}
     deleteCopy={deleteCopy} refresh={refresh} refreshing={options.refreshing ?? false}
     open={options.open ? id(options.open) : null} onOpen={onOpen} /></RouterContextProvider>);
@@ -183,6 +183,20 @@ describe("VolumeCopiesPanel", () => {
     expect(stage).toHaveBeenCalledWith({ primary: id("web-2"), mirrors: [], deletes: [] }, [id("web-2")]);
   });
 
+  it("keeps the silent Server's alert while another Server only needs an upgrade", () => {
+    const lacking = { ...member("web-3", "unanswered"), lack: "Volume move needs a newer Ployz on web-3." };
+    panel([member("web-1", "unanswered"), mirrorAsOf("web-2", fiveAgo()), lacking], row(["web-2"]));
+    expect(screen.getByText("web-1 is not answering")).toBeTruthy();
+    expect(screen.getAllByRole("link").map((link) => link.textContent)).toEqual(["Forget web-1"]);
+    expect(useMirror()).toBeNull();
+  });
+
+  it("says the mirror's Server needs a newer Ployz instead of offering a restore the Deploy refuses", () => {
+    panel([mirrorAsOf("web-2", fiveAgo())], row(["web-2"]), { floorless: ["web-2"] });
+    expect(screen.getByText(/Using a mirror needs a newer Ployz on web-2\.$/)).toBeTruthy();
+    expect(useMirror()).toBeNull();
+  });
+
   it("says why it can't use the mirror while a committed Move is owed", () => {
     panel([mirrorAsOf("web-2", fiveAgo())], row(["web-2"]), { owed: true });
     expect(screen.getByText(/data's last move hasn't finished\.$/)).toBeTruthy();
@@ -192,7 +206,7 @@ describe("VolumeCopiesPanel", () => {
   it("shows the staged restore without an alert, the mirror as staged primary", () => {
     panel([mirrorAsOf("web-2", fiveAgo())], row(["web-2"], { primary: "web-2" }));
     expect(screen.queryByRole("alert")).toBeNull();
-    expect(rows("Live")).toEqual(["No primaryMoving to web-2 · on deployLive"]);
+    expect(rows("Live")).toEqual(["No primaryMoving to web-2 · on deploy"]);
     expect(group("Elsewhere").getByRole("listitem").getAttribute("data-staged")).toBe("primary");
   });
 

@@ -7,7 +7,7 @@ import { epochOf, planFromCopies } from "#/modules/volume-run/plan";
 import { runWords } from "#/modules/volume-run/volume-copies";
 import { rustMachineIdSchema } from "#/modules/machines/enrollment";
 import type { RuntimeVolumeCopy } from "#/modules/runtime/runtime.collection";
-import { type AnsweredMember, type Member, parseDockerVolumeName, type VolumeRunInput, type VolumeRunView } from "#/modules/volume-run/volume-run";
+import { type AnsweredMember, type Member, parseDockerVolumeName, RUN_FEATURES, type VolumeRunInput, type VolumeRunView } from "#/modules/volume-run/volume-run";
 
 export type MachineRef = { readonly id: MachineId; readonly name: MachineName };
 export type PlacementVolume = { readonly id: string; readonly name: string };
@@ -344,23 +344,26 @@ export function recovery(
   row: PlacementRow | null,
   accepting: readonly MachineId[],
   owed: boolean,
+  floorless: readonly MachineId[],
 ): Recovery | null {
   const observed = observePlacement(members);
   if (observed.primary !== null) return null;
   const applied = appliedMirrors(observed, row);
   const copy = observed.copies.find((each) => each.kind === "slot" && applied.includes(each.server.id));
   if (copy === undefined || row?.staged?.primary === copy.server.id) return null;
-  if (members.some((member) => !member.answered && member.lack !== undefined)) return null;
   const { server: mirror, newest: lostAfter } = copy;
-  if (observed.unanswered.length > 0) return { kind: "forget", down: observed.unanswered, mirror, lostAfter };
-  return { kind: "restore", mirror, lostAfter, stage: restoreStage(volume, members, mirror, applied, accepting, owed) };
+  const silent = members.filter((member) => !member.answered && member.lack === undefined).map((member) => member.machine);
+  if (silent.length > 0) return { kind: "forget", down: silent, mirror, lostAfter };
+  return { kind: "restore", mirror, lostAfter, stage: restoreStage(volume, members, mirror, applied, accepting, owed, floorless) };
 }
 
 function restoreStage(
   volume: PlacementVolume, members: readonly Member[], mirror: MachineRef, applied: readonly MachineId[], accepting: readonly MachineId[], owed: boolean,
+  floorless: readonly MachineId[],
 ): Extract<Recovery, { kind: "restore" }>["stage"] {
   if (owed) return { refused: `${volume.name}'s last move hasn't finished.` };
   if (!accepting.includes(mirror.id)) return { refused: `${mirror.name} doesn't run Services.` };
+  if (floorless.includes(mirror.id)) return { refused: `${RUN_FEATURES.restore} needs a newer Ployz on ${mirror.name}.` };
   const planned = planFromCopies({ kind: "restore", args: { from: mirror.name }, volumeName: volume.name, orphan: false }, members);
   if (!planned.ok) return { refused: planned.refusal.message };
   return { placement: { primary: mirror.id, mirrors: [], deletes: [] }, mirrors: applied };

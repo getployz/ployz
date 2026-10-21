@@ -13,6 +13,12 @@ export type VolumeRunRequestKind = (typeof VOLUME_RUN_REQUEST_KINDS)[number];
 export const VOLUME_RUN_KINDS = [...VOLUME_RUN_REQUEST_KINDS, "deploy"] as const;
 export type VolumeRunKind = (typeof VOLUME_RUN_KINDS)[number];
 
+/** What a run of each kind is called when a Server can't run it. */
+export const RUN_FEATURES = {
+  mirror: "Volume mirror", sync: "Mirror refresh", delete_mirror: "Mirror removal", move: "Volume move", release: "Volume move", restore: "Using a mirror", seed: "Volume restore",
+  resize: "Volume resize", deploy: "Deploy",
+} satisfies Record<VolumeRunKind, string>;
+
 /** The sidebar also pins the Machine it resolved, so a renamed or reused Server name can't redirect the run. */
 type Destination = { readonly to: MachineName; readonly machine?: MachineId };
 

@@ -163,8 +163,9 @@ Volume data has no writer; web-2 holds its only copy. Make it the writer: ployz 
 ```
 
 Run the `ployz volume restore` line it prints to make that copy the writer again, then deploy.
-In Ployz Cloud, the volume's **Copies** lists the copy and **Use mirror** stages the same restore
-for your next deploy. While one of your servers is offline, the deploy can't tell whether that
+In Ployz Cloud, when the surviving copy is a mirror, the volume's **Copies** lists it and
+**Use mirror** stages the same restore for your next deploy. An old copy gets no button there:
+run the `ployz volume restore` line. While one of your servers is offline, the deploy can't tell whether that
 server holds the writer, so it names that server instead and suggests no restore. See
 [When its server goes down](#when-its-server-goes-down).
 If several servers hold copies, it names them. Keep the newest and delete the others from the

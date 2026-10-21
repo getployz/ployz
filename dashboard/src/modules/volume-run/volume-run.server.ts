@@ -58,6 +58,7 @@ import {
   managementAddress,
   type Member,
   parseDockerVolumeName,
+  RUN_FEATURES,
   type ServiceSpec,
   VOLUME_RUN_MESSAGE_LIMIT,
   VOLUME_RUN_RUNNING_CHECK_MS,
@@ -1393,12 +1394,6 @@ export const observeVolumeMembers = Effect.fn("VolumeRun.observeMembers")(functi
   }, { concurrency: "unbounded" });
   return [...listed, ...unlisted];
 }, Effect.scoped);
-
-/** What a run of each kind is called when a Server can't run it. */
-const RUN_FEATURES = {
-  mirror: "Volume mirror", sync: "Mirror refresh", delete_mirror: "Mirror removal", move: "Volume move", release: "Volume move", restore: "Using a mirror", seed: "Volume restore",
-  resize: "Volume resize", deploy: "Deploy",
-} satisfies Record<VolumeRunKind, string>;
 
 const lackSentence = Effect.fn("VolumeRun.lackSentence")(function* (
   organizationId: string, capability: string, server: { readonly name: string; readonly daemonVersion: string }, kind: VolumeRunKind | undefined,

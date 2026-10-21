@@ -362,8 +362,9 @@ describe("editPlacement", () => {
 
 describe("recovery", () => {
   const ids = (...names: string[]) => names.map(id);
-  const recover = (members: Member[], placement: PlacementRow | null, owed = false, accepting = ids("web-1", "web-2", "web-3")) =>
-    recovery(volume, members, placement, accepting, owed);
+  const recover = (members: Member[], placement: PlacementRow | null, owed = false, accepting = ids("web-1", "web-2", "web-3"), floorless: MachineId[] = []) =>
+    recovery(volume, members, placement, accepting, owed, floorless);
+  const lacking = (server: string) => ({ ...member(server, "unanswered"), lack: `Volume move needs a newer Ployz on ${server}.` });
   const forgotten = [mirrorAsOf("web-2", at)];
 
   it("is null while the primary answers, even with a silent mirror", () => {
@@ -380,9 +381,19 @@ describe("recovery", () => {
     expect(found).toMatchObject({ kind: "forget", down: [{ name: "web-1" }, { name: "web-3" }] });
   });
 
-  it("is null while a silent Server lacks the capability, since an upgrade is the fix, not Forget", () => {
-    const lacking = { ...member("web-1", "unanswered"), lack: "needs a newer Ployz" };
-    expect(recover([lacking, mirrorAsOf("web-2", at)], row(["web-2"]))).toBeNull();
+  it("leaves a Server that lacks the capability out of the silent names, since an upgrade fixes it, not Forget", () => {
+    const found = recover([member("web-1", "unanswered"), mirrorAsOf("web-2", at), lacking("web-3")], row(["web-2"]));
+    expect(found).toMatchObject({ kind: "forget", down: [{ name: "web-1" }] });
+  });
+
+  it("refuses the restore with the lacking Server's upgrade sentence once nothing is silent", () => {
+    expect(recover([mirrorAsOf("web-2", at), lacking("web-3")], row(["web-2"])))
+      .toMatchObject({ kind: "restore", stage: { refused: "Volume move needs a newer Ployz on web-3." } });
+  });
+
+  it("refuses the restore the Deploy would refuse, when the mirror's Server lacks the generation floor", () => {
+    expect(recover(forgotten, row(["web-2"]), false, ids("web-1", "web-2", "web-3"), ids("web-2")))
+      .toMatchObject({ kind: "restore", stage: { refused: "Using a mirror needs a newer Ployz on web-2." } });
   });
 
   it("is null while the primary is silent and no mirror answers", () => {
