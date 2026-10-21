@@ -64,7 +64,7 @@ read after a rollback or removal. Each log file stays up to 30 days after it was
 a container's older lines can go first. They go sooner when logs and metrics fill their share of
 the disk, or when the disk drops below 10% free (at least 2 GiB).
 
-Anything your app printed stays in those files, secrets included. The dashboard, an agent, and
+Everything Ployz captured from your app stays in those files, secrets included. The dashboard, an agent, and
 `ployz logs` through Ployz Cloud hide Sealed values when they show a line. A value shorter than 6 bytes
 is hidden only where its name labels it, as in `PIN=4821`. `ployz logs` run with
 server access, and the files on the server, keep the line as printed. They live in
