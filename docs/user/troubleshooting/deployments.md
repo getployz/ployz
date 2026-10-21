@@ -283,11 +283,11 @@ happens, restart the services on it, as above. `ployz server ls` names each such
 
 ## My deploy failed when a server lost power or its network
 
-`cause: stream closed because of a broken pipe`
+`cause: operation timed out` or `cause: stream closed because of a broken pipe`
 
-The server your CLI connects through stopped answering for about a minute, so the deploy failed
-and exited 1. Services it had already switched run the new version, and the others keep their old
-replicas. Once the server is back, deploy again to finish the rest:
+The server your CLI connects through stopped answering, so the deploy failed and exited 1, within
+about a minute and a half. Services it had already switched run the new version, and the others
+keep their old replicas. Once the server is back, deploy again to finish the rest:
 
 ```sh
 ployz deploy
