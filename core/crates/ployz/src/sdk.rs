@@ -1495,3 +1495,7 @@ mod preparation_tests;
 #[cfg(test)]
 #[path = "sdk/volume_switch_tests.rs"]
 mod volume_switch_tests;
+
+#[cfg(test)]
+#[path = "sdk/direct_apply_tests.rs"]
+mod direct_apply_tests;
