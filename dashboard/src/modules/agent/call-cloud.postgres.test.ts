@@ -275,7 +275,7 @@ describe("callCloud", () => {
   // Catches a renamed Server's runs named by the name it enrolled with once Cloud drops its row.
   it.live("names a renamed then removed Server's runs by the name it had when they started", () =>
     Effect.gen(function* () {
-      const services = yield* Layer.build(yield* storeTestCloud());
+      const services = yield* storeTestCloud();
       const userId = yield* seedStoreOrganization(ORGANIZATION).pipe(Effect.provide(services));
       yield* enrollStoreServer(ORGANIZATION, { secret: "ppair_fixture_store", server: MACHINE }).pipe(Effect.provide(services));
       const generation = createHash("sha256").update("ppair_fixture_store").digest("hex");
@@ -303,7 +303,7 @@ describe("callCloud", () => {
   // Catches the last Server's runs named by its raw id once Cloud forgets the pairing and every name it kept.
   it.live("names the last removed Server's runs by the name it had when they started", () =>
     Effect.gen(function* () {
-      const services = yield* Layer.build(yield* storeTestCloud());
+      const services = yield* storeTestCloud();
       const userId = yield* seedStoreOrganization(ORGANIZATION).pipe(Effect.provide(services));
       yield* enrollStoreServer(ORGANIZATION, { secret: "ppair_fixture_store", server: MACHINE }).pipe(Effect.provide(services));
       const generation = createHash("sha256").update("ppair_fixture_store").digest("hex");
@@ -343,7 +343,7 @@ describe("callCloud", () => {
       Effect.gen(function* () {
         const inngest = new Inngest({ id: "call-cloud-test" });
         vi.spyOn(inngest, "send").mockResolvedValue({ ids: [] });
-        const services = yield* Layer.build(yield* storeTestCloud({ inngest }));
+        const services = yield* storeTestCloud({ inngest });
         const userId = yield* seedStoreOrganization(ORGANIZATION).pipe(Effect.provide(services));
         yield* enrollStoreServer(ORGANIZATION, { secret: "ppair_fixture_store", server: MACHINE }).pipe(Effect.provide(services));
         const { drizzle } = yield* Database.pipe(Effect.provide(services));
@@ -377,7 +377,7 @@ describe("callCloud", () => {
       Effect.gen(function* () {
         const inngest = new Inngest({ id: "call-cloud-test" });
         vi.spyOn(inngest, "send").mockResolvedValue({ ids: [] });
-        const services = yield* Layer.build(yield* storeTestCloud({ inngest }));
+        const services = yield* storeTestCloud({ inngest });
         const userId = yield* seedStoreOrganization(ORGANIZATION).pipe(Effect.provide(services));
         yield* enrollStoreServer(ORGANIZATION, { secret: "ppair_fixture_store", server: MACHINE }).pipe(Effect.provide(services));
         const { drizzle } = yield* Database.pipe(Effect.provide(services));
@@ -400,7 +400,7 @@ describe("callCloud", () => {
     Effect.gen(function* () {
       const inngest = new Inngest({ id: "call-cloud-test" });
       vi.spyOn(inngest, "send").mockResolvedValue({ ids: [] });
-      const services = yield* Layer.build(yield* storeTestCloud({ inngest }));
+      const services = yield* storeTestCloud({ inngest });
       const userId = yield* seedStoreOrganization(ORGANIZATION).pipe(Effect.provide(services));
       yield* enrollStoreServer(ORGANIZATION, { secret: "ppair_fixture_store", server: MACHINE }).pipe(Effect.provide(services));
       const { drizzle } = yield* Database.pipe(Effect.provide(services));

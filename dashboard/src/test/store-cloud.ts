@@ -88,7 +88,7 @@ type BuiltStoreCloud<A, E> = Effect.Effect<Context.Context<StoreCloud | A>, Laye
  * Built once, in the caller's Scope, as Cloud builds its services once per process: every provide of what this returns
  * shares one pool and one Config Store. A Layer would build again, and open the Store again, on each provide.
  */
-export function storeTestCloud(options?: StoreCloudOptions): BuiltStoreCloud<never, never>;
+export function storeTestCloud(options?: StoreCloudOptions & { readonly with?: never }): BuiltStoreCloud<never, never>;
 export function storeTestCloud<A, E>(options: StoreCloudOptions & { readonly with: Layer.Layer<A, E, StoreCloud> }): BuiltStoreCloud<A, E>;
 export function storeTestCloud<A, E>(options: StoreCloudOptions & { readonly with?: Layer.Layer<A, E, StoreCloud> } = {}) {
   return Effect.gen(function* () {
