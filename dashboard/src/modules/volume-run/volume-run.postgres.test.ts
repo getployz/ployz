@@ -2187,7 +2187,8 @@ describe("volume runs", () => {
       expect(await rows()).toMatchObject([{ state: "failed", message: "data-fsn-2 could not receive dep-10: disk full" }]);
     });
 
-    it("mirror: a pull that never lands gives up after six hours of checks backing off to five minutes", async () => {
+    // The engine replays every earlier step on each of the 84 executions these 78 checks take, so this runs in seconds.
+    it("mirror: a pull that never lands gives up after six hours of checks backing off to five minutes", { timeout: 30_000 }, async () => {
       machines[1] = { name: "fsn-2", pool: true, copy: null, pullFault: { target: "dep-10", kind: "stall" } };
       const run = await requested({ kind: "mirror", args: { to: "fsn-2" } });
       const waits = PATIENCE_WAITS.map((_, check) => ({ id: `03-r0-backoff-${check}`, handler: () => undefined }));
