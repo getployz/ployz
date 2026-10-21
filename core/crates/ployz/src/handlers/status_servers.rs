@@ -1,15 +1,17 @@
 //! The Server check of `ployz status`: no Server answering its one connection, each Down
-//! Machine, and each live Machine whose proxy lacks a Service's In copies or still routes
-//! its Out or Held ones. What the check could not see is a warning, never an all-clear.
+//! Machine, and each live Machine whose proxy lacks a Service's In copies, still routes
+//! its Out or Held ones, or routes a copy at an address its owner does not report. What
+//! the check could not see is a warning, never an all-clear.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use clap::ArgMatches;
 use futures_util::{StreamExt, stream};
 use ployz_core::{
-    ContainerId, CopyRotation, EnvironmentValues, LiveServices, MachineId, MachineName,
-    MachineObservation, MembershipObservation, Namespace, QualifiedService, RoutedAddresses,
-    RoutesRead, RpcError, ServiceContainer, ServiceObservation, Unacked, serving_containers,
+    ContainerAddress, ContainerId, CopyRotation, EnvironmentValues, LiveServices, MachineId,
+    MachineName, MachineObservation, MachineTarget, MembershipObservation, Namespace,
+    QualifiedService, ReadRoutedAddressesRequest, RoutedAddresses, RoutesRead, RpcError,
+    ServiceContainer, ServiceObservation, Unacked, op, serving_containers,
 };
 use ployz_store::{DeploymentStatus, DeploymentSummary};
 use serde::Serialize;
@@ -34,6 +36,12 @@ pub(super) enum Subject {
     },
     Down {
         machine: MachineName,
+    },
+    StaleAddress {
+        service: QualifiedService,
+        /// The routing Machine by name, else by ID when the Machine list lacks it.
+        machine: String,
+        addresses: Vec<ContainerAddress>,
     },
     /// The Servers that didn't answer, by name where known.
     Unanswered {
@@ -183,12 +191,33 @@ async fn observe(
         }
         None => Vec::new(),
     };
+    let answered: Vec<MachineId> = live
+        .containers
+        .successes
+        .iter()
+        .map(|answered| answered.machine_id)
+        .collect();
+    let routed = stream::iter(answered)
+        .map(|machine| async move {
+            let routed = client
+                .invoke::<op::ReadRoutedAddresses>(
+                    ReadRoutedAddressesRequest {},
+                    &MachineTarget::from(&machine),
+                    Some(crate::connect::TARGET_RPC_TIMEOUT),
+                )
+                .await;
+            (machine, routed)
+        })
+        .buffered(READS_AT_ONCE)
+        .filter_map(|(machine, routed)| async move { Some((machine, routed.ok()?)) })
+        .collect()
+        .await;
     Ok(Observed {
         machines,
         copies: Copies::Listed {
             live,
             reads,
-            routed: BTreeMap::new(),
+            routed,
         },
     })
 }
@@ -258,7 +287,7 @@ fn judge(observed: Observed) -> Check {
             .map(|observed| (observed.machine.id, observed.machine.name.clone()))
             .collect(),
     };
-    let (live, reads) = match copies {
+    let (live, reads, routed) = match copies {
         Copies::RollingOut(deployment) => {
             check.unseen.push(Unseen::RollingOut(deployment));
             return check;
@@ -267,7 +296,11 @@ fn judge(observed: Observed) -> Check {
             check.unseen.push(Unseen::Unlisted(error));
             return check;
         }
-        Copies::Listed { live, reads, .. } => (live, reads),
+        Copies::Listed {
+            live,
+            reads,
+            routed,
+        } => (live, reads, routed),
     };
     let unanswered: Vec<MachineId> = live
         .containers
@@ -285,6 +318,11 @@ fn judge(observed: Observed) -> Check {
     let mut unjudged = ServicesByFact(Vec::new());
     let mut down_to_reader = ServicesByFact(Vec::new());
     for (service, read) in reads {
+        for (machine, addresses) in stale_addresses(&service, &routed, &down) {
+            let attention =
+                stale_address(service.identity.clone(), check.name(&machine), addresses);
+            check.attention.push(attention);
+        }
         let read = match read {
             Ok(read) => read,
             Err(error) => {
@@ -371,6 +409,68 @@ fn judge(observed: Observed) -> Check {
             .map(|(machines, services)| Unseen::DownToReader { services, machines }),
     );
     check
+}
+
+/// Each live Machine whose proxy routes a serving copy at an address other than the
+/// one its owner reports, with those addresses.
+fn stale_addresses(
+    service: &ServiceObservation,
+    routed: &BTreeMap<MachineId, RoutedAddresses>,
+    down: &BTreeSet<MachineId>,
+) -> BTreeMap<MachineId, BTreeSet<ContainerAddress>> {
+    let reported: BTreeMap<ContainerId, ContainerAddress> = serving_containers(&service.containers)
+        .iter()
+        .filter(|serving| !down.contains(&serving.as_observation().machine_id))
+        .map(|serving| (serving.as_observation().container_id, serving.address()))
+        .collect();
+    routed
+        .iter()
+        .filter(|(machine, _)| !down.contains(machine))
+        .filter_map(|(machine, routed)| {
+            let stale: BTreeSet<ContainerAddress> = routed
+                .routes
+                .get(&service.identity)?
+                .iter()
+                .filter(|(copy, address)| {
+                    reported
+                        .get(*copy)
+                        .is_some_and(|reported| reported != *address)
+                })
+                .map(|(_, address)| *address)
+                .collect();
+            (!stale.is_empty()).then_some((*machine, stale))
+        })
+        .collect()
+}
+
+fn stale_address(
+    service: QualifiedService,
+    machine: String,
+    addresses: BTreeSet<ContainerAddress>,
+) -> Attention {
+    let addresses: Vec<ContainerAddress> = addresses.into_iter().collect();
+    let (copies, owners) = match addresses.as_slice() {
+        [_] => ("a copy", "its owner does"),
+        _ => ("copies", "their owners do"),
+    };
+    let listed = addresses
+        .iter()
+        .map(|address| address.0.to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    Attention {
+        reason: "routes_stale_address".to_owned(),
+        message: format!(
+            "{machine} routes {copies} to {listed}, which {owners} not report. Check its network."
+        ),
+        deployment: None,
+        next: None,
+        subject: Some(Subject::StaleAddress {
+            service,
+            machine,
+            addresses,
+        }),
+    }
 }
 
 fn not_picked_up(service: QualifiedService, machines: Vec<String>) -> Attention {

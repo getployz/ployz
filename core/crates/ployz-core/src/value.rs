@@ -914,7 +914,7 @@ pub struct ManagementAddress(pub Ipv6Addr);
 #[serde(transparent)]
 pub struct MachineGateway(pub Ipv4Addr);
 
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize, TS)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize, TS)]
 #[serde(transparent)]
 pub struct ContainerAddress(pub Ipv4Addr);
 

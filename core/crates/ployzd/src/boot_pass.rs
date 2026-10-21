@@ -363,7 +363,7 @@ async fn pass<H: BootHost>(
     let own = route_publishes
         .wait_for(|published| published.count >= after)
         .await
-        .map(|published| published.routes.clone());
+        .map(|published| published.acked());
     let Ok(own) = own else {
         return std::future::pending().await;
     };

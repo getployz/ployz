@@ -301,6 +301,22 @@ servers that still see another one as Down. Run it again before you act.
 A `read` or `deploy` token without server access doesn't show this line yet, because Ployz Cloud
 reads for it.
 
+## A server routes a replica at an old address
+
+`web = web-3 routes a copy to 10.210.2.2, which its owner does not report. Check its network.`
+
+`ployz status` prints this when web-3's proxy sends a replica's traffic to an address that the
+server running the replica doesn't report for it. This happens when the replica's address changed
+and web-3 hasn't caught up, so visitors who reach web-3 can fail to reach `web`. A server that
+doesn't answer the check adds no line.
+
+- **Check web-3's network.** Your servers need UDP port 51820 open between them. See
+  [Troubleshooting servers](servers.md).
+- **Wait for it to catch up.** Once web-3's proxy routes the replica at its current address, the
+  line goes away.
+
+A `read` or `deploy` token without server access doesn't show this line yet.
+
 ## A newer deploy is already serving
 
 `error: web: A newer deploy is already serving my-app-production/web.`

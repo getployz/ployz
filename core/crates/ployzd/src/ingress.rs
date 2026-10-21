@@ -45,12 +45,22 @@ pub(crate) mod caddy;
 use caddy::CaddyAdmin;
 
 /// What this process's ingress has published since it started: how many writes
-/// succeeded, and the Containers the last one acked per Service. A row already in
-/// Corrosion may predate a power-off, so only these count as this Machine's acks.
+/// succeeded, and the Containers the last one acked per Service with the address
+/// it applied for each. A row already in Corrosion may predate a power-off, so
+/// only these count as this Machine's acks.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct PublishedRoutes {
     pub(crate) count: u64,
-    pub(crate) routes: BTreeMap<QualifiedService, BTreeSet<ContainerId>>,
+    pub(crate) routes: BTreeMap<QualifiedService, BTreeMap<ContainerId, ContainerAddress>>,
+}
+
+impl PublishedRoutes {
+    pub(crate) fn acked(&self) -> BTreeMap<QualifiedService, BTreeSet<ContainerId>> {
+        self.routes
+            .iter()
+            .map(|(service, routed)| (service.clone(), routed.keys().copied().collect()))
+            .collect()
+    }
 }
 
 /// Run the Caddy watcher.
@@ -493,10 +503,7 @@ where
                         return Ok(());
                     }
                     let acks = route_acks(&routes);
-                    let published = acks
-                        .iter()
-                        .map(|(service, ack)| (service.clone(), ack.containers.clone()))
-                        .collect();
+                    let published = routed_addresses(&routes);
                     if publish_route_acks(&replicated, &machine.id, &mut acked, acks).await {
                         route_publishes.send_modify(|publishes| {
                             publishes.count += 1;
@@ -540,6 +547,21 @@ fn route_acks(routes: &ProxyRoutes) -> BTreeMap<QualifiedService, IngressRouteAc
                     .collect(),
             };
             (service.clone(), ack)
+        })
+        .collect()
+}
+
+fn routed_addresses(
+    routes: &ProxyRoutes,
+) -> BTreeMap<QualifiedService, BTreeMap<ContainerId, ContainerAddress>> {
+    routes
+        .iter()
+        .map(|(service, route)| {
+            let addresses = route
+                .iter()
+                .map(|serving| (serving.as_observation().container_id, serving.address()))
+                .collect();
+            (service.clone(), addresses)
         })
         .collect()
 }

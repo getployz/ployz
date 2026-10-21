@@ -1129,8 +1129,11 @@ async fn route_publishes_count_only_this_process() {
     assert!(first_count >= 1);
     assert_eq!(
         published.borrow().routes,
-        BTreeMap::from([(first.identity(), BTreeSet::from([first.container_id]))]),
-        "the publish carries what this process acked"
+        BTreeMap::from([(
+            first.identity(),
+            BTreeMap::from([(first.container_id, first.address.unwrap())])
+        )]),
+        "the publish carries what this process acked, at the address it applied"
     );
     assert_eq!(state.ack_transactions(), 2);
     assert_eq!(state.last_acks(), vec![ack(&machine, &[&first])]);

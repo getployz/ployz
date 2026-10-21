@@ -34,10 +34,10 @@ use ployz_core::{
     MachineUpgradeOutcome, MachineVersion, MembershipObservation, NAMESPACE_LABEL, Namespace,
     OpaquePayload, PROTOCOL_MAJOR, ProvisionedCopy, ProvisionedVolumeMaximumBytes,
     QualifiedService, RUNTIME_WATCH_MESSAGE_SIZE_LIMIT, ResolvedServiceSpec, RotationEdge,
-    RoutesRead, RoutingRequest, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse, RunTarget,
-    RuntimeWatchFrame, ServiceId, ServiceName, SlotId, SlotRole, StorageBacking, StorageCapacity,
-    VolumeCopy, VolumeCopyView, VolumeInventory, WireGuardPublicKey, WriterEpoch,
-    encode_runtime_watch_frame,
+    RoutedAddresses, RoutesRead, RoutingRequest, RpcError, RpcErrorCode, RpcRequestBody,
+    RpcResponse, RunTarget, RuntimeWatchFrame, ServiceId, ServiceName, SlotId, SlotRole,
+    StorageBacking, StorageCapacity, VolumeCopy, VolumeCopyView, VolumeInventory,
+    WireGuardPublicKey, WriterEpoch, encode_runtime_watch_frame,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -824,6 +824,8 @@ impl Fleet {
                 unary(self.ensure(target, container_id, &request.want)?)
             }
             RpcRequestBody::ReadRoutes(request) => unary(self.routes(&request.service).into()),
+            // Fake copies carry no address, so no fake proxy routes one.
+            RpcRequestBody::ReadRoutedAddresses(_) => unary(RoutedAddresses::default().into()),
             RpcRequestBody::InspectStorage(_) => unary(self.by_id(target)?.storage().into()),
             RpcRequestBody::ListVolumes(_) => unary(
                 VolumeInventory {

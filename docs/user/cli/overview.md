@@ -330,9 +330,15 @@ and `this_server` adds `"left": true`.
 
 When a server is up but its proxy hasn't picked up a service's current replicas after a deploy,
 `ployz status` names it, one line per service, like
-`web = web-2 has not picked up the new copies. Check its network.` A server that's down shows as
-**Down** instead. See
-[A server hasn't picked up the new version](../troubleshooting/deployments.md#a-server-hasnt-picked-up-the-new-version).
+`web = web-2 has not picked up the new copies. Check its network.` When a server's proxy sends a
+replica's traffic to an address the replica's own server doesn't report, status names that
+server too, like
+`web = web-3 routes a copy to 10.210.2.2, which its owner does not report. Check its network.`
+With `--json` these rows have reasons `routes_not_acked` and `routes_stale_address`. A server
+that's down shows as **Down** instead. See
+[A server hasn't picked up the new version](../troubleshooting/deployments.md#a-server-hasnt-picked-up-the-new-version)
+and
+[A server routes a replica at an old address](../troubleshooting/deployments.md#a-server-routes-a-replica-at-an-old-address).
 A `read` or `deploy` token without server access doesn't show this line yet. To check this, `ployz status`
 reaches your servers the way `ployz ps` does, so it takes the same `--context` and
 `--ssh-timeout` options.
