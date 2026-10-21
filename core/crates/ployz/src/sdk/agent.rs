@@ -303,11 +303,9 @@ where
                 let super::AgentTail { text, withheld } = tail.into();
                 if !withheld.is_empty() {
                     notes.push(format!(
-                        "{} withheld the lines of {} Container{} whose env could not be read to scrub them: {}",
+                        "Lines from {} on {} withheld: their env could not be read to scrub Sealed values.",
+                        withheld.join(", "),
                         machine.machine.name,
-                        withheld.len(),
-                        if withheld.len() == 1 { "" } else { "s" },
-                        withheld.join(", ")
                     ));
                 }
                 servers.push(ServerLog {

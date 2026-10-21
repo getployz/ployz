@@ -819,7 +819,7 @@ async fn a_removed_containers_lines_are_left_out_with_a_note_and_the_rest_still_
     assert_eq!(
         answer.notes,
         [
-            "one withheld the lines of 1 Container whose env could not be read to scrub them: web/dddddddddddd"
+            "Lines from web/dddddddddddd on one withheld: their env could not be read to scrub Sealed values."
         ]
     );
 }
