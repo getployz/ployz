@@ -196,7 +196,9 @@ restarting; **Stopped** means they all exited cleanly, or you stopped them, and 
 A replica you stopped reads **Stopped** whatever code your app exited with, and `ployz ps` shows
 it as `stopped`. One that exited on its own before your stop reached it still reads **Crashed**.
 While a deploy starts the service and none of its replicas exists yet, including while its
-pre-deploy command runs, the card reads a grey **Starting**. A replica that crashes during a
+pre-deploy command runs, the card reads a grey **Starting**. Until the dashboard knows whether
+the running deploy starts it, as just after you open the page, the line shimmers instead, and
+reads a grey **Status unavailable** if the deployment can't be read. A replica that crashes during a
 first deploy can read **Crashed** for a few seconds: if the deployment ends **Deployed**, there's
 nothing to fix.
 
