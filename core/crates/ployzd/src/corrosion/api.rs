@@ -602,6 +602,46 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
+    async fn a_transaction_does_not_wait_behind_queued_queries() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(
+                listener,
+                Router::new()
+                    .route(
+                        "/v1/queries",
+                        post(|| async { std::future::pending::<Body>().await }),
+                    )
+                    .route(
+                        "/v1/transactions",
+                        post(|| async {
+                            "{\"results\":[{\"rows_affected\":1,\"time\":0.0}],\"time\":0.0}"
+                        }),
+                    ),
+            )
+            .await
+            .unwrap();
+        });
+        let client = ApiClient::new(address, &"a".repeat(64)).unwrap();
+        let held = (0..=super::MAX_IN_FLIGHT)
+            .map(|_| {
+                let client = client.clone();
+                tokio::spawn(async move { client.query(Statement::new("SELECT 1", [])).await })
+            })
+            .collect::<Vec<_>>();
+        tokio::task::yield_now().await;
+        client
+            .execute([Statement::new("INSERT INTO t VALUES (1)", [])])
+            .await
+            .expect("a write must not queue behind reads");
+        for task in held {
+            task.abort();
+        }
+        server.abort();
+    }
+
+    #[tokio::test(start_paused = true)]
     async fn subscribe_times_out_when_the_snapshot_never_finishes() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
