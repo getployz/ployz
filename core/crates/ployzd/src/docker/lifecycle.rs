@@ -198,9 +198,12 @@ impl ContainerRuntime {
                 .get_or_insert_default()
                 .insert(CREATION_KEY.into(), key.into());
         }
-        body.labels
-            .get_or_insert_default()
-            .insert(super::LABEL_GEN.into(), r#gen.to_string());
+        let labels = body.labels.get_or_insert_default();
+        labels.insert(super::LABEL_GEN.into(), r#gen.to_string());
+        labels.insert(
+            super::LABEL_RECREATE_DIGEST.into(),
+            super::recreate_digest(spec),
+        );
         if let ImagePull::Policy(registry_auth) = image
             && let Err(error) = prepare_image(
                 &self.docker.client,
