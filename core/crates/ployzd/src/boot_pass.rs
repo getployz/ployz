@@ -142,7 +142,7 @@ fn routed_newest<'a>(
 
 /// The local In copies a Deploy would make anew to match their newest siblings,
 /// judged on the full specs in `specs`. The newest gen came from one Deploy, so
-/// siblings that disagree decide nothing. A limits-only difference keeps the copy,
+/// siblings built from different Deploy input decide nothing. A limits-only difference keeps the copy,
 /// since an in-place update that missed it leaves no other copy in its place. A
 /// copy missing from `specs` decides nothing.
 pub(crate) fn superseded(
@@ -158,7 +158,7 @@ pub(crate) fn superseded(
             let agree = rest.iter().all(|sibling| {
                 specs
                     .get(&sibling.container_id)
-                    .is_some_and(|spec| compare_specs(spec, &wanted) == SpecChange::UpToDate)
+                    .is_some_and(|spec| spec.to_requested() == wanted)
             });
             if !agree {
                 tracing::info!(

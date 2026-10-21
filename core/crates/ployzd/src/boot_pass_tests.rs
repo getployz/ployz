@@ -575,6 +575,29 @@ async fn replaced_by_the_newest_gen_when_an_older_one_matches() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn replaced_by_identical_always_pull_siblings() {
+    let cluster = Cluster::new();
+    let always = |copy| {
+        newer_image(respec(copy, |spec| {
+            spec.container.pull_policy = PullPolicy::Always;
+        }))
+    };
+
+    assert!(
+        set_out_beside(
+            &cluster,
+            copy(1, &cluster.local, 1),
+            vec![
+                always(copy(3, &cluster.peer, 2)),
+                always(copy(4, &cluster.peer, 2))
+            ],
+            Some,
+        )
+        .await
+    );
+}
+
+#[tokio::test(start_paused = true)]
 async fn kept_when_the_newest_siblings_disagree() {
     let cluster = Cluster::new();
 
