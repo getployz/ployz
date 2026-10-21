@@ -909,7 +909,7 @@ pub(crate) async fn remove_organization(
 /// What Cloud's removal of a Server did.
 #[derive(Debug, Deserialize)]
 pub(crate) struct CloudRemoval {
-    /// Why the reset didn't finish, if it didn't: Cloud then keeps its hold.
+    /// Why the reset didn't finish, if it didn't: Cloud keeps its hold on the last Server, else drops the row.
     pub(crate) reset_warning: Option<String>,
     pub(crate) release: Release,
 }
