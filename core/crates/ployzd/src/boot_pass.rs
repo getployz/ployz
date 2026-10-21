@@ -1,10 +1,9 @@
 //! Once per daemon start, set Out each In copy on this Machine whose Service has
 //! a newer In copy of another shape that every live proxy routes. A Machine
 //! powered off during a Deploy comes back with its old copy In, and proxies would
-//! route it again. A copy a Deploy kept keeps its gen beside the newer copies it
-//! started, and shares their shape. The pass decides only after this Machine has
-//! caught up with a peer's store and its own ingress has published since, and it
-//! never stops a Container.
+//! route it again. The pass decides only after this Machine has caught up with a
+//! peer's store and its own ingress has published since, and it never stops a
+//! Container.
 
 use std::{
     collections::{BTreeMap, BTreeSet},

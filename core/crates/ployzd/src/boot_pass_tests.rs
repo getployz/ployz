@@ -129,8 +129,8 @@ fn out(copy: &ContainerObservation) -> ContainerWant {
     }
 }
 
-/// A powered-off Machine back with gen 1 In, while a peer serves gen 2 of a newer
-/// image and a second peer runs only a proxy.
+/// A powered-off Machine back with gen 1 In, while a peer serves gen 2 and a
+/// second peer runs only a proxy.
 struct Cluster {
     local: Machine,
     peer: Machine,
