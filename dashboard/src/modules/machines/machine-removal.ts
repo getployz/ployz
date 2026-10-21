@@ -86,15 +86,18 @@ export type MachineRemoveAttemptView =
       id: string;
       machineId: string;
       state: "failed" | "cancelled";
-      /** A removal sent to the Server ran out of retries, so whether it reset is unknown and Cloud still lists it. */
-      resetUnknown: boolean;
+      /**
+       * A reset sent to the Server whose run then ran out of retries. Any later step may be the one that ran out, so
+       * the Server may have reset, or not, and Cloud may or may not still list it.
+       */
+      unfinished: boolean;
       failureMessage: string;
     };
 
-/** What a failed removal tells the person who asked for it. A Server whose reset is unknown and is gone is forgotten. */
-export function removalFailureMessage(name: string, attempt: { resetUnknown: boolean; failureMessage: string }) {
-  return attempt.resetUnknown
-    ? `Ployz Cloud couldn't tell whether ${name} reset, so it's still listed. If ${name} is gone, forget it with Forget server.`
+/** What a failed removal tells the person who asked for it. A Server that is gone and still listed is forgotten. */
+export function removalFailureMessage(name: string, attempt: { unfinished: boolean; failureMessage: string }) {
+  return attempt.unfinished
+    ? `Removing ${name} didn't finish: Ployz Cloud ran out of retries. If ${name} is gone but still listed, forget it with Forget server.`
     : attempt.failureMessage;
 }
 
@@ -148,8 +151,8 @@ export function toMachineRemoveAttemptView(attempt: {
         id: attempt.id,
         machineId: attempt.machineId,
         state: attempt.state,
-        // Retries run out for any step; only one that already asked the Server to reset leaves the reset unknown.
-        resetUnknown: attempt.state === "failed" && attempt.failureCode === "retry_exhausted"
+        // Retries run out for any step, and the row doesn't say which; one before the reset was sent changed nothing.
+        unfinished: attempt.state === "failed" && attempt.failureCode === "retry_exhausted"
           && attempt.removeSentAt !== null && !attempt.noReset,
         failureMessage: attempt.failureMessage,
       };
