@@ -311,13 +311,16 @@ or the replica was removed, and web-3 hasn't caught up, so visitors who reach we
 reach `web`. A server that doesn't answer the check adds no line. Status names no server for a
 replica whose own server didn't answer or is Down.
 
-During a deploy or a move, a proxy can route a replica that was just removed until it catches up,
-so this line can show for a few seconds and go away by itself. Run status again before you act.
+Status skips this check while a deploy is in progress. Right after a deploy or a move, a proxy that
+hasn't caught up can still route a replica that was just removed, so the line can show briefly and
+go away by itself. Run status again before you act.
 
 When status warns that `web-3 has not confirmed what its proxy serves`, web-3's daemon has just
-started, or it wrote a new proxy config without reaching the proxy. Until the proxy loads a config
+started, it wrote a new proxy config without reaching the proxy, or status couldn't read what web-3
+routes. Until the proxy loads a config
 web-3 can see, status doesn't check what web-3 routes. The warning goes away once the proxy
-answers. If it stays, web-3's proxy isn't answering its daemon. See [Troubleshooting servers](servers.md).
+answers, usually within 2 seconds of a daemon restart or upgrade. If it stays, web-3's proxy isn't
+answering its daemon. See [Troubleshooting servers](servers.md).
 
 - **Check web-3's network.** Your servers need UDP port 51820 open between them. See
   [Troubleshooting servers](servers.md).
