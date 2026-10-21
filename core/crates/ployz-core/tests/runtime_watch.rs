@@ -229,6 +229,7 @@ fn expected_frame() -> RuntimeWatchFrame {
                     memory_total_bytes: None,
                     running_builds: 0,
                     pool_committable_bytes: None,
+                    store_filesystem: None,
                     capabilities: BTreeSet::new(),
                 },
                 build_concurrency: None,

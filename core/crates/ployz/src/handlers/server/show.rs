@@ -1,8 +1,8 @@
 use clap::ArgMatches;
 use ployz_core::{
-    InspectRequest, Machine, MachineDetails, MachineObservation, MachineStorageObservation,
-    MachineTarget, MachineUpgradeAttempt, MachineUpgradeOutcome, MembershipObservation,
-    RpcErrorCode, TelemetryObservation, op,
+    InspectRequest, Machine, MachineDetails, MachineObservation, MachineRuntime,
+    MachineStorageObservation, MachineTarget, MachineUpgradeAttempt, MachineUpgradeOutcome,
+    MembershipObservation, RpcErrorCode, TelemetryObservation, op,
 };
 use serde_json::{Value, json};
 
@@ -31,6 +31,9 @@ pub(in crate::handlers) fn list(root: &ArgMatches) -> Result<(), Error> {
             None => (Vec::new(), StorageGaps::default()),
         };
         if let Some(warning) = daemon_skew_warning(&machines, env!("CARGO_PKG_VERSION")) {
+            ui::warn(warning);
+        }
+        if let Some(warning) = power_cut_warning(&machines) {
             ui::warn(warning);
         }
         let listed = machines.iter().map(observation_json).collect::<Vec<_>>();
@@ -101,6 +104,66 @@ fn daemon_skew_warning(machines: &[MachineObservation], cli_version: &str) -> Op
         count => Some(format!(
             "{count} Servers run daemon versions different from CLI {cli_version}."
         )),
+    }
+}
+
+/// Filesystems that refuse, or don't pass on, the flag that makes the store write
+/// synchronously, by the name the daemon reports and the name a person knows.
+const POWER_CUT_STORES: [(&str, &str); 4] = [
+    ("zfs", "ZFS"),
+    ("btrfs", "Btrfs"),
+    ("tmpfs", "tmpfs"),
+    ("overlay", "overlay"),
+];
+
+/// The filesystem a Server keeps its state on, named as a person knows it when it can
+/// lose its last changes in a power cut.
+fn power_cut_store(runtime: &MachineRuntime) -> Option<&'static str> {
+    let filesystem = runtime.store_filesystem.as_deref()?;
+    POWER_CUT_STORES
+        .iter()
+        .find(|(reported, _)| *reported == filesystem)
+        .map(|(_, shown)| *shown)
+}
+
+#[must_use]
+fn power_cut_warning(machines: &[MachineObservation]) -> Option<String> {
+    let lossy = machines
+        .iter()
+        .filter_map(|observed| {
+            let machine = &observed.machine;
+            Some((machine.name.to_string(), power_cut_store(&machine.runtime)?))
+        })
+        .collect::<Vec<_>>();
+    match lossy.as_slice() {
+        [] => None,
+        [(name, filesystem)] => Some(format!(
+            "{name} stores its state on {filesystem}, so it can lose its last changes in a \
+             power cut. If it loses power, restart the services on it, and again if some \
+             requests still reach its old replicas."
+        )),
+        several => {
+            let mut filesystems = several.iter().map(|(_, shown)| *shown).collect::<Vec<_>>();
+            filesystems.sort_unstable();
+            filesystems.dedup();
+            Some(format!(
+                "{} store their state on {}, so they can lose their last changes in a power \
+                 cut. If one loses power, restart the services on it, and again if some \
+                 requests still reach its old replicas.",
+                prose_list(several.iter().map(|(name, _)| name.as_str()), "and"),
+                prose_list(filesystems, "or"),
+            ))
+        }
+    }
+}
+
+/// `a`, `a and b`, `a, b and c`.
+fn prose_list<'item>(items: impl IntoIterator<Item = &'item str>, conjunction: &str) -> String {
+    let items = items.into_iter().collect::<Vec<_>>();
+    match items.split_last() {
+        None => String::new(),
+        Some((last, [])) => (*last).to_owned(),
+        Some((last, rest)) => format!("{} {conjunction} {last}", rest.join(", ")),
     }
 }
 
@@ -303,6 +366,17 @@ fn record(details: &MachineDetails) -> Fields {
         ),
     ));
     lines.push(("storage", format_storage(details.storage)));
+    if let Some(machine) = &details.machine
+        && let Some(filesystem) = &machine.runtime.store_filesystem
+    {
+        let store = match power_cut_store(&machine.runtime) {
+            Some(shown) => format!(
+                "{shown}. Can lose its last changes in a power cut; restart its services after one."
+            ),
+            None => filesystem.clone(),
+        };
+        lines.push(("store", store));
+    }
     if let Some(TelemetryObservation::Full { host, .. }) = &details.telemetry {
         let (memory, disk) = (host.memory(), host.docker_root());
         lines.extend([
@@ -452,7 +526,8 @@ mod tests {
                     "hostname": "box-1",
                     "architecture": "x86_64",
                     "os_pretty_name": "Ubuntu 24.04.4 LTS",
-                    "kernel_version": "6.8.0-117-generic"
+                    "kernel_version": "6.8.0-117-generic",
+                    "store_filesystem": "zfs"
                 }
             },
             "public_key": key,
@@ -510,6 +585,7 @@ mod tests {
              labels = zone=a\n\
              endpoints = 192.168.122.53:51820, 5.39.66.176:51820\n\
              storage = Managed volumes available\n\
+             store = ZFS. Can lose its last changes in a power cut; restart its services after one.\n\
              cpu = 2 CPUs, load 0.02\n\
              memory = 2.9 GB available of 4.1 GB\n\
              docker disk = 47.3 GB free of 73.6 GB\n\
@@ -517,6 +593,104 @@ mod tests {
              peer = machine-3 1.2 ms\n\
              management = cli-5ec2b97c41404ba093fc78cf6489, cloud\n\
              upgrade = to 0.3.0-beta.7 failed at activating: systemd refused the unit\n"
+        );
+    }
+
+    fn on(name: &str, filesystem: Option<&str>) -> MachineObservation {
+        MachineObservation::new(
+            ployz_core::Machine {
+                labels: Default::default(),
+                accepts_builds: true,
+                accepts_services: true,
+                accepts_ingress: true,
+                id: ployz_core::MachineId::random(),
+                name: name.parse().unwrap(),
+                subnet: "10.210.7.0/24".parse().unwrap(),
+                public_key: ployz_core::WireGuardPublicKey([7; 32]),
+                public_ip: None,
+                advertised_endpoints: Vec::new(),
+                runtime: MachineRuntime {
+                    store_filesystem: filesystem.map(str::to_owned),
+                    ..Default::default()
+                },
+                build_concurrency: None,
+            },
+            MembershipObservation::Up,
+        )
+    }
+
+    #[test]
+    fn servers_on_synchronous_or_unreported_stores_are_not_warned_about() {
+        assert_eq!(
+            power_cut_warning(&[
+                on("web-1", Some("ext4")),
+                on("web-2", None),
+                on("web-3", Some("0x1234abcd")),
+            ]),
+            None
+        );
+    }
+
+    #[test]
+    fn one_server_that_can_lose_its_last_changes_is_named() {
+        assert_eq!(
+            power_cut_warning(&[on("web-1", Some("ext4")), on("web-2", Some("zfs"))]).as_deref(),
+            Some(
+                "web-2 stores its state on ZFS, so it can lose its last changes in a power cut. \
+                 If it loses power, restart the services on it, and again if some requests \
+                 still reach its old replicas."
+            )
+        );
+        assert_eq!(
+            power_cut_warning(&[on("web-3", Some("btrfs"))]).as_deref(),
+            Some(
+                "web-3 stores its state on Btrfs, so it can lose its last changes in a power cut. \
+                 If it loses power, restart the services on it, and again if some requests \
+                 still reach its old replicas."
+            )
+        );
+    }
+
+    #[test]
+    fn several_servers_that_can_lose_their_last_changes_are_named_in_one_line() {
+        assert_eq!(
+            power_cut_warning(&[
+                on("web-1", Some("zfs")),
+                on("web-2", Some("ext4")),
+                on("web-3", Some("btrfs")),
+                on("db-1", Some("zfs")),
+            ])
+            .as_deref(),
+            Some(
+                "web-1, web-3 and db-1 store their state on Btrfs or ZFS, so they can lose their \
+                 last changes in a power cut. If one loses power, restart the services on it, \
+                 and again if some requests still reach its old replicas."
+            )
+        );
+    }
+
+    #[test]
+    fn a_server_on_a_synchronous_store_shows_its_plain_filesystem() {
+        let mut details: MachineDetails = serde_json::from_value(json!({
+            "id": "8d996790baf04c20b81cdbf8c7897016",
+            "phase": "participating",
+            "public_key": ployz_core::WireGuardPublicKey([7; 32]),
+        }))
+        .unwrap();
+        let mut machine = on("web-1", Some("ext4")).machine;
+        machine.id = details.id;
+        details.machine = Some(machine);
+        let mut out = anstream::StripStream::new(Vec::new());
+        record(&details).write(&mut out, false).unwrap();
+        let shown = String::from_utf8(out.into_inner()).unwrap();
+        assert!(shown.contains("\nstore = ext4\n"), "{shown}");
+        details.machine.as_mut().unwrap().runtime.store_filesystem = None;
+        let mut out = anstream::StripStream::new(Vec::new());
+        record(&details).write(&mut out, false).unwrap();
+        assert!(
+            !String::from_utf8(out.into_inner())
+                .unwrap()
+                .contains("store =")
         );
     }
 

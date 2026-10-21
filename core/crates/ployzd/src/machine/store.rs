@@ -249,7 +249,7 @@ impl LocalMachineStore {
     }
 
     fn refresh_runtime(&mut self) -> Result<(), StoreError> {
-        let runtime = local_runtime();
+        let runtime = local_runtime(&self.data_dir);
         let stale = match &self.record.body {
             LocalMachineBody::Joining { machine, .. }
             | LocalMachineBody::Participating { machine, .. } => machine.runtime != runtime,
@@ -375,7 +375,7 @@ impl LocalMachineStore {
             public_key: self.record.wireguard_private_key.public_key(),
             public_ip,
             advertised_endpoints,
-            runtime: local_runtime(),
+            runtime: local_runtime(&self.data_dir),
             build_concurrency: None,
         };
         Ok(LocalMachineBody::Participating {
@@ -402,7 +402,7 @@ impl LocalMachineStore {
         if machine.advertised_endpoints.is_empty() {
             return Err(StoreError::MissingEndpoints);
         }
-        machine.runtime = local_runtime();
+        machine.runtime = local_runtime(&self.data_dir);
         Ok(LocalMachineBody::Joining {
             machine,
             bootstrap: visible_peers,
