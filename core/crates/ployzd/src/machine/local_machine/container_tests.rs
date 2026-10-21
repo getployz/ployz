@@ -1724,16 +1724,31 @@ mod stopped_on_request {
         }
 
         #[tokio::test]
-        async fn stop_checked_stops_a_copy_without_a_listener_at_once() {
+        async fn stop_checked_stops_a_copy_without_sockets_at_once() {
             let fixture = Fixture::start().await;
-            fixture.sockets(&[(0xA2C4, ESTABLISHED)]);
+            fixture.sockets(&[]);
 
             let (stopped, took) = fixture.stop_timed(Drain::MAX).await;
 
             assert_exited(&stopped);
             assert!(
                 took < Duration::from_secs(10),
-                "an outbound connection serves no client, took {took:?}"
+                "a worker with no connection serves no client, took {took:?}"
+            );
+            fixture.finish();
+        }
+
+        #[tokio::test]
+        async fn stop_checked_waits_for_a_connection_of_a_copy_without_a_listener() {
+            let fixture = Fixture::start().await;
+            fixture.sockets(&[(8080, ESTABLISHED)]);
+
+            let (stopped, took) = fixture.stop_timed(Drain::try_from(500).unwrap()).await;
+
+            assert_exited(&stopped);
+            assert!(
+                took >= Duration::from_millis(500),
+                "a listener closed before the drain may leave a request it still answers, took {took:?}"
             );
             fixture.finish();
         }

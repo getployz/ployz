@@ -260,7 +260,8 @@ Ployz starts the new replicas of a service alongside the old ones and waits unti
 healthy. Then every server starts sending the service's requests to the new replicas. Once every
 server has, the old replicas get no new requests, finish the ones they have, and stop. An old
 replica with no open connection stops at once; one still answering a request gets up to
-3 seconds. Your app keeps serving the whole time.
+3 seconds. A replica that listens on no port, such as a worker, gets the 3 seconds whenever it
+holds a connection to another host. Your app keeps serving the whole time.
 
 Ployz waits up to five minutes for each server to switch. If a server is cut off or powered off,
 the deploy keeps the new replicas, leaves the old one running there, exits 3, and says so. When

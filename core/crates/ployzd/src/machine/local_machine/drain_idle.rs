@@ -8,14 +8,20 @@ use std::{
     path::Path,
 };
 
-const ESTABLISHED: &str = "01";
+/// The states, as the kernel prints them, in which the copy can still send the client
+/// data it waits for: ESTABLISHED, SYN_RECV, FIN_WAIT1, CLOSE_WAIT, LAST_ACK and
+/// CLOSING. A client that half-closes after its request leaves the copy in CLOSE_WAIT
+/// until it replies. In FIN_WAIT1, LAST_ACK and CLOSING the copy's last data or FIN is
+/// not yet acknowledged, and stopping the Container drops it.
+const ANSWERING: [&str; 6] = ["01", "03", "04", "08", "09", "0B"];
 const LISTEN: &str = "0A";
 
 /// Whether the namespace `pid` lives in, under the `proc_root` procfs mount, has an
-/// inbound TCP connection: an ESTABLISHED socket from off the namespace's loopback,
-/// on a port in `listening`. This read adds the ports it sees listening to
-/// `listening`, so a drain that keeps the set across its reads still counts a port
-/// whose listener closed while a connection to it lives.
+/// inbound TCP connection the copy may still answer: one from off the namespace's
+/// loopback, on a port in `listening`, or on any port while `listening` is empty.
+/// This read adds the ports it sees listening to `listening`, so a drain that keeps
+/// the set across its reads still counts a port whose listener closed while a
+/// connection to it lives.
 ///
 /// # Errors
 ///
@@ -42,6 +48,9 @@ pub(super) fn holds_connection(
 /// the listening ports come from every table. An outbound connection's local port is
 /// ephemeral and usually not one the namespace listens on. A connection from
 /// loopback is the copy talking to itself, as nginx to php-fpm, so it holds nothing.
+/// Before any listener is seen no port can be told inbound, as for a copy that
+/// closed its listener before the drain began and still answers what it accepted,
+/// so every connection counts.
 fn serves_connection(tables: &[&str], listening: &mut BTreeSet<u16>) -> bool {
     let rows = || tables.iter().flat_map(|table| sockets(table));
     listening.extend(
@@ -50,8 +59,8 @@ fn serves_connection(tables: &[&str], listening: &mut BTreeSet<u16>) -> bool {
             .map(|socket| socket.port),
     );
     rows().any(|socket| {
-        socket.state == ESTABLISHED
-            && listening.contains(&socket.port)
+        ANSWERING.contains(&socket.state)
+            && (listening.is_empty() || listening.contains(&socket.port))
             && !from_loopback(socket.remote)
     })
 }
@@ -194,23 +203,48 @@ mod tests {
     }
 
     #[test]
-    fn drain_idle_finds_nothing_without_a_listener() {
-        let tcp = table(TCP_HEADER, &[TCP_INBOUND_8080, TCP_OUTBOUND]);
-        assert!(!serves(&[&tcp, TCP6_HEADER]));
+    fn drain_idle_counts_a_connection_accepted_before_the_listener_closed() {
+        let tcp = table(TCP_HEADER, &[TCP_INBOUND_8080]);
+        assert!(serves(&[&tcp, TCP6_HEADER]));
     }
 
     #[test]
-    fn drain_idle_ignores_sockets_that_are_not_established() {
-        let rows: Vec<String> = ["06", "08", "04", "05", "07", "09", "0B", "02", "03"]
-            .iter()
-            .enumerate()
-            .map(|(row, state)| {
-                format!("   {}: 0A010005:1F90 0A010002:C350 {state} 00000000:00000000 00:00000000 00000000     0        0 0 1 0000000000000000 20 4 30 10 -1", row + 1)
-            })
-            .collect();
-        let mut rows: Vec<&str> = rows.iter().map(String::as_str).collect();
-        rows.push(TCP_LISTENER_8080);
-        assert!(!serves(&[&table(TCP_HEADER, &rows), TCP6_HEADER]));
+    fn drain_idle_counts_an_outside_connection_of_a_copy_that_never_listened() {
+        let tcp = table(TCP_HEADER, &[TCP_OUTBOUND]);
+        assert!(serves(&[&tcp, TCP6_HEADER]));
+    }
+
+    #[test]
+    fn drain_idle_finds_nothing_in_a_copy_without_sockets() {
+        assert!(!serves(&[TCP_HEADER, TCP6_HEADER]));
+    }
+
+    fn inbound_8080_in(state: &str) -> String {
+        format!(
+            "   1: 0A010005:1F90 0A010002:C350 {state} 00000000:00000000 00:00000000 00000000     0        0 0 1 0000000000000000 20 4 30 10 -1"
+        )
+    }
+
+    #[test]
+    fn drain_idle_counts_a_connection_the_copy_may_still_answer() {
+        for (state, name) in [
+            ("03", "SYN_RECV"),
+            ("04", "FIN_WAIT1"),
+            ("08", "CLOSE_WAIT"),
+            ("09", "LAST_ACK"),
+            ("0B", "CLOSING"),
+        ] {
+            let tcp = table(TCP_HEADER, &[TCP_LISTENER_8080, &inbound_8080_in(state)]);
+            assert!(serves(&[&tcp, TCP6_HEADER]), "{name}");
+        }
+    }
+
+    #[test]
+    fn drain_idle_ignores_a_connection_whose_reply_was_delivered() {
+        for (state, name) in [("05", "FIN_WAIT2"), ("06", "TIME_WAIT"), ("07", "CLOSE")] {
+            let tcp = table(TCP_HEADER, &[TCP_LISTENER_8080, &inbound_8080_in(state)]);
+            assert!(!serves(&[&tcp, TCP6_HEADER]), "{name}");
+        }
     }
 
     #[test]
@@ -245,7 +279,7 @@ mod tests {
         let served = || {
             let tcp = fs::read_to_string("/proc/self/net/tcp").unwrap();
             sockets(&tcp)
-                .find(|socket| socket.port == port && socket.state == ESTABLISHED)
+                .find(|socket| socket.port == port && socket.state == "01")
                 .map(|socket| from_loopback(socket.remote))
         };
         assert_eq!(served(), None);
@@ -256,6 +290,33 @@ mod tests {
             served(),
             Some(true),
             "the kernel lists the accepted connection, from loopback"
+        );
+    }
+
+    #[test]
+    fn drain_idle_counts_a_live_request_whose_client_half_closed() {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let mut client = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        let (mut served, _) = listener.accept().unwrap();
+        client.write_all(b"request").unwrap();
+        client.shutdown(std::net::Shutdown::Write).unwrap();
+        let mut request = Vec::new();
+        served.read_to_end(&mut request).unwrap();
+
+        let tcp = fs::read_to_string("/proc/self/net/tcp").unwrap();
+        let state = sockets(&tcp)
+            .find(|socket| socket.port == port && socket.state != LISTEN)
+            .map(|socket| socket.state.to_owned())
+            .unwrap();
+        assert_eq!(
+            state, "08",
+            "the kernel lists the served side in CLOSE_WAIT"
+        );
+        assert!(
+            ANSWERING.contains(&state.as_str()),
+            "the copy can still send its reply"
         );
     }
 }
