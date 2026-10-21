@@ -9,9 +9,10 @@ Every rule here is checkable. A reviewer confirms it from a screenshot or a grep
 1. **Focus ring is neutral grey.** Focus draws with `--ring`, which is grey. It is never `--changed` or any other state colour.
    To check, tab through a page. No pink outline appears.
 
-2. **Four colours encode state, each with one meaning.**
+2. **Five colours encode state, each with one meaning.**
    - Pink `--changed` means staged. Something was added or changed and is not deployed yet. Pink always comes with a text label.
-   - Red `--destructive` means removal or destruction.
+   - Red `--destructive` means failure, removal or destruction.
+   - Amber `--warning` means it needs attention but still works.
    - Blue `--info` means information or work in flight.
    - Green `--success` means healthy.
 
