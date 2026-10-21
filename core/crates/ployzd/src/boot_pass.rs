@@ -223,6 +223,20 @@ fn actor_key(actor: &str) -> String {
     actor.replace('-', "").to_ascii_lowercase()
 }
 
+pub(crate) async fn alone(machines: &MachineView, local: MachineId) -> bool {
+    let mut snapshots = machines.watch();
+    let Ok(snapshot) = snapshots.wait_for(Option::is_some).await else {
+        return false;
+    };
+    snapshot.as_ref().is_some_and(|machines| {
+        machines.incomplete_ids.is_empty()
+            && machines
+                .observations
+                .iter()
+                .all(|machine| machine.id == local)
+    })
+}
+
 #[cfg(test)]
 #[path = "boot_pass_alone_tests.rs"]
 mod alone_tests;
