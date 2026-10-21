@@ -16,8 +16,8 @@ use axum::{
 };
 use futures_util::StreamExt;
 use ployz_core::{
-    AdvertisedEndpoint, ContainerId, ContainerObservation, CopyRotation, HttpProtocol,
-    MACHINE_API_PORT, Machine, MachineId, MachineName, WireGuardPublicKey,
+    AdvertisedEndpoint, ContainerAddress, ContainerId, ContainerObservation, CopyRotation,
+    HttpProtocol, MACHINE_API_PORT, Machine, MachineId, MachineName, WireGuardPublicKey,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -1264,6 +1264,62 @@ async fn routed_addresses_follow_a_loaded_config_even_when_the_caddyfile_write_f
     std::fs::remove_dir_all(directory).unwrap();
 }
 
+#[tokio::test]
+async fn returning_to_the_last_written_config_reloads_caddy_after_a_failed_caddyfile_write() {
+    let WatcherFixture {
+        machine,
+        state,
+        address,
+        server,
+        directory,
+    } = watcher_fixture().await;
+    let api = state.api_container();
+    let (load_tx, mut load_rx) = mpsc::unbounded_channel();
+    let admin = TestAdmin { loads: load_tx };
+    let (route_publishes, mut published) =
+        tokio::sync::watch::channel(crate::ingress::PublishedRoutes::default());
+    let shutdown = CancellationToken::new();
+    let watcher = tokio::spawn(watch_caddy(
+        machine.clone(),
+        ReplicatedStore::new(ApiClient::http1(address, &"a".repeat(64)).unwrap()),
+        no_down,
+        directory.join(CONFIG_FILE),
+        route_publishes,
+        shutdown.clone(),
+        move || std::future::ready(Ok(Some(admin.clone()))),
+    ));
+    assert!(next_load(&mut load_rx).await.contains("10.210.1.2:80"));
+    state.wait_for_ack_transactions(1).await;
+
+    std::fs::remove_file(directory.join(CONFIG_FILE)).unwrap();
+    std::fs::create_dir_all(directory.join(CONFIG_FILE)).unwrap();
+    state.set_address(api.container_id, [10, 210, 1, 7]);
+    assert!(next_load(&mut load_rx).await.contains("10.210.1.7:80"));
+    state.set_address(api.container_id, [10, 210, 1, 2]);
+    timeout(Duration::from_secs(5), async {
+        while !load_rx.recv().await.unwrap().contains("10.210.1.2:80") {}
+    })
+    .await
+    .expect("Caddy still serves 10.210.1.7, so the first config is loaded again");
+    let published = published
+        .wait_for(|published| {
+            published.addresses
+                == BTreeMap::from([(
+                    api.identity(),
+                    BTreeMap::from([(api.container_id, api.address.unwrap())]),
+                )])
+        })
+        .await
+        .unwrap()
+        .clone();
+    assert_eq!(published.count, 1);
+
+    shutdown.cancel();
+    watcher.await.unwrap().unwrap();
+    server.abort();
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
 const CHALLENGE: &str = r#"{"challenge_token":"LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0","challenge_response":"LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}"#;
 
 fn no_down() -> std::future::Ready<Result<BTreeSet<MachineId>, CorrosionError>> {
@@ -1479,6 +1535,18 @@ impl WatchState {
             .find(|container| container.container_id == container_id)
             .expect("watch fixture has the Container")
             .try_update(|parts| parts.rotation = Some(rotation))
+            .unwrap();
+        self.send(b"{\"change\":{}}\n");
+    }
+
+    fn set_address(&self, container_id: ContainerId, address: [u8; 4]) {
+        self.containers
+            .lock()
+            .unwrap()
+            .iter_mut()
+            .find(|container| container.container_id == container_id)
+            .expect("watch fixture has the Container")
+            .try_update(|parts| parts.address = Some(ContainerAddress(address.into())))
             .unwrap();
         self.send(b"{\"change\":{}}\n");
     }
