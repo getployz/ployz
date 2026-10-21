@@ -1,6 +1,6 @@
 import { it } from "@effect/vitest";
 import { asc, sql } from "drizzle-orm";
-import { Deferred, Effect, Fiber, Layer } from "effect";
+import { Deferred, Effect, Fiber } from "effect";
 import { Inngest } from "inngest";
 import { expect, vi } from "vitest";
 import { cloudStore } from "#/modules/config-store/store-sdk.server";
@@ -21,7 +21,7 @@ const NAMES = new Map([[MACHINE, "web-1"]]);
 const setup = Effect.fn(function* () {
   const inngest = new Inngest({ id: "crash-mail-test" });
   const send = vi.spyOn(inngest, "send").mockResolvedValue({ ids: [] });
-  const services = yield* Layer.build(yield* storeTestCloud({ inngest, env: { APP_URL: "https://cloud.example.com" } }));
+  const services = yield* storeTestCloud({ inngest, env: { APP_URL: "https://cloud.example.com" } });
   const provide = <A, E, R>(effect: Effect.Effect<A, E, R>) => effect.pipe(Effect.provide(services));
   yield* provide(seedStoreOrganization(ORGANIZATION, { name: "Acme", slug: "acme" }));
   yield* provide(enrollStoreServer(ORGANIZATION));

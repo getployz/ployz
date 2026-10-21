@@ -938,7 +938,8 @@ const REMOVAL_WAIT: std::time::Duration = std::time::Duration::from_secs(600);
 /// Have Cloud remove Server `machine` of the credential's Organization, resetting it
 /// and accepting exactly `confirmation`'s Data Loss. It is the same durable removal the
 /// dashboard starts, which Cloud runs under its own connection; [`follow_removal`]
-/// waits for it. `approval` is the id of the human's approval, when Cloud asked for one.
+/// waits for it. The run keeps `machine`'s name, the one the CLI showed. `approval` is
+/// the id of the human's approval, when Cloud asked for one.
 ///
 /// # Errors
 ///
@@ -946,15 +947,15 @@ const REMOVAL_WAIT: std::time::Duration = std::time::Duration::from_secs(600);
 /// when the confirmation misses fresh Data Loss, `approval_required`), or a Cloud failure.
 pub(crate) async fn start_removal(
     credential: &Credential,
-    machine: &MachineId,
+    machine: &ployz_core::Machine,
     confirmation: &ployz_core::DataLossConfirmation,
     approval: Option<&str>,
 ) -> Result<String, StoreCallError> {
     start_run(
         credential,
         Method::DELETE,
-        &format!("servers/{machine}"),
-        &serde_json::json!({ "confirm_data_loss": confirmation }),
+        &format!("servers/{}", machine.id),
+        &serde_json::json!({ "confirm_data_loss": confirmation, "server_name": machine.name }),
         approval,
     )
     .await
@@ -962,8 +963,8 @@ pub(crate) async fn start_removal(
 
 /// Have Cloud forget Server `machine` of the credential's Organization: take it out of
 /// the Cluster without a reset. Cloud runs it as the same durable removal
-/// [`follow_removal`] waits for. `approval` is the id of the human's approval, when
-/// Cloud asked for one.
+/// [`follow_removal`] waits for, and it keeps `machine`'s name, the one the CLI
+/// showed. `approval` is the id of the human's approval, when Cloud asked for one.
 ///
 /// # Errors
 ///
@@ -971,14 +972,14 @@ pub(crate) async fn start_removal(
 /// `approval_required`), or a Cloud failure.
 pub(crate) async fn start_forget(
     credential: &Credential,
-    machine: &MachineId,
+    machine: &ployz_core::Machine,
     approval: Option<&str>,
 ) -> Result<String, StoreCallError> {
     start_run(
         credential,
         Method::POST,
-        &format!("servers/{machine}/forget"),
-        &serde_json::json!({}),
+        &format!("servers/{}/forget", machine.id),
+        &serde_json::json!({ "server_name": machine.name }),
         approval,
     )
     .await

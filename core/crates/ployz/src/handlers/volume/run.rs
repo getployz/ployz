@@ -360,7 +360,7 @@ pub(crate) fn mirror_command(command: Command) -> Command {
             .args_conflicts_with_subcommands(true)
             .subcommand_negates_reqs(true),
     )
-    .arg(positional("volume", true))
+    .arg(positional("volume", true).help("Volume name"))
     .arg(
         value("to", None)
             .value_name("SERVER")
@@ -393,7 +393,7 @@ pub(crate) fn sync_command(command: Command) -> Command {
     store::scoped(command
             .about("Hand a Volume's Mirror what changed since its last pull (Ployz Cloud); the dashboard's Volume page follows the download"),
     )
-    .arg(positional("volume", true))
+    .arg(positional("volume", true).help("Volume name"))
     .arg(switch("full", None).help("Copy everything again as a run, for a Mirror that fell behind for good"))
     .arg(wait_flag().requires("full"))
 }
@@ -402,7 +402,7 @@ pub(crate) fn move_command(command: Command) -> Command {
     store::scoped(command
             .about("Move a Volume and its Service onto another Server (Ployz Cloud); the Service stops for the last copy"),
     )
-    .arg(positional("volume", true))
+    .arg(positional("volume", true).help("Volume name"))
     .arg(
         value("to", None)
             .value_name("SERVER")
@@ -416,7 +416,7 @@ pub(crate) fn release_command(command: Command) -> Command {
     store::scoped(command
             .about("Stop what runs on a Volume and start its Service again where it was; a Move past its handover finishes there (Ployz Cloud)"),
     )
-    .arg(positional("volume", true))
+    .arg(positional("volume", true).help("Volume name"))
     .arg(approval_arg())
     .arg(wait_flag())
 }
@@ -425,7 +425,7 @@ pub(crate) fn restore_command(command: Command) -> Command {
     store::scoped(command.about(
         "Make a Server's copy of a Volume its writer when no Server holds one (Ployz Cloud)",
     ))
-    .arg(positional("volume", true))
+    .arg(positional("volume", true).help("Volume name"))
     .arg(
         value("from", None)
             .value_name("SERVER")
@@ -437,7 +437,7 @@ pub(crate) fn restore_command(command: Command) -> Command {
 
 pub(crate) fn runs_command(command: Command) -> Command {
     store::scoped(command.about("List a Volume's runs, or show one (Ployz Cloud)"))
-        .arg(positional("volume", true))
+        .arg(positional("volume", true).help("Volume name"))
         .arg(positional("run", false).help("A run ID, to show that run"))
 }
 

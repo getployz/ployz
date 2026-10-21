@@ -41,7 +41,11 @@ pub(super) fn undo_command(command: Command) -> Command {
 fn history_action(command: Command, about: &'static str) -> Command {
     command
         .about(about)
-        .arg(positional("revision", true).value_parser(clap::value_parser!(u64)))
+        .arg(
+            positional("revision", true)
+                .value_parser(clap::value_parser!(u64))
+                .help("The version's number, from ployz history"),
+        )
         .arg(version())
         .arg(
             switch("preview", None)

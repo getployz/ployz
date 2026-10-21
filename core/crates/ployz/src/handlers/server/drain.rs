@@ -72,7 +72,7 @@ fn through_cloud(
                 credential,
                 Method::POST,
                 &format!("servers/{}/drain", machine.id),
-                &json!({}),
+                &json!({ "server_name": machine.name }),
                 approval,
             )
             .await

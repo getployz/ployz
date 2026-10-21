@@ -1,7 +1,7 @@
 import { it } from "@effect/vitest";
 import { InngestTestEngine } from "@inngest/test";
 import type { ConfigCommand, JsonValue, ConfigTrusted } from "@ployz/sdk";
-import { Effect, Layer } from "effect";
+import { Effect } from "effect";
 import { Inngest } from "inngest";
 import { expect, vi } from "vitest";
 import { cloudStore } from "#/modules/config-store/store-sdk.server";
@@ -58,7 +58,7 @@ it.live(
         return { ids: [] };
       });
       const githubApi = github(pull, posted);
-      const services = yield* Layer.build(yield* storeTestCloud({ github: githubApi.service, inngest: checks }));
+      const services = yield* storeTestCloud({ github: githubApi.service, inngest: checks });
       yield* Effect.all([seedStoreOrganization(ORGANIZATION), enrollStoreServer(ORGANIZATION)]).pipe(Effect.provide(services));
       const store = yield* cloudStore.pipe(Effect.provide(services));
       const write = (command: ConfigCommand, trusted?: ConfigTrusted) =>

@@ -1,7 +1,7 @@
 import { it } from "@effect/vitest";
 import type { ConfigCommand, ConfigQuery, ConfigWritten, Connection, SystemEvent, VolumeObservation } from "@ployz/sdk";
 import { eq } from "drizzle-orm";
-import { Effect, Layer } from "effect";
+import { Effect } from "effect";
 import { expect, vi } from "vitest";
 import type { EncryptedSecretValue, JsonObject, JsonValue } from "#/db/tables";
 import { asTestDouble } from "#/lib/test-double";
@@ -34,14 +34,9 @@ const asked = (command: JsonObject) => Effect.gen(function* () {
   return read.mock.calls.map(([query]) => query);
 });
 
-const cloud = Effect.fn(function* () {
-  const layer = yield* storeTestCloud();
-  return yield* Layer.build(layer);
-});
-
 it.live("a Publish gathers what the Servers hold of the Volumes it removes, as a full Deploy does", () =>
   Effect.gen(function* () {
-    const services = yield* cloud();
+    const services = yield* storeTestCloud();
     const removals = (environment: JsonValue, remove: boolean) => [{ query: "removals", environment, remove }];
     const gathered = (command: JsonObject) => asked(command).pipe(Effect.provide(services));
 
@@ -53,7 +48,7 @@ it.live("a Publish gathers what the Servers hold of the Volumes it removes, as a
 
 it.live("a push asks which Volumes a Save accepted losing, and without Servers to ask sends no evidence", () =>
   Effect.gen(function* () {
-    const services = yield* cloud();
+    const services = yield* storeTestCloud();
     const pushed = (volumes: string[]) => Effect.gen(function* () {
       const read = vi.fn(async (_query: ConfigQuery) => ({ view: "consented", volumes }));
       const evidence = yield* systemVolumeEvidence(ORGANIZATION, asTestDouble<StoreRead>()(read)).pipe(Effect.provide(services));
@@ -67,7 +62,7 @@ it.live("a push asks which Volumes a Save accepted losing, and without Servers t
 
 it.live("a push asks the paired Servers about exactly the consented Volumes and hands what they hold to the Store; a sweep, which can't deploy, asks nothing", () =>
   Effect.gen(function* () {
-    const services = yield* cloud();
+    const services = yield* storeTestCloud();
     const provided = <A, E, R>(effect: Effect.Effect<A, E, R>) => effect.pipe(Effect.provide(services));
     yield* provided(Effect.all([seedStoreOrganization(ORGANIZATION), enrollStoreServer(ORGANIZATION)]));
     const volume = "shop-production_vol-00000000-0000-4000-8000-000000000005";
@@ -95,7 +90,7 @@ it.live("a push asks the paired Servers about exactly the consented Volumes and 
 
 it.live("a removal gathers for each Environment it takes off, and a shutdown for its own", () =>
   Effect.gen(function* () {
-    const services = yield* cloud();
+    const services = yield* storeTestCloud();
     const gathered = (command: JsonObject) => asked(command).pipe(Effect.provide(services));
     const removing = (environment: string) => ({ query: "removals", environment: { project: "shop", environment }, remove: true });
 
@@ -107,7 +102,7 @@ it.live("a removal gathers for each Environment it takes off, and a shutdown for
 
 it.live("a removal names the Servers that didn't answer, Volumes or not, and every one when none can be reached", () =>
   Effect.gen(function* () {
-    const services = yield* cloud();
+    const services = yield* storeTestCloud();
     const provided = <A, E, R>(effect: Effect.Effect<A, E, R>) => effect.pipe(Effect.provide(services));
     const silent = machineId("1");
     const unanswered = (command: JsonObject, observe: (connections: Connection[], sought: string[]) => Promise<VolumeObservation>) =>
@@ -129,7 +124,7 @@ it.live("a removal names the Servers that didn't answer, Volumes or not, and eve
 
 it.live("a malformed removal probes no Server", () =>
   Effect.gen(function* () {
-    const services = yield* cloud();
+    const services = yield* storeTestCloud();
     const provided = <A, E, R>(effect: Effect.Effect<A, E, R>) => effect.pipe(Effect.provide(services));
     yield* provided(Effect.all([seedStoreOrganization(ORGANIZATION), enrollStoreServer(ORGANIZATION)]));
     const observe = vi.fn(async (): Promise<VolumeObservation> => ({ sought: [], held: [], unanswered: [] }));
@@ -147,7 +142,7 @@ it.live("a malformed removal probes no Server", () =>
 
 it.live("a removal whose Server connections fail to load says Cloud couldn't look, never that every Server answered", () =>
   Effect.gen(function* () {
-    const services = yield* cloud();
+    const services = yield* storeTestCloud();
     const provided = <A, E, R>(effect: Effect.Effect<A, E, R>) => effect.pipe(Effect.provide(services));
     const silent = machineId("0");
     const admit = { command: "admit", admit: "remove", environment: staging };
@@ -175,7 +170,7 @@ it.live("a removal whose Server connections fail to load says Cloud couldn't loo
 
 it.live("a Publish naming no Environment gathers for the default one, and a malformed one gathers nothing", () =>
   Effect.gen(function* () {
-    const services = yield* cloud();
+    const services = yield* storeTestCloud();
     const gathered = (command: JsonObject) => asked(command).pipe(Effect.provide(services));
 
     expect(yield* gathered({ command: "publish", version: null })).toEqual([{ query: "removals", environment: here, remove: false }]);
@@ -187,7 +182,7 @@ it.live("a Publish naming no Environment gathers for the default one, and a malf
 
 it.live("the Store still judges the raw Publish: a malformed Environment or an unknown field is refused, a well-formed one publishes", () =>
   Effect.gen(function* () {
-    const services = yield* cloud();
+    const services = yield* storeTestCloud();
     const provided = <A, E, R>(effect: Effect.Effect<A, E, R>) => effect.pipe(Effect.provide(services));
     const userId = yield* provided(seedStoreOrganization(ORGANIZATION));
     yield* provided(seedStoreGitService(ORGANIZATION, ids));
