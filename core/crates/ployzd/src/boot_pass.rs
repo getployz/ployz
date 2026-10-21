@@ -223,6 +223,10 @@ fn actor_key(actor: &str) -> String {
     actor.replace('-', "").to_ascii_lowercase()
 }
 
+#[cfg(test)]
+#[path = "boot_pass_alone_tests.rs"]
+mod alone_tests;
+
 pub(crate) struct DaemonHost {
     pub(crate) machine_id: MachineId,
     pub(crate) machine: LocalMachine,
