@@ -1501,7 +1501,7 @@ mod scope_tests {
         let name = ployz_core::MachineName::parse("web-1").unwrap();
         let mut gaps = crate::ui::Gaps::default().named([(machine, &name)]);
         let silent = crate::operator::LogInput {
-            identity: format!("dtest-production/web/ployz-create-{}", "06d0".repeat(16)),
+            identity: format!("dtest-production/web/web-{}", "06d0".repeat(3)),
             machine,
             stream: Box::pin(futures_util::stream::pending()),
         };

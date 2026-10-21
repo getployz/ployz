@@ -95,10 +95,9 @@ hide failures behind "it will fix itself later."
 
 **Red flags.** Controllers, persisted desired state, Cluster-wide reconcilers,
 work that continues after its command returns. Machine-local loops that only
-observe, retire this Machine's superseded Containers, or extend Docker's
-restart policy to its own serving infrastructure, and a `SetVolumeCopy` task
-that ends when ZFS or Docker answers, are the accepted exceptions; each states
-its bound where it is coded.
+observe or extend Docker's restart policy to its own serving infrastructure,
+and a `SetVolumeCopy` task that ends when ZFS or Docker answers, are the
+accepted exceptions; each states its bound where it is coded.
 
 **Test.** When the command returns, has everything it started either finished
 or been reported?

@@ -119,6 +119,37 @@ pub(super) async fn connect_or_none(
     super::connect_context(matches, context).await.map(Some)
 }
 
+/// [`connect`] through any Server but `leaving`, and the Server it entered by.
+pub(super) async fn connect_avoiding(
+    matches: &ArgMatches,
+    context: Option<&str>,
+    leaving: &Machine,
+) -> Result<(Client, ployz_core::MachineId), Error> {
+    let mut selected = entries(matches, context).await?;
+    let via = selected.source.clone();
+    selected
+        .connections
+        .retain(|connection| connection.machine_id() != Some(&leaving.id));
+    if !selected.connections.is_empty() {
+        let connector =
+            SystemConnector::default().with_ssh_timeout(crate::cli::ssh_timeout(matches));
+        let mut client =
+            crate::connect::connect_selected_with(selected, Arc::new(connector)).await?;
+        let entry = client
+            .call::<op::DescribeContract>(ployz_core::DescribeContractRequest {}, None)
+            .await?
+            .machine_id;
+        if entry != leaving.id {
+            return Ok((client, entry));
+        }
+    }
+    Err(Error::conflict(format!(
+        "Server {} is the only Server reachable through {via}, so it cannot carry its own removal. \
+         Connect through another Server, then retry. No changes made.",
+        leaving.name
+    )))
+}
+
 /// The credential Cloud runs a Server operation under: signed in, with neither `--connect`
 /// nor `--context` naming a Cluster to dial, the same rule [`connect`] follows.
 pub(super) fn cloud_runs(

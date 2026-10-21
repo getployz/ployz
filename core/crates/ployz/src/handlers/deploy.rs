@@ -1090,11 +1090,13 @@ pub(super) fn ls(root: &ArgMatches) -> Result<(), Error> {
     Ok(())
 }
 
-/// A Deployment's status in a word or two; a push waiting for CI says how its CI stands.
+/// A Deployment's status in a word or two; a push waiting for CI says how its CI stands,
+/// and a running one without a Deploy Preview yet reads preparing.
 fn status_word(deployment: &DeploymentSummary) -> String {
     match (deployment.status, deployment.ci) {
         (DeploymentStatus::WaitingForCi, Some(CiVerdict::Failed)) => "CI failed".to_owned(),
         (DeploymentStatus::WaitingForCi, _) => "waiting for CI".to_owned(),
+        (DeploymentStatus::Running, _) if deployment.preparing => "preparing".to_owned(),
         (status, _) => super::store::word(&status),
     }
 }
@@ -1370,6 +1372,7 @@ fn service_outcome_lines(services: &[ployz_core::ServiceOutcome]) -> Vec<String>
                 ployz_core::ServiceResult::Unconfirmed => {
                     "may serve its new copies: the switch was not confirmed"
                 }
+                ployz_core::ServiceResult::Newer => "a newer deploy serves it",
             };
             format!("  {service}: {words}")
         })
@@ -1429,6 +1432,7 @@ mod tests {
             {"service": "cache", "result": "updated"},
             {"service": "db", "result": "not_started"},
             {"service": "worker", "result": "unconfirmed"},
+            {"service": "cron", "result": "newer"},
         ]))
         .unwrap();
         assert_eq!(
@@ -1439,6 +1443,7 @@ mod tests {
                 "  cache: serves its copies with their new limits",
                 "  db: not started",
                 "  worker: may serve its new copies: the switch was not confirmed",
+                "  cron: a newer deploy serves it",
             ]
         );
     }
@@ -1508,5 +1513,28 @@ mod tests {
             provenance(&deployment("running", false)).as_deref(),
             Some("uploaded by nick, sha256 aaaaaaaaaaaa")
         );
+    }
+
+    #[test]
+    fn a_running_deployment_reads_preparing_until_it_has_a_deploy_preview() {
+        let read = |status: &str, preparing: bool| {
+            let deployment: ployz_store::DeploymentSummary =
+                serde_json::from_value(serde_json::json!({
+                    "id": "00000000-0000-4000-8000-000000000101",
+                    "environment_id": "00000000-0000-4000-8000-000000000002",
+                    "number": 1, "status": status, "saved": 1, "services": [],
+                    "runner": "cloud-run", "upload": null, "preparing": preparing,
+                    "remove": false, "admitted_by": null, "admitted_at": 0, "started_at": 0,
+                    "ended_at": null, "message": null, "push": null, "ci": null,
+                    "in_flight": true, "outcome": null,
+                }))
+                .unwrap();
+            (status_word(&deployment), status_tone(&deployment))
+        };
+        assert_eq!(
+            read("running", true),
+            ("preparing".to_owned(), Tone::Change)
+        );
+        assert_eq!(read("running", false), ("running".to_owned(), Tone::Change));
     }
 }

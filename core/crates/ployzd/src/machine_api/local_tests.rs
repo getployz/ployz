@@ -2184,7 +2184,7 @@ mod ensure_container {
     }
 
     fn slot(key: &str) -> Value {
-        json!({"namespace":"app", "kind":"service_container", "creation_key":key})
+        json!({"namespace":"app", "service":"api", "kind":"service_container", "creation_key":key})
     }
 
     fn run_new(key: &str, spec: Value) -> Value {
@@ -2462,7 +2462,7 @@ mod ensure_container {
     async fn a_resent_hook_want_after_the_hook_exited_runs_it_once_and_returns_its_exit() {
         let (data_dir, _store, service, fake) = fake_docker_service("ployzd-ensure-hook").await;
         let hook = json!({"want":{"state":"running", "rotation":"pending", "container":{"new":{
-            "slot":{"namespace":"app", "kind":"pre_deploy_hook", "creation_key":"h1"},
+            "slot":{"namespace":"app", "service":"api", "kind":"pre_deploy_hook", "creation_key":"h1"},
             "resolved_spec":spec("example.test/api:1"), "gen":1}}}});
         let id = present(&ensure(&service, hook.clone()).await).container_id;
         // The hook ran and exited, and the reply was lost.
@@ -2696,15 +2696,13 @@ mod ensure_container {
     }
 }
 
-mod serving_pointer {
-    use std::collections::BTreeMap;
+mod read_routes {
+    use std::collections::{BTreeMap, BTreeSet};
     use std::path::{Path, PathBuf};
 
     use futures_util::{SinkExt, StreamExt};
     use ployz_core::{
-        ContainerId, DeploymentLogId, Machine, NotPointerPublisher, OpaquePayload,
-        PublishServingPointerRequest, QualifiedService, ReadRoutesRequest, RoutesRead, Rpc,
-        RpcError, ServingPointer, ServingPointerPublication,
+        ContainerId, Machine, QualifiedService, ReadRoutesRequest, RoutesRead, RpcError,
     };
     use serde_json::{Value, json};
     use tokio::net::UnixListener;
@@ -2712,7 +2710,7 @@ mod serving_pointer {
 
     use super::*;
     use crate::corrosion::{
-        AdminClient, ReplicatedStore,
+        AdminClient, IngressRouteAck, IngressRouteChange, ReplicatedStore,
         store_tests::{corrosion_db, identity_store},
     };
 
@@ -2739,32 +2737,16 @@ mod serving_pointer {
         path
     }
 
-    fn machine_one() -> Machine {
+    fn row(id: char, subnet: u8) -> Machine {
         serde_json::from_value(json!({
-            "id": "0".repeat(32),
-            "name": "machine-1",
-            "subnet": "10.210.1.0/24",
+            "id": id.to_string().repeat(32),
+            "name": format!("machine-{subnet}"),
+            "subnet": format!("10.210.{subnet}.0/24"),
             "labels": {}, "accepts_builds": true, "accepts_services": true, "accepts_ingress": true,
-            "public_key": crate::network::WireGuardPrivateKey::from_bytes([7; 32]).public_key(),
-            "advertised_endpoints": ["192.0.2.7:51820"],
+            "public_key": crate::network::WireGuardPrivateKey::from_bytes([subnet; 32]).public_key(),
+            "advertised_endpoints": [format!("192.0.2.{subnet}:51820")],
         }))
         .unwrap()
-    }
-
-    fn alive(machine: &Machine) -> Value {
-        let address = std::net::SocketAddr::new(
-            machine.management_address().0.into(),
-            ployz_core::CORROSION_GOSSIP_PORT,
-        );
-        json!({ "id": { "addr": address }, "state": "Alive" })
-    }
-
-    async fn machine(
-        dir: &Path,
-        rows: &[Machine],
-        states: Vec<Value>,
-    ) -> (MachineService, tokio::task::JoinHandle<()>) {
-        serve(dir, enrolled(dir), corrosion_db(), rows, states).await
     }
 
     fn enrolled(dir: &Path) -> LocalMachineStore {
@@ -2787,14 +2769,8 @@ mod serving_pointer {
         local
     }
 
-    async fn serve(
-        dir: &Path,
-        local: LocalMachineStore,
-        db: rusqlite::Connection,
-        rows: &[Machine],
-        states: Vec<Value>,
-    ) -> (MachineService, tokio::task::JoinHandle<()>) {
-        let (replicated, task): (ReplicatedStore, _) = identity_store(db).await;
+    async fn serve(dir: &Path, rows: &[Machine]) -> (MachineService, tokio::task::JoinHandle<()>) {
+        let (replicated, task): (ReplicatedStore, _) = identity_store(corrosion_db()).await;
         for row in rows {
             replicated
                 .machine_publication()
@@ -2804,8 +2780,8 @@ mod serving_pointer {
                 .unwrap();
         }
         let service = MachineService::with_cluster(
-            RecordOwner::spawn(local).unwrap(),
-            Some((replicated, AdminClient::new(admin_socket(dir, states)))),
+            RecordOwner::spawn(enrolled(dir)).unwrap(),
+            Some((replicated, AdminClient::new(admin_socket(dir, Vec::new())))),
         );
         (service, task)
     }
@@ -2814,302 +2790,67 @@ mod serving_pointer {
         QualifiedService::parse("app/api").unwrap()
     }
 
-    fn pointer(deploy: &str, container: &str) -> ServingPointer {
-        ServingPointer {
-            deploy: DeploymentLogId::parse(deploy).unwrap(),
-            containers: vec![ContainerId::parse(container.repeat(64)).unwrap()],
-            previous: None,
-            retiring: Vec::new(),
-            deciding: None,
-        }
-    }
-
-    fn answer<T: Rpc>(response: tonic::Response<OpaquePayload>) -> Result<T::Response, RpcError> {
-        let response = response.into_inner().decode_response().unwrap();
+    async fn read(service: &MachineService) -> Result<RoutesRead, RpcError> {
+        let request = op::ReadRoutes::into_request(ReadRoutesRequest { service: api() });
+        let response = service
+            .read_routes(Request::new(request.encode().unwrap()))
+            .await
+            .unwrap()
+            .into_inner()
+            .decode_response()
+            .unwrap();
         if let ployz_core::RpcResponseBody::Error(error) = &response.body {
             return Err(error.clone());
         }
-        Ok(response.decode::<T>().unwrap())
-    }
-
-    async fn publish(
-        service: &MachineService,
-        read: Option<ServingPointer>,
-        pointer: ServingPointer,
-    ) -> Result<ServingPointerPublication, RpcError> {
-        let request = op::PublishServingPointer::into_request(PublishServingPointerRequest {
-            service: api(),
-            read,
-            pointer,
-        });
-        answer::<op::PublishServingPointer>(
-            service
-                .publish_serving_pointer(Request::new(request.encode().unwrap()))
-                .await
-                .unwrap(),
-        )
-    }
-
-    async fn read(service: &MachineService) -> Result<RoutesRead, RpcError> {
-        read_at(service, true).await
-    }
-
-    async fn read_pointer(service: &MachineService) -> Result<RoutesRead, RpcError> {
-        read_at(service, false).await
-    }
-
-    async fn read_at(service: &MachineService, routes_only: bool) -> Result<RoutesRead, RpcError> {
-        let request = op::ReadRoutes::into_request(ReadRoutesRequest {
-            service: api(),
-            routes_only,
-        });
-        answer::<op::ReadRoutes>(
-            service
-                .read_routes(Request::new(request.encode().unwrap()))
-                .await
-                .unwrap(),
-        )
+        Ok(response.decode::<op::ReadRoutes>().unwrap())
     }
 
     #[tokio::test]
-    async fn publish_answers_published_then_superseded_with_the_current_row() {
-        let dir = std::env::temp_dir().join(format!("ployzd-pointer-{}", MachineId::random()));
+    async fn read_names_the_copies_each_machine_routes_for_the_service() {
+        let dir = std::env::temp_dir().join(format!("ployzd-routes-{}", MachineId::random()));
         std::fs::create_dir_all(&dir).unwrap();
-        let (service, task) = machine(&dir, &[], Vec::new()).await;
-
-        assert_eq!(
-            publish(&service, None, pointer("d1", "a")).await,
-            Ok(ServingPointerPublication::Published)
-        );
-        assert_eq!(
-            publish(&service, None, pointer("d2", "b")).await,
-            Ok(ServingPointerPublication::Superseded {
-                current: Some(pointer("d1", "a"))
-            })
-        );
-        assert_eq!(
-            read(&service).await.unwrap().pointer,
-            Some(pointer("d1", "a"))
-        );
-        task.abort();
-        std::fs::remove_dir_all(dir).ok();
-    }
-
-    #[tokio::test]
-    async fn machines_that_disagree_on_machine_one_never_both_publish() {
-        let dir = std::env::temp_dir().join(format!("ployzd-pointer-{}", MachineId::random()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let one = machine_one();
-        let (sees_one_down, first) = machine(&dir, std::slice::from_ref(&one), Vec::new()).await;
-        let (sees_one_up, second) =
-            machine(&dir, std::slice::from_ref(&one), vec![alive(&one)]).await;
-
-        let outcomes = [
-            publish(&sees_one_down, None, pointer("d1", "a")).await,
-            publish(&sees_one_up, None, pointer("d2", "b")).await,
-        ];
-        let refusal = NotPointerPublisher { publisher: one.id };
-        assert_eq!(outcomes[0], Ok(ServingPointerPublication::Published));
-        let refused = outcomes[1].as_ref().unwrap_err();
-        assert_eq!(NotPointerPublisher::from_error(refused), Some(refusal));
-        assert_eq!(
-            read(&sees_one_up).await.unwrap().pointer,
-            None,
-            "a Machine that may not publish still reads routes"
-        );
-        first.abort();
-        second.abort();
-        std::fs::remove_dir_all(dir).ok();
-    }
-
-    /// A Machine that may not publish may hold a stale pointer, so a pointer read there
-    /// names the publisher instead of answering.
-    #[tokio::test]
-    async fn a_pointer_read_off_the_publisher_names_the_publisher() {
-        let dir = std::env::temp_dir().join(format!("ployzd-pointer-{}", MachineId::random()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let one = machine_one();
-        let (publisher, first) = machine(&dir, &[], Vec::new()).await;
-        let (lagging, second) = machine(&dir, std::slice::from_ref(&one), vec![alive(&one)]).await;
-        publish(&publisher, None, pointer("d1", "a")).await.unwrap();
-
-        assert_eq!(
-            read_pointer(&publisher).await.unwrap().pointer,
-            Some(pointer("d1", "a"))
-        );
-        let refused = read_pointer(&lagging).await.unwrap_err();
-        assert_eq!(
-            NotPointerPublisher::from_error(&refused),
-            Some(NotPointerPublisher { publisher: one.id })
-        );
-        first.abort();
-        second.abort();
-        std::fs::remove_dir_all(dir).ok();
-    }
-
-    #[tokio::test]
-    async fn a_machine_whose_active_peer_has_no_roster_row_refuses_to_publish() {
-        let dir = std::env::temp_dir().join(format!("ployzd-pointer-{}", MachineId::random()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let (mut low, mut high) = (enrolled(&dir), enrolled(&dir));
-        if low.record().id() > high.record().id() {
-            std::mem::swap(&mut low, &mut high);
-        }
-        let low_machine = low.record().machine().unwrap().clone();
-        let high_machine = high.record().machine().unwrap().clone();
-        let both_alive = || vec![alive(&low_machine), alive(&high_machine)];
-        let (low, low_task) = serve(
-            &dir,
-            low,
-            corrosion_db(),
-            &[low_machine.clone(), high_machine.clone()],
-            both_alive(),
-        )
-        .await;
-        let (high, high_task) = serve(
-            &dir,
-            high,
-            corrosion_db(),
-            std::slice::from_ref(&high_machine),
-            both_alive(),
-        )
-        .await;
-
-        let outcomes = [
-            publish(&low, None, pointer("d1", "a")).await,
-            publish(&high, None, pointer("d2", "b")).await,
-        ];
-        assert_eq!(outcomes[0], Ok(ServingPointerPublication::Published));
-        let refused = outcomes[1].as_ref().unwrap_err();
-        assert_eq!(refused.code, RpcErrorCode::Unavailable, "{refused:?}");
-        assert!(
-            refused
-                .message
-                .contains(&low_machine.management_address().0.to_string()),
-            "{refused:?}"
-        );
-        assert_eq!(read(&low).await.unwrap().pointer, Some(pointer("d1", "a")));
-        let unwritten = high.replicated().unwrap().serving_pointer(&api()).await;
-        assert_eq!(
-            unwritten.unwrap(),
-            None,
-            "a Machine that cannot see its active peer's row never elects itself"
-        );
-        low_task.abort();
-        high_task.abort();
-        std::fs::remove_dir_all(dir).ok();
-    }
-
-    #[tokio::test]
-    async fn a_machine_whose_lower_peer_has_an_unreadable_row_refuses_to_publish() {
-        let dir = std::env::temp_dir().join(format!("ployzd-pointer-{}", MachineId::random()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let (mut low, mut high) = (enrolled(&dir), enrolled(&dir));
-        if low.record().id() > high.record().id() {
-            std::mem::swap(&mut low, &mut high);
-        }
-        let low_machine = low.record().machine().unwrap().clone();
-        let high_machine = high.record().machine().unwrap().clone();
-        let both_alive = || vec![alive(&low_machine), alive(&high_machine)];
-        let high_db = corrosion_db();
-        high_db
-            .execute(
-                "INSERT INTO machines (id, info) VALUES (?, '{}')",
-                [low_machine.id.as_str()],
-            )
-            .unwrap();
-        let (low, low_task) = serve(
-            &dir,
-            low,
-            corrosion_db(),
-            &[low_machine.clone(), high_machine.clone()],
-            both_alive(),
-        )
-        .await;
-        let (high, high_task) = serve(
-            &dir,
-            high,
-            high_db,
-            std::slice::from_ref(&high_machine),
-            both_alive(),
-        )
-        .await;
-
-        let outcomes = [
-            publish(&low, None, pointer("d1", "a")).await,
-            publish(&high, None, pointer("d2", "b")).await,
-        ];
-        assert_eq!(outcomes[0], Ok(ServingPointerPublication::Published));
-        let refused = outcomes[1].as_ref().unwrap_err();
-        assert_eq!(refused.code, RpcErrorCode::Unavailable, "{refused:?}");
-        assert!(
-            refused.message.contains(low_machine.id.as_str()),
-            "{refused:?}"
-        );
-        assert_eq!(read(&low).await.unwrap().pointer, Some(pointer("d1", "a")));
-        let unwritten = high.replicated().unwrap().serving_pointer(&api()).await;
-        assert_eq!(
-            unwritten.unwrap(),
-            None,
-            "the refused publish wrote nothing"
-        );
-        low_task.abort();
-        high_task.abort();
-        std::fs::remove_dir_all(dir).ok();
-    }
-
-    #[tokio::test]
-    async fn read_acks_only_machines_routing_every_pointed_container() {
-        use crate::corrosion::{IngressRouteAck, IngressRouteChange};
-
-        let dir = std::env::temp_dir().join(format!("ployzd-pointer-{}", MachineId::random()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let (service, task) = machine(&dir, &[], Vec::new()).await;
+        let (first, second, third) = (row('1', 11), row('2', 12), row('3', 13));
+        let (service, task) = serve(&dir, &[first.clone(), second.clone(), third.clone()]).await;
         let local = service.local();
         let replicated = local.replicated().unwrap();
         let web = QualifiedService::parse("app/web").unwrap();
-        let first = MachineId::random();
-        let second = MachineId::random();
-        let third = MachineId::random();
-        let pointed = ContainerId::parse("a".repeat(64)).unwrap();
-        replicated
-            .compare_and_set_serving_pointer(&api(), None, &pointer("d1", "a"))
-            .await
-            .unwrap();
-        let ack = |deploy: &str, containers: &[ContainerId]| {
+        let (routed, other) = (
+            ContainerId::parse("a".repeat(64)).unwrap(),
+            ContainerId::parse("b".repeat(64)).unwrap(),
+        );
+        let ack = |containers: &[ContainerId]| {
             IngressRouteChange::Upsert(IngressRouteAck {
-                deploy: DeploymentLogId::parse(deploy).unwrap(),
                 containers: containers.iter().copied().collect(),
             })
         };
         replicated
             .publish_ingress_routes(
-                &first,
-                &BTreeMap::from([
-                    (api(), ack("d1", &[pointed])),
-                    (web.clone(), ack("w1", &[pointed])),
-                ]),
+                &first.id,
+                &BTreeMap::from([(api(), ack(&[routed])), (web.clone(), ack(&[other]))]),
             )
             .await
             .unwrap();
         replicated
-            .publish_ingress_routes(
-                &second,
-                &BTreeMap::from([(api(), ack("d1", &[])), (web, ack("w2", &[pointed]))]),
-            )
-            .await
-            .unwrap();
-        replicated
-            .publish_ingress_routes(&third, &BTreeMap::from([(api(), ack("d0", &[pointed]))]))
+            .publish_ingress_routes(&second.id, &BTreeMap::from([(api(), ack(&[]))]))
             .await
             .unwrap();
 
         let read = read(&service).await.unwrap();
-        assert_eq!(read.pointer, Some(pointer("d1", "a")));
+
         assert_eq!(
-            read.acks,
-            BTreeMap::from([(first, DeploymentLogId::parse("d1").unwrap())]),
-            "second routes none of the pointed copies, third routes the fallback"
+            read.routes.get(&first.id),
+            Some(&Some(BTreeSet::from([routed]))),
+            "{read:?}"
+        );
+        assert_eq!(
+            read.routes.get(&second.id),
+            Some(&Some(BTreeSet::new())),
+            "{read:?}"
+        );
+        assert_eq!(
+            read.routes.get(&third.id),
+            Some(&None),
+            "a Machine with no row is unknown, not empty: {read:?}"
         );
         task.abort();
         std::fs::remove_dir_all(dir).ok();
