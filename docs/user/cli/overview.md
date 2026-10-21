@@ -207,7 +207,8 @@ Through Ployz Cloud, commands that talk to your servers directly need an owner o
 `read` and `deploy` tokens. Without server access they read through Ployz Cloud instead: `logs`
 shows each server's newest 200 lines at most, with sealed variables scrubbed, and can't use `--follow`,
 `--until`, `--machine` or a container name. Name the environment with `--project` and `--env`
-if the directory isn't linked. A `deploy` token reads only its own environment, so
+if the directory isn't linked. A server that doesn't answer Ployz Cloud is named, and the command
+exits 3, as it does when Ployz reads your servers itself. A `deploy` token reads only its own environment, so
 `ployz logs --env production` with a staging token fails with `This token can deploy only to staging.` See
 [Reach a server from the CLI](../servers/manage-servers.md#reach-a-server-from-the-cli).
 
