@@ -941,6 +941,35 @@ mod settled {
     }
 
     #[tokio::test]
+    async fn ensure_settled_without_a_healthcheck_outlasts_a_slow_first_inspect() {
+        let Settling {
+            local,
+            fake,
+            data_dir,
+        } = settling().await;
+        *fake.slow_running_inspects.lock().unwrap() = Duration::from_secs(2);
+        let mut new = new_container("settled");
+        new.resolved_spec.container.healthcheck = Some(HealthcheckSpec::Disabled);
+
+        let reply = tokio::time::timeout(Duration::from_secs(20), local.ensure_container(run(new)))
+            .await
+            .expect("a Settled ensure answers")
+            .unwrap();
+
+        assert!(
+            matches!(
+                reply,
+                EnsuredContainer::Ensured {
+                    now: ContainerNow::Present(_),
+                    health: Some(HealthVerdict::Healthy),
+                }
+            ),
+            "an inspect slower than the one-second deadline still answers, got {reply:?}"
+        );
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
+    #[tokio::test]
     async fn removal_by_slot_waits_for_the_create_that_fills_it() {
         let Settling {
             local,
@@ -1195,10 +1224,11 @@ mod settled {
 
     #[tokio::test]
     async fn ensure_settled_times_out_on_time_for_a_container_killed_out_of_memory() {
-        // The kill shows well before the 1.9s deadline and every inspect after it
-        // stalls, so the stalled one ends at the deadline.
+        // The kill shows well before the 6.5s deadline, more than the inspect grace
+        // ahead of it, and every inspect after it stalls, so the stalled one ends at the
+        // deadline.
         let (health, waited) = ensure_stalling_after_oom(
-            settled_run(1_900),
+            settled_run(6_500),
             Duration::from_millis(500),
             json!({"Status":"running", "OOMKilled":true, "Health":{"Status":"starting"}}),
         )
@@ -1210,7 +1240,7 @@ mod settled {
         );
         assert!(health.oom_killed(), "{health:?}");
         assert!(
-            waited >= Duration::from_millis(1_800) && waited < Duration::from_millis(2_900),
+            waited >= Duration::from_millis(6_400) && waited < Duration::from_millis(7_500),
             "waited {waited:?}"
         );
     }

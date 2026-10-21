@@ -6,6 +6,7 @@ use std::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
+    time::Duration,
 };
 
 use axum::{
@@ -77,6 +78,9 @@ pub(crate) struct FakeDocker {
     /// inspect sends its headers and then stalls inside its body.
     pub(crate) stall_after_oom: Arc<AtomicBool>,
     pub(crate) oom_answered: Arc<AtomicBool>,
+    /// Named mode: every inspect of a running Container sends its headers, then its
+    /// body this long after.
+    pub(crate) slow_running_inspects: Arc<Mutex<Duration>>,
 }
 
 async fn fake_docker(
@@ -99,6 +103,15 @@ async fn fake_docker(
         hold.wait().await;
     }
     response
+}
+
+/// A 200 whose body comes `delay` after its headers.
+fn slow_body(delay: Duration, body: serde_json::Value) -> Response {
+    let body = futures_util::stream::once(async move {
+        tokio::time::sleep(delay).await;
+        Ok::<_, std::io::Error>(Bytes::from(body.to_string()))
+    });
+    axum::body::Body::from_stream(body).into_response()
 }
 
 /// A 200 whose body starts and never finishes.
@@ -210,6 +223,12 @@ async fn answer(fake: FakeDocker, method: Method, uri: Uri, body: Bytes) -> Resp
                     && container.pointer("/State/OOMKilled") == Some(&serde_json::Value::Bool(true))
                 {
                     fake.oom_answered.store(true, Ordering::SeqCst);
+                }
+                let delay = *fake.slow_running_inspects.lock().unwrap();
+                if !delay.is_zero()
+                    && container.pointer("/State/Status") == Some(&serde_json::json!("running"))
+                {
+                    return slow_body(delay, container);
                 }
                 return Json(container).into_response();
             }

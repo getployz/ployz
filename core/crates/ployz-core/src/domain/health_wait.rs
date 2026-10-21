@@ -44,6 +44,12 @@ pub fn settle_deadline(spec: &ResolvedServiceSpec) -> Duration {
     deadline.max(health_monitor(spec))
 }
 
+/// How long a settle's inspect may run when it starts near or past
+/// [`settle_deadline`], so a Docker slowed by a Deploy cannot turn a healthy copy
+/// into a timeout, even one whose whole deadline is the one-second watch, while a
+/// stalled one still ends. A verdict can so come up to this long after the deadline.
+pub const SETTLE_INSPECT_GRACE: Duration = Duration::from_secs(5);
+
 /// Which run of a Container one inspect saw. Docker gives each start a new one,
 /// including the restarts its restart policy makes between two looks.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

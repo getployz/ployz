@@ -20,7 +20,8 @@ use std::{
 use hyper_util::rt::TokioIo;
 use ployz_core::{
     CodecError, FramingError, MachineId, MachineTarget, ResolvedServiceSpec, Retry,
-    RoutingMetadataError, RpcError, RpcErrorCode, apply_one_target, settle_deadline,
+    RoutingMetadataError, RpcError, RpcErrorCode, SETTLE_INSPECT_GRACE, apply_one_target,
+    settle_deadline,
 };
 use serde_json::{Value, json};
 use thiserror::Error;
@@ -62,9 +63,10 @@ pub(crate) fn stop_rpc_timeout(grace_period_seconds: Option<u16>, queued: u32) -
 }
 
 /// The deadline of an In RPC: the owner settles the copy's health before it
-/// writes In, so the ask waits out the copy's settle deadline on top of the RPC.
+/// writes In, so the ask waits out the copy's settle deadline, plus the grace its
+/// last inspect may run past it, on top of the RPC.
 pub(crate) fn in_rpc_timeout(spec: &ResolvedServiceSpec) -> Duration {
-    TARGET_RPC_TIMEOUT + settle_deadline(spec)
+    TARGET_RPC_TIMEOUT + settle_deadline(spec) + SETTLE_INSPECT_GRACE
 }
 
 pub trait ProxyStream: AsyncRead + AsyncWrite + Send + Unpin {}
