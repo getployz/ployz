@@ -556,6 +556,7 @@ where
             Ok(value) => return Ok(value),
             Err(error)
                 if error.code.retry() != Retry::Never
+                    && !crate::connect::on_closed_session(&error)
                     && Instant::now() < deadline
                     && !cancellation.is_cancelled() =>
             {

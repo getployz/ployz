@@ -205,6 +205,29 @@ impl Connector for SystemConnector {
     }
 }
 
+/// The one stream a [`connect_stream`] channel runs on has closed, so no call on
+/// that channel reaches a daemon again; only a redial does.
+#[derive(Debug, Error)]
+#[error("connection to the daemon closed")]
+struct SessionClosed;
+
+const SESSION_CLOSED_REASON: &str = "session_closed";
+
+/// The call failed on a channel whose one stream had closed: resending it on
+/// that channel can never reach a daemon.
+pub(crate) fn on_closed_session(error: &RpcError) -> bool {
+    error.details.get("reason").and_then(Value::as_str) == Some(SESSION_CLOSED_REASON)
+}
+
+#[cfg(test)]
+pub(crate) fn closed_session_error() -> RpcError {
+    TransportError {
+        session_closed: true,
+        ..TransportError::from(tonic::Status::unavailable("transport error"))
+    }
+    .to_rpc_error()
+}
+
 async fn connect_stream(
     stream: impl AsyncRead + AsyncWrite + Unpin + Send + 'static,
     timeout: Duration,
@@ -215,9 +238,12 @@ async fn connect_stream(
         .connect_with_connector(tower::service_fn(move |_| {
             // A redial must pass shared Machine confirmation before another RPC.
             // Let Client decide whether the failed operation may be retried.
-            std::future::ready(stream.take().map(TokioIo::new).ok_or_else(|| {
-                io::Error::new(io::ErrorKind::NotConnected, "transport session closed")
-            }))
+            std::future::ready(
+                stream
+                    .take()
+                    .map(TokioIo::new)
+                    .ok_or_else(|| io::Error::new(io::ErrorKind::NotConnected, SessionClosed)),
+            )
         }))
         .await
         .map_err(ConnectError::from)
@@ -903,9 +929,10 @@ impl ConnectError {
         matches!(self, Self::Rpc(error) if error.budget_expired || error.routed_unanswered)
     }
 
-    /// A daemon sent this status itself, so the target was not silent.
+    /// A daemon sent this status itself, so the target was not silent. A call on
+    /// a closed session never left this client, so nothing replied to it.
     pub(crate) fn target_replied(&self) -> bool {
-        matches!(self, Self::Rpc(_)) && !self.unreplied()
+        matches!(self, Self::Rpc(error) if !error.session_closed) && !self.unreplied()
     }
 
     /// The call went out and no status came back: the client's connection dropped, its
@@ -957,6 +984,9 @@ pub struct TransportError {
     /// target never got the call. Never set on a local failure, whose metadata may be
     /// headers that came back before the stream broke.
     routed_unreached: bool,
+    /// The channel's one stream closed: resending on it can never succeed, so
+    /// [`TransportError::to_rpc_error`] marks it for [`on_closed_session`].
+    session_closed: bool,
     /// Why the client's connection or stream failed, below tonic's own words.
     #[source]
     cause: Option<crate::failure::JoinedChain>,
@@ -1019,7 +1049,11 @@ impl TransportError {
         RpcError {
             code: rpc_error_code(self.code),
             message: self.message.clone(),
-            details: self.details.clone(),
+            details: if self.session_closed {
+                json!({ "reason": SESSION_CLOSED_REASON })
+            } else {
+                self.details.clone()
+            },
             cause: ployz_core::error_chain::causes(self),
         }
     }
@@ -1031,7 +1065,14 @@ impl From<tonic::Status> for TransportError {
         // only when the client connection or stream itself fails.
         let source = std::error::Error::source(&status);
         let local = source.is_some();
-        let unanswered = status.code() == tonic::Code::Cancelled || local;
+        let session_closed = std::iter::successors(source, |error| error.source()).any(|error| {
+            error
+                .downcast_ref::<io::Error>()
+                .and_then(io::Error::get_ref)
+                .is_some_and(|inner| inner.is::<SessionClosed>())
+        });
+        // A call on a closed session never left this client.
+        let unanswered = (status.code() == tonic::Code::Cancelled || local) && !session_closed;
         let sent = ployz_core::rpc::status_causes(status.details());
         let cause = match source {
             Some(source) => {
@@ -1055,6 +1096,7 @@ impl From<tonic::Status> for TransportError {
                 && status
                     .metadata()
                     .contains_key(ployz_core::rpc::TARGET_UNREACHED_KEY),
+            session_closed,
             cause,
             code: status.code(),
             message: status.message().to_owned(),

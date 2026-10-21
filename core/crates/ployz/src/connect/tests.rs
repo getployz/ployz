@@ -909,6 +909,49 @@ fn only_a_target_reply_outlasts_a_later_silence() {
 }
 
 #[test]
+fn a_closed_session_does_not_outlast_a_later_silence() {
+    let closed = || {
+        ConnectError::Rpc(TransportError {
+            session_closed: true,
+            ..TransportError::from(tonic::Status::unavailable("transport error"))
+        })
+    };
+    let budget_spent = || {
+        ConnectError::Rpc(TransportError::budget_expired(
+            "target Machine RPC timed out",
+        ))
+    };
+    let routed_silence = || {
+        ConnectError::from(ployz_core::rpc::target_unanswered_status(&io::Error::from(
+            io::ErrorKind::TimedOut,
+        )))
+    };
+    let machine = MachineId::parse("b".repeat(32)).unwrap();
+    for silence in [budget_spent(), routed_silence()] {
+        // As `call_retried`: the closed session first, then the redialled target is silent.
+        let mut reply = None;
+        let error = keep_target_reply(&mut reply, closed());
+        assert!(!error.target_replied(), "no daemon sent it");
+        assert!(
+            !error.unreplied(),
+            "it never left, so it cannot have landed"
+        );
+        if error.target_replied() {
+            reply = Some(error);
+        }
+        let kept = keep_target_reply(&mut reply, silence);
+        assert!(kept.target_unanswered(), "{kept}");
+        let error = crate::cluster::answered_by(&machine, kept);
+        assert!(!on_closed_session(&error), "{error:?}");
+        assert_eq!(
+            error.code.retry(),
+            Retry::Now,
+            "the Deploy waits out the target"
+        );
+    }
+}
+
+#[test]
 fn a_named_context_without_a_config_is_not_found_rather_than_unconfigured() {
     let dir = tempfile::tempdir().unwrap();
     let config = dir.path().join("config.yaml");
@@ -925,4 +968,68 @@ fn a_named_context_without_a_config_is_not_found_rather_than_unconfigured() {
     );
     let selected = resolve_connections(&config, None, None, &socket).unwrap();
     assert_eq!(selected.source, ConnectionSource::LocalSocket);
+}
+
+#[tokio::test]
+async fn a_call_after_the_stream_closed_is_marked_and_stays_unavailable() {
+    let (client, daemon) = tokio::io::duplex(1024);
+    let channel = connect_stream(client, Duration::from_secs(5))
+        .await
+        .unwrap();
+    let mut rpc = ployz_core::MachineRpcClient::new(channel);
+    let describe = || {
+        ployz_core::op::DescribeContract::into_request(ployz_core::DescribeContractRequest {})
+            .encode()
+            .unwrap()
+    };
+    let mut in_flight = rpc.clone();
+    let in_flight = tokio::spawn(async move { in_flight.describe_contract(describe()).await });
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    drop(daemon);
+    let lost = TransportError::from(in_flight.await.unwrap().unwrap_err());
+    assert!(!lost.session_closed, "{lost:?}");
+    assert!(
+        lost.unanswered,
+        "the first call may have reached the daemon"
+    );
+
+    let closed = TransportError::from(rpc.describe_contract(describe()).await.unwrap_err());
+    assert!(closed.session_closed, "{closed:?}");
+    assert!(!closed.unanswered, "a call on a closed session never left");
+    let connect = ConnectError::Rpc(closed);
+    assert_eq!(connect.retry(), Retry::Now, "a redial opens a new stream");
+    assert!(!connect.target_replied(), "no daemon sent it");
+    let error = rpc_error(connect);
+    assert_eq!(error.code, RpcErrorCode::Unavailable);
+    assert!(on_closed_session(&error), "{error:?}");
+    assert_eq!(error.details, closed_session_error().details);
+    assert!(
+        crate::ui::chain_text(&error).contains("connection to the daemon closed"),
+        "{error:?}"
+    );
+}
+
+#[test]
+fn a_broken_pipe_is_not_a_closed_session() {
+    let status = tonic::Status::from_error(Box::new(io::Error::new(
+        io::ErrorKind::BrokenPipe,
+        "stream closed because of a broken pipe",
+    )));
+    let error = TransportError::from(status);
+    assert!(!error.session_closed, "{error:?}");
+    assert!(error.unanswered);
+    assert!(!on_closed_session(&error.to_rpc_error()));
+}
+
+#[test]
+fn a_restarting_target_behind_a_live_entry_is_still_resent() {
+    let refused = io::Error::from(io::ErrorKind::ConnectionRefused);
+    for status in [
+        ployz_core::rpc::target_unanswered_status(&refused),
+        ployz_core::rpc::target_unreached_status(&refused),
+        tonic::Status::unavailable("daemon is restarting"),
+    ] {
+        let error = rpc_error(ConnectError::from(status));
+        assert_eq!(error.code.retry(), Retry::Now, "{error:?}");
+    }
 }
