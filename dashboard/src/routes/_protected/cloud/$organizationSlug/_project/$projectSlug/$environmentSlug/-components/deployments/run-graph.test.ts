@@ -64,7 +64,7 @@ describe("run graph", () => {
     expect(rowLabel(completed())).toBe("Done");
   });
 
-  const stoppedAtCreate = (fields: { reason?: string; cancelled?: boolean } = {}): ServerRow =>
+  const stoppedAtCreate = (fields: { reason?: string; cancelled?: boolean; interrupted?: boolean } = {}): ServerRow =>
     ({ ...at, state: "failed", reason: "Cancelled", cause: [], step: "create", log: null, finished_at: 20, ...fields });
 
   it("reads work the Deployment's cancel stopped as Cancelled with a grey light, on its row and its node", () => {
@@ -80,6 +80,12 @@ describe("run graph", () => {
       { id: "web-id", light: "not_applied" }, { id: "api-id", light: "failed" },
     ]);
     expect(selectRunNode(graph, {})?.id).toBe("api-id");
+  });
+
+  it("reads work a lost runner stopped as Interrupted with a grey light, not Failed", () => {
+    const interrupted = stoppedAtCreate({ interrupted: true });
+    expect(rowLabel(interrupted)).toBe("Interrupted");
+    expect(rowLight(interrupted)).toBe("not_applied");
   });
 
   it("reads a failed row and node without the cancelled marker as Failed, as a Store from before Cancelled sends them", () => {

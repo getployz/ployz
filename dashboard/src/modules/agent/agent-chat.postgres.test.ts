@@ -3,7 +3,7 @@ import type { ConfigCommand, ConfigStore, RuntimeWatchView } from "@ployz/sdk";
 import { reconstructChat } from "@tanstack/ai-persistence";
 import { type AnyTextAdapter, EventType, type TokenUsage, type ModelMessage, type RunAgentResumeItem, type StreamChunk, StreamProcessor } from "@tanstack/ai";
 import { sql } from "drizzle-orm";
-import { ConfigProvider, Effect, Layer, Schema } from "effect";
+import { ConfigProvider, Effect, Exit, Layer, Schema, Tracer } from "effect";
 import { expect, vi } from "vitest";
 import { fakeText } from "@tanstack/ai/testing";
 import { createAnthropicChat } from "@tanstack/ai-anthropic";
@@ -507,6 +507,23 @@ it.live("a resume after the Deploy committed and its process died deploys nothin
     expect(retried).toEqual(first);
   }), 15_000);
 
+type Claimed = Effect.Success<ReturnType<typeof claimResume>>;
+const watchSpans = () => {
+  const spans: Array<Tracer.NativeSpan> = [];
+  const tracer = Tracer.make({
+    span(options) {
+      const span = new Tracer.NativeSpan(options);
+      spans.push(span);
+      return span;
+    },
+  });
+  const ended = (name: string, value?: Claimed) => spans.filter(({ name: spanName, status }) => spanName === name && status._tag === "Ended"
+    && (value === undefined || (Exit.isSuccess(status.exit) && status.exit.value === value))).length;
+  const until = (name: string, value?: Claimed, after = 0) =>
+    Effect.promise(() => vi.waitFor(() => expect(ended(name, value)).toBeGreaterThan(after)));
+  return { traced: Effect.provideService(Tracer.Tracer, tracer), ended, until };
+};
+
 const blockFirstAdmit = ({ store, watchWrites }: Effect.Success<ReturnType<typeof sidebar>>, held: ConfigCommand["command"] = "admit") => {
   const original = store.write.bind(store);
   const writes = watchWrites();
@@ -637,14 +654,15 @@ it.live("a second request resuming the same run while the first is mid-Deploy wa
     yield* provided(decideApproval(caller, approval.id, { approve: { digest: approval.digest } }));
     const interruptId = yield* waiting;
     const { writes, ...gate } = blockFirstAdmit(harness);
+    const { traced, until } = watchSpans();
     const resumeRun = () => Effect.runPromise(provided(agentChat(caller, {
       messages: [], threadId: THREAD, runId: "run-resumed", resume: [{ interruptId, status: "resolved", payload: {} }],
-    })).pipe(Effect.flatMap(drain)));
+    })).pipe(Effect.flatMap(drain), traced));
 
     const first = resumeRun();
     yield* Effect.promise(() => gate.entered);
     const second = resumeRun();
-    yield* Effect.sleep("600 millis");
+    yield* until("Agent.claimResume", "busy");
     gate.release();
     const both = yield* Effect.promise(() => Promise.all([first, second]));
 
@@ -666,16 +684,18 @@ it.live("a request waiting on another's turn keeps its stream alive with chunks 
     const gate = blockFirstAdmit(harness);
     vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
     yield* Effect.addFinalizer(() => Effect.sync(() => vi.useRealTimers()));
+    const { traced, ended, until } = watchSpans();
     const resumeRun = () => Effect.runPromise(provided(agentChat(caller, {
       messages: [], threadId: THREAD, runId: "run-resumed", resume: [{ interruptId, status: "resolved", payload: {} }],
-    })).pipe(Effect.flatMap(drain)));
+    })).pipe(Effect.flatMap(drain), traced));
 
     const first = resumeRun();
     yield* Effect.promise(() => gate.entered);
     const waiter = resumeRun();
-    yield* Effect.sleep("300 millis");
+    yield* until("Agent.claimResume", "busy");
+    const checked = ended("Agent.claimResume", "busy");
     vi.advanceTimersByTime(KEEPALIVE_MS);
-    yield* Effect.sleep("600 millis");
+    yield* until("Agent.claimResume", "busy", checked);
     gate.release();
     const [, waited] = yield* Effect.promise(() => Promise.all([first, waiter]));
 
@@ -755,13 +775,12 @@ it.live("a run update the stalled request queued before a takeover cannot overwr
     const queued = stalled.stores.runs.update("run-1", { status: "failed", error: { message: "stale" } });
     const claimed = Effect.runPromise(provided(claimResume(scope, "takeover", [interruptId])));
     try {
-      yield* Effect.sleep("300 millis");
-      const waiters = yield* provided(Effect.gen(function* () {
+      const waiters = provided(Effect.gen(function* () {
         const { drizzle } = yield* Database;
         return yield* drizzle.execute<{ n: number }>(sql`select count(*)::int as n from pg_stat_activity
           where wait_event_type = 'Lock' and query like '%update "agent_runs"%'`, "objects");
       }));
-      expect(waiters[0]?.n).toBe(1);
+      yield* Effect.promise(() => vi.waitFor(async () => expect((await Effect.runPromise(waiters))[0]?.n).toBe(1)));
       finish();
       yield* Effect.promise(() => Promise.all([takeover, queued]));
       expect(yield* Effect.promise(() => claimed)).toBe("claimed");
@@ -1019,14 +1038,15 @@ it.live("a resumed turn that outlasts the lease keeps its claim, so no other req
     const gate = blockFirstAdmit(harness);
     vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
     yield* Effect.addFinalizer(() => Effect.sync(() => vi.useRealTimers()));
+    const { traced, until } = watchSpans();
     const slow = Effect.runPromise(provided(agentChat(caller, {
       messages: [], threadId: THREAD, runId: "run-slow", resume: [{ interruptId, status: "resolved", payload: {} }],
-    })).pipe(Effect.flatMap(drain)));
+    })).pipe(Effect.flatMap(drain), traced));
     yield* Effect.promise(() => gate.entered);
 
     yield* ageClaim(interruptId);
     vi.advanceTimersByTime(CLAIM_LEASE_MS);
-    yield* Effect.sleep("300 millis");
+    yield* until("Agent.renewResume");
     expect(yield* provided(claimResume({ organizationId: ORGANIZATION, userId }, "other", [interruptId]))).toBe("busy");
 
     gate.release();

@@ -1777,6 +1777,67 @@ fn a_project_removal_on_cloud_takes_off_what_it_can_and_leaves_the_rest_to_cloud
     );
 }
 
+/// Deployment #1 queued while Cloud had a Server; the last one left before its worker
+/// claimed it. Starting it refuses at once, as a Deploy does, instead of following a
+/// Deployment nothing will run.
+#[test]
+fn starting_a_queued_deployment_with_no_server_left_refuses_at_once() {
+    fn unclaimed(_: &std::sync::Arc<ConfigStore>, _: &Written) {}
+    fn none_left_to_start(command: &StoreCommand) -> Trusted {
+        let servers = if matches!(command, StoreCommand::Start(_)) {
+            0
+        } else {
+            1
+        };
+        Trusted {
+            servers: Some(servers),
+            ..evidence()
+        }
+    }
+    let cloud = Target::Cloud {
+        url: cloud(unclaimed, std::sync::Arc::default(), none_left_to_start),
+        token: "ployz_alice",
+    };
+    ok(&cloud, &["project", "new", "shop"]);
+    ok(
+        &cloud,
+        &["service", "add", "web", "--image", "nginx:alpine"],
+    );
+    ok(&cloud, &["deploy", "--detach"]);
+
+    let home = tempfile::tempdir().unwrap();
+    let mut started = cloud
+        .command(home.path())
+        .args(["--json", "deployment", "start", "1"])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while started.try_wait().unwrap().is_none() {
+        if std::time::Instant::now() >= deadline {
+            started.kill().unwrap();
+            panic!("deployment start was still following a Deployment no Server can run");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    let output = started.wait_with_output().unwrap();
+    let json: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(output.status.code(), Some(1), "{json}");
+    assert_eq!(json["error"]["code"], json!("conflict"), "{json}");
+    assert_eq!(
+        json["error"]["message"],
+        json!(
+            "This Organization has no servers yet, so nothing deployed. Add one, then deploy again."
+        )
+    );
+    assert_eq!(
+        json["error"]["details"]["next"],
+        json!("ployz server add"),
+        "{json}"
+    );
+}
+
 #[test]
 fn an_agent_lists_and_removes_a_project_without_servers() {
     for store in &targets() {
@@ -5184,6 +5245,240 @@ fn history_lists_when_who_and_what_and_names_the_draft_an_action_overwrites() {
         "{refused}"
     );
     ok(&store, &["history", "undo", "2", "--accept-overwrite"]);
+}
+
+#[test]
+fn history_names_a_config_and_its_mount_by_name() {
+    let store = Target::Local(tempfile::tempdir().unwrap());
+    let human = |args: &[&str]| {
+        let home = tempfile::tempdir().unwrap();
+        let output = store.command(home.path()).args(args).output().unwrap();
+        assert!(output.status.success(), "{output:?}");
+        String::from_utf8(output.stdout).unwrap()
+    };
+    let file = tempfile::NamedTempFile::new().unwrap();
+    let put = |content: &str| {
+        std::fs::write(file.path(), content).unwrap();
+        let from = file.path().to_str().unwrap();
+        ok(&store, &["config", "put", "app", "app.yml", "--from", from]);
+    };
+    ok(&store, &["project", "new", "shop"]);
+    ok(&store, &["service", "add", "web", "--image", "web:1"]);
+    ok(&store, &["deploy", "--skip-deploy"]);
+    ok(&store, &["config", "add", "app"]);
+    put("a: 1");
+    ok(&store, &["deploy", "--skip-deploy"]);
+    ok(&store, &["config", "mount", "web", "app", "/etc/app"]);
+    put("a: 2");
+    ok(&store, &["deploy", "--skip-deploy"]);
+
+    let listed = human(&["history"]);
+    let newest = listed.lines().nth(1).unwrap_or_default();
+    assert!(newest.contains("web.configs.app"), "{listed}");
+    assert!(newest.contains("configs.app.files.app.yml"), "{listed}");
+    assert!(!listed.contains("configs.@"), "{listed}");
+
+    let preview = human(&["history", "undo", "3", "--preview"]);
+    assert!(preview.contains("  web.configs.app: "), "{preview}");
+    assert!(
+        preview.contains("  configs.app.files.app.yml: "),
+        "{preview}"
+    );
+    assert!(!preview.contains("configs.@"), "{preview}");
+}
+
+/// A Local Store with Service `web` and Config `app` saved as #1 and #2 and applied,
+/// `app` mounted at `mount`.
+fn web_and_app(mount: Option<&str>) -> Target {
+    let store = Target::Local(tempfile::tempdir().unwrap());
+    ok(&store, &["project", "new", "shop"]);
+    ok(&store, &["service", "add", "web", "--image", "web:1"]);
+    ok(&store, &["deploy", "--skip-deploy"]);
+    applied(&store, "production");
+    match mount {
+        Some(mount) => ok(&store, &["config", "add", "app", "--mount", mount]),
+        None => ok(&store, &["config", "add", "app"]),
+    };
+    let file = tempfile::NamedTempFile::new().unwrap();
+    std::fs::write(file.path(), "a: 1").unwrap();
+    let from = file.path().to_str().unwrap();
+    ok(&store, &["config", "put", "app", "app.yml", "--from", from]);
+    ok(&store, &["deploy", "--skip-deploy"]);
+    applied(&store, "production");
+    store
+}
+
+/// What `ployz args` prints to people.
+fn printed(store: &Target, args: &[&str]) -> String {
+    let home = tempfile::tempdir().unwrap();
+    let output = store.command(home.path()).args(args).output().unwrap();
+    assert!(output.status.success(), "{output:?}");
+    String::from_utf8(output.stdout).unwrap()
+}
+
+#[test]
+fn a_bare_discard_names_a_dropped_config_mount_by_its_config() {
+    let store = web_and_app(None);
+    ok(&store, &["config", "mount", "web", "app", "/etc/app"]);
+    let discarded = ok(&store, &["discard"]);
+    assert!(
+        discarded["dropped"][0]
+            .as_str()
+            .unwrap()
+            .starts_with("web.configs.@"),
+        "{discarded}"
+    );
+
+    ok(&store, &["config", "mount", "web", "app", "/etc/app"]);
+    let said = printed(&store, &["discard"]);
+    assert!(said.contains("web.configs.app"), "{said}");
+    assert!(!said.contains("configs.@"), "{said}");
+}
+
+#[test]
+fn an_undo_names_the_draft_config_mount_it_overwrites() {
+    let store = web_and_app(Some("web:/etc/app"));
+    ok(&store, &["config", "mount", "web", "app", "/etc/other"]);
+
+    let preview = printed(&store, &["history", "undo", "2", "--preview"]);
+    assert!(
+        preview.contains("  overwrites draft web.configs.app\n"),
+        "{preview}"
+    );
+    assert!(!preview.contains("configs.@"), "{preview}");
+
+    let refused = error(&store, &["history", "undo", "2"]);
+    assert_eq!(refused["code"], json!("confirmation_required"), "{refused}");
+    let message = refused["message"].as_str().unwrap();
+    assert!(
+        message.ends_with("draft changes to web.configs.app"),
+        "{refused}"
+    );
+}
+
+#[test]
+fn an_undo_names_an_overwritten_mount_under_its_renamed_service() {
+    let store = web_and_app(Some("web:/etc/app"));
+    ok(&store, &["service", "rename", "web", "api"]);
+    ok(&store, &["config", "mount", "api", "app", "/etc/v2"]);
+    ok(&store, &["deploy", "--skip-deploy"]);
+    ok(&store, &["config", "mount", "api", "app", "/etc/v3"]);
+
+    let preview = printed(&store, &["history", "undo", "3", "--preview"]);
+    assert!(
+        preview.contains("  overwrites draft api.configs.app\n"),
+        "{preview}"
+    );
+    assert!(!preview.contains("configs.@"), "{preview}");
+}
+
+#[test]
+fn discarding_a_mount_by_id_names_its_config() {
+    let store = web_and_app(None);
+    ok(&store, &["config", "mount", "web", "app", "/etc/app"]);
+    let diff = ok(&store, &["diff"]);
+    let path = diff["changes"][0]["settings"][0]["path"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(path.starts_with("web.configs.@"), "{diff}");
+
+    let said = printed(&store, &["discard", &path]);
+    assert!(said.contains("web.configs.app"), "{said}");
+    assert!(!said.contains("configs.@"), "{said}");
+}
+
+#[test]
+fn a_discard_to_saved_reads_a_lone_mount_without_an_id() {
+    let store = web_and_app(Some("web:/etc/app"));
+    ok(&store, &["config", "rm", "app"]);
+    ok(&store, &["deploy", "--skip-deploy"]);
+    ok(
+        &store,
+        &["config", "add", "app", "--mount", "web:/etc/app2"],
+    );
+
+    let said = printed(&store, &["discard", "--target", "saved"]);
+    assert!(said.contains("web.configs.app"), "{said}");
+    assert!(!said.contains("(@"), "{said}");
+}
+
+#[test]
+fn a_second_discard_of_a_mount_by_id_still_names_its_config() {
+    let store = web_and_app(Some("web:/etc/app"));
+    ok(&store, &["config", "mount", "web", "app", "/etc/v2"]);
+    let diff = ok(&store, &["diff"]);
+    let path = diff["changes"][0]["settings"][0]["path"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(path.starts_with("web.configs.@"), "{diff}");
+    ok(&store, &["discard", &path]);
+
+    let said = printed(&store, &["discard", &path]);
+    assert!(
+        said.contains("Nothing staged at web.configs.app "),
+        "{said}"
+    );
+    assert!(!said.contains("configs.@"), "{said}");
+}
+
+#[test]
+fn an_undo_tells_apart_the_files_of_two_configs_of_one_name() {
+    let store = web_and_app(None);
+    ok(&store, &["config", "rm", "app"]);
+    ok(&store, &["config", "add", "app"]);
+    let file = tempfile::NamedTempFile::new().unwrap();
+    std::fs::write(file.path(), "b: 2").unwrap();
+    let from = file.path().to_str().unwrap();
+    ok(&store, &["config", "put", "app", "app.yml", "--from", from]);
+    ok(&store, &["deploy", "--skip-deploy"]);
+
+    let preview = printed(&store, &["history", "undo", "3", "--preview"]);
+    let files: Vec<&str> = preview
+        .lines()
+        .filter(|line| line.contains(".files.app.yml"))
+        .collect();
+    assert_eq!(files.len(), 2, "{preview}");
+    assert!(
+        files
+            .iter()
+            .all(|line| line.contains("configs.app.files.app.yml (@")),
+        "{preview}"
+    );
+    assert_ne!(
+        files[0].split(':').next(),
+        files[1].split(':').next(),
+        "{preview}"
+    );
+}
+
+#[test]
+fn a_replaced_config_of_the_same_name_reads_apart_in_diff() {
+    let store = web_and_app(Some("web:/etc/app"));
+    ok(&store, &["config", "rm", "app"]);
+    ok(
+        &store,
+        &["config", "add", "app", "--mount", "web:/etc/app2"],
+    );
+
+    let diff = printed(&store, &["diff"]);
+    let mounts: Vec<&str> = diff
+        .lines()
+        .filter(|line| line.contains("web.configs.app"))
+        .collect();
+    assert_eq!(mounts.len(), 2, "{diff}");
+    assert!(
+        mounts
+            .iter()
+            .all(|line| line.contains("web.configs.app (@")),
+        "{diff}"
+    );
+    assert_ne!(
+        mounts[0].split(':').next(),
+        mounts[1].split(':').next(),
+        "{diff}"
+    );
 }
 
 #[test]

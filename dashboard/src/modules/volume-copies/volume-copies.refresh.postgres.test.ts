@@ -225,7 +225,6 @@ describe("Refresh now", () => {
     const waitFor = (check: () => Promise<boolean> | boolean) => Effect.promise(() => vi.waitFor(async () => {
       if (!(await check())) throw new Error("not yet");
     }, { timeout: 10_000 }));
-    const held = Effect.promise(() => new Promise<"held">((resolve) => { setTimeout(() => resolve("held"), 10_000); }));
 
     const answer = await run(Effect.gen(function* () {
       const fiber = yield* Effect.forkDetach(refreshMirror(caller, environment, volumeId, () => Effect.succeed(blockers), () => Effect.succeed(members), () => Effect.succeed(members), silent));
@@ -234,7 +233,7 @@ describe("Refresh now", () => {
       yield* Effect.promise(() => holder.query(`commit`));
       yield* waitFor(() => asked.includes("mirror"));
       yield* TestClock.adjust(SYNC_CLUSTER_BUDGET_MS);
-      return yield* Effect.raceFirst(Fiber.join(fiber), held);
+      return yield* Fiber.join(fiber);
     }).pipe(Effect.provide(TestClock.layer()))).finally(() => holder.release());
 
     expect(answer).toEqual({
@@ -259,7 +258,6 @@ describe("Refresh now", () => {
     const waitFor = (check: () => Promise<boolean> | boolean) => Effect.promise(() => vi.waitFor(async () => {
       if (!(await check())) throw new Error("not yet");
     }, { timeout: 10_000 }));
-    const held = Effect.promise(() => new Promise<"held">((resolve) => { setTimeout(() => resolve("held"), 10_000); }));
 
     const answer = await run(Effect.gen(function* () {
       const fiber = yield* Effect.forkDetach(refreshOn(cluster));
@@ -269,7 +267,7 @@ describe("Refresh now", () => {
       const early = yield* Effect.raceFirst(waitFor(() => switched.includes("mirror")).pipe(Effect.as(null)), Fiber.join(fiber));
       if (early !== null) return early;
       yield* TestClock.adjust(SYNC_CLUSTER_BUDGET_MS);
-      return yield* Effect.raceFirst(Fiber.join(fiber), held);
+      return yield* Fiber.join(fiber);
     }).pipe(Effect.provide(TestClock.layer()))).finally(() => holder.release());
 
     expect(answer).toEqual({
@@ -286,13 +284,12 @@ describe("Refresh now", () => {
       switched.push(want.kind);
       return want.kind === "mirror" ? new Promise<never>(() => {}) : Promise.resolve(SNAPSHOT);
     });
-    const held = Effect.promise(() => new Promise<"held">((resolve) => { setTimeout(() => resolve("held"), 10_000); }));
 
     const answer = await run(Effect.gen(function* () {
       const fiber = yield* Effect.forkDetach(refreshOn(cluster));
       yield* Effect.promise(() => vi.waitFor(() => expect(switched).toContain("mirror"), { timeout: 10_000 }));
       yield* TestClock.adjust(SYNC_CLUSTER_BUDGET_MS);
-      return yield* Effect.raceFirst(Fiber.join(fiber), held);
+      return yield* Fiber.join(fiber);
     }).pipe(Effect.provide(TestClock.layer())));
 
     expect(answer).toEqual({
@@ -317,14 +314,13 @@ describe("Refresh now", () => {
       switched.push(want.kind);
       return want.kind === "mirror" ? new Promise<never>(() => {}) : Promise.resolve(SNAPSHOT);
     });
-    const held = Effect.promise(() => new Promise<"held">((resolve) => { setTimeout(() => resolve("held"), 10_000); }));
 
     const answer = await run(Effect.gen(function* () {
       const fiber = yield* Effect.forkDetach(refreshOn(cluster));
       yield* Effect.promise(() => vi.waitFor(() => expect(switched).toContain("mirror"), { timeout: 10_000 }));
       yield* Effect.promise(() => harness.pool.query(`delete from organization_machine; delete from organization_pairing`));
       yield* TestClock.adjust(SYNC_CLUSTER_BUDGET_MS);
-      return yield* Effect.raceFirst(Fiber.join(fiber), held);
+      return yield* Fiber.join(fiber);
     }).pipe(Effect.provide(TestClock.layer())));
 
     expect(answer).toEqual({

@@ -12,7 +12,7 @@ pub(crate) mod history;
 pub(crate) mod publish;
 pub(crate) mod sealed;
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::RpcError;
 use ployz_core::config::{
@@ -166,6 +166,63 @@ pub struct NodeChange {
     /// to take its new files.
     #[serde(default)]
     pub restarts: Vec<ployz_core::ServiceName>,
+}
+
+impl NodeChange {
+    /// Each Setting row of `changes`, by path, as people read them shown together.
+    #[must_use]
+    pub fn labels(changes: &[Self]) -> BTreeMap<String, String> {
+        let paths: Vec<String> = changes
+            .iter()
+            .flat_map(|change| change.settings.iter().map(|row| row.path.clone()))
+            .collect();
+        let shown = Self::shown_paths(changes, &paths);
+        paths.into_iter().zip(shown).collect()
+    }
+
+    /// `paths`, shown together, as people read them: each Config, and each mount
+    /// whichever Service holds it, by the name `changes` know its id by, as
+    /// [`ployz_core::config::shown_paths`] reads them.
+    #[must_use]
+    pub fn shown_paths(changes: &[Self], paths: &[String]) -> Vec<String> {
+        Self::shown_paths_by(paths, |id| Self::config_named(changes, id))
+    }
+
+    /// `paths`, shown together, naming each Config by `name(id)`.
+    #[must_use]
+    pub fn shown_paths_by(
+        paths: &[String],
+        name: impl Fn(&str) -> Option<ployz_core::ConfigName>,
+    ) -> Vec<String> {
+        let named: Vec<_> = paths
+            .iter()
+            .map(|path| {
+                let id = path
+                    .split_once("configs.@")
+                    .map(|(_, rest)| rest.split_once('.').map_or(rest, |(id, _)| id));
+                (path.as_str(), id.and_then(&name))
+            })
+            .collect();
+        let named: Vec<_> = named
+            .iter()
+            .map(|(path, name)| (*path, name.as_ref()))
+            .collect();
+        ployz_core::config::shown_paths(&named)
+    }
+
+    /// The name `changes` know the Config `id` by, from its own change or a mount of it.
+    #[must_use]
+    pub fn config_named(changes: &[Self], id: &str) -> Option<ployz_core::ConfigName> {
+        changes.iter().find_map(|change| {
+            if change.node.node_type == EnvironmentNodeType::Config && change.node.id == id {
+                return ployz_core::ConfigName::parse(&change.name).ok();
+            }
+            change.settings.iter().find_map(|row| {
+                let (_, mounted) = row.path.rsplit_once(".configs.@")?;
+                (mounted == id).then(|| row.config_name.clone()).flatten()
+            })
+        })
+    }
 }
 
 /// What a staged change does to data on the Servers.

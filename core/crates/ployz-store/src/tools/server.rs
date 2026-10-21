@@ -32,7 +32,8 @@ const SETTABLE: [&str; 4] = [
     "build_concurrency",
 ];
 
-/// How many of a Server's runs `server_show` reads to find its newest Drain under later ones.
+/// How many of a Server's runs `server_show` reads to find its newest Drain under later ones,
+/// from a Cloud that doesn't name it.
 const RUNS_READ: u8 = 20;
 
 /// How a Drain ended, once it says: it drained the Server, or `failed_drain.outcome` names why
@@ -59,28 +60,32 @@ const fn drain_verdict(operation: &Operation) -> Option<DrainVerdict> {
     }
 }
 
-/// The Server's newest Drain with a verdict, by the `drain <server>` Cloud names it, when it
+/// The Server's newest Drain with a verdict, as Cloud names it, else as `page` lists it, when it
 /// drained nothing and a later run took `latest`, with its `outcome`. A Drain with no verdict
 /// neither clears nor replaces an older one.
-fn failed_drain(operations: &[Operation]) -> Option<Value> {
-    let (at, drain, verdict) = operations
-        .iter()
-        .enumerate()
-        .filter(|(_, operation)| operation.run.starts_with("drain "))
-        .find_map(|(at, operation)| {
-            drain_verdict(operation).map(|verdict| (at, operation, verdict))
-        })?;
+fn failed_drain(page: &OperationsAnswer) -> Option<Value> {
+    let (drain, verdict) = match &page.settled_drain {
+        Some(drain) => (drain, drain_verdict(drain)?),
+        None => page
+            .operations
+            .iter()
+            .filter(|operation| operation.run.starts_with("drain "))
+            .find_map(|operation| drain_verdict(operation).map(|verdict| (operation, verdict)))?,
+    };
+    let shown_as_latest = page
+        .operations
+        .first()
+        .is_some_and(|latest| latest.attempt == drain.attempt);
     match verdict {
         DrainVerdict::Drained => None,
-        DrainVerdict::Failed | DrainVerdict::Lost | DrainVerdict::Interrupted => {
-            (at > 0).then(|| {
+        DrainVerdict::Failed | DrainVerdict::Lost | DrainVerdict::Interrupted => (!shown_as_latest)
+            .then(|| {
                 let mut shown = latest(drain);
                 if let Some(fields) = shown.as_object_mut() {
                     fields.insert("outcome".to_owned(), json!(verdict));
                 }
                 shown
-            })
-        }
+            }),
     }
 }
 
@@ -170,9 +175,7 @@ impl Tool for ServerShow {
                         .as_ref()
                         .and_then(|page| page.operations.first())
                         .map(latest),
-                    "failed_drain": page
-                        .as_ref()
-                        .and_then(|page| failed_drain(&page.operations)),
+                    "failed_drain": page.as_ref().and_then(failed_drain),
                 }))
             })
             .collect::<Result<Vec<_>, Stop>>()?;

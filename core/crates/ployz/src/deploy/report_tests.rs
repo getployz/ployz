@@ -228,7 +228,7 @@ fn row_state(state: &str) -> RowState {
             log: None,
             unanswered: false,
             out_of_memory: None,
-            cancelled: false,
+            stopped_by: ployz_store::StoppedBy::NOTHING,
         },
         "cancelled" => RowState::Failed {
             reason: "Cancelled".into(),
@@ -237,7 +237,16 @@ fn row_state(state: &str) -> RowState {
             log: None,
             unanswered: false,
             out_of_memory: None,
-            cancelled: true,
+            stopped_by: ployz_store::StoppedBy::CANCEL,
+        },
+        "interrupted" => RowState::Failed {
+            reason: "Cancelled".into(),
+            cause: Vec::new(),
+            step: Some(ployz_store::FailedAt::Create),
+            log: None,
+            unanswered: false,
+            out_of_memory: None,
+            stopped_by: ployz_store::StoppedBy::LOST_RUNNER,
         },
         "not_attempted" => RowState::NotAttempted,
         other => panic!("unknown row state {other}"),
@@ -260,6 +269,7 @@ fn graph_frame(groups: &[ServiceGroup], services: &[(&str, &[&str])]) -> Frame {
                 service_row(
                     QualifiedService::new(namespace.clone(), name.clone()),
                     Some(depths.get(&name).copied().unwrap_or(0)),
+                    None,
                     states.iter().map(|state| Replica {
                         machine: MachineId::random(),
                         state,
@@ -494,6 +504,26 @@ fn a_cancel_reads_cancelled_where_it_stopped_work_and_failed_where_work_failed()
             "depth 1",
             "  ⊘ api  cancelled (1/2 ready)",
             "  ✘ web  failed (0/2 ready)",
+        ]
+    );
+}
+
+#[test]
+fn work_a_lost_runner_stopped_reads_interrupted_not_failed() {
+    let frame = graph_frame(
+        &[group("db", &[]), group("web", &["db"])],
+        &[
+            ("db", &["completed"]),
+            ("web", &["interrupted", "completed"]),
+        ],
+    );
+    assert_eq!(
+        lines(&frame),
+        [
+            "depth 0",
+            "  ✔ db  switched 1/1",
+            "depth 1",
+            "  ⊘ web  interrupted (1/2 ready)",
         ]
     );
 }
@@ -1100,5 +1130,69 @@ fn a_machine_away_during_cleanup_is_named_once_under_the_copies_left_on_it() {
             "! Once machine-3 is back, a copy left running can answer beside the new copies, and a left worker still takes jobs, until the next deploy.",
             "! shop/web left running on machine-3 (proxy on machine-3 did not confirm). The next deploy cleans it up.",
         ]
+    );
+}
+
+/// The Servers the summary counts once every planned operation of `plan` completed.
+fn servers_after(plan: &crate::deploy::DeployPlan) -> usize {
+    servers_ending(plan, |_| OperationStatus::Completed)
+}
+
+/// The Servers the summary counts once each planned row of `plan` ends as `end` says.
+fn servers_ending(
+    plan: &crate::deploy::DeployPlan,
+    end: impl Fn(&OperationRow) -> OperationStatus,
+) -> usize {
+    let preview = plan.preview();
+    let mut direct = Direct::new(preview, "Deploying app".into());
+    let done: Vec<_> = preview
+        .operations
+        .iter()
+        .map(|row| OperationRow {
+            status: end(row),
+            ..row.clone()
+        })
+        .collect();
+    direct.observe(&done);
+    let frame = direct.frame();
+    let [row] = frame.rows.as_slice() else {
+        panic!("{:?}", frame.rows);
+    };
+    let Subject::Service(graph) = &row.subject else {
+        panic!("{row:?}");
+    };
+    graph.machines.len()
+}
+
+#[test]
+fn the_summary_counts_every_server_a_scaled_service_runs_on() {
+    use crate::global_fixtures::replicated_plan;
+    let kept = replicated_plan(8, &['1'], 8);
+    assert_eq!(
+        kept.preview().operations.len(),
+        7,
+        "the copy on server-1 is kept"
+    );
+    assert_eq!(servers_after(&kept), 8, "8 copies on 8 Servers, one kept");
+    assert_eq!(
+        servers_after(&replicated_plan(4, &[], 12)),
+        4,
+        "12 copies on 4 Servers"
+    );
+    assert_eq!(
+        servers_after(&replicated_plan(8, &[], 3)),
+        3,
+        "5 of 8 Servers run none"
+    );
+    let failed = servers_ending(&kept, |row| {
+        if row.index == 0 {
+            OperationStatus::Failed { error: denied() }
+        } else {
+            OperationStatus::Completed
+        }
+    });
+    assert_eq!(
+        failed, 7,
+        "a failed Deploy counts only the Servers it worked on"
     );
 }
