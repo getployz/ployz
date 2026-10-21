@@ -31,7 +31,7 @@ export const NO_MOUNTS_CONFIGURED = line("No mounts configured", "idle");
  * `starting`: current evidence while a Deploy starts it; stale evidence keeps its last word.
  */
 function evidenceLine(runtime: Pick<RuntimeServiceRecord, "containers"> | null, whole: boolean, offline: ReadonlySet<string>, desiredReplicas: number | null, deploying: boolean, starting: boolean) {
-  if (!runtime && !whole) return line("Deployed", "quiet");
+  if ((!runtime || runtime.containers.length === 0) && !whole) return line("Deployed", "quiet");
   if (!runtime || runtime.containers.length === 0) return starting ? line("Starting", "quiet") : line("Not running", "bad", true);
   const containers = runtime.containers.filter((container) => !offline.has(container.machineId));
   // A Server missing from partial evidence may still serve it.

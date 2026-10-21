@@ -60,6 +60,15 @@ describe("runtimeLine", () => {
     expect(nodeIssues(runtimeLine(service, runtime(container("restarting")), partial), [])).toBeNull();
   });
 
+  it("says Deployed, as with no record, for a record with no container while the evidence is incomplete, leftover hook or not", () => {
+    const partial = watch({ incomplete: true });
+    const leftoverHook = { containers: [], hookContainers: [{ ...container("exited"), kind: "hook" }] };
+    expect(runtimeLine(service, runtime(), partial)).toMatchObject({ word: "Deployed", tone: "quiet", down: false });
+    expect(runtimeLine(service, leftoverHook, partial)).toMatchObject({ word: "Deployed", tone: "quiet", down: false });
+    expect(nodeIssues(runtimeLine(service, leftoverHook, partial), [])).toBeNull();
+    expect(runtimeLine(service, leftoverHook, seen)).toMatchObject({ word: "Not running", tone: "bad", down: true });
+  });
+
   it("never guesses without current evidence: it waits, greys the last word with its age, or says why", () => {
     const since = new Date("2026-09-30T10:00:00Z");
     expect(runtimeLine(service, null, watch({ status: "connecting", observedAt: null })).tone).toBe("pending");
