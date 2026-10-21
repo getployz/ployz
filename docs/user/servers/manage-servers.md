@@ -177,6 +177,9 @@ Click a server. Its page shows its status and public IP address, then:
 An entry marked **Not in any Project** is left over from a deleted project or environment.
 **Remove** deletes its containers and its volumes, data included, from every server.
 
+When you restore a server from a snapshot of its disk, Ployz picks its services and ingress back
+up as they were when the snapshot was taken. Your next deploy updates them as usual.
+
 ## Reach a server from the CLI
 
 When the CLI reaches your servers through Ployz Cloud, only owners and admins can run these commands:
