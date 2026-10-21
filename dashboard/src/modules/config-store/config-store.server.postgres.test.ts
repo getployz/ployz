@@ -22,7 +22,7 @@ import type { Caller } from "#/modules/identity/actor";
 import { organizationSupportAccess } from "#/modules/support-access/tables";
 import { permissionsOf } from "#/modules/organization/permissions";
 import * as ids from "#/test/ids";
-import { enrollStoreServer, seedStoreOrganization, storeTestCloud } from "#/test/store-cloud";
+import { enrollStoreServer, seedStoreOrganization, storeTestCloudWith } from "#/test/store-cloud";
 import { handleConfigRequest } from "#/routes/api/config/-config.handler";
 import { runStoreDeployment } from "#/modules/config-store/store-deployment.server";
 import { uploadChunk } from "#/modules/config-store/tables";
@@ -75,13 +75,12 @@ const cloudServices = Effect.fn(function* (
   overrides: { readonly polar?: PolarService; readonly hostedDnsUrl?: string } = {},
   inngest = new Inngest({ id: "config-store-test" }),
 ) {
-  return yield* storeTestCloud({
+  return yield* storeTestCloudWith(AuthLive, {
     github: github.service,
     inngest,
     // No Hosted DNS answers unless a test starts one.
     env: { PLOYZ_HOSTED_DNS_URL: overrides.hostedDnsUrl ?? "http://127.0.0.1:9/" },
     polar: overrides.polar ?? { mode: "self_hosted" },
-    with: AuthLive,
   });
 });
 
@@ -1910,7 +1909,7 @@ const ceilingShop = Effect.fn(function* (grant: TokenGrant, kind: "cli" | "agent
   });
   return { secret, headers, state, approvals };
 });
-const ceilingCloud = storeTestCloud({ with: AuthLive });
+const ceilingCloud = storeTestCloudWith(AuthLive);
 const stagingOnly = "This token can deploy only to staging.";
 
 it.live("a token that may protect only staging protects staging, asks a human to unprotect it, and production refuses", () =>

@@ -16,13 +16,13 @@ import { Auth, AuthLive } from "#/server/auth.server";
 import { encodePublicError, statusForPublicError } from "#/server/public-error";
 import { Database } from "#/server/database.server";
 import { machineId } from "#/test/ids";
-import { storeTestCloud } from "#/test/store-cloud";
+import { storeTestCloudWith } from "#/test/store-cloud";
 import { SecretEncryption } from "#/utils/encrypted-secret.server";
 
 const origin = "http://localhost:3000";
 const here = { project: null, environment: null };
 
-const cloudServices = () => storeTestCloud({ env: { PLOYZ_HOSTED_DNS_URL: "http://127.0.0.1:9/" }, with: AuthLive });
+const cloudServices = () => storeTestCloudWith(AuthLive, { env: { PLOYZ_HOSTED_DNS_URL: "http://127.0.0.1:9/" } });
 
 const signUp = Effect.fn(function* (name: string) {
   const response = yield* (yield* Auth).handler(new Request(`${origin}/api/auth/sign-up/email`, {

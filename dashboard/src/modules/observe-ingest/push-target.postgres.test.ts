@@ -13,7 +13,7 @@ import { Database } from "#/server/database.server";
 import { SecretEncryption } from "#/utils/encrypted-secret.server";
 import { machineId } from "#/test/ids";
 import { connectionAborts } from "#/test/connection-aborts";
-import { enrollStoreServer, seedStoreOrganization, storeTestCloud } from "#/test/store-cloud";
+import { enrollStoreServer, seedStoreOrganization, storeTestCloudWith } from "#/test/store-cloud";
 
 const ORGANIZATION = "00000000-0000-4000-8000-00000000f301";
 const CURRENT = machineId("0");
@@ -43,7 +43,7 @@ const setup = Effect.fn(function* (onSet: OnSet = async () => {}, close: () => P
       });
     },
   });
-  const cloud = yield* storeTestCloud({ with: ployz });
+  const cloud = yield* storeTestCloudWith(ployz);
   const provide = <A, E>(effect: Effect.Effect<A, E, Database | SecretEncryption>) => effect.pipe(Effect.provide(cloud), Effect.orDie);
   yield* provide(seedStoreOrganization(ORGANIZATION));
   yield* provide(enrollStoreServer(ORGANIZATION));

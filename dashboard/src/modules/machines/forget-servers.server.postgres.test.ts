@@ -22,7 +22,7 @@ import { makePloyzLayer } from "#/modules/runtime/ployz.server";
 import { organizationPairing } from "#/modules/runtime/tables";
 import { Database } from "#/server/database.server";
 import { makeInngestEffectRunner } from "#/server/run.server";
-import { enrollStoreServer, seedStoreOrganization, storeTestCloud } from "#/test/store-cloud";
+import { enrollStoreServer, seedStoreOrganization, storeTestCloudWith } from "#/test/store-cloud";
 import { SecretEncryption } from "#/utils/encrypted-secret.server";
 
 const ORGANIZATION = "00000000-0000-4000-8000-00000000f001";
@@ -40,7 +40,7 @@ const cloud = (answers: boolean) => Effect.gen(function* () {
       return asTestDouble<Client>()({ close: async () => undefined, inspect: async () => ({ machine: { name: "machine-1" } }) });
     },
   });
-  return yield* storeTestCloud({ with: ployz });
+  return yield* storeTestCloudWith(ployz);
 });
 
 /** A signed-up owner's Organization whose founder completed, a Project with a queued Deploy, and enrollment rows. */
@@ -83,7 +83,7 @@ it.live("Forget Servers refuses while a Server answers, and forgets nothing", ()
 it.live("Forget Servers answers within its Cluster time, and aborts the connection, while a Server that answered never closes its session", () => Effect.gen(function* () {
   const closing = yield* Deferred.make<void>();
   const signals: AbortSignal[] = [];
-  const services = yield* storeTestCloud({ with: makePloyzLayer({
+  const services = yield* storeTestCloudWith(makePloyzLayer({
     connect: async ({ signal }) => {
       if (signal) signals.push(signal);
       return asTestDouble<Client>()({
@@ -94,7 +94,7 @@ it.live("Forget Servers answers within its Cluster time, and aborts the connecti
         inspect: async () => ({ machine: { name: "machine-1" } }),
       });
     },
-  }) });
+  }));
   yield* Effect.gen(function* () {
     const { userId } = yield* seeded();
     const answer = yield* Effect.gen(function* () {

@@ -23,13 +23,13 @@ import { AppConfig } from "#/server/config.server";
 import { Database } from "#/server/database.server";
 import { SecretEncryption } from "#/utils/encrypted-secret.server";
 import { machineId } from "#/test/ids";
-import { storeTestCloud } from "#/test/store-cloud";
+import { storeTestCloudWith } from "#/test/store-cloud";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const ACTIONS: ReadonlyArray<ClaimedAction> = ["add_domain", "mint_token", "invite", "billing", "github_connect"];
 
 const inCloud = <A, E, R>(body: Effect.Effect<A, E, R>) => Effect.gen(function* () {
-  return yield* body.pipe(Effect.provide(yield* storeTestCloud({ with: AuthLive })));
+  return yield* body.pipe(Effect.provide(yield* storeTestCloudWith(AuthLive)));
 });
 
 /** An agent signed up: its sandbox, its token, and the secret in its claim URL. */

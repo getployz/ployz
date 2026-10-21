@@ -82,20 +82,17 @@ type BuiltStoreCloud<A, E> = Effect.Effect<Context.Context<StoreCloud | A>, Laye
  * Cloud with the Config Store in a fresh database, and everything its Store workers use: GitHub as `github` answers
  * (none by default), repository reads through it unless `repositories` stands in, no Cluster paired, a self-hosted
  * billing plan, and an Inngest client that sends nowhere. `env` overrides configuration. With `fleet`, every Organization
- * is paired with the Machines those connections reach, dialed through the real SDK. `with` adds services, such as
- * `AuthLive`, built on Cloud's.
+ * is paired with the Machines those connections reach, dialed through the real SDK.
  *
  * Built once, in the caller's Scope, as Cloud builds its services once per process: every provide of what this returns
  * shares one pool and one Config Store. A Layer would build again, and open the Store again, on each provide.
  */
-export function storeTestCloud(options?: StoreCloudOptions & { readonly with?: never }): BuiltStoreCloud<never, never>;
-export function storeTestCloud<A, E>(options: StoreCloudOptions & { readonly with: Layer.Layer<A, E, StoreCloud> }): BuiltStoreCloud<A, E>;
-export function storeTestCloud<A, E>(options: StoreCloudOptions & { readonly with?: Layer.Layer<A, E, StoreCloud> } = {}) {
-  return Effect.gen(function* () {
-    const cloud = yield* storeCloudLayer(options);
-    return yield* Layer.build(options.with === undefined ? cloud : Layer.provideMerge(options.with, cloud));
-  });
-}
+export const storeTestCloud = (options: StoreCloudOptions = {}): BuiltStoreCloud<never, never> =>
+  Effect.flatMap(storeCloudLayer(options), Layer.build);
+
+/** {@link storeTestCloud} with `layer`'s services, such as `AuthLive`, built on Cloud's in the same build. */
+export const storeTestCloudWith = <A, E>(layer: Layer.Layer<A, E, StoreCloud>, options: StoreCloudOptions = {}): BuiltStoreCloud<A, E> =>
+  Effect.flatMap(storeCloudLayer(options), (cloud) => Layer.build(Layer.provideMerge(layer, cloud)));
 
 /** Organization `id` (Shop by default), whose one member Ada installed the GitHub App on `acme` as installation 7. */
 export const seedStoreOrganization = Effect.fn(function* (id: string, named: { name: string; slug: string } = { name: "Shop", slug: "shop" }) {

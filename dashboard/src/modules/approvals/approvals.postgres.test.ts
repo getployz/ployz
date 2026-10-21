@@ -36,7 +36,7 @@ import { organization } from "#/modules/organization/tables";
 import { handleConfigRequest } from "#/routes/api/config/-config.handler";
 import { AuthLive } from "#/server/auth.server";
 import { Database } from "#/server/database.server";
-import { acmeWeb, enrollStoreServer, seedStoreGitService, seedStoreOrganization, storeTestCloud } from "#/test/store-cloud";
+import { acmeWeb, enrollStoreServer, seedStoreGitService, seedStoreOrganization, storeTestCloudWith } from "#/test/store-cloud";
 
 const ORGANIZATION = "00000000-0000-4000-8000-00000000a501";
 const OTHER = "00000000-0000-4000-8000-00000000a502";
@@ -61,7 +61,7 @@ const addService = (n: number): ConfigCommand => ({
  * State. `refusal` is what the Store answers the CLI's Publish with while a human must approve removing `web`.
  */
 const shopRemovingWeb = Effect.fn(function* (removeWeb = true) {
-  const services = yield* storeTestCloud({ with: AuthLive });
+  const services = yield* storeTestCloudWith(AuthLive);
   const provided = <A, E, R>(effect: Effect.Effect<A, E, R>) => effect.pipe(Effect.provide(services));
   const userId = yield* provided(seedStoreOrganization(ORGANIZATION));
   const store: ConfigStore = yield* provided(seedStoreGitService(ORGANIZATION, { project: PROJECT, environment: ENVIRONMENT, service: SERVICE }));
@@ -910,7 +910,7 @@ const drainOf = (moves: string[]): OperationAsked => ({
 const answers = (digest: string | null): OperationDigest<never> => () => Effect.succeed(digest);
 
 const operationCloud = Effect.fn(function* () {
-  const services = yield* storeTestCloud({ with: AuthLive });
+  const services = yield* storeTestCloudWith(AuthLive);
   const provided = <A, E, R>(effect: Effect.Effect<A, E, R>) => effect.pipe(Effect.provide(services));
   const userId = yield* provided(seedStoreOrganization(ORGANIZATION));
   const caller: Caller = { userId, organization: { id: ORGANIZATION, slug: "shop" }, credential: { kind: "token", id: "token-1", grant: FULL_GRANT }, role: "owner", support: null, via: "cli" };

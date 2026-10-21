@@ -24,7 +24,7 @@ import { handleRunRequest } from "#/routes/api/cli/-handlers";
 import { AuthLive } from "#/server/auth.server";
 import { Database } from "#/server/database.server";
 import { encodePublicError, statusForPublicError } from "#/server/public-error";
-import { seedStoreOrganization, storeTestCloud } from "#/test/store-cloud";
+import { seedStoreOrganization, storeTestCloudWith } from "#/test/store-cloud";
 
 const ORGANIZATION = "00000000-0000-4000-8000-00000000c301";
 const PROJECT = "00000000-0000-4000-8000-00000000c302";
@@ -49,7 +49,7 @@ const Heard = Schema.fromJsonString(Schema.Union([
  */
 const parity = Effect.fn(function* () {
   const stub = ConfigProvider.layer(ConfigProvider.fromEnv({ env: { PLOYZ_AGENT_STUB: "1" } }));
-  const services = yield* storeTestCloud({ with: Layer.merge(AuthLive, stub) });
+  const services = yield* storeTestCloudWith(Layer.merge(AuthLive, stub));
   const provided = <A, E, R>(effect: Effect.Effect<A, E, R>) => effect.pipe(Effect.provide(services));
   const userId = yield* provided(seedStoreOrganization(ORGANIZATION));
   const caller: Caller = { userId, organization: { id: ORGANIZATION, slug: "shop" }, credential: { kind: "session", id: "session-1" }, role: "owner", support: null, via: "dashboard" };

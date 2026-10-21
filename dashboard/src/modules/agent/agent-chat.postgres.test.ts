@@ -20,7 +20,7 @@ import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.serv
 import type { PloyzSession } from "#/modules/runtime/ployz.server";
 import { AuthLive } from "#/server/auth.server";
 import { Database } from "#/server/database.server";
-import { acmeWeb, enrollStoreServer, seedStoreGitService, seedStoreOrganization, storeTestCloud } from "#/test/store-cloud";
+import { acmeWeb, enrollStoreServer, seedStoreGitService, seedStoreOrganization, storeTestCloudWith } from "#/test/store-cloud";
 
 const ORGANIZATION = "00000000-0000-4000-8000-00000000a601";
 const PROJECT = "00000000-0000-4000-8000-00000000a603";
@@ -64,7 +64,7 @@ const drain = (stream: AsyncIterable<StreamChunk>) => Effect.promise(async () =>
  */
 const sidebar = Effect.fn(function* (options: { removeWeb: boolean }) {
   const stub = ConfigProvider.layer(ConfigProvider.fromEnv({ env: { PLOYZ_AGENT_STUB: "1" } }));
-  const services = yield* storeTestCloud({ with: Layer.merge(AuthLive, stub) });
+  const services = yield* storeTestCloudWith(Layer.merge(AuthLive, stub));
   const provided = <A, E, R>(effect: Effect.Effect<A, E, R>) => effect.pipe(Effect.provide(services));
   const userId = yield* provided(seedStoreOrganization(ORGANIZATION));
   yield* provided(enrollStoreServer(ORGANIZATION));

@@ -19,7 +19,7 @@ import { removeMembership } from "#/modules/organization/membership.server";
 import { organization } from "#/modules/organization/tables";
 import { Auth, AuthLive } from "#/server/auth.server";
 import { BetterAuthDatabase, Database } from "#/server/database.server";
-import { acmeWeb, enrollStoreServer, seedStoreGitService, seedStoreOrganization, type StoreCloud, storeTestCloud } from "#/test/store-cloud";
+import { acmeWeb, enrollStoreServer, seedStoreGitService, seedStoreOrganization, type StoreCloud, storeTestCloudWith } from "#/test/store-cloud";
 
 const origin = "http://localhost:3000";
 const REDIRECT = "http://127.0.0.1:9999/callback";
@@ -126,10 +126,9 @@ const holdRead = Effect.fn(function* (table: Table, skip = 0) {
 
 /** A Cloud, hosted or self-hosted, with every route the remote endpoint answers on, run as a browser or agent would. */
 const cloudOf = Effect.fn(function* (hosted: boolean) {
-  const services = yield* storeTestCloud({
+  const services = yield* storeTestCloudWith(AuthLive.pipe(Layer.provide(HoldableBetterAuthDatabase)), {
     env: hosted ? HOSTED_ENV : undefined,
     polar: hosted ? hostedPolar : undefined,
-    with: AuthLive.pipe(Layer.provide(HoldableBetterAuthDatabase)),
   });
   const run = Effect.runPromiseWith(services);
   const provided = <A, E>(effect: Effect.Effect<A, E, StoreCloud | Auth>) => effect.pipe(Effect.provide(services));
