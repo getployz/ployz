@@ -341,6 +341,9 @@ async fn dial_stdio(path: &Path) -> io::Result<()> {
     bridge(stdin(), stdout(), stream).await
 }
 
+// The daemon's side closing ends the bridge, so a daemon restart closes the
+// SSH session and the client's call fails and is resent. Stdin closing first
+// only half-closes: the reply still flows back.
 async fn bridge(
     mut input: impl AsyncRead + Unpin,
     mut output: impl AsyncWrite + Unpin,
@@ -349,13 +352,17 @@ async fn bridge(
     let (mut socket_read, mut socket_write) = stream.into_split();
     let forward = async {
         copy(&mut input, &mut socket_write).await?;
-        socket_write.shutdown().await
+        socket_write.shutdown().await?;
+        std::future::pending().await
     };
     let back = async {
         copy(&mut socket_read, &mut output).await?;
         output.flush().await
     };
-    tokio::try_join!(forward, back).map(|_| ())
+    tokio::select! {
+        result = forward => result,
+        result = back => result,
+    }
 }
 
 #[cfg(test)]
