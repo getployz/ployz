@@ -146,13 +146,19 @@ export function addableCopies(copies: VolumeCopies, served: readonly AddableCopy
 
 export type CardLine = { readonly spin: boolean; readonly words: string; readonly age: string | null; readonly stale: boolean };
 
-/** A staged removal drops the kind word so the Removing badge reads alone. */
+/** What a mirror known only from its silent Server's last report says in place of its kind: it may be gone since. */
+export const LAST_REPORTED = "Last reported";
+
+/**
+ * A staged removal drops the kind word so the Removing badge reads alone. A mirror known only from its Server's last
+ * report reads as last reported, staged or not, never as a mirror held now.
+ */
 export function cardLine(copy: VolumeCopy, now: Date): CardLine {
   if (copy.busy !== null) return { spin: true, words: copy.busy, age: null, stale: false };
-  if (copy.staged !== null) return { spin: false, words: copy.staged === "removing" ? "" : COPY_WORDS[copy.kind], age: null, stale: false };
+  const words = copy.kind === "mirror" && copy.lastReported ? LAST_REPORTED : COPY_WORDS[copy.kind];
+  if (copy.staged !== null) return { spin: false, words: copy.staged === "removing" ? "" : words, age: null, stale: false };
   const at = lastAt(copy);
   const stale = isStale(copy, now);
-  const words = copy.kind === "mirror" && copy.lastReported ? `${COPY_WORDS.mirror} · last reported by ${copy.server.name}` : COPY_WORDS[copy.kind];
   return { spin: false, words, age: at === null ? (stale ? "Not yet" : null) : age(at, now), stale };
 }
 

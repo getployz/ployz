@@ -89,7 +89,7 @@ describe("VolumeCopiesPanel", () => {
   it("lists a mirror made with the CLI while its Server is silent as last reported, never as held now", () => {
     const lastMirror: Member = { machine: { id: id("web-2"), name: "web-2" }, answered: false, lastMirror: true };
     panel([member("web-1", "writer"), lastMirror], null, { matchedAt: new Date(NOW.getTime() - 135 * 60_000).toISOString() });
-    expect(rows("Elsewhere")).toEqual([expect.stringMatching(/^web-2Mirror · last reported by web-2 · .*2 hours.* · Not answering/)]);
+    expect(rows("Elsewhere")).toEqual([expect.stringMatching(/^web-2Last reported · .*2 hours.* · Not answering/)]);
     expect(rows("Elsewhere")[0]).not.toMatch(/15 min/);
     expect(screen.queryByText(/^Nothing outside/)).toBeNull();
     expect(screen.queryByRole("button", { name: "Add copy" })).toBeNull();
@@ -402,6 +402,13 @@ describe("mirror detail", () => {
     expect(stage).toHaveBeenLastCalledWith({ primary: id("web-1"), mirrors: [], deletes: [] }, [id("web-2")]);
     fireEvent.click(screen.getByRole("button", { name: "Copies" }));
     expect(onOpen).toHaveBeenCalledWith(null);
+  });
+
+  it("keeps a mirror known only from its silent Server's last report qualified when opened", () => {
+    const lastMirror: Member = { machine: { id: id("web-2"), name: "web-2" }, answered: false, lastMirror: true };
+    panel([member("web-1", "writer"), lastMirror], null, { open: "web-2" });
+    expect(screen.getByText("Last reported by web-2, which may have removed it since")).toBeTruthy();
+    expect(screen.queryByText("Every 15 min · on deploy")).toBeNull();
   });
 
   it("warns that a mirror with no refresh yet catches up first", () => {

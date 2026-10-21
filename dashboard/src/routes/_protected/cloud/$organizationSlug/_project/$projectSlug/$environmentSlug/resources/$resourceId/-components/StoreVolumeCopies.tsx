@@ -18,7 +18,7 @@ import { type RoleGate, useRoleGate } from "#/modules/organization/members.queri
 import { requirements, serverSupports } from "#/modules/runtime/daemon-compat";
 import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
 import {
-  addableCopies, cardLine, COPY_WORDS, isStale, LIVE_WORDS, type LiveState, type MirrorCopy, type OldCopy, STAGED_WORDS, type StagedCopy,
+  addableCopies, cardLine, COPY_WORDS, isStale, LAST_REPORTED, LIVE_WORDS, type LiveState, type MirrorCopy, type OldCopy, STAGED_WORDS, type StagedCopy,
   nothingElsewhere, unheardReason, type VolumeCopies, type VolumeCopy,
 } from "#/modules/volume-copies/volume-copies";
 import { useRefreshMirror } from "#/modules/volume-copies/volume-copies.hooks";
@@ -414,7 +414,9 @@ function CopyView({ volume, members, row, rows, owed, copies, copy, accepting, u
       {copy.staged ? <Badge variant={STAGED_STATE[copy.staged]}>{STAGED_WORDS[copy.staged]}</Badge> : null}
     </div>
     <Row title="Server">{copy.server.name}</Row>
-    <Row title="Refresh">Every {MIRROR_ROUND_MINUTES} min · on deploy</Row>
+    <Row title="Refresh">
+      {copy.lastReported ? `${LAST_REPORTED} by ${copy.server.name}, which may have removed it since` : `Every ${MIRROR_ROUND_MINUTES} min · on deploy`}
+    </Row>
     <Row title="Last">
       {last.spin ? <Busy words={last.words} />
         : <span className={cn(last.stale && "text-warning")}>{last.stale ? <TriangleAlertIcon className="mr-1 inline size-3.5" /> : null}{last.words}</span>}

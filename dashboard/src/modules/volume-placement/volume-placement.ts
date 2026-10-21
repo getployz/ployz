@@ -173,9 +173,8 @@ export function oldCopies(observed: ObservedPlacement, row: PlacementRow | null)
 
 /**
  * The Server presumed to hold the primary: the one that reports it, else, with none answering, one that didn't. A
- * Server the Volume records as a mirror comes last, as it holds a mirror, unless it is the staged primary, which an
- * unfinished move to it leaves recorded. Before it, one whose report is on its way
- * comes first, though the observer lists it last, then one that is up but lacks a capability, then a silent one: each
+ * Server the Volume records as a mirror, or whose last report held one, comes last, as it holds a mirror, unless it is
+ * the staged primary, which an unfinished move to it leaves recorded. Before it, one whose report is on its way comes first, though the observer lists it last, then one that is up but lacks a capability, then a silent one: each
  * before it may still hold the writer. Among those, the staged primary comes first, since a failed move returns there,
  * else the first listed. Copies names it under Live and the recovery alert reads it. Staging never reads it: an edit,
  * a move and a restore keep main's holder, so what is staged doesn't turn on whose report arrived first.

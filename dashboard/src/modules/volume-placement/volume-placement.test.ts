@@ -86,6 +86,10 @@ describe("presumedPrimary", () => {
     expect(presumed([member("web-1", "unanswered"), mirrorAsOf("web-2", at), lacking, unlisted("web-4")])).toBe(id("web-4"));
   });
 
+  it("presumes a silent Server over one whose last report held a mirror", () => {
+    expect(presumed([lastMirror("web-1"), member("web-2", "unanswered")])).toBe(id("web-2"));
+  });
+
   it("keeps the staged primary first among Servers heard the same way, and the first silent one when nothing is on its way", () => {
     expect(presumed([mirrorAsOf("web-2", at), unlisted("web-1"), unlisted("web-3")], "web-3")).toBe(id("web-3"));
     expect(presumed([member("web-1", "unanswered"), mirrorAsOf("web-2", at), member("web-3", "unanswered")], "web-3")).toBe(id("web-3"));

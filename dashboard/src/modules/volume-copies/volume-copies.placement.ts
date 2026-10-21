@@ -107,7 +107,7 @@ export function copiesFromPlacement(input: {
       ...form.detached.map(old),
     ],
     unheard: members.flatMap((member) => {
-      const from = heard(member.machine.id);
+      const from = heardFrom(member);
       return from === "answered" || member.machine.id === primary?.id ? [] : [{ ...member.machine, heard: from }];
     }),
   };

@@ -80,8 +80,8 @@ last refresh failed. It also says how much of its writes a failover would lose. 
 of these actions, so discard it in Details.
 
 A mirror stays listed while its server is not answering. A mirror made with `ployz volume mirror`
-is known only from that server's last report, so its row reads "Mirror · last reported by web-2": it
-may have been removed since. If Copies knows of no copy outside web-1 while another server hasn't
+is known only from that server's last report, so its row reads "Last reported" in place of "Mirror
+· 15 min": it may have been removed since. If Copies knows of no copy outside web-1 while another server hasn't
 reported, **Elsewhere** says why, for example "web-2 is not answering, so Copies can't say what is
 outside web-1", rather than that nothing is outside web-1.
 
