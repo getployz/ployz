@@ -191,6 +191,20 @@ describe("VolumeCopiesPanel", () => {
     expect(useMirror()).toBeNull();
   });
 
+  it("keeps the silent Server's alert and its Forget link in the mirror's detail, where an outage lands", () => {
+    panel([member("web-1", "unanswered"), mirrorAsOf("web-2", fiveAgo())], row(["web-2"]), { open: "web-2" });
+    expect(screen.getByRole("button", { name: "Copies" })).toBeTruthy();
+    expect(screen.getByText("web-1 is not answering")).toBeTruthy();
+    expect(screen.getByRole("link", { name: "Forget web-1" }).getAttribute("href")).toMatch(new RegExp(`/~/servers/${id("web-1")}$`));
+    expect(useMirror()).toBeNull();
+  });
+
+  it("names the Server to upgrade when that is what holds Use mirror back after the Forget", () => {
+    panel([mirrorAsOf("web-2", fiveAgo())], row(["web-2"]), { upgrade: ["web-3"] });
+    expect(screen.getByText("Upgrade web-3 to a newer Ployz")).toBeTruthy();
+    expect(screen.getByRole<HTMLButtonElement>("button", { name: "Use mirror" }).disabled).toBe(true);
+  });
+
   it("says the mirror's Server needs a newer Ployz instead of offering a restore the Deploy refuses", () => {
     panel([mirrorAsOf("web-2", fiveAgo())], row(["web-2"]), { floorless: ["web-2"] });
     expect(screen.getByText(/Using a mirror needs a newer Ployz on web-2\.$/)).toBeTruthy();

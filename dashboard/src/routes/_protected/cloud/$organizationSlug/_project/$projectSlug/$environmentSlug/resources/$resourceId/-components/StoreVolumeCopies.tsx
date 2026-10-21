@@ -125,10 +125,12 @@ export function VolumeCopiesPanel(props: CopiesPanelProps) {
   const recovered = recovery(volume, members, row, accepting, owed, floorless);
   const alert = recovered === null ? null : <RecoveryAlert {...props} recovery={recovered} now={now} />;
   const target = targetPlacement(observePlacement(members), row);
+  const needs = props.upgrade.length ? <p className="text-sm text-muted-foreground">Upgrade {props.upgrade.join(", ")} to a newer Ployz</p> : null;
   if (copies === null || target === null) {
     if (recovered?.kind !== "restore") return <Empty variant="placeholder"><EmptyDescription>No server reports a copy.</EmptyDescription></Empty>;
     return <div className="flex flex-col gap-4">
       {alert}
+      {needs}
       <Group label="Elsewhere">
         <Item role="listitem" variant="outline" size="sm">
           <ItemContent>
@@ -140,8 +142,8 @@ export function VolumeCopiesPanel(props: CopiesPanelProps) {
     </div>;
   }
   const mirror = copies.elsewhere.find((copy): copy is MirrorCopy => copy.kind === "mirror" && copy.id === open);
-  if (mirror !== undefined) return <CopyView {...props} members={members} row={row} copies={copies} copy={mirror} now={now} onBack={() => onOpen(null)} />;
-  return <CopiesView {...props} members={members} row={row} copies={copies} target={target} now={now} alert={alert} />;
+  if (mirror !== undefined) return <CopyView {...props} members={members} row={row} copies={copies} copy={mirror} now={now} alert={alert} onBack={() => onOpen(null)} />;
+  return <CopiesView {...props} members={members} row={row} copies={copies} target={target} now={now} alert={alert} needs={needs} />;
 }
 
 function RecoveryAlert({ organizationSlug, forgetGate, volume, disabled, deploying, upgrade, stage, recovery: recovered, now }:
@@ -180,7 +182,7 @@ function RecoveryAlert({ organizationSlug, forgetGate, volume, disabled, deployi
 type Resolved = CopiesPanelProps & { members: readonly Member[]; row: PlacementRow | null; copies: VolumeCopies; now: Date };
 
 function CopiesView({ volume, members, row, rows, owed, copies, target, servers, accepting, upgrade, seeds, disabled, deploying, stage, restore, deleteCopy, onOpen, now,
-  alert }: Resolved & { target: Placement; alert: ReactNode }) {
+  alert, needs }: Resolved & { target: Placement; alert: ReactNode; needs: ReactNode }) {
   const [adding, setAdding] = useState(false);
   const [deleting, setDeleting] = useState<OldCopy | null>(null);
   const observed = observePlacement(members);
@@ -195,7 +197,7 @@ function CopiesView({ volume, members, row, rows, owed, copies, target, servers,
 
   return <div className="flex flex-col gap-4">
     {alert}
-    {upgrade.length ? <p className="text-sm text-muted-foreground">Upgrade {upgrade.join(", ")} to a newer Ployz</p> : null}
+    {needs}
     <Group label="Live">
       <Item role="listitem" variant="outline" size="sm">
         <ItemContent>
@@ -358,8 +360,8 @@ function AddCopyDialog({ open, onOpenChange, volume, live, servers, mirrorOn, on
 
 /** Its staged actions build the same placement the list would; only Details discards them. */
 function CopyView({ volume, members, row, rows, owed, copies, copy, accepting, upgrade, seeds, disabled, deploying, stage, restore, refresh, refreshing,
-  onBack, now }:
-  Resolved & { copy: MirrorCopy; onBack: () => void }) {
+  alert, onBack, now }:
+  Resolved & { copy: MirrorCopy; alert: ReactNode; onBack: () => void }) {
   const blocked = upgrade.length > 0;
   const observed = observePlacement(members);
   const target = targetPlacement(observed, row);
@@ -380,6 +382,7 @@ function CopyView({ volume, members, row, rows, owed, copies, copy, accepting, u
 
   return <div className="flex flex-col gap-4">
     <Button variant="ghost" size="sm" className="self-start" onClick={onBack}><ChevronLeftIcon data-icon="inline-start" />Copies</Button>
+    {alert}
     <div className="flex min-w-0 items-center gap-2">
       <span className="font-semibold">{COPY_WORDS.mirror}</span>
       <span className={cn("truncate text-muted-foreground", copy.staged === "removing" && "line-through")}>{copy.name}</span>
