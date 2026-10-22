@@ -125,9 +125,13 @@ until you deploy. To keep it, discard the change in **Details** before you deplo
 
 ## Move a domain to another service
 
-Remove the domain from the service that has it, add it to the other service, and deploy once.
-Ployz starts the new service first and moves the domain over once it's healthy, so the domain
-is down for a moment at most, not for a whole deploy.
+Remove the domain from the service that has it, add it to the other service, and deploy both
+services at once. Ployz starts the new service first and moves the domain over once it's
+healthy. Visitors get an error for a few seconds while the old service stops.
+
+Ployz refuses the move in one deployment when the two services swap domains, or when the new
+service depends on the old one. Move it in two deployments instead: remove the domain and
+deploy, then add it to the other service and deploy again. The domain is down between the two.
 
 ## Good to know
 
