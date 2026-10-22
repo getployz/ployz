@@ -2399,7 +2399,7 @@ fn history_refuses_a_hostname_another_service_of_the_environment_took_since() {
     publish(&store, &who, None).unwrap();
     assert_eq!(
         refused_undo(&store, &who, 2),
-        "Another Service already has a.example.com"
+        "Another Service already has a.example.com: api in shop/production"
     );
 }
 
@@ -2464,7 +2464,7 @@ fn history_refuses_a_hostname_another_environment_took_since() {
     route(&store, &who, staging(), "web", "a.example.com");
     assert_eq!(
         refused_undo(&store, &who, 2),
-        "Another Service already has a.example.com"
+        "Another Service already has a.example.com: web in shop/staging"
     );
 }
 

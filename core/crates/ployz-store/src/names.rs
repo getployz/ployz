@@ -37,7 +37,7 @@ fn refuse_taken_among(
     environment: &Environment,
     name: Name<'_>,
     except: Option<&str>,
-    others: &mut Option<Vec<SavedEnvironmentIntent>>,
+    others: &mut Option<Vec<OtherEnvironment>>,
 ) -> Result<(), RpcError> {
     let other = |id: &str| Some(id) != except;
     let working = &environment.working;
@@ -66,18 +66,30 @@ fn refuse_taken_among(
         }
         Name::Hostname(hostname) => {
             let routed = |intent: &SavedEnvironmentIntent| {
-                intent.services.iter().any(|service| {
-                    other(&service.id)
-                        && service
-                            .config
-                            .routes
-                            .iter()
-                            .any(|route| route.hostname == hostname)
-                })
+                intent
+                    .services
+                    .iter()
+                    .find(|service| {
+                        other(&service.id)
+                            && service
+                                .config
+                                .routes
+                                .iter()
+                                .any(|route| route.hostname == hostname)
+                    })
+                    .map(|service| service.slug.clone())
             };
-            if routed(working) || loaded(tx, environment, others)?.iter().any(routed) {
+            let summary = &environment.summary;
+            let holder = match routed(working) {
+                Some(service) => Some(format!("{service} in {}/{}", summary.project, summary.name)),
+                None => loaded(tx, environment, others)?.iter().find_map(|other| {
+                    let service = routed(&other.working)?;
+                    Some(format!("{service} in {}/{}", other.project, other.name))
+                }),
+            };
+            if let Some(holder) = holder {
                 return Err(error::conflict(
-                    format!("Another Service already has {hostname}"),
+                    format!("Another Service already has {hostname}: {holder}"),
                     json!({ "hostname": hostname }),
                 ));
             }
@@ -94,7 +106,11 @@ fn refuse_taken_among(
                             .any(|managed| managed.prefix == prefix)
                 })
             };
-            if generated(working) || loaded(tx, environment, others)?.iter().any(generated) {
+            if generated(working)
+                || loaded(tx, environment, others)?
+                    .iter()
+                    .any(|other| generated(&other.working))
+            {
                 return Err(error::conflict(
                     format!("Another generated domain of this Organization is {prefix}"),
                     json!({ "prefix": prefix }),
@@ -251,25 +267,40 @@ pub(crate) fn refuse_new_taken(
 fn loaded<'a>(
     tx: &mut dyn Tx,
     environment: &Environment,
-    others: &'a mut Option<Vec<SavedEnvironmentIntent>>,
-) -> Result<&'a [SavedEnvironmentIntent], RpcError> {
+    others: &'a mut Option<Vec<OtherEnvironment>>,
+) -> Result<&'a [OtherEnvironment], RpcError> {
     if others.is_none() {
         *others = Some(other_environments(tx, environment)?);
     }
     Ok(others.get_or_insert_with(Vec::new))
 }
 
-/// Working State of every other Environment of the Organization.
+/// Another Environment of the Organization, named as an error names it.
+pub(crate) struct OtherEnvironment {
+    pub(crate) project: String,
+    pub(crate) name: String,
+    pub(crate) working: SavedEnvironmentIntent,
+}
+
+/// Every other Environment of the Organization.
 pub(crate) fn other_environments(
     tx: &mut dyn Tx,
     environment: &Environment,
-) -> Result<Vec<SavedEnvironmentIntent>, RpcError> {
+) -> Result<Vec<OtherEnvironment>, RpcError> {
     tx.query(
-        "SELECT working FROM config_environment WHERE id <> ?1 AND organization_id = \
+        "SELECT p.name, e.name, e.working FROM config_environment e \
+         JOIN config_project p ON p.id = e.project_id \
+         WHERE e.id <> ?1 AND e.organization_id = \
          (SELECT organization_id FROM config_environment WHERE id = ?1)",
         &[environment.summary.id.as_str().into()],
     )?
     .iter()
-    .map(|row| row.intent(0, "Working State"))
+    .map(|row| {
+        Ok(OtherEnvironment {
+            project: row.text(0)?.to_owned(),
+            name: row.text(1)?.to_owned(),
+            working: row.intent(2, "Working State")?,
+        })
+    })
     .collect()
 }
