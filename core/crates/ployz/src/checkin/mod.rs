@@ -13,7 +13,7 @@ mod wire;
 
 use std::{
     fs, io,
-    os::unix::fs::PermissionsExt,
+    os::unix::fs::{OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
     time::Duration,
 };
@@ -75,6 +75,31 @@ impl Paths {
     fn probe(&self) -> PathBuf {
         self.checkin_dir.join("probe.json")
     }
+}
+
+const LOOP_LOCK: &str = "loop.lock";
+
+/// Held for as long as the check-in loop runs, so `status` can tell a record no loop updates any more.
+pub(crate) struct LoopRunning {
+    _lock: fs::File,
+}
+
+pub(crate) fn hold_loop(paths: &Paths) -> io::Result<LoopRunning> {
+    fs::create_dir_all(&paths.checkin_dir)?;
+    let lock = fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .mode(STATUS_READABLE_BY_ALL)
+        .open(paths.checkin_dir.join(LOOP_LOCK))?;
+    lock.lock()?;
+    Ok(LoopRunning { _lock: lock })
+}
+
+/// Whether a check-in loop ran here and none runs now. A loop older than the lock never made
+/// it, and a lock this user can't open proves nothing, so either claims nothing.
+pub(crate) fn loop_stopped(checkin_dir: &Path) -> bool {
+    fs::File::open(checkin_dir.join(LOOP_LOCK)).is_ok_and(|lock| lock.try_lock_shared().is_ok())
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -474,6 +499,9 @@ pub(crate) async fn run<H: Host>(
     key: &CheckinKey,
     paths: &Paths,
 ) -> CheckinEnd {
+    let _running = hold_loop(paths).inspect_err(|error| {
+        crate::ui::warn(format!("Could not hold the check-in loop's lock: {error}"))
+    });
     let mut said = Said::default();
     let mut probes = Probes::load(paths.probe());
     loop {

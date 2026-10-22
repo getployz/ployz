@@ -207,7 +207,9 @@ prepares Docker and ZFS meanwhile.
    `sudo journalctl -u ployz-prepare -n 200`. A failed preparation is retried 10 minutes later,
    up to three times. Once you've fixed the cause, `sudo ployz server checkin --install` starts it
    again right away. Preparation that stopped mid-step on every try reads as failed.
-3. `sudo systemctl status ployz-checkin` says whether the loop is running at all.
+3. `Check-in stopped` means the loop isn't running, so nothing checks in and Ployz Cloud shows the
+   server Offline. `checked in` says when it last did. `sudo systemctl status ployz-checkin` says why it
+   stopped; `sudo systemctl start ployz-checkin` starts it again.
 4. `Can't reach Cloud` means the server can't reach Ployz Cloud over HTTPS, or something in
    between, such as a proxy, answered instead. It keeps trying every minute.
 5. `Clock is off` means Ployz Cloud refused the check-in and the server's clock is more than 4

@@ -2595,3 +2595,15 @@ fn checkin_state_stays_out_of_the_daemon_data_dir() {
         );
     }
 }
+
+#[test]
+fn status_tells_a_stopped_loop_only_from_a_lock_the_loop_left() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = paths(&dir);
+    // A loop older than the lock never made it, so nothing is claimed.
+    assert!(!loop_stopped(&paths.checkin_dir));
+    let running = hold_loop(&paths).unwrap();
+    assert!(!loop_stopped(&paths.checkin_dir));
+    drop(running);
+    assert!(loop_stopped(&paths.checkin_dir));
+}

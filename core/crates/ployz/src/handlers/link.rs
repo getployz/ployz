@@ -600,6 +600,9 @@ struct ThisServer {
     /// `ployz server rm` resets it. The stopped loop never rewrites its record.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     left: bool,
+    /// A check-in loop ran here and none runs now, so the record no longer changes.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    stopped: bool,
 }
 
 #[derive(Serialize)]
@@ -789,7 +792,12 @@ fn this_server() -> Option<ThisServer> {
                     )
                 })
         });
-    Some(ThisServer { checkin, left })
+    let stopped = crate::checkin::loop_stopped(Path::new(Paths::CHECKIN_DIR));
+    Some(ThisServer {
+        checkin,
+        left,
+        stopped,
+    })
 }
 
 #[cfg(test)]
@@ -823,6 +831,23 @@ fn status_record(status: &Status) -> Fields {
         record.push(
             "this server",
             Cell::status("Not in a Cluster", Tone::Change),
+        );
+    } else if let Some(ThisServer {
+        checkin,
+        stopped: true,
+        ..
+    }) = &status.this_server
+        && checkin.answer != Seen::Joined
+        && !checkin.headline().ended
+    {
+        record.push("this server", Cell::status("Check-in stopped", Tone::Bad));
+        record.push(
+            "reason",
+            "The check-in loop isn't running. Start it with `sudo systemctl start ployz-checkin`.",
+        );
+        record.push(
+            "checked in",
+            crate::checkin::ago(checkin.at, chrono::Utc::now()),
         );
     } else if let Some(ThisServer { checkin, .. }) = &status.this_server {
         let crate::checkin::Headline {
@@ -1156,11 +1181,25 @@ mod tests {
         "attempt": {"attemptId": "attempt-1", "stage": "publishing"}
     }"#;
 
+    /// The check-in record of a host still waiting for approval.
+    const WAITING: &str = r#"{
+        "answer": "wait",
+        "at": "2026-10-22T01:21:48Z",
+        "prep": {"docker": "ready", "zfs": "ready"},
+        "blockers": [],
+        "prepare_retries": 0
+    }"#;
+
     fn status_on(left: bool) -> String {
+        status_of(JOINED, left, false)
+    }
+
+    fn status_of(record: &str, left: bool, stopped: bool) -> String {
         let status = Status {
             this_server: Some(ThisServer {
-                checkin: serde_json::from_str(JOINED).unwrap(),
+                checkin: serde_json::from_str(record).unwrap(),
                 left,
+                stopped,
             }),
             identity: None,
             scope: Scope {
@@ -1189,5 +1228,23 @@ mod tests {
             "{}",
             status_on(false)
         );
+    }
+
+    #[test]
+    fn a_waiting_server_whose_check_in_loop_stopped_says_so() {
+        assert!(
+            status_of(WAITING, false, true).starts_with(
+                "this server = Check-in stopped\nreason = The check-in loop isn't running. Start it with `sudo systemctl start ployz-checkin`.\nchecked in = "
+            ),
+            "{}",
+            status_of(WAITING, false, true)
+        );
+        assert!(
+            status_of(WAITING, false, false)
+                .starts_with("this server = Waiting for approval\nchecked in = "),
+            "{}",
+            status_of(WAITING, false, false)
+        );
+        assert!(status_of(JOINED, false, true).starts_with("this server = Joined\n"));
     }
 }
