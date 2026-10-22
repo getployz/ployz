@@ -1,6 +1,6 @@
 import { generateKeyPairSync, sign } from "node:crypto";
 import { testConfigEnvironment } from "#/test/config-environment";
-import { loadOrganizationConnections } from "#/modules/machines/connections.server";
+import { loadOrganizationConnections, SERVER_REACH_TIMEOUT_MS } from "#/modules/machines/connections.server";
 import type { Client, ConnectOptions, EnrollmentAssignment, EnrollmentSnapshot, RuntimeWatchView } from "@ployz/sdk";
 import { registerRequestFromEnrollmentIdentity, rustMachineIdSchema } from "./enrollment";
 import { ConfigProvider, Effect, Exit, Layer, ManagedRuntime, Result, Schema } from "effect";
@@ -752,6 +752,34 @@ describe("organization enrollment coordinator", () => {
     expect(performance.now() - started).toBeLessThan(SESSION_CLOSE_CLUSTER_MS + 8_000);
     expect(fake.aborts.aborted().at(-1)).toBe(true);
   }, 30_000);
+
+  const cantReach = expect.objectContaining({
+    _tag: "Unavailable", userFacing: true, message: expect.stringContaining("through the relay or directly"),
+  });
+
+  it("answers a refresh Cloud can't reach with a retryable 503 that says why", async () => {
+    const fake = fakeSession(harness.database);
+    const attempt = await pendingFounder(fake);
+    await fake.coordinator.publish({ ...attempt, capability });
+    fake.connection.error = new Error("Server unreachable");
+    const refreshed = await fake.coordinator.publish({ ...attempt, capability: "ployz1:rotated" });
+    if (!Result.isFailure(refreshed)) throw new Error("Refresh succeeded without reaching the Machine");
+    expect(refreshed.failure).toEqual(cantReach);
+    expect(statusForPublicError(encodePublicError(refreshed.failure))).toBe(503);
+  });
+
+  it("answers a completion Cloud can't reach with a retryable 503 that says why, within its reach time", async () => {
+    const fake = fakeSession(harness.database);
+    const attempt = await pendingFounder(fake);
+    await fake.coordinator.publish({ ...attempt, capability });
+    fake.connection.beforeConnect = () => new Promise(() => {});
+    const started = performance.now();
+    const completed = await fake.coordinator.completeFounding(attempt);
+    expect(performance.now() - started).toBeLessThan(SERVER_REACH_TIMEOUT_MS + 2_000);
+    if (!Result.isFailure(completed)) throw new Error("Completion succeeded without reaching the Machine");
+    expect(completed.failure).toEqual(cantReach);
+    expect(statusForPublicError(encodePublicError(completed.failure))).toBe(503);
+  }, 45_000);
 
   const keyed = (key: number, secret = 0xee) => `ployz1:${Buffer.concat([Buffer.alloc(32, key), Buffer.alloc(32, secret)]).toString("base64url")}`;
 
