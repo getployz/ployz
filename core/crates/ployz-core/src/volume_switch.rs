@@ -318,6 +318,18 @@ impl SendStream {
         format!("{}{}?{query}", Self::PATH_PREFIX, self.name)
     }
 
+    /// [`Self::path_and_query`] fit to print or store: a resume token reads `token=…`,
+    /// so it never lands in a run's message, the CLI or a log.
+    #[must_use]
+    pub fn shown(&self) -> String {
+        match &self.source {
+            SendSource::Resume { target, .. } => {
+                format!("{}{}?target={target}&token=…", Self::PATH_PREFIX, self.name)
+            }
+            SendSource::Full { .. } | SendSource::Incremental { .. } => self.path_and_query(),
+        }
+    }
+
     /// Reads a request path and query; `None` when it names no stream this Machine can send.
     ///
     /// Values are a Volume name, a snapshot name, a GUID or a ZFS resume token, none of
