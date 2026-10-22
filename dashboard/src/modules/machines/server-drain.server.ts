@@ -94,12 +94,13 @@ const enqueueDrain = (row: DrainAttemptRow) =>
   enqueueEvent(createServerDrainRequestedEvent({ attemptId: row.id, organizationId: row.organizationId, machineId: row.machineId }));
 
 /**
- * Drain on a Server page: any member may, and confirming it is their approval, so a plan that now stops a Service the
- * dialog didn't show as stopping is refused. The admitted Drain's row takes the id
+ * Drain on a Server page: an owner or admin may, and confirming it is their approval, so a plan that now stops a Service
+ * the dialog didn't show as stopping is refused. The admitted Drain's row takes the id
  * the tab minted and is written with its run's event, so the same request again returns it. A click while another
  * Drain is active on the Server returns that one.
  */
 export const requestServerDrain = Effect.fn("ServerDrain.request")(function* (caller: Caller, input: RequestServerDrainInput) {
+  yield* requireAccess(caller, caller.organization.slug, "servers:operate");
   const organizationId = caller.organization.id;
   const database = yield* Database;
   const sameOrActive = Effect.fn(function* () {
