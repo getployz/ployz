@@ -293,7 +293,11 @@ export const nameLostVolumes = Effect.fn("ServerOperations.nameLostVolumes")(fun
   organizationId: string,
   lost: readonly DataLossIdentity[],
 ) {
-  const owners = new Map((yield* volumeOwners(organizationId, lost)).map((owner) => [owner.dockerName, owner]));
+  // Names only label what the Server answered; a Config Store that can't be read leaves the Docker names, not no list.
+  const found = yield* volumeOwners(organizationId, lost).pipe(
+    Effect.catch((error) => Effect.logWarning("Could not name lost volumes.", { error }).pipe(Effect.as([]))),
+  );
+  const owners = new Map(found.map((owner) => [owner.dockerName, owner]));
   return lost.map(({ id: { name: docker } }): LostVolumeName => {
     const owner = owners.get(docker);
     if (owner !== undefined) return { docker, name: owner.volume, detail: `${owner.project}/${owner.environment}` };
