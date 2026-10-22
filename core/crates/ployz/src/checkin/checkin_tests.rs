@@ -2595,3 +2595,37 @@ fn checkin_state_stays_out_of_the_daemon_data_dir() {
         );
     }
 }
+
+fn waiting_record() -> LocalCheckin {
+    serde_json::from_str(r#"{"answer": "wait", "at": "2026-10-22T01:21:48Z"}"#).unwrap()
+}
+
+#[test]
+fn status_tells_a_stopped_loop_only_from_a_record_its_locked_writer_left() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = paths(&dir);
+    // A loop older than the lock never made it, so nothing is claimed.
+    assert!(!loop_stopped(&paths.checkin_dir));
+    let running = hold_loop(&paths).unwrap().expect("no other loop holds it");
+    record(&waiting_record(), &paths);
+    assert!(!loop_stopped(&paths.checkin_dir));
+    // A second loop doesn't wait behind the first; it learns one already runs.
+    assert!(hold_loop(&paths).unwrap().is_none());
+    drop(running);
+    assert!(loop_stopped(&paths.checkin_dir));
+    // A record written without the lock, by an older loop or one that couldn't take it, claims nothing.
+    record(&waiting_record(), &paths);
+    assert!(!loop_stopped(&paths.checkin_dir));
+}
+
+#[test]
+fn only_root_can_take_the_check_in_loop_lock() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = paths(&dir);
+    drop(hold_loop(&paths).unwrap());
+    let mode = fs::metadata(paths.checkin_dir.join("loop.lock"))
+        .unwrap()
+        .permissions()
+        .mode();
+    assert_eq!(mode & 0o777, 0o600);
+}
