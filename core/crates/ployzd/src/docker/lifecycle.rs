@@ -113,13 +113,11 @@ impl ContainerRuntime {
             admission,
             storage,
         } = request;
-        let reserved_name =
-            creation_key.map(|key| creation_name(&machine.id, namespace, &spec.name, kind, key));
-        if let (Some(name), Some(key)) = (&reserved_name, creation_key) {
+        if let Some(key) = creation_key {
             // Wait for an in-flight create to persist its spec before comparing a retry.
-            let _operation = self.specs.config_operation().await;
+            let mut operation = self.specs.config_operation().await;
             if let Some(existing) = self
-                .matching_creation(machine, namespace, kind, spec, name, key)
+                .matching_creation(&mut operation, machine, namespace, kind, spec, key)
                 .await
                 .map_err(E::from)?
             {
@@ -214,9 +212,9 @@ impl ContainerRuntime {
         }
         let mut config_operation = self.specs.config_operation().await;
         // Another request may have won while admission and image preparation ran.
-        if let (Some(name), Some(key)) = (&reserved_name, creation_key)
+        if let Some(key) = creation_key
             && let Some(existing) = self
-                .matching_creation(machine, namespace, kind, spec, name, key)
+                .matching_creation(&mut config_operation, machine, namespace, kind, spec, key)
                 .await?
         {
             return Ok(existing);
@@ -242,11 +240,11 @@ impl ContainerRuntime {
                             if let Some(key) = creation_key {
                                 return self
                                     .matching_creation(
+                                        &mut config_operation,
                                         machine,
                                         namespace,
                                         kind,
                                         spec,
-                                        &display_name,
                                         key,
                                     )
                                     .await?
@@ -328,10 +326,9 @@ impl ContainerRuntime {
         spec: &ResolvedServiceSpec,
         key: &str,
     ) -> Result<Option<ContainerCreated>, Error> {
-        let name = creation_name(&machine.id, namespace, &spec.name, kind, key);
         // Wait for an in-flight create to persist its spec, as a create does before comparing.
-        let _operation = self.specs.config_operation().await;
-        self.matching_creation(machine, namespace, kind, spec, &name, key)
+        let mut operation = self.specs.config_operation().await;
+        self.matching_creation(&mut operation, machine, namespace, kind, spec, key)
             .await
     }
 
@@ -339,23 +336,27 @@ impl ContainerRuntime {
     /// store's config lock, so no create is between Docker's create and its spec's write.
     async fn matching_creation(
         &self,
+        operation: &mut ConfigOperation<'_>,
         machine: &Machine,
         namespace: &Namespace,
         kind: ContainerKind,
         spec: &ResolvedServiceSpec,
-        name: &str,
         key: &str,
     ) -> Result<Option<ContainerCreated>, Error> {
+        let name = &creation_name(&machine.id, namespace, &spec.name, kind, key);
         let existing = match self.keyed_container(&machine.id, name, key).await {
-            Ok(Some(existing)) => existing,
-            Ok(None) => return Ok(None),
-            // A daemon killed between Docker's create and the spec's write left it. Only a
-            // Container never started is made again: a start needs the spec.
-            Err(Error::SpecNotFound(container_id)) if self.never_started(&container_id).await? => {
+            Err(Error::SpecNotFound(container_id))
+                if self.half_made(operation, &container_id).await? =>
+            {
                 self.force_remove_container(&container_id).await?;
                 return Ok(None);
             }
-            Err(error) => return Err(error),
+            // A restore's Container now holds the records it took over.
+            Err(Error::SpecNotFound(_)) => self.keyed_container(&machine.id, name, key).await,
+            found => found,
+        }?;
+        let Some(existing) = existing else {
+            return Ok(None);
         };
         if !same_creation(&existing, namespace, kind, spec) {
             return Err(Error::SlotNameOccupied(name.into()));
@@ -373,14 +374,31 @@ impl ContainerRuntime {
         &self,
         container_id: &ContainerId,
     ) -> Result<bool, Error> {
-        let _operation = self.specs.config_operation().await;
-        if self.specs.get(container_id).await?.is_some()
-            || !self.never_started(container_id).await?
-        {
+        let mut operation = self.specs.config_operation().await;
+        if !self.half_made(&mut operation, container_id).await? {
             return Ok(false);
         }
         self.force_remove_container(container_id).await?;
         Ok(true)
+    }
+
+    /// Whether a daemon killed between Docker's create and the spec's write left
+    /// `container_id`. A restore also makes a Container with no spec under its ID, so
+    /// its slot's old records are adopted first. Only a Container never started counts:
+    /// a start needs the spec.
+    async fn half_made(
+        &self,
+        operation: &mut ConfigOperation<'_>,
+        container_id: &ContainerId,
+    ) -> Result<bool, Error> {
+        for (old, new) in operation
+            .adopt_restored(self.managed_slots().await?)
+            .await?
+        {
+            eprintln!("adopted restored container {new}, which replaces {old}");
+        }
+        Ok(self.specs.get(container_id).await?.is_none()
+            && self.never_started(container_id).await?)
     }
 
     /// Whether Docker never ran the Container. One already gone ran nothing either.
@@ -406,14 +424,17 @@ impl ContainerRuntime {
     ) -> Result<Option<ContainerObservation>, Error> {
         let key = slot.creation_key.as_str();
         let name = creation_name(machine_id, &slot.namespace, &slot.service, slot.kind, key);
-        match self.keyed_container(machine_id, &name, key).await {
-            // A crash between Docker's create and the spec's write left it; the create
-            // that follows makes it again, or adopts it once an in-flight create's spec lands.
-            Err(Error::SpecNotFound(container_id)) if self.never_started(&container_id).await? => {
-                Ok(None)
-            }
-            found => found,
+        let container_id = match self.keyed_container(machine_id, &name, key).await {
+            Err(Error::SpecNotFound(container_id)) => container_id,
+            found => return found,
+        };
+        // Under the lock no create is between Docker's create and its spec's write.
+        let mut operation = self.specs.config_operation().await;
+        if self.half_made(&mut operation, &container_id).await? {
+            // The create that follows makes it again.
+            return Ok(None);
         }
+        self.keyed_container(machine_id, &name, key).await
     }
 
     async fn keyed_container(

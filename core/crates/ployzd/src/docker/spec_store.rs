@@ -1024,7 +1024,10 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(store.get(&restored).await.unwrap(), Some(copy.spec));
-        assert_eq!(store.rotation(&restored).await.unwrap(), Some(copy.rotation));
+        assert_eq!(
+            store.rotation(&restored).await.unwrap(),
+            Some(copy.rotation)
+        );
     }
 
     #[tokio::test]
