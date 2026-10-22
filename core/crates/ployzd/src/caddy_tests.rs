@@ -1378,6 +1378,10 @@ impl CaddyAdmin for FakeAdmin {
             Ok(())
         }
     }
+
+    async fn loaded_certificates(&self) -> Result<std::collections::BTreeSet<String>, Error> {
+        Ok(std::collections::BTreeSet::new())
+    }
 }
 
 fn ingress(hostname: &str, port: u16, http_protocol: HttpProtocol) -> PortPublication {

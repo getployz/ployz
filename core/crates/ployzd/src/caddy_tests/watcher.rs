@@ -1971,6 +1971,7 @@ async fn caddy_refusing_one_certificate_still_applies_every_other_route() {
     let admin = RefusingAdmin {
         refused: "https://bad.example.com {",
         loads: load_tx,
+        running: Arc::default(),
     };
     let (route_publishes, mut published) =
         tokio::sync::watch::channel(crate::ingress::PublishedRoutes::default());
@@ -2092,6 +2093,7 @@ async fn a_write_without_an_admin_pins_only_certificates_caddy_loaded() {
     let admin = RefusingAdmin {
         refused: "https://bad.example.com {",
         loads: load_tx,
+        running: Arc::default(),
     };
     let admin_up = Arc::new(AtomicBool::new(true));
     let caddyfile = directory.join(CONFIG_FILE);
@@ -2129,6 +2131,73 @@ async fn a_write_without_an_admin_pins_only_certificates_caddy_loaded() {
     assert!(!written.contains("https://bad.example.com {"), "{written}");
     assert!(!written.contains("https://new.example.com {"), "{written}");
     assert!(load_rx.try_recv().is_err());
+
+    shutdown.cancel();
+    watcher.await.unwrap().unwrap();
+    server.abort();
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[tokio::test]
+async fn a_restart_beside_a_refused_certificate_never_drops_what_caddy_serves() {
+    let WatcherFixture {
+        machine,
+        state,
+        address,
+        server,
+        directory,
+    } = watcher_fixture().await;
+    state.mutate(|parts| {
+        parts.resolved_spec.ports = vec![ingress("good.example.com", 8443, HttpProtocol::Https)];
+    });
+    state.containers.lock().unwrap().push(observation(
+        4,
+        &machine.id,
+        "web",
+        Some([10, 210, 1, 5]),
+        vec![ingress("bad.example.com", 8443, HttpProtocol::Https)],
+    ));
+    let good = material("good.example.com");
+    let stem = crate::ingress::certificate_file_stem(
+        &ployz_core::IngressHost::parse("good.example.com").unwrap(),
+        &good,
+    );
+    state.write_certificates(&[
+        ("bad.example.com", material_body("bad.example.com")),
+        (
+            "good.example.com",
+            CertificateRow::from_parts(Some((good, ployz_core::ClusterRoute::Direct)), None)
+                .encode()
+                .unwrap(),
+        ),
+    ]);
+    let (load_tx, mut load_rx) = mpsc::unbounded_channel();
+    let admin = RefusingAdmin {
+        refused: "https://bad.example.com {",
+        loads: load_tx,
+        running: Arc::new(Mutex::new(format!(
+            "https://good.example.com {{\n\ttls /config/caddy/certs/{stem}.crt /config/caddy/certs/{stem}.key\n}}\n"
+        ))),
+    };
+    let caddyfile = directory.join(CONFIG_FILE);
+    let shutdown = CancellationToken::new();
+    let watcher = tokio::spawn(watch_caddy(
+        machine,
+        ReplicatedStore::new(ApiClient::http1(address, &"a".repeat(64)).unwrap()),
+        no_down,
+        caddyfile.clone(),
+        tokio::sync::watch::channel(Default::default()).0,
+        shutdown.clone(),
+        move || std::future::ready(Ok(Some(admin.clone()))),
+    ));
+
+    wait_for_caddyfile(&caddyfile, "# - bad.example.com: Caddy refused").await;
+    let mut loads = 0;
+    while let Ok(loaded) = load_rx.try_recv() {
+        assert!(loaded.contains("https://good.example.com {"), "{loaded}");
+        loads += 1;
+    }
+    assert!(loads > 0);
 
     shutdown.cancel();
     watcher.await.unwrap().unwrap();
@@ -2252,6 +2321,7 @@ async fn watcher_fixture() -> WatcherFixture {
 struct RefusingAdmin {
     refused: &'static str,
     loads: mpsc::UnboundedSender<String>,
+    running: Arc<Mutex<String>>,
 }
 
 impl CaddyAdmin for RefusingAdmin {
@@ -2265,8 +2335,24 @@ impl CaddyAdmin for RefusingAdmin {
                 "loading certificates: x509: negative serial number".into(),
             ));
         }
+        *self.running.lock().unwrap() = caddyfile.to_owned();
         self.loads.send(caddyfile.to_owned()).unwrap();
         Ok(())
+    }
+
+    async fn loaded_certificates(&self) -> Result<BTreeSet<String>, CaddyError> {
+        Ok(self
+            .running
+            .lock()
+            .unwrap()
+            .lines()
+            .filter_map(|line| {
+                let (stem, _) = line
+                    .strip_prefix("\ttls /config/caddy/certs/")?
+                    .split_once(".crt ")?;
+                Some(stem.to_owned())
+            })
+            .collect())
     }
 }
 
@@ -2291,6 +2377,10 @@ impl CaddyAdmin for TestAdmin {
         self.loads.send(caddyfile).unwrap();
         Ok(())
     }
+
+    async fn loaded_certificates(&self) -> Result<BTreeSet<String>, CaddyError> {
+        Ok(BTreeSet::new())
+    }
 }
 
 #[derive(Clone)]
@@ -2310,6 +2400,10 @@ impl CaddyAdmin for RetryAdmin {
         }
         self.loads.send(()).unwrap();
         Ok(())
+    }
+
+    async fn loaded_certificates(&self) -> Result<BTreeSet<String>, CaddyError> {
+        Ok(BTreeSet::new())
     }
 }
 
