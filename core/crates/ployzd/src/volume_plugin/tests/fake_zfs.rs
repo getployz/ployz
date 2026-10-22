@@ -275,7 +275,10 @@ case "$*" in
   'create -o canmount=off -o mountpoint=/var/lib/ployz-volumes tank/ployz') touch '{root}' ;;
   'create -o refquota=1 tank/ployz/data') touch '{volume}' ;;
   'create -o refquota=1073741824 tank/ployz/data') touch '{volume}' ;;
-  'create -o canmount=off -o mountpoint=/var/lib/ployz-mirror -o readonly=on tank/ployz-mirror') touch '{mirror_root}' ;;
+  'create -o canmount=off -o mountpoint=/var/lib/ployz-mirror -o readonly=on tank/ployz-mirror')
+    if exists tank/ployz-mirror; then echo "cannot create 'tank/ployz-mirror': dataset already exists" >&2; exit 1; fi
+    touch '{mirror_root}'
+    ;;
   'create -o canmount=off -o readonly=on -o refquota='*' tank/ployz-mirror/data')
     if [ -e '{mirror}' ]; then echo "cannot create 'tank/ployz-mirror/data': dataset already exists" >&2; exit 1; fi
     touch '{mirror}'

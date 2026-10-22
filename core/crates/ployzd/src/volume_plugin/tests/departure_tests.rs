@@ -527,6 +527,25 @@ async fn departure_leaves_a_root_beside_a_slot_that_holds_a_copy_and_demotes_the
     server.abort();
 }
 
+/// The first root's demote makes the mirror root, so the next must not make it again (#3047).
+#[tokio::test]
+async fn departure_of_two_roots_makes_the_mirror_root_once() {
+    for route in ["/Storage.Demote", "/Storage.Seal"] {
+        let test = TestDir::new();
+        let (socket, server) = start(&test, USABLE_POOL, &["root", "volume", "seed-volume"]);
+
+        let response = post(&socket, route, json!(null)).await;
+        assert_eq!(
+            response,
+            json!({"Ok": {"demoted": ["data", "seed"], "stuck": [], "failed": []}}),
+            "{route}"
+        );
+        assert!(test.0.join("mirror-fs").exists(), "{route}");
+        assert!(test.0.join("seed-fs").exists(), "{route}");
+        server.abort();
+    }
+}
+
 /// A Volume whose demote fails after another was demoted still answers that one, so the
 /// daemon forgets it: a retry judges it departed and answers nothing for it.
 #[tokio::test]
