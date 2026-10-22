@@ -204,7 +204,7 @@ const resolveVerifyOrigin = Effect.fn("Config.resolveVerifyOrigin")(function* (
   const bare = `${origin.origin}/`;
   if ((origin.protocol !== "http:" && origin.protocol !== "https:") || origin.href !== bare) {
     return yield* new InvalidConfiguration({
-      message: `${name} must be an http(s) origin with no path, query or credentials, like http://127.0.0.1:4555, not ${origin.href}`,
+      message: `${name} must be an http(s) origin with no path, query or credentials, like http://127.0.0.1:4555`,
     });
   }
   yield* Effect.logInfo(`${name} ${origin.origin}`);
@@ -283,8 +283,9 @@ export const startupConfigFailure = (env?: Record<string, string>): string | und
   const exit = Effect.runSyncExit(makeAppConfig.pipe(Effect.provideService(ConfigProvider.ConfigProvider, provider)));
   if (Exit.isSuccess(exit)) return undefined;
   const error = Cause.squash(exit.cause);
-  const detail = error instanceof Config.ConfigError || error instanceof InvalidConfiguration ? error.message : String(error);
-  return `Invalid configuration. Fix these environment variables (.env for a Self-hosted Cloud):\n${detail}`;
+  // Anything else is this check's own failure, not the environment's; the runtime reports it on first use.
+  if (!(error instanceof Config.ConfigError || error instanceof InvalidConfiguration)) return undefined;
+  return `Invalid configuration. Fix these environment variables:\n${error.message}`;
 };
 
 export class AppConfig extends Context.Service<AppConfig>()("ployz/AppConfig", {

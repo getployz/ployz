@@ -225,6 +225,16 @@ describe("startupConfigFailure", () => {
     assert.notInclude(report, "short-secret-value");
   });
 
+  it("never prints a rejected URL's credentials", () => {
+    const report = startupConfigFailure({
+      ...requiredEnvironment,
+      NODE_ENV: "development",
+      PLOYZ_VERIFY_GITHUB_ORIGIN: "http://user:hunter2-password@127.0.0.1:4555",
+    });
+    assert.include(report, "PLOYZ_VERIFY_GITHUB_ORIGIN");
+    assert.notInclude(report, "hunter2-password");
+  });
+
   it("names a partial set's variables", () => {
     const report = startupConfigFailure({ ...requiredEnvironment, ...without(postShibaMail, "MAIL_FROM") });
     assert.include(report, "MAIL_FROM");
