@@ -1013,6 +1013,91 @@ mod tests {
         );
     }
 
+    /// A keyed create whose spec never reached `machine.db`, as a daemon killed between
+    /// Docker's create and the spec's write leaves it, and the request to create it again.
+    async fn half_made(
+        status: &str,
+    ) -> (
+        ContainerRuntime,
+        std::sync::Arc<std::sync::Mutex<std::collections::BTreeMap<String, serde_json::Value>>>,
+        ContainerId,
+        Result<ContainerCreated, Error>,
+    ) {
+        let containers =
+            std::sync::Arc::new(std::sync::Mutex::new(std::collections::BTreeMap::new()));
+        let (runtime, _fake) = fake_runtime_with(FakeDocker {
+            named_containers: Some(containers.clone()),
+            ..Default::default()
+        })
+        .await;
+        let machine = machine();
+        let namespace = Namespace::parse("app").unwrap();
+        let spec = spec_with_sources(Vec::new());
+        let request = || ContainerRequest {
+            creation_key: Some("plan:0"),
+            ..container_request(
+                ContainerKind::ServiceContainer,
+                &namespace,
+                &spec,
+                std::future::ready(None),
+            )
+        };
+        let first = runtime
+            .create_with_admission::<_, _, Error>(&machine, request())
+            .await
+            .unwrap();
+        runtime
+            .specs
+            .config_operation()
+            .await
+            .remove(&first.container_id)
+            .await
+            .unwrap();
+        for container in containers.lock().unwrap().values_mut() {
+            container["State"] = serde_json::json!({ "Status": status });
+        }
+        let again = runtime
+            .create_with_admission::<_, _, Error>(&machine, request())
+            .await;
+        (runtime, containers, first.container_id, again)
+    }
+
+    #[tokio::test]
+    async fn a_create_resent_after_a_crash_left_its_container_without_a_spec_makes_it_again() {
+        let (runtime, containers, lost, again) = half_made("created").await;
+        let made = again.expect("the resend creates the Container again");
+        assert_ne!(made.container_id, lost);
+        let ids = containers
+            .lock()
+            .unwrap()
+            .values()
+            .map(|container| container["Id"].as_str().unwrap().to_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            ids,
+            vec![made.container_id.to_string()],
+            "the half-made Container is gone, so nothing is left bound to its Volumes"
+        );
+        assert!(
+            runtime
+                .specs
+                .get(&made.container_id)
+                .await
+                .unwrap()
+                .is_some()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_running_container_without_a_spec_is_never_removed_to_create_again() {
+        let (_runtime, containers, lost, again) = half_made("running").await;
+        assert!(
+            matches!(again, Err(Error::SpecNotFound(id)) if id == lost),
+            "{again:?}"
+        );
+        assert_eq!(containers.lock().unwrap().len(), 1);
+    }
+
     async fn stranded(error: &str) -> (ContainerRuntime, FakeDocker, ContainerId) {
         stranded_with("created", error, FakeDocker::default()).await
     }
