@@ -1151,6 +1151,7 @@ impl MachineState {
             address: None,
             labels,
             stopped: false,
+            run: None,
         })
         .map_err(internal)
     }

@@ -872,6 +872,7 @@ fn observation(
         address: address.map(|octets| ContainerAddress(octets.into())),
         labels: BTreeMap::new(),
         stopped: false,
+        run: None,
     })
     .unwrap()
 }

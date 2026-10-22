@@ -4,16 +4,17 @@
 //! could not see is a warning, never an all-clear.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::time::{Duration, SystemTime};
 
 use clap::ArgMatches;
 use futures_util::{StreamExt, stream};
 use ipnet::Ipv4Net;
 use ployz_core::{
-    ContainerAddress, ContainerId, ContainerObservation, ContainerRuntimeObservation, CopyRotation,
-    EnvironmentValues, LiveServices, MachineId, MachineName, MachineObservation, MachineTarget,
-    MembershipObservation, Namespace, QualifiedService, ReadRoutedAddressesRequest,
+    ContainerAddress, ContainerId, ContainerObservation, ContainerRun, ContainerRuntimeObservation,
+    CopyRotation, EnvironmentValues, LiveServices, MachineId, MachineName, MachineObservation,
+    MachineTarget, MembershipObservation, Namespace, QualifiedService, ReadRoutedAddressesRequest,
     RoutedAddresses, RoutesRead, RpcError, RpcErrorCode, ServiceContainer, ServiceMode,
-    ServiceName, ServiceObservation, Unacked, op, serving_containers,
+    ServiceName, ServiceObservation, ServingContainer, Unacked, op, serving_containers,
 };
 use ployz_store::{DeploymentStatus, DeploymentSummary};
 use serde::Serialize;
@@ -29,7 +30,10 @@ pub(super) const UNCHECKED: &str =
 
 const READS_AT_ONCE: usize = 8;
 /// A routed-address read answers from memory. A slow one warns rather than holding up the listing.
-const ROUTED_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+const ROUTED_READ_TIMEOUT: Duration = Duration::from_secs(3);
+/// Docker's restart policy counts a run shorter than this as a failed start, so a copy it
+/// restarted less than this long ago has not shown that it stays up.
+const RESTART_SETTLE: Duration = Duration::from_secs(10);
 
 #[derive(Serialize)]
 #[serde(untagged)]
@@ -68,6 +72,8 @@ pub(super) struct NotServingCopy {
     container: ContainerId,
     rotation: CopyRotation,
     runtime: ContainerRuntimeObservation,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    run: Option<ContainerRun>,
 }
 
 /// `deployed` maps each deployed Service's name to the name its containers carry, and
@@ -97,9 +103,14 @@ pub(super) fn attention(
         });
     match observed {
         Ok(Some(observed)) => {
-            let check = judge(observed, namespace, deployed, authored, |words| {
-                super::store::next(leaf, words)
-            });
+            let check = judge(
+                observed,
+                namespace,
+                SystemTime::now(),
+                deployed,
+                authored,
+                |words| super::store::next(leaf, words),
+            );
             check.warn();
             check.attention
         }
@@ -293,6 +304,7 @@ impl<Fact: PartialEq> ServicesByFact<Fact> {
 fn judge(
     observed: Observed,
     namespace: &Namespace,
+    now: SystemTime,
     deployed: &BTreeMap<ServiceName, ServiceName>,
     authored: Option<&BTreeSet<ServiceName>>,
     next: impl Fn(&[&str]) -> String,
@@ -378,7 +390,7 @@ fn judge(
         }
     }
     for service in services {
-        if let Some(short) = check.not_serving(service, &down, complete, &next) {
+        if let Some(short) = check.not_serving(service, &down, complete, now, &next) {
             check.attention.push(short);
         }
     }
@@ -649,13 +661,30 @@ fn service_names(services: &[QualifiedService]) -> String {
         .join(", ")
 }
 
+/// How long a running copy Docker's restart policy restarted has been up, while that is
+/// under [`RESTART_SETTLE`] by `now`. A crash-looping copy reads running between its
+/// crashes. `StartedAt` is on the copy's Machine's clock and `now` on this one, so skew
+/// shifts the window: a start after `now` counts as settled rather than just restarted.
+fn just_restarted(copy: &ContainerObservation, now: SystemTime) -> Option<(i64, Duration)> {
+    if !matches!(copy.runtime, ContainerRuntimeObservation::Running { .. }) {
+        return None;
+    }
+    let run = copy.run.as_ref().filter(|run| run.restart_count > 0)?;
+    let started = SystemTime::UNIX_EPOCH
+        + Duration::from_nanos(u64::try_from(run.started_at_unix_nanos).ok()?);
+    let up = now.duration_since(started).ok()?;
+    (up < RESTART_SETTLE).then_some((run.restart_count, up))
+}
+
 /// An Out copy still running stands in for a missing In copy only when every copy was
 /// seen, so a partial list never names a copy as draining. Each Held copy cancels one Out
-/// stand-in, never an In copy, so a restart beside a leftover Out copy raises no row.
+/// stand-in, never an In copy, so a restart beside a leftover Out copy raises no row. A
+/// copy Docker just restarted does not count as serving.
 fn shortfall<'service>(
     service: &'service ServiceObservation,
     down: &BTreeSet<MachineId>,
     complete: bool,
+    now: SystemTime,
 ) -> Option<(usize, usize, Vec<&'service ContainerObservation>)> {
     let up: Vec<&ServiceContainer> = service
         .containers
@@ -664,7 +693,9 @@ fn shortfall<'service>(
         .collect();
     let serving: BTreeSet<ContainerId> = serving_containers(up.iter().copied())
         .iter()
-        .map(|serving| serving.as_observation().container_id)
+        .map(ServingContainer::as_observation)
+        .filter(|serving| just_restarted(serving, now).is_none())
+        .map(|serving| serving.container_id)
         .collect();
     let held = up
         .iter()
@@ -722,16 +753,24 @@ impl Check {
         service: ServiceObservation,
         down: &BTreeSet<MachineId>,
         complete: bool,
+        now: SystemTime,
         next: impl Fn(&[&str]) -> String,
     ) -> Option<Attention> {
-        let (serving, wanted, kept) = shortfall(&service, down, complete)?;
+        let (serving, wanted, kept) = shortfall(&service, down, complete, now)?;
         let states: Vec<String> = kept
             .iter()
             .map(|copy| {
                 let words = match copy.rotation() {
                     CopyRotation::Out => "draining".to_owned(),
                     CopyRotation::In | CopyRotation::Pending | CopyRotation::Held(_) => {
-                        super::service::process_state(copy)
+                        match just_restarted(copy, now) {
+                            Some((restarts, up)) => format!(
+                                "restarted {restarts} {}, up {} s",
+                                if restarts == 1 { "time" } else { "times" },
+                                up.as_secs()
+                            ),
+                            None => super::service::process_state(copy),
+                        }
                     }
                 };
                 format!("{} {words}", self.name(&copy.machine_id))
@@ -763,6 +802,7 @@ impl Check {
                         container: copy.container_id,
                         rotation: copy.rotation().clone(),
                         runtime: copy.runtime.clone(),
+                        run: copy.run.clone(),
                     })
                     .collect(),
             }),

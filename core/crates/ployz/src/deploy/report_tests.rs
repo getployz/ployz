@@ -736,6 +736,7 @@ fn moving_off_an_old_hook() -> DeployPreview {
             address: None,
             labels: Default::default(),
             stopped: false,
+            run: None,
         })
         .unwrap()
     };

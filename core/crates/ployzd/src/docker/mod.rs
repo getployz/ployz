@@ -840,6 +840,7 @@ impl ContainerRuntime {
                     .map(|(key, value)| (key.clone(), value.clone()))
                     .collect(),
                 stopped,
+                run: run.clone(),
             })?;
         let oom_killed = inspected
             .state
@@ -1074,7 +1075,7 @@ fn container_run(inspected: &RawContainerInspect) -> Option<ployz_core::Containe
     let started = started_at(inspected.state.as_ref())?;
     Some(ployz_core::ContainerRun {
         restart_count: inspected.restart_count.unwrap_or_default(),
-        started_at_unix_nanos: started.timestamp_nanos_opt().unwrap_or_default(),
+        started_at_unix_nanos: started.timestamp_nanos_opt()?,
     })
 }
 
@@ -2539,6 +2540,8 @@ mod tests {
         assert_ne!(first, run(1, "2026-10-05T11:00:00.1Z"));
         assert_ne!(first, run(0, "2026-10-05T11:00:00.2Z"));
         assert_eq!(first, run(0, "2026-10-05T11:00:00.1Z"));
+        // Docker reports a container that never started with the zero time.
+        assert_eq!(run(0, "0001-01-01T00:00:00Z"), None);
     }
 
     fn inspect_json() -> serde_json::Value {

@@ -404,6 +404,7 @@ impl JoinDaemon {
                         address: None,
                         labels: Default::default(),
                         stopped: false,
+                        run: None,
                     })
                     .unwrap();
                 containers.push(container.clone());
@@ -1037,6 +1038,7 @@ pub fn ingress_on(machine: &Machine) -> ContainerObservation {
         address: None,
         labels: Default::default(),
         stopped: false,
+        run: None,
     })
     .unwrap()
 }

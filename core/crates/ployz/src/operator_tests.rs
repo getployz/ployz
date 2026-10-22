@@ -1113,6 +1113,7 @@ fn container_on(
         address: None,
         labels: Default::default(),
         stopped: false,
+        run: None,
     })
     .unwrap()
 }

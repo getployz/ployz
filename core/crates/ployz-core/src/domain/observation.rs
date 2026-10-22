@@ -262,6 +262,11 @@ pub struct ContainerObservationParts {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     #[ts(optional, as = "Option<bool>")]
     pub stopped: bool,
+    /// Which run of the Container this observation saw. `None` from older daemons and
+    /// for a Container that never started.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional = nullable)]
+    pub run: Option<crate::ContainerRun>,
 }
 
 /// A coherent observation of one managed Container, retaining its historical spec.
@@ -1043,6 +1048,7 @@ mod tests {
             address: None,
             labels: BTreeMap::new(),
             stopped: false,
+            run: None,
         })
         .unwrap()
     }

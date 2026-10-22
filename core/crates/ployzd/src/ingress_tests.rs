@@ -137,6 +137,7 @@ mod rule_f {
             address: Some(ContainerAddress([10, 210, suffix, 2].into())),
             labels: BTreeMap::new(),
             stopped: false,
+            run: None,
         })
         .unwrap()
     }
