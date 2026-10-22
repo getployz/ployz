@@ -304,11 +304,7 @@ pub fn exec(root: &ArgMatches) -> Result<(), Error> {
         ServiceSelector::parse(typed.clone())?,
         scope(root)?.as_ref(),
     )?;
-    let scope_flags: Vec<(&str, String)> = ["project", "env"]
-        .into_iter()
-        .filter(|id| leaf.value_source(id) == Some(ValueSource::CommandLine))
-        .filter_map(|id| Some((id, leaf.get_one::<String>(id)?.clone())))
-        .collect();
+    let scope_flags = typed_scope(leaf);
     let container = leaf
         .get_one::<String>("container")
         .filter(|selector| !selector.is_empty())
@@ -382,8 +378,19 @@ pub fn exec(root: &ArgMatches) -> Result<(), Error> {
     })
 }
 
+/// The flags typed on the command line that chose where the command ran. Values from the
+/// environment are left out, since they still apply to a command run from the same shell.
+fn typed_scope(leaf: &ArgMatches) -> Vec<(&'static str, String)> {
+    ["context", "connect", "project", "env"]
+        .into_iter()
+        .filter(|id| leaf.value_source(id) == Some(ValueSource::CommandLine))
+        .filter_map(|id| Some((id, leaf.get_one::<String>(id)?.clone())))
+        .collect()
+}
+
 /// The `ployz exec` that runs `command` again as it was typed: the Service by the name the
-/// user gave, `-T` when they asked for no terminal, and the Project and Environment they named.
+/// user gave, `-T` when they asked for no terminal, and the context, connection, Project and
+/// Environment they named.
 /// No container: the retry attaches to whichever of the Service's containers runs.
 fn exec_again(service: &str, no_tty: bool, scope: &[(&str, String)], command: &[String]) -> String {
     let mut words = vec!["ployz".to_owned(), "exec".to_owned()];
@@ -1315,6 +1322,32 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_retry_keeps_the_typed_flags_that_chose_where_the_command_ran() {
+        let leaf = exec_command(Command::new("exec"))
+            .try_get_matches_from([
+                "exec",
+                "-c",
+                "staging",
+                "--connect",
+                "ops",
+                "--env",
+                "production",
+                "web",
+                "--",
+                "true",
+            ])
+            .unwrap();
+        assert_eq!(
+            typed_scope(&leaf),
+            [
+                ("context", "staging".to_owned()),
+                ("connect", "ops".to_owned()),
+                ("env", "production".to_owned()),
+            ]
+        );
+    }
+
+    #[test]
     fn the_retry_after_a_stopped_container_runs_the_same_command_again() {
         let scope = [
             ("project", "a--b".to_owned()),
@@ -1334,6 +1367,15 @@ mod tests {
             "ployz exec web -- sh -c 'echo hi'"
         );
         assert_eq!(exec_again("web", false, &[], &[]), "ployz exec web");
+        assert_eq!(
+            exec_again(
+                "web",
+                false,
+                &[("context", "staging".to_owned())],
+                &["--".to_owned(), "-T".to_owned()]
+            ),
+            "ployz exec web --context staging -- -- -T"
+        );
     }
 
     #[tokio::test]
