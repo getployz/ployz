@@ -220,6 +220,8 @@ If you run a beta, pick the newest release marked **Pre-release**. Don't use `re
 here: it's the newest stable release, so it would move a beta back to an older release.
 If the database contains migrations the image does not ship, `db:migrate`, `web`, and `worker`
 refuse to start. The error names the image version and asks you to use a newer image.
+To roll back to an older image anyway, set `PLOYZ_ALLOW_OLDER_IMAGE=1` in `.env`. It starts with
+a warning, and requests that need the newer tables fail. Remove it once you run a newer image.
 
 Set `VERSION` to that release's tag, then run the rest. It refuses a tag older than the one
 you run now:

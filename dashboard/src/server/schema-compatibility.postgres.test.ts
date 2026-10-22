@@ -134,3 +134,17 @@ for (const command of ["start", "start:worker"]) {
     }
   }, 30_000);
 }
+
+it("PLOYZ_ALLOW_OLDER_IMAGE=1 lets an older image start, with a warning, so a rollback is never locked out", async () => {
+  await harness.pool.query("insert into drizzle.__drizzle_migrations (hash, created_at, name) values ($1, $2, $3)", [
+    "migration-not-shipped-by-this-image", NEWER, "20990101000000_unknown",
+  ]);
+  try {
+    const { stderr } = await execFile("node", ["scripts/check-schema.ts"], {
+      env: { ...process.env, DATABASE_URL: harness.databaseUrl, PLOYZ_ALLOW_OLDER_IMAGE: "1" },
+    });
+    expect(stderr).toMatch(/PLOYZ_ALLOW_OLDER_IMAGE.*Use a newer Ployz Cloud image/s);
+  } finally {
+    await harness.pool.query("delete from drizzle.__drizzle_migrations where hash = $1", ["migration-not-shipped-by-this-image"]);
+  }
+}, 30_000);
