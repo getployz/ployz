@@ -16,26 +16,11 @@ working across from 0.3.0 on: [DESIGN.md](DESIGN.md#stable-promise).
 
 ## CLI
 
-The CLI operates a Cluster over SSH contexts. Cloud authors and deploys
-Services; the CLI has no deploy, build, or image command.
+Cloud holds the configuration, and `ployz deploy` and `ployz up` deploy through it. The CLI
+also operates a Cluster directly over SSH contexts. Run `ployz --help` for the command tree.
 
-```text
-ployz
-├── server     add
-├── cloud      reset
-├── machine    ls · inspect · logs · rename · rm · rtt · update
-│              upgrade [inspect] · build-cache-clear
-├── service    ls · inspect · logs · exec · scale · start · stop · rm
-├── volume     create · ls · inspect · rm
-├── ingress    config · deploy · logs
-├── ctx        ls · show · use · rm · connection
-├── proxy
-├── ps
-├── version
-└── completion
-```
-
-`crates/ployz/tests/cli_shape.rs` pins this tree; there are no aliases.
+`crates/ployz/tests/cli_shape.rs` checks that there are no aliases, that `--json` is the one
+output switch, and that each short flag has one meaning across the tree.
 
 `ployz server add --standalone` saves subnet assignments beside its configuration file in
 `<config-stem>.enrollment/` before publishing or joining. Commands using that

@@ -33,7 +33,7 @@ New to Ployz? Follow these steps from a first deploy to real users.
 ## Services
 
 - [Services](services/services.md): add, rename, restart or delete a service
-- [Service settings](services/settings.md): what each field does; the dashboard links here
+- [Service settings](services/settings.md): what each field does
 - [Variables](services/variables.md): variables, secrets, references between services
 - [Databases](services/databases.md): PostgreSQL, MySQL, Redis and MongoDB, connecting, backups
 - [Volumes](services/volumes.md): files that survive deploys
@@ -72,7 +72,7 @@ New to Ployz? Follow these steps from a first deploy to real users.
 ## Account
 
 - [Your account](account/account.md): your profile, where you're signed in, signing a browser out
-- [Organizations and billing](account/organizations.md): your organization, deleting it, Pro
+- [Organizations and billing](account/organizations.md): your organization, deleting it, billing
 - [Permissions](account/permissions.md): roles, tokens, Protected environments and approvals in one place
 - [Try Ployz without an account](account/try-without-an-account.md): let an agent start in a sandbox, then claim it
 - [Notifications](account/notifications.md): choose which emails you get, and unsubscribe from one
