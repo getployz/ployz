@@ -775,6 +775,39 @@ fn only_a_writer_copy_pins_a_provisioned_volume() {
     }
 }
 
+/// Plan `intent` as the Store runner does: a Service whose Volume nothing can mount
+/// is blocked while the rest are planned.
+fn runner_preview(
+    intent: &DeployIntent,
+    snapshot: &DeploySnapshot,
+) -> Result<DeployPreview, PlanError> {
+    let mut intent = intent.clone();
+    intent.options.block_unmountable = true;
+    preview_deploy(&intent, snapshot)
+}
+
+#[test]
+fn a_direct_preview_refuses_a_volume_without_a_writer_as_a_whole() {
+    let intent = automatic_provisioned_intent();
+
+    let error =
+        preview_deploy(&intent, &copies_snapshot(&[('2', CopyRole::Slot)], vec![])).unwrap_err();
+
+    assert!(
+        matches!(
+            &error,
+            PlanError::NoWriter { .. } | PlanError::Service { .. }
+        ),
+        "{error}"
+    );
+    assert!(
+        error
+            .to_string()
+            .contains("Volume data has no writer; second holds its only copy"),
+        "{error}"
+    );
+}
+
 #[test]
 fn a_provisioned_volume_without_a_writer_refuses_and_names_the_way_back() {
     let intent = automatic_provisioned_intent();
@@ -798,7 +831,7 @@ fn a_provisioned_volume_without_a_writer_refuses_and_names_the_way_back() {
             "Restore needs a single copy: keep the newest, delete each other one from the Volume's page in Ployz Cloud, which shows whether it is a mirror or an old copy, then run ployz volume restore data --from <server you kept>",
         ),
     ] {
-        let preview = preview_deploy(&intent, &copies_snapshot(&copies, rows)).unwrap();
+        let preview = runner_preview(&intent, &copies_snapshot(&copies, rows)).unwrap();
         let rpc = only_blocked(&preview);
         assert!(rpc.message.contains(needle), "{case}: {}", rpc.message);
         assert_eq!(rpc.code, RpcErrorCode::Conflict, "{case}");
@@ -839,7 +872,7 @@ fn a_silent_machine_leaves_the_writer_unknown_instead_of_naming_a_copy() {
                 .insert(machine_id('3'), Err(error)),
         };
 
-        let rpc = only_blocked(&preview_deploy(&intent, &snapshot).unwrap());
+        let rpc = only_blocked(&runner_preview(&intent, &snapshot).unwrap());
 
         assert_eq!(
             rpc.message,
@@ -870,7 +903,7 @@ fn a_cloud_volume_without_a_writer_is_named_as_authored() {
     .unwrap();
     let physical = app_volume(&format!("vol-{volume}"));
 
-    let preview = preview_deploy(
+    let preview = runner_preview(
         &intent,
         &copies_snapshot_of(&physical, &[('1', CopyRole::Switching)], vec![]),
     )
@@ -908,7 +941,7 @@ fn lowered_echo(deployed: bool) -> (DeployIntent, DockerVolumeName) {
 fn a_deployed_volume_no_member_holds_refuses_instead_of_starting_empty() {
     let (intent, physical) = lowered_echo(true);
 
-    let preview = preview_deploy(&intent, &copies_snapshot_of(&physical, &[], vec![])).unwrap();
+    let preview = runner_preview(&intent, &copies_snapshot_of(&physical, &[], vec![])).unwrap();
 
     let rpc = only_blocked(&preview);
     assert_eq!(
@@ -924,7 +957,7 @@ fn a_deployed_volume_with_a_silent_machine_leaves_its_copies_unknown() {
     let mut snapshot = copies_snapshot_of(&physical, &[], vec![]);
     snapshot.storage_capacity.remove(&machine_id('2'));
 
-    let rpc = only_blocked(&preview_deploy(&intent, &snapshot).unwrap());
+    let rpc = only_blocked(&runner_preview(&intent, &snapshot).unwrap());
 
     assert_eq!(rpc.code, RpcErrorCode::Unavailable, "{}", rpc.message);
     assert!(
@@ -938,7 +971,7 @@ fn a_deployed_volume_with_a_silent_machine_leaves_its_copies_unknown() {
 fn a_volume_no_deploy_applied_yet_is_created() {
     let (intent, physical) = lowered_echo(false);
 
-    let preview = preview_deploy(&intent, &copies_snapshot_of(&physical, &[], vec![])).unwrap();
+    let preview = runner_preview(&intent, &copies_snapshot_of(&physical, &[], vec![])).unwrap();
 
     assert_eq!(
         preview.volumes_to_create.len(),
@@ -971,7 +1004,7 @@ fn a_deployed_volume_no_member_holds_leaves_a_deploy_of_another_service_alone() 
     )
     .with_deployed_volumes([app_volume("data")].into());
 
-    let preview = preview_deploy(&intent, &copies_snapshot(&[], vec![])).unwrap();
+    let preview = runner_preview(&intent, &copies_snapshot(&[], vec![])).unwrap();
 
     assert!(
         operations(&preview)
@@ -998,7 +1031,7 @@ fn a_full_deploy_blocks_only_the_service_whose_volume_has_no_writer() {
     );
 
     let preview =
-        preview_deploy(&intent, &copies_snapshot(&[('2', CopyRole::Slot)], vec![])).unwrap();
+        runner_preview(&intent, &copies_snapshot(&[('2', CopyRole::Slot)], vec![])).unwrap();
 
     let planned: Vec<_> = operations(&preview)
         .iter()
@@ -1046,7 +1079,7 @@ fn a_service_that_depends_on_a_blocked_one_is_blocked_too() {
     )]));
 
     let preview =
-        preview_deploy(&intent, &copies_snapshot(&[('2', CopyRole::Slot)], vec![])).unwrap();
+        runner_preview(&intent, &copies_snapshot(&[('2', CopyRole::Slot)], vec![])).unwrap();
 
     assert!(
         operations(&preview).is_empty(),
@@ -1095,7 +1128,7 @@ fn a_blocked_dependent_prepares_none_of_its_volumes() {
     )]));
 
     let preview =
-        preview_deploy(&intent, &copies_snapshot(&[('2', CopyRole::Slot)], vec![])).unwrap();
+        runner_preview(&intent, &copies_snapshot(&[('2', CopyRole::Slot)], vec![])).unwrap();
 
     assert!(
         preview

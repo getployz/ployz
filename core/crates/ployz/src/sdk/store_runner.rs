@@ -152,6 +152,7 @@ pub async fn run_deployment(
     };
     // The Store lowers the Intent without knowing who will run it.
     claimed.intent.options.operator = operator;
+    claimed.intent.options.block_unmountable = true;
     let (targets, built) = match checkouts
         .map_err(Unbuilt::Failed)
         .and_then(|sources| targets(&claimed, sources))
@@ -891,7 +892,7 @@ impl Run {
         let running = session.prepare_with(
             input,
             claimed.intent.registry_auth,
-            claimed.intent.options.operator,
+            Some(claimed.intent.options.operator),
         )?;
         self.renewing(running.finished(), || running.abort()).await
     }

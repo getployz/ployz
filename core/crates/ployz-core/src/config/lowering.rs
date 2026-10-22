@@ -466,6 +466,7 @@ pub fn lower_deployment(input: LowerDeploymentInput) -> Result<DeployIntent, Con
             selected,
             removals: input.removals,
             operator: Operator::default(),
+            block_unmountable: false,
         },
     )
     .with_dependencies(dependencies)

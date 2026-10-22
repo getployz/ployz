@@ -43,6 +43,12 @@ pub struct PlanOptions {
     #[serde(default)]
     #[ts(optional, as = "Option<Operator>")]
     pub operator: Operator,
+    /// Plan the other Services when one mounts a Volume nothing can mount, listing it in
+    /// `DeployPreview.blocked`. Only a runner that records each Service's outcome sets it;
+    /// without it that Service refuses the whole Deploy.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[ts(optional, as = "Option<bool>")]
+    pub block_unmountable: bool,
 }
 
 /// Services a targeted Deploy tears down by name. It can name only Services,
