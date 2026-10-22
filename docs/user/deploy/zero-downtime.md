@@ -7,8 +7,9 @@ With **Start first**, the default for a service without a volume, Ployz starts t
 alongside the old ones and waits until they're all healthy. Then every server starts sending
 the service's requests to the new replicas. Once every server has, the old replicas get no new
 requests, finish the ones they have, and stop. An old replica with no open connection stops at
-once; one still answering a request gets up to 3 seconds. A replica that listens on no port, such as a worker, gets the 3 seconds whenever it
-holds a connection to anything outside itself. Your app keeps serving the whole time.
+once; one still answering a request gets up to 3 seconds. A replica that listens on no port,
+such as a worker, gets the 3 seconds whenever it holds a connection to anything outside itself.
+Your app keeps serving the whole time.
 
 ## Keep your app serving through a deploy
 
