@@ -3623,7 +3623,7 @@ describe("volume runs", () => {
       await runEffect(decideApproval(protector, approval_id, { approve: { digest: approval } }));
 
       expect(await as(member, { kind: "move", args: { to: "fsn-3" } }, approval_id)).toMatchObject({ ok: false, refusal: { code: "approval_required" } });
-      expect(await review(approval_id)).toMatchObject({ operation: { preview: { to: { name: "fsn-2" } } } });
+      expect(await review(approval_id)).toMatchObject({ operation: { name: "data to fsn-2", preview: { to: { name: "fsn-2" } } } });
       expect(await rows()).toEqual([]);
     });
 
@@ -3664,7 +3664,7 @@ describe("volume runs", () => {
         const { approval, approval_id } = askedOf(admitted);
 
         expect(admitted).toMatchObject({ refusal: { details: { protected: { environment: "production" } } } });
-        expect(await review(approval_id)).toMatchObject({ operation: { verb: "resize", preview: { maximum_bytes: 20 * GB } } });
+        expect(await review(approval_id)).toMatchObject({ operation: { verb: "resize", name: "data to 20 GB", preview: { maximum_bytes: 20 * GB } } });
         expect(await rows()).toEqual([]);
         await runEffect(decideApproval(protector, approval_id, { approve: { digest: approval } }));
         expect(await as(asker, grow(30), approval_id)).toMatchObject({ ok: false, refusal: { code: "approval_required" } });

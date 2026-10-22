@@ -46,7 +46,7 @@ import {
   alreadyOn, newestGuid, type PlanInput, type Planned, planForwardRelease, planFromCopies, type Refusal, type RefusalCode, type ReleaseFrom, restoreSource,
   roleOf, writerRemovedMessage,
 } from "#/modules/volume-run/plan";
-import { deployingMessage, resizeRequirements, sizeDirection } from "#/modules/volume-run/resize";
+import { deployingMessage, gb, resizeRequirements, sizeDirection } from "#/modules/volume-run/resize";
 import { isBehind, isCurrent, releaseLine } from "#/modules/server-upgrade/server-upgrade";
 import { channelRelease, organizationReleaseChannel } from "#/modules/server-upgrade/server-upgrade.server";
 import { volumeRun } from "#/modules/volume-run/tables";
@@ -512,6 +512,26 @@ function phaseServer(phase: PlannedPhase): JsonObject {
   }
 }
 
+/** What a guarded phase acts on as its approval names it: "pg-data to fsn-2", "pg-data to 20 GB". */
+function phaseName(volume: string, phase: PlannedPhase): string {
+  switch (phase.kind) {
+    case "move":
+    case "landed":
+      return `${volume} to ${phase.target.machine.name}`;
+    case "restore":
+      return `${volume} from ${phase.from.machine.name}`;
+    case "resize":
+      return `${volume} to ${gb(phase.to)}`;
+    case "delete_mirror":
+    case "release":
+    case "mirror":
+    case "sync":
+    case "demote":
+    case "seed":
+      return volume;
+  }
+}
+
 type PlanRequest = { readonly volumeId: string; readonly environment: EnvironmentRef } & VolumeRunInput;
 
 /**
@@ -628,7 +648,7 @@ export const planOnCluster = Effect.fn("VolumeRun.planOnCluster")(function* (
   const askedAs = (verb: OperationVerb): OperationAsked => ({
     subject: `volume:${input.volumeId}`,
     verb,
-    name: volume.volumeName,
+    name: phaseName(volume.volumeName, phase),
     preview: { volume: input.volumeId, copies: effects.map((effect) => effect.node), ...phaseServer(phase) },
     effects,
   });
