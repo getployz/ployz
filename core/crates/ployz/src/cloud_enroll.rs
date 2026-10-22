@@ -4,7 +4,7 @@ use std::{net::IpAddr, time::Duration};
 
 use ployz_core::{
     AdvertisedEndpoint, CloudEnrollToken, MachineId, MachineName, MachineToken,
-    ManagementCapability, Registered, StorageChoice, WireGuardPublicKey,
+    ManagementCapability, Registered, SealingPublicKey, StorageChoice, WireGuardPublicKey,
 };
 use serde::{Deserialize, Serialize, Serializer};
 use thiserror::Error;
@@ -347,6 +347,28 @@ struct EnrollCallback<'a> {
     capability: Option<&'a ManagementCapability>,
     machine_id: MachineId,
     pairing_credential: &'a PairingCredential,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sealing: Option<Sealing>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
+enum Sealing {
+    Held { public_key: SealingPublicKey },
+    NeedsAccess,
+}
+
+impl From<ployz_core::Sealing> for Sealing {
+    fn from(sealing: ployz_core::Sealing) -> Self {
+        match sealing {
+            ployz_core::Sealing::Held { public_key } => Self::Held { public_key },
+            ployz_core::Sealing::NeedsAccess => Self::NeedsAccess,
+        }
+    }
 }
 
 /// POST identity until Cloud returns `initialize` or `join`.
@@ -432,8 +454,16 @@ pub(crate) async fn callback(
     token: &CloudEnrollToken,
     machine_id: MachineId,
     pairing_credential: &PairingCredential,
+    sealing: Option<ployz_core::Sealing>,
 ) -> Result<(), Error> {
-    post_callback(url, token, machine_id, pairing_credential, None).await
+    let body = EnrollCallback {
+        stage: None,
+        capability: None,
+        machine_id,
+        pairing_credential,
+        sealing: sealing.map(Sealing::from),
+    };
+    post_callback(url, token, &body, "enrollment completion").await
 }
 
 /// Publish a candidate against the authenticated enrollment attempt before completion.
@@ -444,28 +474,23 @@ pub(crate) async fn publish(
     pairing_credential: &PairingCredential,
     capability: &ManagementCapability,
 ) -> Result<(), Error> {
-    post_callback(url, token, machine_id, pairing_credential, Some(capability)).await
+    let body = EnrollCallback {
+        stage: Some("publish"),
+        capability: Some(capability),
+        machine_id,
+        pairing_credential,
+        sealing: None,
+    };
+    post_callback(url, token, &body, "candidate publication").await
 }
 
 async fn post_callback(
     url: &str,
     token: &CloudEnrollToken,
-    machine_id: MachineId,
-    pairing_credential: &PairingCredential,
-    capability: Option<&ManagementCapability>,
+    body: &EnrollCallback<'_>,
+    operation: &'static str,
 ) -> Result<(), Error> {
     let http = http_client()?;
-    let body = EnrollCallback {
-        stage: capability.map(|_| "publish"),
-        capability,
-        machine_id,
-        pairing_credential,
-    };
-    let operation = if capability.is_some() {
-        "candidate publication"
-    } else {
-        "enrollment completion"
-    };
     crate::setup_retry::run(
         &mut (),
         &format!("Cloud {operation} at {}", diagnostic_origin(url)),
@@ -479,7 +504,7 @@ async fn post_callback(
                 )
         },
         async |_| {
-            post_json(&http, url, token, &body)
+            post_json(&http, url, token, body)
                 .await
                 .map(|_| ())
                 .map_err(|error| {
@@ -802,6 +827,7 @@ mod tests {
             },
             visible_peers: Vec::new(),
             target_versions: Default::default(),
+            sealing_key: None,
         }
     }
 
@@ -1320,6 +1346,7 @@ mod tests {
                         &token(),
                         MachineId::random(),
                         &PairingCredential::parse("pairing-secret").unwrap(),
+                        None,
                     )
                     .await
                     .unwrap();
@@ -1361,10 +1388,82 @@ mod tests {
                 )
                 .await
             } else {
-                callback(&url, &token(), MachineId::random(), &credential).await
+                callback(&url, &token(), MachineId::random(), &credential, None).await
             };
             result.unwrap();
             server.await.unwrap();
+        }
+    }
+
+    async fn read_json_body(stream: &mut tokio::net::TcpStream) -> serde_json::Value {
+        let mut request = Vec::new();
+        let mut buf = vec![0; 8192];
+        loop {
+            let read = tokio::io::AsyncReadExt::read(stream, &mut buf)
+                .await
+                .unwrap();
+            request.extend_from_slice(buf.get(..read).unwrap());
+            let text = String::from_utf8_lossy(&request);
+            if let Some((head, body)) = text.split_once("\r\n\r\n") {
+                let length = head
+                    .lines()
+                    .find_map(|line| {
+                        let (name, value) = line.split_once(':')?;
+                        name.eq_ignore_ascii_case("content-length")
+                            .then(|| value.trim().parse::<usize>().unwrap())
+                    })
+                    .unwrap();
+                if body.len() >= length {
+                    return serde_json::from_str(body).unwrap();
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn completion_resends_the_sealing_state_until_cloud_accepts_it() {
+        let public_key = ployz_core::SealingPublicKey::from_bytes([5; 32]);
+        for (sealing, expected) in [
+            (
+                ployz_core::Sealing::Held { public_key },
+                serde_json::json!({ "kind": "held", "publicKey": public_key.to_string() }),
+            ),
+            (
+                ployz_core::Sealing::NeedsAccess,
+                serde_json::json!({ "kind": "needs_access" }),
+            ),
+        ] {
+            let (listener, url) = listen().await;
+            let server = tokio::spawn(async move {
+                let mut bodies = Vec::new();
+                for (status, reason) in [(503, "Service Unavailable"), (200, "OK")] {
+                    let (mut stream, _) = listener.accept().await.unwrap();
+                    bodies.push(read_json_body(&mut stream).await);
+                    tokio::io::AsyncWriteExt::write_all(
+                        &mut stream,
+                        &http_response(status, reason, b"{}"),
+                    )
+                    .await
+                    .unwrap();
+                }
+                bodies
+            });
+            let credential = PairingCredential::parse("pairing-secret").unwrap();
+            callback(
+                &url,
+                &token(),
+                MachineId::random(),
+                &credential,
+                Some(sealing),
+            )
+            .await
+            .unwrap();
+            let bodies = server.await.unwrap();
+            assert_eq!(bodies.len(), 2);
+            for body in bodies {
+                assert_eq!(body.get("sealing"), Some(&expected), "{body}");
+                assert!(body.get("stage").is_none(), "{body}");
+            }
         }
     }
 
@@ -1407,7 +1506,7 @@ mod tests {
                 )
                 .await
             } else {
-                callback(&url, &token(), MachineId::random(), &credential).await
+                callback(&url, &token(), MachineId::random(), &credential, None).await
             };
             let error = result.unwrap_err();
             if body != cant_reach {
@@ -1461,7 +1560,7 @@ mod tests {
                 )
             } else {
                 (
-                    callback(&url, &token(), MachineId::random(), &credential).await,
+                    callback(&url, &token(), MachineId::random(), &credential, None).await,
                     "enrollment completion",
                 )
             };

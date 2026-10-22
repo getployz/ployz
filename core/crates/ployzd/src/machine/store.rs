@@ -23,6 +23,7 @@ use super::{
 };
 use crate::management::ManagementSecret;
 use crate::network::{DiscoveredNetwork, WireGuardPrivateKey, allocate_machine_subnet};
+use crate::sealing_key::{OpenError, SealingKey};
 
 const STATE_FILE_NAME: &str = "machine.json";
 const TEMPORARY_FILE_NAME: &str = ".machine.json.tmp";
@@ -51,6 +52,7 @@ pub(crate) struct PreparedReset {
 
 pub(crate) struct Installation {
     body: LocalMachineBody,
+    sealing_key: Option<SealingKey>,
     wireguard_mtu: Option<u32>,
     pinned: PinnedAddresses,
 }
@@ -316,7 +318,7 @@ impl LocalMachineStore {
             wireguard_mtu,
             pinned,
         } = request;
-        let body = match role {
+        let (body, sealing_key) = match role {
             EnrollAs::Founder {
                 name,
                 cluster_network,
@@ -345,6 +347,7 @@ impl LocalMachineStore {
             plan,
             Installation {
                 body,
+                sealing_key,
                 wireguard_mtu,
                 pinned,
             },
@@ -358,7 +361,7 @@ impl LocalMachineStore {
         initial_policy: ployz_core::InitialMachinePolicy,
         public_ip: Option<std::net::IpAddr>,
         advertised_endpoints: Vec<ployz_core::AdvertisedEndpoint>,
-    ) -> Result<LocalMachineBody, StoreError> {
+    ) -> Result<(LocalMachineBody, Option<SealingKey>), StoreError> {
         if advertised_endpoints.is_empty() {
             return Err(StoreError::MissingEndpoints);
         }
@@ -378,17 +381,24 @@ impl LocalMachineStore {
             runtime: local_runtime(&self.data_dir),
             build_concurrency: None,
         };
-        Ok(LocalMachineBody::Participating {
-            machine,
-            origin: ParticipationOrigin::Founder { cluster },
-        })
+        Ok((
+            LocalMachineBody::Participating {
+                machine,
+                origin: ParticipationOrigin::Founder { cluster },
+            },
+            Some(SealingKey::generate()),
+        ))
     }
 
-    fn member(&self, registration: Registered) -> Result<LocalMachineBody, StoreError> {
+    fn member(
+        &self,
+        registration: Registered,
+    ) -> Result<(LocalMachineBody, Option<SealingKey>), StoreError> {
         let Registered {
             assigned_machine: mut machine,
             visible_peers,
             target_versions,
+            sealing_key,
         } = registration;
         if self.record.id() != machine.id {
             return Err(StoreError::IdentityMismatch);
@@ -402,12 +412,18 @@ impl LocalMachineStore {
         if machine.advertised_endpoints.is_empty() {
             return Err(StoreError::MissingEndpoints);
         }
+        let sealing_key = sealing_key
+            .map(|sealed| SealingKey::open(&sealed, &self.record.wireguard_private_key))
+            .transpose()?;
         machine.runtime = local_runtime(&self.data_dir);
-        Ok(LocalMachineBody::Joining {
-            machine,
-            bootstrap: visible_peers,
-            min_store_version: target_versions,
-        })
+        Ok((
+            LocalMachineBody::Joining {
+                machine,
+                bootstrap: visible_peers,
+                min_store_version: target_versions,
+            },
+            sealing_key,
+        ))
     }
 
     pub(crate) fn install(&mut self, installation: Installation) -> Result<(), StoreError> {
@@ -416,6 +432,7 @@ impl LocalMachineStore {
         installed.body = installation.body;
         installed.wireguard_mtu = installation.wireguard_mtu;
         installed.pinned_addresses = installation.pinned;
+        SealingKey::set(&self.data_dir, installation.sealing_key.as_ref())?;
         save(&self.data_dir, &installed)?;
         self.record = installed;
         Ok(())
@@ -731,6 +748,8 @@ pub enum StoreError {
     KeyMismatch,
     #[error("assignment does not match the local durable Machine ID")]
     IdentityMismatch,
+    #[error(transparent)]
+    SealingKey(#[from] OpenError),
     #[error("invalid Cluster network: {0}")]
     InvalidNetwork(String),
     #[error(transparent)]

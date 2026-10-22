@@ -15,7 +15,7 @@ import { rustMachineIdSchema } from "#/modules/machines/enrollment";
 import { CLUSTER_UNREACHABLE, enrollMachine, hashEnrollmentToken } from "#/modules/machines/enrollment.server";
 import { checkForgetServers, FORGET_CLUSTER_BUDGET_MS, forgetServers } from "#/modules/machines/forget-servers.server";
 import {
-  enrollmentAllocation, machineEnrollmentToken, machineRemoveAttempt, organizationMachine,
+  clusterSealingKey, enrollmentAllocation, machineEnrollmentToken, machineRemoveAttempt, organizationMachine,
 } from "#/modules/machines/tables";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import { makePloyzLayer } from "#/modules/runtime/ployz.server";
@@ -115,6 +115,10 @@ it.live("forgetting unreachable Servers clears Cloud's hold, and the next Server
     const { drizzle } = yield* Database;
     const encryption = yield* SecretEncryption;
     const [before] = yield* drizzle.select().from(organizationPairing);
+    yield* drizzle.insert(clusterSealingKey).values({
+      organizationId: ORGANIZATION, clusterKey: hashEnrollmentToken(before ? encryption.decrypt(before.encryptedPairingSecret) : ""),
+      publicKey: Buffer.alloc(32, 1).toString("base64"),
+    });
     const [bob] = yield* drizzle.insert(user).values({ email: "bob@example.test", name: "Bob" }).returning();
     yield* drizzle.insert(member).values({ userId: bob?.id ?? "", organizationId: ORGANIZATION, role: "member" });
     expect(yield* checkForgetServers({ userId: bob?.id ?? "", organizationId: ORGANIZATION }))
@@ -131,7 +135,7 @@ it.live("forgetting unreachable Servers clears Cloud's hold, and the next Server
       ok: true,
       value: { servers: [{ id: FOUNDER, name: FOUNDER, reach: "didnt_answer" }], volumes: [], cancelled: [QUEUED] },
     });
-    for (const table of [organizationPairing, organizationMachine, machineEnrollmentToken, enrollmentAllocation, machineRemoveAttempt]) {
+    for (const table of [organizationPairing, organizationMachine, clusterSealingKey, machineEnrollmentToken, enrollmentAllocation, machineRemoveAttempt]) {
       expect(yield* drizzle.select().from(table)).toEqual([]);
     }
     expect(yield* Effect.promise(() => store.read(ORGANIZATION, { query: "deployment", id: QUEUED }))).toMatchObject({ status: "cancelled" });

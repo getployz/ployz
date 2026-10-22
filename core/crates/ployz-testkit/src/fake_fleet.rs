@@ -765,6 +765,7 @@ impl Fleet {
                         storage: None,
                         upgrade: machine.upgrades.last().cloned(),
                         token: None,
+                        sealing: None,
                     }
                     .into(),
                 )

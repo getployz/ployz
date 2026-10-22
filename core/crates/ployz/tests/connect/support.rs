@@ -733,6 +733,7 @@ impl FakeMachine for DiscoveryService {
                 storage: inspect.include_storage.then_some(self.storage),
                 upgrade: None,
                 token: None,
+                sealing: None,
             })
             .encode()
             .unwrap(),
@@ -784,6 +785,7 @@ impl FakeMachine for DiscoveryService {
             assigned_machine,
             visible_peers,
             target_versions: BTreeMap::new(),
+            sealing_key: None,
         };
         Ok(Response::new(
             RpcResponse::from(registered).encode().unwrap(),

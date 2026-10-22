@@ -6,7 +6,7 @@ import { Data, Effect, Option, Schema } from "effect";
 import { storeSystem } from "#/modules/config-store/config-store.server";
 import { rustMachineIdSchema } from "#/modules/machines/enrollment";
 import {
-  enrollmentAllocation, machineEnrollmentToken, machineRemoveAttempt, organizationMachine, serverAccess,
+  clusterSealingKey, enrollmentAllocation, machineEnrollmentToken, machineRemoveAttempt, organizationMachine, serverAccess,
 } from "#/modules/machines/tables";
 import { cancelOpenServerEnrollments } from "#/modules/machines/waiting/enrollment-run.server";
 import { clusterRead, OrganizationRuntime, SESSION_CLOSE_CLUSTER_MS, withClusterBudget } from "#/modules/runtime/organization-runtime.server";
@@ -235,6 +235,7 @@ export const forgetEmptiedPairing = Effect.fn("PairingRemoval.forgetEmptied")(
       if (yield* othersRemain(organizationId, generation)) return { kind: "others_remain" } satisfies ServerRelease;
       const { drizzle } = yield* Database;
       yield* deleteEnrollmentTokens(organizationId);
+      yield* drizzle.delete(clusterSealingKey).where(eq(clusterSealingKey.organizationId, organizationId));
       yield* drizzle.delete(organizationPairing).where(eq(organizationPairing.organizationId, organizationId));
       return { kind: "released" } satisfies ServerRelease;
     }));
@@ -274,7 +275,7 @@ const lockCluster = Effect.fn("PairingRemoval.lockCluster")(function* (organizat
  * every key Cloud held there went with them and there is nothing to Clear. Under the pairing's lock, a pairing or Server
  * that changed since refuses; otherwise the Store lets go of what ran (`cluster_forgotten`) first, so no new Cluster is
  * founded before it has; then every row of Cloud's hold on the Cluster goes: the pairing (a stuck removal too), its Servers
- * (device keys cascade), allocations, enrollment tokens and the Server removals it was attempting. The Store commits `cluster_forgotten` on its own and it is idempotent, so if the Cloud-row
+ * (device keys cascade), its Sealing public key, allocations, enrollment tokens and the Server removals it was attempting. The Store commits `cluster_forgotten` on its own and it is idempotent, so if the Cloud-row
  * transaction then fails, running Forget Servers again finishes it.
  */
 export const forgetCluster = Effect.fn("PairingRemoval.forgetCluster")(function* (organizationId: string, seen: ClusterSeen) {
@@ -287,6 +288,7 @@ export const forgetCluster = Effect.fn("PairingRemoval.forgetCluster")(function*
     const written = yield* storeSystem(organizationId, { event: "cluster_forgotten" });
     const { drizzle } = yield* Database;
     yield* drizzle.delete(organizationMachine).where(eq(organizationMachine.organizationId, organizationId));
+    yield* drizzle.delete(clusterSealingKey).where(eq(clusterSealingKey.organizationId, organizationId));
     yield* deleteEnrollmentTokens(organizationId);
     yield* drizzle.delete(enrollmentAllocation).where(eq(enrollmentAllocation.organizationId, organizationId));
     yield* drizzle.delete(machineRemoveAttempt).where(eq(machineRemoveAttempt.organizationId, organizationId));

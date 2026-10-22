@@ -834,6 +834,7 @@ impl FakeMachine for DeployService {
             storage: self.machines.first().and_then(|machine| machine.storage),
             upgrade: None,
             token: None,
+            sealing: None,
         }))
     }
     async fn enroll(

@@ -836,7 +836,9 @@ fn local_error(error: LocalMachineError) -> Result<Response<OpaquePayload>, Stat
             Err(Status::unavailable("Cluster is not available"))
         }
         LocalMachineError::DockerUnavailable => respond(unavailable("Docker is not available")),
-        LocalMachineError::MissingAssignment | LocalMachineError::InvalidPushTarget(_) => {
+        LocalMachineError::MissingAssignment
+        | LocalMachineError::InvalidPushTarget(_)
+        | LocalMachineError::Seal(_) => {
             respond(RpcError::caused(RpcErrorCode::InvalidArgument, &error))
         }
         LocalMachineError::Enrollment(error) => {
@@ -945,6 +947,7 @@ fn store_error(error: StoreError) -> RpcError {
         | StoreError::MissingPeers
         | StoreError::IdentityMismatch
         | StoreError::KeyMismatch
+        | StoreError::SealingKey(_)
         | StoreError::InvalidNetwork(_) => RpcErrorCode::InvalidArgument,
         StoreError::MachineUpdate(ployz_core::MachineUpdateError::DuplicateName) => {
             RpcErrorCode::Conflict

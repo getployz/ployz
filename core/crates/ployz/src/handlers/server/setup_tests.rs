@@ -254,6 +254,7 @@ async fn restarting_cluster_store(
                     storage: None,
                     upgrade: None,
                     token: None,
+                    sealing: None,
                 }),
                 RpcRequestBody::ListMachines(_) => {
                     if calls.fetch_add(1, Ordering::SeqCst) < refusals {

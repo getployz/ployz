@@ -51,6 +51,10 @@ impl WireGuardPrivateKey {
         )
     }
 
+    pub(crate) fn as_bytes(&self) -> &[u8; 32] {
+        &self.0
+    }
+
     fn encoded(&self) -> String {
         defguard_wireguard_rs::key::Key::new(self.0).to_string()
     }

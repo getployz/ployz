@@ -1089,6 +1089,10 @@ pub struct Registered {
     pub assigned_machine: Machine,
     pub visible_peers: Vec<Machine>,
     pub target_versions: BTreeMap<String, i64>,
+    /// Absent from an issuer that holds no Sealing Key, or predates it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional = nullable)]
+    pub sealing_key: Option<crate::SealedSealingKey>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -2074,6 +2078,7 @@ mod set_management_client_wire {
                     assigned_machine: machine(),
                     visible_peers: vec![machine()],
                     target_versions: BTreeMap::new(),
+                    sealing_key: None,
                 },
             },
             wireguard_mtu: Some(1380),

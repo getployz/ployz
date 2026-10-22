@@ -30,6 +30,7 @@ use crate::{
     docker::ContainerRuntime,
     host_capacity,
     network::{NetworkError, discover_network},
+    sealing_key::SealingKey,
 };
 
 const REDISCOVERY_RETRY_MIN: Duration = Duration::from_millis(250);
@@ -142,6 +143,8 @@ pub enum Error {
     Admission(#[from] crate::mutation::Error),
     #[error(transparent)]
     Upgrade(#[from] crate::installer::upgrade::Error),
+    #[error(transparent)]
+    Seal(#[from] crate::sealing_key::SealError),
 }
 
 impl LocalMachine {
@@ -433,7 +436,31 @@ impl LocalMachine {
             storage,
             upgrade,
             token,
+            sealing: self.sealing(record.phase()),
         })
+    }
+
+    fn sealing(&self, phase: LocalMachinePhase) -> Option<ployz_core::Sealing> {
+        if !matches!(
+            phase,
+            LocalMachinePhase::Joining | LocalMachinePhase::Participating
+        ) {
+            return None;
+        }
+        match SealingKey::load(self.owner.data_dir()) {
+            Ok(Some(key)) => Some(ployz_core::Sealing::Held {
+                public_key: key.public_key(),
+            }),
+            Ok(None) => Some(ployz_core::Sealing::NeedsAccess),
+            Err(error) if error.kind() == std::io::ErrorKind::InvalidData => {
+                tracing::warn!(%error, "this Machine's Sealing Key is unusable");
+                Some(ployz_core::Sealing::NeedsAccess)
+            }
+            Err(error) => {
+                tracing::warn!(%error, "could not read the Sealing Key");
+                None
+            }
+        }
     }
 
     async fn token(
@@ -603,11 +630,19 @@ impl LocalMachine {
             target_versions: BTreeMap::new(),
         };
         let assignment = ployz_core::allocate_enrollment(&request, &snapshot, &[])?;
+        let sealing_key = SealingKey::load(self.owner.data_dir())
+            .unwrap_or_else(|error| {
+                tracing::warn!(%error, "could not read the Sealing Key; registering without it");
+                None
+            })
+            .map(|key| key.seal_to(&assignment.machine.public_key))
+            .transpose()?;
         publication.publish(&assignment.machine).await?;
         Ok(registered(
             assignment.machine,
             replicated.machines().await?.observations,
             replicated.version().await?,
+            sealing_key,
         ))
     }
 
@@ -915,6 +950,7 @@ fn registered(
     assigned_machine: Machine,
     machines: Vec<Machine>,
     target_versions: BTreeMap<String, i64>,
+    sealing_key: Option<ployz_core::SealedSealingKey>,
 ) -> Registered {
     let assigned_id = assigned_machine.id;
     Registered {
@@ -924,6 +960,7 @@ fn registered(
             .filter(|machine| machine.id != assigned_id)
             .collect(),
         target_versions,
+        sealing_key,
     }
 }
 

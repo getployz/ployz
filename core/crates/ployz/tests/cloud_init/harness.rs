@@ -595,6 +595,7 @@ impl FakeMachine for JoinDaemon {
                 disk_total_bytes: None,
                 disk_available_bytes: None,
             }),
+            sealing: None,
         })
     }
 
@@ -1010,6 +1011,7 @@ pub fn registration() -> Registered {
         assigned_machine: joiner_machine(),
         visible_peers: Vec::new(),
         target_versions: Default::default(),
+        sealing_key: None,
     }
 }
 

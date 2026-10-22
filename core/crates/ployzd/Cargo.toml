@@ -14,6 +14,7 @@ bytes = "1.12.1"
 chrono = { version = "0.4.41", default-features = false, features = ["clock"] }
 clap = { version = "4.6.6", features = ["derive"] }
 defguard_wireguard_rs = "=0.8.0"
+hpke = { version = "0.13.0", default-features = false, features = ["x25519", "alloc"] }
 netlink-packet-wireguard = "=0.2.4"
 fastrand = "2.5.0"
 fs2 = "0.4.3"
@@ -34,6 +35,7 @@ ipnet = "2.12.1"
 iroh = { version = "1.2", default-features = false, features = ["tls-ring"] }
 ployz-core.workspace = true
 ployz-build.workspace = true
+rand_core = { version = "0.9.5", features = ["os_rng"] }
 rcgen = "0.14.6"
 regex = "1.13.1"
 reqwest = { version = "0.13.4", default-features = false, features = ["http2", "json", "rustls", "stream"] }
@@ -56,6 +58,7 @@ tower-service = "0.3.3"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 x509-parser = "0.18.1"
+zeroize = "1.9.0"
 
 [features]
 verify-faults = []

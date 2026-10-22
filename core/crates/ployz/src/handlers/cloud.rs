@@ -355,6 +355,7 @@ where
         )
         .await?
     };
+    let sealing = sealing(&mut ready).await?;
     progress(EnrollStage::Publishing);
     // Mint a fresh capability; Cloud verifies replacements when enrollment resumes.
     let capability = set_cloud_management_client(matches, &mut ready).await?;
@@ -373,7 +374,7 @@ where
         &capability,
     )
     .await?;
-    cloud_enroll::callback(callback_url, token, assigned.id, &pairing.secret).await?;
+    cloud_enroll::callback(callback_url, token, assigned.id, &pairing.secret, sealing).await?;
     ui::stream(format_args!("Joined Server {}.", assigned.name));
     // The join is committed; a catch-up failure makes it partial.
     Ok(ui::emit_committed(
@@ -517,6 +518,7 @@ where
                     }))
                 })?;
     }
+    let sealing = sealing(&mut ready).await?;
     progress(EnrollStage::Publishing);
     // Repeated Set stages a fresh capability; its first operational RPC completes rotation.
     let capability = set_cloud_management_client(matches, &mut ready).await
@@ -534,9 +536,18 @@ where
         token,
         machine.id,
         &pairing.secret,
+        sealing,
     )
     .await?;
     Ok(ui::emit(&founder_result(&machine, founding)))
+}
+
+/// Whether the enrolled Machine holds its Cluster's Sealing Key, for Cloud to record at completion.
+async fn sealing(client: &mut Client) -> Result<Option<ployz_core::Sealing>, Error> {
+    Ok(client
+        .call_repeatable::<op::Inspect>(InspectRequest::default(), None)
+        .await?
+        .sealing)
 }
 
 /// The first Server is enrolled but its Ingress Proxy deploy failed.
@@ -925,6 +936,7 @@ mod tests {
                 storage: None,
                 upgrade: None,
                 token: None,
+                sealing: None,
             };
             let observed = details.clone();
             let reached = std::sync::Arc::new(tokio::sync::Notify::new());
@@ -1004,6 +1016,7 @@ mod tests {
                                 assigned_machine: machine,
                                 visible_peers: Vec::new(),
                                 target_versions: Default::default(),
+                                sealing_key: None,
                             },
                         },
                         &policy,
@@ -1055,6 +1068,7 @@ mod tests {
             storage: None,
             upgrade: None,
             token: None,
+            sealing: None,
         };
         assert_eq!(
             already_assigned(&details(LocalMachinePhase::Participating), &listed),
@@ -1102,6 +1116,7 @@ mod tests {
             storage: None,
             upgrade: None,
             token: None,
+            sealing: None,
         };
         for phase in [LocalMachinePhase::Joining, LocalMachinePhase::Participating] {
             assert_eq!(

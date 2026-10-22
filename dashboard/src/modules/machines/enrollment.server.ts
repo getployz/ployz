@@ -6,6 +6,7 @@ import { allocateEnrollment, type EnrollmentSnapshot, type MachineId, type Machi
 import { and, eq, gt, isNull, lt, ne, or, type SQL, sql } from "drizzle-orm";
 import { Cause, Effect, Option, Schema } from "effect";
 import {
+  clusterSealingKey,
   enrollmentAllocation,
   organizationMachine,
   machineEnrollmentToken as schemaMachineEnrollmentToken,
@@ -29,6 +30,7 @@ import {
   waitForJoinSlot,
   type EnrollmentIdentity,
   type EnrollmentCallback,
+  type EnrollmentCallbackSealing,
   type CliMintMachineEnrollmentInput,
   type CliResetPendingEnrollmentInput,
   type MintMachineEnrollmentInput,
@@ -855,6 +857,7 @@ export const completeMachineEnrollment = Effect.fn(
           return yield* new Conflict({ message: "The enrollment attempt is no longer current." });
         }
         yield* requireEnrollmentMachine(token.organizationId, current, pairing.secret, machineId, token.claimedPublicKey);
+        yield* recordSealing(token.organizationId, hashEnrollmentToken(pairing.secret), machineId, input.sealing);
       }));
       yield* recordJoined(input.token, machineId, { founder: false });
       yield* reportAttemptCompleted(token.serverEnrollmentId);
@@ -864,6 +867,7 @@ export const completeMachineEnrollment = Effect.fn(
     yield* database.transaction(Effect.gen(function* () {
       yield* commitFounder(token.organizationId, machineId, row.encryptedPairingSecret);
       yield* requireTokenClaimedBy(input.token, machineId);
+      yield* recordSealing(token.organizationId, hashEnrollmentToken(pairing.secret), machineId, input.sealing);
     }));
     // A Cluster Domain that survived teardown points at the founder once the sync reads the runtime frame;
     // completion never sees the founder's IP, and the hourly sync covers a lost event.
@@ -879,6 +883,31 @@ export const completeMachineEnrollment = Effect.fn(
     return { machineId };
   },
 );
+
+/**
+ * Keeps the first Sealing public key a Machine of this pairing generation reports. A later different key is an
+ * error to surface, never a replacement; a Machine without the key is only logged.
+ */
+const recordSealing = Effect.fn("MachineEnrollment.recordSealing")(function* (
+  organizationId: string, clusterKey: string, machineId: MachineId, sealing: EnrollmentCallbackSealing | undefined,
+) {
+  if (sealing === undefined) return;
+  const annotations = { organizationId, machineId };
+  if (sealing.kind === "needs_access") {
+    return yield* Effect.logWarning("A Server joined without its Cluster's Sealing Key.").pipe(Effect.annotateLogs(annotations));
+  }
+  const { drizzle } = yield* Database;
+  yield* drizzle.insert(clusterSealingKey).values({ organizationId, clusterKey, publicKey: sealing.publicKey }).onConflictDoNothing();
+  const [recorded] = yield* drizzle.select({ publicKey: clusterSealingKey.publicKey }).from(clusterSealingKey).where(and(
+    eq(clusterSealingKey.organizationId, organizationId),
+    eq(clusterSealingKey.clusterKey, clusterKey),
+  ));
+  if (recorded !== undefined && recorded.publicKey !== sealing.publicKey) {
+    yield* Effect.logError("A Server reported a Sealing Key unlike the one its Cluster first reported.").pipe(
+      Effect.annotateLogs({ ...annotations, recorded: recorded.publicKey, reported: sealing.publicKey }),
+    );
+  }
+});
 
 const reportAttemptCompleted = Effect.fn("MachineEnrollment.reportAttemptCompleted")(
   function* (serverEnrollmentId: string | null) {

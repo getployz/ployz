@@ -3,7 +3,10 @@ use std::{collections::BTreeMap, io, sync::Arc, time::Duration};
 use tokio_util::sync::CancellationToken;
 
 use super::{Error, MachineView, MachinesSnapshot, ReplicatedStore, store::RuntimeOverlay};
-use crate::machine::{LocalMachineBody, LocalMachineRecord, RecordOwner};
+use crate::{
+    machine::{LocalMachineBody, LocalMachineRecord, RecordOwner},
+    sealing_key::SealingKey,
+};
 
 /// What this Machine observes of itself live: published on its row, never held in
 /// its record.
@@ -142,6 +145,24 @@ pub async fn run_machine_publisher(
                     "failed to publish Cluster network: {error}",
                     error = ployz_core::error_chain::inline(&error),
                 );
+            }
+            match SealingKey::load(local.data_dir()) {
+                Ok(Some(key)) => {
+                    if let Err(error) = replicated
+                        .publish_sealing_public_key(key.public_key())
+                        .await
+                    {
+                        eprintln!(
+                            "failed to publish Sealing public key: {error}",
+                            error = ployz_core::error_chain::inline(&error),
+                        );
+                    }
+                }
+                Ok(None) => {}
+                Err(error) => eprintln!(
+                    "failed to read this Machine's Sealing Key: {error}",
+                    error = ployz_core::error_chain::inline(&error),
+                ),
             }
             let publication = replicated.machine_publication().await;
             let overlay = live.mark_seen();
