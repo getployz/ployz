@@ -2058,3 +2058,25 @@ fn a_project_removal_deletes_no_member_alone() {
             .is_empty()
     );
 }
+
+#[test]
+fn an_environment_its_project_is_removing_cannot_be_protected_midway() {
+    let (store, who) = branched();
+    deploy(&store, &who, "staging", 3, &[]);
+    protect(&store, &who, "production", false);
+    let removing = confirmed(&store, &who, accepting_data(None), &observing(observed())).unwrap();
+    assert!(!left(removing).is_empty());
+
+    let refused = refusal(store.write(
+        &who,
+        &SetEnvironmentProtected {
+            environment: at("production"),
+            protected: true,
+            seen: None,
+        },
+    ));
+    assert_eq!(refused.code, RpcErrorCode::Conflict);
+    assert_eq!(refused.message, "production is being removed");
+    // Unprotecting takes nothing away from a removal, so it still goes.
+    protect(&store, &who, "staging", false);
+}
