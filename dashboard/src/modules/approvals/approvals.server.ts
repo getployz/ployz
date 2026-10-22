@@ -469,7 +469,7 @@ const requestOperationApproval = Effect.fn("Approvals.requestOperation")(functio
   stale: Stale<never> = staleOperation(asked.verb, digest),
 ) {
   const organizationId = caller.organization.id;
-  const operation = { verb: asked.verb, name: asked.name, subject: asked.subject };
+  const operation = { verb: asked.verb, name: asked.name };
   const shown = { effects: asked.effects, operation: { ...operation, preview: asked.preview } };
   const guarded = asked.protected === undefined ? shown : { ...shown, protected: { environment: asked.protected } };
   const review: ApprovalReview = asked.apply === undefined ? guarded : { ...guarded, apply: asked.apply };
@@ -485,7 +485,14 @@ const requestOperationApproval = Effect.fn("Approvals.requestOperation")(functio
     }).onConflictDoUpdate({ ...pending, set: askedAgain(caller, review) }).returning({ id: operationApprovals.id });
     return row ?? (yield* Effect.die("an upsert returned no row"));
   }), stale);
-  const details = { effects: asked.effects, approval: digest, approval_id: recorded.id, operation, organization: caller.organization.slug };
+  // The subject rides in the refusal, not the stored review: approvalView adds it from the row.
+  const details = {
+    effects: asked.effects,
+    approval: digest,
+    approval_id: recorded.id,
+    operation: { ...operation, subject: asked.subject },
+    organization: caller.organization.slug,
+  };
   return {
     code: "approval_required",
     message: `A human must approve this ${asked.verb.replaceAll("_", " ")} of ${asked.name} before it runs.`,
