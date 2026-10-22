@@ -1152,6 +1152,16 @@ async fn a_failed_renewal_keeps_its_material_and_backs_off() {
         .publish_certificate(&hostname, &material, ployz_core::ClusterRoute::Direct)
         .await
         .unwrap();
+    // Another Machine's renewal is presenting its challenge meanwhile.
+    let challenge = super::CertificateChallenge::parse(
+        "LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0",
+        "LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+    )
+    .unwrap();
+    store
+        .publish_certificate_challenge(&hostname, &challenge)
+        .await
+        .unwrap();
     let clock = IssuanceClock::new(1, SystemTime::UNIX_EPOCH, IssuanceFailure::Authority);
     store
         .record_certificate_failure(&hostname, Some(&material), "ACME request failed", clock)
@@ -1159,6 +1169,7 @@ async fn a_failed_renewal_keeps_its_material_and_backs_off() {
         .unwrap();
     let row = store.certificate_row(&hostname).await.unwrap();
     assert_eq!(row.material(), Some(&material));
+    assert_eq!(row.challenge(), Some(&challenge));
     assert_eq!(row.last_error(), Some("ACME request failed"));
     assert_eq!(row.clock(), Some(clock));
 
