@@ -7,12 +7,14 @@ import { hashEnrollmentToken } from "#/modules/machines/enrollment.server";
 import {
   chooseSealingKeyGenerator,
   forgetSealingKeyGenerator,
+  readOrganizationSealingKey,
   readSealingKeyGenerator,
   readSealingPublicKey,
   recordSealingPublicKey,
 } from "#/modules/machines/sealing-key.server";
 import { clusterRead, OrganizationRuntime, withClusterBudget } from "#/modules/runtime/organization-runtime.server";
 import { organizationPairing } from "#/modules/runtime/tables";
+import { AppConfig } from "#/server/config.server";
 import { Database } from "#/server/database.server";
 
 const BACKFILL_CLUSTER_BUDGET_MS = 60_000;
@@ -40,9 +42,11 @@ export const loadSealingBackfillTarget = Effect.fn("SealingBackfill.loadTarget")
   }).from(organizationPairing).where(eq(organizationPairing.organizationId, organizationId));
   if (pairing === undefined || pairing.founderMachineId === null || pairing.removalStartedAt !== null) return null;
   const clusterKey = hashEnrollmentToken(yield* decryptPairingSecret(pairing.encryptedPairingSecret));
+  const expected = (yield* readSealingPublicKey(organizationId, clusterKey))
+    ?? ((yield* AppConfig).sealedVariables ? (yield* readOrganizationSealingKey(organizationId))?.publicKey : undefined);
   return {
     clusterKey,
-    expected: (yield* readSealingPublicKey(organizationId, clusterKey)) ?? null,
+    expected: expected ?? null,
     generator: (yield* readSealingKeyGenerator(organizationId, clusterKey)) ?? null,
   } satisfies SealingBackfillTarget;
 });
