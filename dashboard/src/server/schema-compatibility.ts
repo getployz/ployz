@@ -11,12 +11,14 @@ export class UnsupportedDatabaseSchema extends Data.TaggedError("UnsupportedData
   readonly message: string;
 }> {}
 
-/**
- * A row of Drizzle's history; older rows have no name. Only the last applied row decides: a migration main renamed,
- * folded into its baseline or edited doesn't match this image, but migrations the image ships were applied after it,
- * while a newer image's migrations, even one merged with an older timestamp, were applied last.
- */
+/** A row of Drizzle's history. Older rows have no name. */
 type AppliedMigration = { readonly hash: string; readonly name?: string | null; readonly created_at?: string | number | null };
+
+/**
+ * Migrations main shipped, then renamed and edited, so no image ships their name or hash. Add one here when a
+ * migration that reached main is renamed; one folded into the baseline is older than every shipped migration already.
+ */
+const RETIRED_MIGRATIONS = new Set(["20261011184200_service_act"]);
 
 const histories = [
   { table: "__drizzle_migrations", directory: "." },
@@ -48,19 +50,21 @@ export const assertSchemaCompatible = Effect.fn("Database.assertSchemaCompatible
     const names = new Set(shipped.map(migration => migration.name));
     const hashes = new Set(shipped.map(migration => migration.hash));
     const millis = new Set(shipped.map(migration => Number(migration.folderMillis)));
-    const last = yield* Effect.tryPromise({
+    const oldest = Math.min(...shipped.map(migration => migration.folderMillis));
+    const applied = yield* Effect.tryPromise({
       try: async () => {
         const exists = await client.query<{ present: boolean }>("select to_regclass($1) is not null as present", [`drizzle.${history.table}`]);
-        if (!exists.rows[0]?.present) return undefined;
-        const result = await client.query<{ row: AppliedMigration }>(`select to_jsonb(t) as row from drizzle."${history.table}" t order by id desc limit 1`);
-        return result.rows[0]?.row;
+        if (!exists.rows[0]?.present) return [];
+        const result = await client.query<{ row: AppliedMigration }>(`select to_jsonb(t) as row from drizzle."${history.table}" t`);
+        return result.rows.map(({ row }) => row);
       },
       catch: cause => new SchemaCompatibilityCheckFailure({ cause }),
     });
-    const ships = (migration: AppliedMigration) => migration.name
-      ? names.has(migration.name)
-      : hashes.has(migration.hash) || millis.has(Number(migration.created_at));
-    if (last && !ships(last)) {
+    const explained = (migration: AppliedMigration) =>
+      (migration.name ? names.has(migration.name) || RETIRED_MIGRATIONS.has(migration.name) : millis.has(Number(migration.created_at)))
+      || hashes.has(migration.hash)
+      || Number(migration.created_at) < oldest;
+    if (!applied.every(explained)) {
       return yield* new UnsupportedDatabaseSchema({
         message: `Ployz Cloud image ${imageVersion} does not ship all migrations recorded in drizzle.${history.table}. Use a newer Ployz Cloud image.`,
       });

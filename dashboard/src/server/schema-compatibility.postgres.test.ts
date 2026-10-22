@@ -51,16 +51,41 @@ it("accepts a shipped migration whose file was edited after it was applied", asy
   }
 });
 
-it("accepts history for a migration the image renamed or folded into its baseline", async () => {
-  // Applied before the migrations the image still ships, as a renamed or folded migration was.
-  await harness.pool.query("insert into drizzle.__drizzle_migrations (id, hash, created_at, name) values (-1, $1, $2, $3)", [
-    "a-migration-main-renamed", Date.UTC(2026, 9, 11, 18, 42), "20261011184200_service_act",
-  ]);
+/** Inserts history rows for one test and removes them after. */
+async function withRows(rows: readonly { id?: number; hash: string; createdAt: number; name: string }[], body: () => Promise<void>) {
+  for (const row of rows) {
+    await harness.pool.query("insert into drizzle.__drizzle_migrations (id, hash, created_at, name) values (coalesce($1, nextval(pg_get_serial_sequence('drizzle.__drizzle_migrations', 'id'))), $2, $3, $4)", [
+      row.id ?? null, row.hash, row.createdAt, row.name,
+    ]);
+  }
+  try {
+    await body();
+  } finally {
+    await harness.pool.query("delete from drizzle.__drizzle_migrations where hash = any($1)", [rows.map((row) => row.hash)]);
+  }
+}
+
+it("accepts history for a migration main retired, or folded into the image's baseline", async () => {
+  await withRows([
+    { hash: "retired-service-act", createdAt: Date.UTC(2026, 9, 11, 18, 42), name: "20261011184200_service_act" },
+    { hash: "folded-into-baseline", createdAt: Date.UTC(2026, 8, 25), name: "20260925000000_folded" },
+  ], () => expect(check()).resolves.toBeUndefined());
+});
+
+it("accepts the last applied migration under its old name when the image ships it renamed", async () => {
+  const { rows: [last] } = await harness.pool.query<{ id: number; name: string }>("select id, name from drizzle.__drizzle_migrations order by id desc limit 1");
+  await harness.pool.query("update drizzle.__drizzle_migrations set name = '20990101000000_old_name' where id = $1", [last?.id]);
   try {
     await expect(check()).resolves.toBeUndefined();
   } finally {
-    await harness.pool.query("delete from drizzle.__drizzle_migrations where hash = $1", ["a-migration-main-renamed"]);
+    await harness.pool.query("update drizzle.__drizzle_migrations set name = $2 where id = $1", [last?.id, last?.name]);
   }
+});
+
+it("refuses a newer image's migration applied before migrations this image ships", async () => {
+  await withRows([
+    { id: -1, hash: "newer-image-between-two-shipped", createdAt: Date.UTC(2026, 9, 1), name: "20261001000000_not_shipped" },
+  ], () => expect(check()).rejects.toThrow(/Use a newer Ployz Cloud image/));
 });
 
 it("refuses a migration merged out of order that the image doesn't ship, applied after its own", async () => {
