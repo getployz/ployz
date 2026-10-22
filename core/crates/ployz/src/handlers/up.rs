@@ -1,8 +1,8 @@
 //! `ployz up`: from the directory it runs in to a running app. It adds a Server
 //! first when asked (the Organization's first founds its Cluster), creates a
 //! Project named after the directory unless one is linked or named, links the
-//! directory, gives an Environment without Services one (with a generated domain
-//! on Cloud), then uploads the directory, deploys it and prints its URLs.
+//! directory, gives an Environment with no Service to build the upload one (with a
+//! generated domain on Cloud), then uploads the directory, deploys it and prints its URLs.
 
 use std::path::Path;
 
@@ -10,8 +10,8 @@ use clap::{ArgMatches, Command, ValueHint};
 use ployz_core::{DockerfileFacts, RpcErrorCode, ServiceName};
 use ployz_store::{
     AddDomain, Change, CreateProject, CreateService, DeploymentView, DomainName, DomainsQuery,
-    Edit, EnvironmentId, EnvironmentRef, ProjectId, ProjectName, ServiceLineageId, ServicesQuery,
-    SettingPath,
+    Edit, EnvironmentId, EnvironmentRef, ProjectId, ProjectName, ServiceLineageId, ServiceListing,
+    ServicesQuery, SettingPath, SourceKind,
 };
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -79,7 +79,7 @@ pub(super) fn up(root: &ArgMatches) -> Result<(), Error> {
         project: Some(listed.environment.project.clone()),
         environment: Some(listed.environment.name.clone()),
     };
-    if listed.services.is_empty() {
+    if let Some(name) = service_for_upload(&listed.services, name)? {
         add_service(&store, &environment, name, &directory)?;
     }
     let identity = super::link::identity(&store)?;
@@ -251,6 +251,27 @@ fn add_service(
     Ok(())
 }
 
+/// The Service to add so the upload builds: none when one already builds from an
+/// upload or has no source yet, else `name`. A Service already named `name` that
+/// pulls an image or builds from Git is refused, since the upload would build nothing.
+fn service_for_upload(
+    services: &[ServiceListing],
+    name: ServiceName,
+) -> Result<Option<ServiceName>, Error> {
+    if services
+        .iter()
+        .any(|listed| matches!(listed.source, SourceKind::Uploaded | SourceKind::Empty))
+    {
+        return Ok(None);
+    }
+    if services.iter().any(|listed| listed.service.name == name) {
+        return Err(Error::usage(format!(
+            "Nothing would build this directory: Service {name} pulls an image or builds from Git, and no Service builds from an upload. Add one with `ployz service add <name>` and no --image, then run ployz up again."
+        )));
+    }
+    Ok(Some(name))
+}
+
 /// Refuse a directory with nothing to upload before anything is created.
 fn refuse_empty(directory: &Path) -> Result<(), Error> {
     let listing = crate::build::UploadListing::read(directory)
@@ -303,6 +324,49 @@ mod tests {
         ] {
             assert_eq!(directory_name(Path::new(directory)).as_str(), name);
         }
+    }
+
+    fn listed(name: &str, source: SourceKind) -> ServiceListing {
+        serde_json::from_value(json!({
+            "id": "00000000-0000-4000-8000-000000000003",
+            "name": name,
+            "private_dns": name,
+            "row": "00000000-0000-4000-8000-000000000003:node",
+            "source": source,
+            "change": null,
+            "template": null,
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn an_existing_project_without_an_uploaded_service_gets_one() {
+        // #2863: a Project holding only an image Service built nothing and said "Nothing changed".
+        let name = || ServiceName::parse("my-app").unwrap();
+        assert_eq!(service_for_upload(&[], name()).unwrap(), Some(name()));
+        assert_eq!(
+            service_for_upload(&[listed("db", SourceKind::Image)], name()).unwrap(),
+            Some(name())
+        );
+        assert_eq!(
+            service_for_upload(&[listed("api", SourceKind::Git)], name()).unwrap(),
+            Some(name())
+        );
+        for source in [SourceKind::Uploaded, SourceKind::Empty] {
+            let services = [listed("db", SourceKind::Image), listed("web", source)];
+            assert_eq!(service_for_upload(&services, name()).unwrap(), None);
+        }
+    }
+
+    #[test]
+    fn a_taken_name_that_builds_nothing_from_the_upload_is_refused() {
+        let error = service_for_upload(
+            &[listed("my-app", SourceKind::Image)],
+            ServiceName::parse("my-app").unwrap(),
+        )
+        .unwrap_err();
+        assert_eq!(error.report().code, RpcErrorCode::InvalidArgument);
+        assert!(error.to_string().contains("ployz service add"), "{error}");
     }
 
     #[test]
