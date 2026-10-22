@@ -140,6 +140,20 @@ installation back to the first Callback URL.
 > `ployz-cloud-self-host_postgres-data`. It encrypts the credentials Ployz Cloud stores, so a new
 > value makes them unreadable.
 
+### More than one install on a host
+
+Compose uses `ployz-cloud-self-host` as the project name, even in another directory.
+A second copy with that name replaces the first install's containers and reuses its database.
+Before starting a second install, set a unique `COMPOSE_PROJECT_NAME` in its `.env`, such as
+`COMPOSE_PROJECT_NAME=ployz-staging`. Compose uses it instead of the name in `compose.yml`.
+Set a different `WEB_PORT` too, and change or remove the `inngest` service's host port `8288`
+in the second compose file.
+
+Keep the project name unchanged for an existing install. Changing it selects a different
+volume and makes the database appear empty. With a custom name, back up
+`<COMPOSE_PROJECT_NAME>_postgres-data` and use the network `<COMPOSE_PROJECT_NAME>_default`
+for a containerized proxy. The default names below still apply when you leave it unset.
+
 ## 3. Start it
 
 1. Create the database tables, then start everything:
