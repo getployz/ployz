@@ -1315,6 +1315,96 @@ it.live(
 );
 
 /**
+ * Removes Cloud's dial entry `machine-0` while `machine-1` is listed beside it. Dialing `machine-1` reaches it only when
+ * `otherAnswers`; entering through `machine-0` refuses its own removal as the Engine does.
+ */
+const removeDialEntry = Effect.fn(function* (otherAnswers: boolean) {
+  const alice = yield* signUp("alice");
+  const caller = yield* resolveCaller(signedIn(alice));
+  const organizationId = caller.organization.id;
+  yield* enrollStoreServer(organizationId);
+  const machineId = ids.machineId("0");
+  const other = ids.machineId("1");
+  const { drizzle } = yield* Database;
+  const encryption = yield* SecretEncryption;
+  const [enrolled] = yield* drizzle.select().from(organizationMachine);
+  if (!enrolled) return assert.fail("no Server enrolled");
+  yield* drizzle.insert(organizationMachine).values({
+    ...enrolled, machineId: other, isDialEntry: false, encryptedCapability: encryption.encrypt("ployz1:other"),
+  });
+  const frame = {
+    machines: [
+      { machine: { id: machineId, name: "machine-0", runtime: {} }, membership: "up" },
+      { machine: { id: other, name: "machine-1", runtime: {} }, membership: "up" },
+    ],
+    containers: [],
+  };
+  const sent: string[] = [];
+  const through = (entry: MachineId) => asTestDouble<PloyzSession>()({
+    watchFirstFrame: () => Effect.succeed(frame),
+    removeMachine: (target: string) => Effect.suspend(() => {
+      sent.push(`${target} through ${entry}`);
+      return target === entry
+        ? Effect.fail(new PloyzProviderError({
+          operation: "remove machine",
+          cause: { code: "invalid_argument", message: "the current entry Machine cannot be removed while another Machine is visible" },
+        }))
+        : Effect.succeed({ reset_warning: null });
+    }),
+  });
+  const runtime = {
+    cancel: () => Effect.void,
+    open: (_organizationId: string, entry?: { readonly only: MachineId } | { readonly avoiding: MachineId }) =>
+      Effect.succeed(entry !== undefined && "avoiding" in entry && entry.avoiding === machineId
+        ? otherAnswers
+          ? { status: "connected" as const, connected: through(other) }
+          : { status: "unreachable" as const, error: null }
+        : { status: "connected" as const, connected: through(machineId) }),
+  };
+  const removal = { organizationId, machineId, serverName: null, confirmDataLoss: [], noReset: false };
+  const attempt = yield* requestMachineRemoveAttempt({ ...removal, requestedByUserId: caller.userId });
+  const inngestRunId = "run-dial-entry";
+  yield* prepareMachineRemoveAttemptActivity({ attemptId: attempt.id, inngestRunId, now: new Date() });
+  const removed = yield* Effect.exit(Effect.scoped(removeMachineActivity({ ...removal, id: attempt.id, inngestRunId }))
+    .pipe(Effect.provideService(OrganizationRuntime, runtime)));
+  return { removed, sent, machineId, other };
+});
+
+it.live(
+  "removing Cloud's dial entry while another Server is listed enters through the other Server",
+  () =>
+    Effect.gen(function* () {
+      const cloud = yield* cloudServices();
+      yield* Effect.gen(function* () {
+        const { removed, sent, machineId, other } = yield* removeDialEntry(true);
+        assert.deepStrictEqual(sent, [`${machineId} through ${other}`]);
+        if (!Exit.isSuccess(removed)) return assert.fail(`removal failed: ${Cause.pretty(removed.cause)}`);
+        assert.strictEqual(removed.value.kind, "removed");
+      }).pipe(Effect.provide(cloud));
+    }),
+  60_000,
+);
+
+it.live(
+  "a Server Cloud reaches only through itself refuses its removal at once while another is listed, sending nothing",
+  () =>
+    Effect.gen(function* () {
+      const cloud = yield* cloudServices();
+      yield* Effect.gen(function* () {
+        const { removed, sent } = yield* removeDialEntry(false);
+        assert.deepStrictEqual(sent, []);
+        if (!Exit.isSuccess(removed)) return assert.fail(`removal failed: ${Cause.pretty(removed.cause)}`);
+        if (removed.value.kind !== "refused") return assert.fail(`not refused: ${removed.value.kind}`);
+        assert.strictEqual(removed.value.failureCode, "conflict");
+        assert.match(removed.value.message, /machine-0 can't carry its own removal/);
+        assert.match(removed.value.message, /machine-1/);
+        assert.notMatch(removed.value.message, /forget machine-0/i);
+      }).pipe(Effect.provide(cloud));
+    }),
+  60_000,
+);
+
+/**
  * A retried removal whose Server the Cluster already forgot: the SDK answers removed with this warning (ployz
  * `RESET_UNCONFIRMED`), and the Server keeps one device key. `others` Servers of the same pairing stay enrolled.
  */
