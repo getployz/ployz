@@ -317,6 +317,8 @@ impl Client {
         let deadline = timeout.map(|timeout| tokio::time::Instant::now() + timeout);
         // A reply on an earlier attempt means the target was not silent throughout.
         let mut reply: Option<ConnectError> = None;
+        // An earlier attempt that went out and lost its answer may have been done.
+        let mut lost: Option<ConnectError> = None;
         loop {
             let outcome = match deadline {
                 Some(deadline) => {
@@ -334,18 +336,20 @@ impl Client {
             };
             let error = crate::connect::keep_target_reply(&mut reply, error);
             if error.retry() != ployz_core::Retry::Now {
-                return Err(error);
+                return Err(crate::connect::keep_lost_call(lost, error));
             }
             let Some(delay) = delays.next() else {
-                return Err(error);
+                return Err(crate::connect::keep_lost_call(lost, error));
             };
             if deadline.is_some_and(|deadline| tokio::time::Instant::now() + delay >= deadline) {
-                return Err(error);
+                return Err(crate::connect::keep_lost_call(lost, error));
             }
             tokio::time::sleep(delay).await;
             redial = true;
             if error.target_replied() {
                 reply = Some(error);
+            } else if error.unreplied() {
+                lost = Some(error);
             }
         }
     }
