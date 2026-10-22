@@ -151,6 +151,99 @@ fn retiring_hostname_winner_does_not_hide_another_namespaces_claim() {
 }
 
 #[test]
+fn one_deploy_moves_a_hostname_from_the_service_that_drops_it() {
+    let (web, api) = handover_specs();
+    let snapshot = snapshot_with(vec![container('c', '1', &custom_web(), &service_id('a'))]);
+    let plan = plan_ingress([&web, &api], &snapshot)
+        .expect("the Service that publishes the hostname drops it in this Deploy");
+    assert!(plan.warnings.is_empty());
+    assert_eq!(
+        plan.dependencies,
+        vec![(api.name.clone(), web.name.clone())],
+        "the Service gaining the hostname is published before the one dropping it"
+    );
+    let gainer_starts = first_operation(&plan, "api");
+    let dropper_replaces = first_operation(&plan, "web");
+    assert!(gainer_starts < dropper_replaces, "{:?}", operations(&plan));
+}
+
+#[test]
+fn a_service_that_keeps_its_hostname_still_blocks_another_in_the_same_deploy() {
+    let web = custom_web();
+    let mut api = custom_web();
+    api.name = ServiceName::parse("api").unwrap();
+    let snapshot = snapshot_with(vec![container('c', '1', &web, &service_id('a'))]);
+    assert_eq!(
+        plan_ingress([&web, &api], &snapshot).unwrap_err(),
+        PlanError::HostnameConflict {
+            hostname: IngressHost::parse("api.example.com").unwrap(),
+            owner: QualifiedService::parse("app/web").unwrap(),
+        }
+    );
+}
+
+#[test]
+fn a_handover_to_a_service_that_depends_on_the_dropper_keeps_the_declared_order() {
+    let (web, api) = handover_specs();
+    let snapshot = snapshot_with(vec![container('c', '1', &custom_web(), &service_id('a'))]);
+    let intent = DeployIntent::apply_all(
+        Namespace::parse("app").unwrap(),
+        [&web, &api],
+        PlanOptions::default(),
+    )
+    .with_dependencies(BTreeMap::from([(
+        api.name.clone(),
+        vec![ployz_core::ServiceDependency {
+            service: web.name.clone(),
+            condition: ployz_core::DependencyCondition::ServiceStarted,
+        }],
+    )]));
+    let plan = preview_deploy(&intent, &snapshot)
+        .expect("a declared dependency on the dropper is not a cycle");
+    assert_eq!(
+        plan.dependencies,
+        vec![(web.name.clone(), api.name.clone())]
+    );
+    assert!(first_operation(&plan, "web") < first_operation(&plan, "api"));
+}
+
+#[test]
+fn a_handover_does_not_hide_another_namespaces_claim() {
+    let (web, api) = handover_specs();
+    let snapshot = snapshot_with(vec![
+        container('c', '1', &custom_web(), &service_id('a')),
+        other_namespace_container(&custom_web(), 1),
+    ]);
+    assert_eq!(
+        plan_ingress([&web, &api], &snapshot).unwrap_err(),
+        PlanError::HostnameConflict {
+            hostname: IngressHost::parse("api.example.com").unwrap(),
+            owner: QualifiedService::parse("blog/web").unwrap(),
+        }
+    );
+}
+
+/// `web` publishes `api.example.com` today and drops it; `api` takes it.
+fn handover_specs() -> (RequestedServiceSpec, RequestedServiceSpec) {
+    let mut web = custom_web();
+    web.ports.clear();
+    let mut api = custom_web();
+    api.name = ServiceName::parse("api").unwrap();
+    (web, api)
+}
+
+fn first_operation(plan: &DeployPreview, service: &str) -> usize {
+    plan.operations
+        .iter()
+        .position(|row| {
+            row.service_name
+                .as_ref()
+                .is_some_and(|name| name.as_str() == service)
+        })
+        .unwrap_or_else(|| panic!("{service} has an operation in {:?}", operations(plan)))
+}
+
+#[test]
 fn incomplete_snapshot_without_a_visible_publisher_warns_that_detection_is_observer_relative() {
     for spec in [custom_web(), named_web("web.example.com")] {
         let snapshot = DeploySnapshot {

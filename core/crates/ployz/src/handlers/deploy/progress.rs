@@ -1226,6 +1226,41 @@ mod tests {
     }
 
     #[test]
+    fn a_refusal_the_same_deploy_cannot_get_past_prints_no_retry_line() {
+        let reason = "hostname app.example.com is already published by shop-production/web";
+        let mut view = view();
+        view.deployment.outcome = Some(
+            serde_json::from_value(json!({
+                "type": "not_executed", "reason": reason, "cause": [], "code": "invalid_argument"
+            }))
+            .unwrap(),
+        );
+        view.nodes.clear();
+        let failure = failure(&view, &["api"], command);
+        assert!(failure.to_string().contains(reason), "{failure}");
+        assert_eq!(hints(&failure), Vec::<String>::new());
+    }
+
+    #[test]
+    fn a_refusal_that_may_pass_next_time_keeps_the_retry_line() {
+        let mut view = view();
+        view.nodes.clear();
+        for code in [Some("unavailable"), None] {
+            view.deployment.outcome = Some(
+                serde_json::from_value(json!({
+                    "type": "not_executed", "reason": "Server edge did not answer", "cause": [], "code": code
+                }))
+                .unwrap(),
+            );
+            assert_eq!(
+                hints(&failure(&view, &[], command)),
+                ["retry: ployz deploy --project shop --env production"],
+                "{code:?}"
+            );
+        }
+    }
+
+    #[test]
     fn a_failed_named_deploy_retries_the_services_it_named() {
         let mut view = view();
         view.deployment.services = ["web", "api"]
