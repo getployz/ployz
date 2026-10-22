@@ -64,6 +64,22 @@ pub(super) fn login(root: &ArgMatches) -> Result<(), Error> {
         .cloned()
         .or(stored)
         .unwrap_or_else(|| DEFAULT_CLOUD.to_owned());
+    if let Some((scheme, _)) = cloud.split_once("://")
+        && !["http", "https"].contains(&scheme.to_ascii_lowercase().as_str())
+    {
+        let named = match matches.value_source("cloud-url") {
+            Some(clap::parser::ValueSource::EnvVariable) => env::CLOUD_URL,
+            Some(_) => "--cloud-url",
+            None => {
+                return Err(Error::usage(format!(
+                    "The stored Cloud {cloud} is not an http:// or https:// URL; name one with --cloud-url"
+                )));
+            }
+        };
+        return Err(Error::usage(format!(
+            "{named} takes a host such as ployz.dev, or an http:// or https:// URL, not {cloud}"
+        )));
+    }
     let wait = matches.get_flag("wait") || !crate::ui::json();
     runtime()?.block_on(async {
         let (pending, resumed) = match cloud_login::start(&store, &cloud).await? {

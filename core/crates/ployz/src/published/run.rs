@@ -368,12 +368,7 @@ fn items_of(schema: &Value) -> &Value {
 }
 
 fn label(name: &str) -> String {
-    let mut label = name.replace('_', " ");
-    if let Some(first) = label.get(..1) {
-        let first = first.to_uppercase();
-        label.replace_range(..1, &first);
-    }
-    label
+    name.replace('_', " ")
 }
 
 fn cell(value: Option<&Value>, schema: &Value) -> String {

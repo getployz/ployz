@@ -33,6 +33,7 @@ your entered directory if a write fails.
 
 The limit starts at 5 GB. A volume can't grow past it: once it's full, writes fail. The whole
 limit is set aside on the server's disk, so a deploy fails if no server has room for it.
+`--size` refuses a limit under 0.1 GB, whether you add a volume or change one.
 
 You can change the limit in the volume's **Settings**, under **Space**, or with
 `ployz volume set data --size 10`, until a deploy starts creating the volume. A deploy that
@@ -212,13 +213,21 @@ Volume data was deployed, but no Server in this Cluster holds a copy of it. If a
 To start over with an empty volume instead, remove it with `ployz volume rm data`, which deletes
 its data, add it again and deploy.
 
-Without Ployz Cloud, `ployz volume restore` is not available, so the reason says so instead of
-printing it. Adding a removed server back keeps its copy; making that copy the writer needs
-Ployz Cloud, and starting over empty is the same `ployz volume rm data`:
+Without Ployz Cloud, `ployz volume restore` runs from the CLI, and the reason prints the same
+line. It asks every server what it holds first, and it refuses while one of them doesn't answer,
+since a copy there could become a second writer. It also refuses while another server holds a
+copy, because a restore needs the only one, and while a server holding a copy runs a Ployz too old
+for it. Then it makes the copy the writer and names the
+snapshot it restored from:
 
 ```
-Volume data has no writer; web-2 holds its only copy, and making it the writer needs Ployz Cloud. To start over with an empty Volume, run ployz volume rm data, which deletes its data, then add it again and deploy
+$ ployz volume restore data --from web-2
+Restored data on web-2 from 2026-10-22 20:58:27 UTC; writes after that time are lost.
+Deploy to start the Services that use it.
+next: ployz deploy
 ```
+
+Run it again and it says `data's writer is already on web-2; nothing to restore.` and exits 0.
 
 In Ployz Cloud, when the surviving copy is a mirror, the volume's **Copies** lists it and
 **Use mirror** stages the same restore for your next deploy. An old copy gets no button there:
@@ -232,9 +241,9 @@ no `ployz volume mirror rm` line for them, because such a line run later could d
 has since become the mirror. A volume that is [mid-move](../troubleshooting/volumes.md#a-move-failed-partway) blocks its service too, and names the
 `ployz volume release` line that stops the move. A move that stopped before its first snapshot
 has nothing to release, so it names the `ployz volume move` line that runs the move again.
-Without Ployz Cloud, several copies get the same `ployz volume rm data` to start over empty, and
-the error says that making one of them the writer needs Ployz Cloud. A mid-move volume says only
-that stopping the move needs Ployz Cloud.
+Without Ployz Cloud, the error for several copies says to keep the newest, remove each other
+server from the Cluster with `ployz server rm`, which takes its services off it too, then run
+`ployz volume restore`. Or start over empty with `ployz volume rm data`. A mid-move volume says only that stopping the move needs Ployz Cloud.
 
 Services that share a volume are blocked together: when any volume one of them mounts can't be
 mounted, all of them are blocked with that reason, and so is every service that depends on one of

@@ -546,7 +546,7 @@ fn no_reachable_server(
         .collect::<Vec<_>>();
     let message = match shown.as_slice() {
         // This CLI's own connection to it failed: Cloud reached it to hand that over.
-        [one] if cause.is_some() => crate::connect::not_answering(one),
+        [one] if let Some(cause) = &cause => crate::connect::not_answering(one, relayed(cause)),
         [one] => format!(
             "Server {one} isn't answering. If it just joined or restarted, try again in a moment."
         ),
@@ -563,6 +563,11 @@ fn no_reachable_server(
     )
 }
 
+/// Whether `error` is a connection whose last try went through Ployz Cloud's relay.
+fn relayed(error: &ConnectError) -> bool {
+    matches!(error, ConnectError::AllFailed { relayed: true, .. })
+}
+
 /// Whether `report` is [`no_reachable_server`]'s: Servers Cloud knows that didn't answer,
 /// and none that refused.
 pub(super) fn servers_unanswered(report: &RpcError) -> bool {
@@ -572,8 +577,11 @@ pub(super) fn servers_unanswered(report: &RpcError) -> bool {
 }
 
 /// The Servers of a Cluster none of whose Servers answered, by name where the failure
-/// says which; empty when it doesn't.
-pub(super) struct Silent(Vec<String>);
+/// says which, empty when it doesn't, and whether it asked through Ployz Cloud's relay.
+pub(super) struct Silent {
+    names: Vec<String>,
+    relayed: bool,
+}
 
 impl Silent {
     /// Whether `error` is a connection no Server answered: Servers Cloud knows that
@@ -583,52 +591,71 @@ impl Silent {
         let report = error.report();
         if servers_unanswered(&report) {
             let names = report.details.get("servers").and_then(Value::as_array);
-            return Some(Self(
-                names
+            return Some(Self {
+                names: names
                     .into_iter()
                     .flatten()
                     .filter_map(|name| Some(name.as_str()?.to_owned()))
                     .collect(),
-            ));
+                // With no connection of its own to try, this CLI asked Cloud.
+                relayed: error.connect_error().is_none_or(relayed),
+            });
         }
         let ConnectError::AllFailed {
             reached: false,
             attempts,
             server,
+            relayed,
             ..
         } = error.connect_error()?
         else {
             return None;
         };
         // With more than one connection, the one Server named is only the last tried.
-        Some(Self(if *attempts == 1 {
-            server.iter().cloned().collect()
-        } else {
-            Vec::new()
-        }))
+        Some(Self {
+            names: if *attempts == 1 {
+                server.iter().cloned().collect()
+            } else {
+                Vec::new()
+            },
+            relayed: *relayed,
+        })
     }
 
     pub(super) fn names(&self) -> &[String] {
-        &self.0
+        &self.names
     }
 
     /// What to check, for the Server or Servers named.
     pub(super) fn next(&self) -> &'static str {
-        match self.0.as_slice() {
-            [_] => "Check that its Ployz daemon is running.",
-            _ => "Check that the Ployz daemon is running on your Servers.",
+        match (self.names.as_slice(), self.relayed) {
+            ([_], false) => "Check that its Ployz daemon is running.",
+            (_, false) => "Check that the Ployz daemon is running on your Servers.",
+            ([_], true) => {
+                "Check that it is online, its Ployz daemon is running, and its outgoing https \
+                 isn't filtered."
+            }
+            (_, true) => {
+                "Check that your Servers are online, their Ployz daemon is running, and their \
+                 outgoing https isn't filtered."
+            }
         }
     }
 }
 
 impl std::fmt::Display for Silent {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self.0.as_slice() {
-            [] => formatter.write_str("No Server is answering"),
-            [one] => write!(formatter, "Server {one} isn't answering"),
+        let through = if self.relayed {
+            " through Ployz Cloud"
+        } else {
+            ""
+        };
+        match self.names.as_slice() {
+            [] => write!(formatter, "No Server is answering{through}"),
+            [one] => write!(formatter, "Server {one} isn't answering{through}"),
             many => write!(
                 formatter,
-                "None of your Servers is answering ({})",
+                "None of your Servers is answering{through} ({})",
                 super::joined(many)
             ),
         }
@@ -785,6 +812,9 @@ async fn apply_update(
     recovery: ArgMatches,
 ) -> Result<(), Error> {
     let accepts_ingress = update.accepts_ingress;
+    let public_ip_removed = update.public_ip == PublicIpUpdate::Remove;
+    // Setting or clearing the public IP pins it, so daemon start no longer looks one up.
+    let public_ip_pinned = update.public_ip != PublicIpUpdate::Keep;
     let updated = client
         .invoke_answered::<op::UpdateMachine>(
             UpdateMachineRequest { update },
@@ -828,11 +858,25 @@ async fn apply_update(
         (Err((_, error)), _) => return Err(error.into()),
     };
     crate::ui::stream(format_args!("Updated Server {}.", machine.name));
+    let next =
+        public_ip_removed.then(|| format!("ployz server set {} --public-ip IP", machine.name));
+    if let Some(next) = &next {
+        crate::ui::stream(format_args!(
+            "Server {} advertises no public IP now, and Ployz won't look one up.",
+            machine.name
+        ));
+        crate::ui::hint(&Hint::Next(next.clone()));
+    }
     // The update is committed; starting the Ingress Proxy for a new ingress role is a
     // follow-up. Turning the role off leaves the proxy serving: Hosted DNS stops
     // advertising the Server at its next sync, and `server rm` stops the proxy.
     if accepts_ingress != Some(true) {
-        return crate::ui::emit(&json!({ "server": server_json(&machine), "endpoint": seeding }));
+        return crate::ui::emit(&json!({
+            "server": server_json(&machine),
+            "endpoint": seeding,
+            "public_ip_pinned": public_ip_pinned,
+            "next": next,
+        }));
     }
     let followed = async {
         crate::cluster::wait_for_role(
@@ -855,6 +899,8 @@ async fn apply_update(
         json!({
             "server": server_json(&machine),
             "endpoint": seeding,
+            "public_ip_pinned": public_ip_pinned,
+            "next": next,
             "ingress": followed.as_ref().ok().and_then(Option::as_ref),
         }),
         followed.map(drop).map_err(|error| {
@@ -884,11 +930,7 @@ fn parse_update(matches: &ArgMatches) -> Result<MachineUpdate, Error> {
     let public_ip = match matches.get_one::<String>("public-ip").map(String::as_str) {
         None => PublicIpUpdate::Keep,
         Some("") | Some("none") => PublicIpUpdate::Remove,
-        Some(value) => PublicIpUpdate::Set(
-            value
-                .parse::<IpAddr>()
-                .map_err(|_| Error::usage(format!("invalid public IP {value:?}")))?,
-        ),
+        Some(value) => PublicIpUpdate::Set(helpers::public_ip(value)?),
     };
     let build_concurrency = match matches
         .get_one::<String>("build-concurrency")
@@ -1195,6 +1237,56 @@ mod tests {
     }
 
     #[test]
+    fn a_public_ip_nobody_can_reach_is_refused() {
+        let set = |ip: &str| {
+            let matches = crate::cli::command()
+                .try_get_matches_from(["ployz", "server", "set", "node-a", "--public-ip", ip])
+                .unwrap();
+            parse_update(leaf_matches(&matches)).map(|update| update.public_ip)
+        };
+        let add = |ip: &str| {
+            let matches = crate::cli::command()
+                .try_get_matches_from(["ployz", "server", "add", "root@node-a", "--public-ip", ip])
+                .unwrap();
+            helpers::token_request(leaf_matches(&matches)).map(|_| ())
+        };
+        for unreachable in [
+            "0.0.0.0",
+            "::",
+            "127.0.0.1",
+            "::1",
+            "169.254.1.1",
+            "fe80::1",
+            "224.0.0.1",
+            "ff02::1",
+            "255.255.255.255",
+            "::ffff:127.0.0.1",
+        ] {
+            let refused = set(unreachable).unwrap_err();
+            assert_eq!(
+                refused.report().code,
+                RpcErrorCode::InvalidArgument,
+                "{unreachable}"
+            );
+            assert!(refused.to_string().contains(unreachable), "{refused}");
+            assert!(add(unreachable).is_err(), "{unreachable}");
+        }
+        for allowed in [
+            "203.0.113.9",
+            "2001:db8::9",
+            "10.0.0.5",
+            "192.168.1.2",
+            "fd00::5",
+        ] {
+            assert_eq!(
+                set(allowed).unwrap(),
+                PublicIpUpdate::Set(allowed.parse().unwrap())
+            );
+            assert!(add(allowed).is_ok(), "{allowed}");
+        }
+    }
+
+    #[test]
     fn set_cli_rejects_an_empty_patch_and_maps_none_to_public_ip_removal() {
         let command = crate::cli::command();
         let empty = command
@@ -1403,6 +1495,25 @@ mod tests {
             format!("None of your Servers is answering (web-1, {gone})")
         );
         assert_eq!(both.names(), ["web-1".to_owned(), gone]);
+    }
+
+    #[test]
+    fn a_server_silent_through_cloud_may_be_offline_or_filtered() {
+        let error = Error::from(ConnectError::AllFailed {
+            selection: crate::context::ConnectionSource::Cloud,
+            attempts: 1,
+            server: Some("machine-1".into()),
+            relayed: true,
+            retry: ployz_core::Retry::AfterRestart,
+            reached: false,
+            last: None,
+        });
+        let silent = Silent::of(&error).expect("no Server answered");
+        assert_eq!(
+            format!("{silent}. {}", silent.next()),
+            "Server machine-1 isn't answering through Ployz Cloud. Check that it is online, its \
+             Ployz daemon is running, and its outgoing https isn't filtered."
+        );
     }
 
     #[tokio::test]

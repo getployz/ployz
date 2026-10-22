@@ -347,7 +347,11 @@ deploy would reach answers. With `--json` these are the `attention` rows; that o
 status makes to check your servers (below), not a separate one. A server that accepts the
 connection but never answers takes 5 seconds to give up on, and status tries each server once.
 A check that can't finish adds no row. Instead it warns why, naming the servers that didn't
-answer when it knows them, so no row doesn't prove a server answered. A context or `--connect` that reaches Ployz on this server
+answer when it knows them, so no row doesn't prove a server answered. Status then exits 3, as it
+does when a server is down or didn't answer, so a script can tell its servers weren't all checked.
+A server that never joined shows as **Down** too, but it doesn't make status exit 3, since it never
+ran anything to miss. Take it out with `ployz server forget`.
+While a deployment runs, status skips the copy check on purpose, and that alone doesn't make it exit 3. A context or `--connect` that reaches Ployz on this server
 through its local socket never gets this row; the **this server** line covers it. Signed in to Cloud, status asks
 Cloud for server access once per run. The first `ployz status` or other server command for a
 sign-in or token also waits while Cloud sets up your access on each server.
@@ -397,6 +401,16 @@ every server answered and none is down, since a replica on a server it can't see
 A global service whose placement no server matches has no replicas, and deploying it again
 places none, so the line stays until you change its placement or a server's labels.
 
+When a replica is running but no deploy brought it into routing, it takes no traffic. That
+happens when a deploy created it but didn't finish, for example because the connection to its
+server dropped, or when Cloud moved a stopped service's volume. `ployz status` names it, like
+`web = 1 copy no deploy brought into routing takes no traffic. web-1 running, unhealthy.`
+With `--json` the row has reason `copies_left_pending`, the `service`, and `copies` in the same
+shape as above. Its `next` is `ployz deploy web`, which removes a replica a failed deploy left.
+When you removed the service from your config but haven't deployed since,
+`next` is plain `ployz deploy`. A replica on a down server isn't named. While a server joins, or
+Cloud moves a volume, a replica that's still starting can be named until it's in routing.
+
 This check has limits:
 
 - A replica removed outside Ployz, for example with `docker rm`, is unseen, so status can't name
@@ -440,7 +454,7 @@ Scripts can tell failures apart by exit code:
 | 0 | Done. |
 | 1 | It failed: something wasn't found, a server couldn't be reached, a deploy failed, Ployz refused, the server or Cloud doesn't support what you asked, or the output couldn't be written, as with `> /dev/full`. |
 | 2 | Fix the command: a bad argument, a flag the command doesn't take, a missing `--confirm`, or a name that matches more than one thing. |
-| 3 | You got a result, but part of it is missing or didn't happen: some servers didn't answer, the output stopped partway, or some work couldn't be done. Examples: a `ployz server drain` that leaves a service where it is because no other server can take it, a `ployz env rm`, `ployz project rm` or `ployz env shutdown` whose removal didn't finish, a deploy that applied but couldn't see every server or left an old container running, or a deploy a newer one replaced or someone cancelled. A deploy that failed exits 1. The output says what's left. Run it again once the servers are back, or once there's somewhere for the work to go. |
+| 3 | You got a result, but part of it is missing or didn't happen: some servers didn't answer, the output stopped partway, or some work couldn't be done. Examples: a `ployz server drain` that leaves a service where it is because no other server can take it, a `ployz env rm`, `ployz project rm` or `ployz env shutdown` whose removal didn't finish, a deploy that applied but couldn't see every server or left an old container running, a `ployz status` with a server that joined down or not answering, or a deploy a newer one replaced or someone cancelled. A deploy that failed exits 1. The output says what's left. Run it again once the servers are back, or once there's somewhere for the work to go. |
 | 130 | You cancelled: pressed Ctrl-C, didn't confirm a prompt, or stopped waiting for an approval. Before the work starts, nothing changes. A `ployz deploy` following its Deployment also cancels this way on SIGTERM, which CI runners, `timeout` and container stops send, and on Linux on SIGHUP, which closing its terminal or losing its SSH session sends. Under `nohup` it ignores SIGHUP and goes on. A `ployz deploy` cancelled after its services applied keeps them, and its `--json` says `applied`. Once Ployz Cloud runs it, as with a `server rm` or `server upgrade` it's following, Ctrl-C only stops the following: the work goes on in Cloud and finishes on its own. A `server upgrade` run from your computer works the same way: the server goes on with the upgrade it took, and `ployz server show` says how it ended. |
 
 `ployz exec` exits with your command's own exit code. When the container stops under it,

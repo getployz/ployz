@@ -83,13 +83,13 @@ pub fn run() -> Result<(), Error> {
             // A word the tree lacks may be a command Cloud published since the
             // cache was written, or one never cached: one refresh, then parse again.
             let Some(published) = published_after_miss(&error, &command, &args)? else {
-                return Err(usage_failure(misplaced_flag(error, &command, &args)));
+                return Err(usage_failure(error, &command));
             };
             command = crate::published::attach(crate::cli::compiled(), &published);
             command
                 .clone()
                 .try_get_matches()
-                .map_err(|error| usage_failure(misplaced_flag(error, &command, &args)))?
+                .map_err(|error| usage_failure(error, &command))?
         }
     };
     let color = matches
@@ -172,6 +172,9 @@ fn wants_json(args: &[std::ffi::OsString]) -> bool {
 
 /// A flag written before the command that takes it, `ployz --project web status`:
 /// clap would offer the nearest top-level flag, so name the command's own instead.
+/// A flag another command takes, `server show --project`, is one this command lacks,
+/// not a typo of its nearest flag, unless that flag is [`close`]: `server ls --wait`
+/// keeps clap's `--waiting`. One after `--` is an operand, and keeps clap's error.
 fn misplaced_flag(error: clap::Error, tree: &Command, args: &[std::ffi::OsString]) -> clap::Error {
     use clap::error::{ContextKind, ContextValue, ErrorKind};
     if error.kind() != ErrorKind::UnknownArgument {
@@ -186,29 +189,81 @@ fn misplaced_flag(error: clap::Error, tree: &Command, args: &[std::ffi::OsString
     else {
         return error;
     };
-    let path = reached(tree, args);
-    let takes = !path.is_empty()
-        && path
-            .split(' ')
-            .try_fold(tree, |command, name| command.find_subcommand(name))
-            .is_some_and(|command| {
-                command
-                    .get_arguments()
-                    .any(|arg| arg.get_long() == Some(long))
-            });
-    if !takes {
+    let named = |arg: &std::ffi::OsString| {
+        arg.to_str()
+            .and_then(|arg| arg.strip_prefix("--"))
+            .and_then(|flag| flag.split('=').next())
+            == Some(long)
+    };
+    if !args.iter().take_while(|arg| *arg != "--").any(named) {
         return error;
     }
+    fn takes(command: &Command, long: &str) -> bool {
+        command
+            .get_arguments()
+            .any(|arg| arg.get_long() == Some(long))
+    }
+    fn anywhere(command: &Command, long: &str) -> bool {
+        takes(command, long) || command.get_subcommands().any(|sub| anywhere(sub, long))
+    }
+    let close_suggested = matches!(
+        error.get(ContextKind::SuggestedArg),
+        Some(ContextValue::String(suggested)) if suggested
+            .strip_prefix("--")
+            .is_some_and(|suggested| close(long, suggested))
+    );
+    let path = reached(tree, args);
+    let Some(command) = (!path.is_empty())
+        .then(|| {
+            path.split(' ')
+                .try_fold(tree, |command, name| command.find_subcommand(name))
+        })
+        .flatten()
+    else {
+        return error;
+    };
+    let tip = if takes(command, long) {
+        format!("'{path} --{long}' exists; put it after the command")
+    } else if !command.has_subcommands() && anywhere(tree, long) && !close_suggested {
+        format!("'{path}' takes no --{long}")
+    } else {
+        return error;
+    };
     clap::Error::raw(
         ErrorKind::UnknownArgument,
-        format!(
-            "unexpected argument '{invalid}' found\n\n  tip: '{path} --{long}' exists; put it after the command\n"
-        ),
+        format!("unexpected argument '{invalid}' found\n\n  tip: {tip}\n"),
     )
 }
 
+/// Whether clap's suggestion is a likely typo fix for `long`: one starts the other
+/// (`--wait`, `--waiting`), or they are at most two edits apart (`--reset`, `--preset`).
+fn close(long: &str, suggested: &str) -> bool {
+    if suggested.starts_with(long) || long.starts_with(suggested) {
+        return true;
+    }
+    // Levenshtein distance, one row at a time.
+    let mut previous = (0..=suggested.chars().count()).collect::<Vec<_>>();
+    for (i, a) in long.chars().enumerate() {
+        let mut row = vec![i + 1];
+        for ((b, diagonal), above) in suggested
+            .chars()
+            .zip(&previous)
+            .zip(previous.iter().skip(1))
+        {
+            let left = row.last().copied().unwrap_or(i + 1);
+            row.push(
+                (diagonal + usize::from(a != b))
+                    .min(above + 1)
+                    .min(left + 1),
+            );
+        }
+        previous = row;
+    }
+    previous.last().is_some_and(|distance| *distance <= 2)
+}
+
 /// Report a rejected command line: clap's own rendering, or one JSON error under `--json`.
-fn usage_failure(error: clap::Error) -> Error {
+fn usage_failure(error: clap::Error, tree: &Command) -> Error {
     use clap::error::ErrorKind;
     use std::io::Write as _;
     let wants_json = wants_json(&std::env::args_os().collect::<Vec<_>>());
@@ -224,7 +279,7 @@ fn usage_failure(error: clap::Error) -> Error {
         return Error::exit(0);
     }
     let args = std::env::args_os().skip(1).collect::<Vec<_>>();
-    let error = operator::container_column_asked(error, &args);
+    let error = misplaced_flag(operator::container_column_asked(error, &args), tree, &args);
     if !wants_json {
         error.exit();
     }
@@ -768,6 +823,56 @@ mod tests {
         );
         let error = tip(&["--nonsense", "status"]);
         assert!(!error.contains("exists; put it after"), "{error}");
+        let error = tip(&["get", "--", "web.image", "--project", "p"]);
+        assert!(!error.contains("put it after"), "{error}");
+        let error = tip(&["server", "show", "web-1", "--project", "p"]);
+        assert!(
+            error.contains("tip: 'server show' takes no --project"),
+            "{error}"
+        );
+        assert!(!error.contains("--connect"), "{error}");
+        let error = tip(&["server", "show", "web-1", "--conect", "p"]);
+        assert!(error.contains("--connect"), "{error}");
+    }
+
+    #[test]
+    fn a_flag_of_another_command_keeps_clap_suggestion_of_a_close_one() {
+        let rejected = |args: &[&str]| {
+            let tree = crate::cli::compiled();
+            let args = args
+                .iter()
+                .map(std::ffi::OsString::from)
+                .collect::<Vec<_>>();
+            let error = tree
+                .clone()
+                .try_get_matches_from(std::iter::once("ployz".into()).chain(args.clone()))
+                .unwrap_err();
+            misplaced_flag(error, &tree, &args).to_string()
+        };
+        let error = rejected(&["server", "ls", "--wait"]);
+        assert!(
+            error.contains("tip: a similar argument exists: '--waiting'"),
+            "{error}"
+        );
+        assert!(!error.contains("takes no"), "{error}");
+        let error = rejected(&["server", "token", "create", "--expires-in", "7d"]);
+        assert!(
+            error.contains("tip: a similar argument exists: '--expires'"),
+            "{error}"
+        );
+        assert!(!error.contains("takes no"), "{error}");
+        let error = rejected(&["token", "new", "ci", "--reset", "read"]);
+        assert!(
+            error.contains("tip: a similar argument exists: '--preset'"),
+            "{error}"
+        );
+        assert!(!error.contains("takes no"), "{error}");
+        let error = rejected(&["server", "show", "web-1", "--project", "p"]);
+        assert!(
+            error.contains("tip: 'server show' takes no --project"),
+            "{error}"
+        );
+        assert!(!error.contains("--connect"), "{error}");
     }
 
     fn command() -> Command {

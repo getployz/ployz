@@ -560,7 +560,7 @@ fn an_out_copy_that_exited_is_no_row() {
 }
 
 #[test]
-fn a_pending_copy_that_restarts_is_no_row() {
+fn a_pending_copy_that_restarts_is_left_over_not_short() {
     let [one, ..] = machines();
     let check = judged_copies(vec![web_copy(
         &one,
@@ -571,7 +571,127 @@ fn a_pending_copy_that_restarts_is_no_row() {
         1,
     )]);
 
-    assert!(check.attention.is_empty());
+    assert_eq!(
+        messages(&check),
+        ["1 copy no deploy brought into routing takes no traffic. machine-1 restarting."]
+    );
+}
+
+#[test]
+fn status_names_a_copy_a_failed_deploy_left_running_beside_the_serving_one() {
+    let [one, two, three] = machines();
+    let unhealthy = ContainerRuntimeObservation::Running {
+        health: HealthObservation::Unhealthy,
+    };
+    let check = judged_deploying(
+        Observed {
+            machines: listed(&[&one, &two, &three], &[]),
+            copies: Copies::Listed {
+                live: listed_copies(vec![
+                    web_copy(&one, '1', CopyRotation::In, healthy(), 1, 1),
+                    web_copy(&one, '2', CopyRotation::Pending, unhealthy, 1, 2),
+                ]),
+                reads: Vec::new(),
+                routed: BTreeMap::new(),
+            },
+        },
+        &[("web", "web")],
+    );
+
+    assert_eq!(
+        serde_json::to_value(&check.attention).unwrap(),
+        json!([{
+            "reason": "copies_left_pending",
+            "message": "1 copy no deploy brought into routing takes no traffic. machine-1 running, unhealthy.",
+            "next": "ployz deploy web",
+            "service": "app/web",
+            "copies": [{
+                "machine": "machine-1",
+                "container": "2".repeat(64),
+                "rotation": "pending",
+                "runtime": {"state": "running", "health": "unhealthy"},
+            }],
+        }])
+    );
+    assert!(warned(&check).is_empty());
+}
+
+fn left_pending_hint(deployed: &[(&str, &str)], authored: &[&str]) -> Vec<Option<String>> {
+    let [one, two, three] = machines();
+    let check = judged_authoring(
+        Observed {
+            machines: listed(&[&one, &two, &three], &[]),
+            copies: Copies::Listed {
+                live: listed_copies(vec![
+                    web_copy(&one, '1', CopyRotation::In, healthy(), 1, 1),
+                    web_copy(&one, '2', CopyRotation::Pending, healthy(), 1, 2),
+                ]),
+                reads: Vec::new(),
+                routed: BTreeMap::new(),
+            },
+        },
+        deployed,
+        authored,
+    );
+    check
+        .attention
+        .into_iter()
+        .filter(|attention| attention.reason == "copies_left_pending")
+        .map(|attention| attention.next)
+        .collect()
+}
+
+#[test]
+fn a_left_pending_copy_points_at_the_service_by_its_authored_name() {
+    assert_eq!(
+        left_pending_hint(&[("site", "web")], &["site"]),
+        [Some("ployz deploy site".to_owned())]
+    );
+}
+
+#[test]
+fn a_left_pending_copy_of_a_removed_service_points_at_a_whole_deploy() {
+    assert_eq!(
+        left_pending_hint(&[("web", "web")], &[]),
+        [Some("ployz deploy".to_owned())]
+    );
+}
+
+#[test]
+fn a_copy_with_no_recorded_rotation_is_not_named_left_pending() {
+    let [one, ..] = machines();
+    let check = judged_copies(vec![edited(
+        web_copy(&one, '1', CopyRotation::Pending, healthy(), 1, 1),
+        |parts| parts.rotation = None,
+    )]);
+
+    assert!(
+        check
+            .attention
+            .iter()
+            .all(|attention| attention.reason != "copies_left_pending")
+    );
+}
+
+#[test]
+fn a_copy_left_pending_on_a_down_server_is_not_named() {
+    let [one, two, three] = machines();
+    let check = judged(
+        listed(&[&one, &three], &[&two]),
+        listed_copies(vec![
+            web_copy(&one, '1', CopyRotation::In, healthy(), 1, 1),
+            web_copy(&two, '2', CopyRotation::Pending, healthy(), 1, 2),
+        ]),
+    );
+
+    assert_eq!(
+        check
+            .attention
+            .iter()
+            .map(|attention| attention.reason.as_str())
+            .collect::<Vec<_>>(),
+        ["machine_down"]
+    );
 }
 
 fn cut_for_a_volume_move(machine: &Machine) -> ContainerObservation {
@@ -961,7 +1081,10 @@ fn the_count_comes_from_the_newest_kept_copy_not_from_a_failed_deploy() {
 
     assert_eq!(
         messages(&check),
-        ["Serving 2 of 4 copies. machine-1 restarting, machine-3 restarting."]
+        [
+            "Serving 2 of 4 copies. machine-1 restarting, machine-3 restarting.",
+            "2 copies no deploy brought into routing take no traffic. machine-2 running, healthy, machine-3 running, healthy."
+        ]
     );
 }
 
@@ -1041,6 +1164,10 @@ fn a_server_that_never_arrived_does_not_hide_a_draining_copy() {
         messages(&check)
     );
     assert!(warned(&check).is_empty());
+    assert!(
+        !check.partial(),
+        "a Server that never arrived holds no copies to miss"
+    );
 }
 
 #[test]
@@ -2118,7 +2245,8 @@ fn while_a_deployment_rolls_out_status_says_it_skips_the_check() {
     );
 }
 
-fn status_warnings(config: &std::path::Path, flags: &[&str]) -> Vec<String> {
+/// The check's warnings, and whether it was partial.
+fn status_warnings(config: &std::path::Path, flags: &[&str]) -> (Vec<String>, bool) {
     let mut args = vec![
         "ployz",
         "status",
@@ -2128,11 +2256,14 @@ fn status_warnings(config: &std::path::Path, flags: &[&str]) -> Vec<String> {
     args.extend(flags);
     let root = crate::cli::command().try_get_matches_from(args).unwrap();
     let namespace = qualified("app", "web").namespace;
-    assert!(attention(&root, &namespace, &BTreeMap::new(), None, &[]).is_empty());
+    let check = attention(&root, &namespace, &BTreeMap::new(), None, &[]);
+    assert!(check.attention.is_empty());
     let (_, json) = crate::ui::captured(|| crate::ui::show(&json!({})));
-    json.and_then(|json| json.get("warnings").cloned())
+    let warnings = json
+        .and_then(|json| json.get("warnings").cloned())
         .map(|warnings| serde_json::from_value(warnings).unwrap())
-        .unwrap_or_default()
+        .unwrap_or_default();
+    (warnings, check.partial)
 }
 
 #[test]
@@ -2141,7 +2272,8 @@ fn status_warns_when_the_context_it_was_given_does_not_exist() {
     let config = dir.path().join("config.yaml");
     std::fs::write(&config, "contexts:\n  prod:\n    connections: []\n").unwrap();
 
-    let warnings = status_warnings(&config, &["--context", "typo"]);
+    let (warnings, partial) = status_warnings(&config, &["--context", "typo"]);
+    assert!(partial, "a check that couldn't run exits 3");
 
     let [warning] = warnings.as_slice() else {
         panic!("one warning: {warnings:?}");
@@ -2161,5 +2293,47 @@ fn status_checks_nothing_and_says_nothing_with_no_server_set_up() {
     }
     let dir = tempfile::tempdir().unwrap();
 
-    assert!(status_warnings(&dir.path().join("config.yaml"), &[]).is_empty());
+    assert_eq!(
+        status_warnings(&dir.path().join("config.yaml"), &[]),
+        (Vec::new(), false)
+    );
+}
+
+#[test]
+fn a_check_that_could_not_see_every_server_is_partial() {
+    let [one, two, three] = machines();
+    let copies = || {
+        listed_copies(vec![
+            web_copy(&one, '1', CopyRotation::In, healthy(), 2, 1),
+            web_copy(&two, '2', CopyRotation::In, healthy(), 2, 1),
+        ])
+    };
+    assert!(
+        !judged(listed(&[&one, &two, &three], &[]), copies()).partial(),
+        "every Server answered"
+    );
+    assert!(
+        judged(
+            listed(&[&one, &two], &[&three]),
+            omitted_by(copies(), &three)
+        )
+        .partial(),
+        "a Down Server's copies went unchecked"
+    );
+    assert!(
+        judged(
+            listed(&[&one, &two, &three], &[]),
+            omitted_by(copies(), &three)
+        )
+        .partial(),
+        "a Server that didn't answer"
+    );
+    assert!(
+        !judged_in_app(Observed {
+            machines: listed(&[&one, &two, &three], &[]),
+            copies: Copies::RollingOut(rolling_out(&[deployment(12, "running")]).unwrap()),
+        })
+        .partial(),
+        "status skips the copy check on purpose while a deploy runs"
+    );
 }

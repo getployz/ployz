@@ -937,6 +937,38 @@ fn constraints_name_the_down_machine() {
 }
 
 #[test]
+fn constraints_name_the_machine_that_did_not_answer_its_listing() {
+    let mut requested = requested(ServiceMode::Replicated {
+        replicas: NonZeroU32::new(1).unwrap(),
+    });
+    requested.placement.constraints = [label_constraint("ord1")].into();
+    let mut ord1 = machine('2', "ord1");
+    ord1.membership = MembershipObservation::Suspect;
+
+    assert_no_eligible(
+        plan_deploy(
+            [&requested],
+            &DeploySnapshot {
+                machines: vec![machine('1', "ewr1"), ord1],
+                container_failures: vec![ployz_core::MachineFailure {
+                    machine_id: machine_id('2'),
+                    error: ployz_core::RpcError::unanswered_target(
+                        ployz_core::RpcErrorCode::Unavailable,
+                        "target Machine RPC timed out".into(),
+                    ),
+                }],
+                ..Default::default()
+            },
+            PlanOptions::default(),
+        ),
+        &[EliminatingConstraint::Unanswered {
+            names: vec![MachineName::parse("ord1").unwrap()],
+        }],
+        &["Machine 'ord1' did not answer when this Deploy listed its containers"],
+    );
+}
+
+#[test]
 fn volume_on_another_machine_names_the_volume_and_the_conflict() {
     let mut requested = requested(ServiceMode::Replicated {
         replicas: NonZeroU32::new(1).unwrap(),
@@ -1919,4 +1951,111 @@ fn the_next_deploy_removes_the_copies_a_failed_run_left_pending() {
             );
         }
     }
+}
+
+#[test]
+fn a_suspect_machine_that_did_not_answer_its_listing_gets_no_new_copy() {
+    let requested = requested(ServiceMode::Replicated {
+        replicas: NonZeroU32::new(2).unwrap(),
+    });
+    let mut silent = machine('2', "silent");
+    silent.membership = MembershipObservation::Suspect;
+    let snapshot = DeploySnapshot {
+        machines: vec![machine('1', "live"), silent],
+        container_failures: vec![ployz_core::MachineFailure {
+            machine_id: machine_id('2'),
+            error: ployz_core::RpcError::unanswered_target(
+                ployz_core::RpcErrorCode::Unavailable,
+                "target Machine RPC timed out".into(),
+            ),
+        }],
+        ..Default::default()
+    };
+
+    let plan = plan_deploy([&requested], &snapshot, PlanOptions::default()).unwrap();
+
+    let targets = operations(&plan)
+        .iter()
+        .filter_map(|operation| {
+            let DeployOperation::RunContainer { machine_id, .. } = operation else {
+                return None;
+            };
+            Some(*machine_id)
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(targets, [machine_id('1'), machine_id('1')]);
+}
+
+#[test]
+fn an_up_machine_that_did_not_answer_its_listing_still_gets_its_copy() {
+    let requested = requested(ServiceMode::Replicated {
+        replicas: NonZeroU32::new(2).unwrap(),
+    });
+    let snapshot = DeploySnapshot {
+        machines: vec![machine('1', "live"), machine('2', "hung")],
+        container_failures: vec![ployz_core::MachineFailure {
+            machine_id: machine_id('2'),
+            error: ployz_core::RpcError::unanswered_target(
+                ployz_core::RpcErrorCode::Unavailable,
+                "target Machine RPC timed out".into(),
+            ),
+        }],
+        ..Default::default()
+    };
+
+    let plan = plan_deploy([&requested], &snapshot, PlanOptions::default()).unwrap();
+
+    let targets = operations(&plan)
+        .iter()
+        .filter_map(|operation| {
+            let DeployOperation::RunContainer { machine_id, .. } = operation else {
+                return None;
+            };
+            Some(*machine_id)
+        })
+        .collect::<BTreeSet<_>>();
+    assert_eq!(targets, BTreeSet::from([machine_id('1'), machine_id('2')]));
+}
+
+#[test]
+fn a_docker_volume_is_not_placed_while_a_silent_machine_may_hold_it() {
+    let mut requested = requested(ServiceMode::Replicated {
+        replicas: NonZeroU32::new(1).unwrap(),
+    });
+    add_named_volume(&mut requested, "data");
+    let mut silent = machine('2', "silent");
+    silent.membership = MembershipObservation::Suspect;
+    let unanswered = || {
+        ployz_core::RpcError::unanswered_target(
+            ployz_core::RpcErrorCode::Unavailable,
+            "target Machine RPC timed out".into(),
+        )
+    };
+    let snapshot = DeploySnapshot {
+        machines: vec![machine('1', "live"), silent],
+        container_failures: vec![ployz_core::MachineFailure {
+            machine_id: machine_id('2'),
+            error: unanswered(),
+        }],
+        volume_snapshot: VolumeSnapshot::try_from_parts(
+            Vec::new(),
+            Vec::new(),
+            vec![ployz_core::MachineFailure {
+                machine_id: machine_id('2'),
+                error: unanswered(),
+            }],
+            Vec::new(),
+        )
+        .unwrap(),
+        ..Default::default()
+    };
+
+    let result = plan_deploy([&requested], &snapshot, PlanOptions::default());
+
+    let error = result.expect_err("nothing is placed and no Volume is created");
+    assert_eq!(
+        error.to_string(),
+        "silent did not answer, so whether it holds Docker volume data is unknown. \
+         Bring silent back, or deploy the other services by name"
+    );
 }

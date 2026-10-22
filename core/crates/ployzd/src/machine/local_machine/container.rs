@@ -675,9 +675,13 @@ impl LocalMachine {
         let local = self.clone();
         let shared = self.owner.admission_lock().read_owned().await;
         self.finish_admitted(shared, async move {
-            local.containers.as_ref().ok_or(Error::DockerUnavailable)?;
-            crate::docker::pull_from_ingest(&request.pull, request.source, &request.platform)
-                .await?;
+            let containers = local.containers.as_ref().ok_or(Error::DockerUnavailable)?;
+            if let Err(error) =
+                crate::docker::pull_from_ingest(&request.pull, request.source, &request.platform)
+                    .await
+            {
+                return Err(containers.pull_failure(error).await.into());
+            }
             // Every caller discards this reply; a deploy reads ports from its `PullImage`.
             Ok(ImagePulled::default())
         })

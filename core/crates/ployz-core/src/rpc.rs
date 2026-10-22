@@ -48,6 +48,27 @@ pub enum CapabilityAdvertisement {
     Cluster,
 }
 
+/// What a Management Client may call on a Machine, from its slot's label. Cloud's
+/// `cloud` slot is `Operator`; every other slot and the local socket are `Full`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+pub enum ManagementScope {
+    /// Drives Deploys and reads state, but never execs into a container, opens a
+    /// tunnel, or reads back an env value the Machine opened from Sealed ciphertext.
+    Operator,
+    Full,
+}
+
+impl ManagementScope {
+    #[must_use]
+    pub fn of(label: &crate::ManagementClientLabel) -> Self {
+        if label.as_str() == "cloud" {
+            Self::Operator
+        } else {
+            Self::Full
+        }
+    }
+}
+
 impl CapabilityAdvertisement {
     /// Capability names this class advertises, in catalog order.
     pub fn capabilities(self) -> impl Iterator<Item = CapabilityName> {
@@ -61,9 +82,9 @@ impl CapabilityAdvertisement {
 macro_rules! define_capabilities {
     (
         package $package:literal
-        unary { $($unary_variant:ident: ($unary_method:ident, $unary_route:literal, $unary_request:ty, $unary_command:literal, $unary_response:ty, $unary_capability:ident, $unary_capability_name:literal, $unary_advertisement:ident),)+ }
-        server_streaming { $($stream_variant:ident: ($stream_method:ident, $stream_route:literal, $stream_request:ty, $stream_command:literal, $stream_capability:ident, $stream_capability_name:literal, $stream_advertisement:ident),)+ }
-        bidi_streaming { $($bidi_variant:ident: ($bidi_method:ident, $bidi_route:literal, $bidi_command:literal, $bidi_capability:ident, $bidi_capability_name:literal, $bidi_advertisement:ident),)+ }
+        unary { $($unary_variant:ident: ($unary_method:ident, $unary_route:literal, $unary_request:ty, $unary_command:literal, $unary_response:ty, $unary_capability:ident, $unary_capability_name:literal, $unary_advertisement:ident, $unary_scope:ident),)+ }
+        server_streaming { $($stream_variant:ident: ($stream_method:ident, $stream_route:literal, $stream_request:ty, $stream_command:literal, $stream_capability:ident, $stream_capability_name:literal, $stream_advertisement:ident, $stream_scope:ident),)+ }
+        bidi_streaming { $($bidi_variant:ident: ($bidi_method:ident, $bidi_route:literal, $bidi_command:literal, $bidi_capability:ident, $bidi_capability_name:literal, $bidi_advertisement:ident, $bidi_scope:ident),)+ }
         capabilities { $($(#[$extra_meta:meta])* $extra_capability:ident: ($extra_capability_name:literal, $extra_advertisement:ident),)+ }
     ) => {
         $(pub const $unary_capability: &str = $unary_capability_name;)+
@@ -84,6 +105,17 @@ macro_rules! define_capabilities {
                 $(concat!("/", $package, ".MachineRpc/", $unary_route) => Some($unary_capability),)+
                 $(concat!("/", $package, ".MachineRpc/", $stream_route) => Some($stream_capability),)+
                 $(concat!("/", $package, ".MachineRpc/", $bidi_route) => Some($bidi_capability),)+
+                _ => None,
+            }
+        }
+
+        /// The least scope that may call the route at `path`, or `None` for an uncatalogued path.
+        #[must_use]
+        pub fn scope_of(path: &str) -> Option<ManagementScope> {
+            match path {
+                $(concat!("/", $package, ".MachineRpc/", $unary_route) => Some(ManagementScope::$unary_scope),)+
+                $(concat!("/", $package, ".MachineRpc/", $stream_route) => Some(ManagementScope::$stream_scope),)+
+                $(concat!("/", $package, ".MachineRpc/", $bidi_route) => Some(ManagementScope::$bidi_scope),)+
                 _ => None,
             }
         }
@@ -916,9 +948,9 @@ pub struct UpdateMachineRequest {
 macro_rules! define_request_body {
     (
         package $package:literal
-        unary { $($unary_variant:ident: ($unary_method:ident, $unary_route:literal, $unary_request:ty, $unary_command:literal, $unary_response:ty, $unary_capability:ident, $unary_capability_name:literal, $unary_advertisement:ident),)+ }
-        server_streaming { $($stream_variant:ident: ($stream_method:ident, $stream_route:literal, $stream_request:ty, $stream_command:literal, $stream_capability:ident, $stream_capability_name:literal, $stream_advertisement:ident),)+ }
-        bidi_streaming { $($bidi_variant:ident: ($bidi_method:ident, $bidi_route:literal, $bidi_command:literal, $bidi_capability:ident, $bidi_capability_name:literal, $bidi_advertisement:ident),)+ }
+        unary { $($unary_variant:ident: ($unary_method:ident, $unary_route:literal, $unary_request:ty, $unary_command:literal, $unary_response:ty, $unary_capability:ident, $unary_capability_name:literal, $unary_advertisement:ident, $unary_scope:ident),)+ }
+        server_streaming { $($stream_variant:ident: ($stream_method:ident, $stream_route:literal, $stream_request:ty, $stream_command:literal, $stream_capability:ident, $stream_capability_name:literal, $stream_advertisement:ident, $stream_scope:ident),)+ }
+        bidi_streaming { $($bidi_variant:ident: ($bidi_method:ident, $bidi_route:literal, $bidi_command:literal, $bidi_capability:ident, $bidi_capability_name:literal, $bidi_advertisement:ident, $bidi_scope:ident),)+ }
         capabilities { $($(#[$extra_meta:meta])* $extra_capability:ident: ($extra_capability_name:literal, $extra_advertisement:ident),)+ }
     ) => {
         /// Commands are closed and own their typed payloads.
@@ -1714,6 +1746,50 @@ impl RpcError {
         }
     }
 
+    /// `self` from a call to `machine_id` whose connection dropped after it went out and
+    /// before an answer came back, so the target may have done the work. Read back by
+    /// [`Self::reply_lost`]. Details that aren't an object are kept unmarked.
+    #[must_use]
+    pub fn reply_lost_from(mut self, machine_id: &crate::MachineId) -> Self {
+        if self.details.is_null() {
+            self.details = Value::Object(serde_json::Map::new());
+        }
+        if let Value::Object(details) = &mut self.details {
+            details.insert(REPLY_LOST_KEY.into(), Value::Bool(true));
+            details
+                .entry("machine_id")
+                .or_insert_with(|| Value::String(machine_id.to_string()));
+        }
+        self
+    }
+
+    /// `self` from a call that never reached its target, so the target did nothing with
+    /// it. Read back by [`Self::never_reached`]. Details that aren't an object are kept
+    /// unmarked.
+    #[must_use]
+    pub fn unreached(mut self) -> Self {
+        if self.details.is_null() {
+            self.details = Value::Object(serde_json::Map::new());
+        }
+        if let Value::Object(details) = &mut self.details {
+            details.insert(REACHED_KEY.into(), Value::Bool(false));
+        }
+        self
+    }
+
+    /// Whether the call never reached its target.
+    #[must_use]
+    pub fn never_reached(&self) -> bool {
+        self.details.get(REACHED_KEY).and_then(Value::as_bool) == Some(false)
+    }
+
+    /// Whether the connection dropped before the target's answer came back, so the
+    /// target may have done the work.
+    #[must_use]
+    pub fn reply_lost(&self) -> bool {
+        self.details.get(REPLY_LOST_KEY).and_then(Value::as_bool) == Some(true)
+    }
+
     /// Whether the target Machine didn't answer, rather than answering with this error.
     #[must_use]
     pub fn target_unanswered(&self) -> bool {
@@ -1848,6 +1924,8 @@ impl fmt::Display for CapabilityRefusal {
 pub const TARGET_UNANSWERED_KEY: &str = "ployz-target-unanswered";
 
 const TARGET_UNANSWERED_REASON: &str = "target_unanswered";
+const REPLY_LOST_KEY: &str = "reply_lost";
+const REACHED_KEY: &str = "reached";
 
 /// [`caused_status`] as `Unavailable`, marked [`TARGET_UNANSWERED_KEY`].
 #[cfg(not(target_arch = "wasm32"))]
@@ -2145,9 +2223,9 @@ mod served_capabilities_tests {
     macro_rules! catalog_capabilities {
         (
             package $package:literal
-            unary { $($unary_variant:ident: ($unary_method:ident, $unary_route:literal, $unary_request:ty, $unary_command:literal, $unary_response:ty, $unary_capability:ident, $unary_capability_name:literal, $unary_advertisement:ident),)+ }
-            server_streaming { $($stream_variant:ident: ($stream_method:ident, $stream_route:literal, $stream_request:ty, $stream_command:literal, $stream_capability:ident, $stream_capability_name:literal, $stream_advertisement:ident),)+ }
-            bidi_streaming { $($bidi_variant:ident: ($bidi_method:ident, $bidi_route:literal, $bidi_command:literal, $bidi_capability:ident, $bidi_capability_name:literal, $bidi_advertisement:ident),)+ }
+            unary { $($unary_variant:ident: ($unary_method:ident, $unary_route:literal, $unary_request:ty, $unary_command:literal, $unary_response:ty, $unary_capability:ident, $unary_capability_name:literal, $unary_advertisement:ident, $unary_scope:ident),)+ }
+            server_streaming { $($stream_variant:ident: ($stream_method:ident, $stream_route:literal, $stream_request:ty, $stream_command:literal, $stream_capability:ident, $stream_capability_name:literal, $stream_advertisement:ident, $stream_scope:ident),)+ }
+            bidi_streaming { $($bidi_variant:ident: ($bidi_method:ident, $bidi_route:literal, $bidi_command:literal, $bidi_capability:ident, $bidi_capability_name:literal, $bidi_advertisement:ident, $bidi_scope:ident),)+ }
             capabilities { $($(#[$extra_meta:meta])* $extra_capability:ident: ($extra_capability_name:literal, $extra_advertisement:ident),)+ }
         ) => {
             [$($unary_capability_name,)+ $($stream_capability_name,)+ $($bidi_capability_name,)+ $($extra_capability_name,)+]
@@ -2182,9 +2260,9 @@ mod streaming_routing_tests {
     macro_rules! assert_capability_of {
         (
             package $package:literal
-            unary { $($unary_variant:ident: ($unary_method:ident, $unary_route:literal, $unary_request:ty, $unary_command:literal, $unary_response:ty, $unary_capability:ident, $unary_capability_name:literal, $unary_advertisement:ident),)+ }
-            server_streaming { $($stream_variant:ident: ($stream_method:ident, $stream_route:literal, $stream_request:ty, $stream_command:literal, $stream_capability:ident, $stream_capability_name:literal, $stream_advertisement:ident),)+ }
-            bidi_streaming { $($bidi_variant:ident: ($bidi_method:ident, $bidi_route:literal, $bidi_command:literal, $bidi_capability:ident, $bidi_capability_name:literal, $bidi_advertisement:ident),)+ }
+            unary { $($unary_variant:ident: ($unary_method:ident, $unary_route:literal, $unary_request:ty, $unary_command:literal, $unary_response:ty, $unary_capability:ident, $unary_capability_name:literal, $unary_advertisement:ident, $unary_scope:ident),)+ }
+            server_streaming { $($stream_variant:ident: ($stream_method:ident, $stream_route:literal, $stream_request:ty, $stream_command:literal, $stream_capability:ident, $stream_capability_name:literal, $stream_advertisement:ident, $stream_scope:ident),)+ }
+            bidi_streaming { $($bidi_variant:ident: ($bidi_method:ident, $bidi_route:literal, $bidi_command:literal, $bidi_capability:ident, $bidi_capability_name:literal, $bidi_advertisement:ident, $bidi_scope:ident),)+ }
             capabilities { $($(#[$extra_meta:meta])* $extra_capability:ident: ($extra_capability_name:literal, $extra_advertisement:ident),)+ }
         ) => {
             $(assert_eq!(
@@ -2200,6 +2278,42 @@ mod streaming_routing_tests {
                 Some($bidi_capability_name),
             );)+
         };
+    }
+
+    macro_rules! full_scope_routes {
+        (
+            package $package:literal
+            unary { $($unary_variant:ident: ($unary_method:ident, $unary_route:literal, $unary_request:ty, $unary_command:literal, $unary_response:ty, $unary_capability:ident, $unary_capability_name:literal, $unary_advertisement:ident, $unary_scope:ident),)+ }
+            server_streaming { $($stream_variant:ident: ($stream_method:ident, $stream_route:literal, $stream_request:ty, $stream_command:literal, $stream_capability:ident, $stream_capability_name:literal, $stream_advertisement:ident, $stream_scope:ident),)+ }
+            bidi_streaming { $($bidi_variant:ident: ($bidi_method:ident, $bidi_route:literal, $bidi_command:literal, $bidi_capability:ident, $bidi_capability_name:literal, $bidi_advertisement:ident, $bidi_scope:ident),)+ }
+            capabilities { $($(#[$extra_meta:meta])* $extra_capability:ident: ($extra_capability_name:literal, $extra_advertisement:ident),)+ }
+        ) => {
+            [$($unary_route,)+ $($stream_route,)+ $($bidi_route,)+]
+                .into_iter()
+                .filter(|route| {
+                    super::scope_of(&format!("/ployz.rpc.v1.MachineRpc/{route}"))
+                        .expect("every catalogued route has a scope")
+                        == super::ManagementScope::Full
+                })
+                .collect::<Vec<_>>()
+        };
+    }
+
+    #[test]
+    fn only_exec_needs_full_scope() {
+        assert_eq!(crate::rpc_catalog!(full_scope_routes), ["Exec"]);
+        assert_eq!(super::scope_of("/ployz.rpc.v1.MachineRpc/Nope"), None);
+    }
+
+    #[test]
+    fn only_the_cloud_slot_is_operator() {
+        let scope = |label: &str| {
+            super::ManagementScope::of(&crate::ManagementClientLabel::parse(label).unwrap())
+        };
+        assert_eq!(scope("cloud"), super::ManagementScope::Operator);
+        for label in ["cli-0123456789abcdef0123456789ab", "cloud-2", "laptop"] {
+            assert_eq!(scope(label), super::ManagementScope::Full);
+        }
     }
 
     #[test]

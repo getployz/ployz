@@ -409,8 +409,16 @@ pub(crate) fn freeze(
                     .map(TargetNode::service)
                     .transpose()?
                     .ok_or_else(|| {
+                        let staged = dropped
+                            .services
+                            .iter()
+                            .any(|service| service.slug == name.as_str());
                         error::not_found(
-                            format!("No Service named {name} to deploy"),
+                            if staged {
+                                format!("Service {name} is staged for removal; a full Deploy removes it")
+                            } else {
+                                format!("No Service named {name} to deploy")
+                            },
                             json!({ "services": saved.services.iter().map(|service| &service.slug).collect::<Vec<_>>() }),
                         )
                     })

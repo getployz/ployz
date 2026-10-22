@@ -223,6 +223,10 @@ ployz server set web-1 --public-ip 203.0.113.10
 A public IP you set this way stays until you set it again: Ployz no longer looks it up when the
 server restarts.
 
+`ployz server set` and `ployz server add` refuse an address no visitor can reach, such as `0.0.0.0`, `127.0.0.1`,
+`::1` or `fe80::1`. It warns about a private one, such as `10.0.0.5`, which only its own network
+reaches. `--public-ip none` clears the address, and Ployz doesn't look one up afterwards either.
+
 A server that takes web traffic but whose web server is missing or stopped needs a deploy, not
 these settings. See [Ingress isn't running](#ingress-isnt-running).
 

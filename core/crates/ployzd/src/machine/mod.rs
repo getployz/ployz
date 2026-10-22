@@ -295,6 +295,19 @@ impl LocalMachineRecord {
             .map(|(label, _)| label)
     }
 
+    /// What `remote` may call: the widest scope of any slot holding it as its accepted
+    /// or pending key, or `None` when no slot holds it.
+    #[must_use]
+    pub fn management_scope(&self, remote: &[u8; 32]) -> Option<ployz_core::ManagementScope> {
+        self.management_clients
+            .iter()
+            .filter(|(_, slot)| {
+                slot.accepted().as_ref() == Some(remote) || slot.pending().as_ref() == Some(remote)
+            })
+            .map(|(label, _)| ployz_core::ManagementScope::of(label))
+            .max()
+    }
+
     /// Whether `remote` is any slot's accepted or pending key, so it may connect.
     #[must_use]
     pub fn admits_management_client(&self, remote: &[u8; 32]) -> bool {

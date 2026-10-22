@@ -1,6 +1,6 @@
 //! Tests for the Machine RPC boundary.
 
-use super::{MachineService, store_error};
+use super::{MachineService, store_error, withhold_opened};
 use crate::machine::{LocalMachineStore, RecordOwner, StoreError};
 use ployz_core::labels::CREATION_KEY;
 use ployz_core::{
@@ -10,10 +10,106 @@ use ployz_core::{
     RuntimeWatchRequest, ServiceId, op,
 };
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     sync::{Arc, Mutex},
 };
 use tonic::{Code, Request};
+
+#[test]
+fn an_operator_reads_every_env_key_but_the_opened_ones() {
+    let opened = BTreeSet::from(["DATABASE_URL".to_owned()]);
+    let mut environment = Some(BTreeMap::from([
+        ("DATABASE_URL".to_owned(), "postgres://secret".to_owned()),
+        ("PORT".to_owned(), "8080".to_owned()),
+    ]));
+    withhold_opened(&mut environment, &opened);
+    assert_eq!(
+        environment,
+        Some(BTreeMap::from([("PORT".to_owned(), "8080".to_owned())]))
+    );
+
+    let mut unknown = None;
+    withhold_opened(&mut unknown, &opened);
+    assert_eq!(unknown, None);
+}
+
+#[tokio::test]
+async fn retained_env_answers_no_opened_value_and_names_the_opened_keys() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let dir = std::env::temp_dir().join(format!("ployzd-retained-env-{}", MachineId::random()));
+    let store = RecordOwner::spawn(LocalMachineStore::open(&dir).unwrap()).unwrap();
+    let socket = dir.join("observe.sock");
+    let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+    let cluster = crate::sealed_env::test_support::Cluster::new();
+    let sealed = BTreeMap::from([(
+        "DATABASE_URL".to_owned(),
+        ployz_core::EnvValue::Sealed(cluster.seal(
+            "DATABASE_URL",
+            ployz_core::SealedScope::Shared,
+            "postgres://opened",
+        )),
+    )]);
+    let label = serde_json::to_string(&cluster.open(sealed).unwrap().record).unwrap();
+    let environment = crate::observe::layout::RetainedEnv::from_inspected(
+        &[
+            "DATABASE_URL=postgres://opened".to_owned(),
+            "PORT=8080".to_owned(),
+        ],
+        Some(&label),
+    )
+    .unwrap();
+    let answer = serde_json::to_vec(&serde_json::json!({ "reply": environment })).unwrap();
+    let observer = tokio::spawn(async move {
+        loop {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut len = [0; 4];
+            stream.read_exact(&mut len).await.unwrap();
+            let mut request = vec![0; u32::from_be_bytes(len) as usize];
+            stream.read_exact(&mut request).await.unwrap();
+            let len = u32::try_from(answer.len()).unwrap();
+            stream.write_all(&len.to_be_bytes()).await.unwrap();
+            stream.write_all(&answer).await.unwrap();
+        }
+    });
+    let service = MachineService::with_cluster(store, None).with_observe_socket(socket);
+    let id = ContainerId::parse("a".repeat(64)).unwrap();
+
+    for from_operator in [false, true] {
+        let mut request = Request::new(
+            op::RetainedEnv::into_request(ployz_core::RetainedEnvRequest {
+                container_id: id,
+            })
+            .encode()
+            .unwrap(),
+        );
+        if from_operator {
+            request
+                .metadata_mut()
+                .insert(ployz_core::OPERATOR_SCOPE_HEADER, "1".parse().unwrap());
+        }
+        let reply = service
+            .retained_env(request)
+            .await
+            .unwrap()
+            .into_inner()
+            .decode_response()
+            .unwrap()
+            .decode::<op::RetainedEnv>()
+            .unwrap();
+        assert_eq!(
+            reply.environment,
+            Some(BTreeMap::from([("PORT".to_owned(), "8080".to_owned())])),
+            "operator: {from_operator}"
+        );
+    }
+    assert_eq!(
+        service.opened_keys(id).await.unwrap(),
+        BTreeSet::from(["DATABASE_URL".to_owned()])
+    );
+    observer.abort();
+    std::fs::remove_dir_all(dir).ok();
+}
 
 #[test]
 fn out_of_order_machine_transitions_are_conflicts() {
@@ -2665,9 +2761,11 @@ mod ensure_container {
             .await
             .unwrap();
 
-        for (id, code) in [
-            (ContainerId::parse("a".repeat(64)).unwrap(), Code::NotFound),
-            (stray, Code::InvalidArgument),
+        let unknown = ContainerId::parse("a".repeat(64)).unwrap();
+        for (id, from_operator, code) in [
+            (unknown, false, Code::NotFound),
+            (stray, false, Code::InvalidArgument),
+            (unknown, true, Code::PermissionDenied),
         ] {
             let config = ExecRequestFrame::Config(ExecConfig {
                 container_id: id,
@@ -2682,8 +2780,14 @@ mod ensure_container {
             })
             .encode()
             .unwrap();
+            let mut request = Request::new(tokio_stream::iter([config]));
+            if from_operator {
+                request
+                    .metadata_mut()
+                    .insert(ployz_core::OPERATOR_SCOPE_HEADER, "1".parse().unwrap());
+            }
             let status = client
-                .exec(Request::new(tokio_stream::iter([config])))
+                .exec(request)
                 .await
                 .expect_err("exec must refuse before any Docker exec is created");
             assert_eq!(status.code(), code, "{id}");

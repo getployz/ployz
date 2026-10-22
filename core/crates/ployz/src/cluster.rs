@@ -317,6 +317,8 @@ impl Client {
         let deadline = timeout.map(|timeout| tokio::time::Instant::now() + timeout);
         // A reply on an earlier attempt means the target was not silent throughout.
         let mut reply: Option<ConnectError> = None;
+        // An earlier attempt that went out and lost its answer may have been done.
+        let mut lost: Option<ConnectError> = None;
         loop {
             let outcome = match deadline {
                 Some(deadline) => {
@@ -334,18 +336,22 @@ impl Client {
             };
             let error = crate::connect::keep_target_reply(&mut reply, error);
             if error.retry() != ployz_core::Retry::Now {
-                return Err(error);
+                return Err(crate::connect::keep_lost_call(lost, error));
             }
             let Some(delay) = delays.next() else {
-                return Err(error);
+                return Err(crate::connect::keep_lost_call(lost, error));
             };
             if deadline.is_some_and(|deadline| tokio::time::Instant::now() + delay >= deadline) {
-                return Err(error);
+                return Err(crate::connect::keep_lost_call(lost, error));
             }
             tokio::time::sleep(delay).await;
             redial = true;
             if error.target_replied() {
+                // The target answered after the loss: that answer is the news now.
+                lost = None;
                 reply = Some(error);
+            } else if error.unreplied() {
+                lost = Some(error);
             }
         }
     }
@@ -1253,16 +1259,33 @@ impl Client {
 /// keeps its own words.
 pub(crate) fn answered_by(machine_id: &MachineId, error: ConnectError) -> RpcError {
     if !error.target_unanswered() {
-        return rpc_error(error);
+        // Only a failure a retry may fix is marked unreached: a refused key or another
+        // lasting failure is what the user acts on, so it keeps its own words.
+        let (lost, unreached) = (
+            error.unreplied(),
+            error.unreached() && error.retry() != ployz_core::Retry::Never,
+        );
+        let error = rpc_error(error);
+        return if lost {
+            error.reply_lost_from(machine_id)
+        } else if unreached {
+            error.unreached()
+        } else {
+            error
+        };
     }
-    let error = rpc_error(error);
+    unanswered_by(machine_id, rpc_error(error))
+}
+
+/// `error`, from a call `machine` left unanswered, naming it in the deepest line.
+pub(crate) fn unanswered_by(machine: impl std::fmt::Display, error: RpcError) -> RpcError {
     let transport = std::iter::once(error.message)
         .chain(error.cause)
         .collect::<Vec<_>>()
         .join(": ");
     RpcError::unanswered_target(
         error.code,
-        format!("Machine {machine_id} did not answer: {transport}"),
+        format!("Machine {machine} did not answer: {transport}"),
     )
 }
 
@@ -1853,7 +1876,7 @@ async fn list_on_machine(
     environment: EnvironmentValues,
 ) -> Result<MachineSuccess<Vec<ployz_core::ContainerObservation>>, MachineFailure<RpcError>> {
     client
-        .read::<op::ListContainers>(
+        .try_read::<op::ListContainers>(
             ListContainersRequest { environment },
             &MachineTarget::from(&machine_id),
         )
@@ -1862,7 +1885,23 @@ async fn list_on_machine(
             machine_id,
             value: list.containers,
         })
-        .map_err(|error| MachineFailure { machine_id, error })
+        .map_err(|error| MachineFailure {
+            machine_id,
+            error: unanswered_kept(error),
+        })
+}
+
+/// [`rpc_error`] in its own words, marked unanswered when the router or this client's
+/// deadline shows the target never answered.
+fn unanswered_kept(error: ConnectError) -> RpcError {
+    if !error.target_unanswered() {
+        return rpc_error(error);
+    }
+    let error = rpc_error(error);
+    RpcError {
+        cause: error.cause,
+        ..RpcError::unanswered_target(error.code, error.message)
+    }
 }
 
 async fn change_on_machine(

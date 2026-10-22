@@ -26,8 +26,9 @@ pub const TUNNEL_ALPN: &[u8] = b"ployz/tunnel/2";
 /// The byte a Machine writes once a tunnel's target accepted the TCP connection.
 pub const TUNNEL_OPEN: u8 = 0;
 
-/// QUIC application close code on [`TUNNEL_ALPN`] for a target that is malformed,
-/// outside the Cluster network, or unreachable. The close reason says which.
+/// QUIC application close code on [`TUNNEL_ALPN`] for a client below `Full` scope, or a
+/// target that is malformed, outside the Cluster network, or unreachable. The close
+/// reason says which.
 pub const TUNNEL_FAILED: u32 = 0x53;
 
 /// TLS exporter label for a [`ManagementProof`]. The exporter is unique to one

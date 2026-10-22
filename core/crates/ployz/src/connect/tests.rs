@@ -27,6 +27,7 @@ fn setup_retry_classifies_ssh_and_preserves_aggregate_cause() {
         };
         assert_eq!(ssh_error.retry(), retry);
         let error = ConnectError::AllFailed {
+            relayed: false,
             selection: ConnectionSource::Direct,
             attempts: 1,
             server: None,
@@ -1220,6 +1221,42 @@ fn only_a_target_reply_outlasts_a_later_silence() {
 }
 
 #[test]
+fn a_call_that_lost_its_answer_outlasts_a_retry_that_never_reached_the_target() {
+    let lost = || {
+        ConnectError::from(tonic::Status::from_error(Box::new(io::Error::new(
+            io::ErrorKind::NotConnected,
+            "connection lost",
+        ))))
+    };
+    let unreached = || ConnectError::Io(io::Error::new(io::ErrorKind::TimedOut, "SSH timed out"));
+
+    let error = keep_lost_call(Some(lost()), unreached());
+    assert!(error.unreplied(), "{error}");
+
+    let answered = keep_lost_call(
+        Some(lost()),
+        ConnectError::from(tonic::Status::unavailable("Machine is not participating")),
+    );
+    assert!(
+        answered.target_replied(),
+        "a later answer stands: {answered}"
+    );
+    assert!(!keep_lost_call(None, unreached()).unreplied());
+
+    let refused_key = {
+        use std::os::unix::process::ExitStatusExt;
+        ConnectError::SshProbe {
+            target: "host".to_owned(),
+            status: std::process::ExitStatus::from_raw(255 << 8),
+            failure: SshFailure::Auth,
+            detail: "Permission denied (publickey)".into(),
+        }
+    };
+    let kept = keep_lost_call(Some(lost()), refused_key);
+    assert_eq!(kept.retry(), ployz_core::Retry::Never, "{kept}");
+}
+
+#[test]
 fn a_closed_session_does_not_outlast_a_later_silence() {
     let closed = || {
         ConnectError::Rpc(TransportError {
@@ -1566,4 +1603,28 @@ async fn a_log_stream_left_unread_leaves_room_for_the_next_call() {
         matches!(grant, Ok(Ok(_))),
         "the unread log stream starved the next call: {grant:?}"
     );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_server_unanswered_through_cloud_may_be_offline_or_filtered_not_only_stopped() {
+    let [(relayed, _), (socket, _), _] = staggered_entries();
+    for (entry, said) in [
+        (
+            relayed,
+            "Server machine-1 isn't answering through Ployz Cloud. Check that it is online, its \
+             Ployz daemon is running, and its outgoing https isn't filtered, then retry.",
+        ),
+        (
+            socket,
+            "Server machine-1 isn't answering. Check that its Ployz daemon is running, then retry.",
+        ),
+    ] {
+        let connector =
+            ScriptedConnector::new(vec![(entry.with_name("machine-1"), Scripted::Fails)]);
+        let Err(error) = connect_selected_with(connector.selected(), connector.clone()).await
+        else {
+            panic!("a failing entry connected");
+        };
+        assert_eq!(error.to_string(), said);
+    }
 }

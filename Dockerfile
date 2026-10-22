@@ -47,8 +47,12 @@ WORKDIR /app
 COPY --from=dashboard /app/dashboard/.output .output
 COPY --from=dashboard /app/dashboard/node_modules node_modules
 # The app's packaged SDK is the runtime copy; replace pnpm's source-tree link.
-RUN ln -sfn /app/.output/server/node_modules/@ployz/sdk node_modules/@ployz/sdk
+RUN ln -sfn /app/.output/server/node_modules/@ployz/sdk node_modules/@ployz/sdk \
+    && touch .env \
+    && node -p 'require("@ployz/sdk").ployzVersion()' > .ployz-version
 COPY dashboard/package.json dashboard/drizzle.config.ts dashboard/drizzle.analytics.config.ts ./
 COPY dashboard/drizzle/ drizzle/
+COPY dashboard/scripts/check-schema.ts scripts/check-schema.ts
+COPY dashboard/src/server/schema-compatibility.ts src/server/schema-compatibility.ts
 # Load the OpenTelemetry SDK before the app; it reads Railway's OTEL_* variables.
-CMD ["node", "--experimental-loader=@opentelemetry/instrumentation/hook.mjs", "--import", "@opentelemetry/auto-instrumentations-node/register", ".output/server/index.mjs"]
+CMD ["node", "--experimental-loader=@opentelemetry/instrumentation/hook.mjs", "--import", "@opentelemetry/auto-instrumentations-node/register", "--import", "./scripts/check-schema.ts", ".output/server/index.mjs"]

@@ -375,6 +375,14 @@ keep their old replicas. Once the server is back, deploy again to finish the res
 ployz deploy
 ```
 
+When the connection drops in the middle of a step, the deploy can't tell whether the server did
+it. It says so instead of blaming the step: `db: The connection to Server web-1 dropped during
+pull image, so it may have happened anyway`, with `cause: connection lost`. Your image and your
+change are fine, so the deploy doesn't point you at them. A step that created or started a
+replica may have left the new replica running beside the old one. It takes no traffic, and
+`ployz status` names it as `1 copy no deploy brought into routing takes no traffic`. The
+next deploy removes it.
+
 ## My upload or log stream fails on a slow connection
 
 `keep-alive timed out`
@@ -567,7 +575,8 @@ doesn't exist and for a private image you have no access to.
 
 **Failed at pull**, with `The Server's disk is full: 48 MB free under /var/lib/docker`
 
-The server ran out of disk space while it downloaded an image. A deploy downloads every image it
+The server ran out of disk space while it downloaded an image, from its registry or from another
+server that already had it. A deploy downloads every image it
 needs before it changes any service, so none of the deploy's services changed and the versions
 already running keep running. The cause line under it is Docker's own error.
 

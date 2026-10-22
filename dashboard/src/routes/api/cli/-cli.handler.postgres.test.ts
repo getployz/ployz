@@ -1804,7 +1804,8 @@ it.live(
         ));
         const asked = (reply: { json: Reply }) => {
           const details = reply.json.error?.details;
-          return [reply.json.error?.code, details?.operation, details?.effects?.map(({ kind, name }) => [kind, name])];
+          const operation = details?.operation;
+          return [reply.json.error?.code, operation && { verb: operation.verb, name: operation.name }, details?.effects?.map(({ kind, name }) => [kind, name])];
         };
         for (const token of tokens) {
           const forget = yield* cli("POST", "forget-servers", { bearer: token.secret }, { organization: slug });
@@ -1979,7 +1980,7 @@ it.live(
         assert.strictEqual(asked.status, 409);
         assert.strictEqual(asked.json.error?.code, "approval_required");
         const details = asked.json.error?.details ?? assert.fail("no details");
-        assert.deepStrictEqual(details.operation, { verb: "clean", name: "left-behind" });
+        assert.deepInclude(details.operation, { verb: "clean", name: "left-behind" });
         assert.deepStrictEqual(details.effects?.map(({ kind, name }) => [kind, name]), [
           ["removes_service", "left-behind/web"],
           ["deletes_volume", "used by web at /data on fra-1"],
@@ -2006,7 +2007,7 @@ it.live(
 
         const removal = yield* cli("POST", `servers/${fra1}/forget`, alice, {});
         assert.strictEqual(removal.status, 409);
-        assert.deepStrictEqual(removal.json.error?.details?.operation, { verb: "forget", name: "fra-1" });
+        assert.deepInclude(removal.json.error?.details?.operation, { verb: "forget", name: "fra-1" });
 
         const drain = yield* cli("POST", `servers/${fra1}/drain`, alice);
         assert.strictEqual(drain.status, 202);
@@ -2477,7 +2478,7 @@ it.live(
         const asked = yield* cli(drain.method, drain.path, alice);
         assert.deepStrictEqual([asked.status, asked.json.error?.code], [409, "approval_required"], asked.text);
         const details = asked.json.error?.details ?? assert.fail("no details");
-        assert.deepStrictEqual(details.operation, { verb: "drain", name: "fra-1" });
+        assert.deepInclude(details.operation, { verb: "drain", name: "fra-1" });
         assert.isNotEmpty(details.effects ?? []);
         assert.lengthOf(sent.mock.calls, 0);
 

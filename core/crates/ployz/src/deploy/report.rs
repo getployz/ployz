@@ -352,6 +352,13 @@ impl Direct {
         self.operations = operations.to_vec();
     }
 
+    /// Whether the plan or the run named a Server it could not fully observe.
+    pub(super) fn has_observation_gaps(&self) -> bool {
+        self.notices
+            .iter()
+            .any(|warning| warning.observation_gap().is_some())
+    }
+
     /// Show `warning` with the deploy's other notices, once.
     pub(super) fn notice(&mut self, warning: ployz_core::DeployWarning) {
         if !self.notices.contains(&warning) {

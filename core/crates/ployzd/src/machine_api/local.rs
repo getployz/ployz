@@ -198,11 +198,7 @@ impl MachineService {
     ///
     /// Returns when neither the retained env nor the Container says, so a caller
     /// must treat every key as opened.
-    #[expect(
-        dead_code,
-        reason = "SL3 withholds these keys from Operator callers of InspectContainer"
-    )]
-    pub(crate) async fn opened_keys(&self, id: ContainerId) -> Result<BTreeSet<String>, Status> {
+    async fn opened_keys(&self, id: ContainerId) -> Result<BTreeSet<String>, Status> {
         Ok(self
             .sealed_record(id)
             .await?
@@ -376,6 +372,7 @@ impl MachineRpc for MachineService {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
+        let operator = from_operator(&request);
         let request = expect::<op::InspectContainer>(request)?;
         let containers = match self.containers() {
             Ok(containers) => containers,
@@ -386,7 +383,15 @@ impl MachineRpc for MachineService {
             .inspect_managed_details(&request.container_id, &machine_id)
             .await
         {
-            Ok(details) => respond(details),
+            Ok(mut details) => {
+                if operator {
+                    match self.opened_keys(request.container_id).await {
+                        Ok(opened) => withhold_opened(&mut details.environment, &opened),
+                        Err(_) => details.environment = None,
+                    }
+                }
+                respond(details)
+            }
             Err(error) => respond(RpcError::from(&error)),
         }
     }
@@ -1039,6 +1044,18 @@ fn request_body(request: Request<OpaquePayload>) -> Result<RpcRequestBody, Statu
         .decode_request()
         .map(|request| request.body)
         .map_err(invalid_request)
+}
+
+fn from_operator<T>(request: &Request<T>) -> bool {
+    request
+        .metadata()
+        .contains_key(ployz_core::OPERATOR_SCOPE_HEADER)
+}
+
+fn withhold_opened(environment: &mut Option<BTreeMap<String, String>>, opened: &BTreeSet<String>) {
+    if let Some(environment) = environment {
+        environment.retain(|key, _| !opened.contains(key));
+    }
 }
 
 #[allow(clippy::result_large_err)]

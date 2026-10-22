@@ -24,15 +24,16 @@ impl Service<http::Request<Body>> for EchoService {
     }
 
     fn call(&mut self, request: http::Request<Body>) -> Self::Future {
-        let cloud_routed = request
-            .headers()
-            .get(ployz_core::CLOUD_ROUTED_HEADER)
-            .cloned();
+        let marks = [
+            ployz_core::CLOUD_ROUTED_HEADER,
+            ployz_core::OPERATOR_SCOPE_HEADER,
+        ]
+        .map(|name| (name, request.headers().get(name).cloned()));
         let mut response = http::Response::new(request.into_body());
-        if let Some(cloud_routed) = cloud_routed {
-            response
-                .headers_mut()
-                .insert(ployz_core::CLOUD_ROUTED_HEADER, cloud_routed);
+        for (name, value) in marks {
+            if let Some(value) = value {
+                response.headers_mut().insert(name, value);
+            }
         }
         response.headers_mut().insert(
             "content-type",

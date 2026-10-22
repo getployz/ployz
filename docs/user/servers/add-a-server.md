@@ -51,8 +51,8 @@ you deploy; see [Scaling](../services/scaling.md#add-a-server).
 ## Add servers from the dashboard
 
 Before your first server, the **Servers** page shows one card instead of a list. Click
-**Get install command** and it makes a token that works for 7 days and shows the install line
-with the token under it, then **Shown once. Expires in 7d.** Copy the token now: Ployz can't show
+**Get install command** and it makes a token that works for 24 hours and shows the install line
+with the token under it, then **Shown once. Expires in 24h.** Copy the token now: Ployz can't show
 it again. Paste the line in a shell on the server, as root or as a user with `sudo`, and paste the
 token when it asks. The card then says **Listening for servers…** until the first one checks in.
 
@@ -278,7 +278,9 @@ a partial install. The new token is already in `/etc/ployz/fleet-token`, and the
 and preparation may be set up. Fix the cause and run the install again.
 
 Without `--enroll`, the script checks in only when `PLOYZ_FLEET_TOKEN` is set, and ends with
-`That isn't a Fleet Token` when it holds anything else. It leaves `PLOYZ_ENROLL_TOKEN` to
+`A Fleet Token is pflt_ and 43 more letters, digits, - or _` when it holds anything else, followed
+by how long the value was, or, at the right length, that it has other characters. It never prints
+the value. It leaves `PLOYZ_ENROLL_TOKEN` to
 `ployz server add`, and refuses a Fleet Token in it, which older install lines put there; use
 `PLOYZ_FLEET_TOKEN` instead. If the server
 waits longer than you expect, see

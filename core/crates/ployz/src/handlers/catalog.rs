@@ -310,6 +310,12 @@ pub(super) fn explain(root: &ArgMatches) -> Result<(), Error> {
     let node = SettingPath::parse(path).map(|path| NodeName::parse(&path.to_string()));
     if let Ok(Ok(NodeName::Service(service))) = node {
         let listing = listing(&service)?;
+        if let Some(setting) = explainable(&service) {
+            ui::note(format_args!(
+                "{service} is also a Setting; `{}` describes it.",
+                shell_words::join(["ployz", "explain", &setting])
+            ));
+        }
         return ui::list(&listing, &listing.table());
     }
     let explained = catalog::explain(path)?;
@@ -377,6 +383,23 @@ struct Listed {
     title: String,
     default: Option<Value>,
     applies: String,
+}
+
+/// A path `explain` describes for the Setting that Service `service` shares its name
+/// with: `image.image`, or a map's first example entry, `mounts.mounts.data`.
+fn explainable(service: &ServiceName) -> Option<String> {
+    let setting = format!("{service}.{service}");
+    if catalog::explain(&setting).is_ok() {
+        return Some(setting);
+    }
+    let schema = catalog::schema(Some(service.as_str())).ok()?;
+    let key = schema
+        .pointer(&format!("/properties/{service}/examples/0"))?
+        .as_object()?
+        .keys()
+        .next()?;
+    let entry = format!("{setting}.{key}");
+    catalog::explain(&entry).is_ok().then_some(entry)
 }
 
 fn listing(service: &ServiceName) -> Result<Listing, Error> {

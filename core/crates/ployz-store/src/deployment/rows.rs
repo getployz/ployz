@@ -338,6 +338,17 @@ impl From<&RpcError> for Failure {
     }
 }
 
+/// "Server <name>" for the Machine `error` names, by its name in `operations` when known.
+fn server_named(error: &RpcError, operations: &[OperationRow]) -> Option<String> {
+    let id = error.details.get("machine_id")?.as_str()?;
+    let name = operations
+        .iter()
+        .find(|row| row.machine_id.to_string() == id)
+        .and_then(|row| row.machine_name.as_ref())
+        .map_or_else(|| id.to_owned(), ToString::to_string);
+    Some(format!("Server {name}"))
+}
+
 impl Failure {
     /// `error` for users. A Server that refused for want of a capability is named
     /// from `operations`, and its sentence stands alone.
@@ -381,17 +392,7 @@ impl Failure {
                 action: MachineAction::UpdateContainerLimits,
                 error,
             } => {
-                let server = error
-                    .details
-                    .get("machine_id")
-                    .and_then(serde_json::Value::as_str)
-                    .map(|id| {
-                        operations
-                            .iter()
-                            .find(|row| row.machine_id.to_string() == id)
-                            .and_then(|row| row.machine_name.as_ref())
-                            .map_or_else(|| id.to_owned(), ToString::to_string)
-                    });
+                let server = server_named(error, operations);
                 let mut cause = vec![error.message.clone()];
                 cause.extend(ployz_core::error_chain::causes(error));
                 // A refusal comes before any Docker change, so the old limits hold.
@@ -409,10 +410,19 @@ impl Failure {
                 (
                     format!(
                         "{} {outcome}",
-                        server.map_or_else(
-                            || "The Server".to_owned(),
-                            |name| format!("Server {name}")
-                        )
+                        server.unwrap_or_else(|| "The Server".to_owned())
+                    ),
+                    cause,
+                )
+            }
+            // The Server may have done the work: only its answer was lost.
+            ExecutionError::Machine { action, error } if error.reply_lost() => {
+                let mut cause = vec![error.message.clone()];
+                cause.extend(ployz_core::error_chain::causes(error));
+                let server = server_named(error, operations).unwrap_or_else(|| "the Server".into());
+                (
+                    format!(
+                        "The connection to {server} dropped during {action}, so it may have happened anyway"
                     ),
                     cause,
                 )
@@ -728,7 +738,8 @@ fn state(
             log: container.then_some(LogText::Withheld {
                 why: Withheld::Unanswered,
             }),
-            unanswered: matches!(error, ExecutionError::Machine { error, .. } if error.target_unanswered()),
+            unanswered: matches!(error, ExecutionError::Machine { error, .. }
+                if error.target_unanswered() || error.reply_lost()),
             out_of_memory: match error {
                 ExecutionError::Health { out_of_memory, .. } => *out_of_memory,
                 ExecutionError::Machine { .. }
@@ -1371,6 +1382,51 @@ mod tests {
         assert_eq!(
             Failure::of(&error, &[]).reason,
             format!("Server {machine_id} could not confirm the new limits")
+        );
+    }
+
+    #[test]
+    fn a_step_whose_answer_was_lost_says_so_not_that_the_step_failed() {
+        let machine_id = "a".repeat(32);
+        let operations: Vec<OperationRow> = serde_json::from_value(serde_json::json!([{
+            "index": 0, "machine_id": machine_id, "machine_name": "prod-1",
+            "operation": {"type": "remove_container", "machine_id": machine_id, "container_id": "c".repeat(64)},
+            "status": {"type": "pending"}
+        }]))
+        .unwrap();
+        let lost = |action| ExecutionError::Machine {
+            action,
+            error: RpcError {
+                code: RpcErrorCode::Unavailable,
+                message: "connection lost".into(),
+                details: serde_json::Value::Null,
+                cause: Vec::new(),
+            }
+            .reply_lost_from(&machine_id.parse().unwrap()),
+        };
+        let pull = Failure::of(&lost(MachineAction::PullImage), &operations);
+        assert_eq!(
+            pull.reason,
+            "The connection to Server prod-1 dropped during pull image, so it may have happened anyway"
+        );
+        assert_eq!(pull.cause, ["connection lost"]);
+        let create = lost(MachineAction::CreateContainer);
+        assert_eq!(
+            Failure::of(&create, &[]).reason,
+            format!(
+                "The connection to Server {machine_id} dropped during create Container, so it may have happened anyway"
+            )
+        );
+        let failed = OperationStatus::Failed { error: create };
+        assert!(
+            matches!(
+                server(&[failed]),
+                RowState::Failed {
+                    unanswered: true,
+                    ..
+                }
+            ),
+            "a lost answer may still have done the work"
         );
     }
 

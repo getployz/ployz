@@ -17,7 +17,6 @@ async fn a_machine_that_answered_then_went_silent_keeps_its_answer() {
     let attempts = std::cell::Cell::new(0);
     let error = wait_out_restart(
         &CancellationToken::new(),
-        |_| {},
         || {
             attempts.set(attempts.get() + 1);
             let error = if attempts.get() == 1 {
@@ -35,7 +34,6 @@ async fn a_machine_that_answered_then_went_silent_keeps_its_answer() {
 
     let error = wait_out_restart(
         &CancellationToken::new(),
-        |_| {},
         || async { Err::<(), _>(silent()) },
     )
     .await
@@ -48,7 +46,6 @@ async fn a_call_on_a_closed_session_is_not_resent() {
     let attempts = std::cell::Cell::new(0);
     let error = wait_out_restart(
         &CancellationToken::new(),
-        |_| {},
         || {
             attempts.set(attempts.get() + 1);
             async { Err::<(), _>(crate::connect::closed_session_error()) }

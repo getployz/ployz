@@ -626,6 +626,10 @@ _Avoid_: per-user permission, read-only grant, Pairing Credential, management en
 One named holder slot on a Machine, such as `cloud` or a signed-in device's `cli-<device>`, whose client key may use the management transport. Setting it mints a Management Capability for that holder; clearing it revokes only that holder's connections and leaves a Cleared tombstone of its public keys. A redial with a tombstoned key is refused with `CLIENT_CLEARED`, confirming the removal; any other refused key gets `CLIENT_REFUSED`. The Machine knows holders, never the people or Organizations behind them.
 _Avoid_: Cloud Pairing, user, session, per-user permission
 
+**Management Scope**:
+What a Management Client may do on a Machine, read from its slot's label: `cloud` is Operator, every other label is Full. Operator drives the Machine but cannot Exec or open a tunnel, and reads no environment value the Machine opened from Sealed ciphertext. Each RPC names the least Scope it needs; a short one is refused with `PermissionDenied` naming the capability. A call over the local socket is Full.
+_Avoid_: role, permission level, access tier
+
 **Management Proof**:
 A Management Client's signature, by its client key, over keying material only one management connection exports, sent first on that connection. The Machine admits the client key it proves, never the connection's transport key, so each process dials under a key of its own and processes holding one Management Capability never share a relay identity. It cannot be replayed on another connection.
 _Avoid_: session token, login, transport key as identity

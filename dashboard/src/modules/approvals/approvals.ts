@@ -10,7 +10,7 @@ export type ApprovalStatus = (typeof APPROVAL_STATUSES)[number];
 export type OperationVerb = "drain" | "set" | "clean" | "remove" | "forget" | "release" | "remove_mirror" | "stop" | "restart" | "unprotect" | "move" | "restore" | "resize";
 
 /** An operation as a human approves it: its verb, what it acts on by name, and the preview its digest covers. */
-export type OperationReview = { verb: OperationVerb; name: string; preview: JsonValue };
+export type OperationReview = { verb: OperationVerb; name: string; preview: JsonValue; subject?: string };
 
 /** A stop or restart the dashboard asked for, run as its asker once a protector approves it. */
 export type ServiceApply = { environmentId: string; service: string; verb: "stop" | "restart" };
@@ -67,9 +67,13 @@ export function redeployLine(command: string, review: ApprovalReview) {
   return rollback ? `Back to #${deployment}. ${rollback.body}.` : `Ships #${deployment} again.`;
 }
 
+const losesVolumeAccess = (review?: ApprovalReview) => review !== undefined && "operation" in review
+  && review.operation.verb === "remove" && review.operation.subject?.startsWith("server:") === true;
+
 /** The card's badge: a Save deletes nothing until the next Deploy, and a Deploy that only deletes Volumes counts them. An agent's Deploy that destroys nothing still asks. */
 export function approvalBadge(command: string, review: ApprovalReview) {
   const { effects } = review;
+  if (losesVolumeAccess(review)) return "Removes server";
   if (command === "publish") return "Deletes on deploy";
   if (command === "retry" && !shutsDownAgain(review)) return rollsBack(review) ? "Rolls back" : "Redeploys";
   if (command === "stop") return "Stops service";
@@ -148,7 +152,14 @@ const destroys = {
  * One thing the plan destroys, worded as the card leads with it: by name, or as "a volume" when it has none. A Save
  * destroys nothing itself, so its lines say the next Deploy does.
  */
-export function destroyedLine(effect: DestructiveEffect, command = "admit") {
+export function destroyedLine(effect: DestructiveEffect, command = "admit", review?: ApprovalReview) {
+  if (effect.kind === "deletes_volume" && losesVolumeAccess(review)) {
+    return {
+      verb: effect.name === undefined ? "Loses access to a volume" : "Loses access to volume",
+      name: effect.name ?? null,
+      after: ". Its data stays on the Server's disk until wiped. Wipe or reinstall the disk to erase it; sudo ployz-uninstall keeps the data.",
+    };
+  }
   const { verb: does, noun, after } = destroys[effect.kind];
   const save = command === "publish";
   const verb = save ? `Next deploy ${does.toLowerCase()}` : does;

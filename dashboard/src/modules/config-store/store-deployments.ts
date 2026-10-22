@@ -405,7 +405,11 @@ export function outcomeReason(outcome: Outcome | null) {
   if (outcome.type === "executed" && outcome.cancelled) return undefined;
   const reason = outcome.reason ?? undefined;
   const cause = outcome.cause?.at(-1);
-  return reason && cause ? `${reason}: ${cause}` : reason;
+  if (!reason || !cause) return reason;
+  // A reason in whole sentences takes its cause as a closing one. Never split a reason: a dot inside may be an image tag's,
+  // and with several Servers tried the cause is the last one's.
+  if (!/[.!?]$/.test(reason.trimEnd())) return `${reason}: ${cause}`;
+  return `${reason.trimEnd()} Cause: ${cause}${/[.!?]$/.test(cause) ? "" : "."}`;
 }
 
 /**

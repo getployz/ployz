@@ -557,6 +557,22 @@ impl ContainerRuntime {
         while let Some((container_id, result)) = inspected.next().await {
             match result {
                 Ok(observation) => observations.push(observation),
+                Err(Error::SpecNotFound(_))
+                    if self
+                        .discard_half_made(&container_id)
+                        .await
+                        .unwrap_or_else(|error| {
+                            eprintln!(
+                                "couldn't remove container {container_id}, which has no spec: {error}",
+                                error = ployz_core::error_chain::inline(&error),
+                            );
+                            false
+                        }) =>
+                {
+                    eprintln!(
+                        "removed container {container_id}, which a crash left without its spec before it started"
+                    );
+                }
                 Err(error) if malformed_container(&error) => {
                     eprintln!(
                         "ignoring malformed managed container {container_id}: {error}",
@@ -579,6 +595,7 @@ impl ContainerRuntime {
     pub(crate) async fn managed_inventory(&self) -> Result<Vec<ContainerId>, Error> {
         let containers = self.docker.managed_containers().await?;
         self.adopt_unrotated(&containers).await?;
+        self.adopt_unprobed(&containers).await?;
         let listed = containers
             .into_iter()
             .map(|(id, labels)| (id, creation_slot(&labels)))
@@ -628,6 +645,61 @@ impl ContainerRuntime {
             .await
             .adopt_unrotated(unrotated)
             .await?)
+    }
+
+    /// A user Service Container with no gen label, stored with no Healthcheck, which
+    /// Docker runs with no probe, is recorded as Disabled. See
+    /// [`ResolvedServiceSpec::adopt_unprobed`]. Every release that stored no Healthcheck
+    /// predates the gen label. A Container this daemon created keeps the spec it was
+    /// asked for, so a keyed create retried with that request still matches it. Only
+    /// a Container stored with no Healthcheck is inspected.
+    async fn adopt_unprobed(
+        &self,
+        containers: &[(ContainerId, HashMap<String, String>)],
+    ) -> Result<(), Error> {
+        let unstamped = containers
+            .iter()
+            .filter(|(_, labels)| {
+                !labels.contains_key(LABEL_GEN)
+                    && ManagedLabels::parse(labels).is_ok_and(|managed| {
+                        managed.kind == ContainerKind::ServiceContainer
+                            && !managed.identity.namespace.is_reserved()
+                    })
+            })
+            .map(|(id, _)| *id)
+            .collect::<Vec<_>>();
+        if unstamped.is_empty() {
+            return Ok(());
+        }
+        let mut unprobed = Vec::new();
+        // One whose image runs a probe keeps None and is inspected each sync until a
+        // Deploy replaces it, a cost only 0.2.4 copies of a HEALTHCHECK image pay.
+        for container_id in self.specs.without_healthcheck(unstamped).await? {
+            // A Container Docker cannot inspect now is left for the next sync.
+            let Ok(inspected) = decode_raw_inspect(
+                self.docker
+                    .client
+                    .inspect_container(container_id.as_str(), None)
+                    .await,
+                &container_id,
+            ) else {
+                continue;
+            };
+            if !matches!(
+                effective_healthcheck(inspected.config.as_ref()),
+                Some(HealthcheckSpec::Configured(_))
+            ) {
+                unprobed.push(container_id);
+            }
+        }
+        if unprobed.is_empty() {
+            return Ok(());
+        }
+        let mut operation = self.specs.config_operation().await;
+        if operation.adopt_unprobed(unprobed).await? {
+            operation.republish();
+        }
+        Ok(())
     }
 
     async fn managed_slots(
@@ -1514,12 +1586,12 @@ pub enum Error {
     SlotNameOccupied(String),
     #[error("image pull failed")]
     ImagePull(#[source] bollard::errors::Error),
-    /// A pull failed while the Docker root had almost no free space.
+    /// A registry or peer pull failed while the Docker root had almost no free space.
     #[error("{full}")]
     DiskFull {
         full: ployz_core::DiskFull,
         #[source]
-        source: bollard::errors::Error,
+        source: Box<dyn std::error::Error + Send + Sync>,
     },
     #[error("pre-deploy container requested without a pre-deploy hook")]
     MissingPreDeployHook,

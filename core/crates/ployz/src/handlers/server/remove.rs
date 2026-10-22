@@ -379,13 +379,16 @@ fn leave(root: &ArgMatches, removal: Removal) -> Result<(), Error> {
                 ),
                 "Reset does not erase volume data.",
             ));
-        } else {
+        } else if removal == Removal::Reset {
             for loss in &observed.data_loss {
                 crate::ui::stream(format_args!(
                     "Reset left the data of Volume {} on {}.",
                     volume_label(&labels, loss),
                     selected.name
                 ));
+            }
+            if !observed.data_loss.is_empty() {
+                crate::ui::stream("Wipe or reinstall the Server's disk to erase that data; sudo ployz-uninstall keeps the data.");
             }
         }
         let stopped = if removal == Removal::Reset && reset_failure.is_none() {
@@ -683,7 +686,7 @@ fn machine_removal_refusal(error: RpcError, name: &str) -> Error {
             .context(format!(
                 "Server {name} could not be reset; forget it to take it out of the Cluster without a reset."
             ))
-            .hint(Hint::Next(format!("ployz server forget {name}")))
+            .hint(Hint::Next(format!("ployz server forget {name} --confirm dead")))
     } else {
         error.into()
     }
@@ -761,7 +764,9 @@ mod tests {
         );
         assert_eq!(
             refusal.hints(),
-            [Hint::Next("ployz server forget fra-1".into())]
+            [Hint::Next(
+                "ployz server forget fra-1 --confirm dead".into()
+            )]
         );
         assert_eq!(refusal.causes(), ["Server fra-1 did not respond"]);
         assert_eq!(refusal.report().code, RpcErrorCode::Unavailable);

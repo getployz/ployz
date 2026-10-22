@@ -657,6 +657,7 @@ fn plan_code(error: &PlanError) -> RpcErrorCode {
         | PlanError::HostnameConflict { .. } => RpcErrorCode::Conflict,
         PlanError::CapacityUnknown
         | PlanError::CopiesUnknown { .. }
+        | PlanError::VolumeHolderUnknown { .. }
         | PlanError::ProvisionedVolumeStorageUnknown { .. }
         | PlanError::DockerVolumeUnavailable { .. } => RpcErrorCode::Unavailable,
     }
@@ -1265,6 +1266,7 @@ mod tests {
     #[test]
     fn exhausted_connections_print_how_many_were_tried() {
         let failure = Failure::from(ConnectError::AllFailed {
+            relayed: false,
             selection: crate::context::ConnectionSource::Context("prod".into()),
             attempts: 3,
             server: None,
@@ -1288,6 +1290,7 @@ mod tests {
     #[test]
     fn exhausted_connections_name_the_server_tried_last() {
         let failure = Failure::from(ConnectError::AllFailed {
+            relayed: false,
             selection: crate::context::ConnectionSource::Cloud,
             attempts: 3,
             server: Some("box-node-09c8".into()),
@@ -1305,6 +1308,7 @@ mod tests {
     #[test]
     fn exhausted_connections_say_a_daemon_answered_when_one_did() {
         let failure = Failure::from(ConnectError::AllFailed {
+            relayed: false,
             selection: crate::context::ConnectionSource::Context("prod".into()),
             attempts: 2,
             server: None,
@@ -1323,6 +1327,7 @@ mod tests {
     #[test]
     fn exhausted_connections_say_the_server_tried_last_did_not_answer_after_one_refused() {
         let failure = Failure::from(ConnectError::AllFailed {
+            relayed: false,
             selection: crate::context::ConnectionSource::Cloud,
             attempts: 2,
             server: Some("web-2".into()),

@@ -7,7 +7,9 @@ use crate::ui::{
     progress::{Detail, Diagnostic, Frame, LogTail, Row, Run, State, Subject, Timing},
 };
 use ployz_core::config::{RuntimeFailureKind, RuntimeOutcomeSummary};
-use ployz_core::{QualifiedService, RpcError, RpcErrorCode, ServiceName, config::MEM_LIMIT_MAX};
+use ployz_core::{
+    DeployWarning, QualifiedService, RpcError, RpcErrorCode, ServiceName, config::MEM_LIMIT_MAX,
+};
 use ployz_store::{
     BuildStatus, DeployedNode, DeploymentStatus, DeploymentSummary, DeploymentView,
     DeploymentWarning, FailedAt, IngressAction, IngressFailure, NodeOutcome, NodeStatus, RowState,
@@ -126,9 +128,27 @@ pub(super) fn frame(view: &DeploymentView) -> Frame {
                         | DeploymentWarning::IngressUnchecked { .. } => None,
                     }),
             )
-            .cloned()
-            .collect(),
+            .map(|warning| by_service_name(view, warning.clone()))
+            .fold(Vec::new(), |mut notices, warning| {
+                if !notices.contains(&warning) {
+                    notices.push(warning);
+                }
+                notices
+            }),
     }
+}
+
+/// `warning` naming its Service by its name, not the runtime name its containers run under.
+fn by_service_name(view: &DeploymentView, mut warning: DeployWarning) -> DeployWarning {
+    if let DeployWarning::ImagePortMismatch { service, .. } = &mut warning
+        && let Some((name, _)) = view
+            .runtime_names
+            .iter()
+            .find(|(_, runtime)| *runtime == service)
+    {
+        *service = name.clone();
+    }
+    warning
 }
 
 /// Service `name`'s row from its recorded work on each Server, read against the plan
@@ -353,12 +373,20 @@ pub(super) fn completion(
         .preview
         .as_ref()
         .is_some_and(|preview| preview.has_observation_gaps())
+        || left_a_gap(view)
         || left_a_copy_running(view)
         || ingress_unchecked(view).next().is_some()
     {
         return Err(Failure::partial());
     }
     Ok(())
+}
+
+/// The run found a Server it could not fully observe after the plan was made.
+fn left_a_gap(view: &DeploymentView) -> bool {
+    view.deployment.warnings.iter().any(|warning| {
+        matches!(warning, DeploymentWarning::Deploy { warning } if warning.observation_gap().is_some())
+    })
 }
 
 fn left_a_copy_running(view: &DeploymentView) -> bool {
@@ -518,6 +546,7 @@ fn failure(view: &DeploymentView, named: &[&str], command: impl Fn(&[&str]) -> S
                 step,
                 log,
                 out_of_memory,
+                unanswered,
                 ..
             } = &row.state
             else {
@@ -550,7 +579,8 @@ fn failure(view: &DeploymentView, named: &[&str], command: impl Fn(&[&str]) -> S
                     | FailedAt::Stop
                     | FailedAt::Remove,
                 ) => logs = true,
-                Some(FailedAt::Pull) => pulled = true,
+                // A pull whose answer was lost may have worked: nothing says the image is bad.
+                Some(FailedAt::Pull) => pulled |= !unanswered,
                 Some(FailedAt::Build) => build_failed = true,
                 Some(FailedAt::Create | FailedAt::Volume) => {}
                 None => logs |= log.is_some(),
@@ -860,6 +890,27 @@ mod tests {
     }
 
     #[test]
+    fn a_renamed_services_port_warning_names_it_by_its_service_name() {
+        let mut view = view();
+        view.deployment.warnings = vec![serde_json::from_value(json!({"warning": {
+            "type": "image_port_mismatch", "service": "private-web", "service_id": "c".repeat(32),
+            "image": "nginx", "machines": ["a".repeat(32)], "exposed": [80], "routed": [8080],
+        }}))
+        .unwrap()];
+        let notices: Vec<_> = frame(&view)
+            .notices
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        assert_eq!(
+            notices,
+            [
+                "web's image nginx exposes 80; its domains send to 8080. Set the domain port or PORT."
+            ]
+        );
+    }
+
+    #[test]
     fn a_failed_limits_update_keeps_dockers_words_and_says_to_deploy_again() {
         let docker = "Docker responded with status code 400: Conflicting options: Nano CPUs and CPU Period cannot both be set";
         let reason = "web: Server edge could not confirm the new limits";
@@ -996,6 +1047,32 @@ mod tests {
         assert_eq!(
             inspects(&failure(&view, &[], command)),
             ["ployz logs web --project shop --env production"]
+        );
+    }
+
+    #[test]
+    fn a_pull_whose_answer_was_lost_blames_neither_the_image_nor_the_change() {
+        let mut view = view();
+        for node in &mut view.nodes {
+            for row in &mut node.rows {
+                if let RowState::Failed {
+                    step, unanswered, ..
+                } = &mut row.state
+                {
+                    *step = Some(FailedAt::Pull);
+                    *unanswered = true;
+                }
+            }
+        }
+        let failure = failure(&view, &[], command);
+        assert!(inspects(&failure).is_empty(), "{:?}", inspects(&failure));
+        assert!(
+            !failure
+                .hints()
+                .iter()
+                .any(|hint| matches!(hint, Hint::Undo(_))),
+            "{:?}",
+            failure.hints()
         );
     }
 
@@ -1469,6 +1546,28 @@ mod tests {
                 },
             },
         ];
+        let failure = completion(&view, None, &[], command).unwrap_err();
+        assert_eq!(crate::ui::after_result(&failure), 3);
+    }
+
+    #[test]
+    fn an_applied_deploy_with_a_gap_found_at_run_time_is_partial() {
+        use ployz_core::{MachineName, ObservationGap, ObservationGapReason, ObservationKind};
+        let mut view = view();
+        view.deployment.status = DeploymentStatus::Applied;
+        view.deployment.outcome = None;
+        assert!(completion(&view, None, &[], command).is_ok());
+        view.deployment.warnings = vec![DeploymentWarning::Deploy {
+            warning: ployz_core::DeployWarning::ObservationFailed {
+                gap: Some(ObservationGap {
+                    machine_name: MachineName::parse("one").unwrap(),
+                    reason: ObservationGapReason::Failed,
+                }),
+                kind: ObservationKind::Container,
+                machine_id: ployz_core::MachineId::random(),
+                message: "Machine one did not answer: deadline has elapsed".into(),
+            },
+        }];
         let failure = completion(&view, None, &[], command).unwrap_err();
         assert_eq!(crate::ui::after_result(&failure), 3);
     }

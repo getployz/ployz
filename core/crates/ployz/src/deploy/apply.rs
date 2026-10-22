@@ -93,13 +93,13 @@ pub(crate) async fn apply_requested(
             ui::note_inline(format_args!("{}", render::endpoints_footer(completed)));
             if signal.is_cancelled() {
                 Err(Failure::cancelled().into())
-            } else if preview.has_observation_gaps() {
-                Err(Failure::from(ployz_core::RpcError {
+            } else if evidence.has_observation_gaps() {
+                Err(ApplyError::Partial(Failure::from(ployz_core::RpcError {
                     code: ployz_core::RpcErrorCode::Unavailable,
                     message: "Deployment completed with incomplete Server observations.".into(),
                     details: serde_json::json!({ "outcome": outcome, "warnings": preview.warnings }),
                     cause: Vec::new(),
-                }).into())
+                })))
             } else {
                 Ok(outcome)
             }
@@ -135,20 +135,27 @@ fn show(event: DeployEvent, evidence: &mut report::Direct, progress: &mut Progre
 
 /// A direct follow-up failure retains diagnostic evidence until the outer command adds context.
 #[derive(Debug)]
-pub(crate) struct ApplyError(Failure);
+pub(crate) enum ApplyError {
+    /// The Apply did not complete.
+    Failed(Failure),
+    /// The Apply completed, but a Server it could not observe leaves the result partial.
+    Partial(Failure),
+}
 impl From<Failure> for ApplyError {
     fn from(failure: Failure) -> Self {
-        Self(failure)
+        Self::Failed(failure)
     }
 }
 impl From<DeployError> for ApplyError {
     fn from(error: DeployError) -> Self {
-        Self(error.into())
+        Self::Failed(error.into())
     }
 }
 impl From<ApplyError> for Failure {
     fn from(error: ApplyError) -> Self {
-        error.0
+        match error {
+            ApplyError::Failed(failure) | ApplyError::Partial(failure) => failure,
+        }
     }
 }
 

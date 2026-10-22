@@ -1,7 +1,7 @@
 //! Volume runs: a Mirror, full Sync, Mirror removal, Move, Release, Restore or resize of one Volume,
 //! which Ployz Cloud runs across its Servers. The CLI starts one, reads them back, and with `--wait`
 //! follows one until it ends. A plain Sync is no run: Cloud hands the Mirror its pull and answers.
-//! Without Cloud there are none: Volumes stay put.
+//! Without Cloud there are none: Volumes stay put, and only a Restore runs, from the CLI.
 
 use std::time::Duration;
 
@@ -428,9 +428,9 @@ pub(crate) fn release_command(command: Command) -> Command {
 }
 
 pub(crate) fn restore_command(command: Command) -> Command {
-    store::scoped(command.about(
-        "Make a Server's copy of a Volume its writer when no Server holds one (Ployz Cloud)",
-    ))
+    store::scoped(
+        command.about("Make a Server's copy of a Volume its writer when no Server holds one"),
+    )
     .arg(positional("volume", true).help("Volume name"))
     .arg(
         value("from", None)
@@ -570,6 +570,11 @@ pub(crate) fn restore(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let volume = store::volume_name(matches, "volume")?;
     let from = server_name(matches, "from")?;
+    let store = store::store(root)?;
+    if let Backend::Local(..) = store.backend() {
+        let (volume_id, environment) = located(&store, matches, &volume)?;
+        return super::restore::standalone(root, &store, &volume, &volume_id, &environment, &from);
+    }
     let started = format!("Restore of Volume {volume} from {from}");
     request(root, &volume, started, |environment| RunRequest {
         environment,

@@ -82,7 +82,7 @@ function PendingCard({ organizationSlug, approval }: { organizationSlug: string;
         {effects.length > 0 && (
           <ul aria-label="Destroys" className="flex flex-col gap-1 rounded-lg bg-destructive/10 px-2.5 py-2 text-xs">
             {effects.map((effect) => {
-              const line = destroyedLine(effect, approval.command);
+              const line = destroyedLine(effect, approval.command, approval.review);
               return (
                 <li key={`${effect.kind}:${effect.path}`} className="flex gap-2">
                   <XIcon aria-hidden className="mt-0.5 size-3 shrink-0 text-destructive" />
