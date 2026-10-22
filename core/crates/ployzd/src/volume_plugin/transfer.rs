@@ -235,7 +235,8 @@ impl Receives {
 
 /// A stream the writer answered 200 for, not yet read.
 pub(super) struct OpenedStream {
-    url: String,
+    /// The stream's URL as [`SendStream::shown`] prints it.
+    shown: String,
     response: reqwest::Response,
 }
 
@@ -291,7 +292,7 @@ impl VolumeStorage {
             biased;
             () = stop.cancelled() => Err(ReceiveFailure::Failed(format!(
                 "the request for {} was stopped",
-                stream.path_and_query()
+                stream.shown()
             ))),
             opened = self.request_stream(from, stream) => opened,
         }
@@ -302,12 +303,11 @@ impl VolumeStorage {
         from: ManagementAddress,
         stream: &SendStream,
     ) -> Result<OpenedStream, ReceiveFailure> {
-        let url = format!(
-            "http://[{}]:{}{}",
-            from.0,
-            self.send_port,
-            stream.path_and_query()
-        );
+        let address = format!("http://[{}]:{}", from.0, self.send_port);
+        let url = format!("{address}{}", stream.path_and_query());
+        // Messages name the stream as `shown`, and reqwest's errors lose their URL, so a
+        // resume token never leaves this Machine's request.
+        let shown = format!("{address}{}", stream.shown());
         let client = reqwest::Client::builder()
             .connect_timeout(self.receive_stall)
             .read_timeout(self.receive_stall)
@@ -318,25 +318,24 @@ impl VolumeStorage {
                     inline(&error)
                 ))
             })?;
-        let response =
-            client.get(&url).send().await.map_err(|error| {
-                ReceiveFailure::Failed(format!("GET {url}: {}", inline(&error)))
-            })?;
+        let response = client.get(&url).send().await.map_err(|error| {
+            ReceiveFailure::Failed(format!("GET {shown}: {}", inline(&error.without_url())))
+        })?;
         if response.status() == reqwest::StatusCode::NOT_FOUND {
             let reason = response.text().await.unwrap_or_default();
-            return Err(ReceiveFailure::NoStream(format!("GET {url}: {reason}")));
+            return Err(ReceiveFailure::NoStream(format!("GET {shown}: {reason}")));
         }
-        let response = response
-            .error_for_status()
-            .map_err(|error| ReceiveFailure::Failed(format!("GET {url}: {}", inline(&error))))?;
-        Ok(OpenedStream { url, response })
+        let response = response.error_for_status().map_err(|error| {
+            ReceiveFailure::Failed(format!("GET {shown}: {}", inline(&error.without_url())))
+        })?;
+        Ok(OpenedStream { shown, response })
     }
 
     /// Pulls an opened stream into `fs`. Once `stop` fires, the receive is killed and
     /// reaped before this returns.
     pub(super) async fn receive_opened(
         &self,
-        OpenedStream { url, response }: OpenedStream,
+        OpenedStream { shown, response }: OpenedStream,
         fs: &str,
         bound: u64,
         fault: &'static str,
@@ -363,7 +362,7 @@ impl VolumeStorage {
         )
         .map_err(|error| ReceiveFailure::Failed(format!("could not run zfs receive: {error}")))?;
         let pumped = {
-            let pump = self.pump(child.child(), &url, response, fs, fault, identity);
+            let pump = self.pump(child.child(), &shown, response, fs, fault, identity);
             tokio::select! {
                 biased;
                 () = stop.cancelled() => None,
@@ -383,7 +382,7 @@ impl VolumeStorage {
     async fn pump(
         &self,
         child: &mut Child,
-        url: &str,
+        shown: &str,
         response: reqwest::Response,
         fs: &str,
         fault: &'static str,
@@ -415,7 +414,7 @@ impl VolumeStorage {
                     }
                 }
                 Err(error) => {
-                    broke = Some(inline(&error));
+                    broke = Some(inline(&error.without_url()));
                     break;
                 }
             }
@@ -440,7 +439,7 @@ impl VolumeStorage {
         }
         if let Some(error) = broke {
             return Err(ReceiveFailure::Failed(format!(
-                "stream from {url} broke after {received} bytes: {error}"
+                "stream from {shown} broke after {received} bytes: {error}"
             )));
         }
         Ok(())
