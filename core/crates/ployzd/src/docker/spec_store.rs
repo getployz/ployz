@@ -1031,6 +1031,45 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_copy_restored_from_before_slots_were_recorded_is_never_removed() {
+        use crate::docker::test_support::{container_request, machine};
+        use ployz_core::{ContainerKind, Namespace};
+
+        let copy = keyed_copy_in_rotation().await;
+        let restored = restored_unstarted(&copy);
+        connect(copy.runtime.spec_store_path_for_test())
+            .unwrap()
+            .execute("DELETE FROM creations", [])
+            .unwrap();
+        let mut machine = machine();
+        machine.id = copy.machine;
+        let namespace = Namespace::parse("app").unwrap();
+        let mut request = container_request(
+            ContainerKind::ServiceContainer,
+            &namespace,
+            &copy.spec,
+            std::future::ready(None),
+        );
+        request.creation_key = Some("restore-1");
+
+        let resent = copy
+            .runtime
+            .create_with_admission::<_, _, crate::docker::Error>(&machine, request)
+            .await;
+        copy.runtime.list_managed(&copy.machine).await.unwrap();
+
+        assert!(
+            matches!(&resent, Err(crate::docker::Error::SpecNotFound(id)) if *id == restored),
+            "{resent:?}"
+        );
+        assert_eq!(
+            copy.containers.lock().unwrap().len(),
+            1,
+            "its spec may be the one under its old ID, so it is kept"
+        );
+    }
+
+    #[tokio::test]
     async fn a_slot_holding_a_restored_copy_reads_it_with_its_rotation() {
         use ployz_core::{ContainerKind, Namespace, SlotKey};
 
