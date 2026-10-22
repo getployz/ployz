@@ -1610,6 +1610,27 @@ fn an_admin_shutting_down_protected_production_from_ployz_asks_like_a_removal() 
 }
 
 #[test]
+fn a_token_for_another_environment_is_refused_before_anyone_is_asked() {
+    let (store, system) = shop();
+    deploy(&store, &system, "production", 1, &["web", "db"]);
+    let (owner, trusted) = person(&system, true, Approval::Required);
+    let staging_only = Trusted {
+        environments: Some([EnvironmentName::parse("staging").unwrap()].into()),
+        ..trusted
+    };
+
+    let refused = refusal(shut_down(
+        &store,
+        &owner,
+        ("production", 2),
+        &[],
+        &staging_only,
+    ));
+    assert_eq!(refused.code, RpcErrorCode::from("forbidden"));
+    assert_eq!(refused.message, "This token can deploy only to staging.");
+}
+
+#[test]
 fn a_default_waits_while_its_branch_removal_is_stalled() {
     let (store, who) = branched();
     let removing = confirmed(&store, &who, accepting_data(None), &observing(observed())).unwrap();
