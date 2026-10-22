@@ -75,29 +75,41 @@ impl Paths {
     fn probe(&self) -> PathBuf {
         self.checkin_dir.join("probe.json")
     }
+
+    pub(crate) fn loop_lock(&self) -> PathBuf {
+        self.checkin_dir.join(LOOP_LOCK)
+    }
 }
 
 const LOOP_LOCK: &str = "loop.lock";
+/// Only root may lock it: a lock any user could take would let them hold the loop back from starting.
+const LOOP_LOCK_MODE: u32 = 0o600;
 
 /// Held for as long as the check-in loop runs, so `status` can tell a record no loop updates any more.
 pub(crate) struct LoopRunning {
     _lock: fs::File,
 }
 
-pub(crate) fn hold_loop(paths: &Paths) -> io::Result<LoopRunning> {
+/// The loop's lock, or none when another loop already holds it.
+pub(crate) fn hold_loop(paths: &Paths) -> io::Result<Option<LoopRunning>> {
     fs::create_dir_all(&paths.checkin_dir)?;
     let lock = fs::OpenOptions::new()
         .create(true)
         .truncate(false)
         .write(true)
-        .mode(STATUS_READABLE_BY_ALL)
-        .open(paths.checkin_dir.join(LOOP_LOCK))?;
-    lock.lock()?;
-    Ok(LoopRunning { _lock: lock })
+        .mode(LOOP_LOCK_MODE)
+        .open(paths.loop_lock())?;
+    // A lock an earlier release made readable by all is narrowed too.
+    lock.set_permissions(fs::Permissions::from_mode(LOOP_LOCK_MODE))?;
+    match lock.try_lock() {
+        Ok(()) => Ok(Some(LoopRunning { _lock: lock })),
+        Err(fs::TryLockError::WouldBlock) => Ok(None),
+        Err(fs::TryLockError::Error(error)) => Err(error),
+    }
 }
 
 /// Whether a check-in loop ran here and none runs now. A loop older than the lock never made
-/// it, and a lock this user can't open proves nothing, so either claims nothing.
+/// it, and a user who can't open it (anyone but root) learns nothing, so either claims nothing.
 pub(crate) fn loop_stopped(checkin_dir: &Path) -> bool {
     fs::File::open(checkin_dir.join(LOOP_LOCK)).is_ok_and(|lock| lock.try_lock_shared().is_ok())
 }
@@ -499,9 +511,6 @@ pub(crate) async fn run<H: Host>(
     key: &CheckinKey,
     paths: &Paths,
 ) -> CheckinEnd {
-    let _running = hold_loop(paths).inspect_err(|error| {
-        crate::ui::warn(format!("Could not hold the check-in loop's lock: {error}"))
-    });
     let mut said = Said::default();
     let mut probes = Probes::load(paths.probe());
     loop {

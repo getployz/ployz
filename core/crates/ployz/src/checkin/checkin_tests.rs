@@ -2602,8 +2602,22 @@ fn status_tells_a_stopped_loop_only_from_a_lock_the_loop_left() {
     let paths = paths(&dir);
     // A loop older than the lock never made it, so nothing is claimed.
     assert!(!loop_stopped(&paths.checkin_dir));
-    let running = hold_loop(&paths).unwrap();
+    let running = hold_loop(&paths).unwrap().expect("no other loop holds it");
     assert!(!loop_stopped(&paths.checkin_dir));
+    // A second loop doesn't wait behind the first; it learns one already runs.
+    assert!(hold_loop(&paths).unwrap().is_none());
     drop(running);
     assert!(loop_stopped(&paths.checkin_dir));
+}
+
+#[test]
+fn only_root_can_take_the_check_in_loop_lock() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = paths(&dir);
+    drop(hold_loop(&paths).unwrap());
+    let mode = fs::metadata(paths.checkin_dir.join("loop.lock"))
+        .unwrap()
+        .permissions()
+        .mode();
+    assert_eq!(mode & 0o777, 0o600);
 }

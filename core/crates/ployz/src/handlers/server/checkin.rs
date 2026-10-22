@@ -112,6 +112,21 @@ pub(crate) fn checkin(root: &ArgMatches) -> Result<(), Error> {
         cloud: cloud_url.clone(),
     };
     let (key, mut client) = connect(&paths, &cloud_url, token)?;
+    let _running = match checkin::hold_loop(&paths) {
+        Ok(Some(running)) => Some(running),
+        Ok(None) => {
+            return Err(Error::coded(
+                RpcErrorCode::Conflict,
+                "A check-in loop already runs here. `sudo systemctl status ployz-checkin` shows it.",
+            ));
+        }
+        Err(error) => {
+            // A lock left by an earlier loop would make `status` call this running one stopped.
+            let _ = fs::remove_file(paths.loop_lock());
+            crate::ui::warn(format!("Could not hold the check-in loop's lock: {error}"));
+            None
+        }
+    };
     match runtime.block_on(checkin::run(&host, &mut client, &key, &paths)) {
         CheckinEnd::Stopped(_) | CheckinEnd::Enrolled => Ok(()),
         // A failed exit, so systemd starts the loop again with the token now in the file.

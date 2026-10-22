@@ -833,23 +833,9 @@ fn status_record(status: &Status) -> Fields {
             Cell::status("Not in a Cluster", Tone::Change),
         );
     } else if let Some(ThisServer {
-        checkin,
-        stopped: true,
-        ..
+        checkin, stopped, ..
     }) = &status.this_server
-        && checkin.answer != Seen::Joined
-        && !checkin.headline().ended
     {
-        record.push("this server", Cell::status("Check-in stopped", Tone::Bad));
-        record.push(
-            "reason",
-            "The check-in loop isn't running. Start it with `sudo systemctl start ployz-checkin`.",
-        );
-        record.push(
-            "checked in",
-            crate::checkin::ago(checkin.at, chrono::Utc::now()),
-        );
-    } else if let Some(ThisServer { checkin, .. }) = &status.this_server {
         let crate::checkin::Headline {
             title: headline,
             ended,
@@ -859,12 +845,25 @@ fn status_record(status: &Status) -> Fields {
             (_, true) => Tone::Bad,
             (_, false) => Tone::Change,
         };
-        record.push("this server", Cell::status(headline, tone));
+        // A loop that ended or joined meant to stop; one that didn't left its last answer behind.
+        let stopped = *stopped && checkin.answer != Seen::Joined && !ended;
+        if stopped {
+            record.push("this server", Cell::status("Check-in stopped", Tone::Bad));
+            record.push("last answer", Cell::status(headline, tone));
+        } else {
+            record.push("this server", Cell::status(headline, tone));
+        }
         for blocker in &checkin.blockers {
             record.push("blocked", Cell::status(&blocker.message, Tone::Bad));
         }
         if let Some(message) = checkin.message.as_deref().filter(|_| checkin.says_why()) {
             record.push("reason", message);
+        }
+        if stopped {
+            record.push(
+                "check-in",
+                "Not running. See why with `sudo systemctl status ployz-checkin`, then run `sudo ployz server checkin --install`.",
+            );
         }
         record.push(
             "checked in",
@@ -1230,12 +1229,23 @@ mod tests {
         );
     }
 
+    /// The record a loop left when it found no ployzd and exited.
+    const NO_PLOYZD: &str = r#"{
+        "answer": "no_ployzd",
+        "message": "No ployzd on PATH. Run sudo ployz server checkin --install.",
+        "at": "2026-10-22T01:21:48Z",
+        "blockers": [],
+        "prepare_retries": 0
+    }"#;
+
+    const STOPPED: &str = "check-in = Not running. See why with `sudo systemctl status ployz-checkin`, then run `sudo ployz server checkin --install`.\n";
+
     #[test]
-    fn a_waiting_server_whose_check_in_loop_stopped_says_so() {
+    fn a_waiting_server_whose_check_in_loop_stopped_says_so_and_what_it_last_saw() {
         assert!(
-            status_of(WAITING, false, true).starts_with(
-                "this server = Check-in stopped\nreason = The check-in loop isn't running. Start it with `sudo systemctl start ployz-checkin`.\nchecked in = "
-            ),
+            status_of(WAITING, false, true).starts_with(&format!(
+                "this server = Check-in stopped\nlast answer = Waiting for approval\n{STOPPED}checked in = "
+            )),
             "{}",
             status_of(WAITING, false, true)
         );
@@ -1246,5 +1256,16 @@ mod tests {
             status_of(WAITING, false, false)
         );
         assert!(status_of(JOINED, false, true).starts_with("this server = Joined\n"));
+    }
+
+    #[test]
+    fn a_stopped_loop_keeps_the_reason_it_recorded() {
+        assert!(
+            status_of(NO_PLOYZD, false, true).starts_with(&format!(
+                "this server = Check-in stopped\nlast answer = No ployzd\nreason = No ployzd on PATH. Run sudo ployz server checkin --install.\n{STOPPED}checked in = "
+            )),
+            "{}",
+            status_of(NO_PLOYZD, false, true)
+        );
     }
 }
