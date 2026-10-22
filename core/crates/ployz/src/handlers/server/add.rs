@@ -144,7 +144,7 @@ fn require_another_entry(
         return Ok(());
     }
     Err(Error::conflict(format!(
-        "{destination} answered as the entry for its own add, so its membership can't be checked. No changes made."
+        "{destination} answered as the entry for its own add, so its membership can't be checked. Nothing was enrolled."
     ))
     .hint(crate::ui::Hint::Next(
         "connect through another Server of the Cluster with --connect".into(),

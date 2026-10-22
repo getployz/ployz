@@ -235,8 +235,21 @@ fn already_assigned<'a>(details: &'a MachineDetails, assigned: &Machine) -> Opti
         .filter(|machine| machine.id == assigned.id)
 }
 
-fn unlisted_participation(_details: &MachineDetails, _assigned: &Machine) -> Result<(), Error> {
-    Ok(())
+/// A local participant Cloud doesn't list as joined is a rerun that outran its own
+/// publication, or a forgotten Server. Neither is proven, so the refusal names both.
+fn unlisted_participation(details: &MachineDetails, assigned: &Machine) -> Result<(), Error> {
+    let participating = details.phase == LocalMachinePhase::Participating
+        && details
+            .machine
+            .as_ref()
+            .is_some_and(|machine| machine.id == assigned.id);
+    if !participating {
+        return Ok(());
+    }
+    Err(Error::conflict(format!(
+        "Server {} already participates, but Cloud doesn't list it as joined. If an add of this Server just stopped partway, run the same command again in a minute; if the Server was forgotten, rerun with --reset to reset it before enrollment.",
+        assigned.name
+    )))
 }
 
 async fn enroll_current_identity(
