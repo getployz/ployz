@@ -661,9 +661,10 @@ where
         // Whether to send again follows what this attempt met. A resend that didn't reach
         // the Machine reports the earlier loss instead of itself.
         let closed = crate::connect::on_closed_session(&error);
+        // A closed session says nothing of the Machine, so it is never kept as its answer.
         let (error, retry) = match &lost {
-            Some(lost) if error.never_reached() => (lost.clone(), error.code.retry()),
-            _ if error.target_unanswered() => {
+            Some(lost) if error.never_reached() || closed => (lost.clone(), error.code.retry()),
+            _ if error.target_unanswered() || closed => {
                 let error = answer.clone().unwrap_or(error);
                 let retry = error.code.retry();
                 (error, retry)
