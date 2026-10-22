@@ -569,6 +569,7 @@ pub(crate) fn cancel_held(
         reason,
         cause: Vec::new(),
         needs_upload: Vec::new(),
+        same_again: false,
     };
     stored.summary.status = DeploymentStatus::Cancelled;
     stored.summary.ended_at = Some(now());
@@ -1205,6 +1206,7 @@ pub(crate) fn claim(
                 reason: refused.message.clone(),
                 cause: Vec::new(),
                 needs_upload: Vec::new(),
+                same_again: false,
             },
             DeploymentStatus::Failed,
         )?;
@@ -1230,7 +1232,8 @@ pub(crate) fn claim(
     } = match lowered {
         Ok(lowered) => lowered,
         // Every claim lowers it the same way: it fails rather than waits queued,
-        // and takes nothing over.
+        // and takes nothing over. A new Deploy may still get past it, since a Branch
+        // reference resolves against what its parent has applied since.
         Err(refused) if refused.code == ployz_core::RpcErrorCode::InvalidArgument => {
             finish(
                 tx,
@@ -1239,6 +1242,7 @@ pub(crate) fn claim(
                     reason: refused.message.clone(),
                     cause: Vec::new(),
                     needs_upload: Vec::new(),
+                    same_again: false,
                 },
                 DeploymentStatus::Failed,
             )?;
@@ -1583,6 +1587,7 @@ pub(crate) fn record(
                     .take(500)
                     .collect(),
                     cause: failure.cause.clone(),
+                    same_again: false,
                 });
             let (reason, cause) = real
                 .or_else(|| failure(&outcome, &stored.nodes, &preview.operations))
@@ -1744,7 +1749,11 @@ pub(crate) fn record(
             build::record(tx, &stored, &report)?;
             Ok(stored.summary)
         }
-        RunEvidence::NotExecuted(Failure { reason, cause }) => {
+        RunEvidence::NotExecuted(Failure {
+            reason,
+            cause,
+            same_again,
+        }) => {
             let reason = reason.chars().take(500).collect();
             finish(
                 tx,
@@ -1753,6 +1762,7 @@ pub(crate) fn record(
                     reason,
                     cause,
                     needs_upload: Vec::new(),
+                    same_again,
                 },
                 DeploymentStatus::Failed,
             )
@@ -1785,6 +1795,7 @@ pub(crate) fn record(
                     ),
                     cause: Vec::new(),
                     needs_upload: services,
+                    same_again: false,
                 },
                 DeploymentStatus::Failed,
             )
@@ -1803,6 +1814,7 @@ pub(crate) fn record(
                         reason,
                         cause: Vec::new(),
                         needs_upload: Vec::new(),
+                        same_again: false,
                     },
                     DeploymentStatus::Failed,
                 );
@@ -1845,7 +1857,7 @@ fn failure(
             operation, error, ..
         } => (Some(&operation.spec.name), error),
     };
-    let Failure { reason, cause } = Failure::of(error, operations);
+    let Failure { reason, cause, .. } = Failure::of(error, operations);
     let reason = match service {
         Some(service) => format!("{}: {reason}", current_name(nodes, service)),
         None => reason,
@@ -1853,6 +1865,7 @@ fn failure(
     Some(Failure {
         reason: reason.chars().take(500).collect(),
         cause,
+        same_again: false,
     })
 }
 
@@ -1868,6 +1881,7 @@ fn blocked(nodes: &[TargetNode], blocked: &[ployz_core::BlockedService]) -> Opti
         .take(500)
         .collect(),
         cause: entry.error.cause.clone(),
+        same_again: false,
     })
 }
 

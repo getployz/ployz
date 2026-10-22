@@ -482,6 +482,12 @@ pub enum Outcome {
         cause: Vec<String>,
         #[serde(default)]
         needs_upload: Vec<ServiceName>,
+        /// Deploying the same thing again fails this way again: against the same
+        /// Cluster, `reason` holds until something staged changes, so a retry alone
+        /// never gets past it. Absent from rows written before it, which read false.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        #[ts(as = "Option<bool>", optional)]
+        same_again: bool,
     },
     /// A removal that needed no runner: nothing of its Environment ever ran on a
     /// Server.

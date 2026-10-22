@@ -244,6 +244,13 @@ pub enum PreparationError {
     UploadNeeded(Vec<ployz_core::ServiceName>),
 }
 
+impl PreparationError {
+    /// Whether a plan refusal says deploying the same thing again fails the same way.
+    pub(crate) fn same_again(&self) -> bool {
+        matches!(self, Self::Plan(error) if error.same_again())
+    }
+}
+
 /// Caller-rendered preparation progress; no terminal or process ownership.
 #[derive(serde::Serialize)]
 pub enum Progress {

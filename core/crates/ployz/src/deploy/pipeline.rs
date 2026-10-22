@@ -250,6 +250,13 @@ pub(crate) fn namespace_not_found(preview: &DeployPreview) -> bool {
         && preview.would_remove.is_empty()
 }
 
+impl DeployError {
+    /// Whether a plan refusal says deploying the same thing again fails the same way.
+    pub(crate) fn same_again(&self) -> bool {
+        matches!(self, Self::Plan(plan) if plan.same_again())
+    }
+}
+
 impl From<DeployError> for RpcError {
     fn from(error: DeployError) -> Self {
         match error {

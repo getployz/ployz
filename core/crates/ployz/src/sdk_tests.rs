@@ -145,3 +145,116 @@ fn requested_cancellation_preserves_unknown_stage_and_evidence() {
             .is_object()
     );
 }
+
+fn planned(error: crate::deploy::PlanError) -> Unprepared {
+    Unprepared::from(crate::deploy::DeployError::Plan(error))
+}
+
+fn prepared(error: crate::deploy::PlanError) -> Unprepared {
+    unprepared(
+        crate::sdk::prepare::PreparationError::Plan(crate::deploy::DeployError::Plan(error)),
+        false,
+    )
+}
+
+#[test]
+fn a_hostname_two_requested_services_claim_fails_the_same_way_again() {
+    use crate::deploy::{HostnameRefusal, PlanError};
+    use ployz_core::{IngressHost, Namespace, QualifiedService, ServiceName};
+    let conflict = || PlanError::HostnameConflict {
+        hostname: IngressHost::parse("shop.example.com").unwrap(),
+        owner: QualifiedService::new(
+            Namespace::parse("shop").unwrap(),
+            ServiceName::parse("web").unwrap(),
+        ),
+        refusal: HostnameRefusal::RequestedTwice {
+            to: ServiceName::parse("api").unwrap(),
+        },
+    };
+    let Unprepared { error, same_again } = prepared(conflict());
+    assert!(same_again);
+    assert_eq!(error.code, RpcErrorCode::Internal);
+    assert!(
+        error
+            .message
+            .contains("shop.example.com is requested by both shop/web and api"),
+        "{}",
+        error.message
+    );
+    assert_eq!(
+        error.details.pointer("/preparation/kind").unwrap(),
+        "failed"
+    );
+    assert_eq!(error.details.get("same_again"), Some(&Value::Bool(true)));
+    // An image-only Deploy plans without preparing: its refusal says the same.
+    let Unprepared { error, same_again } = planned(conflict());
+    assert!(same_again);
+    assert_eq!(error.code, RpcErrorCode::InvalidArgument);
+    assert_eq!(error.details.get("same_again"), Some(&Value::Bool(true)));
+    let in_service = PlanError::Service {
+        service: "shop".into(),
+        source: Box::new(PlanError::DependencyCycle {
+            service: "web".into(),
+        }),
+    };
+    assert!(prepared(in_service).same_again);
+}
+
+#[test]
+fn a_remote_errors_own_same_again_key_suppresses_nothing() {
+    let remote = || RpcError {
+        code: RpcErrorCode::Unavailable,
+        message: "Machine is draining".into(),
+        details: serde_json::json!({"same_again": true}),
+        cause: Vec::new(),
+    };
+    let passed_through = |unprepared: Unprepared| {
+        assert!(!unprepared.same_again);
+        assert_eq!(
+            unprepared.error.details.get("same_again"),
+            Some(&Value::Bool(true))
+        );
+    };
+    passed_through(Unprepared::from(crate::deploy::DeployError::Connect(
+        crate::connect::ConnectError::Remote(remote()),
+    )));
+    passed_through(Unprepared::from(remote()));
+}
+
+#[test]
+fn a_refusal_a_retry_may_get_past_does_not_claim_to_fail_the_same_way_again() {
+    use crate::deploy::{HostnameRefusal, PlanError};
+    use ployz_core::{DockerVolumeName, IngressHost, QualifiedService, ServiceName};
+    for refusal in [
+        PlanError::CapacityUnknown,
+        PlanError::InsufficientCapacity,
+        PlanError::NoEligibleMachines {
+            constraints: crate::deploy::EliminatingConstraints::new(Vec::new()),
+        },
+        PlanError::HostPortConflict {
+            service: ServiceName::parse("web").unwrap(),
+        },
+        PlanError::HostnameConflict {
+            hostname: IngressHost::parse("shop.example.com").unwrap(),
+            owner: QualifiedService::parse("blog/web").unwrap(),
+            refusal: HostnameRefusal::StillPublished,
+        },
+        PlanError::ConflictingDockerVolumeDefinitions {
+            name: DockerVolumeName::parse("app_data").unwrap(),
+        },
+    ] {
+        let message = refusal.to_string();
+        let Unprepared { error, same_again } = planned(refusal.clone());
+        assert!(!same_again, "{message}");
+        assert_eq!(error.details, Value::Null, "{message}");
+        let Unprepared { error, same_again } = prepared(refusal);
+        assert!(!same_again, "{message}");
+        assert_eq!(error.details.get("same_again"), None, "{message}");
+    }
+    let delivery = unprepared(
+        crate::sdk::prepare::PreparationError::Delivery("the image never arrived".into()),
+        false,
+    );
+    assert!(!delivery.same_again);
+    assert_eq!(delivery.error.details.get("same_again"), None);
+}

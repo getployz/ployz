@@ -101,16 +101,18 @@ impl Reporter {
 }
 
 /// A cancellable SDK call whose progress is retained until read, within a byte budget.
-pub struct Running<T> {
+/// A failure arrives as `E`: the `RpcError` the SDK returns, unless the caller keeps a
+/// typed refusal.
+pub struct Running<T, E = RpcError> {
     cancel: CancellationToken,
     events: Mutex<tokio::sync::mpsc::UnboundedReceiver<(usize, Value)>>,
     buffered: Arc<AtomicUsize>,
-    join: Mutex<Option<tokio::task::JoinHandle<Result<T, RpcError>>>>,
+    join: Mutex<Option<tokio::task::JoinHandle<Result<T, E>>>>,
 }
-impl<T: Send + 'static> Running<T> {
+impl<T: Send + 'static, E: Send + 'static> Running<T, E> {
     pub(super) fn spawn<F>(cancel: CancellationToken, work: impl FnOnce(Reporter) -> F) -> Self
     where
-        F: std::future::Future<Output = Result<T, RpcError>> + Send + 'static,
+        F: std::future::Future<Output = Result<T, E>> + Send + 'static,
     {
         // Lossless while the consumer keeps up: structured state is never
         // dropped, and output is only replaced by a marker beyond the budget.
@@ -129,7 +131,7 @@ impl<T: Send + 'static> Running<T> {
         }
     }
 }
-impl<T> Running<T> {
+impl<T, E: From<RpcError>> Running<T, E> {
     /// Request cancellation; finished reports whether remote termination was confirmed.
     pub fn abort(&self) {
         self.cancel.cancel();
@@ -144,22 +146,24 @@ impl<T> Running<T> {
     ///
     /// # Errors
     /// Returns the call's typed failure or unknown outcome, or rejects a second await.
-    pub async fn finished(&self) -> Result<T, RpcError> {
+    pub async fn finished(&self) -> Result<T, E> {
         let join = self
             .join
             .lock()
             .await
             .take()
-            .ok_or_else(|| invalid_argument("result already awaited".into()))?;
-        join.await.map_err(|_| RpcError {
-            code: RpcErrorCode::Internal,
-            message: "SDK call task failed".into(),
-            details: Value::Null,
-            cause: Vec::new(),
+            .ok_or_else(|| E::from(invalid_argument("result already awaited".into())))?;
+        join.await.map_err(|_| {
+            E::from(RpcError {
+                code: RpcErrorCode::Internal,
+                message: "SDK call task failed".into(),
+                details: Value::Null,
+                cause: Vec::new(),
+            })
         })?
     }
 }
-impl<T> Drop for Running<T> {
+impl<T, E> Drop for Running<T, E> {
     fn drop(&mut self) {
         self.cancel.cancel();
     }

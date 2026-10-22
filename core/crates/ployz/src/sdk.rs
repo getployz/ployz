@@ -53,6 +53,48 @@ pub type RunningPreparation = Running<PreparedDeploy>;
 
 /// Cancellable Image Build whose progress is retained until read, within a byte budget.
 pub type RunningBuild = Running<BuildOutcome>;
+
+/// Why a Deploy was not prepared, and whether deploying the same thing again fails the
+/// same way. Decided from the typed refusal before it became an `RpcError`, never read
+/// back from one's details: a remote error passes its details through unchanged.
+pub(crate) struct Unprepared {
+    pub(crate) error: RpcError,
+    pub(crate) same_again: bool,
+}
+
+impl From<RpcError> for Unprepared {
+    fn from(error: RpcError) -> Self {
+        Self {
+            error,
+            same_again: false,
+        }
+    }
+}
+
+impl From<Unprepared> for RpcError {
+    fn from(unprepared: Unprepared) -> Self {
+        unprepared.error
+    }
+}
+
+impl From<crate::deploy::DeployError> for Unprepared {
+    fn from(error: crate::deploy::DeployError) -> Self {
+        Self {
+            same_again: error.same_again(),
+            error: error.into(),
+        }
+    }
+}
+
+fn unprepared(
+    error: crate::sdk::prepare::PreparationError,
+    cancellation_requested: bool,
+) -> Unprepared {
+    Unprepared {
+        same_again: error.same_again(),
+        error: preparation_error(error, cancellation_requested),
+    }
+}
 pub(crate) use logs::{
     AgentTail, container_env, failed_tail, process_tail, service_tail, tail_frames,
 };
@@ -599,8 +641,10 @@ impl Session {
 
     /// [`Self::prepare`], pulling private images with `registry_auth`, which a
     /// lowering input never carries. A `runner` plans as that operator and blocks a
-    /// Service whose Volume nothing can mount instead of refusing the Deploy.
-    pub(crate) fn prepare_with(
+    /// Service whose Volume nothing can mount instead of refusing the Deploy. A
+    /// failure reaches `finished` as `E`: the `RpcError` the SDK returns, or
+    /// [`Unprepared`] for the store runner.
+    pub(crate) fn prepare_with<E>(
         &self,
         input: PreparationInput,
         registry_auth: std::collections::BTreeMap<
@@ -608,7 +652,10 @@ impl Session {
             ployz_core::RegistryAuth,
         >,
         runner: Option<ployz_core::Operator>,
-    ) -> Result<RunningPreparation, RpcError> {
+    ) -> Result<Running<PreparedDeploy, E>, RpcError>
+    where
+        E: From<RpcError> + From<Unprepared> + Send + 'static,
+    {
         let mut client = self.client()?;
         let token = self.inner.cancel.child_token();
         let session = Arc::downgrade(&self.inner);
@@ -620,10 +667,10 @@ impl Session {
                 captured.intent.options.block_unmountable = true;
             }
             if token.is_cancelled() {
-                return Err(preparation_error(
+                return Err(E::from(preparation_error(
                     crate::sdk::prepare::PreparationError::Cancelled,
                     true,
-                ));
+                )));
             }
             let prepared = crate::sdk::prepare::prepare(
                 &mut client,
@@ -635,7 +682,7 @@ impl Session {
                 |progress| reporter.report(progress),
             )
             .await
-            .map_err(|error| preparation_error(error, token.is_cancelled()))?;
+            .map_err(|error| E::from(unprepared(error, token.is_cancelled())))?;
             let (preview, retained) = prepared.into_parts();
             let build_receipts =
                 preparation::receipts(&captured.fingerprints, &captured.reused, &retained);
@@ -698,10 +745,15 @@ impl Session {
     /// Returns a generated [`RpcError`] when the session is closed, snapshot
     /// gathering fails, or planning fails.
     pub async fn preview(&self, intent: DeployIntent) -> Result<PreparedDeploy, RpcError> {
+        self.plan(intent).await.map_err(RpcError::from)
+    }
+
+    /// [`Self::preview`], keeping whether a refusal would meet the same Deploy again.
+    pub(crate) async fn plan(&self, intent: DeployIntent) -> Result<PreparedDeploy, Unprepared> {
         let mut client = self.client()?;
         let preview = tokio::select! {
             biased;
-            () = self.inner.cancel.cancelled() => return Err(closed()),
+            () = self.inner.cancel.cancelled() => return Err(closed().into()),
             preview = client.preview(intent) => preview?,
         };
         Ok(PreparedDeploy {
@@ -1418,6 +1470,7 @@ pub(crate) fn preparation_error(
 ) -> RpcError {
     use crate::sdk::prepare::PreparationError;
     let message = crate::ui::rpc_error(RpcErrorCode::Internal, &error).message;
+    let same_again = error.same_again();
     match error {
         PreparationError::Selection(error) => {
             let details = if let ConnectError::Remote(error) = &error {
@@ -1478,9 +1531,17 @@ pub(crate) fn preparation_error(
             cause: Vec::new(),
         },
         PreparationError::Build(_) | PreparationError::Plan(_) | PreparationError::Delivery(_) => {
+            let mut details = serde_json::Map::new();
+            details.insert(
+                "preparation".into(),
+                serde_json::json!({"kind":"failed", "message":message}),
+            );
+            if same_again {
+                details.insert("same_again".into(), Value::Bool(true));
+            }
             RpcError {
                 code: RpcErrorCode::Internal,
-                details: serde_json::json!({"preparation":{"kind":"failed", "message":message}}),
+                details: Value::Object(details),
                 message,
                 cause: Vec::new(),
             }
