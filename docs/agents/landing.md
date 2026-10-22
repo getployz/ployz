@@ -58,8 +58,8 @@ panel had a 60% real-bug rate; CodeRabbit had 11%.
   it, and merges it (as a merge commit) only if that run passes. Two PRs that pass alone
   but break main together fail there instead of on main. The branch does not need to be
   up to date with main.
-- A PR the queue drops for a failed run leaves the queue and stays open. Fix it or
-  rerun, then run `gh pr merge <n> --auto` again.
+- A PR the queue drops for a failed run stays open. Fix it if the failure is real,
+  then queue it again with `gh pr merge <n> --auto`.
 - Keep stacks short and merge each layer as soon as it is green. Ship unfinished work
   dark, behind a flag, in place of a tall stack.
 
