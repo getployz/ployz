@@ -21,6 +21,10 @@ const ENROLL_TIMEOUT: Duration = Duration::from_secs(50);
 /// How long enrollment waits for another Server to finish founding: past Cloud's own
 /// ten minutes for a fresh founding claim, so Cloud answers first.
 const FOUNDER_WAIT: Duration = Duration::from_secs(15 * 60);
+/// How Cloud's answer starts while it can't reach the Server. A proxy in front of a down
+/// Cloud also answers 503, so Cloud's message is the only signal its answer carries.
+/// The prefix also matches 0.3.0 Cloud's "Cloud can't reach this Server yet.".
+const CLOUD_CANT_REACH: &str = "Cloud can't reach this Server";
 
 /// Failures talking to Cloud enroll.
 #[derive(Debug, Error)]
@@ -53,7 +57,7 @@ pub(crate) enum Error {
         cause: Box<dyn std::error::Error + Send + Sync>,
     },
     #[error(
-        "Cloud can't reach this Server through the relay or directly. Allow https to relay.ployz.dev from Cloud and from this Server, then enroll it again."
+        "Cloud can't reach this Server through the relay or directly. Allow https to relay.ployz.dev from this Server, and from Cloud if you host it yourself, then try again."
     )]
     CloudCantReach,
 }
@@ -467,20 +471,30 @@ async fn post_callback(
         &format!("Cloud {operation} at {}", diagnostic_origin(url)),
         crate::setup_retry::WAIT,
         // Cloud answers 503 until it can reach the Machine; both stages are safe to repeat.
-        |error: &Error| error.is_transport() || matches!(error, Error::Status { status: 503, .. }),
+        |error: &Error| {
+            error.is_transport()
+                || matches!(
+                    error,
+                    Error::Status { status: 503, .. } | Error::CloudCantReach
+                )
+        },
         async |_| {
             post_json(&http, url, token, &body)
                 .await
                 .map(|_| ())
                 .map_err(|error| {
+                    let Error::Status { status, body } = error else {
+                        return error;
+                    };
+                    if crate::cloud_login::cloud_message(body.as_bytes())
+                        .is_some_and(|message| message.starts_with(CLOUD_CANT_REACH))
+                    {
+                        return Error::CloudCantReach;
+                    }
                     // Both stages carry credentials; a server may echo them in any encoding.
-                    if let Error::Status { status, .. } = error {
-                        Error::Status {
-                            status,
-                            body: format!("{operation} rejected"),
-                        }
-                    } else {
-                        error
+                    Error::Status {
+                        status,
+                        body: format!("{operation} rejected"),
                     }
                 })
         },
@@ -488,7 +502,7 @@ async fn post_callback(
     .await
     .map_err(|error| match error {
         crate::setup_retry::Error::Exhausted {
-            last: Some(Error::Status { status: 503, .. }),
+            last: Some(Error::CloudCantReach),
             ..
         } => Error::CloudCantReach,
         error @ (crate::setup_retry::Error::Permanent(_)
@@ -1355,15 +1369,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn enrollment_stages_name_the_relay_when_cloud_never_reaches_the_server() {
-        for publishing in [true, false] {
+    async fn enrollment_stages_name_the_relay_only_when_cloud_says_it_never_reaches_the_server() {
+        let cant_reach: &[u8] =
+            br#"{"error":"Cloud can't reach this Server through the relay or directly."}"#;
+        for (publishing, body) in [true, false]
+            .into_iter()
+            .flat_map(|publishing| [(publishing, cant_reach), (publishing, b"busy".as_slice())])
+        {
             let (listener, url) = listen().await;
             let server = tokio::spawn(async move {
                 let (mut stream, _) = listener.accept().await.unwrap();
                 read_http(&mut stream).await;
                 tokio::io::AsyncWriteExt::write_all(
                     &mut stream,
-                    &http_response(503, "Service Unavailable", b"{}"),
+                    &http_response(503, "Service Unavailable", body),
                 )
                 .await
                 .unwrap();
@@ -1391,10 +1410,16 @@ mod tests {
                 callback(&url, &token(), MachineId::random(), &credential).await
             };
             let error = result.unwrap_err();
+            if body != cant_reach {
+                // A proxy in front of a down Cloud answers 503 too; that is not Cloud's diagnosis.
+                assert!(matches!(error, Error::RetrySameCommand { .. }), "{error:?}");
+                server.await.unwrap();
+                continue;
+            }
             assert!(matches!(error, Error::CloudCantReach), "{error:?}");
             assert_eq!(
                 error.to_string(),
-                "Cloud can't reach this Server through the relay or directly. Allow https to relay.ployz.dev from Cloud and from this Server, then enroll it again."
+                "Cloud can't reach this Server through the relay or directly. Allow https to relay.ployz.dev from this Server, and from Cloud if you host it yourself, then try again."
             );
             server.await.unwrap();
         }

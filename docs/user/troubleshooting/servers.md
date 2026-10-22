@@ -340,8 +340,8 @@ minute; try again then.
    `sudo systemctl start ployz`, and read its logs with `sudo journalctl -u ployz -n 200`.
 3. If your servers' outgoing traffic is filtered, allow https to `relay.ployz.dev`. When Cloud
    can't reach your first server, adding it fails with `Cloud can't reach this Server through the
-   relay or directly`. Allow https to `relay.ployz.dev` from Cloud and from the server, then add it
-   again.
+   relay or directly`. Allow https to `relay.ployz.dev` from the server, and from Cloud if you host
+   it yourself, then try again.
 4. If you deleted the servers, see
    [Forget servers you deleted](../servers/manage-servers.md#forget-servers-you-deleted).
 5. If the servers run Ployz 0.3.0-beta.6 or earlier, Cloud can't reach them through the relay.
