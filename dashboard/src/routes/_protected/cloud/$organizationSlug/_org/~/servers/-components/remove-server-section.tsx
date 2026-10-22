@@ -17,6 +17,7 @@ import type { DataLossIdentity } from "#/modules/runtime/data-loss-identity";
 import { removedToast } from "./removed-toast";
 import { removalFailureMessage, type MachineRemoveResult } from "#/modules/machines/machine-removal";
 import type { RuntimeMachineRecord } from "#/modules/runtime/runtime.collection";
+import type { RoleGate } from "#/modules/organization/members.queries";
 import { RowWarning } from "#/components/settings/row-warning";
 import { SettingsDanger, SettingsSection } from "#/components/settings/settings-section";
 import { listNames, plural } from "#/lib/plural";
@@ -65,8 +66,10 @@ const volumes = (rust: DataLossList["rust"]) =>
  * the runtime, and once the Server is gone the page returns to Servers. An `offline` Server can't be reset, so it is
  * forgotten instead: by another Server, or with Forget Servers when it is the last.
  */
-export function RemoveServerSection({ machine, organizationSlug, last, offline, hint }: {
+export function RemoveServerSection({ machine, organizationSlug, last, offline, hint, gate }: {
   machine: RuntimeMachineRecord; organizationSlug: string; last: boolean; offline: boolean;
+  /** Whether your role may remove Servers. */
+  gate: RoleGate;
   /** What still runs here, and the Drain button that would move it. */
   hint: ReactNode;
 }) {
@@ -85,14 +88,14 @@ export function RemoveServerSection({ machine, organizationSlug, last, offline, 
     <>
     <SettingsSection id="remove-server" title="Danger">
       {offline ? last
-        ? <ForgetLastServerRow machine={machine} organizationSlug={organizationSlug} />
-        : <ForgetServerRow machine={machine} organizationSlug={organizationSlug} /> : <SettingsDanger
+        ? <ForgetLastServerRow machine={machine} organizationSlug={organizationSlug} gate={gate} />
+        : <ForgetServerRow machine={machine} organizationSlug={organizationSlug} gate={gate} /> : <SettingsDanger
         label={`Remove ${machine.name}`}
         hint={last
           ? "Resets it. It's your only server, so everything running here stops until you add another."
           : "Resets it and takes it out of the cluster. Services that run only here stop."}
         action={
-          <Button variant="destructive" onClick={() => onOpenChange(true)}>
+          <Button variant="destructive" disabled={!gate.allowed} title={gate.reason} onClick={() => onOpenChange(true)}>
             <Trash2Icon data-icon="inline-start" />
             Remove server
           </Button>
@@ -150,7 +153,7 @@ export function RemoveServerSection({ machine, organizationSlug, last, offline, 
 }
 
 /** No other Server is left to forget the last one, so Forget Servers forgets the Cluster with it. */
-function ForgetLastServerRow({ machine, organizationSlug }: { machine: RuntimeMachineRecord; organizationSlug: string }) {
+function ForgetLastServerRow({ machine, organizationSlug, gate }: { machine: RuntimeMachineRecord; organizationSlug: string; gate: RoleGate }) {
   const [open, setOpen] = useState(false);
   return (
     <>
@@ -158,7 +161,7 @@ function ForgetLastServerRow({ machine, organizationSlug }: { machine: RuntimeMa
         label={`Forget ${machine.name}`}
         hint="It's gone, and it's your only server. Your projects and settings stay; its volumes can't be recovered."
         action={
-          <Button variant="destructive" onClick={() => setOpen(true)}>
+          <Button variant="destructive" disabled={!gate.allowed} title={gate.reason} onClick={() => setOpen(true)}>
             <UnplugIcon data-icon="inline-start" />
             Forget server
           </Button>
@@ -174,7 +177,7 @@ function ForgetLastServerRow({ machine, organizationSlug }: { machine: RuntimeMa
  * A Server that doesn't answer can't list its volumes, so the list is often empty; the sentence still says which come
  * back from a mirror and which are lost.
  */
-function ForgetServerRow({ machine, organizationSlug }: { machine: RuntimeMachineRecord; organizationSlug: string }) {
+function ForgetServerRow({ machine, organizationSlug, gate }: { machine: RuntimeMachineRecord; organizationSlug: string; gate: RoleGate }) {
   const navigate = useNavigate();
   const markHere = useStillHere();
   const [open, setOpen] = useState(false);
@@ -201,7 +204,7 @@ function ForgetServerRow({ machine, organizationSlug }: { machine: RuntimeMachin
         label={`Forget ${machine.name}`}
         hint="It's gone. Ployz stops waiting for it. Its volumes come back only where another server holds a mirror."
         action={
-          <Button variant="destructive" onClick={() => setOpen(true)}>
+          <Button variant="destructive" disabled={!gate.allowed} title={gate.reason} onClick={() => setOpen(true)}>
             <UnplugIcon data-icon="inline-start" />
             Forget server
           </Button>

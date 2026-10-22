@@ -17,9 +17,11 @@ import { needsAttention } from "#/modules/machines/server-status";
 import { useServers, type Server } from "#/modules/machines/use-servers";
 import { latestServerUpgradesQueryOptions } from "#/modules/server-upgrade/server-upgrade.queries";
 import { useStrayNamespaces } from "#/modules/machines/namespace-cleanup.queries";
+import { organizationMembersQueryOptions, useRoleGate } from "#/modules/organization/members.queries";
 import { drainDialogRows, drainLeftRows, removeHint } from "#/modules/machines/server-drain-view";
 import { useServerDrain } from "#/modules/machines/server-drain.hooks";
 import { latestServerDrainsQueryOptions } from "#/modules/machines/server-drain.queries";
+import { OPERATE_REFUSED } from "#/modules/machines/server-policy.hooks";
 import { useServerWebTraffic } from "#/modules/machines/server-web-traffic.hooks";
 import { latestServerWebTrafficQueryOptions } from "#/modules/machines/server-web-traffic.queries";
 import { volumePlacementsQueryOptions } from "#/modules/volume-placement/volume-placement.queries";
@@ -54,6 +56,7 @@ export const Route = createFileRoute(
     latestServerDrainsQueryOptions(params.organizationSlug),
     latestServerWebTrafficQueryOptions(params.organizationSlug),
     volumePlacementsQueryOptions(params.organizationSlug),
+    organizationMembersQueryOptions(params.organizationSlug),
   ),
   component: RouteComponent,
 });
@@ -118,6 +121,8 @@ function RouteComponent() {
   );
 }
 
+const REMOVE_REFUSED = "Only an owner or admin can remove servers.";
+
 /**
  * Services, Web traffic, Builds and Danger: the sections that share one Drain, whose dialog opens from Services and
  * from Danger, and the Web traffic switch with its own confirm.
@@ -131,6 +136,8 @@ function ServerSettings({ organizationSlug, server, servers, stale }: {
   const { machine } = server;
   const drain = useServerDrain(organizationSlug, { id: machine.id, name: server.name }, servers);
   const webTraffic = useServerWebTraffic(organizationSlug, { id: machine.id, name: server.name }, machine, servers);
+  const operate = useRoleGate(organizationSlug, "servers:operate", OPERATE_REFUSED);
+  const remove = useRoleGate(organizationSlug, "servers:remove", REMOVE_REFUSED);
   const strays = useStrayNamespaces(organizationSlug, server.services.flatMap((service) => service.namespace ?? []));
   // A Drain cordons this Server and copies images from it: it needs the Server online, and the page to see it.
   const unavailable = stale
@@ -149,18 +156,20 @@ function ServerSettings({ organizationSlug, server, servers, stale }: {
         left={drainLeftRows(server.services, strays)}
         onDrain={drain.ask}
         unavailable={unavailable}
+        gate={operate}
       />
-      <ServerWebTrafficSection view={webTraffic.view} onTurnOn={webTraffic.turnOn} onAskOff={webTraffic.ask} unavailable={webUnavailable} />
-      <ServerBuildsSection machine={machine} organizationSlug={organizationSlug} />
+      <ServerWebTrafficSection view={webTraffic.view} onTurnOn={webTraffic.turnOn} onAskOff={webTraffic.ask} unavailable={webUnavailable} gate={operate} />
+      <ServerBuildsSection machine={machine} organizationSlug={organizationSlug} gate={operate} />
       <RemoveServerSection
         machine={machine}
         organizationSlug={organizationSlug}
         last={servers.length === 1}
         offline={server.status === "offline"}
+        gate={remove}
         hint={(
           <RemoveServerHint
             hint={removeHint(drain.view, server.services, strays)}
-            drainButton={<DrainButton view={drain.view} onClick={drain.ask} size="sm" disabled={unavailable !== null} />}
+            drainButton={<DrainButton view={drain.view} onClick={drain.ask} size="sm" disabled={unavailable !== null || !operate.allowed} title={operate.reason} />}
           />
         )}
       />
