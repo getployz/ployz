@@ -309,8 +309,11 @@ fn a_conflict_decided_from_the_intent_alone_fails_the_same_way_again() {
             condition: ployz_core::DependencyCondition::ServiceStarted,
         }],
     )]));
+    // The handover is refused only because web is still observed publishing it: once a
+    // Deploy of web alone drops it, this same Deploy goes through, so it keeps its retry.
     let gainer_waits = preview_deploy(&intent, &snapshot).unwrap_err();
-    assert!(gainer_waits.same_again(), "{gainer_waits}");
+    assert!(!gainer_waits.same_again(), "{gainer_waits}");
+    assert!(preview_deploy(&intent, &snapshot_with(Vec::new())).is_ok());
 
     let mut api = named_web("shared.example.com");
     api.name = ServiceName::parse("api").unwrap();

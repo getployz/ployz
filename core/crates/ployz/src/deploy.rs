@@ -790,12 +790,14 @@ pub enum HostnameRefusal {
 
 impl HostnameRefusal {
     /// Decided from this Deploy's intent alone, so the same Deploy is refused the same
-    /// way until something staged changes. A publisher observed outside what this
-    /// Deploy applies can drop the hostname on its own, so those keep their retry.
+    /// way until something staged changes. The others rest on an observed publisher,
+    /// which another Deploy can make drop the hostname, so those keep their retry.
     fn same_again(&self) -> bool {
         match self {
-            Self::StillPublished | Self::OwnerNotIncluded => false,
-            Self::GainerWaitsForOwner { .. } | Self::RequestedTwice { .. } => true,
+            Self::StillPublished | Self::OwnerNotIncluded | Self::GainerWaitsForOwner { .. } => {
+                false
+            }
+            Self::RequestedTwice { .. } => true,
         }
     }
 
