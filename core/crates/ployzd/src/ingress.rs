@@ -496,6 +496,10 @@ impl CaddyCertificates {
         projection: &IngressProjection,
         admin: &A,
     ) -> bool {
+        // What Caddy runs now is what it accepted, so only other material is suspect.
+        if let Ok(loaded) = admin.loaded_certificates().await {
+            self.accepted = loaded;
+        }
         let suspects: Vec<_> = projection
             .sites
             .iter()
@@ -513,7 +517,13 @@ impl CaddyCertificates {
         let mut refused = false;
         for stem in suspects {
             excluded.remove(&stem);
-            match caddy::load(&without(projection, &excluded), Some(admin)).await {
+            let candidate = without(projection, &excluded);
+            let mut loaded = caddy::load(&candidate, Some(admin)).await;
+            if matches!(loaded, Err(caddy::Error::Admin(_))) {
+                // A refusal is quarantined until the material changes, so a one-off must repeat.
+                loaded = caddy::load(&candidate, Some(admin)).await;
+            }
+            match loaded {
                 Ok(_) => {}
                 Err(caddy::Error::Admin(error)) => {
                     tracing::warn!(
@@ -668,8 +678,10 @@ where
                                     };
                                     let applied =
                                         apply_caddy(applying, &config_file, admin.as_ref()).await;
-                                    if let (Err(ApplyError::BeforeServing(_)), Some(admin)) =
-                                        (&applied, admin.as_ref())
+                                    if let (
+                                        Err(ApplyError::BeforeServing(caddy::Error::Admin(_))),
+                                        Some(admin),
+                                    ) = (&applied, admin.as_ref())
                                         && certificates.find_refused(&input.projection, admin).await
                                     {
                                         // Probing reloaded Caddy; derive again without the refused.
