@@ -713,10 +713,12 @@ where
                                         // Derive again without the refused.
                                         Probe::Refused => {
                                             last_input = None;
+                                            recorded_by = None;
                                             continue;
                                         }
                                     }
-                                    // A refused load leaves the earlier one serving. Any other
+                                    // A refused load leaves the earlier one serving. A failure
+                                    // after the load leaves its certificates loaded. Any other
                                     // failure may have replaced the file Caddy restarts from.
                                     match (&applied, admin.is_some()) {
                                         (Ok(()), true) => {
@@ -725,7 +727,11 @@ where
                                         }
                                         (Ok(()), false) => last_input = Some(input),
                                         (Err(ApplyError::BeforeServing(_)), true) => {}
-                                        (Err(_), _) => last_input = None,
+                                        (Err(ApplyError::AfterServing(_)), true) => {
+                                            certificates.accept(&input.projection);
+                                            last_input = None;
+                                        }
+                                        (Err(_), false) => last_input = None,
                                     }
                                     applied
                                 };
