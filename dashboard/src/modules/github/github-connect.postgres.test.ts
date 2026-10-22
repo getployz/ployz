@@ -279,7 +279,7 @@ it.live("removes a repository GitHub revoked while a sync listed it, once the sy
       revoked.add(9120);
       webhook = yield* elsewhere(processGithubInstallationRepositoriesEvent({
         deliveryId: "delivery-removed-9120", action: "removed", installation: { id: 9 },
-        repositories_added: [], repositories_removed: [{ ...repository(9120), updated_at: "2026-01-01T00:00:00Z" }], sender: { id: 1, login: "carol" },
+        repositories_added: [], repositories_removed: [{ id: 9120 }], sender: { id: 1, login: "carol" },
       }));
       yield* settled(webhook);
     });
@@ -294,8 +294,8 @@ it.live("removes a repository GitHub revoked while a sync listed it, once the sy
 const hopperRepositoriesEvent = (action: "added" | "removed", added: readonly number[], removed: readonly number[]) =>
   processGithubInstallationRepositoriesEvent({
     deliveryId: `delivery-${action}-${[...added, ...removed].join("-")}`, action, installation: { id: 9 },
-    repositories_added: added.map((id) => ({ ...repository(id), updated_at: "2026-01-01T00:00:00Z" })),
-    repositories_removed: removed.map((id) => ({ ...repository(id), updated_at: "2026-01-01T00:00:00Z" })),
+    repositories_added: added.map((id) => ({ id })),
+    repositories_removed: removed.map((id) => ({ id })),
     sender: { id: 1, login: "carol" },
   });
 
@@ -318,12 +318,12 @@ it.live("holds no connection or lock while GitHub keeps a sync waiting, so a web
         return row;
       }));
       expect(held).toEqual({ transactions: 0, locks: 0 });
-      REPOSITORY_COUNTS.set(9, 151);
-      yield* run(hopperRepositoriesEvent("added", [9150], [])).pipe(Effect.timeout("5 seconds"));
-      expect((yield* cached).has(9150)).toBe(true);
+      revoked.add(9120);
+      yield* run(hopperRepositoriesEvent("removed", [], [9120])).pipe(Effect.timeout("5 seconds"));
+      expect((yield* cached).has(9120)).toBe(false);
     }).pipe(Effect.ensuring(Deferred.succeed(answer, undefined)));
     yield* Fiber.join(syncing);
-    expect((yield* cached).size).toBe(151);
+    expect((yield* cached).size).toBe(149);
   }), 60_000);
 
 it.live("lists again rather than undo a webhook that wrote after the sync listed GitHub", () =>

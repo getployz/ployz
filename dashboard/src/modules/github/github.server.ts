@@ -20,12 +20,8 @@ import {
   listLinkedOrganizationIds,
   lockGithubRepositoryCache,
   suspendGithubInstallation,
-  upsertCachedGithubRepositories,
   upsertGithubInstallation,
 } from "#/modules/github/github.repository";
-import type {
-  GithubRepository,
-} from "#/modules/github/github";
 import type { Actor } from "#/modules/identity/actor";
 import { requireAccess } from "#/modules/organization/access.server";
 import { accessFor, type GithubAccess } from "./github-access";
@@ -48,20 +44,6 @@ function isUsableInstallationAction(
     action === "unsuspend" ||
     action === "new_permissions_accepted"
   );
-}
-
-function githubRepositoryFromWebhook(
-  repository: GithubInstallationRepositoriesWebhookEventData["repositories_added"][number],
-): GithubRepository {
-  return {
-    id: repository.id,
-    name: repository.name,
-    full_name: repository.full_name,
-    private: repository.private,
-    default_branch: repository.default_branch,
-    html_url: repository.html_url,
-    repo_updated_at: repository.updated_at,
-  };
 }
 
 /**
@@ -103,35 +85,29 @@ export const processGithubInstallationEvent = Effect.fn(
   };
 });
 
+/**
+ * A removed repository leaves the cache now. An added one waits for the sync this asks for, because GitHub's payload
+ * names it without the default branch, URL and timestamp a cache entry holds.
+ */
 export const processGithubInstallationRepositoriesEvent = Effect.fn(
   "Github.processInstallationRepositoriesEvent",
 )(function* (payload: GithubInstallationRepositoriesWebhookEventData) {
-  const addedRepositories = payload.repositories_added.map(
-    githubRepositoryFromWebhook,
-  );
   const removedRepositoryIds = payload.repositories_removed.map(
     (repository) => repository.id,
   );
-  yield* (yield* Database).transaction(Effect.gen(function* () {
-    yield* lockGithubRepositoryCache(payload.installation.id);
-    if (addedRepositories.length > 0) {
-      yield* upsertCachedGithubRepositories({
-        installationId: payload.installation.id,
-        repositories: addedRepositories,
-        syncedAt: new Date(),
-      });
-    }
-    if (removedRepositoryIds.length > 0) {
+  if (removedRepositoryIds.length > 0) {
+    yield* (yield* Database).transaction(Effect.gen(function* () {
+      yield* lockGithubRepositoryCache(payload.installation.id);
       yield* deleteCachedGithubRepositoriesById(
         payload.installation.id,
         removedRepositoryIds,
       );
-    }
-    yield* bumpGithubRepositoryCacheVersion(payload.installation.id);
-  }));
+      yield* bumpGithubRepositoryCacheVersion(payload.installation.id);
+    }));
+  }
   return {
     installationId: payload.installation.id,
-    shouldSyncRepositories: false,
+    shouldSyncRepositories: payload.repositories_added.length > 0,
   };
 });
 
