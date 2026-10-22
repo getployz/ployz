@@ -24,7 +24,7 @@ export function ServersUnreachable({ organizationSlug, older = false }: { organi
           <EmptyMedia variant="icon"><ArrowUpCircleIcon /></EmptyMedia>
           <EmptyTitle>Upgrade your server over SSH</EmptyTitle>
           <EmptyDescription>
-            A server runs an older Ployz that Ployz Cloud can’t reach through the relay. Upgrade it from your computer. Then upgrade the rest from this page:
+            A server runs an older Ployz that Ployz Cloud can’t reach through the relay. Upgrade it from your computer, then upgrade the rest from the Servers page. On your computer, run:
           </EmptyDescription>
         </EmptyHeader>
         <EmptyContent className="max-w-xl text-left">

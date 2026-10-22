@@ -506,8 +506,8 @@ sudo ployzd install --version stable --software-only
 
 `--software-only` replaces Ployz and leaves Docker, packages and storage as they are.
 
-The same boundary holds the other way: a CLI on 0.3.0-beta.6 or earlier can't reach a server on a
-later release. Install the newer CLI with `curl -fsSL https://ployz.sh | sh`.
+The same boundary holds the other way: a CLI on 0.2 or 0.3.0-beta.6 and earlier can't reach a server
+on a later release. Install the newer CLI with `curl -fsSL https://ployz.sh | sh`.
 
 ## Remove a server
 
