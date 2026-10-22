@@ -60,6 +60,8 @@ import { Route as ApiCliAgentActRouteImport } from './routes/api/cli/agent/act'
 import { Route as ApiCliAgentAskRouteImport } from './routes/api/cli/agent/ask'
 import { Route as ApiCliCloudResetRouteImport } from './routes/api/cli/cloud/reset'
 import { Route as ApiCliRunNameRouteImport } from './routes/api/cli/run/$name'
+import { Route as ApiCliSealingRecoveryRouteImport } from './routes/api/cli/sealing/recovery'
+import { Route as ApiCliSealingRotateRouteImport } from './routes/api/cli/sealing/rotate'
 import { Route as ApiCliServersEnrollRouteImport } from './routes/api/cli/servers/enroll'
 import { Route as ApiCliServersEnrollmentRouteImport } from './routes/api/cli/servers/enrollment'
 import { Route as ApiMachinesMachineObserveRouteImport } from './routes/api/machines/$machine/observe'
@@ -352,6 +354,16 @@ const ApiCliRunNameRoute = ApiCliRunNameRouteImport.update({
   path: '/api/cli/run/$name',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiCliSealingRecoveryRoute = ApiCliSealingRecoveryRouteImport.update({
+  id: '/api/cli/sealing/recovery',
+  path: '/api/cli/sealing/recovery',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiCliSealingRotateRoute = ApiCliSealingRotateRouteImport.update({
+  id: '/api/cli/sealing/rotate',
+  path: '/api/cli/sealing/rotate',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ApiCliServersEnrollRoute = ApiCliServersEnrollRouteImport.update({
   id: '/api/cli/servers/enroll',
   path: '/api/cli/servers/enroll',
@@ -619,6 +631,8 @@ export interface FileRoutesByFullPath {
   '/api/cli/agent/ask': typeof ApiCliAgentAskRoute
   '/api/cli/cloud/reset': typeof ApiCliCloudResetRoute
   '/api/cli/run/$name': typeof ApiCliRunNameRoute
+  '/api/cli/sealing/recovery': typeof ApiCliSealingRecoveryRoute
+  '/api/cli/sealing/rotate': typeof ApiCliSealingRotateRoute
   '/api/cli/servers/enroll': typeof ApiCliServersEnrollRoute
   '/api/cli/servers/enrollment': typeof ApiCliServersEnrollmentRoute
   '/api/machines/$machine/observe': typeof ApiMachinesMachineObserveRoute
@@ -695,6 +709,8 @@ export interface FileRoutesByTo {
   '/api/cli/agent/ask': typeof ApiCliAgentAskRoute
   '/api/cli/cloud/reset': typeof ApiCliCloudResetRoute
   '/api/cli/run/$name': typeof ApiCliRunNameRoute
+  '/api/cli/sealing/recovery': typeof ApiCliSealingRecoveryRoute
+  '/api/cli/sealing/rotate': typeof ApiCliSealingRotateRoute
   '/api/cli/servers/enroll': typeof ApiCliServersEnrollRoute
   '/api/cli/servers/enrollment': typeof ApiCliServersEnrollmentRoute
   '/api/machines/$machine/observe': typeof ApiMachinesMachineObserveRoute
@@ -773,6 +789,8 @@ export interface FileRoutesById {
   '/api/cli/agent/ask': typeof ApiCliAgentAskRoute
   '/api/cli/cloud/reset': typeof ApiCliCloudResetRoute
   '/api/cli/run/$name': typeof ApiCliRunNameRoute
+  '/api/cli/sealing/recovery': typeof ApiCliSealingRecoveryRoute
+  '/api/cli/sealing/rotate': typeof ApiCliSealingRotateRoute
   '/api/cli/servers/enroll': typeof ApiCliServersEnrollRoute
   '/api/cli/servers/enrollment': typeof ApiCliServersEnrollmentRoute
   '/api/machines/$machine/observe': typeof ApiMachinesMachineObserveRoute
@@ -853,6 +871,8 @@ export interface FileRouteTypes {
     | '/api/cli/agent/ask'
     | '/api/cli/cloud/reset'
     | '/api/cli/run/$name'
+    | '/api/cli/sealing/recovery'
+    | '/api/cli/sealing/rotate'
     | '/api/cli/servers/enroll'
     | '/api/cli/servers/enrollment'
     | '/api/machines/$machine/observe'
@@ -929,6 +949,8 @@ export interface FileRouteTypes {
     | '/api/cli/agent/ask'
     | '/api/cli/cloud/reset'
     | '/api/cli/run/$name'
+    | '/api/cli/sealing/recovery'
+    | '/api/cli/sealing/rotate'
     | '/api/cli/servers/enroll'
     | '/api/cli/servers/enrollment'
     | '/api/machines/$machine/observe'
@@ -1006,6 +1028,8 @@ export interface FileRouteTypes {
     | '/api/cli/agent/ask'
     | '/api/cli/cloud/reset'
     | '/api/cli/run/$name'
+    | '/api/cli/sealing/recovery'
+    | '/api/cli/sealing/rotate'
     | '/api/cli/servers/enroll'
     | '/api/cli/servers/enrollment'
     | '/api/machines/$machine/observe'
@@ -1082,6 +1106,8 @@ export interface RootRouteChildren {
   ApiCliAgentAskRoute: typeof ApiCliAgentAskRoute
   ApiCliCloudResetRoute: typeof ApiCliCloudResetRoute
   ApiCliRunNameRoute: typeof ApiCliRunNameRoute
+  ApiCliSealingRecoveryRoute: typeof ApiCliSealingRecoveryRoute
+  ApiCliSealingRotateRoute: typeof ApiCliSealingRotateRoute
   ApiCliServersEnrollRoute: typeof ApiCliServersEnrollRoute
   ApiCliServersEnrollmentRoute: typeof ApiCliServersEnrollmentRoute
   ApiMachinesMachineObserveRoute: typeof ApiMachinesMachineObserveRoute
@@ -1444,6 +1470,20 @@ declare module '@tanstack/react-router' {
       path: '/api/cli/run/$name'
       fullPath: '/api/cli/run/$name'
       preLoaderRoute: typeof ApiCliRunNameRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/cli/sealing/recovery': {
+      id: '/api/cli/sealing/recovery'
+      path: '/api/cli/sealing/recovery'
+      fullPath: '/api/cli/sealing/recovery'
+      preLoaderRoute: typeof ApiCliSealingRecoveryRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/cli/sealing/rotate': {
+      id: '/api/cli/sealing/rotate'
+      path: '/api/cli/sealing/rotate'
+      fullPath: '/api/cli/sealing/rotate'
+      preLoaderRoute: typeof ApiCliSealingRotateRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/api/cli/servers/enroll': {
@@ -1912,6 +1952,8 @@ const rootRouteChildren: RootRouteChildren = {
   ApiCliAgentAskRoute: ApiCliAgentAskRoute,
   ApiCliCloudResetRoute: ApiCliCloudResetRoute,
   ApiCliRunNameRoute: ApiCliRunNameRoute,
+  ApiCliSealingRecoveryRoute: ApiCliSealingRecoveryRoute,
+  ApiCliSealingRotateRoute: ApiCliSealingRotateRoute,
   ApiCliServersEnrollRoute: ApiCliServersEnrollRoute,
   ApiCliServersEnrollmentRoute: ApiCliServersEnrollmentRoute,
   ApiMachinesMachineObserveRoute: ApiMachinesMachineObserveRoute,

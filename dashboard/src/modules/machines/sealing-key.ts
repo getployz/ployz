@@ -1,4 +1,5 @@
 import { Schema } from "effect";
+import { Uuid } from "#/lib/schema";
 
 export const SealingPublicKey = Schema.String.check(Schema.isPattern(/^[A-Za-z0-9+/]{43}=$/));
 
@@ -11,3 +12,16 @@ export const RecoveryBackup = Schema.String.check(
     message: "backup must be a v1 recovery backup.",
   }),
 );
+
+export const RecoveryDigest = Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/));
+
+export const CliReadSealingRecoveryInput = Schema.Struct({ organizationId: Uuid });
+export type CliReadSealingRecoveryInput = typeof CliReadSealingRecoveryInput.Type;
+
+export const CliRotateSealingRecoveryInput = Schema.Struct({
+  organizationId: Uuid,
+  publicKey: SealingPublicKey,
+  currentDigest: Schema.NullOr(RecoveryDigest),
+  backup: RecoveryBackup,
+});
+export type CliRotateSealingRecoveryInput = typeof CliRotateSealingRecoveryInput.Type;

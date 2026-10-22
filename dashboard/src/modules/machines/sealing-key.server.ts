@@ -3,7 +3,10 @@ import { createHash } from "node:crypto";
 import type { MachineId, SealingPublicKey } from "@ployz/sdk";
 import { and, eq, isNull } from "drizzle-orm";
 import { Effect } from "effect";
+import type { Actor } from "#/modules/identity/actor";
+import type { CliReadSealingRecoveryInput, CliRotateSealingRecoveryInput } from "#/modules/machines/sealing-key";
 import { clusterSealingKey, clusterSealingKeyGenerator, organizationSealingKey } from "#/modules/machines/tables";
+import { requireAccessById } from "#/modules/organization/access.server";
 import { AppConfig } from "#/server/config.server";
 import { Database } from "#/server/database.server";
 import { Conflict, NotFound } from "#/server/public-error";
@@ -107,6 +110,21 @@ export const rotateRecoveryBackup = Effect.fn("SealingKey.rotateRecoveryBackup")
       .where(organizationKeyOf(organizationId));
     return { digest };
   }));
+});
+
+/** `ployz recover` and `ployz recovery rotate`: the Organization's key and the backup they last stored. */
+export const readCliSealingRecovery = Effect.fn("SealingKey.readRecoveryForCli")(function* (
+  actor: Actor, input: CliReadSealingRecoveryInput,
+) {
+  yield* requireAccessById(actor, input.organizationId, "servers:operate");
+  return yield* readSealingRecovery(input.organizationId);
+});
+
+export const rotateCliSealingRecovery = Effect.fn("SealingKey.rotateRecoveryForCli")(function* (
+  actor: Actor, input: CliRotateSealingRecoveryInput,
+) {
+  yield* requireAccessById(actor, input.organizationId, "servers:operate");
+  return yield* rotateRecoveryBackup(input.organizationId, input.publicKey, input.currentDigest, input.backup);
 });
 
 export const readSealingKeyGenerator = Effect.fn("SealingKey.readGenerator")(function* (organizationId: string, clusterKey: string) {
