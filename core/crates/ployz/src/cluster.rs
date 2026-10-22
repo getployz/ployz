@@ -119,8 +119,8 @@ impl Client {
     /// Replace the channel, and the entry it confirmed, with a freshly confirmed one.
     async fn redial(&mut self) -> Result<(), ConnectError> {
         self.entry = None;
-        self.reconnect().await?;
-        self.confirm_entry().await
+        self.entry = self.reconnect().await?;
+        Ok(())
     }
 
     /// [`Self::redial`] for a client shared by reference, as a Deploy's is. Its entry
@@ -131,17 +131,24 @@ impl Client {
     /// Returns a transport or codec error, or [`ConnectError::EntryNotReady`], when the
     /// entry doesn't answer on the new channel.
     pub(crate) async fn redial_shared(&self) -> Result<(), ConnectError> {
-        self.reconnect().await?;
-        self.confirmed_entry().await.map(|_| ())
+        self.reconnect().await.map(|_| ())
     }
 
-    async fn reconnect(&self) -> Result<(), ConnectError> {
-        let channel = self.connector.connect(&self.connection).await?;
+    /// Dial the connection again and confirm its entry on the new channel, which only
+    /// then replaces the shared one. Returns the entry it confirmed.
+    async fn reconnect(&self) -> Result<Option<MachineId>, ConnectError> {
+        let candidate = Self {
+            channel: Arc::new(std::sync::RwLock::new(
+                self.connector.connect(&self.connection).await?,
+            )),
+            ..self.clone()
+        };
+        let entry = candidate.confirmed_entry().await?;
         *self
             .channel
             .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = channel;
-        Ok(())
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = candidate.channel();
+        Ok(entry)
     }
 
     /// One-shot check that this channel reaches a daemon. No unary retry — a

@@ -703,7 +703,11 @@ where
     Redial: Future<Output = Option<Result<(), RpcError>>>,
 {
     loop {
-        match tokio::time::timeout_at(deadline, redial()).await {
+        let answer = tokio::select! {
+            () = cancellation.cancelled() => return false,
+            answer = tokio::time::timeout_at(deadline, redial()) => answer,
+        };
+        match answer {
             Ok(Some(Ok(()))) => return true,
             Ok(Some(Err(_))) => {}
             Ok(None) | Err(_) => return false,
