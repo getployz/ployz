@@ -440,11 +440,11 @@ impl LocalMachine {
             storage,
             upgrade,
             token,
-            sealing: self.sealing(record.phase()),
+            sealing: self.sealing(record.phase()).await,
         })
     }
 
-    fn sealing(&self, phase: LocalMachinePhase) -> Option<ployz_core::Sealing> {
+    async fn sealing(&self, phase: LocalMachinePhase) -> Option<ployz_core::Sealing> {
         if !matches!(
             phase,
             LocalMachinePhase::Joining | LocalMachinePhase::Participating
@@ -455,13 +455,33 @@ impl LocalMachine {
             Ok(Some(key)) => Some(ployz_core::Sealing::Held {
                 public_key: key.public_key(),
             }),
-            Ok(None) => Some(ployz_core::Sealing::NeedsAccess),
+            Ok(None) => self.lacking_key().await,
             Err(error) if error.kind() == std::io::ErrorKind::InvalidData => {
                 tracing::warn!(%error, "this Machine's Sealing Key is unusable");
-                Some(ployz_core::Sealing::NeedsAccess)
+                self.lacking_key().await
             }
             Err(error) => {
                 tracing::warn!(%error, "could not read the Sealing Key");
+                None
+            }
+        }
+    }
+
+    /// A published key overrides the recovery marker, as Generate reads them.
+    async fn lacking_key(&self) -> Option<ployz_core::Sealing> {
+        let Ok(replicated) = self.replicated() else {
+            return Some(ployz_core::Sealing::NeedsAccess);
+        };
+        let awaited = match replicated.sealing_public_key().await {
+            Ok(Some(_)) => Ok(None),
+            Ok(None) => replicated.sealing_awaits_recovery().await,
+            Err(error) => Err(error),
+        };
+        match awaited {
+            Ok(Some(public_key)) => Some(ployz_core::Sealing::AwaitsRecovery { public_key }),
+            Ok(None) => Some(ployz_core::Sealing::NeedsAccess),
+            Err(error) => {
+                tracing::warn!(%error, "could not read whether the Cluster awaits recovery");
                 None
             }
         }

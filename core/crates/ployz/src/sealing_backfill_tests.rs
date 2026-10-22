@@ -47,6 +47,10 @@ fn needs(n: u8) -> Sight {
     seen(n, Sealing::NeedsAccess)
 }
 
+fn awaits(n: u8, k: u8) -> Sight {
+    seen(n, Sealing::AwaitsRecovery { public_key: key(k) })
+}
+
 fn with(sight: Sight, edit: impl FnOnce(&mut Seen)) -> Sight {
     let Sight::Seen(mut seen) = sight else {
         panic!("not seen");
@@ -283,6 +287,30 @@ enum Call {
     },
 }
 
+#[test]
+fn a_machine_awaiting_recovery_stops_generation_before_any_generator() {
+    let sights = sights(vec![(1, needs(1)), (2, awaits(2, 7)), (3, needs(3))]);
+    for generator in [None, Some(1)] {
+        assert_eq!(
+            plan(&request(None, generator), &sights),
+            Plan::Stop(BackfillSealingKeyReport::AwaitsRecovery { machine: id(2) })
+        );
+    }
+}
+
+#[test]
+fn a_holder_outranks_a_machine_awaiting_recovery() {
+    let sights = sights(vec![(1, holds(1, 7)), (2, awaits(2, 7))]);
+    let Plan::Distribute { public_key, .. } = plan(&request(None, None), &sights) else {
+        panic!("a seen holder settles the key");
+    };
+    assert_eq!(public_key, key(7));
+    assert_eq!(
+        distribution(public_key, &sights, None).recipients,
+        vec![(id(2), wg(2))]
+    );
+}
+
 #[derive(Default)]
 struct Fake {
     sights: BTreeMap<MachineId, Sight>,
@@ -486,8 +514,22 @@ fn generator_awaiting_recovery_is_reported_as_such() {
     };
     assert_eq!(
         run(&mut fake, request(None, Some(1))),
-        BackfillSealingKeyReport::AwaitsRecovery { generator: id(1) }
+        BackfillSealingKeyReport::AwaitsRecovery { machine: id(1) }
     );
+}
+
+#[test]
+fn a_named_generator_is_never_asked_while_another_machine_awaits_recovery() {
+    let mut fake = Fake {
+        sights: sights(vec![(1, needs(1)), (2, awaits(2, 7))]),
+        generate: Some(Ok(key(9))),
+        ..Fake::default()
+    };
+    assert_eq!(
+        run(&mut fake, request(None, Some(1))),
+        BackfillSealingKeyReport::AwaitsRecovery { machine: id(2) }
+    );
+    assert!(fake.calls.is_empty());
 }
 
 #[test]

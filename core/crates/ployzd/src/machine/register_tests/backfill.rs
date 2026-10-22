@@ -163,6 +163,31 @@ async fn generate_refuses_while_the_cluster_awaits_recovery() {
 }
 
 #[tokio::test]
+async fn inspect_reports_the_awaited_key_until_the_cluster_publishes_one() {
+    let cluster = FakeCluster::start();
+    let replicated = cluster.store();
+    let awaited = SealingKey::generate().public_key();
+    cluster.write_sealing_awaits_recovery(&awaited.to_string());
+    let peer = Peer::needing_access("ployzd-backfill-inspect-awaits", &replicated).await;
+    assert_eq!(
+        sealing(&peer.local).await,
+        Some(ployz_core::Sealing::AwaitsRecovery {
+            public_key: awaited
+        })
+    );
+
+    replicated
+        .publish_sealing_public_key(awaited)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        sealing(&peer.local).await,
+        Some(ployz_core::Sealing::NeedsAccess)
+    );
+}
+
+#[tokio::test]
 async fn share_and_install_carry_the_key_to_a_machine_needing_access() {
     let (replicated, server) = fake_cluster::store().await;
     let holder = Peer::participating("ployzd-backfill-holder", &replicated).await;

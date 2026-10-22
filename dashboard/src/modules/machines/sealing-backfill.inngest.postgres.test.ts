@@ -224,7 +224,7 @@ describe("ensure-cluster-sealing-key", () => {
     it("stops for the operator on awaits_recovery after a generator was chosen, sending nothing and keeping the row", async () => {
       reports = [
         { result: "needs_generator", candidate: machine("2") },
-        { result: "awaits_recovery", generator: machine("2") },
+        { result: "awaits_recovery", machine: machine("2") },
       ];
 
       const output = await ensure();
@@ -234,6 +234,18 @@ describe("ensure-cluster-sealing-key", () => {
       expect(requests).toHaveLength(2);
       expect(sentEvents(output)).toBe(0);
       expect(await generators()).toEqual([machine("2")]);
+    });
+
+    it("stops for the operator when a Server awaits recovery, electing no generator and sending nothing", async () => {
+      reports = [{ result: "awaits_recovery", machine: machine("3") }];
+
+      const output = await ensure();
+
+      expect(output.error).toBeUndefined();
+      expect(output.result).toEqual({ organizationId, result: "awaits_recovery", awaitsOperator: true });
+      expect(requests).toEqual([{ expected: null, generator: null }]);
+      expect(sentEvents(output)).toBe(0);
+      expect(await generators()).toEqual([]);
     });
 
     it("stops for the operator on no_holder with one backfill", async () => {

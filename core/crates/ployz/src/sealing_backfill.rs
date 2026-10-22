@@ -59,9 +59,9 @@ pub enum BackfillSealingKeyReport {
     GeneratorGone { generator: MachineId },
     /// The chosen `generator` was not seen Participating with a daemon that can generate.
     Waiting { generator: MachineId },
-    /// The Cluster lost its key and the `generator` refused to make a new one: it awaits
-    /// recovery of the key it published.
-    AwaitsRecovery { generator: MachineId },
+    /// The Cluster lost its key, as `machine` reported or refused to generate, so no new
+    /// one is made: it awaits recovery of the key it published.
+    AwaitsRecovery { machine: MachineId },
     /// The `generator` did not make a key. A refusal names itself in `error.details`.
     GenerationFailed {
         generator: MachineId,
@@ -139,7 +139,7 @@ impl Seen {
     fn held(&self) -> Option<SealingPublicKey> {
         match self.sealing {
             Sealing::Held { public_key } => Some(public_key),
-            Sealing::NeedsAccess => None,
+            Sealing::NeedsAccess | Sealing::AwaitsRecovery { .. } => None,
         }
     }
 
@@ -182,7 +182,10 @@ pub(crate) fn plan(
                 }
             }
             match keys.as_slice() {
-                [] => return generation(request.generator, sights),
+                [] => {
+                    return awaiting_recovery(sights)
+                        .unwrap_or_else(|| generation(request.generator, sights));
+                }
                 [key] => *key,
                 _ => return Plan::Stop(BackfillSealingKeyReport::Conflicting { keys }),
             }
@@ -197,6 +200,12 @@ pub(crate) fn plan(
         public_key,
         sources,
     }
+}
+
+fn awaiting_recovery(sights: &BTreeMap<MachineId, Sight>) -> Option<Plan> {
+    seen(sights)
+        .find(|(_, seen)| matches!(seen.sealing, Sealing::AwaitsRecovery { .. }))
+        .map(|(machine, _)| Plan::Stop(BackfillSealingKeyReport::AwaitsRecovery { machine }))
 }
 
 fn generation(generator: Option<MachineId>, sights: &BTreeMap<MachineId, Sight>) -> Plan {
@@ -317,7 +326,7 @@ pub(crate) async fn execute<C: BackfillClient>(
             Err(error) => {
                 return Ok(match error.sealing_refusal() {
                     Some(SealingRefusal::AwaitsRecovery) => {
-                        BackfillSealingKeyReport::AwaitsRecovery { generator }
+                        BackfillSealingKeyReport::AwaitsRecovery { machine: generator }
                     }
                     _ => BackfillSealingKeyReport::GenerationFailed { generator, error },
                 });
