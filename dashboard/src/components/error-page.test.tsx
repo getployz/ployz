@@ -32,7 +32,7 @@ it("says the page couldn't load, keeps the cause out of sight, and comes back by
   render(<RouterProvider router={app(down)} />);
   await act(() => vi.advanceTimersByTimeAsync(0));
 
-  expect(screen.getByText("This page couldn't load")).toBeTruthy();
+  expect(screen.getByRole("heading", { level: 1, name: "This page couldn't load" })).toBeTruthy();
   expect(screen.queryByText(/ECONNREFUSED/)).toBeNull();
 
   down.value = false;

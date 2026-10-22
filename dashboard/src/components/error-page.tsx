@@ -8,7 +8,6 @@ import {
   EmptyDescription,
   EmptyHeader,
   EmptyMedia,
-  EmptyTitle,
 } from "#/components/ui/empty";
 
 /** How often a page that failed to load tries again on its own. */
@@ -32,7 +31,8 @@ export function ErrorPage() {
           <EmptyMedia variant="icon">
             <CloudAlertIcon />
           </EmptyMedia>
-          <EmptyTitle>This page couldn't load</EmptyTitle>
+          {/* DESIGN.md rule 4: an error state keeps the page's h1. */}
+          <h1 className="text-2xl font-semibold">This page couldn't load</h1>
           <EmptyDescription>Ployz tries again every few seconds, and the page comes back once it loads.</EmptyDescription>
         </EmptyHeader>
         <EmptyContent className="sm:flex-row sm:justify-center">
