@@ -7,7 +7,7 @@ import { Spinner } from "#/components/ui/spinner";
 import { useMinute } from "#/hooks/use-minute";
 import { cn } from "#/lib/utils";
 import {
-  cardLine, hangingCopies, type MirrorCopy, type OffsiteCopy, STAGED_WORDS, type StagedCopy, type VolumeCopies,
+  cardLine, hangingCopies, LAST_REPORTED, type MirrorCopy, type OffsiteCopy, STAGED_WORDS, type StagedCopy, type VolumeCopies,
 } from "#/modules/volume-copies/volume-copies";
 import { mirrorResourceId } from "#/modules/volume-placement/volume-placement";
 import { ENVIRONMENT_RESOURCE_ROUTE_TO, ENVIRONMENT_ROUTE_FROM } from "../environment-route-paths";
@@ -44,7 +44,7 @@ function CopyCard({ volume, copy, now }: { volume: VolumeCopies["volume"]; copy:
   const resourceId = mirrorResourceId(volume.id, copy.server.id);
   return (
     <Link to={ENVIRONMENT_RESOURCE_ROUTE_TO} params={{ ...params, resourceId }} draggable={false} data-copy={name} data-changed={surface === "changed" || undefined}
-      aria-label={`${name}, mirror of ${volume.name}`} data-selected={selectedNodeId === resourceId} className={className}>
+      aria-label={`${name}, ${copy.lastReported ? `${LAST_REPORTED.toLowerCase()} mirror` : "mirror"} of ${volume.name}`} data-selected={selectedNodeId === resourceId} className={className}>
       {content}
     </Link>
   );

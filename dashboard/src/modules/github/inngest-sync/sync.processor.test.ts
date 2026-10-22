@@ -5,6 +5,8 @@ import { githubRepositoriesSyncRequestedEventType } from "#/modules/inngest/even
 import { createSyncGithubRepositories } from "./sync";
 
 describe("GitHub repository sync Inngest adapter", () => {
+  // A request that lands while a sync is still finishing, after it wrote, replaces that run rather than being skipped,
+  // so what prompted it is listed now and not at the next nightly sync (#2965).
   it("preserves the trigger, retries, singleton, and keyed concurrency", () => {
     const fn = createSyncGithubRepositories(new Inngest({ id: "test" }));
 
@@ -15,7 +17,7 @@ describe("GitHub repository sync Inngest adapter", () => {
         triggers: [{ event: githubRepositoriesSyncRequestedEventType }],
         singleton: {
           key: "event.data.installationId",
-          mode: "skip",
+          mode: "cancel",
         },
         concurrency: [{ key: "event.data.installationId", limit: 1 }],
       }),
