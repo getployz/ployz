@@ -551,7 +551,8 @@ async fn a_server_cloud_manages_is_forgotten_through_cloud() {
         "{result}"
     );
     assert_eq!(result.get("next"), Some(&json!(null)), "{result}");
-    // Nothing reaches a forgotten Server, so the operator must stop what still runs there.
+    // The Server fences itself only once it reaches a 0.3.1 peer, so the operator is
+    // told how to stop what still runs there meanwhile.
     assert_eq!(
         result.get("warnings"),
         Some(&json!([
@@ -1025,12 +1026,15 @@ async fn a_server_that_does_not_answer_leaves_without_a_reset_only_when_dead_is_
     assert_eq!(
         result.get("warnings"),
         Some(&json!([
-            "Server two doesn't know it was forgotten. If it runs again as it is, its services \
+            "Server two isn't told it was forgotten. If it runs again as it is, its services \
              start again on its own copy of each Volume, and Ployz never brings back what they \
              write there. When it boots, run sudo ployz-uninstall on it to stop them and keep \
-             every Volume copy on its disk. Adding it back with ployz server add --reset keeps \
-             its writer copies read-only but can delete its mirrors, so don't while one may be a \
-             Volume's last copy. Wipe its disk only if you need nothing on it."
+             every Volume copy on its disk. As a best effort, if two and at least one other \
+             Server ran 0.3.1 or later while it was still connected, and the Server that forgot \
+             it runs 0.3.1 or later, it does that itself up to about 15 minutes after its \
+             network returns. Adding it back with ployz server add --reset keeps its writer \
+             copies read-only but can delete its mirrors, so don't while one may be a Volume's \
+             last copy. Wipe its disk only if you need nothing on it."
         ])),
         "{result}"
     );

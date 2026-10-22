@@ -14,7 +14,7 @@ own. Every pair of servers is linked by an encrypted WireGuard tunnel, over thei
 when they share one and over the internet when they don't. Every container gets a private
 address on that network.
 
-On a server with IPv6, the server's ingress also gets a private IPv6 address, so IPv6 visitors
+On a server with IPv6, the server's web server also gets a private IPv6 address, so IPv6 visitors
 to your domains reach your app with their own address in `X-Forwarded-For`. Your services stay
 IPv4-only. A port a service publishes on the server still answers IPv6 visitors, but your app
 sees them as the server's private gateway, such as `10.210.0.1`.
@@ -83,20 +83,19 @@ databases Ployz creates connect this way. See [Variables](variables.md).
 - Any port works. You don't declare ports for private traffic.
 - `localhost` is the service's own container, never another service.
 
-A service's private name is in its **Settings → Networking**, under **Private Networking**,
-with a copy button, for trying it from a shell. If a connection fails, see
+A service's private name is in its **Settings → Networking**, in the **Private address** row.
+If a connection fails, see
 [One service can't reach another](../troubleshooting/app-not-reachable.md#one-service-cant-reach-another).
 
-![Settings → Networking: the service's private name under Private Networking](../images/service-settings-networking.png)
+![Settings → Networking: the service's private name in the Private address row](../images/service-settings-networking.png)
 
 ## Change a service's private name
 
 The private name starts as the service's name, and renaming the service keeps it.
 
-1. In **Settings → Networking**, under **Private Networking**, click the pencil.
-2. Enter the new name in **Edit private endpoint**. Leave it blank to go back to the service's
-   name.
-3. Click **Deploy**.
+1. In **Settings → Networking**, type the new name in **Private address** and press Enter. Clear
+   it to go back to the service's name.
+2. Click **Deploy**.
 
 References follow the new name. Services that typed the old one stop reaching it, so update
 them in the same deploy.
@@ -113,7 +112,7 @@ page shows how to point it at your project and environment.
 - **Names stay inside one environment.** In staging, `postgres.internal` is staging's
   `postgres`.
 - **A name finds only ready replicas.** A replica is ready once it runs, or once it passes its
-  [health check](settings.md#healthcheck) if it has one. One that passed stays even if its check
+  [healthcheck](settings.md#healthcheck) if it has one. One that passed stays even if its check
   fails later, and its service card shows an amber **⚠**. While no replica is ready, the name
   doesn't resolve. Check that service's **Logs**.
 - **Names are scoped to an environment; addresses aren't.** Projects and environments on

@@ -572,6 +572,7 @@ pub fn local_runtime(data_dir: &Path) -> MachineRuntime {
         pool_committable_bytes: None,
         store_filesystem: store_filesystem(data_dir),
         capabilities: ployz_core::served_capabilities(),
+        management_identity: None,
     }
 }
 

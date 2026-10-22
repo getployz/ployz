@@ -336,16 +336,20 @@ fn leave(root: &ArgMatches, removal: Removal) -> Result<(), Error> {
             selected.name
         ));
         if removal == Removal::Forget {
-            // Nothing reaches a forgotten Server to fence it (#2927), so the operator must.
+            // A Server reachable now may restore its own row, so only a dead one is told
+            // about the self-fence (#2927); it is best effort, so the operator step stays.
             let server = &selected.name;
             crate::ui::warn(if dead {
                 format!(
-                    "Server {server} doesn't know it was forgotten. If it runs again as it is, its \
+                    "Server {server} isn't told it was forgotten. If it runs again as it is, its \
                      services start again on its own copy of each Volume, and Ployz never brings back \
                      what they write there. When it boots, run sudo ployz-uninstall on it to stop them \
-                     and keep every Volume copy on its disk. Adding it back with ployz server add --reset \
-                     keeps its writer copies read-only but can delete its mirrors, so don't while one may \
-                     be a Volume's last copy. Wipe its disk only if you need nothing on it."
+                     and keep every Volume copy on its disk. As a best effort, if {server} and at least \
+                     one other Server ran 0.3.1 or later while it was still connected, and the Server \
+                     that forgot it runs 0.3.1 or later, it does that itself up to about 15 minutes \
+                     after its network returns. Adding it back with ployz server add --reset keeps its \
+                     writer copies read-only but can delete its mirrors, so don't while one may be a \
+                     Volume's last copy. Wipe its disk only if you need nothing on it."
                 )
             } else {
                 format!(

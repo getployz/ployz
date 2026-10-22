@@ -7,12 +7,12 @@ Ployz is young and changing quickly. Before you move real users to your app, wor
 list. Each item links to the page that does it.
 
 > [!WARNING]
-> A volume lives on one server. Without a [mirror](services/move-a-volume.md#mirror-a-volume), if
+> A volume lives on one server. Without a [mirror](services/mirror-a-volume.md), if
 > that server's disk is lost, so is the data.
 
 ## Before you move real users
 
-- **Back up your data.** Add a [mirror](services/move-a-volume.md#mirror-a-volume) to each volume
+- **Back up your data.** Add a [mirror](services/mirror-a-volume.md) to each volume
   you can't lose, so it has a backup on another of your servers that you can
   [restore](services/restore-a-volume.md). A mirror isn't offsite, so also dump your databases on
   a schedule and keep the dumps off your servers. See

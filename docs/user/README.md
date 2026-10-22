@@ -38,8 +38,9 @@ New to Ployz? Follow these steps from a first deploy to real users.
 - [Databases](services/databases.md): PostgreSQL, MySQL, Redis and MongoDB, connecting, backups
 - [Volumes](services/volumes.md): files that survive deploys
 - [Configs](services/configs.md): shared text files mounted read-only into services
-- [Move a volume](services/move-a-volume.md): mirror a volume and move it to another server
-- [Restore a volume](services/restore-a-volume.md): bring a volume back to an earlier point as a new volume
+- [Mirror a volume](services/mirror-a-volume.md): keep a read-only copy of a volume on a second server
+- [Move a volume](services/move-a-volume.md): move a volume and its service to another server
+- [Restore a volume](services/restore-a-volume.md): bring a volume back to an earlier point, or restore it in place
 - [Domains](services/domains.md): generated addresses, custom domains, https
 - [Private networking](services/private-networking.md): how services reach each other
 - [Scaling and multiple servers](services/scaling.md): replicas, more servers, when a server goes down
@@ -91,3 +92,4 @@ New to Ployz? Follow these steps from a first deploy to real users.
 - [My app isn't reachable](troubleshooting/app-not-reachable.md): error pages, wrong ports, domains and certificates
 - [Trace a request](troubleshooting/trace.md): which server answered, its deploy and replicas, Cloudflare
 - [Servers](troubleshooting/servers.md): install failures, servers that don't join or go offline, full disks
+- [Volumes](troubleshooting/volumes.md): moves that stop partway, busy volumes, a server lost mid-move
