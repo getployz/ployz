@@ -1,7 +1,7 @@
 use clap::ArgMatches;
 use ployz_core::{
-    DescribeContractRequest, Machine, MachineId, MachineTarget, QualifiedService, RpcError,
-    RpcErrorCode, op,
+    DescribeContractRequest, LiveServices, Machine, MachineId, MachineTarget, QualifiedService,
+    RpcError, RpcErrorCode, op,
 };
 
 use super::super::runtime;
@@ -122,7 +122,7 @@ fn leave(root: &ArgMatches, removal: Removal) -> Result<(), Error> {
         )
         .into());
     }
-    let (cloud, observed, services, movable, replicated_services) = runtime.block_on(async {
+    let (cloud, observed, services, movable, short) = runtime.block_on(async {
         let selected_target = MachineTarget::from(&selected.id);
         let entry = machines
             .iter()
@@ -178,9 +178,8 @@ fn leave(root: &ArgMatches, removal: Removal) -> Result<(), Error> {
         } else {
             movable_services_on(&selected.id, &live)
         };
-        let replicated_services =
-            under_replicated(replicated_services_on(&selected.id, &live), last);
-        Ok::<_, Error>((cloud, observed, services, movable, replicated_services))
+        let short = left_short(&selected.id, &live, last);
+        Ok::<_, Error>((cloud, observed, services, movable, short))
     })?;
     if let Some((warning, drain)) = running_services(
         selected.name.as_str(),
@@ -389,10 +388,17 @@ fn leave(root: &ArgMatches, removal: Removal) -> Result<(), Error> {
                 ));
             }
         }
-        if !replicated_services.is_empty() {
+        if !short.no_copies.is_empty() {
+            crate::ui::warn(format!(
+                "Replicated Services now run no copies: {}. Their replicas were not moved.",
+                super::super::joined(&short.no_copies)
+            ));
+            crate::ui::hint(&Hint::Next("ployz deploy".to_owned()));
+        }
+        if !short.under_replicated.is_empty() {
             crate::ui::warn(format!(
                 "Replicated Services may now be under-replicated: {}. Their replicas were not moved.",
-                super::super::joined(&replicated_services)
+                super::super::joined(&short.under_replicated)
             ));
         }
 
@@ -401,7 +407,8 @@ fn leave(root: &ArgMatches, removal: Removal) -> Result<(), Error> {
             "server": super::server_json(&selected),
             "reset_warning": reset_failure,
             "data_loss": observed.data_loss,
-            "under_replicated": replicated_services,
+            "under_replicated": short.under_replicated,
+            "no_copies": short.no_copies,
             "cloud_released": cloud_released,
             "cloud_kept": cloud_kept,
             "next": (cloud_released == Some(true)).then_some("ployz server add"),
@@ -511,14 +518,42 @@ fn running_services(
 /// reachable Store, or for a Docker Volume no Environment owns, the Docker name stays.
 /// The replicated user Services the removal leaves a replica short: none on the last
 /// Server, whose removal stops everything.
-fn under_replicated(services: Vec<QualifiedService>, last: bool) -> Vec<QualifiedService> {
+#[derive(Default)]
+struct LeftShort {
+    /// Every copy was on the removed Server, as a listing every other Server answered shows.
+    no_copies: Vec<QualifiedService>,
+    under_replicated: Vec<QualifiedService>,
+}
+
+fn left_short(removed: &MachineId, live: &LiveServices<RpcError>, last: bool) -> LeftShort {
+    let mut short = LeftShort::default();
     if last {
-        return Vec::new();
+        return short;
     }
-    services
-        .into_iter()
-        .filter(|service| !service.namespace.is_reserved())
-        .collect()
+    let others_answered = live
+        .containers
+        .failures
+        .iter()
+        .map(|failure| &failure.machine_id)
+        .chain(&live.containers.omissions)
+        .all(|machine| machine == removed);
+    let services = live.services();
+    for service in replicated_services_on(removed, live) {
+        if service.namespace.is_reserved() {
+            continue;
+        }
+        let elsewhere = services
+            .iter()
+            .filter(|observed| observed.identity == service)
+            .flat_map(|observed| &observed.containers)
+            .any(|copy| copy.as_observation().machine_id != *removed);
+        if others_answered && !elsewhere {
+            short.no_copies.push(service);
+        } else {
+            short.under_replicated.push(service);
+        }
+    }
+    short
 }
 
 fn volume_labels(root: &ArgMatches, docker: &[&str]) -> VolumeLabels {
@@ -641,9 +676,8 @@ mod tests {
     use serde_json::{Value, json};
 
     use super::{
-        VolumeOwner, machine_removal_refusal, movable_services_on, qualified_labels,
-        left_short, replicated_services_on, reset_removal_refusal, running_services,
-        services_on,
+        VolumeOwner, left_short, machine_removal_refusal, movable_services_on, qualified_labels,
+        replicated_services_on, reset_removal_refusal, running_services, services_on,
     };
     use crate::ui::Hint;
 

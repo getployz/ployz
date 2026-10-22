@@ -174,7 +174,7 @@ async fn machine_rm_warns_when_replicated_services_are_left_under_replicated() {
         );
         let stderr = String::from_utf8_lossy(&removed.stderr);
         assert!(
-            stderr.contains("Replicated Services may now be under-replicated: workflow/replicated"),
+            stderr.contains("Replicated Services now run no copies: workflow/replicated"),
             "{stderr}"
         );
         assert!(

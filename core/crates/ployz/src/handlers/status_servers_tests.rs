@@ -1964,7 +1964,7 @@ fn status_warnings(config: &std::path::Path, flags: &[&str]) -> Vec<String> {
     args.extend(flags);
     let root = crate::cli::command().try_get_matches_from(args).unwrap();
     let namespace = qualified("app", "web").namespace;
-    assert!(attention(&root, &namespace, &[]).is_empty());
+    assert!(attention(&root, &namespace, &BTreeMap::new(), &[]).is_empty());
     let (_, json) = crate::ui::captured(|| crate::ui::show(&json!({})));
     json.and_then(|json| json.get("warnings").cloned())
         .map(|warnings| serde_json::from_value(warnings).unwrap())

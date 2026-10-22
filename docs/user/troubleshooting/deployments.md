@@ -248,6 +248,22 @@ shows up here.
 The line goes away once enough replicas serve. A replica removed outside Ployz, for example with
 `docker rm`, is unseen, so status can't name it.
 
+## Status says a service runs no copies
+
+`api = No copies running.`
+
+`ployz status` prints this when a deployed service has no replica on any of your servers. It
+checks only when every server answered and none is down. Removing the only server a service ran
+on with `ployz server rm` leaves it like this, since removal doesn't move replicas. Deploy the
+service to start its replicas on the servers you have:
+
+```sh
+ployz deploy api
+```
+
+For a global service, the deploy fails when no server accepts it. Change its placement or a
+server's labels first.
+
 ## My service shows Not seen running
 
 Part of your servers' report hasn't arrived yet, and none of the replicas in the part that did

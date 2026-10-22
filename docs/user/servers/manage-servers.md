@@ -519,7 +519,11 @@ warns about services a drain could still move off it and, while it still asks yo
 prints the drain command. With `--confirm` it doesn't ask, so it keeps the warning but leaves out
 the drain command. The warning leaves out what a drain won't move: services with a volume or bind
 mount on the server, global services, and Ployz's own web server. On your last server it skips that
-warning. After the removal it warns which replicated services may now run short of replicas.
+warning. After the removal it warns which replicated services now run no replicas, because all of
+them were on that server, and prints `ployz deploy` as the next step. It warns separately which
+replicated services may now run short of replicas. With `--json` the removal lists them as
+`no_copies` and `under_replicated`. `ployz status` keeps naming a service with no replicas until
+you deploy it.
 Ployz's build cache isn't one of the volumes you confirm losing.
 Otherwise services that ran only on that server stop. Your next deploy replaces its replicas on your other
 servers, except for services whose volume was on it (see
