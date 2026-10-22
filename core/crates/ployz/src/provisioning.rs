@@ -277,11 +277,13 @@ impl Remote {
     }
 
     fn common_arguments(&self) -> Vec<OsString> {
-        let mut arguments: Vec<OsString> =
-            crate::connect::ssh_control_args(self.control_path.as_deref())
-                .into_iter()
-                .map(Into::into)
-                .collect();
+        let mut arguments: Vec<OsString> = crate::connect::ssh_control_args(
+            self.control_path.as_deref(),
+            crate::connect::SshMaster::Share,
+        )
+        .into_iter()
+        .map(Into::into)
+        .collect();
         arguments.extend([
             "-o".into(),
             format!("ConnectTimeout={}", self.timeout.as_secs().max(1)).into(),
@@ -369,7 +371,10 @@ impl Remote {
             return;
         };
         let mut command = Command::new(&self.ssh);
-        command.args(crate::connect::ssh_control_args(Some(control_path)));
+        command.args(crate::connect::ssh_control_args(
+            Some(control_path),
+            crate::connect::SshMaster::Share,
+        ));
         if let Some(port) = self.destination.port() {
             command.arg("-p").arg(port.to_string());
         }
@@ -766,9 +771,10 @@ mod tests {
             for command in [&ssh, &scp] {
                 let args: Vec<_> = command.get_args().collect();
                 assert!(args.contains(&std::ffi::OsStr::new("BatchMode=no")));
-                for arg in
-                    crate::connect::ssh_control_args(crate::connect::control_path().as_deref())
-                {
+                for arg in crate::connect::ssh_control_args(
+                    crate::connect::control_path().as_deref(),
+                    crate::connect::SshMaster::Share,
+                ) {
                     assert!(args.contains(&std::ffi::OsStr::new(&arg)));
                 }
                 assert!(

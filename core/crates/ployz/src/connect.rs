@@ -31,6 +31,7 @@ use tokio::{
     io::{AsyncRead, AsyncWrite, ReadBuf},
     net::TcpStream,
     process::{Child, ChildStdin, ChildStdout, Command},
+    time::{Instant, Sleep},
 };
 use tonic::transport::{Channel, Endpoint};
 
@@ -91,6 +92,12 @@ pub type BoxProxyStream = Box<dyn ProxyStream>;
 pub trait Connector: Send + Sync {
     async fn connect(&self, connection: &Connection) -> Result<Channel, ConnectError>;
 
+    /// [`Self::connect`] for a dial started beside another still in flight. Either
+    /// may lose and be dropped, so this one must leave nothing behind when it is.
+    async fn connect_beside(&self, connection: &Connection) -> Result<Channel, ConnectError> {
+        self.connect(connection).await
+    }
+
     async fn dial_proxy(
         &self,
         connection: &Connection,
@@ -136,9 +143,12 @@ impl SystemConnector {
     }
 }
 
-#[tonic::async_trait]
-impl Connector for SystemConnector {
-    async fn connect(&self, connection: &Connection) -> Result<Channel, ConnectError> {
+impl SystemConnector {
+    async fn dial(
+        &self,
+        connection: &Connection,
+        master: SshMaster,
+    ) -> Result<Channel, ConnectError> {
         match connection.transport() {
             Transport::Management(capability) => tokio::time::timeout(
                 Duration::from_secs(15),
@@ -160,6 +170,7 @@ impl Connector for SystemConnector {
                     key_file.as_deref(),
                     &self.ssh_program,
                     self.ssh_timeout,
+                    master,
                 ),
             )
             .await
@@ -174,6 +185,17 @@ impl Connector for SystemConnector {
                 )
             })?,
         }
+    }
+}
+
+#[tonic::async_trait]
+impl Connector for SystemConnector {
+    async fn connect(&self, connection: &Connection) -> Result<Channel, ConnectError> {
+        self.dial(connection, SshMaster::Share).await
+    }
+
+    async fn connect_beside(&self, connection: &Connection) -> Result<Channel, ConnectError> {
+        self.dial(connection, SshMaster::ReuseOnly).await
     }
 
     async fn dial_proxy(
@@ -205,6 +227,7 @@ impl Connector for SystemConnector {
                     destination,
                     key_file.as_deref(),
                     control_path().as_deref(),
+                    SshMaster::Share,
                     self.ssh_timeout,
                 );
                 args.extend(["-W".into(), address.into(), destination.target().into()]);
@@ -277,9 +300,16 @@ async fn connect_ssh(
     key_file: Option<&Path>,
     program: &Path,
     timeout: Duration,
+    master: SshMaster,
 ) -> Result<Channel, ConnectError> {
     let control_path = control_path();
-    let mut probe_args = ssh_base_args(destination, key_file, control_path.as_deref(), timeout);
+    let mut probe_args = ssh_base_args(
+        destination,
+        key_file,
+        control_path.as_deref(),
+        master,
+        timeout,
+    );
     probe_args.extend([destination.target().into(), "true".into()]);
     let output = Command::new(program)
         .args(&probe_args)
@@ -298,7 +328,13 @@ async fn connect_ssh(
             detail,
         });
     }
-    let args = ssh_args(destination, key_file, control_path.as_deref(), timeout);
+    let args = ssh_args(
+        destination,
+        key_file,
+        control_path.as_deref(),
+        master,
+        timeout,
+    );
     connect_stream(spawn_child(program, &args)?, timeout).await
 }
 
@@ -306,9 +342,10 @@ fn ssh_args(
     destination: &crate::context::SshDestination,
     key_file: Option<&Path>,
     control_path: Option<&Path>,
+    master: SshMaster,
     timeout: Duration,
 ) -> Vec<String> {
-    let mut args = ssh_base_args(destination, key_file, control_path, timeout);
+    let mut args = ssh_base_args(destination, key_file, control_path, master, timeout);
     args.extend([
         destination.target().into(),
         "ployzd".into(),
@@ -321,9 +358,10 @@ pub(crate) fn ssh_base_args(
     destination: &crate::context::SshDestination,
     key_file: Option<&Path>,
     control_path: Option<&Path>,
+    master: SshMaster,
     timeout: Duration,
 ) -> Vec<String> {
-    let mut args = ssh_control_args(control_path);
+    let mut args = ssh_control_args(control_path, master);
     args.extend([
         "-o".into(),
         format!("ConnectTimeout={}", timeout.as_secs().max(1)),
@@ -342,20 +380,38 @@ pub(crate) fn ssh_base_args(
     args
 }
 
+/// How an SSH dial uses the master at its control path.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum SshMaster {
+    /// Reuse a running master, or start one that serves later commands for 10 minutes.
+    Share,
+    /// Reuse a running master but start none. A master forks away from the dial, so
+    /// one started by a dial that is then dropped would outlive it.
+    ReuseOnly,
+}
+
 /// OpenSSH multiplexing options shared by provisioning and management connections.
-pub(crate) fn ssh_control_args(control_path: Option<&Path>) -> Vec<String> {
-    let mut args = Vec::new();
-    if let Some(path) = control_path {
-        args.extend([
+pub(crate) fn ssh_control_args(control_path: Option<&Path>, master: SshMaster) -> Vec<String> {
+    let Some(path) = control_path else {
+        return Vec::new();
+    };
+    let control_path = format!("ControlPath={}", path.display());
+    match master {
+        SshMaster::Share => vec![
             "-o".into(),
             "ControlMaster=auto".into(),
             "-o".into(),
-            format!("ControlPath={}", path.display()),
+            control_path,
             "-o".into(),
             "ControlPersist=10m".into(),
-        ]);
+        ],
+        SshMaster::ReuseOnly => vec![
+            "-o".into(),
+            "ControlMaster=no".into(),
+            "-o".into(),
+            control_path,
+        ],
     }
-    args
 }
 
 /// Select the existing runtime or SSH directory for shared control sockets.
@@ -548,13 +604,20 @@ pub(crate) fn target_request<T>(payload: T, target: Option<&MachineTarget>) -> t
     request
 }
 
-/// How long a connection may go unconfirmed before the next one is dialled beside
-/// it. A down Server holds its dial for the whole connect bound, 15 s through Cloud
-/// and the SSH timeout over SSH; a daemon that answers confirms well inside this.
-const ENTRY_STAGGER: Duration = Duration::from_secs(1);
+/// How long a dial over `transport` may go unconfirmed before the next connection
+/// is dialled beside it. A down Server holds its dial for the whole connect bound,
+/// 15 s through Cloud and the SSH timeout over SSH. A daemon that answers confirms
+/// well inside 1 s, but a cold SSH dial may take seconds while healthy, and racing
+/// it costs a second login.
+fn entry_stagger(transport: &Transport) -> Duration {
+    match transport {
+        Transport::Ssh { .. } => Duration::from_secs(5),
+        Transport::Management(_) | Transport::Tcp(_) | Transport::Unix(_) => Duration::from_secs(1),
+    }
+}
 
 /// Walk every connection and keep the first whose daemon answers. Each connection
-/// starts when the one before it fails or stays silent for [`ENTRY_STAGGER`].
+/// starts when the one before it fails or stays silent for its [`entry_stagger`].
 ///
 /// A tunnel or lazy channel is not enough. Confirmation is one-shot so a down
 /// daemon cannot stall the walk or consume unary retries.
@@ -571,27 +634,35 @@ pub async fn connect_selected_with(
     let mut failures = BTreeMap::new();
     {
         let (source, connector) = (&selected.source, &connector);
-        let mut queued =
-            selected
-                .connections
-                .iter()
-                .enumerate()
-                .map(|(index, connection)| async move {
-                    (index, connect_one(connection, source, connector).await)
-                });
+        let mut queued = selected.connections.iter().enumerate();
         let mut dialing = FuturesUnordered::new();
-        dialing.extend(queued.next());
+        let stagger = tokio::time::sleep(Duration::ZERO);
+        tokio::pin!(stagger);
+        // Dials the next connection, if any, and says whether more are queued.
+        let mut dial_next = |dialing: &mut FuturesUnordered<_>, stagger: Pin<&mut Sleep>| {
+            if let Some((index, connection)) = queued.next() {
+                let beside = !dialing.is_empty();
+                stagger.reset(Instant::now() + entry_stagger(connection.transport()));
+                dialing.push(async move {
+                    let outcome = connect_one(connection, source, connector, beside).await;
+                    (index, connection, outcome)
+                });
+            }
+            queued.len() > 0
+        };
+        let mut more = dial_next(&mut dialing, stagger.as_mut());
         while !dialing.is_empty() {
             tokio::select! {
-                Some((index, outcome)) = dialing.next() => match outcome {
-                    Ok(client) => return Ok(client),
-                    Err(error) => {
-                        failures.insert(index, error);
-                        dialing.extend(queued.next());
-                    }
-                },
-                () = tokio::time::sleep(ENTRY_STAGGER), if queued.len() > 0 => {
-                    dialing.extend(queued.next());
+                Some((index, connection, outcome)) = dialing.next() => {
+                    let error = match outcome {
+                        Ok(client) => return Ok(client),
+                        Err(error) => error,
+                    };
+                    failures.insert(index, (connection, error));
+                    more = dial_next(&mut dialing, stagger.as_mut());
+                }
+                () = &mut stagger, if more => {
+                    more = dial_next(&mut dialing, stagger.as_mut());
                 }
             }
         }
@@ -600,29 +671,23 @@ pub async fn connect_selected_with(
     let mut server = None;
     let mut retry = Retry::Never;
     let mut reached = false;
-    let failed = selected.connections.iter().zip(failures.into_values());
-    for (index, (connection, error)) in failed.enumerate() {
-        match error {
-            error
-                if matches!(error, ConnectError::SshClientMissing)
-                    && !reached
-                    && selected
-                        .connections
-                        .iter()
-                        .skip(index + 1)
-                        .all(|next| matches!(next.transport(), Transport::Ssh { .. })) =>
-            {
-                return Err(error);
-            }
-            error => {
-                if error.retry() != Retry::Never {
-                    retry = Retry::AfterRestart;
-                }
-                reached |= !error.unreached();
-                last_error = Some(error);
-                server = connection.server();
-            }
+    for (index, (connection, error)) in failures {
+        if matches!(error, ConnectError::SshClientMissing)
+            && !reached
+            && selected
+                .connections
+                .iter()
+                .skip(index + 1)
+                .all(|next| matches!(next.transport(), Transport::Ssh { .. }))
+        {
+            return Err(error);
         }
+        if error.retry() != Retry::Never {
+            retry = Retry::AfterRestart;
+        }
+        reached |= !error.unreached();
+        last_error = Some(error);
+        server = connection.server();
     }
     Err(ConnectError::AllFailed {
         selection: selected.source,
@@ -634,13 +699,19 @@ pub async fn connect_selected_with(
     })
 }
 
-/// Dial and confirm one entry.
+/// Dial and confirm one entry, `beside` another dial still in flight or alone.
 pub(crate) async fn connect_one(
     connection: &Connection,
     source: &ConnectionSource,
     connector: &Arc<dyn Connector>,
+    beside: bool,
 ) -> Result<Client, ConnectError> {
-    let channel = connector.connect(connection).await?;
+    let channel = if beside {
+        connector.connect_beside(connection)
+    } else {
+        connector.connect(connection)
+    }
+    .await?;
     let mut client = Client::new(
         channel,
         connection.clone(),

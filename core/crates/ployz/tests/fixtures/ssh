@@ -11,6 +11,11 @@ for argument do
             exec sleep 30
             ;;
         user@timeout) exec sleep 30 ;;
+        user@record)
+            echo "$*" >> "$0.args"
+            case "$*" in *dial-stdio) exec sleep 30 ;; esac
+            exit 0
+            ;;
     esac
 done
 exit 64
