@@ -137,7 +137,9 @@ export function mergeContainerHistory(collection: ContainerLogs, rows: readonly 
   const replaced = [...collection.values()].filter(row => row.kind === "line" && !page.has(row.id) && !stored.has(group(row)) && groups.has(group(row))).map(row => row.id);
   if (replaced.length) collection.delete(replaced);
   for (const key of groups) stored.add(key);
-  const fresh = rows.filter(row => !collection.has(row.id));
+  // An older daemon kept a redelivered exit twice, so one page can repeat an exit row; the first copy had the most evidence.
+  const seen = new Set<string>();
+  const fresh = rows.filter(row => !collection.has(row.id) && !seen.has(row.id) && seen.add(row.id));
   if (fresh.length) collection.insert(fresh);
 }
 
