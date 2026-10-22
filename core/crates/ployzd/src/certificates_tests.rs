@@ -275,13 +275,13 @@ fn renewal_window_uses_the_policy_fraction() {
 
 #[test]
 fn machine_jitter_stays_inside_its_span() {
-    let remaining = Duration::from_secs(30 * 86_400);
-    let first = machine_jitter(&machine_id("a"), remaining);
-    let second = machine_jitter(&machine_id("f"), remaining);
-    assert!(first < remaining, "{first:?}");
-    assert!(second < remaining, "{second:?}");
+    let span = Duration::from_secs(3 * 86_400);
+    let first = machine_jitter(&machine_id("a"), span);
+    let second = machine_jitter(&machine_id("f"), span);
+    assert!(first < span, "{first:?}");
+    assert!(second < span, "{second:?}");
     assert_ne!(first, second);
-    assert_eq!(machine_jitter(&machine_id("a"), remaining), first);
+    assert_eq!(machine_jitter(&machine_id("a"), span), first);
 }
 
 #[test]
@@ -294,21 +294,26 @@ fn every_machine_first_tries_to_renew_with_most_of_the_last_third_left() {
         let row = row_with_lifetime(not_before, not_after);
         let window = renewal_window(not_before, not_after, fraction).unwrap();
         let left_at_window = not_after.duration_since(window).unwrap();
-        let mut dues = BTreeSet::new();
-        for n in 0..1_000 {
-            let machine = MachineId::parse(format!("{n:032x}")).unwrap();
-            let due = super::renew_at(row.material().unwrap(), &machine, fraction).unwrap();
-            assert!(due >= window, "lifetime {lifetime:?}");
-            let left = not_after.duration_since(due).unwrap();
-            assert!(
-                left >= left_at_window.mul_f64(0.9),
-                "lifetime {lifetime:?}: {left:?} left"
-            );
-            dues.insert(due);
-        }
+        let dues: Vec<_> = (0..1_000_u64)
+            .map(|n| {
+                // Spread ids over the whole hash range, as random v4 ids are.
+                let mixed = n.wrapping_mul(0x9e37_79b9_7f4a_7c15).rotate_left(29);
+                let machine = MachineId::parse(format!("{mixed:016x}{n:016x}")).unwrap();
+                super::renew_at(row.material().unwrap(), &machine, fraction).unwrap()
+            })
+            .collect();
+        let first = *dues.iter().min().unwrap();
+        let last = *dues.iter().max().unwrap();
+        assert!(first >= window, "lifetime {lifetime:?}");
+        let left = not_after.duration_since(last).unwrap();
         assert!(
-            dues.len() > 900,
-            "lifetime {lifetime:?}: Machines still spread out"
+            left >= left_at_window.mul_f64(0.9),
+            "lifetime {lifetime:?}: {left:?} left"
+        );
+        let spread = last.duration_since(first).unwrap();
+        assert!(
+            spread >= left_at_window.mul_f64(0.09),
+            "lifetime {lifetime:?}: Machines spread over only {spread:?}"
         );
     }
 }

@@ -149,7 +149,7 @@ fn renew_at(
     ))
 }
 
-/// Machines spread their first renewal over this share of the window, so each keeps the rest to retry before expiry.
+/// Machines spread their first renewal over one tenth of the window, so each keeps the rest to retry before expiry.
 const RENEWAL_JITTER_DIVISOR: f64 = 10.0;
 
 /// Jitter in `[0, span)` from the Machine identity.
