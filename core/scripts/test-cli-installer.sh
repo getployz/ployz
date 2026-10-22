@@ -27,12 +27,23 @@ EOF
 cat > "$TMP/bin/curl" <<'EOF'
 #!/bin/sh
 echo "$*" >> "${FAKE_CURL_LOG:-/dev/null}"
+write_out=
 while [ "$#" -gt 0 ]; do
-    if [ "$1" = -o ]; then output=$2; shift 2; else url=$1; shift; fi
+    case "$1" in
+        -o) output=$2; shift 2 ;;
+        -w) write_out=1; shift 2 ;;
+        *) url=$1; shift ;;
+    esac
 done
 src="$FAKE_RELEASE/${url##*/}"
-[ -f "$src" ] || exit 1
+# Like curl: without -f a missing file is a 404 it reports through -w; with -f it fails.
+if [ ! -f "$src" ]; then
+    [ -n "$write_out" ] || exit 22
+    printf 404
+    exit 0
+fi
 cp "$src" "$output"
+[ -z "$write_out" ] || printf 200
 EOF
 chmod 0755 "$TMP/bin/uname" "$TMP/bin/curl"
 
@@ -88,6 +99,24 @@ for case in 'stable:stable channel is unavailable' 'latest:Invalid version' \
     fi
     grep -Fq "${case#*:}" "$TMP/error"
 done
+
+# A version with no release says so, and a missing install directory is named before any download.
+if PATH="$TMP/bin:$PATH" FAKE_OS=Linux FAKE_ARCH=x86_64 FAKE_RELEASE="$TMP/nonexistent" \
+    INSTALL_BIN_DIR="$TMP/install" PLOYZ_GITHUB_URL=https://example.invalid \
+    sh "$ROOT/install.sh" 0.3.0-beta.99 > "$TMP/error" 2>&1; then
+    echo "installed a release that doesn't exist" >&2
+    exit 1
+fi
+grep -Fqx "ERROR: There's no Ployz release 0.3.0-beta.99. Releases: https://example.invalid/releases" "$TMP/error"
+: > "$FAKE_CURL_LOG"
+if PATH="$TMP/bin:$PATH" FAKE_OS=Linux FAKE_ARCH=x86_64 FAKE_RELEASE="$TMP/release" FAKE_CURL_LOG="$FAKE_CURL_LOG" \
+    INSTALL_BIN_DIR="$TMP/nonexistent" PLOYZ_GITHUB_URL=https://example.invalid \
+    sh "$ROOT/install.sh" 1.2.3 > "$TMP/error" 2>&1; then
+    echo "installed into a missing directory" >&2
+    exit 1
+fi
+grep -Fq "INSTALL_BIN_DIR $TMP/nonexistent is not a directory" "$TMP/error"
+[ ! -s "$FAKE_CURL_LOG" ]
 
 # Missing and mismatched binaries must fail before replacing the installed one.
 for defect in missing wrong-version; do

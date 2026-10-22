@@ -235,10 +235,12 @@ echo 'Waiting for approval'
     digest = hashlib.sha256(archive.read_bytes()).hexdigest()
     (root / 'release/checksums.txt').write_text(f'{digest}  {archive.name}\n')
     stub(root / 'bin/curl', '''#!/bin/sh
+write_out=
 while [ "$#" -gt 0 ]; do
-    if [ "$1" = -o ]; then output=$2; shift 2; else url=$1; shift; fi
+    case "$1" in -o) output=$2; shift 2 ;; -w) write_out=1; shift 2 ;; *) url=$1; shift ;; esac
 done
 cp "$FAKE_RELEASE/${url##*/}" "$output"
+[ -z "$write_out" ] || printf 200
 ''')
     stub(root / 'bin/id', '#!/bin/sh\necho 0\n')
     stub(root / 'bin/uname', '#!/bin/sh\ncase "$1" in -s) echo Linux ;; -m) echo x86_64 ;; esac\n')
