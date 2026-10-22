@@ -263,8 +263,8 @@ ployz up --project my-app --env staging
 ```
 
 Always pass `--project` in CI, or `ployz up` creates a new project named after the checkout.
-`ployz up` ships the directory to the project's service that builds from an upload, or to one
-with no source yet. If there's none, it adds one named after the directory and builds it, as it
+`ployz up` ships the directory to each of the project's services that build from an upload or
+have no source yet. If there's none, it adds one named after the directory and builds it, as it
 does in a new project. In that case it stops and says why, adding no service and linking
 nothing, when a service builds from Git (run `ployz deploy` to ship it) or when a service that
 pulls an image already has the directory's name.
