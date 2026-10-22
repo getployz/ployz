@@ -156,6 +156,10 @@ fn shared_writes_flag() -> clap::Arg {
         .help("Let more than one container write it: replicas of one Service, or several Services. =false refuses a second writer")
 }
 
+/// The smallest size `--size` takes, 0.1 GB: a much smaller Volume is full when created (#2995).
+/// A Volume already recorded smaller still reads and resizes up.
+const SMALLEST_SIZE: u64 = 100_000_000;
+
 fn storage_flags(command: Command) -> Command {
     command
         .arg(
@@ -163,7 +167,9 @@ fn storage_flags(command: Command) -> Command {
                 .value_name("GB")
                 .value_parser(|size: &str| {
                     ProvisionedVolumeMaximumBytes::parse_gb(size)
-                        .map_err(|_| "Use a positive size in GB, such as 5GB or 0.5GB")
+                        .ok()
+                        .filter(|size| size.get() >= SMALLEST_SIZE)
+                        .ok_or("Use a size of at least 0.1GB, such as 5GB or 0.5GB")
                 })
                 .help("Managed volume size limit in GB, such as 10GB; new Volumes default to 5GB"),
         )

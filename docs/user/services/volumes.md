@@ -33,6 +33,7 @@ your entered directory if a write fails.
 
 The limit starts at 5 GB. A volume can't grow past it: once it's full, writes fail. The whole
 limit is set aside on the server's disk, so a deploy fails if no server has room for it.
+`ployz volume add` and `ployz volume set` refuse a limit under 0.1 GB.
 
 You can change the limit in the volume's **Settings**, under **Space**, or with
 `ployz volume set data --size 10`, until a deploy starts creating the volume. A deploy that
