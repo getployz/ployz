@@ -9,11 +9,16 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-/** A page whose loader fails while `down` holds, as every page does while Cloud's database restarts. */
-const app = (down: { value: boolean }) => {
+/** A page whose loader fails while `down` holds, as every page does while Cloud's database restarts. Once up, each load
+ * counts in `slow.starts` and waits for `slow.gate`, when given. */
+const app = (down: { value: boolean }, slow?: { starts: number; gate: Promise<void> }) => {
   const root = createRootRoute({
-    loader: () => {
+    loader: async () => {
       if (down.value) throw new Error("connect ECONNREFUSED 172.28.0.3:5432");
+      if (slow) {
+        slow.starts += 1;
+        await slow.gate;
+      }
       return { ok: true };
     },
     component: () => <p>Projects</p>,
@@ -47,4 +52,20 @@ it("tries again at once when asked", async () => {
   down.value = false;
   fireEvent.click(tryAgain);
   expect(await screen.findByText("Projects")).toBeTruthy();
+});
+
+it("lets a load slower than the retry finish instead of starting it over", async () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+  const down = { value: true };
+  let open = () => {};
+  const slow = { starts: 0, gate: new Promise<void>((resolve) => { open = resolve; }) };
+  render(<RouterProvider router={app(down, slow)} />);
+  await act(() => vi.advanceTimersByTimeAsync(0));
+  down.value = false;
+  // The first try starts a load that outlasts the next two ticks.
+  await act(() => vi.advanceTimersByTimeAsync(3 * 5_000));
+  expect(slow.starts).toBe(1);
+  open();
+  await act(() => vi.advanceTimersByTimeAsync(0));
+  expect(screen.getByText("Projects")).toBeTruthy();
 });

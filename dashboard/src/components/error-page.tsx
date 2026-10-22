@@ -15,12 +15,16 @@ const RETRY_MS = 5_000;
 
 /**
  * A page whose loading failed, such as while Cloud's database restarts. It tries again every few seconds, so the page
- * comes back by itself once Cloud can serve it; the cause stays in the server log.
+ * comes back by itself once Cloud can serve it. The error itself goes to the server log, or the browser console when
+ * rendering threw it.
  */
 export function ErrorPage() {
   const router = useRouter();
   useEffect(() => {
-    const retry = setInterval(() => void router.invalidate(), RETRY_MS);
+    // A try skips while a load runs: invalidating mid-load aborts it, so a slow loader would never finish.
+    const retry = setInterval(() => {
+      if (!router.state.isLoading) void router.invalidate();
+    }, RETRY_MS);
     return () => clearInterval(retry);
   }, [router]);
 
