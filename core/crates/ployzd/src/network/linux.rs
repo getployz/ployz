@@ -418,8 +418,9 @@ impl NetworkPlane {
 
     async fn ensure_docker_network(&self) -> Result<bool, NetworkError> {
         // The fence goes in before any container holds IPv6 that NAT66 could carry
-        // into the mesh; without it the bridge stays IPv4-only.
-        let ipv6 = (bridge_ipv6_allowed()
+        // into the mesh, including one an earlier start gave IPv6; without it the
+        // bridge stays IPv4-only.
+        let fenced = docker_ipv6_firewall()
             && fence_container_ipv6()
                 .inspect_err(|error| {
                     eprintln!(
@@ -427,8 +428,9 @@ impl NetworkPlane {
                         error = ployz_core::error_chain::inline(error),
                     );
                 })
-                .is_ok())
-        .then(|| docker_network_ipv6(self.machine.subnet));
+                .is_ok();
+        let ipv6 =
+            (fenced && bridge_ipv6_allowed()).then(|| docker_network_ipv6(self.machine.subnet));
         let created = self.ensure_docker_network_shape(ipv6.as_ref()).await?;
         self.rejoin_detached().await;
         Ok(created)
@@ -442,12 +444,13 @@ impl NetworkPlane {
         let gateway = self.machine.subnet.gateway().0.to_string();
         let required_options = required_docker_network_options(self.mtu);
         let request = docker_network_request(self.machine.subnet, &required_options, ipv6);
+        let ipv4_only = ipv6
+            .is_some()
+            .then(|| docker_network_request(self.machine.subnet, &required_options, None));
         match self.docker.inspect_network(DOCKER_NETWORK_NAME, None).await {
             Ok(network) => {
                 if docker_network_matches(&network, &subnet, &gateway, &required_options) {
                     if !docker_network_ipv6_matches(&network, ipv6) {
-                        let ipv4_only =
-                            docker_network_request(self.machine.subnet, &required_options, None);
                         self.readdress_docker_network(&network, request, ipv4_only)
                             .await?;
                     }
@@ -495,7 +498,9 @@ impl NetworkPlane {
             Err(error) if is_not_found(&error) => {}
             Err(error) => return Err(error.into()),
         }
-        self.docker.create_network(request).await?;
+        if let Some(refused) = self.create_bridge(request, ipv4_only).await? {
+            report_readdress(&refused);
+        }
         Ok(true)
     }
 
@@ -514,7 +519,7 @@ impl NetworkPlane {
         &self,
         network: &NetworkInspect,
         request: NetworkCreateRequest,
-        ipv4_only: NetworkCreateRequest,
+        ipv4_only: Option<NetworkCreateRequest>,
     ) -> Result<(), NetworkError> {
         let mut members = match self.bridge_members().await {
             Ok(members) => members,
@@ -568,14 +573,13 @@ impl NetworkPlane {
         replaced.map(|_| ())
     }
 
-    /// Falls back to the IPv4-only bridge when Docker refuses the dual-stack one, so
-    /// IPv6 trouble never leaves the Machine without a network. Returns why the
-    /// bridge stays as it was, or an error when no bridge could be created.
+    /// Returns why the bridge stays as it was or fell back to IPv4-only, or an error
+    /// when no bridge could be created.
     async fn replace_docker_network(
         &self,
         network: &NetworkInspect,
         request: NetworkCreateRequest,
-        ipv4_only: NetworkCreateRequest,
+        ipv4_only: Option<NetworkCreateRequest>,
     ) -> Result<Option<NetworkError>, NetworkError> {
         let id = network.id.as_deref().unwrap_or(DOCKER_NETWORK_NAME);
         match self.docker.remove_network(id).await {
@@ -583,8 +587,21 @@ impl NetworkPlane {
             Err(error) if is_not_found(&error) => {}
             Err(error) => return Ok(Some(error.into())),
         }
+        self.create_bridge(request, ipv4_only).await
+    }
+
+    /// Falls back to the IPv4-only bridge when Docker refuses the dual-stack one.
+    /// Returns why it fell back, or an error when no bridge could be created.
+    async fn create_bridge(
+        &self,
+        request: NetworkCreateRequest,
+        ipv4_only: Option<NetworkCreateRequest>,
+    ) -> Result<Option<NetworkError>, NetworkError> {
         let Err(refused) = self.docker.create_network(request).await else {
             return Ok(None);
+        };
+        let Some(ipv4_only) = ipv4_only else {
+            return Err(refused.into());
         };
         match self.docker.create_network(ipv4_only).await {
             Ok(_) => Ok(Some(refused.into())),
@@ -657,7 +674,7 @@ impl NetworkPlane {
 
 fn report_readdress(error: &NetworkError) {
     eprintln!(
-        "the {DOCKER_NETWORK_NAME} network could not take IPv6 and stays as it was: {error}",
+        "the {DOCKER_NETWORK_NAME} network could not take IPv6: {error}",
         error = ployz_core::error_chain::inline(error),
     );
 }
