@@ -93,7 +93,7 @@ const foundingClaimLive = Effect.fn("PairingRemoval.foundingClaimLive")(function
   return live !== undefined;
 });
 
-/** A founding claim no token can finish, which the next Enroll drops before it plans a first server. */
+/** A founding claim no token can finish, which the next Enroll drops before it plans a first server, unless that server made it. */
 export const isDeadFoundingClaim = Effect.fn("PairingRemoval.isDeadFoundingClaim")(function* (pairing: Pairing) {
   return pairing.founderMachineId === null && pairing.removalStartedAt === null && !(yield* foundingClaimLive(pairing));
 });
