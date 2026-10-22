@@ -12,7 +12,7 @@ export function useServerList(organizationSlug: string) {
   return {
     state: serverListState(runtime.status, servers.length, runtime.incomplete),
     servers,
-    /** Cloud can't reach a Server because it runs Ployz 0.3.0-beta.6 or earlier; only an upgrade over SSH does. */
+    /** Cloud can't reach a Server because it runs an older Ployz; only an upgrade over SSH does. */
     older: runtime.status === "unreachable" && runtime.error === OLDER_SERVERS_ERROR,
   };
 }

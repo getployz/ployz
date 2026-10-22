@@ -37,9 +37,9 @@ it("lets support forget the servers, as Cloud does", () => {
   expect(renderAs("support")?.hasAttribute("disabled")).toBe(false);
 });
 
-it("points a Server on 0.3.0-beta.6 or earlier to its upgrade over SSH, not to Forget", () => {
+it("points a Server on an older Ployz to its upgrade over SSH, not to Forget", () => {
   expect(renderAs("admin", true)).toBeNull();
   expect(screen.getByText("Upgrade your server over SSH")).toBeTruthy();
-  expect(screen.getByText(/runs Ployz 0\.3\.0-beta\.6 or earlier/)).toBeTruthy();
+  expect(screen.getByText(/runs an older Ployz/)).toBeTruthy();
   expect(screen.getByText((_, element) => element?.tagName === "CODE" && element.textContent === SSH_UPGRADE)).toBeTruthy();
 });

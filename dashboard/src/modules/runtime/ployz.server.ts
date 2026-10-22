@@ -256,7 +256,7 @@ function rpcCode(cause: unknown) {
 const OlderProtocol = Schema.Union([
   Schema.Struct({ details: Schema.Struct({ management_protocol: Schema.Literal("older") }) }),
   // When several connections fail, the older Server's refusal survives only in the message.
-  Schema.Struct({ message: Schema.String.check(Schema.isIncludes("runs Ployz 0.3.0-beta.6 or earlier")) }),
+  Schema.Struct({ message: Schema.String.check(Schema.isIncludes("can't reach through the relay")) }),
 ]);
 
 /** Whether a connect failed on a Server too old to manage through the relay, which only an upgrade over SSH reaches. */

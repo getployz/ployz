@@ -458,8 +458,8 @@ on.
 Starting with the first release after 0.3.0-beta.6, Ployz Cloud and the CLI prove their access in a
 new way on every connection, and servers on 0.3.0-beta.6 or earlier don't understand it. Through
 Ployz's relay, Cloud and a newer CLI can't connect to such a server directly. The server keeps
-running your apps. When Cloud can reach no other server, the **Servers** page reads **Upgrade your
-server over SSH** and shows the commands below. When the CLI can't reach a server on a newer
+running your apps. When Cloud's last try to reach your servers lands on such a server, the
+**Servers** page reads **Upgrade your server over SSH** and shows the commands below. When the CLI can't reach a server on a newer
 release first, it stops with:
 
 ```text
