@@ -36,7 +36,7 @@ import {
   type ReadMachineEnrollmentInput,
   type ResetPendingEnrollmentInput,
 } from "#/modules/machines/enrollment";
-import { readOrganizationSealingKey, recordSealingPublicKey } from "#/modules/machines/sealing-key.server";
+import { readOrganizationSealingKey, recordFirstRecoveryBackup, recordSealingPublicKey } from "#/modules/machines/sealing-key.server";
 import { supportsSealingRecovery } from "#/modules/machines/sealing-recovery-compat.server";
 import { SecretEncryption } from "#/utils/encrypted-secret.server";
 import { sendInngestEvent } from "#/modules/inngest/client";
@@ -825,6 +825,13 @@ export const completeMachineEnrollment = Effect.fn(
 )(
   function* (input: EnrollmentCallback & { token: string }) {
     if ("stage" in input) return yield* publishMachineEnrollment(input);
+    const { recoveryBackup } = input;
+    if (recoveryBackup !== undefined && !(yield* AppConfig).sealedVariables) {
+      return yield* new Validation({ message: "Invalid enrollment callback." });
+    }
+    if (recoveryBackup !== undefined && (input.sealing?.kind !== "held" || input.sealing.publicKey !== recoveryBackup.publicKey)) {
+      return yield* new Validation({ message: "The recovery backup is not of the Sealing Key this Server holds." });
+    }
     const parsed = Schema.decodeUnknownOption(rustMachineIdSchema)(input.machineId);
     if (Option.isNone(parsed)) {
       return yield* new Validation({
@@ -886,10 +893,12 @@ export const completeMachineEnrollment = Effect.fn(
       return { machineId };
     }
     // Past this, `machineId` is the founder (a retried completion may have founded it already).
-    yield* database.transaction(Effect.gen(function* () {
+    const recoveryBackupDigest = yield* database.transaction(Effect.gen(function* () {
       yield* commitFounder(token.organizationId, machineId, row.encryptedPairingSecret);
       yield* requireTokenClaimedBy(input.token, machineId);
       yield* recordSealing(token.organizationId, hashEnrollmentToken(pairing.secret), machineId, input.sealing);
+      if (recoveryBackup === undefined) return undefined;
+      return yield* recordFirstRecoveryBackup(token.organizationId, recoveryBackup.publicKey, recoveryBackup.backup);
     }));
     // A Cluster Domain that survived teardown points at the founder once the sync reads the runtime frame;
     // completion never sees the founder's IP, and the hourly sync covers a lost event.
@@ -902,7 +911,7 @@ export const completeMachineEnrollment = Effect.fn(
       Effect.catch((error) => Effect.logWarning("Deploying to the first Server was not requested; its Deploy button does it.", error)),
     );
     yield* reportAttemptCompleted(token.serverEnrollmentId);
-    return { machineId };
+    return { machineId, recoveryBackupDigest };
   },
 );
 

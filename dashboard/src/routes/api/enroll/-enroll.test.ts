@@ -383,6 +383,25 @@ describe("machine enrollment routes", () => {
     expect(mocks.completeFounding).not.toHaveBeenCalled();
   });
 
+  it("carries the founder's recovery backup to completion, echoes its digest and refuses a malformed one", async () => {
+    const recoveryBackupDigest = "d".repeat(64);
+    mocks.completeFounding.mockReturnValue(Effect.succeed({ machineId, recoveryBackupDigest }));
+    const publicKey = `${"A".repeat(43)}=`;
+    const completion = { machineId, pairingCredential: "ppair_secret", sealing: { kind: "held", publicKey } };
+    const envelope = (version: number, length = 76) => Buffer.concat([Buffer.from([version]), Buffer.alloc(length, 2)]).toString("base64");
+    const recoveryBackup = { publicKey, backup: envelope(1) };
+
+    const accepted = await callback({ ...completion, recoveryBackup });
+    expect(accepted.status).toBe(200);
+    expect(mocks.completeFounding).toHaveBeenLastCalledWith({ token, ...completion, recoveryBackup });
+    expect(await accepted.json()).toEqual({ machineId, recoveryBackupDigest });
+    mocks.completeFounding.mockClear();
+    for (const backup of [envelope(2), envelope(1, 75), envelope(1, 77)]) {
+      expect((await callback({ ...completion, recoveryBackup: { publicKey, backup } })).status).toBe(422);
+    }
+    expect(mocks.completeFounding).not.toHaveBeenCalled();
+  });
+
   it("rejects prefixed or extra callback bodies", async () => {
     for (const response of [
       await callback({

@@ -2,6 +2,7 @@ import type { MachineId, MachineRuntime, RegisterRequest } from "@ployz/sdk";
 import { Effect, Schema, SchemaGetter } from "effect";
 import type { JsonValue } from "#/db/tables";
 import { Uuid } from "#/lib/schema";
+import { RecoveryBackup, SealingPublicKey } from "#/modules/machines/sealing-key";
 
 export const MACHINE_ID_PATTERN = /^[0-9a-f]{32}$/u;
 export const ENROLLMENT_TOKEN_TTL_MS = 24 * 60 * 60 * 1000;
@@ -175,12 +176,19 @@ const enrollmentCallbackIdentity = {
 
 /** Whether the enrolled Machine holds its Cluster's Sealing Key, and its public half if so. */
 const Sealing = Schema.Union([
-  Schema.Struct({ kind: Schema.Literal("held"), publicKey: Schema.String.check(Schema.isPattern(/^[A-Za-z0-9+/]{43}=$/)) }),
+  Schema.Struct({ kind: Schema.Literal("held"), publicKey: SealingPublicKey }),
   Schema.Struct({ kind: Schema.Literal("needs_access") }),
 ]);
 
+/** The founder's held Sealing Key, wrapped under the recovery code it shows its user. */
+const FounderRecoveryBackup = Schema.Struct({ publicKey: SealingPublicKey, backup: RecoveryBackup });
+
 export const enrollmentCallbackBodySchema = Schema.Union([
-  Schema.Struct({ ...enrollmentCallbackIdentity, sealing: Schema.optionalKey(Sealing) }),
+  Schema.Struct({
+    ...enrollmentCallbackIdentity,
+    sealing: Schema.optionalKey(Sealing),
+    recoveryBackup: Schema.optionalKey(FounderRecoveryBackup),
+  }),
   Schema.Struct({
     ...enrollmentCallbackIdentity,
     stage: Schema.Literal("publish"),
