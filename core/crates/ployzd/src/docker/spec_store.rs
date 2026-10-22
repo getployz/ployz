@@ -254,6 +254,28 @@ impl ConfigOperation<'_> {
         Ok(())
     }
 
+    /// Record In for each listed Container that has a spec and no rotation yet.
+    pub(super) async fn adopt_unrotated(
+        &mut self,
+        container_ids: Vec<ContainerId>,
+    ) -> Result<(), Error> {
+        let path = self.store.path.clone();
+        let rotation = serde_json::to_string(&CopyRotation::In)?;
+        blocking(move || {
+            let mut connection = connect(&path)?;
+            let transaction = connection.transaction()?;
+            for container_id in container_ids {
+                transaction.execute(
+                    "INSERT INTO rotations (id, rotation) SELECT id, ?2 FROM containers WHERE id = ?1 ON CONFLICT (id) DO NOTHING",
+                    params![container_id.to_string(), rotation],
+                )?;
+            }
+            transaction.commit()?;
+            Ok(())
+        })
+        .await
+    }
+
     /// Record that this Machine stopped `run` for a `Stopped` want, and republish
     /// observations as [`Self::set_rotation`] does. Records nothing once the
     /// Container's spec is gone: a removal that won the race already took its row,
@@ -821,9 +843,13 @@ mod tests {
             .unwrap();
         let machine = MachineId::random();
         let rotation = || async {
-            let listed = runtime.list_managed(&machine).await.unwrap();
-            assert_eq!(listed.len(), 1);
-            listed[0].rotation().clone()
+            let [observed] = runtime
+                .list_managed(&machine)
+                .await
+                .unwrap()
+                .try_into()
+                .unwrap();
+            observed.rotation().clone()
         };
 
         assert_eq!(rotation().await, CopyRotation::In);
