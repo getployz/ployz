@@ -173,7 +173,20 @@ async fn exec_without_a_running_container_names_the_servers_that_did_not_answer(
             "found: {found}"
         );
         let failure = crate::failure::Failure::from(error);
-        assert_eq!(failure.report().code, ployz_core::RpcErrorCode::Unavailable);
+        let report = failure.report();
+        assert_eq!(report.code, ployz_core::RpcErrorCode::Unavailable);
+        assert_eq!(
+            report.details.pointer("/failures/0/machine_id"),
+            Some(&serde_json::json!(
+                machine_observation(2, "machine-2").machine.id
+            )),
+            "found: {found}"
+        );
+        assert_eq!(
+            report.details.get("omitted"),
+            Some(&serde_json::json!([])),
+            "found: {found}"
+        );
     }
 }
 
