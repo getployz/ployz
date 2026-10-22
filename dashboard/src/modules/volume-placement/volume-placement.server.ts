@@ -16,7 +16,10 @@ import {
 } from "#/modules/volume-placement/volume-placement";
 import { ACTIVE_VOLUME_RUN_STATES, dockerVolumeName, parseDockerVolumeName, type VolumeRunInput } from "#/modules/volume-run/volume-run";
 import { volumeRun } from "#/modules/volume-run/tables";
-import { admitRun, ClusterNotConnected, heldStorage, inspectVolumeCopies, nameRefusal, planVolumeRun, resolveVolume, unreachable } from "#/modules/volume-run/volume-run.server";
+import {
+  admitRun, ClusterNotConnected, heldStorage, inspectVolumeCopies, nameRefusal, planVolumeRun, resolveVolume, storeRefusal, unreachable,
+} from "#/modules/volume-run/volume-run.server";
+import { planSeed } from "#/modules/volume-run/plan";
 import { whileLocked } from "#/server/advisory-lock.server";
 import { Database } from "#/server/database.server";
 
@@ -139,7 +142,8 @@ export const stagePlacement = Effect.fn("VolumePlacement.stage")(function* (
 /**
  * Stage a new Volume restored from one restore point of `volumeId`: in one Store write, the source's mounts move to a
  * new Volume named `<source>-HHMM` (shortened to fit, suffixed when taken), and the row says the next Deploy copies the
- * point onto the source's primary.
+ * point onto the source's primary. Refused with the planner's own refusal when the Deploy's seed run would refuse it, on
+ * the members as that run observes them.
  */
 export const stageRestore = Effect.fn("VolumePlacement.stageRestore")(function* (
   organizationId: string,
@@ -148,12 +152,6 @@ export const stageRestore = Effect.fn("VolumePlacement.stageRestore")(function* 
   inspect: typeof inspectVolumeCopies = inspectVolumeCopies,
 ) {
   const source = yield* resolveVolume(organizationId, input.environment, input.volumeId);
-  const members = yield* inspect(organizationId, input.environment, input.volumeId);
-  if (!serversAnswer(members)) return { ok: false, refusal: UNANSWERED } satisfies PlacementWrite;
-  const primary = observePlacement(members).primary;
-  if (primary === null) {
-    return { ok: false, refusal: { code: "conflict", message: `${source.volumeName} has no primary answering to restore from.`, details: null } } satisfies PlacementWrite;
-  }
   const { environment, volumes } = yield* readStore(organizationId, { query: "volumes", environment: input.environment });
   const listed = volumes.find((volume) => volume.id === input.volumeId);
   const namespace = parseDockerVolumeName(source.dockerVolume)?.namespace;
@@ -161,6 +159,12 @@ export const stageRestore = Effect.fn("VolumePlacement.stageRestore")(function* 
   const id = randomUUID();
   const time = lossTime(new Date(input.at * 1000)).replace(":", "");
   const name = uniqueName(listed.name, volumes.map((volume) => volume.name), { tail: `-${time}` });
+  const run = { kind: "seed", args: { into: { volumeId: id, dockerVolume: dockerVolumeName(namespace, id), name }, guid: input.guid, name: input.name } } as const;
+  const members = yield* inspect(organizationId, input.environment, input.volumeId, run);
+  if (!serversAnswer(members)) return { ok: false, refusal: UNANSWERED } satisfies PlacementWrite;
+  const planned = planSeed({ ...run, volumeName: source.volumeName, orphan: false }, members);
+  if (!planned.ok) return { ok: false, refusal: storeRefusal(planned.refusal) } satisfies PlacementWrite;
+  const primary = planned.source.machine;
   const commands: BatchCommand[] = [
     ...listed.mounts.map((mount): BatchCommand => ({ command: "edit", environment: input.environment, expect: null, changes: [mountChange(mount.service, listed.name, null)] })),
     {
@@ -173,7 +177,7 @@ export const stageRestore = Effect.fn("VolumePlacement.stageRestore")(function* 
   const seed: Seed = {
     sourceVolumeId: input.volumeId,
     sourceName: listed.name,
-    dockerVolume: dockerVolumeName(namespace, id),
+    dockerVolume: run.args.into.dockerVolume,
     point: { guid: input.guid, name: input.name, at: input.at },
   };
   const outcome = yield* whileStaging(environment.id, Effect.gen(function* () {

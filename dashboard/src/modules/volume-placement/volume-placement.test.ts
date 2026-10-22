@@ -15,6 +15,7 @@ import {
   placementTargets,
   placementForm,
   recovery,
+  seedOffer,
   serversAnswer,
   mirroredVolumes,
   oldCopies,
@@ -534,6 +535,36 @@ describe("recovery", () => {
     expect(recover(forgotten, row(["web-2"], { primary: "web-2" }))).toBeNull();
     expect(recover([member("web-1", "unanswered"), mirrorAsOf("web-2", at)], row(["web-2"], { primary: "web-2" })))
       .toMatchObject({ kind: "forget", down: [{ name: "web-1" }] });
+  });
+});
+
+describe("seedOffer", () => {
+  const offer = (members: Member[], options: { restorable?: string[]; floorless?: string[] } = {}) =>
+    seedOffer(volume, members, (options.restorable ?? members.map((each) => each.machine.name)).map(id), (options.floorless ?? []).map(id));
+  const fresh = () => [member("web-1", "writer"), mirrorAsOf("web-2", at)];
+
+  it("offers a point the Deploy's seed run would restore", () => {
+    expect(offer(fresh())).toEqual({ offered: true, refused: null });
+    expect(offer([...fresh(), pooled("web-3")], { floorless: ["web-3"] })).toEqual({ offered: true, refused: null });
+  });
+
+  it("says why the seed run would refuse: a Server without the generation floor that holds a copy, or no primary", () => {
+    expect(offer(fresh(), { floorless: ["web-2"] })).toEqual({ offered: false, refused: "Volume restore is not available on web-2." });
+    expect(offer([mirrorAsOf("web-2", at)])).toEqual({ offered: false, refused: "pg-data has no primary to restore from" });
+  });
+
+  it("says the restore waits for a mirror refresh beside an old primary that came back, as the seed run would demote it and stop", () => {
+    const returned = [member("web-1", "writer", { epoch: 8 }), member("web-3", "writer", { epoch: 3 }), mirrorAsOf("web-2", at)];
+    const refused = "pg-data-web-3 is an old primary that came back; restore once a mirror refresh makes it a mirror";
+    expect(offer(returned)).toEqual({ offered: false, refused });
+    expect(offer([member("web-1", "writer"), member("web-3", "cut"), mirrorAsOf("web-2", at)])).toEqual({ offered: false, refused });
+  });
+
+  it("offers nothing while a Server is silent or its report hasn't arrived, or the primary's Ployz can't restore", () => {
+    const unlisted: Member = { machine: { id: id("web-3"), name: id("web-3") }, answered: false, incomplete: true };
+    expect(offer([...fresh(), member("web-3", "unanswered")])).toEqual({ offered: false, refused: null });
+    expect(offer([...fresh(), unlisted])).toEqual({ offered: false, refused: null });
+    expect(offer(fresh(), { restorable: [] })).toEqual({ offered: false, refused: null });
   });
 });
 

@@ -370,6 +370,20 @@ function unfinishedCutsBefore(volumeName: string, target: AnsweredMember, member
 }
 
 /**
+ * The copy a seed run restores from, or why it would refuse. Beside an old primary that came back, the run only makes
+ * that copy a mirror and stops, so a restore waits for the mirror refresh that does the same.
+ */
+export function planSeed(input: Extract<PlanInput, { kind: "seed" }>, members: readonly Member[]):
+  { readonly ok: true; readonly source: AnsweredMember } | { readonly ok: false; readonly refusal: Refusal } {
+  const planned = planFromCopies(input, members);
+  if (!planned.ok) return planned;
+  if (planned.phase.kind === "seed") return { ok: true, source: planned.phase.source };
+  if (planned.phase.kind !== "demote") throw new Error(`a seed run planned ${planned.phase.kind}`);
+  const old = copyName(input.volumeName, planned.phase.old.machine.name);
+  return { ok: false, refusal: { code: "two_writers", message: `${old} is an old primary that came back; restore once a mirror refresh makes it a mirror` } };
+}
+
+/**
  * A Server removed without a reset keeps its root; once Restore made a newer one elsewhere, the root with the lower
  * epoch is old. Only a writable root can be the writer, so a read-only one is old beside any writable one. Writable
  * roots whose epochs tie leave no way to tell, so neither is old.

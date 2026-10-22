@@ -3,12 +3,12 @@ import { Option, Schema } from "effect";
 import type { DeletionItem } from "#/components/deletion-dialog";
 import type { ChangeGroup } from "#/modules/config-store/store-deployments";
 import { STALE_AFTER_MS } from "#/modules/volume-copies/volume-copies";
-import { epochOf, planFromCopies } from "#/modules/volume-run/plan";
+import { epochOf, planFromCopies, planSeed } from "#/modules/volume-run/plan";
 import { runWords } from "#/modules/volume-run/volume-copies";
 import { rustMachineIdSchema } from "#/modules/machines/enrollment";
 import type { RuntimeVolumeCopy } from "#/modules/runtime/runtime.collection";
 import {
-  type AnsweredMember, heardFrom, type Member, parseDockerVolumeName, RUN_FEATURES, type VolumeRunInput, type VolumeRunView, unheardOf,
+  type AnsweredMember, heardFrom, type Member, needsFloor, parseDockerVolumeName, RUN_FEATURES, type VolumeRunInput, type VolumeRunView, unheardOf,
 } from "#/modules/volume-run/volume-run";
 
 export type MachineRef = { readonly id: MachineId; readonly name: MachineName };
@@ -429,6 +429,30 @@ function restoreStage(
   const planned = planFromCopies({ kind: "restore", args: { from: mirror.name }, volumeName: volume.name, orphan: false }, members);
   if (!planned.ok) return { refused: planned.refusal.message };
   return { placement: { primary: mirror.id, mirrors: [], deletes: [] }, mirrors: applied };
+}
+
+/** Whether Copies offers a Restore point, and the planner's refusal when the Deploy's seed run would refuse it. */
+export type SeedOffer = { readonly offered: boolean; readonly refused: string | null };
+
+/**
+ * Whether Copies offers a Restore point, as the Deploy's seed run plans it, and the planner's refusal when it would
+ * refuse. As the run's observer reads them, a Server without the generation floor (`floorless`) that holds a copy lacks
+ * what the run needs. Nothing is offered while a Server is silent or its report is on its way, nor unless the primary's
+ * Ployz can restore (`restorable`).
+ */
+export function seedOffer(
+  volume: PlacementVolume, members: readonly Member[], restorable: readonly MachineId[], floorless: readonly MachineId[],
+): SeedOffer {
+  if (!serversAnswer(members)) return { offered: false, refused: null };
+  // The plan reads the copies alone, not where the point goes.
+  const run = { kind: "seed", args: { into: { volumeId: "", dockerVolume: "", name: "" }, guid: "", name: "" } } as const;
+  const observed = members.map((member): Member =>
+    member.answered && floorless.includes(member.machine.id) && needsFloor(run, member.machine, member.view.copy)
+      ? { machine: member.machine, answered: false, lack: `${RUN_FEATURES.seed} is not available on ${member.machine.name}.` }
+      : member);
+  const planned = planSeed({ ...run, volumeName: volume.name, orphan: false }, observed);
+  if (!planned.ok) return { offered: false, refused: planned.refusal.message };
+  return { offered: restorable.includes(planned.source.machine.id), refused: null };
 }
 
 export type PlacementTargets = { readonly move: readonly MachineRef[]; readonly mirror: readonly MachineRef[] };

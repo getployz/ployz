@@ -55,8 +55,10 @@ import {
   type AnsweredMember,
   copyName,
   dockerVolumeName,
+  isDestination,
   managementAddress,
   type Member,
+  needsFloor,
   parseDockerVolumeName,
   RUN_FEATURES,
   type ServiceSpec,
@@ -408,7 +410,7 @@ const refusalCode = {
 } satisfies Record<RefusalCode, string>;
 
 /** A plan's refusal as the Store hears it; a call whose outcome already holds is settled, so the Store offers no retry. */
-const storeRefusal = ({ code, message, next }: Refusal): StoreRefusal => {
+export const storeRefusal = ({ code, message, next }: Refusal): StoreRefusal => {
   if (code === "already_on") return { code: refusalCode[code], message, details: { settled: true } };
   return { code: refusalCode[code], message, details: next === undefined ? null : { next } };
 };
@@ -911,10 +913,15 @@ export const listVolumeRuns = Effect.fn("VolumeRun.list")(function* (organizatio
   return rows.map(volumeRunView);
 });
 
-/** The Volume's copies as each managed Machine answers for them, for the panel to plan its offers from. */
-export const inspectVolumeCopies = Effect.fn("VolumeRun.inspectCopies")(function* (organizationId: string, environment: EnvironmentRef, volumeId: string) {
+/**
+ * The Volume's copies as each managed Machine answers for them, for the panel to plan its offers from. With `run`, as
+ * that run's observe step reads them, so a caller can refuse what the run would.
+ */
+export const inspectVolumeCopies = Effect.fn("VolumeRun.inspectCopies")(function* (
+  organizationId: string, environment: EnvironmentRef, volumeId: string, run?: ObservedRun,
+) {
   const volume = yield* resolveVolume(organizationId, environment, volumeId);
-  return yield* observeVolumeMembers(organizationId, volume.dockerVolume);
+  return yield* observeVolumeMembers(organizationId, volume.dockerVolume, run);
 });
 
 /** Whether the Volume's committed Move is still owed its finish, so the Copies tab offers no move or mirror. */
@@ -1337,11 +1344,8 @@ export const removeContainer = Effect.fn("VolumeRun.removeContainer")(function* 
   );
 }, Effect.scoped);
 
-const isDestination = (run: VolumeLaneInput, machine: { readonly id: MachineId; readonly name: MachineName | null }) =>
-  (run.kind === "move" || run.kind === "mirror") && (run.args.machine === undefined ? run.args.to === machine.name : run.args.machine === machine.id);
-
 /** A run as the observe step reads it: a resize carries the size the Store records, which decides its direction. */
-type ObservedRun = Exclude<VolumeLaneInput, { kind: "resize" }> | (Extract<VolumeLaneInput, { kind: "resize" }> & { readonly recordedBytes: number });
+export type ObservedRun = Exclude<VolumeLaneInput, { kind: "resize" }> | (Extract<VolumeLaneInput, { kind: "resize" }> & { readonly recordedBytes: number });
 
 const boundOf = (volumes: readonly DockerVolume[], machineId: MachineId, dockerVolume: string) => {
   const storage = volumes.find((volume) => volume.id.machine_id === machineId && volume.id.name === dockerVolume)?.storage;
@@ -1376,7 +1380,7 @@ export const observeVolumeMembers = Effect.fn("VolumeRun.observeMembers")(functi
     return session.volumeSwitch(machine.id, { command: "inspect_volume_copy", payload: { name: dockerVolume } }).pipe(
       clusterRead,
       Effect.timeout(OBSERVE_TIMEOUT),
-      Effect.flatMap((view) => floorless && (view.copy !== null || isDestination(run, ref))
+      Effect.flatMap((view) => floorless && needsFloor(run, ref, view.copy)
         ? lacks(requirements.volumeFloor.capability, run?.kind)
         : unsized !== undefined && view.copy !== null
         ? lacksVerb(unsized)

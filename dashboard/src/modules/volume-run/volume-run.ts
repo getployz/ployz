@@ -111,6 +111,14 @@ export type Member =
     };
 export type AnsweredMember = Extract<Member, { answered: true }>;
 
+type RunServer = { readonly id: MachineId; readonly name: MachineName | null };
+
+export const isDestination = (run: VolumeLaneInput, machine: RunServer) =>
+  (run.kind === "move" || run.kind === "mirror") && (run.args.machine === undefined ? run.args.to === machine.name : run.args.machine === machine.id);
+
+/** Whether a run needs the generation floor on a Server: one that holds a copy, or the run's destination. */
+export const needsFloor = (run: VolumeLaneInput, machine: RunServer, copy: VolumeCopyView["copy"]) => copy !== null || isDestination(run, machine);
+
 /**
  * What this observer heard from a member's Server just now. Only `answered` reports the copy. A Server that `lacks` the
  * capability answered without reporting it, and is `outdated` when its release is behind. One the frame lists only by
