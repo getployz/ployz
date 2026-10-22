@@ -740,6 +740,20 @@ impl LocalMachine {
     /// [`Error::Store`] when reset cannot be prepared or committed, and
     /// [`Error::OperationTask`] if the admitted operation task fails.
     pub async fn leave(&self, _: LeaveRequest) -> Result<Left, Error> {
+        self.depart(StorageExit::Depart).await
+    }
+
+    /// Fence this Machine after the Cluster forgot it (#2927): the same reset as
+    /// [`Self::leave`], except that storage keeps every copy, since a forgotten Machine
+    /// cannot know what a copy elsewhere still holds.
+    ///
+    /// # Errors
+    /// As [`Self::leave`].
+    pub async fn fence_forgotten(&self) -> Result<Left, Error> {
+        self.depart(StorageExit::KeepEveryCopy).await
+    }
+
+    async fn depart(&self, exit: StorageExit) -> Result<Left, Error> {
         if self.record().phase() == LocalMachinePhase::Uninitialized {
             return Ok(Left::Left {
                 phase: LeftPhase::Uninitialized,
@@ -760,11 +774,11 @@ impl LocalMachine {
             Err(error) => return Err(error.into()),
         }
         let local = self.clone();
-        self.finish_mutation(async move { local.leave_admitted().await })
+        self.finish_mutation(async move { local.leave_admitted(exit).await })
             .await
     }
 
-    async fn leave_admitted(&self) -> Result<Left, Error> {
+    async fn leave_admitted(&self, exit: StorageExit) -> Result<Left, Error> {
         let machine_id = self.record().id();
         let publication = match &self.cluster {
             Some(cluster) => Some(cluster.replicated.machine_publication().await),
@@ -785,7 +799,7 @@ impl LocalMachine {
         {
             return Err(Error::Cleanup(ployz_core::error_chain::inline(&error)));
         }
-        self.depart_storage().await?;
+        self.depart_storage(exit).await?;
         if let Some(prepared_reset) = prepared_reset {
             self.owner
                 .mutate(move |store| prepared_reset.commit(store))
@@ -805,7 +819,7 @@ impl LocalMachine {
 
 impl LocalMachine {
     async fn install(&self, installation: Installation) -> Result<(), Error> {
-        self.depart_storage().await?;
+        self.depart_storage(StorageExit::Depart).await?;
         self.owner
             .mutate(move |store| store.install(installation))
             .await??;
@@ -820,13 +834,13 @@ impl LocalMachine {
     ///
     /// Returns [`Error::Cleanup`] when the plugin cannot demote, a Volume's copy would not
     /// stop or its demote failed, or Docker keeps a name.
-    async fn depart_storage(&self) -> Result<(), Error> {
+    async fn depart_storage(&self, exit: StorageExit) -> Result<(), Error> {
         let Some(containers) = &self.containers else {
             return Ok(());
         };
         let departure: StorageDeparture = self
             .plugin
-            .call("Storage.Demote", &())
+            .call(exit.route(), &())
             .await
             .map_err(|error| Error::Cleanup(format!("storage departure failed: {error}")))?;
         // A retry answers only what it changes, so the demoted are forgotten now even
@@ -861,6 +875,23 @@ impl LocalMachine {
                 ployz_core::error_chain::inline(&error)
             ))
         })
+    }
+}
+
+/// What a departure does with this Machine's mirrors: a leave or a fresh install
+/// destroys those a writer elsewhere holds, a forgotten Machine's fence keeps every copy.
+#[derive(Clone, Copy)]
+enum StorageExit {
+    Depart,
+    KeepEveryCopy,
+}
+
+impl StorageExit {
+    fn route(self) -> &'static str {
+        match self {
+            Self::Depart => "Storage.Demote",
+            Self::KeepEveryCopy => "Storage.Seal",
+        }
     }
 }
 

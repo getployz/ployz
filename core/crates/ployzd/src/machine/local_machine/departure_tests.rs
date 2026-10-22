@@ -125,6 +125,19 @@ async fn leave_departs_storage_before_the_phase_commits() {
 }
 
 #[tokio::test]
+async fn fence_departs_keeping_every_copy() {
+    let test = harness(true).await;
+    test.plugin.reply(
+        "Storage.Seal",
+        json!({"Ok": {"demoted": ["data"], "stuck": [], "failed": []}}),
+    );
+    test.local.fence_forgotten().await.unwrap();
+    assert_eq!(test.plugin.routes_called(), ["Storage.Seal"]);
+    assert!(forgot_data(&test.docker));
+    assert_eq!(test.local.record().phase(), LocalMachinePhase::Resetting);
+}
+
+#[tokio::test]
 async fn leave_forgets_every_volume_floor() {
     let test = harness(true).await;
     let containers = test.local.containers.as_ref().unwrap();
