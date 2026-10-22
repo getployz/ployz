@@ -27,7 +27,8 @@ use crate::{
 };
 
 use super::{
-    ContainerRuntime, Error, ManagedLabels, create, docker_error, spec_store::ConfigOperation,
+    ContainerRuntime, Error, LABEL_SERVICE_ID, ManagedLabels, create, docker_error,
+    spec_store::ConfigOperation,
 };
 
 const CONTAINER_NAME_ATTEMPTS: u8 = 4;
@@ -383,44 +384,47 @@ impl ContainerRuntime {
     }
 
     /// Whether a daemon killed between Docker's create and the spec's write left
-    /// `container_id`. A restore also makes a Container with no spec under its ID, so
-    /// its slot's old records are adopted first. Only a Container never started counts:
-    /// a start needs the spec.
+    /// `container_id`: a keyed Container Docker never ran, with no spec. One already gone
+    /// ran nothing either. A restore also makes a Container with no spec under its ID, so
+    /// its slot's old records are adopted first, and a spec of its Service whose
+    /// Container is gone may be its own from before slots were recorded.
     async fn half_made(
         &self,
         operation: &mut ConfigOperation<'_>,
         container_id: &ContainerId,
     ) -> Result<bool, Error> {
-        for (old, new) in operation
-            .adopt_restored(self.managed_slots().await?)
-            .await?
-        {
+        let listed = self.managed_slots().await?;
+        let present = listed.iter().map(|(id, _)| *id).collect::<Vec<_>>();
+        for (old, new) in operation.adopt_restored(listed).await? {
             eprintln!("adopted restored container {new}, which replaces {old}");
         }
-        Ok(self.specs.get(container_id).await?.is_none()
-            && self.never_started(container_id).await?)
-    }
-
-    /// Whether Docker never ran the Container, which a keyed create made. One already
-    /// gone ran nothing either. An unkeyed Container a restore made has no slot to adopt
-    /// its records by, so it is never taken for half-made.
-    async fn never_started(&self, container_id: &ContainerId) -> Result<bool, Error> {
-        match self
+        if self.specs.get(container_id).await?.is_some() {
+            return Ok(false);
+        }
+        let inspected = match self
             .docker
             .client
             .inspect_container(container_id.as_str(), None)
             .await
             .map_err(|error| docker_error(container_id, error))
         {
-            Ok(inspected) => Ok(inspected
-                .config
-                .and_then(|config| config.labels)
-                .is_some_and(|labels| labels.contains_key(CREATION_KEY))
+            Ok(inspected) => inspected,
+            Err(Error::ContainerNotFound(_)) => return Ok(true),
+            Err(error) => return Err(error),
+        };
+        let labels = inspected
+            .config
+            .and_then(|config| config.labels)
+            .unwrap_or_default();
+        let (true, Some(service_id)) = (
+            labels.contains_key(CREATION_KEY)
                 && inspected.state.and_then(|state| state.status)
-                    == Some(ContainerStateStatusEnum::CREATED)),
-            Err(Error::ContainerNotFound(_)) => Ok(true),
-            Err(error) => Err(error),
-        }
+                    == Some(ContainerStateStatusEnum::CREATED),
+            labels.get(LABEL_SERVICE_ID),
+        ) else {
+            return Ok(false);
+        };
+        Ok(!self.specs.holds_absent(present, service_id.clone()).await?)
     }
 
     pub(crate) async fn inspect_slot(

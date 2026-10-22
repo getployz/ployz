@@ -140,6 +140,41 @@ impl MachineSpecStore {
             .collect()
     }
 
+    /// Whether a spec of Service `service_id` names a Container `present` lacks.
+    pub(super) async fn holds_absent(
+        &self,
+        present: Vec<ContainerId>,
+        service_id: String,
+    ) -> Result<bool, Error> {
+        let path = self.path.clone();
+        let absent = blocking(move || {
+            let present = present
+                .iter()
+                .map(ContainerId::as_str)
+                .collect::<HashSet<_>>();
+            let connection = connect(&path)?;
+            let mut statement = connection.prepare("SELECT id, service_spec FROM containers")?;
+            let rows = statement
+                .query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(rows
+                .into_iter()
+                .filter(|(id, _)| !present.contains(id.as_str()))
+                .map(|(_, spec)| spec)
+                .collect::<Vec<_>>())
+        })
+        .await?;
+        for encoded in absent {
+            let spec: ResolvedServiceSpec = serde_json::from_str(&encoded)?;
+            if spec.service_id.as_str() == service_id {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
     /// Those of `container_ids` with a spec and no recorded rotation.
     pub(super) async fn unrotated(
         &self,
