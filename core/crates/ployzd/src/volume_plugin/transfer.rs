@@ -433,7 +433,7 @@ impl VolumeStorage {
         if !status.success() {
             return Err(ReceiveFailure::Failed(format!(
                 "zfs receive into {fs} failed after {received} bytes: {}{}",
-                stderr.trim(),
+                without_resume_token(stderr.trim()),
                 broke.map_or(String::new(), |error| format!(" (stream: {error})"))
             )));
         }
@@ -621,4 +621,19 @@ pub(super) async fn exited(
     let (status, read) = tokio::join!(child.wait(), read);
     read?;
     Ok((status?, String::from_utf8_lossy(&stderr).into_owned()))
+}
+
+/// `zfs receive`'s stderr fit to print or store: OpenZFS names an interrupted
+/// receive's resume token in the `zfs send -t <token>` that would resume it.
+fn without_resume_token(stderr: &str) -> String {
+    stderr
+        .lines()
+        .map(|line| {
+            line.split_once("zfs send -t ").map_or_else(
+                || line.to_owned(),
+                |(before, _)| format!("{before}zfs send -t …"),
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
