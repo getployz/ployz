@@ -2308,7 +2308,7 @@ async fn execute_operation<C: MachineOperations>(
                 }
             };
             let allow_empty = matches!(purpose, RemoveContainerPurpose::Retire);
-            if allow_empty {
+            if allow_empty && copy.drains() {
                 let unreached = rows.unreached(client, &copy.service, cancellation).await?;
                 if !unreached.is_empty() {
                     let names: Vec<String> =

@@ -43,6 +43,11 @@ impl Copy {
         }
     }
 
+    /// A Pending copy was never routed, so it is removed without a drain.
+    pub(crate) fn drains(&self) -> bool {
+        self.rotation != CopyRotation::Pending
+    }
+
     fn locator(&self) -> ContainerLocator {
         ContainerLocator::Id(self.container_id)
     }
@@ -315,7 +320,7 @@ pub(crate) async fn retire<C: MachineOperations>(
     anonymous_volumes: AnonymousVolumes,
     cancellation: &CancellationToken,
 ) -> Result<Step, RpcError> {
-    if copy.rotation == CopyRotation::Pending {
+    if !copy.drains() {
         return remove(client, copy, anonymous_volumes).await;
     }
     match take_out(client, copy, allow_empty, cancellation).await? {
