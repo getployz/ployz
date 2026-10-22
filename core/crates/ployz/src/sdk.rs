@@ -594,7 +594,11 @@ impl Session {
     /// # Errors
     /// Rejects a closed session. Preparation failures arrive through `finished`.
     pub fn prepare(&self, input: PreparationInput) -> Result<RunningPreparation, RpcError> {
-        self.prepare_with(input, std::collections::BTreeMap::new())
+        self.prepare_with(
+            input,
+            std::collections::BTreeMap::new(),
+            ployz_core::Operator::default(),
+        )
     }
 
     /// [`Self::prepare`], pulling private images with `registry_auth`, which a
@@ -606,6 +610,7 @@ impl Session {
             ployz_core::ServiceName,
             ployz_core::RegistryAuth,
         >,
+        operator: ployz_core::Operator,
     ) -> Result<RunningPreparation, RpcError> {
         let mut client = self.client()?;
         let token = self.inner.cancel.child_token();
@@ -613,6 +618,7 @@ impl Session {
         Ok(Running::spawn(token.clone(), move |reporter| async move {
             let mut captured = capture(input).await?;
             captured.intent.registry_auth = registry_auth;
+            captured.intent.options.operator = operator;
             if token.is_cancelled() {
                 return Err(preparation_error(
                     crate::sdk::prepare::PreparationError::Cancelled,

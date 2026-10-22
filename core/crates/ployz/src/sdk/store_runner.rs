@@ -888,7 +888,11 @@ impl Run {
             }
         }
         // Delivering images can outlast the lease: keep renewing it.
-        let running = session.prepare_with(input, claimed.intent.registry_auth)?;
+        let running = session.prepare_with(
+            input,
+            claimed.intent.registry_auth,
+            claimed.intent.options.operator,
+        )?;
         self.renewing(running.finished(), || running.abort()).await
     }
 
