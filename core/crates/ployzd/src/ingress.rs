@@ -490,12 +490,12 @@ impl CaddyCertificates {
     }
 
     /// After Caddy refuses `projection`, load it without the certificates Caddy has not loaded
-    /// before, then add those back one at a time. Returns whether Caddy refused any of them.
+    /// before, then add those back one at a time.
     async fn find_refused<A: CaddyAdmin>(
         &mut self,
         projection: &IngressProjection,
         admin: &A,
-    ) -> bool {
+    ) -> Probe {
         // What Caddy runs now is what it accepted, so only other material is suspect.
         if let Ok(loaded) = admin.loaded_certificates().await {
             self.accepted = loaded;
@@ -512,7 +512,7 @@ impl CaddyCertificates {
                 .await
                 .is_err()
         {
-            return false;
+            return Probe::Unchanged;
         }
         let mut refused = false;
         for stem in suspects {
@@ -542,8 +542,22 @@ impl CaddyCertificates {
             }
         }
         self.accept(&without(projection, &excluded));
-        refused
+        if refused {
+            Probe::Refused
+        } else {
+            Probe::Reloaded
+        }
     }
+}
+
+/// What a probe left Caddy serving.
+enum Probe {
+    /// Caddy still serves the config it had.
+    Unchanged,
+    /// Caddy serves a probe config, though it refused no certificate.
+    Reloaded,
+    /// Caddy refused at least one certificate, now quarantined.
+    Refused,
 }
 
 /// The file stem of the certificate the Caddyfile pins for `site`.
@@ -678,15 +692,29 @@ where
                                     };
                                     let applied =
                                         apply_caddy(applying, &config_file, admin.as_ref()).await;
-                                    if let (
-                                        Err(ApplyError::BeforeServing(caddy::Error::Admin(_))),
-                                        Some(admin),
-                                    ) = (&applied, admin.as_ref())
-                                        && certificates.find_refused(&input.projection, admin).await
-                                    {
-                                        // Probing reloaded Caddy; derive again without the refused.
-                                        last_input = None;
-                                        continue;
+                                    let probe = match (&applied, admin.as_ref()) {
+                                        (
+                                            Err(ApplyError::BeforeServing(caddy::Error::Admin(_))),
+                                            Some(admin),
+                                        ) => {
+                                            certificates
+                                                .find_refused(&input.projection, admin)
+                                                .await
+                                        }
+                                        _ => Probe::Unchanged,
+                                    };
+                                    match probe {
+                                        Probe::Unchanged => {}
+                                        // Caddy no longer serves what was last loaded or recorded.
+                                        Probe::Reloaded => {
+                                            last_input = None;
+                                            recorded_by = None;
+                                        }
+                                        // Derive again without the refused.
+                                        Probe::Refused => {
+                                            last_input = None;
+                                            continue;
+                                        }
                                     }
                                     // A refused load leaves the earlier one serving. Any other
                                     // failure may have replaced the file Caddy restarts from.
