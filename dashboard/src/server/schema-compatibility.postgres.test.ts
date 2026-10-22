@@ -1,4 +1,7 @@
 import { execFile as execFileCallback } from "node:child_process";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { promisify } from "node:util";
 import { Effect } from "effect";
 import { afterAll, beforeAll, expect, it } from "vitest";
@@ -53,12 +56,12 @@ it("accepts a shipped migration whose file was edited after it was applied", asy
 
 /** Inserts history rows for one test and removes them after. */
 async function withRows(rows: readonly { id?: number; hash: string; createdAt: number; name: string }[], body: () => Promise<void>) {
-  for (const row of rows) {
-    await harness.pool.query("insert into drizzle.__drizzle_migrations (id, hash, created_at, name) values (coalesce($1, nextval(pg_get_serial_sequence('drizzle.__drizzle_migrations', 'id'))), $2, $3, $4)", [
-      row.id ?? null, row.hash, row.createdAt, row.name,
-    ]);
-  }
   try {
+    for (const row of rows) {
+      await harness.pool.query("insert into drizzle.__drizzle_migrations (id, hash, created_at, name) values (coalesce($1, nextval(pg_get_serial_sequence('drizzle.__drizzle_migrations', 'id'))), $2, $3, $4)", [
+        row.id ?? null, row.hash, row.createdAt, row.name,
+      ]);
+    }
     await body();
   } finally {
     await harness.pool.query("delete from drizzle.__drizzle_migrations where hash = any($1)", [rows.map((row) => row.hash)]);
@@ -123,6 +126,20 @@ it("accepts known migration subsets and legacy history without names", async () 
       ]);
     }
     await harness.pool.query("alter table drizzle.__drizzle_migrations rename column saved_name to name");
+  }
+});
+
+it("fails closed when the image ships no migrations", async () => {
+  const empty = await mkdtemp(join(tmpdir(), "ployz-migrations-"));
+  await mkdir(join(empty, "analytics"));
+  try {
+    await expect(Effect.runPromise(assertSchemaCompatible({
+      databaseUrl: harness.databaseUrl,
+      imageVersion: "test-image",
+      migrationsFolder: empty,
+    }).pipe(Effect.scoped))).rejects.toThrow();
+  } finally {
+    await rm(empty, { recursive: true });
   }
 });
 

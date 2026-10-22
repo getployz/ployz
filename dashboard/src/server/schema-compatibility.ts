@@ -44,7 +44,11 @@ export const assertSchemaCompatible = Effect.fn("Database.assertSchemaCompatible
   });
   for (const history of histories) {
     const shipped = yield* Effect.try({
-      try: () => readMigrationFiles({ migrationsFolder: resolve(migrationsFolder, history.directory) }),
+      try: () => {
+        const migrations = readMigrationFiles({ migrationsFolder: resolve(migrationsFolder, history.directory) });
+        if (migrations.length === 0) throw new Error(`No migrations in ${resolve(migrationsFolder, history.directory)}`);
+        return migrations;
+      },
       catch: cause => new SchemaCompatibilityCheckFailure({ cause }),
     });
     const names = new Set(shipped.map(migration => migration.name));
