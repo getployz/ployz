@@ -323,6 +323,46 @@ fn draft_storage_is_explicit_and_locks_once_a_run_prepares_it() {
 }
 
 #[test]
+fn a_deployment_admitted_before_an_earlier_run_fixed_the_storage_is_refused_at_claim() {
+    let (store, who) = shop();
+    admit(&store, &who, 1, &[], None).unwrap();
+    let runner = RunnerId::parse("runner").unwrap();
+    store.claim(&id(1), &runner).unwrap();
+    // #1 is still building, so nothing fixed data's storage yet.
+    store
+        .write(
+            &who,
+            &SetVolumeStorage {
+                environment: EnvironmentRef::default(),
+                volume: VolumeName::parse("data").unwrap(),
+                storage: VolumeKind::provisioned_default(),
+            },
+        )
+        .unwrap();
+    admit(&store, &who, 2, &[], None).unwrap();
+    let preview: DeployPreview = serde_json::from_value(json!({
+        "namespace": "shop-production",
+        "operations": [{
+            "index": 0, "machine_id": "a".repeat(32), "service_name": "web",
+            "operation": remove_web(), "status": {"type": "pending"}
+        }],
+        "warnings": [], "would_remove": [], "preserved_volumes": []
+    }))
+    .unwrap();
+    store
+        .record(&id(1), &runner, RunEvidence::Prepared(preview))
+        .unwrap();
+
+    let refused = store.claim(&id(2), &runner).unwrap_err();
+    assert_eq!(refused.code, RpcErrorCode::Conflict);
+    assert_eq!(refused.details["storage_locked"], true);
+    let view = store
+        .read(&who, &ployz_store::DeploymentQuery { id: id(2) })
+        .unwrap();
+    assert_eq!(view.deployment.status, DeploymentStatus::Failed);
+}
+
+#[test]
 fn a_deploy_after_one_that_applied_a_managed_volume_marks_it_deployed() {
     let (store, who) = shop();
     store

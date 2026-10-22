@@ -1192,6 +1192,24 @@ pub(crate) fn claim(
     };
     let sources = build::sources_of(tx, &stored)?;
     let saved = held_revision(tx, &stored)?;
+    // An earlier run may have fixed a Volume's storage since this one was admitted.
+    if let Err(refused) = crate::volume::check_admitted(tx, &stored.summary.environment_id, &saved)
+    {
+        if refused.code != ployz_core::RpcErrorCode::Conflict {
+            return Err(refused);
+        }
+        finish(
+            tx,
+            stored,
+            Outcome::NotExecuted {
+                reason: refused.message.clone(),
+                cause: Vec::new(),
+                needs_upload: Vec::new(),
+            },
+            DeploymentStatus::Failed,
+        )?;
+        return Ok(Err(refused));
+    }
     let branch = crate::branch::lowering(tx, &stored.summary.environment_id, &saved)?;
     let ships = stored.lowering(&saved);
     let deployed = deployed_volumes(tx, &stored.summary.environment_id, &saved)?;
