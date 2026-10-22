@@ -171,6 +171,22 @@ publish it through a Cloudflare Tunnel instead. Once port 80 is free, the server
 ingress on its own within a minute. You don't need to remove and re-add the server. Then click
 **Check again** under **Domain** in **Organization → General**.
 
+## My servers only have IPv6 addresses
+
+Ployz Cloud checks port 80 from its own network, which may have no IPv6 route. When a server with
+only an IPv6 address doesn't answer that check, Ployz doesn't call its port closed. **Domain** in
+**Organization → General** shows **Ployz Cloud can't reach 2001:db8::1 over IPv6, so it didn't
+check port 80 there.**
+
+- When every server is IPv6-only, your organization's domain still points at them.
+- When another server answers the check, the domain points only at the servers that answered, and
+  **Domain** says traffic skips the IPv6 ones.
+
+Ployz can't confirm such a server takes traffic, so check it yourself from a network with IPv6:
+`curl -I http://web.<your domain>`. Open TCP port 80 and TCP and UDP port 443 for IPv6 in every
+firewall, as in [Port 80 is closed](#port-80-is-closed). To reach your apps from an IPv4-only
+network, give a server an IPv4 address too.
+
 ## Ingress isn't running
 
 You'll see **Ingress isn't running on web-1**, under **Domain** in **Organization → General**

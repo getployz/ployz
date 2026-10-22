@@ -228,6 +228,77 @@ describe("sync-cluster-domain", () => {
     });
   });
 
+  it("publishes IPv6-only Servers Cloud can't reach, as unchecked rather than closed", async () => {
+    frame = runtimeWatchFrameFixture({
+      machines: [machine("a", "2001:db8::1"), machine("b", "2001:db8::2")],
+      services: [ingressRunningOn("a", "b")],
+    });
+
+    const output = await sync();
+
+    expect(output.result).toMatchObject({ observed: true, recordsPut: true });
+    expect(hostedDns.requests[0]).toMatchObject({ body: { a: [], aaaa: ["2001:db8::1", "2001:db8::2"] } });
+    expect(await row()).toMatchObject({
+      records_synced_at: expect.any(Date),
+      traffic: {
+        kind: "probed",
+        reachable: [],
+        unreachable: [],
+        unchecked: [{ machineId: idOf("a"), address: "2001:db8::1" }, { machineId: idOf("b"), address: "2001:db8::2" }],
+      },
+    });
+  });
+
+  it("leaves an unchecked IPv6 Server out of the records while a checked Server carries traffic", async () => {
+    frame = runtimeWatchFrameFixture({
+      machines: [machine("a", "203.0.113.1"), machine("b", "2001:db8::2")],
+      services: [ingressRunningOn("a", "b")],
+    });
+    verify.set("203.0.113.1", idOf("a"));
+
+    await sync();
+
+    expect(hostedDns.requests[0]).toMatchObject({ body: { a: ["203.0.113.1"], aaaa: [] } });
+    expect(await row()).toMatchObject({
+      traffic: { kind: "probed", unreachable: [], unchecked: [{ machineId: idOf("b"), address: "2001:db8::2" }] },
+    });
+  });
+
+  it("keeps the last records when the checked IPv4 Server misses a probe beside an unchecked IPv6 one", async () => {
+    frame = runtimeWatchFrameFixture({
+      machines: [machine("a", "203.0.113.1"), machine("b", "2001:db8::2")],
+      services: [ingressRunningOn("a", "b")],
+    });
+    verify.set("203.0.113.1", idOf("a"));
+    await sync();
+    hostedDns.requests.length = 0;
+    verify.delete("203.0.113.1");
+
+    const output = await sync();
+
+    expect(output.result).toMatchObject({ recordsPut: false });
+    expect(calls()).not.toContain("PUT /domains/acme.ployz.test/records");
+  });
+
+  it("keeps the last records when an IPv4 Server is down beside an unchecked IPv6 one", async () => {
+    frame = runtimeWatchFrameFixture({
+      machines: [machine("a", "203.0.113.1"), machine("b", "2001:db8::2")],
+      services: [ingressRunningOn("a", "b")],
+    });
+    verify.set("203.0.113.1", idOf("a"));
+    await sync();
+    hostedDns.requests.length = 0;
+    frame = runtimeWatchFrameFixture({
+      machines: [machine("a", "203.0.113.1", true, "down"), machine("b", "2001:db8::2")],
+      services: [ingressRunningOn("a", "b")],
+    });
+
+    const output = await sync();
+
+    expect(output.result).toMatchObject({ recordsPut: false });
+    expect(calls()).not.toContain("PUT /domains/acme.ployz.test/records");
+  });
+
   it("keeps the last check when the records PUT fails, so a Server traffic still reaches stays named", async () => {
     frame = runtimeWatchFrameFixture({ machines: [machine("a", "203.0.113.1"), machine("b", "203.0.113.2")], services: [ingressRunningOn("a", "b")] });
     verify.set("203.0.113.2", idOf("b"));
