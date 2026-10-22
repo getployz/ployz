@@ -879,6 +879,19 @@ fn assemble_plan(
     let mut reservations = PlacementReservations::new(snapshot);
     let mut blocked =
         volume_plan.reserve_shared(&requested, &services, &mut reservations, &intent.options)?;
+    let unobserved = snapshot.unobserved_required();
+    if !unobserved.is_empty() {
+        blocked.extend(
+            intent
+                .options
+                .removals
+                .iter()
+                .map(|service| BlockedService {
+                    service: service.clone(),
+                    error: removal_unobserved(&unobserved),
+                }),
+        );
+    }
     let mut budget = ServiceBudget {
         volumes: volume_plan,
         placement: reservations.into_placement(snapshot),
@@ -1051,6 +1064,23 @@ fn dependency_blocked(dependency: &ServiceName) -> RpcError {
         code: RpcErrorCode::Conflict,
         message: format!("depends on {dependency}, which was not attempted"),
         details: serde_json::json!({ "reason": "dependency_blocked", "dependency": dependency }),
+        cause: Vec::new(),
+    }
+}
+
+/// Why a named removal waits: a Server this observer could not read may still run a copy.
+fn removal_unobserved(unobserved: &[&MachineObservation]) -> RpcError {
+    let names: Vec<&str> = unobserved
+        .iter()
+        .map(|machine| machine.machine.name.as_str())
+        .collect();
+    RpcError {
+        code: RpcErrorCode::Unavailable,
+        message: format!(
+            "couldn't check {} for its copies. Deploy again once every Server answers.",
+            names.join(", ")
+        ),
+        details: serde_json::json!({ "reason": "removal_unobserved", "servers": names }),
         cause: Vec::new(),
     }
 }

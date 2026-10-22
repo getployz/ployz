@@ -65,6 +65,15 @@ When web-2 stopped answering during the deploy:
 ! my-app-production/web left running on web-2 (web-2 did not answer). The next deploy cleans it up.
 ```
 
+Removing a service is different. While a server that may run one of its replicas is down, or
+Ployz couldn't check it, the deploy removes none of its replicas, since the proxies would keep
+sending traffic to them. The service keeps running, the deploy names that server and exits 1, and
+your next deploy once the server is back removes it:
+
+```text
+rmme: couldn't check web-2 for its copies. Deploy again once every Server answers.
+```
+
 If web-2 stops answering in the middle of the switch, the deploy can fail instead, with
 `failed (2/3 ready)`, and exit 1, even though the new replicas serve
 ([#2600](https://github.com/getployz/ployz/issues/2600)). Deploy again once web-2 is back.
