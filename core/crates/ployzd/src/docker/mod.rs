@@ -2867,7 +2867,7 @@ async fn inspection_reports_failing_once_the_check_passed_since_this_start() {
 #[cfg(test)]
 mod sealed_output_tests {
     use ployz_core::{
-        ContainerDetails, EnvValue, LastHealthCheck, RuntimeWatchFrame, SealedScope,
+        ContainerDetails, EnvValue, LastHealthCheck, Machine, RuntimeWatchFrame, SealedScope,
         encode_runtime_watch_frame,
     };
 
@@ -2877,14 +2877,13 @@ mod sealed_output_tests {
 
     const OPENED: &str = "opened-t0ken";
 
-    /// A Service Container holding Sealed `TOKEN`, whose checks print it. Docker's
-    /// State becomes `state` with the newest check's output in `Health.Log`.
-    async fn printed_by_check(
+    type Containers = Arc<std::sync::Mutex<std::collections::BTreeMap<String, serde_json::Value>>>;
+
+    /// A Service Container created holding Sealed `TOKEN`, and Docker's copy of it.
+    async fn created_with_token(
         cluster: &Cluster,
-        key_dir: PathBuf,
-        mut state: serde_json::Value,
-    ) -> ContainerDetails {
-        let containers = Arc::new(std::sync::Mutex::new(std::collections::BTreeMap::new()));
+    ) -> (ContainerRuntime, Machine, ContainerId, Containers) {
+        let containers = Containers::default();
         let (runtime, _fake) = fake_runtime_with(FakeDocker {
             named_containers: Some(containers.clone()),
             ..Default::default()
@@ -2915,6 +2914,17 @@ mod sealed_output_tests {
             )
             .await
             .unwrap();
+        (runtime, machine, created.container_id, containers)
+    }
+
+    /// A Service Container holding Sealed `TOKEN`, whose checks print it. Docker's
+    /// State becomes `state` with the newest check's output in `Health.Log`.
+    async fn printed_by_check(
+        cluster: &Cluster,
+        key_dir: PathBuf,
+        mut state: serde_json::Value,
+    ) -> ContainerDetails {
+        let (runtime, machine, id, containers) = created_with_token(cluster).await;
         state.as_object_mut().unwrap().insert(
             "Health".into(),
             json!({
@@ -2933,9 +2943,33 @@ mod sealed_output_tests {
         }
         let runtime = runtime.with_sealing_key(key_dir);
         runtime
-            .inspect_managed_details(&created.container_id, &machine.id)
+            .inspect_managed_details(&id, &machine.id)
             .await
             .unwrap()
+    }
+
+    #[tokio::test]
+    async fn the_spec_store_keeps_only_ciphertext() {
+        let cluster = Cluster::new();
+        let (runtime, _machine, _id, containers) = created_with_token(&cluster).await;
+
+        let docker = serde_json::to_string(&*containers.lock().unwrap()).unwrap();
+        assert!(docker.contains(&format!("TOKEN={OPENED}")), "{docker}");
+        let store = runtime.spec_store_path_for_test().parent().unwrap();
+        let mut pending = vec![store.to_owned()];
+        let holds =
+            |bytes: &[u8], text: &str| bytes.windows(text.len()).any(|w| w == text.as_bytes());
+        let mut held_the_spec = false;
+        while let Some(path) = pending.pop() {
+            if path.is_dir() {
+                pending.extend(std::fs::read_dir(&path).unwrap().map(|e| e.unwrap().path()));
+                continue;
+            }
+            let bytes = std::fs::read(&path).unwrap();
+            held_the_spec |= holds(&bytes, "\"TOKEN\":{\"sealed\"");
+            assert!(!holds(&bytes, OPENED), "{path:?} holds the opened value");
+        }
+        assert!(held_the_spec);
     }
 
     #[tokio::test]
