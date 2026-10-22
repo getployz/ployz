@@ -280,6 +280,25 @@ describe("sync-cluster-domain", () => {
     expect(calls()).not.toContain("PUT /domains/acme.ployz.test/records");
   });
 
+  it("keeps the last records when an IPv4 Server is down beside an unchecked IPv6 one", async () => {
+    frame = runtimeWatchFrameFixture({
+      machines: [machine("a", "203.0.113.1"), machine("b", "2001:db8::2")],
+      services: [ingressRunningOn("a", "b")],
+    });
+    verify.set("203.0.113.1", idOf("a"));
+    await sync();
+    hostedDns.requests.length = 0;
+    frame = runtimeWatchFrameFixture({
+      machines: [machine("a", "203.0.113.1", true, "down"), machine("b", "2001:db8::2")],
+      services: [ingressRunningOn("a", "b")],
+    });
+
+    const output = await sync();
+
+    expect(output.result).toMatchObject({ recordsPut: false });
+    expect(calls()).not.toContain("PUT /domains/acme.ployz.test/records");
+  });
+
   it("keeps the last check when the records PUT fails, so a Server traffic still reaches stays named", async () => {
     frame = runtimeWatchFrameFixture({ machines: [machine("a", "203.0.113.1"), machine("b", "203.0.113.2")], services: [ingressRunningOn("a", "b")] });
     verify.set("203.0.113.2", idOf("b"));

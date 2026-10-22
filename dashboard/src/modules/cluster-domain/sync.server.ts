@@ -93,6 +93,8 @@ export const probeIngressServers = Effect.fn("ClusterDomain.probeIngressServers"
       ? [{ machineId: machine.id, address: machine.public_ip, name: machine.name }]
       : []);
   if (servers.length === 0) return { kind: "no_servers" } satisfies IngressProbe;
+  const offline = ingress.flatMap(({ machine, membership }): IngressServerAddress[] =>
+    membership === "down" && machine.public_ip !== null ? [{ machineId: machine.id, address: machine.public_ip }] : []);
   const awake = ingressAwakeOn(frame);
   const unobserved = new Set<string>(frame.incomplete_ids.machines);
   // An incomplete container row carries no Machine id, so it could be the Ingress Proxy on any Server.
@@ -112,6 +114,7 @@ export const probeIngressServers = Effect.fn("ClusterDomain.probeIngressServers"
     taken: answering("taken").map(({ machineId, address }) => ({ machineId, address })),
     down: closed.filter(isDown),
     unchecked: silent.filter(({ address }) => isIPv6(address)),
+    offline,
   } satisfies IngressProbe;
 }, Effect.scoped, Effect.catch((error) =>
   Effect.logWarning("No runtime frame for the Cluster Domain sync; records stay as published.", error)

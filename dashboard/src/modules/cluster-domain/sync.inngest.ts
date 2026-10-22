@@ -23,11 +23,13 @@ const SyncRequestedData = Schema.Struct({ organizationId: Schema.String.check(Sc
 
 /**
  * The Servers the records name: those that answered, or, when every Server is IPv6 Cloud couldn't check, those. One
- * checked and silent keeps the last good set instead. A probe recorded before `unchecked` existed has none.
+ * checked and silent, or offline, keeps the last good set instead. A probe recorded before `unchecked` existed has none.
  */
-function recordedServers<Server>(probe: { reachable: Server[]; unreachable: unknown[]; taken: unknown[]; down: unknown[]; unchecked?: Server[] }) {
+function recordedServers<Server>(
+  probe: { reachable: Server[]; unreachable: unknown[]; taken: unknown[]; down: unknown[]; unchecked?: Server[]; offline?: unknown[] },
+) {
   if (probe.reachable.length > 0) return probe.reachable;
-  const checked = probe.unreachable.length + probe.taken.length + probe.down.length;
+  const checked = probe.unreachable.length + probe.taken.length + probe.down.length + (probe.offline?.length ?? 0);
   return checked === 0 ? probe.unchecked ?? [] : [];
 }
 

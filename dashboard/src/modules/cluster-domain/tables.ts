@@ -15,7 +15,7 @@ export type IngressServerAddress = { machineId: MachineId; address: string };
  * - `probed`: ingress Servers that are not down were probed; `reachable` lists those where Ployz answered on port 80,
  *   `unreachable` those that did not answer, `taken` those where something else answered, `down` those with nothing
  *   on port 80 and no Ingress Proxy running, `unchecked` IPv6 addresses that did not answer: Cloud may have no IPv6
- *   route, so their port 80 is unknown, not closed. Rows written before `taken` existed count both as `unreachable`;
+ *   route, so their port 80 is unknown, not closed. `offline` lists the down ones, left unprobed. Rows written before `taken` existed count both as `unreachable`;
  *   rows written before `reachable` existed don't say whether any Server answered.
  */
 export type ClusterDomainTraffic =
@@ -28,6 +28,7 @@ export type ClusterDomainTraffic =
     taken?: IngressServerAddress[];
     down?: IngressServerName[];
     unchecked?: IngressServerAddress[];
+    offline?: IngressServerAddress[];
   };
 
 /** An ingress Server that runs no Ingress Proxy, by name for the user. */
