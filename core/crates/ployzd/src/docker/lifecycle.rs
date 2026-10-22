@@ -384,7 +384,14 @@ impl ContainerRuntime {
     ) -> Result<Option<ContainerObservation>, Error> {
         let key = slot.creation_key.as_str();
         let name = creation_name(machine_id, &slot.namespace, &slot.service, slot.kind, key);
-        self.keyed_container(machine_id, &name, key).await
+        match self.keyed_container(machine_id, &name, key).await {
+            // A crash between Docker's create and the spec's write left it; the create
+            // that follows makes it again, or adopts it once an in-flight create's spec lands.
+            Err(Error::SpecNotFound(container_id)) if self.never_started(&container_id).await? => {
+                Ok(None)
+            }
+            found => found,
+        }
     }
 
     async fn keyed_container(
@@ -1163,6 +1170,55 @@ mod tests {
             matches!(found, Err(Error::SpecNotFound(id)) if id == created.container_id),
             "a started Container without its spec is still reported: {found:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn listing_removes_a_container_a_crash_left_without_its_spec_and_keeps_a_started_one() {
+        for (status, kept) in [("created", 0), ("running", 1)] {
+            let containers =
+                std::sync::Arc::new(std::sync::Mutex::new(std::collections::BTreeMap::new()));
+            let (runtime, _fake) = fake_runtime_with(FakeDocker {
+                named_containers: Some(containers.clone()),
+                list_named: true,
+                ..Default::default()
+            })
+            .await;
+            let machine = machine();
+            let namespace = Namespace::parse("app").unwrap();
+            let spec = spec_with_sources(Vec::new());
+            // An abandoned deploy: no create under this key runs again.
+            let created = runtime
+                .create_with_admission::<_, _, Error>(
+                    &machine,
+                    ContainerRequest {
+                        creation_key: Some("plan:0"),
+                        ..container_request(
+                            ContainerKind::ServiceContainer,
+                            &namespace,
+                            &spec,
+                            std::future::ready(None),
+                        )
+                    },
+                )
+                .await
+                .unwrap();
+            runtime
+                .specs
+                .config_operation()
+                .await
+                .remove(&created.container_id)
+                .await
+                .unwrap();
+            for container in containers.lock().unwrap().values_mut() {
+                container["State"] = serde_json::json!({ "Status": status });
+            }
+            assert!(runtime.list_managed(&machine.id).await.unwrap().is_empty());
+            assert_eq!(
+                containers.lock().unwrap().len(),
+                kept,
+                "a {status} Container without its spec"
+            );
+        }
     }
 
     #[tokio::test]
