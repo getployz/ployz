@@ -169,8 +169,8 @@ How you answer depends on where the command runs:
   restart. Typed in a terminal, `ployz service stop` and `ployz service restart` don't ask yet.
   Starting a service never asks.
 - Dashboard buttons and dialogs never ask: confirming a dialog is your approval. The exception
-  is a member's deploy, sync, restart, stop or volume grow in a Protected environment, which waits
-  for an owner or admin (see [Permissions](permissions.md#protect-production)). When the
+  is a member's request in a Protected environment, such as a save, deploy, sync, restart, stop
+  or volume grow, which waits for an owner or admin (see [Permissions](permissions.md#protect-production)). When the
   [Ployz agent](agent-sidebar.md) does the same thing for you, it asks.
 - If the change moves on after Ployz asked, your approval no longer fits it, and the command asks
   again about the new one.

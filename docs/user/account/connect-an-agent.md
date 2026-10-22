@@ -53,8 +53,9 @@ with `approval_required`, anything it would remove, and a link to your organizat
 2. Read what the deploy does, and click **Approve** or **Deny**.
 3. Tell your agent to try again. It sends the call with the approval, and the deploy goes ahead.
 
-A service stop or restart, a server drain, removal or forget, removing a project or environment,
-and moving or releasing a volume wait the same way.
+A service stop or restart, and removing or forgetting a server, wait the same way. A server
+drain, removing a project or environment, and releasing a volume wait when they would take
+something off your servers.
 
 Until you answer, trying again only asks again, and nothing changes. A denied approval stays
 denied. Only you approve, in the dashboard. The agent can't approve its own request, and

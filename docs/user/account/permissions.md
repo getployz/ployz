@@ -53,7 +53,7 @@ Some changes wait for a person before they run. The most common are:
 - anything an agent or the CLI does that would delete a service, volume or domain;
 - a member's request in a Protected environment;
 - removing a server or the organization, taking a project or environment off your servers,
-  turning protection off, and an agent's stop, restart or volume move.
+  turning protection off, and an agent's stop or restart.
 
 A delete from the CLI asks in your terminal first.
 [Destructive actions ask first](organizations.md#destructive-actions-ask-first) has the full
