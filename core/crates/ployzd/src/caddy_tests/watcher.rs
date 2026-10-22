@@ -2063,13 +2063,91 @@ async fn an_undecodable_certificate_row_does_not_block_other_routes() {
     std::fs::remove_dir_all(directory).unwrap();
 }
 
-fn material_body(hostname: &str) -> String {
+#[tokio::test]
+async fn a_write_without_an_admin_pins_only_certificates_caddy_loaded() {
+    let WatcherFixture {
+        machine,
+        state,
+        address,
+        server,
+        directory,
+    } = watcher_fixture().await;
+    state.mutate(|parts| {
+        parts.resolved_spec.ports = vec![ingress("good.example.com", 8443, HttpProtocol::Https)];
+    });
+    let web = observation(
+        4,
+        &machine.id,
+        "web",
+        Some([10, 210, 1, 5]),
+        vec![ingress("bad.example.com", 8443, HttpProtocol::Https)],
+    );
+    state.containers.lock().unwrap().push(web);
+    state.write_certificates(&[
+        ("bad.example.com", material_body("bad.example.com")),
+        ("good.example.com", material_body("good.example.com")),
+        ("new.example.com", material_body("new.example.com")),
+    ]);
+    let (load_tx, mut load_rx) = mpsc::unbounded_channel();
+    let admin = RefusingAdmin {
+        refused: "https://bad.example.com {",
+        loads: load_tx,
+    };
+    let admin_up = Arc::new(AtomicBool::new(true));
+    let caddyfile = directory.join(CONFIG_FILE);
+    let shutdown = CancellationToken::new();
+    let watcher = tokio::spawn(watch_caddy(
+        machine.clone(),
+        ReplicatedStore::new(ApiClient::http1(address, &"a".repeat(64)).unwrap()),
+        no_down,
+        caddyfile.clone(),
+        tokio::sync::watch::channel(Default::default()).0,
+        shutdown.clone(),
+        {
+            let admin_up = Arc::clone(&admin_up);
+            move || std::future::ready(Ok(admin_up.load(Ordering::SeqCst).then(|| admin.clone())))
+        },
+    ));
+    wait_for_caddyfile(&caddyfile, "# - bad.example.com: Caddy refused").await;
+    while load_rx.try_recv().is_ok() {}
+
+    admin_up.store(false, Ordering::SeqCst);
+    state.containers.lock().unwrap().push(observation(
+        5,
+        &machine.id,
+        "new",
+        Some([10, 210, 1, 6]),
+        vec![
+            ingress("new.example.com", 8443, HttpProtocol::Https),
+            ingress("plain.example.com", 80, HttpProtocol::Http),
+        ],
+    ));
+    state.send(b"{\"change\":{}}\n");
+
+    let written = wait_for_caddyfile(&caddyfile, "10.210.1.6:80").await;
+    assert!(written.contains("https://good.example.com {"), "{written}");
+    assert!(!written.contains("https://bad.example.com {"), "{written}");
+    assert!(!written.contains("https://new.example.com {"), "{written}");
+    assert!(load_rx.try_recv().is_err());
+
+    shutdown.cancel();
+    watcher.await.unwrap().unwrap();
+    server.abort();
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+fn material(hostname: &str) -> CertificateMaterial {
     let pair = rcgen::generate_simple_self_signed([hostname.to_owned()]).unwrap();
-    let material =
-        CertificateMaterial::parse(pair.cert.pem(), pair.signing_key.serialize_pem()).unwrap();
-    CertificateRow::from_parts(Some((material, ployz_core::ClusterRoute::Direct)), None)
-        .encode()
-        .unwrap()
+    CertificateMaterial::parse(pair.cert.pem(), pair.signing_key.serialize_pem()).unwrap()
+}
+
+fn material_body(hostname: &str) -> String {
+    CertificateRow::from_parts(
+        Some((material(hostname), ployz_core::ClusterRoute::Direct)),
+        None,
+    )
+    .encode()
+    .unwrap()
 }
 
 fn no_down() -> std::future::Ready<Result<BTreeSet<MachineId>, CorrosionError>> {
