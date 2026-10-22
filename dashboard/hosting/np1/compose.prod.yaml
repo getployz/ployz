@@ -88,13 +88,18 @@ services:
 
   # Hourly rebuild of the site, replacing Railway's site-rebuild cron. See site-rebuild/rebuild.sh.
   ployz-site-rebuild:
-    image: ployz/site-rebuild:1
+    image: ployz/site-rebuild:2
     env_file: .env.site.production
+    environment:
+      # Read-only deploy key on getployz/ployz-site, and GitHub's published host keys (api.github.com/meta).
+      GIT_SSH_COMMAND: ssh -i /root/ployz/site-rebuild-key/id_ed25519 -o IdentitiesOnly=yes -o UserKnownHostsFile=/root/ployz/site-rebuild-key/known_hosts -o StrictHostKeyChecking=yes
     mem_limit: 128m
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - /run/uncloud/uncloud.sock:/run/uncloud/uncloud.sock
       - /root/ployz:/root/ployz
+      # Shadows the read-write mount above, so the key stays read-only inside the container.
+      - /root/ployz/site-rebuild-key:/root/ployz/site-rebuild-key:ro
 
   ployz-tools-api:
     image: ployz/tools-api:3eb6e3a

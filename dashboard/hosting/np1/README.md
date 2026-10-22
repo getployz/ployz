@@ -100,15 +100,28 @@ Rolling back:
 ## Site rebuild
 
 `ployz-site-rebuild` replaces Railway's hourly `site-rebuild` cron. It runs `site-rebuild/rebuild.sh` at minute 0
-(supercronic). The script rebuilds the site with `--no-cache` from the source snapshot in
-`/root/ployz/site-rebuild/src`, so the latest docs from getployz/ployz and any article whose date has come get
-published. It redeploys `ployz-site` only when the built pages changed, by writing `SITE_TAG` to `/root/ployz/.env`,
-which `compose.prod.yaml` reads. It keeps the three newest rebuilt images.
+(supercronic). Each run does the following:
 
-The snapshot is a copy of one ployz-site commit, because np1 has no read access to that private repo. To ship a newer
-commit, replace the snapshot from a checkout:
+- Shallow-clones the head of getployz/ployz-site `main` over SSH and rebuilds the site with `--no-cache`. New site
+  commits, the latest docs from getployz/ployz, and articles whose date has come all go live within the hour.
+- Redeploys `ployz-site` only when the built pages changed. It writes `SITE_TAG` (`<commit>-<timestamp>`) to
+  `/root/ployz/.env`, which `compose.prod.yaml` reads.
+- Keeps the three newest rebuilt images.
 
-    git -C ployz-site archive <sha> | ssh np1 'rm -rf /root/ployz/site-rebuild/src/* && tar -x -C /root/ployz/site-rebuild/src && echo <sha> > /root/ployz/site-rebuild/src.commit'
+The clone authenticates with a read-only deploy key on getployz/ployz-site, kept on np1 in
+`/root/ployz/site-rebuild-key/`:
+
+- `id_ed25519` is the private key, mode 0600 in a 0700 directory. It is mounted read-only and never committed.
+- `known_hosts` holds GitHub's published SSH host keys from `https://api.github.com/meta`.
+
+`GIT_SSH_COMMAND` in the compose file sets `IdentitiesOnly=yes` and `StrictHostKeyChecking=yes`. If GitHub rotates
+its host keys, refresh the file:
+
+    curl -s https://api.github.com/meta | jq -r '.ssh_keys[] | "github.com " + .' | ssh np1 'cat > /root/ployz/site-rebuild-key/known_hosts'
+
+To run a rebuild now:
+
+    ssh np1 'docker exec $(docker ps -q --filter label=uncloud.service.name=ployz-site-rebuild) /usr/local/bin/rebuild.sh'
 
 ## Logs
 
