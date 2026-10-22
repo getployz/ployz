@@ -354,7 +354,7 @@ the dropped change leaves behind depends on how far it got:
   Stage the move again when you're ready.
 - A move that failed after the handover is not undone: the volume belongs to the new server, and
   your service stays down until the move finishes there. The move stays in your changes, so
-  deploy again to finish it. See [When a move stops](../services/move-a-volume.md#when-a-move-stops).
+  deploy again to finish it. See [A move failed partway](../troubleshooting/volumes.md#a-move-failed-partway).
 - A restore that failed is taken back. Your services mount the old volume again, and the new
   volume goes away. If Ployz can't take it back when the deploy fails, your next deploy fails with
   "Restore failed. Restore again." and takes it back then. Restore again once you fix the cause.

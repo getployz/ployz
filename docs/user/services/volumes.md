@@ -107,8 +107,8 @@ doesn't. Everything that mounts the volume still runs on its server.
 The services that mount the volume stop until the server is back. Nothing moves to another
 server on its own, and neither the CLI nor Ployz Cloud [moves](move-a-volume.md) a volume while
 its server is down: that server may still be writing to it. With a mirror, the volume's
-**Copies** says "web-1 is not answering", which changes are lost from, and that the mirror can
-take over once web-1 is forgotten. Under **Live**, web-1 reads **Not answering** instead of
+**Copies** says "web-1 is not answering", which changes are lost, like "Changes after 10:36
+lost", and that the mirror can take over once web-1 is forgotten. Under **Live**, web-1 reads **Not answering** instead of
 **Live**. It names no time: Ployz doesn't know when web-1 stopped.
 
 1. Wait if web-1 is coming back. When it answers again, its services start and nothing is lost.
@@ -132,7 +132,7 @@ To keep deploying your other services meanwhile, see
 [When a server goes down](scaling.md#when-a-server-goes-down).
 
 > [!WARNING]
-> A volume lives on one server. Add a [mirror](move-a-volume.md#mirror-a-volume) to keep a backup
+> A volume lives on one server. Add a [mirror](mirror-a-volume.md) to keep a backup
 > of it on another of your servers. A mirror holds the data as of its last refresh, nothing
 > newer, and Ployz doesn't switch to it on its own. A snapshot isn't a backup: it stays on the
 > volume's own server and is lost with it.
@@ -227,7 +227,7 @@ If several servers hold copies, it names them. Keep the newest. In Ployz Cloud, 
 **Copies** shows whether each is a mirror or an old copy. Delete an old copy with the × on its
 row, and a mirror with **Remove mirror**. The error prints
 no `ployz volume mirror rm` line for them, because such a line run later could delete a copy that
-has since become the mirror. A volume that is [mid-move](move-a-volume.md#when-a-move-stops) blocks its service too, and names the
+has since become the mirror. A volume that is [mid-move](../troubleshooting/volumes.md#a-move-failed-partway) blocks its service too, and names the
 `ployz volume release` line that stops the move. A move that stopped before its first snapshot
 has nothing to release, so it names the `ployz volume move` line that runs the move again.
 Without Ployz Cloud, several copies get the same `ployz volume rm data` to start over empty, and
