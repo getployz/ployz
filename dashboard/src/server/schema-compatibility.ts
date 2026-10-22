@@ -11,9 +11,6 @@ export class UnsupportedDatabaseSchema extends Data.TaggedError("UnsupportedData
   readonly message: string;
 }> {}
 
-/** A row of Drizzle's migration history. Older histories have no name; an edited file changes the hash, not the migration. */
-type AppliedMigration = { readonly name?: string | null; readonly created_at?: string | number | null };
-
 const histories = [
   { table: "__drizzle_migrations", directory: "." },
   { table: "__drizzle_migrations_analytics", directory: "analytics" },
@@ -41,18 +38,17 @@ export const assertSchemaCompatible = Effect.fn("Database.assertSchemaCompatible
       try: () => readMigrationFiles({ migrationsFolder: resolve(migrationsFolder, history.directory) }),
       catch: cause => new SchemaCompatibilityCheckFailure({ cause }),
     });
-    const names = new Set(shipped.map(migration => migration.name));
-    const millis = new Set(shipped.map(migration => String(migration.folderMillis)));
-    const applied = yield* Effect.tryPromise({
+    const shippedNewest = Math.max(0, ...shipped.map(migration => migration.folderMillis));
+    const appliedNewest = yield* Effect.tryPromise({
       try: async () => {
         const exists = await client.query<{ present: boolean }>("select to_regclass($1) is not null as present", [`drizzle.${history.table}`]);
-        if (!exists.rows[0]?.present) return [];
-        const result = await client.query<{ row: AppliedMigration }>(`select to_jsonb(t) as row from drizzle."${history.table}" t`);
-        return result.rows.map(({ row }) => row);
+        if (!exists.rows[0]?.present) return 0;
+        const result = await client.query<{ newest: string | null }>(`select max(created_at) as newest from drizzle."${history.table}"`);
+        return Number(result.rows[0]?.newest ?? 0);
       },
       catch: cause => new SchemaCompatibilityCheckFailure({ cause }),
     });
-    if (applied.some(migration => migration.name ? !names.has(migration.name) : !millis.has(String(migration.created_at)))) {
+    if (appliedNewest > shippedNewest) {
       return yield* new UnsupportedDatabaseSchema({
         message: `Ployz Cloud image ${imageVersion} does not ship all migrations recorded in drizzle.${history.table}. Use a newer Ployz Cloud image.`,
       });

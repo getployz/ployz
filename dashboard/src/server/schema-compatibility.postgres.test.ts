@@ -11,6 +11,9 @@ let harness: PostgresTestHarness;
 beforeAll(async () => { harness = await startPostgresTestHarness(); }, 60_000);
 afterAll(async () => { await harness?.stop(); });
 
+/** A migration timestamp later than any this image ships. */
+const NEWER = Date.UTC(2099, 0, 1);
+
 const check = () => Effect.runPromise(assertSchemaCompatible({
   databaseUrl: harness.databaseUrl,
   imageVersion: "v0.3.0-test-image",
@@ -21,9 +24,9 @@ it("accepts the image's main and analytics migrations", async () => {
 });
 
 for (const table of ["__drizzle_migrations", "__drizzle_migrations_analytics"]) {
-  it(`refuses an unknown hash in ${table} without changing history`, async () => {
-    await harness.pool.query(`insert into drizzle."${table}" (hash, created_at, name) values ($1, 1, $2)`, [
-      "migration-not-shipped-by-this-image", "20000101000000_unknown",
+  it(`refuses a migration newer than the image in ${table} without changing history`, async () => {
+    await harness.pool.query(`insert into drizzle."${table}" (hash, created_at, name) values ($1, $2, $3)`, [
+      "migration-not-shipped-by-this-image", NEWER, "20990101000000_unknown",
     ]);
     try {
       const before = await harness.pool.query(`select * from drizzle."${table}" order by id`);
@@ -37,13 +40,25 @@ for (const table of ["__drizzle_migrations", "__drizzle_migrations_analytics"]) 
 }
 
 it("accepts a shipped migration whose file was edited after it was applied", async () => {
-  const row = await harness.pool.query<{ id: number; hash: string }>(
-    "update drizzle.__drizzle_migrations set hash = 'hash-of-the-file-before-an-edit' where id = (select min(id) from drizzle.__drizzle_migrations) returning id, (select hash from drizzle.__drizzle_migrations where id = (select min(id) from drizzle.__drizzle_migrations)) as hash",
+  const { rows: [first] } = await harness.pool.query<{ id: number; hash: string }>(
+    "select id, hash from drizzle.__drizzle_migrations order by id limit 1",
   );
+  await harness.pool.query("update drizzle.__drizzle_migrations set hash = 'hash-of-the-file-before-an-edit' where id = $1", [first?.id]);
   try {
     await expect(check()).resolves.toBeUndefined();
   } finally {
-    await harness.pool.query("update drizzle.__drizzle_migrations set hash = $2 where id = $1", [row.rows[0]?.id, row.rows[0]?.hash]);
+    await harness.pool.query("update drizzle.__drizzle_migrations set hash = $2 where id = $1", [first?.id, first?.hash]);
+  }
+});
+
+it("accepts history for a migration the image renamed or folded into its baseline", async () => {
+  await harness.pool.query("insert into drizzle.__drizzle_migrations (hash, created_at, name) values ($1, $2, $3)", [
+    "a-migration-main-renamed", Date.UTC(2026, 9, 11, 18, 42), "20261011184200_service_act",
+  ]);
+  try {
+    await expect(check()).resolves.toBeUndefined();
+  } finally {
+    await harness.pool.query("delete from drizzle.__drizzle_migrations where hash = $1", ["a-migration-main-renamed"]);
   }
 });
 
@@ -82,8 +97,8 @@ it("fails closed when migration assets are missing", async () => {
 });
 
 it("db:migrate refuses unknown analytics history before applying pending main migrations", async () => {
-  await harness.pool.query("insert into drizzle.__drizzle_migrations_analytics (hash, created_at, name) values ($1, 1, $2)", [
-    "migration-not-shipped-by-this-image", "20000101000000_unknown",
+  await harness.pool.query("insert into drizzle.__drizzle_migrations_analytics (hash, created_at, name) values ($1, $2, $3)", [
+    "migration-not-shipped-by-this-image", NEWER, "20990101000000_unknown",
   ]);
   const pending = await harness.pool.query<{ id: number; hash: string; created_at: string; name: string }>(
     "delete from drizzle.__drizzle_migrations where id = (select max(id) from drizzle.__drizzle_migrations) returning *",
@@ -107,8 +122,8 @@ it("db:migrate refuses unknown analytics history before applying pending main mi
 
 for (const command of ["start", "start:worker"]) {
   it(`${command} refuses unknown schema before loading its server entrypoint`, async () => {
-    await harness.pool.query("insert into drizzle.__drizzle_migrations (hash, created_at, name) values ($1, 1, $2)", [
-      "migration-not-shipped-by-this-image", "20000101000000_unknown",
+    await harness.pool.query("insert into drizzle.__drizzle_migrations (hash, created_at, name) values ($1, $2, $3)", [
+      "migration-not-shipped-by-this-image", NEWER, "20990101000000_unknown",
     ]);
     try {
       await expect(execFile("npm", ["run", command], {
