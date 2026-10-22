@@ -1197,3 +1197,29 @@ fn the_summary_counts_every_server_a_scaled_service_runs_on() {
         "a failed Deploy counts only the Servers it worked on"
     );
 }
+
+#[test]
+fn a_gap_found_at_run_time_leaves_a_direct_deploy_partial_and_names_its_server() {
+    let preview = DeployPreview::new(Vec::new(), Vec::new(), Namespace::parse("shop").unwrap());
+    let mut direct = Direct::new(&preview, "Deploying shop".into());
+    assert!(!direct.has_observation_gaps());
+
+    direct.notice(ployz_core::DeployWarning::ObservationFailed {
+        gap: Some(ployz_core::ObservationGap {
+            machine_name: MachineName::parse("one").unwrap(),
+            reason: ployz_core::ObservationGapReason::Failed,
+        }),
+        kind: ployz_core::ObservationKind::Container,
+        machine_id: MachineId::random(),
+        message: "Machine one did not answer: deadline has elapsed".into(),
+    });
+
+    assert!(direct.has_observation_gaps());
+    let shown = lines(&direct.frame());
+    assert!(
+        shown
+            .iter()
+            .any(|line| line.starts_with("! Server one: deployment observations are incomplete")),
+        "{shown:?}"
+    );
+}

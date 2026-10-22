@@ -176,3 +176,37 @@ async fn a_direct_apply_whose_last_run_printed_nothing_names_no_line() {
     );
     assert!(!text.contains("cause:"), "{text}");
 }
+
+/// Cloud enrollment publishes past an Ingress Proxy Apply that ran but left a Server
+/// unobserved, and stops before publication on one that failed.
+#[tokio::test]
+async fn an_apply_that_leaves_a_server_unobserved_is_partial_and_a_failed_one_is_not() {
+    let mut down = support::machine('b', "two");
+    down.membership = ployz_core::MembershipObservation::Down;
+    down.membership_evidence = Some(ployz_core::MembershipEvidence::Down);
+    let (mut client, server) = support::connected(
+        support::DeployService::empty().with_machines(vec![support::machine('a', "one"), down]),
+    )
+    .await;
+    let partial =
+        crate::deploy::apply_requested(&mut client, &support::spec("web"), false, false, "test")
+            .await
+            .expect_err("Server two goes unobserved");
+    server.abort();
+    assert!(
+        matches!(partial, crate::deploy::ApplyError::Partial(_)),
+        "{:?}",
+        crate::failure::Failure::from(partial).report()
+    );
+
+    let (mut client, server) = support::connected(
+        support::DeployService::new(support::machine('a', "one")).restart_containers(),
+    )
+    .await;
+    let failed =
+        crate::deploy::apply_requested(&mut client, &support::spec("web"), false, false, "test")
+            .await
+            .expect_err("the Container never runs");
+    server.abort();
+    assert!(matches!(failed, crate::deploy::ApplyError::Failed(_)));
+}

@@ -17,12 +17,13 @@ use ployz_core::{
     DependencyHealthFailure, DeployEvent, DeployWarning, DeploymentLogId, DockerVolumeId, Drain,
     EnsuredContainer, ExecutionError, ExposedPort, FailedOperation, Gen, HEALTH_POLL_INTERVAL,
     HealthFailure, HealthVerdict, HookFailure, ImagePulled, InspectContainerRequest,
-    ListContainersRequest, MachineAction, MachineId, MachineName, MachineTarget,
-    MembershipObservation, Namespace, NewContainer, ObservationKind, OperationPhase, OutOfMemory,
-    PortPublication, PullPolicy, QualifiedService, ReadRoutesRequest, RemoveContainerPurpose,
-    RemoveVolumeRequest, ResolvedServiceSpec, Retry, RoutesRead, RpcError, RpcErrorCode,
-    RunRotation, RunTarget, ServiceId, ServiceName, ServiceOutcome, SlotKey, StopOptions,
-    TransportProtocol, UpdateContainerLimitsRequest, UpdateOrder, op,
+    ListContainersRequest, MachineAction, MachineFailure, MachineId, MachineName, MachineTarget,
+    MembershipObservation, Namespace, NewContainer, ObservationGap, ObservationGapReason,
+    ObservationKind, OperationPhase, OutOfMemory, PortPublication, PullPolicy, QualifiedService,
+    ReadRoutesRequest, RemoveContainerPurpose, RemoveVolumeRequest, ResolvedServiceSpec, Retry,
+    RoutesRead, RpcError, RpcErrorCode, RunRotation, RunTarget, ServiceId, ServiceName,
+    ServiceOutcome, SlotKey, StopOptions, TransportProtocol, UpdateContainerLimitsRequest,
+    UpdateOrder, op,
 };
 use sha2::{Digest, Sha256};
 use tokio::sync::mpsc::UnboundedSender;
@@ -124,6 +125,34 @@ fn outcome_from(
     }
 }
 
+/// One Service's copies on the Machines that answered, and each Suspect Machine that
+/// did not.
+pub(crate) struct Listed {
+    pub(crate) copies: Vec<ContainerObservation>,
+    pub(crate) unanswered: Vec<Unanswered>,
+}
+
+/// A Suspect Machine whose listing went unanswered, a [`crate::deploy::listing_gap`].
+pub(crate) struct Unanswered {
+    pub(crate) name: MachineName,
+    pub(crate) failure: MachineFailure<RpcError>,
+}
+
+impl Unanswered {
+    /// Report this Machine as an observation gap, which leaves the Deploy partial.
+    fn warn(&self, progress: &Progress) {
+        progress.warn(DeployWarning::ObservationFailed {
+            gap: Some(ObservationGap {
+                machine_name: self.name.clone(),
+                reason: ObservationGapReason::Failed,
+            }),
+            kind: ObservationKind::Container,
+            machine_id: self.failure.machine_id,
+            message: crate::ui::row(&self.failure.error),
+        });
+    }
+}
+
 pub(crate) trait MachineOperations {
     async fn prepare_volumes(
         &self,
@@ -134,6 +163,16 @@ pub(crate) trait MachineOperations {
         &self,
         service: &QualifiedService,
     ) -> Result<Vec<ContainerObservation>, RpcError>;
+    /// [`Self::service_containers`], keeping each Suspect Machine that did not answer
+    /// beside the copies the others list instead of failing on it. An answered error,
+    /// or an Up Machine's silence, still fails. The default reports no Machine as
+    /// unanswered.
+    async fn listed_copies(&self, service: &QualifiedService) -> Result<Listed, RpcError> {
+        Ok(Listed {
+            copies: self.service_containers(service).await?,
+            unanswered: Vec::new(),
+        })
+    }
     /// Every Container row in the entry Machine's store, which keeps the rows of
     /// a Machine that does not answer.
     async fn replicated_containers(&self) -> Result<Vec<ContainerObservation>, RpcError>;
@@ -222,6 +261,14 @@ impl MachineOperations for Client {
         &self,
         service: &QualifiedService,
     ) -> Result<Vec<ContainerObservation>, RpcError> {
+        let listed = self.listed_copies(service).await?;
+        match listed.unanswered.into_iter().next() {
+            Some(silent) => Err(silent.failure.error),
+            None => Ok(listed.copies),
+        }
+    }
+
+    async fn listed_copies(&self, service: &QualifiedService) -> Result<Listed, RpcError> {
         let mut client = self.clone();
         let machines = client.machines().await.map_err(RpcError::from)?;
         let listed = client
@@ -229,8 +276,26 @@ impl MachineOperations for Client {
             .await
             .map_err(RpcError::from)?
             .containers;
-        if let Some(failure) = listed.failures.into_iter().next() {
-            return Err(failure.error);
+        let mut unanswered = Vec::new();
+        for failure in listed.failures {
+            match machines
+                .iter()
+                .find(|machine| machine.machine.id == failure.machine_id)
+            {
+                Some(machine) if crate::deploy::listing_gap(machine, &failure.error) => {
+                    unanswered.push(Unanswered {
+                        name: machine.machine.name.clone(),
+                        failure,
+                    });
+                }
+                Some(machine) if failure.error.target_unanswered() => {
+                    return Err(naming_machine(
+                        crate::cluster::unanswered_by(&machine.machine.name, failure.error),
+                        &failure.machine_id,
+                    ));
+                }
+                Some(_) | None => return Err(failure.error),
+            }
         }
         if let Some(machine_id) = listed.omissions.into_iter().find(|machine_id| {
             omission_requires_observation(
@@ -247,7 +312,7 @@ impl MachineOperations for Client {
                 cause: Vec::new(),
             });
         }
-        Ok(listed
+        let copies = listed
             .successes
             .into_iter()
             .flat_map(|success| success.value)
@@ -256,7 +321,8 @@ impl MachineOperations for Client {
                     && container.namespace == service.namespace
                     && container.resolved_spec.name == service.name
             })
-            .collect())
+            .collect();
+        Ok(Listed { copies, unanswered })
     }
 
     async fn replicated_containers(&self) -> Result<Vec<ContainerObservation>, RpcError> {
@@ -500,6 +566,7 @@ macro_rules! restart_policy {
 restart_policy! {
     wait fn prepare_volumes(&self, machine_id: &MachineId, specs: &[ployz_core::ServiceStorageSpec]) -> Result<ployz_core::PreparedVolumes, RpcError>;
     wait fn service_containers(&self, service: &QualifiedService) -> Result<Vec<ContainerObservation>, RpcError>;
+    wait fn listed_copies(&self, service: &QualifiedService) -> Result<Listed, RpcError>;
     once("a failed read leaves the gen to the live answers") fn replicated_containers(&self) -> Result<Vec<ContainerObservation>, RpcError>;
     wait fn ensure_container(&self, machine_id: &MachineId, want: ContainerWant) -> Result<(ContainerNow, Option<HealthVerdict>), RpcError>;
     wait fn inspect_container(&self, machine_id: &MachineId, container_id: &ContainerId) -> Result<ContainerDetails, RpcError>;
@@ -1617,8 +1684,8 @@ struct Rows<'a> {
     /// The Service each rollout removal retires a copy of, so one that cannot
     /// inspect its copy can still name it.
     services: BTreeMap<usize, &'a ServiceName>,
-    gens: tokio::sync::Mutex<BTreeMap<QualifiedService, Gen>>,
-    stored: tokio::sync::OnceCell<Vec<ContainerObservation>>,
+    gens: std::sync::Mutex<BTreeMap<QualifiedService, std::sync::Arc<tokio::sync::OnceCell<Gen>>>>,
+    stored: tokio::sync::OnceCell<Result<Vec<ContainerObservation>, RpcError>>,
     /// Machines whose Containers the plan's snapshot did not list.
     unobserved: BTreeSet<MachineId>,
     stop_first: Vec<StopFirstStep<'a>>,
@@ -1722,7 +1789,7 @@ impl<'a> Rows<'a> {
             run,
             names,
             services,
-            gens: tokio::sync::Mutex::new(BTreeMap::new()),
+            gens: std::sync::Mutex::new(BTreeMap::new()),
             stored: tokio::sync::OnceCell::new(),
             unobserved: plan
                 .preview()
@@ -1969,27 +2036,48 @@ impl<'a> Rows<'a> {
     async fn gen_for<C: MachineOperations>(
         &self,
         client: &C,
+        progress: &Progress,
         service: &QualifiedService,
         cancellation: &CancellationToken,
     ) -> Result<Gen, ExecutionError> {
-        let mut gens = self.gens.lock().await;
-        if let Some(r#gen) = gens.get(service) {
-            return Ok(*r#gen);
-        }
-        let copies = client
-            .service_containers(service)
-            .await
-            .map_err(|error| machine_error(MachineAction::ListContainers, error))?;
-        let stored = self.stored(client, cancellation).await?;
-        let highest = copies
-            .iter()
-            .filter(|copy| copy.kind == ContainerKind::ServiceContainer)
-            .chain(stored.iter().filter(|copy| copy.identity() == *service))
-            .map(|copy| copy.copy_gen())
-            .max();
-        let r#gen = highest.map_or(Gen::FIRST, |highest| Gen::new(highest.get() + 1));
-        gens.insert(service.clone(), r#gen);
-        Ok(r#gen)
+        // One cell per Service, so a silent Machine's deadline is paid by each
+        // Service at once rather than one Service after another.
+        let cell = std::sync::Arc::clone(
+            self.gens
+                .lock()
+                .expect("gens lock")
+                .entry(service.clone())
+                .or_default(),
+        );
+        cell.get_or_try_init(|| async {
+            let listed = client
+                .listed_copies(service)
+                .await
+                .map_err(|error| machine_error(MachineAction::ListContainers, error))?;
+            for silent in &listed.unanswered {
+                silent.warn(progress);
+            }
+            // A silent Machine's copies count only through the store's rows, so a new
+            // copy that could not be numbered above them would never replace them.
+            let stored = match (
+                self.stored(client, cancellation).await?,
+                listed.unanswered.first(),
+            ) {
+                (Ok(stored), _) => stored.as_slice(),
+                (Err(_), None) => &[],
+                (Err(unread), Some(silent)) => return Err(unfloored(silent, unread)),
+            };
+            let highest = listed
+                .copies
+                .iter()
+                .filter(|copy| copy.kind == ContainerKind::ServiceContainer)
+                .chain(stored.iter().filter(|copy| copy.identity() == *service))
+                .map(|copy| copy.copy_gen())
+                .max();
+            Ok(highest.map_or(Gen::FIRST, |highest| Gen::new(highest.get() + 1)))
+        })
+        .await
+        .copied()
     }
 
     /// The Machines this Deploy did not observe that hold a copy of `service` in the
@@ -2001,9 +2089,10 @@ impl<'a> Rows<'a> {
         service: &QualifiedService,
         cancellation: &CancellationToken,
     ) -> Result<BTreeSet<MachineId>, ExecutionError> {
-        Ok(self
-            .stored(client, cancellation)
-            .await?
+        let Ok(stored) = self.stored(client, cancellation).await? else {
+            return Ok(BTreeSet::new());
+        };
+        Ok(stored
             .iter()
             .filter(|copy| {
                 copy.identity() == *service
@@ -2014,15 +2103,16 @@ impl<'a> Rows<'a> {
             .collect())
     }
 
-    /// The Service Containers in the entry Machine's store, read once per Deploy.
-    /// The store keeps the rows of a Machine that did not answer, and a new copy at
-    /// or below one of those gens is refused In or never replaces it. A read that
-    /// fails or outlasts [`STORED_GENS_WAIT`] leaves gens and removals to the live answers.
+    /// The Service Containers in the entry Machine's store, read once per Deploy,
+    /// or why the read failed or outlasted [`STORED_GENS_WAIT`]. The store keeps the
+    /// rows of a Machine that did not answer, and a new copy at or below one of those
+    /// gens is refused In or never replaces it. Without the read, gens and removals
+    /// follow the live answers.
     async fn stored<C: MachineOperations>(
         &self,
         client: &C,
         cancellation: &CancellationToken,
-    ) -> Result<&Vec<ContainerObservation>, ExecutionError> {
+    ) -> Result<&Result<Vec<ContainerObservation>, RpcError>, ExecutionError> {
         self.stored
             .get_or_try_init(|| async {
                 let read = tokio::select! {
@@ -2037,20 +2127,25 @@ impl<'a> Rows<'a> {
                             error = %error.message,
                             "couldn't read the entry Machine's store; new gens follow the live answers only"
                         );
-                        return Ok(Vec::new());
+                        return Ok(Err(error));
                     }
                     Err(_) => {
                         tracing::warn!(
                             wait = ?STORED_GENS_WAIT,
                             "the entry Machine's store didn't answer in time; new gens follow the live answers only"
                         );
-                        return Ok(Vec::new());
+                        return Ok(Err(RpcError {
+                            code: RpcErrorCode::Unavailable,
+                            message: format!("the store didn't answer in {STORED_GENS_WAIT:?}"),
+                            details: serde_json::Value::Null,
+                            cause: Vec::new(),
+                        }));
                     }
                 };
-                Ok(containers
+                Ok(Ok(containers
                     .into_iter()
                     .filter(|copy| copy.kind == ContainerKind::ServiceContainer)
-                    .collect())
+                    .collect()))
             })
             .await
     }
@@ -2253,7 +2348,7 @@ async fn execute_operation<C: MachineOperations>(
         } => {
             let slot = slots.slot(ContainerKind::ServiceContainer, spec, index, None);
             let r#gen = rows
-                .gen_for(client, &rows.service(spec), cancellation)
+                .gen_for(client, progress, &rows.service(spec), cancellation)
                 .await?;
             run_container(
                 client,
@@ -2372,7 +2467,12 @@ async fn execute_operation<C: MachineOperations>(
                 Some(replacement.old_container_id),
             );
             let r#gen = rows
-                .gen_for(client, &rows.service(&replacement.spec), cancellation)
+                .gen_for(
+                    client,
+                    progress,
+                    &rows.service(&replacement.spec),
+                    cancellation,
+                )
                 .await?;
             if replacement.spec.update.order.stops_first() {
                 let old = rows
@@ -3368,6 +3468,26 @@ pub(super) async fn inspect<C: MachineOperations>(
 
 fn machine_error(action: MachineAction, error: RpcError) -> ExecutionError {
     ExecutionError::Machine { action, error }
+}
+
+/// A new copy cannot start while `silent` may run copies the store could not number.
+fn unfloored(silent: &Unanswered, unread: &RpcError) -> ExecutionError {
+    let error = RpcError {
+        code: RpcErrorCode::Unavailable,
+        message: format!(
+            "Machine '{}' did not answer and the entry Machine's store could not be read, \
+             so a new copy might not replace that Machine's copies",
+            silent.name
+        ),
+        details: serde_json::Value::Null,
+        cause: std::iter::once(unread.message.clone())
+            .chain(unread.cause.iter().cloned())
+            .collect(),
+    };
+    machine_error(
+        MachineAction::ListContainers,
+        naming_machine(error, &silent.failure.machine_id),
+    )
 }
 
 /// The Machine that answered `error`, for a failure sentence that names the Server.

@@ -6,7 +6,7 @@ use std::{
 use ployz_core::{
     BridgeEndpointCapacity, ContainerObservation, ContainerRuntimeObservation, DockerVolume,
     DockerVolumeId, DockerVolumeName, IngressHost, MachineFailure, MachineId, MachineName,
-    MachineObservation, Namespace, PartialResult, PlacementConstraint,
+    MachineObservation, MembershipObservation, Namespace, PartialResult, PlacementConstraint,
     ProvisionedVolumeMaximumBytes, QualifiedService, RpcError, RpcErrorCode, ServiceName,
     ServiceObservation, VolumeInventory, VolumeObservationFailure, derive_services,
 };
@@ -24,7 +24,7 @@ mod render;
 mod report;
 mod schedule;
 
-pub(crate) use apply::{Outcome, apply_requested};
+pub(crate) use apply::{ApplyError, Outcome, apply_requested};
 pub(crate) use convergence::{Converged, LastIn, Moving, can_move, converge, named};
 pub use convergence::{
     DrainStop, MachineRef, Move, MoveFailure, OldCopyEnd, StayReason, Unconfirmed,
@@ -321,6 +321,12 @@ pub enum HeldIngress<'snapshot> {
     Restarting(&'snapshot ContainerObservation),
 }
 
+/// A Suspect Machine that left a Container listing unanswered is an observation gap a
+/// Deploy goes on without. An Up Machine's silence stays an error, as does any answer.
+pub(crate) fn listing_gap(machine: &MachineObservation, error: &RpcError) -> bool {
+    machine.membership == MembershipObservation::Suspect && error.target_unanswered()
+}
+
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct DeploySnapshot {
     pub machines: Vec<MachineObservation>,
@@ -385,6 +391,14 @@ impl DeploySnapshot {
         self.ingress_eligible()
             .filter_map(|machine| Some((machine, self.unobserved(machine.machine.id)?)))
             .collect()
+    }
+
+    /// Whether `machine` left this snapshot's Container listing unanswered as a
+    /// [`listing_gap`].
+    pub(crate) fn silent(&self, machine: &MachineObservation) -> bool {
+        self.container_failures.iter().any(|failure| {
+            failure.machine_id == machine.machine.id && listing_gap(machine, &failure.error)
+        })
     }
 
     /// Why `machine`'s container listing is missing from this snapshot, if it is.
@@ -506,6 +520,10 @@ pub enum EliminatingConstraint {
     MachineDown {
         names: Vec<MachineName>,
     },
+    /// Machines that did not answer this Deploy's Container listing.
+    Unanswered {
+        names: Vec<MachineName>,
+    },
     VolumeInventoryUnavailable {
         machine: MachineName,
         message: String,
@@ -589,6 +607,10 @@ impl fmt::Display for EliminatingConstraint {
                 } else {
                     f.write_str(" are down")
                 }
+            }
+            Self::Unanswered { names } => {
+                write_machine_names(f, names)?;
+                f.write_str(" did not answer when this Deploy listed its containers")
             }
             Self::VolumeInventoryUnavailable { machine, message } => {
                 write!(f, "Machine '{machine}' was skipped because its {message}")
@@ -695,6 +717,16 @@ pub enum PlanError {
         /// The Volume, as its owner named it.
         name: String,
         /// The Machine whose storage was not read.
+        machine: MachineName,
+    },
+    /// A Docker Volume this Deploy would create, which a Machine that did not answer
+    /// its listing may already hold.
+    #[error(
+        "{machine} did not answer, so whether it holds Docker volume {name} is unknown. Bring {machine} back, or deploy the other services by name"
+    )]
+    VolumeHolderUnknown {
+        /// The Volume, as its owner named it.
+        name: String,
         machine: MachineName,
     },
     /// The selected Machine has no usable ZFS storage preparation.
@@ -859,6 +891,7 @@ impl PlanError {
             | Self::NoWriter { .. }
             | Self::VolumeServerTakesNoServices { .. }
             | Self::CopiesUnknown { .. }
+            | Self::VolumeHolderUnknown { .. }
             | Self::ProvisionedVolumeStorageRequired { .. }
             | Self::ProvisionedVolumeStorageUnavailable
             | Self::ProvisionedVolumeStorageUnknown { .. }
@@ -901,7 +934,7 @@ impl PlanError {
                 details: serde_json::json!({ "reason": "volume_server_takes_no_services" }),
                 cause: Vec::new(),
             },
-            error @ Self::CopiesUnknown { .. } => RpcError {
+            error @ (Self::CopiesUnknown { .. } | Self::VolumeHolderUnknown { .. }) => RpcError {
                 code: RpcErrorCode::Unavailable,
                 message: error.to_string(),
                 details: serde_json::Value::Null,

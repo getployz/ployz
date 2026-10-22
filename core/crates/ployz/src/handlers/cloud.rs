@@ -505,18 +505,26 @@ where
         }
     };
 
+    let mut partial = None;
     if machine.accepts_ingress
         && let Some(requested) = ingress
     {
+        let incomplete = |error: crate::deploy::ApplyError| {
+            ingress_incomplete(super::ingress_hints(Error::from(error), |args| {
+                super::rerun(matches, args)
+            }))
+        };
         // An interrupted Apply may have completed mutations. Do not replay it.
-        let _ingress =
-            crate::deploy::apply_requested(&mut ready, &requested, false, false, "default")
-                .await
-                .map_err(|error| {
-                    ingress_incomplete(super::ingress_hints(Error::from(error), |args| {
-                        super::rerun(matches, args)
-                    }))
-                })?;
+        match crate::deploy::apply_requested(&mut ready, &requested, false, false, "default").await
+        {
+            Ok(_) => {}
+            // The Ingress Proxy is deployed; a Server it could not observe does not hold
+            // back publication, as a joiner's catch-up failure does not.
+            Err(error @ crate::deploy::ApplyError::Partial(_)) => {
+                partial = Some(incomplete(error));
+            }
+            Err(error) => return Err(incomplete(error)),
+        }
     }
     let sealing = sealing(&mut ready).await?;
     progress(EnrollStage::Publishing);
@@ -539,7 +547,10 @@ where
         sealing,
     )
     .await?;
-    Ok(ui::emit(&founder_result(&machine, founding)))
+    Ok(ui::emit_committed(
+        founder_result(&machine, founding),
+        partial.map_or(Ok(()), Err),
+    ))
 }
 
 /// Whether the enrolled Machine holds its Cluster's Sealing Key, for Cloud to record at completion.

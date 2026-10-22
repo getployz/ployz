@@ -1274,14 +1274,18 @@ pub(crate) fn answered_by(machine_id: &MachineId, error: ConnectError) -> RpcErr
             error
         };
     }
-    let error = rpc_error(error);
+    unanswered_by(machine_id, rpc_error(error))
+}
+
+/// `error`, from a call `machine` left unanswered, naming it in the deepest line.
+pub(crate) fn unanswered_by(machine: impl std::fmt::Display, error: RpcError) -> RpcError {
     let transport = std::iter::once(error.message)
         .chain(error.cause)
         .collect::<Vec<_>>()
         .join(": ");
     RpcError::unanswered_target(
         error.code,
-        format!("Machine {machine_id} did not answer: {transport}"),
+        format!("Machine {machine} did not answer: {transport}"),
     )
 }
 
@@ -1872,7 +1876,7 @@ async fn list_on_machine(
     environment: EnvironmentValues,
 ) -> Result<MachineSuccess<Vec<ployz_core::ContainerObservation>>, MachineFailure<RpcError>> {
     client
-        .read::<op::ListContainers>(
+        .try_read::<op::ListContainers>(
             ListContainersRequest { environment },
             &MachineTarget::from(&machine_id),
         )
@@ -1881,7 +1885,23 @@ async fn list_on_machine(
             machine_id,
             value: list.containers,
         })
-        .map_err(|error| MachineFailure { machine_id, error })
+        .map_err(|error| MachineFailure {
+            machine_id,
+            error: unanswered_kept(error),
+        })
+}
+
+/// [`rpc_error`] in its own words, marked unanswered when the router or this client's
+/// deadline shows the target never answered.
+fn unanswered_kept(error: ConnectError) -> RpcError {
+    if !error.target_unanswered() {
+        return rpc_error(error);
+    }
+    let error = rpc_error(error);
+    RpcError {
+        cause: error.cause,
+        ..RpcError::unanswered_target(error.code, error.message)
+    }
 }
 
 async fn change_on_machine(

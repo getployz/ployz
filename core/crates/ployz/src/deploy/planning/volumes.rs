@@ -208,6 +208,19 @@ impl<'snapshot> VolumePlan<'snapshot> {
             for machine in &self.snapshot.machines {
                 super::storage::capacity(self.snapshot, machine)?;
             }
+        } else if let Some(name) = managed_volume_name(volume)
+            && let Some(silent) = self
+                .snapshot
+                .machines
+                .iter()
+                .find(|machine| self.snapshot.silent(machine))
+        {
+            // Absence from a listing a Machine left unanswered would create the Volume
+            // empty beside the copy that Machine may hold.
+            return Err(PlanError::VolumeHolderUnknown {
+                name: self.authored(name).to_owned(),
+                machine: silent.machine.name.clone(),
+            });
         }
         Ok(VolumeLocality::Absent)
     }
@@ -781,7 +794,9 @@ fn unmountable(error: PlanError) -> Result<PlanError, PlanError> {
     };
     if matches!(
         *source,
-        PlanError::NoWriter { .. } | PlanError::CopiesUnknown { .. }
+        PlanError::NoWriter { .. }
+            | PlanError::CopiesUnknown { .. }
+            | PlanError::VolumeHolderUnknown { .. }
     ) {
         Ok(*source)
     } else {

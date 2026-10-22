@@ -88,6 +88,14 @@ To bring services back:
    Use the CLI and name them: a deploy that includes a service whose volume is on the offline
    server fails before it changes anything, and the dashboard's **Deploy** includes every
    service.
+
+   A server that stopped answering moments ago may not show **Offline** yet. The deploy skips it
+   the same way: it names the server, starts nothing there, and exits 3. The new replicas start
+   serving on your other servers, but the deploy finishes only once they mark that server
+   offline. If that takes more than 5 minutes, the service fails and the deploy names the server.
+   A service with a Docker volume fails before it changes anything, because the volume may be on
+   that server. So does any service when the deploy can't read which replicas that server runs.
+   A server the others still count as online but that doesn't answer fails the deploy.
 2. When the server comes back, its replicas start again. Within a few minutes it takes each
    replica the deploy in step 1 replaced out of traffic, but the replica keeps running until your
    next deploy removes it. It takes out only its own replicas, so an extra one on another server
