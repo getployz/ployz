@@ -170,10 +170,10 @@ which voids every token made before. A token works for 24 hours. Run
 
 ## The server's name is invalid
 
-You'll see `invalid Machine Name "web-1.example.com"`.
+You'll see `invalid Machine Name "Web_1"`, with the closest valid name, `web-1`, below it.
 
-The server takes its hostname as its name, and a name must be one lowercase word: letters, digits
-and hyphens, up to 63 characters. Add `--name web-1` to the end of the command and run it again.
+A name must be one lowercase word: letters, digits and hyphens, up to 63 characters. Only a name
+you pass with `--name` is refused; pass the suggested name and run the command again.
 
 ## The server is already initialised
 

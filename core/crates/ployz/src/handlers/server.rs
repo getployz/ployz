@@ -50,7 +50,7 @@ use add::add;
 pub(super) use enroll::{enroll_token, requested_storage};
 pub(super) use helpers::{
     check_listed, confirm, connect_direct, enroll, inspect_token, leave, machine_name,
-    readiness_timeout_message,
+    readiness_timeout_message, requested_name,
 };
 use init::init;
 pub(super) use remove::remove;

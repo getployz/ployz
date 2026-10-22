@@ -1,7 +1,7 @@
 use clap::ArgMatches;
 use ployz_core::{
     EnrollAs, EnrollRequest, EnrollmentSnapshot, InspectRequest, LocalMachinePhase, MachineId,
-    MachineName, RegisterRequest, WireGuardPublicKey, op,
+    RegisterRequest, WireGuardPublicKey, op,
 };
 
 use super::super::{connect_context, runtime};
@@ -21,10 +21,7 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
         connection,
         matches.get_one::<String>("ssh-key").map(String::as_str),
     )?;
-    let requested_name = matches
-        .get_one::<String>("name")
-        .map(MachineName::parse)
-        .transpose()?;
+    let requested_name = helpers::requested_name(matches)?;
     let token_request = helpers::token_request(matches)?;
     let pinned = helpers::pinned(&token_request);
     let wireguard_mtu = matches.get_one::<u32>("wg-mtu").copied();
@@ -61,7 +58,7 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
                 .await?
                 .1;
         }
-        let name = helpers::machine_name(requested_name, &token)?;
+        let name = helpers::machine_name(requested_name, &token);
 
         let assignment = crate::enrollment::local::save_assignment(
             &history,
