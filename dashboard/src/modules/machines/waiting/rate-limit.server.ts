@@ -74,7 +74,10 @@ export const admitWithinWindows = Effect.fn("RateLimit.admitWithinWindows")(func
     return { admitted: true as const, event: event.id };
   }));
   if ((yield* Random.next) * PRUNE_ONE_CALL_IN < 1) {
-    yield* database.drizzle.delete(rateLimitEvent).where(lt(rateLimitEvent.at, sql`now() - make_interval(secs => ${EVENT_RETENTION_SECONDS})`));
+    // The event is already committed; a failed prune must not lose the admission and strand it.
+    yield* database.drizzle.delete(rateLimitEvent).where(lt(rateLimitEvent.at, sql`now() - make_interval(secs => ${EVENT_RETENTION_SECONDS})`)).pipe(
+      Effect.catch((error) => Effect.logWarning("Stale rate limit events were not pruned; a later call prunes them.", error)),
+    );
   }
   return admission;
 });

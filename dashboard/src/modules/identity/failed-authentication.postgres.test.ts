@@ -1,7 +1,7 @@
 import { it } from "@effect/vitest";
 import * as startServer from "@tanstack/react-start/server";
 import { sql } from "drizzle-orm";
-import { Cause, Effect, Exit } from "effect";
+import { Cause, Deferred, Effect, Exit, Fiber, Random } from "effect";
 import { expect, vi } from "vitest";
 import { MANIFEST_HEADER, MANIFEST_REVISION } from "#/modules/commands/commands.server";
 import { ClientAddress, FAILED_AUTHENTICATION_WINDOWS, resolveCaller } from "#/modules/identity/caller.server";
@@ -139,4 +139,61 @@ it.live("holds the client the proxy names, and says how long in Retry-After, ove
     expect(held.manifest).toBe(MANIFEST_REVISION);
     // The proxy's own address is not the key, so another client behind it is untouched.
     expect((yield* call("ployz_neighbour", "198.51.100.21")).status).toBe(401);
+  })));
+
+/** The failed-authentication events still counted against `address`. */
+const heldAgainst = Effect.fn(function* (address: string) {
+  const { drizzle } = yield* Database;
+  const [row] = yield* drizzle.execute<{ count: number }>(sql`select count(*)::int as count from rate_limit_event where key = ${`failed-auth:${address}`}`, "objects");
+  return row?.count;
+});
+
+it.live("lets a good token in, and holds nothing against it, when the stale-event prune fails", () =>
+  inCloud(Effect.gen(function* () {
+    const good = yield* goodToken;
+    const { drizzle } = yield* Database;
+    yield* drizzle.execute(sql`insert into rate_limit_event (key, at) values ('agent-signup:192.0.2.1', now() - interval '2 days')`);
+    yield* drizzle.execute(sql.raw(`create function refuse_prune() returns trigger language plpgsql as $$
+      begin raise exception 'prune refused'; end $$`));
+    yield* drizzle.execute(sql.raw(`create trigger refuse_prune before delete on rate_limit_event
+      for each row when (old.at < now() - interval '1 day') execute function refuse_prune()`));
+
+    const reply = yield* answer(good, "203.0.113.30").pipe(
+      Effect.provideService(Random.Random, { nextDoubleUnsafe: () => 0, nextIntUnsafe: () => 0 }),
+    );
+    expect(reply.status).toBe(200);
+    expect(yield* heldAgainst("203.0.113.30")).toBe(0);
+  })));
+
+it.live("holds nothing against an attempt interrupted while its place in the limit commits", () =>
+  inCloud(Effect.gen(function* () {
+    const good = yield* goodToken;
+    const database = yield* Database;
+    // A deferred trigger waits on a lock at COMMIT, so the interrupt below lands while the reservation commits.
+    yield* database.drizzle.execute(sql.raw(`create function hold_commit() returns trigger language plpgsql as $$
+      begin perform pg_advisory_xact_lock(4242); return null; end $$`));
+    yield* database.drizzle.execute(sql.raw(`create constraint trigger hold_commit after insert on rate_limit_event
+      deferrable initially deferred for each row execute function hold_commit()`));
+
+    const held = yield* Deferred.make<void>();
+    const release = yield* Deferred.make<void>();
+    const holder = yield* Effect.forkChild(database.transaction(Effect.gen(function* () {
+      const { drizzle } = yield* Database;
+      yield* drizzle.execute(sql`select pg_advisory_xact_lock(4242)`);
+      yield* Deferred.succeed(held, undefined);
+      yield* Deferred.await(release);
+    })));
+    yield* Deferred.await(held);
+
+    const attempt = yield* Effect.forkChild(
+      resolveCaller(new Headers({ authorization: `Bearer ${good}` })).pipe(Effect.provideService(ClientAddress, "203.0.113.31")),
+    );
+    const waiting = sql`select 1 from pg_locks where locktype = 'advisory' and objid = 4242 and not granted`;
+    yield* Effect.promise(() => vi.waitFor(async () => expect(await Effect.runPromise(database.drizzle.execute(waiting, "objects"))).not.toHaveLength(0)));
+
+    const interrupted = yield* Effect.forkChild(Fiber.interrupt(attempt));
+    yield* Deferred.succeed(release, undefined);
+    yield* Fiber.join(holder);
+    yield* Fiber.join(interrupted);
+    expect(yield* heldAgainst("203.0.113.31")).toBe(0);
   })));

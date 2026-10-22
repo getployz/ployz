@@ -35,21 +35,22 @@ export const FAILED_AUTHENTICATION_WINDOWS: ReadonlyArray<RateWindow> = [
  * a cookie is what a browser attaches to a cross-site request on its own, so it authenticates nothing here.
  * An address over its failed-authentication limit waits whatever it presents, so a guess can't land while it does.
  * Each attempt holds a place in the limit while it is checked, so a burst can't all be checked at once; only a
- * failure keeps it.
+ * failure keeps it, even when the attempt is interrupted.
  */
 export const resolveCaller = Effect.fn("Identity.resolveCaller")(function* (headers: Headers) {
   const address = yield* ClientAddress;
   if (address === null) return yield* callerOf(headers);
-  const admission = yield* admitWithinWindows(`failed-auth:${rateLimitAddress(address)}`, FAILED_AUTHENTICATION_WINDOWS);
-  if (!admission.admitted) {
-    return yield* new RateLimited({
-      message: `Too many failed sign-ins from this address. Try again in ${waitOf(admission.retryAfterSeconds)}.`,
-      userFacing: true,
-      retryAfterSeconds: admission.retryAfterSeconds,
-    });
-  }
-  return yield* callerOf(headers).pipe(
-    Effect.onExit((exit) => refused(exit) ? Effect.void : forgetRateEvent(admission.event)),
+  return yield* Effect.acquireUseRelease(
+    admitWithinWindows(`failed-auth:${rateLimitAddress(address)}`, FAILED_AUTHENTICATION_WINDOWS),
+    (admission) => Effect.gen(function* () {
+      if (admission.admitted) return yield* callerOf(headers);
+      return yield* new RateLimited({
+        message: `Too many failed sign-ins from this address. Try again in ${waitOf(admission.retryAfterSeconds)}.`,
+        userFacing: true,
+        retryAfterSeconds: admission.retryAfterSeconds,
+      });
+    }),
+    (admission, exit) => admission.admitted && !refused(exit) ? forgetRateEvent(admission.event) : Effect.void,
   );
 });
 
