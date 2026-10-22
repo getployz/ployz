@@ -59,6 +59,12 @@ pub struct Trusted {
     #[serde(default)]
     #[ts(optional)]
     pub environments: Option<BTreeSet<EnvironmentName>>,
+    /// The user Cloud authenticated, by their immutable id, a token by its owner's: what
+    /// makes a Deployment someone's own. A name may repeat; this never does. None for
+    /// Cloud's own automation and the hidden local Store.
+    #[serde(default)]
+    #[ts(optional)]
+    pub user: Option<String>,
     /// Whether a human must approve a publication that destroys something, and what they
     /// approved.
     #[serde(default)]

@@ -446,6 +446,7 @@ fn admit_member(
         deployment::NOTHING,
         &frozen,
     )?;
+    deployment::admitted_by_user(tx, &admitted.id, trusted)?;
     mark.evidence.insert(
         id.clone(),
         Evidence {
@@ -749,6 +750,7 @@ pub(crate) fn shut_down(
         deployment::NOTHING,
         &frozen,
     )?;
+    deployment::admitted_by_user(tx, &admitted.id, trusted)?;
     if let Some(outcome) = forget {
         return deployment::forget(tx, &admitted.id, outcome);
     }
