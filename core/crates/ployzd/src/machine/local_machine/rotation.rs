@@ -336,7 +336,13 @@ impl LocalMachine {
             decided @ (Checked::Met | Checked::Refused(_)) => return Ok(decided),
         };
         let guard = match (reads, &copy.rotation) {
-            (GuardReads::NewerIn(observed), _) => self.newer_in(copy, observed).await?,
+            (GuardReads::NewerIn(observed), _) => {
+                let run = match want {
+                    RotationWant::In { run } => run.as_ref(),
+                    RotationWant::Held(_) | RotationWant::Out { .. } => None,
+                };
+                self.newer_in(copy, run, observed).await?
+            }
             (GuardReads::LastIn(routed), CopyRotation::In) => self.last_in(copy, routed).await?,
             (GuardReads::LastIn(_), _) | (GuardReads::None, _) => None,
         };
@@ -347,9 +353,15 @@ impl LocalMachine {
     /// In. This Machine's copies are listed afresh from their labels and record, so one
     /// created since `observed` was read still counts and no health check runs under
     /// the turn.
+    ///
+    /// A replicated row carries no environment or Config content, so a copy on another
+    /// Machine whose row matches this one may still differ there. One that `run` created
+    /// replaced this copy whatever the rows show, as when a stop-first Deploy restores
+    /// the copy it held.
     async fn newer_in(
         &self,
         copy: &CopyState,
+        run: Option<&DeploymentLogId>,
         observed: Vec<ContainerObservation>,
     ) -> Result<Option<ContainerRefusal>, Error> {
         let machine_id = self.record().id();
@@ -362,7 +374,8 @@ impl LocalMachine {
                     && is_sibling(copy, observed)
                     && *observed.rotation() == CopyRotation::In
                     && observed.copy_gen() > copy.r#gen
-                    && supersedes(&observed.resolved_spec, &published)
+                    && (run.is_some() && observed.deploy_label().as_ref() == run
+                        || supersedes(&observed.resolved_spec, &published))
             })
             .map(|observed| (observed.container_id, observed.copy_gen()))
             .collect::<Vec<_>>();

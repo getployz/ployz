@@ -435,7 +435,7 @@ ployz deploy web
 
 A later deploy changed the service and started a newer replica, but this older one was still
 running its old version. `ployz service restart` and `ployz service start` keep it out of routing,
-so two versions never answer at once. The command exits 3. A replica a deploy kept as it was,
+because the newer version serves the service. The command exits 3. A replica a deploy kept as it was,
 such as the existing ones when you only raised the replica count, isn't affected. It goes back into
 routing. Deploy the service to replace the old replica:
 
