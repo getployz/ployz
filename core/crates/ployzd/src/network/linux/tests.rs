@@ -745,6 +745,7 @@ fn readdressing_takes_stopped_and_detached_bridge_containers() {
         ipv4: ipv4.map(|address| address.parse().unwrap()),
         attached,
         pinned: false,
+        managed: false,
         ipv6: false,
     };
     assert_eq!(
@@ -764,23 +765,30 @@ fn readdressing_takes_stopped_and_detached_bridge_containers() {
 }
 
 #[test]
-fn every_bridge_member_without_a_static_address_takes_one() {
-    let member = |id: &str, ipv4: Option<[u8; 4]>, attached, pinned| BridgeMember {
+fn every_managed_bridge_member_without_a_static_address_takes_one() {
+    let member = |id: &str, ipv4: Option<[u8; 4]>, attached, pinned, managed| BridgeMember {
         id: id.into(),
         ipv4: ipv4.map(Ipv4Addr::from),
         attached,
         pinned,
+        managed,
         ipv6: false,
     };
     let members = [
-        member("pinned", Some([10, 210, 1, 2]), true, true),
-        member("running", Some([10, 210, 1, 5]), true, false),
-        member("stopped", None, true, false),
-        member("detached", None, false, false),
+        member("pinned", Some([10, 210, 1, 2]), true, true, true),
+        member("running", Some([10, 210, 1, 5]), true, false, true),
+        member("stopped", None, true, false, true),
+        member("detached", None, false, false, true),
+        member("operators", Some([10, 210, 1, 9]), true, false, false),
+        member("operators-detached", None, false, false, false),
     ];
-    let taken = BTreeSet::from([Ipv4Addr::new(10, 210, 1, 2), Ipv4Addr::new(10, 210, 1, 5)]);
-    let pinned = pins(
-        &members,
+    let taken = BTreeSet::from([
+        Ipv4Addr::new(10, 210, 1, 2),
+        Ipv4Addr::new(10, 210, 1, 5),
+        Ipv4Addr::new(10, 210, 1, 9),
+    ]);
+    let pinned = addresses(
+        members.iter().filter(|member| member.needs_pin()),
         taken,
         MachineSubnet::parse("10.210.1.0/24").unwrap(),
     )
@@ -788,12 +796,14 @@ fn every_bridge_member_without_a_static_address_takes_one() {
     .map(|(member, ipv4)| (member.id.as_str(), ipv4.map(|address| address.octets()[3])))
     .collect::<Vec<_>>();
     // A running member keeps its address; the others take free ones past the highest.
+    // An attached container Ployz doesn't manage keeps its endpoint.
     assert_eq!(
         pinned,
         [
             ("running", Some(5)),
-            ("stopped", Some(6)),
-            ("detached", Some(7))
+            ("stopped", Some(10)),
+            ("detached", Some(11)),
+            ("operators-detached", Some(12)),
         ]
     );
 }

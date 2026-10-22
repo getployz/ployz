@@ -431,23 +431,13 @@ impl ContainerRuntime {
         if lost_ployz_network(inspected)
             && let Err(error) = self
                 .docker
-                .client
-                .connect_network(
-                    DOCKER_NETWORK_NAME,
-                    NetworkConnectRequest {
-                        container: container_id.to_string(),
-                        endpoint_config: Some(
-                            self.docker
-                                .bridge_join(
-                                    inspected
-                                        .config
-                                        .as_ref()
-                                        .and_then(|config| config.labels.as_ref())
-                                        .is_some_and(super::takes_bridge_ipv6),
-                                )
-                                .await?,
-                        ),
-                    },
+                .join_bridge(
+                    container_id,
+                    inspected
+                        .config
+                        .as_ref()
+                        .and_then(|config| config.labels.as_ref())
+                        .is_some_and(super::takes_bridge_ipv6),
                 )
                 .await
             // A concurrent start may have attached it first.
@@ -682,17 +672,28 @@ impl ContainerRuntime {
 }
 
 impl super::LocalDocker {
-    /// The endpoint a Container rejoins the bridge with, at the next free address.
-    async fn bridge_join(&self, ipv6: bool) -> Result<bollard::models::EndpointSettings, Error> {
+    /// Connects a Container that lost its bridge endpoint at the next free address,
+    /// holding the gate until Docker records it so no create takes the same one.
+    async fn join_bridge(&self, container_id: &ContainerId, ipv6: bool) -> Result<(), DockerError> {
         let mut last = self.endpoint_creates.lock().await;
-        let bridge = self.bridge().await?;
-        let address = bridge
-            .subnet
-            .and_then(|subnet| super::bridge_address::next(subnet, &bridge.taken, *last));
+        let address = match self.bridge().await {
+            Ok(bridge) => bridge
+                .subnet
+                .and_then(|subnet| super::bridge_address::next(subnet, &bridge.taken, *last)),
+            Err(_) => None,
+        };
         if address.is_some() {
             *last = address;
         }
-        Ok(super::bridge_address::endpoint(ipv6, address))
+        self.client
+            .connect_network(
+                DOCKER_NETWORK_NAME,
+                NetworkConnectRequest {
+                    container: container_id.to_string(),
+                    endpoint_config: Some(super::bridge_address::endpoint(ipv6, address)),
+                },
+            )
+            .await
     }
 
     pub(super) async fn create_container(
