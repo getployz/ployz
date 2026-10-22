@@ -30,6 +30,7 @@ pub(super) struct VolumePlan<'snapshot> {
     snapshot: &'snapshot DeploySnapshot,
     namespace: Namespace,
     volume_names: &'snapshot BTreeMap<DockerVolumeName, String>,
+    deployed_volumes: &'snapshot BTreeSet<DockerVolumeName>,
     assignments: BTreeMap<MachineId, BTreeMap<ServiceName, ServiceStorageSpec>>,
 }
 
@@ -69,6 +70,7 @@ impl<'snapshot> VolumePlan<'snapshot> {
         snapshot: &'snapshot DeploySnapshot,
         namespace: &Namespace,
         volume_names: &'snapshot BTreeMap<DockerVolumeName, String>,
+        deployed_volumes: &'snapshot BTreeSet<DockerVolumeName>,
         target: &[RequestedServiceSpec],
         requested: &[RequestedServiceSpec],
     ) -> Result<Self, PlanError> {
@@ -77,6 +79,7 @@ impl<'snapshot> VolumePlan<'snapshot> {
             snapshot,
             namespace: namespace.clone(),
             volume_names,
+            deployed_volumes,
             assignments: BTreeMap::new(),
         };
         plan.validate_provisioned_volume_definitions(target)?;
@@ -164,7 +167,8 @@ impl<'snapshot> VolumePlan<'snapshot> {
         ) {
             if let Some(name) = managed_volume_name(volume) {
                 let copies = self.copies_without_writer(name);
-                if !copies.is_empty() {
+                // A deployed Volume no member holds left the Cluster with its Server.
+                if !copies.is_empty() || self.deployed_volumes.contains(name) {
                     let authored = self.volume_names.get(name).map_or_else(
                         || Namespace::declared_volume_name(name).unwrap_or(name.as_str()),
                         String::as_str,

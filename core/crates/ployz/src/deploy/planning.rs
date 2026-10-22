@@ -703,6 +703,7 @@ fn assemble_plan(
         snapshot,
         &intent.namespace,
         &intent.volume_names,
+        &intent.deployed_volumes,
         &target,
         &requested,
     )?;

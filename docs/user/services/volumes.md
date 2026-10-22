@@ -168,6 +168,13 @@ Volume data has no writer; web-2 holds its only copy. Make it the writer: ployz 
 ```
 
 Run the `ployz volume restore` line it prints to make that copy the writer again, then deploy.
+When the only copy is on a server you removed, no server in the cluster holds it, and the deploy
+refuses rather than start the service on a new, empty volume:
+
+```
+Volume data has no writer and no Server in this Cluster holds a copy of it. A Server removed while it held the Volume keeps the data on its disk: add that Server back, then run ployz volume restore data --from <server>
+```
+
 In Ployz Cloud, when the surviving copy is a mirror, the volume's **Copies** lists it and
 **Use mirror** stages the same restore for your next deploy. An old copy gets no button there:
 run the `ployz volume restore` line. While one of your servers is offline, the deploy can't tell whether that

@@ -249,6 +249,7 @@ pub(crate) fn freeze(
     let lowered = lower(
         environment,
         saved,
+        &BTreeSet::new(),
         (services, &removals),
         (namespace.clone(), cluster_domain),
         &crate::branch::Lowering::default(),
@@ -419,9 +420,11 @@ pub(super) struct Lowered {
 /// Cluster Domain. Variables and Config files resolve here, a Branch's Live Node
 /// references against `branch.live`; secrets, and values that reference one, only
 /// with `unseal`. Without it such a variable is left out and such a file is empty.
+/// `deployed` names the Volumes Applied State holds.
 pub(super) fn lower(
     environment: &EnvironmentId,
     saved: &SavedEnvironmentIntent,
+    deployed: &BTreeSet<String>,
     (services, removals): (&[ServiceName], &ServiceRemovals),
     (namespace, cluster_domain): (Namespace, Option<&Hostname>),
     branch: &crate::branch::Lowering,
@@ -642,6 +645,7 @@ pub(super) fn lower(
             .map(|volume| LowerDeploymentVolume {
                 volume_resource_id: volume.resource_id.clone(),
                 storage: volume.storage,
+                deployed: deployed.contains(&volume.resource_id),
             })
             .collect(),
         lineages: lineages.clone(),
