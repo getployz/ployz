@@ -578,9 +578,9 @@ async fn a_slow_pending_removal_completes_before_any_sibling_goes_out() {
     let routed = container('b');
     let client = Scripted::new(vec![
         observed(Call::Inspect(machine, pending), running()),
-        ok_after(
+        Step(
             Call::Remove(machine, pending),
-            2 * crate::deploy::cleanup::ACK_WAIT,
+            Reply::OkAfter(|| tokio::time::sleep(2 * crate::deploy::cleanup::ACK_WAIT)),
         ),
         observed(Call::Inspect(machine, routed), running()),
         ok(Call::Remove(machine, routed)),

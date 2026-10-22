@@ -151,7 +151,7 @@ fn following_returns_when_the_owned_runner_ends_not_at_the_next_poll() {
             &mut first_read,
         )
         .unwrap();
-        // Following writes its event just before it waits; give it time to get there.
+        // real-wait: following writes its event just before it blocks in its wait, which signals nothing.
         std::thread::sleep(Duration::from_millis(100));
         let summary = worker_store.record(
             &id,

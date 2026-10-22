@@ -96,8 +96,8 @@ enum Reply {
     Settled(ContainerId, HealthVerdict),
     /// Created once the test's own delay ends.
     CreatedAfter(ContainerId, fn() -> tokio::time::Sleep),
-    /// Absent, once `delay` has passed.
-    OkAfter(std::time::Duration),
+    /// Absent once the test's own delay ends.
+    OkAfter(fn() -> tokio::time::Sleep),
     Observed(
         ContainerRuntimeObservation,
         Option<ployz_core::HealthcheckSpec>,
@@ -1029,7 +1029,7 @@ impl Scripted {
             }
             Reply::Ok => ensured(ContainerNow::Absent { of }, None),
             Reply::OkAfter(delay) => {
-                tokio::time::sleep(delay).await;
+                delay().await;
                 ensured(ContainerNow::Absent { of }, None)
             }
             Reply::Error(error) => Err(error),
@@ -1611,10 +1611,6 @@ fn error(message: &str) -> RpcError {
 
 fn ok(call: Call) -> Step {
     Step(call, Reply::Ok)
-}
-
-fn ok_after(call: Call, delay: std::time::Duration) -> Step {
-    Step(call, Reply::OkAfter(delay))
 }
 
 fn created(call: Call, container_id: &ContainerId) -> Step {
