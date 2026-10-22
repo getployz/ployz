@@ -144,10 +144,7 @@ fn require_another_entry(
         return Ok(());
     }
     Err(Error::conflict(format!(
-        "{destination} answered as the entry for its own add, so its membership can't be checked. Nothing was enrolled."
-    ))
-    .hint(crate::ui::Hint::Next(
-        "connect through another Server of the Cluster with --connect".into(),
+        "{destination} answered as the entry for its own add, so its membership can't be checked. Nothing was enrolled. Run it again with --connect naming another Server of the Cluster."
     )))
 }
 
@@ -276,10 +273,8 @@ mod tests {
             "a forgotten Server's own view can't vouch for it: {message}"
         );
         assert!(
-            refusal.hints().iter().any(
-                |hint| matches!(hint, crate::ui::Hint::Next(next) if next.contains("--connect"))
-            ),
-            "names --connect through another Server"
+            message.contains("--connect naming another Server"),
+            "names --connect through another Server: {message}"
         );
     }
 
