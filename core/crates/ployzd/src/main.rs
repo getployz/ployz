@@ -167,9 +167,14 @@ fn main() -> ExitCode {
     code
 }
 
+/// The main thread's stack, which tokio's 2 MiB default for its own threads is not. In a
+/// debug build a boot pass that sets a replaced copy Out polls about 2.1 MB of frames (#3092).
+const THREAD_STACK: usize = 8 * 1024 * 1024;
+
 fn runtime() -> io::Result<tokio::runtime::Runtime> {
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
+        .thread_stack_size(THREAD_STACK)
         .build()
 }
 
