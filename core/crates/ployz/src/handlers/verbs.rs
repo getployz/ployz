@@ -315,12 +315,13 @@ pub(crate) const ENV_BRANCH: Verb = Verb::cloud(
 .needs(Permission::EnvironmentCreate)
 .docs("environments/environments.md");
 pub(crate) const ENV_COPY: Verb =
-    Verb::cloud("env copy", Never, env::copy_command, env::branch::copy);
+    Verb::cloud("env copy", Never, env::copy_command, env::branch::copy).docs("cli/overview.md");
 pub(crate) const ENV_DEFAULT: Verb =
     Verb::cloud("env default", Never, env::default_command, env::default)
-        .needs(Permission::ProjectEdit);
+        .needs(Permission::ProjectEdit)
+        .docs("cli/overview.md");
 pub(crate) const ENV_KEEP: Verb =
-    Verb::cloud("env keep", Never, env::keep_command, env::branch::keep);
+    Verb::cloud("env keep", Never, env::keep_command, env::branch::keep).docs("cli/overview.md");
 pub(crate) const ENV_LS: Verb =
     Verb::cloud("env ls", Never, env::ls_command, env::ls).docs("cli/overview.md");
 pub(crate) const ENV_NEVER_SYNC: Verb = Verb::cloud(
@@ -328,15 +329,18 @@ pub(crate) const ENV_NEVER_SYNC: Verb = Verb::cloud(
     Never,
     env::never_sync_command,
     env::never_sync,
-);
-pub(crate) const ENV_NEW: Verb =
-    Verb::cloud("env new", Never, env::new_command, env::new).needs(Permission::EnvironmentCreate);
+)
+.docs("cli/overview.md");
+pub(crate) const ENV_NEW: Verb = Verb::cloud("env new", Never, env::new_command, env::new)
+    .needs(Permission::EnvironmentCreate)
+    .docs("cli/overview.md");
 pub(crate) const ENV_ON_MERGE: Verb = Verb::cloud(
     "env on-merge",
     Never,
     env::on_merge_command,
     env::pr::on_merge,
-);
+)
+.docs("cli/overview.md");
 pub(crate) const ENV_PR: Verb = Verb::cloud("env pr", Depends, env::pr_command, env::pr::pr)
     .needs(Permission::ProjectEdit)
     .docs("environments/preview-environments.md");
@@ -355,8 +359,9 @@ pub(crate) const ENV_PROTECT: Verb =
 pub(crate) const ENV_RM: Verb = Verb::cloud("env rm", Always, env::rm_command, env::rm)
     .docs("cli/overview.md")
     .needs(Permission::EnvironmentDelete);
-pub(crate) const ENV_SETUP: Verb =
-    Verb::cloud("env setup", Never, env::setup_command, env::setup).needs(Permission::ProjectEdit);
+pub(crate) const ENV_SETUP: Verb = Verb::cloud("env setup", Never, env::setup_command, env::setup)
+    .needs(Permission::ProjectEdit)
+    .docs("cli/overview.md");
 pub(crate) const ENV_SHUTDOWN: Verb = Verb::cloud(
     "env shutdown",
     Always,

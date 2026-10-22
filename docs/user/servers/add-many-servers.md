@@ -12,7 +12,8 @@ Keep the token secret. Anyone with it can register servers for you to review.
 To join servers automatically, turn on **Enroll on arrival** in **Add servers** and set
 **Maximum servers** to a number from 1 to 1000. The CLI equivalent is
 `ployz server token create --auto --max 3 --expires 7d`.
-Anyone with this token can join servers up to that limit until it expires or you revoke it.
+Once the organization has a server, anyone with this token can join servers up to that limit
+until it expires or you revoke it.
 
 Enroll on arrival only adds servers to an organization that already has one. In a new
 organization, enroll the first server yourself. Until then the install ends with
@@ -68,8 +69,9 @@ check-in refreshes the row. Offline servers have stopped checking in.
    **Enroll N**. For a selection across providers or networks, first check that every source
    belongs to you.
 
-**Update ployz** as a skip reason means that server's `ployz` is too old to enroll. Run the
-install line on it again, then enroll it.
+**Update ployz** as a skip reason means that server's `ployz` is too old to enroll. Copy a
+current install line from **Add servers** or `ployz server token create`, run it on the server,
+then enroll it. An older line installs the release it names.
 
 When no server already in the organization has contacted Ployz Cloud for three hours, the sheet
 says **Servers offline**. A running server contacts Cloud at least once an hour. Cloud can't join
