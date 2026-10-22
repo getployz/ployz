@@ -10,8 +10,8 @@ use std::{
 use bollard::{
     Docker,
     models::{
-        ContainerSummary, Ipam, IpamConfig, NetworkConnectRequest, NetworkCreateRequest,
-        NetworkDisconnectRequest, NetworkInspect,
+        ContainerSummary, EndpointIpamConfig, Ipam, IpamConfig, NetworkConnectRequest,
+        NetworkCreateRequest, NetworkDisconnectRequest, NetworkInspect,
     },
     query_parameters::ListContainersOptionsBuilder,
 };
@@ -501,11 +501,11 @@ impl NetworkPlane {
 
     /// Docker can't change a network's addressing in place, so the bridge is replaced
     /// under its members, stopped ones included, since a stopped container keeps the
-    /// old network's ID and could not start. Running containers keep running. They
-    /// rejoin without pinned addresses, since a pinned one can't start once another
-    /// container holds its address; in their old address order a fresh bridge mostly
-    /// hands their addresses back, and this runs before the first observation
-    /// publishes them. A failure leaves a bridge serving; the next start tries again.
+    /// old network's ID and could not start. Running containers keep running and take
+    /// their own IPv4 addresses back, pinned, before any unpinned member joins, so a
+    /// route to an old address never reaches another Service. ployzd drops the pin the
+    /// next time it starts the container. A failure leaves a bridge serving; the next
+    /// start tries again.
     ///
     /// # Errors
     ///
@@ -563,7 +563,7 @@ impl NetworkPlane {
             report_readdress(error);
         }
         for member in detached {
-            self.rejoin(member).await;
+            self.rejoin(member, member.ipv4.as_deref()).await;
         }
         replaced.map(|_| ())
     }
@@ -612,7 +612,7 @@ impl NetworkPlane {
         match self.bridge_members().await {
             Ok(members) => {
                 for member in members.iter().filter(|member| !member.attached) {
-                    self.rejoin(member).await;
+                    self.rejoin(member, None).await;
                 }
             }
             Err(error) => eprintln!(
@@ -622,16 +622,30 @@ impl NetworkPlane {
         }
     }
 
-    async fn rejoin(&self, member: &BridgeMember) {
-        let connect = NetworkConnectRequest {
-            container: member.id.clone(),
-            endpoint_config: crate::docker::bridge_endpoint(member.ipv6),
+    /// Falls back to any free address when the pinned one can't be had.
+    async fn rejoin(&self, member: &BridgeMember, ipv4: Option<&str>) {
+        let connect = |ipv4: Option<&str>| {
+            let mut endpoint = crate::docker::bridge_endpoint(member.ipv6).unwrap_or_default();
+            endpoint.ipam_config = ipv4.map(|address| EndpointIpamConfig {
+                ipv4_address: Some(address.to_owned()),
+                ..Default::default()
+            });
+            NetworkConnectRequest {
+                container: member.id.clone(),
+                endpoint_config: Some(endpoint),
+            }
         };
-        if let Err(error) = self
+        let mut result = self
             .docker
-            .connect_network(DOCKER_NETWORK_NAME, connect)
-            .await
-        {
+            .connect_network(DOCKER_NETWORK_NAME, connect(ipv4))
+            .await;
+        if result.is_err() && ipv4.is_some() {
+            result = self
+                .docker
+                .connect_network(DOCKER_NETWORK_NAME, connect(None))
+                .await;
+        }
+        if let Err(error) = result {
             eprintln!(
                 "container {container} could not rejoin the {DOCKER_NETWORK_NAME} network: {error}",
                 container = member.id,

@@ -4,7 +4,7 @@ use bollard::{
     errors::Error as DockerError,
     models::{
         ContainerCreateBody, ContainerInspectResponse, ContainerStateStatusEnum, Mount, MountType,
-        NetworkConnectRequest,
+        NetworkConnectRequest, NetworkDisconnectRequest,
     },
     query_parameters::{
         CreateContainerOptionsBuilder, RemoveContainerOptionsBuilder, StopContainerOptionsBuilder,
@@ -22,7 +22,7 @@ use ployz_core::{
 use ployz_core::MachineGateway;
 
 use crate::{
-    docker_image::{ImagePull, prepare_image},
+    docker_image::{ImagePull, is_not_found, prepare_image},
     network::DOCKER_NETWORK_NAME,
 };
 
@@ -428,7 +428,25 @@ impl ContainerRuntime {
         container_id: &ContainerId,
         inspected: &ContainerInspectResponse,
     ) -> Result<(), Error> {
-        if lost_ployz_network(inspected)
+        let pinned = pinned_on_ployz(inspected);
+        if pinned {
+            // A readdress pinned it while it ran; a static address would keep it from
+            // starting once another container holds that address.
+            let disconnect = NetworkDisconnectRequest {
+                container: container_id.to_string(),
+                force: Some(true),
+            };
+            if let Err(error) = self
+                .docker
+                .client
+                .disconnect_network(DOCKER_NETWORK_NAME, disconnect)
+                .await
+                && !is_not_found(&error)
+            {
+                return Err(docker_error(container_id, error));
+            }
+        }
+        if (pinned || lost_ployz_network(inspected))
             && let Err(error) = self
                 .docker
                 .client
@@ -830,6 +848,27 @@ fn failed_start(inspected: &ContainerInspectResponse) -> bool {
 
 /// Docker 29 empties a container's networks when its start fails, and a later start
 /// then runs it with no network and no published ports.
+/// A stopped container a readdress pinned to its old address.
+fn pinned_on_ployz(inspected: &ContainerInspectResponse) -> bool {
+    let running = inspected
+        .state
+        .as_ref()
+        .and_then(|state| state.running)
+        .unwrap_or(false);
+    !running
+        && inspected
+            .network_settings
+            .as_ref()
+            .and_then(|settings| settings.networks.as_ref())
+            .and_then(|networks| networks.get(DOCKER_NETWORK_NAME))
+            .and_then(|endpoint| endpoint.ipam_config.as_ref())
+            .is_some_and(|ipam| {
+                ipam.ipv4_address
+                    .as_deref()
+                    .is_some_and(|ip| !ip.is_empty())
+            })
+}
+
 fn lost_ployz_network(inspected: &ContainerInspectResponse) -> bool {
     let created_on_ployz = inspected
         .host_config
@@ -880,6 +919,26 @@ mod tests {
         assert!(!lost_ployz_network(&inspected(
             "host",
             serde_json::json!({})
+        )));
+    }
+
+    #[test]
+    fn a_stopped_container_a_readdress_pinned_rejoins_unpinned_before_it_starts() {
+        let pinned = |running: bool| -> ContainerInspectResponse {
+            serde_json::from_value(serde_json::json!({
+                "State": { "Running": running },
+                "HostConfig": { "NetworkMode": "ployz" },
+                "NetworkSettings": { "Networks": { "ployz": {
+                    "IPAMConfig": { "IPv4Address": "10.210.0.4" },
+                } } },
+            }))
+            .unwrap()
+        };
+        assert!(pinned_on_ployz(&pinned(false)));
+        assert!(!pinned_on_ployz(&pinned(true)));
+        assert!(!pinned_on_ployz(&inspected(
+            "ployz",
+            serde_json::json!({ "ployz": { "IPAMConfig": {} } })
         )));
     }
 
