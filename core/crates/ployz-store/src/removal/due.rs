@@ -426,7 +426,11 @@ fn admit_member(
         id,
         &empty,
         &deployment::Landing::applied(&review.head.applied),
-        deployment::Scope::All { losses: &losses },
+        deployment::Scope::All {
+            losses: &losses,
+            retire: &[],
+            prune: true,
+        },
         namespace,
         None,
     )?;
@@ -730,7 +734,11 @@ pub(crate) fn shut_down(
         id,
         &empty,
         &deployment::Landing::applied(&review.head.applied),
-        deployment::Scope::All { losses: &losses },
+        deployment::Scope::All {
+            losses: &losses,
+            retire: &[],
+            prune: true,
+        },
         namespace,
         None,
     )?;

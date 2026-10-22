@@ -21,8 +21,8 @@ use thiserror::Error;
 /// Planner knobs for one Deploy.
 ///
 /// `selected` is the Service list this command applies. Empty means full
-/// reconciliation of `DeployIntent.target`. Non-empty means partial. There is
-/// no independent prune flag.
+/// reconciliation of `DeployIntent.target`. Non-empty means partial. `prune`
+/// says how far a full reconciliation removes what the target lacks.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct PlanOptions {
     /// Recreate containers even when the resolved spec matches.
@@ -34,8 +34,8 @@ pub struct PlanOptions {
     /// Service Names this command applies. Empty means full reconciliation.
     #[serde(default)]
     pub selected: Vec<ServiceAttempt>,
-    /// Services this targeted command retires. Each is also in `selected` and
-    /// absent from the target.
+    /// Services this command retires, each absent from the target. A targeted
+    /// command also has each in `selected`.
     #[serde(default, skip_serializing_if = "ServiceRemovals::is_empty")]
     #[ts(optional, as = "Option<Vec<ServiceName>>")]
     pub removals: ServiceRemovals,
@@ -49,6 +49,30 @@ pub struct PlanOptions {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     #[ts(optional, as = "Option<bool>")]
     pub block_unmountable: bool,
+    /// What a full reconciliation removes beyond `removals`. Absent, it removes
+    /// every observed Service of the Namespace the target lacks.
+    #[serde(default, skip_serializing_if = "PruneScope::is_namespace")]
+    #[ts(optional, as = "Option<PruneScope>")]
+    pub prune: PruneScope,
+}
+
+/// How far a full reconciliation removes what its target lacks.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum PruneScope {
+    /// Every observed Service of the Namespace the target lacks.
+    #[default]
+    Namespace,
+    /// Only `PlanOptions.removals`. Every other observed Service the target lacks
+    /// is kept and reported.
+    Removals,
+}
+
+impl PruneScope {
+    #[must_use]
+    pub const fn is_namespace(&self) -> bool {
+        matches!(self, Self::Namespace)
+    }
 }
 
 /// Services a targeted Deploy tears down by name. It can name only Services,
@@ -287,6 +311,8 @@ impl DeployIntent {
             Some(PruneRefusal::IncompleteSnapshot)
         } else if !self.options.selected.is_empty() {
             Some(PruneRefusal::SelectedServices)
+        } else if self.options.prune == PruneScope::Removals {
+            Some(PruneRefusal::RemovalsOnly)
         } else {
             None
         }
@@ -713,6 +739,10 @@ pub enum PruneRefusal {
     IncompleteSnapshot,
     /// The command named specific Services, so it is not a full reconciliation.
     SelectedServices,
+    /// The Deploy removes only the Services its `removals` name: the ones its
+    /// Config Store held and dropped. Every other Service the target lacks is kept
+    /// and reported as [`DeployWarning::NotInStore`].
+    RemovalsOnly,
 }
 
 impl Display for PruneRefusal {
@@ -723,6 +753,9 @@ impl Display for PruneRefusal {
             ),
             Self::SelectedServices => f.write_str(
                 "Pruning is disabled because this command named specific Services, so it is not a full reconciliation.",
+            ),
+            Self::RemovalsOnly => f.write_str(
+                "Pruning is limited to the services this environment removed; any other service running in it is kept and reported.",
             ),
         }
     }
@@ -875,6 +908,10 @@ pub enum DeployWarning {
         /// The Machine's name when the plan knows it, else its id.
         machine: String,
     },
+    /// `service` runs in the Namespace, and neither the target nor the removals
+    /// name it: another Config Store, or a direct Deploy, put it there. The Deploy
+    /// keeps it; `ployz deploy --prune` removes it.
+    NotInStore { service: QualifiedService },
 }
 
 impl DeployWarning {
@@ -905,7 +942,8 @@ impl DeployWarning {
             | Self::SkippedDependencyHealth { .. }
             | Self::ImagePortMismatch { .. }
             | Self::LeftRunning { .. }
-            | Self::MixedAfterReturn { .. } => None,
+            | Self::MixedAfterReturn { .. }
+            | Self::NotInStore { .. } => None,
         }
     }
 }
@@ -962,6 +1000,10 @@ impl Display for DeployWarning {
             Self::MixedAfterReturn { machine } => write!(
                 f,
                 "If {machine} restarts and confirms the new copies within a few minutes of starting, it takes its replaced copies out of traffic. Otherwise they keep answering beside the new copies. Either way they keep running, and a left worker still takes jobs, until the next deploy."
+            ),
+            Self::NotInStore { service } => write!(
+                f,
+                "{service}: running, not in this environment; kept. ployz deploy --prune removes it."
             ),
         }
     }

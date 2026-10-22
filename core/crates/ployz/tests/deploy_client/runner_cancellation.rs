@@ -47,6 +47,7 @@ fn deployment() -> (Arc<ConfigStore>, Actor, DeploymentId) {
                 upload: None,
                 accept_volume_loss: Vec::new(),
                 message: None,
+                prune: false,
             }),
             &ployz_store::Trusted::default(),
         )
@@ -147,6 +148,7 @@ async fn taken_over_mid_create() -> (Arc<ConfigStore>, Actor, DeploymentId) {
                 upload: None,
                 accept_volume_loss: Vec::new(),
                 message: None,
+                prune: false,
             }),
             &ployz_store::Trusted::default(),
         )

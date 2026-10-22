@@ -41,6 +41,12 @@ variable that isn't there, doesn't either: the deploy leaves that variable out t
 leaves the reference empty in a config file, along with any reference that reads it, and the
 deployment's page and `ployz deploy` name each one.
 
+A deploy removes only the services you removed from the environment, such as with
+`ployz service rm`. It keeps any other service running in the environment, and `ployz deploy` and
+`ployz deployment show` name each one, such as `postgres: running, not in this environment; kept`.
+To remove those too, run `ployz deploy --prune`. It asks first. In a script or with `--json`, add
+`--yes`, or it stops with `confirmation_required` and deploys nothing. Their volumes and data stay.
+
 **Save only** in **Details**, in the bottom bar's **⋮** menu, or on **Deploy** while you hold Alt,
 records your changes and optional message without deploying them. Ployz shows **Saved, not
 deployed**. Your
@@ -225,6 +231,8 @@ their recorded outcomes.
 ## Redeploy or cancel a deployment
 
 - **Redeploy**, on any finished deployment, ships that deployment's commit and settings again.
+  It never prunes, even when the deployment it ships again did: services that aren't the
+  environment's are kept and named, as by a deploy without `--prune`.
   Your staged changes, volume changes included, wait for your next deploy, and **Copies wait
   for Deploy** beside the button says so when volume changes are staged. To ship a fix, change it
   and deploy instead. A deployment whose restore failed can't be redeployed, because it would mount

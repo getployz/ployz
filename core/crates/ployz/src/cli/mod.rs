@@ -133,6 +133,15 @@ pub(crate) fn switch(name: &'static str, short: Option<char>) -> Arg {
     }
 }
 
+/// `--yes`/`-y`, which `PLOYZ_AUTO_CONFIRM` also answers, as 1/0, yes/no,
+/// true/false or on/off.
+pub(crate) fn yes(help: &'static str) -> Arg {
+    switch("yes", Some('y'))
+        .value_parser(clap::builder::BoolishValueParser::new())
+        .env(env::AUTO_CONFIRM)
+        .help(help)
+}
+
 pub(crate) fn positional(name: &'static str, required: bool) -> Arg {
     Arg::new(name).required(required).action(ArgAction::Set)
 }

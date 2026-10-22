@@ -48,6 +48,15 @@ pub(super) fn deploy_command(command: Command) -> Command {
                 .conflicts_with_all(["service", "plan", "upload", "events", "detach"])
                 .help("Save everything staged for the next deploy instead of deploying it"),
         )
+        .arg(
+            switch("prune", None)
+                .conflicts_with_all(["service", "plan", "skip-deploy"])
+                .help(
+                    "Also remove every Service running in the Environment that this Store \
+                     doesn't hold; asks first",
+                ),
+        )
+        .arg(crate::cli::yes("Prune without asking"))
         .arg(crate::cli::reviewed_version())
         .arg(crate::cli::approval())
         .arg(
@@ -128,11 +137,7 @@ pub(super) fn redeploy_command(command: Command) -> Command {
          --accept-volume-loss.",
     )))
     .arg(id())
-    .arg(
-        switch("yes", Some('y'))
-            .env(crate::cli::env::AUTO_CONFIRM)
-            .help("Roll back without asking"),
-    )
+    .arg(crate::cli::yes("Roll back without asking"))
     .arg(crate::cli::volume_acceptance().help(format!(
         "{}; --yes cannot bypass this",
         crate::cli::VOLUME_ACCEPTANCE
@@ -171,8 +176,12 @@ pub(super) fn deploy(root: &ArgMatches) -> Result<(), Error> {
     let upload = source.as_deref().and_then(Path::to_str);
     let message = matches.get_one::<String>("message").map(String::as_str);
     let skip = matches.get_flag("skip-deploy");
+    let prune = matches.get_flag("prune");
+    let yes = matches.get_flag("yes");
     let store = store(root)?
         .args(skip.then_some("--skip-deploy"))
+        .args(prune.then_some("--prune"))
+        .args((prune && yes).then_some("--yes"))
         .args(names.iter().copied())
         .args(upload.into_iter().flat_map(|source| ["--upload", source]))
         .args(
@@ -187,6 +196,9 @@ pub(super) fn deploy(root: &ArgMatches) -> Result<(), Error> {
     if matches.get_flag("plan") {
         return plan(matches, &store, services);
     }
+    if prune && !yes {
+        confirm_prune()?;
+    }
     let events = open_events(matches)?;
     let request = Request {
         environment: environment(matches)?,
@@ -195,8 +207,28 @@ pub(super) fn deploy(root: &ArgMatches) -> Result<(), Error> {
         source,
         accept: super::teardown::accepted(matches)?,
         message: matches.get_one::<String>("message").cloned(),
+        prune,
     };
     upload_and_ship(matches, &store, request, events)?.finish()
+}
+
+/// Ask before `deploy --prune` removes what this Store never held. The prompt can't
+/// name those Services: the Deploy Preview that finds them is computed only after
+/// admission, and admission is what `--prune` changes.
+fn confirm_prune() -> Result<(), Error> {
+    ui::confirm(
+        "Also remove every service running in this environment that isn't one of its services?",
+        || {
+            Error::detailed(
+                RpcErrorCode::ConfirmationRequired,
+                "deploy --prune removes every service running in this environment that isn't one of \
+                 its services, and needs confirmation. Nothing deployed.",
+                serde_json::json!({ "prune": true }),
+            )
+            .hint(Hint::Retry(super::typed_with(&["--yes"])))
+        },
+        "Cancelled. Nothing deployed.",
+    )
 }
 
 /// `deploy --skip-deploy`: save everything staged for the next deploy.
@@ -241,6 +273,8 @@ pub(super) struct Request {
     pub(super) source: Option<PathBuf>,
     pub(super) accept: Vec<VolumeName>,
     pub(super) message: Option<String>,
+    /// Also remove every Service running in the Environment that this Store never held.
+    pub(super) prune: bool,
 }
 
 /// Upload `request.source`, admit the Deployment, then run or follow it.
@@ -257,6 +291,7 @@ pub(super) fn upload_and_ship(
         source,
         accept,
         message,
+        prune,
     } = request;
     refuse_local_detach(matches, store)?;
     let listing = source
@@ -284,6 +319,7 @@ pub(super) fn upload_and_ship(
             upload,
             accept_volume_loss: accept,
             message,
+            prune,
         }))
         .map_err(|error| store.accepting(store.at_review(error, "diff")))?;
     execute(matches, store, &admitted, source.as_deref(), events)
@@ -1325,6 +1361,22 @@ fn confirm_rollback(store: &Store, source: &DeploymentId) -> Result<Vec<u64>, Er
     Ok(view.rolls_back)
 }
 
+/// What a Deployment admitted with `prune` says of it: that it prunes, and when
+/// the Servers refused the prune, why. Nothing for one admitted without.
+fn prune_lines(prune: bool, preview: Option<&ployz_core::DeployPreview>) -> Vec<String> {
+    if !prune {
+        return Vec::new();
+    }
+    let mut lines = vec![
+        "  Prune: also removes every service running in this environment that isn't one of its services"
+            .to_owned(),
+    ];
+    if let Some(refusal) = preview.and_then(|preview| preview.prune_refusal.as_ref()) {
+        lines.push(format!("  Prune skipped: {refusal}"));
+    }
+    lines
+}
+
 /// `#5 and #6`, the Deployments a redeploy undoes; none when it undoes nothing.
 fn rolls_back(numbers: &[u64]) -> Option<String> {
     let (last, rest) = numbers.split_last()?;
@@ -1401,6 +1453,14 @@ pub(super) fn say_view(view: &DeploymentView) {
     ));
     if let Some(provenance) = provenance(&view.deployment) {
         crate::ui::stream(format_args!("  {provenance}"));
+    }
+    for line in prune_lines(view.deployment.prune, view.preview.as_ref()) {
+        crate::ui::stream(format_args!("{line}"));
+    }
+    for warning in view.preview.iter().flat_map(|preview| &preview.warnings) {
+        if let ployz_core::DeployWarning::NotInStore { .. } = warning {
+            crate::ui::stream(format_args!("  ! {warning}"));
+        }
     }
     if let Some(
         ployz_store::Outcome::NotExecuted { reason, cause, .. }
@@ -1499,10 +1559,33 @@ fn service_outcome_lines(services: &[ployz_core::ServiceOutcome]) -> Vec<String>
 #[cfg(test)]
 mod tests {
     use super::{
-        Tone, open_events, provenance, service_outcome_lines, ships_all, status_tone, status_word,
-        undecided, untargeted_lines,
+        Tone, open_events, provenance, prune_lines, service_outcome_lines, ships_all, status_tone,
+        status_word, undecided, untargeted_lines,
     };
     use ployz_core::{RpcErrorCode, ServiceName};
+
+    #[test]
+    fn a_pruning_deployment_says_when_the_servers_refused_its_prune() {
+        let refused: ployz_core::DeployPreview = serde_json::from_value(serde_json::json!({
+            "namespace": "shop-production", "operations": [], "warnings": [],
+            "would_remove": [], "preserved_volumes": [], "prune_refusal": "incomplete_snapshot"
+        }))
+        .unwrap();
+        let lines = prune_lines(true, Some(&refused));
+        let [prunes, skipped] = lines.as_slice() else {
+            panic!("{lines:?}");
+        };
+        assert!(prunes.starts_with("  Prune:"), "{lines:?}");
+        assert_eq!(
+            *skipped,
+            format!(
+                "  Prune skipped: {}",
+                ployz_core::PruneRefusal::IncompleteSnapshot
+            )
+        );
+        assert_eq!(prune_lines(true, None).len(), 1);
+        assert!(prune_lines(false, Some(&refused)).is_empty());
+    }
 
     #[test]
     fn the_plan_says_what_the_servers_decide_in_plain_words() {

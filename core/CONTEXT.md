@@ -83,7 +83,7 @@ The unresolved Service ID, Qualified Service (`project/name`), or Service Name u
 _Avoid_: Service Name as identity
 
 **Service Attempt**:
-One Service Name this Deploy will apply from the target. Attempts are implicitly required until a requirement distinction exists. An empty selected list on Plan Options is full reconciliation; a non-empty list is partial. There is no independent prune flag.
+One Service Name this Deploy will apply from the target. Attempts are implicitly required until a requirement distinction exists. An empty selected list on Plan Options is full reconciliation; a non-empty list is partial. How far a full reconciliation removes is the Prune Scope, never the selected list.
 _Avoid_: selected-service list as a prune flag
 
 **Service Template**:
@@ -217,8 +217,12 @@ The Resolved Service Spec carried by the newest observer-visible Service Contain
 _Avoid_: Current service spec, canonical service spec, desired Global state
 
 **Deploy Intent**:
-The complete desired Services for one Deploy together with which of those Services this command applies. Empty `selected` is full reconciliation of the target, including removal of observer-visible Services the target no longer declares. Services in the target that are not applied are unchanged.
+The complete desired Services for one Deploy together with which of those Services this command applies. Empty `selected` is full reconciliation of the target; its Prune Scope says which observer-visible Services the target lacks it removes. Services in the target that are not applied are unchanged.
 It is derived from an Environment's Saved State when a Deploy is admitted, never authored directly. Compose files are not an input.
+
+**Prune Scope**:
+How far a full reconciliation removes what its target lacks. `namespace` removes every observer-visible Service of the resolved user Namespace the target lacks: the direct Deploy's default, and what a Config Store Deploy admitted with prune lowers. `removals` removes only the Deploy's removals: the Services this Config Store held and since dropped, and the runtime names its Services ran as and no longer do; every other running Service is kept and reported as a Deploy Warning. A Config Store lowers a full Deploy as `removals` unless it was admitted with prune, so two Stores driving one Cluster never remove each other's Services. A targeted Deploy has no Prune Scope to apply.
+_Avoid_: prune flag on Service Attempt, ownership of a Service by a Store, orphan
 _Avoid_: leftover filtered Compose project, Compose as an authoring format, Cloud Attempt Target, Full/Partial/Adhoc as kinds of Deploy
 
 **Config Store**:
@@ -401,7 +405,7 @@ The observer-relative Machine, Service Container, and Docker Volume observations
 _Avoid_: current cluster state, desired state, cluster snapshot, authoritative Cluster completeness
 
 **Prune Refusal**:
-Why a full reconciliation must not remove visible drift. Observer-relative; never a claim of Cluster completeness. Absence means this Deploy may remove obsolete Services owned by the resolved user Namespace.
+Why a full reconciliation must not remove visible drift. Observer-relative; never a claim of Cluster completeness. Absence means this Deploy may remove obsolete Services owned by the resolved user Namespace. A Prune Scope of `removals` is one such refusal: the Deploy retires its removals and keeps the rest.
 _Avoid_: prune flag, Cluster-complete snapshot
 
 **Deploy Plan**:

@@ -9,7 +9,7 @@ use ployz_core::RpcErrorCode;
 use serde_json::json;
 
 use super::waiting::{self, Rejection, Stopped, Waiting};
-use crate::cli::{base, env, positional, switch};
+use crate::cli::{base, positional};
 use crate::handlers::{Error, leaf_matches, runtime, typed_with};
 use crate::ui::{self, Cell, Hint, Table, printable};
 
@@ -27,11 +27,7 @@ pub(crate) fn command(command: Command) -> Command {
             positional("pattern", true)
                 .help("A name, a glob such as 'web-*', or a waiting server's id"),
         )
-        .arg(
-            switch("yes", Some('y'))
-                .env(env::AUTO_CONFIRM)
-                .help("Reject the matches without asking"),
-        )
+        .arg(crate::cli::yes("Reject the matches without asking"))
 }
 
 pub(crate) fn reject(root: &ArgMatches) -> Result<(), Error> {

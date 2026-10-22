@@ -1835,6 +1835,7 @@ fn deploying() -> (ConfigStore, DeploymentId) {
                 upload: None,
                 accept_volume_loss: Vec::new(),
                 message: None,
+                prune: false,
             }),
         )
         .unwrap();
@@ -2314,6 +2315,7 @@ fn rolled_back_volume() -> (ConfigStore, Trusted) {
                 upload: None,
                 accept_volume_loss: Vec::new(),
                 message: None,
+                prune: false,
             }),
         )
         .unwrap();
@@ -2606,6 +2608,7 @@ fn a_deployments_metrics_refuse_a_service_it_did_not_deploy() {
                     upload: None,
                     accept_volume_loss: Vec::new(),
                     message: None,
+                    prune: false,
                 }),
             )
             .unwrap();
@@ -2820,6 +2823,7 @@ fn service_update_seals_a_secret_it_generates_and_refuses_one_it_is_sent() {
                 upload: None,
                 accept_volume_loss: Vec::new(),
                 message: None,
+                prune: false,
             }),
         )
         .unwrap();
