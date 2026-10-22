@@ -319,9 +319,12 @@ impl Items {
                     let in_test = in_test || is_cfg_test(&module.attrs);
                     let name = module.ident.to_string();
                     if let Some((_, content)) = &module.content {
+                        let outer = self.imported_sleeps.clone();
+                        self.imported_sleeps.extend(imported_sleeps(content));
                         self.inline_path.push(name);
                         self.walk(content, in_test);
                         self.inline_path.pop();
+                        self.imported_sleeps = outer;
                     } else {
                         self.mods.push(ModDecl {
                             name,
@@ -544,13 +547,8 @@ fn imported_sleeps(items: &[syn::Item]) -> HashMap<String, Clock> {
     }
     let mut out = HashMap::new();
     for item in items {
-        match item {
-            syn::Item::Use(item_use) => tree(&item_use.tree, false, &mut out),
-            syn::Item::Mod(syn::ItemMod {
-                content: Some((_, items)),
-                ..
-            }) => out.extend(imported_sleeps(items)),
-            _ => {}
+        if let syn::Item::Use(item_use) = item {
+            tree(&item_use.tree, false, &mut out);
         }
     }
     out
@@ -753,6 +751,30 @@ async fn waits() {
                 "8: real-clock sleep in test code"
             ]
         );
+    }
+
+    #[test]
+    fn an_import_reaches_only_its_own_module() {
+        let source = r#"
+mod paused {
+    use tokio::time::sleep;
+
+    #[tokio::test(start_paused = true)]
+    async fn waits() {
+        sleep(Duration::from_secs(1)).await;
+    }
+}
+
+mod real {
+    use std::thread::sleep;
+
+    #[test]
+    fn waits() {
+        sleep(Duration::from_millis(5));
+    }
+}
+"#;
+        assert_eq!(lint(source), ["16: real-clock sleep in test code"]);
     }
 
     #[test]
