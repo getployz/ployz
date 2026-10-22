@@ -233,7 +233,7 @@ sees "production is Protected; only an owner or admin can make a Deploy token fo
 deploys, syncs and takes there without waiting for another admin, and cancels a deploy someone else
 started. A Deploy token can't destroy, so a deploy that would remove something is refused, even
 when an admin already saved the removal. A retry or rollback still waits for an admin, and so does
-every deploy from an agent's token. The token still can't turn protection off, connect a
+every deploy an agent makes with it. The token still can't turn protection off, connect a
 repository or change the deploy branch. If you stop being an owner or admin, the token's deploys
 ask like a member's.
 
