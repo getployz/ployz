@@ -744,6 +744,7 @@ fn readdressing_takes_stopped_and_detached_bridge_containers_and_pins_ipv4() {
         id: id.into(),
         ipv4: ipv4.map(Into::into),
         attached,
+        ipv6: false,
     };
     assert_eq!(
         bridge_members(&[

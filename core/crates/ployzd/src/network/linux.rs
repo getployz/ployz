@@ -10,8 +10,8 @@ use std::{
 use bollard::{
     Docker,
     models::{
-        ContainerSummary, EndpointIpamConfig, EndpointSettings, Ipam, IpamConfig,
-        NetworkConnectRequest, NetworkCreateRequest, NetworkDisconnectRequest, NetworkInspect,
+        ContainerSummary, EndpointIpamConfig, Ipam, IpamConfig, NetworkConnectRequest,
+        NetworkCreateRequest, NetworkDisconnectRequest, NetworkInspect,
     },
     query_parameters::ListContainersOptionsBuilder,
 };
@@ -533,7 +533,7 @@ impl NetworkPlane {
             report_readdress(&error);
         }
         for member in detached {
-            self.rejoin(&member.id, member.ipv4.as_deref()).await;
+            self.rejoin(member, member.ipv4.as_deref()).await;
         }
     }
 
@@ -578,7 +578,7 @@ impl NetworkPlane {
         match self.bridge_members().await {
             Ok(members) => {
                 for member in members.iter().filter(|member| !member.attached) {
-                    self.rejoin(&member.id, None).await;
+                    self.rejoin(member, None).await;
                 }
             }
             Err(error) => report_readdress(&error),
@@ -586,16 +586,18 @@ impl NetworkPlane {
     }
 
     /// Falls back to any free address when the old one can't be had.
-    async fn rejoin(&self, container: &str, ipv4: Option<&str>) {
-        let connect = |ipv4: Option<&str>| NetworkConnectRequest {
-            container: container.to_owned(),
-            endpoint_config: ipv4.map(|address| EndpointSettings {
-                ipam_config: Some(EndpointIpamConfig {
-                    ipv4_address: Some(address.to_owned()),
-                    ..Default::default()
-                }),
+    async fn rejoin(&self, member: &BridgeMember, ipv4: Option<&str>) {
+        let container = &member.id;
+        let connect = |ipv4: Option<&str>| {
+            let mut endpoint = crate::docker::bridge_endpoint(member.ipv6).unwrap_or_default();
+            endpoint.ipam_config = ipv4.map(|address| EndpointIpamConfig {
+                ipv4_address: Some(address.to_owned()),
                 ..Default::default()
-            }),
+            });
+            NetworkConnectRequest {
+                container: container.clone(),
+                endpoint_config: Some(endpoint),
+            }
         };
         let mut result = self
             .docker
@@ -629,6 +631,7 @@ struct BridgeMember {
     id: String,
     ipv4: Option<String>,
     attached: bool,
+    ipv6: bool,
 }
 
 fn bridge_members(containers: &[ContainerSummary]) -> Vec<BridgeMember> {
@@ -651,6 +654,10 @@ fn bridge_members(containers: &[ContainerSummary]) -> Vec<BridgeMember> {
                     .and_then(|endpoint| endpoint.ip_address.clone())
                     .filter(|address| !address.is_empty()),
                 attached: endpoint.is_some(),
+                ipv6: container
+                    .labels
+                    .as_ref()
+                    .is_some_and(crate::docker::takes_bridge_ipv6),
             })
         })
         .filter(|member| !member.id.is_empty())
