@@ -45,10 +45,43 @@ Prod application data is on PlanetScale: org `ployz`, database `ployz` (app tabl
 A changed env file only takes effect after its service is redeployed. Deploy redis-inngest before inngest, and inngest
 before web and worker.
 
-Database migrations do not run at boot. Before deploying a web/worker image that adds migrations, run them once from
-that image:
+See [Migrations](#migrations) before changing the web or worker image.
 
-    docker run --rm --env-file <file with DATABASE_URL only> --entrypoint npm <image> run db:migrate
+## Migrations
+
+Database migrations run through Uncloud's pre-deploy hook on web (`x-pre_deploy` on `ployz-web` and
+`ployz-staging-web`):
+
+    x-pre_deploy:
+      command: ["npm", "run", "db:migrate"]
+      timeout: 10m
+
+- When a deploy replaces web's container, Uncloud first runs this command in a one-off container that uses the same
+  image, the image's entrypoint, and web's env, `DATABASE_URL` included, from its env file. `db:migrate` applies the
+  main and the analytics migrations. drizzle-kit skips migrations that are already applied, so a deploy that brings
+  none only checks.
+- If the hook fails or exceeds its timeout, the deploy stops before any web container is replaced. `uc` prints the
+  hook's last 10 log lines and keeps the failed hook container (`ployz-web-pre-deploy-*`), which carries web's env:
+  read its logs, never its config, then remove it.
+- Uncloud skips the hook when the deploy changes nothing. Only web has the hook: worker shares its image, so the
+  migrations run once.
+- Deploy web before worker when an image brings migrations, so the worker never runs against an unmigrated schema.
+
+Before any deploy that brings new migrations, take a backup. The hook doesn't do this for you. List the migrations
+the bump adds with `git diff --name-only <old> <new> -- dashboard/drizzle`, then run:
+
+    pscale backup create ployz main --org ployz --name pre-<version>-$(date -u +%Y%m%d%H%M)
+
+Wait until `pscale backup list ployz main --org ployz` shows the backup's state as `success`.
+
+Rolling back:
+- Migrations are forward-only. To go back to an older image, redeploy the previous compose (keep a copy, for example
+  `compose.prod.yaml.<version>`). Its hook finds nothing new to apply.
+- That's safe only when the newer migrations are backward-compatible with the older code. Check every new
+  migration before the bump and write down any SQL a rollback needs. beta.7's widened
+  `operation_approvals_one_pending_idx` was one case: going back to 487748a needed the old index recreated.
+- As a last resort, restore the backup into a new branch with `pscale backup restore`. That loses every write made
+  since the backup.
 
 ## Networking
 

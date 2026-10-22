@@ -9,6 +9,13 @@ services:
     image: ployz/ployz-cloud:e9126b09-np1
     env_file: .env.web.production
     mem_limit: 2g
+    # Runs the image's migrations (main and analytics) in a one-off container before any web container is replaced,
+    # with web's env, so worker, which shares the image, needs none. drizzle-kit skips applied migrations. A failure
+    # stops the rollout. Uncloud skips the hook when the deploy changes nothing. Take a pscale backup first whenever
+    # the new image brings migrations (README, Migrations).
+    x-pre_deploy:
+      command: ["npm", "run", "db:migrate"]
+      timeout: 10m
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080/api/health').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
       interval: 15s
