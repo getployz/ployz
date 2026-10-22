@@ -625,7 +625,7 @@ pub(super) async fn exited(
 
 /// `zfs receive`'s stderr fit to print or store: OpenZFS names an interrupted
 /// receive's resume token in the `zfs send -t <token>` that would resume it.
-fn without_resume_token(stderr: &str) -> String {
+pub(super) fn without_resume_token(stderr: &str) -> String {
     stderr
         .lines()
         .map(|line| {

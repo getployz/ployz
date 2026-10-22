@@ -246,7 +246,10 @@ impl VolumeStorage {
         let (received, stderr) =
             received.map_err(|error| format!("zfs receive did not finish: {error}"))?;
         if !received.success() {
-            return Err(format!("zfs receive into {fs} failed: {}", stderr.trim()));
+            return Err(format!(
+                "zfs receive into {fs} failed: {}",
+                super::transfer::without_resume_token(stderr.trim())
+            ));
         }
         let (sent, stderr) = sent.map_err(|error| format!("zfs send did not finish: {error}"))?;
         if !sent.success() {
