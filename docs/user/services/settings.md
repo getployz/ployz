@@ -14,7 +14,7 @@ reads as stored. `ployz get
 web.domains` prints only the domains; change them with the `ployz domain` commands, not
 `ployz set`. `ployz explain web` lists every setting a service takes, with its default.
 `ployz explain mounts` lists them for a service named `mounts`, and says `ployz explain
-SERVICE.mounts` describes the setting.
+mounts.mounts.data` describes the setting.
 `ployz diff` shows what you staged, and `ployz discard` undoes it.
 
 ## Source

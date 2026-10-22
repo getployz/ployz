@@ -2167,13 +2167,28 @@ fn explaining_a_setting_name_alone_points_at_the_setting() {
     assert_eq!(output.status.code(), Some(0));
     let stdout = String::from_utf8(output.stdout).unwrap();
     assert!(stdout.contains("mounts.replicas"), "{stdout}");
-    let stderr = String::from_utf8(output.stderr).unwrap();
-    assert!(
-        stderr.contains("mounts is also a Setting; `ployz explain SERVICE.mounts` describes it."),
-        "{stderr}"
-    );
     let output = human_output(&["explain", "web"], &[]);
     assert_eq!(String::from_utf8(output.stderr).unwrap(), "");
+    for setting in ["mounts", "env", "image", "domains"] {
+        let output = human_output(&["explain", setting], &[]);
+        assert_eq!(output.status.code(), Some(0), "{setting}");
+        let stderr = String::from_utf8(output.stderr).unwrap();
+        let suggested = stderr
+            .strip_prefix(&format!("{setting} is also a Setting; `"))
+            .and_then(|rest| rest.strip_suffix("` describes it.\n"))
+            .unwrap_or_else(|| panic!("{stderr}"));
+        let words = shell_words::split(suggested).unwrap();
+        let (ployz, args) = words.split_first().unwrap();
+        assert_eq!(ployz, "ployz", "{suggested}");
+        let args = args.iter().map(String::as_str).collect::<Vec<_>>();
+        let output = human_output(&args, &[]);
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "{suggested}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
 }
 
 #[cfg(unix)]
