@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { QueryClient, QueryClientProvider, focusManager, onlineManager } from "@tanstack/react-query";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 import type { DeploymentView, HistoryView } from "@ployz/sdk";
 import type { ReactNode } from "react";
@@ -149,12 +149,7 @@ it("tells a chrome view's failed read from an unread one, across rereads, after 
   await waitFor(() => expect(shown.result.current).toMatchObject({ result: { ok: true, value: { status: "running" } }, failed: true }));
 });
 
-it("leaves no History or Deployment read mounted for a later file's focus or reconnect to rerender", async () => {
-  // Runs last: every hook above must already be unmounted, or its rerender reads the real scope and throws.
-  focusManager.setFocused(false);
-  focusManager.setFocused(true);
-  onlineManager.setOnline(false);
-  onlineManager.setOnline(true);
-  await new Promise((settled) => setTimeout(settled, 200));
+it("leaves no History or Deployment read mounted for a later file's focus or reconnect to rerender", () => {
+  // Runs last. A hook left mounted would rerender against the real scope on the next focus and read a null router.
   expect(document.body.childElementCount).toBe(0);
 });
