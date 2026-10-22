@@ -2162,6 +2162,17 @@ fn root_help_ends_with_the_catalog_pointer() {
 }
 
 #[test]
+fn a_non_http_cloud_url_names_where_it_came_from() {
+    let output = human_output(&["login"], &[("PLOYZ_CLOUD_URL", "ftp://x")]);
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stderr.contains("PLOYZ_CLOUD_URL takes a host"), "{stderr}");
+    let output = human_output(&["login", "--cloud-url", "ftp://x"], &[]);
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stderr.contains("--cloud-url takes a host"), "{stderr}");
+}
+
+#[test]
 fn explaining_a_setting_name_alone_points_at_the_setting() {
     let output = human_output(&["explain", "mounts"], &[]);
     assert_eq!(output.status.code(), Some(0));
