@@ -197,9 +197,11 @@ only attached to a GitHub account already linked in Cloud.
 
 Replace `compose.yml` with the asset from `releases/download/<tag>/` (or bump
 `PLOYZ_CLOUD_VERSION`), never `releases/latest`: that is the newest stable
-release and silently downgrades a prerelease install. Nothing guards the schema,
-so an image older than the database migrates as a no-op, turns healthy, and fails
-at request time. The user docs' upgrade snippet refuses a downgrade. Then:
+release and silently downgrades a prerelease install. An image older than the
+database refuses `db:migrate`, web and worker startup (`scripts/check-schema.ts`),
+naming its version; `PLOYZ_ALLOW_OLDER_IMAGE=1` starts it anyway, with a warning, for a
+rollback. Hosted web runs the same check, so a Railway rollback past a migration needs that
+variable on web. The user docs' upgrade snippet refuses a downgrade. Then:
 
 ```sh
 docker compose pull
