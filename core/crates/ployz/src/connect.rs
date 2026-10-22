@@ -905,8 +905,9 @@ pub enum ConnectError {
     Rpc(#[source] TransportError),
     #[error("Machine RPC payload failed.")]
     Codec(#[from] CodecError),
-    #[error(transparent)]
-    Remote(RpcError),
+    /// The daemon's own error, kept as the source so the causes it sent stay in the chain.
+    #[error("{0}")]
+    Remote(#[source] RpcError),
     #[error("Machine RPC framing failed.")]
     Framing(#[from] FramingError),
     #[error("Machine RPC identity failed.")]
@@ -1129,12 +1130,27 @@ pub struct TransportError {
     /// The channel's one stream closed: resending on it can never succeed, so
     /// [`TransportError::to_rpc_error`] marks it for [`on_closed_session`].
     session_closed: bool,
+    /// The status carried details, which ployzd attaches and tonic or a proxy never does.
+    detailed: bool,
     /// Why the client's connection or stream failed, below tonic's own words.
     #[source]
     cause: Option<crate::failure::JoinedChain>,
 }
 
 impl TransportError {
+    /// The target's daemon sent this status itself, with its own message and the details
+    /// ployzd attaches. A status tonic or a proxy made up carries no details.
+    pub(crate) fn answered(&self) -> bool {
+        !(self.unanswered
+            || self.local
+            || self.budget_expired
+            || self.routed_unanswered
+            || self.routed_unreached
+            || self.session_closed
+            || self.message.is_empty()
+            || !self.detailed)
+    }
+
     pub(crate) fn budget_expired(message: &str) -> Self {
         Self {
             budget_expired: true,
@@ -1239,6 +1255,7 @@ impl From<tonic::Status> for TransportError {
                     .metadata()
                     .contains_key(ployz_core::rpc::TARGET_UNREACHED_KEY),
             session_closed,
+            detailed: !status.details().is_empty(),
             cause,
             code: status.code(),
             message: status.message().to_owned(),

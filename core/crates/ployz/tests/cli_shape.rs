@@ -2471,6 +2471,15 @@ fn no_error_derive_interpolates_its_source() {
                         .take_while(|c| c.is_alphanumeric() || *c == '_')
                         .collect::<String>()
                 }));
+                // A message that is only its source repeats it exactly, and the chain drops
+                // a line equal to the one above it.
+                if arguments.trim().is_empty()
+                    && sources
+                        .iter()
+                        .any(|source| message.value() == format!("{{{source}}}"))
+                {
+                    continue;
+                }
                 if let Some(source) = sources.iter().find(|source| used.contains(source)) {
                     self.found.push(format!(
                         "{}: {item} shows its source `{source}` in {:?}",

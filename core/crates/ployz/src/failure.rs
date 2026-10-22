@@ -963,6 +963,10 @@ impl From<ConnectError> for Failure {
         match error {
             ConnectError::Context(error) => error.into(),
             ConnectError::Value(error) => error.into(),
+            // The daemon answered with its own failure: print that, not a failed call.
+            ConnectError::Rpc(error) if error.answered() => {
+                Self::command(ConnectError::Remote(error.to_rpc_error()))
+            }
             error => Self::command(error),
         }
     }
@@ -976,6 +980,7 @@ impl From<OperatorError> for Failure {
     fn from(error: OperatorError) -> Self {
         match error {
             OperatorError::Connect(error) => error.into(),
+            OperatorError::Rpc(error) => ConnectError::Rpc(error).into(),
             OperatorError::Protocol(error) => error.into(),
             error => Self::command(error),
         }
@@ -1331,6 +1336,48 @@ mod tests {
             failure.to_string(),
             "A Server's daemon answered, but the 2 connections from Cloud all failed. \
              Server web-2, tried last, isn't answering. Check that its Ployz daemon is running, then retry."
+        );
+    }
+
+    #[test]
+    fn a_daemon_that_answered_with_an_error_is_not_blamed_for_the_call() {
+        let sent = RpcError {
+            code: RpcErrorCode::Internal,
+            message: "Corrosion HTTP request failed".into(),
+            details: Value::Null,
+            cause: vec!["Connection refused (os error 111)".into()],
+        };
+        let failure = Failure::from(ConnectError::Rpc(crate::connect::TransportError::from(
+            ployz_core::rpc::caused_status(tonic::Code::Internal, &sent),
+        )));
+        assert_eq!(failure.to_string(), "Corrosion HTTP request failed");
+        assert_eq!(failure.causes(), ["Connection refused (os error 111)"]);
+        assert_eq!(failure.report().code, RpcErrorCode::Internal);
+        assert!(failure.daemon_answered());
+
+        let wrapped = failure.context("Couldn't list servers.");
+        assert_eq!(
+            wrapped.causes().last().map(String::as_str),
+            Some("Connection refused (os error 111)")
+        );
+        assert!(
+            ui::row(&wrapped)
+                .ends_with("Corrosion HTTP request failed: Connection refused (os error 111)"),
+            "{}",
+            ui::row(&wrapped)
+        );
+    }
+
+    #[test]
+    fn a_status_the_daemon_did_not_attach_details_to_keeps_the_call_wording() {
+        let failure = Failure::from(ConnectError::Rpc(crate::connect::TransportError::from(
+            tonic::Status::unavailable(
+                "grpc-status header missing, mapped from HTTP status code 502",
+            ),
+        )));
+        assert_eq!(
+            failure.to_string(),
+            "Ployz's call to your Server's daemon failed."
         );
     }
 
