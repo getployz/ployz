@@ -17,10 +17,10 @@ web.domains` prints only the domains; change them with the `ployz domain` comman
 ## Source
 
 A repository service shows **Repository** through **Watch paths**, an image service shows
-**Container image** and **Registry credentials**, and an empty service shows **Add a source**.
+**Container image** and **Registry credentials**, and an empty service shows **No source**.
 A service from `ployz up` shows only a note to run it again.
 
-![Settings → Source for a repository: Repository, Branch, Add root directory, Auto-deploy and Wait for CI](../images/service-settings-source.png)
+![Settings → Source for a repository: Repository, Branch, Root directory, Auto-deploy and Wait for CI](../images/service-settings-source.png)
 
 ### Repository
 
@@ -37,7 +37,7 @@ follow `main` while staging follows `develop`. See
 
 ### Root directory
 
-The repository root (`/`) until you click **Add root directory** and enter a folder, like
+The repository root (`/`) until you click **Root directory** and enter a folder, like
 `/apps/web`. Set it to deploy one app from a monorepo: the build sees nothing outside that
 folder. See [Deploy a monorepo](../deploy/github.md#deploy-a-monorepo).
 
@@ -75,25 +75,22 @@ credentials you already have **takes effect at once**, and Discard can't bring t
 
 ### Add a source
 
-An **Empty service** has nothing to run, and deploying it fails until you choose **Git
+An **Empty service** has nothing to run, and deploying it fails until you choose **GitHub
 repository** or **Container image** here. See [Add a service](services.md#add-a-service).
 
 ### Switch between an image and a repository
 
-Setting the other kind of source replaces the current one, with no need to disconnect it first.
-Switching is CLI-only for now:
-
-```sh
-ployz set web.repository=acme/web     # an image service builds acme/web's default branch
-ployz set web.image=nginx:1.27        # a repository service runs nginx:1.27
-```
+Open the source's **⋯** menu and choose **Switch to container image** or **Switch to GitHub
+repository**. The new source replaces the current one, with no need to disconnect it first.
 
 A service that switches to a repository builds from the repository root. A service that
 switches to an image loses its root directory and build settings, so they are back at their
 defaults if it later builds a repository again. Like every change, the switch waits for your
 next deploy, and Discard undoes it.
 
-A service has one source at a time, so one `set` takes `image` or `repository`, not both.
+From the CLI, `ployz set web.repository=acme/web` switches an image service to a repository, and
+`ployz set web.image=nginx:1.27` switches a repository service to an image. A service has one
+source at a time, so one `set` takes `image` or `repository`, not both.
 
 Each setting belongs to one kind of source. An image service refuses the repository settings:
 `branch`, `rootDir`, the build settings and the deploy-on-push settings. A repository service
@@ -116,26 +113,26 @@ the build settings, because it builds the code you upload.
 
 ## Networking
 
-![Settings → Networking: a generated domain that uses PORT, Custom Domain, and the private name](../images/service-settings-networking.png)
+![Settings → Networking: a generated domain that uses PORT, Custom domain, and the Private address](../images/service-settings-networking.png)
 
-### Public Networking
+### Public domains
 
-A service you add in the dashboard has none until you click **Generate Domain**, which gives it
+A service you add in the dashboard has none until you click **Generate domain**, which gives it
 a free https address like `web.acme-x7q2.ployz.app`. Leave **Port** blank to send traffic to
 `PORT`, `8080` unless you set it, or enter the port your app listens on. See
 [Generate a domain](domains.md#generate-a-domain).
 
-### Custom Domain
+### Custom domain
 
 Adds a domain you own, like `app.example.com`, next to the generated one, and a service can have
 as many as you need. It needs a DNS record at your DNS provider. See
 [Add a custom domain](domains.md#add-a-custom-domain).
 
-### Private Networking
+### Private address
 
 Other services reach this one at `NAME.internal`, or just `NAME`, on any port. The name starts as
-the service's name and stays when you rename the service; change it with the pencil, and update
-services that typed the old name in the same deploy. See
+the service's name and stays when you rename the service. Type a new one here and press Enter, and
+update services that typed the old name in the same deploy. See
 [Change a service's private name](private-networking.md#change-a-services-private-name).
 
 ## Scale
@@ -145,7 +142,8 @@ services that typed the old name in the same deploy. See
 ### Replicas
 
 1 by default, up to 50. Ployz gives each server one replica before any server gets a second. A
-service with a volume runs one replica, and preview environments run one of each service. See
+service with a volume runs one replica unless the volume allows shared writes, and the field
+then says **Limited to 1**. Preview environments run one of each service. See
 [Run more replicas](scaling.md#run-more-replicas).
 
 ### CPU limit
