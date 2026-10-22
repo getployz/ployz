@@ -1245,6 +1245,45 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_slot_read_waiting_out_a_create_that_replaced_its_container_reads_the_replacement() {
+        let (runtime, containers, machine, spec, lost) = specless(Some("plan:0"), "created").await;
+        let namespace = Namespace::parse("app").unwrap();
+        let slot = SlotKey {
+            namespace: namespace.clone(),
+            service: spec.name.clone(),
+            kind: ContainerKind::ServiceContainer,
+            creation_key: ployz_core::CreationKey::try_from("plan:0".to_owned()).unwrap(),
+        };
+        let mut create = runtime.specs.config_operation().await;
+        let read = tokio::spawn({
+            let runtime = runtime.clone();
+            async move { runtime.inspect_slot(&machine.id, &slot).await }
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        // The create the read waits on removes the half-made Container and makes another.
+        let replacement = ContainerId::parse("e".repeat(64)).unwrap();
+        for container in containers.lock().unwrap().values_mut() {
+            container["Id"] = replacement.as_str().into();
+            container["State"] = serde_json::json!({ "Status": "running" });
+        }
+        let creation = super::super::spec_store::CreationSlot::new(
+            &namespace,
+            ContainerKind::ServiceContainer,
+            "plan:0",
+        );
+        create
+            .put(&replacement, Some(&creation), &spec)
+            .await
+            .unwrap();
+        drop(create);
+
+        let found = read.await.unwrap().unwrap();
+
+        assert_ne!(replacement, lost);
+        assert_eq!(found.map(|found| found.container_id), Some(replacement));
+    }
+
+    #[tokio::test]
     async fn a_slot_holding_a_started_container_without_its_spec_is_still_reported() {
         let (runtime, containers, machine, spec, id) = specless(Some("plan:0"), "running").await;
         let slot = SlotKey {
