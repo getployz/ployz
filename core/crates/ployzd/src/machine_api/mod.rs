@@ -5,7 +5,9 @@ mod routing;
 
 use std::{convert::Infallible, path::PathBuf, sync::Arc, task::Context};
 
-use ployz_core::{MachineId, MachineRpcServer, RUNTIME_WATCH_MESSAGE_SIZE_LIMIT, Rpc, op};
+use ployz_core::{
+    MachineId, MachineRpcServer, ManagementScope, RUNTIME_WATCH_MESSAGE_SIZE_LIMIT, Rpc, op,
+};
 use tonic::{
     body::Body,
     codec::CompressionEncoding,
@@ -166,6 +168,17 @@ impl Service<http::Request<Body>> for MachineApi {
             .extensions()
             .get::<iroh::endpoint::WeakConnectionHandle>()
         else {
+            let scope = if request
+                .headers()
+                .contains_key(ployz_core::OPERATOR_SCOPE_HEADER)
+            {
+                ManagementScope::Operator
+            } else {
+                ManagementScope::Full
+            };
+            if let Some(refused) = refuse_scope(request.uri().path(), scope) {
+                return Box::pin(async { Ok(refused) });
+            }
             return self.proxy.call(request);
         };
         let remote = connection.upgrade().and(
@@ -202,6 +215,12 @@ impl Service<http::Request<Body>> for MachineApi {
                     tonic::Status::unauthenticated("management credential revoked").into_http(),
                 );
             }
+            let scope = record
+                .management_scope(&remote)
+                .unwrap_or(ManagementScope::Operator);
+            if let Some(refused) = refuse_scope(request.uri().path(), scope) {
+                return Ok(refused);
+            }
             if request.uri().path() == op::SetManagementClient::PATH {
                 if let Err(error) =
                     crate::machine::LocalMachine::require_slot_authority(Some(remote), &record)
@@ -229,9 +248,39 @@ impl Service<http::Request<Body>> for MachineApi {
                 ployz_core::CLOUD_ROUTED_HEADER,
                 http::HeaderValue::from_static("1"),
             );
+            match scope {
+                ManagementScope::Operator => request.headers_mut().insert(
+                    ployz_core::OPERATOR_SCOPE_HEADER,
+                    http::HeaderValue::from_static("1"),
+                ),
+                ManagementScope::Full => request
+                    .headers_mut()
+                    .remove(ployz_core::OPERATOR_SCOPE_HEADER),
+            };
             // Carry the authenticated key into detached/queued local work as well.
             let mut proxy = proxy.with_local(routes(service.with_management_client(remote)));
             proxy.call(request).await
         })
     }
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("{capability} needs Full access")]
+struct NeedsFullAccess {
+    capability: &'static str,
+}
+
+fn refuse_scope(path: &str, scope: ManagementScope) -> Option<http::Response<Body>> {
+    if ployz_core::scope_of(path).is_none_or(|needed| scope >= needed) {
+        return None;
+    }
+    let capability = ployz_core::capability_of(path)?;
+    Some(
+        ployz_core::rpc::hinted_status(
+            tonic::Code::PermissionDenied,
+            &NeedsFullAccess { capability },
+            serde_json::json!({ "capability": capability }),
+        )
+        .into_http(),
+    )
 }

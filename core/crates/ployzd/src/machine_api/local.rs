@@ -40,6 +40,8 @@ pub struct MachineService {
     pub(crate) grants: Arc<crate::management::BuildGrants>,
     pub(crate) endpoint_chooser: Option<crate::network::EndpointChooser>,
     pub(crate) published_routes: tokio::sync::watch::Receiver<crate::ingress::PublishedRoutes>,
+    #[cfg(test)]
+    opened_in_test: BTreeSet<String>,
 }
 
 impl MachineService {
@@ -63,7 +65,21 @@ impl MachineService {
                 crate::ingress::PublishedRoutes::default(),
             )
             .1,
+            #[cfg(test)]
+            opened_in_test: BTreeSet::new(),
         }
+    }
+
+    // TODO: SL2 records the keys it opened; answer from durable state, since RetainedEnv
+    // serves Containers Docker no longer reports.
+    #[cfg(not(test))]
+    fn opened_env_keys(&self, _container: &ployz_core::ContainerId) -> BTreeSet<String> {
+        BTreeSet::new()
+    }
+
+    #[cfg(test)]
+    fn opened_env_keys(&self, _container: &ployz_core::ContainerId) -> BTreeSet<String> {
+        self.opened_in_test.clone()
     }
 
     pub(super) fn with_management_client(mut self, remote: [u8; 32]) -> Self {
@@ -341,6 +357,7 @@ impl MachineRpc for MachineService {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
+        let operator = from_operator(&request);
         let request = expect::<op::InspectContainer>(request)?;
         let containers = match self.containers() {
             Ok(containers) => containers,
@@ -351,7 +368,15 @@ impl MachineRpc for MachineService {
             .inspect_managed_details(&request.container_id, &machine_id)
             .await
         {
-            Ok(details) => respond(details),
+            Ok(mut details) => {
+                if operator {
+                    withhold_opened(
+                        &mut details.environment,
+                        &self.opened_env_keys(&request.container_id),
+                    );
+                }
+                respond(details)
+            }
             Err(error) => respond(RpcError::from(&error)),
         }
     }
@@ -515,10 +540,16 @@ impl MachineRpc for MachineService {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
+        let operator = from_operator(&request);
         let request = expect::<op::RetainedEnv>(request)?;
-        respond(RetainedEnvReply {
-            environment: self.observe.retained_env(request.container_id).await?,
-        })
+        let mut environment = self.observe.retained_env(request.container_id).await?;
+        if operator {
+            withhold_opened(
+                &mut environment,
+                &self.opened_env_keys(&request.container_id),
+            );
+        }
+        respond(RetainedEnvReply { environment })
     }
 
     async fn tail_logs(
@@ -988,6 +1019,18 @@ fn request_body(request: Request<OpaquePayload>) -> Result<RpcRequestBody, Statu
         .decode_request()
         .map(|request| request.body)
         .map_err(invalid_request)
+}
+
+fn from_operator<T>(request: &Request<T>) -> bool {
+    request
+        .metadata()
+        .contains_key(ployz_core::OPERATOR_SCOPE_HEADER)
+}
+
+fn withhold_opened(environment: &mut Option<BTreeMap<String, String>>, opened: &BTreeSet<String>) {
+    if let Some(environment) = environment {
+        environment.retain(|key, _| !opened.contains(key));
+    }
 }
 
 #[allow(clippy::result_large_err)]

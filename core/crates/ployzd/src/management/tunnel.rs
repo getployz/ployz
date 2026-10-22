@@ -1,15 +1,15 @@
 //! Port-forward tunnels: one TCP stream from an admitted Management Client to an
 //! address inside the Cluster network, relayed over its own [`TUNNEL_ALPN`] connection.
 //!
-//! A tunnel is Machine RPC power, not more: only a slot's accepted key, proven on the
-//! tunnel's first stream, opens one, the
+//! A tunnel is Machine RPC power, not more: only a `Full` slot's accepted key, proven
+//! on the tunnel's first stream, opens one, the
 //! target must be an IPv4 address in this Machine's Cluster network (never loopback or
 //! the internet), and revoking the key or stopping the daemon ends it at once.
 
 use std::{net::SocketAddr, sync::Arc, time::Duration};
 
 use iroh::endpoint::{Connection, VarInt};
-use ployz_core::{TUNNEL_FAILED, TUNNEL_OPEN};
+use ployz_core::{ManagementScope, TUNNEL_FAILED, TUNNEL_OPEN};
 use tokio::{
     io::{AsyncReadExt as _, AsyncWriteExt as _},
     net::TcpStream,
@@ -42,6 +42,9 @@ pub(super) async fn serve(
         let code = refusal(&record, &remote).unwrap_or(super::CLIENT_REFUSED);
         connection.close(code, b"management access refused");
         return;
+    }
+    if record.management_scope(&remote) < Some(ManagementScope::Full) {
+        return connection.close(VarInt::from_u32(TUNNEL_FAILED), b"tunnels need Full access");
     }
     let revoked = revoked(records, remote);
     tokio::pin!(revoked);

@@ -12,6 +12,10 @@ pub const MANY_TARGETS_HEADER: &str = "machines";
 /// Cloud's restrictions even though it never sees the tunnel. It only ever restricts,
 /// so a caller gains nothing by setting it.
 pub const CLOUD_ROUTED_HEADER: &str = "ployz-cloud-routed";
+/// Marks a request from an `Operator` Management Client. The entry Machine sets it
+/// from the caller's slot and forwarding keeps it, so the target refuses what the
+/// entry would. Like [`CLOUD_ROUTED_HEADER`] it only ever narrows.
+pub const OPERATOR_SCOPE_HEADER: &str = "ployz-operator-scope";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum RoutingRequest {

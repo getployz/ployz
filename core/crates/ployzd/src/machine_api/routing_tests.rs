@@ -156,7 +156,7 @@ async fn one_to_one_forwards_unknown_bytes_unchanged() {
 }
 
 #[tokio::test]
-async fn forwarding_keeps_the_cloud_routed_mark() {
+async fn forwarding_keeps_the_cloud_routed_and_operator_marks() {
     let listener = TcpListener::bind("[::1]:0").await.unwrap();
     let remote_port = listener.local_addr().unwrap().port();
     let (shutdown, shutdown_rx) = oneshot::channel();
@@ -190,6 +190,7 @@ async fn forwarding_keeps_the_cloud_routed_mark() {
         .header("content-type", "application/grpc")
         .header("machine", remote.name.as_str())
         .header(ployz_core::CLOUD_ROUTED_HEADER, "1")
+        .header(ployz_core::OPERATOR_SCOPE_HEADER, "1")
         .body(Body::new(Full::new(Bytes::from(
             ployz_core::encode_grpc_frame(b"{}"),
         ))))
@@ -201,6 +202,11 @@ async fn forwarding_keeps_the_cloud_routed_mark() {
         response.headers().get(ployz_core::CLOUD_ROUTED_HEADER),
         Some(&http::HeaderValue::from_static("1")),
         "a Cloud request lost its mark on the way to the target Machine"
+    );
+    assert_eq!(
+        response.headers().get(ployz_core::OPERATOR_SCOPE_HEADER),
+        Some(&http::HeaderValue::from_static("1")),
+        "an Operator request lost its mark on the way to the target Machine"
     );
     let _ = shutdown.send(());
     server.await.unwrap().unwrap();
