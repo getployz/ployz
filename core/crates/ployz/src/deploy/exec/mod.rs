@@ -21,8 +21,8 @@ use ployz_core::{
     MembershipObservation, Namespace, NewContainer, OperationPhase, OutOfMemory, PortPublication,
     PullPolicy, QualifiedService, ReadRoutesRequest, RemoveContainerPurpose, RemoveVolumeRequest,
     ResolvedServiceSpec, Retry, RoutesRead, RpcError, RpcErrorCode, RunRotation, RunTarget,
-    RuntimeWatchRequest, ServiceId, ServiceName, ServiceOutcome, SlotKey, StopOptions,
-    TransportProtocol, UpdateContainerLimitsRequest, UpdateOrder, decode_runtime_watch_frame, op,
+    ServiceId, ServiceName, ServiceOutcome, SlotKey, StopOptions, TransportProtocol,
+    UpdateContainerLimitsRequest, UpdateOrder, op,
 };
 use sha2::{Digest, Sha256};
 use tokio::sync::mpsc::UnboundedSender;
@@ -260,28 +260,7 @@ impl MachineOperations for Client {
     }
 
     async fn replicated_containers(&self) -> Result<Vec<ContainerObservation>, RpcError> {
-        let payload = op::RuntimeWatch::into_request(RuntimeWatchRequest {})
-            .encode()
-            .map_err(|error| RpcError::from(ConnectError::from(error)))?;
-        let mut stream = self
-            .runtime_watch_stream(payload)
-            .await
-            .map_err(|error| error.to_rpc_error())?;
-        let Some(frame) = stream
-            .message()
-            .await
-            .map_err(|status| TransportError::from_stream_status(status).to_rpc_error())?
-        else {
-            return Err(RpcError {
-                code: RpcErrorCode::Unavailable,
-                message: "Runtime Watch ended before its first frame".into(),
-                details: serde_json::Value::Null,
-                cause: Vec::new(),
-            });
-        };
-        decode_runtime_watch_frame(&frame)
-            .map(|frame| frame.containers)
-            .map_err(|error| crate::ui::rpc_error(RpcErrorCode::Internal, &error))
+        self.runtime_frame().await.map(|frame| frame.containers)
     }
 
     async fn ensure_container(

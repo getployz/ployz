@@ -9,9 +9,10 @@ use unicode_segmentation::UnicodeSegmentation as _;
 use unicode_width::UnicodeWidthStr as _;
 
 use ployz_store::{
-    Actor, Admit, Ask, ConfigStore, DeploymentId, DeploymentSummary, EnvironmentRef,
-    ObservationFailure, OrganizationId, ProjectName, Publish, Published, Removal, RemovalsQuery,
-    Remove, SealingKey, Sweep, SystemEvent, Tell, Trusted, View, VolumeObservation, Written,
+    Actor, Admit, Ask, ConfigStore, DeploymentId, DeploymentSummary, DomainEvidence,
+    EnvironmentRef, ObservationFailure, OrganizationId, ProjectName, Publish, Published, Removal,
+    RemovalsQuery, Remove, SealingKey, Sweep, SystemEvent, Tell, Trusted, View, VolumeObservation,
+    Written,
 };
 
 use super::{Error, config_path, leaf_matches, runtime};
@@ -39,6 +40,9 @@ impl From<StoreCallError> for Error {
         }
     }
 }
+
+/// How long a domain read waits on the Servers before it reads them as unobserved.
+const OBSERVE_DOMAINS_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// The Organization of the hidden in-process Store.
 pub(super) const LOCAL_ORGANIZATION: &str = "local";
@@ -79,9 +83,14 @@ pub(crate) enum Backend {
 impl Backend {
     /// Answer `query`: a Store query payload, read as its own view.
     pub(crate) fn read<Q: Ask>(&self, query: &Q) -> Result<Q::View, StoreCallError> {
+        self.read_seen(query, &Trusted::default())
+    }
+
+    /// [`Self::read`] with what this CLI observed; Cloud gathers its own.
+    fn read_seen<Q: Ask>(&self, query: &Q, seen: &Trusted) -> Result<Q::View, StoreCallError> {
         match self {
             Self::Local(store, who) => store
-                .read_trusted(who, query, &Trusted::default())
+                .read_trusted(who, query, seen)
                 .map_err(StoreCallError::Refused),
             Self::Cloud(runtime, credential) => {
                 let view: View = runtime.block_on(cloud_account::config_store(
@@ -179,6 +188,21 @@ impl<'m> Store<'m> {
     /// Apply `command`, answered as its own result.
     pub(crate) fn write<C: Tell>(&self, command: &C) -> Result<C::Written, Error> {
         self.try_write(command).map_err(|error| self.fail(error))
+    }
+
+    /// Answer `query` about domains. Cloud observes the Servers itself; for the
+    /// in-process Store this CLI does, from one Runtime Watch frame.
+    pub(crate) fn read_domains<Q: Ask>(&self, query: &Q) -> Result<Q::View, Error> {
+        let seen = match &self.backend {
+            Backend::Local(..) => Trusted {
+                domains: self.observe_domains(),
+                ..Trusted::default()
+            },
+            Backend::Cloud(..) => Trusted::default(),
+        };
+        self.backend
+            .read_seen(query, &seen)
+            .map_err(|error| self.fail(error))
     }
 
     /// [`Self::read`], leaving the refusal for the caller to add a next step to.
@@ -334,6 +358,16 @@ impl<'m> Store<'m> {
         }
     }
 
+    /// `--context`; without it, this reaches the Cluster `--connect` or the current
+    /// context names.
+    fn context(&self) -> Option<&str> {
+        self.matches
+            .try_get_one::<String>("context")
+            .ok()
+            .flatten()
+            .map(String::as_str)
+    }
+
     /// Which Servers hold the data of the Volumes each of `queries` removes: a
     /// Deploy, removal or rollback. A Cluster this can't reach is a failed
     /// observation that says why, so the Store refuses with it.
@@ -354,13 +388,7 @@ impl<'m> Store<'m> {
         if sought.is_empty() {
             return Ok(None);
         }
-        // Without `--context`, this reaches the Cluster `--connect` or the current context names.
-        let context = self
-            .matches
-            .try_get_one::<String>("context")
-            .ok()
-            .flatten()
-            .map(String::as_str);
+        let context = self.context();
         let Ok(runtime) = runtime() else {
             return Ok(None);
         };
@@ -394,6 +422,39 @@ impl<'m> Store<'m> {
                 }
             }
         })))
+    }
+
+    /// The Servers' certificates and ingress addresses, through `--connect` or the
+    /// context: never Cloud's Server Access, whose Cluster isn't this Store's. Servers
+    /// this can't reach leave the certificates unobserved. DNS failures reach a status
+    /// through the certificate attempts that met them.
+    fn observe_domains(&self) -> DomainEvidence {
+        let mut evidence = DomainEvidence::default();
+        let Ok(runtime) = runtime() else {
+            return evidence;
+        };
+        let context = self.context();
+        let observe = async {
+            super::connect_context(self.matches, context)
+                .await
+                .ok()?
+                .runtime_frame()
+                .await
+                .ok()
+        };
+        let frame = runtime
+            .block_on(async { tokio::time::timeout(OBSERVE_DOMAINS_TIMEOUT, observe).await });
+        if let Ok(Some(frame)) = frame {
+            evidence.ingress_addresses = frame
+                .machines
+                .iter()
+                .filter(|observed| observed.machine.accepts_ingress)
+                .filter_map(|observed| observed.machine.public_ip)
+                .map(|address| address.to_string())
+                .collect();
+            evidence.certificates = Some(frame.certificates);
+        }
+        evidence
     }
 
     /// Hand Cloud the archive of `listing`, read from `dir`, the source Deployment

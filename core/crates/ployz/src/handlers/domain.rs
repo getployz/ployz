@@ -206,7 +206,7 @@ pub(super) fn list(root: &ArgMatches) -> Result<(), Error> {
         environment: store::environment(matches)?,
         service,
     };
-    let view = store::store(root)?.read(&query)?;
+    let view = store::store(root)?.read_domains(&query)?;
     let next = view
         .domains
         .iter()
@@ -241,7 +241,7 @@ pub(super) fn check(root: &ArgMatches) -> Result<(), Error> {
         environment: store::environment(matches)?,
         domain: required(matches, "domain")?,
     };
-    let view = store::store(root)?.read(&query)?;
+    let view = store::store(root)?.read_domains(&query)?;
     let next = next(matches, view.domain.action.as_ref());
     let row = &view.domain;
     let [domain, service, port, status, reason] = cells(row);

@@ -3,8 +3,8 @@
 //! Adding and removing either is staged until a Deploy; admission expands generated
 //! ones into routes under the Cluster Domain Cloud reserved for the Organization.
 //!
-//! The Store never looks at DNS, certificates or Servers. Cloud observes them and
-//! passes what it saw as [`DomainEvidence`]; from that, each domain reads Ready,
+//! The Store never looks at DNS, certificates or Servers. Cloud observes them, or the
+//! CLI does in a Standalone Cluster, and passes what it saw as [`DomainEvidence`]; from that, each domain reads Ready,
 //! Setting up or Needs attention, with at most one action.
 
 use ployz_core::config::{
@@ -41,8 +41,8 @@ pub struct DomainEvidence {
     /// The Organization's Cluster Domain, once reserved.
     #[serde(default)]
     pub cluster_domain: Option<ClusterDomain>,
-    /// The Cluster's certificates as its Runtime Watch reported them; none when Cloud
-    /// couldn't observe the Cluster.
+    /// The Cluster's certificates as its Runtime Watch reported them; none when the
+    /// Cluster couldn't be observed.
     #[serde(default)]
     pub certificates: Option<Vec<CertificateObservation>>,
     /// Public addresses of the Servers that accept ingress.
