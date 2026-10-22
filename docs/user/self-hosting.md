@@ -217,9 +217,9 @@ In CI, set `PLOYZ_CLOUD_URL` next to `PLOYZ_TOKEN`; see
 
 Pick the release to move to on the [releases page](https://github.com/getployz/ployz/releases).
 If you run a beta, pick the newest release marked **Pre-release**. Don't use `releases/latest`
-here: it's the newest stable release, so it would move a beta back to an older release. An
-older Ployz Cloud on a newer database passes the migration and health check, then fails every
-request.
+here: it's the newest stable release, so it would move a beta back to an older release.
+If the database contains migrations the image does not ship, `db:migrate`, `web`, and `worker`
+refuse to start. The error names the image version and asks you to use a newer image.
 
 Set `VERSION` to that release's tag, then run the rest. It refuses a tag older than the one
 you run now:
