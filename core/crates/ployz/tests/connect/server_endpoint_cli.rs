@@ -288,10 +288,14 @@ async fn clearing_a_public_ip_says_none_is_looked_up() {
     let _ = std::fs::remove_file(&config);
     assert!(output.status.success(), "{output:?}");
     let result: Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(result["public_ip_pinned"], json!(true), "{result}");
     assert_eq!(
-        result["next"],
-        json!("ployz server set one --public-ip IP"),
+        result.pointer("/public_ip_pinned"),
+        Some(&json!(true)),
+        "{result}"
+    );
+    assert_eq!(
+        result.pointer("/next"),
+        Some(&json!("ployz server set one --public-ip IP")),
         "{result}"
     );
 }
