@@ -15,6 +15,7 @@ use crate::network::WireGuardPrivateKey;
 
 const FILE_NAME: &str = "sealing.key";
 const INFO: &[u8] = b"ployz-sealing-key-v1";
+const SHARE_INFO: &[u8] = b"ployz-sealing-key-share-v1";
 const ENCAPPED_KEY_LEN: usize = 32;
 
 type Kem = X25519HkdfSha256;
@@ -110,6 +111,76 @@ impl SealingKey {
                 &recipient,
                 &encapped,
                 INFO,
+                ciphertext,
+                &[],
+            )
+            .map_err(|_| OpenError::Unopenable)?,
+        );
+        <[u8; 32]>::try_from(opened.as_slice())
+            .map(Self)
+            .map_err(|_| OpenError::Malformed)
+    }
+
+    /// Seal the key to `recipient` so only `sender`'s WireGuard key could
+    /// have produced the blob; a backfill holder shares the key this way.
+    ///
+    /// # Errors
+    /// Refuses a low-order recipient key, which no HPKE secret can be derived
+    /// from.
+    pub(crate) fn seal_from(
+        &self,
+        sender: &WireGuardPrivateKey,
+        recipient: &WireGuardPublicKey,
+    ) -> Result<SealedSealingKey, SealError> {
+        let recipient = <Kem as hpke::Kem>::PublicKey::from_bytes(&recipient.0)
+            .expect("an X25519 public key is any 32 bytes");
+        let sender_sk = <Kem as hpke::Kem>::PrivateKey::from_bytes(sender.as_bytes())
+            .expect("an X25519 private key is any 32 bytes");
+        let sender_pk = Kem::sk_to_pk(&sender_sk);
+        let (encapped, ciphertext) =
+            hpke::single_shot_seal::<ChaCha20Poly1305, HkdfSha256, Kem, _>(
+                &OpModeS::Auth((sender_sk, sender_pk)),
+                &recipient,
+                SHARE_INFO,
+                &self.0,
+                &[],
+                &mut OsRng.unwrap_err(),
+            )
+            .map_err(|_| SealError)?;
+        let mut sealed = encapped.to_bytes().to_vec();
+        sealed.extend(ciphertext);
+        Ok(SealedSealingKey::from_bytes(sealed))
+    }
+
+    /// Open a blob that [`Self::seal_from`] sealed to `recipient` from the
+    /// Machine whose WireGuard key is `sender`.
+    ///
+    /// # Errors
+    /// Returns [`OpenError::Malformed`] when the blob is not an encapsulated
+    /// key followed by ciphertext, and [`OpenError::Unopenable`] when it was
+    /// sealed to another recipient, by another sender, or without a sender.
+    pub(crate) fn open_from(
+        sealed: &SealedSealingKey,
+        recipient: &WireGuardPrivateKey,
+        sender: &WireGuardPublicKey,
+    ) -> Result<Self, OpenError> {
+        let bytes = sealed.as_bytes();
+        if bytes.len() < ENCAPPED_KEY_LEN {
+            return Err(OpenError::Malformed);
+        }
+        let (encapped, ciphertext) = bytes.split_at(ENCAPPED_KEY_LEN);
+        let encapped = <Kem as hpke::Kem>::EncappedKey::from_bytes(encapped)
+            .map_err(|_| OpenError::Malformed)?;
+        let recipient = <Kem as hpke::Kem>::PrivateKey::from_bytes(recipient.as_bytes())
+            .expect("an X25519 private key is any 32 bytes");
+        let sender = <Kem as hpke::Kem>::PublicKey::from_bytes(&sender.0)
+            .expect("an X25519 public key is any 32 bytes");
+        let opened = Zeroizing::new(
+            hpke::single_shot_open::<ChaCha20Poly1305, HkdfSha256, Kem>(
+                &OpModeR::Auth(sender),
+                &recipient,
+                &encapped,
+                SHARE_INFO,
                 ciphertext,
                 &[],
             )
@@ -217,6 +288,70 @@ mod tests {
         assert_eq!(
             Kem::sk_to_pk(&hpke).to_bytes().as_slice(),
             wireguard.public_key().0.as_slice()
+        );
+    }
+
+    #[test]
+    fn shared_sealing_key_opens_only_for_the_recipient_from_the_sender() {
+        let key = SealingKey::generate();
+        let holder = WireGuardPrivateKey::generate();
+        let recipient = WireGuardPrivateKey::generate();
+        let sealed = key.seal_from(&holder, &recipient.public_key()).unwrap();
+
+        assert_eq!(
+            SealingKey::open_from(&sealed, &recipient, &holder.public_key()).unwrap(),
+            key
+        );
+        assert!(matches!(
+            SealingKey::open_from(
+                &sealed,
+                &WireGuardPrivateKey::generate(),
+                &holder.public_key()
+            ),
+            Err(OpenError::Unopenable)
+        ));
+        assert!(matches!(
+            SealingKey::open_from(
+                &sealed,
+                &recipient,
+                &WireGuardPrivateKey::generate().public_key()
+            ),
+            Err(OpenError::Unopenable)
+        ));
+        assert!(matches!(
+            SealingKey::open_from(
+                &SealedSealingKey::from_bytes(vec![1; 8]),
+                &recipient,
+                &holder.public_key()
+            ),
+            Err(OpenError::Malformed)
+        ));
+    }
+
+    #[test]
+    fn a_join_sealed_key_does_not_pass_as_a_shared_one() {
+        let key = SealingKey::generate();
+        let holder = WireGuardPrivateKey::generate();
+        let recipient = WireGuardPrivateKey::generate();
+        let joined = key.seal_to(&recipient.public_key()).unwrap();
+        assert!(matches!(
+            SealingKey::open_from(&joined, &recipient, &holder.public_key()),
+            Err(OpenError::Unopenable)
+        ));
+        let shared = key.seal_from(&holder, &recipient.public_key()).unwrap();
+        assert!(matches!(
+            SealingKey::open(&shared, &recipient),
+            Err(OpenError::Unopenable)
+        ));
+    }
+
+    #[test]
+    fn sharing_refuses_a_low_order_recipient() {
+        let key = SealingKey::generate();
+        let holder = WireGuardPrivateKey::generate();
+        assert!(
+            key.seal_from(&holder, &WireGuardPublicKey([0; 32]))
+                .is_err()
         );
     }
 }
