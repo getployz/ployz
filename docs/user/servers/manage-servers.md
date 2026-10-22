@@ -530,8 +530,11 @@ mount on the server, global services, and Ployz's own web server. On your last s
 warning. After the removal it warns which replicated services now run no replicas, because all of
 them were on that server, and prints `ployz deploy` as the next step. It warns separately which
 other replicated services may now run short of replicas. With `--json` the removal lists every
-service left short as `under_replicated`, and those with no replica on your other servers also as
-`no_copies`. `ployz status` keeps naming a service with no replicas until you deploy it.
+service left short as `under_replicated`. It also lists a service as `no_copies` when every other
+server answered and none showed a replica of it. If a server didn't answer, the service is listed
+only as `under_replicated`. `ployz status` keeps naming a service with no replicas until a deploy
+starts one; see
+[Status says a service runs no copies](../troubleshooting/deployments.md#status-says-a-service-runs-no-copies).
 Ployz's build cache isn't one of the volumes you confirm losing.
 Otherwise services that ran only on that server stop. Your next deploy replaces its replicas on your other
 servers, except for services whose volume was on it (see
