@@ -262,7 +262,7 @@ async fn replayed_enroll_republishes_runtime_over_a_register_row() {
     let marker: ipnet::Ipv4Net = "10.0.0.0/8".parse().unwrap();
     replicated.publish_cluster_network(marker).await.unwrap();
     tokio::time::timeout(std::time::Duration::from_secs(5), async {
-        while replicated.cluster_network().await.unwrap() != network {
+        while replicated.cluster_network().await.unwrap() != Some(network) {
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         }
     })
@@ -336,7 +336,7 @@ async fn replayed_enroll_republishes_runtime_over_a_register_row() {
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     assert_eq!(
         replicated.cluster_network().await.unwrap(),
-        marker,
+        Some(marker),
         "a Machines view change rewrote the Cluster network"
     );
 

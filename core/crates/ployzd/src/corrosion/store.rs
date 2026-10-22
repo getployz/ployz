@@ -247,7 +247,9 @@ impl ReplicatedStore {
         Ok(())
     }
 
-    pub async fn cluster_network(&self) -> Result<Ipv4Net, Error> {
+    /// The published Cluster network, or `None` before the founder's
+    /// publisher has written it.
+    pub async fn cluster_network(&self) -> Result<Option<Ipv4Net>, Error> {
         let query = self
             .api
             .query(Statement::new(
@@ -257,14 +259,17 @@ impl ReplicatedStore {
             .await?;
         let rows = query.rows(["value"])?;
         let Some([value]) = rows.first() else {
-            return Err(Error::Protocol("Cluster network is missing".into()));
+            return Ok(None);
         };
-        text(value, "Cluster network")?.parse().map_err(|error| {
-            Error::Protocol(format!(
-                "invalid Cluster network: {error}",
-                error = ployz_core::error_chain::inline(&error),
-            ))
-        })
+        text(value, "Cluster network")?
+            .parse()
+            .map(Some)
+            .map_err(|error| {
+                Error::Protocol(format!(
+                    "invalid Cluster network: {error}",
+                    error = ployz_core::error_chain::inline(&error),
+                ))
+            })
     }
 
     pub async fn machine(&self, id: &str) -> Result<Option<Machine>, Error> {
