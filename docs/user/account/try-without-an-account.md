@@ -31,7 +31,7 @@ later.
 
    ```sh
    export PLOYZ_TOKEN=ployz_...
-   curl -fsSL https://ployz.sh | sh -s -- beta
+   curl -fsSL https://ployz.sh | sh
    ployz server add
    ```
 

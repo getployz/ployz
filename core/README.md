@@ -6,11 +6,10 @@ of Docker Machines. Ployz Cloud lives in [dashboard/](../dashboard/README.md).
 ## Install
 
 ```sh
-curl -fsSL https://ployz.sh | sh -s -- beta
+curl -fsSL https://ployz.sh | sh
 ```
 
-Ployz Cloud enrolls servers only from 0.3.0-beta.6 on. The stable release and
-Homebrew (`brew install getployz/ployz/ployz`) are still on 0.2.
+Or with Homebrew: `brew install getployz/ployz/ployz`.
 
 Releases and channels: [docs/RELEASE.md](docs/RELEASE.md). What a daemon keeps
 working across from 0.3.0 on: [DESIGN.md](DESIGN.md#stable-promise).
