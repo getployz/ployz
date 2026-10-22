@@ -198,11 +198,7 @@ impl MachinePublicationGuard<'_> {
     }
 }
 
-/// Cluster key holding the Sealing Key's public half, written once by the
-/// Machine that generated it.
 pub(crate) const SEALING_PUBLIC_KEY_CLUSTER_KEY: &str = "sealing_public_key";
-/// Cluster key a lost-key recovery writes while it waits for a new Sealing
-/// Key; it is only meaningful while no public key is published.
 pub(crate) const SEALING_AWAITS_RECOVERY_CLUSTER_KEY: &str = "sealing_awaits_recovery";
 
 impl ReplicatedStore {
@@ -312,7 +308,7 @@ impl ReplicatedStore {
     }
 
     /// The Sealing public key a recovery is waiting on, written when the
-    /// Cluster lost its key. A backfill never generates over it.
+    /// Cluster lost its key.
     ///
     /// # Errors
     /// Returns an error when the Corrosion query fails, or the stored value
