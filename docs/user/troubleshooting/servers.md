@@ -260,9 +260,11 @@ prepares Docker and ZFS meanwhile.
 13. `Enroll failed` means a stage failed, and the line after it names the stage and why, for
     example `Enroll failed at enrolling: Docker is not running`. The server goes back to waiting
     and Ployz Cloud shows the same failure. Fix the cause, then approve the server again in Ployz
-    Cloud. If the loop restarts mid-enroll, it picks up the same attempt rather than starting a
-    second one and keeps the last reported stage. If the join committed but a follow-up failed,
-    the server stays Joined, the loop cleans up, and its log and status name that follow-up.
+    Cloud. If Cloud enrollment publication or completion failed, run `ployz server enroll`
+    again, or use **Enroll** in **Servers > Waiting to join**. If the loop restarts mid-enroll,
+    it picks up the same attempt rather than starting a second one and keeps the last reported
+    stage. If the join committed but a follow-up failed, the server stays Joined, the loop
+    cleans up, and its log and status name that follow-up.
 14. Rejecting a server stops enrollment at the next safe point. A package install finishes
     before stopping at the enroll or queue step. Storage setup finishes once begun in the
     current run. After a restart from storage setup, rejection stops enrollment at the enroll

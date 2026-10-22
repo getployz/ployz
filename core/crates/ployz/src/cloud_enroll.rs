@@ -26,6 +26,25 @@ const FOUNDER_WAIT: Duration = Duration::from_secs(15 * 60);
 /// The prefix also matches 0.3.0 Cloud's "Cloud can't reach this Server yet.".
 const CLOUD_CANT_REACH: &str = "Cloud can't reach this Server";
 
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum Command {
+    ServerAdd,
+    ServerEnroll,
+}
+
+impl Command {
+    fn retry(self) -> &'static str {
+        match self {
+            Self::ServerAdd => {
+                "rerun the same ployz server add command without --reset (keep all other options)"
+            }
+            Self::ServerEnroll => {
+                "run ployz server enroll again, or use Enroll in Servers > Waiting to join"
+            }
+        }
+    }
+}
+
 /// Failures talking to Cloud enroll.
 #[derive(Debug, Error)]
 pub(crate) enum Error {
@@ -49,9 +68,10 @@ pub(crate) enum Error {
     )]
     FounderWait,
     #[error(
-        "Cloud {operation} failed; rerun the same ployz server add command without --reset (keep all other options)."
+        "Cloud {operation} failed; {}.", .command.retry()
     )]
     RetrySameCommand {
+        command: Command,
         operation: &'static str,
         #[source]
         cause: Box<dyn std::error::Error + Send + Sync>,
@@ -381,6 +401,7 @@ impl From<ployz_core::Sealing> for Sealing {
 ///
 /// HTTP status, unexpected JSON, or a non-transport HTTP failure.
 pub(crate) async fn enroll(
+    command: Command,
     url: &str,
     token: &CloudEnrollToken,
     identity: &EnrollIdentity,
@@ -399,7 +420,7 @@ pub(crate) async fn enroll(
             async |_| send(post(&http, url, token, identity).timeout(ENROLL_TIMEOUT)).await,
         )
         .await
-        .map_err(|error| retry_error("enrollment", error))?;
+        .map_err(|error| retry_error(command, "enrollment", error))?;
         match parse_enroll(&response)? {
             Response::Join(join) => return Ok(Outcome::Join(join)),
             Response::Initialize {
@@ -450,6 +471,7 @@ pub(crate) async fn enroll(
 ///
 /// HTTP failure.
 pub(crate) async fn callback(
+    command: Command,
     url: &str,
     token: &CloudEnrollToken,
     machine_id: MachineId,
@@ -463,11 +485,12 @@ pub(crate) async fn callback(
         pairing_credential,
         sealing: sealing.map(Sealing::from),
     };
-    post_callback(url, token, &body, "enrollment completion").await
+    post_callback(command, url, token, &body, "enrollment completion").await
 }
 
 /// Publish a candidate against the authenticated enrollment attempt before completion.
 pub(crate) async fn publish(
+    command: Command,
     url: &str,
     token: &CloudEnrollToken,
     machine_id: MachineId,
@@ -481,10 +504,11 @@ pub(crate) async fn publish(
         pairing_credential,
         sealing: None,
     };
-    post_callback(url, token, &body, "candidate publication").await
+    post_callback(command, url, token, &body, "candidate publication").await
 }
 
 async fn post_callback(
+    command: Command,
     url: &str,
     token: &CloudEnrollToken,
     body: &EnrollCallback<'_>,
@@ -532,17 +556,23 @@ async fn post_callback(
         } => Error::CloudCantReach,
         error @ (crate::setup_retry::Error::Permanent(_)
         | crate::setup_retry::Error::Exhausted { .. }) => Error::RetrySameCommand {
+            command,
             operation,
             cause: Box::new(error),
         },
     })
 }
 
-fn retry_error(operation: &'static str, error: crate::setup_retry::Error<Error>) -> Error {
+fn retry_error(
+    command: Command,
+    operation: &'static str,
+    error: crate::setup_retry::Error<Error>,
+) -> Error {
     match error {
         crate::setup_retry::Error::Permanent(error) => {
             if matches!(error, Error::Timeout(_) | Error::Http(_)) {
                 Error::RetrySameCommand {
+                    command,
                     operation,
                     cause: Box::new(ResponseLost(Some(error))),
                 }
@@ -554,10 +584,12 @@ fn retry_error(operation: &'static str, error: crate::setup_retry::Error<Error>)
         crate::setup_retry::Error::Exhausted {
             in_flight: true, ..
         } => Error::RetrySameCommand {
+            command,
             operation,
             cause: Box::new(ResponseLost(None)),
         },
         exhausted => Error::RetrySameCommand {
+            command,
             operation,
             cause: Box::new(exhausted),
         },
@@ -1078,7 +1110,9 @@ mod tests {
             String::from_utf8_lossy(buf.get(..read).unwrap()).into_owned()
         });
         let url = enroll_url(&origin);
-        enroll(&url, &token(), &identity(), &|_| {}).await.unwrap();
+        enroll(Command::ServerAdd, &url, &token(), &identity(), &|_| {})
+            .await
+            .unwrap();
         let request = server.await.unwrap();
         let request_line = request.lines().next().unwrap();
         assert_eq!(request_line, "POST /api/enroll HTTP/1.1");
@@ -1106,9 +1140,15 @@ mod tests {
             .await
             .unwrap();
         });
-        let error = enroll(&enroll_url(&origin), &token(), &identity(), &|_| {})
-            .await
-            .unwrap_err();
+        let error = enroll(
+            Command::ServerAdd,
+            &enroll_url(&origin),
+            &token(),
+            &identity(),
+            &|_| {},
+        )
+        .await
+        .unwrap_err();
         server.await.unwrap();
         assert!(matches!(error, Error::TokenRefused), "{error:?}");
         assert!(
@@ -1136,9 +1176,15 @@ mod tests {
             }
         });
         let stages = std::cell::RefCell::new(Vec::new());
-        let outcome = enroll(&enroll_url(&origin), &token(), &identity(), &|stage| {
-            stages.borrow_mut().push(stage);
-        })
+        let outcome = enroll(
+            Command::ServerAdd,
+            &enroll_url(&origin),
+            &token(),
+            &identity(),
+            &|stage| {
+                stages.borrow_mut().push(stage);
+            },
+        )
         .await
         .unwrap();
         server.await.unwrap();
@@ -1184,7 +1230,13 @@ mod tests {
         });
         let outcome = tokio::time::timeout(
             answers_after + Duration::from_secs(10),
-            enroll(&enroll_url(&origin), &token(), &identity(), &|_| {}),
+            enroll(
+                Command::ServerAdd,
+                &enroll_url(&origin),
+                &token(),
+                &identity(),
+                &|_| {},
+            ),
         )
         .await
         .expect("enroll returns once Cloud answers")
@@ -1232,7 +1284,9 @@ mod tests {
 
     #[tokio::test]
     async fn enrollment_never_reposts_after_losing_a_dispatched_response() {
-        for timeout in [false, true] {
+        for (timeout, command) in [false, true].into_iter().flat_map(|timeout| {
+            [Command::ServerAdd, Command::ServerEnroll].map(|command| (timeout, command))
+        }) {
             let (listener, url) = listen().await;
             let server = tokio::spawn(async move {
                 let (mut stream, _) = listener.accept().await.unwrap();
@@ -1251,14 +1305,22 @@ mod tests {
             });
             let error = tokio::time::timeout(
                 ENROLL_TIMEOUT + Duration::from_secs(10),
-                enroll(&url, &token(), &identity(), &|_| {}),
+                enroll(command, &url, &token(), &identity(), &|_| {}),
             )
             .await
             .expect("lost response must return without retrying")
             .unwrap_err();
             let rendered = crate::ui::chain_text(&error);
             assert!(rendered.contains("uncertain"), "{rendered}");
-            assert!(error.to_string().contains("without --reset"), "{error}");
+            let message = error.to_string();
+            match command {
+                Command::ServerAdd => assert!(message.contains("without --reset"), "{message}"),
+                Command::ServerEnroll => {
+                    assert!(message.contains("ployz server enroll"), "{message}");
+                    assert!(!message.contains("server add"), "{message}");
+                    assert!(!message.contains("--reset"), "{message}");
+                }
+            }
             server.await.unwrap();
         }
     }
@@ -1289,6 +1351,7 @@ mod tests {
         let error = tokio::time::timeout(
             crate::setup_retry::WAIT + Duration::from_secs(10),
             enroll(
+                Command::ServerAdd,
                 &format!("http://{address}/api/enroll"),
                 &token(),
                 &identity(),
@@ -1329,6 +1392,7 @@ mod tests {
             tokio::time::timeout(Duration::from_secs(25), async {
                 if stage == "publish" {
                     publish(
+                        Command::ServerAdd,
                         &url,
                         &token(),
                         MachineId::random(),
@@ -1342,6 +1406,7 @@ mod tests {
                     .unwrap();
                 } else {
                     callback(
+                        Command::ServerAdd,
                         &url,
                         &token(),
                         MachineId::random(),
@@ -1377,6 +1442,7 @@ mod tests {
             let credential = PairingCredential::parse("pairing-secret").unwrap();
             let result = if publishing {
                 publish(
+                    Command::ServerAdd,
                     &url,
                     &token(),
                     MachineId::random(),
@@ -1388,7 +1454,15 @@ mod tests {
                 )
                 .await
             } else {
-                callback(&url, &token(), MachineId::random(), &credential, None).await
+                callback(
+                    Command::ServerAdd,
+                    &url,
+                    &token(),
+                    MachineId::random(),
+                    &credential,
+                    None,
+                )
+                .await
             };
             result.unwrap();
             server.await.unwrap();
@@ -1450,6 +1524,7 @@ mod tests {
             });
             let credential = PairingCredential::parse("pairing-secret").unwrap();
             callback(
+                Command::ServerAdd,
                 &url,
                 &token(),
                 MachineId::random(),
@@ -1495,6 +1570,7 @@ mod tests {
             let credential = PairingCredential::parse("pairing-secret").unwrap();
             let result = if publishing {
                 publish(
+                    Command::ServerAdd,
                     &url,
                     &token(),
                     MachineId::random(),
@@ -1506,7 +1582,15 @@ mod tests {
                 )
                 .await
             } else {
-                callback(&url, &token(), MachineId::random(), &credential, None).await
+                callback(
+                    Command::ServerAdd,
+                    &url,
+                    &token(),
+                    MachineId::random(),
+                    &credential,
+                    None,
+                )
+                .await
             };
             let error = result.unwrap_err();
             if body != cant_reach {
@@ -1520,6 +1604,54 @@ mod tests {
                 error.to_string(),
                 "Cloud can't reach this Server through the relay or directly. Allow https to relay.ployz.dev from this Server, and from Cloud if you host it yourself, then try again."
             );
+            server.await.unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn cloud_enroll_callback_failure_tells_the_user_to_enroll_again() {
+        for publishing in [true, false] {
+            let (listener, url) = listen().await;
+            let server = tokio::spawn(async move {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                read_http(&mut stream).await;
+                tokio::io::AsyncWriteExt::write_all(
+                    &mut stream,
+                    &http_response(400, "Bad Request", b"rejected"),
+                )
+                .await
+                .unwrap();
+            });
+            let credential = PairingCredential::parse("pairing-secret").unwrap();
+            let result = if publishing {
+                publish(
+                    Command::ServerEnroll,
+                    &url,
+                    &token(),
+                    MachineId::random(),
+                    &credential,
+                    &ManagementCapability::new(
+                        ployz_core::ManagementIdentity::from_bytes([1; 32]),
+                        [2; 32],
+                    ),
+                )
+                .await
+            } else {
+                callback(
+                    Command::ServerEnroll,
+                    &url,
+                    &token(),
+                    MachineId::random(),
+                    &credential,
+                    None,
+                )
+                .await
+            };
+            let message = result.unwrap_err().to_string();
+            assert!(!message.contains("server add"), "{message}");
+            assert!(!message.contains("--reset"), "{message}");
+            assert!(message.contains("ployz server enroll"), "{message}");
+            assert!(message.contains("Servers > Waiting to join"), "{message}");
             server.await.unwrap();
         }
     }
@@ -1549,6 +1681,7 @@ mod tests {
             let (result, operation) = if publishing {
                 (
                     publish(
+                        Command::ServerAdd,
                         &url,
                         &token(),
                         MachineId::random(),
@@ -1560,7 +1693,15 @@ mod tests {
                 )
             } else {
                 (
-                    callback(&url, &token(), MachineId::random(), &credential, None).await,
+                    callback(
+                        Command::ServerAdd,
+                        &url,
+                        &token(),
+                        MachineId::random(),
+                        &credential,
+                        None,
+                    )
+                    .await,
                     "enrollment completion",
                 )
             };
@@ -1593,7 +1734,7 @@ mod tests {
                 .await
                 .unwrap();
         });
-        let error = enroll(&url, &token(), &identity(), &|_| {})
+        let error = enroll(Command::ServerAdd, &url, &token(), &identity(), &|_| {})
             .await
             .unwrap_err();
         assert!(
