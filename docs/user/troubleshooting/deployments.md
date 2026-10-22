@@ -251,8 +251,10 @@ shows up here.
   ```
 
   `restarted 6 times, up 3 s` means Docker restarted the replica after it crashed, less than 10
-  seconds ago. Status doesn't count it as serving until it stays up for 10 seconds, so a replica
-  that crashes every few seconds shows here even while it is briefly running.
+  seconds ago, and it is running again. Status doesn't count it as serving until it stays up for
+  10 seconds, so a replica that crashes every few seconds shows here even while it is briefly
+  running. A replica that crashes more than 10 seconds after each start reads as serving for most
+  of each run, so check its logs if one keeps coming and going.
 
   `exited with code 0` means your app stopped on its own without an error. A start command that
   finishes, instead of running a server, does that.

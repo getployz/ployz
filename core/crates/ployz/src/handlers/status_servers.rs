@@ -661,13 +661,18 @@ fn service_names(services: &[QualifiedService]) -> String {
         .join(", ")
 }
 
-/// How long a copy Docker's restart policy restarted has been up, while that is under
-/// [`RESTART_SETTLE`] by `now`. A crash-looping copy reads running between its crashes.
+/// How long a running copy Docker's restart policy restarted has been up, while that is
+/// under [`RESTART_SETTLE`] by `now`. A crash-looping copy reads running between its
+/// crashes. `StartedAt` is on the copy's Machine's clock and `now` on this one, so skew
+/// shifts the window: a start after `now` counts as settled rather than just restarted.
 fn just_restarted(copy: &ContainerObservation, now: SystemTime) -> Option<(i64, Duration)> {
+    if !matches!(copy.runtime, ContainerRuntimeObservation::Running { .. }) {
+        return None;
+    }
     let run = copy.run.as_ref().filter(|run| run.restart_count > 0)?;
     let started = SystemTime::UNIX_EPOCH
         + Duration::from_nanos(u64::try_from(run.started_at_unix_nanos).ok()?);
-    let up = now.duration_since(started).unwrap_or_default();
+    let up = now.duration_since(started).ok()?;
     (up < RESTART_SETTLE).then_some((run.restart_count, up))
 }
 
