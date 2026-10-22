@@ -522,10 +522,16 @@ async fn a_slow_save_holds_no_port_and_no_check_in() {
 /// blocking task, which freezes paused time, so the clock moves by hand.
 async fn ended(probes: &mut Probes, past: Duration) -> Report {
     tokio::time::advance(past).await;
+    // Paused time stands still while this spins, so the bound is on the real clock.
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
     loop {
         if let Some(report) = probes.report().await {
             return report;
         }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the ended window never reported"
+        );
         tokio::task::yield_now().await;
     }
 }

@@ -1135,7 +1135,13 @@ async fn a_replacement_handed_out_mid_save_listens_at_once_and_goes_out_on_the_n
         .await
         .expect("the new window listens");
     tokio::time::advance(Duration::from_millis(500)).await;
+    // Paused time stands still while this spins, so the bound is on the real clock.
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
     while probes.report().await.is_none() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the ended window never reported"
+        );
         tokio::task::yield_now().await;
     }
     let (url, server) = answering_cloud("200 OK".to_owned(), WAIT.to_owned(), 1).await;
