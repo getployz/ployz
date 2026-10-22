@@ -83,13 +83,13 @@ pub fn run() -> Result<(), Error> {
             // A word the tree lacks may be a command Cloud published since the
             // cache was written, or one never cached: one refresh, then parse again.
             let Some(published) = published_after_miss(&error, &command, &args)? else {
-                return Err(usage_failure(misplaced_flag(error, &command, &args)));
+                return Err(usage_failure(error, &command));
             };
             command = crate::published::attach(crate::cli::compiled(), &published);
             command
                 .clone()
                 .try_get_matches()
-                .map_err(|error| usage_failure(misplaced_flag(error, &command, &args)))?
+                .map_err(|error| usage_failure(error, &command))?
         }
     };
     let color = matches
@@ -229,7 +229,7 @@ fn misplaced_flag(error: clap::Error, tree: &Command, args: &[std::ffi::OsString
 }
 
 /// Report a rejected command line: clap's own rendering, or one JSON error under `--json`.
-fn usage_failure(error: clap::Error) -> Error {
+fn usage_failure(error: clap::Error, tree: &Command) -> Error {
     use clap::error::ErrorKind;
     use std::io::Write as _;
     let wants_json = wants_json(&std::env::args_os().collect::<Vec<_>>());
@@ -245,7 +245,7 @@ fn usage_failure(error: clap::Error) -> Error {
         return Error::exit(0);
     }
     let args = std::env::args_os().skip(1).collect::<Vec<_>>();
-    let error = operator::container_column_asked(error, &args);
+    let error = misplaced_flag(operator::container_column_asked(error, &args), tree, &args);
     if !wants_json {
         error.exit();
     }
