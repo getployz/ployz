@@ -1072,6 +1072,56 @@ fn a_service_that_depends_on_a_blocked_one_is_blocked_too() {
 }
 
 #[test]
+fn a_blocked_dependent_prepares_none_of_its_volumes() {
+    let (mut web, db) = web_and_db();
+    add_named_volume(&mut web, "shared");
+    make_provisioned(&mut web, "shared", 1_073_741_824);
+    let mut api = spec("api");
+    add_named_volume(&mut api, "shared");
+    make_provisioned(&mut api, "shared", 1_073_741_824);
+    add_named_volume(&mut api, "own");
+    make_provisioned(&mut api, "own", 1_073_741_824);
+    let intent = DeployIntent::apply_all(
+        Namespace::parse("app").unwrap(),
+        [&web, &db, &api],
+        PlanOptions::default(),
+    )
+    .with_dependencies(BTreeMap::from([(
+        api.name.clone(),
+        vec![ServiceDependency {
+            service: db.name.clone(),
+            condition: DependencyCondition::ServiceHealthy,
+        }],
+    )]));
+
+    let preview =
+        preview_deploy(&intent, &copies_snapshot(&[('2', CopyRole::Slot)], vec![])).unwrap();
+
+    assert!(
+        preview
+            .blocked
+            .iter()
+            .any(|blocked| blocked.service == api.name),
+        "{:?}",
+        preview.blocked
+    );
+    let own = app_volume("own");
+    assert!(
+        preview
+            .volumes_to_create
+            .iter()
+            .all(|volume| volume.name != own),
+        "{:?}",
+        preview.volumes_to_create
+    );
+    assert!(
+        !format!("{:?}", operations(&preview)).contains(own.as_str()),
+        "{:?}",
+        operations(&preview)
+    );
+}
+
+#[test]
 fn unselected_provisioned_service_leaves_stateless_machine_unchanged() {
     let applied = requested(ServiceMode::Replicated {
         replicas: NonZeroU32::new(1).unwrap(),

@@ -122,6 +122,14 @@ impl<'snapshot> VolumePlan<'snapshot> {
         })
     }
 
+    /// Drop every commitment recorded for `service`, which this Deploy does not attempt.
+    pub(super) fn release(&mut self, service: &ServiceName) {
+        for specs in self.assignments.values_mut() {
+            specs.remove(service);
+        }
+        self.assignments.retain(|_, specs| !specs.is_empty());
+    }
+
     fn assign(&mut self, machine_id: MachineId, spec: &RequestedServiceSpec) {
         self.assignments
             .entry(machine_id)

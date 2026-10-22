@@ -739,6 +739,7 @@ fn assemble_plan(
                 service: spec.name.clone(),
                 error: dependency_blocked(&dependency.service),
             });
+            budget.volumes.release(&spec.name);
             continue;
         }
         let first = service_operations.len();
@@ -758,6 +759,7 @@ fn assemble_plan(
                     service: spec.name.clone(),
                     error: error.into_rpc_error(),
                 });
+                budget.volumes.release(&spec.name);
                 continue;
             }
             Err(source) => {
