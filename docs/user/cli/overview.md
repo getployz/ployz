@@ -375,11 +375,13 @@ and
 When a service serves fewer replicas than its last deploy gave it, `ployz status` names it and
 each replica that isn't serving, in the words `ployz ps` uses, like
 `web = Serving 1 of 3 copies. web-1 restarting, web-2 draining.` A replica can be restarting,
-exited, unhealthy, starting, or draining. A starting replica shows as `running, starting` while it
+exited, unhealthy, starting, or draining. A replica Docker restarted after a crash less than 10
+seconds ago doesn't count as serving yet, and shows as `restarted 6 times, up 3 s`. A starting replica shows as `running, starting` while it
 is still inside its health check's start period, and the line clears once the check passes. A
 draining replica is out of routing but still running. With `--json` the row has reason
 `copies_not_serving`, the `service`, how many replicas are `serving`, how many it `wanted`, and
-`copies`, each with its `machine`, `container`, `rotation` and `runtime`. `wanted` is how many of
+`copies`, each with its `machine`, `container`, `rotation` and `runtime`, and a `run` with its
+`restart_count` and `started_at_unix_nanos` when its server reported one. `wanted` is how many of
 the replicas status could see should be serving. A server that is down or didn't answer isn't
 seen. A down server shows as **Down**, and status warns about one that didn't answer. Its `next`
 is `ployz logs web` when a named replica is still in routing, else `ployz deploy web`. Old

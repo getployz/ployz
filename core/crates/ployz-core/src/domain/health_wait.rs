@@ -1,6 +1,7 @@
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
+use ts_rs::TS;
 
 use crate::{
     ContainerDetails, ContainerObservation, ContainerRuntimeObservation, HealthFailure,
@@ -65,9 +66,12 @@ pub const SETTLE_INSPECT_GRACE: Duration = Duration::from_secs(5);
 
 /// Which run of a Container one inspect saw. Docker gives each start a new one,
 /// including the restarts its restart policy makes between two looks.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct ContainerRun {
+    /// Docker's `RestartCount`: restarts its restart policy made since the last start
+    /// Ployz asked for.
     pub restart_count: i64,
+    /// Docker's `StartedAt`, on the owning Machine's clock.
     pub started_at_unix_nanos: i64,
 }
 
@@ -437,6 +441,7 @@ mod tests {
             address: None,
             labels: Default::default(),
             stopped: false,
+            run: None,
         })
         .unwrap();
         ContainerDetails {

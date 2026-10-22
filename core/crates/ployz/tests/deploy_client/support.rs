@@ -646,6 +646,7 @@ impl DeployService {
             address: None,
             labels: BTreeMap::new(),
             stopped: false,
+            run: None,
         })
         .unwrap()
     }
@@ -926,6 +927,7 @@ impl FakeMachine for DeployService {
                     address: None,
                     labels: BTreeMap::new(),
                     stopped: false,
+                    run: None,
                 },
             )
             .unwrap(),
@@ -1528,6 +1530,7 @@ pub(super) fn running_container_in(
         address: None,
         labels: BTreeMap::new(),
         stopped: false,
+        run: None,
     })
     .unwrap()
 }

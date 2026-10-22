@@ -840,6 +840,7 @@ impl ContainerRuntime {
                     .map(|(key, value)| (key.clone(), value.clone()))
                     .collect(),
                 stopped,
+                run: run.clone(),
             })?;
         let oom_killed = inspected
             .state

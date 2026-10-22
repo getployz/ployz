@@ -1434,6 +1434,7 @@ fn observation(
         address: address.map(|address| ContainerAddress(address.into())),
         labels: BTreeMap::new(),
         stopped: false,
+        run: None,
     })
     .unwrap()
 }
