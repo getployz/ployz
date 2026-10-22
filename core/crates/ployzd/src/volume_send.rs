@@ -200,12 +200,14 @@ async fn stream_args(programs: &Programs, stream: &SendStream) -> Result<Vec<Str
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
         if !output.status.success() {
-            // A token whose snapshots this writer no longer holds, or that does not parse,
-            // names a stream this Machine cannot send, so the puller drops its partial
-            // receive and asks for a full send. Any other failure is this Machine's, and
-            // the puller keeps its copy.
+            // A token naming a snapshot this writer no longer holds names a stream this
+            // Machine cannot send, so the puller drops its partial receive and asks for a
+            // full send. That is judged against the listing above, which succeeded, not by
+            // ZFS's message: a lookup that failed for another reason reads the same. Any
+            // other failure is this Machine's, and the puller keeps its copy.
             let message = format!("resume token cannot be sent from {root}: {}", stderr.trim());
-            return Err(if unusable_token(&stderr) {
+            let contents = stdout.lines().chain(stderr.lines());
+            return Err(if names_a_missing_snapshot(contents, &snapshots) {
                 Refusal::Unknown(message)
             } else {
                 Refusal::Zfs(message)
@@ -237,15 +239,25 @@ async fn stream_args(programs: &Programs, stream: &SendStream) -> Result<Vec<Str
     Ok(args)
 }
 
-/// Whether `zfs send -t` refused the token itself, by libzfs's messages under `LC_ALL=C`.
-fn unusable_token(stderr: &str) -> bool {
-    [
-        "no longer exists",
-        "is no longer the same snapshot",
-        "resume token is corrupt",
-    ]
-    .iter()
-    .any(|reason| stderr.contains(reason))
+/// Whether the `toguid` or `fromguid` that `zfs send -v -t` prints for a token is a
+/// snapshot missing from `snapshots`, this Machine's `(name, guid)` listing.
+fn names_a_missing_snapshot<'a>(
+    contents: impl Iterator<Item = &'a str>,
+    snapshots: &[(&str, &str)],
+) -> bool {
+    contents
+        .filter_map(|line| {
+            let line = line.trim();
+            line.strip_prefix("toguid = 0x")
+                .or_else(|| line.strip_prefix("fromguid = 0x"))
+        })
+        .filter_map(|hex| u64::from_str_radix(hex, 16).ok())
+        .filter(|guid| *guid != 0)
+        .any(|guid| {
+            !snapshots
+                .iter()
+                .any(|(_, held)| held.parse::<u64>() == Ok(guid))
+        })
 }
 
 async fn lines(program: &Path, args: &[&str]) -> Result<Vec<String>, Refusal> {
@@ -306,8 +318,8 @@ case "$*" in
   'send -nvP -t token-wrong-target') printf 'resume token contents:\n\ttoname = tank/ployz/data@w-1-1\n' ;;
   'send -nvP -t token-missing') printf 'resume token contents:\n\ttoname = tank/ployz/data@w-1-3\n' ;;
   'send -nvP -t token-child') printf 'resume token contents:\n\ttoname = tank/ployz/data/child@w-1-2\n' ;;
-  'send -nvP -t token-pruned') printf 'resume token contents:\nnvlist version: 0\n\tfromguid = 0x1f\n\ttoname = tank/ployz/data@w-1-2\ncannot resume send: incremental source 0x1f no longer exists\n' >&2; exit 1 ;;
-  'send -nvP -t token-io') echo 'cannot resume send: I/O error' >&2; exit 1 ;;
+  'send -nvP -t token-pruned') printf 'resume token contents:\nnvlist version: 0\n\tfromguid = 0x1f\n\ttoguid = 0xc\n\ttoname = tank/ployz/data@w-1-2\ncannot resume send: incremental source 0x1f no longer exists\n' >&2; exit 1 ;;
+  'send -nvP -t token-io') printf 'resume token contents:\nnvlist version: 0\n\tfromguid = 0xb\n\ttoguid = 0xc\n\ttoname = tank/ployz/data@w-1-2\ncannot resume send: incremental source 0xb no longer exists\n' >&2; exit 1 ;;
   'send -t token-other') printf 'unrelated stream' ;;
   'send -t token-1') printf 'resumed stream' ;;
   'get -Hp -o value refquota tank/ployz/data') printf '1073741824\n' ;;
@@ -487,7 +499,8 @@ esac
         assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
         assert!(body.contains("no longer exists"), "{body}");
         assert!(!body.contains("token-pruned"), "{body}");
-        // A failure of this Machine is not a stale token: the puller must keep its copy.
+        // A lookup that failed while this writer still holds both snapshots is this
+        // Machine's failure, whatever ZFS says, and the puller must keep its copy.
         let (status, body) = get(&base, "/volume-send/data?target=w-1-2&token=token-io").await;
         assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
         shutdown.cancel();
