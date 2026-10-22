@@ -1215,7 +1215,11 @@ fn context_config_empty_context_names_the_next_step_for_runtime_commands() {
     .save()
     .unwrap();
     let run = ployz_with(&path, &[]);
-    for args in [&["server", "ls"][..], &["ps"]] {
+    for args in [
+        &["server", "ls"][..],
+        &["ps"],
+        &["ctx", "use", "verify", "--connection", "1"],
+    ] {
         let output = run(args);
         let stderr = String::from_utf8(output.stderr).unwrap();
         assert_eq!(output.status.code(), Some(1), "{stderr}");

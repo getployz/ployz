@@ -95,7 +95,7 @@ impl Config {
         let mut config =
             serde_norway::from_str::<Self>(&yaml).map_err(|source| ConfigError::Parse {
                 path: path.clone(),
-                line: source.location().map(|location| location.line()),
+                source,
             })?;
         if config.has_capability() {
             require_private(
@@ -461,7 +461,6 @@ pub fn select_connections(
         if context.connections.is_empty() {
             return Err(ContextError::NoConnections {
                 name: name.to_owned(),
-                path: config.path.clone(),
             });
         }
         return Ok(SelectedConnections {
@@ -866,9 +865,13 @@ pub enum ConfigError {
     #[error("Could not read Ployz config {path}.")]
     Read { path: PathBuf, source: io::Error },
     #[error(
-        "could not parse Ployz config {path} (line {line:?}); check connection fields and YAML syntax"
+        "Could not parse Ployz config {path}{line}.",
+        line = .source.location().map(|location| format!(" (line {})", location.line())).unwrap_or_default()
     )]
-    Parse { path: PathBuf, line: Option<usize> },
+    Parse {
+        path: PathBuf,
+        source: serde_norway::Error,
+    },
     #[error("credential storage {0} must not grant group or other permissions")]
     PrivatePermissions(PathBuf),
     #[error("current context cannot be empty in Ployz config {0}")]
@@ -913,8 +916,8 @@ pub enum ContextError {
     NoCurrentContext(PathBuf),
     #[error("context {} not found in Ployz config {path}", .name.escape_debug())]
     ContextNotFound { name: String, path: PathBuf },
-    #[error("no connections found in context {} in Ployz config {path}", .name.escape_debug())]
-    NoConnections { name: String, path: PathBuf },
+    #[error("Context {} has no Servers.", .name.escape_debug())]
+    NoConnections { name: String },
     #[error(transparent)]
     Connection(ConnectionError),
 }

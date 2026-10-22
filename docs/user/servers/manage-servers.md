@@ -546,6 +546,10 @@ servers, except for services whose volume was on it (see
 server stops everything; your projects and settings stay, and the bottom bar shows **Add servers**
 until you [add one](add-a-server.md).
 
+If a standalone context has no Servers left, runtime commands say which context is empty
+and print `ployz server add --context NAME` as the next step. Add a Server before trying
+those commands again.
+
 On a server that joined from a Fleet Token, `sudo ployz status` then says
 `this server = Not in a Cluster`.
 

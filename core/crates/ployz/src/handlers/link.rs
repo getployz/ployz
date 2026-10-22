@@ -637,6 +637,7 @@ const RECENT: usize = 5;
 /// `ployz status`: one call that orients an agent.
 pub(super) fn status(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
+    crate::context::Config::load_or_empty(config_path(matches)?)?;
     let this_server = this_server();
     let store = reachable(root)?;
     let identity = store.as_ref().map(identity).transpose()?;

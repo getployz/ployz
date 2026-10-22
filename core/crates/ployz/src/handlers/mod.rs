@@ -317,7 +317,7 @@ fn dispatch(matches: &ArgMatches, command: &mut Command) -> Result<(), Error> {
         if let Some(cached) = setup.cached()
             && let Some(published) = cached.find(&path)
         {
-            if context_above_leaf(matches) {
+            if matches.value_source("context") == Some(clap::parser::ValueSource::CommandLine) {
                 return Err(Error::usage(format!("ployz {path} doesn't use a context")));
             }
             return crate::published::run(matches, published, &setup);
@@ -338,19 +338,19 @@ fn dispatch(matches: &ArgMatches, command: &mut Command) -> Result<(), Error> {
             "ployz {path} does not support --json"
         )));
     }
-    if context_above_leaf(matches) {
+    if matches.value_source("context") == Some(clap::parser::ValueSource::CommandLine)
+        && !takes_value(path.split(' '), "context")
+    {
         // Store commands address a Project and Environment, never a context.
         let takes = |id| takes_value(path.split(' '), id);
-        return Err(Error::usage(if takes("context") {
-            format!("--context goes after the command: ployz {path} --context NAME")
-        } else if takes("project") {
+        return Err(Error::usage(if takes("project") {
             format!("ployz {path} doesn't use a context; it takes --project and --env")
         } else {
             format!("ployz {path} doesn't use a context")
         }));
     }
     (verb.run)(matches)
-        .map_err(|failure| context::with_no_contexts_next(failure, leaf_matches(matches)))
+        .map_err(|failure| context::with_context_next(failure, leaf_matches(matches)))
 }
 
 /// Whether the compiled command at `words` takes a value for the option `id`; a
@@ -367,29 +367,13 @@ fn takes_value<'a>(words: impl IntoIterator<Item = &'a str>, id: &str) -> bool {
         let Some(child) = command.find_subcommand(word) else {
             break;
         };
-        inherited |= command
-            .get_arguments()
-            .any(|arg| arg.is_global_set() && takes(arg));
+        inherited |= id != "context"
+            && command
+                .get_arguments()
+                .any(|arg| arg.is_global_set() && takes(arg));
         command = child;
     }
     inherited || command.get_arguments().any(takes)
-}
-
-/// Whether `--context` was typed before the last subcommand (`ployz -c prod ps`): only the leaf
-/// reads it, so it would be ignored and the command would run against the default connection.
-// ponytail: refuses rather than forwards; make --context global if the per-command copies go.
-fn context_above_leaf(root: &ArgMatches) -> bool {
-    let mut matches = root;
-    while let Some((_, child)) = matches.subcommand() {
-        // Not every group defines --context, and asking clap about one it lacks panics.
-        if matches.ids().any(|id| id == "context")
-            && matches.value_source("context") == Some(clap::parser::ValueSource::CommandLine)
-        {
-            return true;
-        }
-        matches = child;
-    }
-    false
 }
 
 /// Print the shell hook that asks `ployz` itself for completions, so Setting paths
@@ -750,26 +734,11 @@ mod tests {
     }
 
     #[test]
-    fn a_context_typed_before_the_last_subcommand_is_caught() {
-        let parsed = |args: &[&str]| crate::cli::command().try_get_matches_from(args).unwrap();
-        assert!(context_above_leaf(&parsed(&["ployz", "-c", "prod", "ps"])));
-        assert!(context_above_leaf(&parsed(&[
-            "ployz", "server", "-c", "prod", "ls"
-        ])));
-        assert!(!context_above_leaf(&parsed(&["ployz", "ps", "-c", "prod"])));
-        assert!(!context_above_leaf(&parsed(&["ployz", "ps"])));
-    }
-
-    #[test]
-    fn a_context_above_the_leaf_names_where_the_leaf_takes_its_scope() {
+    fn an_explicit_context_names_where_a_cloud_command_takes_its_scope() {
         let mut command = command();
         for (args, expected) in [
             (
-                &["ps"][..],
-                "--context goes after the command: ployz ps --context NAME",
-            ),
-            (
-                &["config", "ls"],
+                &["config", "ls"][..],
                 "ployz config ls doesn't use a context; it takes --project and --env",
             ),
             (&["org", "ls"], "ployz org ls doesn't use a context"),

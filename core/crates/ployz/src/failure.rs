@@ -93,14 +93,9 @@ impl Failure {
         self
     }
 
-    /// Whether a command failed because the Ployz config has no contexts.
-    pub(crate) fn has_no_contexts(&self) -> bool {
-        std::iter::successors(self.source(), |&link| link.source()).any(|link| {
-            matches!(
-                link.downcast_ref::<ContextError>(),
-                Some(ContextError::NoContexts(_))
-            )
-        })
+    pub(crate) fn context_error(&self) -> Option<&ContextError> {
+        std::iter::successors(self.source(), |&link| link.source())
+            .find_map(|link| link.downcast_ref::<ContextError>())
     }
 
     /// End the process with `code`, whatever it printed already said: the remote
@@ -1194,7 +1189,7 @@ mod tests {
                 },
                 ConfigError::Parse {
                     path: "c".into(),
-                    line: Some(1),
+                    source: serde_norway::from_str::<String>("[").unwrap_err(),
                 },
                 ConfigError::PrivatePermissions("c".into()),
                 ConfigError::EmptyCurrentContext("c".into()),
