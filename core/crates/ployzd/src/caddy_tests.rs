@@ -1061,6 +1061,113 @@ async fn failed_load_preserves_the_last_caddyfile() {
     std::fs::remove_dir_all(directory).unwrap();
 }
 
+#[test]
+fn certificate_error_text_cannot_add_caddyfile_lines() {
+    let local = MachineId::parse("a".repeat(32)).unwrap();
+    let observations = vec![observation(
+        1,
+        &local,
+        "api",
+        Some([10, 210, 1, 2]),
+        vec![ingress("example.com", 80, HttpProtocol::Http)],
+    )];
+    let certificates = BTreeMap::from([(
+        CertificateHost::parse("example.com").unwrap(),
+        CertificateRow::decode(
+            r#"{"last_error":"refused\r\n}\nhttp://evil.example {\n\trespond pwned"}"#,
+        )
+        .unwrap(),
+    )]);
+
+    let caddyfile = caddyfile_for(
+        &local,
+        "node-a",
+        &service_containers(observations),
+        "TIMESTAMP",
+        &certificates,
+    );
+
+    let injected: Vec<_> = caddyfile
+        .lines()
+        .filter(|line| line.contains("evil.example") || line.contains("pwned"))
+        .collect();
+    assert_eq!(injected.len(), 1, "{caddyfile}");
+    assert!(
+        injected[0].starts_with("# - example.com: refused"),
+        "{caddyfile}"
+    );
+}
+
+#[tokio::test]
+async fn reconcile_writes_only_pinned_material_and_tolerates_a_stray_directory() {
+    let directory = std::env::temp_dir().join(format!(
+        "ployz-caddy-cert-pinned-test-{}",
+        MachineId::random()
+    ));
+    let path = directory.join(CONFIG_FILE);
+    let certs = directory.join("certs");
+    std::fs::create_dir_all(certs.join("stray")).unwrap();
+    let machine = Machine {
+        labels: Default::default(),
+        accepts_builds: true,
+        accepts_services: true,
+        accepts_ingress: true,
+        id: MachineId::parse("a".repeat(32)).unwrap(),
+        name: MachineName::parse("node-a").unwrap(),
+        subnet: "10.210.1.0/24".parse().unwrap(),
+        public_key: WireGuardPublicKey([1; 32]),
+        public_ip: None,
+        advertised_endpoints: vec![AdvertisedEndpoint(
+            format!("192.0.2.1:{MACHINE_API_PORT}").parse().unwrap(),
+        )],
+        runtime: Default::default(),
+        build_concurrency: None,
+    };
+    let observations = [observation(
+        1,
+        &machine.id,
+        "api",
+        Some([10, 210, 1, 2]),
+        vec![ingress("secure.example.com", 8443, HttpProtocol::Https)],
+    )];
+    let row = || {
+        CertificateRow::from_parts(
+            Some((test_material(), ployz_core::ClusterRoute::Direct)),
+            None,
+        )
+    };
+    let certificates = BTreeMap::from([
+        (CertificateHost::parse("secure.example.com").unwrap(), row()),
+        (
+            CertificateHost::parse("removed.example.com").unwrap(),
+            row(),
+        ),
+    ]);
+
+    reconcile(
+        &machine,
+        &observations,
+        &certificates,
+        &path,
+        Some(&FakeAdmin::default()),
+    )
+    .await
+    .unwrap();
+
+    let caddyfile = std::fs::read_to_string(&path).unwrap();
+    let (cert_name, key_name) =
+        pinned_file_names(pinned_tls_line(&caddyfile, "secure.example.com").unwrap());
+    let mut written: Vec<_> = std::fs::read_dir(&certs)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+        .collect();
+    written.sort();
+    let mut expected = vec![cert_name, key_name, "stray".to_owned()];
+    expected.sort();
+    assert_eq!(written, expected);
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
 #[tokio::test]
 async fn reconcile_writes_material_and_pins_it_before_load() {
     reconcile_writes_material_for("secure.example.com").await;

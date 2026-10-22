@@ -2,7 +2,10 @@
 
 use super::{ingress, observation, reserved};
 use crate::{
-    corrosion::{ApiClient, Error as CorrosionError, ReplicatedStore, fake_cluster::events},
+    corrosion::{
+        ApiClient, CertificateMaterial, CertificateRow, Error as CorrosionError, ReplicatedStore,
+        fake_cluster::events,
+    },
     ingress::caddy::{CONFIG_FILE, CaddyAdmin, Error as CaddyError, run},
     ingress::{WATCH_DEBOUNCE, watch_caddy},
 };
@@ -1940,6 +1943,135 @@ async fn routed_addresses_stand_while_the_caddy_that_loaded_them_refuses_a_new_l
 
 const CHALLENGE: &str = r#"{"challenge_token":"LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0","challenge_response":"LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}"#;
 
+#[tokio::test]
+async fn caddy_refusing_one_certificate_still_applies_every_other_route() {
+    let WatcherFixture {
+        machine,
+        state,
+        address,
+        server,
+        directory,
+    } = watcher_fixture().await;
+    state.mutate(|parts| {
+        parts.resolved_spec.ports = vec![ingress("good.example.com", 8443, HttpProtocol::Https)];
+    });
+    state.containers.lock().unwrap().push(observation(
+        4,
+        &machine.id,
+        "web",
+        Some([10, 210, 1, 5]),
+        vec![ingress("bad.example.com", 8443, HttpProtocol::Https)],
+    ));
+    state.write_certificates(&[
+        ("bad.example.com", material_body("bad.example.com")),
+        ("good.example.com", material_body("good.example.com")),
+    ]);
+    let api = state.api_container();
+    let (load_tx, mut load_rx) = mpsc::unbounded_channel();
+    let admin = RefusingAdmin {
+        refused: "https://bad.example.com {",
+        loads: load_tx,
+    };
+    let (route_publishes, mut published) =
+        tokio::sync::watch::channel(crate::ingress::PublishedRoutes::default());
+    let shutdown = CancellationToken::new();
+    let watcher = tokio::spawn(watch_caddy(
+        machine,
+        ReplicatedStore::new(ApiClient::http1(address, &"a".repeat(64)).unwrap()),
+        no_down,
+        directory.join(CONFIG_FILE),
+        route_publishes,
+        shutdown.clone(),
+        move || std::future::ready(Ok(Some(admin.clone()))),
+    ));
+
+    let loaded = timeout(Duration::from_secs(5), async {
+        loop {
+            let loaded = load_rx.recv().await.unwrap();
+            if loaded.contains("https://good.example.com {") {
+                return loaded;
+            }
+        }
+    })
+    .await
+    .expect("one refused certificate blocked every other route");
+    assert!(!loaded.contains("https://bad.example.com {"), "{loaded}");
+    let caddyfile = wait_for_caddyfile(
+        &directory.join(CONFIG_FILE),
+        "# - bad.example.com: Caddy refused",
+    )
+    .await;
+    assert!(
+        caddyfile.contains("https://good.example.com {"),
+        "{caddyfile}"
+    );
+    timeout(
+        Duration::from_secs(5),
+        published.wait_for(|published| {
+            published
+                .addresses
+                .as_ref()
+                .is_some_and(|addresses| addresses.contains_key(&api.identity()))
+        }),
+    )
+    .await
+    .expect("the route beside the refused certificate was not claimed")
+    .unwrap();
+
+    shutdown.cancel();
+    watcher.await.unwrap().unwrap();
+    server.abort();
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[tokio::test]
+async fn an_undecodable_certificate_row_does_not_block_other_routes() {
+    let WatcherFixture {
+        machine,
+        state,
+        address,
+        server,
+        directory,
+    } = watcher_fixture().await;
+    state.mutate(|parts| {
+        parts.resolved_spec.ports = vec![ingress("good.example.com", 8443, HttpProtocol::Https)];
+    });
+    state.write_certificates(&[
+        ("Not A Hostname", "{}".to_owned()),
+        ("example.org", "not json".to_owned()),
+        ("good.example.com", material_body("good.example.com")),
+    ]);
+    let (load_tx, mut load_rx) = mpsc::unbounded_channel();
+    let admin = TestAdmin { loads: load_tx };
+    let shutdown = CancellationToken::new();
+    let watcher = tokio::spawn(watch_caddy(
+        machine,
+        ReplicatedStore::new(ApiClient::http1(address, &"a".repeat(64)).unwrap()),
+        no_down,
+        directory.join(CONFIG_FILE),
+        tokio::sync::watch::channel(Default::default()).0,
+        shutdown.clone(),
+        move || std::future::ready(Ok(Some(admin.clone()))),
+    ));
+
+    let loaded = next_load(&mut load_rx).await;
+    assert!(loaded.contains("https://good.example.com {"), "{loaded}");
+
+    shutdown.cancel();
+    watcher.await.unwrap().unwrap();
+    server.abort();
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+fn material_body(hostname: &str) -> String {
+    let pair = rcgen::generate_simple_self_signed([hostname.to_owned()]).unwrap();
+    let material =
+        CertificateMaterial::parse(pair.cert.pem(), pair.signing_key.serialize_pem()).unwrap();
+    CertificateRow::from_parts(Some((material, ployz_core::ClusterRoute::Direct)), None)
+        .encode()
+        .unwrap()
+}
+
 fn no_down() -> std::future::Ready<Result<BTreeSet<MachineId>, CorrosionError>> {
     std::future::ready(Ok(BTreeSet::new()))
 }
@@ -2034,6 +2166,29 @@ async fn watcher_fixture() -> WatcherFixture {
         address,
         server,
         directory,
+    }
+}
+
+/// Refuses any config that serves `refused`, as Caddy refuses a certificate it can't load.
+#[derive(Clone)]
+struct RefusingAdmin {
+    refused: &'static str,
+    loads: mpsc::UnboundedSender<String>,
+}
+
+impl CaddyAdmin for RefusingAdmin {
+    async fn adapt(&self, caddyfile: &str) -> Result<String, CaddyError> {
+        Ok(caddyfile.to_owned())
+    }
+
+    async fn load(&self, caddyfile: &str) -> Result<(), CaddyError> {
+        if caddyfile.contains(self.refused) {
+            return Err(CaddyError::Admin(
+                "loading certificates: x509: negative serial number".into(),
+            ));
+        }
+        self.loads.send(caddyfile.to_owned()).unwrap();
+        Ok(())
     }
 }
 
@@ -2225,6 +2380,14 @@ impl WatchState {
         })
         .await
         .unwrap_or_else(|_| panic!("ack transaction {count} was never written"));
+    }
+
+    fn write_certificates(&self, rows: &[(&str, String)]) {
+        *self.certificates.lock().unwrap() = rows
+            .iter()
+            .map(|(hostname, body)| ((*hostname).to_owned(), body.clone()))
+            .collect();
+        self.send_certificates(b"{\"change\":{}}\n");
     }
 
     fn send_certificates(&self, event: &'static [u8]) {
