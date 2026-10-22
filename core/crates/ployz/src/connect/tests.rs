@@ -1014,6 +1014,32 @@ async fn a_silent_entry_is_raced_after_its_stagger_and_dropped_once_another_conf
 }
 
 #[tokio::test(start_paused = true)]
+async fn in_order_a_slow_entry_is_never_raced() {
+    let connector = ScriptedConnector::new(vec![
+        (
+            Connection::unix("/scripted/0.sock").unwrap(),
+            Scripted::ConfirmsAfter(Duration::from_secs(4)),
+        ),
+        (answering_entry(), Scripted::ConfirmsAfter(Duration::ZERO)),
+    ]);
+    let client = connect_selected_in_order(connector.selected(), connector.clone())
+        .await
+        .unwrap();
+    assert_eq!(
+        client.connection(),
+        &Connection::unix("/scripted/0.sock").unwrap()
+    );
+    assert_eq!(
+        *connector.dials.lock().unwrap(),
+        [Dialled {
+            index: 0,
+            at: Duration::ZERO,
+            beside: false
+        }]
+    );
+}
+
+#[tokio::test(start_paused = true)]
 async fn a_failed_entry_hands_over_at_once_and_only_dials_beside_a_live_one() {
     let connector = ScriptedConnector::new(vec![
         (

@@ -631,6 +631,28 @@ pub async fn connect_selected_with(
     selected: SelectedConnections,
     connector: Arc<dyn Connector>,
 ) -> Result<Client, ConnectError> {
+    connect_selected(selected, connector, true).await
+}
+
+/// [`connect_selected_with`] without the race: each connection starts only once the one
+/// before it fails, for a caller that acts on the entry itself and so must reach the
+/// first one that answers, however slowly.
+///
+/// # Errors
+///
+/// As [`connect_selected_with`].
+pub(crate) async fn connect_selected_in_order(
+    selected: SelectedConnections,
+    connector: Arc<dyn Connector>,
+) -> Result<Client, ConnectError> {
+    connect_selected(selected, connector, false).await
+}
+
+async fn connect_selected(
+    selected: SelectedConnections,
+    connector: Arc<dyn Connector>,
+    race: bool,
+) -> Result<Client, ConnectError> {
     let mut failures = BTreeMap::new();
     {
         let (source, connector) = (&selected.source, &connector);
@@ -661,7 +683,7 @@ pub async fn connect_selected_with(
                     failures.insert(index, (connection, error));
                     more = dial_next(&mut dialing, stagger.as_mut());
                 }
-                () = &mut stagger, if more => {
+                () = &mut stagger, if race && more => {
                     more = dial_next(&mut dialing, stagger.as_mut());
                 }
             }
