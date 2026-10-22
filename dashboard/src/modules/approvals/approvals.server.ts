@@ -526,11 +526,11 @@ export const gateOperation = Effect.fn("Approvals.gateOperation")(function* (
   asked: OperationAsked,
 ): Effect.fn.Return<Gated, never, Database> {
   // A person who confirmed it in the dashboard already approved it; only `ployz`, agents, and an ask into a Protected
-  // Environment by someone who can't protect it wait on one.
+  // Environment by someone who can't protect it wait on one. That ask waits even when it destroys nothing.
   if (caller.via === "dashboard" && asked.protected === undefined) return { ok: true, approvalId: null };
   const trusted = yield* redeemApproval(caller, approvalId, { command: asked.verb, subject: asked.subject });
   if (!trusted.ok) return trusted;
-  if (asked.effects.length === 0) return { ok: true, approvalId: null };
+  if (asked.effects.length === 0 && asked.protected === undefined) return { ok: true, approvalId: null };
   if (asked.protected === undefined && !(yield* hasApprover(caller.organization.id))) return { ok: true, approvalId: null };
   const digest = operationDigest(asked);
   if (approvalId !== null && trusted.approval !== "required" && trusted.approval.approved === digest) {

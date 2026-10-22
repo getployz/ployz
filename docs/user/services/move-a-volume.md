@@ -147,6 +147,9 @@ five minutes. If the copy has not finished after six hours, the run fails and sa
 ployz volume move data --to web-2
 ```
 
+In a [Protected environment](../environments/environments.md), a move from a member, or from a
+token or an agent without `environments:protect`, waits for an owner or admin to approve it.
+
 Your service keeps running while Ployz copies the volume to `web-2` in rounds. Then Ployz takes
 the service on the old server out of ingress, lets requests in flight finish for up to 3 seconds,
 and stops it. It takes a last snapshot of the volume. `web-2` pulls that snapshot and starts the
