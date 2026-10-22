@@ -432,6 +432,28 @@ validated_string_newtype!(
     "a 1-63 character lowercase DNS label",
     |value| is_dns_label(value)
 );
+
+impl MachineName {
+    /// The Machine Name a host's hostname becomes by default: lowercased, each run of
+    /// characters a DNS label refuses turned into one `-`, trimmed of `-`, cut to 63
+    /// characters. None when nothing usable is left.
+    #[must_use]
+    pub fn from_hostname(hostname: &str) -> Option<Self> {
+        let mut label = String::with_capacity(hostname.len());
+        for character in hostname.chars() {
+            let character = character.to_ascii_lowercase();
+            if character.is_ascii_lowercase() || character.is_ascii_digit() {
+                label.push(character);
+            } else if !label.is_empty() && !label.ends_with('-') {
+                label.push('-');
+            }
+        }
+        label.truncate(63);
+        let label = label.trim_end_matches('-');
+        Self::parse(label).ok()
+    }
+}
+
 validated_string_newtype!(
     /// Names one Management Client slot on a Machine, such as `cloud`.
     ManagementClientLabel,
@@ -1093,6 +1115,31 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn a_hostname_normalises_to_a_machine_name() {
+        let long = format!("{}-tail", "a".repeat(66));
+        let cut_at_a_dash = format!("{}_b", "a".repeat(62));
+        for (hostname, name) in [
+            ("HP-WIN11", "hp-win11"),
+            ("vultr1", "vultr1"),
+            ("my_box__01", "my-box-01"),
+            ("web.example.com", "web-example-com"),
+            ("--Edge Node--", "edge-node"),
+            ("a---b", "a-b"),
+            (long.as_str(), &"a".repeat(63)),
+            (cut_at_a_dash.as_str(), &"a".repeat(62)),
+        ] {
+            assert_eq!(
+                MachineName::from_hostname(hostname).map(String::from),
+                Some(name.to_owned()),
+                "{hostname}"
+            );
+        }
+        for unusable in ["", "___", "-.-", "ÜÖÄ"] {
+            assert_eq!(MachineName::from_hostname(unusable), None, "{unusable}");
+        }
+    }
 
     #[test]
     fn labels_are_a_lowercase_letter_then_up_to_31_label_characters() {

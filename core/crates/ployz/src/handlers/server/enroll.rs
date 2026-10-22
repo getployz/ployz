@@ -12,7 +12,7 @@ use std::time::Duration;
 use clap::parser::ValueSource;
 use clap::{ArgMatches, Command};
 use ipnet::Ipv4Net;
-use ployz_core::{CloudEnrollToken, MachineId, MachineName, RpcErrorCode, StoragePreparation};
+use ployz_core::{CloudEnrollToken, MachineId, RpcErrorCode, StoragePreparation};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
@@ -158,9 +158,7 @@ const SHAPING_VALUES: [&str; 12] = [
 fn shaping_args(matches: &ArgMatches) -> Result<Vec<String>, Error> {
     super::enrollment_policy(matches)?;
     super::helpers::token_request(matches)?;
-    if let Some(name) = matches.get_one::<String>("name") {
-        MachineName::parse(name)?;
-    }
+    super::helpers::requested_name(matches)?;
     let given = |id: &str| {
         matches!(
             matches.value_source(id),

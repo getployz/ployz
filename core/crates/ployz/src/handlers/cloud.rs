@@ -160,10 +160,7 @@ where
     }
     let initial_policy = super::server::enrollment_policy(matches)?;
     let url = cloud_enroll::enroll_url(cloud_url);
-    let requested_name = matches
-        .get_one::<String>("name")
-        .map(MachineName::parse)
-        .transpose()?;
+    let requested_name = super::server::requested_name(matches)?;
     let requested_storage = super::server::requested_storage(matches);
     let cluster_network = *matches
         .get_one::<Ipv4Net>("network")
@@ -296,7 +293,7 @@ async fn enroll_current_identity(
         },
     )
     .await?;
-    let name = crate::handlers::server::machine_name(requested_name, &machine_token)?;
+    let name = crate::handlers::server::machine_name(requested_name, &machine_token);
     let identity = EnrollIdentity::from_machine_token(
         name.clone(),
         &machine_token,

@@ -340,7 +340,7 @@ async fn caddy_lookup_failure_happens_before_initialize() {
 }
 
 #[tokio::test]
-async fn an_unnamed_server_on_an_empty_hostname_fails_before_asking_cloud_to_enroll() {
+async fn an_unnamed_server_on_an_empty_hostname_asks_cloud_with_a_generated_name() {
     let enroll = EnrollListen::script([]).await;
     let daemon = JoinDaemon::new(registration());
     let machine_addr = serve_machine(daemon.clone()).await;
@@ -360,14 +360,17 @@ async fn an_unnamed_server_on_an_empty_hostname_fails_before_asking_cloud_to_enr
         .output()
         .await
         .unwrap();
-    assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("Naming this Server server-"), "{stderr}");
+    let posts = enroll.posts();
+    let name = posts
+        .first()
+        .and_then(|post| post.get("name"))
+        .and_then(|name| name.as_str());
     assert!(
-        stderr.contains("Server name is required because the remote hostname is empty"),
-        "{stderr}"
+        name.is_some_and(|name| name.starts_with("server-")),
+        "{posts:?}"
     );
-    assert!(!stderr.contains("Asking Cloud"), "{stderr}");
-    assert!(enroll.posts().is_empty());
 }
 
 #[tokio::test]
