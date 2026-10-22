@@ -169,6 +169,12 @@ async fn check(credential: &Credential) -> Result<ForgetCheck, Error> {
 
 fn finished(forgotten: &ServersForgotten) -> Result<(), Error> {
     let next = "ployz server add".to_owned();
+    // Nothing reaches a forgotten Server to fence it (#2927), so the operator must.
+    crate::ui::warn(
+        "A forgotten Server doesn't know it was forgotten. Wipe or reinstall the disk of each \
+         before it runs again. If one comes back as it is, its services keep writing to its old \
+         copy of each Volume, and those writes are lost: run sudo ployz-uninstall on it at once.",
+    );
     crate::ui::finish(&Next::new(forgotten, Some(next)), || {
         let check = &forgotten.check;
         crate::ui::stream(format_args!(
