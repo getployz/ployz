@@ -80,7 +80,7 @@ repository** or **Container image** here. See [Add a service](services.md#add-a-
 
 ### Switch between an image and a repository
 
-Open the source's **⋯** menu and choose **Switch to container image** or **Switch to GitHub
+Open the source's **⋯** menu and choose **Switch to container image** or **Switch to github
 repository**. The new source replaces the current one, with no need to disconnect it first.
 
 A service that switches to a repository builds from the repository root. A service that
