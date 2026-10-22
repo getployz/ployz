@@ -150,7 +150,7 @@ pub struct LocalMachineRecord {
     pub wireguard_mtu: Option<u32>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub selected_endpoints: BTreeMap<MachineId, SelectedEndpoint>,
-    #[serde(default, skip_serializing_if = "PinnedAddresses::is_empty")]
+    /// Always written, so only a record from 0.3.0-beta.7 or earlier lacks it.
     pinned_addresses: PinnedAddresses,
     /// Where the observe process pushes crash events. Absent means buffer only.
     #[serde(default, skip_serializing_if = "Option::is_none")]

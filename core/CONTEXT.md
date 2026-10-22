@@ -586,7 +586,7 @@ The endpoint one observing Machine currently selects for reaching a target Machi
 _Avoid_: Advertised Endpoint, globally current endpoint
 
 **Pinned Address**:
-A Machine's public IP or Advertised Endpoints when its operator chose them at enrollment or with `server set`. Daemon start rediscovers only unpinned addresses. The pin lives on the Machine and is never replicated.
+A Machine's public IP or Advertised Endpoints when its operator chose them at enrollment or with `server set`. Daemon start rediscovers only unpinned addresses. The pin lives on the Machine and is never replicated. A record last written by 0.3.0-beta.6 or earlier reads with both addresses pinned, because those releases never recorded which were chosen.
 _Avoid_: static IP, address override
 
 **Cloud Pairing**:

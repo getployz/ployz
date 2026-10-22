@@ -387,6 +387,13 @@ An address you chose yourself never changes on its own. That means `--public-ip`
 given to `ployz server init`, `ployz server add` or `ployz server set`. To change it, run
 `ployz server set` again.
 
+A server on 0.3.0-beta.6 or earlier keeps the public IP and network addresses it has when you
+upgrade it to a release after 0.3.0-beta.7. Those older releases didn't record which addresses you
+chose, so Ployz treats both as chosen. From then on the server doesn't pick up a new address on its
+own: after its IP changes, run `ployz server set`. Only resetting the server goes back to automatic
+addresses. A server already upgraded to 0.3.0-beta.7 may have swapped an address you chose for one
+it found; set yours again with `ployz server set`.
+
 If every server's address changed at once, the servers can't reach each other to share the new
 addresses, and each one shows the others as unreachable. [Tell them where one of them
 is](#servers-lost-each-other-after-their-ips-changed).
