@@ -235,6 +235,10 @@ fn already_assigned<'a>(details: &'a MachineDetails, assigned: &Machine) -> Opti
         .filter(|machine| machine.id == assigned.id)
 }
 
+fn unlisted_participation(_details: &MachineDetails, _assigned: &Machine) -> Result<(), Error> {
+    Ok(())
+}
+
 async fn enroll_current_identity(
     client: &mut Client,
     requested_name: Option<MachineName>,
@@ -308,6 +312,7 @@ where
             client
         }
     } else {
+        unlisted_participation(&details, &assigned)?;
         client = ensure_uninitialized(
             matches,
             matches.get_flag("yes"),
@@ -1052,6 +1057,17 @@ mod tests {
             already_assigned(&details(LocalMachinePhase::Joining), &registered),
             Some(&listed),
             "a join under way hasn't published itself yet"
+        );
+        let refusal =
+            unlisted_participation(&details(LocalMachinePhase::Participating), &registered)
+                .unwrap_err()
+                .to_string();
+        assert!(
+            refusal.contains("run the same command again") && refusal.contains("--reset"),
+            "an unlisted participant may be a rerun that outran its publication or a forgotten Server: {refusal}"
+        );
+        assert!(
+            unlisted_participation(&details(LocalMachinePhase::Uninitialized), &registered).is_ok()
         );
     }
 
