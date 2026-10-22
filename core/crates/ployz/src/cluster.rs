@@ -15,9 +15,9 @@ use ployz_core::{
     MachineName, MachineObservation, MachineRpcClient, MachineStorageObservation, MachineSuccess,
     MachineTarget, NameMatches, Namespace, ObservedDataLoss, OpaquePayload, PartialResult,
     RUNTIME_WATCH_MESSAGE_SIZE_LIMIT, RemoveVolumeRequest, RemoveVolumesRequest,
-    ResolvedServiceSpec, Rpc, RpcError, RpcErrorCode, RpcResponseBody, StopOptions,
-    StorageCapacity, UnconfirmedDataLoss, VolumeInventory, VolumeRemoval, VolumeRemovalOutcome,
-    derive_live_services, op,
+    ResolvedServiceSpec, Rpc, RpcError, RpcErrorCode, RpcResponseBody, RuntimeWatchFrame,
+    RuntimeWatchRequest, StopOptions, StorageCapacity, UnconfirmedDataLoss, VolumeInventory,
+    VolumeRemoval, VolumeRemovalOutcome, decode_runtime_watch_frame, derive_live_services, op,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -534,6 +534,31 @@ impl Client {
             .runtime_watch(tonic::Request::new(request))
             .await?
             .into_inner())
+    }
+
+    /// The Cluster as the first Runtime Watch frame shows it.
+    pub(crate) async fn runtime_frame(&self) -> Result<RuntimeWatchFrame, RpcError> {
+        let payload = op::RuntimeWatch::into_request(RuntimeWatchRequest {})
+            .encode()
+            .map_err(|error| RpcError::from(ConnectError::from(error)))?;
+        let mut stream = self
+            .runtime_watch_stream(payload)
+            .await
+            .map_err(|error| error.to_rpc_error())?;
+        let Some(frame) = stream
+            .message()
+            .await
+            .map_err(|status| TransportError::from_stream_status(status).to_rpc_error())?
+        else {
+            return Err(RpcError {
+                code: RpcErrorCode::Unavailable,
+                message: "Runtime Watch ended before its first frame".into(),
+                details: Value::Null,
+                cause: Vec::new(),
+            });
+        };
+        decode_runtime_watch_frame(&frame)
+            .map_err(|error| crate::ui::rpc_error(RpcErrorCode::Internal, &error))
     }
 
     async fn call_once<T: Rpc>(

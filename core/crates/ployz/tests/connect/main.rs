@@ -31,6 +31,7 @@ use tonic::{
     transport::{Channel, Endpoint, Server},
 };
 
+mod domain_cli;
 mod machine_storage;
 mod removal_cli;
 mod sdk;
