@@ -723,17 +723,20 @@ fn assemble_plan(
     )?;
     let name_errors_with_service = requested.len() > 1;
     let mut reservations = PlacementReservations::new(snapshot);
-    volume_plan.reserve_shared(&requested, &services, &mut reservations, &intent.options)?;
+    let mut blocked =
+        volume_plan.reserve_shared(&requested, &services, &mut reservations, &intent.options)?;
     let mut budget = ServiceBudget {
         volumes: volume_plan,
         placement: reservations.into_placement(snapshot),
     };
     let mut service_operations = Vec::new();
     let mut ranges = Vec::new();
-    let mut blocked: Vec<BlockedService> = Vec::new();
     // `requested` places every dependency before its dependents, so a Service whose
     // dependency is blocked is seen after that dependency was.
     for spec in &requested {
+        if blocked.iter().any(|entry| entry.service == spec.name) {
+            continue;
+        }
         if let Some(dependency) = intent
             .dependencies()
             .get(&spec.name)
@@ -749,7 +752,7 @@ fn assemble_plan(
                 service: spec.name.clone(),
                 error: dependency_blocked(&dependency.service),
             });
-            budget.volumes.release(&spec.name);
+            budget.release(&spec.name);
             continue;
         }
         let first = service_operations.len();
@@ -771,7 +774,7 @@ fn assemble_plan(
                     service: spec.name.clone(),
                     error: error.into_rpc_error(),
                 });
-                budget.volumes.release(&spec.name);
+                budget.release(&spec.name);
                 continue;
             }
             Err(source) => {
@@ -820,6 +823,9 @@ fn assemble_plan(
         service_operations.extend(operations);
         ranges.push((spec.name.clone(), first..service_operations.len()));
     }
+    // Shared components were blocked before the loop; in `requested` order the first
+    // entry is the earliest root cause, which is the one the Deployment reports.
+    blocked.sort_by_key(|entry| requested.iter().position(|spec| spec.name == entry.service));
     let before_volumes = service_operations.len();
     let volumes = budget.volumes.finish(&mut service_operations)?;
     let mut operations = service_operations;
@@ -1076,6 +1082,14 @@ fn order_included<'intent>(
 struct ServiceBudget<'snapshot> {
     volumes: VolumePlan<'snapshot>,
     placement: PlacementState,
+}
+
+impl ServiceBudget<'_> {
+    /// Give back everything `service`, which this Deploy does not attempt, had committed.
+    fn release(&mut self, service: &ServiceName) {
+        self.volumes.release(service);
+        self.placement.release(service);
+    }
 }
 
 /// One Service to place, with what the Cluster already runs of it.

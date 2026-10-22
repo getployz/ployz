@@ -225,6 +225,13 @@ no `ployz volume mirror rm` line for them, because such a line run later could d
 has since become the mirror. A volume that is [mid-move](move-a-volume.md#when-a-move-stops) blocks its service too, and names the
 `ployz volume release` line that stops the move. A move that stopped before its first snapshot
 has nothing to release, so it names the `ployz volume move` line that runs the move again.
+Without Ployz Cloud, several copies get the same `ployz volume rm data` to start over empty, and
+the error says that making one of them the writer needs Ployz Cloud. A mid-move volume says only
+that stopping the move needs Ployz Cloud.
+
+Services that share a volume are blocked together: when any volume one of them mounts can't be
+mounted, all of them are blocked with that reason, and so is every service that depends on one of
+them. The rest of the deploy still goes ahead.
 
 ## When your servers show Docker only
 

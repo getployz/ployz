@@ -133,6 +133,25 @@ impl PlacementState {
         self.reservations.remove(service)
     }
 
+    /// Cancel `service`'s shared reservation and restore the endpoints it committed. The old
+    /// hooks it counted as free stay in use: a Service this Deploy does not attempt keeps them.
+    pub(super) fn release(&mut self, service: &ServiceName) {
+        let Some(reservation) = self.reservations.remove(service) else {
+            return;
+        };
+        for choice in &reservation.choices {
+            if matches!(choice.action, ReplicaAction::Create) {
+                self.capacity.release(&choice.machine_id);
+            }
+        }
+        if let Some(machine_id) = reservation.hook_machine {
+            self.capacity.release(&machine_id);
+        }
+        for machine_id in &reservation.credited_hooks {
+            self.capacity.take(machine_id);
+        }
+    }
+
     pub(super) fn capacity_error_for<'a>(
         &self,
         machine_ids: impl IntoIterator<Item = &'a MachineId>,
@@ -498,6 +517,8 @@ pub(super) enum CapacityAdmission {
 pub(super) struct ReplicatedReservation {
     choices: Vec<ReplicaChoice>,
     hook_machine: Option<MachineId>,
+    /// The Machine of each old hook the reservation counted as free before it was made.
+    credited_hooks: Vec<MachineId>,
 }
 
 impl ReplicatedReservation {
@@ -767,6 +788,7 @@ fn select_replicated(
     Ok(ReplicatedReservation {
         choices,
         hook_machine,
+        credited_hooks: Vec::new(),
     })
 }
 
@@ -977,6 +999,7 @@ fn reserve_replicated_service_demand(
     let current = observed.map_or(&[][..], |service| service.containers.as_slice());
     let reserve = |budget: &mut (CapacityBudget, HostSockets), limits| {
         let (capacity, sockets) = budget;
+        let mut credited_hooks = Vec::new();
         if let ServiceMode::Replicated { replicas } = requested.mode
             && requested.pre_deploy.is_some()
             && current
@@ -989,15 +1012,18 @@ fn reserve_replicated_service_demand(
                 .count()
                 < replicas.get() as usize
         {
-            release_hooks(
-                capacity,
+            credited_hooks.extend(
                 observed
                     .into_iter()
-                    .flat_map(|service| &service.hook_containers),
+                    .flat_map(|service| &service.hook_containers)
+                    .map(|hook| hook.as_observation().machine_id),
             );
+            for machine_id in &credited_hooks {
+                capacity.release(machine_id);
+            }
         }
         let error = capacity.error_for([&machine_id]);
-        let reservation = select_replicated(
+        let mut reservation = select_replicated(
             requested,
             current,
             vec![machine_id],
@@ -1006,6 +1032,7 @@ fn reserve_replicated_service_demand(
             error,
             (options, limits),
         )?;
+        reservation.credited_hooks = credited_hooks;
         for container in current {
             let observation = container.as_observation();
             if !reservation
