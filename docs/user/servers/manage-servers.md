@@ -292,8 +292,8 @@ upgrading reads **Upgrading**.
 When you upgrade from `0.3.0-beta.6`, where [the first server needs
 SSH](#servers-on-030-beta6-or-earlier), upgrade every server back to back: upgraded servers don't
 route traffic to apps on a server still on `0.3.0-beta.6` until it upgrades too
-([#2892](https://github.com/getployz/ployz/issues/2892)). As each server restarts, its domains can answer `503` briefly, for about 6 seconds when the app runs on
-another server.
+([#2892](https://github.com/getployz/ployz/issues/2892)). As each server restarts, its domains can
+answer `503` briefly, for about 6 seconds when the app runs on another server.
 
 ### Turn on automatic upgrades
 
