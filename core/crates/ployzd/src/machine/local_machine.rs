@@ -143,8 +143,8 @@ pub enum Error {
     Admission(#[from] crate::mutation::Error),
     #[error(transparent)]
     Upgrade(#[from] crate::installer::upgrade::Error),
-    #[error("could not read this Machine's Sealing Key")]
-    SealingKey(#[source] std::io::Error),
+    #[error(transparent)]
+    Seal(#[from] crate::sealing_key::SealError),
 }
 
 impl LocalMachine {
@@ -627,8 +627,12 @@ impl LocalMachine {
         };
         let assignment = ployz_core::allocate_enrollment(&request, &snapshot, &[])?;
         let sealing_key = SealingKey::load(self.owner.data_dir())
-            .map_err(Error::SealingKey)?
-            .map(|key| key.seal_to(&assignment.machine.public_key));
+            .unwrap_or_else(|error| {
+                tracing::warn!(%error, "could not read the Sealing Key; registering without it");
+                None
+            })
+            .map(|key| key.seal_to(&assignment.machine.public_key))
+            .transpose()?;
         publication.publish(&assignment.machine).await?;
         Ok(registered(
             assignment.machine,

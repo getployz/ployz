@@ -211,7 +211,9 @@ const admit = Effect.fn("Checkin.admit")(function* (
       .where(and(key, eq(waitingServer.fleetTokenId, token.id), existing.rejectedAt === null ? isNull(waitingServer.rejectedAt) : undefined))
       .returning({ id: waitingServer.id, probe: waitingServer.probe });
   if (row === undefined) return OWNERSHIP_CHANGED;
-  yield* recordSealing(token.organizationId, row.id, request);
+  yield* afterDatabaseCommit(recordSealing(token.organizationId, row.id, request).pipe(
+    Effect.catch((error) => Effect.logError("A Server's Sealing Key report was not recorded.", error)),
+  ));
   const answer = yield* answerAttempt(row.id, request, report);
   if (answer.kind !== "wait") return answer;
   // Handed out only with a wait, so an Enroll answer doesn't stamp a handout the host never sees.
@@ -227,11 +229,11 @@ const recordSealing = Effect.fn("Checkin.recordSealing")(function* (
   const { sealing, attempt } = request;
   if (sealing === undefined || attempt === undefined) return;
   const { drizzle } = yield* Database;
-  const [enrolled] = yield* drizzle.select({ id: serverEnrollment.id }).from(serverEnrollment).where(and(
+  const [enrolled] = yield* drizzle.select({ id: serverEnrollment.id, stage: serverEnrollment.stage }).from(serverEnrollment).where(and(
     eq(sql`${serverEnrollment.id}::text`, attempt.attemptId),
     eq(serverEnrollment.waitingServerId, waitingServerId),
   ));
-  if (enrolled === undefined) return;
+  if (enrolled === undefined || !joinCommitted(enrolled, { reportedAttemptId: attempt.attemptId, reportedStage: attempt.stage })) return;
   const annotations = { organizationId, attemptId: enrolled.id };
   if (sealing.kind === "needs_access") {
     return yield* Effect.logWarning("A Server joined without its Cluster's Sealing Key.").pipe(Effect.annotateLogs(annotations));

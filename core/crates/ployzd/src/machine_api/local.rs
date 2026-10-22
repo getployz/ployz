@@ -836,7 +836,9 @@ fn local_error(error: LocalMachineError) -> Result<Response<OpaquePayload>, Stat
             Err(Status::unavailable("Cluster is not available"))
         }
         LocalMachineError::DockerUnavailable => respond(unavailable("Docker is not available")),
-        LocalMachineError::MissingAssignment | LocalMachineError::InvalidPushTarget(_) => {
+        LocalMachineError::MissingAssignment
+        | LocalMachineError::InvalidPushTarget(_)
+        | LocalMachineError::Seal(_) => {
             respond(RpcError::caused(RpcErrorCode::InvalidArgument, &error))
         }
         LocalMachineError::Enrollment(error) => {
@@ -887,10 +889,6 @@ fn local_error(error: LocalMachineError) -> Result<Response<OpaquePayload>, Stat
             ployz_core::rpc::caused_status(tonic::Code::Internal, &error),
         ),
         LocalMachineError::Upgrade(error) => respond(upgrade_error(error)),
-        LocalMachineError::SealingKey(error) => Err(ployz_core::rpc::caused_status(
-            tonic::Code::Internal,
-            &error,
-        )),
     }
 }
 

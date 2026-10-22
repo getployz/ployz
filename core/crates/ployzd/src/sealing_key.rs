@@ -29,6 +29,10 @@ pub enum OpenError {
     Unopenable,
 }
 
+#[derive(Debug, Error)]
+#[error("cannot seal the Sealing Key to a low-order WireGuard key")]
+pub struct SealError;
+
 impl SealingKey {
     pub(crate) fn generate() -> Self {
         let (private, _) = Kem::gen_keypair(&mut OsRng.unwrap_err());
@@ -62,7 +66,10 @@ impl SealingKey {
         }
     }
 
-    pub(crate) fn seal_to(&self, recipient: &WireGuardPublicKey) -> SealedSealingKey {
+    pub(crate) fn seal_to(
+        &self,
+        recipient: &WireGuardPublicKey,
+    ) -> Result<SealedSealingKey, SealError> {
         let recipient = <Kem as hpke::Kem>::PublicKey::from_bytes(&recipient.0)
             .expect("an X25519 public key is any 32 bytes");
         let (encapped, ciphertext) =
@@ -74,10 +81,10 @@ impl SealingKey {
                 &[],
                 &mut OsRng.unwrap_err(),
             )
-            .expect("sealing to an X25519 key does not fail");
+            .map_err(|_| SealError)?;
         let mut sealed = encapped.to_bytes().to_vec();
         sealed.extend(ciphertext);
-        SealedSealingKey::from_bytes(sealed)
+        Ok(SealedSealingKey::from_bytes(sealed))
     }
 
     pub(crate) fn open(
@@ -156,7 +163,7 @@ mod tests {
     fn sealing_key_opens_only_with_the_recipient_wireguard_key() {
         let key = SealingKey::generate();
         let joiner = WireGuardPrivateKey::generate();
-        let sealed = key.seal_to(&joiner.public_key());
+        let sealed = key.seal_to(&joiner.public_key()).unwrap();
 
         assert_eq!(SealingKey::open(&sealed, &joiner).unwrap(), key);
         assert!(matches!(
@@ -170,9 +177,17 @@ mod tests {
     }
 
     #[test]
+    fn sealing_key_refuses_a_low_order_recipient() {
+        let key = SealingKey::generate();
+        assert!(key.seal_to(&WireGuardPublicKey([0; 32])).is_err());
+    }
+
+    #[test]
     fn sealing_key_sealed_bytes_hide_the_private_half() {
         let key = SealingKey::generate();
-        let sealed = key.seal_to(&WireGuardPrivateKey::generate().public_key());
+        let sealed = key
+            .seal_to(&WireGuardPrivateKey::generate().public_key())
+            .unwrap();
         assert!(
             !sealed
                 .as_bytes()

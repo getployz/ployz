@@ -171,8 +171,8 @@ const joinedHost = async () => {
      order by first_seen_at desc limit 1 returning id`,
     [adaOrg, machineId],
   );
-  return async (sealing: CheckinRequest["sealing"], attemptId = enrolled?.id) => {
-    const body = Buffer.from(JSON.stringify({ ...JSON.parse(checkin.toString()), attempt: { attemptId, stage: "joined" }, sealing }));
+  return async (sealing: CheckinRequest["sealing"], attemptId = enrolled?.id, stage = "publishing") => {
+    const body = Buffer.from(JSON.stringify({ ...JSON.parse(checkin.toString()), attempt: { attemptId, stage }, sealing }));
     const { json, headers } = signed(token, body, host);
     expect((await post(json, headers)).status).toBe(200);
   };
@@ -203,10 +203,11 @@ it("files each pairing generation's Sealing Key apart", async () => {
   ]));
 });
 
-it("records nothing for a Server that needs access, names another host's attempt, or has no pairing", async () => {
+it("records nothing for a Server that needs access, has not committed its join, names another host's attempt, or has no pairing", async () => {
   await pair("pairing-1");
   const report = await joinedHost();
   await report({ kind: "needs_access" });
+  await report(held(1), undefined, "storage");
   await report(held(1), "00000000-0000-4000-8000-000000000000");
   await report(held(1), "not-an-attempt");
   const [theirs] = (await harness.pool.query<{ id: string }>("select id from server_enrollment")).rows;
@@ -215,5 +216,12 @@ it("records nothing for a Server that needs access, names another host's attempt
 
   await harness.pool.query("delete from organization_pairing");
   await report(held(1));
+  expect(await sealingKeys()).toEqual([]);
+});
+
+it("answers the check-in even when its Sealing Key report cannot be recorded", async () => {
+  await pair("pairing-1");
+  await harness.pool.query("update organization_pairing set encrypted_pairing_secret = '{}'");
+  await (await joinedHost())(held(1));
   expect(await sealingKeys()).toEqual([]);
 });

@@ -460,7 +460,8 @@ async fn enroll_refuses_a_sealing_key_sealed_to_another_machine() {
     let mut registration = entry.register(joiner.identity).await.unwrap();
     registration.sealing_key = Some(
         SealingKey::generate()
-            .seal_to(&crate::network::WireGuardPrivateKey::generate().public_key()),
+            .seal_to(&crate::network::WireGuardPrivateKey::generate().public_key())
+            .unwrap(),
     );
     assert!(joiner.machine.enroll(member(registration)).await.is_err());
 
@@ -469,6 +470,31 @@ async fn enroll_refuses_a_sealing_key_sealed_to_another_machine() {
         joiner.machine.record().phase(),
         LocalMachinePhase::Uninitialized
     );
+}
+
+#[tokio::test]
+async fn register_from_an_entry_with_an_unreadable_sealing_key_still_admits_the_joiner() {
+    let (entry, entry_dir, joiner) = sealing_entry("ployzd-register-corrupt-key").await;
+    std::fs::write(entry_dir.join("sealing.key"), b"not a key").unwrap();
+
+    let registration = entry.register(joiner.identity).await.unwrap();
+    assert_eq!(registration.sealing_key, None);
+    joiner.machine.enroll(member(registration)).await.unwrap();
+
+    assert_eq!(
+        sealing(&joiner.machine).await,
+        Some(ployz_core::Sealing::NeedsAccess)
+    );
+}
+
+#[tokio::test]
+async fn register_refuses_a_low_order_wireguard_key_instead_of_sealing_to_it() {
+    let (entry, _entry_dir, mut joiner) = sealing_entry("ployzd-register-low-order").await;
+    joiner.identity.public_key = WireGuardPublicKey([0; 32]);
+
+    let error = entry.register(joiner.identity).await.unwrap_err();
+
+    assert!(matches!(error, LocalMachineError::Seal(_)));
 }
 
 #[test]
