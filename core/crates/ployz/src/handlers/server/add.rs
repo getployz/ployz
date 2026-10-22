@@ -50,6 +50,9 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
         let (details, mut token) =
             helpers::inspect_token(&mut target_client, token_request.clone()).await?;
         require_another_entry(entry_id, token.id, destination)?;
+        // Before the reset, so a taken name leaves the Server as it was.
+        let name = helpers::machine_name(requested_name, &token)?;
+        require_free_name(&snapshot, token.id, &name)?;
         let history = config.path().with_extension("enrollment");
         if details.phase != LocalMachinePhase::Uninitialized
             && !resumes(&snapshot, token.id, token.public_key)
@@ -61,7 +64,6 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
                 .await?
                 .1;
         }
-        let name = helpers::machine_name(requested_name, &token)?;
 
         let assignment = crate::enrollment::local::save_assignment(
             &history,
@@ -145,6 +147,25 @@ fn require_another_entry(
     }
     Err(Error::conflict(format!(
         "{destination} answered as the entry for its own add, so its membership can't be checked. Nothing was enrolled. Run it again with --connect naming another Server of the Cluster."
+    )))
+}
+
+/// A Server's name names one Server: `ps`, `server rm` and the rest select by it.
+fn require_free_name(
+    snapshot: &EnrollmentSnapshot,
+    id: MachineId,
+    name: &MachineName,
+) -> Result<(), Error> {
+    let Some(holder) = snapshot
+        .machines
+        .iter()
+        .find(|machine| machine.id != id && machine.name == *name)
+    else {
+        return Ok(());
+    };
+    Err(Error::conflict(format!(
+        "Server {name} already has that name (ID {}). Nothing was enrolled. Run it again with --name naming another.",
+        holder.id
     )))
 }
 
@@ -275,6 +296,36 @@ mod tests {
         assert!(
             message.contains("--connect naming another Server"),
             "names --connect through another Server: {message}"
+        );
+    }
+
+    #[test]
+    fn a_server_cannot_take_a_name_another_server_has() {
+        let live = assigned_machine("machine-1", 'a');
+        let joining = assigned_machine("machine-3", 'c');
+        let snapshot = EnrollmentSnapshot {
+            network: "10.210.0.0/16".parse().unwrap(),
+            machines: vec![live.clone(), joining.clone()],
+            target_versions: Default::default(),
+        };
+        let refusal = require_free_name(&snapshot, joining.id, &live.name).unwrap_err();
+        let message = refusal.to_string();
+        assert!(
+            message.contains("Server machine-1 already has that name"),
+            "names the Server that holds it: {message}"
+        );
+        assert!(message.contains("--name"), "names --name: {message}");
+        assert!(
+            require_free_name(&snapshot, joining.id, &joining.name).is_ok(),
+            "a Server resuming its own join keeps its name"
+        );
+        assert!(
+            require_free_name(
+                &snapshot,
+                joining.id,
+                &MachineName::parse("machine-4").unwrap()
+            )
+            .is_ok()
         );
     }
 
