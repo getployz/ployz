@@ -5323,6 +5323,73 @@ fn a_retry_into_a_protected_environment_asks_an_admin() {
     retry(approved(&refused)).unwrap();
 }
 
+/// Cloud's evidence for an owner's Deploy token: it can protect, but its grant leaves
+/// out `environments:protect` and `changes:destroy`.
+fn protectors_deploy_token(approval: Approval) -> Trusted {
+    Trusted {
+        protector: true,
+        permissions: unprotecting(approval.clone()).permissions.map(|held| {
+            held.into_iter()
+                .filter(|p| *p != Permission::ChangesDestroy)
+                .collect()
+        }),
+        ..unprotecting(approval)
+    }
+}
+
+#[test]
+fn a_protectors_deploy_token_ships_into_protected_production_unasked() {
+    let (store, who) = shop();
+    apply_both(&store, &who, 1);
+    set_replicas(&store, &who, "api", 2);
+    deploy_trusted(
+        &store,
+        &who,
+        2,
+        &protectors_deploy_token(Approval::NotRequired),
+    )
+    .unwrap();
+}
+
+#[test]
+fn a_protectors_deploy_token_cannot_ship_a_saved_removal_into_protected_production() {
+    let (store, who) = shop();
+    apply_both(&store, &who, 1);
+    remove_web(&store, &who);
+    save(&store, &who);
+    let refused = deploy_trusted(
+        &store,
+        &who,
+        2,
+        &protectors_deploy_token(Approval::NotRequired),
+    )
+    .unwrap_err();
+    assert_eq!(refused.code.as_str(), "forbidden", "{refused:?}");
+}
+
+#[test]
+fn a_protectors_deploy_token_still_asks_an_admin_to_retry() {
+    let (store, who) = shop();
+    apply_both(&store, &who, 1);
+    set_replicas(&store, &who, "api", 2);
+    deploy_as(&store, &who, 2, Approval::NotRequired).unwrap();
+    cancel(&store, &who, 2).unwrap();
+    let refused = store
+        .write_trusted(
+            &who,
+            &Admit::Retry(Retry {
+                id: id(3),
+                deployment: id(2),
+                rolls_back: None,
+                version: None,
+                accept_volume_loss: Vec::new(),
+            }),
+            &protectors_deploy_token(Approval::NotRequired),
+        )
+        .unwrap_err();
+    assert_admin_asked(&refused);
+}
+
 /// History's (live, failed) marks.
 fn marks(store: &ConfigStore, who: &Actor) -> (Option<Revision>, Option<Revision>) {
     let view = store

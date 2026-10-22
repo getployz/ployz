@@ -325,9 +325,14 @@ fn digest(version: &str, bound: &serde_json::Value) -> ApprovalDigest {
 /// can protect, asks for every write that ships, and Cloud's word that nothing is
 /// required does not exempt it. Cloud's own
 /// writes name no caller, so they never ask here.
+///
+/// A protector's token is `exempt` rather than unasked everywhere: its grant still
+/// decides what it may destroy, and a retry, which may replay what someone else
+/// destroyed, still asks.
 pub(crate) struct Gate<'a> {
     trusted: &'a Trusted,
     protected: bool,
+    exempt: bool,
 }
 
 impl<'a> Gate<'a> {
@@ -336,13 +341,25 @@ impl<'a> Gate<'a> {
         environment: &EnvironmentId,
         trusted: &'a Trusted,
     ) -> Result<Self, RpcError> {
-        let protected = !trusted.protector
-            && trusted
-                .permissions
-                .as_ref()
-                .is_some_and(|held| !held.contains(&Permission::EnvironmentsProtect))
+        let asks = trusted
+            .permissions
+            .as_ref()
+            .is_some_and(|held| !held.contains(&Permission::EnvironmentsProtect))
             && crate::scope::protected(tx, environment)?;
-        Ok(Self { trusted, protected })
+        Ok(Self {
+            trusted,
+            protected: asks && !trusted.protector,
+            exempt: asks && trusted.protector,
+        })
+    }
+
+    /// The gate a Deploy's retry passes: a protector's token asks there too.
+    pub(crate) const fn retrying(self) -> Self {
+        Self {
+            protected: self.protected || self.exempt,
+            exempt: false,
+            ..self
+        }
     }
 
     /// Whether a retry asks a human at all.
@@ -421,6 +438,9 @@ pub(crate) fn approve(
         Shipping::Publish => Asks::Destroys,
         Shipping::Deploy { .. } => gate.trusted.asks,
     };
+    if gate.exempt && !effects.is_empty() {
+        gate.trusted.admit(Permission::ChangesDestroy)?;
+    }
     if asks == Asks::Destroys && (effects.is_empty() || resaves) {
         return Ok(());
     }
