@@ -424,9 +424,10 @@ impl<'m> Store<'m> {
         })))
     }
 
-    /// The Servers' certificates and ingress addresses. Servers this can't reach
-    /// leave the certificates unobserved. DNS failures reach a status through the
-    /// certificate attempts that met them.
+    /// The Servers' certificates and ingress addresses, through `--connect` or the
+    /// context: never Cloud's Server Access, whose Cluster isn't this Store's. Servers
+    /// this can't reach leave the certificates unobserved. DNS failures reach a status
+    /// through the certificate attempts that met them.
     fn observe_domains(&self) -> DomainEvidence {
         let mut evidence = DomainEvidence::default();
         let Ok(runtime) = runtime() else {
@@ -434,7 +435,7 @@ impl<'m> Store<'m> {
         };
         let context = self.context();
         let observe = async {
-            super::server::connect(self.matches, context)
+            super::connect_context(self.matches, context)
                 .await
                 .ok()?
                 .runtime_frame()
