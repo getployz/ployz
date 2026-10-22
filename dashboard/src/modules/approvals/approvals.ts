@@ -64,6 +64,9 @@ export function redeployLine(command: string, review: ApprovalReview) {
   return rollback ? `Back to #${deployment}. ${rollback.body}.` : `Ships #${deployment} again.`;
 }
 
+/** A Volume Run a Protected Environment asks about, though it destroys nothing. */
+const VOLUME_RUN_BADGES: Partial<Record<string, string>> = { move: "Moves volume", restore: "Restores volume", release: "Releases volume" };
+
 /** The card's badge: a Save deletes nothing until the next Deploy, and a Deploy that only deletes Volumes counts them. An agent's Deploy that destroys nothing still asks. */
 export function approvalBadge(command: string, review: ApprovalReview) {
   const { effects } = review;
@@ -75,7 +78,7 @@ export function approvalBadge(command: string, review: ApprovalReview) {
   if (command === "sync") return "Syncs";
   if (command === "take") return "Takes";
   if (command === "cancel") return "Cancels deploy";
-  if (effects.length === 0) return "Deploys";
+  if (effects.length === 0) return VOLUME_RUN_BADGES[command] ?? "Deploys";
   if (effects.every((effect) => effect.kind === "deletes_volume")) {
     return `Deletes ${effects.length} ${effects.length === 1 ? "volume" : "volumes"}`;
   }

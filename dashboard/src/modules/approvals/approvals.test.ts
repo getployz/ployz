@@ -55,3 +55,11 @@ it("lists a Store write's Environment under its Project, so two production appro
   const review = asTestDouble<ApprovalReview>()({ effects: [], diff: { environment: { name: "production", project: "mcp-lab" } } });
   expect(approvalTarget("deploy", review)).toEqual({ verb: "Deploy", name: "mcp-lab/production" });
 });
+
+it("badges a Protected Volume Run by what it does to the Volume, never as a Deploy", () => {
+  const run = (verb: string) => asTestDouble<ApprovalReview>()({ effects: [], operation: { verb, name: "pg-data", preview: {} }, protected: { environment: "production" } });
+  expect(approvalBadge("move", run("move"))).toBe("Moves volume");
+  expect(approvalBadge("restore", run("restore"))).toBe("Restores volume");
+  expect(approvalBadge("release", run("release"))).toBe("Releases volume");
+  expect(approvalSubject("move", run("move"))).toMatchObject({ verb: "Move", name: "pg-data" });
+});

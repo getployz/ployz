@@ -67,6 +67,9 @@ pub(crate) enum Verb {
     Stop,
     Restart,
     Unprotect,
+    Move,
+    Restore,
+    Sync,
 }
 
 impl Verb {
@@ -85,6 +88,9 @@ impl Verb {
             Self::Stop => "stop",
             Self::Restart => "restart",
             Self::Unprotect => "unprotecting",
+            Self::Move => "move",
+            Self::Restore => "restore",
+            Self::Sync => "sync",
         }
     }
 
@@ -103,6 +109,9 @@ impl Verb {
             Self::Stop => "stopped",
             Self::Restart => "restarted",
             Self::Unprotect => "unprotected",
+            Self::Move => "moved",
+            Self::Restore => "restored",
+            Self::Sync => "synced",
         }
     }
 
@@ -121,7 +130,10 @@ impl Verb {
             | Self::RemoveMirror
             | Self::Stop
             | Self::Restart
-            | Self::Unprotect => "of",
+            | Self::Unprotect
+            | Self::Move
+            | Self::Restore
+            | Self::Sync => "of",
         }
     }
 }
