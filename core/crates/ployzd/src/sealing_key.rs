@@ -75,50 +75,14 @@ impl SealingKey {
         &self,
         recipient: &WireGuardPublicKey,
     ) -> Result<SealedSealingKey, SealError> {
-        let recipient = <Kem as hpke::Kem>::PublicKey::from_bytes(&recipient.0)
-            .expect("an X25519 public key is any 32 bytes");
-        let (encapped, ciphertext) =
-            hpke::single_shot_seal::<ChaCha20Poly1305, HkdfSha256, Kem, _>(
-                &OpModeS::Base,
-                &recipient,
-                INFO,
-                &self.0,
-                &[],
-                &mut OsRng.unwrap_err(),
-            )
-            .map_err(|_| SealError)?;
-        let mut sealed = encapped.to_bytes().to_vec();
-        sealed.extend(ciphertext);
-        Ok(SealedSealingKey::from_bytes(sealed))
+        self.seal(&OpModeS::Base, INFO, recipient)
     }
 
     pub(crate) fn open(
         sealed: &SealedSealingKey,
         wireguard: &WireGuardPrivateKey,
     ) -> Result<Self, OpenError> {
-        let bytes = sealed.as_bytes();
-        if bytes.len() < ENCAPPED_KEY_LEN {
-            return Err(OpenError::Malformed);
-        }
-        let (encapped, ciphertext) = bytes.split_at(ENCAPPED_KEY_LEN);
-        let encapped = <Kem as hpke::Kem>::EncappedKey::from_bytes(encapped)
-            .map_err(|_| OpenError::Malformed)?;
-        let recipient = <Kem as hpke::Kem>::PrivateKey::from_bytes(wireguard.as_bytes())
-            .expect("an X25519 private key is any 32 bytes");
-        let opened = Zeroizing::new(
-            hpke::single_shot_open::<ChaCha20Poly1305, HkdfSha256, Kem>(
-                &OpModeR::Base,
-                &recipient,
-                &encapped,
-                INFO,
-                ciphertext,
-                &[],
-            )
-            .map_err(|_| OpenError::Unopenable)?,
-        );
-        <[u8; 32]>::try_from(opened.as_slice())
-            .map(Self)
-            .map_err(|_| OpenError::Malformed)
+        Self::open_with(&OpModeR::Base, INFO, sealed, wireguard)
     }
 
     /// Seal the key to `recipient` so only `sender`'s WireGuard key could
@@ -132,24 +96,14 @@ impl SealingKey {
         sender: &WireGuardPrivateKey,
         recipient: &WireGuardPublicKey,
     ) -> Result<SealedSealingKey, SealError> {
-        let recipient = <Kem as hpke::Kem>::PublicKey::from_bytes(&recipient.0)
-            .expect("an X25519 public key is any 32 bytes");
         let sender_sk = <Kem as hpke::Kem>::PrivateKey::from_bytes(sender.as_bytes())
             .expect("an X25519 private key is any 32 bytes");
         let sender_pk = Kem::sk_to_pk(&sender_sk);
-        let (encapped, ciphertext) =
-            hpke::single_shot_seal::<ChaCha20Poly1305, HkdfSha256, Kem, _>(
-                &OpModeS::Auth((sender_sk, sender_pk)),
-                &recipient,
-                SHARE_INFO,
-                &self.0,
-                &[],
-                &mut OsRng.unwrap_err(),
-            )
-            .map_err(|_| SealError)?;
-        let mut sealed = encapped.to_bytes().to_vec();
-        sealed.extend(ciphertext);
-        Ok(SealedSealingKey::from_bytes(sealed))
+        self.seal(
+            &OpModeS::Auth((sender_sk, sender_pk)),
+            SHARE_INFO,
+            recipient,
+        )
     }
 
     /// Open a blob that [`Self::seal_from`] sealed to `recipient` from the
@@ -164,6 +118,40 @@ impl SealingKey {
         recipient: &WireGuardPrivateKey,
         sender: &WireGuardPublicKey,
     ) -> Result<Self, OpenError> {
+        let sender = <Kem as hpke::Kem>::PublicKey::from_bytes(&sender.0)
+            .expect("an X25519 public key is any 32 bytes");
+        Self::open_with(&OpModeR::Auth(sender), SHARE_INFO, sealed, recipient)
+    }
+
+    fn seal(
+        &self,
+        mode: &OpModeS<Kem>,
+        info: &[u8],
+        recipient: &WireGuardPublicKey,
+    ) -> Result<SealedSealingKey, SealError> {
+        let recipient = <Kem as hpke::Kem>::PublicKey::from_bytes(&recipient.0)
+            .expect("an X25519 public key is any 32 bytes");
+        let (encapped, ciphertext) =
+            hpke::single_shot_seal::<ChaCha20Poly1305, HkdfSha256, Kem, _>(
+                mode,
+                &recipient,
+                info,
+                &self.0,
+                &[],
+                &mut OsRng.unwrap_err(),
+            )
+            .map_err(|_| SealError)?;
+        let mut sealed = encapped.to_bytes().to_vec();
+        sealed.extend(ciphertext);
+        Ok(SealedSealingKey::from_bytes(sealed))
+    }
+
+    fn open_with(
+        mode: &OpModeR<Kem>,
+        info: &[u8],
+        sealed: &SealedSealingKey,
+        recipient: &WireGuardPrivateKey,
+    ) -> Result<Self, OpenError> {
         let bytes = sealed.as_bytes();
         if bytes.len() < ENCAPPED_KEY_LEN {
             return Err(OpenError::Malformed);
@@ -173,14 +161,12 @@ impl SealingKey {
             .map_err(|_| OpenError::Malformed)?;
         let recipient = <Kem as hpke::Kem>::PrivateKey::from_bytes(recipient.as_bytes())
             .expect("an X25519 private key is any 32 bytes");
-        let sender = <Kem as hpke::Kem>::PublicKey::from_bytes(&sender.0)
-            .expect("an X25519 public key is any 32 bytes");
         let opened = Zeroizing::new(
             hpke::single_shot_open::<ChaCha20Poly1305, HkdfSha256, Kem>(
-                &OpModeR::Auth(sender),
+                mode,
                 &recipient,
                 &encapped,
-                SHARE_INFO,
+                info,
                 ciphertext,
                 &[],
             )
