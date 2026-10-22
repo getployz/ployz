@@ -6,8 +6,7 @@ use ployz_core::config::{SavedEnvironmentIntent, SavedServiceIntent};
 use ployz_core::{
     ContainerId, ContainerRuntimeObservation, DependencyHealthFailure, DeployOperation,
     ExecutionError, HealthFailure, HookFailure, LimitsRefusal, MachineAction, MachineId,
-    OperationPhase, OperationRow, OperationStatus, OutOfMemory, PullPolicy, RpcError, RpcErrorCode,
-    ServiceName,
+    OperationPhase, OperationRow, OperationStatus, OutOfMemory, PullPolicy, RpcError, ServiceName,
 };
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -300,10 +299,6 @@ pub struct Failure {
     pub reason: String,
     #[serde(default)]
     pub cause: Vec<String>,
-    /// The code of the refusal it came from, when a Server or the planner refused: it
-    /// says whether asking the same thing again can succeed. Absent otherwise.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub code: Option<RpcErrorCode>,
 }
 
 impl From<String> for Failure {
@@ -311,7 +306,6 @@ impl From<String> for Failure {
         Self {
             reason,
             cause: Vec::new(),
-            code: None,
         }
     }
 }
@@ -324,17 +318,12 @@ impl From<&str> for Failure {
 
 impl From<&RpcError> for Failure {
     fn from(error: &RpcError) -> Self {
-        let (reason, cause) = match error.refusal() {
-            Some(refusal) => (refusal.to_string(), Vec::new()),
-            None => (
-                error.message.clone(),
-                ployz_core::error_chain::causes(error),
-            ),
-        };
-        Self {
-            reason,
-            cause,
-            code: Some(error.code.clone()),
+        match error.refusal() {
+            Some(refusal) => refusal.to_string().into(),
+            None => Self {
+                reason: error.message.clone(),
+                cause: ployz_core::error_chain::causes(error),
+            },
         }
     }
 }
@@ -544,11 +533,7 @@ impl Failure {
             ),
             ExecutionError::Cancelled => ("Cancelled".to_owned(), Vec::new()),
         };
-        Self {
-            reason,
-            cause,
-            code: None,
-        }
+        Self { reason, cause }
     }
 }
 
@@ -720,7 +705,7 @@ fn state(
         }
     }
     if let Some(error) = failed.or(cancelled) {
-        let Failure { reason, cause, .. } = Failure::of(error, operations);
+        let Failure { reason, cause } = Failure::of(error, operations);
         return RowState::Failed {
             reason,
             cause,
@@ -881,16 +866,7 @@ pub(super) fn failed_or_cancelled(
                     .and_then(failed_on_its_own)
                     .or(row.optional_int(3)?);
                 let machine = row.text(1)?.to_owned();
-                failed.push((
-                    at,
-                    service,
-                    machine,
-                    Failure {
-                        reason,
-                        cause,
-                        code: None,
-                    },
-                ));
+                failed.push((at, service, machine, Failure { reason, cause }));
             }
             StoppedBy::CANCEL => {
                 cancelled.insert(service);

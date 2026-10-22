@@ -284,7 +284,6 @@ fn a_secret_that_resolves_too_long_fails_the_deployment_at_claim() {
             reason: message.into(),
             cause: Vec::new(),
             needs_upload: Vec::new(),
-            code: Some(RpcErrorCode::InvalidArgument),
         })
     );
 }

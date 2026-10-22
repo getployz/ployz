@@ -569,7 +569,6 @@ pub(crate) fn cancel_held(
         reason,
         cause: Vec::new(),
         needs_upload: Vec::new(),
-        code: None,
     };
     stored.summary.status = DeploymentStatus::Cancelled;
     stored.summary.ended_at = Some(now());
@@ -1222,7 +1221,6 @@ pub(crate) fn claim(
                     reason: refused.message.clone(),
                     cause: Vec::new(),
                     needs_upload: Vec::new(),
-                    code: Some(refused.code.clone()),
                 },
                 DeploymentStatus::Failed,
             )?;
@@ -1545,7 +1543,6 @@ pub(crate) fn record(
                     .take(500)
                     .collect(),
                     cause: failure.cause.clone(),
-                    code: None,
                 });
             let (reason, cause) = real
                 .or_else(|| failure(&outcome, &stored.nodes, &preview.operations))
@@ -1707,11 +1704,7 @@ pub(crate) fn record(
             build::record(tx, &stored, &report)?;
             Ok(stored.summary)
         }
-        RunEvidence::NotExecuted(Failure {
-            reason,
-            cause,
-            code,
-        }) => {
+        RunEvidence::NotExecuted(Failure { reason, cause }) => {
             let reason = reason.chars().take(500).collect();
             finish(
                 tx,
@@ -1720,7 +1713,6 @@ pub(crate) fn record(
                     reason,
                     cause,
                     needs_upload: Vec::new(),
-                    code,
                 },
                 DeploymentStatus::Failed,
             )
@@ -1753,7 +1745,6 @@ pub(crate) fn record(
                     ),
                     cause: Vec::new(),
                     needs_upload: services,
-                    code: None,
                 },
                 DeploymentStatus::Failed,
             )
@@ -1772,7 +1763,6 @@ pub(crate) fn record(
                         reason,
                         cause: Vec::new(),
                         needs_upload: Vec::new(),
-                        code: None,
                     },
                     DeploymentStatus::Failed,
                 );
@@ -1815,7 +1805,7 @@ fn failure(
             operation, error, ..
         } => (Some(&operation.spec.name), error),
     };
-    let Failure { reason, cause, .. } = Failure::of(error, operations);
+    let Failure { reason, cause } = Failure::of(error, operations);
     let reason = match service {
         Some(service) => format!("{}: {reason}", current_name(nodes, service)),
         None => reason,
@@ -1823,7 +1813,6 @@ fn failure(
     Some(Failure {
         reason: reason.chars().take(500).collect(),
         cause,
-        code: None,
     })
 }
 
@@ -1839,7 +1828,6 @@ fn blocked(nodes: &[TargetNode], blocked: &[ployz_core::BlockedService]) -> Opti
         .take(500)
         .collect(),
         cause: entry.error.cause.clone(),
-        code: None,
     })
 }
 

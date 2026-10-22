@@ -182,7 +182,6 @@ pub async fn run_deployment(
                 .not_executed(Failure {
                     reason: error.to_string(),
                     cause: ployz_core::error_chain::causes(&error),
-                    code: None,
                 })
                 .await;
         }
