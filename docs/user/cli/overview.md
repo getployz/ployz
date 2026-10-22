@@ -31,26 +31,26 @@ curl -fsSL https://ployz.sh | INSTALL_BIN_DIR="$HOME/.local/bin" sh
    **Approve**.
 
 This computer starts in the organization the page names. Switching organization in the dashboard
-later doesn't move it, and `ployz org use ORG` does. `ployz logout` signs this computer out.
+later doesn't move it, and `ployz org use ORGANIZATION` does. `ployz logout` signs this computer out.
 If Cloud can't be reached, or refuses because you've left the sign-in's organization, `ployz logout`
 still forgets the sign-in here and warns that Cloud may still honour it until you remove it with
 `ployz token rm`. An unreadable sign-in is forgotten too, and `ployz login` replaces it. While it
 is unreadable, `PLOYZ_TOKEN` also needs `PLOYZ_CLOUD_URL`.
 
-The sign-in is saved in `~/.config/ployz`, or in `$XDG_CONFIG_HOME/ployz` when you set
-`XDG_CONFIG_HOME`. Set `PLOYZ_CONFIG` to a file path to keep a separate one.
+The sign-in is saved in `~/.config/ployz`, or in `$XDG_CONFIG_HOME/ployz` when
+`XDG_CONFIG_HOME` is an absolute path. Set `PLOYZ_CONFIG` to a file path to keep a separate one.
 
 Commands act on your only project and its default environment. With more than one, add
 `--project my-app --env production`, or run `ployz link --project my-app --env production` once in
 your app's directory.
 `ployz ctx` shows where commands act from here. In a directory with no project linked, it asks Cloud
-which projects there are: it names your only project, or says the organization has several and
-how to link one. If Cloud doesn't answer within a few seconds, it shows `(none)` and the same
+which projects there are: it names your only project, says the organization has none yet, or says
+it has several and how to link one. If Cloud doesn't answer within a few seconds, it shows `(none)` and the same
 `ployz link` step.
 
 A link belongs to the organization it was made in. Acting in another one, a command that uses the
 link, such as `ployz status`, refuses. When both are Ployz Cloud organizations, it names
-`ployz org use ORG` to switch back. When either is the local organization, it names `ployz link`
+`ployz org use ORGANIZATION` to switch back. When either is the local organization, it names `ployz link`
 to link the directory where you act now. If the organization the link was made in was replaced by
 a new one with the same name, it says the directory `is linked in an
 earlier Organization ORG, which another Organization of that name replaced` and names
@@ -100,7 +100,8 @@ calls as the agent's.
 The tools create
 Projects, read and stage changes in them, review and deploy them (or save them for the next deploy), restore or undo a
 saved version, list, follow, redeploy, start and cancel their deployments, show Services, Servers
-and Volumes, and read a Service's recent logs. The agent can resend a call after a lost reply
+and Volumes, and read a Service's recent logs. They also start, stop and restart Services, change
+a Server's roles, drain and upgrade it, and move or mirror Volumes. The agent can resend a call after a lost reply
 without running it twice. Each call acts where the agent's directory is linked when the call
 starts, so after `ployz link` or `ployz org use` the next call follows it.
 
@@ -108,7 +109,7 @@ Some things are not tools. Run these yourself in a terminal:
 
 - `login`, `ctx use` and other commands that act on this computer.
 - `server add`, which installs Ployz over SSH or on this computer.
-- `server enroll`, which enrolls hosts waiting in Cloud by name or glob.
+- `server enroll`, which enrolls servers waiting in Cloud by name or glob.
 - `exec`, `service port-forward`, `logs --follow` and `up`.
 - Branches, tokens and Fleet Tokens (`server token`).
 - Secrets and registry credentials. `ployz set web.env.KEY --secret` adds a secret.
@@ -189,7 +190,8 @@ ployz org invite ls
 ployz org invite revoke bob@example.com
 ```
 
-`invite` prints `Invite link (expires in 7 days)` and the link. Send it to the person yourself.
+`invite` prints the link, which works once and lasts 7 days. When Ployz Cloud sends email, it
+emails the link to the address you gave and says so. Otherwise, send the link yourself.
 Roles are `owner`, `admin` and `member`. Only an owner can make, change or remove an owner.
 Any member can run `ployz org member ls`. Pending invites name who was invited, so
 `ployz org invite ls` refuses anyone but an owner or admin.
@@ -197,7 +199,7 @@ Any member can run `ployz org member ls`. Pending invites name who was invited, 
 Through Ployz Cloud, commands that talk to your servers directly need an owner or admin too: `exec`,
 `service start`, `service stop`, `service restart`, `service port-forward`,
 `server ls`, `server show`, `server logs`, `server set`, `server drain`, `server upgrade`,
-`server rm`, `server forget <server>` and `server clean` without a namespace. A member gets
+`server rm`, `server forget <server>` and `server clean` without `--namespace`. A member gets
 `Server access needs an admin. Ask an owner or admin of <organization>.` and exit code 1. A `read` or
 `deploy` [token](#make-an-organization-token) can't run them either, even an owner's: it gets
 `This token's grant doesn't include servers:shell.`
@@ -225,6 +227,24 @@ leaves that Organization even if you switched to another one in the dashboard si
 Pass `--yes` to skip the question. It then moves this device to another Organization of yours,
 the way `ployz org rm` does, and prints which one.
 
+## Change environments from the CLI
+
+These `ployz env` commands do what the dashboard's environment controls do. See
+[Environments](../environments/environments.md) for what each one means.
+
+| In the dashboard | From the CLI |
+| --- | --- |
+| **New environment** | `ployz env new qa` |
+| **Default environment** in **Settings → Project** | `ployz env default staging` |
+| **Keep staging** in the Sync button's ▾ menu | `ployz env keep --env staging` |
+| **Never sync** on a variable | `ployz env never-sync web.env.APP_ENV --env staging` |
+| **On merge** on a preview environment | `ployz env on-merge --env pr-142` |
+| **Branch setup** in production's **Settings → Environment** | `ployz env setup --env production --setup 'web=pnpm db:seed'` |
+| **Make it separate** on a shared service | `ployz env copy web --env staging` |
+
+`keep` and `never-sync` take `--off` to undo. `ployz env copy` gives the branch its own copy of the
+service, and a volume it mounts starts empty. `ployz env --help` lists the rest.
+
 ## Deploy a directory
 
 > [!WARNING]
@@ -243,6 +263,7 @@ ployz up
 The first time, Ployz creates a project named after the directory, adds a service with an https
 address, builds your app, deploys it and prints the address. In an empty directory it stops
 before it creates anything, with `Nothing to deploy` and exit code 2.
+`ployz up --server root@203.0.113.10` adds that server over SSH first, as `ployz server add` does.
 
 An upload can be at most 95 MiB compressed. To deploy on every push instead, see
 [Deploy from GitHub](../deploy/github.md).
@@ -322,9 +343,9 @@ deploy would reach answers. With `--json` these are the `attention` rows; that o
 `no_server_answers` and names the servers in `servers`. It comes from the same single connection
 status makes to check your servers (below), not a separate one. A server that accepts the
 connection but never answers takes 5 seconds to give up on, and status tries each server once.
-A check that can't finish adds no row and warns `Could not check which copies serve or which
-Servers picked up the new copies` instead, so no row doesn't prove a server answered. A context or `--connect` that reaches the daemon on this host through its local
-socket never gets this row; the **this server** line covers it. Signed in to Cloud, status asks
+A check that can't finish adds no row. Instead it warns why, naming the servers that didn't
+answer when it knows them, so no row doesn't prove a server answered. A context or `--connect` that reaches Ployz on this server
+through its local socket never gets this row; the **this server** line covers it. Signed in to Cloud, status asks
 Cloud for server access once per run. The first `ployz status` or other server command for a
 sign-in or token also waits while Cloud sets up your access on each server.
 
@@ -448,7 +469,7 @@ from `ployz env ls`, or for `project rm` the project from `ployz project ls`. Un
 When one of them didn't apply, it also reports that deployment in full under `deployment` (its
 `status`, `outcome` and `nodes`) and `next`: the command that finishes it, with the same
 `--ployz-config` when you passed one. Each server it waits on is under `waiting_on`, by its name
-in `server` and its machine ID in `server_id`.
+in `server` and its ID in `server_id`.
 
 Ployz colors its output in a terminal. With `CI` set or `TERM=dumb`, it prints plain text even in
 one. Set `NO_COLOR=1` or pass `--color never` to turn color off, or `--color always` to keep it

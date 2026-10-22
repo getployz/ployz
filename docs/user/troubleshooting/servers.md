@@ -166,7 +166,7 @@ You'll see `Cloud no longer takes this enrollment token`.
 
 The enrollment token expired or was mistyped, or the organization's servers were forgotten,
 which voids every token made before. A token works for 24 hours. Run
-`ployz server add --command` on your machine for a new one and run its line again.
+`ployz server add --command` on your computer for a new one and run its line again.
 
 ## The server's name is invalid
 
@@ -253,8 +253,9 @@ prepares Docker and ZFS meanwhile.
    installs one.
 12. Once you approve the server, the loop enrolls it and the **this server** line walks through
     `Installing`, `Enrolling`, `Queued to join`, `Setting up ZFS`, `Joining` and `Publishing`,
-    the same stages Ployz Cloud shows. `Queued to join` means other servers are joining the
-    fleet first. When it reads `Joined`, the running check-in loop turns itself off and deletes
+    the same stages Ployz Cloud shows, where `Queued to join` reads **In line** and `Publishing`
+    reads **Going live**. `Queued to join` means other servers are joining the fleet first. When
+    it reads `Joined`, the running check-in loop turns itself off and deletes
     `/etc/ployz/fleet-token`, or the file you named with `--token-file`.
 13. `Enroll failed` means a stage failed, and the line after it names the stage and why, for
     example `Enroll failed at enrolling: Docker is not running`. The server goes back to waiting
@@ -269,20 +270,19 @@ prepares Docker and ZFS meanwhile.
     `Publishing`, rejection lets enrollment finish, including after a restart. Cloud keeps
     its enrollment token valid and continues answering the attempt until it joins or fails.
     Expiring or revoking a Fleet Token lets an open enrollment finish.
-15. If Cloud selects a ZFS disk, this version logs the selection and builds ZFS on the default
-    disk. Selecting a particular disk on the host is not yet supported.
+15. If Cloud selects a spare disk, the server builds its ZFS pool on that disk.
 16. When you check ports on waiting servers, each one listens on TCP 80 and 443 and UDP 51820 for
     at most 10 seconds, then closes them. Nothing stays listening after that. A check that arrives
     while `ployz server checkin --install` runs makes it pause for those seconds, and it says so.
     The server tells Cloud what it heard only after it closes the ports. One that restarts while it
-    listens tells Cloud nothing for that check, so its ports read Unknown: check again. **Open**
-    means Cloud reached the port and the server answered. **Closed** means the server listened but
-    Cloud's connection was refused, so a firewall in front of it turns the port away. **Unknown ·
-    port busy** means Ployz couldn't listen on that port in time. Usually another program, such as
-    a web server, already holds it. Find it with `sudo ss -lntup 'sport = :80'`, stop it, and check
-    again. If nothing holds it, a delayed check-in reply or a busy server may have left too little
-    time to listen, so check again. A server running a `ployz` older than this feature leaves every
-    port Unknown.
+    listens tells Cloud nothing for that check, so its ports read **Unknown · server didn't
+    report**: check again. **Open** means Cloud reached the port and the server answered.
+    **Closed** means the server listened but Cloud's connection was refused, so a firewall in front
+    of it turns the port away. **Couldn't listen · port in use** means Ployz couldn't listen on that
+    port in time. Usually another program, such as a web server, already holds it. Find it with
+    `sudo ss -lntup 'sport = :80'`, stop it, and check again. If nothing holds it, a delayed
+    check-in reply or a busy server may have left too little time to listen, so check again. A
+    server running a `ployz` older than this feature leaves every port Unknown.
 
 ## Ployz stops over a leftover network
 
@@ -330,8 +330,8 @@ naming each server it couldn't reach by the name it last reported, or by its ID 
 learned one. When a server answered but refused every connection, the error names the server
 tried last, as in `Server web-2, tried last, refused the connection`. When its connection finds no
 server answering, `ployz status` lists `Server web-1 isn't answering` under **needs attention**, and
-`ployz deploy --plan` warns first that the deploy can't run until it answers. A deploy whose ingress
-check couldn't reach a server warns `Couldn't check ingress: Server web-1 isn't answering`, with
+`ployz deploy --plan` warns first that the deploy can't run until it answers. A deploy whose web
+traffic check couldn't reach a server warns `Couldn't check ingress: Server web-1 isn't answering`, with
 what the connection said in parentheses. A server that just joined or restarted answers within a
 minute; try again then.
 
@@ -364,18 +364,14 @@ don't forget it. Read why in its logs with `sudo journalctl -u ployz -n 200`.
 ## A server shows Offline
 
 The server's page says **Can't reach web-2**. Services that run only there are down. Stopping Ployz
-with `sudo systemctl stop ployz.socket ployz` doesn't cause this: the server keeps its place in the
-cluster until it reboots or you remove it.
+with `sudo systemctl stop ployz.socket ployz` doesn't cause this: the server keeps its place among
+your servers until it reboots or you remove it.
 
 1. Check at your provider that the server is running, then run `sudo systemctl status ployz` on
    it.
 2. Make sure UDP 51820 is open between your servers.
 3. If the server is gone for good, [forget it](../servers/manage-servers.md#forget-a-server-that-is-gone),
-   then deploy again. Its page offers **Forget server** while it's offline, or from the CLI:
-
-   ```sh
-   ployz server forget web-2 --confirm dead
-   ```
+   then deploy again. Its page offers **Forget server** while it's offline.
 
    See [When a server goes down](../services/scaling.md#when-a-server-goes-down) for which
    services come back, and [When its server goes down](../services/volumes.md#when-its-server-goes-down)
@@ -431,7 +427,7 @@ or may not have changed.` and the command still succeeds. Run it again once both
 ls` to save the address on `web-2` too. With more than two servers, repeat the command for any
 server that still shows as not answering.
 
-Run it from your machine with Ployz Cloud, or on one of the other servers itself. Run on `web-2`, it only saves the address on `web-2`.
+Run it from your computer with Ployz Cloud, or on one of the other servers itself. Run on `web-2`, it only saves the address on `web-2`.
 
 ## Apps see IPv6 visitors as 10.210.x.1
 

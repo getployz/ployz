@@ -57,7 +57,7 @@ your app didn't answer.
 4. **Check the server running it is up.** A replica on a server that's down or out of reach
    doesn't answer either. See [Troubleshooting servers](servers.md).
 
-When a server running one of your replicas powers off, a new connection to it gives up after one
+When a server running one of your replicas powers off, a new connection to it gives up after half a
 second and the request goes to another replica. A request that had already reached it, or that
 went out on a connection the web server keeps open to it, waits about 14 seconds. Then a `GET`,
 like a page load, goes to another replica, and anything else, like a form post, gets
@@ -168,7 +168,7 @@ sudo ss -ltnp '( sport = :80 or sport = :443 )'
 
 Stop that web server, or move it to another server. To keep Ployz Cloud on the same server,
 publish it through a Cloudflare Tunnel instead. Once port 80 is free, the server starts its
-ingress on its own within a minute. You don't need to remove and re-add the server. Then click
+web server on its own within a minute. You don't need to remove and re-add the server. Then click
 **Check again** under **Domain** in **Organization → General**.
 
 ## My servers only have IPv6 addresses
@@ -198,33 +198,32 @@ no web traffic. When your other servers still take the traffic, your domains sta
 ployz deploy
 ```
 
-A deploy creates or starts the missing ingress on every server that takes web traffic.
+A deploy creates or starts the missing web server on every server that takes web traffic.
 `ployz deploy --plan` lists it first, as `ingress on web-1: would create`. If it
-still isn't running, the deploy says why. When several servers are missing ingress at once, one
+still isn't running, the deploy says why. When several servers are missing it at once, one
 deploy may bring it back on only some of them, and it lists the rest as not running. Deploy
-again until none is listed. Bringing ingress back never stops it on a server where it already
-runs, including one another deploy just brought back. When the ingress keeps crashing and restarting, the
-deploy leaves it alone and warns with the `docker logs` command that shows why. When something else holds port 80 or 443, see
+again until none is listed. Bringing the web server back never stops it on a server where it
+already runs, including one another deploy just brought back. When the web server keeps crashing
+and restarting, the deploy leaves it alone and warns with the `docker logs` command that shows
+why. `ployz server add` and enrollment also show its exit code and last line. When something else holds port 80 or 443, see
 [above](#something-else-answers-on-port-80).
 
 ## None of my servers takes web traffic
 
 You'll see **No Server receives traffic** or **No ingress Server has a public IP**. Either every server has web traffic turned off,
-or Ployz doesn't know their public addresses. [Add a server](../servers/add-a-server.md), or fix
-it from the CLI (these settings aren't in the dashboard yet):
+or Ployz doesn't know their public addresses. [Add a server](../servers/add-a-server.md), or open
+a server and turn on **Takes web traffic** under **Web traffic**.
+
+The dashboard can't set a public IP yet, so tell Ployz a server's address from the CLI:
 
 ```sh
-# Turn web traffic back on for web-1
-ployz server set web-1 --accepts-ingress=true
-
-# Tell Ployz web-1's public address
 ployz server set web-1 --public-ip 203.0.113.10
 ```
 
 A public IP you set this way stays until you set it again: Ployz no longer looks it up when the
 server restarts.
 
-A server that takes web traffic but whose ingress is missing or stopped needs a deploy, not
+A server that takes web traffic but whose web server is missing or stopped needs a deploy, not
 these settings. See [Ingress isn't running](#ingress-isnt-running).
 
 ## One service can't reach another
@@ -232,8 +231,8 @@ these settings. See [Ingress isn't running](#ingress-isnt-running).
 You'll see errors like `ECONNREFUSED 127.0.0.1:5432` or `getaddrinfo ENOTFOUND api.internal`.
 
 - Reference the other service's address, like `${{ postgres.PLOYZ_PRIVATE_DOMAIN }}`, never
-  `localhost`. Its private name is in that service's **Settings → Networking**, under
-  **Private Networking**.
+  `localhost`. Its private name is in that service's **Settings → Networking**, in the
+  **Private address** row.
 - Use the port it listens on inside its container, like `5432`.
 - For a web service, use `http://`, not `https://`: traffic between services stays on your
   private network.

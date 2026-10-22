@@ -4,12 +4,8 @@ description: Run the Ployz dashboard on your own infrastructure with Docker Comp
 ---
 
 You can run Ployz Cloud, the dashboard at ployz.dev, on your own server instead of using ours.
-Your apps still run on your servers either way. Self-hosting moves only the dashboard.
-
-> [!NOTE]
-> Eventually Ployz will deploy Ployz Cloud for you, like any other app. That needs templates,
-> which deploy several services together in one step, and Ployz doesn't have them yet. Until
-> then, run Ployz Cloud with Docker Compose, as this page shows.
+Your apps still run on your servers either way. Self-hosting moves only the dashboard, which you
+run with Docker Compose.
 
 ## Should you self-host?
 
@@ -39,16 +35,15 @@ and GitHub releases.
 
 ## Choose where it runs
 
-Run Ployz Cloud on a server that **isn't** one of your Ployz servers. A Ployz server that takes
-web traffic needs ports 80 and 443 for your apps, and the TLS proxy in front of Ployz Cloud
-wants the same two ports. If both run on one server, the proxy wins: your domains show
+Ployz Cloud's TLS proxy and a Ployz server that takes web traffic both need ports 80 and 443.
+If both run on one server, the proxy wins: your domains show
 **Something else answers on port 80 of …** and visitors get an SSL handshake error.
 
 | Your setup | What to do |
 | --- | --- |
 | A separate server for Ployz Cloud | Put Caddy or nginx on it, as in step 3. |
 | One server for everything | Skip the proxy. Publish Ployz Cloud with a [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/) to `http://localhost:3000`, so ports 80 and 443 stay free for your apps. |
-| A server where only Ployz Cloud's proxy uses 80 and 443 | Turn off web traffic for that server: `ployz server set <name> --accepts-ingress=false`. Your apps then need another server for their domains. |
+| A server where only Ployz Cloud's proxy uses 80 and 443 | On the server's page, turn off **Takes web traffic** under **Web traffic** and confirm **Stop**. Your apps' domains then need another server. |
 
 You need:
 
@@ -133,7 +128,8 @@ installation back to the first Callback URL.
    Leave every `POLAR_*` and `POSTHOG_*` variable unset: that turns off billing and product
    analytics. If a required value is missing or malformed, `web` and `worker` stop at startup,
    and `docker compose logs web worker` names each variable to fix.
-   To turn on the [Ployz agent](account/agent-sidebar.md), set `ANTHROPIC_API_KEY`.
+   To turn on the [Ployz agent](account/agent-sidebar.md), set `ANTHROPIC_API_KEY`. To count
+   visits on an environment's [Analytics](observe/analytics.md) page, set `ANALYTICS_ENABLED=true`.
    Email is optional too. Ployz Cloud sends none while `POSTSHIBA_API_KEY`, `POSTSHIBA_TEAM_ID`,
    `POSTSHIBA_CLUSTER_ID`, and `MAIL_FROM` are unset. Set all four to send through
    PostShiba. With only some of them set, `web` and `worker` stop at startup. Each person
@@ -162,7 +158,7 @@ installation back to the first Callback URL.
    }
    ```
 
-   Ployz Cloud listens only on `127.0.0.1`, so other machines can't skip your proxy. If your
+   Ployz Cloud listens only on `127.0.0.1`, so other computers can't skip your proxy. If your
    proxy or `cloudflared` runs in a Docker container on this server, attach it to the
    `ployz-cloud-self-host_default` network and point it at `http://web:3000`. If your proxy
    runs on another server, set `WEB_BIND` in `.env` to a private address of this
@@ -175,9 +171,9 @@ installation back to the first Callback URL.
 ## 4. Sign in and add a server
 
 1. Open your address and sign in with GitHub.
-2. Open **Settings → GitHub** and click **Connect GitHub**. GitHub asks you to install the app
-   and to authorize it. The installation belongs to the organization you connect it to, not to
-   your GitHub account, so everyone in that organization can use its repositories.
+2. Open **Organization → GitHub** and click **Connect GitHub**. GitHub asks you to install the
+   app and to authorize it. See [Who owns the connection](deploy/github.md#who-owns-the-connection)
+   for which GitHub accounts you can connect.
 3. [Add a server](servers/add-a-server.md). You need one even if it's the server Ployz Cloud
    runs on: Ployz Cloud is only the dashboard, and your apps run on the servers you add. The
    command the dashboard gives you already points at your address.
@@ -253,7 +249,8 @@ before it stops.
 - **Adding a GitHub permission later.** Existing installations keep working without it until
   their owner approves the new permissions on GitHub.
 - **No uptime checks yet.** Self-hosted Ployz Cloud doesn't run the uptime checker, so services
-  show no up or down status and have no Monitoring tab.
+  show no up or down status. Their **Monitoring** tab shows CPU and memory, with no uptime checks
+  or incidents.
 - **Behind Cloudflare?** Your apps' domains need **SSL/TLS** set to **Full (strict)**. See
   [My domain is behind Cloudflare](troubleshooting/app-not-reachable.md#my-domain-is-behind-cloudflare). Your
   apps see the visitor's address, not Cloudflare's.
