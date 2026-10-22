@@ -87,7 +87,8 @@ export const processGithubInstallationEvent = Effect.fn(
 
 /**
  * A removed repository leaves the cache now. An added one waits for the sync this asks for, because GitHub's payload
- * names it without the default branch, URL and timestamp a cache entry holds.
+ * names it without the default branch, URL and timestamp a cache entry holds. The version bump makes a sync already
+ * listing list again, since the request for a new one is skipped while it runs.
  */
 export const processGithubInstallationRepositoriesEvent = Effect.fn(
   "Github.processInstallationRepositoriesEvent",
@@ -95,16 +96,16 @@ export const processGithubInstallationRepositoriesEvent = Effect.fn(
   const removedRepositoryIds = payload.repositories_removed.map(
     (repository) => repository.id,
   );
-  if (removedRepositoryIds.length > 0) {
-    yield* (yield* Database).transaction(Effect.gen(function* () {
-      yield* lockGithubRepositoryCache(payload.installation.id);
+  yield* (yield* Database).transaction(Effect.gen(function* () {
+    yield* lockGithubRepositoryCache(payload.installation.id);
+    if (removedRepositoryIds.length > 0) {
       yield* deleteCachedGithubRepositoriesById(
         payload.installation.id,
         removedRepositoryIds,
       );
-      yield* bumpGithubRepositoryCacheVersion(payload.installation.id);
-    }));
-  }
+    }
+    yield* bumpGithubRepositoryCacheVersion(payload.installation.id);
+  }));
   return {
     installationId: payload.installation.id,
     shouldSyncRepositories: payload.repositories_added.length > 0,

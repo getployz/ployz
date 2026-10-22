@@ -299,7 +299,7 @@ const hopperRepositoriesEvent = (action: "added" | "removed", added: readonly nu
     sender: { id: 1, login: "carol" },
   });
 
-it.live("holds no connection or lock while GitHub keeps a sync waiting, so a webhook for the installation lands meanwhile", () =>
+it.live("holds no connection or lock while GitHub keeps a sync waiting, so a webhook adding a repository lands meanwhile and the sync lists again", () =>
   Effect.gen(function* () {
     const { run, connectHopper, sync, cached } = yield* hopperCloud();
     yield* connectHopper;
@@ -318,12 +318,13 @@ it.live("holds no connection or lock while GitHub keeps a sync waiting, so a web
         return row;
       }));
       expect(held).toEqual({ transactions: 0, locks: 0 });
-      revoked.add(9120);
-      yield* run(hopperRepositoriesEvent("removed", [], [9120])).pipe(Effect.timeout("5 seconds"));
-      expect((yield* cached).has(9120)).toBe(false);
+      REPOSITORY_COUNTS.set(9, 151);
+      yield* run(hopperRepositoriesEvent("added", [9150], [])).pipe(Effect.timeout("5 seconds"));
     }).pipe(Effect.ensuring(Deferred.succeed(answer, undefined)));
     yield* Fiber.join(syncing);
-    expect((yield* cached).size).toBe(149);
+    const repositories = yield* cached;
+    expect(repositories.has(9150)).toBe(true);
+    expect(repositories.size).toBe(151);
   }), 60_000);
 
 it.live("lists again rather than undo a webhook that wrote after the sync listed GitHub", () =>
