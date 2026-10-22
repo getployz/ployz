@@ -492,8 +492,8 @@ pub fn no_writer_observation(name: &str, copies: &[KnownCopy]) -> String {
 
 /// The refusal a plain Deploy of Volume `name` reads when no Server can mount its writer:
 /// what was observed, then the way back `operator` can take. Restore and Moves are Cloud's:
-/// the CLI alone is told that making a copy the writer, or stopping a Move, needs Cloud, or
-/// that `ployz volume rm` starts over empty.
+/// the CLI alone is told that making a copy the writer, or stopping a Move, needs Cloud. With
+/// no Move under way, it is also told that `ployz volume rm` starts over empty.
 #[must_use]
 pub fn no_writer_message(name: &str, copies: &[KnownCopy], operator: Operator) -> String {
     let observed = no_writer_observation(name, copies);
@@ -502,9 +502,9 @@ pub fn no_writer_message(name: &str, copies: &[KnownCopy], operator: Operator) -
         (NoWriterCase::MidMove, Operator::Cloud) => {
             format!("{observed}; ployz volume release {name} stops it")
         }
-        (NoWriterCase::MidMove, Operator::Cli) => format!(
-            "{observed}; stopping it needs Ployz Cloud. To start over with an empty Volume, run ployz volume rm {name}, which deletes its data, then add it again and deploy"
-        ),
+        (NoWriterCase::MidMove, Operator::Cli) => {
+            format!("{observed}; stopping it needs Ployz Cloud")
+        }
         (NoWriterCase::NoCopy, Operator::Cloud) => format!(
             "{observed}. If a Server you removed still holds its data, add that Server back, then run ployz volume restore {name} --from <server>"
         ),
@@ -699,7 +699,7 @@ mod tests {
         );
         assert_eq!(
             no_writer_message("data", &[copy("hel-1", CopyRole::Switching)], Operator::Cli),
-            "Volume data is mid-Move; it is held as hel-1 (switching); stopping it needs Ployz Cloud. To start over with an empty Volume, run ployz volume rm data, which deletes its data, then add it again and deploy"
+            "Volume data is mid-Move; it is held as hel-1 (switching); stopping it needs Ployz Cloud"
         );
         for copies in [
             vec![],
