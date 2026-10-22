@@ -158,6 +158,11 @@ describe("VolumeCopiesPanel", () => {
     expect(stage).not.toHaveBeenCalled();
   });
 
+  it("names the silent Primary's Server under Live as not answering, never Live, with no time", () => {
+    panel([member("web-1", "unanswered"), mirrorAsOf("web-2", fiveAgo())], row(["web-2"]));
+    expect(rows("Live")).toEqual(["web-1PrimaryNot answering"]);
+  });
+
   it("tells a member an owner or admin has to forget the silent Server, with no link", () => {
     panel([member("web-1", "unanswered"), mirrorAsOf("web-2", fiveAgo())], row(["web-2"]),
       { forgetGate: { allowed: false, reason: "Only an owner or admin can forget servers." } });
@@ -183,11 +188,12 @@ describe("VolumeCopiesPanel", () => {
     expect(stage).toHaveBeenCalledWith({ primary: id("web-2"), mirrors: [], deletes: [] }, [id("web-2")]);
   });
 
-  it("keeps the silent Server's alert while another Server only needs an upgrade", () => {
-    const lacking = { ...member("web-3", "unanswered"), lack: "Volume move needs a newer Ployz on web-3." };
+  it("names the Server that can't report its copy, not a silent one, while that Server may hold the writer", () => {
+    const lacking: Member = { machine: member("web-3", "unanswered").machine, answered: false, lack: "Volume move is not in Ployz 0.3.0 on web-3." };
     panel([member("web-1", "unanswered"), mirrorAsOf("web-2", fiveAgo()), lacking], row(["web-2"]));
-    expect(screen.getByText("web-1 is not answering")).toBeTruthy();
-    expect(screen.getAllByRole("link").map((link) => link.textContent)).toEqual(["Forget web-1"]);
+    expect(screen.getByText("web-3 can't report this copy")).toBeTruthy();
+    expect(rows("Live")).toEqual(["web-3PrimaryCan't report this copy"]);
+    expect(screen.queryByRole("link")).toBeNull();
     expect(useMirror()).toBeNull();
   });
 
@@ -205,6 +211,72 @@ describe("VolumeCopiesPanel", () => {
     expect(screen.getByRole<HTMLButtonElement>("button", { name: "Use mirror" }).disabled).toBe(true);
   });
 
+  it("waits when the Primary's report hasn't arrived, with no Forget for another silent Server, as its Live row says", () => {
+    const unlisted: Member = { machine: { id: id("web-1"), name: id("web-1") }, answered: false, incomplete: true };
+    panel([unlisted, mirrorAsOf("web-2", fiveAgo()), member("web-3", "unanswered")], row(["web-2"]));
+    expect(screen.getByText("Waiting for every server's report")).toBeTruthy();
+    expect(screen.queryByText(/take over|Forget/)).toBeNull();
+    expect(rows("Live")).toEqual([`${id("web-1")}PrimaryWaiting for its report`]);
+  });
+
+  it("names the Primary whose report is pending, not a silent Server listed before it, and waits with no Forget", () => {
+    // observeVolumeMembers lists the frame's Servers, silent ones among them, and appends those it names only by id.
+    const unlisted: Member = { machine: { id: id("web-1"), name: id("web-1") }, answered: false, incomplete: true };
+    panel([mirrorAsOf("web-2", fiveAgo()), member("web-3", "unanswered"), unlisted], row(["web-2"]));
+    expect(rows("Live")).toEqual([`${id("web-1")}PrimaryWaiting for its report`]);
+    expect(screen.getByText("Waiting for every server's report")).toBeTruthy();
+    expect(screen.queryByText(/take over|Forget|not answering/)).toBeNull();
+  });
+
+  it("says what the presumed primary's Server can't do instead of claiming the Volume has no primary", () => {
+    const lacking: Member = { machine: member("web-1", "unanswered").machine, answered: false, lack: "Volume move is not in Ployz 0.3.0 on web-1." };
+    panel([lacking, mirrorAsOf("web-2", fiveAgo())], row(["web-2"]));
+    expect(screen.getByText("web-1 can't report this copy")).toBeTruthy();
+    expect(screen.getByText(/Volume move is not in Ployz 0\.3\.0 on web-1\.$/)).toBeTruthy();
+    expect(screen.queryByText("data has no primary")).toBeNull();
+    expect(screen.getByRole("alert").className).not.toContain("text-destructive");
+    expect(useMirror()).toBeNull();
+    cleanup();
+    panel([{ ...lacking, lack: "Volume move needs a newer Ployz on web-1. 0.3.1 is out.", outdated: true }, mirrorAsOf("web-2", fiveAgo())], row(["web-2"]));
+    expect(screen.getByText("web-1 needs a newer Ployz")).toBeTruthy();
+  });
+
+  it("names the Primary whose report is pending beside a silent staged target, with no move the row didn't stage", () => {
+    const unlisted: Member = { machine: { id: id("web-1"), name: id("web-1") }, answered: false, incomplete: true };
+    panel([mirrorAsOf("web-2", fiveAgo()), member("web-3", "unanswered"), unlisted], row(["web-2"], { primary: "web-3", mirrors: ["web-2"] }));
+    expect(rows("Live")).toEqual([`${id("web-1")}PrimaryWaiting for its report`]);
+    expect(screen.queryByText(/No primary|Moving to/)).toBeNull();
+  });
+
+  it("names a Primary whose root is read-only Read-only under Live, not Live", () => {
+    panel([member("web-1", "cut"), mirrorAsOf("web-2", fiveAgo())], row(["web-2"]));
+    expect(rows("Live")).toEqual(["web-1PrimaryRead-only"]);
+  });
+
+  it("waits with the staged primary's report pending, as Live names it, though another Server is silent and listed first", () => {
+    const unlisted: Member = { machine: { id: id("web-1"), name: id("web-1") }, answered: false, incomplete: true };
+    panel([member("web-3", "unanswered"), mirrorAsOf("web-2", fiveAgo()), unlisted], row(["web-2"], { primary: "web-1" }));
+    expect(screen.getByText("Waiting for every server's report")).toBeTruthy();
+    expect(screen.queryByText(/take over|Forget/)).toBeNull();
+    expect(rows("Live")).toEqual([`${id("web-1")}PrimaryWaiting for its report`]);
+  });
+
+  it("keeps a silent mirror staged as primary under Elsewhere while the writer's report is on its way, staged, with nothing to stage again", () => {
+    const unlisted: Member = { machine: { id: id("web-1"), name: id("web-1") }, answered: false, incomplete: true };
+    panel([member("web-2", "unanswered"), unlisted], row(["web-2"], { primary: "web-2" }), { open: "web-2" });
+    expect(screen.getByText("web-2 is not answering.")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Make primary" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Remove mirror" })).toBeNull();
+  });
+
+  it("offers no edit on a silent mirror that staging holds as the primary while Live names the Server whose report is on its way", () => {
+    const unlisted: Member = { machine: { id: id("web-1"), name: id("web-1") }, answered: false, incomplete: true };
+    panel([member("web-2", "unanswered"), unlisted], row(["web-2"]), { open: "web-2" });
+    expect(screen.getByText("web-2 is not answering.")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Make primary" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Remove mirror" })).toBeNull();
+  });
+
   it("waits for a Server's report when the frame lists it only by id, with no Forget link and no Use mirror", () => {
     const unlisted: Member = { machine: { id: id("web-1"), name: id("web-1") }, answered: false, incomplete: true };
     panel([unlisted, mirrorAsOf("web-2", fiveAgo())], row(["web-2"]));
@@ -212,6 +284,7 @@ describe("VolumeCopiesPanel", () => {
     expect(screen.getByText("Copies shows what you can do once every server has reported.")).toBeTruthy();
     expect(screen.getByRole("alert").className).not.toContain("text-destructive");
     expect(screen.queryByText(/not answering|take over/)).toBeNull();
+    expect(rows("Live")).toEqual([`${id("web-1")}PrimaryWaiting for its report`]);
     expect(screen.queryByRole("link")).toBeNull();
     expect(useMirror()).toBeNull();
   });
@@ -290,6 +363,13 @@ describe("mirror detail", () => {
     expect(onOpen).toHaveBeenCalledWith(null);
   });
 
+  it("warns that a mirror with no refresh yet catches up first", () => {
+    const base = member("web-2", "mirror");
+    const unrefreshed: Member = base.answered ? { ...base, view: { ...base.view, copy: { ...COPIES.mirror, newest: null } } } : base;
+    panel([member("web-1", "writer"), unrefreshed], row(["web-2"]), { open: "web-2" });
+    expect(screen.getByText(/The deploy catches up first, then pauses writes for the final sync\./)).toBeTruthy();
+  });
+
   it("warns that a behind mirror catches up first", () => {
     panel([member("web-1", "writer"), mirrorAsOf("web-2", new Date(NOW.getTime() - 3 * 3_600_000))], row(["web-2"]), { open: "web-2" });
     expect(screen.getByText(/The deploy catches up first, then pauses writes for the final sync\. If web-2 can't catch up, the deploy fails and web-1 keeps serving\./)).toBeTruthy();
@@ -326,6 +406,22 @@ describe("mirror detail", () => {
   const matchedAgo = (minutes: number) => new Date(NOW.getTime() - minutes * 60_000).toISOString();
   const refreshNow = () => screen.getByRole("button", { name: "Refresh now" }) as HTMLButtonElement;
 
+  it("says a mirror's Server isn't answering on its row and in its detail minutes after it stopped, beside its age", () => {
+    panel(silent(), row(["web-2"]), { matchedAt: matchedAgo(9) });
+    expect(rows("Elsewhere")).toEqual(["web-2Mirror · 15 min · 9 minutes ago · Not answering"]);
+    cleanup();
+    panel(silent(), row(["web-2"]), { open: "web-2", matchedAt: matchedAgo(9) });
+    expect(screen.getByText("web-2 is not answering.")).toBeTruthy();
+    expect(screen.getByText("9 minutes ago")).toBeTruthy();
+    expect(screen.queryByText("Refresh skipped")).toBeNull();
+  });
+
+  it("says a never-refreshed mirror's Server isn't answering without claiming a refresh was skipped", () => {
+    panel(silent(), row(["web-2"]), { open: "web-2" });
+    expect(screen.getByText("web-2 is not answering.")).toBeTruthy();
+    expect(screen.queryByText("Refresh skipped")).toBeNull();
+  });
+
   it("runs a round on Refresh now", () => {
     const { refresh } = panel(fresh(), row(["web-2"]), { open: "web-2" });
     expect(screen.getByText("5 minutes ago")).toBeTruthy();
@@ -344,6 +440,20 @@ describe("mirror detail", () => {
     expect(screen.getByText("Refresh skipped")).toBeTruthy();
     expect(screen.getByText(/^web-2 is not answering\. Ployz retries every 15 minutes\. Until it catches up, a failover loses 2 hours of writes\.$/)).toBeTruthy();
     expect(refreshNow().disabled).toBe(false);
+  });
+
+  it("says a mirror whose report hasn't arrived waits for it, not that its Server isn't answering", () => {
+    const unlisted: Member = { machine: { id: id("web-2"), name: id("web-2") }, answered: false, incomplete: true };
+    panel([member("web-1", "writer"), unlisted], row(["web-2"]), { open: "web-2", matchedAt: matchedAgo(135) });
+    expect(screen.getByText(/^Waiting for its server's report\. Ployz retries every 15 minutes\. Until it catches up, a failover loses 2 hours of writes\.$/)).toBeTruthy();
+    expect(screen.queryByText(/not answering/)).toBeNull();
+  });
+
+  it("says a fresh mirror waits for its server's report without claiming a refresh was skipped", () => {
+    const unlisted: Member = { machine: { id: id("web-2"), name: id("web-2") }, answered: false, incomplete: true };
+    panel([member("web-1", "writer"), unlisted], row(["web-2"]), { open: "web-2", matchedAt: matchedAgo(20) });
+    expect(screen.getByText("Waiting for its server's report.")).toBeTruthy();
+    expect(screen.queryByText("Refresh skipped")).toBeNull();
   });
 
   it("hides the skipped prose while a round runs", () => {

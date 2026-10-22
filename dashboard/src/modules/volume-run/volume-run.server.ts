@@ -1363,7 +1363,7 @@ export const observeVolumeMembers = Effect.fn("VolumeRun.observeMembers")(functi
     const ref: MachineRef = { id: machine.id, name: machine.name };
     const server = { name: machine.name, daemonVersion: machine.runtime.daemon_version };
     const lacks = (capability: string, kind: VolumeRunKind | undefined) => lackSentence(organizationId, capability, server, kind).pipe(
-      Effect.map((lack): Member => ({ machine: ref, answered: false, lack })),
+      Effect.map((said): Member => ({ machine: ref, answered: false, ...said })),
     );
     /** Named by the verb, not the run, so a resize says which direction the Server lacks: "Volume shrink needs a newer Ployz on db-1." */
     const lacksVerb = (requirement: Requirement) => lacks(requirement.capability, undefined);
@@ -1405,10 +1405,12 @@ const lackSentence = Effect.fn("VolumeRun.lackSentence")(function* (
     Effect.flatMap((channel) => channelRelease(channel, line).pipe(Effect.timeout(OBSERVE_TIMEOUT))),
     Effect.orElseSucceed(() => null),
   );
-  const needs = `${feature.feature} ${feature.plural ? "need" : "needs"} a newer Ployz on ${server.name}.`;
-  if (release === null) return needs;
-  if (isBehind(server.daemonVersion, release)) return `${needs} ${release} is out.`;
-  return isCurrent(server.daemonVersion, release) ? `${feature.feature} ${feature.plural ? "are" : "is"} not in Ployz ${server.daemonVersion} on ${server.name} yet.` : needs;
+  // A newer Ployz is claimed only on proof the Server's release is behind; otherwise the sentence says only what it lacks.
+  const missing = `${feature.feature} ${feature.plural ? "are" : "is"} not ${server.daemonVersion === "" ? "available" : `in Ployz ${server.daemonVersion}`} on ${server.name}`;
+  if (release !== null && isBehind(server.daemonVersion, release)) {
+    return { lack: `${feature.feature} ${feature.plural ? "need" : "needs"} a newer Ployz on ${server.name}. ${release} is out.`, outdated: true as const };
+  }
+  return { lack: release !== null && isCurrent(server.daemonVersion, release) ? `${missing} yet.` : `${missing}.` };
 });
 
 export const observeMembers = Effect.fn("VolumeRun.observe")(function* (ctx: RunContext, inngestRunId: string) {

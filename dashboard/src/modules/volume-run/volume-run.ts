@@ -104,10 +104,43 @@ export type Member =
       readonly machine: { readonly id: MachineId; readonly name: MachineName };
       readonly answered: false;
       readonly lack?: string;
+      /** The lack is the Server's release being behind its line's latest, so an upgrade brings what it lacks. */
+      readonly outdated?: true;
       /** The frame lists the Machine only by id: its report hasn't arrived, which is not the same as not answering. */
       readonly incomplete?: true;
     };
 export type AnsweredMember = Extract<Member, { answered: true }>;
+
+/**
+ * What this observer heard from a member's Server just now. Only `answered` reports the copy. A Server that `lacks` the
+ * capability answered without reporting it, and is `outdated` when its release is behind. One the frame lists only by
+ * id is `waiting`: its report hasn't arrived, which says nothing about whether it answers.
+ */
+export type Heard = "answered" | "outdated" | "lacks" | "silent" | "waiting";
+
+export function heardFrom(member: Member): Heard {
+  if (member.answered) return "answered";
+  if (member.lack !== undefined) return member.outdated ? "outdated" : "lacks";
+  return member.incomplete ? "waiting" : "silent";
+}
+
+/**
+ * The members that didn't report their copy, by why: what each lacking Server lacks, silent Servers' names, and whether
+ * a report is still on its way. A lack comes first, as the planner refuses: waiting never clears it.
+ */
+export function unheardOf(members: readonly Member[]) {
+  const lacks: string[] = [];
+  const silent: string[] = [];
+  let waiting = false;
+  for (const member of members) {
+    if (member.answered) continue;
+    const heard = heardFrom(member);
+    if (heard === "silent") silent.push(member.machine.name);
+    else if (heard === "waiting") waiting = true;
+    else if ((heard === "lacks" || heard === "outdated") && member.lack !== undefined) lacks.push(member.lack);
+  }
+  return { lacks, silent, waiting };
+}
 
 export function managementAddress(publicKey: readonly number[]): string {
   const bytes = [0xfd, 0xcc, ...publicKey.slice(0, 14)];

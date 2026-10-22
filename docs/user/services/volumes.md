@@ -104,7 +104,8 @@ The services that mount the volume stop until the server is back. Nothing moves 
 server on its own, and neither the CLI nor Ployz Cloud [moves](move-a-volume.md) a volume while
 its server is down: that server may still be writing to it. With a mirror, the volume's
 **Copies** says "web-1 is not answering", which changes are lost from, and that the mirror can
-take over once web-1 is forgotten.
+take over once web-1 is forgotten. Under **Live**, web-1 reads **Not answering** instead of
+**Live**. It names no time: Ployz doesn't know when web-1 stopped.
 
 1. Wait if web-1 is coming back. When it answers again, its services start and nothing is lost.
 2. If it's gone for good, an owner or admin
@@ -140,7 +141,29 @@ deploy and every 15 minutes. A move leaves an old copy on the server it left. Op
 look under **Copies**. An old copy never refreshes, so it doesn't protect the data. Each server
 records which of its copies is a mirror and which is an old copy, so a mirror made with
 `ployz volume mirror` refreshes like any other, and a move from the CLI leaves an old copy too. A
-mirror's age turns amber with a **⚠** once it is more than an hour old.
+mirror's age turns amber with a **⚠** once it is more than an hour old. When the mirror's server
+doesn't report it, its row says why beside that age at once, like "9 minutes ago · Not answering",
+**Can't report this copy** or **Needs a newer Ployz**. The age is when the mirror last matched, not
+when the server stopped.
+
+While a server's report is still on its way, Copies doesn't say the server is down. A primary on
+it reads **Waiting for its report**, and a mirror on it says it is waiting for its server's report.
+That server may still hold the primary, so Copies names it under **Live** before a server that
+isn't answering. While any server's report is on its way, Copies offers no way to forget a server.
+
+When the primary's server answers but can't report its copy, Copies says so, like "web-1 can't
+report this copy" or "web-1 needs a newer Ployz", and offers neither a Forget nor **Use mirror**:
+web-1 is up, and may still hold the volume. Copies names such a server under **Live** before one
+that isn't answering. A server the volume records as its mirror is named under **Live** only when
+no other server is likelier to hold the volume. One staged to become the primary counts as one
+that may hold it, as a failed move returns there. Otherwise it is listed under **Elsewhere**, even
+when it is staged to become the primary. While a change you stage would keep that server as the
+primary, its row offers no **Make primary** or **Remove mirror**.
+
+Under **Live**, the primary reads **Live** only while its server reports it writable. During a
+move, while writes pause on the server it leaves, it reads **Read-only**. A server whose Ployz is
+behind the latest release reads **Needs a newer Ployz**. One that can't report the copy for
+another reason reads **Can't report this copy**.
 
 Copy changes, like a new mirror or a restore, go out with your next deploy. **Redeploy** on a past
 deployment ships what that deployment froze, so it leaves them staged and says **Copies wait for

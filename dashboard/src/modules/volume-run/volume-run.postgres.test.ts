@@ -3219,7 +3219,7 @@ describe("volume runs", () => {
     ])("a holder that %s refuses the run at admission, before any row", async (_, capabilities) => {
       named("fsn-2").capabilities = capabilities;
 
-      expect(await admit(grow(20))).toEqual({ ok: false, refusal: { code: "unsupported", message: "Volume resize needs a newer Ployz on fsn-2.", details: null } });
+      expect(await admit(grow(20))).toEqual({ ok: false, refusal: { code: "unsupported", message: "Volume resize is not available on fsn-2.", details: null } });
 
       expect(verbs).toEqual([]);
       expect(await rows()).toEqual([]);
@@ -3232,7 +3232,7 @@ describe("volume runs", () => {
       await execute(run.id);
 
       expect(verbs).toEqual([]);
-      expect(await rows()).toMatchObject([{ state: "failed", message: "Volume resize needs a newer Ployz on fsn-3." }]);
+      expect(await rows()).toMatchObject([{ state: "failed", message: "Volume resize is not available on fsn-3." }]);
     });
 
     it("the size the Store already records asks the primary, then each mirror, to hold it, and records nothing", async () => {
@@ -3447,7 +3447,7 @@ describe("volume runs", () => {
       it("a holder without the shrink refuses it at admission, naming the Server, and still admits a grow", async () => {
         named("fsn-2").capabilities = [requirements.volumeFloor.capability, requirements.volumeSize.capability];
 
-        expect(await admit(shrink(10))).toEqual({ ok: false, refusal: { code: "unsupported", message: "Volume shrink needs a newer Ployz on fsn-2.", details: null } });
+        expect(await admit(shrink(10))).toEqual({ ok: false, refusal: { code: "unsupported", message: "Volume shrink is not available on fsn-2.", details: null } });
         expect(verbs).toEqual([]);
         expect(await rows()).toEqual([]);
 
@@ -3462,7 +3462,7 @@ describe("volume runs", () => {
 
         expect(verbs).toEqual([]);
         expect(storeEvents).toEqual([]);
-        expect(await rows()).toMatchObject([{ state: "failed", message: "Volume shrink needs a newer Ployz on fsn-3." }]);
+        expect(await rows()).toMatchObject([{ state: "failed", message: "Volume shrink is not available on fsn-3." }]);
       });
 
       it("a stale replay left the Store larger than every copy: a settle refuses, asks no Machine and records nothing", async () => {
@@ -3593,7 +3593,7 @@ describe("volume runs", () => {
 
       const admitted = await run({ kind: "move", args: { to: "fsn-2" } });
 
-      expect(admitted).toMatchObject({ ok: false, refusal: { message: "Volume move needs a newer Ployz on fsn-2." } });
+      expect(admitted).toMatchObject({ ok: false, refusal: { message: "Volume move is not available on fsn-2." } });
       expect(await rows()).toEqual([]);
       expect(send).not.toHaveBeenCalled();
     });
@@ -3603,7 +3603,7 @@ describe("volume runs", () => {
 
       const admitted = await run({ kind: "move", args: { to: "fsn-2" } });
 
-      expect(admitted).toMatchObject({ ok: false, refusal: { message: "Volume move needs a newer Ployz on fsn-1." } });
+      expect(admitted).toMatchObject({ ok: false, refusal: { message: "Volume move is not available on fsn-1." } });
       expect(await rows()).toEqual([]);
     });
 

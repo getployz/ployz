@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { MachineId } from "@ployz/sdk";
 import {
-  addableCopies, cardLine, hangingCopies, type MirrorCopy, type OffsiteCopy, type OldCopy, type Snapshot, traySpeech,
+  addableCopies, cardLine, hangingCopies, type MirrorCopy, type OffsiteCopy, type OldCopy, type Snapshot, traySpeech, unheardReason,
   type VolumeCopies,
 } from "./volume-copies";
 
@@ -20,12 +20,12 @@ const old: OldCopy = { kind: "old", id: "web-3", server: server("web-3"), name: 
 
 const pgData = (elsewhere: VolumeCopies["elsewhere"], live: Partial<VolumeCopies["live"]> = {}): VolumeCopies => ({
   volume: { id: "v1", name: "pg-data" },
-  live: { server: server("web-1"), restore: null, moveTo: null, busy: null, snapshots: snapshots(13), ...live },
+  live: { server: { ...server("web-1"), state: "live" }, restore: null, moveTo: null, busy: null, snapshots: snapshots(13), ...live },
   elsewhere,
 });
 const redisData: VolumeCopies = {
   volume: { id: "v2", name: "redis-data" },
-  live: { server: server("web-2"), restore: null, moveTo: null, busy: null, snapshots: snapshots(4) },
+  live: { server: { ...server("web-2"), state: "live" }, restore: null, moveTo: null, busy: null, snapshots: snapshots(4) },
   elsewhere: [],
 };
 
@@ -83,6 +83,25 @@ describe("stale mirror", () => {
 
   it("is not behind at exactly an hour", () => {
     expect(cardLine(mirror(today("13:04")), now).stale).toBe(false);
+  });
+});
+
+describe("unheard mirror", () => {
+  const now = today("14:04");
+
+  it("says why a mirror's Server didn't report it however fresh its age, which stays the last match", () => {
+    const silent = mirror(today("13:55"), { skipped: "silent" });
+    expect(unheardReason(silent)).toBe("Not answering");
+    expect(cardLine(silent, now)).toMatchObject({ age: "9 minutes ago", stale: false });
+    expect(unheardReason(mirror(today("13:55"), { skipped: "waiting" }))).toBe("Waiting for its report");
+    expect(unheardReason(mirror(today("13:55"), { skipped: "lacks" }))).toBe("Can't report this copy");
+    expect(unheardReason(mirror(today("13:55"), { skipped: "outdated" }))).toBe("Needs a newer Ployz");
+  });
+
+  it("gives no reason for a mirror whose Server answered, or while a run is on it", () => {
+    expect(unheardReason(mirror(today("13:55")))).toBeNull();
+    expect(unheardReason(mirror(today("13:55"), { skipped: "failed" }))).toBeNull();
+    expect(unheardReason(mirror(today("13:55"), { skipped: "silent", busy: "Refreshing" }))).toBeNull();
   });
 });
 

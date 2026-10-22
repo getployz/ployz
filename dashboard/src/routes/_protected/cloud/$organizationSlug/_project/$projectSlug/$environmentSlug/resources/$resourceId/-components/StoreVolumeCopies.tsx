@@ -18,8 +18,8 @@ import { type RoleGate, useRoleGate } from "#/modules/organization/members.queri
 import { requirements, serverSupports } from "#/modules/runtime/daemon-compat";
 import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
 import {
-  addableCopies, cardLine, COPY_WORDS, isStale, type MirrorCopy, type OldCopy, STAGED_WORDS, type StagedCopy,
-  type VolumeCopies, type VolumeCopy,
+  addableCopies, cardLine, COPY_WORDS, isStale, LIVE_WORDS, type LiveState, type MirrorCopy, type OldCopy, STAGED_WORDS, type StagedCopy,
+  unheardReason, type VolumeCopies, type VolumeCopy,
 } from "#/modules/volume-copies/volume-copies";
 import { useRefreshMirror } from "#/modules/volume-copies/volume-copies.hooks";
 import { copiesFromPlacement } from "#/modules/volume-copies/volume-copies.placement";
@@ -41,6 +41,9 @@ export type CopiesVolume = PlacementVolume & { readonly mounts: readonly { reado
 export type CopyServer = { readonly id: string; readonly name: string; readonly storage: "stateless" | "ready" | "pool" | null };
 
 const STAGED_STATE = { new: "success", removing: "destructive", primary: "changed" } as const satisfies Record<StagedCopy, string>;
+const LIVE_STATE = {
+  live: "success", read_only: "info", outdated: "warning", lacks: "secondary", silent: "destructive", waiting: "outline",
+} as const satisfies Record<LiveState, string>;
 
 /** Everything the Copies tab reads and writes, gathered once so the header's safety line and the tab agree. */
 export function useVolumeCopies(organizationSlug: string, environment: EnvironmentRef, volume: CopiesVolume) {
@@ -157,6 +160,13 @@ function RecoveryAlert({ organizationSlug, forgetGate, volume, disabled, deployi
       <AlertDescription>Copies shows what you can do once every server has reported.</AlertDescription>
     </Alert>;
   }
+  if (recovered.kind === "unreported") {
+    const { server, heard, lack } = recovered;
+    return <Alert>
+      <AlertTitle>{server.name} {heard === "outdated" ? "needs a newer Ployz" : "can't report this copy"}</AlertTitle>
+      <AlertDescription>{`Copies can't tell whether ${server.name} still holds ${volume.name}'s primary. ${lack}`}</AlertDescription>
+    </Alert>;
+  }
   if (recovered.kind === "forget") {
     const { down } = recovered;
     const names = down.map((server) => server.name).join(" and ");
@@ -211,7 +221,7 @@ function CopiesView({ volume, members, row, rows, owed, copies, target, servers,
           <ItemTitle>{live.server?.name ?? "No primary"}</ItemTitle>
           <ItemDescription>{live.busy ? <Busy words={live.busy} /> : live.moveTo ? `Moving to ${live.moveTo.name} · on deploy` : "Primary"}</ItemDescription>
         </ItemContent>
-        {live.server ? <ItemActions><Badge variant="success">Live</Badge></ItemActions> : null}
+        {live.server ? <ItemActions><Badge variant={LIVE_STATE[live.server.state]}>{LIVE_WORDS[live.server.state]}</Badge></ItemActions> : null}
       </Item>
       {live.restore ? <Item role="listitem" variant="outline" size="sm" state="changed" data-staged="restore">
         <ItemContent>
@@ -282,12 +292,14 @@ function CopyRow({ copy, now, locked, blocked, onOpen, onDelete, restore = null 
   restore?: RestoreOffer;
 }) {
   const line = cardLine(copy, now);
+  const unheard = unheardReason(copy);
   const title = copy.kind === "offsite" ? copy.bucket : copy.server.name;
   const description = line.spin ? <Busy words={line.words} />
     : copy.staged === "new" ? `${COPY_WORDS[copy.kind]} · on deploy`
     : <>
       {[line.words, copy.kind === "mirror" ? "15 min" : null].filter(Boolean).join(" · ")}
       {line.age ? <> · <span className={cn(line.stale && "text-warning")}>{line.stale ? <TriangleAlertIcon className="mr-1 inline size-3.5" /> : null}{copy.kind === "old" && copy.since ? lossMoment(copy.since, now) : line.age}</span></> : null}
+      {unheard ? ` · ${unheard}` : null}
     </>;
   const badge = copy.staged ? <Badge variant={STAGED_STATE[copy.staged]}>{STAGED_WORDS[copy.staged]}</Badge> : null;
   const content = <>
@@ -373,8 +385,9 @@ function CopyView({ volume, members, row, rows, owed, copies, copy, accepting, u
   const observed = observePlacement(members);
   const target = targetPlacement(observed, row);
   const applied = appliedMirrors(observed, row);
-  // A staged mirror is Details' to discard, and a Deploy running the placement holds it.
-  const offered = !blocked && copy.staged === null && !deploying ? target : null;
+  // A staged mirror is Details' to discard, and a Deploy running the placement holds it. A mirror the target holds as its
+  // primary, while Live names another Server, has no edit of its own.
+  const offered = !blocked && copy.staged === null && !deploying && target?.primary !== copy.server.id ? target : null;
   const movable = placementTargets(volume, members, row, accepting, owed).move.some((machine) => machine.id === copy.server.id);
   const promote = offered !== null && movable ? editPlacement(offered, { kind: "move", to: copy.server.id }) : null;
   const remove = offered === null ? null : editPlacement(offered, { kind: "remove_mirror", server: copy.server.id });
@@ -382,6 +395,8 @@ function CopyView({ volume, members, row, rows, owed, copies, copy, accepting, u
   const live = copies.live.server?.name ?? "the live server";
   const services = [...new Set(volume.mounts.map((mount) => mount.service))].join(", ") || volume.name;
   const stale = isStale(copy, now);
+  // Refresh skipped needs a refresh to have been skipped: a mirror with no recorded refresh only says why.
+  const skippedBadge = stale && copy.refreshedAt !== null;
   const shown = refreshing && copy.busy === null ? { ...copy, busy: "Refreshing" } : copy;
   const last = mirrorLast(shown, now);
   const skipped = skippedWords(shown, now);
@@ -403,7 +418,7 @@ function CopyView({ volume, members, row, rows, owed, copies, copy, accepting, u
     </Row>
     {skipped === null ? null : <Field orientation="responsive">
       <FieldContent><FieldTitle>Status</FieldTitle><FieldDescription>{skipped}</FieldDescription></FieldContent>
-      <Badge variant="warning">Refresh skipped</Badge>
+      {skippedBadge ? <Badge variant="warning">Refresh skipped</Badge> : null}
     </Field>}
     {offer ? <Row title="Restore point">
       <span className="flex items-center gap-2">

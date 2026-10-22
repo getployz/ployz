@@ -7,7 +7,9 @@ import { epochOf, planFromCopies } from "#/modules/volume-run/plan";
 import { runWords } from "#/modules/volume-run/volume-copies";
 import { rustMachineIdSchema } from "#/modules/machines/enrollment";
 import type { RuntimeVolumeCopy } from "#/modules/runtime/runtime.collection";
-import { type AnsweredMember, type Member, parseDockerVolumeName, RUN_FEATURES, type VolumeRunInput, type VolumeRunView } from "#/modules/volume-run/volume-run";
+import {
+  type AnsweredMember, heardFrom, type Member, parseDockerVolumeName, RUN_FEATURES, type VolumeRunInput, type VolumeRunView,
+} from "#/modules/volume-run/volume-run";
 
 export type MachineRef = { readonly id: MachineId; readonly name: MachineName };
 export type PlacementVolume = { readonly id: string; readonly name: string };
@@ -26,6 +28,10 @@ export type ObservedPlacement = {
   readonly primary: MachineRef | null;
   readonly copies: readonly ObservedCopy[];
   readonly unanswered: readonly MachineRef[];
+  /** The unanswered Servers whose report is on its way. */
+  readonly waiting: readonly MachineRef[];
+  /** Of `unanswered`, the Servers that are up but lack a capability to report their copy. */
+  readonly lacking: readonly MachineRef[];
   /** Every Server in the cluster, answering or not. */
   readonly members: readonly MachineId[];
 };
@@ -120,6 +126,8 @@ export function observePlacement(members: readonly Member[]): ObservedPlacement 
     primary: primary?.machine ?? null,
     copies,
     unanswered: members.filter((member) => !member.answered).map((member) => member.machine),
+    waiting: members.filter((member) => heardFrom(member) === "waiting").map((member) => member.machine),
+    lacking: members.filter((member) => ["lacks", "outdated"].includes(heardFrom(member))).map((member) => member.machine),
     members: members.map((member) => member.machine.id),
   };
 }
@@ -147,6 +155,25 @@ export function detachedCopies(observed: ObservedPlacement): readonly ObservedCo
 export function oldCopies(observed: ObservedPlacement, row: PlacementRow | null): readonly ObservedCopy[] {
   const target = targetPlacement(observed, row);
   return detachedCopies(observed).filter((copy) => copy.server.id !== target?.primary && !target?.mirrors.includes(copy.server.id));
+}
+
+/**
+ * The Server presumed to hold the primary: the one that reports it, else, with none answering, one that didn't. A
+ * Server the Volume records as a mirror comes last, as it holds a mirror, unless it is the staged primary, which an
+ * unfinished move to it leaves recorded. Before it, one whose report is on its way
+ * comes first, though the observer lists it last, then one that is up but lacks a capability, then a silent one: each
+ * before it may still hold the writer. Among those, the staged primary comes first, since a failed move returns there,
+ * else the first listed. Copies names it under Live and the recovery alert reads it. Staging never reads it: an edit,
+ * a move and a restore keep main's holder, so what is staged doesn't turn on whose report arrived first.
+ */
+export function presumedPrimary(observed: ObservedPlacement, row: PlacementRow | null): MachineRef | null {
+  if (observed.primary !== null) return observed.primary;
+  const mirrors = appliedMirrors(observed, row);
+  const holding = (servers: readonly MachineRef[]) =>
+    servers.filter((server) => server.id === row?.staged?.primary || !mirrors.includes(server.id));
+  const pool = [holding(observed.waiting), holding(observed.lacking), holding(observed.unanswered), observed.unanswered]
+    .find((servers) => servers.length > 0) ?? [];
+  return pool.find((server) => server.id === row?.staged?.primary) ?? pool[0] ?? null;
 }
 
 /**
@@ -333,6 +360,15 @@ export type Recovery =
   | { readonly kind: "forget"; readonly down: readonly MachineRef[]; readonly mirror: MachineRef; readonly lostAfter: Date | null }
   /** A member's report is incomplete: not silence, so nothing to forget yet and nothing to stage. */
   | { readonly kind: "wait"; readonly mirror: MachineRef; readonly lostAfter: Date | null }
+  /** The presumed primary's Server answered without reporting its copy: it is up, so neither Forget nor a restore. */
+  | {
+    readonly kind: "unreported";
+    readonly server: MachineRef;
+    readonly heard: "lacks" | "outdated";
+    readonly lack: string;
+    readonly mirror: MachineRef;
+    readonly lostAfter: Date | null;
+  }
   | {
     readonly kind: "restore";
     readonly mirror: MachineRef;
@@ -354,10 +390,22 @@ export function recovery(
   const copy = observed.copies.find((each) => each.kind === "slot" && applied.includes(each.server.id));
   if (copy === undefined) return null;
   const { server: mirror, newest: lostAfter } = copy;
-  const unanswered = members.filter((member): member is Extract<Member, { answered: false }> => !member.answered && member.lack === undefined);
-  const silent = unanswered.filter((member) => member.incomplete === undefined).map((member) => member.machine);
-  if (silent.length > 0) return { kind: "forget", down: silent, mirror, lostAfter };
-  if (unanswered.length > 0) return { kind: "wait", mirror, lostAfter };
+  // While any report is on its way, it may come from the writer, whichever Server is presumed primary: wait. Then what
+  // was heard from the presumed primary decides, as Live shows it. Silent: Forget, naming every silent Server, since
+  // each holds the stage back. Lacking a capability: it is up, so say what it lacks.
+  if (observed.waiting.length > 0) return { kind: "wait", mirror, lostAfter };
+  const presumed = presumedPrimary(observed, row);
+  const primary = members.find((member) => member.machine.id === presumed?.id);
+  if (primary !== undefined && !primary.answered) {
+    const heard = heardFrom(primary);
+    if (heard === "silent") {
+      const down = members.filter((member) => heardFrom(member) === "silent").map((member) => member.machine);
+      return { kind: "forget", down, mirror, lostAfter };
+    }
+    if ((heard === "lacks" || heard === "outdated") && primary.lack !== undefined) {
+      return { kind: "unreported", server: primary.machine, heard, lack: primary.lack, mirror, lostAfter };
+    }
+  }
   if (row?.staged?.primary === mirror.id) return null;
   return { kind: "restore", mirror, lostAfter, stage: restoreStage(volume, members, mirror, applied, accepting, owed, floorless) };
 }

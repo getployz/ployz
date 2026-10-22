@@ -195,10 +195,28 @@ it.effect("a Server's release channel query that takes 12 seconds finishes, and 
       machine: { id: machine.id, name: machine.name },
       answered: false,
       lack: "Volume move needs a newer Ployz on box-1. 0.2.0 is out.",
+      outdated: true,
     }]);
     assert.strictEqual(cluster.finished(), 1);
     assert.strictEqual(cluster.interrupted(), 0);
   }).pipe(Effect.ensuring(Effect.sync(() => vi.unstubAllGlobals()))),
+);
+
+it.effect("a Server's lack claims no newer Ployz when its release can't be looked up", () =>
+  Effect.gen(function* () {
+    vi.stubGlobal("fetch", async () => { throw new Error("offline"); });
+    // Past the release pointer cache, so an earlier test's release isn't read back.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(Date.now() + 10 * 60_000);
+    const cluster = yield* lacking;
+    const observing = yield* observeVolumeMembers("org-1", "pg-data", release).pipe(Effect.provide(cluster.layer(Promise.resolve())), Effect.forkChild);
+    (yield* Queue.take(cluster.queries))();
+    assert.deepStrictEqual(yield* Fiber.join(observing), [{
+      machine: { id: machine.id, name: machine.name },
+      answered: false,
+      lack: `Volume move is not in Ployz ${machine.runtime.daemon_version} on box-1.`,
+    }]);
+  }).pipe(Effect.ensuring(Effect.sync(() => { vi.useRealTimers(); vi.unstubAllGlobals(); }))),
 );
 
 it.effect("a Server whose inspect never answers is a member that didn't answer after 10 seconds", () =>

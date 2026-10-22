@@ -25,7 +25,7 @@ const old: OldCopy = {
 };
 const copiesOf = (elsewhere: VolumeCopies["elsewhere"]): VolumeCopies => ({
   volume: { id: volume.id, name: volume.name },
-  live: { server: { id: "m1" as MachineId, name: "web-1" }, restore: null, moveTo: null, busy: null, snapshots: null },
+  live: { server: { id: "m1" as MachineId, name: "web-1", state: "live" }, restore: null, moveTo: null, busy: null, snapshots: null },
   elsewhere,
 });
 
