@@ -7,9 +7,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::{
-    CopyRole, DockerVolumeId, DockerVolumeName, DockerVolumeStorageObservation, KnownCopy,
-    MachineId, MachineObservation, Namespace, Operator, PlacementConstraint, PreservedVolume,
-    RequestedServiceSpec, ServiceMode, ServiceName, ServiceObservation,
+    BlockedService, CopyRole, DockerVolumeId, DockerVolumeName, DockerVolumeStorageObservation,
+    KnownCopy, MachineId, MachineObservation, Namespace, Operator, PlacementConstraint,
+    PreservedVolume, RequestedServiceSpec, ServiceMode, ServiceName, ServiceObservation,
     ServicePlacementEligibility, ServiceStorageSpec, ServiceVolume, ServiceVolumeGraph,
     VolumeSource, owned_volume_namespace,
 };
@@ -670,6 +670,18 @@ struct SharedVolumeComponent<'volume_use> {
     )>,
 }
 
+impl SharedVolumeComponent<'_> {
+    /// Each Service of the component once, in name order.
+    fn service_names(&self) -> impl Iterator<Item = &ServiceName> {
+        self.volumes
+            .iter()
+            .flat_map(|(_, uses)| uses.iter())
+            .map(|volume_use| &volume_use.service.name)
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+    }
+}
+
 fn shared_volume_components<'volume_use>(
     volume_uses: &'volume_use BTreeMap<DockerVolumeName, Vec<ManagedVolumeUse<'volume_use>>>,
 ) -> Vec<SharedVolumeComponent<'volume_use>> {
@@ -706,7 +718,9 @@ fn shares_a_service(
 }
 
 impl VolumePlan<'_> {
-    /// Reserve shared placement and its full mounted commitments together.
+    /// Reserve shared placement and its full mounted commitments together. With
+    /// `options.block_unmountable`, a shared Volume nobody can mount blocks every Service
+    /// of its component instead of failing, and those are returned.
     ///
     /// # Errors
     /// Returns no common legal Machine, conflicting definitions, or endpoint admission failure.
@@ -716,11 +730,12 @@ impl VolumePlan<'_> {
         observed_services: &[ServiceObservation],
         placement: &mut PlacementReservations,
         options: &PlanOptions,
-    ) -> Result<(), PlanError> {
+    ) -> Result<Vec<BlockedService>, PlanError> {
         let snapshot = self.snapshot;
         let volume_uses = managed_volume_uses(requested);
+        let mut blocked = Vec::new();
         for component in shared_volume_components(&volume_uses) {
-            let anchor = shared_component_anchor(
+            let anchor = match shared_component_anchor(
                 &component,
                 snapshot,
                 requested,
@@ -728,10 +743,40 @@ impl VolumePlan<'_> {
                 self,
                 placement,
                 options,
-            )?;
+            ) {
+                Ok(anchor) => anchor,
+                Err(error) if options.block_unmountable => {
+                    let error = unmountable(error)?.into_rpc_error();
+                    blocked.extend(component.service_names().map(|service| BlockedService {
+                        service: service.clone(),
+                        error: error.clone(),
+                    }));
+                    continue;
+                }
+                Err(error) => return Err(error),
+            };
             assign_shared_component(&component, anchor, self);
         }
-        Ok(())
+        Ok(blocked)
+    }
+}
+
+/// The refusal of a Volume nobody can mount, out of the Service context
+/// `shared_component_anchor` gave it.
+///
+/// # Errors
+/// Hands back any other error, which still fails the Deploy.
+fn unmountable(error: PlanError) -> Result<PlanError, PlanError> {
+    let PlanError::Service { service, source } = error else {
+        return Err(error);
+    };
+    if matches!(
+        *source,
+        PlanError::NoWriter { .. } | PlanError::CopiesUnknown { .. }
+    ) {
+        Ok(*source)
+    } else {
+        Err(PlanError::Service { service, source })
     }
 }
 

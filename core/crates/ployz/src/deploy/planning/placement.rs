@@ -133,6 +133,21 @@ impl PlacementState {
         self.reservations.remove(service)
     }
 
+    /// Cancel `service`'s shared reservation and restore the endpoints it committed.
+    pub(super) fn release(&mut self, service: &ServiceName) {
+        let Some(reservation) = self.reservations.remove(service) else {
+            return;
+        };
+        for choice in &reservation.choices {
+            if matches!(choice.action, ReplicaAction::Create) {
+                self.capacity.release(&choice.machine_id);
+            }
+        }
+        if let Some(machine_id) = reservation.hook_machine {
+            self.capacity.release(&machine_id);
+        }
+    }
+
     pub(super) fn capacity_error_for<'a>(
         &self,
         machine_ids: impl IntoIterator<Item = &'a MachineId>,

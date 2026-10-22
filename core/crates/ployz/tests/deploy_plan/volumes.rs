@@ -1216,6 +1216,128 @@ fn a_silent_volume_server_leaves_a_deploy_of_another_service_alone() {
 }
 
 #[test]
+fn a_blocked_dependent_gives_back_the_endpoint_its_shared_reservation_took() {
+    let (web, db) = web_and_db();
+    let mut api = spec("api");
+    let mut worker = spec("worker");
+    for spec in [&mut api, &mut worker] {
+        add_named_volume(spec, "shared");
+        make_provisioned(spec, "shared", 1_073_741_824);
+    }
+    let intent = DeployIntent::apply_all(
+        Namespace::parse("app").unwrap(),
+        [&db, &api, &worker, &web],
+        PlanOptions::default(),
+    )
+    .with_dependencies(BTreeMap::from([(
+        api.name.clone(),
+        vec![ServiceDependency {
+            service: db.name.clone(),
+            condition: DependencyCondition::ServiceHealthy,
+        }],
+    )]));
+    // Exactly the two endpoints api and worker reserve together; web needs the one api gives back.
+    let snapshot = DeploySnapshot {
+        capacity: capacity([('1', 2), ('2', 0)]),
+        ..copies_snapshot(&[('2', CopyRole::Slot)], vec![])
+    };
+
+    let preview = runner_preview(&intent, &snapshot).unwrap();
+
+    let blocked: Vec<_> = preview
+        .blocked
+        .iter()
+        .map(|blocked| blocked.service.as_str())
+        .collect();
+    assert_eq!(blocked, ["db", "api"]);
+    let planned: Vec<_> = operations(&preview)
+        .iter()
+        .filter_map(|operation| operation.service_name().cloned())
+        .collect();
+    assert_eq!(planned, [worker.name.clone(), web.name.clone()]);
+    assert_eq!(
+        preview.placed_on.get(&web.name),
+        Some(&[machine_id('1')].into())
+    );
+}
+
+#[test]
+fn a_shared_volume_without_a_writer_blocks_only_the_services_that_share_it() {
+    let other = spec("other");
+    let mut api = spec("api");
+    let mut worker = spec("worker");
+    for spec in [&mut api, &mut worker] {
+        add_named_volume(spec, "data");
+        make_provisioned(spec, "data", 1_073_741_824);
+    }
+    let web = spec("web");
+    let intent = DeployIntent::apply_all(
+        Namespace::parse("app").unwrap(),
+        [&other, &api, &worker, &web],
+        PlanOptions::default(),
+    )
+    .with_dependencies(BTreeMap::from([(
+        web.name.clone(),
+        vec![ServiceDependency {
+            service: api.name.clone(),
+            condition: DependencyCondition::ServiceHealthy,
+        }],
+    )]));
+    let mut silent = copies_snapshot(&[('2', CopyRole::Slot)], vec![]);
+    silent.machines.push(machine('3', "third"));
+    silent.storage_capacity.remove(&machine_id('3'));
+    for (case, snapshot, reason, code) in [
+        (
+            "no writer",
+            copies_snapshot(&[('2', CopyRole::Slot)], vec![]),
+            "Volume data has no writer; second holds its only copy",
+            RpcErrorCode::Conflict,
+        ),
+        (
+            "copies unknown",
+            silent,
+            "third did not answer, so Volume data's copies are unknown",
+            RpcErrorCode::Unavailable,
+        ),
+    ] {
+        let preview = runner_preview(&intent, &snapshot).unwrap();
+
+        let planned: Vec<_> = operations(&preview)
+            .iter()
+            .filter_map(|operation| operation.service_name().cloned())
+            .collect();
+        assert_eq!(planned, std::slice::from_ref(&other.name), "{case}");
+        let [api, worker, web] = preview.blocked.as_slice() else {
+            panic!("{case}: {:?}", preview.blocked)
+        };
+        for sharer in [api, worker] {
+            assert_eq!(sharer.error.code, code, "{case}");
+            assert!(
+                sharer.error.message.starts_with(reason),
+                "{case}: {}",
+                sharer.error.message
+            );
+        }
+        assert_eq!(
+            (api.service.as_str(), worker.service.as_str()),
+            ("api", "worker"),
+            "{case}"
+        );
+        assert_eq!(web.service.as_str(), "web", "{case}");
+        assert_eq!(web.error.code, RpcErrorCode::Conflict, "{case}");
+        assert_eq!(
+            web.error.message, "depends on api, which was not attempted",
+            "{case}"
+        );
+        assert!(preview.volumes_to_create.is_empty(), "{case}");
+        assert!(
+            preview_deploy(&intent, &snapshot).is_err(),
+            "{case}: a direct preview still refuses the whole Deploy"
+        );
+    }
+}
+
+#[test]
 fn unselected_provisioned_service_leaves_stateless_machine_unchanged() {
     let applied = requested(ServiceMode::Replicated {
         replicas: NonZeroU32::new(1).unwrap(),
