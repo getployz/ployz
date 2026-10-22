@@ -138,6 +138,7 @@ pub(super) fn redeploy_command(command: Command) -> Command {
         crate::cli::VOLUME_ACCEPTANCE
     )))
     .arg(crate::cli::reviewed_version())
+    .arg(crate::cli::approval())
 }
 
 pub(super) fn start_command(command: Command) -> Command {
