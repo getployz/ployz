@@ -36,7 +36,8 @@ import {
   type ReadMachineEnrollmentInput,
   type ResetPendingEnrollmentInput,
 } from "#/modules/machines/enrollment";
-import { recordSealingPublicKey } from "#/modules/machines/sealing-key.server";
+import { readOrganizationSealingKey, recordSealingPublicKey } from "#/modules/machines/sealing-key.server";
+import { supportsSealingRecovery } from "#/modules/machines/sealing-recovery-compat.server";
 import { SecretEncryption } from "#/utils/encrypted-secret.server";
 import { sendInngestEvent } from "#/modules/inngest/client";
 import {
@@ -531,6 +532,17 @@ const queueBeforeLocking = Effect.fn("MachineEnrollment.queueBeforeLocking")(
   },
 );
 
+const foundingRecovery = Effect.fn("MachineEnrollment.foundingRecovery")(function* (
+  organizationId: string, recoverySupport: 1 | undefined,
+) {
+  if (!(yield* AppConfig).sealedVariables) return undefined;
+  const organizationKey = yield* readOrganizationSealingKey(organizationId);
+  if (!(yield* supportsSealingRecovery(recoverySupport, organizationKey !== undefined))) return undefined;
+  return organizationKey === undefined
+    ? { kind: "back_up" as const }
+    : { kind: "seed" as const, expectedPublicKey: organizationKey.publicKey, backup: organizationKey.recoveryBlob };
+});
+
 const claimOrLoadEnrollment = Effect.fn("MachineEnrollment.claimOrLoad")(
   function* (input: {
     token: string;
@@ -540,6 +552,7 @@ const claimOrLoadEnrollment = Effect.fn("MachineEnrollment.claimOrLoad")(
     name: MachineName;
     role: EnrollmentRole | null;
     joinSlots: number;
+    recoverySupport: 1 | undefined;
   }) {
     const database = yield* Database;
     const encryption = yield* SecretEncryption;
@@ -567,6 +580,7 @@ const claimOrLoadEnrollment = Effect.fn("MachineEnrollment.claimOrLoad")(
             kind: "initialize" as const,
             resumed: false,
             pairing: { secret },
+            recovery: yield* foundingRecovery(input.organizationId, input.recoverySupport),
           };
         }
 
@@ -589,7 +603,12 @@ const claimOrLoadEnrollment = Effect.fn("MachineEnrollment.claimOrLoad")(
         };
         if (!joiner && current.founderPublicKey === input.publicKey && current.founderClaimMachineId === input.machineId) {
           yield* claimEnrollmentToken(input.token, input);
-          return { kind: "initialize" as const, resumed: true, pairing };
+          return {
+            kind: "initialize" as const,
+            resumed: true,
+            pairing,
+            recovery: yield* foundingRecovery(input.organizationId, input.recoverySupport),
+          };
         }
         if (current.founderMachineId) {
           const queued = yield* queueForJoinSlot({ ...input, founderMachineId: current.founderMachineId });
@@ -632,6 +651,7 @@ export const enrollMachine = Effect.fn("MachineEnrollment.enrollMachine")(
       name: input.identity.name,
       role: token.enrollmentRole,
       joinSlots: input.joinSlots ?? JOIN_SLOTS,
+      recoverySupport: input.identity.recoverySupport,
     };
     const early = yield* queueBeforeLocking(claim);
     const state = early ? { kind: "queued" as const, material: early } : yield* claimOrLoadEnrollment(claim);
@@ -642,6 +662,7 @@ export const enrollMachine = Effect.fn("MachineEnrollment.enrollMachine")(
         resumed: state.resumed,
         pairing: state.pairing,
         storage: request.storage,
+        recovery: state.recovery,
       };
     }
     // Another Server is founding: wait while it may still finish; an old claim may be a founder that was deleted.

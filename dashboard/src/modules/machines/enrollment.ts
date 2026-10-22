@@ -138,6 +138,7 @@ export const enrollmentIdentitySchema = Schema.Struct({
   memoryTotalBytes: Schema.optionalKey(Schema.NullOr(NonnegativeSafeInteger)),
   diskTotalBytes: Schema.optionalKey(Schema.NullOr(NonnegativeSafeInteger)),
   diskAvailableBytes: Schema.optionalKey(Schema.NullOr(NonnegativeSafeInteger)),
+  recoverySupport: Schema.optionalKey(Schema.Literal(1)),
 });
 
 export type EnrollmentIdentity = typeof enrollmentIdentitySchema.Type;
@@ -292,11 +293,17 @@ export type CloudPairing = {
   secret: string;
 };
 
+/** A founding Server backs up the Sealing Key it makes, or waits for its Organization's key to be recovered. */
+export type FoundingRecovery =
+  | { kind: "back_up" }
+  | { kind: "seed"; expectedPublicKey: string; backup: string | null };
+
 export type InitializeJoinMaterial = {
   kind: "initialize";
   resumed: boolean;
   pairing: CloudPairing;
   storage: RegisterRequest["storage"];
+  recovery?: FoundingRecovery | undefined;
 };
 
 export type JoinEnrollMaterial = {
