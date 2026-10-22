@@ -1,7 +1,8 @@
 //! The Server check of `ployz status`: no Server answering its one connection, each Down
-//! Machine, each Service serving fewer copies than it should or none at all, and each live
-//! Machine whose proxy lacks a Service's In copies or still routes its Out or Held ones. What the check
-//! could not see is a warning, never an all-clear.
+//! Machine, each Service serving fewer copies than it should or none at all, each copy no
+//! deploy brought into routing, and each live Machine whose proxy lacks a Service's In copies
+//! or still routes its Out or Held ones. What the check could not see is a warning, never an
+//! all-clear.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::time::{Duration, SystemTime};
@@ -47,6 +48,10 @@ pub(super) enum Subject {
         service: QualifiedService,
         serving: usize,
         wanted: usize,
+        copies: Vec<NotServingCopy>,
+    },
+    LeftPending {
+        service: QualifiedService,
         copies: Vec<NotServingCopy>,
     },
     Down {
@@ -416,9 +421,11 @@ fn judge(
         }
     }
     for service in services {
+        let left = check.left_pending(&service, &down, deployed, authored, &next);
         if let Some(short) = check.not_serving(service, &down, complete, now, &next) {
             check.attention.push(short);
         }
+        check.attention.extend(left);
     }
     if !unanswered.is_empty() {
         check.unseen.push(Unseen::Unanswered(unanswered.clone()));
@@ -821,16 +828,7 @@ impl Check {
                 service: service.identity.clone(),
                 serving,
                 wanted,
-                copies: kept
-                    .into_iter()
-                    .map(|copy| NotServingCopy {
-                        machine: self.name(&copy.machine_id),
-                        container: copy.container_id,
-                        rotation: copy.rotation().clone(),
-                        runtime: copy.runtime.clone(),
-                        run: copy.run.clone(),
-                    })
-                    .collect(),
+                copies: kept.into_iter().map(|copy| self.copy(copy)).collect(),
             }),
         })
     }
@@ -843,6 +841,81 @@ impl Check {
                 .unseen
                 .iter()
                 .any(|unseen| !matches!(unseen, Unseen::RollingOut(_)))
+    }
+
+    /// Outside a rollout, a Pending copy is one no deploy brought In: a deploy whose reply was
+    /// lost or whose cleanup failed left it, or a Move of a stopped Service started it. It
+    /// takes no traffic, and the next deploy of its Service settles it.
+    fn left_pending(
+        &self,
+        service: &ServiceObservation,
+        down: &BTreeSet<MachineId>,
+        deployed: &BTreeMap<ServiceName, ServiceName>,
+        authored: Option<&BTreeSet<ServiceName>>,
+        next: impl Fn(&[&str]) -> String,
+    ) -> Option<Attention> {
+        let mut left: Vec<&ContainerObservation> = service
+            .containers
+            .iter()
+            .map(ServiceContainer::as_observation)
+            .filter(|copy| {
+                // A copy with no recorded rotation predates rotations, and deploys keep it.
+                copy.rotation == Some(CopyRotation::Pending) && !down.contains(&copy.machine_id)
+            })
+            .collect();
+        if left.is_empty() {
+            return None;
+        }
+        left.sort_by_key(|copy| (copy.machine_id, copy.container_id));
+        let states: Vec<String> = left
+            .iter()
+            .map(|copy| {
+                format!(
+                    "{} {}",
+                    self.name(&copy.machine_id),
+                    super::service::process_state(copy)
+                )
+            })
+            .collect();
+        let (copies, take) = match left.len() {
+            1 => ("copy", "takes"),
+            _ => ("copies", "take"),
+        };
+        let runtime = &service.identity.name;
+        let name = deployed
+            .iter()
+            .find(|(_, deployed)| *deployed == runtime)
+            .map_or(runtime, |(name, _)| name);
+        // A Service gone from Working State deploys only as part of a whole deploy.
+        let hint = if authored.is_some_and(|authored| !authored.contains(name)) {
+            next(&["deploy"])
+        } else {
+            next(&["deploy", name.as_str()])
+        };
+        Some(Attention {
+            reason: "copies_left_pending".to_owned(),
+            message: format!(
+                "{} {copies} no deploy brought into routing {take} no traffic. {}.",
+                left.len(),
+                states.join(", ")
+            ),
+            deployment: None,
+            next: Some(hint),
+            subject: Some(Subject::LeftPending {
+                service: service.identity.clone(),
+                copies: left.into_iter().map(|copy| self.copy(copy)).collect(),
+            }),
+        })
+    }
+
+    fn copy(&self, copy: &ContainerObservation) -> NotServingCopy {
+        NotServingCopy {
+            machine: self.name(&copy.machine_id),
+            container: copy.container_id,
+            rotation: copy.rotation().clone(),
+            runtime: copy.runtime.clone(),
+            run: copy.run.clone(),
+        }
     }
 
     fn name(&self, machine: &MachineId) -> String {

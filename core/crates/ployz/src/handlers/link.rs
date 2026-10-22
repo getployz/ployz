@@ -906,6 +906,7 @@ fn status_record(status: &Status) -> Fields {
                 Subject::NotPickedUp { service, .. }
                 | Subject::StaleAddress { service, .. }
                 | Subject::NotServing { service, .. }
+                | Subject::LeftPending { service, .. }
                 | Subject::NoCopies { service },
             ) => Cow::Owned(service.name.to_string()),
             Some(Subject::Down { machine }) => Cow::Owned(machine.to_string()),
