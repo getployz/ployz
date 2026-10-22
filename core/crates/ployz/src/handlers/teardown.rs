@@ -955,6 +955,26 @@ impl Inventory {
 mod tests {
     use super::*;
 
+    #[test]
+    fn each_removal_takes_the_approval_its_refusal_names() {
+        for args in [
+            &["env", "shutdown", "production", "--project", "shop"][..],
+            &["env", "rm", "staging", "--project", "shop"],
+            &["project", "rm", "shop"],
+        ] {
+            let parsed = crate::cli::command()
+                .try_get_matches_from(["ployz"].iter().chain(args).chain(&["--approval", "apr_1"]))
+                .unwrap_or_else(|error| panic!("{args:?}: {error}"));
+            assert_eq!(
+                crate::handlers::leaf_matches(&parsed)
+                    .get_one::<String>("approval")
+                    .map(String::as_str),
+                Some("apr_1"),
+                "{args:?}"
+            );
+        }
+    }
+
     fn asks(version: &str, service: &str) -> StoreCallError {
         asks_in(version, "production", service)
     }
