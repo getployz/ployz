@@ -18,11 +18,11 @@ use ployz_core::{
     EnsuredContainer, ExecutionError, ExposedPort, FailedOperation, Gen, HEALTH_POLL_INTERVAL,
     HealthFailure, HealthVerdict, HookFailure, ImagePulled, InspectContainerRequest,
     ListContainersRequest, MachineAction, MachineId, MachineName, MachineTarget,
-    MembershipObservation, Namespace, NewContainer, OperationPhase, OutOfMemory, PortPublication,
-    PullPolicy, QualifiedService, ReadRoutesRequest, RemoveContainerPurpose, RemoveVolumeRequest,
-    ResolvedServiceSpec, Retry, RoutesRead, RpcError, RpcErrorCode, RunRotation, RunTarget,
-    ServiceId, ServiceName, ServiceOutcome, SlotKey, StopOptions, TransportProtocol,
-    UpdateContainerLimitsRequest, UpdateOrder, op,
+    MembershipObservation, Namespace, NewContainer, ObservationKind, OperationPhase, OutOfMemory,
+    PortPublication, PullPolicy, QualifiedService, ReadRoutesRequest, RemoveContainerPurpose,
+    RemoveVolumeRequest, ResolvedServiceSpec, Retry, RoutesRead, RpcError, RpcErrorCode,
+    RunRotation, RunTarget, ServiceId, ServiceName, ServiceOutcome, SlotKey, StopOptions,
+    TransportProtocol, UpdateContainerLimitsRequest, UpdateOrder, op,
 };
 use sha2::{Digest, Sha256};
 use tokio::sync::mpsc::UnboundedSender;
@@ -1599,7 +1599,9 @@ struct Rows<'a> {
     /// inspect its copy can still name it.
     services: BTreeMap<usize, &'a ServiceName>,
     gens: tokio::sync::Mutex<BTreeMap<QualifiedService, Gen>>,
-    stored_gens: tokio::sync::OnceCell<BTreeMap<QualifiedService, Gen>>,
+    stored: tokio::sync::OnceCell<Vec<ContainerObservation>>,
+    /// Machines whose Containers the plan's snapshot did not list.
+    unobserved: BTreeSet<MachineId>,
     stop_first: Vec<StopFirstStep<'a>>,
 }
 
@@ -1702,7 +1704,28 @@ impl<'a> Rows<'a> {
             names,
             services,
             gens: tokio::sync::Mutex::new(BTreeMap::new()),
-            stored_gens: tokio::sync::OnceCell::new(),
+            stored: tokio::sync::OnceCell::new(),
+            unobserved: plan
+                .preview()
+                .warnings
+                .iter()
+                .filter_map(|warning| {
+                    let (DeployWarning::ObservationFailed {
+                        kind: ObservationKind::Container,
+                        machine_id,
+                        ..
+                    }
+                    | DeployWarning::ObservationOmitted {
+                        kind: ObservationKind::Container,
+                        machine_id,
+                        ..
+                    }) = warning
+                    else {
+                        return None;
+                    };
+                    Some(*machine_id)
+                })
+                .collect(),
             stop_first,
         }
     }
@@ -1938,32 +1961,50 @@ impl<'a> Rows<'a> {
             .service_containers(service)
             .await
             .map_err(|error| machine_error(MachineAction::ListContainers, error))?;
-        let stored = self
-            .stored_gens(client, cancellation)
-            .await?
-            .get(service)
-            .copied();
+        let stored = self.stored(client, cancellation).await?;
         let highest = copies
             .iter()
             .filter(|copy| copy.kind == ContainerKind::ServiceContainer)
+            .chain(stored.iter().filter(|copy| copy.identity() == *service))
             .map(|copy| copy.copy_gen())
-            .chain(stored)
             .max();
         let r#gen = highest.map_or(Gen::FIRST, |highest| Gen::new(highest.get() + 1));
         gens.insert(service.clone(), r#gen);
         Ok(r#gen)
     }
 
-    /// The highest gen of each Service in the entry Machine's store, read once per
-    /// Deploy. The store keeps the rows of a Machine that did not answer, and a new
-    /// copy at or below one of those is refused In or never replaces it. A read
-    /// that fails or outlasts [`STORED_GENS_WAIT`] leaves the gen to the live answers.
-    async fn stored_gens<C: MachineOperations>(
+    /// The Machines this Deploy did not observe that hold a copy of `service` in the
+    /// entry Machine's store. Every proxy reads that copy too, so while it is In or
+    /// Pending, one sent Out beside it stays routed and its removal never confirms.
+    async fn unreached<C: MachineOperations>(
+        &self,
+        client: &C,
+        service: &QualifiedService,
+        cancellation: &CancellationToken,
+    ) -> Result<BTreeSet<MachineId>, ExecutionError> {
+        Ok(self
+            .stored(client, cancellation)
+            .await?
+            .iter()
+            .filter(|copy| {
+                copy.identity() == *service
+                    && self.unobserved.contains(&copy.machine_id)
+                    && copy.rotation().keeps_route()
+            })
+            .map(|copy| copy.machine_id)
+            .collect())
+    }
+
+    /// The Service Containers in the entry Machine's store, read once per Deploy.
+    /// The store keeps the rows of a Machine that did not answer, and a new copy at
+    /// or below one of those gens is refused In or never replaces it. A read that
+    /// fails or outlasts [`STORED_GENS_WAIT`] leaves gens and removals to the live answers.
+    async fn stored<C: MachineOperations>(
         &self,
         client: &C,
         cancellation: &CancellationToken,
-    ) -> Result<&BTreeMap<QualifiedService, Gen>, ExecutionError> {
-        self.stored_gens
+    ) -> Result<&Vec<ContainerObservation>, ExecutionError> {
+        self.stored
             .get_or_try_init(|| async {
                 let read = tokio::select! {
                     biased;
@@ -1977,25 +2018,20 @@ impl<'a> Rows<'a> {
                             error = %error.message,
                             "couldn't read the entry Machine's store; new gens follow the live answers only"
                         );
-                        return Ok(BTreeMap::new());
+                        return Ok(Vec::new());
                     }
                     Err(_) => {
                         tracing::warn!(
                             wait = ?STORED_GENS_WAIT,
                             "the entry Machine's store didn't answer in time; new gens follow the live answers only"
                         );
-                        return Ok(BTreeMap::new());
+                        return Ok(Vec::new());
                     }
                 };
-                let mut highest = BTreeMap::new();
-                for copy in containers
-                    .iter()
+                Ok(containers
+                    .into_iter()
                     .filter(|copy| copy.kind == ContainerKind::ServiceContainer)
-                {
-                    let r#gen = highest.entry(copy.identity()).or_insert(Gen::FIRST);
-                    *r#gen = (*r#gen).max(copy.copy_gen());
-                }
-                Ok(highest)
+                    .collect())
             })
             .await
     }
@@ -2272,6 +2308,18 @@ async fn execute_operation<C: MachineOperations>(
                 }
             };
             let allow_empty = matches!(purpose, RemoveContainerPurpose::Retire);
+            if allow_empty && copy.drains() {
+                let unreached = rows.unreached(client, &copy.service, cancellation).await?;
+                if !unreached.is_empty() {
+                    let names: Vec<String> =
+                        unreached.iter().map(|id| rows.machine_name(id)).collect();
+                    return Err(machine_error(
+                        MachineAction::RemoveContainer,
+                        unavailable(super::planning::removal_unobserved_message(&names)),
+                    )
+                    .into());
+                }
+            }
             match cleanup::retire(client, &copy, allow_empty, (*purpose).into(), cancellation).await
             {
                 Ok(cleanup::Step::Done) => Ok(Ran::default()),

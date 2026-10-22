@@ -117,6 +117,13 @@ pub enum RotationRefusal {
 }
 
 impl CopyRotation {
+    /// While a copy in view is In or Pending, a proxy keeps its Service's last route
+    /// when no Serving Container is on a Machine that is up.
+    #[must_use]
+    pub fn keeps_route(&self) -> bool {
+        matches!(self, Self::In | Self::Pending)
+    }
+
     /// The one edge table; every move not listed is refused. The owner adds the
     /// runtime guards: a copy reaches In only once healthy, and In reaches Out only
     /// while another In copy is acked, unless the caller allows an empty Service.

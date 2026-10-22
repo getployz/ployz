@@ -219,12 +219,17 @@ impl VolumeSnapshot {
             .chain(self.named_failures.iter().map(|failure| &failure.id))
     }
 
-    fn affects_required(&self, required: &BTreeSet<MachineId>) -> bool {
-        affects_required(&self.machine_failures, &self.omissions, required)
-            || self
-                .named_failures
-                .iter()
-                .any(|failure| required.contains(&failure.id.machine_id))
+    /// Each Machine whose Volumes this observer did not read in full.
+    fn gaps(&self) -> impl Iterator<Item = MachineId> + '_ {
+        self.machine_failures
+            .iter()
+            .map(|failure| failure.machine_id)
+            .chain(self.omissions.iter().copied())
+            .chain(
+                self.named_failures
+                    .iter()
+                    .map(|failure| failure.id.machine_id),
+            )
     }
 
     pub(crate) fn machine_gap(&self, machine_id: MachineId) -> Option<String> {
@@ -468,29 +473,24 @@ impl DeploySnapshot {
     /// A partition may hide a Machine entirely; that absence is not detected here.
     #[must_use]
     pub fn is_observer_complete(&self) -> bool {
-        let required = self
-            .machines
-            .iter()
-            .filter(|machine| machine.invites_rpc())
-            .map(|machine| machine.machine.id)
-            .collect::<BTreeSet<_>>();
-        !affects_required(
-            &self.container_failures,
-            &self.container_omissions,
-            &required,
-        ) && !self.volume_snapshot.affects_required(&required)
+        self.unobserved_required().is_empty()
     }
-}
 
-fn affects_required(
-    failures: &[MachineFailure<RpcError>],
-    omissions: &[MachineId],
-    required: &BTreeSet<MachineId>,
-) -> bool {
-    failures
-        .iter()
-        .any(|failure| required.contains(&failure.machine_id))
-        || omissions.iter().any(|machine| required.contains(machine))
+    /// The required Machines whose Containers or Volumes this observer did not read in full.
+    #[must_use]
+    pub fn unobserved_required(&self) -> Vec<&MachineObservation> {
+        let gaps = self
+            .container_failures
+            .iter()
+            .map(|failure| failure.machine_id)
+            .chain(self.container_omissions.iter().copied())
+            .chain(self.volume_snapshot.gaps())
+            .collect::<BTreeSet<_>>();
+        self.machines
+            .iter()
+            .filter(|machine| machine.invites_rpc() && gaps.contains(&machine.machine.id))
+            .collect()
+    }
 }
 
 /// Why [`PlanError::NoEligibleMachines`] found zero Machines.

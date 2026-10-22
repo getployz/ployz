@@ -112,12 +112,9 @@ fn next_route(
     let Some(current) = current else {
         return on_down;
     };
-    let entering = siblings.iter().any(|sibling| {
-        matches!(
-            sibling.as_observation().rotation(),
-            CopyRotation::In | CopyRotation::Pending
-        )
-    });
+    let entering = siblings
+        .iter()
+        .any(|sibling| sibling.as_observation().rotation().keeps_route());
     let routed_out_of_view = current.iter().any(|routed| {
         !siblings.iter().any(|sibling| {
             sibling.as_observation().container_id == routed.as_observation().container_id

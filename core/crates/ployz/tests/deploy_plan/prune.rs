@@ -515,6 +515,32 @@ fn an_incomplete_snapshot_retires_nothing() {
 }
 
 #[test]
+fn a_removal_on_an_incomplete_snapshot_is_blocked_naming_the_server_not_checked() {
+    let (web, mut snapshot) = shop_with_obsolete_debug();
+    snapshot.machines.push(machine('2', "second"));
+    snapshot.container_failures.push(MachineFailure {
+        machine_id: machine_id('2'),
+        error: RpcError {
+            code: RpcErrorCode::Unavailable,
+            message: "no answer".into(),
+            details: Default::default(),
+            cause: Vec::new(),
+        },
+    });
+    let plan = preview_deploy(&retiring(&[web], &["debug"], &["debug"]), &snapshot).unwrap();
+    assert!(!removes(&plan, 'd'));
+    let [blocked] = plan.blocked.as_slice() else {
+        panic!("{:?}", plan.blocked);
+    };
+    assert_eq!(blocked.service, ServiceName::parse("debug").unwrap());
+    assert!(
+        blocked.error.message.contains("second"),
+        "{}",
+        blocked.error.message
+    );
+}
+
+#[test]
 fn retiring_an_already_absent_service_plans_nothing() {
     let web = spec("web");
     let snapshot = DeploySnapshot {

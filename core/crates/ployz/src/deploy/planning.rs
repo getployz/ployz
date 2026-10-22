@@ -180,6 +180,23 @@ impl DeployPlan {
             .collect();
         self
     }
+
+    /// The plan's snapshot listed no Containers on `machines`, as for a Down Machine.
+    #[cfg(test)]
+    pub(super) fn with_unobserved(mut self, machines: &[MachineId]) -> Self {
+        self.preview
+            .warnings
+            .extend(
+                machines
+                    .iter()
+                    .map(|machine_id| DeployWarning::ObservationOmitted {
+                        gap: None,
+                        kind: ployz_core::ObservationKind::Container,
+                        machine_id: *machine_id,
+                    }),
+            );
+        self
+    }
 }
 
 /// One group per Service in operation order, each after the one before it, so
@@ -862,6 +879,19 @@ fn assemble_plan(
     let mut reservations = PlacementReservations::new(snapshot);
     let mut blocked =
         volume_plan.reserve_shared(&requested, &services, &mut reservations, &intent.options)?;
+    let unobserved = snapshot.unobserved_required();
+    if !unobserved.is_empty() {
+        blocked.extend(
+            intent
+                .options
+                .removals
+                .iter()
+                .map(|service| BlockedService {
+                    service: service.clone(),
+                    error: removal_unobserved(&unobserved),
+                }),
+        );
+    }
     let mut budget = ServiceBudget {
         volumes: volume_plan,
         placement: reservations.into_placement(snapshot),
@@ -1036,6 +1066,28 @@ fn dependency_blocked(dependency: &ServiceName) -> RpcError {
         details: serde_json::json!({ "reason": "dependency_blocked", "dependency": dependency }),
         cause: Vec::new(),
     }
+}
+
+/// Why a named removal waits: a Server this observer could not read may still run a copy.
+fn removal_unobserved(unobserved: &[&MachineObservation]) -> RpcError {
+    let names: Vec<&str> = unobserved
+        .iter()
+        .map(|machine| machine.machine.name.as_str())
+        .collect();
+    RpcError {
+        code: RpcErrorCode::Unavailable,
+        message: removal_unobserved_message(&names),
+        details: serde_json::json!({ "reason": "removal_unobserved", "servers": names }),
+        cause: Vec::new(),
+    }
+}
+
+pub(super) fn removal_unobserved_message(names: &[impl AsRef<str>]) -> String {
+    let names: Vec<&str> = names.iter().map(AsRef::as_ref).collect();
+    format!(
+        "couldn't check {} for its copies. Deploy again once every Server answers.",
+        names.join(", ")
+    )
 }
 
 /// Why a Service handing a hostname to a blocked one is blocked too: replacing its copies
