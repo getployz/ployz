@@ -93,4 +93,30 @@ describe("ClusterDomainSection", () => {
     expect(screen.getByText("Ingress isn’t running on web-1. Deploy to bring it back.")).toBeTruthy();
     expect(screen.getByText("Check again")).toBeTruthy();
   });
+
+  it("says traffic skips an unchecked IPv6 Server while another answers", () => {
+    const mixed = { ...ready, traffic: {
+      kind: "probed",
+      reachable: [{ machineId: machineId("a"), address: "203.0.113.1" }],
+      unreachable: [],
+      unchecked: [{ machineId: machineId("b"), address: "2001:db8::1" }],
+    } } as Omit<ClusterDomainRow, "id">;
+    render(<ClusterDomainSection organizationSlug="acme" domain={mixed} onCheck={vi.fn()} />);
+
+    expect(screen.getByText("Ployz Cloud can’t reach 2001:db8::1 over IPv6 to check port 80, so traffic skips it.")).toBeTruthy();
+  });
+
+  it("says Ployz Cloud couldn't check an IPv6-only Server, rather than calling its port closed", () => {
+    const ipv6 = { ...ready, traffic: {
+      kind: "probed",
+      reachable: [],
+      unreachable: [],
+      unchecked: [{ machineId: machineId("a"), address: "2001:db8::1" }],
+    } } as Omit<ClusterDomainRow, "id">;
+    render(<ClusterDomainSection organizationSlug="acme" domain={ipv6} onCheck={vi.fn()} />);
+
+    expect(screen.getByText("Ready")).toBeTruthy();
+    expect(screen.queryByText(/closed|firewall/)).toBeNull();
+    expect(screen.getByText("Ployz Cloud can’t reach 2001:db8::1 over IPv6, so it didn’t check port 80 there.")).toBeTruthy();
+  });
 });

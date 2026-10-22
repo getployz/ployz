@@ -327,6 +327,7 @@ describe("callCloud", () => {
       watchFirstFrame: () => Effect.succeed(asTestDouble<RuntimeWatchView>()({
         machines: [{ membership: "up", machine: { id: MACHINE, name, accepts_ingress: true, public_ip: "203.0.113.2", runtime: { running_builds: 0, daemon_version: "0.1.0" } } }],
         services: [],
+        volumes: [],
       })),
       dataLossIfMachineRemoved: () => Effect.succeed({ data_loss: [] }),
     }),

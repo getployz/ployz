@@ -655,8 +655,30 @@ fn unobserved(
     ))
 }
 
+/// Ask a human, for `taking_off`, before `environment` comes off the Servers as
+/// `review` saw it, as a Deploy that removes the same would ask.
+pub(crate) fn ask_taking_off(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    (environment, review): (&Environment, &crate::review::Review),
+    taking_off: approval::TakingOff<'_>,
+    trusted: &Trusted,
+) -> Result<(), RpcError> {
+    let id = &environment.summary.id;
+    let deployed = approval::deployed(&review.head);
+    let cluster_domains = if crate::domain::has_generated(&deployed) {
+        deployment::cluster_domains(tx, id, &review.head)?
+    } else {
+        Default::default()
+    };
+    let empty = scope::empty(&environment.working.environment_slug);
+    let effects = approval::destructive_effects(&deployed, &empty, &cluster_domains);
+    let gate = approval::Gate::new(tx, id, trusted)?;
+    approval::approve_shut_down(who, taking_off, review, &effects, &gate)
+}
+
 /// Take an Environment off the Servers and keep it: a Server's shutdown. It
-/// writes no mark, and asks a human only when it deletes Volume data.
+/// writes no mark, and asks a human as a Deploy that removes the same would.
 pub(crate) fn shut_down(
     tx: &mut dyn Tx,
     who: &Actor,
@@ -664,6 +686,7 @@ pub(crate) fn shut_down(
     trusted: &Trusted,
 ) -> Result<DeploymentSummary, RpcError> {
     let environment = scope::lock(tx, who, &admit.environment)?;
+    trusted.writes(&environment.summary.name)?;
     guard_removal(tx, &environment)?;
     refuse_running(tx, &environment)?;
     let id = &environment.summary.id;
@@ -693,21 +716,13 @@ pub(crate) fn shut_down(
             trusted.volumes.as_ref(),
         )?,
     };
-    if forget.is_none() && !admit.accept_volume_loss.is_empty() {
-        let deployed = approval::deployed(&review.head);
-        let cluster_domains = if crate::domain::has_generated(&deployed) {
-            deployment::cluster_domains(tx, id, &review.head)?
-        } else {
-            Default::default()
-        };
-        super::gate(
+    if forget.is_none() {
+        ask_taking_off(
+            tx,
             who,
-            "shut_down",
-            &Target::Environment(id.clone()),
-            &review.view.version,
-            approval::destructive_effects(&deployed, &empty, &cluster_domains),
-            &trusted.approval,
-            || json!(review.view),
+            (&environment, &review),
+            approval::TakingOff::ShutDown,
+            trusted,
         )?;
     }
     let frozen = deployment::freeze(

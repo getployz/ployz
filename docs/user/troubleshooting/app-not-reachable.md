@@ -72,8 +72,7 @@ On a server upgraded from an earlier release, the web server Ployz already ran t
 old behavior: a request that had reached the powered-off server can hang for about 15 minutes.
 That lasts until the web server is created again. To do that now, open the server's page, turn
 **Takes web traffic** off, then on again. While it's off, that server doesn't answer on ports 80
-and 443, so do one server at a time. Servers you run without Ployz Cloud have no command for this
-yet ([#2526](https://github.com/getployz/ployz/issues/2526)).
+and 443, so do one server at a time.
 
 ## This app isn't running
 
@@ -171,6 +170,22 @@ Stop that web server, or move it to another server. To keep Ployz Cloud on the s
 publish it through a Cloudflare Tunnel instead. Once port 80 is free, the server starts its
 ingress on its own within a minute. You don't need to remove and re-add the server. Then click
 **Check again** under **Domain** in **Organization → General**.
+
+## My servers only have IPv6 addresses
+
+Ployz Cloud checks port 80 from its own network, which may have no IPv6 route. When a server with
+only an IPv6 address doesn't answer that check, Ployz doesn't call its port closed. **Domain** in
+**Organization → General** shows **Ployz Cloud can't reach 2001:db8::1 over IPv6, so it didn't
+check port 80 there.**
+
+- When every server is IPv6-only, your organization's domain still points at them.
+- When another server answers the check, the domain points only at the servers that answered, and
+  **Domain** says traffic skips the IPv6 ones.
+
+Ployz can't confirm such a server takes traffic, so check it yourself from a network with IPv6:
+`curl -I http://web.<your domain>`. Open TCP port 80 and TCP and UDP port 443 for IPv6 in every
+firewall, as in [Port 80 is closed](#port-80-is-closed). To reach your apps from an IPv4-only
+network, give a server an IPv4 address too.
 
 ## Ingress isn't running
 

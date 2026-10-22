@@ -18,7 +18,7 @@ use crate::registry;
 use crate::review;
 use crate::scope::{self, EnvironmentRef};
 use crate::storage::Tx;
-use crate::{Actor, Trusted};
+use crate::{Actor, Approval, Trusted};
 
 /// Queue a Deployment: a Deploy of Saved State, a retry of an ended Deployment, or
 /// the removal of an Environment from the Servers.
@@ -160,18 +160,35 @@ pub(crate) fn admit(
     match admit {
         // A plain retry deletes exactly the Docker Volumes its source's review
         // accepted, which the copied target nodes carry; a rollback reviews its
-        // deletes afresh. Only an agent's retry asks a human.
+        // deletes afresh. An agent's retry asks a human, and so does a removal's.
         Admit::Retry(retry) => {
             let asked = retry_review(tx, who, &retry.deployment, trusted)?;
             let (retried, rollback) = deployment::retry(tx, who, retry, trusted)?;
-            if let Some((review, gate)) = asked {
-                trusted.writes(&scope::load_by_id(tx, &retried.environment_id)?.summary.name)?;
-                review::approve_retry(who, &review, (retry, &rollback), &gate)?;
+            let forget = match retried.remove {
+                true => deployment::forgettable(tx, &retried.environment_id, trusted)?,
+                false => None,
+            };
+            match asked {
+                Asked::Removal(environment, review, asks) => {
+                    trusted.writes(&environment.summary.name)?;
+                    if forget.is_none() || asks {
+                        crate::removal::ask_taking_off(
+                            tx,
+                            who,
+                            (&environment, &review),
+                            review::TakingOff::Retry(&retry.deployment),
+                            trusted,
+                        )?;
+                    }
+                }
+                Asked::Retry(review, gate) => {
+                    trusted
+                        .writes(&scope::load_by_id(tx, &retried.environment_id)?.summary.name)?;
+                    review::approve_retry(who, &review, (retry, &rollback), &gate)?;
+                }
+                Asked::Nothing => {}
             }
-            if retried.remove
-                && let Some(outcome) =
-                    deployment::forgettable(tx, &retried.environment_id, trusted)?
-            {
+            if let Some(outcome) = forget {
                 return deployment::forget(tx, &retried.id, outcome);
             }
             trusted.runnable()?;
@@ -183,22 +200,40 @@ pub(crate) fn admit(
     }
 }
 
+/// What a retry asks a human about, read before it queues.
+enum Asked<'a> {
+    /// A removal's retry takes its Environment off the Servers again, so it asks as
+    /// a shutdown does, about what the Environment runs now. The flag is whether
+    /// the caller asks on every retry, as an agent does, even one with nothing left
+    /// to take off.
+    Removal(Box<scope::Environment>, review::Review, bool),
+    /// Any other retry that may ask: the review it approves.
+    Retry(review::Review, review::Gate<'a>),
+    Nothing,
+}
+
 /// The review a retry of `source` asks a human to approve, taken before the retry
-/// queues, with the gate it passes: none unless the retry asks.
+/// queues, so one approval admits one retry.
 fn retry_review<'a>(
     tx: &mut dyn Tx,
     who: &Actor,
     source: &DeploymentId,
     trusted: &'a Trusted,
-) -> Result<Option<(review::Review, review::Gate<'a>)>, RpcError> {
-    let id = deployment::owned(tx, who, source)?.summary.environment_id;
+) -> Result<Asked<'a>, RpcError> {
+    let summary = deployment::owned(tx, who, source)?.summary;
+    let id = summary.environment_id;
     let gate = review::Gate::new(tx, &id, trusted)?;
-    if !gate.asks_retry() {
-        return Ok(None);
+    // Where Cloud requires approval, a retry that takes something off asks too.
+    if !summary.remove && !gate.asks_retry() && trusted.approval == Approval::NotRequired {
+        return Ok(Asked::Nothing);
     }
     scope::lock_all(tx, [id.clone()])?;
     let environment = scope::load_by_id(tx, &id)?;
-    Ok(Some((review::review(tx, &environment)?, gate)))
+    let review = review::review(tx, &environment)?;
+    Ok(match summary.remove {
+        true => Asked::Removal(Box::new(environment), review, gate.asks_retry()),
+        false => Asked::Retry(review, gate),
+    })
 }
 
 /// The gate every Deploy passes, the user's or the Store's own: a Server to run

@@ -263,13 +263,6 @@ button. Unlike the button, it waits for approval first when a global service wou
 [Destructive actions ask first](../account/organizations.md#destructive-actions-ask-first)).
 The CLI stops waiting after 30 minutes and says so; the drain keeps running in Ployz Cloud.
 
-Servers you run without Ployz Cloud belong to a context on your computer. Signed out, the same
-command drains from your computer through your current context. To use another context, name it:
-
-```sh
-ployz server drain web-2 --context my-cluster
-```
-
 Under **Web traffic** on a server's page, **Takes web traffic** is a switch. On, the line under it
 reads **Your domains point at 203.0.113.10**: the server's address. Turn it off and a dialog lists the
 domains pointed at your servers. When another server takes web traffic, it keeps serving them; when
@@ -296,11 +289,11 @@ Click it to upgrade every server that's behind, one at a time in name order. You
 while they do. While an upgrade runs, the top of the page reads **Upgrading 1/4**, and the server
 upgrading reads **Upgrading**.
 
-When you upgrade from `0.3.0-beta.6` ([over SSH](#servers-on-030-beta6-or-earlier)), upgrade every
-server back to back: upgraded servers don't route traffic to apps on a server still on
-`0.3.0-beta.6` until it upgrades too ([#2892](https://github.com/getployz/ployz/issues/2892)). As
-each server restarts, its domains can answer `503` briefly, for about 6 seconds when the app runs on
-another server.
+When you upgrade from `0.3.0-beta.6`, where [the first server needs
+SSH](#servers-on-030-beta6-or-earlier), upgrade every server back to back: upgraded servers don't
+route traffic to apps on a server still on `0.3.0-beta.6` until it upgrades too
+([#2892](https://github.com/getployz/ployz/issues/2892)). As each server restarts, its domains can
+answer `503` briefly, for about 6 seconds when the app runs on another server.
 
 ### Turn on automatic upgrades
 
@@ -367,12 +360,12 @@ Naming the other channel fails with `channel_mismatch`. Ployz Cloud upgrades onl
 release on that channel and never moves a server to an older release than it runs. To get
 prereleases, [choose Beta](#choose-stable-or-beta-releases).
 
-Servers you run without Ployz Cloud upgrade from your computer, through your current context or
-the one `--context` names. There you can name an exact version like `0.2.0`, even one older
-than the server runs:
+With `--connect` and a server's SSH address, the upgrade runs from your computer instead of Ployz
+Cloud. There you can name an exact version like `0.3.0-beta.7`, even one older than the server
+runs:
 
 ```sh
-ployz server upgrade 0.2.0 web-1 --context my-cluster
+ployz server upgrade 0.3.0-beta.7 web-1 --connect ssh://root@203.0.113.10
 ```
 
 Ployz releases are signed, starting with the first release after 0.3.0-beta.2. A server checks
@@ -464,30 +457,47 @@ on.
 
 Starting with the first release after 0.3.0-beta.6, Ployz Cloud and the CLI prove their access in a
 new way on every connection, and servers on 0.3.0-beta.6 or earlier don't understand it. Through
-Ployz's relay, Cloud and a newer CLI can't manage such a server at all, and that includes starting
-its upgrade from the **Servers** page or with `ployz server upgrade`. The server keeps running your
-apps. The CLI stops with:
+Ployz's relay, Cloud and a newer CLI can't connect to such a server directly. The server keeps
+running your apps. When Cloud's last try to reach your servers lands on such a server, the
+**Servers** page reads **Upgrade your server over SSH** and shows the commands below. When the CLI can't reach a server on a newer
+release first, it stops with:
 
 ```text
 This Server runs Ployz 0.3.0-beta.6 or earlier, which this release can't reach through the relay.
 ```
 
-Upgrade each such server over SSH from your computer, one at a time. Install the CLI from the beta
-channel; the stable channel is still on a release before the change. Then run it with `--connect`
-and the server's SSH address:
+Every 0.2 release, 0.2.4 included, is on this side of the boundary. A server on 0.2 upgrades to
+0.3.0 in place the same way: it keeps its apps, volumes and cluster, and doesn't need to be
+enrolled again.
+
+Upgrade the first server over SSH from your computer. Install the newest CLI, then run it with
+`--connect` and the server's SSH address:
 
 ```sh
-curl -fsSL https://ployz.sh | sh -s -- beta
-ployz server upgrade beta web-1 --connect ssh://root@203.0.113.10
+curl -fsSL https://ployz.sh | sh
+ployz server upgrade stable web-1 --connect ssh://root@203.0.113.10
 ```
 
 The server installs the newest release on the channel you name. Then Cloud and the CLI reach it
 through the relay again. If the upgrade fails, the server goes back to the release it ran before
 and keeps running; run the command again.
 
+Once one server runs the newer release, Cloud and the CLI can reach the others through it, so you
+can upgrade the rest from the **Servers** page or with `ployz server upgrade`. Do it right away:
+see [Upgrade Ployz on a server](#upgrade-ployz-on-a-server) for why. If a server still stops with
+the message above, upgrade it over SSH too.
+
+Without SSH from your computer, say with only your provider's console, upgrade a server on the
+server itself:
+
+```sh
+sudo ployzd install --version stable --software-only
+```
+
+`--software-only` replaces Ployz and leaves Docker, packages and storage as they are.
+
 The same boundary holds the other way: a CLI on 0.3.0-beta.6 or earlier can't reach a server on a
-later release. Install the newer CLI from the beta channel with
-`curl -fsSL https://ployz.sh | sh -s -- beta`.
+later release. Install the newer CLI with `curl -fsSL https://ployz.sh | sh`.
 
 ## Remove a server
 
@@ -588,6 +598,9 @@ even if it still shows as up, type `dead` instead:
 ```sh
 ployz server forget web-2 --confirm dead
 ```
+
+The approval Ployz Cloud asks for names the server and each volume whose only copy is on it, as
+those are lost with it. A volume with a mirror or a writer on another server isn't listed.
 
 `ployz server rm` on a server that doesn't answer stops before it changes anything and prints that
 command as its next step. When Ployz Cloud itself doesn't answer, it says to run `ployz server rm`

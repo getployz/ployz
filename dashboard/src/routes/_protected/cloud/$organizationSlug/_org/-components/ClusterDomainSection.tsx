@@ -48,7 +48,13 @@ function excludedCopy(excluded: readonly ExcludedServer[]) {
   const closed = on("port_80");
   const taken = on("port_80_taken");
   const down = on("ingress_down");
-  return [closed && `Port 80 closed on ${closed}.`, taken && `Port 80 taken on ${taken}.`, down && `Ingress isn’t running on ${down}.`]
+  const unchecked = on("unchecked");
+  return [
+    closed && `Port 80 closed on ${closed}.`,
+    taken && `Port 80 taken on ${taken}.`,
+    down && `Ingress isn’t running on ${down}.`,
+    unchecked && `Ployz Cloud can’t reach ${unchecked} over IPv6 to check port 80, so traffic skips it.`,
+  ]
     .filter(Boolean).join(" ");
 }
 
@@ -77,7 +83,10 @@ export function ClusterDomainSection({ organizationSlug, domain, onCheck }: {
 
   const status = domain === null ? null : clusterDomainStatus(domain, new Date());
   const copy = status === null ? { message: "You’ll get one when you generate your first domain.", action: null } as const : statusCopy(status.state);
-  const excluded = status === null ? "" : excludedCopy(status.excluded);
+  const unchecked = status === null || status.unchecked.length === 0
+    ? ""
+    : `Ployz Cloud can’t reach ${status.unchecked.join(", ")} over IPv6, so it didn’t check port 80 there.`;
+  const excluded = status === null ? "" : [excludedCopy(status.excluded), unchecked].filter(Boolean).join(" ");
 
   return (
     <SettingsSection id="cluster-domain" title="Domain" description="Your services get free addresses under this domain.">

@@ -634,6 +634,7 @@ pub(crate) fn retry(
         number: stored.summary.numbered()?,
         rolls_back: undone(tx, &stored.summary)?,
         removes: Vec::new(),
+        retires: Vec::new(),
     };
     if let Some(confirmed) = &retry.rolls_back
         && *confirmed != rollback.rolls_back
@@ -664,6 +665,27 @@ pub(crate) fn retry(
         rollback.removes.clone_from(losses);
     }
     let (services, nodes) = retried(tx, &stored, fresh)?;
+    // A rollback retires each Service it ships that its revision doesn't hold. A
+    // plain retry retires only what its source's review already covered.
+    let revision = saved_at(tx, &stored.summary.environment_id, stored.summary.saved)?;
+    rollback.retires = nodes
+        .iter()
+        .filter_map(|node| match node {
+            TargetNode::Service { id, .. }
+                if node.retires()
+                    || revision
+                        .services
+                        .iter()
+                        .all(|service| service.id != id.as_str()) =>
+            {
+                Some(id.clone())
+            }
+            TargetNode::Service { .. } | TargetNode::Volume { .. } | TargetNode::Config { .. } => {
+                None
+            }
+        })
+        .filter(|_| !rollback.rolls_back.is_empty())
+        .collect();
     // A retry builds from what its source did, but sends nothing.
     let retried_uploads = stored.service_uploads.clone().map(|uploads| {
         json_text(&super::uploads::ServiceUploads {
@@ -737,12 +759,14 @@ pub(crate) fn retry(
 }
 
 /// What a redeploy rolls back: the Deployment it ships again, by number, the
-/// newer ones it undoes, and the Volumes it removes with the data each deletes.
+/// newer ones it undoes, the Volumes it removes with the data each deletes, and
+/// the Services it retires.
 #[derive(Clone, Debug)]
 pub(crate) struct Rollback {
     pub(crate) number: u64,
     pub(crate) rolls_back: Vec<u64>,
     pub(crate) removes: Vec<VolumeLoss>,
+    pub(crate) retires: Vec<ServiceLineageId>,
 }
 
 /// The Deployments of `deployment`'s Environment after it that may have changed

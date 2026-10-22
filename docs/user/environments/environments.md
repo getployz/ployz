@@ -223,7 +223,7 @@ deploy**, **Request sync**, **Request restart** and **Request stop**, and clicki
 of every owner or admin, with the name of who asked. Once one approves it, it runs as the member
 who asked. The member sees their own request under **Requested**, marked **Waiting on an owner or
 admin.**, and can't approve or deny it. Neither can an owner or admin decide a request they made. A deploy, sync or take from `ployz` or an agent asks
-the same way.
+the same way, and so do `ployz env shutdown` and cancelling a deploy someone else started.
 
 A merge into a Protected environment's deploy branch still deploys. To control who can merge, use
 [GitHub branch protection](../deploy/github.md#protected-environments).

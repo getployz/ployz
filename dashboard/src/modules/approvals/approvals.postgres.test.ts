@@ -1160,7 +1160,7 @@ it.live("an approved clean doesn't cover a Service that started running since, a
 it.live("asking about a Server's drain leaves its pending removal waiting", () =>
   Effect.gen(function* () {
     const { provided, gate } = yield* operationCloud();
-    const removal = refusedWith(yield* gate(removePlan(MACHINE, "fra-1", null)));
+    const removal = refusedWith(yield* gate(removePlan(MACHINE, "fra-1", { reset: false, volumes: [] })));
     const drain = refusedWith(yield* gate(drainOf(["shop.web"])));
     expect((yield* provided(getApproval(ORGANIZATION, removal.approval_id))).status).toBe("pending");
     expect((yield* provided(getApproval(ORGANIZATION, drain.approval_id))).status).toBe("pending");
@@ -1213,7 +1213,7 @@ it.live("an org rm or forget-servers approval stays approvable while the Cluster
   }));
 
 it("a removal that resets the Server and one that keeps its data are different approvals", () => {
-  expect(operationDigest(removePlan(MACHINE, "fra-1", []))).not.toBe(operationDigest(removePlan(MACHINE, "fra-1", null)));
+  expect(operationDigest(removePlan(MACHINE, "fra-1", { reset: true, volumes: [] }))).not.toBe(operationDigest(removePlan(MACHINE, "fra-1", { reset: false, volumes: [] })));
 });
 
 for (const verb of ["remove", "drain", "clean"] as const) {

@@ -5,7 +5,6 @@ description: Copy a volume to another server, and move it and its service there.
 
 A volume lives on one server. With Ployz Cloud you can keep a read-only copy of it on a second
 server, called a mirror, and move the volume and the service that mounts it to another server.
-Without Cloud, volumes stay on the server that has them.
 
 ## In Ployz Cloud
 

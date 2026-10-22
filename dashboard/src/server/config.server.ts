@@ -1,9 +1,12 @@
 import "@tanstack/react-start/server-only";
 import {
+  Cause,
   Config,
+  ConfigProvider,
   Context,
   Data,
   Effect,
+  Exit,
   Layer,
   Option,
   type Redacted,
@@ -201,7 +204,7 @@ const resolveVerifyOrigin = Effect.fn("Config.resolveVerifyOrigin")(function* (
   const bare = `${origin.origin}/`;
   if ((origin.protocol !== "http:" && origin.protocol !== "https:") || origin.href !== bare) {
     return yield* new InvalidConfiguration({
-      message: `${name} must be an http(s) origin with no path, query or credentials, like http://127.0.0.1:4555, not ${origin.href}`,
+      message: `${name} must be an http(s) origin with no path, query or credentials, like http://127.0.0.1:4555`,
     });
   }
   yield* Effect.logInfo(`${name} ${origin.origin}`);
@@ -273,6 +276,17 @@ const makeAppConfig = Effect.gen(function* () {
     supportStaffUserIds: polar.mode === "self_hosted" ? [] : parseUserIds(raw.supportStaffUserIds),
   } as const;
 });
+
+/** The startup report for an environment Cloud can't run with, naming each bad variable; undefined when it loads. */
+export const startupConfigFailure = (env?: Record<string, string>): string | undefined => {
+  const provider = ConfigProvider.fromEnv(env === undefined ? undefined : { env });
+  const exit = Effect.runSyncExit(makeAppConfig.pipe(Effect.provideService(ConfigProvider.ConfigProvider, provider)));
+  if (Exit.isSuccess(exit)) return undefined;
+  const error = Cause.squash(exit.cause);
+  // Anything else is this check's own failure, not the environment's; the runtime reports it on first use.
+  if (!(error instanceof Config.ConfigError || error instanceof InvalidConfiguration)) return undefined;
+  return `Invalid configuration. Fix these environment variables:\n${error.message}`;
+};
 
 export class AppConfig extends Context.Service<AppConfig>()("ployz/AppConfig", {
   make: makeAppConfig,

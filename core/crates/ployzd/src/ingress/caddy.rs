@@ -65,6 +65,8 @@ pub(crate) trait CaddyAdmin: Send + Sync {
     fn adapt(&self, caddyfile: &str) -> impl Future<Output = Result<String, Error>> + Send;
     /// Load adapted Caddy JSON and wait for acknowledgement.
     fn load(&self, json: &str) -> impl Future<Output = Result<(), Error>> + Send;
+    /// File stems of the certificates the running config loads.
+    fn loaded_certificates(&self) -> impl Future<Output = Result<BTreeSet<String>, Error>> + Send;
 }
 
 struct AdminClient {
@@ -95,6 +97,20 @@ impl AdminClient {
             .body(body)
             .send()
             .await?;
+        Self::body(response).await
+    }
+
+    async fn get(&self, path: &str) -> Result<String, Error> {
+        Self::body(
+            self.client
+                .get(format!("http://localhost{path}"))
+                .send()
+                .await?,
+        )
+        .await
+    }
+
+    async fn body(response: reqwest::Response) -> Result<String, Error> {
         let status = response.status();
         let body = response.text().await?;
         if status != StatusCode::OK {
@@ -124,6 +140,24 @@ impl CaddyAdmin for AdminClient {
         self.post("/load", "application/json", json.to_owned())
             .await?;
         Ok(())
+    }
+
+    async fn loaded_certificates(&self) -> Result<BTreeSet<String>, Error> {
+        // Caddy refuses the path when the running config has no TLS app, so it loads nothing.
+        let files = match self.get("/config/apps/tls/certificates/load_files").await {
+            Ok(files) => files,
+            Err(Error::Admin(_)) => return Ok(BTreeSet::new()),
+            Err(error) => return Err(error),
+        };
+        let prefix = format!("{CONTAINER_CERTS_DIR}/");
+        Ok(serde_json::from_str::<Option<Vec<Value>>>(&files)?
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|file| {
+                let path = file.get("certificate")?.as_str()?;
+                Some(path.strip_prefix(&prefix)?.strip_suffix(".crt")?.to_owned())
+            })
+            .collect())
     }
 }
 
@@ -466,9 +500,20 @@ fn write_certificate_errors(output: &mut String, sites: &[IngressSite]) {
             continue;
         };
         if !header {
-            output.push_str("\n# Skipped certificate issuance:\n");
+            output.push_str("\n# Certificates not served:\n");
             header = true;
         }
+        // CA error detail can quote what the domain served, so it stays on this comment line.
+        let error: String = error
+            .chars()
+            .map(|character| {
+                if character.is_control() {
+                    ' '
+                } else {
+                    character
+                }
+            })
+            .collect();
         let _ = writeln!(output, "# - {}: {error}", site.hostname);
     }
 }

@@ -86,6 +86,8 @@ resolve_install() {
 }
 
 install_cli() {
+    [ -d "$INSTALL_BIN_DIR" ] ||
+        error "$INSTALL_BIN_DIR is not a directory. Create it first, or set INSTALL_BIN_DIR to a directory that exists."
     tmp_dir=$(mktemp -d)
     trap 'rm -rf "$tmp_dir"' EXIT
     trap 'exit 130' HUP INT TERM
@@ -96,8 +98,15 @@ install_cli() {
         error "Unsupported platform: $(uname -s) $(uname -m)"
     base_url="$PLOYZ_GITHUB_URL/releases/download/v$version"
 
+    # Every release has checksums.txt, so a 404 for it means the release doesn't exist.
+    # A file:// mirror, as verify-release.sh uses, answers 000 when curl succeeds.
+    status=$(curl -sSL -w '%{http_code}' -o "$tmp_dir/checksums.txt" "$base_url/checksums.txt") || status=
+    case "$status" in
+        2??|000) ;;
+        404) error "There's no Ployz release $version. Releases: $PLOYZ_GITHUB_URL/releases" ;;
+        *) error "Failed to download checksums.txt${status:+ (HTTP $status)}" ;;
+    esac
     curl -fsSL -o "$tmp_dir/$archive" "$base_url/$archive" || error "Failed to download $archive"
-    curl -fsSL -o "$tmp_dir/checksums.txt" "$base_url/checksums.txt" || error "Failed to download checksums.txt"
     verify_checksum "$archive" "$tmp_dir/checksums.txt" "$tmp_dir" || error "Checksum verification failed"
     tar -xzf "$tmp_dir/$archive" -C "$tmp_dir" ployz || error "Release archive is incomplete"
     if [ ! -f "$tmp_dir/ployz" ] || [ -L "$tmp_dir/ployz" ] || [ ! -x "$tmp_dir/ployz" ]; then

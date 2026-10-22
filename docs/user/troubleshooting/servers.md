@@ -191,7 +191,9 @@ your first server.
 1. Run the same command again. A first start can take several minutes.
 2. Make sure your servers reach each other on UDP 51820, in any firewall your provider runs in
    front of them.
-3. Read the server's logs with `sudo journalctl -u ployz -n 200`.
+3. Read the server's logs with `sudo journalctl -u ployz -n 200`. Only if they say `refusing to
+   change the retained WireGuard interface` or `refusing to replace the existing Docker network`,
+   follow [Ployz stops over a leftover network](#ployz-stops-over-a-leftover-network).
 
 ## A server waits for approval and never shows up
 
@@ -340,7 +342,7 @@ minute; try again then.
 4. If you deleted the servers, see
    [Forget servers you deleted](../servers/manage-servers.md#forget-servers-you-deleted).
 5. If the servers run Ployz 0.3.0-beta.6 or earlier, Cloud can't reach them through the relay.
-   Upgrade each one over SSH, as in
+   Upgrade one over SSH, then the rest from Cloud, as in
    [Servers on 0.3.0-beta.6 or earlier](../servers/manage-servers.md#servers-on-030-beta6-or-earlier).
 
 ## The CLI says a server runs 0.3.0-beta.6 or earlier
@@ -349,7 +351,7 @@ minute; try again then.
 This Server runs Ployz 0.3.0-beta.6 or earlier, which this release can't reach through the relay.
 ```
 
-Upgrade that server over SSH, as in
+Upgrade one server over SSH, then the rest from Cloud, as in
 [Servers on 0.3.0-beta.6 or earlier](../servers/manage-servers.md#servers-on-030-beta6-or-earlier).
 
 A server that answers but refuses says so instead, with its own reason:
@@ -384,7 +386,7 @@ server comes back from a stop with a new address, the other servers learn it, an
 warning; restart Ployz on it with `sudo systemctl restart ployz` to try again.
 
 An address you chose yourself never changes on its own. That means `--public-ip` or `--wg-endpoint`
-given to `ployz server init`, `ployz server add` or `ployz server set`. To change it, run
+given to `ployz server add` or `ployz server set`. To change it, run
 `ployz server set` again.
 
 A server on 0.3.0-beta.6 or earlier keeps the public IP and network addresses it has when you
@@ -426,8 +428,7 @@ or may not have changed.` and the command still succeeds. Run it again once both
 ls` to save the address on `web-2` too. With more than two servers, repeat the command for any
 server that still shows as not answering.
 
-Run it from your machine with Ployz Cloud or a context that reaches the other servers, or on one of
-the other servers itself. Run on `web-2`, it only saves the address on `web-2`.
+Run it from your machine with Ployz Cloud, or on one of the other servers itself. Run on `web-2`, it only saves the address on `web-2`.
 
 ## Apps see IPv6 visitors as 10.210.x.1
 

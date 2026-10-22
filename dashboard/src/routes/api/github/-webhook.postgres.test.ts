@@ -94,6 +94,23 @@ it.live(
         assert.strictEqual(workflowRun.status, 200);
         assert.strictEqual(sent.length, 1);
 
+        const repositoriesAdded = yield* handleGithubWebhookRequest(
+          request("installation_repositories", "delivery-repositories-added", {
+            action: "added",
+            installation: { id: 99 },
+            repository_selection: "selected",
+            repositories_added: [
+              { id: 4243, node_id: "R_4243", name: "docs", full_name: "acme/docs", private: true },
+            ],
+            repositories_removed: [],
+            requester: null,
+            sender: { id: 123, login: "nick" },
+          }),
+        );
+        assert.strictEqual(repositoriesAdded.status, 200);
+        assert.strictEqual(sent.length, 2);
+        assert.match(JSON.stringify(sent[1]), /delivery-repositories-added/);
+
         const rejected = yield* handleGithubWebhookRequest(
           request("push", "delivery-malformed", {
             installation: { id: 17 },

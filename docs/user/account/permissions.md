@@ -24,7 +24,8 @@ A token acts as you, narrowed by its preset:
 - **Full** does everything you can.
 - **Read only** reads and changes nothing.
 - **Deploy** reads what you can read, but stages and deploys changes only in the one environment
-  you name.
+  you name. It can't take anything off your servers: a deploy that removes a service, volume or
+  domain, or `ployz env shutdown`, needs a Full token.
 
 Give CI a Deploy token for the one environment it ships to. See
 [Make an organization token](../cli/overview.md#make-an-organization-token). An agent you connect

@@ -87,7 +87,9 @@ async fn machine_init_and_add_send_policy_in_creation_without_an_update() {
         registration.assigned_machine.accepts_services = false;
         registration.assigned_machine.accepts_ingress = false;
         let events = EventLog::default();
-        let entry = JoinDaemon::new(registration.clone()).with_events(events.clone());
+        let entry = JoinDaemon::new(registration.clone())
+            .with_id(super::harness::founder_machine().id)
+            .with_events(events.clone());
         let target = JoinDaemon::new(registration).with_events(events.clone());
         let entry_address = serve_machine(entry.clone()).await;
         let target_address = serve_machine(target.clone()).await;

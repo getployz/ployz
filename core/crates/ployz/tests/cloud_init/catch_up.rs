@@ -328,7 +328,11 @@ async fn machine_add_with(
     let mut registration = registration();
     registration.visible_peers = vec![founder.clone()];
     let entry = with_faults(
-        entry(JoinDaemon::new(registration.clone()).with_containers(globals_on(&founder))),
+        entry(
+            JoinDaemon::new(registration.clone())
+                .with_id(founder.id)
+                .with_containers(globals_on(&founder)),
+        ),
         target_failures,
         ensure_failures,
     );

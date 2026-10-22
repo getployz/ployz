@@ -93,3 +93,24 @@ pub(super) async fn rpc_register(
     }
     Ok(response.decode::<op::Register>().unwrap())
 }
+
+pub(super) async fn rpc_list_machines(
+    service: &MachineService,
+) -> Result<ployz_core::MachineList, RpcError> {
+    let request = Request::new(
+        op::ListMachines::into_request(ployz_core::ListMachinesRequest {})
+            .encode()
+            .unwrap(),
+    );
+    let response = service
+        .list_machines(request)
+        .await
+        .unwrap()
+        .into_inner()
+        .decode_response()
+        .unwrap();
+    if let RpcResponseBody::Error(error) = &response.body {
+        return Err(error.clone());
+    }
+    Ok(response.decode::<op::ListMachines>().unwrap())
+}

@@ -5,6 +5,8 @@ import type { RuntimeMachineRecord } from "#/modules/runtime/runtime.collection"
 import { type BuildConcurrencyChange, policyChangeObserved, type ServerPolicyChange } from "./server-policy";
 import { requestServerPolicyChangeServerFn } from "./server-policy.functions";
 
+export const OPERATE_REFUSED = "Only an owner or admin can change how a server runs.";
+
 /** How long a requested Server Policy change may take to appear in observation. */
 const POLICY_APPLY_TIMEOUT_MS = 60_000;
 

@@ -109,6 +109,8 @@ pub enum Error {
     NotParticipating,
     #[error("Cluster store is not available")]
     ClusterStoreUnavailable,
+    #[error("Cluster network is not published yet")]
+    ClusterNetworkUnpublished,
     #[error("Cluster is not available")]
     ClusterUnavailable,
     #[error("Docker is not available")]
@@ -571,7 +573,8 @@ impl LocalMachine {
     /// Publish a client-selected assignment from a participating Entry Machine.
     ///
     /// # Errors
-    /// Rejects absent assignments, invalid assignments, or unavailable storage.
+    /// Rejects absent assignments, invalid assignments, unavailable storage, or
+    /// a Cluster network not yet published.
     pub async fn register(&self, request: RegisterRequest) -> Result<Registered, Error> {
         let local = self.clone();
         self.finish_mutation(async move {
@@ -592,7 +595,7 @@ impl LocalMachine {
         // Other Machines' rows are not consulted: Cloud owns concurrency, and a
         // Register for an existing id overwrites its row.
         let snapshot = ployz_core::EnrollmentSnapshot {
-            network: replicated.cluster_network().await?,
+            network: published_network(replicated).await?,
             machines: Vec::new(),
             target_versions: BTreeMap::new(),
         };
@@ -611,19 +614,22 @@ impl LocalMachine {
     ///
     /// Returns [`Error::NotParticipating`] when this Machine is not
     /// participating, [`Error::ClusterStoreUnavailable`] when the Cluster
-    /// store is missing, and [`Error::Cluster`] when replicated I/O fails.
+    /// store is missing, [`Error::ClusterNetworkUnpublished`] before the
+    /// founder publishes the Cluster network, and [`Error::Cluster`] when
+    /// replicated I/O fails.
     pub async fn list_machines(&self) -> Result<MachineList, Error> {
         let local = self.record();
         if local.phase() != LocalMachinePhase::Participating {
             return Err(Error::NotParticipating);
         }
         let replicated = self.replicated()?;
+        let network = published_network(replicated).await?;
         let machines = replicated.machines().await?.observations;
         let states = self.membership_states().await?;
         let entry_id = local.id();
         Ok(MachineList {
             enrollment: Some(ployz_core::EnrollmentSnapshot {
-                network: replicated.cluster_network().await?,
+                network,
                 machines: machines.clone(),
                 target_versions: replicated.version().await?,
             }),
@@ -856,6 +862,15 @@ impl LocalMachine {
             ))
         })
     }
+}
+
+/// The founder's publisher writes the Cluster network after it starts
+/// answering as Participating, so a missing row means not ready yet.
+async fn published_network(replicated: &ReplicatedStore) -> Result<ipnet::Ipv4Net, Error> {
+    replicated
+        .cluster_network()
+        .await?
+        .ok_or(Error::ClusterNetworkUnpublished)
 }
 
 fn registered(

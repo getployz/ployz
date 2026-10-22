@@ -1,7 +1,7 @@
 use clap::ArgMatches;
 use ployz_core::{
-    EnrollAs, EnrollRequest, EnrollmentSnapshot, LocalMachinePhase, MachineId, MachineName,
-    RegisterRequest, WireGuardPublicKey,
+    EnrollAs, EnrollRequest, EnrollmentSnapshot, InspectRequest, LocalMachinePhase, MachineId,
+    MachineName, RegisterRequest, WireGuardPublicKey, op,
 };
 
 use super::super::{connect_context, runtime};
@@ -38,6 +38,10 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
         }
         let mut entry = connect_context(matches, options.context()).await?;
         let snapshot = crate::enrollment::observe_enrollment(&mut entry).await?;
+        let entry_id = entry
+            .call_repeatable::<op::Inspect>(InspectRequest::default(), None)
+            .await?
+            .id;
         let mut target_client = if no_install {
             helpers::connect_direct(matches, &connection).await?
         } else {
@@ -45,6 +49,7 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
         };
         let (details, mut token) =
             helpers::inspect_token(&mut target_client, token_request.clone()).await?;
+        require_another_entry(entry_id, token.id, destination)?;
         let history = config.path().with_extension("enrollment");
         if details.phase != LocalMachinePhase::Uninitialized
             && !resumes(&snapshot, token.id, token.public_key)
@@ -128,6 +133,21 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
     )
 }
 
+/// A Server that answers as the entry for its own add vouches only for its own state, which
+/// a forgotten Server still holds; another Server's view decides whether it is a member.
+fn require_another_entry(
+    entry: MachineId,
+    target: MachineId,
+    destination: &str,
+) -> Result<(), Error> {
+    if entry != target {
+        return Ok(());
+    }
+    Err(Error::conflict(format!(
+        "{destination} answered as the entry for its own add, so its membership can't be checked. Nothing was enrolled. Run it again with --connect naming another Server of the Cluster."
+    )))
+}
+
 /// Only a Server the Cluster lists resumes its join. One this computer assigned that the Cluster
 /// no longer lists was forgotten, and still holds the state it had then.
 fn resumes(snapshot: &EnrollmentSnapshot, id: MachineId, public_key: WireGuardPublicKey) -> bool {
@@ -145,11 +165,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn add_timeout_surfaces_the_docker_network_recovery() {
+    fn add_timeout_leaves_the_docker_network_recovery_to_the_journal() {
         let message = helpers::readiness_timeout_message("added Server did not become ready");
 
         assert!(message.contains("added Server did not become ready"));
-        assert!(message.contains(DOCKER_NETWORK_CONFLICT_RECOVERY));
+        assert!(!message.contains(DOCKER_NETWORK_CONFLICT_RECOVERY));
     }
 
     #[test]
@@ -238,6 +258,23 @@ mod tests {
         assert!(
             !resumes(&forgotten, returning.id, returning.public_key),
             "a forgotten Server is reset, whatever this computer once assigned it"
+        );
+    }
+
+    #[test]
+    fn a_server_cannot_be_added_through_itself() {
+        let target = assigned_machine("machine-3", 'c');
+        let other = assigned_machine("machine-1", 'a');
+        assert!(require_another_entry(other.id, target.id, "root@machine-3").is_ok());
+        let refusal = require_another_entry(target.id, target.id, "root@machine-3").unwrap_err();
+        let message = refusal.to_string();
+        assert!(
+            message.contains("root@machine-3 answered as the entry"),
+            "a forgotten Server's own view can't vouch for it: {message}"
+        );
+        assert!(
+            message.contains("--connect naming another Server"),
+            "names --connect through another Server: {message}"
         );
     }
 

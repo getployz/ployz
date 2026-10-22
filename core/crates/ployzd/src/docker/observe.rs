@@ -9,7 +9,7 @@ use futures_util::StreamExt;
 use ployz_core::{
     CADDY_ADMIN_ENV, ContainerId, ContainerKind, ContainerObservation, CopyRole, DockerVolume,
     DockerVolumeName, DockerVolumeStorageObservation, LocalMachinePhase, MIRROR_ROOT,
-    VolumeInventory,
+    ResolvedServiceSpec, VolumeInventory,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -485,17 +485,21 @@ fn observe_copies(
 
 fn redacted_container(observation: &ContainerObservation) -> ContainerObservation {
     let mut parts = observation.clone().into_parts();
-    parts
-        .resolved_spec
-        .container
-        .environment
-        .retain(|key, _| key == CADDY_ADMIN_ENV);
-    if let Some(hook) = &mut parts.resolved_spec.pre_deploy {
-        hook.environment.clear();
-    }
-    parts.resolved_spec.mount_graph.redact_config_content();
+    parts.resolved_spec = published_spec(parts.resolved_spec);
     ContainerObservation::try_from(parts)
         .expect("environment redaction preserves Container identity")
+}
+
+/// A spec as this Machine publishes it: no environment and no Config content.
+pub(crate) fn published_spec(mut spec: ResolvedServiceSpec) -> ResolvedServiceSpec {
+    spec.container
+        .environment
+        .retain(|key, _| key == CADDY_ADMIN_ENV);
+    if let Some(hook) = &mut spec.pre_deploy {
+        hook.environment.clear();
+    }
+    spec.mount_graph.redact_config_content();
+    spec
 }
 
 struct LocalContainerChanges {

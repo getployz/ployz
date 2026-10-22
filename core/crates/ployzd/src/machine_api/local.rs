@@ -829,6 +829,9 @@ fn local_error(error: LocalMachineError) -> Result<Response<OpaquePayload>, Stat
         LocalMachineError::ClusterStoreUnavailable => {
             respond(unavailable("Cluster store is not available"))
         }
+        LocalMachineError::ClusterNetworkUnpublished => {
+            respond(unavailable("Cluster network is not published yet"))
+        }
         LocalMachineError::ClusterUnavailable => {
             Err(Status::unavailable("Cluster is not available"))
         }

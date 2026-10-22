@@ -9,19 +9,18 @@ agent the Ployz skill, and the agent can deploy and change your services for you
 ## Install the CLI
 
 ```sh
-curl -fsSL https://ployz.sh | sh -s -- beta
+curl -fsSL https://ployz.sh | sh
 ```
 
 It runs on Linux and macOS. On Windows, install it inside WSL. To upgrade, run the same command
 again.
 
-The line installs the beta release to `/usr/local/bin`. Ployz Cloud enrolls servers only from
-0.3.0-beta.6 on, and the stable release and Homebrew are still on 0.2. Without `beta`, the
-script installs stable. For one version, name it after `sh -s --` instead. To install somewhere
-else, set `INSTALL_BIN_DIR` to a directory that exists:
+The line installs the stable release to `/usr/local/bin`. For the beta channel, end it with
+`sh -s -- beta`. For one version, name it after `sh -s --` instead. To install somewhere else, set
+`INSTALL_BIN_DIR` to a directory that exists:
 
 ```sh
-curl -fsSL https://ployz.sh | INSTALL_BIN_DIR="$HOME/.local/bin" sh -s -- beta
+curl -fsSL https://ployz.sh | INSTALL_BIN_DIR="$HOME/.local/bin" sh
 ```
 
 ## Sign in
