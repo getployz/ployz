@@ -218,14 +218,38 @@ where
     }
 }
 
+/// The local Machine this enrollment already joined, if any. A participating Machine counts
+/// only when Cloud found it listed as it published itself; Cloud registers a forgotten one
+/// afresh, with no daemon version, and its participation predates this enrollment.
 fn already_assigned<'a>(details: &'a MachineDetails, assigned: &Machine) -> Option<&'a Machine> {
-    matches!(
-        details.phase,
-        LocalMachinePhase::Joining | LocalMachinePhase::Participating
-    )
-    .then_some(details.machine.as_ref())
-    .flatten()
-    .filter(|machine| machine.id == assigned.id)
+    let resumable = match details.phase {
+        LocalMachinePhase::Joining => true,
+        LocalMachinePhase::Participating => !assigned.runtime.daemon_version.is_empty(),
+        LocalMachinePhase::Uninitialized
+        | LocalMachinePhase::Resetting
+        | LocalMachinePhase::Unrecognized(_) => false,
+    };
+    resumable
+        .then_some(details.machine.as_ref())
+        .flatten()
+        .filter(|machine| machine.id == assigned.id)
+}
+
+/// A local participant Cloud doesn't list as joined is a rerun that outran its own
+/// publication, or a forgotten Server. Neither is proven, so the refusal names both.
+fn unlisted_participation(details: &MachineDetails, assigned: &Machine) -> Result<(), Error> {
+    let participating = details.phase == LocalMachinePhase::Participating
+        && details
+            .machine
+            .as_ref()
+            .is_some_and(|machine| machine.id == assigned.id);
+    if !participating {
+        return Ok(());
+    }
+    Err(Error::conflict(format!(
+        "Server {} already participates, but Cloud doesn't list it as joined. If an add of this Server just stopped partway, run the same command again in a minute; if the Server was forgotten, rerun with --reset to reset it before enrollment.",
+        assigned.name
+    )))
 }
 
 async fn enroll_current_identity(
@@ -301,6 +325,7 @@ where
             client
         }
     } else {
+        unlisted_participation(&details, &assigned)?;
         client = ensure_uninitialized(
             matches,
             matches.get_flag("yes"),
@@ -1010,8 +1035,59 @@ mod tests {
     }
 
     #[test]
+    fn a_forgotten_server_rejoining_through_cloud_is_reset_first() {
+        let listed = {
+            let mut machine = crate::global_fixtures::machine('a', "web-3");
+            machine.runtime.daemon_version = "0.3.0".into();
+            machine
+        };
+        let registered = crate::global_fixtures::machine('a', "web-3");
+        let details = |phase| MachineDetails {
+            id: listed.id,
+            phase,
+            public_key: listed.public_key,
+            advertised_endpoints: Vec::new(),
+            machine: Some(listed.clone()),
+            store_version: Default::default(),
+            rtts: Vec::new(),
+            management_clients: Vec::new(),
+            telemetry: None,
+            storage: None,
+            upgrade: None,
+            token: None,
+        };
+        assert_eq!(
+            already_assigned(&details(LocalMachinePhase::Participating), &listed),
+            Some(&listed),
+            "the Cluster lists the Machine as it published itself"
+        );
+        assert_eq!(
+            already_assigned(&details(LocalMachinePhase::Participating), &registered),
+            None,
+            "Cloud registered it afresh, so its participation predates this enrollment"
+        );
+        assert_eq!(
+            already_assigned(&details(LocalMachinePhase::Joining), &registered),
+            Some(&listed),
+            "a join under way hasn't published itself yet"
+        );
+        let refusal =
+            unlisted_participation(&details(LocalMachinePhase::Participating), &registered)
+                .unwrap_err()
+                .to_string();
+        assert!(
+            refusal.contains("run the same command again") && refusal.contains("--reset"),
+            "an unlisted participant may be a rerun that outran its publication or a forgotten Server: {refusal}"
+        );
+        assert!(
+            unlisted_participation(&details(LocalMachinePhase::Uninitialized), &registered).is_ok()
+        );
+    }
+
+    #[test]
     fn a_rerun_resumes_a_join_already_under_way_for_the_assigned_machine() {
-        let assigned = crate::global_fixtures::machine('a', "web-3");
+        let mut assigned = crate::global_fixtures::machine('a', "web-3");
+        assigned.runtime.daemon_version = "0.3.0".into();
         let other = crate::global_fixtures::machine('b', "web-4");
         let details = |phase, machine: Option<&Machine>| MachineDetails {
             id: assigned.id,

@@ -125,6 +125,7 @@ struct JoinInner {
     fail_list_on: Mutex<Option<MachineId>>,
     assigned_membership: Mutex<MembershipObservation>,
     listed: Mutex<Vec<MachineObservation>>,
+    own_id: Mutex<Option<MachineId>>,
 }
 
 impl JoinDaemon {
@@ -165,6 +166,7 @@ impl JoinDaemon {
                 fail_list_on: Mutex::new(None),
                 assigned_membership: Mutex::new(MembershipObservation::Up),
                 listed: Mutex::new(Vec::new()),
+                own_id: Mutex::new(None),
             }),
         }
     }
@@ -230,6 +232,12 @@ impl JoinDaemon {
 
     pub fn revoked_on_publication(self, events: EventLog) -> Self {
         *self.inner.revoked_on_publication.lock().unwrap() = Some(events);
+        self
+    }
+
+    /// Report `id` as this daemon's own, as an entry Machine other than the one being added does.
+    pub fn with_id(self, id: MachineId) -> Self {
+        *self.inner.own_id.lock().unwrap() = Some(id);
         self
     }
 
@@ -540,7 +548,12 @@ impl FakeMachine for JoinDaemon {
         let joined = targeted || self.inner.joined.load(Ordering::SeqCst);
         let telemetry = inspect_telemetry_fixture::observation(inspect.telemetry);
         rpc_ok(MachineDetails {
-            id: self.inner.registration.assigned_machine.id,
+            id: self
+                .inner
+                .own_id
+                .lock()
+                .unwrap()
+                .unwrap_or(self.inner.registration.assigned_machine.id),
             phase: if joined {
                 LocalMachinePhase::Participating
             } else {
