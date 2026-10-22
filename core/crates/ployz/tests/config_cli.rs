@@ -4209,6 +4209,113 @@ fn up_ships_a_directory_without_git() {
     }
 }
 
+/// `ployz up --project` into a Project whose Services all pull images adds the
+/// directory's uploaded Service and builds it, as in a new Project (#2863). A name
+/// already taken by one of those Services is refused, adding nothing.
+#[test]
+fn up_into_an_existing_project_adds_the_directory_s_service() {
+    let args = [&["up", "--project", "shop"][..], &UNREACHABLE_SERVER].concat();
+    for store in &targets() {
+        let home = tempfile::tempdir().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().canonicalize().unwrap().join("web");
+        std::fs::create_dir(&dir).unwrap();
+        std::fs::write(dir.join("Dockerfile"), "FROM scratch\nEXPOSE 80\n").unwrap();
+        in_dir(store, home.path(), &dir, &["project", "new", "shop"], &[]);
+        in_dir(
+            store,
+            home.path(),
+            &dir,
+            &[
+                "service",
+                "add",
+                "db",
+                "--project",
+                "shop",
+                "--image",
+                "postgres:16-alpine",
+            ],
+            &[],
+        );
+
+        let (code, up) = in_dir(store, home.path(), &dir, &args, &[]);
+        assert_eq!(code, Some(1), "{up}");
+        let (_, services) = in_dir(
+            store,
+            home.path(),
+            &dir,
+            &["service", "ls", "--project", "shop"],
+            &[],
+        );
+        let names: Vec<_> = services["services"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|service| service["name"].clone())
+            .collect();
+        assert_eq!(names, [json!("db"), json!("web")], "{services}");
+        let (_, method) = in_dir(
+            store,
+            home.path(),
+            &dir,
+            &["get", "web.buildMethod", "--project", "shop"],
+            &[],
+        );
+        assert_eq!(
+            method["settings"][0]["value"],
+            json!("dockerfile"),
+            "{method}"
+        );
+
+        let taken = root.path().canonicalize().unwrap().join("db");
+        std::fs::create_dir(&taken).unwrap();
+        std::fs::write(taken.join("Dockerfile"), "FROM scratch\n").unwrap();
+        let fresh = tempfile::tempdir().unwrap();
+        in_dir(
+            store,
+            fresh.path(),
+            &taken,
+            &["project", "new", "other"],
+            &[],
+        );
+        in_dir(
+            store,
+            fresh.path(),
+            &taken,
+            &[
+                "service",
+                "add",
+                "db",
+                "--project",
+                "other",
+                "--image",
+                "postgres:16-alpine",
+            ],
+            &[],
+        );
+        let (code, refused) = in_dir(
+            store,
+            fresh.path(),
+            &taken,
+            &[&["up", "--project", "other"][..], &UNREACHABLE_SERVER].concat(),
+            &[],
+        );
+        assert_eq!(code, Some(2), "{refused}");
+        assert!(
+            refused["error"]["message"]
+                .as_str()
+                .is_some_and(|message| message.starts_with("Nothing would build this directory")),
+            "{refused}"
+        );
+        let (_, status) = in_dir(store, fresh.path(), &taken, &["status"], &[]);
+        assert_ne!(
+            status.pointer("/environment/project"),
+            Some(&json!("other")),
+            "a refused up leaves the directory unlinked: {status}"
+        );
+    }
+}
+
 /// A Branch's copy of a Service `ployz up` uploaded has no source until an upload,
 /// so the Branch names `ployz up --env`, which ships it; `deploy` there is refused.
 #[test]
