@@ -353,6 +353,11 @@ runs:
 ployz server upgrade 0.3.0-beta.7 web-1 --connect ssh://root@203.0.113.10
 ```
 
+A version older than the server runs is a downgrade, and Ployz asks before it starts. A newer CLI
+or Ployz Cloud may need something the older release lacks. On 0.3.0-beta.6 or earlier, they can't
+reach the server through the relay at all, and upgrading it again takes SSH. In a script, under
+`--json` or without a terminal, Ployz refuses the downgrade unless you pass `--allow-downgrade`.
+
 Ployz releases are signed, starting with the first release after 0.3.0-beta.2. A server checks
 the signature before it installs a release, and refuses one that isn't signed by Ployz or that
 claims a different version. Releases up to 0.3.0-beta.2 are unsigned, so a server can't install

@@ -5,7 +5,8 @@ use std::{collections::BTreeSet, time::Duration};
 use clap::ArgMatches;
 use ployz_core::{
     Machine, MachineId, MachineRelease, MachineTarget, MachineUpgradeAttempt,
-    MachineUpgradeAttemptId, MachineUpgradeOutcome, RequestMachineUpgradeRequest, RpcErrorCode, op,
+    MachineUpgradeAttemptId, MachineUpgradeOutcome, MachineVersion, RequestMachineUpgradeRequest,
+    RpcErrorCode, op,
 };
 use reqwest::Method;
 use serde::{Deserialize, Serialize};
@@ -28,6 +29,8 @@ use super::ConnectionOptions;
 
 const OBSERVATION_TIMEOUT: Duration = Duration::from_secs(16 * 60);
 const POLL_INTERVAL: Duration = Duration::from_secs(1);
+// The first release whose relay protocol a 0.3.0 CLI and Ployz Cloud speak.
+const RELAY_SINCE: &str = "0.3.0-beta.7";
 // The daemon restarts itself mid-upgrade; its socket vanishing is expected.
 const RESTART: crate::setup_retry::Expected =
     crate::setup_retry::Expected("Waiting for ployzd to restart…");
@@ -98,9 +101,11 @@ pub(in crate::handlers) fn upgrade(root: &ArgMatches) -> Result<(), Error> {
         .ok_or_else(|| Error::usage("upgrade version is required"))?;
     let selectors = string_values(matches, "server");
     let image = matches.get_one::<String>("ingress-image");
+    let allow_downgrade = matches.get_flag("allow-downgrade");
     let version = release.to_string();
     let mut args = vec!["server", "upgrade", version.as_str()];
     args.extend(selectors.iter().map(String::as_str));
+    args.extend(allow_downgrade.then_some("--allow-downgrade"));
     args.extend(
         image
             .iter()
@@ -126,6 +131,7 @@ pub(in crate::handlers) fn upgrade(root: &ArgMatches) -> Result<(), Error> {
     with_client(root, |client| {
         Box::pin(async move {
             let machines = selected_machines(client, &selectors).await?;
+            confirm_downgrades(&machines, &release, allow_downgrade)?;
             let cancellation = crate::cancellation::on_ctrl_c();
             let (result, outcome) =
                 run_all(client, &machines, release, ingress, rerun, &cancellation).await;
@@ -540,12 +546,61 @@ async fn run_all(
 }
 
 /// Ask before an exact `release` moves any of `machines` to an older version than it runs.
+/// Channels never move a Server back, and a version Ployz never published can't be compared.
 fn confirm_downgrades(
-    _machines: &[Machine],
-    _release: &MachineRelease,
-    _allowed: bool,
+    machines: &[Machine],
+    release: &MachineRelease,
+    allowed: bool,
 ) -> Result<(), Error> {
-    Ok(())
+    let MachineRelease::Exact(target) = release else {
+        return Ok(());
+    };
+    let newer = machines
+        .iter()
+        .filter_map(|machine| {
+            let running = MachineVersion::parse(&machine.runtime.daemon_version).ok()?;
+            (running > *target).then_some((machine, running))
+        })
+        .collect::<Vec<_>>();
+    if newer.is_empty() || allowed {
+        return Ok(());
+    }
+    let servers = newer
+        .iter()
+        .map(|(machine, running)| format!("Server {} from {running}", machine.name))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let relay = MachineVersion::parse(RELAY_SINCE).expect("RELAY_SINCE is a release version");
+    let breaks = if *target < relay {
+        "A newer CLI and Ployz Cloud can't reach a Server on it through the relay, so \
+         upgrading it again takes SSH."
+    } else {
+        "A newer CLI or Ployz Cloud may need what the older release lacks."
+    };
+    if crate::ui::can_prompt() {
+        crate::ui::note(breaks);
+    }
+    crate::ui::confirm(
+        &format!("Downgrade {servers} to {target}?"),
+        || {
+            Error::detailed(
+                RpcErrorCode::ConfirmationRequired,
+                format!(
+                    "Upgrading to {target} would downgrade {servers}. {breaks} Pass \
+                     --allow-downgrade to downgrade anyway. Nothing upgraded."
+                ),
+                json!({
+                    "target": target,
+                    "downgrade": newer
+                        .iter()
+                        .map(|(machine, running)| json!({ "server": machine.id, "version": running }))
+                        .collect::<Vec<_>>(),
+                }),
+            )
+            .hint(Hint::Retry(super::super::typed_with(&["--allow-downgrade"])))
+        },
+        "Cancelled. Nothing upgraded.",
+    )
 }
 
 async fn selected_machines(
