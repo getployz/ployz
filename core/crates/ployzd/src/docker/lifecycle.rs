@@ -401,7 +401,9 @@ impl ContainerRuntime {
             && self.never_started(container_id).await?)
     }
 
-    /// Whether Docker never ran the Container. One already gone ran nothing either.
+    /// Whether Docker never ran the Container, which a keyed create made. One already
+    /// gone ran nothing either. An unkeyed Container a restore made has no slot to adopt
+    /// its records by, so it is never taken for half-made.
     async fn never_started(&self, container_id: &ContainerId) -> Result<bool, Error> {
         match self
             .docker
@@ -410,8 +412,12 @@ impl ContainerRuntime {
             .await
             .map_err(|error| docker_error(container_id, error))
         {
-            Ok(inspected) => Ok(inspected.state.and_then(|state| state.status)
-                == Some(ContainerStateStatusEnum::CREATED)),
+            Ok(inspected) => Ok(inspected
+                .config
+                .and_then(|config| config.labels)
+                .is_some_and(|labels| labels.contains_key(CREATION_KEY))
+                && inspected.state.and_then(|state| state.status)
+                    == Some(ContainerStateStatusEnum::CREATED)),
             Err(Error::ContainerNotFound(_)) => Ok(true),
             Err(error) => Err(error),
         }
@@ -431,7 +437,9 @@ impl ContainerRuntime {
         // Under the lock no create is between Docker's create and its spec's write.
         let mut operation = self.specs.config_operation().await;
         if self.half_made(&mut operation, &container_id).await? {
+            // Removed, so a slot read as empty holds nothing that keeps its Volumes in use.
             // The create that follows makes it again.
+            self.force_remove_container(&container_id).await?;
             return Ok(None);
         }
         self.keyed_container(machine_id, &name, key).await
