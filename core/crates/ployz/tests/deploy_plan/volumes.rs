@@ -1104,6 +1104,11 @@ fn a_volume_on_a_server_that_accepts_no_services_blocks_only_its_service() {
         panic!("{:?}", preview.blocked)
     };
     assert_eq!(blocked.service, db.name);
+    assert_eq!(blocked.error.code, RpcErrorCode::Conflict);
+    assert_eq!(
+        blocked.error.details.get("reason").unwrap(),
+        "volume_server_takes_no_services"
+    );
     assert_eq!(
         blocked.error.message,
         "Volume data is on second, which doesn't run services. Turn them back on with ployz \

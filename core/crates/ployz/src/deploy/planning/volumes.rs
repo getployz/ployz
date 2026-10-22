@@ -1037,7 +1037,7 @@ fn volume_constraints<'spec>(
     Ok((mounted_volumes, missing_volumes))
 }
 
-/// The refusal for a Volume whose every location is a Machine that accepts no
+/// The refusal for a Volume whose every location is an up Machine that accepts no
 /// services: the Service can run nowhere else, and nothing new starts there.
 fn refused_location(
     spec: &RequestedServiceSpec,
@@ -1055,16 +1055,17 @@ fn refused_location(
     let first = locations.peek()?.machine.name.clone();
     locations
         .all(|machine| {
-            matches!(
-                spec.placement_eligibility_in_namespace(
-                    &plan.namespace,
-                    &machine.machine,
-                    machine.storage.as_ref()
-                ),
-                ServicePlacementEligibility::Ineligible(
-                    ServicePlacementIneligibleReason::WorkNotAccepted
+            machine.membership != ployz_core::MembershipObservation::Down
+                && matches!(
+                    spec.placement_eligibility_in_namespace(
+                        &plan.namespace,
+                        &machine.machine,
+                        machine.storage.as_ref()
+                    ),
+                    ServicePlacementEligibility::Ineligible(
+                        ServicePlacementIneligibleReason::WorkNotAccepted
+                    )
                 )
-            )
         })
         .then(|| PlanError::VolumeServerTakesNoServices {
             volume: plan.authored(name).to_owned(),

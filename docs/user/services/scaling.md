@@ -57,7 +57,8 @@ move on your next deploy, or right away when you click **Drain** on the server's
 use it can only run there. While its services are off, a deploy doesn't attempt those services,
 for example "db: Volume data is on db-1, which doesn't run services. Turn them back on with
 ployz server set db-1 --accepts-services=true". The rest of the deploy still goes
-ahead, and the deployment reads Failed.
+ahead, and the deployment reads Failed. While a drain runs, wait for it to end before you turn
+services back on.
 
 Turning **Takes web traffic** off drops the server from your generated addresses and stops its web
 server. `ployz server set --accepts-ingress=false` only drops it from your addresses, and leaves it
