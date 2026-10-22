@@ -1,7 +1,7 @@
 use std::{
     borrow::Cow,
     cmp::Ordering,
-    collections::{BinaryHeap, HashMap, HashSet},
+    collections::{BTreeMap, BinaryHeap, HashMap, HashSet},
     future::Future,
     pin::Pin,
     str::FromStr,
@@ -13,9 +13,10 @@ use futures_util::{Stream, StreamExt, stream};
 use ployz_core::{
     ContainerId, ContainerRef, ContainerSelector, ExecConfig, ExecOptions, ExecRequestFrame,
     FanoutSelector, LiveLogTarget, LogBody, LogEntry, LogsOptions, MachineId, MachineLogService,
-    MachineName, MachineObservation, MachineTarget, Namespace, OpaquePayload, QualifiedService,
-    ServiceContainer, ServiceObservation, ServiceSelector, StreamProtocolError, TailLogsRequest,
-    op, resolve_container_selector, resolve_machine_selectors, select_service,
+    MachineName, MachineObservation, MachineTarget, Namespace, OpaquePayload, PartialResult,
+    QualifiedService, RpcError, ServiceContainer, ServiceObservation, ServiceSelector,
+    StreamProtocolError, TailLogsRequest, op, resolve_container_selector,
+    resolve_machine_selectors, select_service,
 };
 use thiserror::Error;
 use tokio::sync::mpsc;
@@ -119,6 +120,18 @@ pub enum OperatorError {
         name: String,
         running_in_scope: Vec<String>,
     },
+    /// No container of the Service runs on the Servers that answered, and some did
+    /// not answer, so it may run there.
+    #[error(
+        "No running container of {service:?} on the Servers that answered; {} did not answer.",
+        unanswered_names(gaps, names)
+    )]
+    NotRunningOnAnswered {
+        service: String,
+        /// The Servers that did not answer, and why. It holds no successes.
+        gaps: PartialResult<(), RpcError>,
+        names: BTreeMap<MachineId, MachineName>,
+    },
     #[error(transparent)]
     MachineSelector(#[from] ployz_core::MachineSelectorError),
     #[error(transparent)]
@@ -192,6 +205,36 @@ pub enum OperatorError {
     },
 }
 
+impl OperatorError {
+    /// Whether this says the Service or its container was not observed, which an
+    /// unanswered Server could change.
+    fn is_not_found(&self) -> bool {
+        matches!(
+            self,
+            Self::Selector(ployz_core::ServiceSelectorError::NotFound { .. })
+                | Self::Container(ployz_core::ContainerSelectorError::NotFound { .. })
+                | Self::NoRegularContainer
+        )
+    }
+}
+
+fn unanswered_names(
+    gaps: &PartialResult<(), RpcError>,
+    names: &BTreeMap<MachineId, MachineName>,
+) -> String {
+    gaps.failures
+        .iter()
+        .map(|failure| &failure.machine_id)
+        .chain(&gaps.omissions)
+        .map(|id| {
+            names
+                .get(id)
+                .map_or_else(|| id.to_string(), ToString::to_string)
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 impl From<tonic::Status> for OperatorError {
     fn from(status: tonic::Status) -> Self {
         Self::Rpc(TransportError::from(status))
@@ -236,16 +279,7 @@ pub fn select_exec_container<'a>(
     selector: Option<&ContainerSelector>,
 ) -> Result<&'a ServiceContainer, OperatorError> {
     match selector {
-        // A running one: a failed Deploy can leave an exited Container first in line.
-        None => service
-            .containers
-            .iter()
-            .find(|container| {
-                matches!(
-                    container.as_observation().runtime,
-                    ployz_core::ContainerRuntimeObservation::Running { .. }
-                )
-            })
+        None => running_container(service)
             .or_else(|| service.containers.first())
             .ok_or(OperatorError::NoRegularContainer),
         Some(selector) => Ok(resolve_container_selector(
@@ -253,6 +287,27 @@ pub fn select_exec_container<'a>(
             selector,
         )?),
     }
+}
+
+/// The Service's first running container. A failed Deploy can leave an exited one
+/// first in line.
+fn running_container(service: &ServiceObservation) -> Option<&ServiceContainer> {
+    service
+        .containers
+        .iter()
+        .find(|container| is_running(container))
+}
+
+fn is_running(container: &ServiceContainer) -> bool {
+    matches!(
+        container.as_observation().runtime,
+        ployz_core::ContainerRuntimeObservation::Running { .. }
+    )
+}
+
+/// The Service Name as the person typed it, not the Namespace the CLI scoped it to.
+fn typed_name(selector: &ServiceSelector) -> &str {
+    selector.as_str().rsplit('/').next().unwrap_or_default()
 }
 
 pub fn parse_service_args(values: &[String]) -> Result<Vec<ServiceArg>, OperatorError> {
@@ -450,12 +505,46 @@ pub async fn open_exec(
     options: ExecOptions,
 ) -> Result<ExecSession, OperatorError> {
     let machines = client.machines().await?;
+    // On a Server yet to answer, a bare name may match another Namespace's Service,
+    // and a container selector may match a container.
+    let settles_early =
+        container_selector.is_none() && QualifiedService::parse(service_selector.as_str()).is_ok();
     let live = client
-        .live_services_from(&machines, EnvironmentValues::Redacted)
+        .live_services_until(&machines, EnvironmentValues::Redacted, |live| {
+            settles_early
+                && select_service(&live.services(), service_selector)
+                    .is_ok_and(|service| running_container(service).is_some())
+        })
         .await?;
     let services = live.services();
-    let service = select_service(&services, service_selector)?;
-    let container = select_exec_container(service, container_selector)?.as_observation();
+    let selected = select_service(&services, service_selector)
+        .map_err(OperatorError::from)
+        .and_then(|service| Ok((service, select_exec_container(service, container_selector)?)));
+    let gaps = &live.containers;
+    // A named container gets its own error: "no running container of the Service"
+    // would contradict a Server that answered with one.
+    let unanswered =
+        container_selector.is_none() && (!gaps.failures.is_empty() || !gaps.omissions.is_empty());
+    let (service, container) = match selected {
+        Ok((service, container)) if !unanswered || is_running(container) => {
+            (service, container.as_observation())
+        }
+        Err(error) if !unanswered || !error.is_not_found() => return Err(error),
+        Ok(_) | Err(_) => {
+            return Err(OperatorError::NotRunningOnAnswered {
+                service: typed_name(service_selector).to_owned(),
+                gaps: PartialResult {
+                    successes: Vec::new(),
+                    failures: live.containers.failures,
+                    omissions: live.containers.omissions,
+                },
+                names: machines
+                    .iter()
+                    .map(|machine| (machine.machine.id, machine.machine.name.clone()))
+                    .collect(),
+            });
+        }
+    };
     let machine_id = container.machine_id;
     let config = ExecRequestFrame::Config(ExecConfig {
         container_id: container.container_id,
@@ -825,12 +914,7 @@ fn not_running(
     match error {
         ployz_core::ServiceSelectorError::NotFound { selector } if !running_in_scope.is_empty() => {
             OperatorError::NotRunning {
-                name: selector
-                    .as_str()
-                    .rsplit('/')
-                    .next()
-                    .unwrap_or_default()
-                    .to_owned(),
+                name: typed_name(&selector).to_owned(),
                 running_in_scope,
             }
         }

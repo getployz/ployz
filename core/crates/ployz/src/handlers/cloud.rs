@@ -683,7 +683,7 @@ async fn dial(matches: &ArgMatches) -> Result<Client, ConnectError> {
         }
         return super::server::connect_direct(matches, &connection).await;
     }
-    crate::connect::connect_selected_with(
+    crate::connect::connect_selected_in_order(
         local_selection(matches)?,
         std::sync::Arc::new(
             crate::connect::SystemConnector::default()

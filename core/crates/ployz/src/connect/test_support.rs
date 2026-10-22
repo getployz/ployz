@@ -108,9 +108,17 @@ where
     connected_client(service).await
 }
 
-/// One fake Machine answering unary calls with `unary` and its log streams with `stream`.
+/// The log routes, served as streams.
+pub(crate) const LOG_ROUTES: &[&str] = &[
+    ployz_core::op::TailLogs::PATH,
+    ployz_core::op::LogHistory::PATH,
+];
+
+/// One fake Machine answering the calls on `streams` with `stream`, and every
+/// other call with `unary`.
 pub(crate) async fn rpc_routes<U, UFut, F, Fut, S>(
     unary: U,
+    streams: &'static [&'static str],
     stream: F,
 ) -> (
     Client,
@@ -119,7 +127,7 @@ pub(crate) async fn rpc_routes<U, UFut, F, Fut, S>(
 where
     U: Fn(Request<OpaquePayload>) -> UFut + Clone + Send + Sync + 'static,
     UFut: Future<Output = Result<Response<OpaquePayload>, Status>> + Send + 'static,
-    F: Fn(Request<OpaquePayload>) -> Fut + Clone + Send + Sync + 'static,
+    F: Fn(Request<tonic::Streaming<OpaquePayload>>) -> Fut + Clone + Send + Sync + 'static,
     Fut: Future<Output = Result<Response<S>, Status>> + Send + 'static,
     S: Stream<Item = Result<OpaquePayload, Status>> + Send + 'static,
 {
@@ -129,24 +137,51 @@ where
         let unary = unary.clone();
         let stream = stream.clone();
         async move {
-            let path = request.uri().path();
             let mut grpc = tonic::server::Grpc::new(ProstCodec::default());
-            Ok::<_, Infallible>(
-                if path.ends_with("/TailLogs") || path.ends_with("/LogHistory") {
-                    grpc.server_streaming(stream, request).await
-                } else {
-                    grpc.unary(unary, request).await
-                },
-            )
+            // A server stream is a bidi stream whose client sends one message.
+            Ok::<_, Infallible>(if streams.contains(&request.uri().path()) {
+                grpc.streaming(stream, request).await
+            } else {
+                grpc.unary(unary, request).await
+            })
         }
     });
     connected_client(service).await
 }
 
-async fn connected_client<S>(
+/// A channel to an in-memory daemon that answers only its own confirmation.
+pub(crate) async fn confirming_channel() -> Channel {
+    use ployz_core::{RpcRequestBody, RpcResponse};
+    let rpc = tower::service_fn(|request: Request<OpaquePayload>| async move {
+        let RpcRequestBody::DescribeContract(_) =
+            request.into_inner().decode_request().unwrap().body
+        else {
+            panic!("connect asks only for confirmation")
+        };
+        let response = RpcResponse::from(ployz_core::ContractDescription {
+            machine_id: ployz_core::MachineId::random(),
+            protocol_major: ployz_core::PROTOCOL_MAJOR,
+            daemon_version: "fixture".into(),
+            capabilities: Default::default(),
+        });
+        Ok::<_, Status>(Response::new(response.encode().unwrap()))
+    });
+    let service = tower::service_fn(
+        move |request: http::Request<tonic::body::Body>| async move {
+            Ok::<_, Infallible>(
+                tonic::server::Grpc::new(ProstCodec::default())
+                    .unary(rpc, request)
+                    .await,
+            )
+        },
+    );
+    memory_channel(service).await.0
+}
+
+async fn memory_channel<S>(
     service: S,
 ) -> (
-    Client,
+    Channel,
     tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
 )
 where
@@ -173,6 +208,26 @@ where
         }))
         .await
         .unwrap();
+    (channel, server)
+}
+
+async fn connected_client<S>(
+    service: S,
+) -> (
+    Client,
+    tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
+)
+where
+    S: tower::Service<
+            http::Request<tonic::body::Body>,
+            Response = http::Response<tonic::body::Body>,
+            Error = Infallible,
+        > + Clone
+        + Send
+        + 'static,
+    S::Future: Send,
+{
+    let (channel, server) = memory_channel(service).await;
     let client = Client::new(
         channel.clone(),
         Connection::tcp("127.0.0.1:1".parse().unwrap()),

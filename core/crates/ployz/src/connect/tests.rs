@@ -114,6 +114,7 @@ fn system_ssh_command_uses_noninteractive_authentication() {
         &destination,
         Some(Path::new("/keys/deploy")),
         None,
+        SshMaster::Share,
         SystemConnector::default().ssh_timeout,
     );
 
@@ -455,6 +456,54 @@ async fn cancelling_ssh_establishment_returns_without_waiting_for_ssh() {
 }
 
 #[tokio::test]
+async fn an_ssh_dial_beside_another_starts_no_master_to_outlive_it() {
+    let root = tempfile::tempdir().unwrap();
+    let program = root.path().join("ssh");
+    symlink(
+        concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/ssh"),
+        &program,
+    )
+    .unwrap();
+    let connector = SystemConnector::new(&program);
+    let connection = Connection::ssh(SshDestination::parse("user@record").unwrap());
+    // Without a control directory no dial multiplexes, so none starts a master.
+    let multiplexed = control_path().is_some();
+    for beside in [false, true] {
+        let _ = fs::remove_file(program.with_extension("args"));
+        // The session child is held open until the channel drops, so it has
+        // time to record its arguments.
+        let _channel = if beside {
+            connector.connect_beside(&connection).await
+        } else {
+            connector.connect(&connection).await
+        };
+        let invocations = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let recorded = fs::read_to_string(program.with_extension("args")).unwrap();
+                if recorded.lines().count() == 2 {
+                    break recorded;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the probe and the session both ran");
+        for invocation in invocations.lines() {
+            assert_eq!(
+                invocation.contains("ControlMaster=auto"),
+                multiplexed && !beside,
+                "{invocation}"
+            );
+            assert_eq!(
+                invocation.contains("ControlMaster=no"),
+                multiplexed && beside,
+                "{invocation}"
+            );
+        }
+    }
+}
+
+#[tokio::test]
 async fn missing_ssh_program_names_the_local_client() {
     let connector = SystemConnector::new("/ployz-missing-ssh-client");
     let connection = Connection::ssh(SshDestination::parse("user@example.com").unwrap());
@@ -704,6 +753,7 @@ fn ssh_timeout_flag_is_global_and_reaches_transport_arguments() {
                 &SshDestination::parse("user@host").unwrap(),
                 None,
                 None,
+                SshMaster::Share,
                 connector.ssh_timeout,
             );
             assert!(args.contains(&format!("ConnectTimeout={seconds}")));
@@ -779,6 +829,267 @@ async fn local_socket_that_accepts_but_never_serves_fails_as_starting() {
         "{error}"
     );
     assert_eq!(error.retry(), Retry::AfterRestart, "{error}");
+}
+
+#[derive(Clone, Copy, Debug)]
+enum Scripted {
+    ConfirmsAfter(Duration),
+    Silent,
+    Fails,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct Dialled {
+    index: usize,
+    at: Duration,
+    beside: bool,
+}
+
+/// Dials each entry as its script says, recording every dial and every dial
+/// dropped before it finished.
+struct ScriptedConnector {
+    entries: Vec<(Connection, Scripted)>,
+    epoch: tokio::time::Instant,
+    dials: std::sync::Mutex<Vec<Dialled>>,
+    abandoned: std::sync::Mutex<Vec<usize>>,
+}
+
+struct Unfinished<'a>(&'a std::sync::Mutex<Vec<usize>>, usize);
+
+impl Drop for Unfinished<'_> {
+    fn drop(&mut self) {
+        self.0.lock().unwrap().push(self.1);
+    }
+}
+
+impl ScriptedConnector {
+    fn new(entries: Vec<(Connection, Scripted)>) -> Arc<Self> {
+        Arc::new(Self {
+            entries,
+            epoch: tokio::time::Instant::now(),
+            dials: Default::default(),
+            abandoned: Default::default(),
+        })
+    }
+
+    fn selected(&self) -> SelectedConnections {
+        SelectedConnections {
+            source: ConnectionSource::Cloud,
+            connections: self
+                .entries
+                .iter()
+                .map(|(entry, _)| entry.clone())
+                .collect(),
+        }
+    }
+
+    async fn dial(&self, connection: &Connection, beside: bool) -> Result<Channel, ConnectError> {
+        let (index, (_, script)) = self
+            .entries
+            .iter()
+            .enumerate()
+            .find(|(_, (entry, _))| entry == connection)
+            .unwrap();
+        self.dials.lock().unwrap().push(Dialled {
+            index,
+            at: self.epoch.elapsed(),
+            beside,
+        });
+        let unfinished = Unfinished(&self.abandoned, index);
+        let dialled = match *script {
+            Scripted::ConfirmsAfter(delay) => {
+                tokio::time::sleep(delay).await;
+                Ok(test_support::confirming_channel().await)
+            }
+            Scripted::Silent => std::future::pending().await,
+            Scripted::Fails => Err(ConnectError::Attempt("scripted failure".into())),
+        };
+        std::mem::forget(unfinished);
+        dialled
+    }
+}
+
+#[tonic::async_trait]
+impl Connector for ScriptedConnector {
+    async fn connect(&self, connection: &Connection) -> Result<Channel, ConnectError> {
+        self.dial(connection, false).await
+    }
+
+    async fn connect_beside(&self, connection: &Connection) -> Result<Channel, ConnectError> {
+        self.dial(connection, true).await
+    }
+
+    async fn dial_proxy(
+        &self,
+        _: &Connection,
+        _: &str,
+        _: &str,
+    ) -> Result<BoxProxyStream, ConnectError> {
+        unreachable!("connect opens no proxy")
+    }
+}
+
+/// One entry of each transport, with the stagger it is given before the next
+/// entry is dialled beside it.
+fn staggered_entries() -> [(Connection, Duration); 3] {
+    let capability = ployz_core::ManagementCapability::new(
+        ployz_core::ManagementIdentity::from_bytes([1; 32]),
+        [2; 32],
+    );
+    [
+        (
+            Connection::management(capability.to_secret_string()).unwrap(),
+            Duration::from_secs(1),
+        ),
+        (
+            Connection::unix("/scripted/entry.sock").unwrap(),
+            Duration::from_secs(1),
+        ),
+        (
+            Connection::ssh(SshDestination::parse("user@scripted").unwrap()),
+            Duration::from_secs(5),
+        ),
+    ]
+}
+
+fn answering_entry() -> Connection {
+    Connection::unix("/scripted/answering.sock").unwrap()
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_entry_that_confirms_within_its_stagger_is_never_raced() {
+    for (first, stagger) in staggered_entries() {
+        let connector = ScriptedConnector::new(vec![
+            (
+                first.clone(),
+                Scripted::ConfirmsAfter(stagger - Duration::from_millis(100)),
+            ),
+            (answering_entry(), Scripted::ConfirmsAfter(Duration::ZERO)),
+        ]);
+        let client = connect_selected_with(connector.selected(), connector.clone())
+            .await
+            .unwrap();
+        assert_eq!(client.connection(), &first);
+        assert_eq!(
+            *connector.dials.lock().unwrap(),
+            [Dialled {
+                index: 0,
+                at: Duration::ZERO,
+                beside: false
+            }],
+            "{first}"
+        );
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_silent_entry_is_raced_after_its_stagger_and_dropped_once_another_confirms() {
+    for (first, stagger) in staggered_entries() {
+        let connector = ScriptedConnector::new(vec![
+            (first.clone(), Scripted::Silent),
+            (answering_entry(), Scripted::ConfirmsAfter(Duration::ZERO)),
+        ]);
+        let client = connect_selected_with(connector.selected(), connector.clone())
+            .await
+            .unwrap();
+        assert_eq!(client.connection(), &answering_entry());
+        assert_eq!(
+            *connector.dials.lock().unwrap(),
+            [
+                Dialled {
+                    index: 0,
+                    at: Duration::ZERO,
+                    beside: false
+                },
+                Dialled {
+                    index: 1,
+                    at: stagger,
+                    beside: true
+                },
+            ],
+            "{first}"
+        );
+        assert_eq!(*connector.abandoned.lock().unwrap(), [0], "{first}");
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn in_order_a_slow_entry_is_never_raced() {
+    let connector = ScriptedConnector::new(vec![
+        (
+            Connection::unix("/scripted/0.sock").unwrap(),
+            Scripted::ConfirmsAfter(Duration::from_secs(4)),
+        ),
+        (answering_entry(), Scripted::ConfirmsAfter(Duration::ZERO)),
+    ]);
+    let client = connect_selected_in_order(connector.selected(), connector.clone())
+        .await
+        .unwrap();
+    assert_eq!(
+        client.connection(),
+        &Connection::unix("/scripted/0.sock").unwrap()
+    );
+    assert_eq!(
+        *connector.dials.lock().unwrap(),
+        [Dialled {
+            index: 0,
+            at: Duration::ZERO,
+            beside: false
+        }]
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_failed_entry_hands_over_at_once_and_only_dials_beside_a_live_one() {
+    let connector = ScriptedConnector::new(vec![
+        (
+            Connection::unix("/scripted/0.sock").unwrap(),
+            Scripted::Fails,
+        ),
+        (
+            Connection::unix("/scripted/1.sock").unwrap(),
+            Scripted::Silent,
+        ),
+        (
+            Connection::unix("/scripted/2.sock").unwrap(),
+            Scripted::Fails,
+        ),
+        (
+            answering_entry(),
+            Scripted::ConfirmsAfter(Duration::from_secs(3)),
+        ),
+    ]);
+    let client = connect_selected_with(connector.selected(), connector.clone())
+        .await
+        .unwrap();
+    assert_eq!(client.connection(), &answering_entry());
+    let second = Duration::from_secs(1);
+    assert_eq!(
+        *connector.dials.lock().unwrap(),
+        [
+            Dialled {
+                index: 0,
+                at: Duration::ZERO,
+                beside: false
+            },
+            Dialled {
+                index: 1,
+                at: Duration::ZERO,
+                beside: false
+            },
+            Dialled {
+                index: 2,
+                at: second,
+                beside: true
+            },
+            Dialled {
+                index: 3,
+                at: second,
+                beside: true
+            },
+        ]
+    );
+    assert_eq!(*connector.abandoned.lock().unwrap(), [1]);
 }
 
 #[test]

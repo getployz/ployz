@@ -1,5 +1,5 @@
 use super::*;
-use crate::connect::test_support::rpc_routes;
+use crate::connect::test_support::{LOG_ROUTES, rpc_routes};
 use crate::global_fixtures::{machine, running_on};
 use crate::sdk::SessionInner;
 use ployz_core::{
@@ -89,6 +89,7 @@ async fn fake<const STREAMS: usize>(env: Option<&str>) -> (Fake, [Frames; STREAM
                 }
             }
         },
+        LOG_ROUTES,
         move |_| {
             let receiver = receivers.lock().unwrap().pop_front().unwrap();
             async move { Ok(tonic::Response::new(ReceiverStream::new(receiver))) }

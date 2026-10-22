@@ -425,6 +425,14 @@ fn classify(error: &(dyn Error + 'static)) -> (RpcErrorCode, Value) {
             serde_json::json!({ "valid_children": valid }),
         );
     }
+    if let Some(OperatorError::NotRunningOnAnswered { gaps, .. }) =
+        error.downcast_ref::<OperatorError>()
+    {
+        return (
+            RpcErrorCode::Unavailable,
+            serde_json::json!({ "failures": gaps.failures, "omitted": gaps.omissions }),
+        );
+    }
     if let Some(OperatorError::NotRunning {
         running_in_scope, ..
     }) = error.downcast_ref::<OperatorError>()
@@ -616,6 +624,7 @@ fn operator_code(error: &OperatorError) -> RpcErrorCode {
         | OperatorError::NoServices
         | OperatorError::NoDeploymentContainers => RpcErrorCode::NotFound,
         OperatorError::StreamClosed
+        | OperatorError::NotRunningOnAnswered { .. }
         | OperatorError::ExecContainerStopped { .. }
         | OperatorError::NoServableContainer
         | OperatorError::SnapshotStale => RpcErrorCode::Unavailable,

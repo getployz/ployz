@@ -1047,8 +1047,25 @@ impl Client {
         machines: &[MachineObservation],
         environment: EnvironmentValues,
     ) -> Result<LiveServices<RpcError>, ConnectError> {
+        self.live_services_until(machines, environment, |_| false)
+            .await
+    }
+
+    /// [`Self::live_services_from`], returning early once `found` holds for the
+    /// answers so far. An early result leaves out the Machines yet to answer, as
+    /// neither a failure nor an omission, so only what `found` checked is complete.
+    pub(crate) async fn live_services_until(
+        &self,
+        machines: &[MachineObservation],
+        environment: EnvironmentValues,
+        found: impl Fn(&LiveServices<RpcError>) -> bool,
+    ) -> Result<LiveServices<RpcError>, ConnectError> {
+        let mut live = derive_live_services(PartialResult {
+            successes: Vec::new(),
+            failures: Vec::new(),
+            omissions: Vec::new(),
+        });
         let mut tasks = JoinSet::new();
-        let mut omissions = Vec::new();
         for machine in machines {
             if machine.invites_rpc() {
                 tasks.spawn(list_on_machine(
@@ -1057,24 +1074,22 @@ impl Client {
                     environment,
                 ));
             } else {
-                omissions.push(machine.machine.id);
+                live.containers.omissions.push(machine.machine.id);
             }
         }
-        let mut result = PartialResult {
-            successes: Vec::new(),
-            failures: Vec::new(),
-            omissions,
-        };
         // TODO: retain target failures and omissions beside successful container
         // observations; an entry-relative answer remains partial evidence.
         while let Some(joined) = tasks.join_next().await {
             match joined {
-                Ok(Ok(success)) => result.successes.push(success),
-                Ok(Err(failure)) => result.failures.push(failure),
+                Ok(Ok(success)) => live.containers.successes.push(success),
+                Ok(Err(failure)) => live.containers.failures.push(failure),
                 Err(error) => return Err(error.into()),
             }
+            if found(&live) {
+                return Ok(live);
+            }
         }
-        Ok(derive_live_services(result))
+        Ok(live)
     }
 
     /// Converge one Container on `machine_id` to `want`. A refusal answers as the error
