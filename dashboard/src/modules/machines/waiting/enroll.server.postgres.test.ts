@@ -533,6 +533,20 @@ it("resumes the founding claim of a host whose founding attempt failed when it i
   expect(await claimAsFounder(a, "1".repeat(32))).toMatchObject({ kind: "initialize", resumed: true });
 });
 
+it("finishes removing a failed founder's claim whose removal already started, even when that host is enrolled first again", async () => {
+  const [a] = await waiting("web-a");
+  if (a === undefined) throw new Error("one host");
+  await failedFounder(a, "1".repeat(32));
+  await harness.pool.query(
+    "update organization_pairing set removal_started_at = date_trunc('milliseconds', now()), removal_endpoints = '[]'::jsonb",
+  );
+
+  const [again] = (await run(enroll([a]))).attempts;
+  expect(again?.role).toBe("founder");
+  expect(await pairings()).toEqual([]);
+  expect(await claimAsFounder(a, "1".repeat(32))).toMatchObject({ kind: "initialize", resumed: false });
+});
+
 it("drops a failed founding claim once the host's latest attempt came from another Machine", async () => {
   const [a] = await waiting("web-a");
   if (a === undefined) throw new Error("one host");
