@@ -495,7 +495,15 @@ pub(super) fn execute(
     } else if detached {
         Ok(())
     } else {
-        progress::completion(&view, successor.as_ref(), |args| {
+        let named: Vec<&str> = matches
+            .try_get_many::<String>("service")
+            .ok()
+            .flatten()
+            .into_iter()
+            .flatten()
+            .map(String::as_str)
+            .collect();
+        progress::completion(&view, successor.as_ref(), &named, |args| {
             super::rerun(matches, args)
         })
     };
