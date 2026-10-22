@@ -682,13 +682,16 @@ impl ReplicatedStore {
     pub async fn record_certificate_failure(
         &self,
         hostname: &IngressHost,
+        tried: Option<&CertificateMaterial>,
         last_error: impl Into<String>,
         clock: IssuanceClock,
     ) -> Result<(), Error> {
         let Some((key, latest)) = self.acme_row(hostname).await? else {
             return Ok(());
         };
-        if latest.material().is_some() {
+        // A failed renewal keeps serving its material and backs off like a first order, unless
+        // another Machine renewed meanwhile: the new material carries no stale failure.
+        if latest.material() != tried {
             return Ok(());
         }
         self.upsert_certificate(&key, &latest.with_backoff(last_error, clock))

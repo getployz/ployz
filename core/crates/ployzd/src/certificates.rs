@@ -510,10 +510,15 @@ async fn issue_wanted(
             IssuanceGate::Nothing => continue,
             IssuanceGate::Refuse { refusal, clock } => {
                 first_seen.remove(hostname);
-                if rank == 0 && row.and_then(CertificateRow::material).is_none() {
+                if rank == 0 {
                     let reason = refusal_reason(hostname, refusal, &cluster);
                     if let Err(error) = store
-                        .record_certificate_failure(hostname, reason, clock)
+                        .record_certificate_failure(
+                            hostname,
+                            row.and_then(CertificateRow::material),
+                            reason,
+                            clock,
+                        )
                         .await
                     {
                         eprintln!(
@@ -560,6 +565,8 @@ async fn issue_wanted(
                 if let Err(record_error) = store
                     .record_certificate_failure(
                         hostname,
+                        rows.get(hostname.as_str())
+                            .and_then(CertificateRow::material),
                         ployz_core::error_chain::inline(&error),
                         clock,
                     )

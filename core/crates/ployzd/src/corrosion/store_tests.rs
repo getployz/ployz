@@ -203,6 +203,7 @@ async fn record_certificate_failure_is_an_error_when_the_store_is_unreachable() 
         store
             .record_certificate_failure(
                 &hostname,
+                None,
                 "does not resolve",
                 IssuanceClock::new(
                     1,
@@ -1135,6 +1136,48 @@ async fn certificate_rows_round_trip_material_and_refusal_through_the_store() {
         store.certificates().await.unwrap(),
         BTreeMap::from([(CertificateHost::from(hostname), material)])
     );
+    task.abort();
+}
+
+#[tokio::test]
+async fn a_failed_renewal_keeps_its_material_and_backs_off() {
+    let db = corrosion_db();
+    let (store, task) = identity_store(db).await;
+    let hostname = IngressHost::parse("app.example.com").unwrap();
+    let pair = rcgen::generate_simple_self_signed([hostname.as_str().to_owned()]).unwrap();
+    let material =
+        super::CertificateMaterial::parse(pair.cert.pem(), pair.signing_key.serialize_pem())
+            .unwrap();
+    store
+        .publish_certificate(&hostname, &material, ployz_core::ClusterRoute::Direct)
+        .await
+        .unwrap();
+    let clock = IssuanceClock::new(1, SystemTime::UNIX_EPOCH, IssuanceFailure::Authority);
+    store
+        .record_certificate_failure(&hostname, Some(&material), "ACME request failed", clock)
+        .await
+        .unwrap();
+    let row = store.certificate_row(&hostname).await.unwrap();
+    assert_eq!(row.material(), Some(&material));
+    assert_eq!(row.last_error(), Some("ACME request failed"));
+    assert_eq!(row.clock(), Some(clock));
+
+    // Another Machine renewed meanwhile: its new material carries no stale failure.
+    let pair = rcgen::generate_simple_self_signed([hostname.as_str().to_owned()]).unwrap();
+    let renewed =
+        super::CertificateMaterial::parse(pair.cert.pem(), pair.signing_key.serialize_pem())
+            .unwrap();
+    store
+        .publish_certificate(&hostname, &renewed, ployz_core::ClusterRoute::Direct)
+        .await
+        .unwrap();
+    store
+        .record_certificate_failure(&hostname, Some(&material), "ACME request failed", clock)
+        .await
+        .unwrap();
+    let row = store.certificate_row(&hostname).await.unwrap();
+    assert_eq!(row.material(), Some(&renewed));
+    assert_eq!(row.last_error(), None);
     task.abort();
 }
 
