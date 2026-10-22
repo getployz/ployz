@@ -473,7 +473,7 @@ async fn enroll_refuses_a_sealing_key_sealed_to_another_machine() {
 }
 
 #[tokio::test]
-async fn register_from_an_entry_with_an_unreadable_sealing_key_still_admits_the_joiner() {
+async fn a_corrupt_sealing_key_reads_as_needs_access_and_still_admits_the_joiner() {
     let (entry, entry_dir, joiner) = sealing_entry("ployzd-register-corrupt-key").await;
     std::fs::write(entry_dir.join("sealing.key"), b"not a key").unwrap();
 
@@ -481,6 +481,10 @@ async fn register_from_an_entry_with_an_unreadable_sealing_key_still_admits_the_
     assert_eq!(registration.sealing_key, None);
     joiner.machine.enroll(member(registration)).await.unwrap();
 
+    assert_eq!(
+        sealing(&entry).await,
+        Some(ployz_core::Sealing::NeedsAccess)
+    );
     assert_eq!(
         sealing(&joiner.machine).await,
         Some(ployz_core::Sealing::NeedsAccess)

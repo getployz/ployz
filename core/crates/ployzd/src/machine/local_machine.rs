@@ -452,6 +452,10 @@ impl LocalMachine {
                 public_key: key.public_key(),
             }),
             Ok(None) => Some(ployz_core::Sealing::NeedsAccess),
+            Err(error) if error.kind() == std::io::ErrorKind::InvalidData => {
+                tracing::warn!(%error, "this Machine's Sealing Key is unusable");
+                Some(ployz_core::Sealing::NeedsAccess)
+            }
             Err(error) => {
                 tracing::warn!(%error, "could not read the Sealing Key");
                 None
