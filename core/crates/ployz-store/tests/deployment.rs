@@ -6315,3 +6315,95 @@ fn a_rollback_asks_about_a_service_a_deployment_of_unknown_outcome_may_have_star
         .collect();
     assert_eq!(removes, ["cron"]);
 }
+
+/// [`shop`] with #1 applying web and api, then #2 adding cron and starting before its
+/// runner lost track of it.
+fn cron_lost() -> (ConfigStore, Actor) {
+    let (store, who) = shop();
+    apply_both(&store, &who, 1);
+    store
+        .write(
+            &who,
+            &CreateService {
+                id: ServiceLineageId::parse("00000000-0000-4000-8000-000000000005").unwrap(),
+                environment: EnvironmentRef::default(),
+                name: ServiceName::parse("cron").unwrap(),
+                image: Some("nginx:1".into()),
+                template: None,
+            },
+        )
+        .unwrap();
+    admit(&store, &who, 2, &[], None).unwrap();
+    let a = runner("runner-a");
+    store.claim(&id(2), &a).unwrap();
+    store
+        .record(
+            &id(2),
+            &a,
+            RunEvidence::Prepared(preview(&["web", "api", "cron"])),
+        )
+        .unwrap();
+    store.claim(&id(2), &a).unwrap_err();
+    (store, who)
+}
+
+fn rollback_to(
+    store: &ConfigStore,
+    who: &Actor,
+    (n, to): (u8, u8),
+) -> Result<DeploymentSummary, RpcError> {
+    store.write_trusted(
+        who,
+        &Admit::Retry(Retry {
+            id: id(n),
+            deployment: id(to),
+            rolls_back: None,
+            version: None,
+            accept_volume_loss: Vec::new(),
+        }),
+        &protector(Approval::Required, Asks::Destroys),
+    )
+}
+
+#[test]
+fn a_deploy_of_some_services_leaves_a_lost_deployments_service_in_doubt() {
+    let (store, who) = cron_lost();
+    // #3 deploys web alone: it settles nothing about cron.
+    admit(&store, &who, 3, &["web"], None).unwrap();
+    let a = runner("runner-a");
+    store.claim(&id(3), &a).unwrap();
+    store
+        .record(&id(3), &a, RunEvidence::Prepared(preview(&["web"])))
+        .unwrap();
+    store.record(&id(3), &a, succeeded(&["web"])).unwrap();
+    assert_eq!(status(&store, &who, 3), DeploymentStatus::Applied);
+
+    let refused = rollback_to(&store, &who, (4, 1)).unwrap_err();
+    assert_eq!(refused.code.as_str(), "approval_required");
+    let removes: Vec<&str> = refused.details["effects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|effect| effect["kind"] == "removes_service")
+        .map(|effect| effect["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(removes, ["cron"]);
+}
+
+#[test]
+fn rolling_back_to_a_deploy_of_some_services_leaves_the_others_running_unasked() {
+    let (store, who) = shop();
+    apply_both(&store, &who, 1);
+    admit(&store, &who, 2, &["web"], None).unwrap();
+    let a = runner("runner-a");
+    store.claim(&id(2), &a).unwrap();
+    store
+        .record(&id(2), &a, RunEvidence::Prepared(preview(&["web"])))
+        .unwrap();
+    store.record(&id(2), &a, succeeded(&["web"])).unwrap();
+    apply_both(&store, &who, 3);
+
+    // Back to #2 ships web alone; api keeps running.
+    let rolled = rollback_to(&store, &who, (4, 2)).unwrap();
+    assert_eq!(rolled.status, DeploymentStatus::Queued);
+}
