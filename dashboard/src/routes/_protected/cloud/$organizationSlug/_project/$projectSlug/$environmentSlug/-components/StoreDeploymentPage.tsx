@@ -108,7 +108,7 @@ function RunHeader({ deployment, graph, selected, search, onCancel }: {
                 {ended ? formatDuration((ended.getTime() - started.getTime()) / 1000) : <RunningTime from={started} />}
               </span></>
             ) : null}
-            {graph.nodes.length ? ` · ${graph.done} of ${graph.nodes.length}` : null}
+            {graph.total ? ` · ${graph.done} of ${graph.total}` : null}
           </p>
           <p className="break-words text-xs text-muted-foreground">
             {byline}{byline ? " · " : null}

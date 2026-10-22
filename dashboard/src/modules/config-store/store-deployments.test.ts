@@ -307,6 +307,28 @@ it("keeps the deepest preparation failure cause in the Deployment banner", () =>
   expect(outcome.cause).toEqual(["could not pull the image", "registry denied access"]);
 });
 
+it("closes a reason in whole sentences with its cause, and never reads inside the reason", () => {
+  const outcome: Outcome = {
+    type: "not_executed", needs_upload: [],
+    reason: "Server machine-1 isn't answering. Check that its Ployz daemon is running, then retry.",
+    cause: ["management connection timed out"],
+  };
+  const read = (reason: string, cause: string) => outcomeReason({ ...outcome, reason, cause: [cause] });
+  expect(outcomeReason(outcome))
+    .toBe("Server machine-1 isn't answering. Check that its Ployz daemon is running, then retry. Cause: management connection timed out.");
+  // The cause belongs to the Server tried last, so it follows the whole reason, not its first sentence.
+  expect(read(
+    "Ployz couldn't reach a Server's daemon through any of the 2 connections from Cloud. Server web-2, tried last, isn't answering. Check that its Ployz daemon is running, then retry.",
+    "connection refused",
+  )).toBe("Ployz couldn't reach a Server's daemon through any of the 2 connections from Cloud. Server web-2, tried last, isn't answering. Check that its Ployz daemon is running, then retry. Cause: connection refused.");
+  expect(read("Ployz couldn't reach your Server's daemon.", "Timed out after 10s."))
+    .toBe("Ployz couldn't reach your Server's daemon. Cause: Timed out after 10s.");
+  // An image tag may end in a dot; a reason that isn't a sentence keeps it whole.
+  expect(read("Image ghcr.io/acme/web:release-2026.10. not found, or its registry needs credentials", "manifest unknown"))
+    .toBe("Image ghcr.io/acme/web:release-2026.10. not found, or its registry needs credentials: manifest unknown");
+  expect(read("web: Cancelled", "registry denied access")).toBe("web: Cancelled: registry denied access");
+});
+
 it("drops the header's reason when the Deployment's cancel stopped the work it names, and keeps a real failure's", () => {
   const stopped: Outcome = { type: "executed", summary: null, reason: "web: Cancelled", cause: [], services: [] };
   expect(outcomeReason({ ...stopped, cancelled: true })).toBeUndefined();
