@@ -340,19 +340,19 @@ fn leave(root: &ArgMatches, removal: Removal) -> Result<(), Error> {
             let server = &selected.name;
             crate::ui::warn(if dead {
                 format!(
-                    "Server {server} doesn't know it was forgotten. If it runs again as it is, \
-                     its services start again on its own copy of each Volume, and Ployz never \
-                     brings back what they write there. When it boots, run sudo ployz-uninstall \
-                     on it to stop them and keep every Volume copy on its disk. ployz server add \
-                     for it with --reset adds it back and keeps its writer copies read-only, but \
-                     deletes its mirrors. Wipe its disk only if you need nothing on it."
+                    "Server {server} doesn't know it was forgotten. If it runs again as it is, its \
+                     services start again on its own copy of each Volume, and Ployz never brings back \
+                     what they write there. When it boots, run sudo ployz-uninstall on it to stop them \
+                     and keep every Volume copy on its disk. Adding it back with ployz server add --reset \
+                     keeps its writer copies read-only but can delete its mirrors, so don't while one may \
+                     be a Volume's last copy. Wipe its disk only if you need nothing on it."
                 )
             } else {
                 format!(
-                    "Server {server} still runs and doesn't know it was forgotten, so its \
-                     services keep running there. Run sudo ployz-uninstall on it to stop them and \
-                     keep every Volume copy on its disk, or ployz server add for it with --reset \
-                     to add it back; the reset deletes its mirrors."
+                    "Server {server} still runs and doesn't know it was forgotten, so its services keep \
+                     running there. Run sudo ployz-uninstall on it to stop them and keep every Volume \
+                     copy on its disk. Adding it back with ployz server add --reset can delete its \
+                     mirrors, so don't while one may be a Volume's last copy."
                 )
             });
         }
