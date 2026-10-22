@@ -172,8 +172,9 @@ pub(crate) fn head(tx: &mut dyn Tx, environment: &Environment) -> Result<Head, R
     Ok(head)
 }
 
-/// The Services `environment`'s Deployments of unknown outcome since its last applied
-/// one may have started: each started, then its runner lost track of it.
+/// The Services `environment`'s Deployments of unknown outcome may have started: each
+/// started, then its runner lost track of it. Only an applied Deployment of every
+/// Service settles them; one of some Services leaves the rest in doubt.
 fn may_run(
     tx: &mut dyn Tx,
     environment: &EnvironmentId,
@@ -184,7 +185,7 @@ fn may_run(
              WHERE environment_id = ?1 AND {NUMBERED} AND started IS NOT NULL \
              AND (status = 'unknown' OR (status IN ('running', 'cancelling') AND lease <= {})) \
              AND number > COALESCE((SELECT MAX(number) FROM config_deployment \
-              WHERE environment_id = ?1 AND status = 'applied'), 0)",
+              WHERE environment_id = ?1 AND status = 'applied' AND services = '[]'), 0)",
             now()
         ),
         &[environment.as_str().into()],
