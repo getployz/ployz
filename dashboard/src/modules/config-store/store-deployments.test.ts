@@ -307,6 +307,21 @@ it("keeps the deepest preparation failure cause in the Deployment banner", () =>
   expect(outcome.cause).toEqual(["could not pull the image", "registry denied access"]);
 });
 
+it("puts the cause inside a reason's first sentence, so a Server that isn't answering reads as plain sentences", () => {
+  const outcome: Outcome = {
+    type: "not_executed", needs_upload: [],
+    reason: "Server machine-1 isn't answering. Check that its Ployz daemon is running, then retry.",
+    cause: ["management connection timed out"],
+  };
+  expect(outcomeReason(outcome))
+    .toBe("Server machine-1 isn't answering (management connection timed out). Check that its Ployz daemon is running, then retry.");
+  expect(outcomeReason({ ...outcome, reason: "Ployz couldn't reach your Server's daemon.", cause: ["connection refused"] }))
+    .toBe("Ployz couldn't reach your Server's daemon (connection refused).");
+  // A Server named like a domain keeps its dots: only a stop before a space or the end closes a sentence.
+  expect(outcomeReason({ ...outcome, reason: "Server web.example.com isn't answering.", cause: ["timed out"] }))
+    .toBe("Server web.example.com isn't answering (timed out).");
+});
+
 it("drops the header's reason when the Deployment's cancel stopped the work it names, and keeps a real failure's", () => {
   const stopped: Outcome = { type: "executed", summary: null, reason: "web: Cancelled", cause: [], services: [] };
   expect(outcomeReason({ ...stopped, cancelled: true })).toBeUndefined();
