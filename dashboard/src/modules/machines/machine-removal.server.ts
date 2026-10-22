@@ -130,7 +130,7 @@ export const removeMachineActivity = Effect.fn("MachineRemoval.remove")(
     const runtime = yield* OrganizationRuntime;
     // The Engine refuses to remove the Server it was entered by while another is listed, so Cloud enters by another.
     const avoiding = yield* runtime.open(attempt.organizationId, { avoiding: attempt.machineId });
-    const session = avoiding.status === "connected" ? avoiding : yield* runtime.open(attempt.organizationId);
+    const session = avoiding.status === "connected" ? avoiding : yield* runtime.open(attempt.organizationId, { only: attempt.machineId });
     if (access.kind !== "ready" || session.status !== "connected") {
       return yield* new MachineRemovalProviderFailure({
         operation: "open organization runtime",
@@ -154,10 +154,14 @@ export const removeMachineActivity = Effect.fn("MachineRemoval.remove")(
       return { kind: "refused", failureCode: "server_lacks", message: sdkFailureMessage(lack, servers), generation: access.generation } as const;
     }
     const machine = attempt.machineId;
-    const others = servers.filter((server) => server.id !== machine);
+    // Entered by the target itself. Without a frame, the other paired Servers stand in for the ones the Engine lists.
+    const others = Option.isSome(frame)
+      ? servers.flatMap((server) => server.id === machine ? [] : [server.name])
+      : access.connections.flatMap((connection) =>
+        connection.machine_id === undefined || connection.machine_id === machine ? [] : [connection.name ?? connection.machine_id]);
     if (!forgetOnly && avoiding.status !== "connected" && others.length > 0) {
       const name = servers.find((server) => server.id === machine)?.name ?? machine;
-      return { kind: "refused", failureCode: "conflict", message: carriedOnlyBy(name, others.map((server) => server.name)), generation: access.generation } as const;
+      return { kind: "refused", failureCode: "conflict", message: carriedOnlyBy(name, others), generation: access.generation } as const;
     }
     const owned = yield* markOwnedMachineRemoveSent({ attemptId: attempt.id, inngestRunId: attempt.inngestRunId });
     if (!owned) return { kind: "superseded" } as const;

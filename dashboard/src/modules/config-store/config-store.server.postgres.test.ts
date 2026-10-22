@@ -1316,9 +1316,10 @@ it.live(
 
 /**
  * Removes Cloud's dial entry `machine-0` while `machine-1` is listed beside it. Dialing `machine-1` reaches it only when
- * `otherAnswers`; entering through `machine-0` refuses its own removal as the Engine does.
+ * `otherAnswers`, and the Runtime Watch sends a frame only when `frameAnswers`; entering through `machine-0` refuses
+ * its own removal as the Engine does.
  */
-const removeDialEntry = Effect.fn(function* (otherAnswers: boolean) {
+const removeDialEntry = Effect.fn(function* (otherAnswers: boolean, frameAnswers = true) {
   const alice = yield* signUp("alice");
   const caller = yield* resolveCaller(signedIn(alice));
   const organizationId = caller.organization.id;
@@ -1341,7 +1342,7 @@ const removeDialEntry = Effect.fn(function* (otherAnswers: boolean) {
   };
   const sent: string[] = [];
   const through = (entry: MachineId) => asTestDouble<PloyzSession>()({
-    watchFirstFrame: () => Effect.succeed(frame),
+    watchFirstFrame: () => frameAnswers ? Effect.succeed(frame) : Effect.fail(new RuntimeConnectionFailure({ cause: "timed out" })),
     removeMachine: (target: string) => Effect.suspend(() => {
       sent.push(`${target} through ${entry}`);
       return target === entry
@@ -1399,6 +1400,22 @@ it.live(
         assert.match(removed.value.message, /machine-0 can't carry its own removal/);
         assert.match(removed.value.message, /machine-1/);
         assert.notMatch(removed.value.message, /forget machine-0/i);
+      }).pipe(Effect.provide(cloud));
+    }),
+  60_000,
+);
+
+it.live(
+  "without a Cluster frame, a Server Cloud reaches only through itself still refuses its removal at once while another is paired",
+  () =>
+    Effect.gen(function* () {
+      const cloud = yield* cloudServices();
+      yield* Effect.gen(function* () {
+        const { removed, sent } = yield* removeDialEntry(false, false);
+        assert.deepStrictEqual(sent, []);
+        if (!Exit.isSuccess(removed)) return assert.fail(`removal failed: ${Cause.pretty(removed.cause)}`);
+        if (removed.value.kind !== "refused") return assert.fail(`not refused: ${removed.value.kind}`);
+        assert.strictEqual(removed.value.failureCode, "conflict");
       }).pipe(Effect.provide(cloud));
     }),
   60_000,
