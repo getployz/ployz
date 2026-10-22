@@ -2,7 +2,11 @@ import type { MachineId, MachineUpgradeAttemptId } from "@ployz/sdk";
 import { Effect, Option, Schema } from "effect";
 import { attemptLifecycle } from "#/modules/inngest/attempt-lifecycle";
 import type { PloyzStepTools } from "#/modules/inngest/client";
-import { createServerUpgradeRequestedEvent, serverUpgradeRequestedEventType } from "#/modules/inngest/events";
+import {
+  createSealingKeyEnsureRequestedEvent,
+  createServerUpgradeRequestedEvent,
+  serverUpgradeRequestedEventType,
+} from "#/modules/inngest/events";
 import { rustMachineIdSchema } from "#/modules/machines/enrollment";
 import { upgradeFailedMail } from "#/modules/mail/templates/servers/upgrade-failed";
 import { queueOrganizationMail } from "#/modules/notifications/recipients.server";
@@ -29,7 +33,7 @@ import {
 import { AppConfig } from "#/server/config.server";
 import type { runInngestEffect } from "#/server/run.server";
 
-type StepTools = Pick<PloyzStepTools, "run" | "sleep">;
+type StepTools = Pick<PloyzStepTools, "run" | "sendEvent" | "sleep">;
 type EffectRunner = typeof runInngestEffect;
 
 const POLL_INTERVAL_MS = 15_000;
@@ -57,6 +61,7 @@ type ServerResult =
  * older than the newest release on the channel for its line) in name order, one at a time; an automatic one skips a
  * Halted release. It stops at the first outcome that isn't `succeeded`; a Server that went
  * offline or refuses as Busy is skipped and records nothing. An automatic one that didn't finish mails the members.
+ * Whatever the results, it then asks for the Cluster's Sealing Key to be backfilled, since upgraded Servers can now hold it.
  */
 export async function executeRollOutServerUpgrade(
   { event, step, runId }: { event: { data: unknown }; step: StepTools; runId: string },
@@ -88,6 +93,8 @@ export async function executeRollOutServerUpgrade(
       new Map(failed.flatMap(({ machineId, name }) => name === undefined ? [] : [[machineId, name]])),
     )));
   }
+  await step.sendEvent("ensure-cluster-sealing-key",
+    createSealingKeyEnsureRequestedEvent({ organizationId: request.organizationId }));
   return { results };
 }
 

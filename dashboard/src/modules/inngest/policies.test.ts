@@ -24,6 +24,7 @@ import {
 } from "#/modules/cluster-domain/sync.inngest";
 import { createCancelServerUpgrade, createRollOutServerUpgrade, createScheduleServerUpgrades } from "#/modules/server-upgrade/server-upgrade.inngest";
 import { createRetireServerAccess } from "#/modules/machines/server-access.inngest";
+import { createEnsureClusterSealingKey } from "#/modules/machines/sealing-backfill.inngest";
 import { createPruneOrganizationChangeLog } from "#/modules/organization/change-log.inngest";
 import { createSweepExpiredVerifications } from "#/modules/identity/verification-sweep.inngest";
 import { createUptimeMaintenanceFunctions } from "#/modules/uptime/maintenance.inngest";
@@ -52,6 +53,7 @@ describe("Inngest function policies", () => {
       createSweepExpiredVerifications(inngest),
     createSyncClusterDomain(inngest),
     createScheduleClusterDomainSync(inngest),
+    createEnsureClusterSealingKey(inngest),
     createRollOutServerUpgrade(inngest),
     createCancelServerUpgrade(inngest),
     createScheduleServerUpgrades(inngest),
@@ -86,6 +88,7 @@ describe("Inngest function policies", () => {
       { id: "sweep-expired-verifications", retries: 3, concurrency: [{ limit: 1 }] },
       { id: "sync-cluster-domain", retries: 3, concurrency: [{ key: "event.data.organizationId", limit: 1 }] },
       { id: "schedule-cluster-domain-sync", retries: 3, concurrency: [{ limit: 1 }] },
+      { id: "ensure-cluster-sealing-key", retries: 3, concurrency: [{ key: "event.data.organizationId", limit: 1 }] },
       { id: "roll-out-server-upgrade", retries: 3, concurrency: [{ key: "event.data.organizationId", limit: 1 }] },
       { id: "cancel-server-upgrade", retries: 3, concurrency: [{ key: "event.data.run_id", limit: 1 }] },
       { id: "schedule-server-upgrades", retries: 3, concurrency: [{ limit: 1 }] },
