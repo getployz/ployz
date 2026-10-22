@@ -220,9 +220,10 @@ function ForgetServerRow({ machine, organizationSlug, gate }: { machine: Runtime
         sentence={<>Ployz takes it out of the cluster without reaching it. A volume with a mirror on another server comes
           back from it: open the volume's Copies, click Use mirror, then deploy. Volumes with no copy elsewhere{" "}
           <span className="text-destructive">are lost</span>. {machine.name} isn't told it was forgotten. If it runs
-          again as it is, its services keep writing to its own copies, and Ployz never brings that back. On 0.3.1 or
-          later it stops them itself a few minutes after it reaches an old peer on 0.3.1 or later; otherwise run sudo
-          ployz-uninstall on it as soon as it boots.</>}
+          again as it is, its services keep writing to its own copies, and Ployz never brings that back: run sudo
+          ployz-uninstall on it as soon as it boots. As a best effort, if it and at least one other server ran 0.3.1 or
+          later while it was still connected, and the server that forgot it runs 0.3.1 or later, it stops them itself up
+          to about 15 minutes after its network returns.</>}
         callbacks={{ load, confirm: forget }}
       />
     </>

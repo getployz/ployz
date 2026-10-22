@@ -556,12 +556,10 @@ async fn a_server_cloud_manages_is_forgotten_through_cloud() {
     assert_eq!(
         result.get("warnings"),
         Some(&json!([
-            "Server two still runs and isn't told it was forgotten, so its services keep \
-             running there. On 0.3.1 or later it stops them itself a few minutes after it \
-             reaches an old peer on 0.3.1 or later, keeping every Volume copy on its disk. \
-             Otherwise run sudo ployz-uninstall on it to do the same. Adding it back with \
-             ployz server add --reset can delete its mirrors, so don't while one may be a \
-             Volume's last copy."
+            "Server two still runs and doesn't know it was forgotten, so its services keep \
+             running there. Run sudo ployz-uninstall on it to stop them and keep every Volume \
+             copy on its disk. Adding it back with ployz server add --reset can delete its \
+             mirrors, so don't while one may be a Volume's last copy."
         ])),
         "{result}"
     );
@@ -1030,12 +1028,13 @@ async fn a_server_that_does_not_answer_leaves_without_a_reset_only_when_dead_is_
         Some(&json!([
             "Server two isn't told it was forgotten. If it runs again as it is, its services \
              start again on its own copy of each Volume, and Ployz never brings back what they \
-             write there. On 0.3.1 or later it stops them itself a few minutes after it reaches \
-             an old peer on 0.3.1 or later, keeping every Volume copy on its disk. Otherwise, \
-             when it boots, run sudo ployz-uninstall on it to do the same. Adding it back with \
-             ployz server add --reset keeps its writer copies read-only but can delete its \
-             mirrors, so don't while one may be a Volume's last copy. Wipe its disk only if you \
-             need nothing on it."
+             write there. When it boots, run sudo ployz-uninstall on it to stop them and keep \
+             every Volume copy on its disk. As a best effort, if two and at least one other \
+             Server ran 0.3.1 or later while it was still connected, and the Server that forgot \
+             it runs 0.3.1 or later, it does that itself up to about 15 minutes after its \
+             network returns. Adding it back with ployz server add --reset keeps its writer \
+             copies read-only but can delete its mirrors, so don't while one may be a Volume's \
+             last copy. Wipe its disk only if you need nothing on it."
         ])),
         "{result}"
     );

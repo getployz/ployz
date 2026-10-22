@@ -643,14 +643,15 @@ its own copy of each volume and they keep writing there, and a later move, mirro
 of the volume doesn't reach it. Ployz never brings back what they write there, and if you've
 restored the volume on another server, the two copies drift apart.
 
-A forgotten server on Ployz 0.3.1 or later finds out on its own, as long as the server that forgot
-it and at least one of its old peers also run 0.3.1 or later. Once it has heard nothing from its
-peers for a minute, it asks them whether it was forgotten, and when one says so it resets itself as
-`ployz server rm` would, except that it keeps every volume copy on its disk, mirrors included. Its
-services stop within a few minutes of it coming back, and `journalctl -u ployzd` on it says
-`this Machine was forgotten by its Cluster`. Nothing fences it when it can't reach any of its old
-peers, or when it, the server that forgot it, or all its old peers run an older version. Those
-cases, and the minutes before it asks, are yours to cover.
+A forgotten server stops its services itself as a best effort, and only when it was unreachable
+when it was forgotten. It needs the server and at least one other server to have run Ployz 0.3.1 or
+later while it was still connected, and the server that forgot it to run 0.3.1 or later. Once its
+network returns and it has heard nothing from a server for a minute, it asks that server whether it
+was forgotten, and when one says so it resets itself as `ployz server rm` would, except that it
+keeps every volume copy on its disk, mirrors included. Its services stop up to about 15 minutes
+after its network returns, and `journalctl -u ployz` on it says `this Machine was forgotten by its
+Cluster`. Nothing stops them when it can't reach any of those servers, or when the versions don't
+line up. Those cases, and the minutes before it asks, are yours to cover.
 
 So decide before a forgotten server runs again. As soon as it boots, run `sudo ployz-uninstall`
 on it. That stops the services Ployz runs there and keeps every copy of a volume on the disk, along

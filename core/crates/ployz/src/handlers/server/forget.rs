@@ -169,17 +169,14 @@ async fn check(credential: &Credential) -> Result<ForgetCheck, Error> {
 
 fn finished(forgotten: &ServersForgotten) -> Result<(), Error> {
     let next = "ployz server add".to_owned();
-    // A forgotten Server fences itself only when it and a peer run 0.3.1 or later and
-    // it reaches that peer (#2927); until then, and otherwise, the operator must.
+    // Nothing reaches a forgotten Server to fence it (#2927), so the operator must.
     crate::ui::warn(
-        "A forgotten Server isn't told it was forgotten. If one runs again as it is, its \
+        "A forgotten Server doesn't know it was forgotten. If one runs again as it is, its \
          services start again on its own copy of each Volume, and Ployz never brings back \
-         what they write there. One on 0.3.1 or later stops them itself a few minutes after \
-         it reaches an old peer on 0.3.1 or later, keeping every Volume copy on its disk. \
-         Otherwise, when it boots, run sudo ployz-uninstall on it to do the same. Adding it \
-         back with ployz server add --reset keeps its writer copies read-only but can delete \
-         its mirrors, so don't while one may be a Volume's last copy. Wipe its disk only if \
-         you need nothing on it.",
+         what they write there. When it boots, run sudo ployz-uninstall on it to stop them \
+         and keep every Volume copy on its disk. Adding it back with ployz server add --reset \
+         keeps its writer copies read-only but can delete its mirrors, so don't while one may \
+         be a Volume's last copy. Wipe its disk only if you need nothing on it.",
     );
     crate::ui::finish(&Next::new(forgotten, Some(next)), || {
         let check = &forgotten.check;
