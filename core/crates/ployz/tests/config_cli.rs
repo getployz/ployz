@@ -2893,7 +2893,9 @@ fn an_agent_adds_mounts_detaches_and_removes_volumes() {
         // --prune's ask, so the deploy runs and fails for want of a Server.
         let accept = error(store, &["deploy", "--accept-volume-loss", "data"]);
         assert_eq!(accept["code"], json!("invalid_argument"));
-        failed(store, &["deploy", "--yes"], 1);
+        let (code, deployed) = ployz(Some(store), &["deploy", "--yes"]);
+        assert_eq!(code, Some(1), "{deployed}");
+        assert_eq!(deployed["status"], json!("failed"));
     }
 }
 
