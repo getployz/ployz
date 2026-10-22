@@ -528,7 +528,7 @@ pub fn no_writer_message(name: &str, copies: &[KnownCopy], operator: Operator) -
             "{observed}. Restore needs a single copy: keep the newest, delete each other one from the Volume's page in Ployz Cloud, which shows whether it is a mirror or an old copy, then run ployz volume restore {name} --from <server you kept>"
         ),
         (NoWriterCase::SeveralCopies, Operator::Cli) => format!(
-            "{observed}. Restore needs a single copy: keep the newest, remove each other Server with ployz server rm, then run ployz volume restore {name} --from <server you kept>. {}",
+            "{observed}. Restore needs a single copy: keep the newest, remove each other Server from the Cluster with ployz server rm, then run ployz volume restore {name} --from <server you kept>. {}",
             start_over(name)
         ),
     }
@@ -707,7 +707,7 @@ mod tests {
                 &[copy("fsn-2", CopyRole::Slot), copy("hel-1", CopyRole::Slot)],
                 Operator::Cli
             ),
-            "Volume data has no writer; it is held as fsn-2 (copy), hel-1 (copy). Restore needs a single copy: keep the newest, remove each other Server with ployz server rm, then run ployz volume restore data --from <server you kept>. To start over with an empty Volume instead, run ployz volume rm data, which deletes its data, then add it again and deploy"
+            "Volume data has no writer; it is held as fsn-2 (copy), hel-1 (copy). Restore needs a single copy: keep the newest, remove each other Server from the Cluster with ployz server rm, then run ployz volume restore data --from <server you kept>. To start over with an empty Volume instead, run ployz volume rm data, which deletes its data, then add it again and deploy"
         );
         assert_eq!(
             no_writer_message("data", &[copy("hel-1", CopyRole::Switching)], Operator::Cli),

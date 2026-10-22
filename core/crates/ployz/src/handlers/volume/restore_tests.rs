@@ -4,7 +4,7 @@ use ployz_core::{
 };
 use ployz_store::VolumeName;
 
-use super::{Planned, Seen, plan};
+use super::{Planned, Seen, Unseen, plan};
 
 fn volume() -> VolumeName {
     VolumeName::parse("data").unwrap()
@@ -21,14 +21,14 @@ fn server(name: &str) -> MachineName {
 fn seen(name: &str, copy: Option<VolumeCopy>) -> Seen {
     Seen {
         id: MachineId::parse(name[name.len() - 1..].repeat(32)).unwrap(),
-        name: server(name),
+        name: name.to_owned(),
         copy: Ok(copy),
     }
 }
 
 fn silent(name: &str) -> Seen {
     Seen {
-        copy: Err("did not answer".to_owned()),
+        copy: Err(Unseen::Silent("did not answer".to_owned())),
         ..seen(name, None)
     }
 }
@@ -174,7 +174,7 @@ fn restore_refuses_beside_another_copy() {
             ],
             "web-1"
         ),
-        "data also has a copy on web-2; Restore needs web-1's copy to be the only one. Remove web-2 with ployz server rm first, or keep its copy and restore from it instead"
+        "data also has a copy on web-2; Restore needs web-1's copy to be the only one. Remove web-2 from the Cluster with ployz server rm first, or keep its copy and restore from it instead"
     );
 }
 
@@ -196,4 +196,60 @@ fn restore_refuses_a_server_outside_the_cluster() {
         refused(&[seen("web-1", None)], "web-9"),
         "web-9 is not a Server of this Cluster"
     );
+}
+
+#[test]
+fn restore_refuses_while_a_server_is_still_arriving_or_cant_fence_it() {
+    let arriving = Seen {
+        copy: Err(Unseen::Silent(
+            "is still arriving at the Server this connects through".to_owned(),
+        )),
+        ..seen("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", None)
+    };
+    assert_eq!(
+        refused(
+            &[
+                seen("web-1", Some(old_copy(Some(snapshot("f-2", 9, 1))))),
+                arriving
+            ],
+            "web-1"
+        ),
+        "Restore needs every Server to answer, since a copy on one that didn't would become a second writer. bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb is still arriving at the Server this connects through"
+    );
+    let unfenced = Seen {
+        copy: Err(Unseen::Unfenced),
+        ..seen("web-1", None)
+    };
+    assert_eq!(
+        refused(&[unfenced], "web-1"),
+        "web-1 holds a copy of data but runs a Ployz too old for Restore; upgrade Ployz there first"
+    );
+}
+
+#[test]
+fn a_writable_root_beside_another_copy_is_refused_not_already_the_writer() {
+    assert_eq!(
+        refused(
+            &[
+                seen("web-1", Some(root(false, 5))),
+                seen("web-2", Some(root(false, 7))),
+            ],
+            "web-1"
+        ),
+        "data also has a copy on web-2; Restore needs web-1's copy to be the only one. Remove web-2 from the Cluster with ployz server rm first, or keep its copy and restore from it instead"
+    );
+}
+
+#[test]
+fn a_snapshot_named_by_a_run_without_a_round_still_counts_its_epoch() {
+    let Planned::Restore { request, .. } = planned(
+        &[seen("web-1", Some(old_copy(Some(snapshot("f-9", 3, 1)))))],
+        "web-1",
+    ) else {
+        panic!("expected a restore");
+    };
+    assert!(matches!(
+        request.want,
+        WantedCopy::Writer { epoch, .. } if epoch == WriterEpoch::new(10)
+    ));
 }

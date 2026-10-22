@@ -215,7 +215,8 @@ its data, add it again and deploy.
 Without Ployz Cloud, `ployz volume restore` runs from the CLI, and the reason prints the same
 line. It asks every server what it holds first, and it refuses while one of them doesn't answer,
 since a copy there could become a second writer. It also refuses while another server holds a
-copy, because a restore needs the only one. Then it makes the copy the writer and names the
+copy, because a restore needs the only one, and while a server holding a copy runs a Ployz too old
+for it. Then it makes the copy the writer and names the
 snapshot it restored from:
 
 ```
@@ -240,8 +241,8 @@ has since become the mirror. A volume that is [mid-move](../troubleshooting/volu
 `ployz volume release` line that stops the move. A move that stopped before its first snapshot
 has nothing to release, so it names the `ployz volume move` line that runs the move again.
 Without Ployz Cloud, the error for several copies says to keep the newest, remove each other
-server with `ployz server rm`, then run `ployz volume restore`, or to start over empty with
-`ployz volume rm data`. A mid-move volume says only that stopping the move needs Ployz Cloud.
+server from the Cluster with `ployz server rm`, which takes its services off it too, then run
+`ployz volume restore`. Or start over empty with `ployz volume rm data`. A mid-move volume says only that stopping the move needs Ployz Cloud.
 
 Services that share a volume are blocked together: when any volume one of them mounts can't be
 mounted, all of them are blocked with that reason, and so is every service that depends on one of
