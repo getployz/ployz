@@ -26,7 +26,7 @@ import { copiesFromPlacement } from "#/modules/volume-copies/volume-copies.place
 import { MIRROR_ROUND_MINUTES, mirrorLast, skippedWords } from "#/modules/volume-copies/volume-copies.refresh";
 import { placementBlockers, placementServers, restoreOpen } from "#/modules/volume-placement/daemon-release";
 import {
-  appliedMirrors, editPlacement, lossMoment, observePlacement, type Placement, type PlacementEdit, type PlacementRow,
+  appliedMirrors, editPlacement, lossMoment, observePlacement, serversAnswer, type Placement, type PlacementEdit, type PlacementRow,
   placementTargets, type PlacementVolume, type Recovery, recovery, type RestorePoint, restorePoints, targetPlacement,
 } from "#/modules/volume-placement/volume-placement";
 import { useDeleteCopy, useStagePlacement, useStageRestore } from "#/modules/volume-placement/volume-placement.hooks";
@@ -76,7 +76,7 @@ export function useVolumeCopies(organizationSlug: string, environment: Environme
     accepting: members?.filter((member) => accepting.has(member.machine.id)).map((member) => member.machine.id) ?? [],
     floorless: members?.filter((member) => floorless.has(member.machine.id)).map((member) => member.machine.id) ?? [],
     upgrade: placementBlockers(lens.machines),
-    seeds: members !== undefined && restoreOpen(lens.machines, observePlacement(members).primary?.id ?? null),
+    seeds: members !== undefined && serversAnswer(members) && restoreOpen(lens.machines, observePlacement(members).primary?.id ?? null),
     disabled: placement.pending || restore.pending,
     deploying: row?.deploymentId != null && inFlight.some((deployment) => deployment.id === row.deploymentId),
     stage: placement.stage,
@@ -235,7 +235,7 @@ function CopiesView({ volume, members, row, rows, owed, copies, target, servers,
         ? <p className="text-sm text-muted-foreground">Nothing outside {liveName}. If {liveName} dies, {volume.name} goes with it.</p>
         : copies.elsewhere.map((copy) => <CopyRow key={copy.id} copy={copy} now={now} locked={locked} blocked={blocked}
           onOpen={() => { if (copy.kind === "mirror") onOpen(copy.server.id); }} onDelete={copy.kind === "old" ? () => setDeleting(copy) : null}
-          restore={copy.kind === "old" && seeds ? restoreOffer(volume, members, rows, copy.server.id, disabled || deploying, restore) : null} />)}
+          restore={copy.kind === "old" ? restoreOffer(volume, members, rows, copy.server.id, disabled || deploying, restore) : null} seeds={seeds} />)}
     </Group>
     {canAdd ? <Button variant="outline" className="border-dashed" disabled={locked} onClick={() => setAdding(true)}>
       <PlusIcon data-icon="inline-start" />Add copy
@@ -281,8 +281,11 @@ function restoreOffer(volume: CopiesVolume, members: readonly Member[], rows: re
 
 type RestoreOffer = ReturnType<typeof restoreOffer>;
 
-/** One copy away from the live Server. A mirror opens; an old copy restores its point on deploy, or goes at once. */
-function CopyRow({ copy, now, locked, blocked, onOpen, onDelete, restore = null }: {
+/**
+ * One copy away from the live Server. A mirror opens; an old copy restores its point on deploy, or goes at once. A
+ * restore already staged reads Staged even while `seeds` offers no new one.
+ */
+function CopyRow({ copy, now, locked, blocked, onOpen, onDelete, restore = null, seeds = false }: {
   copy: VolumeCopy;
   now: Date;
   locked: boolean;
@@ -290,6 +293,7 @@ function CopyRow({ copy, now, locked, blocked, onOpen, onDelete, restore = null 
   onOpen: () => void;
   onDelete: (() => void) | null;
   restore?: RestoreOffer;
+  seeds?: boolean;
 }) {
   const line = cardLine(copy, now);
   const unheard = unheardReason(copy);
@@ -311,7 +315,7 @@ function CopyRow({ copy, now, locked, blocked, onOpen, onDelete, restore = null 
       {badge}
       {copy.kind === "mirror" ? <ChevronRightIcon className="size-4 text-muted-foreground" /> : null}
       {restore?.staged ? <span className="text-sm text-muted-foreground">Staged</span>
-        : restore ? <Button variant="outline" size="xs" aria-label={`Restore from ${title}`} disabled={restore.disabled} onClick={restore.stage}>Restore</Button> : null}
+        : restore && seeds ? <Button variant="outline" size="xs" aria-label={`Restore from ${title}`} disabled={restore.disabled} onClick={restore.stage}>Restore</Button> : null}
       {onDelete && copy.staged === null && copy.busy === null && !blocked
         ? <Button variant="ghost" size="icon-xs" aria-label={`Delete copy on ${title}`} disabled={locked} onClick={onDelete}><XIcon /></Button> : null}
     </ItemActions>

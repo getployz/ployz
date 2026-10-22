@@ -36,7 +36,7 @@ const server = (name: string, storage: CopyServer["storage"] = "pool"): CopyServ
 
 function panel(members: Member[], placement: PlacementRow | null, options: {
   open?: string; upgrade?: string[]; servers?: CopyServer[]; matchedAt?: string; refreshing?: boolean; deploying?: boolean; owed?: boolean;
-  forgetGate?: RoleGate; floorless?: string[];
+  forgetGate?: RoleGate; floorless?: string[]; seeds?: boolean; rows?: PlacementRow[];
 } = {}) {
   const stage = vi.fn();
   const refresh = vi.fn();
@@ -46,9 +46,9 @@ function panel(members: Member[], placement: PlacementRow | null, options: {
   const copies = copiesFromPlacement({ volume, members, row: placement, active: null,
     statuses: options.matchedAt === undefined ? [] : [{ machine: id("web-2"), okAt: options.matchedAt, matchedAt: options.matchedAt, failedAt: null, failure: null }] });
   const router = createRouter({ routeTree: createRootRoute(), history: createMemoryHistory() });
-  render(<RouterContextProvider router={router}><VolumeCopiesPanel organizationSlug="ada" forgetGate={options.forgetGate ?? { allowed: true, reason: undefined }} volume={volume} members={members} rows={placement ? [placement] : []} running={null} owed={options.owed ?? false} copies={copies}
+  render(<RouterContextProvider router={router}><VolumeCopiesPanel organizationSlug="ada" forgetGate={options.forgetGate ?? { allowed: true, reason: undefined }} volume={volume} members={members} rows={options.rows ?? (placement ? [placement] : [])} running={null} owed={options.owed ?? false} copies={copies}
     servers={options.servers ?? members.map((entry) => server(entry.machine.name))} accepting={members.map((entry) => entry.machine.id)} floorless={(options.floorless ?? []).map(id)}
-    upgrade={options.upgrade ?? []} seeds disabled={false} deploying={options.deploying ?? false} stage={stage} restore={restore}
+    upgrade={options.upgrade ?? []} seeds={options.seeds ?? true} disabled={false} deploying={options.deploying ?? false} stage={stage} restore={restore}
     deleteCopy={deleteCopy} refresh={refresh} refreshing={options.refreshing ?? false}
     open={options.open ? id(options.open) : null} onOpen={onOpen} /></RouterContextProvider>);
   return { stage, deleteCopy, restore, onOpen, refresh };
@@ -128,6 +128,18 @@ describe("VolumeCopiesPanel", () => {
     const { restore } = panel([member("web-1", "writer"), oldAsOf("web-3", new Date(NOW.getTime() - 3_600_000))], row([]));
     fireEvent.click(screen.getByRole("button", { name: "Restore from web-3" }));
     expect(restore).toHaveBeenCalledWith(expect.objectContaining({ guid: "web-3" }));
+  });
+
+  it("keeps an old copy's staged restore Staged while Restore isn't offered, and offers no new one", () => {
+    const old = oldAsOf("web-3", new Date(NOW.getTime() - 3_600_000));
+    const point = { guid: "web-3", name: "web-3-point", at: 0 };
+    const restoring: PlacementRow = { ...row([]), volumeId: "restored",
+      staged: { primary: id("web-1"), mirrors: [], deletes: [], seed: { sourceVolumeId: volume.id, sourceName: volume.name, dockerVolume: "ns_vol-restored", point } } };
+    panel([member("web-1", "writer"), old], row([]), { seeds: false, rows: [row([]), restoring] });
+    expect(group("Elsewhere").getByText("Staged")).toBeTruthy();
+    cleanup();
+    panel([member("web-1", "writer"), old], row([]), { seeds: false });
+    expect(screen.queryByRole("button", { name: "Restore from web-3" })).toBeNull();
   });
 
   it("shows a staged mirror green with New and no action, Was or Undo", () => {

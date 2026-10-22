@@ -11,7 +11,7 @@ import { requireAccess } from "#/modules/organization/access.server";
 import { firstRuntimeFrame, type OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import { placementBlockers, placementUpgradeMessage } from "#/modules/volume-placement/daemon-release";
 import { failedRestore, volumePlacement } from "#/modules/volume-placement/tables";
-import { deleteOldCopy, discardPlacement, RESTORE_FAILED, restoreSettled, stagePlacement, view } from "#/modules/volume-placement/volume-placement.server";
+import { deleteOldCopy, discardPlacement, RESTORE_FAILED, restoreSettled, stagePlacement, UNANSWERED, view } from "#/modules/volume-placement/volume-placement.server";
 import {
   appliedMirrors, changeKey, type DeleteCopyInput, drainPlacement, dropChange, nextPlacementStep, observePlacement, type Placement, placementChanges, type PlacementStep, type PlacementVolume,
   sameChange,
@@ -301,8 +301,6 @@ export const readPlacementBlockers: BlockerReader = (organizationId) => firstRun
     name: entry.machine.name, storage: entry.storage?.state ?? null, capabilities: entry.machine.runtime.capabilities ?? [],
   }))))),
 );
-
-export const UNANSWERED: StoreRefusal = { code: "unanswered", message: "Your servers aren't answering. Try again once they are.", details: null };
 
 /** Why the organization can't stage a placement or restore yet, or null when it can. */
 export const placementRefusal = Effect.fn("VolumePlacement.refusal")(function* (organizationId: string, read: BlockerReader = readPlacementBlockers) {

@@ -90,6 +90,16 @@ it.live("stages a restore as one Store write and a seeded row, and discards both
   expect(yield* listPlacements(ORGANIZATION).pipe(Effect.provide(services))).toEqual([]);
 }));
 
+it.live("refuses a restore while a Server is silent or its report hasn't arrived, and stages nothing", () => Effect.gen(function* () {
+  const { services } = yield* deployedShop();
+  const { machine } = member("web-2", "unanswered");
+  for (const mirror of [member("web-2", "unanswered"), { machine, answered: false, incomplete: true } satisfies Member]) {
+    expect(yield* stageRestore(ORGANIZATION, null, { volumeId: SOURCE, environment: shop, ...point }, () => Effect.succeed([member("web-1", "writer"), mirror]))
+      .pipe(Effect.provide(services))).toMatchObject({ ok: false, refusal: { code: "unanswered", message: "Your servers aren't answering. Try again once they are." } });
+  }
+  expect(yield* listPlacements(ORGANIZATION).pipe(Effect.provide(services))).toEqual([]);
+}));
+
 it.live("refuses a restore from a point on an old copy being deleted, and stages nothing", () => Effect.gen(function* () {
   const { services } = yield* deployedShop();
   yield* Effect.gen(function* () {
