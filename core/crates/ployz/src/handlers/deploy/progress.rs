@@ -7,10 +7,11 @@ use crate::ui::{
     progress::{Detail, Diagnostic, Frame, LogTail, Row, Run, State, Subject, Timing},
 };
 use ployz_core::config::{RuntimeFailureKind, RuntimeOutcomeSummary};
-use ployz_core::{QualifiedService, RpcError, RpcErrorCode, config::MEM_LIMIT_MAX};
+use ployz_core::{QualifiedService, RpcError, RpcErrorCode, ServiceName, config::MEM_LIMIT_MAX};
 use ployz_store::{
     BuildStatus, DeployedNode, DeploymentStatus, DeploymentSummary, DeploymentView,
     DeploymentWarning, FailedAt, IngressAction, IngressFailure, NodeOutcome, NodeStatus, RowState,
+    ServerRow,
 };
 use serde::Deserialize;
 use std::time::{Duration, UNIX_EPOCH};
@@ -35,40 +36,7 @@ pub(super) fn frame(view: &DeploymentView) -> Frame {
             continue;
         };
         let runtime = view.runtime_names.get(name).unwrap_or(name);
-        let depth = view
-            .preview
-            .as_ref()
-            .and_then(|preview| preview.depths.get(runtime))
-            .copied();
-        let mut row = service_row(
-            QualifiedService::new(view.namespace.clone(), name.clone()),
-            depth,
-            view.preview
-                .as_ref()
-                .and_then(|preview| preview.placed_on.get(runtime)),
-            node.rows.iter().map(|row| Replica {
-                machine: row.machine_id,
-                state: &row.state,
-                starts: view
-                    .preview
-                    .as_ref()
-                    .is_none_or(|preview| starts(&preview.operations, runtime, row.machine_id)),
-                updates: view
-                    .preview
-                    .as_ref()
-                    .is_some_and(|preview| updates(&preview.operations, runtime, row.machine_id)),
-                timing: match (row.started_at, row.finished_at) {
-                    (Some(start), Some(end)) => Timing::Finished(Duration::from_secs(
-                        u64::try_from(end.saturating_sub(start)).unwrap_or(0),
-                    )),
-                    (Some(start), None) => u64::try_from(start)
-                        .ok()
-                        .and_then(|secs| UNIX_EPOCH.checked_add(Duration::from_secs(secs)))
-                        .map_or(Timing::Unavailable, Timing::Started),
-                    (None, _) => Timing::Unavailable,
-                },
-            }),
-        );
+        let mut row = runtime_row(view, name, runtime, &node.rows);
         if node.rows.is_empty() {
             let build = view.builds.iter().find(|build| build.service == *name);
             row.state = node_state(
@@ -92,6 +60,13 @@ pub(super) fn frame(view: &DeploymentView) -> Frame {
                 }
             });
         }
+        rows.push(row);
+    }
+    // A full reconciliation removes what runs in the Namespace and this Store doesn't hold.
+    for (runtime, server_rows) in &view.untargeted {
+        let mut row = runtime_row(view, runtime, runtime, server_rows);
+        row.detail
+            .get_or_insert_with(|| "not in this environment".to_owned());
         rows.push(row);
     }
     rows.extend(view.deployment.ingress.iter().map(|repair| Row {
@@ -145,6 +120,42 @@ pub(super) fn frame(view: &DeploymentView) -> Frame {
             .cloned()
             .collect(),
     }
+}
+
+/// Service `name`'s row from its recorded work on each Server, read against the plan
+/// for `runtime`.
+fn runtime_row(
+    view: &DeploymentView,
+    name: &ServiceName,
+    runtime: &ServiceName,
+    rows: &[ServerRow],
+) -> Row {
+    let preview = view.preview.as_ref();
+    service_row(
+        QualifiedService::new(view.namespace.clone(), name.clone()),
+        preview
+            .and_then(|preview| preview.depths.get(runtime))
+            .copied(),
+        preview.and_then(|preview| preview.placed_on.get(runtime)),
+        rows.iter().map(|row| Replica {
+            machine: row.machine_id,
+            state: &row.state,
+            starts: preview
+                .is_none_or(|preview| starts(&preview.operations, runtime, row.machine_id)),
+            updates: preview
+                .is_some_and(|preview| updates(&preview.operations, runtime, row.machine_id)),
+            timing: match (row.started_at, row.finished_at) {
+                (Some(start), Some(end)) => Timing::Finished(Duration::from_secs(
+                    u64::try_from(end.saturating_sub(start)).unwrap_or(0),
+                )),
+                (Some(start), None) => u64::try_from(start)
+                    .ok()
+                    .and_then(|secs| UNIX_EPOCH.checked_add(Duration::from_secs(secs)))
+                    .map_or(Timing::Unavailable, Timing::Started),
+                (None, _) => Timing::Unavailable,
+            },
+        }),
+    )
 }
 
 fn node_state(node: &NodeOutcome, build_failed: bool) -> State {
@@ -663,6 +674,36 @@ mod tests {
         assert!(frame.rows.iter().any(
             |row| matches!(&row.subject, Subject::Node { name, .. } if name == "Volume data")
         ));
+    }
+
+    #[test]
+    fn a_service_this_store_doesnt_hold_reads_removed_and_counts_in_the_summary() {
+        let mut view = view();
+        view.deployment.status = DeploymentStatus::Applied;
+        view.deployment.outcome = None;
+        view.nodes.clear();
+        view.preview = Some(
+            serde_json::from_value(json!({
+                "namespace": "shop-production", "warnings": [],
+                "would_remove": ["shop-production/db"],
+                "operations": [{
+                    "index": 0, "machine_id": "a".repeat(32), "service_name": "db",
+                    "operation": {"type": "remove_container", "machine_id": "a".repeat(32), "container_id": "b".repeat(64), "purpose": "retire"},
+                    "status": {"type": "completed"}
+                }]
+            }))
+            .unwrap(),
+        );
+        view.untargeted = serde_json::from_value(json!({"db": [
+            {"machine_id": "a".repeat(32), "server": "edge", "state": "completed", "started_at": 1, "finished_at": 2}
+        ]}))
+        .unwrap();
+        let text = crate::ui::progress::settled_text(&frame(&view));
+        assert!(
+            text.contains("db: removed 1/1 (not in this environment)"),
+            "{text}"
+        );
+        assert!(text.contains("1 removed · across 1 server"), "{text}");
     }
 
     #[test]

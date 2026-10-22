@@ -413,10 +413,12 @@ pub(crate) fn view(
         .collect();
     let builds = build::views(tx, &stored)?;
     let rolls_back = undone(tx, &stored.summary)?;
+    let untargeted = super::rows::untargeted(tx, &stored)?;
     Ok(DeploymentView {
         builds,
         runtime_names,
         rolls_back,
+        untargeted,
         deployment: stored.summary,
         environment: environment.summary,
         namespace: stored.namespace,

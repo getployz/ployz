@@ -945,22 +945,17 @@ pub(crate) fn servers(
         .collect()
 }
 
-/// Each node's rows. A mounted Volume's or Config's rows read the Deployment's Saved
-/// State, which is left in `saved` for the caller to reuse.
-pub(super) fn of_nodes(
+/// Each runtime Service's rows, by the Machine they ran on.
+fn by_service(
     tx: &mut dyn Tx,
     stored: &Stored,
-    saved: &mut Option<SavedEnvironmentIntent>,
-) -> Result<BTreeMap<String, Vec<ServerRow>>, RpcError> {
+) -> Result<BTreeMap<ServiceName, BTreeMap<MachineId, ServerRow>>, RpcError> {
     let found = tx.query(
         "SELECT service, server, state, started, finished, machine, history \
          FROM config_deployment_row \
          WHERE deployment_id = ?1 ORDER BY service, server, machine",
         &[stored.summary.id.as_str().into()],
     )?;
-    if found.is_empty() {
-        return Ok(BTreeMap::new());
-    }
     let lost = matches!(
         stored.summary.status,
         DeploymentStatus::Unknown | DeploymentStatus::Cancelled
@@ -987,6 +982,35 @@ pub(super) fn of_nodes(
                     history: history(row, 6)?,
                 },
             );
+    }
+    Ok(by_service)
+}
+
+/// The rows of runtime Services no node targets, which a full reconciliation removes
+/// because this Store doesn't hold them.
+pub(super) fn untargeted(
+    tx: &mut dyn Tx,
+    stored: &Stored,
+) -> Result<BTreeMap<ServiceName, Vec<ServerRow>>, RpcError> {
+    let targeted: BTreeSet<&ServiceName> =
+        stored.nodes.iter().flat_map(TargetNode::runtimes).collect();
+    Ok(by_service(tx, stored)?
+        .into_iter()
+        .filter(|(service, _)| !targeted.contains(service))
+        .map(|(service, rows)| (service, rows.into_values().collect()))
+        .collect())
+}
+
+/// Each node's rows. A mounted Volume's or Config's rows read the Deployment's Saved
+/// State, which is left in `saved` for the caller to reuse.
+pub(super) fn of_nodes(
+    tx: &mut dyn Tx,
+    stored: &Stored,
+    saved: &mut Option<SavedEnvironmentIntent>,
+) -> Result<BTreeMap<String, Vec<ServerRow>>, RpcError> {
+    let by_service = by_service(tx, stored)?;
+    if by_service.is_empty() {
+        return Ok(BTreeMap::new());
     }
     let mut nodes = BTreeMap::new();
     for node in &stored.nodes {

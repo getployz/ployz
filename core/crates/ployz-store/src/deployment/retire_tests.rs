@@ -513,3 +513,41 @@ fn reading_a_deployment_loads_saved_state_only_for_what_its_rows_mount() {
     assert!(read.nodes.iter().any(|node| !node.rows.is_empty()));
     assert_eq!(saved_reads(&store, &who, &deployment(2)), 1);
 }
+
+#[test]
+fn a_service_the_store_never_held_keeps_its_rows_outside_every_node() {
+    let (store, who) = retiring_api();
+    deploy(&store, &who, 2, &[]).unwrap();
+    store.claim(&deployment(2), &runner()).unwrap();
+    store
+        .record(
+            &deployment(2),
+            &runner(),
+            RunEvidence::Prepared(preview(&["web", "cache"], true)),
+        )
+        .unwrap();
+    let snapshot: Vec<ployz_core::OperationRow> = serde_json::from_value(json!([{
+        "index": 1, "machine_id": "a".repeat(32), "machine_name": "alpha", "service_name": "cache",
+        "operation": operation("cache"), "status": {"type": "completed"}
+    }]))
+    .unwrap();
+    store
+        .record(
+            &deployment(2),
+            &runner(),
+            RunEvidence::Progress(crate::RowTracker::default().changes(&snapshot)),
+        )
+        .unwrap();
+    let read = store
+        .read(&who, &crate::DeploymentQuery { id: deployment(2) })
+        .unwrap();
+    assert!(!read.nodes.iter().any(|node| node.node.name() == "cache"));
+    let rows: Vec<_> = read
+        .untargeted
+        .get(&name("cache"))
+        .unwrap()
+        .iter()
+        .map(|row| (row.server.as_str(), &row.state))
+        .collect();
+    assert_eq!(rows, [("alpha", &crate::RowState::Completed)]);
+}

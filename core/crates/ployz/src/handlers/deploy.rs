@@ -1426,6 +1426,9 @@ pub(super) fn say_view(view: &DeploymentView) {
         };
         crate::ui::stream(format_args!("  {}: {outcome}", node.node.name()));
     }
+    for line in untargeted_lines(&view.untargeted) {
+        crate::ui::stream(format_args!("{line}"));
+    }
     for build in &view.builds {
         let commit = build.commit.as_ref().map_or("the upload", |commit| {
             commit.as_str().get(..7).unwrap_or(commit.as_str())
@@ -1444,6 +1447,25 @@ pub(super) fn say_view(view: &DeploymentView) {
             crate::ui::stream(format_args!("    GitHub skipped it: {why}"));
         }
     }
+}
+
+/// How many Servers removed each Service the Deployment's Store doesn't hold.
+fn untargeted_lines(
+    untargeted: &BTreeMap<ServiceName, Vec<ployz_store::ServerRow>>,
+) -> Vec<String> {
+    untargeted
+        .iter()
+        .map(|(service, rows)| {
+            let removed = rows
+                .iter()
+                .filter(|row| row.state == ployz_store::RowState::Completed)
+                .count();
+            format!(
+                "  {service}: removed {removed}/{} (not in this environment)",
+                rows.len()
+            )
+        })
+        .collect()
 }
 
 fn service_outcome_lines(services: &[ployz_core::ServiceOutcome]) -> Vec<String> {
@@ -1469,7 +1491,7 @@ fn service_outcome_lines(services: &[ployz_core::ServiceOutcome]) -> Vec<String>
 mod tests {
     use super::{
         Tone, open_events, provenance, service_outcome_lines, ships_all, status_tone, status_word,
-        undecided,
+        undecided, untargeted_lines,
     };
     use ployz_core::{RpcErrorCode, ServiceName};
 
@@ -1507,6 +1529,28 @@ mod tests {
         assert_eq!(
             refused(directory).message,
             format!("Can't write --events file {directory}: it is a directory")
+        );
+    }
+
+    #[test]
+    fn a_service_this_store_doesnt_hold_reads_how_many_copies_it_removed() {
+        let rows: std::collections::BTreeMap<ServiceName, Vec<ployz_store::ServerRow>> =
+            serde_json::from_value(serde_json::json!({
+                "cache": [
+                    {"machine_id": "a".repeat(32), "server": "alpha", "state": "completed", "started_at": 1, "finished_at": 2},
+                    {"machine_id": "b".repeat(32), "server": "beta", "state": "not_attempted", "started_at": null, "finished_at": 2}
+                ],
+                "db": [
+                    {"machine_id": "a".repeat(32), "server": "alpha", "state": "completed", "started_at": 1, "finished_at": 2}
+                ]
+            }))
+            .unwrap();
+        assert_eq!(
+            untargeted_lines(&rows),
+            [
+                "  cache: removed 1/2 (not in this environment)",
+                "  db: removed 1/1 (not in this environment)",
+            ]
         );
     }
 
