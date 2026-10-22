@@ -68,16 +68,12 @@ export function redeployLine(command: string, review: ApprovalReview) {
 }
 
 const losesVolumeAccess = (review?: ApprovalReview) => review !== undefined && "operation" in review
-  && (review.operation.verb === "remove" || review.operation.verb === "forget")
-  && (review.operation.subject?.startsWith("server:") === true || review.operation.subject?.startsWith("servers:") === true);
+  && review.operation.verb === "remove" && review.operation.subject?.startsWith("server:") === true;
 
 /** The card's badge: a Save deletes nothing until the next Deploy, and a Deploy that only deletes Volumes counts them. An agent's Deploy that destroys nothing still asks. */
 export function approvalBadge(command: string, review: ApprovalReview) {
   const { effects } = review;
-  if ("operation" in review && losesVolumeAccess(review)) {
-    if (review.operation.verb === "remove") return "Removes server";
-    return review.operation.subject?.startsWith("servers:") ? "Forgets servers" : "Forgets server";
-  }
+  if (losesVolumeAccess(review)) return "Removes server";
   if (command === "publish") return "Deletes on deploy";
   if (command === "retry" && !shutsDownAgain(review)) return rollsBack(review) ? "Rolls back" : "Redeploys";
   if (command === "stop") return "Stops service";

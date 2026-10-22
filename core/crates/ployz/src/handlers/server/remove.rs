@@ -379,11 +379,10 @@ fn leave(root: &ArgMatches, removal: Removal) -> Result<(), Error> {
                 ),
                 "Reset does not erase volume data.",
             ));
-        } else {
+        } else if removal == Removal::Reset {
             for loss in &observed.data_loss {
                 crate::ui::stream(format_args!(
-                    "{} left the data of Volume {} on {}.",
-                    if removal == Removal::Reset { "Reset" } else { "Forgetting" },
+                    "Reset left the data of Volume {} on {}.",
                     volume_label(&labels, loss),
                     selected.name
                 ));

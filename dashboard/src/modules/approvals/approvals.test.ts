@@ -67,17 +67,15 @@ it("badges a Protected Volume Run by what it does to the Volume, never as a Depl
 
 const deletedVolume: DestructiveEffect = { kind: "deletes_volume", name: "pgdata", node: "v1", path: "volumes/v1" };
 
-it("says server removal and forgetting lose access while the disk keeps volume data", () => {
-  for (const [subject, command] of [["server:box", "remove"], ["server:box", "forget"], ["servers:acme", "forget"]] as const) {
-    const review: ApprovalReview = { effects: [deletedVolume], operation: { subject, verb: command, name: "box", preview: {} } };
-    const line = destroyedLine(deletedVolume, command, review);
-    expect(`${line.verb} ${line.name}${line.after}`).toBe("Loses access to volume pgdata. Its data stays on the Server's disk until wiped. Wipe or reinstall the disk to erase it; sudo ployz-uninstall keeps the data.");
-    expect(approvalBadge(command, review)).toBe(command === "remove" ? "Removes server" : subject.startsWith("servers:") ? "Forgets servers" : "Forgets server");
-  }
+it("says server removal loses access while the disk keeps volume data", () => {
+  const review: ApprovalReview = { effects: [deletedVolume], operation: { subject: "server:box", verb: "remove", name: "box", preview: {} } };
+  const line = destroyedLine(deletedVolume, "remove", review);
+  expect(`${line.verb} ${line.name}${line.after}`).toBe("Loses access to volume pgdata. Its data stays on the Server's disk until wiped. Wipe or reinstall the disk to erase it; sudo ployz-uninstall keeps the data.");
+  expect(approvalBadge("remove", review)).toBe("Removes server");
 });
 
 it("keeps real volume deletion wording for project removal, namespace clean and deploy", () => {
-  for (const [subject, command] of [["project:shop", "remove"], ["namespace:shop", "clean"], ["server:box", "clean"]] as const) {
+  for (const [subject, command] of [["project:shop", "remove"], ["namespace:shop", "clean"], ["server:box", "clean"], ["server:box", "forget"], ["servers:acme", "forget"]] as const) {
     const review: ApprovalReview = { effects: [deletedVolume], operation: { subject, verb: command, name: "shop", preview: {} } };
     expect(destroyedLine(deletedVolume, command, review)).toEqual({ verb: "Deletes volume", name: "pgdata", after: ". Not recoverable." });
     expect(approvalBadge(command, review)).toBe("Deletes 1 volume");

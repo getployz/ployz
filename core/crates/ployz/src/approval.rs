@@ -68,10 +68,12 @@ pub(crate) struct Operation {
 
 impl Operation {
     fn loses_volume_access(&self) -> bool {
-        matches!(self.verb, Verb::Remove | Verb::Forget)
-            && self.subject.as_deref().is_some_and(|subject| {
-                subject.starts_with("server:") || subject.starts_with("servers:")
-            })
+        // A reset keeps Volume data on the Server's disk; a forget is for a Server that may be gone.
+        self.verb == Verb::Remove
+            && self
+                .subject
+                .as_deref()
+                .is_some_and(|subject| subject.starts_with("server:"))
     }
 }
 
@@ -547,33 +549,27 @@ mod tests {
 
     #[test]
     fn server_removal_approval_keeps_volume_data_on_disk() {
-        for (subject, verb) in [
-            ("server:box", "remove"),
-            ("server:box", "forget"),
-            ("servers:acme", "forget"),
-        ] {
-            let asked: Asked = serde_json::from_value(serde_json::json!({
-                "approval_id": "a1", "approval": "d1",
-                "effects": [{ "kind": "deletes_volume", "name": "pgdata", "node": "v1", "path": "volumes/v1" }],
-                "operation": { "subject": subject, "verb": verb, "name": "box" },
-            })).unwrap();
-            let review = asked.review(asked.verb()).join("\n");
-            assert!(review.contains("loses access to Volume pgdata"), "{review}");
-            assert!(
-                review.contains("its data stays on the Server's disk until wiped"),
-                "{review}"
-            );
-            assert!(
-                review.contains("Wipe or reinstall the disk to erase it"),
-                "{review}"
-            );
-            assert!(
-                review.contains("sudo ployz-uninstall keeps the data"),
-                "{review}"
-            );
-            assert!(!review.contains("deletes Volume"), "{review}");
-            assert!(!review.contains("destroys"), "{review}");
-        }
+        let asked: Asked = serde_json::from_value(serde_json::json!({
+            "approval_id": "a1", "approval": "d1",
+            "effects": [{ "kind": "deletes_volume", "name": "pgdata", "node": "v1", "path": "volumes/v1" }],
+            "operation": { "subject": "server:box", "verb": "remove", "name": "box" },
+        })).unwrap();
+        let review = asked.review(asked.verb()).join("\n");
+        assert!(review.contains("loses access to Volume pgdata"), "{review}");
+        assert!(
+            review.contains("its data stays on the Server's disk until wiped"),
+            "{review}"
+        );
+        assert!(
+            review.contains("Wipe or reinstall the disk to erase it"),
+            "{review}"
+        );
+        assert!(
+            review.contains("sudo ployz-uninstall keeps the data"),
+            "{review}"
+        );
+        assert!(!review.contains("deletes Volume"), "{review}");
+        assert!(!review.contains("destroys"), "{review}");
     }
 
     #[test]
@@ -582,6 +578,8 @@ mod tests {
             (Some("project:shop"), "remove"),
             (Some("namespace:shop"), "clean"),
             (Some("server:box"), "clean"),
+            (Some("server:box"), "forget"),
+            (Some("servers:acme"), "forget"),
             (None, "remove"),
         ] {
             let mut operation = serde_json::json!({ "verb": verb, "name": "shop" });
