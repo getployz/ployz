@@ -254,7 +254,10 @@ impl Daemon {
             ContainerMode::Auto => {
                 let specs = MachineSpecStore::open(config.data_dir.join("machine.db")).await?;
                 match LocalDocker::connect() {
-                    Ok(docker) => Some(ContainerRuntime::new(docker, specs)),
+                    Ok(docker) => Some(
+                        ContainerRuntime::new(docker, specs)
+                            .with_sealing_key(config.data_dir.clone()),
+                    ),
                     Err(error) => {
                         eprintln!(
                             "WARNING: local Docker is unavailable: {error}",

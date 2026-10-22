@@ -303,6 +303,7 @@ pub struct ContainerRuntime {
     first_synced: watch::Sender<bool>,
     checks: Arc<std::sync::Mutex<CheckRecords>>,
     stranded: Arc<tokio::sync::Mutex<observe::StrandedIngress>>,
+    sealing_key_dir: Option<PathBuf>,
 }
 
 impl ContainerRuntime {
@@ -316,7 +317,15 @@ impl ContainerRuntime {
             first_synced: watch::Sender::new(false),
             checks: Arc::new(std::sync::Mutex::new(CheckRecords::new(chrono::Utc::now()))),
             stranded: Arc::default(),
+            sealing_key_dir: None,
         }
+    }
+
+    /// Opens Sealed env values with the Sealing Key kept in `data_dir`.
+    #[must_use]
+    pub fn with_sealing_key(mut self, data_dir: PathBuf) -> Self {
+        self.sealing_key_dir = Some(data_dir);
+        self
     }
 
     pub async fn floor_turn(&self) -> FloorTurn<'_> {
@@ -1322,6 +1331,8 @@ pub enum Error {
     #[error(transparent)]
     Network(#[from] crate::network::NetworkError),
     #[error(transparent)]
+    Sealed(#[from] crate::sealed_env::OpenError),
+    #[error(transparent)]
     SpecStore(#[from] SpecStoreError),
     #[error(transparent)]
     ReplicatedStore(#[from] crate::corrosion::Error),
@@ -1472,8 +1483,9 @@ impl Error {
             | Self::EventStreamClosed
             // A peer pull is idempotent, so a rerun is safe whatever docker printed.
             | Self::PeerPull(_)
-            | Self::UnregistryNotReady { .. } => RpcErrorCode::Unavailable,
-            Self::MissingPreDeployHook
+            | Self::UnregistryNotReady { .. }
+            | Self::Sealed(crate::sealed_env::OpenError::KeyMissing) => RpcErrorCode::Unavailable,
+            Self::Sealed(_) | Self::MissingPreDeployHook
             | Self::EndpointCapacity
             | Self::DurationOverflow
             | Self::SizeOverflow
@@ -1672,6 +1684,7 @@ mod tests {
             ContainerKind::ServiceContainer,
             &namespace,
             &spec,
+            None,
         )
         .unwrap();
         assert!(
@@ -1727,6 +1740,7 @@ mod tests {
             ContainerKind::PreDeployHook,
             &namespace,
             &spec,
+            None,
         )
         .unwrap();
         assert_eq!(hook.cmd, Some(vec!["migrate".into()]));
@@ -1797,6 +1811,7 @@ mod tests {
             ContainerKind::ServiceContainer,
             &ployz_core::Namespace::parse("app").unwrap(),
             &spec,
+            None,
         )
         .unwrap();
         assert_eq!(body.stop_timeout, Some(1));
@@ -1829,6 +1844,7 @@ mod tests {
                 ContainerKind::ServiceContainer,
                 namespace,
                 &spec,
+                None,
             )
             .unwrap();
             create::ingress_sysctls(&mut body, namespace, &spec, kernel_supports);
@@ -1879,6 +1895,7 @@ mod tests {
                 ContainerKind::ServiceContainer,
                 namespace,
                 &caddy,
+                None,
             )
             .unwrap();
             assert!(
@@ -1929,6 +1946,7 @@ mod tests {
             ContainerKind::ServiceContainer,
             &ployz_core::Namespace::parse("app").unwrap(),
             &spec,
+            None,
         )
         .unwrap();
         let host = body.host_config.unwrap();

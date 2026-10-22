@@ -2,7 +2,9 @@
 //! transport, with sentinels for every application mutation. Docker execution
 //! is proved at rung 4.
 use ployz_build::{Stage, TargetEvidence, WorkEvidence, remote::Outcome};
-use ployz_core::{MachineImages, MembershipObservation, RpcError, RpcErrorCode, ServiceName};
+use ployz_core::{
+    EnvValue, MachineImages, MembershipObservation, RpcError, RpcErrorCode, ServiceName,
+};
 use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
@@ -1434,7 +1436,7 @@ async fn a_settings_only_deploy_of_an_upload_rebuilds_from_the_held_upload() {
             spec.container
                 .environment
                 .get("GREETING")
-                .map(String::as_str)
+                .and_then(EnvValue::text)
                 == Some("hello-staging")
         })
     }));

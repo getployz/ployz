@@ -1459,7 +1459,7 @@ fn want_locator(want: &ContainerWant) -> ContainerLocator {
 }
 
 fn create_refusal(error: Error) -> Result<ContainerRefusal, Error> {
-    use crate::docker::Error as Docker;
+    use crate::{docker::Error as Docker, sealed_env::OpenError};
     #[expect(
         clippy::wildcard_enum_match_arm,
         reason = "only create-path errors a driver can act on become refusals"
@@ -1480,6 +1480,15 @@ fn create_refusal(error: Error) -> Result<ContainerRefusal, Error> {
         Error::Docker(Docker::ExternalVolumeNotFound(_) | Docker::VolumeShapeMismatch { .. }) => {
             ContainerRefusalReason::VolumesNotPrepared
         }
+        Error::Docker(Docker::Sealed(OpenError::KeyMissing)) => {
+            ContainerRefusalReason::SealingKeyMissing
+        }
+        Error::Docker(Docker::Sealed(
+            OpenError::MissingIdentity(_)
+            | OpenError::SealedPort
+            | OpenError::Unbound(_)
+            | OpenError::Unopenable(_),
+        )) => ContainerRefusalReason::SealedValueUnopenable,
         _ => return Err(error),
     };
     Ok(refuse(reason, ployz_core::error_chain::inline(&error)))

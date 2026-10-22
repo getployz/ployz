@@ -20,8 +20,9 @@ use super::{
     ServiceVolumeGraph,
 };
 use crate::{
-    ContainerHostname, ContainerLabels, ContainerPath, ExtraHost, IngressHost, MachinePath,
-    PidMode, RestartPolicy, ServiceId, ServiceMount, ServiceName, ServiceVolume, ValueError,
+    ContainerHostname, ContainerLabels, ContainerPath, EnvValue, ExtraHost, IngressHost,
+    MachinePath, PidMode, RestartPolicy, SealedIdentity, ServiceId, ServiceMount, ServiceName,
+    ServiceVolume, ValueError,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
@@ -397,7 +398,7 @@ impl TryFrom<Vec<String>> for PreDeployCommand {
 pub struct PreDeployHook {
     pub command: PreDeployCommand,
     #[serde(default)]
-    pub environment: BTreeMap<String, String>,
+    pub environment: BTreeMap<String, EnvValue>,
     #[serde(default)]
     pub privileged: Option<bool>,
     #[serde(default)]
@@ -475,7 +476,12 @@ pub struct ServiceContainerSpec {
     #[serde(default)]
     pub entrypoint: Vec<String>,
     #[serde(default)]
-    pub environment: BTreeMap<String, String>,
+    pub environment: BTreeMap<String, EnvValue>,
+    /// Who the environment's Sealed values were sealed for. Absent while the
+    /// environment holds only text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub sealed_identity: Option<SealedIdentity>,
     /// User Docker labels, excluding Ployz's reserved management namespace.
     #[serde(default)]
     pub labels: ContainerLabels,

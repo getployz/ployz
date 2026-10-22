@@ -2510,7 +2510,10 @@ mod ensure_container {
         let redacted = |observed: &ContainerObservation| {
             let spec = &observed.resolved_spec;
             assert_eq!(
-                spec.container.environment.get("TOKEN").map(String::as_str),
+                spec.container
+                    .environment
+                    .get("TOKEN")
+                    .and_then(ployz_core::EnvValue::text),
                 Some("<redacted>")
             );
             assert_eq!(
@@ -2519,7 +2522,7 @@ mod ensure_container {
                     .unwrap()
                     .environment
                     .get("DATABASE_URL")
-                    .map(String::as_str),
+                    .and_then(ployz_core::EnvValue::text),
                 Some("<redacted>")
             );
             let graph = spec.mount_graph.config_graph();

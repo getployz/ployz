@@ -95,6 +95,7 @@ fn caddy_container(image: String) -> ServiceContainerSpec {
         command: CADDY_INGRESS_COMMAND.map(str::to_owned).into(),
         entrypoint: Vec::new(),
         environment: BTreeMap::from([(CADDY_ADMIN_ENV.into(), CADDY_INGRESS_ADMIN.into())]),
+        sealed_identity: None,
         labels: Default::default(),
         hostname: None,
         extra_hosts: Vec::new(),

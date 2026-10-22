@@ -2883,7 +2883,10 @@ fn service_update_seals_a_secret_it_generates_and_refuses_one_it_is_sent() {
         .iter()
         .find(|spec| spec.name.as_str() == "db")
         .unwrap();
-    let minted = db.container.environment["POSTGRES_PASSWORD"].clone();
+    let minted = db.container.environment["POSTGRES_PASSWORD"]
+        .text()
+        .unwrap()
+        .to_owned();
     assert_eq!(minted.len(), 32);
     assert!(minted.chars().all(|c| c.is_ascii_alphabetic()), "{minted}");
     for text in &seen {

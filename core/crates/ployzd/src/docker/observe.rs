@@ -742,7 +742,7 @@ mod tests {
                 .container
                 .environment
                 .get("TOKEN")
-                .map(String::as_str),
+                .and_then(ployz_core::EnvValue::text),
             Some("service-secret")
         );
     }
@@ -837,7 +837,7 @@ mod tests {
                 .container
                 .environment
                 .get("CADDY_ADMIN")
-                .map(String::as_str),
+                .and_then(ployz_core::EnvValue::text),
             Some("unix//run/ingress/caddy/admin.sock")
         );
         assert!(

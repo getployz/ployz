@@ -1,6 +1,7 @@
 use std::{
     collections::{BTreeSet, HashMap},
     net::IpAddr,
+    path::Path,
 };
 
 use bollard::models::{
@@ -19,6 +20,7 @@ use super::{
     Error, LABEL_HOOK, LABEL_HOOK_PRE_DEPLOY, LABEL_MANAGED, LABEL_NAMESPACE, LABEL_SERVICE_ID,
     LABEL_SERVICE_NAME,
 };
+use crate::sealed_env;
 
 pub(super) const TCP_MIGRATE_REQ: &str = "net.ipv4.tcp_migrate_req";
 
@@ -71,6 +73,7 @@ pub(super) fn container_create_body(
     kind: ContainerKind,
     namespace: &Namespace,
     spec: &ResolvedServiceSpec,
+    sealing_key_dir: Option<&Path>,
 ) -> Result<ContainerCreateBody, Error> {
     let hook = match kind {
         ContainerKind::ServiceContainer => None,
@@ -86,7 +89,12 @@ pub(super) fn container_create_body(
         environment.extend(hook.environment.clone());
         environment.insert("PLOYZ_HOOK_PRE_DEPLOY".into(), "true".into());
     }
-    environment.insert("PLOYZ_MACHINE_ID".into(), machine_id.to_string());
+    environment.insert("PLOYZ_MACHINE_ID".into(), machine_id.to_string().into());
+    let opened = sealed_env::open(
+        environment,
+        container.sealed_identity.as_ref(),
+        sealing_key_dir,
+    )?;
     let mut labels: HashMap<_, _> = container
         .labels
         .as_map()
@@ -101,6 +109,12 @@ pub(super) fn container_create_body(
     ]);
     if hook.is_some() {
         labels.insert(LABEL_HOOK.into(), LABEL_HOOK_PRE_DEPLOY.into());
+    }
+    if let Some(record) = &opened.record {
+        labels.insert(
+            sealed_env::LABEL_SEALED.into(),
+            serde_json::to_string(record).expect("a sealed record serializes"),
+        );
     }
     let mounts = docker_mounts(spec.volume_graph())?;
     let interface_addresses = if hook.is_none()
@@ -167,7 +181,8 @@ pub(super) fn container_create_body(
         tty: Some(container.tty),
         open_stdin: Some(container.open_stdin),
         env: Some(
-            environment
+            opened
+                .values
                 .into_iter()
                 .map(|(key, value)| format!("{key}={value}"))
                 .collect(),

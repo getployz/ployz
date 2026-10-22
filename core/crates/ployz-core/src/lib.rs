@@ -21,6 +21,7 @@ mod release;
 pub mod routing;
 pub mod rpc;
 mod rpc_catalog;
+mod sealed;
 mod sealing;
 pub mod service;
 mod storage_capacity;
@@ -43,6 +44,7 @@ pub use release::*;
 #[cfg(not(target_arch = "wasm32"))]
 pub use routing::*;
 pub use rpc::*;
+pub use sealed::*;
 pub use sealing::*;
 pub use service::*;
 pub use storage_capacity::*;

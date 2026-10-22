@@ -1085,6 +1085,7 @@ fn container_on(
                 command: vec![],
                 entrypoint: vec![],
                 environment: Default::default(),
+                sealed_identity: None,
                 labels: Default::default(),
                 hostname: None,
                 extra_hosts: vec![],

@@ -1255,8 +1255,10 @@ impl ContainerRefusal {
     pub fn into_error(self) -> RpcError {
         let code = match self.reason {
             ContainerRefusalReason::NotFound => RpcErrorCode::NotFound,
-            ContainerRefusalReason::NotParticipating => RpcErrorCode::Unavailable,
-            ContainerRefusalReason::InvalidIngress => RpcErrorCode::InvalidArgument,
+            ContainerRefusalReason::NotParticipating
+            | ContainerRefusalReason::SealingKeyMissing => RpcErrorCode::Unavailable,
+            ContainerRefusalReason::InvalidIngress
+            | ContainerRefusalReason::SealedValueUnopenable => RpcErrorCode::InvalidArgument,
             ContainerRefusalReason::NotEligible
             | ContainerRefusalReason::SlotOccupied
             | ContainerRefusalReason::VolumesNotPrepared
@@ -1299,6 +1301,10 @@ pub enum ContainerRefusalReason {
     RotationMismatch,
     /// The copy is routed, or held by a run that may route it again.
     InRotation,
+    /// This Machine holds no Sealing Key to open the spec's Sealed values.
+    SealingKeyMissing,
+    /// A Sealed value is bound elsewhere or does not open with this Cluster's key.
+    SealedValueUnopenable,
     #[serde(other)]
     Unrecognized,
 }

@@ -179,6 +179,7 @@ impl ContainerRuntime {
             kind,
             namespace,
             spec,
+            self.sealing_key_dir.as_deref(),
         )?;
         create::ingress_sysctls(
             &mut body,
