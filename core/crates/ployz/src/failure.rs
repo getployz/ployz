@@ -425,6 +425,14 @@ fn classify(error: &(dyn Error + 'static)) -> (RpcErrorCode, Value) {
             serde_json::json!({ "valid_children": valid }),
         );
     }
+    if let Some(OperatorError::NotRunningOnAnswered { gaps, .. }) =
+        error.downcast_ref::<OperatorError>()
+    {
+        return (
+            RpcErrorCode::Unavailable,
+            serde_json::json!({ "failures": gaps.failures, "omitted": gaps.omissions }),
+        );
+    }
     if let Some(OperatorError::NotRunning {
         running_in_scope, ..
     }) = error.downcast_ref::<OperatorError>()
@@ -616,6 +624,7 @@ fn operator_code(error: &OperatorError) -> RpcErrorCode {
         | OperatorError::NoServices
         | OperatorError::NoDeploymentContainers => RpcErrorCode::NotFound,
         OperatorError::StreamClosed
+        | OperatorError::NotRunningOnAnswered { .. }
         | OperatorError::ExecContainerStopped { .. }
         | OperatorError::NoServableContainer
         | OperatorError::SnapshotStale => RpcErrorCode::Unavailable,
@@ -644,9 +653,11 @@ fn plan_code(error: &PlanError) -> RpcErrorCode {
         | PlanError::ExistingPlainVolume { .. }
         | PlanError::ExistingProvisionedVolumeMismatch { .. }
         | PlanError::NoWriter { .. }
+        | PlanError::VolumeServerTakesNoServices { .. }
         | PlanError::HostnameConflict { .. } => RpcErrorCode::Conflict,
         PlanError::CapacityUnknown
         | PlanError::CopiesUnknown { .. }
+        | PlanError::VolumeHolderUnknown { .. }
         | PlanError::ProvisionedVolumeStorageUnknown { .. }
         | PlanError::DockerVolumeUnavailable { .. } => RpcErrorCode::Unavailable,
     }
@@ -733,6 +744,7 @@ fn cloud_enroll_code(error: &cloud_enroll::Error) -> RpcErrorCode {
         | cloud_enroll::Error::Connect(_)
         | cloud_enroll::Error::Http(_)
         | cloud_enroll::Error::RetrySameCommand { .. }
+        | cloud_enroll::Error::CloudCantReach
         | cloud_enroll::Error::FounderWait => RpcErrorCode::Unavailable,
         cloud_enroll::Error::Json(_) => RpcErrorCode::Internal,
         cloud_enroll::Error::TokenRefused => RpcErrorCode::Unauthenticated,
@@ -752,7 +764,7 @@ fn http_status_code(status: u16) -> RpcErrorCode {
     }
 }
 
-fn io_code(error: &io::Error) -> RpcErrorCode {
+pub(crate) fn io_code(error: &io::Error) -> RpcErrorCode {
     use io::ErrorKind;
     let kind = error.kind();
     if kind == ErrorKind::NotFound {
@@ -952,6 +964,10 @@ impl From<ConnectError> for Failure {
         match error {
             ConnectError::Context(error) => error.into(),
             ConnectError::Value(error) => error.into(),
+            // The daemon answered with its own failure: print that, not a failed call.
+            ConnectError::Rpc(error) if error.answered() => {
+                Self::command(ConnectError::Remote(error.to_rpc_error()))
+            }
             error => Self::command(error),
         }
     }
@@ -965,6 +981,7 @@ impl From<OperatorError> for Failure {
     fn from(error: OperatorError) -> Self {
         match error {
             OperatorError::Connect(error) => error.into(),
+            OperatorError::Rpc(error) => ConnectError::Rpc(error).into(),
             OperatorError::Protocol(error) => error.into(),
             error => Self::command(error),
         }
@@ -1019,7 +1036,8 @@ impl From<LoginError> for Failure {
             | LoginError::Status { .. }
             | LoginError::Reply(_)
             | LoginError::Store { .. }
-            | LoginError::TokenBound => None,
+            | LoginError::TokenBound
+            | LoginError::TokenMalformed => None,
         };
         Self::command(error).hint(next.map(|next| Hint::Next(next.into())))
     }
@@ -1042,6 +1060,7 @@ pub(crate) fn login_code(error: &LoginError) -> RpcErrorCode {
         | LoginError::Ended
         | LoginError::AwaitingApproval { .. }
         | LoginError::TokenRefused
+        | LoginError::TokenMalformed
         | LoginError::NotMember(_) => RpcErrorCode::Unauthenticated,
         LoginError::UnknownOrganization(_) | LoginError::UnknownCredential(_) => {
             RpcErrorCode::NotFound
@@ -1247,6 +1266,7 @@ mod tests {
     #[test]
     fn exhausted_connections_print_how_many_were_tried() {
         let failure = Failure::from(ConnectError::AllFailed {
+            relayed: false,
             selection: crate::context::ConnectionSource::Context("prod".into()),
             attempts: 3,
             server: None,
@@ -1270,6 +1290,7 @@ mod tests {
     #[test]
     fn exhausted_connections_name_the_server_tried_last() {
         let failure = Failure::from(ConnectError::AllFailed {
+            relayed: false,
             selection: crate::context::ConnectionSource::Cloud,
             attempts: 3,
             server: Some("box-node-09c8".into()),
@@ -1287,6 +1308,7 @@ mod tests {
     #[test]
     fn exhausted_connections_say_a_daemon_answered_when_one_did() {
         let failure = Failure::from(ConnectError::AllFailed {
+            relayed: false,
             selection: crate::context::ConnectionSource::Context("prod".into()),
             attempts: 2,
             server: None,
@@ -1305,6 +1327,7 @@ mod tests {
     #[test]
     fn exhausted_connections_say_the_server_tried_last_did_not_answer_after_one_refused() {
         let failure = Failure::from(ConnectError::AllFailed {
+            relayed: false,
             selection: crate::context::ConnectionSource::Cloud,
             attempts: 2,
             server: Some("web-2".into()),
@@ -1318,6 +1341,48 @@ mod tests {
             failure.to_string(),
             "A Server's daemon answered, but the 2 connections from Cloud all failed. \
              Server web-2, tried last, isn't answering. Check that its Ployz daemon is running, then retry."
+        );
+    }
+
+    #[test]
+    fn a_daemon_that_answered_with_an_error_is_not_blamed_for_the_call() {
+        let sent = RpcError {
+            code: RpcErrorCode::Internal,
+            message: "Corrosion HTTP request failed".into(),
+            details: Value::Null,
+            cause: vec!["Connection refused (os error 111)".into()],
+        };
+        let failure = Failure::from(ConnectError::Rpc(crate::connect::TransportError::from(
+            ployz_core::rpc::caused_status(tonic::Code::Internal, &sent),
+        )));
+        assert_eq!(failure.to_string(), "Corrosion HTTP request failed");
+        assert_eq!(failure.causes(), ["Connection refused (os error 111)"]);
+        assert_eq!(failure.report().code, RpcErrorCode::Internal);
+        assert!(failure.daemon_answered());
+
+        let wrapped = failure.context("Couldn't list servers.");
+        assert_eq!(
+            wrapped.causes().last().map(String::as_str),
+            Some("Connection refused (os error 111)")
+        );
+        assert!(
+            ui::row(&wrapped)
+                .ends_with("Corrosion HTTP request failed: Connection refused (os error 111)"),
+            "{}",
+            ui::row(&wrapped)
+        );
+    }
+
+    #[test]
+    fn a_status_the_daemon_did_not_attach_details_to_keeps_the_call_wording() {
+        let failure = Failure::from(ConnectError::Rpc(crate::connect::TransportError::from(
+            tonic::Status::unavailable(
+                "grpc-status header missing, mapped from HTTP status code 502",
+            ),
+        )));
+        assert_eq!(
+            failure.to_string(),
+            "Ployz's call to your Server's daemon failed."
         );
     }
 

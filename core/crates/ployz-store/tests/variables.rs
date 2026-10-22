@@ -158,6 +158,7 @@ fn admit(store: &ConfigStore, n: u8) -> Result<DeploymentId, RpcError> {
             upload: None,
             accept_volume_loss: Vec::new(),
             message: None,
+            prune: false,
         }),
         &ployz_store::Trusted::default(),
     )?;
@@ -283,6 +284,7 @@ fn a_secret_that_resolves_too_long_fails_the_deployment_at_claim() {
             reason: message.into(),
             cause: Vec::new(),
             needs_upload: Vec::new(),
+            same_again: false,
         })
     );
 }

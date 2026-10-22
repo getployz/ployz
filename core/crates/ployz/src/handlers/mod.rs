@@ -46,6 +46,32 @@ pub use cloud::enroll_with_installer as cloud_enroll_with_installer;
 
 pub type Error = Failure;
 
+/// The most bytes the CLI reads of a Config file, env file or secret, so a wrong source
+/// such as `/dev/zero` can't fill memory. It bounds only the read: the Store and Cloud
+/// judge what was read, as they would without it.
+pub(crate) const MAX_CLI_INPUT_BYTES: usize = 32 * 1024 * 1024;
+
+/// The refusal of an `input` past [`MAX_CLI_INPUT_BYTES`], such as `stdin` or a path.
+pub(crate) fn input_too_long(input: &str, what: &str) -> Error {
+    Error::detailed(
+        ployz_core::RpcErrorCode::InvalidArgument,
+        format!("{input}: the CLI reads at most 32 MiB of {what}; this one holds more"),
+        serde_json::json!({ "input": input, "max_bytes": MAX_CLI_INPUT_BYTES }),
+    )
+}
+
+/// All of `source`, or `None` when it holds more than `limit` bytes. Reads at most one
+/// byte past `limit`, so an endless source such as `/dev/zero` is refused at once.
+pub(crate) fn read_bounded(
+    source: impl std::io::Read,
+    limit: usize,
+) -> std::io::Result<Option<Vec<u8>>> {
+    let mut bytes = Vec::new();
+    let past = u64::try_from(limit).unwrap_or(u64::MAX).saturating_add(1);
+    std::io::Read::read_to_end(&mut source.take(past), &mut bytes)?;
+    Ok((bytes.len() <= limit).then_some(bytes))
+}
+
 pub fn run() -> Result<(), Error> {
     let mut command = crate::cli::command();
     let args = std::env::args_os().skip(1).collect::<Vec<_>>();
@@ -57,13 +83,13 @@ pub fn run() -> Result<(), Error> {
             // A word the tree lacks may be a command Cloud published since the
             // cache was written, or one never cached: one refresh, then parse again.
             let Some(published) = published_after_miss(&error, &command, &args)? else {
-                return Err(usage_failure(misplaced_flag(error, &command, &args)));
+                return Err(usage_failure(error, &command));
             };
             command = crate::published::attach(crate::cli::compiled(), &published);
             command
                 .clone()
                 .try_get_matches()
-                .map_err(|error| usage_failure(misplaced_flag(error, &command, &args)))?
+                .map_err(|error| usage_failure(error, &command))?
         }
     };
     let color = matches
@@ -146,6 +172,9 @@ fn wants_json(args: &[std::ffi::OsString]) -> bool {
 
 /// A flag written before the command that takes it, `ployz --project web status`:
 /// clap would offer the nearest top-level flag, so name the command's own instead.
+/// A flag another command takes, `server show --project`, is one this command lacks,
+/// not a typo of its nearest flag, unless that flag is [`close`]: `server ls --wait`
+/// keeps clap's `--waiting`. One after `--` is an operand, and keeps clap's error.
 fn misplaced_flag(error: clap::Error, tree: &Command, args: &[std::ffi::OsString]) -> clap::Error {
     use clap::error::{ContextKind, ContextValue, ErrorKind};
     if error.kind() != ErrorKind::UnknownArgument {
@@ -160,29 +189,81 @@ fn misplaced_flag(error: clap::Error, tree: &Command, args: &[std::ffi::OsString
     else {
         return error;
     };
-    let path = reached(tree, args);
-    let takes = !path.is_empty()
-        && path
-            .split(' ')
-            .try_fold(tree, |command, name| command.find_subcommand(name))
-            .is_some_and(|command| {
-                command
-                    .get_arguments()
-                    .any(|arg| arg.get_long() == Some(long))
-            });
-    if !takes {
+    let named = |arg: &std::ffi::OsString| {
+        arg.to_str()
+            .and_then(|arg| arg.strip_prefix("--"))
+            .and_then(|flag| flag.split('=').next())
+            == Some(long)
+    };
+    if !args.iter().take_while(|arg| *arg != "--").any(named) {
         return error;
     }
+    fn takes(command: &Command, long: &str) -> bool {
+        command
+            .get_arguments()
+            .any(|arg| arg.get_long() == Some(long))
+    }
+    fn anywhere(command: &Command, long: &str) -> bool {
+        takes(command, long) || command.get_subcommands().any(|sub| anywhere(sub, long))
+    }
+    let close_suggested = matches!(
+        error.get(ContextKind::SuggestedArg),
+        Some(ContextValue::String(suggested)) if suggested
+            .strip_prefix("--")
+            .is_some_and(|suggested| close(long, suggested))
+    );
+    let path = reached(tree, args);
+    let Some(command) = (!path.is_empty())
+        .then(|| {
+            path.split(' ')
+                .try_fold(tree, |command, name| command.find_subcommand(name))
+        })
+        .flatten()
+    else {
+        return error;
+    };
+    let tip = if takes(command, long) {
+        format!("'{path} --{long}' exists; put it after the command")
+    } else if !command.has_subcommands() && anywhere(tree, long) && !close_suggested {
+        format!("'{path}' takes no --{long}")
+    } else {
+        return error;
+    };
     clap::Error::raw(
         ErrorKind::UnknownArgument,
-        format!(
-            "unexpected argument '{invalid}' found\n\n  tip: '{path} --{long}' exists; put it after the command\n"
-        ),
+        format!("unexpected argument '{invalid}' found\n\n  tip: {tip}\n"),
     )
 }
 
+/// Whether clap's suggestion is a likely typo fix for `long`: one starts the other
+/// (`--wait`, `--waiting`), or they are at most two edits apart (`--reset`, `--preset`).
+fn close(long: &str, suggested: &str) -> bool {
+    if suggested.starts_with(long) || long.starts_with(suggested) {
+        return true;
+    }
+    // Levenshtein distance, one row at a time.
+    let mut previous = (0..=suggested.chars().count()).collect::<Vec<_>>();
+    for (i, a) in long.chars().enumerate() {
+        let mut row = vec![i + 1];
+        for ((b, diagonal), above) in suggested
+            .chars()
+            .zip(&previous)
+            .zip(previous.iter().skip(1))
+        {
+            let left = row.last().copied().unwrap_or(i + 1);
+            row.push(
+                (diagonal + usize::from(a != b))
+                    .min(above + 1)
+                    .min(left + 1),
+            );
+        }
+        previous = row;
+    }
+    previous.last().is_some_and(|distance| *distance <= 2)
+}
+
 /// Report a rejected command line: clap's own rendering, or one JSON error under `--json`.
-fn usage_failure(error: clap::Error) -> Error {
+fn usage_failure(error: clap::Error, tree: &Command) -> Error {
     use clap::error::ErrorKind;
     use std::io::Write as _;
     let wants_json = wants_json(&std::env::args_os().collect::<Vec<_>>());
@@ -198,7 +279,7 @@ fn usage_failure(error: clap::Error) -> Error {
         return Error::exit(0);
     }
     let args = std::env::args_os().skip(1).collect::<Vec<_>>();
-    let error = operator::container_column_asked(error, &args);
+    let error = misplaced_flag(operator::container_column_asked(error, &args), tree, &args);
     if !wants_json {
         error.exit();
     }
@@ -516,6 +597,16 @@ fn recovery_command(matches: &ArgMatches, context: &str, command: &[&str]) -> St
     shell_words::join(args)
 }
 
+/// The headline for a committed step whose Ingress Proxy deploy failed. A failed deploy's
+/// own sentence names what its Container did, so it stays on the headline; the one
+/// `cause:` line is then the Container's last line.
+pub(crate) fn ingress_headline(stem: &str, error: &Error) -> String {
+    match error.diagnostic() {
+        Some(_) => format!("{stem}: {error}"),
+        None => format!("{stem}."),
+    }
+}
+
 /// Direct ingress diagnostics acquire their command scope before committed output is serialized.
 pub(crate) fn ingress_hints(mut error: Error, command: impl Fn(&[&str]) -> String) -> Error {
     let Some(diagnostic) = error.diagnostic() else {
@@ -602,6 +693,28 @@ pub(crate) type Handler = fn(&ArgMatches) -> Result<(), Error>;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An endless source that counts the bytes it serves.
+    struct Endless(usize);
+
+    impl std::io::Read for &mut Endless {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            buf.fill(b'a');
+            self.0 += buf.len();
+            Ok(buf.len())
+        }
+    }
+
+    #[test]
+    fn a_bounded_read_takes_at_most_one_byte_past_its_limit() {
+        for limit in [0, 1, 4096, 256 * 1024] {
+            let mut source = Endless(0);
+            assert_eq!(read_bounded(&mut source, limit).unwrap(), None);
+            assert!(source.0 <= limit + 1, "{limit}: read {}", source.0);
+        }
+        let exact = read_bounded(&[b'a'; 10][..], 10).unwrap();
+        assert_eq!(exact.as_deref(), Some(&[b'a'; 10][..]));
+    }
 
     #[test]
     fn a_retry_line_escapes_what_would_steer_the_terminal() {
@@ -710,6 +823,56 @@ mod tests {
         );
         let error = tip(&["--nonsense", "status"]);
         assert!(!error.contains("exists; put it after"), "{error}");
+        let error = tip(&["get", "--", "web.image", "--project", "p"]);
+        assert!(!error.contains("put it after"), "{error}");
+        let error = tip(&["server", "show", "web-1", "--project", "p"]);
+        assert!(
+            error.contains("tip: 'server show' takes no --project"),
+            "{error}"
+        );
+        assert!(!error.contains("--connect"), "{error}");
+        let error = tip(&["server", "show", "web-1", "--conect", "p"]);
+        assert!(error.contains("--connect"), "{error}");
+    }
+
+    #[test]
+    fn a_flag_of_another_command_keeps_clap_suggestion_of_a_close_one() {
+        let rejected = |args: &[&str]| {
+            let tree = crate::cli::compiled();
+            let args = args
+                .iter()
+                .map(std::ffi::OsString::from)
+                .collect::<Vec<_>>();
+            let error = tree
+                .clone()
+                .try_get_matches_from(std::iter::once("ployz".into()).chain(args.clone()))
+                .unwrap_err();
+            misplaced_flag(error, &tree, &args).to_string()
+        };
+        let error = rejected(&["server", "ls", "--wait"]);
+        assert!(
+            error.contains("tip: a similar argument exists: '--waiting'"),
+            "{error}"
+        );
+        assert!(!error.contains("takes no"), "{error}");
+        let error = rejected(&["server", "token", "create", "--expires-in", "7d"]);
+        assert!(
+            error.contains("tip: a similar argument exists: '--expires'"),
+            "{error}"
+        );
+        assert!(!error.contains("takes no"), "{error}");
+        let error = rejected(&["token", "new", "ci", "--reset", "read"]);
+        assert!(
+            error.contains("tip: a similar argument exists: '--preset'"),
+            "{error}"
+        );
+        assert!(!error.contains("takes no"), "{error}");
+        let error = rejected(&["server", "show", "web-1", "--project", "p"]);
+        assert!(
+            error.contains("tip: 'server show' takes no --project"),
+            "{error}"
+        );
+        assert!(!error.contains("--connect"), "{error}");
     }
 
     fn command() -> Command {

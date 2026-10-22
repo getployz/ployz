@@ -9,6 +9,7 @@ import {
   drainSummary,
   drainView,
   removeHint,
+  stuckMessage,
 } from "#/modules/machines/server-drain-view";
 import { runtimeWatchMachineFixture } from "#/modules/runtime/runtime-watch-frame.test-fixture";
 
@@ -162,15 +163,24 @@ describe("Drain view", () => {
     expect(view({})).toEqual({ kind: "idle" });
     expect(view({}, "a2")).toEqual({ kind: "starting" });
     expect(view({ [web2.id]: finished([moved]) }, "a2")).toEqual({ kind: "starting" });
-    expect(view({ [web2.id]: { attemptId: "a2", state: "pending", requestedAt: "2026-10-04T10:00:00.000Z" } }, "a2"))
+    expect(view({ [web2.id]: { attemptId: "a2", state: "pending", requestedAt: "2026-10-04T10:00:00.000Z", serversSilent: false } }, "a2"))
       .toEqual({ kind: "queued", behind: null });
   });
 
   it("names the Server whose running Drain a queued one waits behind", () => {
     expect(view({
-      [web2.id]: { attemptId: "a2", state: "pending", requestedAt: "2026-10-04T10:00:00.000Z" },
+      [web2.id]: { attemptId: "a2", state: "pending", requestedAt: "2026-10-04T10:00:00.000Z", serversSilent: false },
       [web1.id]: { attemptId: "a1", state: "running", startedAt: "2026-10-04T09:59:00.000Z" },
     })).toEqual({ kind: "queued", behind: "web-1" });
+  });
+
+  it("reads waiting for its servers once they didn't answer it, whether or not another Drain runs", () => {
+    const waiting: LatestDrain = { attemptId: "a2", state: "pending", requestedAt: "2026-10-04T10:00:00.000Z", serversSilent: true };
+    expect(view({ [web2.id]: waiting })).toEqual({ kind: "waiting" });
+    expect(view({
+      [web2.id]: waiting,
+      [web1.id]: { attemptId: "a1", state: "running", startedAt: "2026-10-04T09:59:00.000Z" },
+    })).toEqual({ kind: "waiting" });
   });
 
   it("offers Drain again when something stayed, failed or was not reached, or the Drain stopped early", () => {
@@ -271,5 +281,21 @@ describe("A leftover still running here", () => {
   it("counts as stayed, not stopped", () => {
     const value = report([leftover], null, { kind: "observed", services: ["shop/web"], unchosen: [] });
     expect(drainSummary(value, "web-2")).toBe("1 stayed");
+  });
+});
+
+describe("stuckMessage", () => {
+  it("names the Server whose upgrade would move each Volume there, and says the rest have nowhere to move", () => {
+    expect(stuckMessage([{ volume: "db", upgrade: null }])).toBe("db has nowhere to move");
+    expect(stuckMessage([{ volume: "db", upgrade: "web-2" }])).toBe("Upgrade web-2 to move db there");
+    expect(stuckMessage([{ volume: "db", upgrade: "web-2" }, { volume: "cache", upgrade: null }, { volume: "logs", upgrade: "web-2" }]))
+      .toBe("cache has nowhere to move. Upgrade web-2 to move db and logs there");
+    expect(stuckMessage([{ volume: "db", upgrade: "web-2" }, { volume: "cache", upgrade: "web-3" }]))
+      .toBe("Upgrade web-2 to move db there. Upgrade web-3 to move cache there");
+  });
+
+  it("keeps a Volume nowhere takes when another Environment's Volume of the same name can move once a Server is upgraded", () => {
+    expect(stuckMessage([{ volume: "data", upgrade: "web-2" }, { volume: "data", upgrade: null }]))
+      .toBe("data has nowhere to move. Upgrade web-2 to move data there");
   });
 });

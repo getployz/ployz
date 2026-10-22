@@ -18,13 +18,19 @@ that owns it, and user-visible behavior in [docs/user/](../docs/user/).
 
 ## Stable promise
 
-**Bet.** From 0.2.0, a daemon keeps working and upgrades across every later
+**Bet.** From 0.3.0, a daemon keeps working and upgrades across every later
 0.x release without re-enrolling. Only a new major line may break that, and it
 says so. The promise covers what a daemon carries or speaks: replicated rows
 and bodies, the local Machine record, Machine RPC within `PROTOCOL_MAJOR`,
 enrollment, the release source, and the Internal DNS spec and probe. The CLI
 is a client courtesy with ordinary deprecation. The Observe Store is
 disposable and outside the promise.
+
+**Before 0.3.0.** 0.3.0 is the first release the promise covers. A Machine on
+a 0.2 release or a 0.3.0 beta is outside it, yet still upgrades to 0.3.0 in
+place without re-enrolling. On 0.2 or 0.3.0-beta.6 and earlier, the first
+Machine of a Cluster takes that upgrade over SSH, because its relay protocol
+predates 0.3.0's; the rest upgrade through it.
 
 **Rules.** Frozen formats only gain optional fields with defaults. Nothing is
 renamed or repurposed, and readers ignore unknown fields. Replicated bodies

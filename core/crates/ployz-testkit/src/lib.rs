@@ -1174,6 +1174,7 @@ mod tests {
             assigned_machine: second.clone(),
             visible_peers: Vec::new(),
             target_versions: BTreeMap::from([("actor".to_owned(), 7)]),
+            sealing_key: None,
         };
         let EnrollAs::Member { registration: join } = join_request(&first, &registration).role
         else {

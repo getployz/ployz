@@ -1,0 +1,226 @@
+use crate::sdk::test_support as support;
+
+/// The failure of a direct apply against `service`.
+async fn failed(service: support::DeployService) -> crate::failure::Failure {
+    let (mut client, server) = support::connected(service).await;
+    let error =
+        crate::deploy::apply_requested(&mut client, &support::spec("web"), false, false, "test")
+            .await
+            .expect_err("the Container never runs");
+    server.abort();
+    error.into()
+}
+
+/// The `--json` error of a direct apply that failed against `service`.
+async fn failed_apply(service: support::DeployService) -> ployz_core::RpcError {
+    failed(service).await.report()
+}
+
+/// A direct apply, with no Store, names a crash-looping Container's exit code and last
+/// line from its Server's Log Store, in the same words as a Store-followed deploy.
+#[tokio::test]
+async fn a_direct_apply_whose_container_keeps_restarting_names_its_exit_and_last_line() {
+    let failure = failed_apply(
+        support::DeployService::new(support::machine('a', "one")).restart_containers(),
+    )
+    .await;
+    assert_eq!(
+        failure.message,
+        "web: The Container exited with code 1 and is restarting."
+    );
+    assert_eq!(failure.cause, ["token=[redacted]"]);
+    assert_eq!(
+        failure.details.pointer("/outcome/failed/error/last_run"),
+        Some(&serde_json::json!({ "exit_code": 1, "last_line": "token=[redacted]" }))
+    );
+}
+
+#[tokio::test]
+async fn a_direct_apply_whose_container_exited_names_its_last_line() {
+    let failure =
+        failed_apply(support::DeployService::new(support::machine('a', "one")).crash_containers())
+            .await;
+    assert_eq!(failure.message, "web: The Container exited with code 1.");
+    assert_eq!(failure.cause, ["token=[redacted]"]);
+}
+
+#[tokio::test]
+async fn a_direct_apply_whose_container_ran_out_of_memory_still_says_so() {
+    let failure = failed_apply(
+        support::DeployService::new(support::machine('a', "one")).oom_kill_containers(),
+    )
+    .await;
+    assert_eq!(failure.message, "web: The Container ran out of memory.");
+}
+
+/// A Server change whose Ingress Proxy follow-up crash-loops tells a person reading
+/// the CLI the exit code and the last line, as `ployz deploy` does.
+#[tokio::test]
+async fn an_ingress_follow_up_that_keeps_restarting_prints_its_exit_and_last_line() {
+    let failure =
+        failed(support::DeployService::new(support::machine('a', "one")).restart_containers())
+            .await;
+    let failure = crate::handlers::server::ingress_incomplete(
+        "Server updated",
+        failure,
+        "ployz server set one --accepts-ingress=true".into(),
+    );
+    let text = crate::ui::plain(&failure);
+    assert!(
+        text.starts_with(
+            "error: Server updated; the Ingress Proxy did not follow: web: The Container exited with code 1 and is restarting.\n  cause: token=[redacted]\n"
+        ),
+        "{text}"
+    );
+    assert_eq!(failure.causes(), ["token=[redacted]"]);
+}
+
+/// The last line is the one the exited run printed, not the next run's first.
+#[tokio::test]
+async fn a_direct_apply_whose_container_restarted_names_the_exited_runs_last_line() {
+    let failure =
+        failed_apply(support::DeployService::new(support::machine('a', "one")).reboot_containers())
+            .await;
+    assert_eq!(
+        failure.message,
+        "web: The Container exited with code 1 and is restarting."
+    );
+    assert_eq!(failure.cause, ["token=[redacted]"]);
+}
+
+/// `ployz server add` founding a Cluster without Cloud, whose Ingress Proxy crash-loops,
+/// tells a person the exit code and the last line.
+#[tokio::test]
+async fn a_founding_server_add_whose_ingress_keeps_restarting_prints_its_exit_and_last_line() {
+    let failure =
+        failed(support::DeployService::new(support::machine('a', "one")).restart_containers())
+            .await;
+    let failure = crate::handlers::server::init::ingress_incomplete(
+        failure,
+        "ployz server set one --accepts-ingress=true".into(),
+    );
+    let text = crate::ui::plain(&failure);
+    assert!(
+        text.starts_with(
+            "error: Server initialized; ingress deployment incomplete: web: The Container exited with code 1 and is restarting.\n  cause: token=[redacted]\n"
+        ),
+        "{text}"
+    );
+    assert_eq!(failure.causes(), ["token=[redacted]"]);
+}
+
+/// Cloud enrollment behind `ployz server add` whose Ingress Proxy crash-loops tells a
+/// person the exit code and the last line.
+#[tokio::test]
+async fn a_cloud_enrollment_whose_ingress_keeps_restarting_prints_its_exit_and_last_line() {
+    let failure =
+        failed(support::DeployService::new(support::machine('a', "one")).restart_containers())
+            .await;
+    let failure = crate::handlers::cloud::ingress_incomplete(
+        crate::cloud_enroll::Command::ServerAdd,
+        failure,
+    );
+    let text = crate::ui::plain(&failure);
+    assert!(
+        text.starts_with(
+            "error: Server initialized; Ingress deployment incomplete: web: The Container exited with code 1 and is restarting. Rerun the same ployz server add command without --reset, keeping all other options, to reconcile it.\n  cause: token=[redacted]\n"
+        ),
+        "{text}"
+    );
+}
+
+/// A failure with no deploy evidence keeps each path's headline as it was.
+#[test]
+fn an_ingress_failure_without_deploy_evidence_keeps_its_headline() {
+    let failure = || crate::failure::Failure::unavailable("down");
+    let init = crate::handlers::server::init::ingress_incomplete(failure(), String::new());
+    assert_eq!(
+        init.report().message,
+        "Server initialized; ingress deployment incomplete."
+    );
+    let cloud = crate::handlers::cloud::ingress_incomplete(
+        crate::cloud_enroll::Command::ServerAdd,
+        failure(),
+    );
+    assert_eq!(
+        cloud.report().message,
+        "Server initialized; Ingress deployment incomplete. Rerun the same ployz server add command without --reset, keeping all other options, to reconcile it."
+    );
+    let enrolled = crate::handlers::cloud::ingress_incomplete(
+        crate::cloud_enroll::Command::ServerEnroll,
+        failure(),
+    );
+    assert_eq!(
+        enrolled.report().message,
+        "Server initialized; Ingress deployment incomplete. Run ployz server enroll again, or use Enroll in Servers > Waiting to join, to reconcile it."
+    );
+    let set =
+        crate::handlers::server::ingress_incomplete("Server updated", failure(), String::new());
+    assert_eq!(
+        set.report().message,
+        "Server updated; the Ingress Proxy did not follow."
+    );
+}
+
+/// A run that exited printing nothing has no last line, so no earlier run's line
+/// stands in for it, on the headline or under it.
+#[tokio::test]
+async fn a_direct_apply_whose_last_run_printed_nothing_names_no_line() {
+    let failure = failed(
+        support::DeployService::new(support::machine('a', "one"))
+            .reboot_containers_through_a_silent_run(),
+    )
+    .await;
+    let report = failure.report();
+    assert_eq!(
+        report.message,
+        "web: The Container exited with code 1 and is restarting."
+    );
+    assert_eq!(report.cause, Vec::<String>::new());
+    let text = crate::ui::plain(&crate::handlers::server::ingress_incomplete(
+        "Server updated",
+        failure,
+        "ployz server set one --accepts-ingress=true".into(),
+    ));
+    assert!(
+        text.starts_with(
+            "error: Server updated; the Ingress Proxy did not follow: web: The Container exited with code 1 and is restarting.\n"
+        ),
+        "{text}"
+    );
+    assert!(!text.contains("cause:"), "{text}");
+}
+
+/// Cloud enrollment publishes past an Ingress Proxy Apply that ran but left a Server
+/// unobserved, and stops before publication on one that failed.
+#[tokio::test]
+async fn an_apply_that_leaves_a_server_unobserved_is_partial_and_a_failed_one_is_not() {
+    let mut down = support::machine('b', "two");
+    down.membership = ployz_core::MembershipObservation::Down;
+    down.membership_evidence = Some(ployz_core::MembershipEvidence::Down);
+    let (mut client, server) = support::connected(
+        support::DeployService::empty().with_machines(vec![support::machine('a', "one"), down]),
+    )
+    .await;
+    let partial =
+        crate::deploy::apply_requested(&mut client, &support::spec("web"), false, false, "test")
+            .await
+            .expect_err("Server two goes unobserved");
+    server.abort();
+    assert!(
+        matches!(partial, crate::deploy::ApplyError::Partial(_)),
+        "{:?}",
+        crate::failure::Failure::from(partial).report()
+    );
+
+    let (mut client, server) = support::connected(
+        support::DeployService::new(support::machine('a', "one")).restart_containers(),
+    )
+    .await;
+    let failed =
+        crate::deploy::apply_requested(&mut client, &support::spec("web"), false, false, "test")
+            .await
+            .expect_err("the Container never runs");
+    server.abort();
+    assert!(matches!(failed, crate::deploy::ApplyError::Failed(_)));
+}

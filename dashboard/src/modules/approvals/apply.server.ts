@@ -2,15 +2,15 @@ import "@tanstack/react-start/server-only";
 import type { ConfigCommand, DiffView } from "@ployz/sdk";
 import { Cause, Effect, Predicate } from "effect";
 import { toErrorMessage } from "#/lib/error-message";
-import type { ApprovalDecision, ServiceApply } from "#/modules/approvals/approvals";
+import type { ApprovalDecision, ServiceApply, VolumeApply } from "#/modules/approvals/approvals";
 import { type ApprovalView, type Decider, decideApproval, onceFor, type OperationDigest, readAsker, undoApproval } from "#/modules/approvals/approvals.server";
 import { callStore, writePermission } from "#/modules/config-store/config-store.server";
 import { findService } from "#/modules/config-store/store-lookup.server";
 import type { StoreRefusal } from "#/modules/config-store/store.contract";
 import type { Caller } from "#/modules/identity/actor";
 import { bodyDigest } from "#/modules/operations/keyed.server";
-import { OPERATIONS } from "#/modules/operations/operations";
-import { actService } from "#/modules/operations/operations.server";
+import { OPERATIONS, VOLUME_OPERATIONS } from "#/modules/operations/operations";
+import { actService, runVolume } from "#/modules/operations/operations.server";
 import { type Access, requireAccessById } from "#/modules/organization/access.server";
 
 /** Why an approved ask didn't run; `moved` when the plan it reviewed is gone, so it must be asked again. */
@@ -58,6 +58,21 @@ const applyService = Effect.fn("Approvals.applyService")(function* (
   return admission.ok ? null : notRun(admission.refusal, "busy");
 });
 
+const applyVolume = Effect.fn("Approvals.applyVolume")(function* (
+  organizationId: string,
+  asker: { userId: string; credentialId: string },
+  approval: ApprovalView,
+  { volumeId, environment, maximum_bytes }: VolumeApply,
+) {
+  const access = yield* requireAccessById({ userId: asker.userId }, organizationId, VOLUME_OPERATIONS.resize.requires);
+  const admission = yield* runVolume(
+    askerCaller(access, asker.credentialId),
+    { volumeId, environment, kind: "resize", args: { maximum_bytes } },
+    { key: null, approvalId: approval.id },
+  );
+  return admission.ok ? null : notRun(admission.refusal, "busy");
+});
+
 /**
  * Runs what a dashboard ask into a Protected Environment waited on, as its asker with what they hold now and the
  * approval it was given. An ask from `ployz` or an agent has no `apply`: it runs when it asks again with the approval.
@@ -68,7 +83,9 @@ const applyApproved = Effect.fn("Approvals.applyApproved")(function* (organizati
   if (asker.requestedByUserId === null) return { message: "Whoever asked is no longer in the Organization.", moved: true } satisfies NotRun;
   return "diff" in asker.review
     ? yield* applyStore(organizationId, asker.requestedByUserId, asker.review.apply, approval, asker.review.diff)
-    : yield* applyService(organizationId, { userId: asker.requestedByUserId, credentialId: asker.credentialId }, approval, asker.review.apply);
+    : "volumeId" in asker.review.apply
+      ? yield* applyVolume(organizationId, { userId: asker.requestedByUserId, credentialId: asker.credentialId }, approval, asker.review.apply)
+      : yield* applyService(organizationId, { userId: asker.requestedByUserId, credentialId: asker.credentialId }, approval, asker.review.apply);
 });
 
 /**

@@ -48,6 +48,15 @@ pub(super) fn deploy_command(command: Command) -> Command {
                 .conflicts_with_all(["service", "plan", "upload", "events", "detach"])
                 .help("Save everything staged for the next deploy instead of deploying it"),
         )
+        .arg(
+            switch("prune", None)
+                .conflicts_with_all(["service", "plan", "skip-deploy"])
+                .help(
+                    "Also remove every Service running in the Environment that this Store \
+                     doesn't hold; asks first",
+                ),
+        )
+        .arg(crate::cli::yes("Prune without asking"))
         .arg(crate::cli::reviewed_version())
         .arg(crate::cli::approval())
         .arg(
@@ -131,16 +140,13 @@ pub(super) fn redeploy_command(command: Command) -> Command {
          --accept-volume-loss.",
     )))
     .arg(id())
-    .arg(
-        switch("yes", Some('y'))
-            .env(crate::cli::env::AUTO_CONFIRM)
-            .help("Roll back without asking"),
-    )
+    .arg(crate::cli::yes("Roll back without asking"))
     .arg(crate::cli::volume_acceptance().help(format!(
         "{}; --yes cannot bypass this",
         crate::cli::VOLUME_ACCEPTANCE
     )))
     .arg(crate::cli::reviewed_version())
+    .arg(crate::cli::approval())
 }
 
 pub(super) fn start_command(command: Command) -> Command {
@@ -154,6 +160,7 @@ pub(super) fn start_command(command: Command) -> Command {
 pub(super) fn cancel_command(command: Command) -> Command {
     scoped(command.about("Cancel a Deployment: a queued one never runs, a running one stops"))
         .arg(id())
+        .arg(crate::cli::approval())
 }
 
 fn id() -> clap::Arg {
@@ -172,8 +179,12 @@ pub(super) fn deploy(root: &ArgMatches) -> Result<(), Error> {
     let upload = source.as_deref().and_then(Path::to_str);
     let message = matches.get_one::<String>("message").map(String::as_str);
     let skip = matches.get_flag("skip-deploy");
+    let prune = matches.get_flag("prune");
+    let yes = matches.get_flag("yes");
     let store = store(root)?
         .args(skip.then_some("--skip-deploy"))
+        .args(prune.then_some("--prune"))
+        .args((prune && yes).then_some("--yes"))
         .args(names.iter().copied())
         .args(upload.into_iter().flat_map(|source| ["--upload", source]))
         .args(
@@ -188,6 +199,9 @@ pub(super) fn deploy(root: &ArgMatches) -> Result<(), Error> {
     if matches.get_flag("plan") {
         return plan(matches, &store, services);
     }
+    if prune && !yes {
+        confirm_prune()?;
+    }
     let events = open_events(matches)?;
     let request = Request {
         environment: environment(matches)?,
@@ -196,8 +210,28 @@ pub(super) fn deploy(root: &ArgMatches) -> Result<(), Error> {
         source,
         accept: super::teardown::accepted(matches)?,
         message: matches.get_one::<String>("message").cloned(),
+        prune,
     };
     upload_and_ship(matches, &store, request, events)?.finish()
+}
+
+/// Ask before `deploy --prune` removes what this Store never held. The prompt can't
+/// name those Services: the Deploy Preview that finds them is computed only after
+/// admission, and admission is what `--prune` changes.
+fn confirm_prune() -> Result<(), Error> {
+    ui::confirm(
+        "Also remove every service running in this environment that isn't one of its services?",
+        || {
+            Error::detailed(
+                RpcErrorCode::ConfirmationRequired,
+                "deploy --prune removes every service running in this environment that isn't one of \
+                 its services, and needs confirmation. Nothing deployed.",
+                serde_json::json!({ "prune": true }),
+            )
+            .hint(Hint::Retry(super::typed_with(&["--yes"])))
+        },
+        "Cancelled. Nothing deployed.",
+    )
 }
 
 /// `deploy --skip-deploy`: save everything staged for the next deploy.
@@ -242,6 +276,8 @@ pub(super) struct Request {
     pub(super) source: Option<PathBuf>,
     pub(super) accept: Vec<VolumeName>,
     pub(super) message: Option<String>,
+    /// Also remove every Service running in the Environment that this Store never held.
+    pub(super) prune: bool,
 }
 
 /// Upload `request.source`, admit the Deployment, then run or follow it.
@@ -258,6 +294,7 @@ pub(super) fn upload_and_ship(
         source,
         accept,
         message,
+        prune,
     } = request;
     refuse_local_detach(matches, store)?;
     let listing = source
@@ -285,6 +322,7 @@ pub(super) fn upload_and_ship(
             upload,
             accept_volume_loss: accept,
             message,
+            prune,
         }))
         .map_err(|error| store.accepting(store.at_review(error, "diff")))?;
     execute(matches, store, &admitted, source.as_deref(), events)
@@ -379,14 +417,18 @@ pub(super) fn execute(
     events: Option<std::io::BufWriter<std::fs::File>>,
 ) -> Result<Shipped, Error> {
     let hint = hint_for(matches, admitted);
-    let signal = crate::cancellation::interrupted()?;
+    let (signal, _sigterm) = crate::cancellation::interrupted_or_terminated()?;
     let mut runner = match store.local() {
         // Admission can end it at once, with nothing to run.
-        Some(local) if admitted.status.in_flight() => Some(OwnedRunner {
-            store,
-            id: admitted.id.clone(),
-            handle: Some(run_here(matches, local, admitted, source)?),
-        }),
+        Some(local) if admitted.status.in_flight() => {
+            let ended = tokio_util::sync::CancellationToken::new();
+            Some(OwnedRunner {
+                store,
+                id: admitted.id.clone(),
+                handle: Some(run_here(matches, local, admitted, source, ended.clone())?),
+                ended,
+            })
+        }
         Some(_) | None => None,
     };
     let detached = runner.is_none() && matches.get_flag("detach");
@@ -492,7 +534,15 @@ pub(super) fn execute(
     } else if detached {
         Ok(())
     } else {
-        progress::completion(&view, successor.as_ref(), |args| {
+        let named: Vec<&str> = matches
+            .try_get_many::<String>("service")
+            .ok()
+            .flatten()
+            .into_iter()
+            .flatten()
+            .map(String::as_str)
+            .collect();
+        progress::completion(&view, successor.as_ref(), &named, |args| {
             super::rerun(matches, args)
         })
     };
@@ -522,6 +572,7 @@ fn run_here(
     local: &std::sync::Arc<ConfigStore>,
     admitted: &DeploymentSummary,
     source: Option<&Path>,
+    ended: tokio_util::sync::CancellationToken,
 ) -> Result<std::thread::JoinHandle<Result<DeploymentSummary, Error>>, Error> {
     let direct = matches.get_one::<String>("connect").map(String::as_str);
     let context = matches.get_one::<String>("context").map(String::as_str);
@@ -544,13 +595,20 @@ fn run_here(
     let (local, id) = (std::sync::Arc::clone(local), admitted.id.clone());
     let runtime = runtime()?;
     Ok(std::thread::spawn(move || {
-        Ok(runtime.block_on(crate::sdk::run_deployment(
-            local,
-            id,
-            runner,
-            connections,
-            Ok(sources),
-        ))?)
+        // Locals drop last to first, on a panic too. Dropping the runtime waits out its
+        // blocking tasks, so it goes before `ended` wakes following.
+        let _ended = ended.drop_guard();
+        let runtime = runtime;
+        runtime
+            .block_on(crate::sdk::run_deployment(
+                ployz_core::Operator::Cli,
+                local,
+                id,
+                runner,
+                connections,
+                Ok(sources),
+            ))
+            .map_err(Error::from)
     }))
 }
 
@@ -571,6 +629,8 @@ struct OwnedRunner<'store, 'matches> {
     store: &'store Store<'matches>,
     id: DeploymentId,
     handle: Option<std::thread::JoinHandle<Result<DeploymentSummary, Error>>>,
+    /// Cancelled when the runner thread returns, so following wakes at once.
+    ended: tokio_util::sync::CancellationToken,
 }
 
 impl OwnedRunner<'_, '_> {
@@ -687,6 +747,9 @@ fn follow(
             .hint(Hint::Inspect(hint_for(matches, tracked)))
     };
     let mut unclaimed = Some(std::time::Instant::now() + unclaimed_wait());
+    let mut ended = runner
+        .map(|runner| runner.ended.clone())
+        .unwrap_or_default();
     loop {
         if signal.is_cancelled() {
             return followed.ok_or_else(Error::cancelled);
@@ -793,9 +856,14 @@ fn follow(
         wait_runtime.block_on(async {
             tokio::select! {
                 () = signal.cancelled() => {},
+                () = ended.cancelled() => {},
                 () = tokio::time::sleep(FOLLOW_POLL) => {},
             }
         });
+        // The thread may still be exiting; later reads fall back to the poll.
+        if ended.is_cancelled() {
+            ended = tokio_util::sync::CancellationToken::new();
+        }
     }
 }
 
@@ -917,7 +985,12 @@ fn plan(matches: &ArgMatches, store: &Store, services: Vec<ServiceName>) -> Resu
     let hint = store.again(&["--expect-version", plan.version.as_str()]);
     let (ingress, ingress_unchecked) = match ingress_check(matches) {
         Ok(check) => (Some(check.repairs), check.unchecked),
-        Err(cause) => (None, vec![cause]),
+        Err(Unchecked { cause, silent }) => {
+            if let Some(silent) = silent {
+                ui::warn(cant_run(&silent));
+            }
+            (None, vec![cause])
+        }
     };
     let shown = Planned {
         domain_changes: super::store::domain_changes(
@@ -992,22 +1065,48 @@ fn undecided(unresolved: &[String]) -> Option<String> {
     ))
 }
 
-fn ingress_check(matches: &ArgMatches) -> Result<crate::ingress::IngressCheck, String> {
+/// The plan's warning when no Server answers: the deploy waits on one.
+fn cant_run(silent: &super::server::Silent) -> String {
+    let until = if let [_] = silent.names() {
+        "it does"
+    } else {
+        "one does"
+    };
+    format!(
+        "{silent}, so this deploy can't run until {until}. {}",
+        silent.next()
+    )
+}
+
+/// Why ingress went unchecked, and whether that is because no Server answered.
+struct Unchecked {
+    cause: String,
+    silent: Option<super::server::Silent>,
+}
+
+fn ingress_check(matches: &ArgMatches) -> Result<crate::ingress::IngressCheck, Unchecked> {
     let context = matches
         .try_get_one::<String>("context")
         .ok()
         .flatten()
         .map(String::as_str);
+    let unchecked = |cause| Unchecked {
+        cause,
+        silent: None,
+    };
     runtime()
-        .map_err(|error| error.to_string())?
+        .map_err(|error| unchecked(error.to_string()))?
         .block_on(async {
             let mut client = super::server::connect(matches, context)
                 .await
-                .map_err(|error| crate::ingress::unchecked(&error, None))?;
+                .map_err(|error| Unchecked {
+                    cause: crate::ingress::unchecked(&error, None),
+                    silent: super::server::Silent::of(&error),
+                })?;
             let server = client.server();
             crate::ingress::planned_slots(&mut client)
                 .await
-                .map_err(|error| crate::ingress::unchecked(&error, server))
+                .map_err(|error| unchecked(crate::ingress::unchecked(&error, server)))
         })
 }
 
@@ -1273,6 +1372,22 @@ fn confirm_rollback(store: &Store, source: &DeploymentId) -> Result<Vec<u64>, Er
     Ok(view.rolls_back)
 }
 
+/// What a Deployment admitted with `prune` says of it: that it prunes, and when
+/// the Servers refused the prune, why. Nothing for one admitted without.
+fn prune_lines(prune: bool, preview: Option<&ployz_core::DeployPreview>) -> Vec<String> {
+    if !prune {
+        return Vec::new();
+    }
+    let mut lines = vec![
+        "  Prune: also removes every service running in this environment that isn't one of its services"
+            .to_owned(),
+    ];
+    if let Some(refusal) = preview.and_then(|preview| preview.prune_refusal.as_ref()) {
+        lines.push(format!("  Prune skipped: {refusal}"));
+    }
+    lines
+}
+
 /// `#5 and #6`, the Deployments a redeploy undoes; none when it undoes nothing.
 fn rolls_back(numbers: &[u64]) -> Option<String> {
     let (last, rest) = numbers.split_last()?;
@@ -1306,7 +1421,13 @@ pub(super) fn start(root: &ArgMatches) -> Result<(), Error> {
 
 pub(super) fn cancel(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
-    let store = store(root)?;
+    // An approval refusal names this command again, with the same Deployment.
+    let words: Vec<&str> = matches
+        .get_one::<String>("id")
+        .map(String::as_str)
+        .into_iter()
+        .collect();
+    let store = store(root)?.args(words);
     let id = deployment_id(matches, &store, "id")?;
     store
         .try_write_checked(
@@ -1344,6 +1465,14 @@ pub(super) fn say_view(view: &DeploymentView) {
     if let Some(provenance) = provenance(&view.deployment) {
         crate::ui::stream(format_args!("  {provenance}"));
     }
+    for line in prune_lines(view.deployment.prune, view.preview.as_ref()) {
+        crate::ui::stream(format_args!("{line}"));
+    }
+    for warning in view.preview.iter().flat_map(|preview| &preview.warnings) {
+        if let ployz_core::DeployWarning::NotInStore { .. } = warning {
+            crate::ui::stream(format_args!("  ! {warning}"));
+        }
+    }
     if let Some(
         ployz_store::Outcome::NotExecuted { reason, cause, .. }
         | ployz_store::Outcome::Executed {
@@ -1370,11 +1499,15 @@ pub(super) fn say_view(view: &DeploymentView) {
         ));
     }
     for node in &view.nodes {
-        crate::ui::stream(format_args!(
-            "  {}: {}",
-            node.node.name(),
+        let outcome = if node.outcome == ployz_store::NodeStatus::Failed && node.cancelled {
+            "cancelled".to_owned()
+        } else {
             super::store::word(&node.outcome)
-        ));
+        };
+        crate::ui::stream(format_args!("  {}: {outcome}", node.node.name()));
+    }
+    for line in untargeted_lines(&view.untargeted) {
+        crate::ui::stream(format_args!("{line}"));
     }
     for build in &view.builds {
         let commit = build.commit.as_ref().map_or("the upload", |commit| {
@@ -1394,6 +1527,25 @@ pub(super) fn say_view(view: &DeploymentView) {
             crate::ui::stream(format_args!("    GitHub skipped it: {why}"));
         }
     }
+}
+
+/// How many Servers removed each Service the Deployment's Store doesn't hold.
+fn untargeted_lines(
+    untargeted: &BTreeMap<ServiceName, Vec<ployz_store::ServerRow>>,
+) -> Vec<String> {
+    untargeted
+        .iter()
+        .map(|(service, rows)| {
+            let removed = rows
+                .iter()
+                .filter(|row| row.state == ployz_store::RowState::Completed)
+                .count();
+            format!(
+                "  {service}: removed {removed}/{} (not in this environment)",
+                rows.len()
+            )
+        })
+        .collect()
 }
 
 fn service_outcome_lines(services: &[ployz_core::ServiceOutcome]) -> Vec<String> {
@@ -1418,10 +1570,33 @@ fn service_outcome_lines(services: &[ployz_core::ServiceOutcome]) -> Vec<String>
 #[cfg(test)]
 mod tests {
     use super::{
-        Tone, open_events, provenance, service_outcome_lines, ships_all, status_tone, status_word,
-        undecided,
+        Tone, open_events, provenance, prune_lines, service_outcome_lines, ships_all, status_tone,
+        status_word, undecided, untargeted_lines,
     };
     use ployz_core::{RpcErrorCode, ServiceName};
+
+    #[test]
+    fn a_pruning_deployment_says_when_the_servers_refused_its_prune() {
+        let refused: ployz_core::DeployPreview = serde_json::from_value(serde_json::json!({
+            "namespace": "shop-production", "operations": [], "warnings": [],
+            "would_remove": [], "preserved_volumes": [], "prune_refusal": "incomplete_snapshot"
+        }))
+        .unwrap();
+        let lines = prune_lines(true, Some(&refused));
+        let [prunes, skipped] = lines.as_slice() else {
+            panic!("{lines:?}");
+        };
+        assert!(prunes.starts_with("  Prune:"), "{lines:?}");
+        assert_eq!(
+            *skipped,
+            format!(
+                "  Prune skipped: {}",
+                ployz_core::PruneRefusal::IncompleteSnapshot
+            )
+        );
+        assert_eq!(prune_lines(true, None).len(), 1);
+        assert!(prune_lines(false, Some(&refused)).is_empty());
+    }
 
     #[test]
     fn the_plan_says_what_the_servers_decide_in_plain_words() {
@@ -1457,6 +1632,28 @@ mod tests {
         assert_eq!(
             refused(directory).message,
             format!("Can't write --events file {directory}: it is a directory")
+        );
+    }
+
+    #[test]
+    fn a_service_this_store_doesnt_hold_reads_how_many_copies_it_removed() {
+        let rows: std::collections::BTreeMap<ServiceName, Vec<ployz_store::ServerRow>> =
+            serde_json::from_value(serde_json::json!({
+                "cache": [
+                    {"machine_id": "a".repeat(32), "server": "alpha", "state": "completed", "started_at": 1, "finished_at": 2},
+                    {"machine_id": "b".repeat(32), "server": "beta", "state": "not_attempted", "started_at": null, "finished_at": 2}
+                ],
+                "db": [
+                    {"machine_id": "a".repeat(32), "server": "alpha", "state": "completed", "started_at": 1, "finished_at": 2}
+                ]
+            }))
+            .unwrap();
+        assert_eq!(
+            untargeted_lines(&rows),
+            [
+                "  cache: removed 1/2 (not in this environment)",
+                "  db: removed 1/1 (not in this environment)",
+            ]
         );
     }
 

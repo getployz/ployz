@@ -23,7 +23,7 @@ import { handleConfigRequest } from "#/routes/api/config/-config.handler";
 import { githubConnectResponse } from "#/routes/api/github/-connect.handler";
 import { Auth, AuthLive, type AuthService, type AuthSession } from "#/server/auth.server";
 import { Database } from "#/server/database.server";
-import { seedStoreGitService, seedStoreOrganization, storeTestCloud } from "#/test/store-cloud";
+import { seedStoreGitService, seedStoreOrganization, storeTestCloudWith } from "#/test/store-cloud";
 
 const ORGANIZATION = "00000000-0000-4000-8000-00000000c501";
 const ACTIONS: ReadonlyArray<ClaimedAction> = ["add_domain", "mint_token", "invite", "billing", "github_connect"];
@@ -40,8 +40,7 @@ type Reply = {
 };
 
 const shop = Effect.fn(function* (anonymous: boolean, env?: Readonly<Record<string, string>>) {
-  const cloud = yield* storeTestCloud(env === undefined ? {} : { env });
-  const services = yield* Layer.build(Layer.mergeAll(AuthLive.pipe(Layer.provide(cloud)), cloud, noServers));
+  const services = yield* storeTestCloudWith(Layer.merge(AuthLive, noServers), { env });
   const provided = <A, E, R>(effect: Effect.Effect<A, E, R>) => effect.pipe(Effect.provide(services));
   const userId = yield* provided(seedStoreOrganization(ORGANIZATION));
   yield* provided(seedStoreGitService(ORGANIZATION, {

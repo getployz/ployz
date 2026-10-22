@@ -15,8 +15,9 @@ use futures_util::Stream;
 use ipnet::Ipv4Net;
 use ployz_core::{
     CERTIFICATE_POLICY_CLUSTER_KEY, CertificateHost, ClusterRoute, ContainerId,
-    ContainerObservation, DockerVolume, DockerVolumeId, DockerVolumeName, IngressHost,
-    IssuanceClock, Machine, MachineId, QualifiedService,
+    ContainerObservation, DockerVolume, DockerVolumeId, DockerVolumeName, ForgottenAnswer,
+    IngressHost, IssuanceClock, Machine, MachineId, ManagementIdentity, QualifiedService,
+    SealingPublicKey, forgotten_key,
 };
 use serde_json::json;
 
@@ -78,6 +79,7 @@ impl MachinePublicationGuard<'_> {
                 let mut machine = machine.clone();
                 machine.runtime.running_builds = overlay.running_builds;
                 machine.runtime.pool_committable_bytes = overlay.pool_committable_bytes;
+                machine.runtime.management_identity = Some(local.management_secret().public_key());
                 Some(machine)
             }
             LocalMachineBody::Uninitialized { .. }
@@ -91,23 +93,25 @@ impl MachinePublicationGuard<'_> {
     }
 
     pub(crate) async fn remove(&self, machine_id: &MachineId) -> Result<(), Error> {
+        self.store.api.execute(removal(machine_id)).await
+    }
+
+    /// Remove a Machine another Machine forgot, leaving a tombstone keyed by the
+    /// row's Management Identity so the forgotten Machine can learn it was forgotten
+    /// (#2927). A row without an identity leaves none. One transaction, so no
+    /// reader sees the row gone and the tombstone absent.
+    pub(crate) async fn forget(&self, machine_id: &MachineId) -> Result<(), Error> {
+        let tombstone = Statement::new(
+            "INSERT INTO cluster (key, value) \
+             SELECT 'forgotten:' || json_extract(info, '$.runtime.management_identity'), id \
+             FROM machines \
+             WHERE id = ? AND json_extract(info, '$.runtime.management_identity') IS NOT NULL \
+             ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+            [json!(machine_id)],
+        );
         self.store
             .api
-            .execute([
-                Statement::new(
-                    "DELETE FROM volumes WHERE machine_id = ?",
-                    [json!(machine_id)],
-                ),
-                Statement::new(
-                    "DELETE FROM containers WHERE machine_id = ?",
-                    [json!(machine_id)],
-                ),
-                Statement::new(
-                    "DELETE FROM ingress_routes WHERE machine_id = ?",
-                    [json!(machine_id)],
-                ),
-                Statement::new("DELETE FROM machines WHERE id = ?", [json!(machine_id)]),
-            ])
+            .execute(std::iter::once(tombstone).chain(removal(machine_id)))
             .await
     }
 
@@ -216,6 +220,38 @@ impl ReplicatedStore {
         self.machine_publication().await.remove(machine_id).await
     }
 
+    pub async fn forget_machine(&self, machine_id: &MachineId) -> Result<(), Error> {
+        self.machine_publication().await.forget(machine_id).await
+    }
+
+    /// What this Machine knows about `identity`: Listed when a Machine row carries
+    /// it or the id its tombstone names is listed again, Forgotten when only the
+    /// tombstone remains, NoAnswer when nothing mentions it.
+    pub async fn forgotten(&self, identity: ManagementIdentity) -> Result<ForgottenAnswer, Error> {
+        let key = forgotten_key(&identity);
+        let query = self
+            .api
+            .query(Statement::new(
+                "SELECT (SELECT value FROM cluster WHERE key = ?) AS forgotten_id, \
+                 EXISTS (SELECT 1 FROM machines \
+                         WHERE json_extract(info, '$.runtime.management_identity') = ? \
+                         OR id = (SELECT value FROM cluster WHERE key = ?)) AS listed",
+                [json!(key), json!(identity.to_hex()), json!(key)],
+            ))
+            .await?;
+        let rows = query.rows(["forgotten_id", "listed"])?;
+        let Some([forgotten_id, listed]) = rows.first() else {
+            return Ok(ForgottenAnswer::NoAnswer);
+        };
+        Ok(if listed.as_i64() == Some(1) {
+            ForgottenAnswer::Listed
+        } else if forgotten_id.is_null() {
+            ForgottenAnswer::NoAnswer
+        } else {
+            ForgottenAnswer::Forgotten
+        })
+    }
+
     pub(crate) async fn machine_publication(&self) -> MachinePublicationGuard<'_> {
         MachinePublicationGuard {
             store: self,
@@ -247,7 +283,23 @@ impl ReplicatedStore {
         Ok(())
     }
 
-    pub async fn cluster_network(&self) -> Result<Ipv4Net, Error> {
+    pub async fn publish_sealing_public_key(&self, key: SealingPublicKey) -> Result<(), Error> {
+        self.api
+            .execute([Statement::new(
+                "INSERT INTO cluster (key, value) VALUES ('sealing_public_key', ?) ON CONFLICT (key) DO NOTHING",
+                [json!(key.to_string())],
+            )])
+            .await?;
+        Ok(())
+    }
+
+    /// The published Cluster network, or `None` before the founder's
+    /// publisher has written it.
+    ///
+    /// # Errors
+    /// Returns an error when the Corrosion query fails, or the stored value
+    /// is not a valid Cluster network.
+    pub async fn cluster_network(&self) -> Result<Option<Ipv4Net>, Error> {
         let query = self
             .api
             .query(Statement::new(
@@ -257,14 +309,17 @@ impl ReplicatedStore {
             .await?;
         let rows = query.rows(["value"])?;
         let Some([value]) = rows.first() else {
-            return Err(Error::Protocol("Cluster network is missing".into()));
+            return Ok(None);
         };
-        text(value, "Cluster network")?.parse().map_err(|error| {
-            Error::Protocol(format!(
-                "invalid Cluster network: {error}",
-                error = ployz_core::error_chain::inline(&error),
-            ))
-        })
+        text(value, "Cluster network")?
+            .parse()
+            .map(Some)
+            .map_err(|error| {
+                Error::Protocol(format!(
+                    "invalid Cluster network: {error}",
+                    error = ployz_core::error_chain::inline(&error),
+                ))
+            })
     }
 
     pub async fn machine(&self, id: &str) -> Result<Option<Machine>, Error> {
@@ -629,7 +684,8 @@ impl ReplicatedStore {
             .await
     }
 
-    /// Record why a hostname has no certificate and when the Cluster may try again.
+    /// Record why a hostname has no certificate, or why its renewal failed, and when the Cluster may
+    /// try again.
     ///
     /// # Errors
     ///
@@ -637,16 +693,43 @@ impl ReplicatedStore {
     pub async fn record_certificate_failure(
         &self,
         hostname: &IngressHost,
+        tried: Option<&CertificateMaterial>,
         last_error: impl Into<String>,
         clock: IssuanceClock,
     ) -> Result<(), Error> {
         let Some((key, latest)) = self.acme_row(hostname).await? else {
             return Ok(());
         };
-        if latest.material().is_some() {
-            return Ok(());
-        }
-        self.upsert_certificate(&key, &latest.with_backoff(last_error, clock))
+        let Some(tried) = tried else {
+            if latest.material().is_some() {
+                return Ok(());
+            }
+            return self
+                .upsert_certificate(&key, &latest.with_backoff(last_error, clock))
+                .await;
+        };
+        // A failed renewal keeps serving its material and backs off like a first order. Only the
+        // failure fields change, and only over the ACME material that failed, so a renewal, a
+        // publication or another Machine's challenge landing after the read survives.
+        let failed: serde_json::Value =
+            serde_json::from_str(&latest.with_backoff(last_error, clock).encode()?)?;
+        let field = |name: &str| failed.get(name).cloned().unwrap_or_default();
+        self.api
+            .execute([Statement::new(
+                "UPDATE certificates SET body = json_set(body, \
+                   '$.last_error', ?, '$.next_attempt_at', ?, '$.failures', ?, '$.last_failure', ?) \
+                 WHERE hostname = ? \
+                 AND json_extract(body, '$.certificate') = ? \
+                 AND NOT coalesce(json_extract(body, '$.published'), 0)",
+                [
+                    field("last_error"),
+                    field("next_attempt_at"),
+                    field("failures"),
+                    field("last_failure"),
+                    json!(key.as_str()),
+                    json!(tried.certificate()),
+                ],
+            )])
             .await
     }
 
@@ -764,11 +847,12 @@ impl ReplicatedStore {
 
     /// Return decoded certificate rows and typed incomplete certificate hostnames.
     ///
-    /// An incomplete row is listed in `incomplete_ids`; it is not a deletion.
+    /// An incomplete row is listed in `incomplete_ids`; it is not a deletion. A row that
+    /// won't decode is logged and left out.
     ///
     /// # Errors
     ///
-    /// Returns if rows cannot be read or decoded.
+    /// Returns if rows cannot be read.
     pub async fn certificate_rows(
         &self,
     ) -> Result<ReplicatedObservations<(CertificateHost, CertificateRow), CertificateHost>, Error>
@@ -783,12 +867,14 @@ impl ReplicatedStore {
         let mut observations = Vec::new();
         let mut incomplete_ids = Vec::new();
         for [hostname, encoded] in query.rows(["hostname", "body"])? {
-            let hostname = CertificateHost::parse(text(&hostname, "certificate hostname")?)?;
             let encoded = text(&encoded, "certificate body")?;
+            let Some(hostname) = certificate_host(text(&hostname, "certificate hostname")?) else {
+                continue;
+            };
             if is_incomplete_document(encoded) {
                 incomplete_ids.push(hostname);
-            } else {
-                observations.push((hostname, CertificateRow::decode(encoded)?));
+            } else if let Some(row) = decode_certificate_row(&hostname, encoded) {
+                observations.push((hostname, row));
             }
         }
         Ok(ReplicatedObservations {
@@ -809,11 +895,13 @@ impl ReplicatedStore {
             .await?;
         let mut rows = BTreeMap::new();
         for [hostname, encoded] in query.rows(["hostname", "body"])? {
-            let hostname = CertificateHost::parse(text(&hostname, "certificate hostname")?)?;
-            rows.insert(
-                hostname,
-                CertificateRow::decode(text(&encoded, "certificate body")?)?,
-            );
+            let encoded = text(&encoded, "certificate body")?;
+            let Some(hostname) = certificate_host(text(&hostname, "certificate hostname")?) else {
+                continue;
+            };
+            if let Some(row) = decode_certificate_row(&hostname, encoded) {
+                rows.insert(hostname, row);
+            }
         }
         Ok(rows)
     }
@@ -1083,4 +1171,42 @@ impl RuntimeWatchChanges {
             result = self.cluster.changed() => result,
         }
     }
+}
+
+// One row that won't decode must not hide every other certificate, so it is logged and skipped.
+fn certificate_host(hostname: &str) -> Option<CertificateHost> {
+    CertificateHost::parse(hostname)
+        .inspect_err(|error| tracing::warn!(%error, "skipping certificate row"))
+        .ok()
+}
+
+fn decode_certificate_row(hostname: &CertificateHost, encoded: &str) -> Option<CertificateRow> {
+    CertificateRow::decode(encoded)
+        .inspect_err(|error| {
+            tracing::warn!(
+                %hostname,
+                error = %ployz_core::error_chain::inline(error),
+                "skipping certificate row"
+            );
+        })
+        .ok()
+}
+
+/// The deletes that take a Machine and everything it published out of the Cluster.
+fn removal(machine_id: &MachineId) -> [Statement; 4] {
+    [
+        Statement::new(
+            "DELETE FROM volumes WHERE machine_id = ?",
+            [json!(machine_id)],
+        ),
+        Statement::new(
+            "DELETE FROM containers WHERE machine_id = ?",
+            [json!(machine_id)],
+        ),
+        Statement::new(
+            "DELETE FROM ingress_routes WHERE machine_id = ?",
+            [json!(machine_id)],
+        ),
+        Statement::new("DELETE FROM machines WHERE id = ?", [json!(machine_id)]),
+    ]
 }

@@ -9,7 +9,7 @@ free https address under your organization's domain, and you can add domains you
 ## Generate a domain
 
 1. Open your service and go to **Settings → Networking**.
-2. Under **Public Networking**, click **Generate Domain**.
+2. Click **Generate domain**.
 3. Leave **Port** blank to use `PORT`, or enter the port your app listens on. Click
    **Generate Domain**.
 4. Click **Deploy**.
@@ -47,7 +47,7 @@ If your app listens on a fixed port, like 3000, do one of these and deploy:
 - add a `PORT` [variable](variables.md) set to `3000`, or
 - click the pencil on the domain, set **Target port** to `3000`, and click **Save domain**.
 
-Either way the health check follows, since it checks the port your domains send traffic to.
+Either way the healthcheck follows, since it checks the port your domains send traffic to.
 
 The domain's row shows where traffic goes: **→ Uses PORT** or **→ Port 3000**. Ployz doesn't
 send traffic to the port your image exposes, but the deployment warns when none of its domains
@@ -58,7 +58,7 @@ PORT." The deployment still goes ahead.
 
 Custom domains are free.
 
-1. In **Settings → Networking**, click **Custom Domain**.
+1. In **Settings → Networking**, click **Custom domain**.
 2. Enter the **Domain**, like `app.example.com`, leave **Target port** blank to use `PORT`,
    and click **Save route**.
 3. Create the DNS records below at your DNS provider.
@@ -121,7 +121,17 @@ For any other status, see [My app isn't reachable](../troubleshooting/app-not-re
 ## Remove a domain
 
 Click the trash icon on the domain. It shows **Removed on your next deploy** and keeps serving
-until you deploy. **Undo** keeps it.
+until you deploy. To keep it, discard the change in **Details** before you deploy.
+
+## Move a domain to another service
+
+Remove the domain from the service that has it, add it to the other service, and deploy both
+services at once. Ployz starts the new service first and moves the domain over once it's
+healthy. Visitors get an error for a few seconds while the old service stops.
+
+Ployz refuses the move in one deployment when the two services swap domains, or when the new
+service depends on the old one. Move it in two deployments instead: remove the domain and
+deploy, then add it to the other service and deploy again. The domain is down between the two.
 
 ## Good to know
 

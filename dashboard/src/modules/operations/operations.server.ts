@@ -22,7 +22,7 @@ import { environmentProtected } from "#/modules/config-store/store-lookup.server
 import { protectorOnly } from "#/modules/config-store/protected.server";
 import { planCliServerUpgrade } from "#/modules/server-upgrade/server-upgrade.server";
 import type { VolumeRunInput } from "#/modules/volume-run/volume-run";
-import { admitRun, planVolumeRun } from "#/modules/volume-run/volume-run.server";
+import { admitRun, planVolumeRun, type VolumeRunPlan } from "#/modules/volume-run/volume-run.server";
 import { Conflict, Forbidden, NotFound } from "#/server/public-error";
 import { uuidFrom } from "#/server/uuid-from";
 
@@ -196,6 +196,22 @@ const removal = (
     }));
   }));
 
+/**
+ * The ask a Volume Run makes: in a Protected Environment, one that interrupts or takes off what runs there, by someone
+ * who can't protect it, waits for someone who can, as a stop or restart does.
+ */
+const guardedVolume = Effect.fn("Operations.guardedVolume")(function* (
+  caller: Caller,
+  { asked, guard, volume, environment, input }: Pick<Extract<VolumeRunPlan, { ok: true }>, "asked" | "guard" | "volume" | "environment" | "input">,
+) {
+  if (guard === null || protectorOnly(caller, environment.name) === null) return asked;
+  if (!(yield* environmentProtected(caller.organization.id, environment.project, volume.environmentId))) return asked;
+  const protectedAsk = { ...guard, protected: environment.name } satisfies OperationAsked;
+  // The dashboard's grow waits as a request, and runs as its asker once someone who can protect it approves.
+  if (caller.via !== "dashboard" || input.kind !== "resize") return protectedAsk;
+  return { ...protectedAsk, apply: { volumeId: input.volumeId, environment: input.environment, maximum_bytes: input.args.maximum_bytes } } satisfies OperationAsked;
+});
+
 /** A Volume Run whose id is its attempt, so a replayed request reads back the run it started. */
 export const runVolume = (
   caller: Caller,
@@ -205,8 +221,9 @@ export const runVolume = (
   holding(caller, call, VOLUME_OPERATIONS[input.kind].requires, input.environment.environment, admitOperation(caller.organization.id, { tool: VOLUME_OPERATIONS[input.kind].idempotency, key: call.key, body: input }, Effect.gen(function* () {
     const planned = yield* planVolumeRun(caller.organization.id, input);
     if (!planned.ok) return refused(planned.refusal);
-    if (planned.asked !== null) {
-      const gated = yield* gate(caller, call, planned.asked);
+    const asked = yield* guardedVolume(caller, planned);
+    if (asked !== null) {
+      const gated = yield* gate(caller, call, asked);
       if (!gated.ok) return refused(gated.refusal);
     } else {
       const carried = yield* unasked(caller, call, { command: input.kind, subject: `volume:${input.volumeId}` });

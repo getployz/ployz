@@ -7,6 +7,7 @@ use management::{connect_management, dial_tunnel};
 
 use std::{
     borrow::Cow,
+    collections::BTreeMap,
     future::Future,
     io,
     path::{Path, PathBuf},
@@ -17,10 +18,12 @@ use std::{
     time::Duration,
 };
 
+use futures_util::{StreamExt, stream::FuturesUnordered};
 use hyper_util::rt::TokioIo;
 use ployz_core::{
     CodecError, FramingError, MachineId, MachineTarget, ResolvedServiceSpec, Retry,
-    RoutingMetadataError, RpcError, RpcErrorCode, apply_one_target, settle_deadline,
+    RoutingMetadataError, RpcError, RpcErrorCode, SETTLE_INSPECT_GRACE, apply_one_target,
+    settle_deadline,
 };
 use serde_json::{Value, json};
 use thiserror::Error;
@@ -28,6 +31,7 @@ use tokio::{
     io::{AsyncRead, AsyncWrite, ReadBuf},
     net::TcpStream,
     process::{Child, ChildStdin, ChildStdout, Command},
+    time::{Instant, Sleep},
 };
 use tonic::transport::{Channel, Endpoint};
 
@@ -54,6 +58,15 @@ pub(crate) fn target_read_timeout() -> Duration {
         .unwrap_or(TARGET_RPC_TIMEOUT)
 }
 
+/// While a call is open, the client pings the entry daemon after this long without a
+/// read, and fails an open call within interval + timeout of its last read: an entry
+/// that lost power or its network ends a Deploy instead of hanging it.
+const KEEP_ALIVE_INTERVAL: Duration = Duration::from_secs(10);
+/// A ping or its answer queues behind up to [`ployz_core::RPC_STREAM_WINDOW_BYTES`] of
+/// unread data per call, so this also sets the slowest link a call survives: about
+/// 17 KB/s.
+const KEEP_ALIVE_TIMEOUT: Duration = Duration::from_secs(60);
+
 /// Bounds how long a connect waits for the entry daemon to confirm itself.
 ///
 /// A socket-activated daemon accepts connects before it serves; this bound is
@@ -68,9 +81,10 @@ pub(crate) fn stop_rpc_timeout(grace_period_seconds: Option<u16>, queued: u32) -
 }
 
 /// The deadline of an In RPC: the owner settles the copy's health before it
-/// writes In, so the ask waits out the copy's settle deadline on top of the RPC.
+/// writes In, so the ask waits out the copy's settle deadline, plus the grace its
+/// last inspect may run past it, on top of the RPC.
 pub(crate) fn in_rpc_timeout(spec: &ResolvedServiceSpec) -> Duration {
-    TARGET_RPC_TIMEOUT + settle_deadline(spec)
+    TARGET_RPC_TIMEOUT + settle_deadline(spec) + SETTLE_INSPECT_GRACE
 }
 
 pub trait ProxyStream: AsyncRead + AsyncWrite + Send + Unpin {}
@@ -83,6 +97,12 @@ pub type BoxProxyStream = Box<dyn ProxyStream>;
 #[tonic::async_trait]
 pub trait Connector: Send + Sync {
     async fn connect(&self, connection: &Connection) -> Result<Channel, ConnectError>;
+
+    /// [`Self::connect`] for a dial started beside another still in flight. Either
+    /// may lose and be dropped, so this one must leave nothing behind when it is.
+    async fn connect_beside(&self, connection: &Connection) -> Result<Channel, ConnectError> {
+        self.connect(connection).await
+    }
 
     async fn dial_proxy(
         &self,
@@ -129,9 +149,12 @@ impl SystemConnector {
     }
 }
 
-#[tonic::async_trait]
-impl Connector for SystemConnector {
-    async fn connect(&self, connection: &Connection) -> Result<Channel, ConnectError> {
+impl SystemConnector {
+    async fn dial(
+        &self,
+        connection: &Connection,
+        master: SshMaster,
+    ) -> Result<Channel, ConnectError> {
         match connection.transport() {
             Transport::Management(capability) => tokio::time::timeout(
                 Duration::from_secs(15),
@@ -153,6 +176,7 @@ impl Connector for SystemConnector {
                     key_file.as_deref(),
                     &self.ssh_program,
                     self.ssh_timeout,
+                    master,
                 ),
             )
             .await
@@ -167,6 +191,17 @@ impl Connector for SystemConnector {
                 )
             })?,
         }
+    }
+}
+
+#[tonic::async_trait]
+impl Connector for SystemConnector {
+    async fn connect(&self, connection: &Connection) -> Result<Channel, ConnectError> {
+        self.dial(connection, SshMaster::Share).await
+    }
+
+    async fn connect_beside(&self, connection: &Connection) -> Result<Channel, ConnectError> {
+        self.dial(connection, SshMaster::ReuseOnly).await
     }
 
     async fn dial_proxy(
@@ -198,6 +233,7 @@ impl Connector for SystemConnector {
                     destination,
                     key_file.as_deref(),
                     control_path().as_deref(),
+                    SshMaster::Share,
                     self.ssh_timeout,
                 );
                 args.extend(["-W".into(), address.into(), destination.target().into()]);
@@ -209,6 +245,29 @@ impl Connector for SystemConnector {
     }
 }
 
+/// The one stream a [`connect_stream`] channel runs on has closed, so no call on
+/// that channel reaches a daemon again; only a redial does.
+#[derive(Debug, Error)]
+#[error("connection to the daemon closed")]
+struct SessionClosed;
+
+const SESSION_CLOSED_REASON: &str = "session_closed";
+
+/// The call failed on a channel whose one stream had closed: resending it on
+/// that channel can never reach a daemon.
+pub(crate) fn on_closed_session(error: &RpcError) -> bool {
+    error.details.get("reason").and_then(Value::as_str) == Some(SESSION_CLOSED_REASON)
+}
+
+#[cfg(test)]
+pub(crate) fn closed_session_error() -> RpcError {
+    TransportError {
+        session_closed: true,
+        ..TransportError::from(tonic::Status::unavailable("transport error"))
+    }
+    .to_rpc_error()
+}
+
 async fn connect_stream(
     stream: impl AsyncRead + AsyncWrite + Unpin + Send + 'static,
     timeout: Duration,
@@ -216,12 +275,19 @@ async fn connect_stream(
     let mut stream = Some(stream);
     Endpoint::from_static("http://[::]:50051")
         .connect_timeout(timeout)
+        .http2_keep_alive_interval(KEEP_ALIVE_INTERVAL)
+        .keep_alive_timeout(KEEP_ALIVE_TIMEOUT)
+        .initial_stream_window_size(ployz_core::RPC_STREAM_WINDOW_BYTES)
+        .initial_connection_window_size(ployz_core::RPC_CONNECTION_WINDOW_BYTES)
         .connect_with_connector(tower::service_fn(move |_| {
             // A redial must pass shared Machine confirmation before another RPC.
             // Let Client decide whether the failed operation may be retried.
-            std::future::ready(stream.take().map(TokioIo::new).ok_or_else(|| {
-                io::Error::new(io::ErrorKind::NotConnected, "transport session closed")
-            }))
+            std::future::ready(
+                stream
+                    .take()
+                    .map(TokioIo::new)
+                    .ok_or_else(|| io::Error::new(io::ErrorKind::NotConnected, SessionClosed)),
+            )
         }))
         .await
         .map_err(ConnectError::from)
@@ -240,9 +306,16 @@ async fn connect_ssh(
     key_file: Option<&Path>,
     program: &Path,
     timeout: Duration,
+    master: SshMaster,
 ) -> Result<Channel, ConnectError> {
     let control_path = control_path();
-    let mut probe_args = ssh_base_args(destination, key_file, control_path.as_deref(), timeout);
+    let mut probe_args = ssh_base_args(
+        destination,
+        key_file,
+        control_path.as_deref(),
+        master,
+        timeout,
+    );
     probe_args.extend([destination.target().into(), "true".into()]);
     let output = Command::new(program)
         .args(&probe_args)
@@ -261,7 +334,13 @@ async fn connect_ssh(
             detail,
         });
     }
-    let args = ssh_args(destination, key_file, control_path.as_deref(), timeout);
+    let args = ssh_args(
+        destination,
+        key_file,
+        control_path.as_deref(),
+        master,
+        timeout,
+    );
     connect_stream(spawn_child(program, &args)?, timeout).await
 }
 
@@ -269,9 +348,10 @@ fn ssh_args(
     destination: &crate::context::SshDestination,
     key_file: Option<&Path>,
     control_path: Option<&Path>,
+    master: SshMaster,
     timeout: Duration,
 ) -> Vec<String> {
-    let mut args = ssh_base_args(destination, key_file, control_path, timeout);
+    let mut args = ssh_base_args(destination, key_file, control_path, master, timeout);
     args.extend([
         destination.target().into(),
         "ployzd".into(),
@@ -284,9 +364,10 @@ pub(crate) fn ssh_base_args(
     destination: &crate::context::SshDestination,
     key_file: Option<&Path>,
     control_path: Option<&Path>,
+    master: SshMaster,
     timeout: Duration,
 ) -> Vec<String> {
-    let mut args = ssh_control_args(control_path);
+    let mut args = ssh_control_args(control_path, master);
     args.extend([
         "-o".into(),
         format!("ConnectTimeout={}", timeout.as_secs().max(1)),
@@ -305,20 +386,38 @@ pub(crate) fn ssh_base_args(
     args
 }
 
+/// How an SSH dial uses the master at its control path.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum SshMaster {
+    /// Reuse a running master, or start one that serves later commands for 10 minutes.
+    Share,
+    /// Reuse a running master but start none. A master forks away from the dial, so
+    /// one started by a dial that is then dropped would outlive it.
+    ReuseOnly,
+}
+
 /// OpenSSH multiplexing options shared by provisioning and management connections.
-pub(crate) fn ssh_control_args(control_path: Option<&Path>) -> Vec<String> {
-    let mut args = Vec::new();
-    if let Some(path) = control_path {
-        args.extend([
+pub(crate) fn ssh_control_args(control_path: Option<&Path>, master: SshMaster) -> Vec<String> {
+    let Some(path) = control_path else {
+        return Vec::new();
+    };
+    let control_path = format!("ControlPath={}", path.display());
+    match master {
+        SshMaster::Share => vec![
             "-o".into(),
             "ControlMaster=auto".into(),
             "-o".into(),
-            format!("ControlPath={}", path.display()),
+            control_path,
             "-o".into(),
             "ControlPersist=10m".into(),
-        ]);
+        ],
+        SshMaster::ReuseOnly => vec![
+            "-o".into(),
+            "ControlMaster=no".into(),
+            "-o".into(),
+            control_path,
+        ],
     }
-    args
 }
 
 /// Select the existing runtime or SSH directory for shared control sockets.
@@ -511,7 +610,20 @@ pub(crate) fn target_request<T>(payload: T, target: Option<&MachineTarget>) -> t
     request
 }
 
-/// Walk every connection and keep the first whose daemon answers.
+/// How long a dial over `transport` may go unconfirmed before the next connection
+/// is dialled beside it. A down Server holds its dial for the whole connect bound,
+/// 15 s through Cloud and the SSH timeout over SSH. A daemon that answers confirms
+/// well inside 1 s, but a cold SSH dial may take seconds while healthy, and racing
+/// it costs a second login.
+fn entry_stagger(transport: &Transport) -> Duration {
+    match transport {
+        Transport::Ssh { .. } => Duration::from_secs(5),
+        Transport::Management(_) | Transport::Tcp(_) | Transport::Unix(_) => Duration::from_secs(1),
+    }
+}
+
+/// Walk every connection and keep the first whose daemon answers. Each connection
+/// starts when the one before it fails or stays silent for its [`entry_stagger`].
 ///
 /// A tunnel or lazy channel is not enough. Confirmation is one-shot so a down
 /// daemon cannot stall the walk or consume unary retries.
@@ -525,51 +637,112 @@ pub async fn connect_selected_with(
     selected: SelectedConnections,
     connector: Arc<dyn Connector>,
 ) -> Result<Client, ConnectError> {
-    let mut last_error = None;
-    let mut server = None;
-    let mut retry = Retry::Never;
-    let mut reached = false;
-    for (index, connection) in selected.connections.iter().enumerate() {
-        match connect_one(connection, &selected.source, &connector).await {
-            Ok(client) => return Ok(client),
-            Err(error)
-                if matches!(error, ConnectError::SshClientMissing)
-                    && !reached
-                    && selected
-                        .connections
-                        .iter()
-                        .skip(index + 1)
-                        .all(|next| matches!(next.transport(), Transport::Ssh { .. })) =>
-            {
-                return Err(error);
+    connect_selected(selected, connector, true).await
+}
+
+/// [`connect_selected_with`] without the race: each connection starts only once the one
+/// before it fails, for a caller that acts on the entry itself and so must reach the
+/// first one that answers, however slowly.
+///
+/// # Errors
+///
+/// As [`connect_selected_with`].
+pub(crate) async fn connect_selected_in_order(
+    selected: SelectedConnections,
+    connector: Arc<dyn Connector>,
+) -> Result<Client, ConnectError> {
+    connect_selected(selected, connector, false).await
+}
+
+async fn connect_selected(
+    selected: SelectedConnections,
+    connector: Arc<dyn Connector>,
+    race: bool,
+) -> Result<Client, ConnectError> {
+    let mut failures = BTreeMap::new();
+    {
+        let (source, connector) = (&selected.source, &connector);
+        let mut queued = selected.connections.iter().enumerate();
+        let mut dialing = FuturesUnordered::new();
+        let stagger = tokio::time::sleep(Duration::ZERO);
+        tokio::pin!(stagger);
+        // Dials the next connection, if any, and says whether more are queued.
+        let mut dial_next = |dialing: &mut FuturesUnordered<_>, stagger: Pin<&mut Sleep>| {
+            if let Some((index, connection)) = queued.next() {
+                let beside = !dialing.is_empty();
+                stagger.reset(Instant::now() + entry_stagger(connection.transport()));
+                dialing.push(async move {
+                    let outcome = connect_one(connection, source, connector, beside).await;
+                    (index, connection, outcome)
+                });
             }
-            Err(error) => {
-                if error.retry() != Retry::Never {
-                    retry = Retry::AfterRestart;
+            queued.len() > 0
+        };
+        let mut more = dial_next(&mut dialing, stagger.as_mut());
+        while !dialing.is_empty() {
+            tokio::select! {
+                Some((index, connection, outcome)) = dialing.next() => {
+                    let error = match outcome {
+                        Ok(client) => return Ok(client),
+                        Err(error) => error,
+                    };
+                    failures.insert(index, (connection, error));
+                    more = dial_next(&mut dialing, stagger.as_mut());
                 }
-                reached |= !error.unreached();
-                last_error = Some(error);
-                server = connection.server();
+                () = &mut stagger, if race && more => {
+                    more = dial_next(&mut dialing, stagger.as_mut());
+                }
             }
         }
+    }
+    let mut last_error = None;
+    let mut server = None;
+    let mut relayed = false;
+    let mut retry = Retry::Never;
+    let mut reached = false;
+    for (index, (connection, error)) in failures {
+        if matches!(error, ConnectError::SshClientMissing)
+            && !reached
+            && selected
+                .connections
+                .iter()
+                .skip(index + 1)
+                .all(|next| matches!(next.transport(), Transport::Ssh { .. }))
+        {
+            return Err(error);
+        }
+        if error.retry() != Retry::Never {
+            retry = Retry::AfterRestart;
+        }
+        reached |= !error.unreached();
+        last_error = Some(error);
+        server = connection.server();
+        relayed = matches!(connection.transport(), Transport::Management(_));
     }
     Err(ConnectError::AllFailed {
         selection: selected.source,
         attempts: selected.connections.len(),
         server,
+        relayed,
         retry,
         reached,
         last: last_error.map(Box::new),
     })
 }
 
-/// Dial and confirm one entry.
+/// Dial and confirm one entry, `beside` another dial still in flight or alone.
 pub(crate) async fn connect_one(
     connection: &Connection,
     source: &ConnectionSource,
     connector: &Arc<dyn Connector>,
+    beside: bool,
 ) -> Result<Client, ConnectError> {
-    let channel = connector.connect(connection).await?;
+    let channel = if beside {
+        connector.connect_beside(connection)
+    } else {
+        connector.connect(connection)
+    }
+    .await?;
     let mut client = Client::new(
         channel,
         connection.clone(),
@@ -691,11 +864,11 @@ pub enum ConnectError {
     ClientRefused,
     #[error("Machine confirmed this Management Client was cleared")]
     ClientCleared,
-    /// The Machine speaks the management protocol of Ployz 0.3.0-beta.6 or earlier, which
+    /// The Machine speaks the management protocol of Ployz 0.2 or 0.3.0-beta.6 and earlier, which
     /// this release does not; only its own upgrade reaches it, over SSH.
     #[error(
-        "This Server runs Ployz 0.3.0-beta.6 or earlier, which this release can't reach through the relay. \
-         Upgrade it over SSH: ployz server upgrade beta SERVER --connect ssh://USER@HOST. \
+        "This Server runs Ployz 0.2 or a 0.3.0 beta up to beta.6, which this release can't reach through the relay. \
+         Upgrade it over SSH: ployz server upgrade stable SERVER --connect ssh://USER@HOST. \
          Docs: ployz docs servers/manage-servers.md"
     )]
     OlderMachine,
@@ -724,12 +897,14 @@ pub enum ConnectError {
     Context(#[from] ContextError),
     #[error("Could not inspect {path}.")]
     Path { path: PathBuf, source: io::Error },
-    #[error("{}", all_failed(*attempts, selection, *reached, server.as_deref(), last.as_deref()))]
+    #[error("{}", all_failed(*attempts, selection, *reached, server.as_deref(), *relayed, last.as_deref()))]
     AllFailed {
         selection: ConnectionSource,
         attempts: usize,
         /// The Server the last connection tried enters, by name or else Machine ID.
         server: Option<String>,
+        /// The last connection tried went through Ployz Cloud's relay.
+        relayed: bool,
         /// [`Retry::AfterRestart`] when any connection may still come up.
         retry: Retry,
         /// A daemon answered at least one connection, even if `last` did not reach one.
@@ -741,19 +916,29 @@ pub enum ConnectError {
     Rpc(#[source] TransportError),
     #[error("Machine RPC payload failed.")]
     Codec(#[from] CodecError),
-    #[error(transparent)]
-    Remote(RpcError),
+    /// The daemon's own error, kept as the source so the causes it sent stay in the chain.
+    #[error("{0}")]
+    Remote(#[source] RpcError),
     #[error("Machine RPC framing failed.")]
     Framing(#[from] FramingError),
     #[error("Machine RPC identity failed.")]
     Value(#[from] ployz_core::ValueError),
 }
 
-const NOT_ANSWERING_NEXT: &str = "Check that its Ployz daemon is running, then retry.";
+/// That a Server gave no answer, and what to check. Through Ployz Cloud's relay, the
+/// Server's network is as likely the cause as its daemon.
+fn isnt_answering(relayed: bool) -> &'static str {
+    if relayed {
+        "isn't answering through Ployz Cloud. Check that it is online, its Ployz daemon is \
+         running, and its outgoing https isn't filtered, then retry."
+    } else {
+        "isn't answering. Check that its Ployz daemon is running, then retry."
+    }
+}
 
 /// `server`, by name or Machine ID, gave no answer to a connection this process made.
-pub(crate) fn not_answering(server: &str) -> String {
-    format!("Server {server} isn't answering. {NOT_ANSWERING_NEXT}")
+pub(crate) fn not_answering(server: &str, relayed: bool) -> String {
+    format!("Server {server} {}", isnt_answering(relayed))
 }
 
 /// Say a daemon answered when one did: a refusal is not an unreachable Server. Name the
@@ -763,10 +948,11 @@ fn all_failed(
     selection: &ConnectionSource,
     reached: bool,
     server: Option<&str>,
+    relayed: bool,
     last: Option<&ConnectError>,
 ) -> String {
     match (attempts, reached, server) {
-        (1, false, Some(server)) => not_answering(server),
+        (1, false, Some(server)) => not_answering(server, relayed),
         (1, false, None) => "Ployz couldn't reach your Server's daemon.".into(),
         (1, true, Some(server)) => {
             format!("Server {server}'s daemon answered, but the connection was refused.")
@@ -774,16 +960,17 @@ fn all_failed(
         (1, true, None) => "Your Server's daemon answered, but the connection was refused.".into(),
         (_, false, Some(server)) => format!(
             "Ployz couldn't reach a Server's daemon through any of the {attempts} connections from {selection}. \
-             Server {server}, tried last, isn't answering. {NOT_ANSWERING_NEXT}"
+             Server {server}, tried last, {}",
+            isnt_answering(relayed)
         ),
         (_, false, None) => format!(
             "Ployz couldn't reach a Server's daemon through any of the {attempts} connections from {selection}."
         ),
         (_, true, Some(server)) => {
             let how = if last.is_some_and(|last| !last.unreached()) {
-                "refused the connection.".into()
+                "refused the connection."
             } else {
-                format!("isn't answering. {NOT_ANSWERING_NEXT}")
+                isnt_answering(relayed)
             };
             format!(
                 "A Server's daemon answered, but the {attempts} connections from {selection} all failed. \
@@ -907,9 +1094,10 @@ impl ConnectError {
         matches!(self, Self::Rpc(error) if error.budget_expired || error.routed_unanswered)
     }
 
-    /// A daemon sent this status itself, so the target was not silent.
+    /// A daemon sent this status itself, so the target was not silent. A call on
+    /// a closed session never left this client, so nothing replied to it.
     pub(crate) fn target_replied(&self) -> bool {
-        matches!(self, Self::Rpc(_)) && !self.unreplied()
+        matches!(self, Self::Rpc(error) if !error.session_closed) && !self.unreplied()
     }
 
     /// The call went out and no status came back: the client's connection dropped, its
@@ -942,6 +1130,23 @@ pub(crate) fn keep_target_reply(
     }
 }
 
+/// A call that went out and lost its answer may have been done, and a later attempt that
+/// never reached the target says nothing about it, so the earlier loss stands. A target
+/// that stayed silent is stronger news than an earlier drop, and a failure that no retry
+/// fixes, such as a refused SSH key, is what the user has to act on.
+pub(crate) fn keep_lost_call(lost: Option<ConnectError>, error: ConnectError) -> ConnectError {
+    match lost {
+        Some(lost)
+            if error.unreached()
+                && !error.target_unanswered()
+                && error.retry() != ployz_core::Retry::Never =>
+        {
+            lost
+        }
+        _ => error,
+    }
+}
+
 /// A gRPC transport failure. Display is the status message, not Status Debug.
 #[derive(Clone, Debug, Eq, Error, PartialEq)]
 #[error("{message}")]
@@ -961,12 +1166,30 @@ pub struct TransportError {
     /// target never got the call. Never set on a local failure, whose metadata may be
     /// headers that came back before the stream broke.
     routed_unreached: bool,
+    /// The channel's one stream closed: resending on it can never succeed, so
+    /// [`TransportError::to_rpc_error`] marks it for [`on_closed_session`].
+    session_closed: bool,
+    /// The status carried details, which ployzd attaches and tonic or a proxy never does.
+    detailed: bool,
     /// Why the client's connection or stream failed, below tonic's own words.
     #[source]
     cause: Option<crate::failure::JoinedChain>,
 }
 
 impl TransportError {
+    /// The target's daemon sent this status itself, with its own message and the details
+    /// ployzd attaches. A status tonic or a proxy made up carries no details.
+    pub(crate) fn answered(&self) -> bool {
+        !(self.unanswered
+            || self.local
+            || self.budget_expired
+            || self.routed_unanswered
+            || self.routed_unreached
+            || self.session_closed
+            || self.message.is_empty()
+            || !self.detailed)
+    }
+
     pub(crate) fn budget_expired(message: &str) -> Self {
         Self {
             budget_expired: true,
@@ -1023,7 +1246,11 @@ impl TransportError {
         RpcError {
             code: rpc_error_code(self.code),
             message: self.message.clone(),
-            details: self.details.clone(),
+            details: if self.session_closed {
+                json!({ "reason": SESSION_CLOSED_REASON })
+            } else {
+                self.details.clone()
+            },
             cause: ployz_core::error_chain::causes(self),
         }
     }
@@ -1035,7 +1262,14 @@ impl From<tonic::Status> for TransportError {
         // only when the client connection or stream itself fails.
         let source = std::error::Error::source(&status);
         let local = source.is_some();
-        let unanswered = status.code() == tonic::Code::Cancelled || local;
+        let session_closed = std::iter::successors(source, |error| error.source()).any(|error| {
+            error
+                .downcast_ref::<io::Error>()
+                .and_then(io::Error::get_ref)
+                .is_some_and(|inner| inner.is::<SessionClosed>())
+        });
+        // A call on a closed session never left this client.
+        let unanswered = (status.code() == tonic::Code::Cancelled || local) && !session_closed;
         let sent = ployz_core::rpc::status_causes(status.details());
         let cause = match source {
             Some(source) => {
@@ -1059,6 +1293,8 @@ impl From<tonic::Status> for TransportError {
                 && status
                     .metadata()
                     .contains_key(ployz_core::rpc::TARGET_UNREACHED_KEY),
+            session_closed,
+            detailed: !status.details().is_empty(),
             cause,
             code: status.code(),
             message: status.message().to_owned(),

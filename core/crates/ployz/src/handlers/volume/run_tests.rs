@@ -186,6 +186,22 @@ fn the_in_process_store_has_no_volume_runs() {
 }
 
 #[test]
+fn a_volume_size_below_the_floor_is_refused() {
+    for verb in [["volume", "add"], ["volume", "set"]] {
+        let size = |size: &str| parsed(&["ployz", verb[0], verb[1], "data", "--size", size]);
+        let refused = size("0.0001GB").unwrap_err().to_string();
+        assert!(refused.contains("at least 0.1GB"), "{refused}");
+        assert!(size("0.09").is_err());
+        let malformed = size("abc").unwrap_err().to_string();
+        assert!(
+            malformed.contains("Use a positive size in GB"),
+            "{malformed}"
+        );
+        assert!(size("0.1GB").is_ok());
+    }
+}
+
+#[test]
 fn a_deployed_volume_resizes_only_with_ployz_cloud() {
     let root = parsed(&[
         "ployz",
@@ -363,6 +379,38 @@ fn a_removal_s_retry_line_keeps_if_old_copy() {
     assert_eq!(
         removal_words(&volume, &slot, false, None).join(" "),
         "volume mirror rm data-web-1"
+    );
+}
+
+#[test]
+fn a_resize_s_retry_line_carries_its_size_and_approval() {
+    for size in ["20", "0.5"] {
+        let word = size_word(ProvisionedVolumeMaximumBytes::parse_gb(size).unwrap());
+        assert_eq!(word, format!("{size}GB"));
+        let retry = parsed(&[
+            "ployz",
+            "volume",
+            "set",
+            "data",
+            "--size",
+            &word,
+            "--approval",
+            "apr_1",
+        ])
+        .unwrap();
+        assert_eq!(path(&retry), "volume set");
+    }
+    assert!(
+        parsed(&[
+            "ployz",
+            "volume",
+            "set",
+            "data",
+            "--shared-writes=true",
+            "--approval",
+            "apr_1"
+        ])
+        .is_err()
     );
 }
 

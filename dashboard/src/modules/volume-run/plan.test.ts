@@ -399,12 +399,22 @@ describe("plan_from_copies_table", () => {
     expect(planFromCopies(restore("fsn-2"), [departed])).toMatchObject({ ok: true, phase: { kind: "restore", lostAfter: newest } });
   });
 
+  it("says a Server's report hasn't arrived, not that it did not answer, and names a silent one first", () => {
+    const waiting: Member = { machine: { id: "fsn-9".padEnd(32, "0") as MachineId, name: "fsn-9" }, answered: false, incomplete: true };
+    expect(planFromCopies(mirror("fsn-2"), [member("fsn-1", "writer"), member("fsn-2", "empty"), waiting])).toEqual({
+      ok: false, refusal: { code: "unanswered", message: "fsn-9's report hasn't arrived; data's copies are unknown" },
+    });
+    expect(planFromCopies(mirror("fsn-2"), [member("fsn-1", "writer"), waiting, member("fsn-2", "unanswered")])).toMatchObject({
+      ok: false, refusal: { message: "fsn-2 did not answer; data's copies are unknown" },
+    });
+  });
+
   it("ends with the lacking Server's sentence before any Server that did not answer", () => {
-    const old: Member = { machine: member("fsn-3", "unanswered").machine, answered: false, lack: "Volume move needs a newer Ployz on fsn-3. 0.2.5 is out." };
+    const old: Member = { machine: member("fsn-3", "unanswered").machine, answered: false, lack: "Volume move needs a newer Ployz on fsn-3, which runs 0.2.4. Upgrade it to 0.2.5." };
     const members = [member("fsn-1", "writer"), member("fsn-2", "unanswered"), old];
     expect(planFromCopies(mirror("fsn-2"), members)).toEqual({
       ok: false,
-      refusal: { code: "server_lacks", message: "Volume move needs a newer Ployz on fsn-3. 0.2.5 is out." },
+      refusal: { code: "server_lacks", message: "Volume move needs a newer Ployz on fsn-3, which runs 0.2.4. Upgrade it to 0.2.5." },
     });
     expect(planFromCopies(remove("fsn-2"), members)).toMatchObject({ ok: false, refusal: { code: "server_lacks" } });
     expect(planFromCopies(move("fsn-2"), members)).toMatchObject({ ok: false, refusal: { code: "server_lacks" } });

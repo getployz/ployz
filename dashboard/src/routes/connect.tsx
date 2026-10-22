@@ -72,7 +72,7 @@ function ConnectConsent({ email, organizations, selected, agent }: { email: stri
   if (agent === null) {
     return (
       <div className="flex flex-col items-center gap-2 text-center">
-        <h1 className="text-xl font-semibold">This link is no longer valid</h1>
+        <h1 className="text-2xl font-semibold">This link is no longer valid</h1>
         <p className="text-sm text-muted-foreground">Ask your agent to connect again.</p>
       </div>
     );
@@ -81,7 +81,7 @@ function ConnectConsent({ email, organizations, selected, agent }: { email: stri
   if (organizations.length === 0) {
     return (
       <div className="flex flex-col items-center gap-2 text-center">
-        <h1 className="text-xl font-semibold">No Organization to connect</h1>
+        <h1 className="text-2xl font-semibold">No Organization to connect</h1>
         <p className="text-sm text-muted-foreground">Signed in as {email}. Create or join an Organization, then connect your agent again.</p>
       </div>
     );
@@ -90,7 +90,7 @@ function ConnectConsent({ email, organizations, selected, agent }: { email: stri
   return (
     <form className="flex flex-col gap-6" onSubmit={allow}>
       <div className="flex flex-col gap-1 text-center">
-        <h1 className="text-xl font-semibold">Connect {agent.name ?? "an agent"} to Ployz</h1>
+        <h1 className="text-2xl font-semibold">Connect {agent.name ?? "an agent"} to Ployz</h1>
         <p className="text-sm">
           Returns to <span className="font-mono">{agent.host}</span>
         </p>

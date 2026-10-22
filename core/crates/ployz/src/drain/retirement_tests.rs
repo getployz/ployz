@@ -130,6 +130,10 @@ impl MachineOperations for Cluster {
             .collect())
     }
 
+    async fn replicated_containers(&self) -> Result<Vec<ContainerObservation>, RpcError> {
+        Ok(self.containers.lock().unwrap().clone())
+    }
+
     async fn ensure_container(
         &self,
         _machine_id: &MachineId,

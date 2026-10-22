@@ -108,6 +108,7 @@ fn join_request(record: &crate::machine::LocalMachineRecord) -> EnrollRequest {
                 assigned_machine,
                 visible_peers: vec![peer],
                 target_versions: BTreeMap::new(),
+                sealing_key: None,
             },
         },
         wireguard_mtu: None,
@@ -120,6 +121,19 @@ async fn leave_departs_storage_before_the_phase_commits() {
     let test = harness(true).await;
     test.local.leave(LeaveRequest::default()).await.unwrap();
     assert_eq!(test.plugin.routes_called(), ["Storage.Demote"]);
+    assert!(forgot_data(&test.docker));
+    assert_eq!(test.local.record().phase(), LocalMachinePhase::Resetting);
+}
+
+#[tokio::test]
+async fn fence_departs_keeping_every_copy() {
+    let test = harness(true).await;
+    test.plugin.reply(
+        "Storage.Seal",
+        json!({"Ok": {"demoted": ["data"], "stuck": [], "failed": []}}),
+    );
+    test.local.fence_forgotten().await.unwrap();
+    assert_eq!(test.plugin.routes_called(), ["Storage.Seal"]);
     assert!(forgot_data(&test.docker));
     assert_eq!(test.local.record().phase(), LocalMachinePhase::Resetting);
 }
@@ -310,7 +324,7 @@ async fn a_plain_deploy_mounts_only_on_the_writer() {
             "slot elsewhere",
             nothing.clone(),
             Some(("slot", true)),
-            Some("ployz volume restore data --from fsn-2"),
+            Some("Volume data has no writer; fsn-2 holds its only copy"),
         ),
         (
             "slot on a Machine the Cluster no longer lists",
@@ -328,7 +342,7 @@ async fn a_plain_deploy_mounts_only_on_the_writer() {
             "slot held",
             slot,
             None,
-            Some("ployz volume restore data --from local"),
+            Some("Volume data has no writer; local holds its only copy"),
         ),
         ("read-only root", root(true), None, Some("mid-run")),
     ];
@@ -364,6 +378,12 @@ async fn a_plain_deploy_mounts_only_on_the_writer() {
                 };
                 assert_eq!(error.code, RpcErrorCode::Conflict, "{case}: {error:?}");
                 assert!(error.message.contains(text), "{case}: {}", error.message);
+                // Only the operator knows whether `ployz volume restore` can run here.
+                assert!(
+                    !error.message.contains("restore"),
+                    "{case}: {}",
+                    error.message
+                );
                 assert!(!prepared, "{case}: a refused mount is never prepared");
             }
         }

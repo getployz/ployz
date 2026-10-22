@@ -1879,6 +1879,7 @@ fn removed_but_unswept() -> ConfigStore {
                 upload: None,
                 accept_volume_loss: Vec::new(),
                 message: None,
+                prune: false,
             }),
         )
         .unwrap();

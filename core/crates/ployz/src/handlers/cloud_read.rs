@@ -2,7 +2,7 @@
 //! the Servers instead, under the read permission each needs and the credential's
 //! Environment ceiling.
 
-use std::time::Duration;
+use std::{collections::BTreeSet, time::Duration};
 
 use chrono::Utc;
 use ployz_core::{MachineName, QualifiedService, ServiceName, ServiceSelector};
@@ -110,15 +110,13 @@ pub(super) fn logs(credential: &Credential, asked: LogsAsked<'_>) -> Result<(), 
                 && unknown(name).is_some()
         })
         .map(|(name, _)| scoped.no_service(name));
-    if read.iter().all(|(_, answer)| answer.servers.is_empty())
+    // A Server that did not answer may hold the lines, so it outranks the refusal, as
+    // on the direct path.
+    if read
+        .iter()
+        .all(|(_, answer)| answer.servers.is_empty() && answer.seen.unanswered.is_empty())
         && let Some(refusal) = refusal
     {
-        // Why another name's Servers did not answer still matters beside the refusal.
-        for (_, answer) in &read {
-            for note in &answer.notes {
-                ui::note(note);
-            }
-        }
         return Err(refusal);
     }
     let shown = read
@@ -148,6 +146,11 @@ pub(super) fn logs(credential: &Credential, asked: LogsAsked<'_>) -> Result<(), 
             }
         }
     })?;
+    ui::unanswered(
+        read.iter()
+            .flat_map(|(_, answer)| &answer.seen.unanswered)
+            .collect::<BTreeSet<_>>(),
+    )?;
     refusal.map_or(Ok(()), Err)
 }
 
@@ -232,7 +235,8 @@ pub(super) fn metrics(
         for note in &answer.notes {
             ui::note(note);
         }
-    })
+    })?;
+    ui::unanswered(&answer.seen.unanswered)
 }
 
 pub(super) fn processes(
@@ -276,18 +280,8 @@ pub(super) fn processes(
             container.image.clone(),
         ]);
     }
-    ui::finish(&json!({ "containers": answer }), || {
-        ui::rows(&table);
-        if !answer.seen.unanswered.is_empty() {
-            let unanswered = answer
-                .seen
-                .unanswered
-                .iter()
-                .map(ToString::to_string)
-                .collect::<Vec<_>>();
-            ui::note(format_args!("Not answered: {}", unanswered.join(", ")));
-        }
-    })
+    ui::finish(&json!({ "containers": answer }), || ui::rows(&table))?;
+    ui::unanswered(&answer.seen.unanswered)
 }
 
 /// A unit enum's wire word, such as `running`.

@@ -329,7 +329,7 @@ fn acting_organization(config: &Path) -> Result<Option<Organization>, Error> {
     }
     // ponytail: an Organization Token's Organization is only known to Cloud, so a link
     // is not checked against it; ask `GET organizations` here if tokens meet links.
-    if std::env::var(env::TOKEN).is_ok_and(|token| !token.is_empty()) {
+    if crate::cloud_account::env_token().is_some() {
         return Ok(None);
     }
     Ok(CredentialStore::beside(config).organization()?)
@@ -581,8 +581,6 @@ struct Staged {
 /// Something that needs someone to act, with the command that acts.
 #[derive(Serialize)]
 pub(super) struct Attention {
-    /// An error code, `deployment_failed`, `deployment_unknown`, `broken_reference`,
-    /// `machine_down` or `routes_not_acked`.
     pub(super) reason: String,
     pub(super) message: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -706,16 +704,26 @@ pub(super) fn status(root: &ArgMatches) -> Result<(), Error> {
             subject: None,
         });
     }
+    let mut partial = false;
     if let (Some(store), Some(_)) = (&store, &diff) {
         match store.try_read(&NamespaceQuery {
             environment: scope.at(),
         }) {
-            Ok(view) => attention.extend(super::status_servers::attention(
-                root,
-                &view.namespace,
-                &deploying,
-            )),
-            Err(error) => crate::ui::warn_cause(UNCHECKED, &store.fail(error)),
+            Ok(view) => {
+                let servers = super::status_servers::attention(
+                    root,
+                    &view.namespace,
+                    &view.services,
+                    view.authored.as_ref(),
+                    &deploying,
+                );
+                attention.extend(servers.attention);
+                partial = servers.partial;
+            }
+            Err(error) => {
+                crate::ui::warn_cause(UNCHECKED, &store.fail(error));
+                partial = true;
+            }
         }
     }
     let staged = diff.as_ref().map(|diff| Staged {
@@ -752,6 +760,9 @@ pub(super) fn status(root: &ArgMatches) -> Result<(), Error> {
     crate::ui::fields(&Next::new(&status, hint.clone()), &status_record(&status))?;
     if let Some(hint) = hint {
         crate::ui::hint(&Hint::Next(hint));
+    }
+    if partial {
+        return Err(Error::partial());
     }
     Ok(())
 }
@@ -891,9 +902,15 @@ fn status_record(status: &Status) -> Fields {
     }
     for attention in &status.attention {
         let label = match &attention.subject {
-            Some(Subject::NotPickedUp { service, .. }) => Cow::Owned(service.name.to_string()),
+            Some(
+                Subject::NotPickedUp { service, .. }
+                | Subject::StaleAddress { service, .. }
+                | Subject::NotServing { service, .. }
+                | Subject::LeftPending { service, .. }
+                | Subject::NoCopies { service },
+            ) => Cow::Owned(service.name.to_string()),
             Some(Subject::Down { machine }) => Cow::Owned(machine.to_string()),
-            None => Cow::Borrowed("needs attention"),
+            Some(Subject::Unanswered { .. }) | None => Cow::Borrowed("needs attention"),
         };
         record.push(label, Cell::status(&attention.message, Tone::Bad));
     }
@@ -1032,7 +1049,7 @@ fn servers(matches: &ArgMatches, config: &Path) -> Result<Servers, Error> {
     if let Some(context) = matches.get_one::<String>("context") {
         return Ok(via("context", Some(context.clone())));
     }
-    let token = std::env::var(env::TOKEN).is_ok_and(|token| !token.is_empty());
+    let token = crate::cloud_account::env_token().is_some();
     if token || CredentialStore::beside(config).organization()?.is_some() {
         return Ok(via("cloud", None));
     }

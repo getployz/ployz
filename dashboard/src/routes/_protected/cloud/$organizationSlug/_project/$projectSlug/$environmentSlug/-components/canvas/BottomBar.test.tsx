@@ -14,8 +14,8 @@ import { AgentDock } from "#/components/agent-sidebar/agent-dock";
 import { BottomBar, BottomBarSlot } from "./BottomBar";
 
 const [running, queued] = ["aaaa1111-uuid", "aaaa2222-uuid"];
-const deployment = (id: string, status: DeploymentSummary["status"], number: number | null) =>
-  asTestDouble<DeploymentSummary>()({ id, status, number, services: [], upload: null });
+const deployment = (id: string, status: DeploymentSummary["status"], number: number | null, saved = 1, preparing = false) =>
+  asTestDouble<DeploymentSummary>()({ id, status, number, saved, preparing, remove: false, services: [], upload: null });
 const replicas: ChangeGroup = asTestDouble<ChangeGroup>()({
   nodeType: "service", nodeId: "api", nodeName: "api", canDiscard: true, changeCount: 1, lifecycle: "update",
   rows: [{ label: "Replicas", currentValue: "1", newValue: "2", kind: "update", path: "api.replicas", changeKey: "api", canDiscard: true }],
@@ -31,9 +31,9 @@ let latest: DeploymentSummary | null | undefined = null;
 let storage: (deploymentId: string) => string | null = () => null;
 /** Secrets without a value the next Deploy leaves out. */
 let notSet = 0;
-/** Edits not yet saved, and the latest Save when the Servers don't run it. */
+/** Edits not yet saved, and the latest Save when part of it is left to deploy. */
 let stagedChanges: number | undefined;
-let notRunning: number | null = null;
+let undeployedSave: number | null = null;
 /** A write the Store hasn't answered for yet. */
 let busy: ReadonlySet<Busy> = new Set();
 /** Moves Deployments between in flight and ended while the bar stays mounted. */
@@ -45,7 +45,7 @@ beforeEach(() => {
   storage = () => null;
   notSet = 0;
   stagedChanges = undefined;
-  notRunning = null;
+  undeployedSave = null;
   busy = new Set();
   localStorage.clear();
   vi.stubGlobal("matchMedia", () => ({ matches: false, addEventListener() {}, removeEventListener() {} }));
@@ -70,7 +70,7 @@ function open(url: string, groups: ChangeGroup[] = [], totalChanges = 0, canSave
         <button type="button" onClick={() => setAgent(!agent)}>Agent</button>
         {agent ? <aside aria-label="Agent"><div ref={setDock} /></aside> : null}
         <section aria-label="Canvas"><div ref={setSlot} /></section>
-        <BottomBar groups={groups} totalChanges={totalChanges} stagedChanges={stagedChanges} notRunning={notRunning} canSave={canSave} onDeploy={onDeploy} onSave={onSave}
+        <BottomBar groups={groups} totalChanges={totalChanges} stagedChanges={stagedChanges} undeployedSave={undeployedSave} canSave={canSave} onDeploy={onDeploy} onSave={onSave}
           onDiscardAll={onDiscardAll} onDiscardNode={() => {}} onDiscardRow={() => {}} active={lists.active} latest={lists.latest} storage={storage} notes={{}} notSet={notSet} busy={busy}
           proposals={{ included: [] }} />
         <Outlet />
@@ -197,38 +197,91 @@ it("counts the secrets the Deploy leaves out beside the changes", async () => {
   expect((await bar()).getByText("1 change · 2 not set")).toBeTruthy();
 });
 
-it("names a Save the Servers don't run apart from staged changes, with Deploy", async () => {
+it("names a Save no Deploy ships as not deployed, apart from staged changes, with Deploy", async () => {
   stagedChanges = 0;
-  notRunning = 4;
+  undeployedSave = 4;
   open(canvasUrl, [replicas], 1);
   const staged = await bar();
-  expect(staged.getAllByText("#4 not running")).toHaveLength(2);
+  expect(staged.getAllByText("Save #4 not deployed")).toHaveLength(2);
   expect(staged.queryByText("1 change")).toBeNull();
   fireEvent.click(staged.getByRole("button", { name: /^Deploy/ }));
   expect(onDeploy).toHaveBeenCalledOnce();
 });
 
-it("offers no Discard all while only a Save the Servers don't run is left", async () => {
+it("says a Deploy in flight ships the Save, as that Deployment's status reads, never not running", async () => {
   stagedChanges = 0;
-  notRunning = 4;
+  undeployedSave = 4;
+  for (const [shipping, words] of [
+    [deployment(running, "running", 3, 4, true), "Preparing · Save #4"],
+    [deployment(running, "running", 3, 4), "Deploying · Save #4"],
+    [deployment(queued, "queued", 3, 4), "Queued · Save #4"],
+  ] as const) {
+    active = [shipping];
+    open(canvasUrl, [replicas], 1);
+    const staged = await bar();
+    expect(staged.getAllByText(words)).toHaveLength(2);
+    expect(staged.queryByText(/not running|not deployed/)).toBeNull();
+    // Part of the Save it doesn't ship is left to deploy after it.
+    expect(staged.getByRole("button", { name: /^Deploy next/ })).toBeTruthy();
+    cleanup();
+  }
+});
+
+it("words the Save by the oldest Deploy in flight that ships it", async () => {
+  stagedChanges = 0;
+  undeployedSave = 4;
+  active = [deployment(queued, "queued", 4, 4), deployment(running, "running", 3, 4)];
+  open(canvasUrl, [replicas], 1);
+  expect((await bar()).getAllByText("Deploying · Save #4")).toHaveLength(2);
+});
+
+it("names a Save not deployed while a Deploy of an older Save, or one taking the Environment off, runs", async () => {
+  stagedChanges = 0;
+  undeployedSave = 4;
+  for (const other of [deployment(running, "running", 3, 3), { ...deployment(running, "running", 3, 4), remove: true }]) {
+    active = [other];
+    open(canvasUrl, [replicas], 1);
+    const staged = await bar();
+    expect(staged.getAllByText("Save #4 not deployed")).toHaveLength(2);
+    expect(staged.getByRole("button", { name: /^Deploy next/ })).toBeTruthy();
+    cleanup();
+  }
+});
+
+it("names the Save not deployed under how its Deploy ended, with Save and Deployment told apart", async () => {
+  stagedChanges = 0;
+  undeployedSave = 3;
+  active = [deployment(running, "running", 3, 3)];
+  open(canvasUrl, [replicas], 1);
+  expect((await bar()).getAllByText("Deploying · Save #3")).toHaveLength(2);
+  act(() => settle({ active: [], latest: deployment(running, "applied", 3, 3) }));
+  const both = await bar();
+  const rows = both.getAllByText(/Deployment #3|Save #3/).map((node) => node.textContent);
+  expect(rows).toEqual(["Deployed · Deployment #3", "Save #3 not deployed", "Save #3 not deployed"]);
+  expect(both.getByRole("button", { name: /^Deploy$/ })).toBeTruthy();
+});
+
+it("offers no Discard all while only a Save not deployed is left", async () => {
+  stagedChanges = 0;
+  undeployedSave = 4;
   open(canvasUrl, [replicas], 1);
   await act(async () => { fireEvent.click((await bar()).getByRole("button", { name: "More change actions" })); });
   expect(await screen.findByRole("menuitem", { name: "Save only" })).toBeTruthy();
   expect(screen.queryByRole("menuitem", { name: "Discard all changes" })).toBeNull();
 });
 
-it("leaves Discard all out of Details while only a Save the Servers don't run is left", async () => {
+it("leaves Discard all out of Details while only a Save not deployed is left", async () => {
   stagedChanges = 0;
-  notRunning = 4;
+  undeployedSave = 4;
   open(canvasUrl, [replicas], 1);
   fireEvent.click((await bar()).getByRole("button", { name: "Details" }));
   expect(await screen.findByRole("button", { name: "Save only" })).toBeTruthy();
   expect(screen.queryByRole("button", { name: "Discard all" })).toBeNull();
 });
 
-it("counts only staged changes when a Save isn't running too", async () => {
+it("counts only staged changes when a Save isn't deployed too", async () => {
   stagedChanges = 2;
-  notRunning = 4;
+  undeployedSave = 4;
   open(canvasUrl, [replicas, cache], 3);
   const staged = await bar();
   expect(staged.getAllByText("2 changes")).toHaveLength(2);

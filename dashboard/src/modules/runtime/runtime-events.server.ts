@@ -1,9 +1,9 @@
 import "@tanstack/react-start/server-only";
 import type { RuntimeWatchView } from "@ployz/sdk";
 import { RuntimeConnectionFailure } from "#/modules/runtime/runtime-connection-errors";
-import { CLUSTER_UNREACHABLE_ERROR } from "#/modules/runtime/runtime.collection";
+import { CLUSTER_UNREACHABLE_ERROR, OLDER_SERVERS_ERROR } from "#/modules/runtime/runtime.collection";
 import { runtimeWatchFrameForTransport } from "#/modules/runtime/runtime-watch-frame";
-import type { PloyzProviderError } from "#/modules/runtime/ployz.server";
+import { type PloyzProviderError, speaksOlderProtocol } from "#/modules/runtime/ployz.server";
 
 export type RuntimeWatch =
   | {
@@ -116,7 +116,7 @@ export function createRuntimeEventsResponse(input: RuntimeEventsSource) {
       if (input.status === "unreachable") {
         writeStatus(
           "unreachable",
-          input.error?.message || CLUSTER_UNREACHABLE_ERROR,
+          input.error !== null && speaksOlderProtocol(input.error) ? OLDER_SERVERS_ERROR : input.error?.message || CLUSTER_UNREACHABLE_ERROR,
         );
         void cleanup(true);
         return;

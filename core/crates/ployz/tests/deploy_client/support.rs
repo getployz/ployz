@@ -23,9 +23,10 @@ use ployz_core::{
     MACHINE_STORAGE_OBSERVATION_CAPABILITY, Machine, MachineDetails, MachineId, MachineImages,
     MachineList, MachineName, MachineObservation, MachineRpcServer, MembershipObservation,
     Namespace, OpaquePayload, PROTOCOL_MAJOR, QualifiedService, RequestedServiceSpec,
-    ResolvedServiceSpec, ResolvedUpdateConfig, RotationEdge, RoutesRead, RpcError, RpcErrorCode,
-    RpcRequestBody, RpcResponse, RunTarget, ServiceId, ServiceMount, ServiceVolume,
-    ServiceVolumeGraph, ServiceVolumeReference, UpdateOrder, VolumeInventory, WireGuardPublicKey,
+    ResolvedServiceSpec, ResolvedUpdateConfig, RetainedEnvReply, RotationEdge, RoutesRead,
+    RpcError, RpcErrorCode, RpcRequestBody, RpcResponse, RunTarget, ServiceId, ServiceMount,
+    ServiceVolume, ServiceVolumeGraph, ServiceVolumeReference, UpdateOrder, VolumeInventory,
+    WireGuardPublicKey,
 };
 use ployz_testkit::{
     fake_machine::{Fake, FakeMachine, FakeStream},
@@ -67,6 +68,10 @@ pub(super) struct DeployService {
     /// Once released, a Starting Container turns healthy and starts serving.
     health_release: Option<Arc<tokio::sync::watch::Sender<bool>>>,
     health_waits: Arc<tokio::sync::Notify>,
+    /// Docker restarted each Container after its exit, and the new run printed `booting`.
+    rebooted: bool,
+    /// Between that exit and `booting`, a run exited having printed nothing.
+    silent_run: bool,
     /// The Machine answers an In ask without a health verdict and leaves the copy where it was.
     unread_health: bool,
     effective_healthcheck: Option<HealthcheckSpec>,
@@ -76,6 +81,10 @@ pub(super) struct DeployService {
     pub(super) history_failures: BTreeMap<MachineId, String>,
     /// Containers the Machine can no longer inspect, as when one has been removed.
     pub(super) uninspectable: BTreeSet<ContainerId>,
+    /// Containers whose inspect runs out of time, as when Docker stalls.
+    pub(super) stalled_inspects: BTreeSet<ContainerId>,
+    /// The env the Log Store kept per Container; `None` is a daemon predating the route.
+    pub(super) retained_envs: Option<BTreeMap<ContainerId, BTreeMap<String, String>>>,
     start_error: Option<RpcError>,
     listing_failures: Vec<MachineId>,
     pub(super) listing_blocked: Option<Arc<tokio::sync::Notify>>,
@@ -153,12 +162,16 @@ impl DeployService {
             oom_killed: false,
             health_release: None,
             health_waits: Arc::new(tokio::sync::Notify::new()),
+            rebooted: false,
+            silent_run: false,
             unread_health: false,
             effective_healthcheck: None,
             removed: Arc::new(Mutex::new(BTreeSet::new())),
             history_requests: Arc::new(Mutex::new(Vec::new())),
             history_failures: BTreeMap::new(),
             uninspectable: BTreeSet::new(),
+            stalled_inspects: BTreeSet::new(),
+            retained_envs: Some(BTreeMap::new()),
             start_error: None,
             listing_failures: Vec::new(),
             listing_blocked: None,
@@ -335,6 +348,21 @@ impl DeployService {
     pub(super) fn restart_containers(mut self) -> Self {
         self.runtime = ContainerRuntimeObservation::Restarting;
         self
+    }
+
+    /// Containers crash, and Docker restarts them so each new run prints `booting`
+    /// after the stored exit.
+    pub(super) fn reboot_containers(mut self) -> Self {
+        self.runtime = ContainerRuntimeObservation::Restarting;
+        self.rebooted = true;
+        self
+    }
+
+    /// Like [`Self::reboot_containers`], with a run that exited printing nothing
+    /// between the crash and `booting`.
+    pub(super) fn reboot_containers_through_a_silent_run(mut self) -> Self {
+        self.silent_run = true;
+        self.reboot_containers()
     }
 
     /// Containers exit 137 with Docker's inspect saying it OOM-killed them.
@@ -647,6 +675,7 @@ impl DeployService {
             address: None,
             labels: BTreeMap::new(),
             stopped: false,
+            run: None,
         })
         .unwrap()
     }
@@ -834,6 +863,7 @@ impl FakeMachine for DeployService {
             storage: self.machines.first().and_then(|machine| machine.storage),
             upgrade: None,
             token: None,
+            sealing: None,
         }))
     }
     async fn enroll(
@@ -857,6 +887,21 @@ impl FakeMachine for DeployService {
         self.record_mutation();
         unused()
     }
+    async fn retained_env(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        let Some(retained) = &self.retained_envs else {
+            return unused();
+        };
+        let RpcRequestBody::RetainedEnv(ask) = request.into_inner().decode_request().unwrap().body
+        else {
+            return Err(Status::invalid_argument("expected retained_env"));
+        };
+        encoded(RpcResponse::from(RetainedEnvReply {
+            environment: retained.get(&ask.container_id).cloned(),
+        }))
+    }
     async fn inspect_container(
         &self,
         request: Request<OpaquePayload>,
@@ -872,6 +917,9 @@ impl FakeMachine for DeployService {
         }
         if self.uninspectable.contains(&inspect.container_id) {
             return Err(Status::not_found("no such container"));
+        }
+        if self.stalled_inspects.contains(&inspect.container_id) {
+            return Err(Status::deadline_exceeded("docker did not answer"));
         }
         let service = self.identity(&inspect.container_id);
         let spec = spec(service.name.as_str())
@@ -909,6 +957,7 @@ impl FakeMachine for DeployService {
                     address: None,
                     labels: BTreeMap::new(),
                     stopped: false,
+                    run: None,
                 },
             )
             .unwrap(),
@@ -1156,6 +1205,22 @@ impl FakeMachine for DeployService {
             exit_code: Some(1),
             oom_killed: false,
         });
+        if self.silent_run {
+            stored.push(ployz_core::HistoryRow::Exit {
+                container_id,
+                ts: 14,
+                exit_code: Some(1),
+                oom_killed: false,
+            });
+        }
+        if self.rebooted {
+            stored.push(ployz_core::HistoryRow::Line {
+                container_id,
+                ts: 15,
+                stream: ployz_core::HistoryStream::Stdout,
+                text: b"booting".to_vec(),
+            });
+        }
         stored.reverse();
         let total = stored.len();
         let from = history.cursor.map_or(0, |cursor| cursor.parse().unwrap());
@@ -1211,6 +1276,12 @@ impl FakeMachine for DeployService {
             panic!("expected a routes read");
         };
         encoded(RpcResponse::from(self.routes(&read.service)))
+    }
+    async fn read_routed_addresses(
+        &self,
+        _request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        unused()
     }
     async fn prune_images(
         &self,
@@ -1489,6 +1560,7 @@ pub(super) fn running_container_in(
         address: None,
         labels: BTreeMap::new(),
         stopped: false,
+        run: None,
     })
     .unwrap()
 }

@@ -8,10 +8,7 @@ const installation = (action: "suspend" | "unsuspend" | "deleted") => ({
   installation: { id: 7, account: { login: "acme", type: "Organization", avatar_url: "https://avatars.githubusercontent.com/u/7" } },
 });
 
-const repository = (id: number, name: string) => ({
-  id, name, full_name: `acme/${name}`, private: true, default_branch: "main",
-  html_url: `https://github.com/acme/${name}`, updated_at: "2026-10-14T00:00:00Z",
-});
+const repository = (id: number) => ({ id });
 
 it("drops every removed repository from the picker cache and keeps the rest", async () => {
   const harness = await startPostgresTestHarness();
@@ -24,7 +21,7 @@ it("drops every removed repository from the picker cache and keeps the rest", as
 
     await harness.runEffect(processGithubInstallationRepositoriesEvent({
       deliveryId: "delivery-1", action: "removed", installation: { id: 7 },
-      repositories_added: [], repositories_removed: [repository(41, "web"), repository(42, "docs")],
+      repositories_added: [], repositories_removed: [repository(41), repository(42)],
       sender: { id: 9001, login: "ada" },
     }));
 

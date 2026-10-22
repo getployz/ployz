@@ -1,0 +1,2 @@
+ALTER TABLE "server_access" ADD COLUMN "claim" text;--> statement-breakpoint
+ALTER TABLE "server_access" DROP CONSTRAINT "server_access_revoked_shape_check", ADD CONSTRAINT "server_access_revoked_shape_check" CHECK ("revoked_at" is null or "encrypted_capability" is null);

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, renderHook, waitFor } from "@testing-library/react";
+import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 import type { DeploymentView, HistoryView } from "@ployz/sdk";
 import type { ReactNode } from "react";
 import { afterEach, expect, it, vi } from "vitest";
@@ -9,9 +9,10 @@ import * as scopes from "#/collections/use-collection-scope";
 import { asTestDouble } from "#/lib/test-double";
 import * as functions from "./store.functions";
 import type { StoreResult } from "./store.contract";
-import { deploymentQuery, storeViewOptions, useStoreView } from "./store-view.queries";
+import { deploymentQuery, storeViewOptions, useCachedStoreRead, useStoreView } from "./store-view.queries";
 
-afterEach(() => vi.restoreAllMocks());
+// Unmount before restoring the scope spy: a hook left mounted rerenders on a later focus and reads a null router.
+afterEach(() => { cleanup(); vi.restoreAllMocks(); });
 
 const query = { query: "history", environment: { project: "shop", environment: "production" } } as const;
 
@@ -119,4 +120,36 @@ it("moves an open Deployment on from Queued when the change stream never says it
   } finally {
     vi.useRealTimers();
   }
+});
+
+it("tells a chrome view's failed read from an unread one, across rereads, after an answer, and until a read succeeds", async () => {
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const scope = { queryClient, sessionId: "session", userId: "user" };
+  vi.spyOn(scopes, "useCollectionScope").mockReturnValue(scope);
+  const reads: { fail: () => void; answer: (result: DeploymentShown) => void }[] = [];
+  vi.spyOn(functions, "readStoreViewServerFn").mockImplementation(() =>
+    new Promise((answer, fail) => { reads.push({ fail: () => fail(new Error("Failed to fetch")), answer }); }) as never);
+  const wrapper = ({ children }: { children: ReactNode }) => <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>;
+  const shown = renderHook(() => useCachedStoreRead("acme", deploymentQuery("dep-18")), { wrapper });
+  const changed = () => act(() => applyOrganizationChanges(["store_deployment"], "acme", scope));
+  await waitFor(() => expect(reads).toHaveLength(1));
+  expect(shown.result.current).toEqual({ result: undefined, failed: false });
+
+  await act(async () => reads[0]?.fail());
+  await waitFor(() => expect(shown.result.current).toEqual({ result: undefined, failed: true }));
+  changed();
+  await waitFor(() => expect(reads).toHaveLength(2));
+  expect(shown.result.current.failed).toBe(true);
+
+  await act(async () => reads[1]?.answer(deployment("running")));
+  await waitFor(() => expect(shown.result.current).toMatchObject({ result: { ok: true, value: { status: "running" } }, failed: false }));
+  changed();
+  await waitFor(() => expect(reads).toHaveLength(3));
+  await act(async () => reads[2]?.fail());
+  await waitFor(() => expect(shown.result.current).toMatchObject({ result: { ok: true, value: { status: "running" } }, failed: true }));
+});
+
+it("leaves no History or Deployment read mounted for a later file's focus or reconnect to rerender", () => {
+  // Runs last. A hook left mounted would rerender against the real scope on the next focus and read a null router.
+  expect(document.body.childElementCount).toBe(0);
 });

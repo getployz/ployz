@@ -61,8 +61,9 @@ export function StoreVolumeDrawer({ params, volumeId = params.resourceId, copy =
   const volumes = effectiveVolumes(listings, services, settings);
   const volume = volumes.find((candidate) => candidate.id === volumeId);
   const arriving = useStorePendingNodes(organizationSlug, store).arriving.some((ghost) => ghost.id === volumeId);
-  // A stale link, or removed while open (a new Volume's removal, or from the CLI).
-  if (!volume) return arriving ? <CanvasInspectorPending /> : <CanvasInspectorNotFound noun="Volume" />;
+  // A stale link, or removed while open (a new Volume's removal, or from the CLI). Any resource id that isn't a Config
+  // lands here, a deleted Config's too, so only a mirror's own address is known to be a Volume.
+  if (!volume) return arriving ? <CanvasInspectorPending /> : <CanvasInspectorNotFound noun={copy === null ? "Resource" : "Volume"} />;
   return <VolumeDrawer params={params} environment={store} volume={volume} volumes={volumes} services={services}
     settings={settings} diff={requireView(views[2])} copy={copy} />;
 }

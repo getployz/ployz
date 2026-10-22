@@ -15,7 +15,7 @@ use super::MachineOperations;
 use crate::connect::{TARGET_RPC_TIMEOUT, in_rpc_timeout, stop_rpc_timeout};
 use crate::ui::{then_sentence, with_reason};
 
-pub(crate) const ACK_POLL: Duration = Duration::from_secs(1);
+pub(crate) const ACK_POLL: Duration = Duration::from_millis(200);
 pub(crate) const ACK_WAIT: Duration = Duration::from_secs(300);
 
 const DOCKER_STOP_GRACE_SECONDS: u16 = 10;
@@ -41,6 +41,11 @@ impl Copy {
             container_id: observation.container_id,
             rotation: observation.rotation().clone(),
         }
+    }
+
+    /// A Pending copy was never routed, so it is removed without a drain.
+    pub(crate) fn drains(&self) -> bool {
+        self.rotation != CopyRotation::Pending
     }
 
     fn locator(&self) -> ContainerLocator {
@@ -315,7 +320,7 @@ pub(crate) async fn retire<C: MachineOperations>(
     anonymous_volumes: AnonymousVolumes,
     cancellation: &CancellationToken,
 ) -> Result<Step, RpcError> {
-    if copy.rotation == CopyRotation::Pending {
+    if !copy.drains() {
         return remove(client, copy, anonymous_volumes).await;
     }
     match take_out(client, copy, allow_empty, cancellation).await? {
@@ -620,7 +625,10 @@ fn started(copy: &Copy, brought: BroughtIn) -> Result<UserStarted, RpcError> {
                     rotation_name(&copy.rotation),
                     error.message
                 ),
-                "Remove it; the newer copy serves the Service.",
+                &format!(
+                    "The newer copy serves the Service; ployz deploy {} replaces this one.",
+                    copy.service.name
+                ),
             );
             Err(error)
         }

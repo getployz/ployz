@@ -78,11 +78,11 @@ jobs:
           RELEASE_TAG: ${{ inputs.release-tag }}
           EVENT: ${{ github.event_name }}
         # A release builds its own SDK rather than reuse one an earlier run uploaded.
-        # A PR builds dev, so its upload takes a name no release lookup matches.
+        # A PR or merge queue run builds dev, so its upload takes a name no release lookup matches.
         run: |
           python3 ../core/scripts/artifacts.py lookup sdk --extra "features= profile=release" > "$RUNNER_TEMP/lookup.out"
           if [ -n "$RELEASE_TAG" ]; then sed -i 's/^run-id=.*/run-id=/' "$RUNNER_TEMP/lookup.out"; fi
-          if [ "$EVENT" = pull_request ] && grep -qx 'run-id=' "$RUNNER_TEMP/lookup.out"; then sed -i 's/^name=.*/&-pr-dev/' "$RUNNER_TEMP/lookup.out"; fi
+          if { [ "$EVENT" = pull_request ] || [ "$EVENT" = merge_group ]; } && grep -qx 'run-id=' "$RUNNER_TEMP/lookup.out"; then sed -i 's/^name=.*/&-pr-dev/' "$RUNNER_TEMP/lookup.out"; fi
           cat "$RUNNER_TEMP/lookup.out" >> "$GITHUB_OUTPUT"
       - uses: ./.github/actions/setup-cloud
         with:
@@ -103,11 +103,11 @@ jobs:
         if: steps.lookup.outputs.run-id == ''
         with:
           tool: wasm-bindgen@0.2.127
-      # A PR only tests against its SDK, so it builds dev.
+      # A PR or merge queue run only tests against its SDK, so it builds dev.
       - name: Build and test the SDK
         if: steps.lookup.outputs.run-id == ''
         env:
-          PLOYZ_SDK_PROFILE: ${{ github.event_name == 'pull_request' && 'dev' || 'release' }}
+          PLOYZ_SDK_PROFILE: ${{ (github.event_name == 'pull_request' || github.event_name == 'merge_group') && 'dev' || 'release' }}
         run: bash scripts/pr-check.sh sdk
       # Local verify runs download these too, so main keeps them longer. One leg uploads: a run's artifact names are unique.
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

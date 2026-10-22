@@ -36,6 +36,7 @@ pub(in crate::deploy) fn ingress_on(
         rotation: None,
         r#gen: None,
         stopped: false,
+        run: None,
     })
     .unwrap()
 }

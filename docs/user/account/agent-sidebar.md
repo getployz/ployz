@@ -13,10 +13,13 @@ Ployz can't read where it is, the agent won't fall back to another environment. 
 you to name the project and environment to act in. It
 can create or rename a project, add, change and rename services, [configs](../services/configs.md)
 and volumes, add and change domains, check a domain and list the DNS records it still needs,
-review what's staged, restore or undo a saved version, save without deploying, and deploy. It can list an
+review what's staged, restore or undo a saved version, save without deploying, and deploy. It can
+also remove services, volumes, domains and configs, discard staged changes, remove an environment
+or a project with its volumes' data, protect or unprotect a project's own environment, and turn
+preview environments on or off. It can list an
 environment's deployments, follow one to its end, redeploy a failed, cancelled or unknown one, start
 a queued one now, and cancel one, like the
-[deployment page](../deploy/deployments.md#redeploy-or-cancel-a-deployment)'s buttons. It can also
+[deployment page](../deploy/history-and-rollback.md#redeploy-or-cancel-a-deployment)'s buttons. It can also
 read your GitHub repositories and work on your servers. It doesn't create environments.
 
 The agent never sees or sends a secret's value. It can ask Ployz to give a variable a new
@@ -36,14 +39,14 @@ replied. It can:
 - Read a service's recent logs from each server that ran it, with sealed variables and
   secret-shaped values replaced (**service logs**). Ployz support sees them only if your organization
   shows its logs to support. It reads the latest lines and doesn't follow new ones.
-- Read a server's own recent logs from the Ployz daemon, Docker or Corrosion, up to 200 lines,
+- Read a server's own recent logs from the Ployz daemon, Docker or Ployz's network store, up to 200 lines,
   with secret-shaped values replaced (**server logs**). Ployz support can't read them.
 - Read a service's or a server's [metrics](../observe/metrics.md), with the OOM kills, exits and
   restarts in the range (**service metrics**, **server metrics**). Name a deployment and it reads
   from that deployment's start and keeps only its events.
 - Restart, start or stop a service (**service restart**, **service start**, **service stop**).
-- Drain, upgrade, clean up after or remove a server (**server drain**, **server upgrade**,
-  **server clean**, **server remove**).
+- Drain, upgrade, clean up after, remove or forget a server (**server drain**, **server upgrade**,
+  **server clean**, **server remove**, **server forget**).
 - Change what a server takes: builds, services and web traffic, and how many builds it runs at
   once (**server set**). It can turn web traffic off but not on; that takes
   `ployz server set web-1 --accepts-ingress=true` in your terminal.
@@ -93,15 +96,17 @@ CLI at once can leave it either running or stopped.
 
 ## Approve or deny a deploy
 
-Every deploy the agent starts waits for you. Its card, like **Deploy production**, is marked
+Every deploy the agent starts waits for you. Its card, like **Deploy shop/production**, is marked
 **Deploys** when it destroys nothing, and lists what changes. A redeploy of a deployment that
-failed waits too. Its card, like **Retry production**, is marked **Redeploys** and lists no
-changes, because it ships exactly what that deployment did.
+failed waits too. Its card, like **Redeploy shop/production**, is marked **Redeploys** and lists no
+changes, because it ships exactly what that deployment did. A redeploy that undoes later
+deployments is titled **Roll back shop/production** and marked **Rolls back**.
 
 When a deploy or save would remove a running service, delete a volume, detach a volume from a
 service or remove a domain, the agent stops and shows a card. It does the same before it removes
-a server, cleans up after one, drains a server whose global service runs on no other server, or runs a volume
-command that deletes data. The card leads with what would be
+or forgets a server, cleans up after one, drains a server whose global service runs on no other server, runs a volume
+command that deletes data, takes an environment or a project off your servers, or unprotects an
+environment. The card leads with what would be
 destroyed. A detach that a [restore](../services/restore-a-volume.md) makes also says what the
 new volume leaves out, like "Changes after 10:27 are not in pg-data-1027", with the date as well
 for a point from an earlier day. Everything else the change does is folded under a count, like **2 other changes**;
@@ -112,12 +117,12 @@ click it to see them. Under its name the card says when it was asked, like **9 m
 3. Or click **Deny** to stop it. To tell the agent why, click
    **Deny with a reason…**, type the reason, and click **Deny**.
 
-<!-- screenshot: an approval card for Deploy production that deletes the postgres-data volume -->
+<!-- screenshot: an approval card for Deploy shop/production that deletes the postgres-data volume -->
 
 The agent picks up your answer and carries on. If you denied it, the agent gets your reason.
 
-A card for a save, like **Save production**, is marked **Deletes on deploy**: saving deletes
-nothing yet. Approving it saves without deploying, and shows **Approved. Saved, not deployed.**
+A card for a save, like **Save shop/production**, is marked **Deletes on deploy**: saving deletes
+nothing yet. Approving it saves without deploying, and shows **Approved. Saves without deploying.**
 Your next deploy deletes the data, including one a Git push starts.
 
 While approvals are waiting, the **Agent** button shows how many, like **1 waiting**. An approval you didn't

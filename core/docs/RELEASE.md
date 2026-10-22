@@ -25,7 +25,7 @@ git push origin v0.2.0
 Beta: `v0.3.0-beta.1` with Cargo version `0.3.0-beta.1`. `-rc` and every other suffix are rejected.
 
 4. Wait for the Release workflow. The tag run validates the tag and commit, builds the six CLI and daemon archives using the shared kache/R2 cache, builds and pushes `ghcr.io/getployz/ployz-cloud:<tag>`, and opens a **draft** GitHub release (`--prerelease` on beta tags) with `ployz-cloud-compose.yml` (pinned to the tag) and `ployz-cloud.env.example` attached for self-hosting.
-5. Fill `## Notes`. Click **Publish**. That click is the review gate. Drafts are not public downloads.
+5. Fill `## Notes` as [Release notes](#release-notes) describes. Nick approves the notes before Publish. Click **Publish**. That click is the review gate. Drafts are not public downloads.
 
 The `ghcr.io/getployz/ployz-cloud:<tag>` image is pushed during the draft run and is pullable by exact tag before Publish; only Publish announces it and moves the channel pointers.
 
@@ -42,6 +42,18 @@ The live agent eval runs only on a developer's machine, never in GitHub Actions,
 No-model agent replays are also local only. Nothing under `dashboard/evals` runs in GitHub Actions, and `rust-tests` skips the `ployz mcp` transcript replays. Run both before a release. From `dashboard/`, `pnpm sdk:eval`, then `pnpm eval:replay` replays the golden trajectories through the sidebar. It needs Docker and `cargo build -p ployz-testkit --bin ployz-fake-fleet`. `pnpm eval` runs everything under `dashboard/evals`, with live trials still skipped. From `core/`, `cargo nextest run -p ployz --run-ignored only -E 'test(/transcript_replays/)'` replays every agent tool transcript through `ployz mcp`.
 
 Before Publish, use the beta on real Machines through Cloud: enrol, deploy, attach a domain and certificate, and upgrade. There is no scripted qualification; when the informing cluster suite and those Machines disagree, the real Machines are the authority. Testkit bugs do not block a release.
+
+## Release notes
+
+Release notes build trust, and readers often hand them to an AI to judge whether Ployz is safe to use. Write them for that reader.
+
+- Lead with what the release lets people do: benefits and new features first.
+- Keep fixes generic, in one line such as "Reliability and safety improvements across Volumes, enrollment, upgrades and Server removal." Don't describe bugs one by one, and don't link bug issues.
+- Have no Known issues section. Open bugs live in GitHub issues.
+- Keep only what a user must act on to upgrade safely: the upgrade path (for example, first Server over SSH, then the rest through it), real breaking changes, and self-hosted Cloud's Postgres backup and `db:migrate`. State them calmly and briefly.
+- Avoid alarming words such as critical, data loss, brick or freeze.
+- Under the Stable promise, name any new wire surface, such as an ALPN, as additive.
+- End with the install lines and the Full Changelog link for the new tag.
 
 ## What Publish does
 
@@ -88,7 +100,7 @@ Apex and channel URLs must serve these bodies.
 
 ## Homebrew
 
-Goreleaser does not touch the tap (`--skip=homebrew`); `scripts/promote-release.sh` writes the formula. Bottles 404 if the formula is pushed while the GitHub release is still a draft. The tap updates only when a **stable** Publish leaves the unscoped `stable` pointer on that tag.
+Goreleaser does not touch the tap: the config has no Homebrew step, and the release workflow also passes `--skip=homebrew`. `scripts/promote-release.sh` writes the formula. Bottles 404 if the formula is pushed while the GitHub release is still a draft. The tap updates only when a **stable** Publish leaves the unscoped `stable` pointer on that tag.
 
 ## Machine daemon
 

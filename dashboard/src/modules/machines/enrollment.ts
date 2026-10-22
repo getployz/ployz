@@ -172,8 +172,14 @@ const enrollmentCallbackIdentity = {
   pairingCredential: NonEmptyString,
 };
 
+/** Whether the enrolled Machine holds its Cluster's Sealing Key, and its public half if so. */
+const Sealing = Schema.Union([
+  Schema.Struct({ kind: Schema.Literal("held"), publicKey: Schema.String.check(Schema.isPattern(/^[A-Za-z0-9+/]{43}=$/)) }),
+  Schema.Struct({ kind: Schema.Literal("needs_access") }),
+]);
+
 export const enrollmentCallbackBodySchema = Schema.Union([
-  Schema.Struct(enrollmentCallbackIdentity),
+  Schema.Struct({ ...enrollmentCallbackIdentity, sealing: Schema.optionalKey(Sealing) }),
   Schema.Struct({
     ...enrollmentCallbackIdentity,
     stage: Schema.Literal("publish"),
@@ -182,6 +188,7 @@ export const enrollmentCallbackBodySchema = Schema.Union([
 ]);
 
 export type EnrollmentCallback = typeof enrollmentCallbackBodySchema.Type;
+export type EnrollmentCallbackSealing = typeof Sealing.Type;
 
 /** The phases of token enrollment; each name is a PostHog property, so renaming one breaks analytics. */
 const SetupStep = Schema.Literals(["install", "enroll", "storage", "join"]);

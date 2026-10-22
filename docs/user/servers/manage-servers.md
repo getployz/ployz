@@ -21,7 +21,7 @@ status only when someone should look.
 | **Offline** | Your other servers can't reach it. See [A server shows Offline](../troubleshooting/servers.md#a-server-shows-offline). |
 | **Unknown** | Ployz can't tell whether it's up. Check it as you would an offline one. |
 | **Upgrading** | Ployz is upgrading it. See [Upgrade Ployz on a server](#upgrade-ployz-on-a-server). |
-| **Upgrade failed** | Its last upgrade didn't install, and it went back to the release it ran before. |
+| **Upgrade failed** | Its last upgrade didn't finish: it failed, stopped partway, or Cloud couldn't tell how it ended. A failed upgrade goes back to the release it ran before. **Show details** on its page has where it stopped and any error. |
 
 When the list is wide enough, each row also shows how much of the server's CPU and memory is in
 use right now. The meters stay empty until the server sends a reading, and an offline server shows
@@ -29,7 +29,9 @@ none. A dash means the server sent no recent reading for that meter. The server'
 and the full picture.
 
 A server that can hold [managed volumes](../services/volumes.md) shows nothing about storage.
-**Docker only** means it was added with **Start without it** and holds plain Docker volumes only.
+**Docker only** means it was added with **Docker only** storage, or fell back to it because it
+can't run ZFS, and holds plain Docker volumes only. See
+[Start without ZFS](add-a-server.md#start-without-zfs).
 **Volume support unknown** means Ployz couldn't tell what it can store.
 
 If the page shows **Can't reach your servers right now**, see
@@ -37,10 +39,9 @@ If the page shows **Can't reach your servers right now**, see
 
 ## Servers waiting to join
 
-A server you installed with a Fleet Token checks in with Ployz Cloud and waits. Ployz can't let a
-waiting server join yet; to add one you can deploy to, see
-[Add one server that joins right away](add-a-server.md#add-one-server-that-joins-right-away). To
-list the ones waiting:
+A server you installed with a Fleet Token checks in with Ployz Cloud and waits for you to enroll
+it. [Add many servers](add-many-servers.md) shows how in the dashboard. From the CLI, list the
+ones waiting:
 
 ```sh
 ployz server ls --waiting
@@ -60,52 +61,52 @@ blocking it:
 ployz server show web-3
 ```
 
-`ployz server show` shows a server in your cluster the same way, so one command covers both: its
+`ployz server show` shows a server that has joined the same way, so one command covers both: its
 OS, versions, addresses, storage, CPU, memory and disk, and how long a round trip to each other
 server takes. Add `--json` for everything it knows, such as the features its daemon supports. It
 also takes a waiting server's id, or the start of one at least 8 characters long, such as the
 start the list prints. If two waiting servers share a name or the start you typed, it lists their
 ids instead.
 
-To enroll waiting hosts, select their names or hostnames with a quoted glob:
+To enroll waiting servers, select their names or hostnames with a quoted glob:
 
 ```sh
 ployz server enroll 'host-*' --name 'web-{n}' --status
 ```
 
-Ployz Cloud plans the names, founder and storage. The CLI prints that plan, source IPs and
-anything skipped, then asks before starting. The oldest selected host is the default founder
-when your organization has no cluster. Use `--first host-a` with a name glob or `--all` to
-choose another selected host. Put the glob before `--first`.
-Bare `--first` enrolls only the oldest match. `--all` selects every waiting host and prints
+Ployz Cloud plans the names, the first server and storage. The CLI prints that plan, source IPs
+and anything skipped, then asks before starting. When your organization has no servers yet, the
+oldest selected server goes first. Use `--first host-a` with a name glob or `--all` to choose
+another selected server. Put the glob before `--first`.
+Bare `--first` enrolls only the oldest match. `--all` selects every waiting server and prints
 how many came from each provider, including **Unknown**.
 
 `--name 'web-{n}'` numbers the planned names. Without it, each server keeps its hostname.
 Selection takes names or hostnames, never IDs. `--storage zfs` is the default. It uses a spare
 disk when available and falls back to Docker volumes where ZFS cannot run. Add
-`--no-spare-disk` to keep ZFS on the main disk, or `--no-fallback` to skip hosts that cannot
-use ZFS. `--storage none` uses Docker volumes. Each enrolled server accepts services, ingress
-and builds.
+`--no-spare-disk` to keep ZFS on the main disk, or `--no-fallback` to skip servers that cannot
+use ZFS. `--storage none` uses Docker volumes. Each enrolled server runs services, takes web
+traffic and runs builds.
 
 Add `--yes` to accept the printed plan without a prompt. Without a terminal or with `--json`,
 Ployz requires `--yes` and otherwise returns the plan with `confirmation_required`.
-To enroll every waiting host without a prompt, for example in a script:
+To enroll every waiting server without a prompt, for example in a script:
 
 ```sh
 ployz server enroll --all --yes --json
 ```
 
-A command that skips any hosts exits 3 and includes the reasons in its JSON result.
-If Cloud starts different names or roles, or omits a planned host, the CLI reports the
+A command that skips any servers exits 3 and includes the reasons in its JSON result.
+If Cloud starts different names or roles, or omits a planned server, the CLI reports the
 changes and exits 3. Enrollment continues in Cloud.
 
 `--status` follows each attempt and prints a line when its stage changes. **Queued** means
-the host is still preparing its storage. **In line · 3 servers ahead** means it is waiting
+the server is still preparing its storage. **In line · 3 servers ahead** means it is waiting
 for a join slot. If Cloud cannot see a current position, the CLI says **Join position unknown**.
-A failed attempt prints the host's error. Ctrl-C stops following while enrollment continues.
-With a selection, `--status` starts matching hosts that are not already enrolling after
+A failed attempt prints the server's error. Ctrl-C stops following while enrollment continues.
+With a selection, `--status` starts matching servers that are not already enrolling after
 confirmation, then follows both existing and new attempts. Bare `--first --status` stays
-limited to the oldest matching host. An unknown state makes the command exit 3 once the
+limited to the oldest matching server. An unknown state makes the command exit 3 once the
 other attempts end.
 Resume open attempts without starting new ones:
 
@@ -174,10 +175,10 @@ Click a server. Its page shows its status and public IP address, then:
 
 ![A server's page: Running here with each service's CPU and memory, then Services](../images/server-running-here.png)
 
-An entry marked **Not in any Project** is left over from a deleted project or environment.
-**Remove** deletes its containers and its volumes, data included, from every server.
+An entry marked **Not in any Project** is left over from a deleted project or environment; see
+[Clean up after a deleted environment](#clean-up-after-a-deleted-environment).
 
-When you restore a server from a snapshot of its disk, Ployz picks its services and ingress back
+When you restore a server from a snapshot of its disk, Ployz picks its services and web server back
 up as they were when the snapshot was taken. Your next deploy updates them as usual.
 
 ## Reach a server from the CLI
@@ -186,7 +187,7 @@ When the CLI reaches your servers through Ployz Cloud, only owners and admins ca
 `exec`, `service start`, `service stop`, `service restart`,
 `service port-forward`, `server ls`, `server show`, `server logs`, `server set`,
 `server drain`, `server upgrade`, `server rm`, `server forget <server>` and `server clean`
-without a namespace. A member who runs one gets this, and the command exits 1:
+without `--namespace`. A member who runs one gets this, and the command exits 1:
 
 ```text
 Server access needs an admin. Ask an owner or admin of acme.
@@ -224,10 +225,10 @@ at a time: a second one reads **Queued · Waiting on web-1**. While a drain runs
 **Drain** row counts the services left to move and lists them as **Pending**; each one leaves the
 list as it leaves the server. You can leave the page while one runs.
 If your servers don't answer when a drain's turn comes, as while one restarts, the drain reads
-**Queued** and tries again 20 seconds after each try. It starts once they answer. While it waits,
-it doesn't hold up the organization's other drains: they can start and run, and while one runs, the
-waiting drain reads **Queued · Waiting on** that drain's server. It waits up to 15 minutes from when
-you confirmed, and other drains ending don't extend that. If your servers still don't answer by
+**Waiting for your servers to answer** and tries again 20 seconds after each try. It starts once
+they answer. While it waits, it doesn't hold up the organization's other drains: they can start and
+run, and it keeps that label rather than **Queued**. It waits up to 15 minutes from when you
+confirmed, and other drains ending don't extend that. If your servers still don't answer by
 then, the drain doesn't start and reads **Drain didn't start. Try again.** Nothing on the server
 changed. A drain whose turn comes more than 15 minutes after you confirmed still starts if your
 servers answer at once. If they don't, it doesn't start.
@@ -252,22 +253,14 @@ A drain that stops early marks the service it was moving **Interrupted** and the
 reached **Not attempted**; those still run on the server. If a server's proxy doesn't confirm the
 switch in time, the moved service's old container keeps running on the drained server and the row says
 so; the next drain removes it, along with any old container an earlier drain left there. While an old
-container is out of routing but still running, `ployz ps` marks it **draining**.
+container is out of routing but still running, `ployz ps` marks it **draining**. `ployz status`
+names a draining container only when the service has too few others serving.
 If anything stayed or failed, the drain stopped early, or it couldn't check what's left on the server, the button
 reads **Drain again**. Turning services back on doesn't move anything back.
 
-From the CLI, `ployz server drain web-2` does the same and prints the report. If anything stayed or
-failed, it exits non-zero. When you're signed in, Ployz Cloud runs the drain, as it does for the
-button. Unlike the button, it waits for approval first when a global service would run on no other server (see
+`ployz server drain web-2` does the same from the CLI and exits non-zero if anything stayed or
+failed. It waits for an approval first when a global service would run on no other server (see
 [Destructive actions ask first](../account/organizations.md#destructive-actions-ask-first)).
-The CLI stops waiting after 30 minutes and says so; the drain keeps running in Ployz Cloud.
-
-Servers you run without Ployz Cloud belong to a context on your computer. Signed out, the same
-command drains from your computer through your current context. To use another context, name it:
-
-```sh
-ployz server drain web-2 --context my-cluster
-```
 
 Under **Web traffic** on a server's page, **Takes web traffic** is a switch. On, the line under it
 reads **Your domains point at 203.0.113.10**: the server's address. Turn it off and a dialog lists the
@@ -290,10 +283,16 @@ server running; use the switch to stop it.
 
 Each server's page shows the Ployz release it runs. When a newer release is out on your
 organization's channel (Stable unless you [choose Beta](#choose-stable-or-beta-releases)) and a
-server is behind, the top of the **Servers** page offers **Upgrade to `0.2.2`**.
+server is behind, the top of the **Servers** page offers **Upgrade to `0.3.1`**.
 Click it to upgrade every server that's behind, one at a time in name order. Your apps keep running
 while they do. While an upgrade runs, the top of the page reads **Upgrading 1/4**, and the server
 upgrading reads **Upgrading**.
+
+When you upgrade from `0.3.0-beta.6`, where [the first server needs
+SSH](#servers-on-02-or-030-beta6-and-earlier), upgrade every server back to back: upgraded servers don't
+route traffic to apps on a server still on `0.3.0-beta.6` until it upgrades too
+([#2892](https://github.com/getployz/ployz/issues/2892)). As each server restarts, its domains can
+answer `503` briefly, for about 6 seconds when the app runs on another server.
 
 ### Turn on automatic upgrades
 
@@ -303,11 +302,11 @@ starts upgrading right away, then checks every hour. Turn the switch off to go b
 hand.
 
 Servers that are offline or building are skipped and upgrade at a later check. An offline server
-that's behind reads **Upgrades to `0.2.2` when it's back** on its page.
+that's behind reads **Upgrades to `0.3.1` when it's back** on its page.
 
 If a server's upgrade doesn't install, that server goes back to the release it ran before, and the
 other servers wait: automatic upgrades skip that release until a newer one is out. That server
-reads **Upgrade failed**, and the top of the page offers **Upgrade to `0.2.2`** to carry on yourself.
+reads **Upgrade failed**, and the top of the page offers **Upgrade to `0.3.1`** to carry on yourself.
 On the server's page, **Show details** has the exact error to copy, and **Try again** retries. Once an upgrade of that release succeeds, automatic upgrades pick it up again.
 
 Every member of the organization gets one email about it, naming the server, the release, and
@@ -316,7 +315,7 @@ whether it went back to the release it ran before. Members who set **Failed auto
 
 ### Upgrade one server
 
-To upgrade one server, open it: its **Ployz** section reads **`0.2.2` is out**. Click **Upgrade**.
+To upgrade one server, open it: its **Ployz** section reads **`0.3.1` is out**. Click **Upgrade**.
 Only an owner or admin, or [Ployz support](../account/organizations.md#let-ployz-support-in), can upgrade servers, and only while they're online and not building. For a
 member, **Upgrade** and **Try again** are disabled and say so. One upgrade runs at a time
 per organization, so **Upgrade** and **Try again** wait while one is running.
@@ -324,21 +323,14 @@ per organization, so **Upgrade** and **Try again** wait while one is running.
 ### Choose Stable or Beta releases
 
 Click the **Upgrade settings** icon at the top of the **Servers** page and set **Releases** to
-**Stable** or **Beta**. Stable is the default; Beta gets fixes early, as prereleases like `0.2.3-beta.1`. Only an
+**Stable** or **Beta**. Stable is the default; Beta gets fixes early, as prereleases like `0.3.2-beta.1`. Only an
 owner or admin, or [Ployz support](../account/organizations.md#let-ployz-support-in), can change it, and it applies to every upgrade, automatic or by hand. The **Servers** page
 and each server's page then show the newest release on that channel.
 
 Switching back to Stable never downgrades a server. A server on a beta ahead of Stable reads as
 current and waits until Stable catches up.
 
-The same two settings from the CLI, when you're signed in:
-
-```sh
-ployz server upgrade-policy show
-ployz server upgrade-policy set --channel beta --automatic true
-```
-
-Pass only the setting you're changing; the other stays as it is.
+From the CLI, `ployz server upgrade-policy show` and `set` read and change the same two settings.
 
 ### New major lines
 
@@ -348,25 +340,24 @@ line for you: your servers stay on 0.x and keep getting its upgrades.
 
 ### Upgrade from the CLI
 
-To upgrade from the CLI, name your organization's channel and the servers:
-
-```sh
-# on web-1 then web-2
-ployz server upgrade stable web-1 web-2
-```
-
-When you're signed in, Ployz Cloud runs the upgrade, so it follows your organization's channel.
-Naming the other channel fails with `channel_mismatch`. Ployz Cloud upgrades only to the newest
+`ployz server upgrade stable web-1 web-2` upgrades web-1, then web-2. When you're signed in,
+Ployz Cloud runs the upgrade, so it follows your organization's channel. Naming the other channel fails with `channel_mismatch`. Ployz Cloud upgrades only to the newest
 release on that channel and never moves a server to an older release than it runs. To get
 prereleases, [choose Beta](#choose-stable-or-beta-releases).
 
-Servers you run without Ployz Cloud upgrade from your computer, through your current context or
-the one `--context` names. There you can name an exact version like `0.2.0`, even one older
-than the server runs:
+With `--connect` and a server's SSH address, the upgrade runs from your computer instead of Ployz
+Cloud. There you can name an exact version like `0.3.0-beta.7`, even one older than the server
+runs:
 
 ```sh
-ployz server upgrade 0.2.0 web-1 --context my-cluster
+ployz server upgrade 0.3.0-beta.7 web-1 --connect ssh://root@203.0.113.10
 ```
+
+A version older than the server runs is a downgrade, and Ployz asks before it starts. A newer CLI
+or Ployz Cloud may need something the older release lacks. On 0.3.0-beta.6 or earlier, they can't
+reach the server through the relay at all, and upgrading it again may take
+[SSH](#servers-on-02-or-030-beta6-and-earlier). In a script, under
+`--json` or without a terminal, Ployz refuses the downgrade unless you pass `--allow-downgrade`.
 
 Ployz releases are signed, starting with the first release after 0.3.0-beta.2. A server checks
 the signature before it installs a release, and refuses one that isn't signed by Ployz or that
@@ -379,6 +370,15 @@ running and private DNS keeps answering (with the exceptions in
 the release it ran before.
 The command prints one line per server it tried, the failed one included. The error after it, on
 stderr, says why that server failed.
+It exits 1 when a server's upgrade failed before any server moved to another release, and 3
+when some did first, or when a server took the upgrade and then stopped answering, since it may
+still finish. A version that was
+never released fails with `no such release 0.3.0-beta.99`.
+A server that already runs the newest release on the channel you name, or a newer one, says
+`already runs 0.3.0-beta.7`, and a server on this release or later is left alone: nothing is
+reinstalled or restarted.
+Ctrl-C stops the command, not the upgrade: the server finishes it on its own, and
+`ployz server show` says how it ended.
 With `--json`, each entry in `attempts` names its server's id under `server`, and `unattempted`
 lists the ids of the servers the command never reached.
 A server that doesn't answer within a minute counts as failed, so an offline server stops the
@@ -398,8 +398,8 @@ the command follows the upgrade that's running.
 
 Ployz Cloud and the CLI keep working with servers that run an older Ployz release, back to the
 first release after 0.3.0-beta.6. The **Servers** page shows each one and offers its upgrade, as in
-[Upgrade Ployz on a server](#upgrade-ployz-on-a-server). A server on 0.3.0-beta.6 or earlier is the
-exception: see [Servers on 0.3.0-beta.6 or earlier](#servers-on-030-beta6-or-earlier).
+[Upgrade Ployz on a server](#upgrade-ployz-on-a-server). A server on 0.2 or 0.3.0-beta.6 and earlier is
+the exception: see [Servers on 0.2 or 0.3.0-beta.6 and earlier](#servers-on-02-or-030-beta6-and-earlier).
 
 When a server's release can't serve a feature, the feature names that server:
 
@@ -419,8 +419,12 @@ When a server's release can't serve a feature, the feature names that server:
   Every volume move, mirror, sync, release, restore and mirror removal, and a Deploy that restores
   a volume onto a new server, also needs every server that holds or receives the volume to run a
   Ployz new enough to refuse a request from an older run. The message names what you ran and the
-  server to upgrade: "Volume move needs a newer Ployz on web-1", "Mirror removal needs a newer
-  Ployz on web-2".
+  server: "Volume move needs a newer Ployz on web-1, which runs 0.3.0. Upgrade it to 0.3.1." when
+  that server's release is behind your channel's. When Ployz can't tell, it says only what is
+  missing: "Mirror removal is not in Ployz 0.3.0 on web-2."
+  A volume move onto a server on 0.3.0-beta.6 is refused before any data moves: that release can
+  take the volume, but can't put the moved service back in web traffic. A move that already reached
+  such a server waits at "Starting" until you upgrade it, then finishes.
 - **Drain** in Ployz Cloud names the servers to upgrade before it changes anything:
   "Drains need a newer Ployz on web-1".
 - **Upgrade** off Ployz 0.2.4 that stops partway while the old Ployz keeps running looks like it's
@@ -443,43 +447,61 @@ instead. `ployz exec` into a container on such a server exits with code 1 and na
 Server web-2 needs a newer Ployz. It cannot serve ployz.container.exec.v1.
 ```
 
-`ployz drain` of a server on Ployz 0.2.4 turns its services off, then stops and names the server:
+`ployz server drain` of a server on Ployz 0.2.4 turns its services off, then stops and names the server:
 
 ```text
 Server web-2 needs a newer Ployz. It cannot serve ployz.container.ensure.v1.
 ```
 
-Upgrade the server and run `ployz drain` again. The rerun finds services already off and carries
+Upgrade the server and run `ployz server drain` again. The rerun finds services already off and carries
 on.
 
-### Servers on 0.3.0-beta.6 or earlier
+### Servers on 0.2 or 0.3.0-beta.6 and earlier
 
 Starting with the first release after 0.3.0-beta.6, Ployz Cloud and the CLI prove their access in a
-new way on every connection, and servers on 0.3.0-beta.6 or earlier don't understand it. Through
-Ployz's relay, Cloud and a newer CLI can't manage such a server at all, and that includes starting
-its upgrade from the **Servers** page or with `ployz server upgrade`. The server keeps running your
-apps. The CLI stops with:
+new way on every connection, and servers on 0.2 or 0.3.0-beta.6 and earlier don't understand it. Through
+Ployz's relay, Cloud and a newer CLI can't connect to such a server directly. The server keeps
+running your apps. When Cloud's last try to reach your servers lands on such a server, the
+**Servers** page reads **Upgrade your server over SSH** and shows the commands below. When the CLI can't reach a server on a newer
+release first, it stops with:
 
 ```text
-This Server runs Ployz 0.3.0-beta.6 or earlier, which this release can't reach through the relay.
+This Server runs Ployz 0.2 or a 0.3.0 beta up to beta.6, which this release can't reach through the relay.
 ```
 
-Upgrade each such server over SSH from your computer, one at a time. Install the CLI from the beta
-channel; the stable channel is still on a release before the change. Then run it with `--connect`
-and the server's SSH address:
+Every 0.2 release, 0.2.4 included, is on this side of the boundary. A server on 0.2 upgrades to
+0.3.0 in place the same way: it keeps its apps, volumes and place among your servers, and doesn't need to be
+enrolled again. Upgrade it with the newest CLI, not with a 0.2 CLI's `ployz server upgrade`: that
+installs 0.3.0 but can't confirm the result once the server restarts.
+
+Upgrade the first server over SSH from your computer. Install the newest CLI, then run it with
+`--connect` and the server's SSH address:
 
 ```sh
-curl -fsSL https://ployz.sh | sh -s -- beta
-ployz server upgrade beta web-1 --connect ssh://root@203.0.113.10
+curl -fsSL https://ployz.sh | sh
+ployz server upgrade stable web-1 --connect ssh://root@203.0.113.10
 ```
 
 The server installs the newest release on the channel you name. Then Cloud and the CLI reach it
 through the relay again. If the upgrade fails, the server goes back to the release it ran before
 and keeps running; run the command again.
 
-The same boundary holds the other way: a CLI on 0.3.0-beta.6 or earlier can't reach a server on a
-later release. Install the newer CLI from the beta channel with
-`curl -fsSL https://ployz.sh | sh -s -- beta`.
+Once one server runs the newer release, Cloud and the CLI can reach the others through it, so you
+can upgrade the rest from the **Servers** page or with `ployz server upgrade`. Do it right away:
+see [Upgrade Ployz on a server](#upgrade-ployz-on-a-server) for why. If a server still stops with
+the message above, upgrade it over SSH too.
+
+Without SSH from your computer, say with only your provider's console, upgrade a server on the
+server itself:
+
+```sh
+sudo ployzd install --version stable --software-only
+```
+
+`--software-only` replaces Ployz and leaves Docker, packages and storage as they are.
+
+The same boundary holds the other way: a CLI on 0.2 or 0.3.0-beta.6 and earlier can't reach a server
+on a later release. Install the newer CLI with `curl -fsSL https://ployz.sh | sh`.
 
 ## Remove a server
 
@@ -490,7 +512,9 @@ later release. Install the newer CLI from the beta channel with
 > finished copying stays as a copy. Copy off any data you need first.
 
 1. Open the server and click **Remove server**.
-2. Ployz lists the volumes on the server. Type the server's name and click **Remove**.
+2. Ployz lists the volumes on the server: each of your volumes by its name and its project and
+   environment, such as `pg-data` in `shop/production`. A volume Docker made with no name shows as
+   **Anonymous volume**. Type the server's name and click **Remove**.
 
 The server you remove and every server Ployz reaches it through must run a Ployz that can remove
 servers. If one doesn't, the removal stops and says "Server removal
@@ -505,8 +529,15 @@ no project owns, which draining leaves. `ployz server rm`
 warns about services a drain could still move off it and, while it still asks you to confirm,
 prints the drain command. With `--confirm` it doesn't ask, so it keeps the warning but leaves out
 the drain command. The warning leaves out what a drain won't move: services with a volume or bind
-mount on the server, global services, and Ployz's own ingress. On your last server it skips that
-warning. After the removal it warns which replicated services may now run short of replicas.
+mount on the server, global services, and Ployz's own web server. On your last server it skips that
+warning. After the removal it warns which replicated services now run no replicas, because all of
+them were on that server, and prints `ployz deploy` as the next step. It warns separately which
+other replicated services may now run short of replicas. With `--json` the removal lists every
+service left short as `under_replicated`. It also lists a service as `no_copies` when every other
+server answered and none showed a replica of it. If a server didn't answer, the service is listed
+only as `under_replicated`. `ployz status` keeps naming a service with no replicas until a deploy
+starts one; see
+[Status says a service runs no copies](../troubleshooting/deployments.md#status-says-a-service-runs-no-copies).
 Ployz's build cache isn't one of the volumes you confirm losing.
 Otherwise services that ran only on that server stop. Your next deploy replaces its replicas on your other
 servers, except for services whose volume was on it (see
@@ -527,41 +558,78 @@ If the server resets but your other servers can't forget it, `ployz server rm` s
 reset but is still listed." and prints `ployz server forget web-2` to finish. Ployz Cloud
 finishes such a removal on its own.
 
+A Ployz Cloud removal that retries can find the server already gone. Ployz then
+can't confirm the server reset. Cloud drops its record of the server, and `ployz server rm` says
+"Cloud let go of Server web-2, but its reset couldn't be confirmed: it was already gone from the
+Cluster. Reset does not erase volume data." and exits with code 3. Your last server is the exception: Cloud keeps its hold on your
+servers and says why. With `--json`, `cloud_kept` says which of the two happened.
+
 `sudo systemctl stop ployz.socket ployz` stops Ployz's control of the server. Stop the socket too:
 any `ployz` command on the server starts Ployz again through it. Your services, their private DNS,
-the private network and the server's place in the cluster keep running until the server reboots or
+the private network and the server's place among your servers keep running until the server reboots or
 you remove it.
 
-When Ployz Cloud manages the server and taking it out would destroy something, `ployz server rm`
-and `ployz server forget` wait for an approval (see
+When Ployz Cloud manages the server, `ployz server rm` and `ployz server forget` always wait for
+an approval (see
 [Destructive actions ask first](../account/organizations.md#destructive-actions-ask-first))
-before they take the server out. One approval removes the server once, and approving a forget
-doesn't approve a removal that resets the server.
+before they take the server out, and so does an agent that removes or forgets one. The
+**Remove server** and **Forget server** dialogs don't ask: confirming one is the approval. An
+[agent sandbox](../account/try-without-an-account.md) that no person has claimed yet doesn't ask
+either, since no one could approve. One
+approval removes the server once, and approving a forget doesn't approve a removal that resets
+the server.
+
+When you remove a server, the approval names each volume Ployz loses access to. The removal
+doesn't erase those volumes' data: it stays on that server's disk until you wipe or reinstall
+the disk. `sudo ployz-uninstall` keeps volume data. Forgetting a server says the volume's data
+is deleted, since a server you forget may already be gone with its disk.
 
 Removing or forgetting a server Ployz Cloud manages always goes through Ployz Cloud, even with
 `--context` or `--connect`: Cloud keeps a record of each server it manages, and removing one behind
 its back would leave that record behind.
+While other servers are listed, Ployz Cloud carries the removal through one of them, since a server
+can't carry its own; your last server carries its own. If none of the others answers Ployz Cloud,
+the removal fails on its first try, names them, and changes nothing: bring one back online, or forget
+the ones that are gone, then remove the server again.
 Ctrl-C stops following the removal but doesn't stop it: it keeps running in Ployz Cloud, and the
 server stays listed, since the removal can still fail.
 
+If Ployz Cloud runs out of retries after it sent the server its reset, the removal didn't finish,
+and Ployz can't say how far it got: the server may have reset, and Ployz Cloud may already have
+dropped it. `ployz server rm` says the removal didn't finish and prints `ployz server ls` as its
+next step, so you check before you forget anything. The **Remove** dialog says the removal didn't
+finish and points at **Forget server**. If the
+server is gone but `ployz server ls` (or the **Servers** page) still lists it,
+[forget it](#forget-a-server-that-is-gone); if it still answers, remove it again; if it's no longer
+listed, there is nothing left to forget. A removal that runs out of retries before it reaches the
+server only shows its failure. `ployz server rm` stops following a removal after 10 minutes. It
+then says the removal keeps running in Ployz Cloud, and to forget the server if the removal fails
+and the server is gone but still listed.
+
 Ployz stays installed on a removed server, so you can add it again later. To remove Ployz itself,
 run `sudo ployz-uninstall` on the server after you remove it. Docker, your images and your volume
-data stay on the disk.
+data stay on the disk. If it says `Ployz mutation or installation is active; retry uninstall`,
+wait for the upgrade or install to finish and run it again. Nothing was removed.
 
 ## Forget a server that is gone
 
-If a server is gone or can't be reset, forget it instead. Forgetting takes it out of the cluster
-without reaching it, and its volumes can't be recovered.
+If a server is gone or can't be reset, forget it instead. Forgetting takes it off your list of
+servers without reaching it. The volumes it held come back only where they have a
+[mirror](../services/volumes.md#when-its-server-goes-down); the rest are lost with it.
 
 When the server is offline, its page shows **Forget web-2** under **Danger**. Click **Forget
 server**, type its name, then click **Forget**.
 
-From the CLI, type the server's name to confirm. When the server doesn't answer within 10 seconds,
-even if it still shows as up, type `dead` instead:
+The dashboard offers **Forget server** only while the server shows as offline. When it still
+shows as up but doesn't answer within 10 seconds, forget it from the CLI and type `dead` to
+confirm:
 
 ```sh
 ployz server forget web-2 --confirm dead
 ```
+
+The approval Ployz Cloud asks for names the server and each volume whose only copy is on it, as
+those are lost with it. A volume with a mirror or a writer on another server isn't listed.
 
 `ployz server rm` on a server that doesn't answer stops before it changes anything and prints that
 command as its next step. When Ployz Cloud itself doesn't answer, it says to run `ployz server rm`
@@ -584,33 +652,51 @@ server during the download stops the pull and keeps the mirror. It also pulls on
 volume wrote since the mirror's last refresh, so the mirror of a volume that wrote nothing since
 pulls nothing and stays.
 
-A forgotten server doesn't know it was removed. If it comes back, its services may still be
-running on its copy of a volume. When you've restored that volume on another server, the next
-move, mirror, sync or release of that volume marks the returning copy old, makes it read-only and
-stops there; run it again. If a service on the returning server still has the copy open, the copy
-turns read-only but the run fails; run it again once that service stops. Anything written to the old copy in between is lost. Ployz no longer lists a forgotten server, so
-`ployz server rm` can't reach it: run `sudo ployz-uninstall` on a server you don't mean to keep. It
-stops the services Ployz runs there; Docker, your images and your volume data stay on the disk.
+A forgotten server isn't told it was removed. If it runs again as it is, it starts its services on
+its own copy of each volume and they keep writing there, and a later move, mirror, sync or release
+of the volume doesn't reach it. Ployz never brings back what they write there, and if you've
+restored the volume on another server, the two copies drift apart.
+
+A forgotten server stops its services itself as a best effort, and only when it was unreachable
+when it was forgotten. It needs the server and at least one other server to have run Ployz 0.3.1 or
+later while it was still connected, and the server that forgot it to run 0.3.1 or later. Once its
+network returns and it has heard nothing from a server for a minute, it asks that server whether it
+was forgotten, and when one says so it resets itself as `ployz server rm` would, except that it
+keeps every volume copy on its disk, mirrors included. Its services stop up to about 15 minutes
+after its network returns, and `journalctl -u ployz` on it says `this Machine was forgotten by its
+Cluster`. Nothing stops them when it can't reach any of those servers, or when the versions don't
+line up. Those cases, and the minutes before it asks, are yours to cover.
+
+So decide before a forgotten server runs again. As soon as it boots, run `sudo ployz-uninstall`
+on it. That stops the services Ployz runs there and keeps every copy of a volume on the disk, along
+with Docker and your images. Adding it back later, with `ployz server add` and `--reset`, makes its
+copies read-only and keeps their data but can delete its mirrors, even after an uninstall. So don't
+add it back while a mirror there may be the last copy of a volume. Wipe or reinstall its disk only
+if you need nothing on it. Ployz no longer lists a forgotten server, so `ployz server rm` can't
+reach it. `ployz server forget` prints this warning each time it forgets servers.
+
+`ployz server forget` warns about replicated services as `ployz server rm` does, with one
+difference. A forgotten server may still run its replicas, so for a service with every replica on
+it, forget says "No copies of Replicated Services were seen on the remaining Servers" rather than
+that the service runs none. With `--json` it lists them as `no_copies` all the same.
+
+To add a forgotten server back, run `ployz server add` for it with `--reset`. It resets the server
+first, as `ployz server rm` would have, and asks before it does; `--yes` skips the question.
 
 ## Clean up after a deleted environment
 
 If removing an environment stopped partway, its services and volumes can stay on your servers.
-`ployz server clean` lists what's left of environments that no longer exist. To remove one, with
-its volumes and their data, name it and type it again to confirm:
+Open the server: under **Running here**, **Namespaces no Project owns** lists what's left of
+deleted environments, each marked **Not in any Project**. Click **Remove** on one,
+type its name and confirm. That deletes its containers and its volumes, data included, from every
+server.
 
-```sh
-ployz server clean
-ployz server clean --namespace my-app-staging --confirm my-app-staging
-```
-
-When you're signed in, Ployz Cloud does the removal. You still type the name to confirm, and the
-confirmation names each volume as the approval does: by the services that used it and its server. Cloud
-refuses anything an environment owns, including one an environment took over while the removal
-waited, and it asks before it stops services or deletes volume data (see [Destructive actions ask first](../account/organizations.md#destructive-actions-ask-first)). The
-CLI stops waiting after 30 minutes and says so; the removal keeps running in Ployz Cloud.
-
-`ployz server clean` works only when you're signed in, without `--context` or `--connect`, because
-only Ployz Cloud knows which environments still exist.
+From the CLI, `ployz server clean` lists the same, and
+`ployz server clean --namespace my-app-staging --confirm my-app-staging` removes one. It asks for
+an approval before it stops services or deletes volume data (see
+[Destructive actions ask first](../account/organizations.md#destructive-actions-ask-first)), and
+works only when you're signed in, without `--context` or `--connect`, because only Ployz Cloud
+knows which environments still exist.
 
 ## Forget servers you deleted
 

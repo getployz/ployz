@@ -9,5 +9,10 @@
 !dashboard/drizzle.analytics.config.ts
 !dashboard/drizzle/
 !dashboard/drizzle/**
+!dashboard/scripts/
+!dashboard/scripts/check-schema.ts
+!dashboard/src/
+!dashboard/src/server/
+!dashboard/src/server/schema-compatibility.ts
 **/.env
 **/.env.*

@@ -34,7 +34,8 @@ function RouteComponent() {
           </ReactFlow>
         </ReactFlowProvider>
       </div>
-      <div className="relative w-full max-w-md">
+      <div className="relative flex w-full max-w-md flex-col gap-4">
+        <h1 className="text-2xl font-semibold">New project</h1>
         <ServiceCreateCommand organizationSlug={organizationSlug} />
       </div>
     </div>

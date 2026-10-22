@@ -1,7 +1,7 @@
 //! Tools on a Service's public domains: check one, add one, change its prefix
 //! or port, remove it.
 
-use ployz_core::{DomainPrefix, ServiceName};
+use ployz_core::{DomainPrefix, RpcErrorCode, ServiceName};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -94,7 +94,7 @@ fn domains(
 pub(crate) struct DomainAdd {
     #[schemars(with = "String", pattern(NODE_NAME), example = &"web")]
     service: ServiceName,
-    /// Prefix for a generated domain, PREFIX.cluster-domain. Omit both prefix and hostname for a free one.
+    /// Prefix for a generated domain, PREFIX.cluster-domain; needs Ployz Cloud. Omit both prefix and hostname for a free one.
     #[serde(default)]
     #[schemars(with = "Option<String>", pattern(NODE_NAME))]
     prefix: Option<DomainPrefix>,
@@ -121,7 +121,7 @@ pub(crate) struct DomainAdd {
 
 impl Tool for DomainAdd {
     const NAME: &'static str = "domain_add";
-    const DESCRIPTION: &'static str = "Give a Service a public domain: a generated one under the cluster domain, or a hostname the member owns. Staged until the next Deploy. A custom hostname comes back with the DNS records the member must create.";
+    const DESCRIPTION: &'static str = "Give a Service a public domain: a hostname the member owns, or with Ployz Cloud a generated one under the cluster domain. Staged until the next Deploy. A custom hostname comes back with the DNS records the member must create.";
     const EFFECT: Effect = Effect::Change;
 
     fn example() -> Value {
@@ -134,6 +134,27 @@ impl Tool for DomainAdd {
         }
         let scope = cx.scope(self.project.as_ref(), self.environment.as_ref());
         cx.expect(&scope, self.expect_revision)?;
+        // Only Cloud reserves the Cluster Domain a generated domain lives under, so on a
+        // local Store one could never deploy. A missing Service is refused as missing first.
+        if self.hostname.is_none() && cx.is_local() {
+            cx.one(&DomainsQuery {
+                environment: scope,
+                service: Some(self.service.clone()),
+            })?;
+            let service = self.service;
+            return Err(Refusal {
+                field: Some("hostname".to_owned()),
+                example: Some(Self::example()),
+                ..Refusal::new(
+                    RpcErrorCode::Unsupported,
+                    format!(
+                        "Generated domains need Ployz Cloud, which reserves the Cluster Domain \
+                         they live under: give {service} a hostname you own instead"
+                    ),
+                )
+            }
+            .into());
+        }
         let added = cx.write(&AddDomain {
             environment: scope.clone(),
             service: self.service.clone(),

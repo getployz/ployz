@@ -50,7 +50,13 @@ So a Service that failed to pull on one Server and to start on another shows onl
 `ployz logs <service>`.
 
 A failed build or an image that won't pull fails the same way again, so neither offers
-`retry: ployz deploy`. An image that won't pull offers `undo: ployz history undo N` to go back
+`retry: ployz deploy`. Nor does a deploy Ployz refused for something in your own
+configuration, such as two of your services claiming the same hostname, two services that
+depend on each other, or a service you asked to remove that your configuration still
+contains. Its message says what to change, and deploying again without a change fails the
+same way. A hostname another service still publishes keeps the retry, even when this
+deploy moves it: a deploy of that service can drop the hostname before you try again. A refused `ployz up` gets no `retry: ployz up` for the same
+reason. An image that won't pull offers `undo: ployz history undo N` to go back
 to the version before it, even when another Server's failure picked the `inspect:` line. A failed `ployz up` retries with `ployz up`, which uploads your fixed
 directory; `ployz deploy` would ship the last upload that built. `up` leaves out the `Open`
 lines when the deploy failed. When a newer deployment, such as a push, takes the place of the
@@ -73,19 +79,36 @@ a completion observed during interruption. An active
 Cloud request can take up to 15 seconds to return. For local execution, Ctrl-C requests
 cancellation and waits for owned work and cleanup to settle. Server enrollment that
 already committed remains committed; follow the recovery hint if Global catch-up or
-ingress work was interrupted.
+web traffic setup was interrupted.
+
+## My deploy failed partway
+
+**Failed**, with some services on the new version and others on the old one
+
+Where a new replica didn't come up, the old ones keep serving. Ployz doesn't roll back. A service
+that already switched keeps the new version, services that depend on the failed one stay as they
+were, and services that don't depend on it may have switched already.
+
+> [!WARNING]
+> Ployz doesn't undo a pre-deploy command. If a migration ran and the deploy then failed, your
+> database keeps the change while the old version of your app runs against it.
+
+- Fix the cause with the entries below, and deploy again.
+- To try the fix in a [branch](../environments/environments.md) first, click
+  **Fix it on a branch** on the deployment's page.
 
 ## My build failed
 
 `Build failed. web: …`
 
 The deployment stopped before it changed anything, so your old version keeps running. Open the
-service's **Build** log and read the end of it: the failing step is there.
+service's build card on the deployment's page and read the end of its log: the failing step is
+there.
 [Troubleshooting builds](builds.md) covers the common causes.
 
 ## My new version never becomes healthy
 
-`container … failed health monitoring: timed out; last check: HTTP 503`, or
+`container … failed health monitoring: did not become healthy within 30s; last check: HTTP 503`, or
 `running (health: unhealthy); last check exited 127: sh: pg_isready: not found`
 
 A new replica didn't pass its **Healthcheck** in time. Ployz stopped it and kept the old version
@@ -100,7 +123,7 @@ or a command's exit code and output.
 - **Listen on `0.0.0.0`**, not `127.0.0.1`. See
   [This app didn't respond](app-not-reachable.md#this-app-didnt-respond).
 - **Answer with a 2xx status, not a redirect** to `https://` or `/login`. See
-  [Deployments](../deploy/deployments.md).
+  [Deploy without downtime](../deploy/zero-downtime.md#keep-your-app-serving-through-a-deploy).
 - **Give it time to boot.** If you lowered **Healthcheck timeout** under **Settings → Deploy**,
   raise it. Otherwise make your app start faster.
 
@@ -156,10 +179,11 @@ service stays **Online**, with an amber **⚠** on its card.
 **The Container is restarting** or **The Container stopped**
 
 The new replica stopped right after it started, and the old version kept running. Any exit code
-can show here. The cause is the last line your app printed, from the same logs the **Deploy** log
-shows; it's left out when the logs couldn't be read, or couldn't be checked for Sealed values.
+can show here. The cause is the last line your app printed, from the same logs the service's card
+on the deployment's page shows; it's left out when the logs couldn't be read, or couldn't be checked for Sealed values.
 
-- Read the **Deploy** log for the rest of what your app printed before it stopped.
+- Read the service's card on the deployment's page for the rest of what your app printed before
+  it stopped.
 - Check the service's **Variables** for one your app needs that's missing or wrong.
 - Fix the **Start command**, or clear it to run the image's own command.
 - Code `137` usually means the replica went over its **Memory limit**. Raise or clear it under
@@ -177,10 +201,10 @@ Ployz didn't start this one. Fix the service the message names first; its **Logs
 `The setup or pre-deploy command failed` with `exited with code 1`, or `timed out`
 
 None of the service's replicas were replaced, so the old version keeps running. Before a service
-starts, Ployz runs its pre-deploy command, then, the first time a new environment deploys it, its
-setup commands. The first one that fails stops the deploy.
+starts, Ployz runs its pre-deploy command, then, in a new environment until the service first
+deploys successfully, its setup commands. The first one that fails stops the deploy.
 
-- Read the **Deploy** log: the command's output is there.
+- Read the service's card on the deployment's page: the command's output is there.
 - `timed out` means it ran longer than 5 minutes. Make it faster, or run the slow part outside
   the deploy.
 - To try the command in a running replica, use the CLI (CLI-only for now):
@@ -195,20 +219,87 @@ None of the service's replicas is running. **Crashed** means one exited with an 
 restarting; **Stopped** means they all exited cleanly, or you stopped them, and weren't restarted.
 A replica you stopped reads **Stopped** whatever code your app exited with, and `ployz ps` shows
 it as `stopped`. One that exited on its own before your stop reached it still reads **Crashed**.
-During a first
-deploy a card can read **Not running** or **Crashed** for a few seconds: if the deployment ends
-**Deployed**, there's nothing to fix.
+While a deploy starts the service and none of its replicas exists yet, including while its
+pre-deploy command runs, the card reads a grey **Starting**. Until the dashboard knows whether
+the running deploy starts it, as just after you open the page, the line shimmers instead, and
+reads a grey **Status unavailable** if the deployment can't be read. A replica that crashes during a
+first deploy can read **Crashed** for a few seconds: if the deployment ends **Deployed**, there's
+nothing to fix.
 
 - Read the last lines in the service's **Logs**. If they end with no error, it may have run out of
   memory: raise **Memory limit**.
 - A start command that finishes, instead of running a server, restarts over and over or stops.
   Set **Start command** to the command that runs your app.
 - If it stopped because of something outside your app, like a database that was down, restart
-  it. That's CLI-only for now:
+  it: open the service, click **⋮**, then **Restart**.
+
+A service with some replicas still serving can crash in the rest. `ployz status` names those
+replicas. See
+[Status says a service serves fewer copies than it should](#status-says-a-service-serves-fewer-copies-than-it-should).
+
+## Status says a service serves fewer copies than it should
+
+```text
+api   Serving 0 of 2 copies. web-1 exited with code 1, web-2 restarting.
+```
+
+`ployz status` prints this when fewer of a service's replicas serve than its last deploy gave it.
+It names each replica that doesn't serve, with the state `ployz ps` shows for it. A deploy that
+ended **Deployed** doesn't watch its replicas after they start, so a replica that crashes later
+shows up here.
+
+- **Restarting, exited, unhealthy, or `running, starting`.** The replica crashes or fails its
+  health check. `running, starting` clears on its own once the replica passes its check within its
+  start period. If it stays, read why in its logs, then fix the app and deploy again:
 
   ```sh
-  ployz service restart api
+  ployz logs api
   ```
+
+  `restarted 6 times, up 3 s` means Docker restarted the replica after it crashed, less than 10
+  seconds ago, and it is running again. Status doesn't count it as serving until it stays up for
+  10 seconds, so a replica that crashes every few seconds shows here even while it is briefly
+  running. A replica that crashes more than 10 seconds after each start reads as serving for most
+  of each run, so check its logs if one keeps coming and going.
+
+  `exited with code 0` means your app stopped on its own without an error. A start command that
+  finishes, instead of running a server, does that.
+- **Draining.** The replica is out of routing but still running, and too few replicas in routing
+  are left. An older Ployz daemon could leave replicas like that after it restarted.
+  `ployz deploy api` deploys what is staged for the service. With nothing staged, it starts the
+  replicas the service is short:
+
+  ```sh
+  ployz deploy api
+  ```
+
+The line goes away once enough replicas serve. A replica removed outside Ployz, for example with
+`docker rm`, is unseen, so status can't name it.
+
+## Status says a service runs no copies
+
+`api = No copies running. For a global Service, no Server matches its placement.`
+
+`ployz status` prints this when a deployed service has no replica on any of your servers. It
+checks only when every server answered and none is down. Removing the only server a service ran
+on with `ployz server rm` leaves it like this, since removal doesn't move replicas. Deploy the
+service to start its replicas on the servers you have:
+
+```sh
+ployz deploy api
+```
+
+If you removed the service from your config, status suggests plain `ployz deploy` instead, which
+finishes removing it.
+
+A global service runs only on servers its placement matches. When none matches, deploying it
+places no replica and the line stays. Change its placement or a server's labels, then deploy.
+
+## My service shows Not seen running
+
+Part of your servers' report hasn't arrived yet, and none of the replicas in the part that did
+is running. A replica may still be running where the report is missing, so the service doesn't
+count as down. Wait a few seconds for the rest of the report.
 
 ## My service shows Server offline
 
@@ -220,13 +311,20 @@ for.
 
 ## Old and new versions answer at once
 
-`Once web-2 is back, a copy left running can answer beside the new copies, and a left worker still takes jobs, until the next deploy.`
+`If web-2 restarts and confirms the new copies within a few minutes of starting, it takes its replaced copies out of traffic. Otherwise they keep answering beside the new copies. Either way they keep running, and a left worker still takes jobs, until the next deploy.`
 or `my-app-production/web left running on web-2 (web-2 did not answer). The next deploy cleans it up.`
 
 A deploy couldn't reach web-2 to retire its old replica, because web-2 was cut off or powered
-off. Once web-2 is back, that replica can answer beside the new ones, so visitors get either
-version, and an old worker still takes jobs. A server that restarts takes its old replica out of
-traffic on its own within a few minutes, but the replica keeps running.
+off. If web-2 restarts and confirms the new replicas within a few minutes of starting, it takes
+its old replica out of traffic on its own, but the replica keeps running. That includes a replica a
+deploy replaced while the server was offline, even with nothing changed. Otherwise the replica
+answers beside the new ones, so visitors get either version. That happens when web-2 comes back
+from a network cut without restarting, when it can't confirm the new replicas in time, when the
+server running a newer replica doesn't answer, when the newer replicas differ from each other
+because a limit change reached only some of them, or when the deploy only raised a memory or CPU
+limit and the replica isn't one too many. Either way an old worker takes jobs until the next
+deploy. A server takes out only its own replicas, so an extra replica on another server stays
+until that server restarts. Then deploy again.
 
 1. Wait until web-2 shows online on the **Servers** page.
 2. Deploy again. With nothing staged, click **Redeploy** on the newest deployment, or run:
@@ -236,6 +334,65 @@ traffic on its own within a few minutes, but the replica keeps running.
    ```
 
 The deploy stops the old replica, and the warning doesn't come back.
+
+## Some requests get the wrong answer after a server lost power
+
+`proxy on web-1 did not confirm`
+
+After web-2 lost power and came back, some requests through your other servers get the wrong
+answer: an old version of your app, a redirect, or a 404 from something else on web-2. Deploys can
+wait several minutes and then fail with the message above. On an earlier Ployz release, web-2 could
+lose its last changes when the power went, and your other servers kept an out-of-date view of its
+replicas. Ployz now saves each change on the server before the others see it, so this no longer
+starts. A view that went out of date before you upgraded stays until web-2 reports those replicas
+again.
+
+1. [Upgrade Ployz](../servers/manage-servers.md#upgrade-ployz-on-a-server) on every server.
+2. [Restart](../services/services.md#restart-stop-or-open-a-shell) each service that runs on
+   web-2: open the service, click **⋮**, then **Restart**. Or run:
+
+   ```sh
+   ployz service restart web
+   ```
+
+The restart makes web-2 report its replicas again, and every server sends requests to them. A
+deploy or **Redeploy** with nothing changed doesn't help, because it leaves the replicas as they are.
+If some requests still reach web-2's old replicas a minute later, restart the service again.
+
+A server whose root disk uses ZFS, Btrfs or tmpfs can still lose its last changes in a power cut. If that
+happens, restart the services on it, as above. `ployz server ls` names each such server, and
+`ployz server show` adds a `store` line that says so.
+
+## My deploy failed when a server lost power or its network
+
+`cause: operation timed out` or `cause: stream closed because of a broken pipe`
+
+The server your CLI connects through stopped answering, so the deploy failed and exited 1, within
+about a minute and a half. Services it had already switched run the new version, and the others
+keep their old replicas. Once the server is back, deploy again to finish the rest:
+
+```sh
+ployz deploy
+```
+
+When the connection drops in the middle of a step, the deploy can't tell whether the server did
+it. It says so instead of blaming the step: `db: The connection to Server web-1 dropped during
+pull image, so it may have happened anyway`, with `cause: connection lost`. Your image and your
+change are fine, so the deploy doesn't point you at them. A step that created or started a
+replica may have left the new replica running beside the old one. It takes no traffic, and
+`ployz status` names it as `1 copy no deploy brought into routing takes no traffic`. The
+next deploy removes it.
+
+## My upload or log stream fails on a slow connection
+
+`keep-alive timed out`
+
+Your connection moves less than about 17 KB/s (140 kbit/s), so the server's answers to the CLI's
+checks wait behind your upload or download for more than a minute, and the CLI gives up as if the
+server had stopped answering. It happens during `ployz up` and builds that upload your code, and
+when a busy `ployz logs -f` waits on you, such as while you scroll it in `less`.
+
+Run the command again from a faster connection, such as a CI runner.
 
 ## A server hasn't picked up the new version
 
@@ -257,6 +414,40 @@ servers that still see another one as Down. Run it again before you act.
 
 A `read` or `deploy` token without server access doesn't show this line yet, because Ployz Cloud
 reads for it.
+
+## A server routes a replica at an old address
+
+`web = web-3 routes a copy to 10.210.2.2, which its owner does not report. Check its network.`
+
+`ployz status` prints this when web-3's proxy sends a replica's traffic to an address that the
+server running the replica doesn't report for it. This happens when the replica's address changed,
+or the replica was removed, and web-3 hasn't caught up, so visitors who reach web-3 can fail to
+reach `web`. A server that doesn't answer the check adds no line. For a removed replica, status
+names no server when any server that may have run the replica didn't answer or is Down.
+
+Status skips this check while a deploy is in progress. Right after a deploy or a move, a proxy that
+hasn't caught up can still route a replica that was just removed, so the line can show briefly and
+go away by itself. Run status again before you act.
+
+When status warns that `web-3 has not confirmed what its proxy serves`, one of these happened:
+
+- Web-3's daemon has just started.
+- Web-3 wrote a new proxy config without reaching the proxy.
+- Web-3's proxy restarted, and web-3 hasn't loaded its config into the new proxy yet.
+- Status couldn't read what web-3 routes within 3 seconds, which a slow link between servers can
+  cause.
+
+Until web-3's proxy loads a config web-3 can see, status doesn't check what web-3 routes.
+The warning goes away once the proxy answers, usually within 2 seconds of a daemon restart or
+upgrade. If it stays, web-3's proxy isn't answering its daemon, or web-3 can't load its config
+into the proxy. See [Troubleshooting servers](servers.md).
+
+- **Check web-3's network.** Your servers need UDP port 51820 open between them. See
+  [Troubleshooting servers](servers.md).
+- **Wait for it to catch up.** Once web-3's proxy routes the replica at its current address, the
+  line goes away.
+
+A `read` or `deploy` token without server access doesn't show this line yet.
 
 ## A newer deploy is already serving
 
@@ -293,25 +484,73 @@ once. The command exits 3. Deploy the service to put a replica in service:
 ployz deploy web
 ```
 
+## A restarted replica is left out of routing
+
+`Container … is left Held and not routed: copy … of app/web is In at gen 3, newer than this copy's gen 2. The newer copy serves the Service; ployz deploy web replaces this one.`
+
+A later deploy changed the service and started a newer replica, but this older one still runs the
+old version. `ployz service restart` and `ployz service start` keep it out of routing, because the
+newer version serves the service. The command exits 3. Deploy the service to replace the old
+replica:
+
+```sh
+ployz deploy web
+```
+
+A replica a deploy kept as it was, such as the existing ones when you only raised the replica
+count, goes back into routing. For a replica on another server, Ployz sees only the settings that
+server shares, which leave out variable values and config file contents. So if a deploy changed only
+those and couldn't replace the replica on a server, for example because that server was unreachable,
+the old replica keeps serving there, and a restart routes it again. Deploy the service to replace it.
+
+## Ployz restarted on a server during my deploy
+
+`cause: connection to the daemon closed` or `cause: stream closed because of a broken pipe`
+
+Ployz restarted on the server your deploy connects through, as it does during an upgrade. The
+deploy fails, usually within seconds (2–12 s in our tests) and within about a minute at most. It
+exits 1, and the deployment reads Failed. Deploy again,
+or redeploy the failed deployment, and Ployz finishes the switch and removes what the failed deploy
+left behind:
+
+```sh
+ployz deploy
+```
+
+Do it right away when the service deploys **Stop first**, the default for a single replica with a
+volume ([Service settings](../services/settings.md)): the failed deploy may already have stopped the
+old replica, so the service is down until the next deploy. Otherwise a replica that was serving
+before the deploy keeps serving, sometimes beside a new one. A service's first deploy has no old
+replica: it serves only if its new replica was already taking traffic before the failure; otherwise deploy again.
+
+When Ployz restarts on another server the deploy uses, the deploy waits for it and carries on.
+
+A server on an earlier Ployz release keeps the connection open when it restarts, so the deploy
+hangs on `still waiting:` instead of failing. That includes the restart that upgrades a server to
+this release. Stop the command and deploy again.
+
 ## My deployment stays Queued
 
 - Another deployment of the environment is running. Yours runs after it; cancel that one from
   **Deployments** if it's stuck.
-- It's building on GitHub Actions, and the run hasn't started or finished. Its **Build** log shows
-  where it is.
+- It's building on GitHub Actions, and the run hasn't started or finished. The service's build
+  card on the deployment's page shows where it is.
 - The bottom bar shows **Add servers**: your organization has no server yet.
-  [Add one](../servers/add-a-server.md).
+  [Add one](../servers/add-a-server.md). **Deploy now** says
+  `This Organization has no servers yet, so nothing deployed. Add one, then deploy again.`
 - Nothing else is running: click **Deploy now** on the deployment's page.
 
 ## My push didn't deploy
 
 - **Auto-deploy** is off under **Settings → Source**, or the push went to another Git branch.
 - **Watch paths** are set and the push changed none of those files.
-- **Wait for CI** is on and a check failed, or no checks ran. Re-run the check on GitHub, or push
-  again.
+- **Wait for CI** is on: the deployment reads **Waiting for CI** until the checks pass, or
+  **CI failed** when one failed. If no checks ran, it waits for your next push. Re-run the check
+  on GitHub, or push again. See [Wait for CI](../deploy/github.md#wait-for-ci).
 - The repository is public and connected without the Ployz GitHub App. See
   [Deploy a public repository without the app](../deploy/github.md#deploy-a-public-repository-without-the-app).
-- Your organization has no servers. [Add one](../servers/add-a-server.md).
+- Your organization has no servers. [Add one](../servers/add-a-server.md). A deploy you start
+  says `This Organization has no servers yet, so nothing deployed. Add one, then deploy again.`
 
 ## My new image didn't deploy
 
@@ -336,7 +575,8 @@ doesn't exist and for a private image you have no access to.
 
 **Failed at pull**, with `The Server's disk is full: 48 MB free under /var/lib/docker`
 
-The server ran out of disk space while it downloaded an image. A deploy downloads every image it
+The server ran out of disk space while it downloaded an image, from its registry or from another
+server that already had it. A deploy downloads every image it
 needs before it changes any service, so none of the deploy's services changed and the versions
 already running keep running. The cause line under it is Docker's own error.
 
@@ -350,7 +590,7 @@ already running keep running. The cause line under it is Docker's own error.
 `api has nothing to run yet: add an image, connect a repository, or run ployz up in its directory`
 
 The service has no source, and its card shows **No source**. Ployz won't deploy the environment
-until it has one. Open its **Settings → Source** and click **Git repository** or **Container
+until it has one. Open its **Settings → Source** and click **GitHub repository** or **Container
 image**, or delete the service. A service you uploaded with `ployz up` has no source in a new
 branch: run `ployz up --env <branch>` from your app's directory.
 
@@ -386,17 +626,55 @@ known only once that one ends. When yours starts, its page and `ployz deployment
 upload it runs, which can differ from the one it showed while it waited. To ship the code in your
 directory instead, run `ployz up`.
 
+## A volume change didn't finish when my deploy failed
+
+**Not reached** beside a volume change in **Details**, `Restore failed. Restore again.`, or
+`the restore waits for the next Deploy.`
+
+A failed deploy drops the volume change it failed on. Volume changes it never got to go back to
+your staged changes, and **Details** marks them **Not reached**. Deploy again to run them. What
+the dropped change leaves behind depends on how far it got:
+
+- A move that failed before the handover leaves the volume on its old server, with all its data.
+  Stage the move again when you're ready.
+- A move that failed after the handover is not undone. The volume belongs to the new server, and
+  your service stays down until the move finishes there. The move stays in your changes, so
+  deploy again to finish it. See [A move failed partway](volumes.md#a-move-failed-partway).
+- A restore that failed is taken back. Your services mount the old volume again, and the new
+  volume goes away. If Ployz can't take it back when the deploy fails, your next deploy fails with
+  `Restore failed. Restore again.` and takes it back then. Restore again once you fix the cause.
+  Redeploying that deployment is refused.
+- A deploy that shipped a restore it couldn't claim fails before it copies anything, with
+  `the restore waits for the next Deploy.` The restore stays staged, so deploy again.
+
 ## Deploy asks me to confirm it deletes data
 
-**Deletes data** or **Data loss**
+**Deletes data**, **Data loss** or **Next deploy deletes data**
 
 This deploy would delete a volume's data: a volume you deleted, a database service, which takes
 its volume with it, or a mirror or detached copy you removed. **Data loss** means it also uses a
 mirror while the primary isn't answering, so changes after the mirror's last refresh are lost.
 
 - If you meant it, type your `project/environment` and click **Deploy**.
-- If you didn't, cancel, then open **Details** in the bottom bar and click **Discard** beside the
-  volume or service.
+- If you didn't, cancel, then open **Details** in the bottom bar, open the volume's or service's
+  **⋮** menu and choose **Discard**.
+- From **Save only**, confirming saves without deleting anything yet. The next deploy deletes the
+  data, including one a push starts.
+
+## A deploy says deleting a volume's data failed
+
+`postgres-data: deleting its data failed: it is still in use on Server web-1`
+
+You deleted a volume, and the deploy couldn't delete its data on a server, so the data is still
+there. The end of the message says why:
+
+- `Server web-1 did not answer` or `the Cluster could not be reached`. Wait until the server is
+  back online on the **Servers** page.
+- `it is still in use on Server web-1`. Something on that server still uses the volume. Stop what
+  uses it.
+- `Server web-1 refused`. See [Troubleshooting servers](servers.md).
+
+Then deploy again to delete the data.
 
 ## My services show Can't reach servers
 

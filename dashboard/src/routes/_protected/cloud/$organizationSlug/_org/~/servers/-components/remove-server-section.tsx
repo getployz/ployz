@@ -14,8 +14,11 @@ import {
 } from "#/modules/machines/machine-removal.functions";
 import { withMissingDataLossIdentities, type DataLossList } from "#/modules/runtime/data-loss-confirm";
 import type { DataLossIdentity } from "#/modules/runtime/data-loss-identity";
-import type { MachineRemoveResult } from "#/modules/machines/machine-removal";
+import type { LostVolumeName } from "#/modules/machines/server-operations.server";
+import { removedToast } from "./removed-toast";
+import { removalFailureMessage, type MachineRemoveResult } from "#/modules/machines/machine-removal";
 import type { RuntimeMachineRecord } from "#/modules/runtime/runtime.collection";
+import type { RoleGate } from "#/modules/organization/members.queries";
 import { RowWarning } from "#/components/settings/row-warning";
 import { SettingsDanger, SettingsSection } from "#/components/settings/settings-section";
 import { listNames, plural } from "#/lib/plural";
@@ -25,6 +28,7 @@ import { useClusterReleased } from "#/providers/runtime-provider";
 /** Polls the removal until it settles. Closing the dialog or leaving the page aborts; polling stops within a second. */
 async function waitForMachineRemoveAttempt(
   organizationSlug: string,
+  name: string,
   attemptId: string,
   stopped: () => boolean,
 ): Promise<MachineRemoveResult | "aborted" | { missing: DataLossIdentity[] }> {
@@ -45,7 +49,7 @@ async function waitForMachineRemoveAttempt(
         return { missing: attempt.missingIdentities };
       case "failed":
       case "cancelled":
-        throw new Error(attempt.failureMessage);
+        throw new Error(removalFailureMessage(name, attempt));
       default: {
         const _exhaustive: never = attempt;
         throw new Error(`Unhandled machine remove attempt: ${_exhaustive}`);
@@ -54,8 +58,11 @@ async function waitForMachineRemoveAttempt(
   }
 }
 
-const volumes = (rust: DataLossList["rust"]) =>
-  rust.map((identity): DeletionItem => ({ kind: "volume", name: identity.id.name }));
+/** Each lost Docker volume by the name Cloud found for it; one found since, by its Docker name. */
+const volumes = (rust: DataLossList["rust"], names: readonly LostVolumeName[]) => rust.map(({ id }): DeletionItem => {
+  const named = names.find(({ docker }) => docker === id.name);
+  return { kind: "volume", name: named?.name ?? id.name, detail: named?.detail };
+});
 
 /**
  * Removing a Server resets it and takes it out of the cluster; its volumes stay on its disk, unused. The `last` one takes
@@ -63,8 +70,10 @@ const volumes = (rust: DataLossList["rust"]) =>
  * the runtime, and once the Server is gone the page returns to Servers. An `offline` Server can't be reset, so it is
  * forgotten instead: by another Server, or with Forget Servers when it is the last.
  */
-export function RemoveServerSection({ machine, organizationSlug, last, offline, hint }: {
+export function RemoveServerSection({ machine, organizationSlug, last, offline, hint, gate }: {
   machine: RuntimeMachineRecord; organizationSlug: string; last: boolean; offline: boolean;
+  /** Whether your role may remove Servers. */
+  gate: RoleGate;
   /** What still runs here, and the Drain button that would move it. */
   hint: ReactNode;
 }) {
@@ -73,6 +82,7 @@ export function RemoveServerSection({ machine, organizationSlug, last, offline, 
   const markHere = useStillHere();
   const clusterReleased = useClusterReleased();
   const abortRef = useRef<AbortController | null>(null);
+  const namesRef = useRef<readonly LostVolumeName[]>([]);
 
   function onOpenChange(next: boolean) {
     if (!next) abortRef.current?.abort();
@@ -83,14 +93,14 @@ export function RemoveServerSection({ machine, organizationSlug, last, offline, 
     <>
     <SettingsSection id="remove-server" title="Danger">
       {offline ? last
-        ? <ForgetLastServerRow machine={machine} organizationSlug={organizationSlug} />
-        : <ForgetServerRow machine={machine} organizationSlug={organizationSlug} /> : <SettingsDanger
+        ? <ForgetLastServerRow machine={machine} organizationSlug={organizationSlug} gate={gate} />
+        : <ForgetServerRow machine={machine} organizationSlug={organizationSlug} gate={gate} /> : <SettingsDanger
         label={`Remove ${machine.name}`}
         hint={last
           ? "Resets it. It's your only server, so everything running here stops until you add another."
           : "Resets it and takes it out of the cluster. Services that run only here stop."}
         action={
-          <Button variant="destructive" onClick={() => onOpenChange(true)}>
+          <Button variant="destructive" disabled={!gate.allowed} title={gate.reason} onClick={() => onOpenChange(true)}>
             <Trash2Icon data-icon="inline-start" />
             Remove server
           </Button>
@@ -112,10 +122,11 @@ export function RemoveServerSection({ machine, organizationSlug, last, offline, 
         </>}
         callbacks={{
           load: async () => {
-            const { rust } = await loadMachineDataLossServerFn({
+            const { rust, names } = await loadMachineDataLossServerFn({
               data: { organizationSlug, machineId: machine.id },
             });
-            return { items: volumes(rust), evidence: rust };
+            namesRef.current = names;
+            return { items: volumes(rust, names), evidence: rust };
           },
           confirm: async (identities) => {
             abortRef.current?.abort();
@@ -127,22 +138,19 @@ export function RemoveServerSection({ machine, organizationSlug, last, offline, 
             const queued = await enqueueMachineRemoveServerFn({
               data: { organizationSlug, machineId: machine.id, confirmDataLoss: identities },
             });
-            const result = await waitForMachineRemoveAttempt(organizationSlug, queued.id,
+            const result = await waitForMachineRemoveAttempt(organizationSlug, machine.name, queued.id,
               () => abort.signal.aborted || !stillHere());
             if (result === "aborted") return;
             if ("release" in result) {
-              const { release } = result;
-              if (release.kind === "kept") toast.warning(`${machine.name} left the cluster. Cloud keeps its hold: ${release.reason}`);
-              else if (release.kind === "released") {
-                clusterReleased();
-                toast(`${machine.name} removed. Add a server to deploy again.`);
-              }
-              else toast(`${machine.name} removed`);
+              if (result.release.kind === "released") clusterReleased();
+              const { warning, message } = removedToast(machine.name, result);
+              if (warning) toast.warning(message);
+              else toast(message);
               void navigate({ to: "/cloud/$organizationSlug/~/servers", params: { organizationSlug } });
               return;
             }
             const { rust } = withMissingDataLossIdentities({ rust: identities, cloud: [] }, result.missing);
-            return { items: volumes(rust), evidence: rust };
+            return { items: volumes(rust, namesRef.current), evidence: rust };
           },
         }}
       />
@@ -151,7 +159,7 @@ export function RemoveServerSection({ machine, organizationSlug, last, offline, 
 }
 
 /** No other Server is left to forget the last one, so Forget Servers forgets the Cluster with it. */
-function ForgetLastServerRow({ machine, organizationSlug }: { machine: RuntimeMachineRecord; organizationSlug: string }) {
+function ForgetLastServerRow({ machine, organizationSlug, gate }: { machine: RuntimeMachineRecord; organizationSlug: string; gate: RoleGate }) {
   const [open, setOpen] = useState(false);
   return (
     <>
@@ -159,7 +167,7 @@ function ForgetLastServerRow({ machine, organizationSlug }: { machine: RuntimeMa
         label={`Forget ${machine.name}`}
         hint="It's gone, and it's your only server. Your projects and settings stay; its volumes can't be recovered."
         action={
-          <Button variant="destructive" onClick={() => setOpen(true)}>
+          <Button variant="destructive" disabled={!gate.allowed} title={gate.reason} onClick={() => setOpen(true)}>
             <UnplugIcon data-icon="inline-start" />
             Forget server
           </Button>
@@ -172,23 +180,24 @@ function ForgetLastServerRow({ machine, organizationSlug }: { machine: RuntimeMa
 
 /**
  * Forgetting takes a Server that is gone for good out of the cluster without resetting it, then waits on the removal.
- * A Server that doesn't answer can't list its volumes, so the list is often empty; the sentence still says they're lost.
+ * A Server that doesn't answer can't list its volumes, so the list is often empty; the sentence still says which come
+ * back from a mirror and which are lost.
  */
-function ForgetServerRow({ machine, organizationSlug }: { machine: RuntimeMachineRecord; organizationSlug: string }) {
+function ForgetServerRow({ machine, organizationSlug, gate }: { machine: RuntimeMachineRecord; organizationSlug: string; gate: RoleGate }) {
   const navigate = useNavigate();
   const markHere = useStillHere();
   const [open, setOpen] = useState(false);
 
   const load = async () => {
     const lost = await loadMachineDataLossServerFn({ data: { organizationSlug, machineId: machine.id } })
-      .then(({ rust }) => volumes(rust), () => []);
+      .then(({ rust, names }) => volumes(rust, names), () => []);
     return { items: lost, evidence: null };
   };
 
   const forget = async () => {
     const stillHere = markHere();
     const answer = await forgetServerServerFn({ data: { organizationSlug, machineId: machine.id, requestId: crypto.randomUUID() } });
-    const result = await waitForMachineRemoveAttempt(organizationSlug, answer.id, () => !stillHere());
+    const result = await waitForMachineRemoveAttempt(organizationSlug, machine.name, answer.id, () => !stillHere());
     if (result === "aborted") return;
     if ("missing" in result) throw new Error(`${machine.name} changed while it was being forgotten. Try again.`);
     toast(`${machine.name} forgotten`);
@@ -199,9 +208,9 @@ function ForgetServerRow({ machine, organizationSlug }: { machine: RuntimeMachin
     <>
       <SettingsDanger
         label={`Forget ${machine.name}`}
-        hint="It's gone. Ployz stops waiting for it; its volumes can't be recovered."
+        hint="It's gone. Ployz stops waiting for it. Its volumes come back only where another server holds a mirror."
         action={
-          <Button variant="destructive" onClick={() => setOpen(true)}>
+          <Button variant="destructive" disabled={!gate.allowed} title={gate.reason} onClick={() => setOpen(true)}>
             <UnplugIcon data-icon="inline-start" />
             Forget server
           </Button>
@@ -214,8 +223,13 @@ function ForgetServerRow({ machine, organizationSlug }: { machine: RuntimeMachin
         place={machine.name}
         confirmLabel="Forget"
         pendingLabel="Forgetting"
-        sentence={<>Ployz takes it out of the cluster without reaching it. Its volumes{" "}
-          <span className="text-destructive">can't be recovered</span>.</>}
+        sentence={<>Ployz takes it out of the cluster without reaching it. A volume with a mirror on another server comes
+          back from it: open the volume's Copies, click Use mirror, then deploy. Volumes with no copy elsewhere{" "}
+          <span className="text-destructive">are lost</span>. {machine.name} isn't told it was forgotten. If it runs
+          again as it is, its services keep writing to its own copies, and Ployz never brings that back: run sudo
+          ployz-uninstall on it as soon as it boots. As a best effort, if it and at least one other server ran 0.3.1 or
+          later while it was still connected, and the server that forgot it runs 0.3.1 or later, it stops them itself up
+          to about 15 minutes after its network returns.</>}
         callbacks={{ load, confirm: forget }}
       />
     </>

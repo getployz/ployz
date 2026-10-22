@@ -2,7 +2,7 @@ import { FULL_GRANT } from "#/modules/identity/token-grant";
 import { it } from "@effect/vitest";
 import { type Approval, type ConfigCommand, type ConfigStore, RpcError, type RuntimeWatchView } from "@ployz/sdk";
 import { eq, sql } from "drizzle-orm";
-import { Deferred, Effect, Fiber, Layer } from "effect";
+import { Deferred, Effect, Fiber } from "effect";
 import { expect, vi } from "vitest";
 import {
   decideApproval,
@@ -16,7 +16,7 @@ import {
   redeemApproval,
   requestApproval,
 } from "#/modules/approvals/approvals.server";
-import type { OperationVerb } from "#/modules/approvals/approvals";
+import { destroyedLine, type OperationVerb } from "#/modules/approvals/approvals";
 import { asTestDouble } from "#/lib/test-double";
 import { decideAndApply } from "#/modules/approvals/apply.server";
 import { operationApprovals } from "#/modules/approvals/tables";
@@ -36,7 +36,7 @@ import { organization } from "#/modules/organization/tables";
 import { handleConfigRequest } from "#/routes/api/config/-config.handler";
 import { AuthLive } from "#/server/auth.server";
 import { Database } from "#/server/database.server";
-import { acmeWeb, enrollStoreServer, seedStoreGitService, seedStoreOrganization, storeTestCloud } from "#/test/store-cloud";
+import { acmeWeb, enrollStoreServer, seedStoreGitService, seedStoreOrganization, storeTestCloudWith } from "#/test/store-cloud";
 
 const ORGANIZATION = "00000000-0000-4000-8000-00000000a501";
 const OTHER = "00000000-0000-4000-8000-00000000a502";
@@ -61,8 +61,7 @@ const addService = (n: number): ConfigCommand => ({
  * State. `refusal` is what the Store answers the CLI's Publish with while a human must approve removing `web`.
  */
 const shopRemovingWeb = Effect.fn(function* (removeWeb = true) {
-  const cloud = yield* storeTestCloud();
-  const services = yield* Layer.build(Layer.merge(AuthLive.pipe(Layer.provide(cloud)), cloud));
+  const services = yield* storeTestCloudWith(AuthLive);
   const provided = <A, E, R>(effect: Effect.Effect<A, E, R>) => effect.pipe(Effect.provide(services));
   const userId = yield* provided(seedStoreOrganization(ORGANIZATION));
   const store: ConfigStore = yield* provided(seedStoreGitService(ORGANIZATION, { project: PROJECT, environment: ENVIRONMENT, service: SERVICE }));
@@ -596,6 +595,31 @@ it.live("a Deploy token for staging is refused a production Deploy before anyone
     expect(yield* pending).toEqual([]);
   }));
 
+it.live("an owner's Deploy token ships into its Protected Environment unasked but can't unprotect it; a member's token still asks", () =>
+  Effect.gen(function* () {
+    const { provided, caller, cli, write, pending, store } = yield* shopRemovingWeb(false);
+    yield* provided(enrollStoreServer(ORGANIZATION));
+    yield* write({ command: "set_environment_protected", environment: here, protected: true });
+    const owner = { ...caller, credential: { kind: "session", id: "session-1" } } satisfies Caller;
+    const { secret: deployToken } = yield* provided(createOrganizationToken(owner,
+      { name: "ci", expiresInDays: 1, preset: { preset: "deploy", environment: "production" } }));
+    const sent = vi.spyOn(store, "write");
+
+    expect(yield* cli(deploy(1), undefined, undefined, deployToken)).toMatchObject({ status: 200 });
+    // The Store's fences on protection and source still see the token's own grant.
+    expect(sent.mock.calls[0]?.[2]).toMatchObject({ protector: true });
+    expect(sent.mock.calls[0]?.[2]?.permissions).not.toContain("environments:protect");
+    expect(yield* cli(publish, undefined, undefined, deployToken)).toMatchObject({ status: 200 });
+    expect(yield* pending).toEqual([]);
+    const unprotect = yield* cli({ command: "set_environment_protected", environment: here, protected: false }, undefined, undefined, deployToken);
+    expect(unprotect).toMatchObject({ status: 403, json: { error: { code: "forbidden" } } });
+
+    const { secret: memberToken } = yield* provided(createOrganizationToken(
+      { ...yield* provided(dashboardMember), credential: { kind: "session", id: "ada-session" }, via: "cli" }, { name: "ada", expiresInDays: 1 }));
+    const asked = yield* cli(deploy(2), undefined, undefined, memberToken);
+    expect(asked.json.error).toMatchObject({ code: "approval_required", details: { protected: true } });
+  }));
+
 it.live("an anonymous agent's Organization has no person to ask: its Deploys and destroys go through as not required", () =>
   Effect.gen(function* () {
     const { provided, userId, cli, store } = yield* shopRemovingWeb();
@@ -911,8 +935,7 @@ const drainOf = (moves: string[]): OperationAsked => ({
 const answers = (digest: string | null): OperationDigest<never> => () => Effect.succeed(digest);
 
 const operationCloud = Effect.fn(function* () {
-  const cloud = yield* storeTestCloud();
-  const services = yield* Layer.build(Layer.merge(AuthLive.pipe(Layer.provide(cloud)), cloud));
+  const services = yield* storeTestCloudWith(AuthLive);
   const provided = <A, E, R>(effect: Effect.Effect<A, E, R>) => effect.pipe(Effect.provide(services));
   const userId = yield* provided(seedStoreOrganization(ORGANIZATION));
   const caller: Caller = { userId, organization: { id: ORGANIZATION, slug: "shop" }, credential: { kind: "token", id: "token-1", grant: FULL_GRANT }, role: "owner", support: null, via: "cli" };
@@ -1028,6 +1051,27 @@ it.live("an agent's destructive operation still asks once a person also owns the
     expect(refusedWith(yield* gate(drainOf(["shop.web"]))).approval).toBe(operationDigest(drainOf(["shop.web"])));
   }));
 
+it.live("an older server removal approval recovers its subject without changing its digest", () =>
+  Effect.gen(function* () {
+    const { provided, caller, gate } = yield* operationCloud();
+    const asked: OperationAsked = {
+      ...drainOf([]), verb: "remove",
+      effects: [{ kind: "deletes_volume", name: "pgdata", node: "v1", path: "volumes/v1" }],
+    };
+    const first = refusedWith(yield* gate(asked));
+    yield* provided(Effect.gen(function* () {
+      const { drizzle } = yield* Database;
+      yield* drizzle.update(operationApprovals).set({
+        review: sql`jsonb_set(${operationApprovals.review}, '{operation}', (${operationApprovals.review}->'operation') - 'subject')`,
+      }).where(eq(operationApprovals.id, first.approval_id));
+    }));
+    const approval = yield* provided(getApproval(caller.organization.id, first.approval_id));
+    expect(approval.digest).toBe(first.approval);
+    expect(approval.review).toMatchObject({ operation: { subject: asked.subject } });
+    const effect = approval.review.effects[0] ?? expect.fail("no volume effect");
+    expect(destroyedLine(effect, approval.command, approval.review).verb).toBe("Loses access to volume");
+  }));
+
 it.live("a destructive operation waits on one approval of exactly its preview, and its retry runs once approved", () =>
   Effect.gen(function* () {
     const { provided, caller, gate, rows } = yield* operationCloud();
@@ -1037,7 +1081,7 @@ it.live("a destructive operation waits on one approval of exactly its preview, a
       effects: asked.effects,
       approval: operationDigest(asked),
       approval_id: expect.any(String),
-      operation: { verb: "drain", name: "fra-1" },
+      operation: { verb: "drain", name: "fra-1", subject: asked.subject },
       organization: caller.organization.slug,
     });
     expect(refusedWith(yield* gate(asked)).approval_id).toBe(first.approval_id);
@@ -1162,7 +1206,7 @@ it.live("an approved clean doesn't cover a Service that started running since, a
 it.live("asking about a Server's drain leaves its pending removal waiting", () =>
   Effect.gen(function* () {
     const { provided, gate } = yield* operationCloud();
-    const removal = refusedWith(yield* gate(removePlan(MACHINE, "fra-1", null)));
+    const removal = refusedWith(yield* gate(removePlan(MACHINE, "fra-1", { reset: false, volumes: [] })));
     const drain = refusedWith(yield* gate(drainOf(["shop.web"])));
     expect((yield* provided(getApproval(ORGANIZATION, removal.approval_id))).status).toBe("pending");
     expect((yield* provided(getApproval(ORGANIZATION, drain.approval_id))).status).toBe("pending");
@@ -1215,7 +1259,7 @@ it.live("an org rm or forget-servers approval stays approvable while the Cluster
   }));
 
 it("a removal that resets the Server and one that keeps its data are different approvals", () => {
-  expect(operationDigest(removePlan(MACHINE, "fra-1", []))).not.toBe(operationDigest(removePlan(MACHINE, "fra-1", null)));
+  expect(operationDigest(removePlan(MACHINE, "fra-1", { reset: true, volumes: [] }))).not.toBe(operationDigest(removePlan(MACHINE, "fra-1", { reset: false, volumes: [] })));
 });
 
 for (const verb of ["remove", "drain", "clean"] as const) {

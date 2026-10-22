@@ -1,7 +1,7 @@
 import { it } from "@effect/vitest";
 import type { MachineId } from "@ployz/sdk";
 import { type SQL, sql } from "drizzle-orm";
-import { Effect, Layer } from "effect";
+import { Effect } from "effect";
 import { describe, expect } from "vitest";
 import { machineRemoveAttempt, serverDrainAttempt } from "#/modules/machines/tables";
 import { operationsOn, settledDrain } from "#/modules/operations/operation-history.server";
@@ -17,7 +17,7 @@ const THIRD = "00000000-0000-4000-8000-00000000d1c3";
 
 const runs = (at: Record<"drain" | "remove" | "upgrade", Date | SQL>) =>
   Effect.gen(function* () {
-    const services = yield* Layer.build(yield* storeTestCloud());
+    const services = yield* storeTestCloud();
     const userId = yield* seedStoreOrganization(ORGANIZATION).pipe(Effect.provide(services));
     const { drizzle } = yield* Database.pipe(Effect.provide(services));
     yield* drizzle.insert(serverDrainAttempt).values({ id: THIRD, organizationId: ORGANIZATION, machineId: MACHINE, requestedByUserId: userId, requestedAt: at.drain });
@@ -73,7 +73,7 @@ describe("operationsOn a Server", () => {
   // Catches the upgrade query's limit keeping a different attempt than the merge ranks first, under a collation other than byte order.
   it.live("keeps the attempt the merge ranks first under an ICU numeric collation", () =>
     Effect.gen(function* () {
-      const services = yield* Layer.build(yield* storeTestCloud());
+      const services = yield* storeTestCloud();
       const userId = yield* seedStoreOrganization(ORGANIZATION).pipe(Effect.provide(services));
       const { drizzle } = yield* Database.pipe(Effect.provide(services));
       yield* drizzle.execute(sql`create collation numeric (provider = icu, locale = 'en-u-kn-true')`);
@@ -104,7 +104,7 @@ const lost = (id: string, at: number): Drain => ({
 /** A Server whose `drains` came first and `later` upgrades followed them, read through `settledDrain`. */
 const drained = (drains: readonly Drain[], later: number) =>
   Effect.gen(function* () {
-    const services = yield* Layer.build(yield* storeTestCloud());
+    const services = yield* storeTestCloud();
     const userId = yield* seedStoreOrganization(ORGANIZATION).pipe(Effect.provide(services));
     const { drizzle } = yield* Database.pipe(Effect.provide(services));
     for (const drain of drains) {

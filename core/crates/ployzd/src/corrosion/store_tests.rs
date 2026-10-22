@@ -6,8 +6,8 @@ use std::{
 };
 
 use ployz_core::{
-    CertificateHost, ContainerId, DockerVolume, DockerVolumeId, DockerVolumeName, IngressHost,
-    IssuanceClock, IssuanceFailure, Machine, MachineId, QualifiedService,
+    CertificateHost, ContainerId, DockerVolume, DockerVolumeId, DockerVolumeName, ForgottenAnswer,
+    IngressHost, IssuanceClock, IssuanceFailure, Machine, MachineId, QualifiedService,
 };
 use serde_json::json;
 
@@ -49,6 +49,7 @@ async fn catch_up_waits_for_removal_and_rechecks_phase() {
                     assigned_machine: machine.clone(),
                     visible_peers: vec![machine],
                     target_versions: BTreeMap::new(),
+                    sealing_key: None,
                 },
             },
             wireguard_mtu: None,
@@ -203,6 +204,7 @@ async fn record_certificate_failure_is_an_error_when_the_store_is_unreachable() 
         store
             .record_certificate_failure(
                 &hostname,
+                None,
                 "does not resolve",
                 IssuanceClock::new(
                     1,
@@ -221,7 +223,8 @@ async fn publication_guard_rechecks_the_local_phase() {
     let store = ReplicatedStore::new(
         ApiClient::new(listener.local_addr().unwrap(), &"a".repeat(64)).unwrap(),
     );
-    let (machine, local) = participating_record();
+    let (mut machine, local) = participating_record();
+    machine.runtime.management_identity = Some(local.management_secret().public_key());
     let publication = store.machine_publication().await;
     assert_eq!(
         publication.publishable_machine(&local, RuntimeOverlay::default()),
@@ -327,6 +330,80 @@ async fn publisher_republishes_when_pool_committable_bytes_change() {
     publisher.await.unwrap().unwrap();
     server.abort();
     let _ = std::fs::remove_dir_all(data_dir);
+}
+
+#[tokio::test]
+async fn publisher_publishes_the_founders_sealing_public_key() {
+    use std::time::Duration;
+
+    let cluster = crate::corrosion::fake_cluster::FakeCluster::start();
+    let replicated = cluster.store();
+    let data_dir = std::env::temp_dir().join(format!("ployzd-sealing-{}", MachineId::random()));
+    let mut store = LocalMachineStore::open(&data_dir).unwrap();
+    store
+        .enroll(ployz_core::EnrollRequest {
+            role: ployz_core::EnrollAs::Founder {
+                initial_policy: Default::default(),
+                name: ployz_core::MachineName::parse("local").unwrap(),
+                cluster_network: "10.210.0.0/16".parse().unwrap(),
+                public_ip: None,
+                advertised_endpoints: vec![ployz_core::AdvertisedEndpoint(
+                    "192.0.2.1:51820".parse().unwrap(),
+                )],
+            },
+            wireguard_mtu: None,
+            pinned: Default::default(),
+        })
+        .unwrap();
+    let held = crate::sealing_key::SealingKey::load(&data_dir)
+        .unwrap()
+        .expect("the founder holds a Sealing Key")
+        .public_key();
+    let owner = RecordOwner::spawn(store).unwrap();
+    let shutdown = tokio_util::sync::CancellationToken::new();
+    let view = crate::corrosion::MachineView::start(replicated.clone(), shutdown.clone());
+    let publisher = tokio::spawn(crate::corrosion::run_machine_publisher(
+        Some((replicated, view)),
+        owner,
+        crate::corrosion::LiveRuntime::unobserved(),
+        shutdown.clone(),
+    ));
+
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while cluster.sealing_public_key() != Some(held.to_string()) {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("the founder's Sealing public key was never published");
+
+    shutdown.cancel();
+    publisher.await.unwrap().unwrap();
+    let _ = std::fs::remove_dir_all(data_dir);
+}
+
+#[tokio::test]
+async fn publishing_a_sealing_public_key_never_replaces_the_clusters() {
+    let (store, task) = identity_store(corrosion_db()).await;
+    let first = ployz_core::SealingPublicKey::from_bytes([1; 32]);
+    store.publish_sealing_public_key(first).await.unwrap();
+    store
+        .publish_sealing_public_key(ployz_core::SealingPublicKey::from_bytes([2; 32]))
+        .await
+        .unwrap();
+
+    let rows = store
+        .api()
+        .query(Statement::new(
+            "SELECT value FROM cluster WHERE key = 'sealing_public_key'",
+            [],
+        ))
+        .await
+        .unwrap()
+        .rows(["value"])
+        .unwrap();
+    assert_eq!(rows, [[json!(first.to_string())]]);
+    task.abort();
 }
 
 fn participating_record() -> (Machine, LocalMachineRecord) {
@@ -702,6 +779,94 @@ async fn remove_machine_deletes_route_ack() {
     task.abort();
 }
 
+#[tokio::test]
+async fn forget_leaves_a_tombstone_only_the_forgotten_identity_matches() {
+    let (store, task) = identity_store(corrosion_db()).await;
+    let (machine, local) = participating_record();
+    let identity = local.management_secret().public_key();
+    let other = crate::management::ManagementSecret::generate().public_key();
+    let publication = store.machine_publication().await;
+    let published = publication
+        .publishable_machine(&local, RuntimeOverlay::default())
+        .unwrap();
+    assert_eq!(published.runtime.management_identity, Some(identity));
+    publication.publish(&published).await.unwrap();
+    drop(publication);
+    assert_eq!(
+        store.forgotten(identity).await.unwrap(),
+        ForgottenAnswer::Listed
+    );
+
+    store.forget_machine(&machine.id).await.unwrap();
+    assert_eq!(store.machine(machine.id.as_str()).await.unwrap(), None);
+    assert_eq!(
+        store.forgotten(identity).await.unwrap(),
+        ForgottenAnswer::Forgotten
+    );
+    assert_eq!(
+        store.forgotten(other).await.unwrap(),
+        ForgottenAnswer::NoAnswer
+    );
+
+    // An Entry's Register writes the id back without an identity: Listed wins.
+    store.publish_local_machine(&machine).await.unwrap();
+    assert_eq!(
+        store.forgotten(identity).await.unwrap(),
+        ForgottenAnswer::Listed
+    );
+    store.forget_machine(&machine.id).await.unwrap();
+
+    let mut twin = published.clone();
+    twin.id = MachineId::parse("c".repeat(32)).unwrap();
+    store.publish_local_machine(&twin).await.unwrap();
+    assert_eq!(
+        store.forgotten(identity).await.unwrap(),
+        ForgottenAnswer::Listed
+    );
+    task.abort();
+}
+
+#[tokio::test]
+async fn forget_of_a_row_without_an_identity_writes_no_tombstone() {
+    let (store, task) = identity_store(corrosion_db()).await;
+    let (machine, local) = participating_record();
+    store.publish_local_machine(&machine).await.unwrap();
+
+    store.forget_machine(&machine.id).await.unwrap();
+
+    assert_eq!(store.machine(machine.id.as_str()).await.unwrap(), None);
+    assert_eq!(
+        store
+            .forgotten(local.management_secret().public_key())
+            .await
+            .unwrap(),
+        ForgottenAnswer::NoAnswer
+    );
+    task.abort();
+}
+
+#[tokio::test]
+async fn leave_writes_no_tombstone() {
+    let (store, task) = identity_store(corrosion_db()).await;
+    let (machine, local) = participating_record();
+    let identity = local.management_secret().public_key();
+    let publication = store.machine_publication().await;
+    let published = publication
+        .publishable_machine(&local, RuntimeOverlay::default())
+        .unwrap();
+    publication.publish(&published).await.unwrap();
+    drop(publication);
+
+    store.remove_machine(&machine.id).await.unwrap();
+
+    assert_eq!(store.machine(machine.id.as_str()).await.unwrap(), None);
+    assert_eq!(
+        store.forgotten(identity).await.unwrap(),
+        ForgottenAnswer::NoAnswer
+    );
+    task.abort();
+}
+
 fn identity_container(machine_id: MachineId) -> ployz_core::ContainerObservation {
     serde_json::from_value(json!({
         "container_id": "c".repeat(64),
@@ -1045,6 +1210,59 @@ async fn certificate_rows_round_trip_material_and_refusal_through_the_store() {
         store.certificates().await.unwrap(),
         BTreeMap::from([(CertificateHost::from(hostname), material)])
     );
+    task.abort();
+}
+
+#[tokio::test]
+async fn a_failed_renewal_keeps_its_material_and_backs_off() {
+    let db = corrosion_db();
+    let (store, task) = identity_store(db).await;
+    let hostname = IngressHost::parse("app.example.com").unwrap();
+    let pair = rcgen::generate_simple_self_signed([hostname.as_str().to_owned()]).unwrap();
+    let material =
+        super::CertificateMaterial::parse(pair.cert.pem(), pair.signing_key.serialize_pem())
+            .unwrap();
+    store
+        .publish_certificate(&hostname, &material, ployz_core::ClusterRoute::Direct)
+        .await
+        .unwrap();
+    // Another Machine's renewal is presenting its challenge meanwhile.
+    let challenge = super::CertificateChallenge::parse(
+        "LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0",
+        "LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+    )
+    .unwrap();
+    store
+        .publish_certificate_challenge(&hostname, &challenge)
+        .await
+        .unwrap();
+    let clock = IssuanceClock::new(1, SystemTime::UNIX_EPOCH, IssuanceFailure::Authority);
+    store
+        .record_certificate_failure(&hostname, Some(&material), "ACME request failed", clock)
+        .await
+        .unwrap();
+    let row = store.certificate_row(&hostname).await.unwrap();
+    assert_eq!(row.material(), Some(&material));
+    assert_eq!(row.challenge(), Some(&challenge));
+    assert_eq!(row.last_error(), Some("ACME request failed"));
+    assert_eq!(row.clock(), Some(clock));
+
+    // Another Machine renewed meanwhile: its new material carries no stale failure.
+    let pair = rcgen::generate_simple_self_signed([hostname.as_str().to_owned()]).unwrap();
+    let renewed =
+        super::CertificateMaterial::parse(pair.cert.pem(), pair.signing_key.serialize_pem())
+            .unwrap();
+    store
+        .publish_certificate(&hostname, &renewed, ployz_core::ClusterRoute::Direct)
+        .await
+        .unwrap();
+    store
+        .record_certificate_failure(&hostname, Some(&material), "ACME request failed", clock)
+        .await
+        .unwrap();
+    let row = store.certificate_row(&hostname).await.unwrap();
+    assert_eq!(row.material(), Some(&renewed));
+    assert_eq!(row.last_error(), None);
     task.abort();
 }
 

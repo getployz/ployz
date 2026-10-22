@@ -24,7 +24,7 @@
               "results": [
                 {
                   "anchor": "add-a-custom-domain",
-                  "excerpt": "Custom domains are free. 1. In Settings → Networking, click Custom Domain. 2. Enter the Domain, like app.example.com, leave Target port blank to use PORT, and click Save route. 3. Create the DNS…",
+                  "excerpt": "Custom domains are free. 1. In Settings → Networking, click Custom domain. 2. Enter the Domain, like app.example.com, leave Target port blank to use PORT, and click Save route. 3. Create the DNS…",
                   "heading": "Add a custom domain",
                   "path": "services/domains.md",
                   "title": "Domains"
@@ -32,7 +32,7 @@
                 {
                   "anchor": "custom-domain",
                   "excerpt": "Adds a domain you own, like app.example.com, next to the generated one, and a service can have as many as you need. It needs a DNS record at your DNS provider. See Add a custom domain.",
-                  "heading": "Networking > Custom Domain",
+                  "heading": "Networking > Custom domain",
                   "path": "services/settings.md",
                   "title": "Service settings"
                 },
@@ -45,17 +45,17 @@
                 },
                 {
                   "anchor": "generate-a-domain",
-                  "excerpt": "…Settings → Networking. 2. Under Public Networking, click Generate Domain. 3. Leave Port blank to use PORT, or enter the port your app listens on. Click Generate Domain. 4. Click Deploy. The address…",
+                  "excerpt": "…your service and go to Settings → Networking. 2. Click Generate domain. 3. Leave Port blank to use PORT, or enter the port your app listens on. Click Generate Domain. 4. Click Deploy. The address is…",
                   "heading": "Generate a domain",
                   "path": "services/domains.md",
                   "title": "Domains"
                 },
                 {
-                  "anchor": "remove-a-domain",
-                  "excerpt": "Click the trash icon on the domain. It shows Removed on your next deploy and keeps serving until you deploy. Undo keeps it.",
-                  "heading": "Remove a domain",
-                  "path": "services/domains.md",
-                  "title": "Domains"
+                  "anchor": "my-custom-domain-is-waiting-for-dns",
+                  "excerpt": "…another server. Your servers can't get a certificate until your domain leads to them. 1. Click Show DNS records on the domain's row and create exactly those records at your DNS provider. 2. Delete…",
+                  "heading": "My custom domain is waiting for DNS",
+                  "path": "troubleshooting/app-not-reachable.md",
+                  "title": "My app isn't reachable"
                 }
               ]
             }
@@ -88,7 +88,7 @@
               "results": [
                 {
                   "anchor": "add-a-custom-domain",
-                  "excerpt": "Custom domains are free. 1. In Settings → Networking, click Custom Domain. 2. Enter the Domain, like app.example.com, leave Target port blank to use PORT, and click Save route. 3. Create the DNS…",
+                  "excerpt": "Custom domains are free. 1. In Settings → Networking, click Custom domain. 2. Enter the Domain, like app.example.com, leave Target port blank to use PORT, and click Save route. 3. Create the DNS…",
                   "heading": "Add a custom domain",
                   "path": "services/domains.md",
                   "title": "Domains"
@@ -96,7 +96,7 @@
                 {
                   "anchor": "custom-domain",
                   "excerpt": "Adds a domain you own, like app.example.com, next to the generated one, and a service can have as many as you need. It needs a DNS record at your DNS provider. See Add a custom domain.",
-                  "heading": "Networking > Custom Domain",
+                  "heading": "Networking > Custom domain",
                   "path": "services/settings.md",
                   "title": "Service settings"
                 },
@@ -109,17 +109,17 @@
                 },
                 {
                   "anchor": "generate-a-domain",
-                  "excerpt": "…Settings → Networking. 2. Under Public Networking, click Generate Domain. 3. Leave Port blank to use PORT, or enter the port your app listens on. Click Generate Domain. 4. Click Deploy. The address…",
+                  "excerpt": "…your service and go to Settings → Networking. 2. Click Generate domain. 3. Leave Port blank to use PORT, or enter the port your app listens on. Click Generate Domain. 4. Click Deploy. The address is…",
                   "heading": "Generate a domain",
                   "path": "services/domains.md",
                   "title": "Domains"
                 },
                 {
-                  "anchor": "remove-a-domain",
-                  "excerpt": "Click the trash icon on the domain. It shows Removed on your next deploy and keeps serving until you deploy. Undo keeps it.",
-                  "heading": "Remove a domain",
-                  "path": "services/domains.md",
-                  "title": "Domains"
+                  "anchor": "my-custom-domain-is-waiting-for-dns",
+                  "excerpt": "…another server. Your servers can't get a certificate until your domain leads to them. 1. Click Show DNS records on the domain's row and create exactly those records at your DNS provider. 2. Delete…",
+                  "heading": "My custom domain is waiting for DNS",
+                  "path": "troubleshooting/app-not-reachable.md",
+                  "title": "My app isn't reachable"
                 }
               ]
             }
@@ -3667,7 +3667,7 @@
           {
             "error": {
               "code": "not_found",
-              "message": "No saved version has this revision",
+              "message": "No saved version has revision 1",
               "details": {
                 "revision": 1
               }
@@ -3682,7 +3682,7 @@
             "ok": false,
             "refusal": {
               "code": "not_found",
-              "message": "No saved version has this revision",
+              "message": "No saved version has revision 1",
               "retry": {
                 "tool": "history",
                 "input": {
@@ -3736,7 +3736,7 @@
           {
             "error": {
               "code": "not_found",
-              "message": "No saved version has this revision",
+              "message": "No saved version has revision 1",
               "details": {
                 "revision": 1
               }
@@ -3751,7 +3751,7 @@
             "ok": false,
             "refusal": {
               "code": "not_found",
-              "message": "No saved version has this revision",
+              "message": "No saved version has revision 1",
               "retry": {
                 "tool": "history",
                 "input": {

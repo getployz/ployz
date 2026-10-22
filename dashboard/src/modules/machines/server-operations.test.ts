@@ -2,7 +2,9 @@ import type { MachineId, RuntimeWatchView } from "@ployz/sdk";
 import { describe, expect, it } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
 import { operationDigest } from "#/modules/approvals/approvals.server";
-import { cleanPlan, drainPlan, ingressOffPlan, removePlan, volumeLabels } from "#/modules/machines/server-operations.server";
+import { Effect, Layer } from "effect";
+import { CloudStore, ConfigStoreOpenFailure } from "#/modules/config-store/store-sdk.server";
+import { cleanPlan, drainPlan, forgetLoses, ingressOffPlan, nameLostVolumes, removePlan, volumeLabels } from "#/modules/machines/server-operations.server";
 import type { ServerPolicyChange } from "#/modules/machines/server-policy";
 
 const here = "a".repeat(32);
@@ -113,20 +115,28 @@ describe("cleanPlan and removePlan", () => {
   });
 
   it("removing a Server always destroys the Server, and each Volume it confirms losing", () => {
-    expect(removePlan(here, "fra-1", []).effects).toEqual([
+    expect(removePlan(here, "fra-1", { reset: true, volumes: [] }).effects).toEqual([
       { kind: "removes_server", name: "fra-1", node: here, path: `servers/${here}` },
     ]);
-    expect(removePlan(here, "fra-1", [volume(here, "data")]).preview).toEqual({ server: here, reset: true, volumes: [`${here}/data`] });
-    expect(removePlan(here, "fra-1", null)).toMatchObject({
+    expect(removePlan(here, "fra-1", { reset: true, volumes: [volume(here, "data")] }).preview)
+      .toEqual({ server: here, reset: true, volumes: [`${here}/data`] });
+  });
+
+  it("forgetting a Server destroys the Server and each Volume whose only copy it holds", () => {
+    const docker = "zz-production_vol-1";
+    expect(removePlan(here, "fra-1", { reset: false, volumes: [volume(here, docker)] }, new Map([[docker, "data"]]))).toMatchObject({
       verb: "forget",
-      preview: { server: here, reset: false, volumes: [] },
-      effects: [{ kind: "removes_server", name: "fra-1" }],
+      preview: { server: here, reset: false, volumes: [`${here}/${docker}`] },
+      effects: [
+        { kind: "removes_server", name: "fra-1" },
+        { kind: "deletes_volume", name: "data", node: `${here}/${docker}` },
+      ],
     });
   });
 
   it("a removal names each Volume it deletes as Ployz does, keeping the Docker name as its identity", () => {
     const docker = "shop-production_vol-1";
-    const plan = removePlan(here, "fra-1", [volume(here, docker)], new Map([[docker, "cache-data"]]));
+    const plan = removePlan(here, "fra-1", { reset: true, volumes: [volume(here, docker)] }, new Map([[docker, "cache-data"]]));
     expect(plan.effects[1]).toEqual({ kind: "deletes_volume", name: "cache-data", node: `${here}/${docker}`, path: `volumes/${here}/${docker}` });
   });
 
@@ -138,6 +148,63 @@ describe("cleanPlan and removePlan", () => {
       owner("c", "shop", "staging", "uploads"),
       owner("d", "blog", "staging", "uploads"),
     ])).toEqual(new Map([["a", "cache-data"], ["b", "production/uploads"], ["c", "shop/staging/uploads"], ["d", "blog/staging/uploads"]]));
+  });
+});
+
+describe("forgetLoses", () => {
+  const elsewhere = "c".repeat(32);
+  type Copy = { machine: string; name: string; plain?: boolean; role?: "writer" | "slot" | "switching"; slot?: "mirror" | "old_copy" };
+  const copies = (volumes: Copy[]) => asTestDouble<RuntimeWatchView>()({
+    volumes: volumes.map(({ machine, name, plain, role, slot }) => ({
+      id: { machine_id: machine, name },
+      storage: plain ? { kind: "plain", driver: "local" } : { kind: "provisioned", role, slot_role: slot },
+    })),
+  });
+  const names = (frame: RuntimeWatchView) => forgetLoses(frame, here).map(({ id }) => `${id.machine_id === here ? "here" : id.machine_id}/${id.name}`).sort();
+
+  it("loses each Volume whose writer is on the Server and has no mirror or writer on another Server", () => {
+    expect(names(copies([
+      { machine: here, name: "only", role: "writer" },
+      { machine: here, name: "unreported" },
+      { machine: here, name: "mid-switch", role: "switching" },
+      { machine: here, name: "docker", plain: true },
+      { machine: here, name: "mirrored", role: "writer" },
+      { machine: there, name: "mirrored", role: "slot", slot: "mirror" },
+      { machine: here, name: "older-daemon-mirror", role: "writer" },
+      { machine: there, name: "older-daemon-mirror", role: "slot" },
+      { machine: here, name: "moved", role: "writer" },
+      { machine: elsewhere, name: "moved", role: "writer" },
+      { machine: here, name: "switching-elsewhere", role: "writer" },
+      { machine: there, name: "switching-elsewhere", role: "switching" },
+      { machine: here, name: "old-copy-elsewhere", role: "writer" },
+      { machine: there, name: "old-copy-elsewhere", role: "slot", slot: "old_copy" },
+    ]))).toEqual(["here/docker", "here/mid-switch", "here/old-copy-elsewhere", "here/only", "here/switching-elsewhere", "here/unreported"]);
+  });
+
+  it("loses nothing for a mirror of a writer elsewhere, an Old copy, or a Volume on another Server", () => {
+    expect(names(copies([
+      { machine: here, name: "a-mirror", role: "slot", slot: "mirror" },
+      { machine: there, name: "a-mirror", role: "writer" },
+      { machine: here, name: "an-old-copy", role: "slot", slot: "old_copy" },
+      { machine: there, name: "theirs", role: "writer" },
+    ]))).toEqual([]);
+  });
+
+  it("never counts Ployz's own build cache as lost", () => {
+    expect(names(copies([{ machine: here, name: "buildx_buildkit_ployz-0_state", plain: true }]))).toEqual([]);
+  });
+
+  it("loses the last mirror of a Volume whose writer is gone", () => {
+    expect(names(copies([{ machine: here, name: "orphan", role: "slot", slot: "mirror" }]))).toEqual(["here/orphan"]);
+  });
+
+  it("loses a Docker volume even when another Server has one of the same name", () => {
+    expect(names(copies([
+      { machine: here, name: "data", plain: true },
+      { machine: there, name: "data", plain: true },
+      { machine: here, name: "managed-on-other", plain: true },
+      { machine: there, name: "managed-on-other", role: "writer" },
+    ]))).toEqual(["here/data", "here/managed-on-other"]);
   });
 });
 
@@ -203,5 +270,14 @@ describe("ingressOffPlan", () => {
 
   it("is null for a Server the frame doesn't hold", () => {
     expect(ingressOffPlan(web({ here: [true, "203.0.113.1"], there: [false, null] }), "c".repeat(32), off)).toBeNull();
+  });
+});
+
+describe("nameLostVolumes", () => {
+  it("names each lost volume by its Docker name when the Config Store can't be read, so the Server's answer still shows", async () => {
+    const down = Layer.succeed(CloudStore, { open: Effect.fail(new ConfigStoreOpenFailure({ cause: "down" })) });
+    const docker = "shop-production_vol-1";
+    const named = await Effect.runPromise(nameLostVolumes("org", [{ kind: "docker_volume", id: { machine_id: here as MachineId, name: docker } }]).pipe(Effect.provide(down)));
+    expect(named).toEqual([{ docker, name: docker }]);
   });
 });

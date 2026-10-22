@@ -8,11 +8,12 @@ import { Spinner } from "#/components/ui/spinner";
 import { Switch } from "#/components/ui/switch";
 import { drainBusy, drainButtonLabel, type DrainRow, type DrainTone, type DrainView } from "#/modules/machines/server-drain-view";
 import { useServerPolicy } from "#/modules/machines/server-policy.hooks";
+import type { RoleGate } from "#/modules/organization/members.queries";
 import type { RuntimeMachineRecord } from "#/modules/runtime/runtime.collection";
 import { useStagedOffServer } from "#/modules/volume-placement/volume-placement.hooks";
 
 /** Whether this Server takes Services, and Drain. Off alone is a cordon: nothing new lands here, nothing moves. */
-export function ServerServicesSection({ machine, organizationSlug, lastToRunServices, view, left, onDrain, unavailable }: {
+export function ServerServicesSection({ machine, organizationSlug, lastToRunServices, view, left, onDrain, unavailable, gate }: {
   machine: RuntimeMachineRecord;
   organizationSlug: string;
   lastToRunServices: boolean;
@@ -22,6 +23,8 @@ export function ServerServicesSection({ machine, organizationSlug, lastToRunServ
   onDrain: () => void;
   /** Why Drain can't run now (the Server is offline, or the page can't see it); null when it can. */
   unavailable: string | null;
+  /** Whether your role may operate Servers. */
+  gate: RoleGate;
 }) {
   const policy = useServerPolicy(machine, organizationSlug, "services setting");
   const busy = drainBusy(view);
@@ -36,6 +39,7 @@ export function ServerServicesSection({ machine, organizationSlug, lastToRunServ
       onDrain={onDrain}
       unavailable={busy ? null : unavailable}
       staged={staged}
+      gate={gate}
     />
   );
 }
@@ -45,7 +49,7 @@ export function ServerServicesSection({ machine, organizationSlug, lastToRunServ
  * way it lists what it still has to move, each Service leaving the list as it leaves this Server. Volumes move with the
  * next Deploy, so the row counts those staged to leave.
  */
-export function ServerServicesRows({ acceptsServices, lastToRunServices, onAcceptsServices, view, left, onDrain, unavailable, staged }: {
+export function ServerServicesRows({ acceptsServices, lastToRunServices, onAcceptsServices, view, left, onDrain, unavailable, staged, gate }: {
   acceptsServices: boolean;
   lastToRunServices: boolean;
   onAcceptsServices: (acceptsServices: boolean) => void;
@@ -55,6 +59,7 @@ export function ServerServicesRows({ acceptsServices, lastToRunServices, onAccep
   unavailable: string | null;
   /** Volume primaries here staged to move off. */
   staged: number;
+  gate: RoleGate;
 }) {
   const busy = drainBusy(view);
   return (
@@ -67,14 +72,14 @@ export function ServerServicesRows({ acceptsServices, lastToRunServices, onAccep
         commit="change"
         control={(
           // Turning it on mid-drain would leave the rest of the Drain nothing to move: it waits for the Drain.
-          <Switch aria-label="Run services here" checked={acceptsServices} disabled={busy} onCheckedChange={(checked) => onAcceptsServices(checked)} />
+          <Switch aria-label="Run services here" checked={acceptsServices} disabled={busy || !gate.allowed} title={gate.reason} onCheckedChange={(checked) => onAcceptsServices(checked)} />
         )}
       />
       <SettingsRow
         label="Drain"
         hint={unavailable ?? <DrainLine view={view} left={left.length} />}
         commit="none"
-        control={<DrainButton view={view} onClick={onDrain} disabled={unavailable !== null} />}
+        control={<DrainButton view={view} onClick={onDrain} disabled={unavailable !== null || !gate.allowed} title={gate.reason} />}
       >
         {view.kind === "finished" && view.stoppedEarly !== null ? (
           <p className="text-sm text-warning">It stopped early: {view.stoppedEarly}.</p>
@@ -137,6 +142,8 @@ function DrainLine({ view, left }: { view: DrainView; left: number }) {
       return <>Starting…</>;
     case "queued":
       return view.behind === null ? <>Queued</> : <>Queued · Waiting on {view.behind}</>;
+    case "waiting":
+      return <>Waiting for your servers to answer</>;
     case "running":
       return <>Draining · {left === 0 ? "Finishing up" : `${left} left`} · Started <RelativeTime date={new Date(view.since)} /></>;
     case "finished":
@@ -151,11 +158,13 @@ function DrainLine({ view, left }: { view: DrainView; left: number }) {
 }
 
 /** Drain | Drain again | a spinner while one is under way. */
-export function DrainButton({ view, onClick, size, disabled = false }: {
+export function DrainButton({ view, onClick, size, disabled = false, title }: {
   view: DrainView;
   onClick: () => void;
   size?: "sm";
   disabled?: boolean;
+  /** Why it is disabled, when your role is why. */
+  title?: string | undefined;
 }) {
   return drainBusy(view) ? (
     <Button variant="outline" size={size} disabled>
@@ -163,6 +172,6 @@ export function DrainButton({ view, onClick, size, disabled = false }: {
       Draining…
     </Button>
   ) : (
-    <Button variant="outline" size={size} disabled={disabled} onClick={onClick}>{drainButtonLabel(view)}</Button>
+    <Button variant="outline" size={size} disabled={disabled} title={title} onClick={onClick}>{drainButtonLabel(view)}</Button>
   );
 }

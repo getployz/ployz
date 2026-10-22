@@ -1,6 +1,8 @@
 import { useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
+import { toast } from "sonner";
 import type { EnvironmentRef, VolumeListing } from "@ployz/sdk";
+import { refetchApprovals } from "#/components/agent-sidebar/approvals.queries";
 import { ConfirmDialog } from "#/components/confirm-dialog";
 import { SettingsRow } from "#/components/settings/settings-section";
 import type { PersistableTransaction } from "#/components/stageable/collection-field-resources";
@@ -8,6 +10,7 @@ import { FieldError } from "#/components/ui/field";
 import { environmentKey, invalidateViews } from "#/modules/config-store/store-view.queries";
 import { gigabytes, volumeStorage } from "#/modules/config-store/store-volumes";
 import { useStoreWriter } from "#/modules/config-store/store-write";
+import { useProtectedAsk } from "#/modules/config-store/use-protected-ask";
 import { type Bytes, gb } from "#/modules/volume-run/resize";
 import { checkResize, growWords, type Holder, type ResizeVerdict } from "#/modules/volume-run/resize-check";
 import { ACTIVE_VOLUME_RUN_STATES, type VolumeRunView } from "#/modules/volume-run/volume-run";
@@ -32,6 +35,8 @@ export function StoreVolumeSize({ organizationSlug, environment, volume, recorde
 }) {
   const writer = useStoreWriter(organizationSlug);
   const queryClient = useQueryClient();
+  // The Environment is Protected and you can't protect it, so a grow asks an owner or admin first.
+  const asks = useProtectedAsk(organizationSlug, environment);
   const working = volume.storage.kind === "provisioned" ? volume.storage.maximumBytes : recorded;
   const [asking, setAsking] = useState<Asking | null>(null);
   const admittingGrow = useRef(false);
@@ -66,12 +71,17 @@ export function StoreVolumeSize({ organizationSlug, environment, volume, recorde
   async function grow(asked: Asking) {
     admittingGrow.current = true;
     try {
-      const { id } = await resizeVolumeServerFn({ data: {
+      const admitted = await resizeVolumeServerFn({ data: {
         organizationSlug, volumeId: volume.id, environment, maximumBytes: asked.grow.to, requestId: crypto.randomUUID(),
       } });
-      setGrowingTo(asked.grow.to);
-      watch(id);
-      void queryClient.invalidateQueries({ queryKey: volumeRunKeys.all });
+      if ("requested" in admitted) {
+        toast("Requested");
+        void refetchApprovals(queryClient, organizationSlug);
+      } else {
+        setGrowingTo(asked.grow.to);
+        watch(admitted.id);
+        void queryClient.invalidateQueries({ queryKey: volumeRunKeys.all });
+      }
       asked.settle();
     } catch (error) {
       asked.settle(error instanceof Error ? error : new Error(`Could not grow ${volume.name}.`));
@@ -87,6 +97,8 @@ export function StoreVolumeSize({ organizationSlug, environment, volume, recorde
     ? `${runWords(other)}. Grow it once that finishes.`
     : restoredSmaller
     ? `A restored revision asks for ${gb(working)}; the servers keep ${gb(recorded)}. Enter ${gigabytes(recorded)} to keep it.`
+    : asks
+    ? "Grows live on every server that holds a copy, once an owner or admin approves it. Can't shrink yet."
     : "Grows live on every server that holds a copy. Can't shrink yet.";
 
   return (
@@ -102,8 +114,9 @@ export function StoreVolumeSize({ organizationSlug, environment, volume, recorde
       )}>
         {failure ? <FieldError>{failure}</FieldError> : null}
       </SettingsRow>
-      <ConfirmDialog open={asking !== null} title="Grow volume" actionLabel="Grow" pendingLabel="Growing"
-        description={asking ? growWords(volume.name, asking.grow) : null}
+      <ConfirmDialog open={asking !== null} title={asks ? "Request grow" : "Grow volume"} actionLabel={asks ? "Request grow" : "Grow"}
+        pendingLabel={asks ? "Requesting" : "Growing"}
+        description={asking ? `${growWords(volume.name, asking.grow)}${asks ? " An owner or admin approves it first." : ""}` : null}
         onOpenChange={(open) => {
           if (open || asking === null || admittingGrow.current) return;
           asking.settle();

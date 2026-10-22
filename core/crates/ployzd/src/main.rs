@@ -24,9 +24,13 @@ use ployzd::{
     management::ManagementConfig,
     runtime_unit::UnitSupervision,
 };
-use tokio::io::{AsyncWriteExt, copy, stdin, stdout};
+use tokio::{
+    io::{AsyncRead, AsyncWrite, AsyncWriteExt, copy, stdin, stdout},
+    net::UnixStream,
+};
 
 const DIAL_STDIO_SOCKET_TIMEOUT: Duration = Duration::from_secs(20);
+const STDOUT_FLUSH_BOUND: Duration = Duration::from_secs(2);
 
 #[derive(Parser)]
 #[command(about = "Ployz Machine daemon")]
@@ -139,10 +143,8 @@ enum ObserveCommand {
 
 fn main() -> ExitCode {
     let args = Args::parse();
-    let runtime = match tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-    {
+    let dial_stdio = matches!(args.command, Some(Command::DialStdio));
+    let runtime = match runtime() {
         Ok(runtime) => runtime,
         Err(error) => {
             eprintln!("{error}", error = ployz_core::error_chain::inline(&error),);
@@ -156,8 +158,24 @@ fn main() -> ExitCode {
             daemon_error_exit_code(&error)
         }
     };
-    runtime.shutdown_timeout(Duration::from_secs(5));
+    if dial_stdio {
+        // Its stdin read holds a blocking thread until the client closes stdin.
+        runtime.shutdown_background();
+    } else {
+        runtime.shutdown_timeout(Duration::from_secs(5));
+    }
     code
+}
+
+/// The usual main-thread stack; tokio's own threads default to 2 MiB. In a debug build a boot
+/// pass that sets a replaced copy Out polls about 2.1 MB of frames (#3092).
+const THREAD_STACK: usize = 8 * 1024 * 1024;
+
+fn runtime() -> io::Result<tokio::runtime::Runtime> {
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .thread_stack_size(THREAD_STACK)
+        .build()
 }
 
 fn daemon_error_exit_code(error: &Error) -> ExitCode {
@@ -335,26 +353,207 @@ fn install_request(
 
 async fn dial_stdio(path: &Path) -> io::Result<()> {
     let stream = wait_until_socket_accepts(path, DIAL_STDIO_SOCKET_TIMEOUT).await?;
+    bridge(stdin(), stdout(), stream).await
+}
+
+// The daemon's side closing ends the bridge, so a daemon restart closes the
+// SSH session and the client's call fails instead of waiting forever. Stdin
+// closing first only half-closes: the reply still flows back.
+async fn bridge(
+    mut input: impl AsyncRead + Unpin,
+    mut output: impl AsyncWrite + Unpin,
+    stream: UnixStream,
+) -> io::Result<()> {
     let (mut socket_read, mut socket_write) = stream.into_split();
-    let input = async {
-        copy(&mut stdin(), &mut socket_write).await?;
-        socket_write.shutdown().await
+    let forward = async {
+        copy(&mut input, &mut socket_write).await?;
+        socket_write.shutdown().await?;
+        std::future::pending().await
     };
-    let output = async {
-        copy(&mut socket_read, &mut stdout()).await?;
-        stdout().flush().await
+    let back = async {
+        copy(&mut socket_read, &mut output).await?;
+        output.flush().await
     };
-    tokio::try_join!(input, output).map(|_| ())
+    let result = tokio::select! {
+        result = forward => result,
+        result = back => result,
+    };
+    // Deliver what `back` already wrote, bounded so a stalled reader cannot hold
+    // the bridge open; the process exits without waiting on stdout.
+    let flushed = tokio::time::timeout(STDOUT_FLUSH_BOUND, output.flush())
+        .await
+        .unwrap_or_else(|_| Err(io::ErrorKind::TimedOut.into()));
+    result.and(flushed)
 }
 
 #[cfg(test)]
 mod tests {
+    use std::{
+        pin::Pin,
+        sync::{
+            Arc, Mutex,
+            atomic::{AtomicBool, Ordering},
+        },
+        task::{Context, Poll},
+    };
+
     use ployzd::network::NetworkError;
+    use tokio::{
+        io::{AsyncReadExt, ReadBuf, duplex},
+        net::UnixListener,
+    };
 
     use super::*;
 
+    /// Uses about `depth` × 32 KiB of stack in a debug build, the array and its copy.
+    fn deep(depth: usize) -> usize {
+        let frame = std::hint::black_box([1_u8; 16 * 1024]);
+        if depth == 0 {
+            return usize::from(frame[0]);
+        }
+        deep(depth - 1) + usize::from(frame[1])
+    }
+
+    #[test]
+    fn a_daemon_task_has_room_for_a_deep_poll() {
+        let runtime = super::runtime().unwrap();
+        let task = runtime.spawn(async { deep(128) });
+        assert_eq!(runtime.block_on(task).unwrap(), 129);
+    }
+
     fn release(value: &str) -> MachineRelease {
         MachineRelease::parse(value).unwrap()
+    }
+
+    async fn bridged(
+        input: impl AsyncRead + Unpin,
+        daemon: impl AsyncFnOnce(UnixStream),
+    ) -> Vec<u8> {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ployz.sock");
+        let listener = UnixListener::bind(&path).unwrap();
+        let (output, mut client_output) = duplex(64);
+        let stream = UnixStream::connect(&path).await.unwrap();
+        let daemon = async {
+            let (socket, _) = listener.accept().await.unwrap();
+            daemon(socket).await;
+        };
+        let bridged = tokio::time::timeout(Duration::from_secs(5), bridge(input, output, stream));
+        let ((), bridged) = tokio::join!(daemon, bridged);
+        bridged
+            .expect("bridge outlived the daemon's socket")
+            .unwrap();
+        let mut seen = Vec::new();
+        client_output.read_to_end(&mut seen).await.unwrap();
+        seen
+    }
+
+    #[tokio::test]
+    async fn bridge_ends_when_the_daemon_closes_while_stdin_stays_open() {
+        let (_client_input, input) = duplex(64);
+        let seen = bridged(input, async |mut socket: UnixStream| {
+            socket.write_all(b"reply").await.unwrap();
+        })
+        .await;
+        assert_eq!(seen, b"reply");
+    }
+
+    /// Holds written bytes until a flush after `open` is set, like tokio's stdout
+    /// with a write still on its blocking thread.
+    struct HeldOutput {
+        open: Arc<AtomicBool>,
+        held: Vec<u8>,
+        delivered: Arc<Mutex<Vec<u8>>>,
+    }
+
+    impl AsyncWrite for HeldOutput {
+        fn poll_write(
+            mut self: Pin<&mut Self>,
+            _: &mut Context<'_>,
+            buf: &[u8],
+        ) -> Poll<io::Result<usize>> {
+            self.held.extend_from_slice(buf);
+            Poll::Ready(Ok(buf.len()))
+        }
+
+        fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            if !self.open.load(Ordering::SeqCst) {
+                cx.waker().wake_by_ref();
+                return Poll::Pending;
+            }
+            let held = std::mem::take(&mut self.held);
+            self.delivered.lock().unwrap().extend(held);
+            Poll::Ready(Ok(()))
+        }
+
+        fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            self.poll_flush(cx)
+        }
+    }
+
+    /// Stdin that fails once `broken` is set.
+    struct BreakingInput(Arc<AtomicBool>);
+
+    impl AsyncRead for BreakingInput {
+        fn poll_read(
+            self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+            _: &mut ReadBuf<'_>,
+        ) -> Poll<io::Result<()>> {
+            if self.0.load(Ordering::SeqCst) {
+                return Poll::Ready(Err(io::ErrorKind::BrokenPipe.into()));
+            }
+            cx.waker().wake_by_ref();
+            Poll::Pending
+        }
+    }
+
+    #[tokio::test]
+    async fn bridge_delivers_a_held_reply_when_stdin_breaks() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ployz.sock");
+        let listener = UnixListener::bind(&path).unwrap();
+        let broken = Arc::new(AtomicBool::new(false));
+        let open = Arc::new(AtomicBool::new(false));
+        let delivered = Arc::new(Mutex::new(Vec::new()));
+        let output = HeldOutput {
+            open: Arc::clone(&open),
+            held: Vec::new(),
+            delivered: Arc::clone(&delivered),
+        };
+        let stream = UnixStream::connect(&path).await.unwrap();
+        let (mut socket, _) = listener.accept().await.unwrap();
+        socket.write_all(b"reply").await.unwrap();
+        let trigger = async {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            broken.store(true, Ordering::SeqCst);
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            open.store(true, Ordering::SeqCst);
+        };
+        let bridged = tokio::time::timeout(
+            Duration::from_secs(5),
+            bridge(BreakingInput(Arc::clone(&broken)), output, stream),
+        );
+        let ((), bridged) = tokio::join!(trigger, bridged);
+        let error = bridged.expect("bridge returned").unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::BrokenPipe);
+        assert_eq!(*delivered.lock().unwrap(), b"reply");
+        drop(socket);
+    }
+
+    #[tokio::test]
+    async fn bridge_returns_the_reply_sent_after_stdin_closes() {
+        let (mut client_input, input) = duplex(64);
+        client_input.write_all(b"request").await.unwrap();
+        drop(client_input);
+        let seen = bridged(input, async |mut socket: UnixStream| {
+            let mut request = Vec::new();
+            socket.read_to_end(&mut request).await.unwrap();
+            assert_eq!(request, b"request");
+            socket.write_all(b"reply").await.unwrap();
+        })
+        .await;
+        assert_eq!(seen, b"reply");
     }
 
     #[test]

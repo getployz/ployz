@@ -27,6 +27,7 @@ fn setup_retry_classifies_ssh_and_preserves_aggregate_cause() {
         };
         assert_eq!(ssh_error.retry(), retry);
         let error = ConnectError::AllFailed {
+            relayed: false,
             selection: ConnectionSource::Direct,
             attempts: 1,
             server: None,
@@ -114,6 +115,7 @@ fn system_ssh_command_uses_noninteractive_authentication() {
         &destination,
         Some(Path::new("/keys/deploy")),
         None,
+        SshMaster::Share,
         SystemConnector::default().ssh_timeout,
     );
 
@@ -465,6 +467,54 @@ async fn cancelling_ssh_establishment_returns_without_waiting_for_ssh() {
 }
 
 #[tokio::test]
+async fn an_ssh_dial_beside_another_starts_no_master_to_outlive_it() {
+    let root = tempfile::tempdir().unwrap();
+    let program = root.path().join("ssh");
+    symlink(
+        concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/ssh"),
+        &program,
+    )
+    .unwrap();
+    let connector = SystemConnector::new(&program);
+    let connection = Connection::ssh(SshDestination::parse("user@record").unwrap());
+    // Without a control directory no dial multiplexes, so none starts a master.
+    let multiplexed = control_path().is_some();
+    for beside in [false, true] {
+        let _ = fs::remove_file(program.with_extension("args"));
+        // The session child is held open until the channel drops, so it has
+        // time to record its arguments.
+        let _channel = if beside {
+            connector.connect_beside(&connection).await
+        } else {
+            connector.connect(&connection).await
+        };
+        let invocations = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let recorded = fs::read_to_string(program.with_extension("args")).unwrap();
+                if recorded.lines().count() == 2 {
+                    break recorded;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the probe and the session both ran");
+        for invocation in invocations.lines() {
+            assert_eq!(
+                invocation.contains("ControlMaster=auto"),
+                multiplexed && !beside,
+                "{invocation}"
+            );
+            assert_eq!(
+                invocation.contains("ControlMaster=no"),
+                multiplexed && beside,
+                "{invocation}"
+            );
+        }
+    }
+}
+
+#[tokio::test]
 async fn missing_ssh_program_names_the_local_client() {
     let connector = SystemConnector::new("/ployz-missing-ssh-client");
     let connection = Connection::ssh(SshDestination::parse("user@example.com").unwrap());
@@ -714,6 +764,7 @@ fn ssh_timeout_flag_is_global_and_reaches_transport_arguments() {
                 &SshDestination::parse("user@host").unwrap(),
                 None,
                 None,
+                SshMaster::Share,
                 connector.ssh_timeout,
             );
             assert!(args.contains(&format!("ConnectTimeout={seconds}")));
@@ -779,6 +830,267 @@ async fn local_socket_that_accepts_but_never_serves_fails_as_starting() {
         "{error}"
     );
     assert_eq!(error.retry(), Retry::AfterRestart, "{error}");
+}
+
+#[derive(Clone, Copy, Debug)]
+enum Scripted {
+    ConfirmsAfter(Duration),
+    Silent,
+    Fails,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct Dialled {
+    index: usize,
+    at: Duration,
+    beside: bool,
+}
+
+/// Dials each entry as its script says, recording every dial and every dial
+/// dropped before it finished.
+struct ScriptedConnector {
+    entries: Vec<(Connection, Scripted)>,
+    epoch: tokio::time::Instant,
+    dials: std::sync::Mutex<Vec<Dialled>>,
+    abandoned: std::sync::Mutex<Vec<usize>>,
+}
+
+struct Unfinished<'a>(&'a std::sync::Mutex<Vec<usize>>, usize);
+
+impl Drop for Unfinished<'_> {
+    fn drop(&mut self) {
+        self.0.lock().unwrap().push(self.1);
+    }
+}
+
+impl ScriptedConnector {
+    fn new(entries: Vec<(Connection, Scripted)>) -> Arc<Self> {
+        Arc::new(Self {
+            entries,
+            epoch: tokio::time::Instant::now(),
+            dials: Default::default(),
+            abandoned: Default::default(),
+        })
+    }
+
+    fn selected(&self) -> SelectedConnections {
+        SelectedConnections {
+            source: ConnectionSource::Cloud,
+            connections: self
+                .entries
+                .iter()
+                .map(|(entry, _)| entry.clone())
+                .collect(),
+        }
+    }
+
+    async fn dial(&self, connection: &Connection, beside: bool) -> Result<Channel, ConnectError> {
+        let (index, (_, script)) = self
+            .entries
+            .iter()
+            .enumerate()
+            .find(|(_, (entry, _))| entry == connection)
+            .unwrap();
+        self.dials.lock().unwrap().push(Dialled {
+            index,
+            at: self.epoch.elapsed(),
+            beside,
+        });
+        let unfinished = Unfinished(&self.abandoned, index);
+        let dialled = match *script {
+            Scripted::ConfirmsAfter(delay) => {
+                tokio::time::sleep(delay).await;
+                Ok(test_support::confirming_channel().await)
+            }
+            Scripted::Silent => std::future::pending().await,
+            Scripted::Fails => Err(ConnectError::Attempt("scripted failure".into())),
+        };
+        std::mem::forget(unfinished);
+        dialled
+    }
+}
+
+#[tonic::async_trait]
+impl Connector for ScriptedConnector {
+    async fn connect(&self, connection: &Connection) -> Result<Channel, ConnectError> {
+        self.dial(connection, false).await
+    }
+
+    async fn connect_beside(&self, connection: &Connection) -> Result<Channel, ConnectError> {
+        self.dial(connection, true).await
+    }
+
+    async fn dial_proxy(
+        &self,
+        _: &Connection,
+        _: &str,
+        _: &str,
+    ) -> Result<BoxProxyStream, ConnectError> {
+        unreachable!("connect opens no proxy")
+    }
+}
+
+/// One entry of each transport, with the stagger it is given before the next
+/// entry is dialled beside it.
+fn staggered_entries() -> [(Connection, Duration); 3] {
+    let capability = ployz_core::ManagementCapability::new(
+        ployz_core::ManagementIdentity::from_bytes([1; 32]),
+        [2; 32],
+    );
+    [
+        (
+            Connection::management(capability.to_secret_string()).unwrap(),
+            Duration::from_secs(1),
+        ),
+        (
+            Connection::unix("/scripted/entry.sock").unwrap(),
+            Duration::from_secs(1),
+        ),
+        (
+            Connection::ssh(SshDestination::parse("user@scripted").unwrap()),
+            Duration::from_secs(5),
+        ),
+    ]
+}
+
+fn answering_entry() -> Connection {
+    Connection::unix("/scripted/answering.sock").unwrap()
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_entry_that_confirms_within_its_stagger_is_never_raced() {
+    for (first, stagger) in staggered_entries() {
+        let connector = ScriptedConnector::new(vec![
+            (
+                first.clone(),
+                Scripted::ConfirmsAfter(stagger - Duration::from_millis(100)),
+            ),
+            (answering_entry(), Scripted::ConfirmsAfter(Duration::ZERO)),
+        ]);
+        let client = connect_selected_with(connector.selected(), connector.clone())
+            .await
+            .unwrap();
+        assert_eq!(client.connection(), &first);
+        assert_eq!(
+            *connector.dials.lock().unwrap(),
+            [Dialled {
+                index: 0,
+                at: Duration::ZERO,
+                beside: false
+            }],
+            "{first}"
+        );
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_silent_entry_is_raced_after_its_stagger_and_dropped_once_another_confirms() {
+    for (first, stagger) in staggered_entries() {
+        let connector = ScriptedConnector::new(vec![
+            (first.clone(), Scripted::Silent),
+            (answering_entry(), Scripted::ConfirmsAfter(Duration::ZERO)),
+        ]);
+        let client = connect_selected_with(connector.selected(), connector.clone())
+            .await
+            .unwrap();
+        assert_eq!(client.connection(), &answering_entry());
+        assert_eq!(
+            *connector.dials.lock().unwrap(),
+            [
+                Dialled {
+                    index: 0,
+                    at: Duration::ZERO,
+                    beside: false
+                },
+                Dialled {
+                    index: 1,
+                    at: stagger,
+                    beside: true
+                },
+            ],
+            "{first}"
+        );
+        assert_eq!(*connector.abandoned.lock().unwrap(), [0], "{first}");
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn in_order_a_slow_entry_is_never_raced() {
+    let connector = ScriptedConnector::new(vec![
+        (
+            Connection::unix("/scripted/0.sock").unwrap(),
+            Scripted::ConfirmsAfter(Duration::from_secs(4)),
+        ),
+        (answering_entry(), Scripted::ConfirmsAfter(Duration::ZERO)),
+    ]);
+    let client = connect_selected_in_order(connector.selected(), connector.clone())
+        .await
+        .unwrap();
+    assert_eq!(
+        client.connection(),
+        &Connection::unix("/scripted/0.sock").unwrap()
+    );
+    assert_eq!(
+        *connector.dials.lock().unwrap(),
+        [Dialled {
+            index: 0,
+            at: Duration::ZERO,
+            beside: false
+        }]
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_failed_entry_hands_over_at_once_and_only_dials_beside_a_live_one() {
+    let connector = ScriptedConnector::new(vec![
+        (
+            Connection::unix("/scripted/0.sock").unwrap(),
+            Scripted::Fails,
+        ),
+        (
+            Connection::unix("/scripted/1.sock").unwrap(),
+            Scripted::Silent,
+        ),
+        (
+            Connection::unix("/scripted/2.sock").unwrap(),
+            Scripted::Fails,
+        ),
+        (
+            answering_entry(),
+            Scripted::ConfirmsAfter(Duration::from_secs(3)),
+        ),
+    ]);
+    let client = connect_selected_with(connector.selected(), connector.clone())
+        .await
+        .unwrap();
+    assert_eq!(client.connection(), &answering_entry());
+    let second = Duration::from_secs(1);
+    assert_eq!(
+        *connector.dials.lock().unwrap(),
+        [
+            Dialled {
+                index: 0,
+                at: Duration::ZERO,
+                beside: false
+            },
+            Dialled {
+                index: 1,
+                at: Duration::ZERO,
+                beside: false
+            },
+            Dialled {
+                index: 2,
+                at: second,
+                beside: true
+            },
+            Dialled {
+                index: 3,
+                at: second,
+                beside: true
+            },
+        ]
+    );
+    assert_eq!(*connector.abandoned.lock().unwrap(), [1]);
 }
 
 #[test]
@@ -909,6 +1221,85 @@ fn only_a_target_reply_outlasts_a_later_silence() {
 }
 
 #[test]
+fn a_call_that_lost_its_answer_outlasts_a_retry_that_never_reached_the_target() {
+    let lost = || {
+        ConnectError::from(tonic::Status::from_error(Box::new(io::Error::new(
+            io::ErrorKind::NotConnected,
+            "connection lost",
+        ))))
+    };
+    let unreached = || ConnectError::Io(io::Error::new(io::ErrorKind::TimedOut, "SSH timed out"));
+
+    let error = keep_lost_call(Some(lost()), unreached());
+    assert!(error.unreplied(), "{error}");
+
+    let answered = keep_lost_call(
+        Some(lost()),
+        ConnectError::from(tonic::Status::unavailable("Machine is not participating")),
+    );
+    assert!(
+        answered.target_replied(),
+        "a later answer stands: {answered}"
+    );
+    assert!(!keep_lost_call(None, unreached()).unreplied());
+
+    let refused_key = {
+        use std::os::unix::process::ExitStatusExt;
+        ConnectError::SshProbe {
+            target: "host".to_owned(),
+            status: std::process::ExitStatus::from_raw(255 << 8),
+            failure: SshFailure::Auth,
+            detail: "Permission denied (publickey)".into(),
+        }
+    };
+    let kept = keep_lost_call(Some(lost()), refused_key);
+    assert_eq!(kept.retry(), ployz_core::Retry::Never, "{kept}");
+}
+
+#[test]
+fn a_closed_session_does_not_outlast_a_later_silence() {
+    let closed = || {
+        ConnectError::Rpc(TransportError {
+            session_closed: true,
+            ..TransportError::from(tonic::Status::unavailable("transport error"))
+        })
+    };
+    let budget_spent = || {
+        ConnectError::Rpc(TransportError::budget_expired(
+            "target Machine RPC timed out",
+        ))
+    };
+    let routed_silence = || {
+        ConnectError::from(ployz_core::rpc::target_unanswered_status(&io::Error::from(
+            io::ErrorKind::TimedOut,
+        )))
+    };
+    let machine = MachineId::parse("b".repeat(32)).unwrap();
+    for silence in [budget_spent(), routed_silence()] {
+        // As `call_retried`: the closed session first, then the redialled target is silent.
+        let mut reply = None;
+        let error = keep_target_reply(&mut reply, closed());
+        assert!(!error.target_replied(), "no daemon sent it");
+        assert!(
+            !error.unreplied(),
+            "it never left, so it cannot have landed"
+        );
+        if error.target_replied() {
+            reply = Some(error);
+        }
+        let kept = keep_target_reply(&mut reply, silence);
+        assert!(kept.target_unanswered(), "{kept}");
+        let error = crate::cluster::answered_by(&machine, kept);
+        assert!(!on_closed_session(&error), "{error:?}");
+        assert_eq!(
+            error.code.retry(),
+            Retry::Now,
+            "the Deploy waits out the target"
+        );
+    }
+}
+
+#[test]
 fn a_named_context_without_a_config_is_not_found_rather_than_unconfigured() {
     let dir = tempfile::tempdir().unwrap();
     let config = dir.path().join("config.yaml");
@@ -925,4 +1316,315 @@ fn a_named_context_without_a_config_is_not_found_rather_than_unconfigured() {
     );
     let selected = resolve_connections(&config, None, None, &socket).unwrap();
     assert_eq!(selected.source, ConnectionSource::LocalSocket);
+}
+
+#[tokio::test]
+async fn a_call_after_the_stream_closed_is_marked_and_stays_unavailable() {
+    let (client, daemon) = tokio::io::duplex(1024);
+    let channel = connect_stream(client, Duration::from_secs(5))
+        .await
+        .unwrap();
+    let mut rpc = ployz_core::MachineRpcClient::new(channel);
+    let describe = || {
+        ployz_core::op::DescribeContract::into_request(ployz_core::DescribeContractRequest {})
+            .encode()
+            .unwrap()
+    };
+    let mut in_flight = rpc.clone();
+    let in_flight = tokio::spawn(async move { in_flight.describe_contract(describe()).await });
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    drop(daemon);
+    let lost = TransportError::from(in_flight.await.unwrap().unwrap_err());
+    assert!(!lost.session_closed, "{lost:?}");
+    assert!(
+        lost.unanswered,
+        "the first call may have reached the daemon"
+    );
+
+    let closed = TransportError::from(rpc.describe_contract(describe()).await.unwrap_err());
+    assert!(closed.session_closed, "{closed:?}");
+    assert!(!closed.unanswered, "a call on a closed session never left");
+    let connect = ConnectError::Rpc(closed);
+    assert_eq!(connect.retry(), Retry::Now, "a redial opens a new stream");
+    assert!(!connect.target_replied(), "no daemon sent it");
+    let error = rpc_error(connect);
+    assert_eq!(error.code, RpcErrorCode::Unavailable);
+    assert!(on_closed_session(&error), "{error:?}");
+    assert_eq!(error.details, closed_session_error().details);
+    assert!(
+        crate::ui::chain_text(&error).contains("connection to the daemon closed"),
+        "{error:?}"
+    );
+}
+
+#[test]
+fn a_broken_pipe_is_not_a_closed_session() {
+    let status = tonic::Status::from_error(Box::new(io::Error::new(
+        io::ErrorKind::BrokenPipe,
+        "stream closed because of a broken pipe",
+    )));
+    let error = TransportError::from(status);
+    assert!(!error.session_closed, "{error:?}");
+    assert!(error.unanswered);
+    assert!(!on_closed_session(&error.to_rpc_error()));
+}
+
+#[test]
+fn a_restarting_target_behind_a_live_entry_is_still_resent() {
+    let refused = io::Error::from(io::ErrorKind::ConnectionRefused);
+    for status in [
+        ployz_core::rpc::target_unanswered_status(&refused),
+        ployz_core::rpc::target_unreached_status(&refused),
+        tonic::Status::unavailable("daemon is restarting"),
+    ] {
+        let error = rpc_error(ConnectError::from(status));
+        assert_eq!(error.code.retry(), Retry::Now, "{error:?}");
+    }
+}
+
+/// Holds one call open on `client` for up to an hour: how long it took to fail, or
+/// `None` if it was still open.
+async fn held_call(client: tokio::io::DuplexStream) -> Option<Duration> {
+    let channel = connect_stream(client, Duration::from_secs(5))
+        .await
+        .unwrap();
+    let mut rpc = ployz_core::MachineRpcClient::new(channel);
+    let request =
+        ployz_core::op::DescribeContract::into_request(ployz_core::DescribeContractRequest {})
+            .encode()
+            .unwrap();
+    let started = tokio::time::Instant::now();
+    let held = tokio::time::timeout(Duration::from_secs(3600), rpc.describe_contract(request));
+    held.await.ok().map(|reply| {
+        assert!(reply.is_err(), "a held call cannot succeed");
+        started.elapsed()
+    })
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_call_to_a_daemon_that_went_silent_fails_within_its_keepalive_bound() {
+    let (client, _silent_daemon) = tokio::io::duplex(64 * 1024);
+    let failed_after = held_call(client)
+        .await
+        .expect("a silent daemon held the call for an hour");
+    assert!(
+        (KEEP_ALIVE_TIMEOUT..=KEEP_ALIVE_INTERVAL + KEEP_ALIVE_TIMEOUT).contains(&failed_after),
+        "failed after {failed_after:?}"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_resend_after_a_keepalive_timeout_ends_on_the_closed_session() {
+    let (client, _silent_daemon) = tokio::io::duplex(64 * 1024);
+    let channel = connect_stream(client, Duration::from_secs(5))
+        .await
+        .unwrap();
+    let mut rpc = ployz_core::MachineRpcClient::new(channel);
+    let describe = || {
+        ployz_core::op::DescribeContract::into_request(ployz_core::DescribeContractRequest {})
+            .encode()
+            .unwrap()
+    };
+    let timed_out = rpc_error(ConnectError::from(
+        rpc.describe_contract(describe()).await.unwrap_err(),
+    ));
+    assert!(
+        crate::ui::chain_text(&timed_out).contains("keep-alive timed out"),
+        "{timed_out:?}"
+    );
+    let resent = rpc_error(ConnectError::from(
+        rpc.describe_contract(describe()).await.unwrap_err(),
+    ));
+    assert!(on_closed_session(&resent), "{resent:?}");
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_daemon_that_answers_pings_may_hold_a_call_for_an_hour() {
+    let (client, daemon) = tokio::io::duplex(64 * 1024);
+    tokio::spawn(
+        hyper::server::conn::http2::Builder::new(hyper_util::rt::TokioExecutor::new())
+            .serve_connection(
+                TokioIo::new(daemon),
+                hyper::service::service_fn(|_| {
+                    std::future::pending::<Result<http::Response<String>, io::Error>>()
+                }),
+            ),
+    );
+    assert_eq!(held_call(client).await, None);
+}
+
+/// Moves bytes from `from` to `to` at `bytes_per_second`, as a slow link drains the
+/// buffers in front of it.
+async fn drain_slowly(
+    mut from: impl AsyncRead + Unpin,
+    mut to: impl AsyncWrite + Unpin,
+    bytes_per_second: usize,
+) -> io::Result<()> {
+    use tokio::io::AsyncReadExt;
+    let per_tick = bytes_per_second / 10;
+    loop {
+        let mut chunk = vec![0; per_tick];
+        let read = from.read(&mut chunk).await?;
+        if read == 0 {
+            return to.shutdown().await;
+        }
+        chunk.truncate(read);
+        to.write_all(&chunk).await?;
+        let share = u32::try_from(read * 1000 / per_tick).expect("a read fits its buffer");
+        tokio::time::sleep(Duration::from_micros(100) * share).await;
+    }
+}
+
+/// A client end and a daemon end joined by 4 MiB of buffering each way, as ssh and TCP
+/// buffer, with one direction slowed to `bytes_per_second`.
+fn slow_link(
+    slow: Direction,
+    bytes_per_second: usize,
+) -> (tokio::io::DuplexStream, tokio::io::DuplexStream) {
+    let (client, client_far) = tokio::io::duplex(4 * 1024 * 1024);
+    let (daemon, daemon_far) = tokio::io::duplex(4 * 1024 * 1024);
+    let (mut uplink, mut downlink) = tokio::io::split(client_far);
+    let (mut from_daemon, mut to_daemon) = tokio::io::split(daemon_far);
+    match slow {
+        Direction::Up => {
+            tokio::spawn(drain_slowly(uplink, to_daemon, bytes_per_second));
+            tokio::spawn(async move { tokio::io::copy(&mut from_daemon, &mut downlink).await });
+        }
+        Direction::Down => {
+            tokio::spawn(async move { tokio::io::copy(&mut uplink, &mut to_daemon).await });
+            tokio::spawn(drain_slowly(from_daemon, downlink, bytes_per_second));
+        }
+    }
+    (client, daemon)
+}
+
+enum Direction {
+    Up,
+    Down,
+}
+
+/// Serves `daemon` with the window the daemon advertises.
+fn serve<F, R>(daemon: tokio::io::DuplexStream, handle: F)
+where
+    F: Fn(http::Request<hyper::body::Incoming>) -> R + Send + 'static,
+    R: Future<Output = Result<http::Response<http_body_util::Full<bytes::Bytes>>, io::Error>>
+        + Send
+        + 'static,
+{
+    tokio::spawn(
+        hyper::server::conn::http2::Builder::new(hyper_util::rt::TokioExecutor::new())
+            .initial_connection_window_size(ployz_core::RPC_CONNECTION_WINDOW_BYTES)
+            .initial_stream_window_size(ployz_core::RPC_STREAM_WINDOW_BYTES)
+            .serve_connection(TokioIo::new(daemon), hyper::service::service_fn(handle)),
+    );
+}
+
+/// Sends `body` on a channel held for the whole call, as the CLI holds its channel:
+/// once every handle is gone, hyper stops pinging and a test would prove nothing.
+async fn call(
+    client: tokio::io::DuplexStream,
+    body: Vec<u8>,
+) -> (Channel, http::Response<tonic::body::Body>) {
+    let mut channel = connect_stream(client, Duration::from_secs(5))
+        .await
+        .unwrap();
+    let response = send(&mut channel, "/call", body).await;
+    (channel, response)
+}
+
+/// Sends `body` to `path` on an open channel.
+async fn send(
+    channel: &mut Channel,
+    path: &str,
+    body: Vec<u8>,
+) -> http::Response<tonic::body::Body> {
+    use http_body_util::BodyExt;
+    let body = http_body_util::Full::new(bytes::Bytes::from(body)).map_err(|never| match never {});
+    let request = http::Request::post(format!("http://[::]:50051{path}"))
+        .body(tonic::body::Body::new(body))
+        .unwrap();
+    let ready = tower::ServiceExt::ready(channel).await.unwrap();
+    tower::Service::call(ready, request).await.unwrap()
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_upload_over_a_20_kb_per_second_uplink_finishes() {
+    use http_body_util::BodyExt;
+    const UPLOAD: usize = 2 * 1024 * 1024;
+    let (client, daemon) = slow_link(Direction::Up, 20 * 1024);
+    serve(daemon, |request| async {
+        let received = request.into_body().collect().await.unwrap().to_bytes();
+        Ok(http::Response::new(received.len().to_string().into()))
+    });
+    let (_channel, response) = call(client, vec![0; UPLOAD]).await;
+    let received = response.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(received, UPLOAD.to_string());
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_download_left_unread_on_a_20_kb_per_second_downlink_finishes() {
+    use http_body_util::BodyExt;
+    const DOWNLOAD: usize = 3 * 1024 * 1024;
+    let (client, daemon) = slow_link(Direction::Down, 20 * 1024);
+    serve(daemon, |_| async {
+        Ok(http::Response::new(vec![0; DOWNLOAD].into()))
+    });
+    let (_channel, response) = call(client, Vec::new()).await;
+    tokio::time::sleep(Duration::from_secs(120)).await;
+    let received = response.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(received.len(), DOWNLOAD);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_log_stream_left_unread_leaves_room_for_the_next_call() {
+    use http_body_util::BodyExt;
+    let (client, daemon) = tokio::io::duplex(16 * 1024 * 1024);
+    serve(daemon, |request| async move {
+        let size = if request.uri().path() == "/logs" {
+            8 * 1024 * 1024
+        } else {
+            1
+        };
+        Ok(http::Response::new(vec![0; size].into()))
+    });
+    let mut channel = connect_stream(client, Duration::from_secs(5))
+        .await
+        .unwrap();
+    let _unread_logs = send(&mut channel, "/logs", Vec::new()).await;
+    let grant = tokio::time::timeout(Duration::from_secs(10), async {
+        send(&mut channel, "/grant", Vec::new())
+            .await
+            .into_body()
+            .collect()
+            .await
+    })
+    .await;
+    assert!(
+        matches!(grant, Ok(Ok(_))),
+        "the unread log stream starved the next call: {grant:?}"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_server_unanswered_through_cloud_may_be_offline_or_filtered_not_only_stopped() {
+    let [(relayed, _), (socket, _), _] = staggered_entries();
+    for (entry, said) in [
+        (
+            relayed,
+            "Server machine-1 isn't answering through Ployz Cloud. Check that it is online, its \
+             Ployz daemon is running, and its outgoing https isn't filtered, then retry.",
+        ),
+        (
+            socket,
+            "Server machine-1 isn't answering. Check that its Ployz daemon is running, then retry.",
+        ),
+    ] {
+        let connector =
+            ScriptedConnector::new(vec![(entry.with_name("machine-1"), Scripted::Fails)]);
+        let Err(error) = connect_selected_with(connector.selected(), connector.clone()).await
+        else {
+            panic!("a failing entry connected");
+        };
+        assert_eq!(error.to_string(), said);
+    }
 }

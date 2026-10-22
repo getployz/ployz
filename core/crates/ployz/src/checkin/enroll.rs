@@ -253,6 +253,7 @@ pub(super) async fn server_add(
         }
     };
     let setup = crate::handlers::cloud::run_enrollment(
+        crate::cloud_enroll::Command::ServerEnroll,
         &root,
         &instruction.token,
         &system.cloud,

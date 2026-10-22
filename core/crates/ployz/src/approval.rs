@@ -34,6 +34,19 @@ pub(crate) struct Asked {
     /// last acted in once a browser has moved the session.
     #[serde(default)]
     organization: Option<String>,
+    /// Set when a Protected Environment asks someone who can't protect it: only another
+    /// person, an owner or admin, can approve, so even a terminal waits.
+    #[serde(default)]
+    protected: Option<serde_json::Value>,
+}
+
+impl Asked {
+    fn for_someone_else(&self) -> bool {
+        !matches!(
+            self.protected,
+            None | Some(serde_json::Value::Null | serde_json::Value::Bool(false))
+        )
+    }
 }
 
 /// What the approval covers: a Store write, which carries its diff, or an operation on one
@@ -49,6 +62,19 @@ pub(crate) enum Subject {
 pub(crate) struct Operation {
     pub(crate) verb: Verb,
     name: String,
+    #[serde(default)]
+    subject: Option<String>,
+}
+
+impl Operation {
+    fn loses_volume_access(&self) -> bool {
+        // A reset keeps Volume data on the Server's disk; a forget is for a Server that may be gone.
+        self.verb == Verb::Remove
+            && self
+                .subject
+                .as_deref()
+                .is_some_and(|subject| subject.starts_with("server:"))
+    }
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
@@ -67,6 +93,9 @@ pub(crate) enum Verb {
     Stop,
     Restart,
     Unprotect,
+    Move,
+    Restore,
+    Resize,
 }
 
 impl Verb {
@@ -85,6 +114,9 @@ impl Verb {
             Self::Stop => "stop",
             Self::Restart => "restart",
             Self::Unprotect => "unprotecting",
+            Self::Move => "move",
+            Self::Restore => "restore",
+            Self::Resize => "resize",
         }
     }
 
@@ -103,6 +135,9 @@ impl Verb {
             Self::Stop => "stopped",
             Self::Restart => "restarted",
             Self::Unprotect => "unprotected",
+            Self::Move => "moved",
+            Self::Restore => "restored",
+            Self::Resize => "resized",
         }
     }
 
@@ -121,7 +156,10 @@ impl Verb {
             | Self::RemoveMirror
             | Self::Stop
             | Self::Restart
-            | Self::Unprotect => "of",
+            | Self::Unprotect
+            | Self::Move
+            | Self::Restore
+            | Self::Resize => "of",
         }
     }
 }
@@ -176,6 +214,7 @@ impl Asked {
             Some(organization) => format!(" in Organization {organization}"),
             None => String::new(),
         };
+        let loses_volume_access = matches!(&self.subject, Subject::Operation(operation) if operation.loses_volume_access());
         let changes_only = self.effects.iter().all(|effect| !destroys(effect.kind));
         let mut lines = vec![if verb == Verb::Publish && changes_only {
             format!("The next deploy{within} after this save:")
@@ -184,7 +223,7 @@ impl Asked {
                 "The next deploy{within} after this save destroys {}:",
                 things(self.effects.len())
             )
-        } else if changes_only {
+        } else if changes_only || loses_volume_access {
             format!("This {}{within}:", verb.noun())
         } else {
             format!(
@@ -195,7 +234,16 @@ impl Asked {
         }];
         for effect in &self.effects {
             let mark = if destroys(effect.kind) { "✕" } else { "~" };
-            lines.push(format!("  {mark} {}", line(effect)));
+            let line = if loses_volume_access && effect.kind == DestructiveKind::DeletesVolume {
+                format!(
+                    "loses access to Volume {}; its data stays on the Server's disk until wiped. \
+                     Wipe or reinstall the disk to erase it; sudo ployz-uninstall keeps the data.",
+                    effect.name
+                )
+            } else {
+                line(effect)
+            };
+            lines.push(format!("  {mark} {line}"));
             if let Some(lost) = &effect.lost_after {
                 lines.push(format!(
                     "    Changes after {} are not in {}",
@@ -278,7 +326,7 @@ pub(crate) fn settle(
     for line in asked.review(verb) {
         crate::ui::note(line);
     }
-    if crate::ui::can_prompt() {
+    if crate::ui::can_prompt() && !asked.for_someone_else() {
         crate::ui::confirm_name(
             asked.name(),
             || Failure::usage("Approving needs a terminal"),
@@ -301,15 +349,22 @@ pub(crate) fn settle(
     }
     let interrupted = crate::cancellation::interrupted()
         .map_err(|error| StoreCallError::Stopped(Failure::from(error)))?;
-    crate::ui::note(where_to_approve(
-        credential,
-        &asked.id,
-        asked.organization.as_deref(),
-    ));
-    crate::ui::hint(&crate::ui::Hint::Next(format!(
-        "ployz org approval approve {}",
-        asked.id
-    )));
+    if asked.for_someone_else() {
+        crate::ui::note(format!(
+            "An owner or admin who didn't ask must approve {} in Ployz Cloud.",
+            asked.id
+        ));
+    } else {
+        crate::ui::note(where_to_approve(
+            credential,
+            &asked.id,
+            asked.organization.as_deref(),
+        ));
+        crate::ui::hint(&crate::ui::Hint::Next(format!(
+            "ployz org approval approve {}",
+            asked.id
+        )));
+    }
     crate::ui::note_inline("Waiting for approval in Ployz Cloud… ");
     let settled = runtime.block_on(async {
         tokio::select! {
@@ -385,6 +440,7 @@ fn unanswered(error: &LoginError) -> bool {
         | LoginError::SignedOut
         | LoginError::Ended
         | LoginError::TokenRefused
+        | LoginError::TokenMalformed
         | LoginError::NotMember(_)
         | LoginError::Unsupported(_)
         | LoginError::Status { .. }
@@ -492,6 +548,62 @@ mod tests {
     }
 
     #[test]
+    fn server_removal_approval_keeps_volume_data_on_disk() {
+        let asked: Asked = serde_json::from_value(serde_json::json!({
+            "approval_id": "a1", "approval": "d1",
+            "effects": [{ "kind": "deletes_volume", "name": "pgdata", "node": "v1", "path": "volumes/v1" }],
+            "operation": { "subject": "server:box", "verb": "remove", "name": "box" },
+        })).unwrap();
+        let review = asked.review(asked.verb()).join("\n");
+        assert!(review.contains("loses access to Volume pgdata"), "{review}");
+        assert!(
+            review.contains("its data stays on the Server's disk until wiped"),
+            "{review}"
+        );
+        assert!(
+            review.contains("Wipe or reinstall the disk to erase it"),
+            "{review}"
+        );
+        assert!(
+            review.contains("sudo ployz-uninstall keeps the data"),
+            "{review}"
+        );
+        assert!(!review.contains("deletes Volume"), "{review}");
+        assert!(!review.contains("destroys"), "{review}");
+    }
+
+    #[test]
+    fn volume_deletion_approval_still_says_it_deletes_data() {
+        for (subject, verb) in [
+            (Some("project:shop"), "remove"),
+            (Some("namespace:shop"), "clean"),
+            (Some("server:box"), "clean"),
+            (Some("server:box"), "forget"),
+            (Some("servers:acme"), "forget"),
+            (None, "remove"),
+        ] {
+            let mut operation = serde_json::json!({ "verb": verb, "name": "shop" });
+            if let Some(subject) = subject {
+                operation
+                    .as_object_mut()
+                    .unwrap()
+                    .insert("subject".into(), subject.into());
+            }
+            let asked: Asked = serde_json::from_value(serde_json::json!({
+                "approval_id": "a1", "approval": "d1",
+                "effects": [{ "kind": "deletes_volume", "name": "pgdata", "node": "v1", "path": "volumes/v1" }],
+                "operation": operation,
+            })).unwrap();
+            assert!(
+                asked
+                    .review(asked.verb())
+                    .join("\n")
+                    .contains("deletes Volume pgdata and its data")
+            );
+        }
+    }
+
+    #[test]
     fn a_role_change_reads_as_a_change_in_its_organization() {
         let asked = asked("set", "changes_role");
         assert_eq!(
@@ -590,6 +702,23 @@ mod tests {
                 "    Changes after 2026-10-08T11:27:00+02:00 are not in pg-data-0927",
             ]
         );
+    }
+
+    #[test]
+    fn a_protected_ask_waits_for_someone_else_even_at_a_terminal() {
+        let ask = |protected: serde_json::Value| -> Asked {
+            serde_json::from_value(serde_json::json!({
+                "approval_id": "a1",
+                "approval": "d1",
+                "effects": [],
+                "operation": { "verb": "move", "name": "pg-data" },
+                "protected": protected,
+            }))
+            .unwrap()
+        };
+        assert!(ask(serde_json::json!({ "environment": "production" })).for_someone_else());
+        assert!(ask(serde_json::json!(true)).for_someone_else());
+        assert!(!ask(serde_json::Value::Null).for_someone_else());
     }
 
     /// Cloud names every operation it gates with one of its `OperationVerb`s; one this CLI

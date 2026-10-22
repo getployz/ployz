@@ -1,4 +1,4 @@
-use std::{io, net::SocketAddr, pin::Pin, time::Duration};
+use std::{io, net::SocketAddr, pin::Pin, sync::Arc, time::Duration};
 
 use bytes::Bytes;
 use futures_util::{Stream, StreamExt, TryStreamExt};
@@ -11,6 +11,13 @@ use tokio_util::{
 };
 
 use super::Error;
+
+/// Requests this client keeps in flight at once on each of Corrosion's query and
+/// transaction routes. Corrosion sheds every request past 128 in flight on a
+/// route with an immediate 503, and a Deploy's rotation guards can fan out far
+/// more reads than that. Each route gets its own gate, so writes never queue
+/// behind a burst of reads.
+const MAX_IN_FLIGHT: usize = 32;
 
 #[derive(Clone, Debug, Serialize)]
 pub(crate) struct Statement {
@@ -31,6 +38,8 @@ impl Statement {
 pub(crate) struct ApiClient {
     base_url: Url,
     client: Client,
+    queries: Arc<tokio::sync::Semaphore>,
+    transactions: Arc<tokio::sync::Semaphore>,
 }
 
 impl ApiClient {
@@ -70,7 +79,39 @@ impl ApiClient {
             .default_headers(headers)
             .retry(retry)
             .build()?;
-        Ok(Self { base_url, client })
+        Ok(Self {
+            base_url,
+            client,
+            queries: Arc::new(tokio::sync::Semaphore::new(MAX_IN_FLIGHT)),
+            transactions: Arc::new(tokio::sync::Semaphore::new(MAX_IN_FLIGHT)),
+        })
+    }
+
+    /// Run one request under the I/O timeout, counting the wait for an in-flight
+    /// slot against it. A wait that runs out names this daemon's own queue, not
+    /// Corrosion.
+    async fn bounded<T>(
+        gate: &tokio::sync::Semaphore,
+        request: impl std::future::Future<Output = Result<T, Error>>,
+    ) -> Result<T, Error> {
+        let deadline = tokio::time::Instant::now() + super::IO_TIMEOUT;
+        let permit = tokio::time::timeout_at(deadline, gate.acquire()).await;
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        let (Ok(permit), false) = (permit, remaining.is_zero()) else {
+            return Err(Error::Io(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "timed out waiting for a free Corrosion request slot",
+            )));
+        };
+        let _permit = permit.expect("the semaphore is never closed");
+        tokio::time::timeout(remaining, request)
+            .await
+            .unwrap_or_else(|_| {
+                Err(Error::Io(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "Corrosion I/O timed out",
+                )))
+            })
     }
 
     pub(crate) async fn execute(
@@ -79,7 +120,7 @@ impl ApiClient {
     ) -> Result<(), Error> {
         let statements = statements.into_iter().collect::<Vec<_>>();
         // ponytail: finite query responses are buffered; stream events if store size makes this measurable.
-        let (status, body) = super::within_io_timeout(async {
+        let (status, body) = Self::bounded(&self.transactions, async {
             let response = self
                 .client
                 .post(self.base_url.join("v1/transactions").expect("static path"))
@@ -125,7 +166,7 @@ impl ApiClient {
     }
 
     pub(crate) async fn query(&self, statement: Statement) -> Result<QueryResult, Error> {
-        let (status, body) = super::within_io_timeout(async {
+        let (status, body) = Self::bounded(&self.queries, async {
             let response = self
                 .client
                 .post(self.base_url.join("v1/queries").expect("static path"))
@@ -177,42 +218,56 @@ impl ApiClient {
         Ok(QueryResult { columns, rows })
     }
 
+    /// Open a subscription and drain its initial snapshot.
+    ///
+    /// Only the opening is bounded. A quiet table sends nothing after its
+    /// snapshot, so a caller that must notice a stream gone silent re-reads
+    /// on its own interval.
+    ///
+    /// # Errors
+    ///
+    /// Returns a timed-out I/O error when Corrosion does not finish the
+    /// snapshot within the I/O timeout, and otherwise any request or protocol
+    /// failure.
     pub(crate) async fn subscribe(&self, statement: Statement) -> Result<Subscription, Error> {
-        let response = self
-            .client
-            .post(self.base_url.join("v1/subscriptions").expect("static path"))
-            .json(&statement)
-            .send()
-            .await?;
-        let status = response.status();
-        if !status.is_success() {
-            return Err(Error::Api(format!(
-                "HTTP {status}: {}",
-                response.text().await?
-            )));
-        }
-        let chunks: ByteStream = Box::pin(response.bytes_stream().map_err(io::Error::other));
-        let mut subscription = Subscription {
-            lines: FramedRead::new(
-                StreamReader::new(chunks),
-                LinesCodec::new_with_max_length(8 * 1024 * 1024),
-            ),
-            snapshot_in_progress: false,
-        };
-        match subscription.next_event().await? {
-            QueryEvent::Columns(_) => {
-                subscription.snapshot_in_progress = true;
-                subscription.finish_snapshot().await?;
-                Ok(subscription)
+        super::within_io_timeout(async {
+            let response = self
+                .client
+                .post(self.base_url.join("v1/subscriptions").expect("static path"))
+                .json(&statement)
+                .send()
+                .await?;
+            let status = response.status();
+            if !status.is_success() {
+                return Err(Error::Api(format!(
+                    "HTTP {status}: {}",
+                    response.text().await?
+                )));
             }
-            QueryEvent::Change(_) => Err(Error::Protocol(
-                "subscription change preceded end-of-query".into(),
-            )),
-            QueryEvent::Error(error) => Err(Error::Api(error)),
-            QueryEvent::Row(_, _) | QueryEvent::EndOfQuery { .. } => Err(Error::Protocol(
-                "subscription snapshot event arrived without columns".into(),
-            )),
-        }
+            let chunks: ByteStream = Box::pin(response.bytes_stream().map_err(io::Error::other));
+            let mut subscription = Subscription {
+                lines: FramedRead::new(
+                    StreamReader::new(chunks),
+                    LinesCodec::new_with_max_length(8 * 1024 * 1024),
+                ),
+                snapshot_in_progress: false,
+            };
+            match subscription.next_event().await? {
+                QueryEvent::Columns(_) => {
+                    subscription.snapshot_in_progress = true;
+                    subscription.finish_snapshot().await?;
+                    Ok(subscription)
+                }
+                QueryEvent::Change(_) => Err(Error::Protocol(
+                    "subscription change preceded end-of-query".into(),
+                )),
+                QueryEvent::Error(error) => Err(Error::Api(error)),
+                QueryEvent::Row(_, _) | QueryEvent::EndOfQuery { .. } => Err(Error::Protocol(
+                    "subscription snapshot event arrived without columns".into(),
+                )),
+            }
+        })
+        .await
     }
 }
 
@@ -387,7 +442,7 @@ mod tests {
         time::Duration,
     };
 
-    use axum::{Router, body::Body, routing::post};
+    use axum::{Router, body::Body, response::IntoResponse, routing::post};
     use bytes::Bytes;
     use tokio::{net::TcpListener, sync::mpsc};
     use tokio_stream::wrappers::UnboundedReceiverStream;
@@ -470,6 +525,170 @@ mod tests {
         .await
         .expect("hung query must fail")
         .expect_err("hung query must fail");
+        assert!(
+            matches!(error, super::Error::Io(ref error) if error.kind() == std::io::ErrorKind::TimedOut),
+            "{error}"
+        );
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn a_burst_of_queries_stays_under_corrosions_load_shed_limit() {
+        const CORROSION_ROUTE_LIMIT: usize = 128;
+        let in_flight = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server_in_flight = in_flight.clone();
+        let server = tokio::spawn(async move {
+            axum::serve(
+                listener,
+                Router::new().route(
+                    "/v1/queries",
+                    post(move || {
+                        let in_flight = server_in_flight.clone();
+                        async move {
+                            use std::sync::atomic::Ordering;
+                            let now = in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+                            let response = if now > CORROSION_ROUTE_LIMIT {
+                                (
+                                    axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                                    "max concurrency limit reached",
+                                )
+                                    .into_response()
+                            } else {
+                                tokio::time::sleep(Duration::from_millis(20)).await;
+                                "{\"columns\":[\"x\"]}\n{\"eoq\":{\"time\":0.0}}\n".into_response()
+                            };
+                            in_flight.fetch_sub(1, Ordering::SeqCst);
+                            response
+                        }
+                    }),
+                ),
+            )
+            .await
+            .unwrap();
+        });
+        let client = ApiClient::new(address, &"a".repeat(64)).unwrap();
+        let results = futures_util::future::join_all(
+            (0..3 * CORROSION_ROUTE_LIMIT).map(|_| client.query(Statement::new("SELECT x", []))),
+        )
+        .await;
+        let failures = results.iter().filter(|result| result.is_err()).count();
+        assert_eq!(
+            failures,
+            0,
+            "{:?}",
+            results.into_iter().find_map(Result::err)
+        );
+        server.abort();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_query_that_never_gets_a_slot_names_the_queue() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(
+                listener,
+                Router::new().route(
+                    "/v1/queries",
+                    post(|| async { std::future::pending::<Body>().await }),
+                ),
+            )
+            .await
+            .unwrap();
+        });
+        let client = ApiClient::new(address, &"a".repeat(64)).unwrap();
+        let results = futures_util::future::join_all(
+            (0..=super::MAX_IN_FLIGHT).map(|_| client.query(Statement::new("SELECT 1", []))),
+        )
+        .await;
+        let messages = results
+            .into_iter()
+            .map(|result| {
+                ployz_core::error_chain::inline(&result.expect_err("hung query must fail"))
+            })
+            .collect::<Vec<_>>();
+        let queued = messages
+            .iter()
+            .filter(|message| message.contains("waiting for a free Corrosion request slot"))
+            .count();
+        assert_eq!(queued, 1, "{messages:?}");
+        server.abort();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_transaction_does_not_wait_behind_queued_queries() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(
+                listener,
+                Router::new()
+                    .route(
+                        "/v1/queries",
+                        post(|| async { std::future::pending::<Body>().await }),
+                    )
+                    .route(
+                        "/v1/transactions",
+                        post(|| async {
+                            "{\"results\":[{\"rows_affected\":1,\"time\":0.0}],\"time\":0.0}"
+                        }),
+                    ),
+            )
+            .await
+            .unwrap();
+        });
+        let client = ApiClient::new(address, &"a".repeat(64)).unwrap();
+        let held = (0..=super::MAX_IN_FLIGHT)
+            .map(|_| {
+                let client = client.clone();
+                tokio::spawn(async move { client.query(Statement::new("SELECT 1", [])).await })
+            })
+            .collect::<Vec<_>>();
+        tokio::task::yield_now().await;
+        client
+            .execute([Statement::new("INSERT INTO t VALUES (1)", [])])
+            .await
+            .expect("a write must not queue behind reads");
+        for task in held {
+            task.abort();
+        }
+        server.abort();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn subscribe_times_out_when_the_snapshot_never_finishes() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(
+                listener,
+                Router::new().route(
+                    "/v1/subscriptions",
+                    post(|| async {
+                        let columns = futures_util::stream::once(async {
+                            Ok::<_, Infallible>(Bytes::from_static(b"{\"columns\":[\"id\"]}\n"))
+                        });
+                        Body::from_stream(futures_util::StreamExt::chain(
+                            columns,
+                            futures_util::stream::pending(),
+                        ))
+                    }),
+                ),
+            )
+            .await
+            .unwrap();
+        });
+        let client = ApiClient::http1(address, &"a".repeat(64)).unwrap();
+        let error = tokio::time::timeout(
+            IO_TIMEOUT + Duration::from_secs(1),
+            client.subscribe(Statement::new("SELECT id FROM test", [])),
+        )
+        .await
+        .expect("stalled subscription snapshot must fail")
+        .err()
+        .expect("stalled subscription snapshot must fail");
         assert!(
             matches!(error, super::Error::Io(ref error) if error.kind() == std::io::ErrorKind::TimedOut),
             "{error}"

@@ -35,6 +35,8 @@ function InvitePage() {
           <Notice title="This invite doesn't exist" detail="Check the link, or ask for a new one." signedIn={session !== null} />
         ) : invite.member ? (
           <Member invite={invite} />
+        ) : invite.membershipEnded ? (
+          <Notice title="Membership ended" detail={`Ask someone in ${invite.organization} for a new invite.`} signedIn />
         ) : invite.state !== "pending" ? (
           <Notice title={UNUSABLE[invite.state]} detail={`Ask someone in ${invite.organization} for a new one.`} signedIn={session !== null} />
         ) : session ? (
@@ -52,7 +54,7 @@ function Notice({ title, detail, signedIn }: { title: string; detail: string; si
     <div className="flex flex-col items-center gap-6 text-center">
       <PloyzMark className="size-11" decorative />
       <div className="flex flex-col gap-2">
-        <h1 className="text-xl font-semibold">{title}</h1>
+        <h1 className="text-2xl font-semibold">{title}</h1>
         <p className="text-sm text-muted-foreground">{detail}</p>
       </div>
       <Link to={signedIn ? "/cloud" : "/auth"} className={buttonVariants({ variant: "outline" })}>
@@ -66,7 +68,7 @@ function Member({ invite }: { invite: Invite }) {
   return (
     <div className="flex flex-col items-center gap-6 text-center">
       <PloyzMark className="size-11" decorative />
-      <h1 className="text-xl font-semibold">You're in {invite.organization}</h1>
+      <h1 className="text-2xl font-semibold">You're in {invite.organization}</h1>
       <Link to="/cloud/$organizationSlug/~" params={{ organizationSlug: invite.slug }} reloadDocument className={buttonVariants({ variant: "outline" })}>
         Open
       </Link>
@@ -98,7 +100,7 @@ function Join({ invite, email }: { invite: Invite; email: string }) {
     <div className="flex flex-col items-center gap-6 text-center">
       <PloyzMark className="size-11" decorative />
       <div className="flex flex-col gap-1">
-        <h1 className="text-xl font-semibold">Join {invite.organization}</h1>
+        <h1 className="text-2xl font-semibold">Join {invite.organization}</h1>
         <p className="text-sm text-muted-foreground">
           {invite.invitedBy} invited you as {invite.role === "admin" ? "an admin" : "a member"}. You're signed in as {email}.
         </p>

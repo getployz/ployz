@@ -261,6 +261,7 @@ pub(super) fn may_have_acted(error: &StoreCallError) -> bool {
             | LoginError::Ended
             | LoginError::AwaitingApproval { .. }
             | LoginError::TokenRefused
+            | LoginError::TokenMalformed
             | LoginError::NotMember(_)
             | LoginError::TokenBound
             | LoginError::UnknownOrganization(_)

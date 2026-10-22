@@ -15,7 +15,7 @@ const volume = asTestDouble<VolumeListing>()({ id: "vol-1", name: "data", mounts
 const minutesAgo = (minutes: number) => new Date(Date.now() - minutes * 60_000);
 const mirror = (extra: Partial<MirrorCopy> = {}): MirrorCopy => ({
   kind: "mirror", id: "m2", server: { id: "m2" as MachineId, name: "web-2" }, name: "data-web-2", refreshedAt: minutesAgo(4),
-  skipped: null, staged: null, busy: null, ...extra,
+  skipped: null, lastReported: false, staged: null, busy: null, ...extra,
 });
 const offsite: OffsiteCopy = {
   kind: "offsite", id: "acme-backups", bucket: "acme-backups", region: "eu-central-1", keep: 7, uploadedAt: minutesAgo(10), staged: null, busy: null,
@@ -25,8 +25,9 @@ const old: OldCopy = {
 };
 const copiesOf = (elsewhere: VolumeCopies["elsewhere"]): VolumeCopies => ({
   volume: { id: volume.id, name: volume.name },
-  live: { server: { id: "m1" as MachineId, name: "web-1" }, restore: null, moveTo: null, busy: null, snapshots: null },
+  live: { server: { id: "m1" as MachineId, name: "web-1", state: "live" }, restore: null, moveTo: null, busy: null, snapshots: null },
   elsewhere,
+  unheard: [],
 });
 
 afterEach(cleanup);
@@ -74,23 +75,25 @@ it("shows a busy mirror with a spinner and what it is doing", async () => {
   expect(node().querySelector("[aria-hidden]")).not.toBeNull();
 });
 
-it("shows a staged mirror green with New", async () => {
+it("shows a staged mirror pink with New", async () => {
   await show([mirror({ staged: "new", refreshedAt: null })]);
   expect(within(node()).getByText("New")).toBeTruthy();
-  expect(node().className).toMatch(/bg-success-soft/);
+  expect(node().getAttribute("data-changed")).toBe("true");
+  expect(node().className).toMatch(/data-\[changed=true\]:bg-changed-soft/);
 });
 
 it("shows a staged removal red and struck through with Removing", async () => {
   await show([mirror({ staged: "removing" })]);
   expect(node().textContent).toBe("data-web-2Removing");
   expect(node().className).toMatch(/bg-destructive-soft/);
+  expect(node().hasAttribute("data-changed")).toBe(false);
   expect(within(node()).getByText("data-web-2").className).toMatch(/line-through/);
 });
 
-it("shows a mirror staged to become the Primary blue, with Primary", async () => {
+it("shows a mirror staged to become the Primary pink, with Primary", async () => {
   await show([mirror({ staged: "primary" })]);
   expect(within(node()).getByText("Primary")).toBeTruthy();
-  expect(node().className).toMatch(/bg-info-soft/);
+  expect(node().getAttribute("data-changed")).toBe("true");
 });
 
 it("hangs the offsite copy beside the mirror on one bar, and never the old copy", async () => {
@@ -109,4 +112,10 @@ it("draws a single card without a bar", async () => {
 it("hangs nothing under a Volume whose only other copy is old", async () => {
   await show([old]);
   expect(document.querySelector("[data-copy]")).toBeNull();
+});
+
+it("names a mirror known only from its silent Server's last report as last reported", async () => {
+  await show([mirror({ lastReported: true })]);
+  const link = screen.getByRole("link", { name: "data-web-2, last reported mirror of data" });
+  expect(link.textContent).toMatch(/^data-web-2Last reported · /);
 });

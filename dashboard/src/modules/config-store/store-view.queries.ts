@@ -416,7 +416,23 @@ export function useStoreView<Q extends ConfigQuery>(organizationSlug: string, qu
  * other. The canvas lights an open Deployment Page's nodes from the view that page's loader prefetched.
  */
 export function useCachedStoreView<Q extends ConfigQuery>(organizationSlug: string, query: Q | null): StoreResult<StoreViewOf<Q>> | undefined {
+  return useCachedQuery(organizationSlug, query)?.data;
+}
+
+/** A Store view as last read, if ever, and whether its latest read failed. */
+export type CachedStoreRead<T> = { result: StoreResult<T> | undefined; failed: boolean };
+
+/**
+ * `useCachedStoreView`, with whether its latest read failed. Each refetch puts an unanswered query back to pending, so
+ * only the read times remember a failure.
+ */
+export function useCachedStoreRead<Q extends ConfigQuery>(organizationSlug: string, query: Q | null): CachedStoreRead<StoreViewOf<Q>> {
+  const read = useCachedQuery(organizationSlug, query);
+  return { result: read?.data, failed: read !== undefined && read.errorUpdatedAt > read.dataUpdatedAt };
+}
+
+function useCachedQuery<Q extends ConfigQuery>(organizationSlug: string, query: Q | null) {
   const scope = useCollectionScope();
   const queries: ReturnType<typeof storeViewOptions<Q>>[] = query ? [storeViewOptions(organizationSlug, scope, query)] : [];
-  return useQueries({ queries })[0]?.data;
+  return useQueries({ queries })[0];
 }

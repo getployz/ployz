@@ -1,5 +1,5 @@
 import { it } from "@effect/vitest";
-import { Effect, Layer } from "effect";
+import { Effect } from "effect";
 import { expect } from "vitest";
 import { cloudStore } from "#/modules/config-store/store-sdk.server";
 import { operationsOn } from "#/modules/operations/operation-history.server";
@@ -37,7 +37,7 @@ it.live("offers to remove only Namespaces no Environment owns, and refuses an ow
 
 // Catches a clean that never started or was lost reaching the agent with no reason.
 it.live("says why a clean ended without the Engine's words", () => Effect.gen(function* () {
-  const services = yield* Layer.build(yield* storeTestCloud());
+  const services = yield* storeTestCloud();
   const userId = yield* seedStoreOrganization(ORGANIZATION).pipe(Effect.provide(services));
   const { drizzle } = yield* Database.pipe(Effect.provide(services));
   const NOT_STARTED = "00000000-0000-4000-8000-00000000e011";

@@ -26,18 +26,21 @@ New to Ployz? Follow these steps from a first deploy to real users.
 
 - [Deploy from GitHub](deploy/github.md): connect GitHub, deploy on push, wait for CI, monorepos
 - [Deploy a Docker image](deploy/docker-image.md): public and private registries
-- [Deployments](deploy/deployments.md): staged changes, Deploy, following and fixing a deployment
+- [Deployments](deploy/deployments.md): staged changes, Deploy, following a deployment, confirming data loss
+- [History and rollback](deploy/history-and-rollback.md): saved versions, undo, roll back, redeploy or cancel
+- [Deploy without downtime](deploy/zero-downtime.md): health checks, update order, servers cut off mid-deploy
 
 ## Services
 
 - [Services](services/services.md): add, rename, restart or delete a service
-- [Service settings](services/settings.md): what each field does; the dashboard links here
+- [Service settings](services/settings.md): what each field does
 - [Variables](services/variables.md): variables, secrets, references between services
 - [Databases](services/databases.md): PostgreSQL, MySQL, Redis and MongoDB, connecting, backups
 - [Volumes](services/volumes.md): files that survive deploys
 - [Configs](services/configs.md): shared text files mounted read-only into services
-- [Move a volume](services/move-a-volume.md): mirror a volume and move it to another server
-- [Restore a volume](services/restore-a-volume.md): bring a volume back to an earlier point as a new volume
+- [Mirror a volume](services/mirror-a-volume.md): keep a read-only copy of a volume on a second server
+- [Move a volume](services/move-a-volume.md): move a volume and its service to another server
+- [Restore a volume](services/restore-a-volume.md): bring a volume back to an earlier point, or restore it in place
 - [Domains](services/domains.md): generated addresses, custom domains, https
 - [Private networking](services/private-networking.md): how services reach each other
 - [Scaling and multiple servers](services/scaling.md): replicas, more servers, when a server goes down
@@ -57,6 +60,7 @@ New to Ployz? Follow these steps from a first deploy to real users.
 ## Servers
 
 - [Add a server](servers/add-a-server.md): requirements, the install command, the ports to open
+- [Add many servers](servers/add-many-servers.md): one Fleet Token for several servers, reviewed before they join
 - [Manage servers](servers/manage-servers.md): status, upgrades, removing a server
 
 ## Observe
@@ -69,7 +73,7 @@ New to Ployz? Follow these steps from a first deploy to real users.
 ## Account
 
 - [Your account](account/account.md): your profile, where you're signed in, signing a browser out
-- [Organizations and billing](account/organizations.md): your organization, deleting it, Pro
+- [Organizations and billing](account/organizations.md): your organization, deleting it, billing
 - [Permissions](account/permissions.md): roles, tokens, Protected environments and approvals in one place
 - [Try Ployz without an account](account/try-without-an-account.md): let an agent start in a sandbox, then claim it
 - [Notifications](account/notifications.md): choose which emails you get, and unsubscribe from one
@@ -89,3 +93,4 @@ New to Ployz? Follow these steps from a first deploy to real users.
 - [My app isn't reachable](troubleshooting/app-not-reachable.md): error pages, wrong ports, domains and certificates
 - [Trace a request](troubleshooting/trace.md): which server answered, its deploy and replicas, Cloudflare
 - [Servers](troubleshooting/servers.md): install failures, servers that don't join or go offline, full disks
+- [Volumes](troubleshooting/volumes.md): moves that stop partway, busy volumes, a server lost mid-move

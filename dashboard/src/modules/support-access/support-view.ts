@@ -108,8 +108,11 @@ function redactions(shows: SupportShows) {
       view.removal === "removing" ? { ...view, left: view.left.map((left) => ({ ...left, deployment: maybeSummary(left.deployment) })) } : view,
     automated: <T extends Automated>(view: T): T =>
       ({ ...view, admitted: view.admitted.map((admitted) => ({ ...admitted, deployment: summary(admitted.deployment) })) }),
-    deployment: <T extends DeploymentView>(view: T): T =>
-      ({ ...summary(view), nodes: view.nodes.map((node) => ({ ...node, rows: node.rows.map(server) })) }),
+    deployment: <T extends DeploymentView>(view: T): T => {
+      const shown = { ...summary(view), nodes: view.nodes.map((node) => ({ ...node, rows: node.rows.map(server) })) };
+      if (view.untargeted) shown.untargeted = Object.fromEntries(Object.entries(view.untargeted).map(([name, rows]) => [name, rows.map(server)]));
+      return shown;
+    },
   };
 }
 

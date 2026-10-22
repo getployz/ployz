@@ -1,6 +1,7 @@
 import { generateKeyPairSync, sign } from "node:crypto";
+import { inspect } from "node:util";
 import { testConfigEnvironment } from "#/test/config-environment";
-import { loadOrganizationConnections } from "#/modules/machines/connections.server";
+import { loadOrganizationConnections, SERVER_REACH_TIMEOUT_MS } from "#/modules/machines/connections.server";
 import type { Client, ConnectOptions, EnrollmentAssignment, EnrollmentSnapshot, RuntimeWatchView } from "@ployz/sdk";
 import { registerRequestFromEnrollmentIdentity, rustMachineIdSchema } from "./enrollment";
 import { ConfigProvider, Effect, Exit, Layer, ManagedRuntime, Result, Schema } from "effect";
@@ -42,7 +43,7 @@ import { disableOrganizationPairing, dropRemovedServer, revokeOrganizationPairin
 import { asTestDouble } from "#/lib/test-double";
 import { readCollection } from "#/collections/read.server";
 import { firstRuntimeFrame, OrganizationRuntime, OrganizationRuntimeLive, SESSION_CLOSE_CLUSTER_MS } from "#/modules/runtime/organization-runtime.server";
-import { makePloyzLayer } from "#/modules/runtime/ployz.server";
+import { makePloyzLayer, RpcError } from "#/modules/runtime/ployz.server";
 import { InngestClient } from "#/modules/inngest/client";
 import { GithubApi } from "#/modules/github/github-observation.api";
 import { Polar } from "#/modules/billing/polar-provider.server";
@@ -101,7 +102,7 @@ function fakeSession(database: PostgresTestHarness["database"]) {
     beforeRegister: async (_assignment: EnrollmentAssignment) => {},
   };
   /** The Machines each Runtime Watch frame reports, as `[id, name]`. */
-  const cluster = { frames: [] as Array<Array<[string, string]>> };
+  const cluster = { frames: [] as Array<Array<[string, string]>>, snapshot };
   const coordinator = enrollmentTestClient(database, async (options) => {
     connected.push(options);
     aborts.watch(options.signal);
@@ -112,7 +113,7 @@ function fakeSession(database: PostgresTestHarness["database"]) {
         closed += 1;
         return connection.closeHangs ? new Promise<void>(() => {}) : Promise.resolve();
       },
-      observeEnrollment: async () => { observations += 1; return snapshot; },
+      observeEnrollment: async () => { observations += 1; return cluster.snapshot; },
       register: async (assignment: EnrollmentAssignment) => {
         registerCalls += 1;
         published.push(assignment);
@@ -753,6 +754,74 @@ describe("organization enrollment coordinator", () => {
     expect(fake.aborts.aborted().at(-1)).toBe(true);
   }, 30_000);
 
+  const cantReach = expect.objectContaining({
+    _tag: "Unavailable", userFacing: true, message: expect.stringContaining("through the relay or directly"),
+  });
+
+  const undialed = () => new RpcError({ code: "unavailable", message: "tcp connect error", details: null, unanswered: true });
+  const unrouted = () => new RpcError({ code: "unavailable", message: "relay could not dial", details: null, targetUnreached: true });
+  const refused = () => new RpcError({ code: "permission_denied", message: "identity mismatch", details: null });
+
+  it.each([
+    ["the dial fails", (fake: ReturnType<typeof fakeSession>) => { fake.connection.error = undialed(); }],
+    ["the entry can't dial it", (fake: ReturnType<typeof fakeSession>) => { fake.connection.error = unrouted(); }],
+    ["nothing answers in time", (fake: ReturnType<typeof fakeSession>) => { fake.connection.beforeConnect = () => new Promise(() => {}); }],
+  ])("answers a refresh Cloud can't reach because %s with a retryable 503 that says why", async (_case, unreachable) => {
+    const fake = fakeSession(harness.database);
+    const attempt = await pendingFounder(fake);
+    await fake.coordinator.publish({ ...attempt, capability });
+    unreachable(fake);
+    const refreshed = await fake.coordinator.publish({ ...attempt, capability: "ployz1:rotated" });
+    if (!Result.isFailure(refreshed)) throw new Error("Refresh succeeded without reaching the Machine");
+    expect(refreshed.failure).toEqual(cantReach);
+    expect(statusForPublicError(encodePublicError(refreshed.failure))).toBe(503);
+  }, 45_000);
+
+  it("keeps a Server's refusal of a refresh, so the Server doesn't retry it as unreachable", async () => {
+    const fake = fakeSession(harness.database);
+    const attempt = await pendingFounder(fake);
+    await fake.coordinator.publish({ ...attempt, capability });
+    fake.connection.error = refused();
+    const refreshed = await fake.coordinator.publish({ ...attempt, capability: "ployz1:rotated" });
+    if (!Result.isFailure(refreshed)) throw new Error("Refresh succeeded past the Server's refusal");
+    expect(refreshed.failure).toMatchObject({ _tag: "PloyzProviderError" });
+    expect(statusForPublicError(encodePublicError(refreshed.failure))).not.toBe(503);
+  });
+
+  it("answers a completion Cloud can't reach with a retryable 503 that says why, within its reach time", async () => {
+    const fake = fakeSession(harness.database);
+    const attempt = await pendingFounder(fake);
+    await fake.coordinator.publish({ ...attempt, capability });
+    fake.connection.beforeConnect = () => new Promise(() => {});
+    const started = performance.now();
+    const completed = await fake.coordinator.completeFounding(attempt);
+    expect(performance.now() - started).toBeLessThan(SERVER_REACH_TIMEOUT_MS + 2_000);
+    if (!Result.isFailure(completed)) throw new Error("Completion succeeded without reaching the Machine");
+    expect(completed.failure).toEqual(cantReach);
+    expect(statusForPublicError(encodePublicError(completed.failure))).toBe(503);
+  }, 45_000);
+
+  it("doesn't call a completion that failed without the SDK's answer a refusal", async () => {
+    const fake = fakeSession(harness.database);
+    const attempt = await pendingFounder(fake);
+    await fake.coordinator.publish({ ...attempt, capability });
+    fake.connection.error = new Error("Connecting to the organization's machines timed out");
+    const completed = await fake.coordinator.completeFounding(attempt);
+    if (!Result.isFailure(completed)) throw new Error("Completion succeeded without reaching the Machine");
+    expect(completed.failure).toEqual(cantReach);
+  });
+
+  it("names a Server's refusal of completion instead of blaming the relay", async () => {
+    const fake = fakeSession(harness.database);
+    const attempt = await pendingFounder(fake);
+    await fake.coordinator.publish({ ...attempt, capability });
+    fake.connection.error = refused();
+    const completed = await fake.coordinator.completeFounding(attempt);
+    if (!Result.isFailure(completed)) throw new Error("Completion succeeded past the Server's refusal");
+    expect(completed.failure).toMatchObject({ _tag: "Unavailable", message: "This Server refused Cloud's connection." });
+    expect(statusForPublicError(encodePublicError(completed.failure))).toBe(503);
+  });
+
   const keyed = (key: number, secret = 0xee) => `ployz1:${Buffer.concat([Buffer.alloc(32, key), Buffer.alloc(32, secret)]).toString("base64url")}`;
 
   it("keeps the management key a refreshed capability carries, and asks for its push target again", async () => {
@@ -785,14 +854,17 @@ describe("organization enrollment coordinator", () => {
     expect(fake.connected).toHaveLength(connections);
   });
 
-  it.each(["unreachable", "identity mismatch"])("preserves saved credentials when refresh verification fails: %s", async (message) => {
+  it.each([
+    ["unreachable", undialed, "Unavailable"],
+    ["identity mismatch", refused, "PloyzProviderError"],
+  ])("preserves saved credentials when refresh verification fails: %s", async (_case, error, tag) => {
     const fake = fakeSession(harness.database);
     const attempt = await pendingFounder(fake);
     await fake.coordinator.publish({ ...attempt, capability });
     const before = await harness.pool.query("select * from organization_machine");
-    fake.connection.error = new Error(message);
+    fake.connection.error = error();
     expect(await fake.coordinator.publish({ ...attempt, capability: "ployz1:unverified" }))
-      .toMatchObject({ failure: { _tag: "PloyzProviderError" } });
+      .toMatchObject({ failure: { _tag: tag } });
     expect((await harness.pool.query("select * from organization_machine")).rows).toEqual(before.rows);
   });
 
@@ -1040,6 +1112,63 @@ describe("organization enrollment coordinator", () => {
     expect(await fake.coordinator.tryRevokePairing(organizationId)).toBe(false);
   });
 
+  const sealingKeys = () => harness.pool.query<{ cluster_key: string; public_key: string }>(
+    "select cluster_key, public_key from cluster_sealing_key where organization_id = $1", [organizationId],
+  ).then((result) => result.rows);
+  const held = (letter: string) => ({ kind: "held" as const, publicKey: `${letter.repeat(43)}=` });
+  /** Effect's default logger writes every level through `console.log`, naming the level before the message. */
+  const logged = (level: "WARN" | "ERROR", text: string) => {
+    const spy = vi.spyOn(console, "log");
+    return {
+      count: () => spy.mock.calls.map((args) => inspect(args, { depth: null })).filter((line) => line.includes(` ${level} `) && line.includes(text)).length,
+      [Symbol.dispose]: () => spy.mockRestore(),
+    };
+  };
+
+  it("keeps the first Sealing Key its pairing reports and logs a different one as an error", async () => {
+    const fake = fakeSession(harness.database);
+    const founder = await pendingFounder(fake);
+    await fake.coordinator.publish({ ...founder, capability });
+    expect(await fake.coordinator.completeFounding({ ...founder, sealing: held("A") })).toMatchObject({ success: { machineId: founder.machineId } });
+    expect(await fake.coordinator.completeFounding({ ...founder, sealing: held("A") })).toMatchObject({ success: { machineId: founder.machineId } });
+    const recorded = [{ cluster_key: hashEnrollmentToken(founder.pairingCredential), public_key: held("A").publicKey }];
+    expect(await sealingKeys()).toEqual(recorded);
+
+    await fake.coordinator.enroll({ token: tokens[1] ?? "", identity: identity(1) });
+    const joiner = { token: tokens[1] ?? "", machineId: identity(1).machineId, pairingCredential: founder.pairingCredential };
+    await fake.coordinator.publish({ ...joiner, capability: "ployz1:joining" });
+    using errors = logged("ERROR", "unlike the one its Cluster first reported");
+    expect(await fake.coordinator.completeFounding({ ...joiner, sealing: held("B") })).toMatchObject({ success: { machineId: joiner.machineId } });
+    expect(await sealingKeys()).toEqual(recorded);
+    expect(errors.count()).toBe(1);
+  });
+
+  it("records no Sealing Key for a Server that joined without one, and warns", async () => {
+    const fake = fakeSession(harness.database);
+    const founder = await pendingFounder(fake);
+    await fake.coordinator.publish({ ...founder, capability });
+    using warnings = logged("WARN", "joined without its Cluster's Sealing Key");
+    expect(await fake.coordinator.completeFounding({ ...founder, sealing: { kind: "needs_access" } }))
+      .toMatchObject({ success: { machineId: founder.machineId } });
+    expect(await sealingKeys()).toEqual([]);
+    expect(warnings.count()).toBe(1);
+  });
+
+  it("drops the Sealing Key of a completion its Organization re-paired under", async () => {
+    const fake = fakeSession(harness.database);
+    const founder = await readyFounder(fake);
+    await fake.coordinator.enroll({ token: tokens[1] ?? "", identity: identity(1) });
+    const joiner = { token: tokens[1] ?? "", machineId: identity(1).machineId, pairingCredential: founder.pairingCredential };
+    await fake.coordinator.publish({ ...joiner, capability: "ployz1:joining" });
+    fake.connection.beforeConnect = async () => {
+      await harness.pool.query("update organization_pairing set encrypted_pairing_secret = $1::jsonb where organization_id = $2", [
+        JSON.stringify(enrollmentSettings.encryption.encrypt("ppair_replacement")), organizationId,
+      ]);
+    };
+    expect(await fake.coordinator.completeFounding({ ...joiner, sealing: held("B") })).toMatchObject({ failure: { _tag: "Conflict" } });
+    expect(await sealingKeys()).toEqual([]);
+  });
+
   it("retains an unconfirmed founding claim while reset disables Cloud access", async () => {
     const fake = fakeSession(harness.database);
     expect(await fake.coordinator.resetPendingEnrollment(organizationId)).toMatchObject({ success: { reset: true } });
@@ -1143,6 +1272,26 @@ describe("organization enrollment coordinator", () => {
     expect(first).toMatchObject({ success: { kind: "join" } });
     expect(again).toEqual(first);
     expect(new Set(fake.published.map((assignment) => JSON.stringify(assignment))).size).toBe(1);
+  });
+
+  it("answers a rerun for a Server that already joined from its own row, without registering it again", async () => {
+    const fake = fakeSession(harness.database);
+    const founder = await pendingFounder(fake);
+    await fake.coordinator.publish({ ...founder, capability });
+    await fake.coordinator.completeFounding(founder);
+    const token = await issueToken();
+    const first = await fake.coordinator.enroll({ token, identity: identity(1) });
+    const registered = fake.published[0]?.machine;
+    if (!Result.isSuccess(first) || first.success.kind !== "join" || !registered) throw new Error("expected a join");
+    // The Server joined and published its own row; its publish callback to Cloud was lost.
+    const joined = { ...registered, runtime: { ...registered.runtime, daemon_version: "0.9.0" } };
+    fake.cluster.snapshot = { ...snapshot, machines: [joined], target_versions: { machines: 7 } };
+    for (const rerun of [token, await issueToken()]) {
+      expect(await fake.coordinator.enroll({ token: rerun, identity: identity(1) })).toMatchObject({
+        success: { kind: "join", registration: { assigned_machine: joined, visible_peers: [], target_versions: { machines: 7 } } },
+      });
+    }
+    expect(fake.registerCalls()).toBe(1);
   });
 
   it("never lets a joiner token take or resume the Founding Claim", async () => {

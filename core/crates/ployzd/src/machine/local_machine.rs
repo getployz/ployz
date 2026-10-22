@@ -30,6 +30,7 @@ use crate::{
     docker::ContainerRuntime,
     host_capacity,
     network::{NetworkError, discover_network},
+    sealing_key::SealingKey,
 };
 
 const REDISCOVERY_RETRY_MIN: Duration = Duration::from_millis(250);
@@ -44,6 +45,7 @@ pub struct LocalMachine {
     containers: Option<ContainerRuntime>,
     plugin: crate::storage::Plugin,
     zpool: PathBuf,
+    proc_root: PathBuf,
     settled: container::SettledCreations,
 }
 
@@ -108,6 +110,8 @@ pub enum Error {
     NotParticipating,
     #[error("Cluster store is not available")]
     ClusterStoreUnavailable,
+    #[error("Cluster network is not published yet")]
+    ClusterNetworkUnpublished,
     #[error("Cluster is not available")]
     ClusterUnavailable,
     #[error("Docker is not available")]
@@ -128,6 +132,9 @@ pub enum Error {
     Docker(#[from] crate::docker::Error),
     #[error("{0}")]
     Cleanup(String),
+    /// An upgrade is running; the fence is retried once it ends.
+    #[error(transparent)]
+    FenceRefused(RpcError),
     #[error("local operation task failed")]
     OperationTask(#[from] tokio::task::JoinError),
     #[error("Register requires a client-selected Machine Subnet")]
@@ -136,6 +143,8 @@ pub enum Error {
     Admission(#[from] crate::mutation::Error),
     #[error(transparent)]
     Upgrade(#[from] crate::installer::upgrade::Error),
+    #[error(transparent)]
+    Seal(#[from] crate::sealing_key::SealError),
 }
 
 impl LocalMachine {
@@ -149,6 +158,7 @@ impl LocalMachine {
             containers: None,
             plugin: crate::storage::Plugin::default(),
             zpool: PathBuf::from("zpool"),
+            proc_root: PathBuf::from("/proc"),
             settled: container::SettledCreations::default(),
         }
     }
@@ -157,6 +167,13 @@ impl LocalMachine {
     #[must_use]
     pub(crate) fn with_zpool(mut self, program: impl Into<PathBuf>) -> Self {
         self.zpool = program.into();
+        self
+    }
+
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn with_proc_root(mut self, root: impl Into<PathBuf>) -> Self {
+        self.proc_root = root.into();
         self
     }
 
@@ -419,7 +436,31 @@ impl LocalMachine {
             storage,
             upgrade,
             token,
+            sealing: self.sealing(record.phase()),
         })
+    }
+
+    fn sealing(&self, phase: LocalMachinePhase) -> Option<ployz_core::Sealing> {
+        if !matches!(
+            phase,
+            LocalMachinePhase::Joining | LocalMachinePhase::Participating
+        ) {
+            return None;
+        }
+        match SealingKey::load(self.owner.data_dir()) {
+            Ok(Some(key)) => Some(ployz_core::Sealing::Held {
+                public_key: key.public_key(),
+            }),
+            Ok(None) => Some(ployz_core::Sealing::NeedsAccess),
+            Err(error) if error.kind() == std::io::ErrorKind::InvalidData => {
+                tracing::warn!(%error, "this Machine's Sealing Key is unusable");
+                Some(ployz_core::Sealing::NeedsAccess)
+            }
+            Err(error) => {
+                tracing::warn!(%error, "could not read the Sealing Key");
+                None
+            }
+        }
     }
 
     async fn token(
@@ -439,7 +480,7 @@ impl LocalMachine {
             } else {
                 requested_endpoints.to_vec()
             },
-            runtime: local_runtime(),
+            runtime: local_runtime(self.owner.data_dir()),
             memory_total_bytes: capacity.memory_total_bytes,
             disk_total_bytes: capacity.disk_total_bytes,
             disk_available_bytes: capacity.disk_available_bytes,
@@ -562,7 +603,8 @@ impl LocalMachine {
     /// Publish a client-selected assignment from a participating Entry Machine.
     ///
     /// # Errors
-    /// Rejects absent assignments, invalid assignments, or unavailable storage.
+    /// Rejects absent assignments, invalid assignments, unavailable storage, or
+    /// a Cluster network not yet published.
     pub async fn register(&self, request: RegisterRequest) -> Result<Registered, Error> {
         let local = self.clone();
         self.finish_mutation(async move {
@@ -583,16 +625,24 @@ impl LocalMachine {
         // Other Machines' rows are not consulted: Cloud owns concurrency, and a
         // Register for an existing id overwrites its row.
         let snapshot = ployz_core::EnrollmentSnapshot {
-            network: replicated.cluster_network().await?,
+            network: published_network(replicated).await?,
             machines: Vec::new(),
             target_versions: BTreeMap::new(),
         };
         let assignment = ployz_core::allocate_enrollment(&request, &snapshot, &[])?;
+        let sealing_key = SealingKey::load(self.owner.data_dir())
+            .unwrap_or_else(|error| {
+                tracing::warn!(%error, "could not read the Sealing Key; registering without it");
+                None
+            })
+            .map(|key| key.seal_to(&assignment.machine.public_key))
+            .transpose()?;
         publication.publish(&assignment.machine).await?;
         Ok(registered(
             assignment.machine,
             replicated.machines().await?.observations,
             replicated.version().await?,
+            sealing_key,
         ))
     }
 
@@ -602,19 +652,22 @@ impl LocalMachine {
     ///
     /// Returns [`Error::NotParticipating`] when this Machine is not
     /// participating, [`Error::ClusterStoreUnavailable`] when the Cluster
-    /// store is missing, and [`Error::Cluster`] when replicated I/O fails.
+    /// store is missing, [`Error::ClusterNetworkUnpublished`] before the
+    /// founder publishes the Cluster network, and [`Error::Cluster`] when
+    /// replicated I/O fails.
     pub async fn list_machines(&self) -> Result<MachineList, Error> {
         let local = self.record();
         if local.phase() != LocalMachinePhase::Participating {
             return Err(Error::NotParticipating);
         }
         let replicated = self.replicated()?;
+        let network = published_network(replicated).await?;
         let machines = replicated.machines().await?.observations;
         let states = self.membership_states().await?;
         let entry_id = local.id();
         Ok(MachineList {
             enrollment: Some(ployz_core::EnrollmentSnapshot {
-                network: replicated.cluster_network().await?,
+                network,
                 machines: machines.clone(),
                 target_versions: replicated.version().await?,
             }),
@@ -705,7 +758,7 @@ impl LocalMachine {
             }
             local
                 .replicated()?
-                .remove_machine(&request.machine_id)
+                .forget_machine(&request.machine_id)
                 .await?;
             Ok(Forgotten::Forgotten)
         })
@@ -725,6 +778,24 @@ impl LocalMachine {
     /// [`Error::Store`] when reset cannot be prepared or committed, and
     /// [`Error::OperationTask`] if the admitted operation task fails.
     pub async fn leave(&self, _: LeaveRequest) -> Result<Left, Error> {
+        self.depart(StorageExit::Depart).await
+    }
+
+    /// Fence this Machine after the Cluster forgot it (#2927): the same reset as
+    /// [`Self::leave`], except that storage keeps every copy, since a forgotten Machine
+    /// cannot know what a copy elsewhere still holds.
+    ///
+    /// # Errors
+    /// As [`Self::leave`], and [`Error::FenceRefused`] where Leave would answer
+    /// [`Left::Refused`].
+    pub async fn fence_forgotten(&self) -> Result<(), Error> {
+        match self.depart(StorageExit::KeepEveryCopy).await? {
+            Left::Left { .. } => Ok(()),
+            Left::Refused { error, .. } => Err(Error::FenceRefused(error)),
+        }
+    }
+
+    async fn depart(&self, exit: StorageExit) -> Result<Left, Error> {
         if self.record().phase() == LocalMachinePhase::Uninitialized {
             return Ok(Left::Left {
                 phase: LeftPhase::Uninitialized,
@@ -745,11 +816,11 @@ impl LocalMachine {
             Err(error) => return Err(error.into()),
         }
         let local = self.clone();
-        self.finish_mutation(async move { local.leave_admitted().await })
+        self.finish_mutation(async move { local.leave_admitted(exit).await })
             .await
     }
 
-    async fn leave_admitted(&self) -> Result<Left, Error> {
+    async fn leave_admitted(&self, exit: StorageExit) -> Result<Left, Error> {
         let machine_id = self.record().id();
         let publication = match &self.cluster {
             Some(cluster) => Some(cluster.replicated.machine_publication().await),
@@ -770,7 +841,7 @@ impl LocalMachine {
         {
             return Err(Error::Cleanup(ployz_core::error_chain::inline(&error)));
         }
-        self.depart_storage().await?;
+        self.depart_storage(exit).await?;
         if let Some(prepared_reset) = prepared_reset {
             self.owner
                 .mutate(move |store| prepared_reset.commit(store))
@@ -790,7 +861,7 @@ impl LocalMachine {
 
 impl LocalMachine {
     async fn install(&self, installation: Installation) -> Result<(), Error> {
-        self.depart_storage().await?;
+        self.depart_storage(StorageExit::Depart).await?;
         self.owner
             .mutate(move |store| store.install(installation))
             .await??;
@@ -805,13 +876,13 @@ impl LocalMachine {
     ///
     /// Returns [`Error::Cleanup`] when the plugin cannot demote, a Volume's copy would not
     /// stop or its demote failed, or Docker keeps a name.
-    async fn depart_storage(&self) -> Result<(), Error> {
+    async fn depart_storage(&self, exit: StorageExit) -> Result<(), Error> {
         let Some(containers) = &self.containers else {
             return Ok(());
         };
         let departure: StorageDeparture = self
             .plugin
-            .call("Storage.Demote", &())
+            .call(exit.route(), &())
             .await
             .map_err(|error| Error::Cleanup(format!("storage departure failed: {error}")))?;
         // A retry answers only what it changes, so the demoted are forgotten now even
@@ -849,10 +920,37 @@ impl LocalMachine {
     }
 }
 
+/// What a departure does with this Machine's mirrors: a leave or a fresh install
+/// destroys those a writer elsewhere holds, a forgotten Machine's fence keeps every copy.
+#[derive(Clone, Copy)]
+enum StorageExit {
+    Depart,
+    KeepEveryCopy,
+}
+
+impl StorageExit {
+    fn route(self) -> &'static str {
+        match self {
+            Self::Depart => "Storage.Demote",
+            Self::KeepEveryCopy => "Storage.Seal",
+        }
+    }
+}
+
+/// The founder's publisher writes the Cluster network after it starts
+/// answering as Participating, so a missing row means not ready yet.
+async fn published_network(replicated: &ReplicatedStore) -> Result<ipnet::Ipv4Net, Error> {
+    replicated
+        .cluster_network()
+        .await?
+        .ok_or(Error::ClusterNetworkUnpublished)
+}
+
 fn registered(
     assigned_machine: Machine,
     machines: Vec<Machine>,
     target_versions: BTreeMap<String, i64>,
+    sealing_key: Option<ployz_core::SealedSealingKey>,
 ) -> Registered {
     let assigned_id = assigned_machine.id;
     Registered {
@@ -862,6 +960,7 @@ fn registered(
             .filter(|machine| machine.id != assigned_id)
             .collect(),
         target_versions,
+        sealing_key,
     }
 }
 

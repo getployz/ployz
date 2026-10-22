@@ -46,6 +46,19 @@ async fn a_machine_that_answered_then_went_silent_keeps_its_answer() {
     assert!(error.target_unanswered());
 }
 
+#[tokio::test(start_paused = true)]
+async fn a_call_on_a_closed_session_is_not_resent() {
+    let attempts = std::cell::Cell::new(0);
+    let error = wait_out_restart(&CancellationToken::new(), || {
+        attempts.set(attempts.get() + 1);
+        async { Err::<(), _>(crate::connect::closed_session_error()) }
+    })
+    .await
+    .unwrap_err();
+    assert_eq!(attempts.get(), 1);
+    assert_eq!(error.code, RpcErrorCode::Unavailable);
+}
+
 fn resent(machine: MachineId, id: &ContainerId) -> [Step; 2] {
     [
         failed_unavailable(

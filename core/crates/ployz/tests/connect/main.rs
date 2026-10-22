@@ -31,6 +31,7 @@ use tonic::{
     transport::{Channel, Endpoint, Server},
 };
 
+mod domain_cli;
 mod machine_storage;
 mod removal_cli;
 mod sdk;
@@ -539,7 +540,7 @@ async fn volume_listing_retains_successes_and_target_failures() {
         capabilities: Default::default(),
     }))
     .await;
-    let mut client = connect_selected_with(
+    let client = connect_selected_with(
         SelectedConnections {
             source: ConnectionSource::Direct,
             connections: vec![Connection::tcp(address)],
@@ -1156,6 +1157,7 @@ fn listing_container(
         address: None,
         labels: BTreeMap::from([("detail".into(), "preserved".into())]),
         stopped: false,
+        run: None,
     })
     .unwrap()
 }
@@ -1169,7 +1171,7 @@ async fn volume_listing_omits_down_and_unknown_and_probes_suspect() {
         capabilities: Default::default(),
     }))
     .await;
-    let mut client = connect_selected_with(
+    let client = connect_selected_with(
         SelectedConnections {
             source: ConnectionSource::Direct,
             connections: vec![Connection::tcp(address)],
@@ -1240,6 +1242,7 @@ async fn observing_containers_past_tonic_s_default_4_mib_succeeds() {
             rotation: None,
             r#gen: None,
             stopped: false,
+            run: None,
         })
         .unwrap();
     service.listed_containers.lock().unwrap().push(container);

@@ -10,19 +10,16 @@ agent the Ployz skill, and the agent can deploy and change your services for you
 
 ```sh
 curl -fsSL https://ployz.sh | sh
-
-# or with Homebrew
-brew install getployz/ployz/ployz
 ```
 
 It runs on Linux and macOS. On Windows, install it inside WSL. To upgrade, run the same command
-again, or `brew upgrade ployz`.
+again.
 
-The script installs the stable release to `/usr/local/bin`. For the beta, or one version, name it
-after `sh -s --`. To install somewhere else, set `INSTALL_BIN_DIR` to a directory that exists:
+The line installs the stable release to `/usr/local/bin`. For the beta channel, end it with
+`sh -s -- beta`. For one version, name it after `sh -s --` instead. To install somewhere else, set
+`INSTALL_BIN_DIR` to a directory that exists:
 
 ```sh
-curl -fsSL https://ployz.sh | sh -s -- beta
 curl -fsSL https://ployz.sh | INSTALL_BIN_DIR="$HOME/.local/bin" sh
 ```
 
@@ -34,26 +31,26 @@ curl -fsSL https://ployz.sh | INSTALL_BIN_DIR="$HOME/.local/bin" sh
    **Approve**.
 
 This computer starts in the organization the page names. Switching organization in the dashboard
-later doesn't move it, and `ployz org use ORG` does. `ployz logout` signs this computer out.
+later doesn't move it, and `ployz org use ORGANIZATION` does. `ployz logout` signs this computer out.
 If Cloud can't be reached, or refuses because you've left the sign-in's organization, `ployz logout`
 still forgets the sign-in here and warns that Cloud may still honour it until you remove it with
 `ployz token rm`. An unreadable sign-in is forgotten too, and `ployz login` replaces it. While it
 is unreadable, `PLOYZ_TOKEN` also needs `PLOYZ_CLOUD_URL`.
 
-The sign-in is saved in `~/.config/ployz`, or in `$XDG_CONFIG_HOME/ployz` when you set
-`XDG_CONFIG_HOME`. Set `PLOYZ_CONFIG` to a file path to keep a separate one.
+The sign-in is saved in `~/.config/ployz`, or in `$XDG_CONFIG_HOME/ployz` when
+`XDG_CONFIG_HOME` is an absolute path. Set `PLOYZ_CONFIG` to a file path to keep a separate one.
 
 Commands act on your only project and its default environment. With more than one, add
 `--project my-app --env production`, or run `ployz link --project my-app --env production` once in
 your app's directory.
 `ployz ctx` shows where commands act from here. In a directory with no project linked, it asks Cloud
-which projects there are: it names your only project, or says the organization has several and
-how to link one. If Cloud doesn't answer within a few seconds, it shows `(none)` and the same
+which projects there are: it names your only project, says the organization has none yet, or says
+it has several and how to link one. If Cloud doesn't answer within a few seconds, it shows `(none)` and the same
 `ployz link` step.
 
 A link belongs to the organization it was made in. Acting in another one, a command that uses the
 link, such as `ployz status`, refuses. When both are Ployz Cloud organizations, it names
-`ployz org use ORG` to switch back. When either is the local organization, it names `ployz link`
+`ployz org use ORGANIZATION` to switch back. When either is the local organization, it names `ployz link`
 to link the directory where you act now. If the organization the link was made in was replaced by
 a new one with the same name, it says the directory `is linked in an
 earlier Organization ORG, which another Organization of that name replaced` and names
@@ -103,7 +100,8 @@ calls as the agent's.
 The tools create
 Projects, read and stage changes in them, review and deploy them (or save them for the next deploy), restore or undo a
 saved version, list, follow, redeploy, start and cancel their deployments, show Services, Servers
-and Volumes, and read a Service's recent logs. The agent can resend a call after a lost reply
+and Volumes, and read a Service's recent logs. They also start, stop and restart Services, change
+a Server's roles, drain and upgrade it, and move or mirror Volumes. The agent can resend a call after a lost reply
 without running it twice. Each call acts where the agent's directory is linked when the call
 starts, so after `ployz link` or `ployz org use` the next call follows it.
 
@@ -111,7 +109,7 @@ Some things are not tools. Run these yourself in a terminal:
 
 - `login`, `ctx use` and other commands that act on this computer.
 - `server add`, which installs Ployz over SSH or on this computer.
-- `server enroll`, which enrolls hosts waiting in Cloud by name or glob.
+- `server enroll`, which enrolls servers waiting in Cloud by name or glob.
 - `exec`, `service port-forward`, `logs --follow` and `up`.
 - Branches, tokens and Fleet Tokens (`server token`).
 - Secrets and registry credentials. `ployz set web.env.KEY --secret` adds a secret.
@@ -192,7 +190,8 @@ ployz org invite ls
 ployz org invite revoke bob@example.com
 ```
 
-`invite` prints `Invite link (expires in 7 days)` and the link. Send it to the person yourself.
+`invite` prints the link, which works once and lasts 7 days. When Ployz Cloud sends email, it
+emails the link to the address you gave and says so. Otherwise, send the link yourself.
 Roles are `owner`, `admin` and `member`. Only an owner can make, change or remove an owner.
 Any member can run `ployz org member ls`. Pending invites name who was invited, so
 `ployz org invite ls` refuses anyone but an owner or admin.
@@ -200,7 +199,7 @@ Any member can run `ployz org member ls`. Pending invites name who was invited, 
 Through Ployz Cloud, commands that talk to your servers directly need an owner or admin too: `exec`,
 `service start`, `service stop`, `service restart`, `service port-forward`,
 `server ls`, `server show`, `server logs`, `server set`, `server drain`, `server upgrade`,
-`server rm`, `server forget <server>` and `server clean` without a namespace. A member gets
+`server rm`, `server forget <server>` and `server clean` without `--namespace`. A member gets
 `Server access needs an admin. Ask an owner or admin of <organization>.` and exit code 1. A `read` or
 `deploy` [token](#make-an-organization-token) can't run them either, even an owner's: it gets
 `This token's grant doesn't include servers:shell.`
@@ -209,7 +208,8 @@ Through Ployz Cloud, commands that talk to your servers directly need an owner o
 `read` and `deploy` tokens. Without server access they read through Ployz Cloud instead: `logs`
 shows each server's newest 200 lines at most, with sealed variables scrubbed, and can't use `--follow`,
 `--until`, `--machine` or a container name. Name the environment with `--project` and `--env`
-if the directory isn't linked. A `deploy` token reads only its own environment, so
+if the directory isn't linked. A server that doesn't answer Ployz Cloud is named, and the command
+exits 3, as it does when Ployz reads your servers itself. A `deploy` token reads only its own environment, so
 `ployz logs --env production` with a staging token fails with `This token can deploy only to staging.` See
 [Reach a server from the CLI](../servers/manage-servers.md#reach-a-server-from-the-cli).
 
@@ -227,12 +227,31 @@ leaves that Organization even if you switched to another one in the dashboard si
 Pass `--yes` to skip the question. It then moves this device to another Organization of yours,
 the way `ployz org rm` does, and prints which one.
 
+## Change environments from the CLI
+
+These `ployz env` commands do what the dashboard's environment controls do. See
+[Environments](../environments/environments.md) for what each one means.
+
+| In the dashboard | From the CLI |
+| --- | --- |
+| **New environment** | `ployz env new qa` |
+| **Default environment** in **Settings → Project** | `ployz env default staging` |
+| **Keep staging** in the Sync button's ▾ menu | `ployz env keep --env staging` |
+| **Never sync** on a variable | `ployz env never-sync web.env.APP_ENV --env staging` |
+| **On merge** on a preview environment | `ployz env on-merge --env pr-142` |
+| **Branch setup** in production's **Settings → Environment** | `ployz env setup --env production --setup 'web=pnpm db:seed'` |
+| **Make it separate** on a shared service | `ployz env copy web --env staging` |
+
+`keep` and `never-sync` take `--off` to undo. `ployz env copy` gives the branch its own copy of the
+service, and a volume it mounts starts empty. `ployz env --help` lists the rest.
+
 ## Deploy a directory
 
 > [!WARNING]
 > In a Git checkout, `ployz up` uploads only the files Git keeps, tracked or not, and leaves out
 > `.git` and every file Git ignores, such as `.env` and `node_modules`. It stops if `git` can't
-> list them. Outside a Git checkout it uploads every file in the directory, so move secrets out
+> list them. If you committed `.env` before, Git still keeps it, so add it to `.gitignore` and
+> run `git rm --cached .env`. Outside a Git checkout it uploads every file in the directory, so move secrets out
 > of it first.
 
 From your app's directory:
@@ -244,6 +263,7 @@ ployz up
 The first time, Ployz creates a project named after the directory, adds a service with an https
 address, builds your app, deploys it and prints the address. In an empty directory it stops
 before it creates anything, with `Nothing to deploy` and exit code 2.
+`ployz up --server root@203.0.113.10` adds that server over SSH first, as `ployz server add` does.
 
 An upload can be at most 95 MiB compressed. To deploy on every push instead, see
 [Deploy from GitHub](../deploy/github.md).
@@ -264,6 +284,15 @@ ployz up --project my-app --env staging
 ```
 
 Always pass `--project` in CI, or `ployz up` creates a new project named after the checkout.
+`ployz up` ships the directory to each of the project's services that build from an upload or
+have no source yet. If there's none, it adds one named after the directory and builds it, as it
+does in a new project. In that case it stops and says why, adding no service and linking
+nothing, when a service builds from Git (run `ployz deploy` to ship it) or when a service that
+pulls an image already has the directory's name.
+
+Ployz ignores spaces and newlines around `PLOYZ_TOKEN`, as a paste into a secret or `.env` file
+often leaves. A value that is still not a token, such as one with a newline inside it, fails with
+`PLOYZ_TOKEN is not a token`, and Ployz never prints it.
 
 A token acts as you in this organization, narrowed by its preset:
 
@@ -285,7 +314,10 @@ deleted. Then unset `PLOYZ_TOKEN` and run `ployz login`, or make a new token in 
 you're still in. To revoke it,
 find its ID with `ployz token ls`, then run `ployz token rm ID`. If it names a server that's
 offline, run it again once that server is back. Owners and admins see and can revoke every
-organization token in the organization, not only their own. Members see only theirs.
+organization token in the organization, not only their own. Members see only theirs. OWNER
+says whose each token is: `you`, or the teammate's name, and a teammate's `full` token shows as
+`Full as Grace`. With `--json`, each token has an `owner` with its `id`, `name`, `email` and
+`you`. A Cloud older than 0.3.2 names no owner: OWNER is empty and `--json` leaves `owner` out.
 
 Only your login can make or revoke tokens. A token can't do either, so a leaked one can't make
 another that outlives it, or revoke the rest. While `PLOYZ_TOKEN` is set, Ployz acts with the token
@@ -308,6 +340,22 @@ stderr, such as `No Services in production yet.`; piped, it also prints the head
 A single record, such as
 `ployz status`, prints one `label = value` line per field when piped.
 
+`ployz status` lists what needs you under **needs attention**: a deployment that didn't complete,
+a reference to a removed service, or `Server web-1 isn't answering` when none of the servers a
+deploy would reach answers. With `--json` these are the `attention` rows; that one has reason
+`no_server_answers` and names the servers in `servers`. It comes from the same single connection
+status makes to check your servers (below), not a separate one. A server that accepts the
+connection but never answers takes 5 seconds to give up on, and status tries each server once.
+A check that can't finish adds no row. Instead it warns why, naming the servers that didn't
+answer when it knows them, so no row doesn't prove a server answered. Status then exits 3, as it
+does when a server is down or didn't answer, so a script can tell its servers weren't all checked.
+A server that never joined shows as **Down** too, but it doesn't make status exit 3, since it never
+ran anything to miss. Take it out with `ployz server forget`.
+While a deployment runs, status skips the copy check on purpose, and that alone doesn't make it exit 3. A context or `--connect` that reaches Ployz on this server
+through its local socket never gets this row; the **this server** line covers it. Signed in to Cloud, status asks
+Cloud for server access once per run. The first `ployz status` or other server command for a
+sign-in or token also waits while Cloud sets up your access on each server.
+
 `ployz status` works signed out too. It shows what it can and says `signed in as no one`. On a
 server waiting for approval, it leads with a **this server** line: `Installing Docker`,
 `Building ZFS`, `Waiting for approval`, `No cluster yet`, `Blocked`, `Rejected`, `Token expired`, `Token revoked`,
@@ -318,10 +366,65 @@ and `this_server` adds `"left": true`.
 
 When a server is up but its proxy hasn't picked up a service's current replicas after a deploy,
 `ployz status` names it, one line per service, like
-`web = web-2 has not picked up the new copies. Check its network.` A server that's down shows as
-**Down** instead. See
-[A server hasn't picked up the new version](../troubleshooting/deployments.md#a-server-hasnt-picked-up-the-new-version).
-A `read` or `deploy` token without server access doesn't show this line yet. To check this, `ployz status`
+`web = web-2 has not picked up the new copies. Check its network.` When a server's proxy sends a
+replica's traffic to an address the replica's own server doesn't report, status names that
+server too, like
+`web = web-3 routes a copy to 10.210.2.2, which its owner does not report. Check its network.`
+With `--json` these rows have reasons `routes_not_acked` and `routes_stale_address`. A server
+that's down shows as **Down** instead. See
+[A server hasn't picked up the new version](../troubleshooting/deployments.md#a-server-hasnt-picked-up-the-new-version)
+and
+[A server routes a replica at an old address](../troubleshooting/deployments.md#a-server-routes-a-replica-at-an-old-address).
+
+When a service serves fewer replicas than its last deploy gave it, `ployz status` names it and
+each replica that isn't serving, in the words `ployz ps` uses, like
+`web = Serving 1 of 3 copies. web-1 restarting, web-2 draining.` A replica can be restarting,
+exited, unhealthy, starting, or draining. A running replica Docker restarted after a crash less than
+10 seconds ago doesn't count as serving yet, and shows as `restarted 6 times, up 3 s`. A starting replica shows as `running, starting` while it
+is still inside its health check's start period, and the line clears once the check passes. A
+draining replica is out of routing but still running. With `--json` the row has reason
+`copies_not_serving`, the `service`, how many replicas are `serving`, how many it `wanted`, and
+`copies`, each with its `machine`, `container`, `rotation` and `runtime`, and a `run` with its
+`restart_count` and `started_at_unix_nanos` when its server reported one. `wanted` is how many of
+the replicas status could see should be serving. A server that is down or didn't answer isn't
+seen. A down server shows as **Down**, and status warns about one that didn't answer. Its `next`
+is `ployz logs web` when a named replica is still in routing, else `ployz deploy web`. Old
+replicas still draining beside a full set of new ones, as just after a deploy, add no row. While
+a deployment runs, status skips this check and warns that it did.
+
+When a deployed service has no replica on any server, as after `ployz server rm` took the only
+server it ran on, `ployz status` says `api = No copies running. For a global Service, no Server
+matches its placement.` With `--json` the row has reason `no_copies` and the `service`, and its
+`next` is `ployz deploy api`. When you removed the service from your config but haven't deployed
+since, `next` is plain `ployz deploy`, which finishes removing it. Status says this only when
+every server answered and none is down, since a replica on a server it can't see may still run.
+A global service whose placement no server matches has no replicas, and deploying it again
+places none, so the line stays until you change its placement or a server's labels.
+
+When a replica is running but no deploy brought it into routing, it takes no traffic. That
+happens when a deploy created it but didn't finish, for example because the connection to its
+server dropped, or when Cloud moved a stopped service's volume. `ployz status` names it, like
+`web = 1 copy no deploy brought into routing takes no traffic. web-1 running, unhealthy.`
+With `--json` the row has reason `copies_left_pending`, the `service`, and `copies` in the same
+shape as above. Its `next` is `ployz deploy web`, which removes a replica a failed deploy left.
+When you removed the service from your config but haven't deployed since,
+`next` is plain `ployz deploy`. A replica on a down server isn't named. While a server joins, or
+Cloud moves a volume, a replica that's still starting can be named until it's in routing.
+
+This check has limits:
+
+- A replica removed outside Ployz, for example with `docker rm`, is unseen, so status can't name
+  it.
+- A global service's draining replica isn't named.
+- While a server that has joined is down, or any server didn't answer, a draining replica isn't
+  named.
+- After a scale-down that changed only the replica count, a replica left draining can be named
+  until the next deploy removes it.
+
+See
+[Status says a service serves fewer copies than it should](../troubleshooting/deployments.md#status-says-a-service-serves-fewer-copies-than-it-should).
+
+A `read` or `deploy` token without server access doesn't show these lines yet. To check this, `ployz status`
 reaches your servers the way `ployz ps` does, so it takes the same `--context` and
 `--ssh-timeout` options.
 
@@ -351,13 +454,17 @@ Scripts can tell failures apart by exit code:
 | 0 | Done. |
 | 1 | It failed: something wasn't found, a server couldn't be reached, a deploy failed, Ployz refused, the server or Cloud doesn't support what you asked, or the output couldn't be written, as with `> /dev/full`. |
 | 2 | Fix the command: a bad argument, a flag the command doesn't take, a missing `--confirm`, or a name that matches more than one thing. |
-| 3 | You got a result, but part of it is missing or didn't happen: some servers didn't answer, the output stopped partway, or some work couldn't be done. Examples: a `ployz server drain` that leaves a service where it is because no other server can take it, a `ployz env rm`, `ployz project rm` or `ployz env shutdown` whose removal didn't finish, a deploy that applied but couldn't see every server or left an old container running, or a deploy a newer one replaced or someone cancelled. A deploy that failed exits 1. The output says what's left. Run it again once the servers are back, or once there's somewhere for the work to go. |
-| 130 | You cancelled: pressed Ctrl-C, didn't confirm a prompt, or stopped waiting for an approval. Before the work starts, nothing changes. A `ployz deploy` cancelled after its services applied keeps them, and its `--json` says `applied`. Once Ployz Cloud runs it, as with a `server rm` or `server upgrade` it's following, Ctrl-C only stops the following: the work goes on in Cloud and finishes on its own. |
+| 3 | You got a result, but part of it is missing or didn't happen: some servers didn't answer, the output stopped partway, or some work couldn't be done. Examples: a `ployz server drain` that leaves a service where it is because no other server can take it, a `ployz env rm`, `ployz project rm` or `ployz env shutdown` whose removal didn't finish, a deploy that applied but couldn't see every server or left an old container running, a `ployz status` with a server that joined down or not answering, or a deploy a newer one replaced or someone cancelled. A deploy that failed exits 1. The output says what's left. Run it again once the servers are back, or once there's somewhere for the work to go. |
+| 130 | You cancelled: pressed Ctrl-C, didn't confirm a prompt, or stopped waiting for an approval. Before the work starts, nothing changes. A `ployz deploy` following its Deployment also cancels this way on SIGTERM, which CI runners, `timeout` and container stops send, and on Linux on SIGHUP, which closing its terminal or losing its SSH session sends. Under `nohup` it ignores SIGHUP and goes on. A `ployz deploy` cancelled after its services applied keeps them, and its `--json` says `applied`. Once Ployz Cloud runs it, as with a `server rm` or `server upgrade` it's following, Ctrl-C only stops the following: the work goes on in Cloud and finishes on its own. A `server upgrade` run from your computer works the same way: the server goes on with the upgrade it took, and `ployz server show` says how it ended. |
 
 `ployz exec` exits with your command's own exit code. When the container stops under it,
 because a deploy replaced it or the service was stopped, it exits 1 with
 `The container for web stopped; exec ended.` A `retry:` line follows when another container of the
-service runs, and running it again attaches there.
+service runs, and running it again attaches there. When `ployz exec` stops before your command does,
+because you pressed Ctrl-C, a script killed it or the connection dropped, the server stops the
+command too: it sends SIGTERM, then SIGKILL after 10 seconds. The signal reaches the command
+you ran, not processes it started, so a shell like `sh -c 'a | b'` can leave `a` and `b` running.
+With a TTY, Ctrl-C reaches the command as a keypress first.
 
 A change can reach Ployz Cloud even when its answer never comes back. Then `ployz set`,
 `service add` and other changes exit 1 with `Cloud ... stopped answering after it got this
@@ -394,9 +501,60 @@ from `ployz env ls`, or for `project rm` the project from `ployz project ls`. Un
 When one of them didn't apply, it also reports that deployment in full under `deployment` (its
 `status`, `outcome` and `nodes`) and `next`: the command that finishes it, with the same
 `--ployz-config` when you passed one. Each server it waits on is under `waiting_on`, by its name
-in `server` and its machine ID in `server_id`.
+in `server` and its ID in `server_id`.
 
 Ployz colors its output in a terminal. With `CI` set or `TERM=dumb`, it prints plain text even in
 one. Set `NO_COLOR=1` or pass `--color never` to turn color off, or `--color always` to keep it
 when you pipe the output. A piped list stays plain tab-separated text either way. Put `--color` before `--`, and before the command `ployz exec` runs;
 after either, it belongs to that command.
+
+## Follow and inspect deployments
+
+`ployz deployment ls` lists the environment's deployments, newest first, with each one's status
+and saved revision. `ployz deploy` keeps following a queued deployment. If it is still queued after
+30 seconds, the CLI names the deployment it waits for, like
+`Deployment #2 waits for Deployment #1 to finish.`, with the `ployz deployment show` command for
+that one. If nothing is ahead of it, the CLI says no server has started it yet and points at
+`ployz server ls`.
+
+To inspect per-server progress, run:
+
+```sh
+ployz --json deployment show 37
+```
+
+Each service's `nodes[].rows[]` records the servers where work ran, its state, and its start
+and finish times. Each row identifies its server with `machine_id`. The `server` field is a
+display name and can repeat across servers. Volume rows use the same server IDs to group
+the work of services that mount them. A running row also names its phase. Failed rows retain
+the cause chain and up to ten final container log lines when available, with sealed variables
+and secret-shaped values such as `password=…` replaced. Other values, such as `NODE_ENV` from
+the image, show as the container printed them. These outcomes stay with that deployment
+when you deploy again. Unchanged services have no rows because no server work ran.
+
+Work your cancel stopped reads `cancelled`. In `--json`, its row keeps `"state": "failed"` with
+`"cancelled": true`, and so does its service: `"outcome": "failed"` with `"cancelled": true`. Work
+Ployz stopped because the deployment lost its runner reads `interrupted`, and its row keeps
+`"state": "failed"` with `"interrupted": true`. Older Ployz versions ignore both markers and read
+the work as failed. If the runner stops reporting, unfinished rows read `unknown`. Completed and
+failed rows keep their recorded outcomes.
+
+`ployz deployment redeploy`, `start` and `cancel` do what the buttons on a deployment's page do.
+Before a rollback, `ployz deployment redeploy 4` asks in a terminal; outside one, or with `--json`,
+it needs `--yes`. A rollback that deletes volume data also needs `--accept-volume-loss <volume>`
+and the `--expect-version` it prints.
+
+`ployz history` lists the environment's saved versions with when and by whom each was saved, the
+settings it changed and its message; the live one says `(live)`.
+`ployz history restore 2 --preview` reviews a rollback without writing. `ployz history undo 2` stages an Undo. One that
+would overwrite draft changes refuses, names those fields and gives the same command with
+`--accept-overwrite`; run it only after reviewing them. Both list each variable that came back Not
+set, and `--json` carries them as `not_set`. The agent's `history` tool does the same by revision
+number; one that would overwrite draft changes refuses and names them first.
+
+When a deploy would delete a volume's data, `ployz deploy` and `ployz deploy --skip-deploy` stop
+and print the command to run instead. It names each volume that loses data, like
+`ployz deploy --skip-deploy --accept-volume-loss postgres-data --expect-version …`. Run it only if
+you mean it. If Ployz can't check your servers for that data and you passed `--connect`, the
+refusal names the address you gave when Ployz doesn't know which server that is. With `--json`,
+the error's `cause` lists it.

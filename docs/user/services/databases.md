@@ -8,7 +8,7 @@ for its data, a generated password and the variables your app needs to connect. 
 it's an ordinary service you can change like any other.
 
 > [!WARNING]
-> A database lives on one server. Add a [mirror](move-a-volume.md#mirror-a-volume) of its volume
+> A database lives on one server. Add a [mirror](mirror-a-volume.md) of its volume
 > to keep a backup on another of your servers, which you can [restore](restore-a-volume.md) or
 > move the database to. A mirror isn't an offsite backup, so also take your own dumps and keep
 > them off your servers: see [Back up a database](#back-up-a-database).
@@ -17,8 +17,8 @@ it's an ordinary service you can change like any other.
 
 1. On your project's canvas, click **Create**.
 2. Choose **Database**, then **PostgreSQL**, **MySQL**, **Redis** or **MongoDB**.
-3. Its data goes on a 5 GB [volume](volumes.md). For more room, click the volume, change
-   **Storage limit (GB)** and click **Save storage** now. After you deploy it, grow it on
+3. Its data goes on a 5 GB [volume](volumes.md). For more room, click the volume, open its
+   **Settings**, type a new **Storage limit** and press Enter. After you deploy it, grow it on
    Ployz Cloud from the volume's panel, or change it with `ployz volume set NAME --size N`.
 4. Click **Deploy**.
 
@@ -70,7 +70,7 @@ If 5432 is taken on your laptop, pick another local port, like `15432:5432`.
 
 ## Back up a database
 
-A [mirror](move-a-volume.md#mirror-a-volume) keeps a backup of the database's volume on another of
+A [mirror](mirror-a-volume.md) keeps a backup of the database's volume on another of
 your servers. For an offsite backup, dump each database on a schedule, from a computer you trust
 or a CI job, and store the dumps
 away from your servers, such as in object storage. A dump kept on the same server is lost with

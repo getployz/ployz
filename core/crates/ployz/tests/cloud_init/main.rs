@@ -162,6 +162,7 @@ async fn cloud_init_initialize_participates() {
         assigned_machine: founder,
         visible_peers: Vec::new(),
         target_versions: Default::default(),
+        sealing_key: None,
     })
     .with_events(events.clone());
     let machine_addr = serve_machine(daemon.clone()).await;
@@ -271,6 +272,7 @@ async fn caddy_lookup_failure_happens_before_initialize() {
         assigned_machine: founder,
         visible_peers: Vec::new(),
         target_versions: Default::default(),
+        sealing_key: None,
     });
     let machine_addr = serve_machine(daemon.clone()).await;
     // Reject the proxy tunnel immediately. Retry exhaustion is covered with a
@@ -469,6 +471,7 @@ async fn cloud_init_retries_not_yet_then_initializes() {
         assigned_machine: founder,
         visible_peers: Vec::new(),
         target_versions: Default::default(),
+        sealing_key: None,
     });
     let machine_addr = serve_machine(daemon.clone()).await;
 
@@ -554,6 +557,7 @@ async fn initialized_machine_yes_refuses_reset_without_explicit_reset() {
         assigned_machine: founder.clone(),
         visible_peers: Vec::new(),
         target_versions: Default::default(),
+        sealing_key: None,
     });
     let machine_addr = serve_machine(daemon.clone()).await;
     let mut client = connect_daemon(machine_addr).await;
@@ -606,6 +610,7 @@ async fn rerun_on_the_founded_machine_does_not_claim_to_found_it() {
         assigned_machine: founder.clone(),
         visible_peers: Vec::new(),
         target_versions: Default::default(),
+        sealing_key: None,
     });
     let machine_addr = serve_machine(daemon.clone()).await;
     let mut client = connect_daemon(machine_addr).await;
@@ -666,6 +671,7 @@ async fn invalid_cluster_network_does_not_reset_an_initialized_machine() {
         assigned_machine: founder.clone(),
         visible_peers: Vec::new(),
         target_versions: Default::default(),
+        sealing_key: None,
     });
     let machine_addr = serve_machine(daemon.clone()).await;
     connect_daemon(machine_addr)
@@ -1255,6 +1261,7 @@ fn container_on(
         address: None,
         labels: Default::default(),
         stopped: false,
+        run: None,
     })
     .unwrap()
 }

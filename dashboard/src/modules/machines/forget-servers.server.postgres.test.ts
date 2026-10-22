@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { it } from "@effect/vitest";
 import { InngestTestEngine } from "@inngest/test";
 import type { Client, ConfigCommand, MachineId } from "@ployz/sdk";
-import { Deferred, Effect, Fiber, Layer, Schema } from "effect";
+import { Deferred, Effect, Fiber, Schema } from "effect";
 import * as TestClock from "effect/testing/TestClock";
 import { Inngest } from "inngest";
 import { expect } from "vitest";
@@ -15,14 +15,14 @@ import { rustMachineIdSchema } from "#/modules/machines/enrollment";
 import { CLUSTER_UNREACHABLE, enrollMachine, hashEnrollmentToken } from "#/modules/machines/enrollment.server";
 import { checkForgetServers, FORGET_CLUSTER_BUDGET_MS, forgetServers } from "#/modules/machines/forget-servers.server";
 import {
-  enrollmentAllocation, machineEnrollmentToken, machineRemoveAttempt, organizationMachine,
+  clusterSealingKey, enrollmentAllocation, machineEnrollmentToken, machineRemoveAttempt, organizationMachine,
 } from "#/modules/machines/tables";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import { makePloyzLayer } from "#/modules/runtime/ployz.server";
 import { organizationPairing } from "#/modules/runtime/tables";
 import { Database } from "#/server/database.server";
 import { makeInngestEffectRunner } from "#/server/run.server";
-import { enrollStoreServer, seedStoreOrganization, storeTestCloud } from "#/test/store-cloud";
+import { enrollStoreServer, seedStoreOrganization, storeTestCloudWith } from "#/test/store-cloud";
 import { SecretEncryption } from "#/utils/encrypted-secret.server";
 
 const ORGANIZATION = "00000000-0000-4000-8000-00000000f001";
@@ -40,7 +40,7 @@ const cloud = (answers: boolean) => Effect.gen(function* () {
       return asTestDouble<Client>()({ close: async () => undefined, inspect: async () => ({ machine: { name: "machine-1" } }) });
     },
   });
-  return yield* Layer.build(Layer.merge(yield* storeTestCloud(), ployz));
+  return yield* storeTestCloudWith(ployz);
 });
 
 /** A signed-up owner's Organization whose founder completed, a Project with a queued Deploy, and enrollment rows. */
@@ -83,7 +83,7 @@ it.live("Forget Servers refuses while a Server answers, and forgets nothing", ()
 it.live("Forget Servers answers within its Cluster time, and aborts the connection, while a Server that answered never closes its session", () => Effect.gen(function* () {
   const closing = yield* Deferred.make<void>();
   const signals: AbortSignal[] = [];
-  const services = yield* Layer.build(Layer.merge(yield* storeTestCloud(), makePloyzLayer({
+  const services = yield* storeTestCloudWith(makePloyzLayer({
     connect: async ({ signal }) => {
       if (signal) signals.push(signal);
       return asTestDouble<Client>()({
@@ -94,7 +94,7 @@ it.live("Forget Servers answers within its Cluster time, and aborts the connecti
         inspect: async () => ({ machine: { name: "machine-1" } }),
       });
     },
-  })));
+  }));
   yield* Effect.gen(function* () {
     const { userId } = yield* seeded();
     const answer = yield* Effect.gen(function* () {
@@ -115,6 +115,10 @@ it.live("forgetting unreachable Servers clears Cloud's hold, and the next Server
     const { drizzle } = yield* Database;
     const encryption = yield* SecretEncryption;
     const [before] = yield* drizzle.select().from(organizationPairing);
+    yield* drizzle.insert(clusterSealingKey).values({
+      organizationId: ORGANIZATION, clusterKey: hashEnrollmentToken(before ? encryption.decrypt(before.encryptedPairingSecret) : ""),
+      publicKey: Buffer.alloc(32, 1).toString("base64"),
+    });
     const [bob] = yield* drizzle.insert(user).values({ email: "bob@example.test", name: "Bob" }).returning();
     yield* drizzle.insert(member).values({ userId: bob?.id ?? "", organizationId: ORGANIZATION, role: "member" });
     expect(yield* checkForgetServers({ userId: bob?.id ?? "", organizationId: ORGANIZATION }))
@@ -131,7 +135,7 @@ it.live("forgetting unreachable Servers clears Cloud's hold, and the next Server
       ok: true,
       value: { servers: [{ id: FOUNDER, name: FOUNDER, reach: "didnt_answer" }], volumes: [], cancelled: [QUEUED] },
     });
-    for (const table of [organizationPairing, organizationMachine, machineEnrollmentToken, enrollmentAllocation, machineRemoveAttempt]) {
+    for (const table of [organizationPairing, organizationMachine, clusterSealingKey, machineEnrollmentToken, enrollmentAllocation, machineRemoveAttempt]) {
       expect(yield* drizzle.select().from(table)).toEqual([]);
     }
     expect(yield* Effect.promise(() => store.read(ORGANIZATION, { query: "deployment", id: QUEUED }))).toMatchObject({ status: "cancelled" });

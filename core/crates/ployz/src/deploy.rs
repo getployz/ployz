@@ -6,7 +6,7 @@ use std::{
 use ployz_core::{
     BridgeEndpointCapacity, ContainerObservation, ContainerRuntimeObservation, DockerVolume,
     DockerVolumeId, DockerVolumeName, IngressHost, MachineFailure, MachineId, MachineName,
-    MachineObservation, Namespace, PartialResult, PlacementConstraint,
+    MachineObservation, MembershipObservation, Namespace, PartialResult, PlacementConstraint,
     ProvisionedVolumeMaximumBytes, QualifiedService, RpcError, RpcErrorCode, ServiceName,
     ServiceObservation, VolumeInventory, VolumeObservationFailure, derive_services,
 };
@@ -24,7 +24,7 @@ mod render;
 mod report;
 mod schedule;
 
-pub(crate) use apply::{Outcome, apply_requested};
+pub(crate) use apply::{ApplyError, Outcome, apply_requested};
 pub(crate) use convergence::{Converged, LastIn, Moving, can_move, converge, named};
 pub use convergence::{
     DrainStop, MachineRef, Move, MoveFailure, OldCopyEnd, StayReason, Unconfirmed,
@@ -219,12 +219,17 @@ impl VolumeSnapshot {
             .chain(self.named_failures.iter().map(|failure| &failure.id))
     }
 
-    fn affects_required(&self, required: &BTreeSet<MachineId>) -> bool {
-        affects_required(&self.machine_failures, &self.omissions, required)
-            || self
-                .named_failures
-                .iter()
-                .any(|failure| required.contains(&failure.id.machine_id))
+    /// Each Machine whose Volumes this observer did not read in full.
+    fn gaps(&self) -> impl Iterator<Item = MachineId> + '_ {
+        self.machine_failures
+            .iter()
+            .map(|failure| failure.machine_id)
+            .chain(self.omissions.iter().copied())
+            .chain(
+                self.named_failures
+                    .iter()
+                    .map(|failure| failure.id.machine_id),
+            )
     }
 
     pub(crate) fn machine_gap(&self, machine_id: MachineId) -> Option<String> {
@@ -316,6 +321,12 @@ pub enum HeldIngress<'snapshot> {
     Restarting(&'snapshot ContainerObservation),
 }
 
+/// A Suspect Machine that left a Container listing unanswered is an observation gap a
+/// Deploy goes on without. An Up Machine's silence stays an error, as does any answer.
+pub(crate) fn listing_gap(machine: &MachineObservation, error: &RpcError) -> bool {
+    machine.membership == MembershipObservation::Suspect && error.target_unanswered()
+}
+
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct DeploySnapshot {
     pub machines: Vec<MachineObservation>,
@@ -380,6 +391,14 @@ impl DeploySnapshot {
         self.ingress_eligible()
             .filter_map(|machine| Some((machine, self.unobserved(machine.machine.id)?)))
             .collect()
+    }
+
+    /// Whether `machine` left this snapshot's Container listing unanswered as a
+    /// [`listing_gap`].
+    pub(crate) fn silent(&self, machine: &MachineObservation) -> bool {
+        self.container_failures.iter().any(|failure| {
+            failure.machine_id == machine.machine.id && listing_gap(machine, &failure.error)
+        })
     }
 
     /// Why `machine`'s container listing is missing from this snapshot, if it is.
@@ -468,29 +487,24 @@ impl DeploySnapshot {
     /// A partition may hide a Machine entirely; that absence is not detected here.
     #[must_use]
     pub fn is_observer_complete(&self) -> bool {
-        let required = self
-            .machines
-            .iter()
-            .filter(|machine| machine.invites_rpc())
-            .map(|machine| machine.machine.id)
-            .collect::<BTreeSet<_>>();
-        !affects_required(
-            &self.container_failures,
-            &self.container_omissions,
-            &required,
-        ) && !self.volume_snapshot.affects_required(&required)
+        self.unobserved_required().is_empty()
     }
-}
 
-fn affects_required(
-    failures: &[MachineFailure<RpcError>],
-    omissions: &[MachineId],
-    required: &BTreeSet<MachineId>,
-) -> bool {
-    failures
-        .iter()
-        .any(|failure| required.contains(&failure.machine_id))
-        || omissions.iter().any(|machine| required.contains(machine))
+    /// The required Machines whose Containers or Volumes this observer did not read in full.
+    #[must_use]
+    pub fn unobserved_required(&self) -> Vec<&MachineObservation> {
+        let gaps = self
+            .container_failures
+            .iter()
+            .map(|failure| failure.machine_id)
+            .chain(self.container_omissions.iter().copied())
+            .chain(self.volume_snapshot.gaps())
+            .collect::<BTreeSet<_>>();
+        self.machines
+            .iter()
+            .filter(|machine| machine.invites_rpc() && gaps.contains(&machine.machine.id))
+            .collect()
+    }
 }
 
 /// Why [`PlanError::NoEligibleMachines`] found zero Machines.
@@ -504,6 +518,10 @@ pub enum EliminatingConstraint {
         names: Vec<MachineName>,
     },
     MachineDown {
+        names: Vec<MachineName>,
+    },
+    /// Machines that did not answer this Deploy's Container listing.
+    Unanswered {
         names: Vec<MachineName>,
     },
     VolumeInventoryUnavailable {
@@ -590,6 +608,10 @@ impl fmt::Display for EliminatingConstraint {
                     f.write_str(" are down")
                 }
             }
+            Self::Unanswered { names } => {
+                write_machine_names(f, names)?;
+                f.write_str(" did not answer when this Deploy listed its containers")
+            }
             Self::VolumeInventoryUnavailable { machine, message } => {
                 write!(f, "Machine '{machine}' was skipped because its {message}")
             }
@@ -668,12 +690,24 @@ pub enum PlanError {
         service: ServiceName,
     },
     /// Every copy of a Managed Volume is a slot or mid-switch; nothing can mount it.
-    #[error("{}", ployz_core::no_writer_message(.name, .copies))]
+    #[error("{}", ployz_core::no_writer_message(.name, .copies, *.operator))]
     NoWriter {
         /// The Volume without a writer, as its owner named it.
         name: String,
         /// Each copy and its role, in Machine order.
         copies: Vec<ployz_core::KnownCopy>,
+        /// Who runs the Deploy, which decides the way back the message names.
+        operator: ployz_core::Operator,
+    },
+    /// The Volume's writer is on a Machine that accepts no services, as after a drain.
+    #[error(
+        "Volume {volume} is on {machine}, which doesn't run services. Turn them back on with ployz server set {machine} --accepts-services=true"
+    )]
+    VolumeServerTakesNoServices {
+        /// The Volume, as its owner named it.
+        volume: String,
+        /// The Machine holding the Volume's writer.
+        machine: MachineName,
     },
     /// No observed copy is a writer, and a silent Machine may hold it.
     #[error(
@@ -683,6 +717,16 @@ pub enum PlanError {
         /// The Volume, as its owner named it.
         name: String,
         /// The Machine whose storage was not read.
+        machine: MachineName,
+    },
+    /// A Docker Volume this Deploy would create, which a Machine that did not answer
+    /// its listing may already hold.
+    #[error(
+        "{machine} did not answer, so whether it holds Docker volume {name} is unknown. Bring {machine} back, or deploy the other services by name"
+    )]
+    VolumeHolderUnknown {
+        /// The Volume, as its owner named it.
+        name: String,
         machine: MachineName,
     },
     /// The selected Machine has no usable ZFS storage preparation.
@@ -745,10 +789,11 @@ pub enum PlanError {
     DependencyCycle { service: String },
     #[error("Docker Volume {id} is unavailable: {message}")]
     DockerVolumeUnavailable { id: DockerVolumeId, message: String },
-    #[error("hostname {hostname} is already published by {owner}")]
+    #[error("{}", .refusal.message(.hostname, .owner))]
     HostnameConflict {
         hostname: IngressHost,
         owner: QualifiedService,
+        refusal: HostnameRefusal,
     },
     /// A Deploy would both run and retire the same Service.
     #[error("Service {service} can't be deployed and removed in one Deploy")]
@@ -761,6 +806,53 @@ pub enum PlanError {
     RemovalInReservedNamespace { namespace: Namespace },
 }
 
+/// Why a hostname another Service publishes can't be claimed in this Deploy.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum HostnameRefusal {
+    /// The owner keeps the hostname, or this Deploy leaves the owner alone.
+    StillPublished,
+    /// The owner's staged spec drops the hostname, but this Deploy doesn't include the owner.
+    OwnerNotIncluded,
+    /// `to` takes the hostname but already waits for the owner, `because`, so the owner
+    /// can't wait for `to` and the hostname would answer nowhere for `to`'s whole rollout.
+    GainerWaitsForOwner { to: ServiceName, because: String },
+    /// `to`, another Service this Deploy requests, claims the hostname too.
+    RequestedTwice { to: ServiceName },
+}
+
+impl HostnameRefusal {
+    /// Decided from this Deploy's intent alone, so the same Deploy is refused the same
+    /// way until something staged changes. The others rest on an observed publisher,
+    /// which another Deploy can make drop the hostname, so those keep their retry.
+    fn same_again(&self) -> bool {
+        match self {
+            Self::StillPublished | Self::OwnerNotIncluded | Self::GainerWaitsForOwner { .. } => {
+                false
+            }
+            Self::RequestedTwice { .. } => true,
+        }
+    }
+
+    fn message(&self, hostname: &IngressHost, owner: &QualifiedService) -> String {
+        match self {
+            Self::StillPublished => format!(
+                "hostname {hostname} is already published by {owner}: remove it from that Service first, or use another hostname"
+            ),
+            Self::OwnerNotIncluded => format!(
+                "hostname {hostname} is published by {owner} until {dropper} deploys: deploy {dropper} too",
+                dropper = owner.name
+            ),
+            Self::GainerWaitsForOwner { to, because } => format!(
+                "hostname {hostname} is published by {owner} and can't move to {to} in the same Deploy: {because}; remove it from {dropper} and deploy, then add it to {to}",
+                dropper = owner.name
+            ),
+            Self::RequestedTwice { to } => format!(
+                "hostname {hostname} is requested by both {owner} and {to}: keep it on one of them"
+            ),
+        }
+    }
+}
+
 struct MachineNames<'names>(&'names [MachineName]);
 
 impl fmt::Display for MachineNames<'_> {
@@ -770,6 +862,45 @@ impl fmt::Display for MachineNames<'_> {
 }
 
 impl PlanError {
+    /// Deploying the same thing again is refused this way again: the refusal was
+    /// decided from this Deploy's intent alone, so it holds until something staged
+    /// changes. A refusal the snapshot, placement or a Server's labels take part in
+    /// stays false, since another Deploy landing or a label changing can clear it, as
+    /// does every refusal not listed here: the retry it keeps is the safe default.
+    #[must_use]
+    pub fn same_again(&self) -> bool {
+        match self {
+            Self::ConflictingHostPublications { .. }
+            | Self::DuplicateTargetService { .. }
+            | Self::MixedVolumeModes { .. }
+            | Self::DependencyCycle { .. }
+            | Self::RemovalInTarget { .. }
+            | Self::RemovalNotSelected { .. }
+            | Self::RemovalInReservedNamespace { .. } => true,
+            Self::HostnameConflict { refusal, .. } => refusal.same_again(),
+            Self::Service { source, .. } => source.same_again(),
+            // Two Services may disagree about one Docker Volume only on a Server both
+            // are placed on, which its labels decide.
+            Self::ConflictingDockerVolumeDefinitions { .. }
+            | Self::Storage { .. }
+            | Self::HostPortConflict { .. }
+            | Self::CapacityUnknown
+            | Self::InsufficientCapacity
+            | Self::NoEligibleMachines { .. }
+            | Self::ServiceModeCannotChange
+            | Self::NoWriter { .. }
+            | Self::VolumeServerTakesNoServices { .. }
+            | Self::CopiesUnknown { .. }
+            | Self::VolumeHolderUnknown { .. }
+            | Self::ProvisionedVolumeStorageRequired { .. }
+            | Self::ProvisionedVolumeStorageUnavailable
+            | Self::ProvisionedVolumeStorageUnknown { .. }
+            | Self::ExistingPlainVolume { .. }
+            | Self::ExistingProvisionedVolumeMismatch { .. }
+            | Self::DockerVolumeUnavailable { .. } => false,
+        }
+    }
+
     /// Readable SDK failure with structured storage details preserved through service context.
     #[must_use]
     pub fn into_rpc_error(self) -> RpcError {
@@ -797,7 +928,13 @@ impl PlanError {
             error @ Self::NoWriter { .. } => {
                 ployz_core::SwitchError::NoWriter.rpc_error(error.to_string())
             }
-            error @ Self::CopiesUnknown { .. } => RpcError {
+            error @ Self::VolumeServerTakesNoServices { .. } => RpcError {
+                code: RpcErrorCode::Conflict,
+                message: error.to_string(),
+                details: serde_json::json!({ "reason": "volume_server_takes_no_services" }),
+                cause: Vec::new(),
+            },
+            error @ (Self::CopiesUnknown { .. } | Self::VolumeHolderUnknown { .. }) => RpcError {
                 code: RpcErrorCode::Unavailable,
                 message: error.to_string(),
                 details: serde_json::Value::Null,
@@ -825,7 +962,11 @@ impl PlanError {
             | Self::RemovalInReservedNamespace { .. }) => RpcError {
                 code: RpcErrorCode::InvalidArgument,
                 message: error.to_string(),
-                details: serde_json::Value::Null,
+                details: if error.same_again() {
+                    serde_json::json!({"same_again": true})
+                } else {
+                    serde_json::Value::Null
+                },
                 cause: Vec::new(),
             },
         }

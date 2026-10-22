@@ -23,7 +23,7 @@ use ts_rs::TS;
 
 pub use self::due::{Due, DueQuery};
 pub(crate) use self::due::{admit, close, sweep};
-pub(crate) use self::due::{due, shut_down};
+pub(crate) use self::due::{ask_taking_off, due, shut_down};
 use self::mark::{Accepted, Closed, Mark, State};
 pub use self::review::{ConsentedQuery, ConsentedView, RemovedVolume, VolumeLoss, docker_volume};
 pub(crate) use self::review::{
@@ -724,8 +724,8 @@ fn confirm(remove: &Remove, reviews: &[Reviewed], version: &str) -> Result<(), R
     ))
 }
 
-/// Ask a human once for everything a removal deletes, bound to `command`: `remove`
-/// or `shut_down`, so an approval for one never runs the other.
+/// Ask a human once for everything a removal deletes, bound to `command`, so an
+/// approval for a removal never runs a shutdown.
 pub(crate) fn gate(
     who: &Actor,
     command: &str,
@@ -820,12 +820,35 @@ pub(crate) fn cancel_removal(
 }
 
 /// Cancel a Deployment. Cancelling one that removes a marked target stops the
-/// whole removal, as [`cancel_removal`] does.
+/// whole removal, as [`cancel_removal`] does. In a Protected Environment, a caller
+/// who can't protect it asks an admin before cancelling someone else's.
 pub(crate) fn cancel(
     tx: &mut dyn Tx,
     who: &Actor,
     id: &DeploymentId,
+    trusted: &Trusted,
 ) -> Result<DeploymentSummary, RpcError> {
+    // Read it, and the Environment's protection, under the lock the cancel writes
+    // under, so neither can change between the ask and the cancel.
+    let environment = deployment::owned(tx, who, id)?.summary.environment_id;
+    crate::scope::lock_all(tx, [environment])?;
+    let summary = deployment::owned(tx, who, id)?.summary;
+    // Their own by the immutable id Cloud authenticated, since a name may repeat. A
+    // Deployment an older Cloud admitted holds none, nor does a caller an older Cloud
+    // sends, so those still go by name.
+    let theirs = match (deployment::admitter(tx, id)?, &trusted.user) {
+        (Some(admitter), Some(user)) => admitter != *user,
+        _ => summary.admitted_by.is_none() || summary.admitted_by != who.principal,
+    };
+    let stops = matches!(
+        summary.status,
+        DeploymentStatus::WaitingForCi | DeploymentStatus::Queued | DeploymentStatus::Running
+    );
+    // Cancelling a removal keeps what runs, as `cancel_removal` does, so only a
+    // Deployment that ships asks.
+    if theirs && stops && !summary.remove {
+        approval::approve_cancel(tx, who, &summary, trusted)?;
+    }
     let cancelled = deployment::cancel(tx, who, id)?;
     if cancelled.remove
         && let Some(mut mark) = mark::naming(tx, &cancelled.environment_id)?

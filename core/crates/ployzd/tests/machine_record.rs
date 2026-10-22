@@ -155,6 +155,7 @@ fn initialize_and_join_persist_the_only_supported_transitions() {
                     assigned_machine: assigned.clone(),
                     visible_peers: vec![initialized.clone()],
                     target_versions: BTreeMap::from([("actor".into(), 4)]),
+                    sealing_key: None,
                 },
             },
             wireguard_mtu: None,
@@ -377,13 +378,15 @@ fn reopening_a_participating_machine_refreshes_runtime_metadata() {
         memory_total_bytes: None,
         running_builds: 0,
         pool_committable_bytes: None,
+        store_filesystem: None,
         capabilities: Default::default(),
+        management_identity: None,
     })
     .unwrap();
     fs::write(&path, serde_json::to_vec_pretty(&stale).unwrap()).unwrap();
 
     let reopened = LocalMachineStore::open(&dir.0).unwrap();
-    let expected = ployzd::machine::local_runtime();
+    let expected = ployzd::machine::local_runtime(&dir.0);
     assert_eq!(reopened.record().machine().unwrap().runtime, expected);
     let persisted: LocalMachineRecord = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
     assert_eq!(persisted.machine().unwrap().runtime, expected);
@@ -966,6 +969,7 @@ fn join_rejects_empty_local_endpoints_without_changing_the_durable_record() {
                     assigned_machine: assigned,
                     visible_peers: vec![peer],
                     target_versions: BTreeMap::new(),
+                    sealing_key: None,
                 },
             },
             wireguard_mtu: None,
@@ -1025,6 +1029,7 @@ async fn join_preserves_identity_rejects_wrong_inputs_and_resumes_after_lost_res
         assigned_machine: assigned,
         visible_peers: vec![peer],
         target_versions: BTreeMap::from([("actor".into(), 4)]),
+        sealing_key: None,
     };
     let member = |registration: Registered, wireguard_mtu| EnrollRequest {
         role: EnrollAs::Member { registration },

@@ -157,7 +157,7 @@ async fn enter(
     address: SelectedEndpoint,
 ) -> Entry {
     let missed = |entry: String, error| Entry::Missed(Missed { entry, error });
-    let mut client = match connect_one(connection, source, connector).await {
+    let mut client = match connect_one(connection, source, connector, false).await {
         Ok(client) => client,
         Err(error) => {
             let unreachable = error.is_unreachable();

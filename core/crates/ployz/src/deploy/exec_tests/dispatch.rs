@@ -449,7 +449,9 @@ async fn removal_sent(purpose: ployz_core::RemoveContainerPurpose) -> Vec<Contai
                     | RpcRequestBody::InspectBuildGrant(_)
                     | RpcRequestBody::PublishCertificateMaterial(_)
                     | RpcRequestBody::ReadRoutes(_)
+                    | RpcRequestBody::ReadRoutedAddresses(_)
                     | RpcRequestBody::MetricHistory(_)
+                    | RpcRequestBody::RetainedEnv(_)
                     | RpcRequestBody::LogHistory(_)
                     | RpcRequestBody::TailLogs(_)
                     | RpcRequestBody::RuntimeWatch(_)) => {
@@ -798,6 +800,9 @@ async fn global_stop_first_retry_replays_retained_candidate_with_no_free_endpoin
                         }
                         other => panic!("unexpected want: {other:?}"),
                     },
+                    RpcRequestBody::RuntimeWatch(_) => {
+                        return Err(tonic::Status::unimplemented("no store in this fixture"));
+                    }
                     other => panic!("unexpected mutation: {other:?}"),
                 };
                 Ok(Response::new(response.encode().unwrap()))

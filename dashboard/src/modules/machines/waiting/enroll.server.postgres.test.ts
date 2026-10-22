@@ -517,16 +517,48 @@ it("sends Enroll to Forget Servers when the earlier pairing waits only on Machin
   expect(await failure(enroll([b]))).toMatchObject({ _tag: "Conflict", message: "Cloud can't remove an earlier server's pairing. Use Forget Servers." });
 });
 
-it("lets a host whose founding attempt failed found again on a new enrollment", async () => {
+it("resumes the founding claim of a host whose founding attempt failed when it is enrolled first again", async () => {
+  const [a, b] = await waiting("web-a", "web-b");
+  if (a?.id === undefined || b?.id === undefined) throw new Error("two hosts");
+  await failedFounder(a, "1".repeat(32));
+
+  const input: EnrollInput = { ids: [a.id, b.id], first: a.id, ...plainly };
+  expect((await run(preview(input))).rows.map((row) => [row.waitingServerId, row.role])).toEqual([[a.id, "founder"], [b.id, "joiner"]]);
+  const started = await run(startServerEnrollment(ada, { organizationSlug: "ada", ...input }));
+  expect(started.attempts.map((attempt) => [attempt.waitingServerId, attempt.role, attempt.state])).toEqual([
+    [a.id, "founder", "instructed"],
+    [b.id, "joiner", "awaiting_founder"],
+  ]);
+  expect(await pairings()).toEqual([{ founder_claim_machine_id: "1".repeat(32) }]);
+  expect(await claimAsFounder(a, "1".repeat(32))).toMatchObject({ kind: "initialize", resumed: true });
+});
+
+it("finishes removing a failed founder's claim whose removal already started, even when that host is enrolled first again", async () => {
   const [a] = await waiting("web-a");
   if (a === undefined) throw new Error("one host");
-  const [first] = (await run(enroll([a]))).attempts;
-  expect(await claimAsFounder(a, "1".repeat(32))).toMatchObject({ kind: "initialize", resumed: false });
-  await run(closeServerEnrollment("unbound", "failure", first?.id));
+  await failedFounder(a, "1".repeat(32));
+  await harness.pool.query(
+    "update organization_pairing set removal_started_at = date_trunc('milliseconds', now()), removal_endpoints = '[]'::jsonb",
+  );
 
   const [again] = (await run(enroll([a]))).attempts;
-  expect([again?.role, again?.state]).toEqual(["founder", "instructed"]);
+  expect(again?.role).toBe("founder");
+  expect(await pairings()).toEqual([]);
   expect(await claimAsFounder(a, "1".repeat(32))).toMatchObject({ kind: "initialize", resumed: false });
+});
+
+it("drops a failed founding claim once the host's latest attempt came from another Machine", async () => {
+  const [a] = await waiting("web-a");
+  if (a === undefined) throw new Error("one host");
+  await failedFounder(a, "1".repeat(32));
+  const [reinstalled] = (await run(enroll([a]))).attempts;
+  expect(await claimAsFounder(a, "2".repeat(32))).toMatchObject({ kind: "not_yet", reason: "founder" });
+  await run(closeServerEnrollment("unbound", "failure", reinstalled?.id));
+
+  const [again] = (await run(enroll([a]))).attempts;
+  expect(again?.role).toBe("founder");
+  expect(await pairings()).toEqual([]);
+  expect(await claimAsFounder(a, "2".repeat(32))).toMatchObject({ kind: "initialize", resumed: false });
 });
 
 it("ends open attempts when the pairing is removed", async () => {
@@ -539,14 +571,17 @@ it("ends open attempts when the pairing is removed", async () => {
   expect(await checkin(a)).toEqual({ kind: "wait", retryAfter: 10 });
 });
 
-it("ends open attempts when Cloud forgets an emptied pairing", async () => {
+it("ends open attempts and drops the Sealing public key when Cloud forgets an emptied pairing", async () => {
   const [a] = await waiting("web-a");
   if (a === undefined) throw new Error("one host");
   await run(enroll([a]));
   await claimAsFounder(a, "1".repeat(32));
   const { seen } = await run(seeCluster(adaOrg));
+  await harness.pool.query("insert into cluster_sealing_key (organization_id, cluster_key, public_key) values ($1, $2, $3)",
+    [adaOrg, seen.generation, Buffer.alloc(32, 1).toString("base64")]);
   expect(await run(forgetEmptiedPairing(adaOrg, seen.generation ?? ""))).toEqual({ kind: "released" });
   expect((await attempts()).map((row) => [row.state, row.ended_at !== null])).toEqual([["cancelled", true]]);
+  expect((await harness.pool.query("select 1 from cluster_sealing_key where organization_id = $1", [adaOrg])).rows).toEqual([]);
 });
 
 it("fails an attempt whose enroll token was removed under it", async () => {

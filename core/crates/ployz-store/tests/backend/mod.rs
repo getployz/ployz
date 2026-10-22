@@ -176,6 +176,7 @@ pub fn admit(
                 upload: None,
                 accept_volume_loss: Vec::new(),
                 message: None,
+                prune: false,
             }),
             &ployz_store::Trusted::default(),
         )

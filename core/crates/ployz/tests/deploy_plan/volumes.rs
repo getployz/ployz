@@ -1,10 +1,14 @@
 use super::support::*;
 use ployz_core::{
-    CopyRole, DockerVolume, DockerVolumeStorageObservation, MachineFailure,
-    MachineStorageObservation, PreservedVolume, ProvisionedVolumeMaximumBytes, PruneRefusal,
-    RpcError, RpcErrorCode, ServiceAttempt, ServiceName, VolumeObservationFailure,
+    ContainerKind, CopyRole, DependencyCondition, DockerVolume, DockerVolumeStorageObservation,
+    HttpProtocol, IngressHost, MachineFailure, MachineStorageObservation, PortPublication,
+    PreDeployHook, PreservedVolume, ProvisionedVolumeMaximumBytes, PruneRefusal, RpcError,
+    RpcErrorCode, ServiceAttempt, ServiceDependency, ServiceName, VolumeObservationFailure,
 };
-use std::{collections::BTreeMap, num::NonZeroU64};
+use std::{
+    collections::BTreeMap,
+    num::{NonZeroU32, NonZeroU64},
+};
 
 fn maximum_bytes(bytes: u64) -> ProvisionedVolumeMaximumBytes {
     ProvisionedVolumeMaximumBytes::new(NonZeroU64::new(bytes).unwrap())
@@ -774,6 +778,39 @@ fn only_a_writer_copy_pins_a_provisioned_volume() {
     }
 }
 
+/// Plan `intent` as the Store runner does: a Service whose Volume nothing can mount
+/// is blocked while the rest are planned.
+fn runner_preview(
+    intent: &DeployIntent,
+    snapshot: &DeploySnapshot,
+) -> Result<DeployPreview, PlanError> {
+    let mut intent = intent.clone();
+    intent.options.block_unmountable = true;
+    preview_deploy(&intent, snapshot)
+}
+
+#[test]
+fn a_direct_preview_refuses_a_volume_without_a_writer_as_a_whole() {
+    let intent = automatic_provisioned_intent();
+
+    let error =
+        preview_deploy(&intent, &copies_snapshot(&[('2', CopyRole::Slot)], vec![])).unwrap_err();
+
+    assert!(
+        matches!(
+            &error,
+            PlanError::NoWriter { .. } | PlanError::Service { .. }
+        ),
+        "{error}"
+    );
+    assert!(
+        error
+            .to_string()
+            .contains("Volume data has no writer; second holds its only copy"),
+        "{error}"
+    );
+}
+
 #[test]
 fn a_provisioned_volume_without_a_writer_refuses_and_names_the_way_back() {
     let intent = automatic_provisioned_intent();
@@ -797,16 +834,21 @@ fn a_provisioned_volume_without_a_writer_refuses_and_names_the_way_back() {
             "Restore needs a single copy: keep the newest, delete each other one from the Volume's page in Ployz Cloud, which shows whether it is a mirror or an old copy, then run ployz volume restore data --from <server you kept>",
         ),
     ] {
-        let error = preview_deploy(&intent, &copies_snapshot(&copies, rows)).unwrap_err();
-        assert!(
-            matches!(error, PlanError::NoWriter { .. }),
-            "{case}: {error}"
-        );
-        assert!(error.to_string().contains(needle), "{case}: {error}");
-        let rpc = error.into_rpc_error();
+        let preview = runner_preview(&intent, &copies_snapshot(&copies, rows)).unwrap();
+        let rpc = only_blocked(&preview);
+        assert!(rpc.message.contains(needle), "{case}: {}", rpc.message);
         assert_eq!(rpc.code, RpcErrorCode::Conflict, "{case}");
         assert_eq!(rpc.details.get("reason").unwrap(), "no_writer", "{case}");
     }
+}
+
+/// The one Service `preview` blocked, and why. Fails when it planned work instead.
+fn only_blocked(preview: &DeployPreview) -> RpcError {
+    assert!(preview.operations.is_empty(), "{:?}", operations(preview));
+    let [blocked] = preview.blocked.as_slice() else {
+        panic!("{:?}", preview.blocked)
+    };
+    blocked.error.clone()
 }
 
 #[test]
@@ -833,18 +875,14 @@ fn a_silent_machine_leaves_the_writer_unknown_instead_of_naming_a_copy() {
                 .insert(machine_id('3'), Err(error)),
         };
 
-        let error = preview_deploy(&intent, &snapshot).unwrap_err();
+        let rpc = only_blocked(&runner_preview(&intent, &snapshot).unwrap());
 
         assert_eq!(
-            error.to_string(),
+            rpc.message,
             "third did not answer, so Volume data's copies are unknown. Bring third back, or deploy the other services by name",
             "{case}"
         );
-        assert_eq!(
-            error.into_rpc_error().code,
-            RpcErrorCode::Unavailable,
-            "{case}"
-        );
+        assert_eq!(rpc.code, RpcErrorCode::Unavailable, "{case}");
     }
 }
 
@@ -868,17 +906,734 @@ fn a_cloud_volume_without_a_writer_is_named_as_authored() {
     .unwrap();
     let physical = app_volume(&format!("vol-{volume}"));
 
-    let error = preview_deploy(
+    let preview = runner_preview(
         &intent,
         &copies_snapshot_of(&physical, &[('1', CopyRole::Switching)], vec![]),
     )
-    .unwrap_err();
+    .unwrap();
 
-    assert!(matches!(error, PlanError::NoWriter { .. }), "{error}");
     assert_eq!(
-        error.to_string(),
+        only_blocked(&preview).message,
         "Volume echo is mid-Move; it is held as first (switching); ployz volume release echo stops it"
     );
+}
+
+/// The Deploy Intent of one Service mounting Managed Volume `echo`, which a Deploy
+/// applied before when `deployed`.
+fn lowered_echo(deployed: bool) -> (DeployIntent, DockerVolumeName) {
+    let volume = "3f2a6c1e-8d4b-4e7a-9c15-2b6d8e0f4a71";
+    let intent = ployz_core::config::lower_deployment(
+        serde_json::from_value(serde_json::json!({
+            "namespace": "app",
+            "snapshots": [{
+                "serviceId": "web",
+                "config": {"version": 2, "privateDns": "web", "healthcheck": {"type": "none"},
+                    "restartPolicy": "on-failure",
+                    "source": {"type": "image", "version": 1, "image": "nginx:latest", "credentials": {"type": "none"}},
+                    "mounts": [{"volumeResourceId": volume, "volumeName": "echo", "mountPath": "/data"}]}
+            }],
+            "volumes": [{"volumeResourceId": volume, "storage": {"kind": "provisioned", "maximumBytes": 1_073_741_824}, "deployed": deployed}]
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    (intent, app_volume(&format!("vol-{volume}")))
+}
+
+#[test]
+fn a_deployed_volume_no_member_holds_refuses_instead_of_starting_empty() {
+    let (intent, physical) = lowered_echo(true);
+
+    let preview = runner_preview(&intent, &copies_snapshot_of(&physical, &[], vec![])).unwrap();
+
+    let rpc = only_blocked(&preview);
+    assert_eq!(
+        rpc.message,
+        "Volume echo was deployed, but no Server in this Cluster holds a copy of it. If a Server you removed still holds its data, add that Server back, then run ployz volume restore echo --from <server>"
+    );
+    assert_eq!(rpc.details.get("reason").unwrap(), "no_writer");
+}
+
+#[test]
+fn a_deployed_volume_with_a_silent_machine_leaves_its_copies_unknown() {
+    let (intent, physical) = lowered_echo(true);
+    let mut snapshot = copies_snapshot_of(&physical, &[], vec![]);
+    snapshot.storage_capacity.remove(&machine_id('2'));
+
+    let rpc = only_blocked(&runner_preview(&intent, &snapshot).unwrap());
+
+    assert_eq!(rpc.code, RpcErrorCode::Unavailable, "{}", rpc.message);
+    assert!(
+        rpc.message.contains("copies are unknown"),
+        "{}",
+        rpc.message
+    );
+}
+
+#[test]
+fn a_volume_no_deploy_applied_yet_is_created() {
+    let (intent, physical) = lowered_echo(false);
+
+    let preview = runner_preview(&intent, &copies_snapshot_of(&physical, &[], vec![])).unwrap();
+
+    assert_eq!(
+        preview.volumes_to_create.len(),
+        1,
+        "{:?}",
+        operations(&preview)
+    );
+}
+
+#[test]
+fn a_deployed_volume_no_member_holds_leaves_a_deploy_of_another_service_alone() {
+    let mut db = requested(ServiceMode::Replicated {
+        replicas: NonZeroU32::new(1).unwrap(),
+    });
+    db.name = ServiceName::parse("db").unwrap();
+    add_named_volume(&mut db, "data");
+    make_provisioned(&mut db, "data", 1_073_741_824);
+    let web = requested(ServiceMode::Replicated {
+        replicas: NonZeroU32::new(1).unwrap(),
+    });
+    let intent = DeployIntent::apply_all(
+        Namespace::parse("app").unwrap(),
+        [&web, &db],
+        PlanOptions {
+            selected: vec![ServiceAttempt {
+                name: web.name.clone(),
+            }],
+            ..PlanOptions::default()
+        },
+    )
+    .with_deployed_volumes([app_volume("data")].into());
+
+    let preview = runner_preview(&intent, &copies_snapshot(&[], vec![])).unwrap();
+
+    assert!(
+        operations(&preview)
+            .iter()
+            .all(|operation| operation.service_name() != Some(&db.name))
+    );
+}
+
+/// `web`, which mounts nothing, and `db`, which mounts Managed Volume `data`.
+fn web_and_db() -> (RequestedServiceSpec, RequestedServiceSpec) {
+    let mut db = spec("db");
+    add_named_volume(&mut db, "data");
+    make_provisioned(&mut db, "data", 1_073_741_824);
+    (spec("web"), db)
+}
+
+#[test]
+fn a_full_deploy_blocks_only_the_service_whose_volume_has_no_writer() {
+    let (web, db) = web_and_db();
+    let intent = DeployIntent::apply_all(
+        Namespace::parse("app").unwrap(),
+        [&web, &db],
+        PlanOptions::default(),
+    );
+
+    let preview =
+        runner_preview(&intent, &copies_snapshot(&[('2', CopyRole::Slot)], vec![])).unwrap();
+
+    let planned: Vec<_> = operations(&preview)
+        .iter()
+        .filter_map(|operation| operation.service_name().cloned())
+        .collect();
+    assert_eq!(
+        planned,
+        std::slice::from_ref(&web.name),
+        "{:?}",
+        operations(&preview)
+    );
+    assert!(preview.volumes_to_create.is_empty());
+    let [blocked] = preview.blocked.as_slice() else {
+        panic!("{:?}", preview.blocked)
+    };
+    assert_eq!(blocked.service, db.name);
+    assert_eq!(blocked.error.code, RpcErrorCode::Conflict);
+    assert_eq!(blocked.error.details.get("reason").unwrap(), "no_writer");
+    assert!(
+        blocked
+            .error
+            .message
+            .starts_with("Volume data has no writer; second holds its only copy"),
+        "{}",
+        blocked.error.message
+    );
+    assert_eq!(preview.depths.keys().collect::<Vec<_>>(), [&web.name]);
+    assert_eq!(preview.placed_on.keys().collect::<Vec<_>>(), [&web.name]);
+}
+
+/// db runs on `second`, which holds its Volume and no longer accepts services, as after
+/// `ployz server drain second`.
+fn drained_volume_snapshot(db: &RequestedServiceSpec) -> DeploySnapshot {
+    let mut snapshot = copies_snapshot(&[('2', CopyRole::Writer)], vec![provisioned_row('2')]);
+    snapshot
+        .machines
+        .get_mut(1)
+        .unwrap()
+        .machine
+        .accepts_services = false;
+    snapshot.containers = vec![container('a', '2', db, &service_id('a'))];
+    snapshot
+}
+
+#[test]
+fn a_volume_on_a_server_that_accepts_no_services_blocks_only_its_service() {
+    let (web, db) = web_and_db();
+    let intent = DeployIntent::apply_all(
+        Namespace::parse("app").unwrap(),
+        [&web, &db],
+        PlanOptions::default(),
+    );
+
+    let preview = runner_preview(&intent, &drained_volume_snapshot(&db)).unwrap();
+
+    let planned: Vec<_> = operations(&preview)
+        .iter()
+        .filter_map(|operation| operation.service_name().cloned())
+        .collect();
+    assert_eq!(
+        planned,
+        std::slice::from_ref(&web.name),
+        "{:?}",
+        operations(&preview)
+    );
+    let [blocked] = preview.blocked.as_slice() else {
+        panic!("{:?}", preview.blocked)
+    };
+    assert_eq!(blocked.service, db.name);
+    assert_eq!(blocked.error.code, RpcErrorCode::Conflict);
+    assert_eq!(
+        blocked.error.details.get("reason").unwrap(),
+        "volume_server_takes_no_services"
+    );
+    assert_eq!(
+        blocked.error.message,
+        "Volume data is on second, which doesn't run services. Turn them back on with ployz \
+         server set second --accepts-services=true"
+    );
+}
+
+#[test]
+fn a_direct_preview_names_the_volume_its_server_and_the_way_back() {
+    let (_, db) = web_and_db();
+    let intent = DeployIntent::apply_all(
+        Namespace::parse("app").unwrap(),
+        [&db],
+        PlanOptions::default(),
+    );
+
+    let error = preview_deploy(&intent, &drained_volume_snapshot(&db)).unwrap_err();
+
+    assert_eq!(
+        error.to_string(),
+        "Volume data is on second, which doesn't run services. Turn them back on with ployz \
+         server set second --accepts-services=true"
+    );
+}
+
+#[test]
+fn a_service_that_depends_on_a_blocked_one_is_blocked_too() {
+    let (web, db) = web_and_db();
+    let intent = DeployIntent::apply_all(
+        Namespace::parse("app").unwrap(),
+        [&web, &db],
+        PlanOptions::default(),
+    )
+    .with_dependencies(BTreeMap::from([(
+        web.name.clone(),
+        vec![ServiceDependency {
+            service: db.name.clone(),
+            condition: DependencyCondition::ServiceHealthy,
+        }],
+    )]));
+
+    let preview =
+        runner_preview(&intent, &copies_snapshot(&[('2', CopyRole::Slot)], vec![])).unwrap();
+
+    assert!(
+        operations(&preview).is_empty(),
+        "{:?}",
+        operations(&preview)
+    );
+    let blocked: Vec<_> = preview
+        .blocked
+        .iter()
+        .map(|blocked| (blocked.service.as_str(), blocked.error.message.as_str()))
+        .collect();
+    assert_eq!(blocked.first().map(|entry| entry.0), Some("db"));
+    assert_eq!(
+        blocked.get(1).copied(),
+        Some(("web", "depends on db, which was not attempted"))
+    );
+    assert!(
+        preview.dependencies.is_empty(),
+        "{:?}",
+        preview.dependencies
+    );
+    assert!(preview.depths.is_empty(), "{:?}", preview.depths);
+}
+
+#[test]
+fn a_service_handing_a_hostname_to_a_blocked_one_is_blocked_too() {
+    let publishing = |name: &str| {
+        let mut spec = spec(name);
+        spec.ports = vec![PortPublication::Ingress {
+            hostname: IngressHost::parse("api.example.com").unwrap(),
+            load_balancer_port: NonZeroU16::new(80).unwrap(),
+            container_port: NonZeroU16::new(80).unwrap(),
+            http_protocol: HttpProtocol::Http,
+        }];
+        spec
+    };
+    let web = spec("web");
+    let mut api = publishing("api");
+    add_named_volume(&mut api, "data");
+    make_provisioned(&mut api, "data", 1_073_741_824);
+    let intent = DeployIntent::apply_all(
+        Namespace::parse("app").unwrap(),
+        [&web, &api],
+        PlanOptions::default(),
+    );
+    let mut snapshot = copies_snapshot(&[('2', CopyRole::Slot)], vec![]);
+    snapshot
+        .containers
+        .push(container('c', '1', &publishing("web"), &service_id('a')));
+
+    let preview = runner_preview(&intent, &snapshot).unwrap();
+
+    assert!(
+        operations(&preview).is_empty(),
+        "web keeps publishing the hostname: {:?}",
+        operations(&preview)
+    );
+    let blocked: Vec<_> = preview
+        .blocked
+        .iter()
+        .map(|blocked| (blocked.service.as_str(), blocked.error.message.as_str()))
+        .collect();
+    assert_eq!(blocked.first().map(|entry| entry.0), Some("api"));
+    assert_eq!(
+        blocked.get(1).copied(),
+        Some((
+            "web",
+            "hands hostname api.example.com to api, which was not attempted"
+        ))
+    );
+}
+
+#[test]
+fn a_blocked_dependent_prepares_none_of_its_volumes() {
+    let (mut web, db) = web_and_db();
+    add_named_volume(&mut web, "shared");
+    make_provisioned(&mut web, "shared", 1_073_741_824);
+    let mut api = spec("api");
+    add_named_volume(&mut api, "shared");
+    make_provisioned(&mut api, "shared", 1_073_741_824);
+    add_named_volume(&mut api, "own");
+    make_provisioned(&mut api, "own", 1_073_741_824);
+    let intent = DeployIntent::apply_all(
+        Namespace::parse("app").unwrap(),
+        [&web, &db, &api],
+        PlanOptions::default(),
+    )
+    .with_dependencies(BTreeMap::from([(
+        api.name.clone(),
+        vec![ServiceDependency {
+            service: db.name.clone(),
+            condition: DependencyCondition::ServiceHealthy,
+        }],
+    )]));
+
+    let preview =
+        runner_preview(&intent, &copies_snapshot(&[('2', CopyRole::Slot)], vec![])).unwrap();
+
+    assert!(
+        preview
+            .blocked
+            .iter()
+            .any(|blocked| blocked.service == api.name),
+        "{:?}",
+        preview.blocked
+    );
+    let own = app_volume("own");
+    assert!(
+        preview
+            .volumes_to_create
+            .iter()
+            .all(|volume| volume.name != own),
+        "{:?}",
+        preview.volumes_to_create
+    );
+    assert!(
+        !format!("{:?}", operations(&preview)).contains(own.as_str()),
+        "{:?}",
+        operations(&preview)
+    );
+}
+
+#[test]
+fn a_silent_volume_server_leaves_a_deploy_of_another_service_alone() {
+    let mut db = requested(ServiceMode::Replicated {
+        replicas: NonZeroU32::new(1).unwrap(),
+    });
+    db.name = ServiceName::parse("db").unwrap();
+    add_named_volume(&mut db, "data");
+    make_provisioned(&mut db, "data", 1_073_741_824);
+    let web = requested(ServiceMode::Replicated {
+        replicas: NonZeroU32::new(1).unwrap(),
+    });
+    let intent = DeployIntent::apply_all(
+        Namespace::parse("app").unwrap(),
+        [&web, &db],
+        PlanOptions {
+            selected: vec![ServiceAttempt {
+                name: web.name.clone(),
+            }],
+            ..PlanOptions::default()
+        },
+    )
+    .with_deployed_volumes([app_volume("data")].into());
+    let mut snapshot = copies_snapshot(&[], vec![]);
+    snapshot.storage_capacity.remove(&machine_id('2'));
+
+    let preview = preview_deploy(&intent, &snapshot).unwrap();
+
+    assert!(
+        operations(&preview)
+            .iter()
+            .all(|operation| operation.service_name() != Some(&db.name))
+    );
+
+    let depends = intent.clone().with_dependencies(BTreeMap::from([(
+        web.name.clone(),
+        vec![ployz_core::ServiceDependency {
+            service: db.name.clone(),
+            condition: ployz_core::DependencyCondition::ServiceStarted,
+        }],
+    )]));
+    assert!(matches!(
+        preview_deploy(&depends, &snapshot),
+        Err(PlanError::Service { source, .. })
+            if matches!(*source, PlanError::CopiesUnknown { .. })
+    ));
+
+    let mut pinned = intent.clone();
+    for service in &mut pinned.target {
+        if service.name == db.name {
+            service.placement.constraints = [label_constraint("second")].into();
+        }
+    }
+    snapshot.machines.last_mut().unwrap().membership = MembershipObservation::Down;
+    let preview = preview_deploy(&pinned, &snapshot).unwrap();
+    assert!(
+        operations(&preview)
+            .iter()
+            .all(|operation| operation.service_name() != Some(&db.name))
+    );
+}
+
+#[test]
+fn a_blocked_dependent_gives_back_the_endpoint_its_shared_reservation_took() {
+    let (web, db) = web_and_db();
+    let mut api = spec("api");
+    let mut worker = spec("worker");
+    for spec in [&mut api, &mut worker] {
+        add_named_volume(spec, "shared");
+        make_provisioned(spec, "shared", 1_073_741_824);
+    }
+    let intent = DeployIntent::apply_all(
+        Namespace::parse("app").unwrap(),
+        [&db, &api, &worker, &web],
+        PlanOptions::default(),
+    )
+    .with_dependencies(BTreeMap::from([(
+        api.name.clone(),
+        vec![ServiceDependency {
+            service: db.name.clone(),
+            condition: DependencyCondition::ServiceHealthy,
+        }],
+    )]));
+    // Exactly the two endpoints api and worker reserve together; web needs the one api gives back.
+    let snapshot = DeploySnapshot {
+        capacity: capacity([('1', 2), ('2', 0)]),
+        ..copies_snapshot(&[('2', CopyRole::Slot)], vec![])
+    };
+
+    let preview = runner_preview(&intent, &snapshot).unwrap();
+
+    let blocked: Vec<_> = preview
+        .blocked
+        .iter()
+        .map(|blocked| blocked.service.as_str())
+        .collect();
+    assert_eq!(blocked, ["db", "api"]);
+    let planned: Vec<_> = operations(&preview)
+        .iter()
+        .filter_map(|operation| operation.service_name().cloned())
+        .collect();
+    assert_eq!(planned, [worker.name.clone(), web.name.clone()]);
+    assert_eq!(
+        preview.placed_on.get(&web.name),
+        Some(&[machine_id('1')].into())
+    );
+}
+
+#[test]
+fn a_blocked_service_keeps_the_endpoint_its_old_hook_was_credited_for() {
+    let (mut web, db) = web_and_db();
+    let mut api = spec("api");
+    let mut worker = spec("worker");
+    for spec in [&mut api, &mut worker] {
+        add_named_volume(spec, "shared");
+        make_provisioned(spec, "shared", 1_073_741_824);
+    }
+    api.pre_deploy = Some(PreDeployHook {
+        command: vec!["migrate".into()].try_into().unwrap(),
+        environment: Default::default(),
+        privileged: None,
+        timeout_millis: None,
+        user: None,
+    });
+    let mut old_api = api.clone();
+    old_api.container.image = "ghcr.io/getployz/api:0".into();
+    let mut old_hook = container('8', '1', &old_api, &service_id('a'));
+    old_hook
+        .try_update(|parts| parts.kind = ContainerKind::PreDeployHook)
+        .unwrap();
+    // On first, 2 endpoints are free. api's reservation first credits its old hook, takes
+    // one for a new hook and none for the Container it replaces, and worker takes one.
+    // Blocked, api gives back only its hook: its old Container and hook keep running, so
+    // one endpoint is left for web.
+    let snapshot = DeploySnapshot {
+        capacity: capacity([('1', 2), ('2', 0)]),
+        containers: vec![container('a', '1', &old_api, &service_id('a')), old_hook],
+        ..copies_snapshot(&[('2', CopyRole::Slot)], vec![])
+    };
+    for (replicas, fits) in [(1, true), (2, false)] {
+        web.mode = ServiceMode::Replicated {
+            replicas: NonZeroU32::new(replicas).unwrap(),
+        };
+        let intent = DeployIntent::apply_all(
+            Namespace::parse("app").unwrap(),
+            [&db, &api, &worker, &web],
+            PlanOptions::default(),
+        )
+        .with_dependencies(BTreeMap::from([(
+            api.name.clone(),
+            vec![ServiceDependency {
+                service: db.name.clone(),
+                condition: DependencyCondition::ServiceHealthy,
+            }],
+        )]));
+
+        let preview = runner_preview(&intent, &snapshot);
+
+        if fits {
+            let preview = preview.unwrap_or_else(|error| panic!("{replicas} replicas: {error}"));
+            let blocked: Vec<_> = preview
+                .blocked
+                .iter()
+                .map(|blocked| blocked.service.as_str())
+                .collect();
+            assert_eq!(blocked, ["db", "api"]);
+            assert_eq!(
+                preview.placed_on.get(&web.name),
+                Some(&[machine_id('1')].into())
+            );
+        } else {
+            assert!(
+                matches!(
+                    preview,
+                    Err(PlanError::Service { ref service, ref source })
+                        if service == "web" && matches!(**source, PlanError::InsufficientCapacity)
+                ),
+                "{replicas} replicas: {preview:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_blocked_service_taking_back_its_credited_hook_keeps_the_machine_in_debt() {
+    let (mut web, db) = web_and_db();
+    let mut api = spec("api");
+    let mut worker = spec("worker");
+    for spec in [&mut api, &mut worker] {
+        add_named_volume(spec, "a_shared");
+        make_provisioned(spec, "a_shared", 1_073_741_824);
+        spec.placement.constraints = [label_constraint("first")].into();
+    }
+    let mut c = spec("c");
+    let mut d = spec("d");
+    for spec in [&mut c, &mut d, &mut web] {
+        spec.placement.constraints = [label_constraint("second")].into();
+    }
+    for spec in [&mut c, &mut d] {
+        add_named_volume(spec, "z_shared");
+        make_provisioned(spec, "z_shared", 1_073_741_824);
+    }
+    api.pre_deploy = Some(PreDeployHook {
+        command: vec!["migrate".into()].try_into().unwrap(),
+        environment: Default::default(),
+        privileged: None,
+        timeout_millis: None,
+        user: None,
+    });
+    let mut old_api = api.clone();
+    old_api.container.image = "ghcr.io/getployz/api:0".into();
+    let mut old_hook = container('8', '2', &old_api, &service_id('a'));
+    old_hook
+        .try_update(|parts| parts.kind = ContainerKind::PreDeployHook)
+        .unwrap();
+    // second has one free endpoint. api's reservation credits its old hook there, and c and
+    // d spend both. Blocked, api takes its credit back, which leaves second one endpoint in
+    // debt; blocked c's refund only pays that debt, so d's Container takes the last one.
+    let snapshot = DeploySnapshot {
+        capacity: capacity([('1', 3), ('2', 1)]),
+        containers: vec![container('a', '1', &old_api, &service_id('a')), old_hook],
+        ..copies_snapshot(&[('2', CopyRole::Slot)], vec![])
+    };
+    let dependency = vec![ServiceDependency {
+        service: db.name.clone(),
+        condition: DependencyCondition::ServiceHealthy,
+    }];
+    let intent = DeployIntent::apply_all(
+        Namespace::parse("app").unwrap(),
+        [&db, &api, &worker, &c, &d, &web],
+        PlanOptions::default(),
+    )
+    .with_dependencies(BTreeMap::from([
+        (api.name.clone(), dependency.clone()),
+        (c.name.clone(), dependency),
+    ]));
+
+    let preview = runner_preview(&intent, &snapshot);
+
+    assert!(
+        matches!(
+            preview,
+            Err(PlanError::Service { ref service, ref source })
+                if service == "web" && matches!(**source, PlanError::InsufficientCapacity)
+        ),
+        "{preview:?}"
+    );
+}
+
+#[test]
+fn blocked_services_are_reported_in_deploy_order() {
+    let (_, db) = web_and_db();
+    let mut api = spec("api");
+    let mut worker = spec("worker");
+    for spec in [&mut api, &mut worker] {
+        add_named_volume(spec, "shared");
+        make_provisioned(spec, "shared", 1_073_741_824);
+    }
+    let intent = DeployIntent::apply_all(
+        Namespace::parse("app").unwrap(),
+        [&db, &api, &worker],
+        PlanOptions::default(),
+    );
+    let mut snapshot = copies_snapshot(&[('2', CopyRole::Slot)], vec![]);
+    let Some(Ok(second)) = snapshot.storage_capacity.get_mut(&machine_id('2')) else {
+        panic!("fixture capacity for second")
+    };
+    second.copies.insert(
+        app_volume("shared"),
+        ployz_core::ProvisionedCopy {
+            role: CopyRole::Slot,
+            maximum_bytes: maximum_bytes(1_073_741_824),
+            used_bytes: 0,
+            slot_role: None,
+        },
+    );
+
+    let preview = runner_preview(&intent, &snapshot).unwrap();
+
+    let blocked: Vec<_> = preview
+        .blocked
+        .iter()
+        .map(|blocked| blocked.service.as_str())
+        .collect();
+    assert_eq!(blocked, ["db", "api", "worker"]);
+}
+
+#[test]
+fn a_shared_volume_without_a_writer_blocks_only_the_services_that_share_it() {
+    let other = spec("other");
+    let mut api = spec("api");
+    let mut worker = spec("worker");
+    for spec in [&mut api, &mut worker] {
+        add_named_volume(spec, "data");
+        make_provisioned(spec, "data", 1_073_741_824);
+    }
+    let web = spec("web");
+    let intent = DeployIntent::apply_all(
+        Namespace::parse("app").unwrap(),
+        [&other, &api, &worker, &web],
+        PlanOptions::default(),
+    )
+    .with_dependencies(BTreeMap::from([(
+        web.name.clone(),
+        vec![ServiceDependency {
+            service: api.name.clone(),
+            condition: DependencyCondition::ServiceHealthy,
+        }],
+    )]));
+    let mut silent = copies_snapshot(&[('2', CopyRole::Slot)], vec![]);
+    silent.machines.push(machine('3', "third"));
+    silent.storage_capacity.remove(&machine_id('3'));
+    for (case, snapshot, reason, code) in [
+        (
+            "no writer",
+            copies_snapshot(&[('2', CopyRole::Slot)], vec![]),
+            "Volume data has no writer; second holds its only copy",
+            RpcErrorCode::Conflict,
+        ),
+        (
+            "copies unknown",
+            silent,
+            "third did not answer, so Volume data's copies are unknown",
+            RpcErrorCode::Unavailable,
+        ),
+    ] {
+        let preview = runner_preview(&intent, &snapshot).unwrap();
+
+        let planned: Vec<_> = operations(&preview)
+            .iter()
+            .filter_map(|operation| operation.service_name().cloned())
+            .collect();
+        assert_eq!(planned, std::slice::from_ref(&other.name), "{case}");
+        let [api, worker, web] = preview.blocked.as_slice() else {
+            panic!("{case}: {:?}", preview.blocked)
+        };
+        for sharer in [api, worker] {
+            assert_eq!(sharer.error.code, code, "{case}");
+            assert!(
+                sharer.error.message.starts_with(reason),
+                "{case}: {}",
+                sharer.error.message
+            );
+        }
+        assert_eq!(
+            (api.service.as_str(), worker.service.as_str()),
+            ("api", "worker"),
+            "{case}"
+        );
+        assert_eq!(web.service.as_str(), "web", "{case}");
+        assert_eq!(web.error.code, RpcErrorCode::Conflict, "{case}");
+        assert_eq!(
+            web.error.message, "depends on api, which was not attempted",
+            "{case}"
+        );
+        assert!(preview.volumes_to_create.is_empty(), "{case}");
+        assert!(
+            preview_deploy(&intent, &snapshot).is_err(),
+            "{case}: a direct preview still refuses the whole Deploy"
+        );
+    }
 }
 
 #[test]
@@ -1027,6 +1782,63 @@ fn partial_apply_rejects_different_bounds_for_colocated_global_volumes() {
         ),
         "unexpected result: {result:?}"
     );
+}
+
+#[test]
+fn a_volume_definition_conflict_placement_decides_keeps_its_retry() {
+    let mut first = global_service("first", "first", 1_073_741_824);
+    first.placement.constraints =
+        [ployz_core::PlacementConstraint::parse("node.labels.a == yes").unwrap()].into();
+    let mut second = global_service("second", "first", 2_147_483_648);
+    second.placement.constraints =
+        [ployz_core::PlacementConstraint::parse("node.labels.b == yes").unwrap()].into();
+    let intent = DeployIntent::apply_all(
+        Namespace::parse("app").unwrap(),
+        [&first, &second],
+        PlanOptions::default(),
+    );
+    let labelled = |hex, name, labels: &[&str]| {
+        let mut machine = machine(hex, name);
+        machine.machine.labels = labels
+            .iter()
+            .map(|label| (label.parse().unwrap(), "yes".parse().unwrap()))
+            .collect();
+        machine.storage = Some(MachineStorageObservation::Ready);
+        machine
+    };
+
+    let refused = preview_deploy(
+        &intent,
+        &DeploySnapshot {
+            machines: vec![
+                labelled('1', "both", &["a", "b"]),
+                labelled('2', "second", &["b"]),
+            ],
+            ..storage_snapshot()
+        },
+    )
+    .unwrap_err();
+    assert!(
+        matches!(
+            &refused,
+            PlanError::Service { source, .. }
+                if matches!(source.as_ref(), PlanError::ConflictingDockerVolumeDefinitions { .. })
+        ),
+        "{refused:?}"
+    );
+    assert!(!refused.same_again(), "{refused}");
+
+    preview_deploy(
+        &intent,
+        &DeploySnapshot {
+            machines: vec![
+                labelled('1', "both", &["a"]),
+                labelled('2', "second", &["b"]),
+            ],
+            ..storage_snapshot()
+        },
+    )
+    .expect("a label taken off the Server lets the identical Deploy through");
 }
 
 #[test]

@@ -16,7 +16,7 @@ export function TokenRow({ organizationSlug, token, onRevoke }: { organizationSl
     <TableRow>
       <TableCell>
         <div className="flex items-center gap-2">
-          <span className="font-mono font-medium">{token.name}</span>
+          <span className="font-medium">{token.name}</span>
           {token.autoEnrollMax !== null ? <Badge variant="secondary">Auto up to {token.autoEnrollMax}</Badge> : null}
         </div>
         <div className="text-xs text-muted-foreground">

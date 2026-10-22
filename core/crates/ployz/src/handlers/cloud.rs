@@ -14,7 +14,8 @@ use ployz_core::{
 
 use super::{Error, config_path, leaf_matches, runtime};
 use crate::cloud_enroll::{
-    self, CloudPairing, EnrollIdentity, EnrollStage, InitializeMode, Join, Outcome,
+    self, CloudPairing, Command as EnrollCommand, EnrollIdentity, EnrollStage, InitializeMode,
+    Join, Outcome,
 };
 use crate::connect::{Client, ConnectError};
 use crate::context::{Connection, ContextError, SelectedConnections, Transport};
@@ -88,17 +89,25 @@ where
     InstallFuture: Future<Output = Result<(), Error>>,
 {
     runtime()?
-        .block_on(run_enrollment(root, &token, cloud_url, install, &|stage| {
-            if stage == EnrollStage::Enrolling && !ui::json() {
-                ui::note("Asking Cloud to enroll this Server…");
-            }
-        }))
+        .block_on(run_enrollment(
+            EnrollCommand::ServerAdd,
+            root,
+            &token,
+            cloud_url,
+            install,
+            &|stage| {
+                if stage == EnrollStage::Enrolling && !ui::json() {
+                    ui::note("Asking Cloud to enroll this Server…");
+                }
+            },
+        ))
         .and_then(|printed| printed)
 }
 
 /// Enroll as `server add` does, reporting Joining only after the daemon accepts
 /// enrollment, then send Cloud the best-effort setup report for the outcome.
 pub(crate) async fn run_enrollment<Install, InstallFuture>(
+    command: EnrollCommand,
     root: &ArgMatches,
     token: &CloudEnrollToken,
     cloud_url: &str,
@@ -110,7 +119,16 @@ where
     InstallFuture: Future<Output = Result<(), Error>>,
 {
     let mut report = SetupReport::start();
-    let setup = enroll_steps(root, token, cloud_url, install, &mut report, progress).await;
+    let setup = enroll_steps(
+        command,
+        root,
+        token,
+        cloud_url,
+        install,
+        &mut report,
+        progress,
+    )
+    .await;
     report
         .send(
             &cloud_enroll::report_url(cloud_url),
@@ -122,6 +140,7 @@ where
 }
 
 async fn enroll_steps<Install, InstallFuture>(
+    command: EnrollCommand,
     root: &ArgMatches,
     token: &CloudEnrollToken,
     cloud_url: &str,
@@ -162,6 +181,7 @@ where
     }
     report.step(Step::Enroll);
     let (details, machine_token, name, outcome) = enroll_current_identity(
+        command,
         &mut client,
         requested_name,
         requested_storage.choice(),
@@ -177,6 +197,7 @@ where
         Outcome::Join(join) => {
             report.enrolled(join.storage.choice(), false);
             enroll_join(
+                command,
                 matches,
                 client,
                 details,
@@ -197,6 +218,7 @@ where
         } => {
             report.enrolled(storage.choice(), true);
             enroll_founder(
+                command,
                 matches,
                 client,
                 details,
@@ -218,17 +240,46 @@ where
     }
 }
 
+/// The local Machine this enrollment already joined, if any. A participating Machine counts
+/// only when Cloud found it listed as it published itself; Cloud registers a forgotten one
+/// afresh, with no daemon version, and its participation predates this enrollment.
 fn already_assigned<'a>(details: &'a MachineDetails, assigned: &Machine) -> Option<&'a Machine> {
-    matches!(
-        details.phase,
-        LocalMachinePhase::Joining | LocalMachinePhase::Participating
-    )
-    .then_some(details.machine.as_ref())
-    .flatten()
-    .filter(|machine| machine.id == assigned.id)
+    let resumable = match details.phase {
+        LocalMachinePhase::Joining => true,
+        LocalMachinePhase::Participating => !assigned.runtime.daemon_version.is_empty(),
+        LocalMachinePhase::Uninitialized
+        | LocalMachinePhase::Resetting
+        | LocalMachinePhase::Unrecognized(_) => false,
+    };
+    resumable
+        .then_some(details.machine.as_ref())
+        .flatten()
+        .filter(|machine| machine.id == assigned.id)
 }
 
+/// A local participant Cloud doesn't list as joined is a rerun that outran its own
+/// publication, or a forgotten Server. Neither is proven, so the refusal names both.
+fn unlisted_participation(details: &MachineDetails, assigned: &Machine) -> Result<(), Error> {
+    let participating = details.phase == LocalMachinePhase::Participating
+        && details
+            .machine
+            .as_ref()
+            .is_some_and(|machine| machine.id == assigned.id);
+    if !participating {
+        return Ok(());
+    }
+    Err(Error::conflict(format!(
+        "Server {} already participates, but Cloud doesn't list it as joined. If an add of this Server just stopped partway, run the same command again in a minute; if the Server was forgotten, rerun with --reset to reset it before enrollment.",
+        assigned.name
+    )))
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the enrollment request carries its originating command"
+)]
 async fn enroll_current_identity(
+    command: EnrollCommand,
     client: &mut Client,
     requested_name: Option<MachineName>,
     requested_storage: StorageChoice,
@@ -253,7 +304,7 @@ async fn enroll_current_identity(
         initial_policy.clone(),
     );
     progress(EnrollStage::Enrolling);
-    let outcome = cloud_enroll::enroll(url, token, &identity, progress).await?;
+    let outcome = cloud_enroll::enroll(command, url, token, &identity, progress).await?;
     Ok((details, machine_token, name, outcome))
 }
 
@@ -262,6 +313,7 @@ async fn enroll_current_identity(
     reason = "the join tail consumes the existing cloud-enroll command interface"
 )]
 async fn enroll_join<Install, InstallFuture>(
+    command: EnrollCommand,
     matches: &ArgMatches,
     mut client: Client,
     details: MachineDetails,
@@ -301,6 +353,7 @@ where
             client
         }
     } else {
+        unlisted_participation(&details, &assigned)?;
         client = ensure_uninitialized(
             matches,
             matches.get_flag("yes"),
@@ -330,13 +383,19 @@ where
         )
         .await?
     };
+    let sealing = sealing(&mut ready).await?;
     progress(EnrollStage::Publishing);
     // Mint a fresh capability; Cloud verifies replacements when enrollment resumes.
     let capability = set_cloud_management_client(matches, &mut ready).await?;
-    let catch_up = crate::global_catch_up::follow_globals(&mut ready, &assigned).await;
+    let (unarrived, catch_up) =
+        crate::global_catch_up::follow_globals(&mut ready, &assigned, |args| {
+            super::rerun(matches, args)
+        })
+        .await;
     // Cloud may use the replacement after publication, revoking this key.
     // A committed join remains enrolled even when Global catch-up needs a separate retry.
     cloud_enroll::publish(
+        command,
         callback_url,
         token,
         assigned.id,
@@ -344,11 +403,22 @@ where
         &capability,
     )
     .await?;
-    cloud_enroll::callback(callback_url, token, assigned.id, &pairing.secret).await?;
+    cloud_enroll::callback(
+        command,
+        callback_url,
+        token,
+        assigned.id,
+        &pairing.secret,
+        sealing,
+    )
+    .await?;
     ui::stream(format_args!("Joined Server {}.", assigned.name));
     // The join is committed; a catch-up failure makes it partial.
     Ok(ui::emit_committed(
-        serde_json::json!({ "server": super::server::server_json(&assigned), "founded": false }),
+        crate::global_catch_up::with_unarrived(
+            serde_json::json!({ "server": super::server::server_json(&assigned), "founded": false }),
+            &unarrived,
+        ),
         catch_up.map_err(|error| {
             crate::global_catch_up::joined_catch_up_error(error, &assigned, |args| {
                 super::rerun(matches, args)
@@ -367,6 +437,7 @@ enum FounderLocalState {
     reason = "the founder tail consumes the existing cloud-enroll command interface"
 )]
 async fn enroll_founder<Install, InstallFuture>(
+    command: EnrollCommand,
     matches: &ArgMatches,
     mut client: Client,
     details: MachineDetails,
@@ -472,19 +543,41 @@ where
         }
     };
 
+    let mut partial = None;
     if machine.accepts_ingress
         && let Some(requested) = ingress
     {
+        let incomplete = |error: crate::deploy::ApplyError| {
+            ingress_incomplete(
+                command,
+                super::ingress_hints(Error::from(error), |args| super::rerun(matches, args)),
+            )
+        };
         // An interrupted Apply may have completed mutations. Do not replay it.
-        let _ingress = crate::deploy::apply_requested(&mut ready, &requested, false, false, "default").await.map_err(|error| {
-            super::ingress_hints(Error::from(error), |args| super::rerun(matches, args)).context("Server initialized; Ingress deployment incomplete. Rerun the same ployz server add command without --reset, keeping all other options, to reconcile it.")
-        })?;
+        match crate::deploy::apply_requested(&mut ready, &requested, false, false, "default").await
+        {
+            Ok(_) => {}
+            // The Ingress Proxy is deployed; a Server it could not observe does not hold
+            // back publication, as a joiner's catch-up failure does not.
+            Err(error @ crate::deploy::ApplyError::Partial(_)) => {
+                partial = Some(incomplete(error));
+            }
+            Err(error) => return Err(incomplete(error)),
+        }
     }
+    let sealing = sealing(&mut ready).await?;
     progress(EnrollStage::Publishing);
     // Repeated Set stages a fresh capability; its first operational RPC completes rotation.
-    let capability = set_cloud_management_client(matches, &mut ready).await
-        .map_err(|error| error.context("Server initialized; Cloud Pairing publication incomplete. Rerun the same ployz server add command without --reset, keeping all other options."))?;
+    let capability = set_cloud_management_client(matches, &mut ready)
+        .await
+        .map_err(|error| {
+            error.context(format!(
+                "Server initialized; Cloud Pairing publication incomplete. {}.",
+                command.again()
+            ))
+        })?;
     cloud_enroll::publish(
+        command,
         &cloud_enroll::callback_url(cloud_url),
         token,
         machine.id,
@@ -493,13 +586,33 @@ where
     )
     .await?;
     cloud_enroll::callback(
+        command,
         &cloud_enroll::callback_url(cloud_url),
         token,
         machine.id,
         &pairing.secret,
+        sealing,
     )
     .await?;
-    Ok(ui::emit(&founder_result(&machine, founding)))
+    Ok(ui::emit_committed(
+        founder_result(&machine, founding),
+        partial.map_or(Ok(()), Err),
+    ))
+}
+
+/// Whether the enrolled Machine holds its Cluster's Sealing Key, for Cloud to record at completion.
+async fn sealing(client: &mut Client) -> Result<Option<ployz_core::Sealing>, Error> {
+    Ok(client
+        .call_repeatable::<op::Inspect>(InspectRequest::default(), None)
+        .await?
+        .sealing)
+}
+
+/// The first Server is enrolled but its Ingress Proxy deploy failed.
+pub(crate) fn ingress_incomplete(command: EnrollCommand, error: Error) -> Error {
+    let headline =
+        super::ingress_headline("Server initialized; Ingress deployment incomplete", &error);
+    error.context(format!("{headline} {}, to reconcile it.", command.again()))
 }
 
 /// The first Server's result. Founding it, Cloud deploys the Organization's saved
@@ -639,7 +752,7 @@ async fn dial(matches: &ArgMatches) -> Result<Client, ConnectError> {
         }
         return super::server::connect_direct(matches, &connection).await;
     }
-    crate::connect::connect_selected_with(
+    crate::connect::connect_selected_in_order(
         local_selection(matches)?,
         std::sync::Arc::new(
             crate::connect::SystemConnector::default()
@@ -847,6 +960,7 @@ mod tests {
             io::ErrorKind::ConnectionRefused
         ))));
         assert!(!retry_local_connect(&ConnectError::AllFailed {
+            relayed: false,
             selection: ConnectionSource::LocalSocket,
             attempts: 1,
             server: None,
@@ -881,6 +995,7 @@ mod tests {
                 storage: None,
                 upgrade: None,
                 token: None,
+                sealing: None,
             };
             let observed = details.clone();
             let reached = std::sync::Arc::new(tokio::sync::Notify::new());
@@ -922,6 +1037,7 @@ mod tests {
             let enrolling = async {
                 if founder {
                     enroll_founder(
+                        EnrollCommand::ServerAdd,
                         matches,
                         client,
                         details,
@@ -950,6 +1066,7 @@ mod tests {
                     .await
                 } else {
                     enroll_join(
+                        EnrollCommand::ServerAdd,
                         matches,
                         client,
                         details,
@@ -960,6 +1077,7 @@ mod tests {
                                 assigned_machine: machine,
                                 visible_peers: Vec::new(),
                                 target_versions: Default::default(),
+                                sealing_key: None,
                             },
                         },
                         &policy,
@@ -991,8 +1109,60 @@ mod tests {
     }
 
     #[test]
+    fn a_forgotten_server_rejoining_through_cloud_is_reset_first() {
+        let listed = {
+            let mut machine = crate::global_fixtures::machine('a', "web-3");
+            machine.runtime.daemon_version = "0.3.0".into();
+            machine
+        };
+        let registered = crate::global_fixtures::machine('a', "web-3");
+        let details = |phase| MachineDetails {
+            id: listed.id,
+            phase,
+            public_key: listed.public_key,
+            advertised_endpoints: Vec::new(),
+            machine: Some(listed.clone()),
+            store_version: Default::default(),
+            rtts: Vec::new(),
+            management_clients: Vec::new(),
+            telemetry: None,
+            storage: None,
+            upgrade: None,
+            token: None,
+            sealing: None,
+        };
+        assert_eq!(
+            already_assigned(&details(LocalMachinePhase::Participating), &listed),
+            Some(&listed),
+            "the Cluster lists the Machine as it published itself"
+        );
+        assert_eq!(
+            already_assigned(&details(LocalMachinePhase::Participating), &registered),
+            None,
+            "Cloud registered it afresh, so its participation predates this enrollment"
+        );
+        assert_eq!(
+            already_assigned(&details(LocalMachinePhase::Joining), &registered),
+            Some(&listed),
+            "a join under way hasn't published itself yet"
+        );
+        let refusal =
+            unlisted_participation(&details(LocalMachinePhase::Participating), &registered)
+                .unwrap_err()
+                .to_string();
+        assert!(
+            refusal.contains("run the same command again") && refusal.contains("--reset"),
+            "an unlisted participant may be a rerun that outran its publication or a forgotten Server: {refusal}"
+        );
+        assert!(
+            unlisted_participation(&details(LocalMachinePhase::Uninitialized), &registered).is_ok()
+        );
+    }
+
+    #[test]
     fn a_rerun_resumes_a_join_already_under_way_for_the_assigned_machine() {
-        let assigned = crate::global_fixtures::machine('a', "web-3");
+        let mut assigned = crate::global_fixtures::machine('a', "web-3");
+        assigned.runtime.daemon_version = "0.3.0".into();
         let other = crate::global_fixtures::machine('b', "web-4");
         let details = |phase, machine: Option<&Machine>| MachineDetails {
             id: assigned.id,
@@ -1007,6 +1177,7 @@ mod tests {
             storage: None,
             upgrade: None,
             token: None,
+            sealing: None,
         };
         for phase in [LocalMachinePhase::Joining, LocalMachinePhase::Participating] {
             assert_eq!(

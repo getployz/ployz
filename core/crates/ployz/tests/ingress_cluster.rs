@@ -225,15 +225,12 @@ async fn certificate_material_in_cluster_state_is_served_without_restart() {
     create_and_start(&mut client, &first, api).await;
     wait_running(&mut client, &service_id, 1).await;
     let before = wait_config(&cluster, 0, |config| config.contains("auto_https off")).await;
-    assert!(
-        !before.contains("tls /config/caddy/certs/secure.example.test"),
-        "{before}"
-    );
+    assert!(!pins_tls(&before, "secure.example.test"), "{before}");
 
     let (first_cert, first_key) = self_signed_material("secure.example.test", "first");
     publish_certificate_row(&cluster, 0, "secure.example.test", &first_cert, &first_key);
     wait_config(&cluster, 0, |config| {
-        config.contains("tls /config/caddy/certs/secure.example.test-")
+        pins_tls(config, "secure.example.test")
     })
     .await;
     assert_eq!(curl_https(&cluster, 0, &first_cert).trim(), "ok");
@@ -265,7 +262,7 @@ async fn certificate_material_in_cluster_state_is_served_without_restart() {
     let second = cluster.add_machine(0, 1, "machine-2").await.unwrap();
     cli(&direct, &ingress_role(&second));
     wait_config(&cluster, 1, |config| {
-        config.contains("tls /config/caddy/certs/secure.example.test-")
+        pins_tls(config, "secure.example.test")
     })
     .await;
     poll_until(
@@ -914,4 +911,13 @@ fn curl_https(cluster: &Cluster, index: usize, certificate: &str) -> String {
             ),
         )
         .unwrap_or_default()
+}
+
+fn pins_tls(config: &str, hostname: &str) -> bool {
+    let header = format!("https://{hostname} {{");
+    config
+        .lines()
+        .skip_while(|line| *line != header)
+        .take_while(|line| *line != "}")
+        .any(|line| line.starts_with("\ttls /config/caddy/certs/"))
 }

@@ -14,7 +14,7 @@ $ ployz domain ls
 stdout:
 ```
 DOMAIN	SERVICE	PORT	STATUS	REASON
-acme.com	web	-	setting up	Cloud can't see the Servers right now
+acme.com	web	-	setting up	Ployz can't see the Servers right now
 ```
 
 ### domain ls --json
@@ -33,7 +33,7 @@ stdout:
       "hostname": "acme.com",
       "kind": "custom",
       "port": null,
-      "reason": "Cloud can't see the Servers right now",
+      "reason": "Ployz can't see the Servers right now",
       "service": "web",
       "status": "setting_up"
     }
@@ -262,7 +262,7 @@ $ ployz domain ls
 stdout:
 ```
 DOMAIN	SERVICE	PORT	STATUS	REASON
-acme.com	web	-	setting up	Cloud can't see the Servers right now
+acme.com	web	-	setting up	Ployz can't see the Servers right now
 shop.example.org	web	-	setting up	Live after your next deploy
 docs.example.org	web	8080	setting up	Live after your next deploy
 myapi.ada.ployz.test	api	-	setting up	Live after your next deploy
@@ -287,7 +287,7 @@ domain = acme.com
 service = web
 port = -
 status = setting up
-reason = Cloud can't see the Servers right now
+reason = Ployz can't see the Servers right now
 ```
 
 ### domain check acme.com --json
@@ -305,7 +305,7 @@ stdout:
     "hostname": "acme.com",
     "kind": "custom",
     "port": null,
-    "reason": "Cloud can't see the Servers right now",
+    "reason": "Ployz can't see the Servers right now",
     "service": "web",
     "status": "setting_up"
   },

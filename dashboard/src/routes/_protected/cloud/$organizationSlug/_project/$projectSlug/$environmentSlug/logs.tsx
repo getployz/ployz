@@ -9,5 +9,10 @@ export const Route = createFileRoute(
 
 function RouteComponent() {
   const { organizationSlug, projectSlug, environmentSlug } = Route.useParams();
-  return <div className="flex h-full min-h-0 flex-col p-4"><ContainerLogs selection={{ organizationSlug, projectSlug, environmentSlug }} /></div>;
+  return (
+    <div className="flex h-full min-h-0 flex-col gap-4 p-4">
+      <h1 className="text-2xl font-semibold">Logs</h1>
+      <ContainerLogs selection={{ organizationSlug, projectSlug, environmentSlug }} />
+    </div>
+  );
 }

@@ -1,6 +1,7 @@
 import type { DrainReport, MachineRef, MoveFailure, OldCopyEnd, ServiceDrain, StayReason, Unconfirmed } from "@ployz/sdk";
 import type { DrainEndCode, LatestDrains } from "#/modules/machines/server-drain";
 import { splitQualifiedService } from "#/modules/machines/server-services";
+import { listNames } from "#/lib/plural";
 
 export type DrainTone = "moved" | "stopped" | "stayed" | "failed" | "neutral";
 
@@ -28,6 +29,8 @@ export type DrainView =
   | { readonly kind: "starting" }
   /** Requested, and waiting for a run: behind `behind`'s Drain when another Server's is running. */
   | { readonly kind: "queued"; readonly behind: string | null }
+  /** Its turn came and the servers didn't answer: it tries again until they do, or its pending limit ends it. */
+  | { readonly kind: "waiting" }
   | { readonly kind: "running"; readonly since: string }
   | {
     readonly kind: "finished";
@@ -47,7 +50,7 @@ export type DrainView =
 
 /** Whether a Drain is under way from this Server's point of view: the button spins and the switch waits. */
 export const drainBusy = (view: DrainView) =>
-  view.kind === "starting" || view.kind === "queued" || view.kind === "running";
+  view.kind === "starting" || view.kind === "queued" || view.kind === "waiting" || view.kind === "running";
 
 export const drainButtonLabel = (view: DrainView): "Drain" | "Drain again" =>
   (view.kind === "finished" && view.again) || view.kind === "failed" || view.kind === "cancelled" || view.kind === "unknown"
@@ -71,6 +74,7 @@ export function drainView(input: {
   if (own === null) return { kind: "idle" };
   switch (own.state) {
     case "pending": {
+      if (own.serversSilent) return { kind: "waiting" };
       // Drains in one Organization run one at a time.
       const behind = Object.entries(latest).find(([id, other]) => id !== server.id && other.state === "running");
       return { kind: "queued", behind: behind === undefined ? null : input.serverNames.get(behind[0]) ?? null };
@@ -379,4 +383,17 @@ export function removeHint(view: DrainView, running: readonly RunningService[], 
     return { kind: "pinned", names: names(split.drainable), unowned };
   }
   return { kind: "drain", count: split.drainable.length, unowned };
+}
+
+/**
+ * The Volumes a Drain found nowhere to move. One with an `upgrade` names a Server that would take it once upgraded,
+ * whose Ployz can't finish a Move yet; the rest say only that nowhere takes them.
+ */
+export function stuckMessage(blocked: readonly { readonly volume: string; readonly upgrade: string | null }[]) {
+  const nowhere = blocked.filter((entry) => entry.upgrade === null).map((entry) => entry.volume);
+  const servers = [...new Set(blocked.flatMap((entry) => entry.upgrade ?? []))];
+  return [
+    ...(nowhere.length > 0 ? [`${listNames(nowhere)} ${nowhere.length === 1 ? "has" : "have"} nowhere to move`] : []),
+    ...servers.map((server) => `Upgrade ${server} to move ${listNames(blocked.filter((entry) => entry.upgrade === server).map((entry) => entry.volume))} there`),
+  ].join(". ");
 }

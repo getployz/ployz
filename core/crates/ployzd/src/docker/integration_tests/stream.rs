@@ -131,6 +131,200 @@ async fn exec_forwards_output_while_docker_inspection_is_pending() {
     server.abort();
 }
 
+#[tokio::test]
+async fn an_exec_whose_client_goes_away_stops_its_command() {
+    use std::os::unix::process::ExitStatusExt as _;
+    let status = abandoned_exec(false).await;
+    assert_eq!(
+        status.signal(),
+        Some(rustix::process::Signal::TERM.as_raw())
+    );
+}
+
+#[tokio::test]
+async fn an_exec_still_writing_when_its_client_goes_away_stops_its_command() {
+    use std::os::unix::process::ExitStatusExt as _;
+    let status = abandoned_exec(true).await;
+    assert_eq!(
+        status.signal(),
+        Some(rustix::process::Signal::TERM.as_raw())
+    );
+}
+
+/// Run an exec whose command is a local `sleep`, writing output the client never
+/// reads when `noisy`, then drop the client; how the command ended.
+async fn abandoned_exec(noisy: bool) -> std::process::ExitStatus {
+    let root = TestDir::new("ployzd-exec-abandoned");
+    let docker_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let docker_address = docker_listener.local_addr().unwrap();
+    let container_id = ContainerId::parse("b".repeat(64)).unwrap();
+    let spec = crate::docker::test_support::spec_with_sources(vec![]);
+    // The container's own process is this test's, so the command shares its cgroup.
+    let managed = serde_json::json!({
+        "Id": container_id.as_str(),
+        "State": {"Pid": std::process::id()},
+        "Config": {"Labels": {
+            LABEL_MANAGED: "",
+            LABEL_NAMESPACE: "app",
+            LABEL_SERVICE_ID: spec.service_id.to_string(),
+            LABEL_SERVICE_NAME: spec.name.to_string(),
+        }},
+    })
+    .to_string();
+    // The exec's process: Docker reports its host PID, as for a Service's container.
+    let command = std::sync::Arc::new(std::sync::Mutex::new(
+        std::process::Command::new("sleep")
+            .arg("300")
+            .spawn()
+            .unwrap(),
+    ));
+    let pid = command.lock().unwrap().id();
+    let docker_command = std::sync::Arc::clone(&command);
+    let docker_server = tokio::spawn(async move {
+        let mut hijacked = Vec::new();
+        loop {
+            let (mut stream, path) = accept_docker_request_to(&docker_listener).await;
+            let body = if path.starts_with("/containers/") && path.ends_with("/json") {
+                managed.clone()
+            } else if path.ends_with("/exec") {
+                r#"{"Id":"slow"}"#.to_owned()
+            } else if path.starts_with("/exec/slow/start") {
+                stream
+                    .write_all(b"HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: tcp\r\n\r\n")
+                    .await
+                    .unwrap();
+                if noisy {
+                    // Far more than the response channel holds, so forwarding waits on a send.
+                    tokio::spawn(async move {
+                        let mut frame = b"\x01\0\0\0\0\0\x04\0".to_vec();
+                        frame.extend([b'x'; 1024]);
+                        for _ in 0..4096 {
+                            if stream.write_all(&frame).await.is_err() {
+                                return;
+                            }
+                        }
+                        std::future::pending::<()>().await;
+                    });
+                } else {
+                    hijacked.push(stream);
+                }
+                continue;
+            } else {
+                let exited = docker_command.lock().unwrap().try_wait().unwrap();
+                match exited {
+                    None => format!(
+                        r#"{{"Running":true,"Pid":{pid},"ContainerID":"{}"}}"#,
+                        "b".repeat(64)
+                    ),
+                    Some(_) => r#"{"Running":false,"ExitCode":143}"#.to_owned(),
+                }
+            };
+            stream
+                .write_all(
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    )
+                    .as_bytes(),
+                )
+                .await
+                .unwrap();
+        }
+    });
+    let docker = bollard::Docker::connect_with_http(
+        &format!("http://{docker_address}"),
+        5,
+        bollard::API_DEFAULT_VERSION,
+    )
+    .unwrap();
+    let machine_store = crate::machine::LocalMachineStore::open(&root.0).unwrap();
+    let specs = MachineSpecStore::open(root.0.join("machine.db"))
+        .await
+        .unwrap();
+    specs
+        .config_operation()
+        .await
+        .put(&container_id, None, &spec)
+        .await
+        .unwrap();
+    let runtime = ContainerRuntime::new(LocalDocker::from_client(docker), specs);
+    let api = MachineApi::builder(crate::machine::RecordOwner::spawn(machine_store).unwrap())
+        .with_optional_containers(Some(runtime))
+        .build();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server =
+        tokio::spawn(Server::builder().serve_with_incoming(api, TcpListenerStream::new(listener)));
+    let mut client = MachineRpcClient::connect(format!("http://{address}"))
+        .await
+        .unwrap();
+    let mut output = client
+        .exec(Request::new(tokio_stream::iter([exec_config(
+            &container_id,
+            ["sleep", "300"],
+            false,
+        )])))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(
+        ExecResponseFrame::decode(&output.message().await.unwrap().unwrap()).unwrap(),
+        ExecResponseFrame::ExecId("slow".into())
+    );
+    // An interrupted `ployz exec -T` goes away without the command's exit.
+    drop(output);
+    drop(client);
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let status = loop {
+        if let Some(status) = command.lock().unwrap().try_wait().unwrap() {
+            break status;
+        }
+        if std::time::Instant::now() > deadline {
+            let _ = command.lock().unwrap().kill();
+            panic!("the exec's command outlived its client");
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+    docker_server.abort();
+    server.abort();
+    status
+}
+
+/// Accept one request to the fake Docker, returning its stream and path.
+async fn accept_docker_request_to(
+    listener: &tokio::net::TcpListener,
+) -> (tokio::net::TcpStream, String) {
+    let (stream, _) = listener.accept().await.unwrap();
+    let mut reader = BufReader::new(stream);
+    let mut request = String::new();
+    reader.read_line(&mut request).await.unwrap();
+    let path = request.split_whitespace().nth(1).unwrap_or_default();
+    let path = match path.strip_prefix("/v") {
+        Some(versioned) => versioned.find('/').map_or(path, |at| &versioned[at..]),
+        None => path,
+    };
+    let path = path.split('?').next().unwrap_or_default().to_owned();
+    let mut content_length = 0;
+    loop {
+        let mut line = String::new();
+        assert_ne!(reader.read_line(&mut line).await.unwrap(), 0);
+        if line == "\r\n" {
+            break;
+        }
+        if let Some((name, value)) = line.split_once(':')
+            && name.eq_ignore_ascii_case("content-length")
+        {
+            content_length = value.trim().parse().unwrap();
+        }
+    }
+    reader
+        .read_exact(&mut vec![0; content_length])
+        .await
+        .unwrap();
+    (reader.into_inner(), path)
+}
+
 async fn accept_docker_request(listener: &tokio::net::TcpListener) -> tokio::net::TcpStream {
     let (stream, _) = listener.accept().await.unwrap();
     let mut reader = BufReader::new(stream);

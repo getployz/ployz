@@ -71,13 +71,13 @@ function Routes({ routes }: { routes: RouteRows }) {
           {sorted.map((row) => (
             <TableRow key={row.route}>
               <TableCell className="truncate font-mono" title={row.route}>{row.route}</TableCell>
-              <TableCell className="text-right font-mono tabular-nums">{formatCount(row.requests)}</TableCell>
-              <TableCell className={cn("text-right font-mono tabular-nums", row.errors > 0 && "text-destructive")}>
+              <TableCell className="text-right tabular-nums">{formatCount(row.requests)}</TableCell>
+              <TableCell className={cn("text-right tabular-nums", row.errors > 0 && "text-destructive")}>
                 {formatRate(row.errors, row.requests)}
               </TableCell>
-              <TableCell className="text-right font-mono tabular-nums">{formatMs(row.p50)}</TableCell>
-              <TableCell className="text-right font-mono tabular-nums">{formatMs(row.p95)}</TableCell>
-              <TableCell className="text-right font-mono tabular-nums">{formatMs(row.p99)}</TableCell>
+              <TableCell className="text-right tabular-nums">{formatMs(row.p50)}</TableCell>
+              <TableCell className="text-right tabular-nums">{formatMs(row.p95)}</TableCell>
+              <TableCell className="text-right tabular-nums">{formatMs(row.p99)}</TableCell>
             </TableRow>
           ))}
         </TableBody>

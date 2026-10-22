@@ -7,23 +7,24 @@ Ployz is young and changing quickly. Before you move real users to your app, wor
 list. Each item links to the page that does it.
 
 > [!WARNING]
-> A volume lives on one server. Without a [mirror](services/move-a-volume.md#mirror-a-volume), if
+> A volume lives on one server. Without a [mirror](services/mirror-a-volume.md), if
 > that server's disk is lost, so is the data.
 
 ## Before you move real users
 
-- **Back up your data.** Add a [mirror](services/move-a-volume.md#mirror-a-volume) to each volume
+- **Back up your data.** Add a [mirror](services/mirror-a-volume.md) to each volume
   you can't lose, so it has a backup on another of your servers that you can
   [restore](services/restore-a-volume.md). A mirror isn't offsite, so also dump your databases on
   a schedule and keep the dumps off your servers. See
   [Back up a database](services/databases.md#back-up-a-database).
   Or keep your hosted database and [point your app at it](services/databases.md#use-a-managed-database-instead).
-- **Add a health check.** Without one, a new replica gets traffic a few seconds after it starts,
-  ready or not. See [Deploy without downtime](deploy/deployments.md#deploy-without-downtime).
+- **Add a health check.** Without one, a new replica gets traffic about a second after it starts,
+  ready or not. A crash after that second doesn't fail the deploy, and `ployz status` names the
+  replica. See [Deploy without downtime](deploy/zero-downtime.md#keep-your-app-serving-through-a-deploy).
 - **Run two replicas on two servers.** With one replica on one server, one failure takes your
   app down. [Add a second server](servers/add-a-server.md), then
-  [run more replicas](services/scaling.md#run-more-replicas). A service with a volume runs one
-  replica, on the volume's server.
+  [run more replicas](services/scaling.md#run-more-replicas). A service with a volume runs on the
+  volume's server, one replica unless the volume [allows shared writes](services/volumes.md#share-a-volume).
 - **Set CPU and memory limits.** Otherwise one busy service can use all of its server's CPU and
   memory and starve the others. See [Scaling](services/scaling.md#run-more-replicas).
 - **Keep production Protected.** A new project's production starts Protected, so only an owner
@@ -39,8 +40,9 @@ list. Each item links to the page that does it.
   open. A reboot stops the services on that server until it's back.
 - **Watch your app.** Ployz Cloud checks every service with a public address and shows its
   [uptime](observe/uptime.md) next to its [metrics](observe/metrics.md) and
-  [logs](observe/logs.md). It emails your organization when a service goes down and when it's
-  back up. Choose who gets those in [Notifications](account/notifications.md).
+  [logs](observe/logs.md). It emails each member when a service goes down, comes back up, or
+  keeps crashing. Each person turns these on or off for themselves in
+  [Notifications](account/notifications.md).
 
 ## What Ployz doesn't do yet
 
@@ -49,10 +51,11 @@ list. Each item links to the page that does it.
   [When a server goes down](services/scaling.md#when-a-server-goes-down).
 - **No automatic rollbacks.** A failed deploy doesn't undo itself. To go back, click **Redeploy**
   on an earlier deployment; it ships that deployment's commit and settings. See
-  [Redeploy or cancel a deployment](deploy/deployments.md#redeploy-or-cancel-a-deployment). The
-  rollback lasts until your next push or deploy, so to keep it, revert the commit in Git. To roll
-  back settings only, use **Roll back to #N** in **Deployments** > **Versions**; see
-  [Saved history](deploy/deployments.md#saved-history).
+  [Redeploy or cancel a deployment](deploy/history-and-rollback.md#redeploy-or-cancel-a-deployment).
+  The rollback lasts until your next push or deploy, so to keep it, revert the commit in Git and
+  change the settings back. To roll back settings only, use **Roll back to #N** in
+  **Deployments** > **Versions**, which stages them, then click **Deploy**; see
+  [Undo or roll back a saved version](deploy/history-and-rollback.md#undo-or-roll-back-a-saved-version).
 - **No Docker Compose files.** Add each container as its own service.
 - **No autoscaling.** You choose the number of replicas.
 - **Three roles.** An organization has owners, admins and members, with no finer permissions. See

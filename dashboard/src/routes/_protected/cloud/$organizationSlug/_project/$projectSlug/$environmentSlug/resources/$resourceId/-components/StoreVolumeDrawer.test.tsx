@@ -10,6 +10,7 @@ import * as scopes from "#/collections/use-collection-scope";
 import { asTestDouble } from "#/lib/test-double";
 import * as mounts from "#/modules/config-store/StoreVolumeMounts";
 import * as functions from "#/modules/config-store/store.functions";
+import * as protectedAsk from "#/modules/config-store/use-protected-ask";
 import type { StoreResult } from "#/modules/config-store/store.contract";
 import { diffQuery, environmentSettingsQuery, servicesQuery, storeViewOptions, volumesQuery } from "#/modules/config-store/store-view.queries";
 import { useStoreWriter } from "#/modules/config-store/store-write";
@@ -31,7 +32,7 @@ afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
 type CopiesData = ReturnType<typeof copies.useVolumeCopies>;
 
-async function openDrawer(url: string, volume: Partial<VolumeListing>, copy: MachineId | null = null, { realMounts = false, data = {} }: { realMounts?: boolean; data?: Partial<CopiesData> } = {}) {
+async function openDrawer(url: string, volume: Partial<VolumeListing>, copy: MachineId | null = null, { realMounts = false, data = {}, opens = true }: { realMounts?: boolean; data?: Partial<CopiesData>; opens?: boolean } = {}) {
   vi.stubGlobal("scrollTo", () => {});
   vi.spyOn(changes, "useStoreChangeActions").mockReturnValue(asTestDouble<ReturnType<typeof changes.useStoreChangeActions>>()({ dialog: null }));
   vi.spyOn(copies, "useVolumeCopies").mockReturnValue(asTestDouble<CopiesData>()({ copies: null, holders: null, running: null, ...data }));
@@ -77,9 +78,15 @@ async function openDrawer(url: string, volume: Partial<VolumeListing>, copy: Mac
     project.addChildren([environmentRoute.addChildren([canvas.addChildren([resource])])]),
   ])])]), history: createMemoryHistory({ initialEntries: [url] }) });
   render(<QueryClientProvider client={queryClient}><RouterProvider router={router} /></QueryClientProvider>);
-  await screen.findByRole("tab", { name: "Copies" });
+  if (opens) await screen.findByRole("tab", { name: "Copies" });
   return queryClient;
 }
+
+it("names a missing resource neutrally, since a deleted Config lands here too", async () => {
+  await openDrawer("/cloud/acme/shop/production/resources/vol", { id: "other" }, null, { opens: false });
+  await screen.findByText("This environment has no such resource. It may have been deleted.");
+  expect(screen.queryByText(/no such volume/)).toBeNull();
+});
 
 it("opens a mirror on the Copies tab, even from a URL that had Settings open", async () => {
   await openDrawer("/cloud/acme/shop/production/resources/vol~web-2?tab=settings", {}, "web-2" as MachineId);
@@ -164,6 +171,23 @@ it("grows a deployed volume after a plain confirm, then shows the run until it e
   read.mockResolvedValue({ ...growing, state: "failed", message: "fsn-2 has no room to grow data to 20 GB" });
   await screen.findByText("fsn-2 has no room to grow data to 20 GB", {}, { timeout: 5_000 });
   expect(limit().hasAttribute("disabled")).toBe(false);
+});
+
+it("in a Protected environment a member's grow is a request an owner or admin approves, with no run to watch", async () => {
+  vi.spyOn(protectedAsk, "useProtectedAsk").mockReturnValue(true);
+  await openDrawer(SETTINGS, deployed(), null, { data: { holders: holders() } });
+  screen.getByText("Grows live on every server that holds a copy, once an owner or admin approves it. Can't shrink yet.");
+  const resize = vi.spyOn(runs, "resizeVolumeServerFn").mockResolvedValue({ requested: true });
+  const read = vi.spyOn(runs, "getVolumeRunServerFn");
+  enter("20");
+  const dialog = await screen.findByRole("alertdialog");
+  within(dialog).getByText("Grow data from 10 GB to 20 GB on fsn-1 and its mirror on fsn-2. Its services keep running. An owner or admin approves it first.");
+  fireEvent.click(within(dialog).getByRole("button", { name: "Request grow" }));
+  await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+  expect(resize).toHaveBeenCalledTimes(1);
+  expect(read).not.toHaveBeenCalled();
+  expect(limit().hasAttribute("disabled")).toBe(false);
+  expect((limit() as HTMLInputElement).value).toBe("10");
 });
 
 it.each([

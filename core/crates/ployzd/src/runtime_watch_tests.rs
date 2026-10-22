@@ -400,6 +400,7 @@ fn container(id: &str, service_name: &str, kind: ContainerKind) -> ContainerObse
         address: None,
         labels: Default::default(),
         stopped: false,
+        run: None,
     })
     .unwrap()
 }

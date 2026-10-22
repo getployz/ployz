@@ -18,7 +18,8 @@ export type RunNode = BuildRunNode | OutcomeRunNode | CleanupRunNode;
 /** A build to its Service, or a Service to one depending on it; `animated` while the target runs. */
 export type RunEdge = { id: string; source: string; target: string; animated: boolean };
 
-export type RunGraph = { nodes: RunNode[]; edges: RunEdge[]; done: number };
+/** `done` of `total` counts the Deployment's own steps, never Cloud's cleanup, which joins only once the run ended. */
+export type RunGraph = { nodes: RunNode[]; edges: RunEdge[]; done: number; total: number };
 
 export const buildStatusLabels = {
   pending: "Pending", building: "Building", built: "Built", reused: "Reused", failed: "Failed",
@@ -183,7 +184,8 @@ export function makeRunGraph(deployment: DeploymentView, cleanup: DeploymentClea
     [...edges.values()],
   );
   const nodes = unplaced.map((node) => ({ ...node, row: rows.get(node.id) ?? 0 }));
-  return { nodes, edges: [...edges.values()], done: nodes.filter((node) => node.light === "deployed").length };
+  const steps = nodes.filter((node) => node.type !== "cleanup");
+  return { nodes, edges: [...edges.values()], done: steps.filter((node) => node.light === "deployed").length, total: steps.length };
 }
 
 /**

@@ -1,0 +1,128 @@
+{
+ "deployment": {
+  "namespace": "verify-production",
+  "snapshots": [
+   {
+    "serviceId": "31f8557d-7d95-4e2f-9c8e-1b176bfcbfe6",
+    "config": {
+     "version": 2,
+     "privateDns": "db",
+     "source": {
+      "version": 1,
+      "type": "image",
+      "image": "postgres:16-alpine",
+      "credentials": {
+       "type": "none"
+      }
+     },
+     "healthcheck": {
+      "type": "none"
+     },
+     "restartPolicy": "unless-stopped",
+     "mounts": [
+      {
+       "volumeResourceId": "4b1dfe32-3fe8-4c54-8c7d-bd1ba1376afa",
+       "volumeName": "pgdata",
+       "mountPath": "/var/lib/postgresql/data"
+      }
+     ]
+    },
+    "resolvedEnv": {
+     "PORT": "8080"
+    }
+   }
+  ],
+  "volumes": [
+   {
+    "volumeResourceId": "4b1dfe32-3fe8-4c54-8c7d-bd1ba1376afa",
+    "storage": {
+     "kind": "provisioned",
+     "maximumBytes": 5000000000
+    }
+   }
+  ]
+ },
+ "stored": {
+  "service_id": "b50e9ded29a14a8bb5ae1edd46cfae96",
+  "name": "db",
+  "mode": {
+   "mode": "replicated",
+   "replicas": 1
+  },
+  "container": {
+   "image": "postgres:16-alpine",
+   "command": [],
+   "entrypoint": [],
+   "environment": {
+    "PORT": "8080"
+   },
+   "labels": {
+    "cloud.ployz.service.id": "31f8557d-7d95-4e2f-9c8e-1b176bfcbfe6"
+   },
+   "hostname": null,
+   "extra_hosts": [],
+   "cap_add": [],
+   "cap_drop": [],
+   "healthcheck": {
+    "state": "disabled"
+   },
+   "pull_policy": "missing",
+   "init": null,
+   "user": null,
+   "working_directory": null,
+   "tty": false,
+   "open_stdin": false,
+   "privileged": false,
+   "pid_mode": null,
+   "resources": {
+    "cpu_nanos": null,
+    "memory_bytes": null,
+    "memory_reservation_bytes": null,
+    "shared_memory_bytes": null,
+    "devices": [],
+    "device_reservations": [],
+    "ulimits": {}
+   },
+   "stop_timeout_secs": null,
+   "sysctls": {},
+   "restart": {
+    "name": "unless-stopped"
+   },
+   "config_mounts": []
+  },
+  "placement": {
+   "constraints": []
+  },
+  "ports": [],
+  "volumes": [
+   {
+    "reference": "vol-4b1dfe32-3fe8-4c54-8c7d-bd1ba1376afa",
+    "source": {
+     "kind": "provisioned",
+     "name": "verify-production_vol-4b1dfe32-3fe8-4c54-8c7d-bd1ba1376afa",
+     "maximum_bytes": 5000000000,
+     "labels": {},
+     "scope": {
+      "namespace": "verify-production",
+      "logical_name": "vol-4b1dfe32-3fe8-4c54-8c7d-bd1ba1376afa"
+     }
+    }
+   }
+  ],
+  "mounts": [
+   {
+    "volume": "vol-4b1dfe32-3fe8-4c54-8c7d-bd1ba1376afa",
+    "target": "/var/lib/postgresql/data",
+    "read_only": false,
+    "no_copy": false,
+    "subpath": null
+   }
+  ],
+  "configs": [],
+  "pre_deploy": null,
+  "update": {
+   "order": "stop_first",
+   "monitor_millis": null
+  }
+ }
+}

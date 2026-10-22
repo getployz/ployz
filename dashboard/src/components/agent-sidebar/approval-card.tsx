@@ -82,7 +82,7 @@ function PendingCard({ organizationSlug, approval }: { organizationSlug: string;
         {effects.length > 0 && (
           <ul aria-label="Destroys" className="flex flex-col gap-1 rounded-lg bg-destructive/10 px-2.5 py-2 text-xs">
             {effects.map((effect) => {
-              const line = destroyedLine(effect, approval.command);
+              const line = destroyedLine(effect, approval.command, approval.review);
               return (
                 <li key={`${effect.kind}:${effect.path}`} className="flex gap-2">
                   <XIcon aria-hidden className="mt-0.5 size-3 shrink-0 text-destructive" />
@@ -137,8 +137,13 @@ function PendingCard({ organizationSlug, approval }: { organizationSlug: string;
 function ChangeLines({ label, changes, className }: { label?: string; changes: ChangeLine[]; className: string }) {
   const id = useId();
   const list = (
-    <ul aria-labelledby={label ? id : undefined} className={cn("flex flex-col gap-0.5 font-mono text-xs", className)}>
-      {changes.map((change) => <li key={change.key}>{change.mark} {change.node} {change.text}</li>)}
+    <ul aria-labelledby={label ? id : undefined} className={cn("flex flex-col gap-0.5 text-xs", className)}>
+      {changes.map((change) => (
+        <li key={change.key}>
+          {change.mark} {change.node} <span className={cn(change.variable && "font-mono")}>{change.name}</span>
+          {change.values === "" ? null : <> <span className="font-mono">{change.values}</span></>}
+        </li>
+      ))}
     </ul>
   );
   if (!label) return list;

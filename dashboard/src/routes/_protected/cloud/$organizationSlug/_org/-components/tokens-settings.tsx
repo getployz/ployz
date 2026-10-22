@@ -52,13 +52,21 @@ export function TokensSettings({ organizationSlug }: { organizationSlug: string 
   );
 }
 
-export function TokenItem({ token, revoking, onRevoke }: { token: { name: string; scope: string; expires_at: string; expired: boolean }; revoking: boolean; onRevoke: () => void }) {
+type TokenOwner = { readonly name: string; readonly email: string; readonly you: boolean };
+
+export function TokenItem({ token, revoking, onRevoke }: {
+  token: { name: string; scope: string; expires_at: string; expired: boolean; owner: TokenOwner };
+  revoking: boolean;
+  onRevoke: () => void;
+}) {
   const [confirming, setConfirming] = useState(false);
+  const owner = token.owner.name || token.owner.email;
+  const by = token.owner.you || token.scope === `Full as ${owner}` ? "" : ` · by ${owner}`;
   return (
     <SettingsListItem
       media={<KeyRoundIcon />}
       label={token.name}
-      hint={`${token.scope} · ${token.expired ? "Expired" : "Expires"} ${formatDate(token.expires_at)}`}
+      hint={`${token.scope}${by} · ${token.expired ? "Expired" : "Expires"} ${formatDate(token.expires_at)}`}
       commit="confirm"
       actions={(
         <>

@@ -5,8 +5,16 @@ use super::*;
 /// Which nodes a Deployment ships.
 pub(crate) enum Scope<'a> {
     /// Every Service, Volume and Config, including the removal of those Applied
-    /// State holds and Saved does not, which deletes the Docker Volumes `losses` names.
-    All { losses: &'a [VolumeLoss] },
+    /// State holds and Saved does not, which deletes the Docker Volumes `losses`
+    /// names. It tears down what `retire` names, from [`dropped`]: each Service
+    /// Saved dropped, and beside each it ships, the runtime Services that one no
+    /// longer runs as. With `prune` it tears down every other Service running in
+    /// the Namespace too.
+    All {
+        losses: &'a [VolumeLoss],
+        retire: &'a [Retire],
+        prune: bool,
+    },
     /// `services` and the Volumes and Configs they mount, and the teardown of the
     /// Services `retire` names. With `every_saved`, it ships every Saved change:
     /// each Service, Volume and Config its [`Landing`] doesn't hold settled, and the
@@ -21,10 +29,15 @@ pub(crate) enum Scope<'a> {
 }
 
 impl<'a> Scope<'a> {
-    /// `services`, or every node with `losses` when it names none.
+    /// `services`, or every node with `losses` when it names none. For a plan: it
+    /// tears down nothing beyond what Saved dropped.
     pub(crate) fn of(services: &'a [ServiceName], losses: &'a [VolumeLoss]) -> Self {
         if services.is_empty() {
-            Self::All { losses }
+            Self::All {
+                losses,
+                retire: &[],
+                prune: false,
+            }
         } else {
             Self::Narrow {
                 services,
@@ -36,20 +49,20 @@ impl<'a> Scope<'a> {
     }
 }
 
-/// A Service a narrowed Deployment tears down: one Saved no longer holds.
+/// A Service whose runtime Services a Deployment tears down: one Saved no longer
+/// holds, by every runtime it may still run as; or, on a full Deployment, one
+/// Saved still holds, by those it ran as and no longer does.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct Retire {
     pub(crate) id: ServiceLineageId,
     pub(crate) name: ServiceName,
-    /// Every runtime Service it may still run as.
     pub(crate) runtimes: ServiceRemovals,
 }
 
 /// What tearing down the Services `removed` takes once Saved revision `saved`
-/// dropped them: each by the runtime Services Applied State and every started or
-/// queued Deployment since the last one that removed it runs it as. One still in
-/// `saved`, or that never ran nor will, has nothing to tear down, and a runtime
-/// Service another kept Service runs is never one.
+/// dropped them: each by the runtime Services it may run as, by [`ran_as`]. One
+/// still in `saved`, or that never ran nor will, has nothing to tear down, and a
+/// runtime Service another kept Service runs is never one.
 pub(crate) fn retirements(
     tx: &mut dyn Tx,
     environment: &EnvironmentId,
@@ -73,44 +86,7 @@ pub(crate) fn retirements(
         {
             continue;
         }
-        let mut name = None;
-        let mut runtimes = ServiceRemovals::default();
-        if let Some(service) = applied
-            .services
-            .iter()
-            .find(|service| service.id == id.as_str())
-        {
-            name = Some(
-                ServiceName::parse(service.slug.as_str())
-                    .map_err(|_| error::corrupt("Service name"))?,
-            );
-            runtimes.extend([service.config.private_dns.clone()]);
-        }
-        let rows = tx.query(
-            "SELECT nodes, run FROM config_deployment \
-             WHERE environment_id = ?1 AND number IS NOT NULL \
-             AND (started IS NOT NULL OR status = 'queued') \
-             AND nodes LIKE ?2 \
-             ORDER BY number DESC",
-            &[
-                environment.as_str().into(),
-                format!("%\"{id}\"%").as_str().into(),
-            ],
-        )?;
-        for row in &rows {
-            let run: Run = row.json(1, "Deployment")?;
-            // What ran it before a Deployment removed it is gone.
-            if run.nodes.get(id.as_str()) == Some(&NodeStatus::Removed) {
-                break;
-            }
-            let nodes: Vec<TargetNode> = row.json(0, "Deployment")?;
-            for node in nodes.iter().filter(|node| node.id() == id.as_str()) {
-                if let TargetNode::Service { name: then, .. } = node {
-                    name.get_or_insert_with(|| then.clone());
-                    runtimes.extend(node.runtimes().into_iter().cloned());
-                }
-            }
-        }
+        let (name, runtimes) = ran_as(tx, environment, &applied, id)?;
         let runtimes = ServiceRemovals::from_names(
             runtimes.iter().filter(|name| !kept.contains(name)).cloned(),
         );
@@ -125,6 +101,172 @@ pub(crate) fn retirements(
     Ok(retire)
 }
 
+/// The name of Service lineage `id` and every runtime Service it may run as: by
+/// `applied`, and by each started or queued Deployment since the last one that
+/// removed it, less each runtime an Applied Deployment whose snapshot was complete
+/// since tore down beside it.
+fn ran_as(
+    tx: &mut dyn Tx,
+    environment: &EnvironmentId,
+    applied: &SavedEnvironmentIntent,
+    id: &ServiceLineageId,
+) -> Result<(Option<ServiceName>, ServiceRemovals), RpcError> {
+    let mut name = None;
+    let mut runtimes = ServiceRemovals::default();
+    if let Some(service) = applied
+        .services
+        .iter()
+        .find(|service| service.id == id.as_str())
+    {
+        name = Some(
+            ServiceName::parse(service.slug.as_str())
+                .map_err(|_| error::corrupt("Service name"))?,
+        );
+        runtimes.extend([service.config.private_dns.clone()]);
+    }
+    let rows = tx.query(
+        "SELECT nodes, run, status FROM config_deployment \
+         WHERE environment_id = ?1 AND number IS NOT NULL \
+         AND (started IS NOT NULL OR status = 'queued') \
+         AND nodes LIKE ?2 \
+         ORDER BY number DESC",
+        &[
+            environment.as_str().into(),
+            format!("%\"{id}\"%").as_str().into(),
+        ],
+    )?;
+    let mut torn_down = BTreeSet::new();
+    for row in &rows {
+        let run: Run = row.json(1, "Deployment")?;
+        // What ran it before a Deployment removed it is gone.
+        if run.nodes.get(id.as_str()) == Some(&NodeStatus::Removed) {
+            break;
+        }
+        let nodes: Vec<TargetNode> = row.json(0, "Deployment")?;
+        // Applied means every operation the preview planned completed, and a
+        // preview plans removals only from a complete snapshot: only then did the
+        // Deployment tear down what it shipped beside. What any other one shipped
+        // or tried to tear down may run still.
+        let torn = row.text(2)? == "applied"
+            && run.preview.as_ref().is_some_and(|preview| {
+                preview.prune_refusal != Some(ployz_core::PruneRefusal::IncompleteSnapshot)
+            });
+        for node in nodes.iter().filter(|node| node.id() == id.as_str()) {
+            if let TargetNode::Service {
+                name: then,
+                removals,
+                ..
+            } = node
+            {
+                name.get_or_insert_with(|| then.clone());
+                if torn {
+                    torn_down.extend(removals.iter().cloned());
+                }
+                runtimes.extend(
+                    node.runtimes()
+                        .into_iter()
+                        .filter(|runtime| !torn_down.contains(*runtime))
+                        .cloned(),
+                );
+            }
+        }
+    }
+    Ok((name, runtimes))
+}
+
+/// What a full Deployment of `saved` tears down beside each Service it ships: the
+/// runtime Services the Service ran as, by [`ran_as`], and no Service of `saved`
+/// runs as now.
+fn renamed(
+    tx: &mut dyn Tx,
+    environment: &EnvironmentId,
+    saved: &SavedEnvironmentIntent,
+) -> Result<Vec<Retire>, RpcError> {
+    let applied = applied_state(tx, environment, saved)?;
+    let runs: BTreeSet<&ServiceName> = saved
+        .services
+        .iter()
+        .map(|service| &service.config.private_dns)
+        .collect();
+    let mut retire = Vec::new();
+    for service in &saved.services {
+        let id = parse_stored(&service.id)?;
+        let (_, runtimes) = ran_as(tx, environment, &applied, &id)?;
+        let runtimes = ServiceRemovals::from_names(
+            runtimes.iter().filter(|name| !runs.contains(name)).cloned(),
+        );
+        if !runtimes.is_empty() {
+            retire.push(Retire {
+                id,
+                name: ServiceName::parse(service.slug.as_str())
+                    .map_err(|_| error::corrupt("Service name"))?,
+                runtimes,
+            });
+        }
+    }
+    Ok(retire)
+}
+
+/// What a full Deployment of `saved` tears down: each Service `landing` may run
+/// and `saved` dropped, and each a Deployment that started and ended short of
+/// Applied put in place and `saved` lacks, by [`retirements`]; and beside each
+/// Service it ships, the runtime Services that one no longer runs as, by
+/// [`renamed`].
+pub(crate) fn dropped(
+    tx: &mut dyn Tx,
+    environment: &EnvironmentId,
+    saved: &SavedEnvironmentIntent,
+    landing: &Landing<'_>,
+) -> Result<Vec<Retire>, RpcError> {
+    let mut removed = landing
+        .dropped(saved)
+        .services
+        .iter()
+        .map(|service| parse_stored(&service.id))
+        .collect::<Result<BTreeSet<ServiceLineageId>, _>>()?;
+    let in_flight = in_flight_sql();
+    let rows = tx.query(
+        &format!(
+            "SELECT nodes FROM config_deployment \
+             WHERE environment_id = ?1 AND {NUMBERED} AND started IS NOT NULL \
+             AND status != 'applied' AND NOT {in_flight}"
+        ),
+        &[environment.as_str().into()],
+    )?;
+    for row in &rows {
+        let nodes: Vec<TargetNode> = row.json(0, "Deployment")?;
+        for node in nodes {
+            if let TargetNode::Service { id, .. } = node
+                && !saved
+                    .services
+                    .iter()
+                    .any(|service| service.id == id.as_str())
+            {
+                removed.insert(id);
+            }
+        }
+    }
+    let mut retire = retirements(tx, environment, saved, &removed)?;
+    retire.extend(renamed(tx, environment, saved)?);
+    Ok(retire)
+}
+
+/// What a Deployment lowers: the Saved Services it ships and the runtime
+/// Services it tears down.
+pub(crate) enum Ships {
+    /// Every Saved Service, tearing down `removals`; with `prune`, every other
+    /// Service running in the Namespace too.
+    All {
+        removals: ServiceRemovals,
+        prune: bool,
+    },
+    /// `services`, tearing down `removals`.
+    Named {
+        services: Vec<ServiceName>,
+        removals: ServiceRemovals,
+    },
+}
+
 /// Freeze a Deployment of `saved` over `scope`, diffed against `landing`: its
 /// target nodes, checked to lower to a Deploy Intent. Generated domains expand
 /// under `cluster_domain`; a plan, which has none, checks the rest.
@@ -136,20 +278,25 @@ pub(crate) fn freeze(
     namespace: Namespace,
     cluster_domain: Option<&Hostname>,
 ) -> Result<Frozen, RpcError> {
-    let (full, services, retire, losses, every_saved): (
+    let (full, prune, services, retire, losses, every_saved): (
+        bool,
         bool,
         &[ServiceName],
         &[Retire],
         &[VolumeLoss],
         bool,
     ) = match scope {
-        Scope::All { losses } => (true, &[], &[], losses, false),
+        Scope::All {
+            losses,
+            retire,
+            prune,
+        } => (true, prune, &[], retire, losses, false),
         Scope::Narrow {
             services,
             retire,
             losses,
             every_saved,
-        } => (false, services, retire, losses, every_saved),
+        } => (false, false, services, retire, losses, every_saved),
     };
     let dropped = landing.dropped(saved);
     if !full && services.is_empty() && retire.is_empty() {
@@ -204,10 +351,13 @@ pub(crate) fn freeze(
                 .iter()
                 .any(|service| service.config.private_dns == *name)
         };
-        if saved
+        let held = saved
             .services
             .iter()
-            .any(|service| service.id == gone.id.as_str())
+            .any(|service| service.id == gone.id.as_str());
+        // Only a full Deployment tears down, beside a Service it ships, what that
+        // one no longer runs as.
+        if held && !full
             || retire.iter().take(at).any(|earlier| earlier.id == gone.id)
             || gone.runtimes.iter().any(running)
         {
@@ -218,12 +368,35 @@ pub(crate) fn freeze(
         }
         removals.extend(gone.runtimes.iter().cloned());
     }
+    let holds =
+        |service: &SavedServiceIntent| retire.iter().find(|gone| gone.id.as_str() == service.id);
     let mut nodes: Vec<TargetNode> = if full {
+        let shipping = |service: &SavedServiceIntent| {
+            let mut node = TargetNode::service(service)?;
+            if let (Some(gone), TargetNode::Service { removals, .. }) = (holds(service), &mut node)
+            {
+                removals.extend(gone.runtimes.iter().cloned());
+            }
+            Ok(node)
+        };
+        // A dropped Service that ran is its teardown; one that never ran is just gone.
+        let tearing_down = |service: &SavedServiceIntent| {
+            holds(service).map_or_else(|| TargetNode::service(service), TargetNode::retire)
+        };
+        // A teardown of a Service nothing may run is one a failed attempt left behind.
+        let left_behind = retire.iter().filter(|gone| {
+            !dropped
+                .services
+                .iter()
+                .chain(&saved.services)
+                .any(|service| service.id == gone.id.as_str())
+        });
         saved
             .services
             .iter()
-            .chain(&dropped.services)
-            .map(TargetNode::service)
+            .map(shipping)
+            .chain(dropped.services.iter().map(tearing_down))
+            .chain(left_behind.map(TargetNode::retire))
             .collect::<Result<_, _>>()?
     } else {
         services
@@ -236,8 +409,16 @@ pub(crate) fn freeze(
                     .map(TargetNode::service)
                     .transpose()?
                     .ok_or_else(|| {
+                        let staged = dropped
+                            .services
+                            .iter()
+                            .any(|service| service.slug == name.as_str());
                         error::not_found(
-                            format!("No Service named {name} to deploy"),
+                            if staged {
+                                format!("Service {name} is staged for removal; a full Deploy removes it")
+                            } else {
+                                format!("No Service named {name} to deploy")
+                            },
                             json!({ "services": saved.services.iter().map(|service| &service.slug).collect::<Vec<_>>() }),
                         )
                     })
@@ -245,11 +426,20 @@ pub(crate) fn freeze(
             .chain(retire.iter().map(TargetNode::retire))
             .collect::<Result<Vec<_>, _>>()?
     };
+    let ships = if full {
+        Ships::All { removals, prune }
+    } else {
+        Ships::Named {
+            services: services.to_vec(),
+            removals,
+        }
+    };
     // Live values and Setup Commands resolve at claim; checking without them is the same.
     let lowered = lower(
         environment,
         saved,
-        (services, &removals),
+        &BTreeSet::new(),
+        &ships,
         (namespace.clone(), cluster_domain),
         &crate::branch::Lowering::default(),
         None,
@@ -361,6 +551,8 @@ pub(crate) fn freeze(
         .collect();
     Ok(Frozen {
         nodes,
+        full,
+        prune,
         namespace,
         credentials: BTreeMap::new(),
         cluster_domain: cluster_domain.cloned(),
@@ -413,20 +605,36 @@ pub(super) struct Lowered {
     pub(super) warnings: Vec<DeploymentWarning>,
 }
 
-/// Lower Saved revision `saved` to the Deploy Intent of a Deployment of `services`
-/// that tears down the runtime Services `removals` names (neither: every Service)
-/// into its Namespace, with generated domains under the
+/// Lower Saved revision `saved` to the Deploy Intent of a Deployment that
+/// `ships` into its Namespace, with generated domains under the
 /// Cluster Domain. Variables and Config files resolve here, a Branch's Live Node
 /// references against `branch.live`; secrets, and values that reference one, only
 /// with `unseal`. Without it such a variable is left out and such a file is empty.
+/// `deployed` names the Volumes Applied State holds.
 pub(super) fn lower(
     environment: &EnvironmentId,
     saved: &SavedEnvironmentIntent,
-    (services, removals): (&[ServiceName], &ServiceRemovals),
+    deployed: &BTreeSet<String>,
+    ships: &Ships,
     (namespace, cluster_domain): (Namespace, Option<&Hostname>),
     branch: &crate::branch::Lowering,
     unseal: Option<&SealingKey>,
 ) -> Result<Lowered, RpcError> {
+    let (narrowed, services, removals, prune): (bool, &[ServiceName], _, _) = match ships {
+        Ships::All { removals, prune } => (
+            false,
+            &[],
+            removals,
+            if *prune {
+                PruneScope::Namespace
+            } else {
+                PruneScope::Removals
+            },
+        ),
+        Ships::Named { services, removals } => {
+            (true, services.as_slice(), removals, PruneScope::Namespace)
+        }
+    };
     let mut compiled = compile_environment_intent(
         environment.as_str(),
         crate::domain::expand(saved, cluster_domain),
@@ -441,7 +649,6 @@ pub(super) fn lower(
         .variable_producers
         .extend(branch.live.iter().cloned());
     let mut resolved = variables::resolve(&compiled, unseal)?;
-    let narrowed = !services.is_empty() || !removals.is_empty();
     let targeted: Vec<&str> = saved
         .services
         .iter()
@@ -475,14 +682,18 @@ pub(super) fn lower(
         })
         .collect();
     // Empty reconciles the whole Namespace; names deploy only those Services.
-    let selected = saved
-        .services
-        .iter()
-        .filter(|service| services.iter().any(|name| name.as_str() == service.slug))
-        .map(|service| service.config.private_dns.clone())
-        .chain(removals.iter().cloned())
-        .map(|name| ServiceAttempt { name })
-        .collect::<Vec<_>>();
+    let selected = if narrowed {
+        saved
+            .services
+            .iter()
+            .filter(|service| services.iter().any(|name| name.as_str() == service.slug))
+            .map(|service| service.config.private_dns.clone())
+            .chain(removals.iter().cloned())
+            .map(|name| ServiceAttempt { name })
+            .collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
     let slugs: BTreeMap<&str, &str> = saved
         .services
         .iter()
@@ -642,12 +853,14 @@ pub(super) fn lower(
             .map(|volume| LowerDeploymentVolume {
                 volume_resource_id: volume.resource_id.clone(),
                 storage: volume.storage,
+                deployed: deployed.contains(&volume.resource_id),
             })
             .collect(),
         lineages: lineages.clone(),
         selected: Some(selected.clone()),
         configs: configs.clone(),
         removals: removals.clone(),
+        prune,
         cluster_domain: cluster_domain
             .and_then(|cluster| ployz_core::IngressHost::parse(cluster.as_str()).ok()),
     };

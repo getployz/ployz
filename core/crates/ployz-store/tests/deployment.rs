@@ -93,6 +93,7 @@ fn admit(
             upload: None,
             accept_volume_loss: Vec::new(),
             message: None,
+            prune: false,
         }),
         &Trusted::default(),
     )
@@ -3602,6 +3603,7 @@ fn each_service_builds_from_its_own_upload_and_cloud_keeps_it() {
                 upload,
                 accept_volume_loss: Vec::new(),
                 message: None,
+                prune: false,
             }),
             &Trusted::default(),
         )
@@ -3703,6 +3705,7 @@ fn deploy_sent(store: &ConfigStore, who: &Actor, n: u8, upload: Option<char>) ->
                 upload: upload.map(digested),
                 accept_volume_loss: Vec::new(),
                 message: None,
+                prune: false,
             }),
             &Trusted::default(),
         )
@@ -3818,6 +3821,7 @@ fn a_reupload_stays_kept_whether_a_retry_of_an_older_upload_comes_before_or_afte
                         upload,
                         accept_volume_loss: Vec::new(),
                         message: None,
+                        prune: false,
                     }),
                     &Trusted::default(),
                 )
@@ -3903,6 +3907,7 @@ fn an_upload_is_recorded_kept_for_later_deployments_and_its_receipts_come_back()
                 upload,
                 accept_volume_loss: Vec::new(),
                 message: None,
+                prune: false,
             }),
             &ployz_store::Trusted::default(),
         )
@@ -4030,6 +4035,7 @@ fn an_upload_is_recorded_kept_for_later_deployments_and_its_receipts_come_back()
                 upload: Some(upload),
                 accept_volume_loss: Vec::new(),
                 message: None,
+                prune: false,
             }),
             &ployz_store::Trusted::default(),
         )
@@ -4071,6 +4077,7 @@ fn cloud_names_the_uploader_and_uploaded_builds_report_like_git_ones() {
             upload: Some(upload(Some("mallory"))),
             accept_volume_loss: Vec::new(),
             message: None,
+            prune: false,
         }));
         // Cloud names who acts and what they hold; the Deployment records them as its
         // admitter and uploader.
@@ -4152,6 +4159,7 @@ fn a_deploy_message_shows_on_the_deployment_and_its_retry() {
                 upload: None,
                 accept_volume_loss: Vec::new(),
                 message: Some(message),
+                prune: false,
             }),
         )
     };
@@ -4651,6 +4659,7 @@ fn deploy_trusted(
             upload: None,
             accept_volume_loss: Vec::new(),
             message: None,
+            prune: false,
         }),
         trusted,
     )
@@ -4678,6 +4687,21 @@ fn remove_web(store: &ConfigStore, who: &Actor) {
             },
         )
         .unwrap();
+}
+
+#[test]
+fn a_deploy_naming_a_service_staged_for_removal_says_a_full_deploy_removes_it() {
+    let (store, who) = shop();
+    apply_both(&store, &who, 1);
+    remove_web(&store, &who);
+    let refused = admit(&store, &who, 2, &["web"], None).unwrap_err();
+    assert_eq!(refused.code.as_str(), "not_found");
+    assert_eq!(
+        refused.message,
+        "Service web is staged for removal; a full Deploy removes it"
+    );
+    let missing = admit(&store, &who, 2, &["shop"], None).unwrap_err();
+    assert_eq!(missing.message, "No Service named shop to deploy");
 }
 
 fn approved(refused: &RpcError) -> Approval {
@@ -4798,6 +4822,7 @@ fn agent_deploys_only(
             upload: None,
             accept_volume_loss: Vec::new(),
             message: None,
+            prune: false,
         }),
         &Trusted {
             approval,
@@ -4841,6 +4866,7 @@ fn agent_deploys_upload(
             }),
             accept_volume_loss: Vec::new(),
             message: None,
+            prune: false,
         }),
         &Trusted {
             approval,
@@ -5323,6 +5349,86 @@ fn a_retry_into_a_protected_environment_asks_an_admin() {
     retry(approved(&refused)).unwrap();
 }
 
+/// Cloud's evidence for an owner's Deploy token: it can protect, but its grant leaves
+/// out `environments:protect` and `changes:destroy`.
+fn protectors_deploy_token(approval: Approval) -> Trusted {
+    Trusted {
+        protector: true,
+        permissions: unprotecting(approval.clone()).permissions.map(|held| {
+            held.into_iter()
+                .filter(|p| *p != Permission::ChangesDestroy)
+                .collect()
+        }),
+        ..unprotecting(approval)
+    }
+}
+
+#[test]
+fn a_protectors_deploy_token_ships_into_protected_production_unasked() {
+    let (store, who) = shop();
+    apply_both(&store, &who, 1);
+    set_replicas(&store, &who, "api", 2);
+    deploy_trusted(
+        &store,
+        &who,
+        2,
+        &protectors_deploy_token(Approval::NotRequired),
+    )
+    .unwrap();
+}
+
+#[test]
+fn a_protectors_agent_still_asks_an_admin_in_protected_production() {
+    let (store, who) = shop();
+    apply_both(&store, &who, 1);
+    set_replicas(&store, &who, "api", 2);
+    let agent = Trusted {
+        asks: Asks::EveryDeploy,
+        ..protectors_deploy_token(Approval::NotRequired)
+    };
+    let refused = deploy_trusted(&store, &who, 2, &agent).unwrap_err();
+    assert_admin_asked(&refused);
+}
+
+#[test]
+fn a_protectors_deploy_token_cannot_ship_a_saved_removal_into_protected_production() {
+    let (store, who) = shop();
+    apply_both(&store, &who, 1);
+    remove_web(&store, &who);
+    save(&store, &who);
+    let refused = deploy_trusted(
+        &store,
+        &who,
+        2,
+        &protectors_deploy_token(Approval::NotRequired),
+    )
+    .unwrap_err();
+    assert_eq!(refused.code.as_str(), "forbidden", "{refused:?}");
+}
+
+#[test]
+fn a_protectors_deploy_token_still_asks_an_admin_to_retry() {
+    let (store, who) = shop();
+    apply_both(&store, &who, 1);
+    set_replicas(&store, &who, "api", 2);
+    deploy_as(&store, &who, 2, Approval::NotRequired).unwrap();
+    cancel(&store, &who, 2).unwrap();
+    let refused = store
+        .write_trusted(
+            &who,
+            &Admit::Retry(Retry {
+                id: id(3),
+                deployment: id(2),
+                rolls_back: None,
+                version: None,
+                accept_volume_loss: Vec::new(),
+            }),
+            &protectors_deploy_token(Approval::NotRequired),
+        )
+        .unwrap_err();
+    assert_admin_asked(&refused);
+}
+
 /// History's (live, failed) marks.
 fn marks(store: &ConfigStore, who: &Actor) -> (Option<Revision>, Option<Revision>) {
     let view = store
@@ -5745,6 +5851,7 @@ fn cloud_keeps_every_upload_a_queued_deploy_may_start_from_until_it_ends() {
                     upload: upload.map(digested),
                     accept_volume_loss: Vec::new(),
                     message: None,
+                    prune: false,
                 }),
                 &Trusted::default(),
             )
@@ -5816,6 +5923,7 @@ fn verifier_a_failed_upload_keeps_the_upload_a_partial_retry_applied() {
                 upload: Some(digested('c')),
                 accept_volume_loss: Vec::new(),
                 message: None,
+                prune: false,
             }),
             &Trusted::default(),
         )
@@ -5856,6 +5964,7 @@ fn verifier_a_successful_no_op_retry_keeps_the_service_on_the_retried_upload() {
                     upload: upload.map(digested),
                     accept_volume_loss: Vec::new(),
                     message: None,
+                    prune: false,
                 }),
                 &Trusted::default(),
             )
@@ -5916,4 +6025,584 @@ fn verifier_failed_retry_of_a_pre_0022_upload_does_not_replace_current_upload() 
         deploy_sent(&store, &who, 4, None).upload,
         Some(digested('a'))
     );
+}
+
+/// Cloud's evidence for a caller who holds every permission, as an owner's or
+/// admin's sign-in or token does, asking as `asks` does: `EveryDeploy` for an
+/// agent's token, such as `ployz mcp`'s.
+fn protector(approval: Approval, asks: Asks) -> Trusted {
+    Trusted {
+        approval,
+        asks,
+        permissions: Some(Permission::ALL.iter().copied().collect()),
+        ..Trusted::default()
+    }
+}
+
+/// [`unprotecting`], a member's sign-in or token, asking as `asks` does.
+fn member(approval: Approval, asks: Asks) -> Trusted {
+    Trusted {
+        asks,
+        ..unprotecting(approval)
+    }
+}
+
+/// `trusted` for the user Cloud authenticated as `user`, by their immutable id.
+fn signed_in(user: &str, trusted: Trusted) -> Trusted {
+    Trusted {
+        user: Some(user.to_owned()),
+        ..trusted
+    }
+}
+
+fn as_person(who: &Actor, name: &str) -> Actor {
+    Actor {
+        principal: Some(Principal::parse(name).unwrap()),
+        ..who.clone()
+    }
+}
+
+/// [`shop`] with #1 running `web` and `api`, then #2 adding `cron`.
+fn cron_added() -> (ConfigStore, Actor) {
+    let (store, who) = shop();
+    apply_both(&store, &who, 1);
+    store
+        .write(
+            &who,
+            &CreateService {
+                id: ServiceLineageId::parse("00000000-0000-4000-8000-000000000005").unwrap(),
+                environment: EnvironmentRef::default(),
+                name: ServiceName::parse("cron").unwrap(),
+                image: Some("nginx:1".into()),
+                template: None,
+            },
+        )
+        .unwrap();
+    admit(&store, &who, 2, &[], None).unwrap();
+    apply(&store, 2);
+    (store, who)
+}
+
+#[test]
+fn a_rollback_that_takes_a_service_off_asks_and_names_it() {
+    let (store, who) = cron_added();
+    let rollback = |trusted: &Trusted| {
+        store.write_trusted(
+            &who,
+            &Admit::Retry(Retry {
+                id: id(3),
+                deployment: id(1),
+                rolls_back: None,
+                version: None,
+                accept_volume_loss: Vec::new(),
+            }),
+            trusted,
+        )
+    };
+    for (trusted, protected) in [
+        (protector(Approval::Required, Asks::Destroys), false),
+        (protector(Approval::Required, Asks::EveryDeploy), false),
+        (member(Approval::Required, Asks::Destroys), true),
+        (member(Approval::Required, Asks::EveryDeploy), true),
+    ] {
+        let refused = rollback(&trusted).unwrap_err();
+        assert_eq!(refused.code.as_str(), "approval_required", "{trusted:?}");
+        assert_eq!(refused.details.get("protected").is_some(), protected);
+        let removes: Vec<&str> = refused.details["effects"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|effect| effect["kind"] == "removes_service")
+            .map(|effect| effect["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(removes, ["cron"], "{trusted:?}");
+    }
+    let owner = protector(Approval::Required, Asks::Destroys);
+    let refused = rollback(&owner).unwrap_err();
+    let rolled = rollback(&Trusted {
+        approval: approved(&refused),
+        ..owner
+    })
+    .unwrap();
+    assert_eq!(rolled.status, DeploymentStatus::Queued);
+}
+
+#[test]
+fn a_retry_that_takes_nothing_off_still_asks_nothing() {
+    let (store, who) = shop();
+    admit(&store, &who, 1, &[], None).unwrap();
+    fail_api(&store, 1);
+    let retried = store
+        .write_trusted(
+            &who,
+            &Admit::Retry(Retry {
+                id: id(2),
+                deployment: id(1),
+                rolls_back: None,
+                version: None,
+                accept_volume_loss: Vec::new(),
+            }),
+            &protector(Approval::Required, Asks::Destroys),
+        )
+        .unwrap();
+    assert_eq!(retried.status, DeploymentStatus::Queued);
+}
+
+#[test]
+fn cancelling_someone_elses_deployment_in_protected_production_asks_an_admin() {
+    let (store, system) = shop();
+    let (grace, linus) = (as_person(&system, "grace"), as_person(&system, "linus"));
+    let cancel_as = |who: &Actor, n: u8, trusted: &Trusted| {
+        store.write_trusted(who, &Cancel { deployment: id(n) }, trusted)
+    };
+    deploy_trusted(
+        &store,
+        &grace,
+        1,
+        &protector(Approval::NotRequired, Asks::Destroys),
+    )
+    .unwrap();
+
+    for asks in [Asks::Destroys, Asks::EveryDeploy] {
+        let refused = cancel_as(&linus, 1, &member(Approval::Required, asks)).unwrap_err();
+        assert_eq!(refused.code.as_str(), "approval_required");
+        assert_eq!(
+            refused.message,
+            "production is Protected; an admin must approve this cancel."
+        );
+        assert_eq!(refused.details["protected"], json!(true));
+        assert_eq!(status(&store, &system, 1), DeploymentStatus::Queued);
+    }
+    let refused = cancel_as(&linus, 1, &member(Approval::NotRequired, Asks::Destroys)).unwrap_err();
+    let cancelled = cancel_as(&linus, 1, &member(approved(&refused), Asks::Destroys)).unwrap();
+    assert_eq!(cancelled.status, DeploymentStatus::Cancelled);
+
+    // Grace may cancel anyone's, and Linus his own once it runs as his.
+    deploy_trusted(
+        &store,
+        &linus,
+        2,
+        &signed_in("u-linus", protector(Approval::NotRequired, Asks::Destroys)),
+    )
+    .unwrap();
+    cancel_as(
+        &linus,
+        2,
+        &signed_in("u-linus", member(Approval::NotRequired, Asks::Destroys)),
+    )
+    .unwrap();
+    deploy_trusted(
+        &store,
+        &linus,
+        3,
+        &protector(Approval::NotRequired, Asks::Destroys),
+    )
+    .unwrap();
+    cancel_as(&grace, 3, &protector(Approval::Required, Asks::Destroys)).unwrap();
+
+    // Cancelling one already stopping changes nothing, so nobody is asked.
+    deploy_trusted(
+        &store,
+        &grace,
+        4,
+        &protector(Approval::NotRequired, Asks::Destroys),
+    )
+    .unwrap();
+    store.claim(&id(4), &runner("runner-a")).unwrap();
+    let stopping = cancel_as(&grace, 4, &protector(Approval::Required, Asks::Destroys)).unwrap();
+    assert_eq!(stopping.status, DeploymentStatus::Cancelling);
+    let again = cancel_as(&linus, 4, &member(Approval::Required, Asks::Destroys)).unwrap();
+    assert_eq!(again.status, DeploymentStatus::Cancelling);
+}
+
+#[test]
+fn a_member_named_like_the_admitter_still_asks_before_cancelling_their_deployment() {
+    let (store, system) = shop();
+    let linus = as_person(&system, "linus");
+    deploy_trusted(
+        &store,
+        &linus,
+        1,
+        &signed_in("u-linus", protector(Approval::NotRequired, Asks::Destroys)),
+    )
+    .unwrap();
+
+    // Another member who calls themselves linus too.
+    let namesake = signed_in("u-other", member(Approval::Required, Asks::Destroys));
+    let refused = store
+        .write_trusted(&linus, &Cancel { deployment: id(1) }, &namesake)
+        .unwrap_err();
+    assert_eq!(refused.code.as_str(), "approval_required");
+    assert_eq!(refused.details["protected"], json!(true));
+    assert_eq!(status(&store, &system, 1), DeploymentStatus::Queued);
+}
+
+#[test]
+fn a_deployment_admitted_without_a_user_id_is_someones_own_by_name() {
+    // As one an older Cloud admitted, or one from before the id: its row holds none.
+    let (store, system) = shop();
+    let (grace, linus) = (as_person(&system, "grace"), as_person(&system, "linus"));
+    deploy_trusted(
+        &store,
+        &linus,
+        1,
+        &protector(Approval::NotRequired, Asks::Destroys),
+    )
+    .unwrap();
+
+    // Linus cancels his own by name, though Cloud sends his id now.
+    let mine = signed_in("u-linus", member(Approval::Required, Asks::Destroys));
+    store
+        .write_trusted(&linus, &Cancel { deployment: id(1) }, &mine)
+        .unwrap();
+    // Grace's is someone else's to him, with his id sent or not.
+    deploy_trusted(
+        &store,
+        &grace,
+        2,
+        &protector(Approval::NotRequired, Asks::Destroys),
+    )
+    .unwrap();
+    let refused = store
+        .write_trusted(&linus, &Cancel { deployment: id(2) }, &mine)
+        .unwrap_err();
+    assert_eq!(refused.code.as_str(), "approval_required");
+    let refused = store
+        .write_trusted(
+            &linus,
+            &Cancel { deployment: id(2) },
+            &member(Approval::Required, Asks::Destroys),
+        )
+        .unwrap_err();
+    assert_eq!(refused.code.as_str(), "approval_required");
+}
+
+#[test]
+fn a_rollback_asks_about_a_service_a_deployment_of_unknown_outcome_may_have_started() {
+    let (store, who) = shop();
+    apply_both(&store, &who, 1);
+    store
+        .write(
+            &who,
+            &CreateService {
+                id: ServiceLineageId::parse("00000000-0000-4000-8000-000000000005").unwrap(),
+                environment: EnvironmentRef::default(),
+                name: ServiceName::parse("cron").unwrap(),
+                image: Some("nginx:1".into()),
+                template: None,
+            },
+        )
+        .unwrap();
+    admit(&store, &who, 2, &[], None).unwrap();
+    let a = runner("runner-a");
+    store.claim(&id(2), &a).unwrap();
+    store
+        .record(
+            &id(2),
+            &a,
+            RunEvidence::Prepared(preview(&["web", "api", "cron"])),
+        )
+        .unwrap();
+    // Its runner loses track of it: cron may run, though nothing confirmed it.
+    store.claim(&id(2), &a).unwrap_err();
+    assert_eq!(status(&store, &who, 2), DeploymentStatus::Unknown);
+
+    let refused = store
+        .write_trusted(
+            &who,
+            &Admit::Retry(Retry {
+                id: id(3),
+                deployment: id(1),
+                rolls_back: None,
+                version: None,
+                accept_volume_loss: Vec::new(),
+            }),
+            &protector(Approval::Required, Asks::Destroys),
+        )
+        .unwrap_err();
+    assert_eq!(refused.code.as_str(), "approval_required");
+    let removes: Vec<&str> = refused.details["effects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|effect| effect["kind"] == "removes_service")
+        .map(|effect| effect["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(removes, ["cron"]);
+}
+
+/// [`shop`] with #1 applying web and api, then #2 adding cron and starting on
+/// the runner returned.
+fn cron_started() -> (ConfigStore, Actor, RunnerId) {
+    cron_started_in(backend::open())
+}
+
+fn cron_started_in(store: ConfigStore) -> (ConfigStore, Actor, RunnerId) {
+    let (store, who) = shop_in(store);
+    apply_both(&store, &who, 1);
+    store
+        .write(
+            &who,
+            &CreateService {
+                id: ServiceLineageId::parse("00000000-0000-4000-8000-000000000005").unwrap(),
+                environment: EnvironmentRef::default(),
+                name: ServiceName::parse("cron").unwrap(),
+                image: Some("nginx:1".into()),
+                template: None,
+            },
+        )
+        .unwrap();
+    admit(&store, &who, 2, &[], None).unwrap();
+    let a = runner("runner-a");
+    store.claim(&id(2), &a).unwrap();
+    store
+        .record(
+            &id(2),
+            &a,
+            RunEvidence::Prepared(preview(&["web", "api", "cron"])),
+        )
+        .unwrap();
+    (store, who, a)
+}
+
+/// [`cron_started`], then #2's runner lost track of it.
+fn cron_lost() -> (ConfigStore, Actor) {
+    let (store, who, a) = cron_started();
+    store.claim(&id(2), &a).unwrap_err();
+    (store, who)
+}
+
+/// What executing [`preview`] did when `done` completed, `failed` stopped it and
+/// `unexecuted` never ran.
+fn failed_at(done: &[&str], failed: &str, unexecuted: &[&str]) -> RunEvidence {
+    RunEvidence::Executed {
+        progress: Vec::new(),
+        outcome: Box::new(outcome(json!({
+            "type": "failed",
+            "completed": done.iter().map(|service| operation(service)).collect::<Vec<_>>(),
+            "failed": {"type": "operation", "operation": operation(failed), "error": {
+                "type": "machine", "action": "CreateContainer",
+                "error": {"code": "unavailable", "message": "connection lost", "details": {}}
+            }},
+            "unexecuted": unexecuted.iter().map(|service| operation(service)).collect::<Vec<_>>()
+        }))),
+        removed: Vec::new(),
+    }
+}
+
+fn removes_service(refused: &RpcError) -> Vec<&str> {
+    refused.details["effects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|effect| effect["kind"] == "removes_service")
+        .map(|effect| effect["name"].as_str().unwrap())
+        .collect()
+}
+
+fn rollback_to(
+    store: &ConfigStore,
+    who: &Actor,
+    (n, to): (u8, u8),
+) -> Result<DeploymentSummary, RpcError> {
+    store.write_trusted(
+        who,
+        &Admit::Retry(Retry {
+            id: id(n),
+            deployment: id(to),
+            rolls_back: None,
+            version: None,
+            accept_volume_loss: Vec::new(),
+        }),
+        &protector(Approval::Required, Asks::Destroys),
+    )
+}
+
+#[test]
+fn a_deploy_of_some_services_leaves_a_lost_deployments_service_in_doubt() {
+    let (store, who) = cron_lost();
+    // #3 deploys web alone: it settles nothing about cron.
+    admit(&store, &who, 3, &["web"], None).unwrap();
+    let a = runner("runner-a");
+    store.claim(&id(3), &a).unwrap();
+    store
+        .record(&id(3), &a, RunEvidence::Prepared(preview(&["web"])))
+        .unwrap();
+    store.record(&id(3), &a, succeeded(&["web"])).unwrap();
+    assert_eq!(status(&store, &who, 3), DeploymentStatus::Applied);
+
+    let refused = rollback_to(&store, &who, (4, 1)).unwrap_err();
+    assert_eq!(refused.code.as_str(), "approval_required");
+    let removes: Vec<&str> = refused.details["effects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|effect| effect["kind"] == "removes_service")
+        .map(|effect| effect["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(removes, ["cron"]);
+}
+
+#[test]
+fn rolling_back_to_a_deploy_of_some_services_leaves_the_others_running_unasked() {
+    let (store, who) = shop();
+    apply_both(&store, &who, 1);
+    admit(&store, &who, 2, &["web"], None).unwrap();
+    let a = runner("runner-a");
+    store.claim(&id(2), &a).unwrap();
+    store
+        .record(&id(2), &a, RunEvidence::Prepared(preview(&["web"])))
+        .unwrap();
+    store.record(&id(2), &a, succeeded(&["web"])).unwrap();
+    apply_both(&store, &who, 3);
+
+    // Back to #2 ships web alone; api keeps running.
+    let rolled = rollback_to(&store, &who, (4, 2)).unwrap();
+    assert_eq!(rolled.status, DeploymentStatus::Queued);
+}
+
+#[test]
+fn a_deploy_queued_behind_one_that_is_later_lost_asks_about_its_services_when_admitted() {
+    // A plain retry asks only what its source's review asked, so that review has
+    // to have counted a Deployment that was running then and is lost by the retry.
+    let (store, who) = shop();
+    apply_both(&store, &who, 1);
+    store
+        .write(
+            &who,
+            &CreateService {
+                id: ServiceLineageId::parse("00000000-0000-4000-8000-000000000005").unwrap(),
+                environment: EnvironmentRef::default(),
+                name: ServiceName::parse("cron").unwrap(),
+                image: Some("nginx:1".into()),
+                template: None,
+            },
+        )
+        .unwrap();
+    admit(&store, &who, 2, &[], None).unwrap();
+    let a = runner("runner-a");
+    store.claim(&id(2), &a).unwrap();
+    store
+        .write(
+            &who,
+            &RemoveService {
+                environment: EnvironmentRef::default(),
+                service: ServiceName::parse("cron").unwrap(),
+            },
+        )
+        .unwrap();
+
+    let refused = deploy_trusted(
+        &store,
+        &who,
+        3,
+        &protector(Approval::Required, Asks::Destroys),
+    )
+    .unwrap_err();
+    assert_eq!(refused.code.as_str(), "approval_required");
+    let removes: Vec<&str> = refused.details["effects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|effect| effect["kind"] == "removes_service")
+        .map(|effect| effect["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(removes, ["cron"]);
+}
+
+#[test]
+fn a_rollback_asks_about_a_service_a_failed_deployment_may_have_left_running() {
+    let (store, who, a) = cron_started();
+    // Creating cron's Container didn't finish, so Applied State lacks it; its
+    // Container may still run.
+    store
+        .record(&id(2), &a, failed_at(&["web", "api"], "cron", &[]))
+        .unwrap();
+    assert_eq!(status(&store, &who, 2), DeploymentStatus::Failed);
+    assert!(nodes(&store, &who, 2).contains(&("cron".to_owned(), NodeStatus::Failed)));
+
+    let refused = rollback_to(&store, &who, (3, 1)).unwrap_err();
+    assert_eq!(refused.code.as_str(), "approval_required");
+    assert_eq!(removes_service(&refused), ["cron"]);
+}
+
+#[test]
+fn a_rollback_asks_about_a_service_whose_outcome_a_failed_deployment_lost() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = backend::fresh_url(&dir);
+    let (store, who, a) = cron_started_in(ConfigStore::open(&url, backend::key()).unwrap());
+    store
+        .record(&id(2), &a, failed_at(&["web"], "api", &["cron"]))
+        .unwrap();
+    // Its runner was lost before recording what became of cron.
+    rewrite_run(&url, 2, |run| {
+        run["nodes"]["00000000-0000-4000-8000-000000000005"] = json!("unknown");
+    });
+    assert_eq!(status(&store, &who, 2), DeploymentStatus::Failed);
+    assert!(nodes(&store, &who, 2).contains(&("cron".to_owned(), NodeStatus::Unknown)));
+
+    let refused = rollback_to(&store, &who, (3, 1)).unwrap_err();
+    assert_eq!(refused.code.as_str(), "approval_required");
+    assert_eq!(removes_service(&refused), ["cron"]);
+}
+
+#[test]
+fn a_rollback_asks_about_a_service_a_cancelled_deployment_started_but_reported_unexecuted() {
+    let (store, who, a) = cron_started();
+    // api's and cron's Containers wait for health side by side when #2 is cancelled
+    // and the Machine stops answering, so neither is cleaned up.
+    let cancelled = json!({"type": "failed", "error": {"type": "cancelled"}});
+    let mut tracker = RowTracker::default();
+    store
+        .record(
+            &id(2),
+            &a,
+            RunEvidence::Progress(tracker.changes(&progress(&[
+                ("web", "alpha", json!({"type": "completed"})),
+                ("api", "alpha", waiting(0)),
+                ("cron", "alpha", waiting(0)),
+            ]))),
+        )
+        .unwrap();
+    cancel(&store, &who, 2).unwrap();
+    // The runner names api's cancel and reports cron's operation as unexecuted.
+    store
+        .record(
+            &id(2),
+            &a,
+            RunEvidence::Executed {
+                progress: tracker.changes(&progress(&[
+                    ("web", "alpha", json!({"type": "completed"})),
+                    ("api", "alpha", cancelled.clone()),
+                    ("cron", "alpha", cancelled),
+                ])),
+                outcome: Box::new(outcome(json!({
+                    "type": "failed", "completed": [operation("web")],
+                    "failed": {"type": "operation", "operation": operation("api"), "error": {"type": "cancelled"}},
+                    "unexecuted": [operation("cron")]
+                }))),
+                removed: Vec::new(),
+            },
+        )
+        .unwrap();
+    assert_eq!(status(&store, &who, 2), DeploymentStatus::Cancelled);
+    assert!(nodes(&store, &who, 2).contains(&("cron".to_owned(), NodeStatus::NotAttempted)));
+
+    let refused = rollback_to(&store, &who, (3, 1)).unwrap_err();
+    assert_eq!(refused.code.as_str(), "approval_required");
+    assert_eq!(removes_service(&refused), ["cron"]);
+}
+
+#[test]
+fn a_rollback_leaves_alone_a_service_a_failed_deployment_never_attempted() {
+    let (store, who, a) = cron_started();
+    // #2 stopped at api, before cron: nothing of cron runs.
+    store
+        .record(&id(2), &a, failed_at(&["web"], "api", &["cron"]))
+        .unwrap();
+    assert_eq!(status(&store, &who, 2), DeploymentStatus::Failed);
+    assert!(nodes(&store, &who, 2).contains(&("cron".to_owned(), NodeStatus::NotAttempted)));
+
+    let rolled = rollback_to(&store, &who, (3, 1)).unwrap();
+    assert_eq!(rolled.status, DeploymentStatus::Queued);
 }

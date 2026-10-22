@@ -335,6 +335,15 @@ type Reads = std::sync::Arc<tokio::sync::Notify>;
 const ASKED: &str = r#"{"error":{"code":"approval_required","message":"A human must approve this first: this removal takes Server two out","details":{"approval_id":"apr_9","approval":"remove:abc","effects":[{"kind":"removes_server","name":"two","node":"b","path":"servers/b"}],"operation":{"verb":"remove","name":"two"}}}}"#;
 const ASKED_FORGET: &str = r#"{"error":{"code":"approval_required","message":"A human must approve this first: this forget takes Server two out","details":{"approval_id":"apr_9","approval":"forget:abc","effects":[{"kind":"removes_server","name":"two","node":"b","path":"servers/b"}],"operation":{"verb":"forget","name":"two"}}}}"#;
 fn fake_cloud(settled: &'static str, gated: bool) -> (String, Asked, Reads) {
+    fake_cloud_settling("200 OK", settled, gated)
+}
+
+/// [`fake_cloud`] whose removal reads answer `status`, as Cloud refuses a removal that ended without succeeding.
+fn fake_cloud_settling(
+    status: &'static str,
+    settled: &'static str,
+    gated: bool,
+) -> (String, Asked, Reads) {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let cloud = format!("http://{}", listener.local_addr().unwrap());
     let asked = std::sync::Arc::new(std::sync::Mutex::new(
@@ -378,7 +387,7 @@ fn fake_cloud(settled: &'static str, gated: bool) -> (String, Asked, Reads) {
                 }
             } else if line.starts_with("GET /api/cli/server-removals/r1 ") {
                 read.notify_one();
-                ("200 OK", settled)
+                (status, settled)
             } else {
                 ("404 Not Found", r#"{"code":"NOT_FOUND"}"#)
             };
@@ -443,6 +452,67 @@ async fn cloud_removes_its_last_server_for_the_cli() {
     );
 }
 
+/// `server rm` of the last Server whose Cloud removal ended `failed / retry_exhausted`, as
+/// Cloud refuses it on `GET server-removals/:id`. Its error, after a failed exit.
+async fn removal_ran_out(refusal: &'static str) -> serde_json::Value {
+    let (cloud, _, _) = fake_cloud_settling("503 Service Unavailable", refusal, false);
+    let (output, _) = remove_last_cloud_server(
+        &[("PLOYZ_TOKEN", "ployz_acme"), ("PLOYZ_CLOUD_URL", &cloud)],
+        &["--confirm", "one", "--accept-volume-loss", "data"],
+    )
+    .await;
+    assert_ne!(output.status.code(), Some(0), "{output:?}");
+    let error: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        error.pointer("/error/code"),
+        Some(&json!("unavailable")),
+        "{error}"
+    );
+    error
+}
+
+fn message(error: &serde_json::Value) -> &str {
+    error
+        .pointer("/error/message")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default()
+}
+
+#[tokio::test]
+async fn a_sent_cloud_removal_whose_retries_ran_out_checks_the_server_before_forgetting_it() {
+    let error = removal_ran_out(
+        r#"{"error":{"code":"unavailable","message":"Machine remove retries were exhausted.","details":{"unfinished":true}}}"#,
+    )
+    .await;
+    let message = message(&error);
+    assert!(message.contains("didn't finish"), "{message}");
+    // A step after the Server's reply may be the one that ran out: the reset may be
+    // confirmed and Cloud's row dropped, so the CLI claims neither way.
+    for unbacked in ["unknown", "answered", "Cloud still lists", "Removed"] {
+        assert!(!message.contains(unbacked), "{message}");
+    }
+    assert!(
+        message.contains("If the Server is gone but `ployz server ls` still lists it"),
+        "{message}"
+    );
+    // The Server may still answer, and forgetting one that does leaves its copies unfenced.
+    assert_eq!(
+        error.pointer("/error/details/next"),
+        Some(&json!("ployz server ls")),
+        "{error}"
+    );
+}
+
+#[tokio::test]
+async fn a_cloud_removal_that_sent_nothing_says_only_its_failure() {
+    let error = removal_ran_out(
+        r#"{"error":{"code":"unavailable","message":"Machine remove retries were exhausted.","details":null}}"#,
+    )
+    .await;
+    assert_eq!(message(&error), "Machine remove retries were exhausted.");
+    assert_eq!(error.pointer("/error/details/next"), None, "{error}");
+}
+
 #[tokio::test]
 async fn a_server_cloud_manages_is_forgotten_through_cloud() {
     let (cloud, asked, _) = fake_cloud(
@@ -481,6 +551,76 @@ async fn a_server_cloud_manages_is_forgotten_through_cloud() {
         "{result}"
     );
     assert_eq!(result.get("next"), Some(&json!(null)), "{result}");
+    // The Server fences itself only once it reaches a 0.3.1 peer, so the operator is
+    // told how to stop what still runs there meanwhile.
+    assert_eq!(
+        result.get("warnings"),
+        Some(&json!([
+            "Server two still runs and doesn't know it was forgotten, so its services keep \
+             running there. Run sudo ployz-uninstall on it to stop them and keep every Volume \
+             copy on its disk. Adding it back with ployz server add --reset can delete its \
+             mirrors, so don't while one may be a Volume's last copy."
+        ])),
+        "{result}"
+    );
+}
+
+#[tokio::test]
+async fn a_server_already_gone_from_the_cluster_says_cloud_let_go_and_its_reset_is_unconfirmed() {
+    let (cloud, _, _) = fake_cloud(
+        r#"{"state":"succeeded","reset_warning":"its reset couldn't be confirmed: it was already gone from the Cluster","release":{"kind":"others_remain"}}"#,
+        false,
+    );
+    let mut service = DiscoveryService::new(test_description());
+    // A Server whose ID starts with `b` never answers this fake; this one answers, holding Volume `data`.
+    service.machines.push(machine('c', "two"));
+    let (output, _) = remove_cloud_server(
+        service,
+        "two",
+        &[("PLOYZ_TOKEN", "ployz_acme"), ("PLOYZ_CLOUD_URL", &cloud)],
+        &["--confirm", "two", "--accept-volume-loss", "data"],
+    )
+    .await;
+    // The reset is still in doubt, so the removal is partial.
+    assert_eq!(output.status.code(), Some(3), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("Removed Server two."), "{stderr}");
+    assert!(
+        stderr.contains(
+            "! Cloud let go of Server two, but its reset couldn't be confirmed: it was already gone from the Cluster. Reset does not erase volume data."
+        ),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("keeps its hold"), "{stderr}");
+    assert!(!stderr.contains("not fully cleaned up"), "{stderr}");
+    // `--json` tells a dropped row from a kept hold too.
+    let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(result.get("cloud_kept"), Some(&json!(false)), "{result}");
+}
+
+#[tokio::test]
+async fn the_last_server_already_gone_from_the_cluster_says_cloud_keeps_its_hold() {
+    let (cloud, _, _) = fake_cloud(
+        r#"{"state":"succeeded","reset_warning":"its reset couldn't be confirmed: it was already gone from the Cluster","release":{"kind":"kept","reason":"its reset didn't finish (its reset couldn't be confirmed: it was already gone from the Cluster), so it may still hold Cloud's key."}}"#,
+        false,
+    );
+    let (output, _) = remove_last_cloud_server(
+        &[("PLOYZ_TOKEN", "ployz_acme"), ("PLOYZ_CLOUD_URL", &cloud)],
+        &["--confirm", "one", "--accept-volume-loss", "data"],
+    )
+    .await;
+    assert_eq!(output.status.code(), Some(3), "{output:?}");
+    let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(result.get("cloud_kept"), Some(&json!(true)), "{result}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("! Cloud keeps its hold on the Cluster: its reset didn't finish (its reset couldn't be confirmed: it was already gone from the Cluster), so it may still hold Cloud's key."),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("! Server one was not fully cleaned up or reset: its reset couldn't be confirmed: it was already gone from the Cluster. Reset does not erase volume data."),
+        "{stderr}"
+    );
 }
 
 #[tokio::test]
@@ -878,6 +1018,22 @@ async fn a_server_that_does_not_answer_leaves_without_a_reset_only_when_dead_is_
 
     let output = run("two", &["--confirm", "dead"]).await;
     assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        result.get("warnings"),
+        Some(&json!([
+            "Server two isn't told it was forgotten. If it runs again as it is, its services \
+             start again on its own copy of each Volume, and Ployz never brings back what they \
+             write there. When it boots, run sudo ployz-uninstall on it to stop them and keep \
+             every Volume copy on its disk. As a best effort, if two and at least one other \
+             Server ran 0.3.1 or later while it was still connected, and the Server that forgot \
+             it runs 0.3.1 or later, it does that itself up to about 15 minutes after its \
+             network returns. Adding it back with ployz server add --reset keeps its writer \
+             copies read-only but can delete its mirrors, so don't while one may be a Volume's \
+             last copy. Wipe its disk only if you need nothing on it."
+        ])),
+        "{result}"
+    );
     assert_eq!(*removals.lock().unwrap(), [machine_id('b')]);
     assert!(resets.lock().unwrap().is_empty());
     server.abort();

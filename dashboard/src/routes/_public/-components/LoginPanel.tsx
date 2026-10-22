@@ -60,7 +60,7 @@ export function LoginPanel({
     <div className="flex w-full flex-col items-center gap-6 text-center">
       <PloyzMark className="size-11" decorative />
       <div className="flex flex-col gap-2">
-        <h1 className="text-3xl font-semibold tracking-tight text-balance">{title}</h1>
+        <h1 className="text-2xl font-semibold text-balance">{title}</h1>
         {description ? <p className="text-balance text-muted-foreground">{description}</p> : null}
       </div>
       <div className="flex w-full flex-col gap-2">

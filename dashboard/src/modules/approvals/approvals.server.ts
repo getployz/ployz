@@ -13,6 +13,7 @@ import {
   approvalSubject,
   type OperationVerb,
   type ServiceApply,
+  type VolumeApply,
 } from "#/modules/approvals/approvals";
 import { operationApprovals } from "#/modules/approvals/tables";
 import { user } from "#/modules/identity/tables";
@@ -44,7 +45,8 @@ export const onceFor = (command: ConfigCommand, approvalId: string, reviewed: Di
 };
 
 /** A review as anyone reads it: what runs once approved stays in Cloud, since a Sync's carries the secrets it sets. */
-const shownReview = ({ apply: _apply, ...review }: ApprovalReview): ApprovalReview => review;
+const shownReview = ({ apply: _apply, ...review }: ApprovalReview, subject: string): ApprovalReview =>
+  "operation" in review ? { ...review, operation: { ...review.operation, subject } } : review;
 
 /** An approval as the CLI reads it. */
 function approvalView(row: ApprovalRow) {
@@ -54,7 +56,7 @@ function approvalView(row: ApprovalRow) {
     digest: row.digest,
     command: row.command,
     reason: row.reason,
-    review: shownReview(row.review),
+    review: shownReview(row.review, row.subject),
     protected: row.review.protected !== undefined,
     requested_by: row.requestedByUserId,
     created_at: row.createdAt.toISOString(),
@@ -452,7 +454,7 @@ export type OperationAsked = {
   /** The Protected Environment it lands in when its asker can't protect it, so a protector approves it, even from the dashboard. */
   protected?: string;
   /** What to run as the asker once approved: a dashboard ask that waits for a protector. */
-  apply?: ServiceApply;
+  apply?: ServiceApply | VolumeApply;
   /**
    * Its run records the approval it ran under, once, so carrying that approval again answers or finishes that run
    * instead of starting another. The gate leaves such an approval unspent; it spends every other one on its one run.
@@ -483,10 +485,18 @@ const requestOperationApproval = Effect.fn("Approvals.requestOperation")(functio
     }).onConflictDoUpdate({ ...pending, set: askedAgain(caller, review) }).returning({ id: operationApprovals.id });
     return row ?? (yield* Effect.die("an upsert returned no row"));
   }), stale);
+  // The subject rides in the refusal, not the stored review: approvalView adds it from the row.
+  const details = {
+    effects: asked.effects,
+    approval: digest,
+    approval_id: recorded.id,
+    operation: { ...operation, subject: asked.subject },
+    organization: caller.organization.slug,
+  };
   return {
     code: "approval_required",
     message: `A human must approve this ${asked.verb.replaceAll("_", " ")} of ${asked.name} before it runs.`,
-    details: { effects: asked.effects, approval: digest, approval_id: recorded.id, operation, organization: caller.organization.slug },
+    details: asked.protected === undefined ? details : { ...details, protected: { environment: asked.protected } },
   } satisfies StoreRefusal;
 });
 
@@ -526,11 +536,11 @@ export const gateOperation = Effect.fn("Approvals.gateOperation")(function* (
   asked: OperationAsked,
 ): Effect.fn.Return<Gated, never, Database> {
   // A person who confirmed it in the dashboard already approved it; only `ployz`, agents, and an ask into a Protected
-  // Environment by someone who can't protect it wait on one.
+  // Environment by someone who can't protect it wait on one. That ask waits even when it destroys nothing.
   if (caller.via === "dashboard" && asked.protected === undefined) return { ok: true, approvalId: null };
   const trusted = yield* redeemApproval(caller, approvalId, { command: asked.verb, subject: asked.subject });
   if (!trusted.ok) return trusted;
-  if (asked.effects.length === 0) return { ok: true, approvalId: null };
+  if (asked.effects.length === 0 && asked.protected === undefined) return { ok: true, approvalId: null };
   if (asked.protected === undefined && !(yield* hasApprover(caller.organization.id))) return { ok: true, approvalId: null };
   const digest = operationDigest(asked);
   if (approvalId !== null && trusted.approval !== "required" && trusted.approval.approved === digest) {

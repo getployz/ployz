@@ -5,82 +5,122 @@
 <h1 align="center">Ployz</h1>
 
 <p align="center">
-  Rent a server. Get a cloud.
+  <strong>Rent a server. Get a cloud.</strong>
   <br>
-  <a href="https://ployz.dev">Website</a> · <a href="#quick-start">Quick start</a> · <a href="#self-hosting-the-dashboard">Self-host</a>
+  Preview environments on servers you own. One command from a fresh server to https.
 </p>
 
-Ployz turns any Linux server into a deployment platform. It builds your app, gives it an
-https address, runs your databases and workers next to it, and spins up an environment for
-every pull request. Start with one server and add more when you need them.
+<p align="center">
+  <a href="https://ployz.dev">Website</a> · <a href="#quick-start">Quick start</a> · <a href="#use-it-with-your-agent">Agents</a> · <a href="#status">Status</a> · <a href="#self-hosting-the-dashboard">Self-host</a>
+</p>
 
-## Features
+Ployz turns Linux servers you rent into a deployment platform. It builds your app, gives it an
+https address and runs its databases and workers next to it. Every pull request can get its own
+environment. Start with one server and add more when you need them.
 
-- **Git push to deploy.** Every push to your main branch builds and ships.
-- **Preview environments.** Every pull request gets its own copy of your app at its own https address,
-  Copy the database and the preview gets its own, empty, with a setup command to seed it. Send the
-  link to your client.
-  When the pull request merges, production gets the code and the preview's setting changes.
-- **Your whole app on one canvas.** Web, workers, databases, variables and logs in one dashboard.
-- **Review before you deploy.** Dashboard edits are staged until you press Deploy.
-- **No Dockerfile needed.** Ployz detects and builds Node, Python, Ruby, PHP, Go, Rust, Java, Elixir
-  and more. It can also use your Dockerfile or run any Docker image.
-- **HTTPS by default.** Every app gets an https address on its first deploy. Custom domains are supported.
-- **More servers when you need them.** Add a server with one command. Servers share a private
-  network, and a service can run up to 50 replicas across them. No Kubernetes.
-- **Built for coding agents.** Anything the dashboard does, the `ployz` CLI does too, with JSON output.
-  Anything that would delete a service, a volume or a domain waits for your approval.
-- **No lock-in.** Your apps keep running on your servers if Ployz Cloud goes away. The engine
-  and the dashboard are both open source.
+<p align="center">
+  The workflow of the hosted platforms you like, on servers you rent.
+  <br><br>
+  <img src="docs/readme/platforms.svg" width="560" alt="Logos of Vercel, Railway, Fly.io, Render, Netlify and Heroku">
+  <br>
+  <sub>Six hosted platforms. Ployz isn't affiliated with any of them.</sub>
+</p>
+
+## What's different
+
+- **An environment for every pull request.** Each preview runs the pull request's code at its own
+  https address. Copy the database service and the preview gets its own empty database, seeded by
+  your setup command. A database you leave shared gives the preview production data. On merge,
+  production gets the code and the preview's setting changes. The **Ployz · ready to merge** check
+  lists those changes on the pull request first.
+- **Review before you deploy.** Edits from the dashboard, the CLI or an agent wait as a draft. You
+  read the diff, then deploy it.
+- **The CLI does what the dashboard does.** Commands print JSON with `--json`. A change that would
+  delete a service, a volume or a domain stops until a person approves it. An agent can't approve
+  it.
+- **One private network across your servers.** Add a server with `ployz server add`. Your servers
+  share a WireGuard network, and a service runs up to 50 replicas across them. A service with a
+  volume runs on the server that holds its data, one replica by default.
+- **Apps that outlive Ployz Cloud.** Your apps keep running on your servers if Ployz Cloud is down
+  or goes away. The engine and the dashboard are open source.
+
+## Use it with your agent
+
+Paste this into your coding agent.
+
+```text
+Set me up for Ployz: https://ployz.dev/agents.md
+```
+
+It installs the CLI and the Ployz skill, signs you in and registers the Ployz MCP tools. From
+then on it runs the same commands you would.
+
+```text
+> Copy production with its own worker, deploy it there, then stage it back.
+$ ployz env branch try-worker --copy worker   # Made Branch shop/try-worker of production.
+$ ployz deploy --env try-worker               # 2 deployed · across 1 server
+$ ployz env sync --env try-worker --to        # Synced try-worker → shop/production.
+```
+
+The change waits in production for you to review and deploy.
 
 ## Quick start
 
-You need a Linux server you can reach as root over SSH.
+You need a Linux server with systemd that you can reach as root over SSH. See the
+[server requirements](docs/user/servers/add-a-server.md#what-you-need).
 
-1. Install the CLI:
-
+1. Install the CLI.
    ```sh
    curl -fsSL https://ployz.sh | sh
-   # or
-   brew install getployz/ployz/ployz
    ```
 
-2. Sign in to Ployz Cloud:
-
+2. Sign in to Ployz Cloud.
    ```sh
    ployz login
    ```
 
-3. From your app's directory, point Ployz at your server:
-
+3. From your app's directory, point Ployz at your server.
    ```sh
    ployz up --server root@your-server
    ```
 
    Ployz installs itself on the server, builds your app and prints its https address.
 
-To deploy on every push and get preview environments, connect your repository with
-`ployz github connect` or from the dashboard at [ployz.dev](https://ployz.dev).
+4. Deploy on every push, and give each pull request a preview with its own seeded database.
+   ```sh
+   ployz github connect                # install the Ployz GitHub App
+   ployz set shop.repository=you/shop  # build from GitHub instead of uploads
+   ployz deploy
+   ployz env pr you/shop --on --from production --copy postgres --setup 'shop=pnpm db:seed'
+   ```
 
-Using a coding agent? Paste `Set me up for Ployz: https://ployz.dev/agents.md` into it. The agent
-installs the CLI and the Ployz skill and signs you in.
+   `ployz up` names the service after your app's directory, here `shop`. The preview copies a
+   [`postgres` service](docs/user/services/databases.md) you've added.
 
 ## How it works
 
-```mermaid
-flowchart LR
-  you["Dashboard / ployz CLI"] -- deploys --> a
-  subgraph servers["Your servers (private network)"]
-    a["Server 1<br>your services"] <--> b["Server 2<br>your services"]
-  end
-```
+Each server runs a small Ployz daemon next to Docker. Your servers share a WireGuard network and
+keep each other up to date. Every server serves https itself through Caddy, so there's no load
+balancer to rent. The dashboard and the CLI tell your servers what to run. Once deployed, your
+apps depend on neither. Generated `ployz.app` addresses use Ployz's DNS. A custom domain with an
+A record pointing at your servers doesn't.
 
-Each server runs a small Ployz daemon alongside Docker. The servers form a private network and
-keep each other up to date, so there is no central control server to run or lose. The dashboard
-and the CLI tell your servers what to run; once deployed, your apps don't depend on either.
+## Status
 
-Ployz is built on proven parts: Docker for containers, WireGuard for the private network and Caddy
-for https.
+**Can I move a production app?** Yes, if the gaps below are fine for you. If you need managed
+backups and automatic failover today, wait. Ployz is young and changes quickly. Work through the
+[production checklist](docs/user/production-checklist.md) first.
+
+- **You look after the OS.** Ployz doesn't install OS updates.
+- **No offsite backups yet.** Volume mirrors keep a copy on another server. Dump your databases
+  on a schedule and keep the dumps off your servers, or keep your hosted database.
+- **No automatic failover.** If a server dies, what ran only there stops. Replicas on other
+  servers keep running.
+- **No Docker Compose files.** Add each container as its own service.
+- **Alerts are email only.** Ployz Cloud emails you when a service goes down or crashes.
+
+**Soon:** offsite backups, automatic rollbacks, and moving a database to a bigger server without
+downtime.
 
 ## Pricing
 
@@ -89,50 +129,26 @@ plans are coming soon. Your hosting provider bills you for the servers.
 
 ## Self-hosting the dashboard
 
-You can run the dashboard yourself instead of using Ployz Cloud. See
-[dashboard/README.md](dashboard/README.md#self-host).
-
-## Status
-
-Ployz is young and changing quickly. Good to know before you move a production app:
-
-- **You look after the server's OS.** Ployz doesn't install OS updates.
-- **No database backups yet.** Keep your own dumps off the server, or keep your managed database
-  and connect to it with a variable.
-- **No automatic failover.** If a server dies, the services on it stop. Replicas on other servers
-  keep running.
-- **No Docker Compose files and no alerts.** Use an uptime monitor for alerts.
-
-Planned: snapshots, backups and rollbacks, and moving a database to a bigger server without downtime.
+Run the dashboard yourself instead of Ployz Cloud. See [dashboard/README.md](dashboard/README.md#self-host).
 
 ## How Ployz is built
 
-Most of Ployz is written by agents. I don't hand-edit much code anymore. I design the loop the
-agents run in, and I'm responsible for what comes out of it.
+Agents write most of Ployz. I design the loop they run in, and I answer for what comes out of it.
 
-We use pstack. Every change ships as a small PR, and the agent has to prove it works by actually
-running Ployz the way you would: deploying to real servers, adding a machine, checking that
-traffic moves. If it can't show me that, it doesn't merge.
+Every change ships as a small PR. The agent has to prove it by running Ployz the way you would,
+on real servers. If it can't show me that, it doesn't merge. Low-risk PRs merge once the checks
+pass. The orchestrator, networking and anything touching your data get a human review first.
 
-Low-risk PRs merge on their own after the checks pass. Higher-risk ones, like the orchestrator,
-networking, or anything touching your data, get a human review first. I read everything else
-after it lands.
-
-When an agent gets something wrong, we don't just fix that one spot. We turn it into a lint rule
-or a test, so it can't happen again.
-
-Code review never caught every bug, and verification won't either. But every mistake makes the
-system stricter, and that's the part I trust.
+When an agent gets something wrong, we turn the mistake into a lint rule or a test. Every mistake
+makes the system stricter, and that's the part I trust.
 
 ## Contributing
 
 Bug reports and feature requests go in [GitHub Issues](https://github.com/getployz/ployz/issues).
 
-The repository has two projects: [core/](core/README.md) (the engine, CLI and daemon, in Rust)
-and [dashboard/](dashboard/README.md) (Ployz Cloud, in TypeScript). Each README explains how to
-build and test it.
+The repository holds two projects. [core/](core/README.md) is the engine, CLI and daemon, in Rust.
+[dashboard/](dashboard/README.md) is Ployz Cloud, in TypeScript. Each README explains how to build it.
 
 ## License
 
-The engine in `core/` is [Apache-2.0](core/LICENSE). The dashboard in `dashboard/` is
-[AGPL-3.0](dashboard/LICENSE).
+The engine in `core/` is [Apache-2.0](core/LICENSE). The dashboard in `dashboard/` is [AGPL-3.0](dashboard/LICENSE).

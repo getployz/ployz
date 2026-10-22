@@ -1,3 +1,4 @@
+pub(crate) mod bridge_address;
 mod checks;
 mod create;
 mod http_health;
@@ -6,6 +7,7 @@ mod lifecycle;
 mod limits;
 mod managed_service;
 mod observe;
+pub(crate) use observe::published_spec;
 mod peer_pull;
 pub(crate) use peer_pull::ImageProxy;
 mod spec_store;
@@ -67,6 +69,30 @@ pub const LABEL_SERVICE_ID: &str = "ployz.service.id";
 pub const LABEL_SERVICE_NAME: &str = "ployz.service.name";
 pub const LABEL_NAMESPACE: &str = "ployz.namespace";
 pub const LABEL_HOOK: &str = "ployz.service.hook";
+
+/// Only the Ingress Proxy takes an IPv6 address on the ployz bridge, so IPv6
+/// visitors reach it by DNAT with their own address (#2837). Every other container
+/// stays IPv4-only, so its published ports keep reaching an app that listens on
+/// IPv4 alone through docker-proxy, as before.
+#[must_use]
+pub(crate) fn takes_bridge_ipv6(labels: &HashMap<String, String>) -> bool {
+    let ingress = QualifiedService::system_ingress();
+    labels.get(LABEL_NAMESPACE) == Some(&ingress.namespace.to_string())
+        && labels.get(LABEL_SERVICE_NAME) == Some(&ingress.name.to_string())
+        && !labels.contains_key(LABEL_HOOK)
+}
+
+/// The ployz bridge endpoint for a container that does or does not take IPv6.
+#[must_use]
+pub(crate) fn bridge_endpoint(ipv6: bool) -> Option<bollard::models::EndpointSettings> {
+    (!ipv6).then(|| bollard::models::EndpointSettings {
+        driver_opts: Some(HashMap::from([(
+            "com.docker.network.endpoint.sysctls".into(),
+            "net.ipv6.conf.IFNAME.disable_ipv6=1".into(),
+        )])),
+        ..Default::default()
+    })
+}
 /// Deployment attempt that created a Service Container.
 pub const LABEL_DEPLOYMENT: &str = "ployz.deployment.id";
 pub const LABEL_GEN: &str = "ployz.gen";
@@ -75,7 +101,8 @@ pub const LABEL_HOOK_PRE_DEPLOY: &str = "pre-deploy";
 #[derive(Clone)]
 pub struct LocalDocker {
     client: Docker,
-    endpoint_creates: Arc<Mutex<()>>,
+    /// Serializes bridge endpoint creates, and holds the last bridge address handed out.
+    endpoint_creates: Arc<Mutex<Option<std::net::Ipv4Addr>>>,
     /// Counts container creates, so a stranded ingress retry can tell a newer
     /// container may have appeared since its scan, or be appearing still.
     creates: Arc<Creates>,
@@ -115,7 +142,7 @@ impl LocalDocker {
     fn from_client(client: Docker) -> Self {
         Self {
             client,
-            endpoint_creates: Arc::new(Mutex::new(())),
+            endpoint_creates: Arc::new(Mutex::new(None)),
             creates: Arc::default(),
         }
     }
@@ -219,6 +246,8 @@ pub struct ServiceCopy {
     pub container_id: ContainerId,
     pub r#gen: Gen,
     pub rotation: ployz_core::CopyRotation,
+    /// The Deploy run that created it, from its `LABEL_DEPLOYMENT`.
+    pub deployment: Option<ployz_core::DeploymentLogId>,
 }
 
 /// One existing copy's rotation, read under the lock `remove` takes and held until
@@ -352,6 +381,18 @@ impl ContainerRuntime {
         Ok(self.specs.rotations(container_ids).await?)
     }
 
+    /// The full spec this Machine recorded when it created `container_id`.
+    ///
+    /// # Errors
+    ///
+    /// Returns when the Machine database cannot be read.
+    pub async fn spec(
+        &self,
+        container_id: &ContainerId,
+    ) -> Result<Option<ployz_core::ResolvedServiceSpec>, Error> {
+        Ok(self.specs.get(container_id).await?)
+    }
+
     /// Report this Container as `stopping` until the returned Withdrawal drops,
     /// so the Ingress Proxies stop routing to it before it stops. Each operation
     /// holds its own; the Container returns to ingress once none is held.
@@ -471,6 +512,22 @@ impl ContainerRuntime {
         while let Some((container_id, result)) = inspected.next().await {
             match result {
                 Ok(observation) => observations.push(observation),
+                Err(Error::SpecNotFound(_))
+                    if self
+                        .discard_half_made(&container_id)
+                        .await
+                        .unwrap_or_else(|error| {
+                            eprintln!(
+                                "couldn't remove container {container_id}, which has no spec: {error}",
+                                error = ployz_core::error_chain::inline(&error),
+                            );
+                            false
+                        }) =>
+                {
+                    eprintln!(
+                        "removed container {container_id}, which a crash left without its spec before it started"
+                    );
+                }
                 Err(error) if malformed_container(&error) => {
                     eprintln!(
                         "ignoring malformed managed container {container_id}: {error}",
@@ -491,7 +548,13 @@ impl ContainerRuntime {
     ///
     /// Returns when Docker or the Machine database cannot be read.
     pub(crate) async fn managed_inventory(&self) -> Result<Vec<ContainerId>, Error> {
-        let listed = self.managed_slots().await?;
+        let containers = self.docker.managed_containers().await?;
+        self.adopt_unrotated(&containers).await?;
+        self.adopt_unprobed(&containers).await?;
+        let listed = containers
+            .into_iter()
+            .map(|(id, labels)| (id, creation_slot(&labels)))
+            .collect::<Vec<_>>();
         if !self.specs.record_creations(listed.clone()).await? {
             return Ok(listed.into_iter().map(|(id, _)| id).collect());
         }
@@ -503,6 +566,95 @@ impl ContainerRuntime {
             eprintln!("adopted restored container {new}, which replaces {old}");
         }
         Ok(listed.into_iter().map(|(id, _)| id).collect())
+    }
+
+    /// A Service Container with no gen label was created by a daemon from before
+    /// rotation, which routed every copy it ran. Until a rotation is written for it,
+    /// it is In.
+    async fn adopt_unrotated(
+        &self,
+        containers: &[(ContainerId, HashMap<String, String>)],
+    ) -> Result<(), Error> {
+        let unstamped = containers
+            .iter()
+            .filter(|(_, labels)| {
+                !labels.contains_key(LABEL_GEN)
+                    && ManagedLabels::parse(labels).is_ok_and(|managed| {
+                        managed.kind == ContainerKind::ServiceContainer
+                            && managed.identity != QualifiedService::system_ingress()
+                    })
+            })
+            .map(|(id, _)| *id)
+            .collect::<Vec<_>>();
+        if unstamped.is_empty() {
+            return Ok(());
+        }
+        let unrotated = self.specs.unrotated(unstamped).await?;
+        if unrotated.is_empty() {
+            return Ok(());
+        }
+        // Rotation turns read under this lock, so none decides on Pending meanwhile.
+        Ok(self
+            .specs
+            .config_operation()
+            .await
+            .adopt_unrotated(unrotated)
+            .await?)
+    }
+
+    /// A user Service Container with no gen label, stored with no Healthcheck, which
+    /// Docker runs with no probe, is recorded as Disabled. See
+    /// [`ResolvedServiceSpec::adopt_unprobed`]. Every release that stored no Healthcheck
+    /// predates the gen label. A Container this daemon created keeps the spec it was
+    /// asked for, so a keyed create retried with that request still matches it. Only
+    /// a Container stored with no Healthcheck is inspected.
+    async fn adopt_unprobed(
+        &self,
+        containers: &[(ContainerId, HashMap<String, String>)],
+    ) -> Result<(), Error> {
+        let unstamped = containers
+            .iter()
+            .filter(|(_, labels)| {
+                !labels.contains_key(LABEL_GEN)
+                    && ManagedLabels::parse(labels).is_ok_and(|managed| {
+                        managed.kind == ContainerKind::ServiceContainer
+                            && !managed.identity.namespace.is_reserved()
+                    })
+            })
+            .map(|(id, _)| *id)
+            .collect::<Vec<_>>();
+        if unstamped.is_empty() {
+            return Ok(());
+        }
+        let mut unprobed = Vec::new();
+        // One whose image runs a probe keeps None and is inspected each sync until a
+        // Deploy replaces it, a cost only 0.2.4 copies of a HEALTHCHECK image pay.
+        for container_id in self.specs.without_healthcheck(unstamped).await? {
+            // A Container Docker cannot inspect now is left for the next sync.
+            let Ok(inspected) = decode_raw_inspect(
+                self.docker
+                    .client
+                    .inspect_container(container_id.as_str(), None)
+                    .await,
+                &container_id,
+            ) else {
+                continue;
+            };
+            if !matches!(
+                effective_healthcheck(inspected.config.as_ref()),
+                Some(HealthcheckSpec::Configured(_))
+            ) {
+                unprobed.push(container_id);
+            }
+        }
+        if unprobed.is_empty() {
+            return Ok(());
+        }
+        let mut operation = self.specs.config_operation().await;
+        if operation.adopt_unprobed(unprobed).await? {
+            operation.republish();
+        }
+        Ok(())
     }
 
     async fn managed_slots(
@@ -545,6 +697,9 @@ impl ContainerRuntime {
                 container_id,
                 r#gen: label_gen(&labels),
                 rotation: rotations.remove(&container_id).unwrap_or_default(),
+                deployment: labels
+                    .get(LABEL_DEPLOYMENT)
+                    .and_then(|label| ployz_core::DeploymentLogId::parse(label).ok()),
             })
             .collect())
     }
@@ -611,6 +766,28 @@ impl ContainerRuntime {
         ) && finished_at(inspected.state.as_ref())
             .is_some_and(|finished| finished >= since);
         Ok(ended.then(|| container_run(&inspected)).flatten())
+    }
+
+    /// The host pid of the Container's process, or `None` when Docker reports none.
+    ///
+    /// # Errors
+    ///
+    /// Returns when Docker cannot inspect the Container.
+    pub async fn pid(&self, container_id: &ContainerId) -> Result<Option<u32>, Error> {
+        let inspected = decode_raw_inspect(
+            self.docker
+                .client
+                .inspect_container(container_id.as_str(), None)
+                .await,
+            container_id,
+        )?;
+        Ok(inspected
+            .state
+            .as_ref()
+            .and_then(|state| state.get("Pid"))
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|pid| u32::try_from(pid).ok())
+            .filter(|pid| *pid != 0))
     }
 
     pub async fn inspect_managed(
@@ -735,6 +912,7 @@ impl ContainerRuntime {
                     .map(|(key, value)| (key.clone(), value.clone()))
                     .collect(),
                 stopped,
+                run: run.clone(),
             })?;
         let oom_killed = inspected
             .state
@@ -935,10 +1113,14 @@ struct RawContainerConfig {
 fn inspected_environment(
     config: &RawContainerConfig,
 ) -> Option<std::collections::BTreeMap<String, String>> {
-    config
-        .env
-        .as_deref()
-        .unwrap_or_default()
+    parse_environment(config.env.as_deref().unwrap_or_default())
+}
+
+/// Docker's `Config.Env` entries as a map; `None` when an entry has no `KEY=`.
+pub(crate) fn parse_environment(
+    entries: &[String],
+) -> Option<std::collections::BTreeMap<String, String>> {
+    entries
         .iter()
         .map(|entry| {
             entry
@@ -965,7 +1147,7 @@ fn container_run(inspected: &RawContainerInspect) -> Option<ployz_core::Containe
     let started = started_at(inspected.state.as_ref())?;
     Some(ployz_core::ContainerRun {
         restart_count: inspected.restart_count.unwrap_or_default(),
-        started_at_unix_nanos: started.timestamp_nanos_opt().unwrap_or_default(),
+        started_at_unix_nanos: started.timestamp_nanos_opt()?,
     })
 }
 
@@ -1297,12 +1479,12 @@ pub enum Error {
     SlotNameOccupied(String),
     #[error("image pull failed")]
     ImagePull(#[source] bollard::errors::Error),
-    /// A pull failed while the Docker root had almost no free space.
+    /// A registry or peer pull failed while the Docker root had almost no free space.
     #[error("{full}")]
     DiskFull {
         full: ployz_core::DiskFull,
         #[source]
-        source: bollard::errors::Error,
+        source: Box<dyn std::error::Error + Send + Sync>,
     },
     #[error("pre-deploy container requested without a pre-deploy hook")]
     MissingPreDeployHook,
@@ -1748,6 +1930,46 @@ mod tests {
                 true
             ),
             None
+        );
+    }
+
+    #[test]
+    fn only_the_system_ingress_takes_ipv6_on_the_bridge() {
+        let machine_id = MachineId::parse("1".repeat(32)).unwrap();
+        let gateway = MachineGateway(Ipv4Addr::new(10, 210, 0, 1));
+        let ingress = ployz_core::QualifiedService::system_ingress();
+        let caddy = ployz_core::caddy_service_spec("caddy:test".into(), Default::default())
+            .to_resolved(
+                ployz_core::ServiceId::parse("c".repeat(32)).unwrap(),
+                ployz_core::ResolvedUpdateConfig::default(),
+            )
+            .unwrap();
+        let endpoint = |namespace: &ployz_core::Namespace| {
+            let body = create::container_create_body(
+                &machine_id,
+                gateway,
+                ContainerKind::ServiceContainer,
+                namespace,
+                &caddy,
+            )
+            .unwrap();
+            assert!(
+                takes_bridge_ipv6(body.labels.as_ref().unwrap())
+                    == (*namespace == ingress.namespace)
+            );
+            body.networking_config
+                .and_then(|config| config.endpoints_config)
+                .and_then(|endpoints| endpoints.get(crate::network::DOCKER_NETWORK_NAME).cloned())
+        };
+
+        assert_eq!(endpoint(&ingress.namespace), None);
+        assert_eq!(
+            endpoint(&ployz_core::Namespace::parse("app").unwrap())
+                .and_then(|endpoint| endpoint.driver_opts),
+            Some(HashMap::from([(
+                "com.docker.network.endpoint.sysctls".into(),
+                "net.ipv6.conf.IFNAME.disable_ipv6=1".into(),
+            )]))
         );
     }
 
@@ -2390,6 +2612,8 @@ mod tests {
         assert_ne!(first, run(1, "2026-10-05T11:00:00.1Z"));
         assert_ne!(first, run(0, "2026-10-05T11:00:00.2Z"));
         assert_eq!(first, run(0, "2026-10-05T11:00:00.1Z"));
+        // Docker reports a container that never started with the zero time.
+        assert_eq!(run(0, "0001-01-01T00:00:00Z"), None);
     }
 
     fn inspect_json() -> serde_json::Value {

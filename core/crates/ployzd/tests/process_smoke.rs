@@ -437,6 +437,7 @@ fn join(path: &Path) {
                             assigned_machine: assigned,
                             visible_peers: vec![peer],
                             target_versions: [("actor".into(), 1)].into(),
+                            sealing_key: None,
                         },
                     },
                     wireguard_mtu: None,

@@ -101,7 +101,7 @@ function GithubActions({ organizationSlug }: { organizationSlug: string }) {
           <SettingsListItem
             key={githubBuildRepositoryKey(repository)}
             media={<GitHubMarkIcon />}
-            label={<span className="font-mono">{repository.fullName}</span>}
+            label={repository.fullName}
             hint={repository.readiness === "no_permission"
               ? "Installation lacks permission"
               : waiting(repository) ? "Waiting for commit" : undefined}

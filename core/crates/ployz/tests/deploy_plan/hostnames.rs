@@ -1,5 +1,5 @@
 use super::support::*;
-use ployz::deploy::preview_deploy;
+use ployz::deploy::{HostnameRefusal, preview_deploy};
 use ployz_core::{
     DeployWarning, HttpProtocol, IngressHost, Namespace, PortPublication, QualifiedService,
     ServiceAttempt,
@@ -29,11 +29,12 @@ fn complete_snapshot_rejects_another_qualified_service_already_publishing_the_ho
         PlanError::HostnameConflict {
             hostname: IngressHost::parse("api.example.com").unwrap(),
             owner: QualifiedService::parse("blog/web").unwrap(),
+            refusal: HostnameRefusal::StillPublished,
         }
     );
     assert_eq!(
         error.to_string(),
-        "hostname api.example.com is already published by blog/web"
+        "hostname api.example.com is already published by blog/web: remove it from that Service first, or use another hostname"
     );
 }
 
@@ -57,6 +58,7 @@ fn visible_conflict_rejects_even_when_the_snapshot_is_incomplete() {
         PlanError::HostnameConflict {
             hostname: IngressHost::parse("api.example.com").unwrap(),
             owner: QualifiedService::parse("blog/web").unwrap(),
+            refusal: HostnameRefusal::StillPublished,
         }
     );
 }
@@ -146,8 +148,237 @@ fn retiring_hostname_winner_does_not_hide_another_namespaces_claim() {
         PlanError::HostnameConflict {
             hostname: IngressHost::parse("api.example.com").unwrap(),
             owner: QualifiedService::parse("blog/web").unwrap(),
+            refusal: HostnameRefusal::StillPublished,
         }
     );
+}
+
+#[test]
+fn one_deploy_moves_a_hostname_from_the_service_that_drops_it() {
+    let (web, api) = handover_specs();
+    let snapshot = snapshot_with(vec![container('c', '1', &custom_web(), &service_id('a'))]);
+    let plan = plan_ingress([&web, &api], &snapshot)
+        .expect("the Service that publishes the hostname drops it in this Deploy");
+    assert!(plan.warnings.is_empty());
+    assert_eq!(
+        plan.dependencies,
+        vec![(api.name.clone(), web.name.clone())],
+        "the Service gaining the hostname is published before the one dropping it"
+    );
+    let gainer_starts = first_operation(&plan, "api");
+    let dropper_replaces = first_operation(&plan, "web");
+    assert!(gainer_starts < dropper_replaces, "{:?}", operations(&plan));
+}
+
+#[test]
+fn a_service_that_keeps_its_hostname_still_blocks_another_in_the_same_deploy() {
+    let web = custom_web();
+    let mut api = custom_web();
+    api.name = ServiceName::parse("api").unwrap();
+    let snapshot = snapshot_with(vec![container('c', '1', &web, &service_id('a'))]);
+    let error = plan_ingress([&web, &api], &snapshot).unwrap_err();
+    assert_eq!(
+        error,
+        PlanError::HostnameConflict {
+            hostname: IngressHost::parse("api.example.com").unwrap(),
+            owner: QualifiedService::parse("app/web").unwrap(),
+            refusal: HostnameRefusal::RequestedTwice {
+                to: api.name.clone()
+            },
+        }
+    );
+    assert!(
+        error.same_again(),
+        "both claims are in this Deploy, so what is observed cannot clear it"
+    );
+}
+
+#[test]
+fn a_handover_to_a_service_that_depends_on_the_dropper_is_refused() {
+    let (web, api) = handover_specs();
+    let snapshot = snapshot_with(vec![container('c', '1', &custom_web(), &service_id('a'))]);
+    let intent = DeployIntent::apply_all(
+        Namespace::parse("app").unwrap(),
+        [&web, &api],
+        PlanOptions::default(),
+    )
+    .with_dependencies(BTreeMap::from([(
+        api.name.clone(),
+        vec![ployz_core::ServiceDependency {
+            service: web.name.clone(),
+            condition: ployz_core::DependencyCondition::ServiceStarted,
+        }],
+    )]));
+    let error = preview_deploy(&intent, &snapshot)
+        .expect_err("web would drop the hostname for api's whole rollout");
+    assert_eq!(
+        error.to_string(),
+        "hostname api.example.com is published by app/web and can't move to api in the same Deploy: api depends on web; remove it from web and deploy, then add it to api"
+    );
+}
+
+#[test]
+fn two_services_swapping_hostnames_are_refused() {
+    let web_today = named_web("web.example.com");
+    let mut api_today = custom_web();
+    api_today.name = ServiceName::parse("api").unwrap();
+    let web = custom_web();
+    let mut api = named_web("web.example.com");
+    api.name = ServiceName::parse("api").unwrap();
+    let snapshot = snapshot_with(vec![
+        container('c', '1', &web_today, &service_id('a')),
+        container('d', '1', &api_today, &service_id('b')),
+    ]);
+    let error = plan_ingress([&web, &api], &snapshot)
+        .expect_err("a swap can order only one of its two handovers");
+    assert_eq!(
+        error.to_string(),
+        "hostname web.example.com is published by app/web and can't move to api in the same Deploy: api hands api.example.com to web; remove it from web and deploy, then add it to api"
+    );
+}
+
+#[test]
+fn a_named_deploy_of_the_gainer_alone_says_to_deploy_the_dropper_too() {
+    let (web, api) = handover_specs();
+    let snapshot = snapshot_with(vec![container('c', '1', &custom_web(), &service_id('a'))]);
+    let intent = DeployIntent::new(
+        Namespace::parse("app").unwrap(),
+        vec![web.clone(), api.clone()],
+        PlanOptions {
+            selected: vec![ServiceAttempt {
+                name: api.name.clone(),
+            }],
+            ..PlanOptions::default()
+        },
+    );
+    let error = preview_deploy(&intent, &snapshot).unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "hostname api.example.com is published by app/web until web deploys: deploy web too"
+    );
+}
+
+#[test]
+fn a_retiring_older_publisher_does_not_hide_a_handover() {
+    let (web, api) = handover_specs();
+    let mut old = custom_web();
+    old.name = ServiceName::parse("old").unwrap();
+    let mut newer = container('c', '1', &custom_web(), &service_id('a'));
+    newer
+        .try_update(|parts| parts.created_at_unix_nanos = 1)
+        .unwrap();
+    let snapshot = snapshot_with(vec![container('e', '1', &old, &service_id('c')), newer]);
+    let plan = plan_ingress([&web, &api], &snapshot)
+        .expect("old retires with this Deploy, so web is the publisher that hands the hostname on");
+    assert_eq!(
+        plan.dependencies,
+        vec![(api.name.clone(), web.name.clone())]
+    );
+}
+
+#[test]
+fn a_handover_does_not_hide_another_namespaces_claim() {
+    let (web, api) = handover_specs();
+    let snapshot = snapshot_with(vec![
+        container('c', '1', &custom_web(), &service_id('a')),
+        other_namespace_container(&custom_web(), 1),
+    ]);
+    assert_eq!(
+        plan_ingress([&web, &api], &snapshot).unwrap_err(),
+        PlanError::HostnameConflict {
+            hostname: IngressHost::parse("api.example.com").unwrap(),
+            owner: QualifiedService::parse("blog/web").unwrap(),
+            refusal: HostnameRefusal::StillPublished,
+        }
+    );
+}
+
+#[test]
+fn a_conflict_decided_from_the_intent_alone_fails_the_same_way_again() {
+    let (web, api) = handover_specs();
+    let snapshot = snapshot_with(vec![container('c', '1', &custom_web(), &service_id('a'))]);
+    let intent = DeployIntent::apply_all(
+        Namespace::parse("app").unwrap(),
+        [&web, &api],
+        PlanOptions::default(),
+    )
+    .with_dependencies(BTreeMap::from([(
+        api.name.clone(),
+        vec![ployz_core::ServiceDependency {
+            service: web.name.clone(),
+            condition: ployz_core::DependencyCondition::ServiceStarted,
+        }],
+    )]));
+    // The handover is refused only because web is still observed publishing it: once a
+    // Deploy of web alone drops it, this same Deploy goes through, so it keeps its retry.
+    let gainer_waits = preview_deploy(&intent, &snapshot).unwrap_err();
+    assert!(!gainer_waits.same_again(), "{gainer_waits}");
+    assert!(preview_deploy(&intent, &snapshot_with(Vec::new())).is_ok());
+
+    let mut api = named_web("shared.example.com");
+    api.name = ServiceName::parse("api").unwrap();
+    let web = named_web("shared.example.com");
+    let requested_twice = plan_ingress([&api, &web], &snapshot_with(Vec::new())).unwrap_err();
+    assert_eq!(
+        requested_twice.to_string(),
+        "hostname shared.example.com is requested by both app/api and web: keep it on one of them"
+    );
+    assert!(requested_twice.same_again());
+}
+
+#[test]
+fn a_conflict_an_observed_publisher_can_clear_keeps_its_retry() {
+    let spec = custom_web();
+    let snapshot = snapshot_with(vec![other_namespace_container(&spec, 1)]);
+    let published = plan_ingress([&spec], &snapshot).unwrap_err();
+    assert!(matches!(
+        published,
+        PlanError::HostnameConflict {
+            refusal: HostnameRefusal::StillPublished,
+            ..
+        }
+    ));
+    assert!(!published.same_again(), "{published}");
+
+    let (web, api) = handover_specs();
+    let snapshot = snapshot_with(vec![container('c', '1', &custom_web(), &service_id('a'))]);
+    let intent = DeployIntent::new(
+        Namespace::parse("app").unwrap(),
+        vec![web, api.clone()],
+        PlanOptions {
+            selected: vec![ServiceAttempt { name: api.name }],
+            ..PlanOptions::default()
+        },
+    );
+    let not_included = preview_deploy(&intent, &snapshot).unwrap_err();
+    assert!(matches!(
+        not_included,
+        PlanError::HostnameConflict {
+            refusal: HostnameRefusal::OwnerNotIncluded,
+            ..
+        }
+    ));
+    assert!(!not_included.same_again(), "{not_included}");
+}
+
+/// `web` publishes `api.example.com` today and drops it; `api` takes it.
+fn handover_specs() -> (RequestedServiceSpec, RequestedServiceSpec) {
+    let mut web = custom_web();
+    web.ports.clear();
+    let mut api = custom_web();
+    api.name = ServiceName::parse("api").unwrap();
+    (web, api)
+}
+
+fn first_operation(plan: &DeployPreview, service: &str) -> usize {
+    plan.operations
+        .iter()
+        .position(|row| {
+            row.service_name
+                .as_ref()
+                .is_some_and(|name| name.as_str() == service)
+        })
+        .unwrap_or_else(|| panic!("{service} has an operation in {:?}", operations(plan)))
 }
 
 #[test]
@@ -203,6 +434,9 @@ fn two_applied_specs_with_the_same_hostname_conflict() {
         PlanError::HostnameConflict {
             hostname: IngressHost::parse("shared.example.com").unwrap(),
             owner: QualifiedService::parse("app/api").unwrap(),
+            refusal: HostnameRefusal::RequestedTwice {
+                to: web.name.clone()
+            },
         }
     );
 }

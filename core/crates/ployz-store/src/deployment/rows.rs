@@ -299,6 +299,12 @@ pub struct Failure {
     pub reason: String,
     #[serde(default)]
     pub cause: Vec<String>,
+    /// Deploying the same thing again fails this way again: against the same
+    /// Cluster, the refusal holds until something staged changes, so a retry alone
+    /// never gets past it. Rows from before this field read false, as does every
+    /// failure a retry may get past.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub same_again: bool,
 }
 
 impl From<String> for Failure {
@@ -306,6 +312,7 @@ impl From<String> for Failure {
         Self {
             reason,
             cause: Vec::new(),
+            same_again: false,
         }
     }
 }
@@ -323,9 +330,21 @@ impl From<&RpcError> for Failure {
             None => Self {
                 reason: error.message.clone(),
                 cause: ployz_core::error_chain::causes(error),
+                same_again: false,
             },
         }
     }
+}
+
+/// "Server <name>" for the Machine `error` names, by its name in `operations` when known.
+fn server_named(error: &RpcError, operations: &[OperationRow]) -> Option<String> {
+    let id = error.details.get("machine_id")?.as_str()?;
+    let name = operations
+        .iter()
+        .find(|row| row.machine_id.to_string() == id)
+        .and_then(|row| row.machine_name.as_ref())
+        .map_or_else(|| id.to_owned(), ToString::to_string);
+    Some(format!("Server {name}"))
 }
 
 impl Failure {
@@ -371,17 +390,7 @@ impl Failure {
                 action: MachineAction::UpdateContainerLimits,
                 error,
             } => {
-                let server = error
-                    .details
-                    .get("machine_id")
-                    .and_then(serde_json::Value::as_str)
-                    .map(|id| {
-                        operations
-                            .iter()
-                            .find(|row| row.machine_id.to_string() == id)
-                            .and_then(|row| row.machine_name.as_ref())
-                            .map_or_else(|| id.to_owned(), ToString::to_string)
-                    });
+                let server = server_named(error, operations);
                 let mut cause = vec![error.message.clone()];
                 cause.extend(ployz_core::error_chain::causes(error));
                 // A refusal comes before any Docker change, so the old limits hold.
@@ -399,10 +408,19 @@ impl Failure {
                 (
                     format!(
                         "{} {outcome}",
-                        server.map_or_else(
-                            || "The Server".to_owned(),
-                            |name| format!("Server {name}")
-                        )
+                        server.unwrap_or_else(|| "The Server".to_owned())
+                    ),
+                    cause,
+                )
+            }
+            // The Server may have done the work: only its answer was lost.
+            ExecutionError::Machine { action, error } if error.reply_lost() => {
+                let mut cause = vec![error.message.clone()];
+                cause.extend(ployz_core::error_chain::causes(error));
+                let server = server_named(error, operations).unwrap_or_else(|| "the Server".into());
+                (
+                    format!(
+                        "The connection to {server} dropped during {action}, so it may have happened anyway"
                     ),
                     cause,
                 )
@@ -465,7 +483,17 @@ impl Failure {
                     | HealthFailure::TimedOut { .. }
                     | HealthFailure::Runtime { .. } => vec![failure.to_string()],
                 };
-                if let HealthFailure::Runtime { .. } = failure {
+                // Only a Container that stopped on its own ends with its last line. A
+                // running one's check result is the cause; what it printed while Ployz
+                // stopped it is not.
+                if let HealthFailure::Runtime {
+                    observation:
+                        ContainerRuntimeObservation::Restarting
+                        | ContainerRuntimeObservation::Exited { .. }
+                        | ContainerRuntimeObservation::Dead,
+                    ..
+                } = failure
+                {
                     cause.extend(last_run.as_ref().and_then(|run| run.last_line.clone()));
                 }
                 (reason, cause)
@@ -523,7 +551,11 @@ impl Failure {
             ),
             ExecutionError::Cancelled => ("Cancelled".to_owned(), Vec::new()),
         };
-        Self { reason, cause }
+        Self {
+            reason,
+            cause,
+            same_again: false,
+        }
     }
 }
 
@@ -695,7 +727,7 @@ fn state(
         }
     }
     if let Some(error) = failed.or(cancelled) {
-        let Failure { reason, cause } = Failure::of(error, operations);
+        let Failure { reason, cause, .. } = Failure::of(error, operations);
         return RowState::Failed {
             reason,
             cause,
@@ -703,7 +735,8 @@ fn state(
             log: container.then_some(LogText::Withheld {
                 why: Withheld::Unanswered,
             }),
-            unanswered: matches!(error, ExecutionError::Machine { error, .. } if error.target_unanswered()),
+            unanswered: matches!(error, ExecutionError::Machine { error, .. }
+                if error.target_unanswered() || error.reply_lost()),
             out_of_memory: match error {
                 ExecutionError::Health { out_of_memory, .. } => *out_of_memory,
                 ExecutionError::Machine { .. }
@@ -856,7 +889,16 @@ pub(super) fn failed_or_cancelled(
                     .and_then(failed_on_its_own)
                     .or(row.optional_int(3)?);
                 let machine = row.text(1)?.to_owned();
-                failed.push((at, service, machine, Failure { reason, cause }));
+                failed.push((
+                    at,
+                    service,
+                    machine,
+                    Failure {
+                        reason,
+                        cause,
+                        same_again: false,
+                    },
+                ));
             }
             StoppedBy::CANCEL => {
                 cancelled.insert(service);
@@ -945,22 +987,17 @@ pub(crate) fn servers(
         .collect()
 }
 
-/// Each node's rows. A mounted Volume's or Config's rows read the Deployment's Saved
-/// State, which is left in `saved` for the caller to reuse.
-pub(super) fn of_nodes(
+/// Each runtime Service's rows, by the Machine they ran on.
+pub(super) fn by_service(
     tx: &mut dyn Tx,
     stored: &Stored,
-    saved: &mut Option<SavedEnvironmentIntent>,
-) -> Result<BTreeMap<String, Vec<ServerRow>>, RpcError> {
+) -> Result<BTreeMap<ServiceName, BTreeMap<MachineId, ServerRow>>, RpcError> {
     let found = tx.query(
         "SELECT service, server, state, started, finished, machine, history \
          FROM config_deployment_row \
          WHERE deployment_id = ?1 ORDER BY service, server, machine",
         &[stored.summary.id.as_str().into()],
     )?;
-    if found.is_empty() {
-        return Ok(BTreeMap::new());
-    }
     let lost = matches!(
         stored.summary.status,
         DeploymentStatus::Unknown | DeploymentStatus::Cancelled
@@ -987,6 +1024,44 @@ pub(super) fn of_nodes(
                     history: history(row, 6)?,
                 },
             );
+    }
+    Ok(by_service)
+}
+
+/// The rows of the runtime Services the Deployment's preview plans to remove as
+/// obsolete and no node targets: Services this Store doesn't hold, which a full
+/// reconciliation removes. Empty without a preview.
+pub(super) fn untargeted(
+    stored: &Stored,
+    by_service: &BTreeMap<ServiceName, BTreeMap<MachineId, ServerRow>>,
+) -> BTreeMap<ServiceName, Vec<ServerRow>> {
+    let Some(preview) = &stored.run.preview else {
+        return BTreeMap::new();
+    };
+    let targeted: BTreeSet<&ServiceName> =
+        stored.nodes.iter().flat_map(TargetNode::runtimes).collect();
+    preview
+        .would_remove
+        .iter()
+        .map(|obsolete| &obsolete.name)
+        .filter(|service| !targeted.contains(service))
+        .filter_map(|service| {
+            let rows = by_service.get(service)?;
+            Some((service.clone(), rows.values().cloned().collect()))
+        })
+        .collect()
+}
+
+/// Each node's rows. A mounted Volume's or Config's rows read the Deployment's Saved
+/// State, which is left in `saved` for the caller to reuse.
+pub(super) fn of_nodes(
+    tx: &mut dyn Tx,
+    stored: &Stored,
+    by_service: &BTreeMap<ServiceName, BTreeMap<MachineId, ServerRow>>,
+    saved: &mut Option<SavedEnvironmentIntent>,
+) -> Result<BTreeMap<String, Vec<ServerRow>>, RpcError> {
+    if by_service.is_empty() {
+        return Ok(BTreeMap::new());
     }
     let mut nodes = BTreeMap::new();
     for node in &stored.nodes {
@@ -1079,8 +1154,9 @@ fn merge_mounting_row(kept: &mut ServerRow, row: &ServerRow) {
 #[cfg(test)]
 mod tests {
     use ployz_core::{
-        ContainerId, ContainerRuntimeObservation, ExecutionError, HealthFailure, HookFailure,
-        MachineAction, OperationPhase, OperationRow, OperationStatus, RpcError, RpcErrorCode,
+        ContainerId, ContainerRuntimeObservation, ExecutionError, HealthFailure, HealthObservation,
+        HookFailure, LastHealthCheck, LastRun, MachineAction, OperationPhase, OperationRow,
+        OperationStatus, RpcError, RpcErrorCode,
     };
 
     use super::{Failure, RowPhase, RowState};
@@ -1307,6 +1383,51 @@ mod tests {
     }
 
     #[test]
+    fn a_step_whose_answer_was_lost_says_so_not_that_the_step_failed() {
+        let machine_id = "a".repeat(32);
+        let operations: Vec<OperationRow> = serde_json::from_value(serde_json::json!([{
+            "index": 0, "machine_id": machine_id, "machine_name": "prod-1",
+            "operation": {"type": "remove_container", "machine_id": machine_id, "container_id": "c".repeat(64)},
+            "status": {"type": "pending"}
+        }]))
+        .unwrap();
+        let lost = |action| ExecutionError::Machine {
+            action,
+            error: RpcError {
+                code: RpcErrorCode::Unavailable,
+                message: "connection lost".into(),
+                details: serde_json::Value::Null,
+                cause: Vec::new(),
+            }
+            .reply_lost_from(&machine_id.parse().unwrap()),
+        };
+        let pull = Failure::of(&lost(MachineAction::PullImage), &operations);
+        assert_eq!(
+            pull.reason,
+            "The connection to Server prod-1 dropped during pull image, so it may have happened anyway"
+        );
+        assert_eq!(pull.cause, ["connection lost"]);
+        let create = lost(MachineAction::CreateContainer);
+        assert_eq!(
+            Failure::of(&create, &[]).reason,
+            format!(
+                "The connection to Server {machine_id} dropped during create Container, so it may have happened anyway"
+            )
+        );
+        let failed = OperationStatus::Failed { error: create };
+        assert!(
+            matches!(
+                server(&[failed]),
+                RowState::Failed {
+                    unanswered: true,
+                    ..
+                }
+            ),
+            "a lost answer may still have done the work"
+        );
+    }
+
+    #[test]
     fn a_refused_limits_update_says_which_limits_hold() {
         let machine_id = "a".repeat(32);
         let refused = |reason: &str, message: &str| ExecutionError::Machine {
@@ -1366,6 +1487,70 @@ mod tests {
             reason(ContainerRuntimeObservation::Dead),
             "The Container stopped"
         );
+    }
+
+    fn checked(observation: ContainerRuntimeObservation, last_line: &str) -> Failure {
+        Failure::of(
+            &ExecutionError::Health {
+                container_id: ContainerId::parse("a".repeat(64)).unwrap(),
+                failure: HealthFailure::Runtime {
+                    observation,
+                    last_check: Some(LastHealthCheck::exited(127, "sh: pg_isready: not found")),
+                },
+                out_of_memory: None,
+                last_run: Some(LastRun {
+                    exit_code: None,
+                    last_line: Some(last_line.to_owned()),
+                }),
+            },
+            &[],
+        )
+    }
+
+    #[test]
+    fn a_running_container_s_failed_check_is_the_deepest_cause() {
+        // What the app printed while Ployz stopped it is not why its check failed (#2841).
+        let failed = checked(
+            ContainerRuntimeObservation::Running {
+                health: HealthObservation::Unhealthy,
+            },
+            "[notice] 1#1: signal 29 (SIGIO) received",
+        );
+        assert_eq!(failed.reason, "The Container failed its health check");
+        assert_eq!(
+            failed.cause,
+            ["running (health: unhealthy); last check exited 127: sh: pg_isready: not found"]
+        );
+    }
+
+    #[test]
+    fn a_container_that_stopped_ends_with_its_last_line() {
+        let failed = checked(
+            ContainerRuntimeObservation::Restarting,
+            "panic: no DATABASE_URL",
+        );
+        assert_eq!(
+            failed.cause.last().map(String::as_str),
+            Some("panic: no DATABASE_URL")
+        );
+    }
+
+    #[test]
+    fn a_failure_row_from_before_same_again_reads_back_as_one_a_retry_may_get_past() {
+        let old: Failure =
+            serde_json::from_str(r#"{"reason":"capacity unknown","cause":["fsn-1"]}"#).unwrap();
+        assert!(!old.same_again);
+        assert_eq!(
+            serde_json::to_value(&old).unwrap(),
+            serde_json::json!({"reason": "capacity unknown", "cause": ["fsn-1"]})
+        );
+        let refused = Failure {
+            same_again: true,
+            ..Failure::from("hostname taken".to_owned())
+        };
+        let json = serde_json::to_value(&refused).unwrap();
+        assert_eq!(json.get("same_again"), Some(&serde_json::Value::Bool(true)));
+        assert!(serde_json::from_value::<Failure>(json).unwrap().same_again);
     }
 
     #[test]

@@ -736,6 +736,7 @@ fn moving_off_an_old_hook() -> DeployPreview {
             address: None,
             labels: Default::default(),
             stopped: false,
+            run: None,
         })
         .unwrap()
     };
@@ -1127,7 +1128,7 @@ fn a_machine_away_during_cleanup_is_named_once_under_the_copies_left_on_it() {
             .expect("at least three lines shown"),
         [
             "! shop/web left running on machine-3 (proxy on machine-3 did not confirm). The next deploy cleans it up.",
-            "! Once machine-3 is back, a copy left running can answer beside the new copies, and a left worker still takes jobs, until the next deploy.",
+            "! If machine-3 restarts and confirms the new copies within a few minutes of starting, it takes its replaced copies out of traffic. Otherwise they keep answering beside the new copies. Either way they keep running, and a left worker still takes jobs, until the next deploy.",
             "! shop/web left running on machine-3 (proxy on machine-3 did not confirm). The next deploy cleans it up.",
         ]
     );
@@ -1194,5 +1195,31 @@ fn the_summary_counts_every_server_a_scaled_service_runs_on() {
     assert_eq!(
         failed, 7,
         "a failed Deploy counts only the Servers it worked on"
+    );
+}
+
+#[test]
+fn a_gap_found_at_run_time_leaves_a_direct_deploy_partial_and_names_its_server() {
+    let preview = DeployPreview::new(Vec::new(), Vec::new(), Namespace::parse("shop").unwrap());
+    let mut direct = Direct::new(&preview, "Deploying shop".into());
+    assert!(!direct.has_observation_gaps());
+
+    direct.notice(ployz_core::DeployWarning::ObservationFailed {
+        gap: Some(ployz_core::ObservationGap {
+            machine_name: MachineName::parse("one").unwrap(),
+            reason: ployz_core::ObservationGapReason::Failed,
+        }),
+        kind: ployz_core::ObservationKind::Container,
+        machine_id: MachineId::random(),
+        message: "Machine one did not answer: deadline has elapsed".into(),
+    });
+
+    assert!(direct.has_observation_gaps());
+    let shown = lines(&direct.frame());
+    assert!(
+        shown
+            .iter()
+            .any(|line| line.starts_with("! Server one: deployment observations are incomplete")),
+        "{shown:?}"
     );
 }

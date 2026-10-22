@@ -103,6 +103,30 @@ it("refuses to revoke another Organization's token", async () => {
   expect(await revokedAt(created.id)).toBeNull();
 });
 
+it("counts only still-waiting hosts when revoking, while cleaning up joined and rejected rows", async () => {
+  const created = await create("rack-1");
+  const org = "00000000-0000-4000-8000-000000000511";
+  await harness.pool.query(`
+    insert into waiting_server (id, organization_id, fleet_token_id, checkin_key, report, observed_ip, rejected_at) values
+      ('00000000-0000-4000-8000-000000000601', '${org}', '${created.id}', 'waiting', '{}', '203.0.113.1', null),
+      ('00000000-0000-4000-8000-000000000602', '${org}', '${created.id}', 'joined', '{}', '203.0.113.2', null),
+      ('00000000-0000-4000-8000-000000000603', '${org}', '${created.id}', 'rejected', '{}', '203.0.113.3', now()),
+      ('00000000-0000-4000-8000-000000000604', '${org}', '${created.id}', 'enrolling', '{}', '203.0.113.4', null);
+    insert into server_enrollment (organization_id, waiting_server_id, fleet_token_id, role, instruction, enroll_token_id, state, ended_at) values
+      ('${org}', '00000000-0000-4000-8000-000000000601', '${created.id}', 'joiner', '{}', gen_random_uuid(), 'failed', now()),
+      ('${org}', '00000000-0000-4000-8000-000000000602', '${created.id}', 'joiner', '{}', gen_random_uuid(), 'joined', now()),
+      ('${org}', '00000000-0000-4000-8000-000000000604', '${created.id}', 'joiner', '{}', gen_random_uuid(), 'running', null);
+  `);
+  expect(await harness.runEffect(listFleetTokens(ada, { organizationSlug: "ada" })))
+    .toMatchObject([{ waiting: 1 }]);
+
+  expect(await harness.runEffect(revokeFleetToken(ada, { organizationSlug: "ada", name: created.name })))
+    .toEqual({ waitingRemoved: 1 });
+
+  const { rows } = await harness.pool.query("select checkin_key from waiting_server where fleet_token_id = $1", [created.id]);
+  expect(rows).toEqual([{ checkin_key: "enrolling" }]);
+});
+
 it("counts each token's hosts still waiting, not enrolling or joined, and the ones that joined, and names who made it", async () => {
   const created = await create("rack-1");
   const org = "00000000-0000-4000-8000-000000000511";

@@ -15,9 +15,9 @@ use ployz_core::{
     MachineName, MachineObservation, MachineRpcClient, MachineStorageObservation, MachineSuccess,
     MachineTarget, NameMatches, Namespace, ObservedDataLoss, OpaquePayload, PartialResult,
     RUNTIME_WATCH_MESSAGE_SIZE_LIMIT, RemoveVolumeRequest, RemoveVolumesRequest,
-    ResolvedServiceSpec, Rpc, RpcError, RpcErrorCode, RpcResponseBody, StopOptions,
-    StorageCapacity, UnconfirmedDataLoss, VolumeInventory, VolumeRemoval, VolumeRemovalOutcome,
-    derive_live_services, op,
+    ResolvedServiceSpec, Rpc, RpcError, RpcErrorCode, RpcResponseBody, RuntimeWatchFrame,
+    RuntimeWatchRequest, StopOptions, StorageCapacity, UnconfirmedDataLoss, VolumeInventory,
+    VolumeRemoval, VolumeRemovalOutcome, decode_runtime_watch_frame, derive_live_services, op,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -318,6 +318,8 @@ impl Client {
         let deadline = timeout.map(|timeout| tokio::time::Instant::now() + timeout);
         // A reply on an earlier attempt means the target was not silent throughout.
         let mut reply: Option<ConnectError> = None;
+        // An earlier attempt that went out and lost its answer may have been done.
+        let mut lost: Option<ConnectError> = None;
         loop {
             let outcome = match deadline {
                 Some(deadline) => {
@@ -335,18 +337,22 @@ impl Client {
             };
             let error = crate::connect::keep_target_reply(&mut reply, error);
             if error.retry() != ployz_core::Retry::Now {
-                return Err(error);
+                return Err(crate::connect::keep_lost_call(lost, error));
             }
             let Some(delay) = delays.next() else {
-                return Err(error);
+                return Err(crate::connect::keep_lost_call(lost, error));
             };
             if deadline.is_some_and(|deadline| tokio::time::Instant::now() + delay >= deadline) {
-                return Err(error);
+                return Err(crate::connect::keep_lost_call(lost, error));
             }
             tokio::time::sleep(delay).await;
             redial = true;
             if error.target_replied() {
+                // The target answered after the loss: that answer is the news now.
+                lost = None;
                 reply = Some(error);
+            } else if error.unreplied() {
+                lost = Some(error);
             }
         }
     }
@@ -537,6 +543,31 @@ impl Client {
             .into_inner())
     }
 
+    /// The Cluster as the first Runtime Watch frame shows it.
+    pub(crate) async fn runtime_frame(&self) -> Result<RuntimeWatchFrame, RpcError> {
+        let payload = op::RuntimeWatch::into_request(RuntimeWatchRequest {})
+            .encode()
+            .map_err(|error| RpcError::from(ConnectError::from(error)))?;
+        let mut stream = self
+            .runtime_watch_stream(payload)
+            .await
+            .map_err(|error| error.to_rpc_error())?;
+        let Some(frame) = stream
+            .message()
+            .await
+            .map_err(|status| TransportError::from_stream_status(status).to_rpc_error())?
+        else {
+            return Err(RpcError {
+                code: RpcErrorCode::Unavailable,
+                message: "Runtime Watch ended before its first frame".into(),
+                details: Value::Null,
+                cause: Vec::new(),
+            });
+        };
+        decode_runtime_watch_frame(&frame)
+            .map_err(|error| crate::ui::rpc_error(RpcErrorCode::Internal, &error))
+    }
+
     async fn call_once<T: Rpc>(
         &self,
         payload: OpaquePayload,
@@ -566,7 +597,7 @@ impl Client {
     /// independently with bounded transient retries.
     /// Keep each probed target's success or typed failure.
     pub async fn list_volumes(
-        &mut self,
+        &self,
         machines: &[MachineObservation],
     ) -> PartialResult<VolumeInventory, RpcError> {
         let mut requests = Vec::new();
@@ -1048,8 +1079,25 @@ impl Client {
         machines: &[MachineObservation],
         environment: EnvironmentValues,
     ) -> Result<LiveServices<RpcError>, ConnectError> {
+        self.live_services_until(machines, environment, |_| false)
+            .await
+    }
+
+    /// [`Self::live_services_from`], returning early once `found` holds for the
+    /// answers so far. An early result leaves out the Machines yet to answer, as
+    /// neither a failure nor an omission, so only what `found` checked is complete.
+    pub(crate) async fn live_services_until(
+        &self,
+        machines: &[MachineObservation],
+        environment: EnvironmentValues,
+        found: impl Fn(&LiveServices<RpcError>) -> bool,
+    ) -> Result<LiveServices<RpcError>, ConnectError> {
+        let mut live = derive_live_services(PartialResult {
+            successes: Vec::new(),
+            failures: Vec::new(),
+            omissions: Vec::new(),
+        });
         let mut tasks = JoinSet::new();
-        let mut omissions = Vec::new();
         for machine in machines {
             if machine.invites_rpc() {
                 tasks.spawn(list_on_machine(
@@ -1058,24 +1106,22 @@ impl Client {
                     environment,
                 ));
             } else {
-                omissions.push(machine.machine.id);
+                live.containers.omissions.push(machine.machine.id);
             }
         }
-        let mut result = PartialResult {
-            successes: Vec::new(),
-            failures: Vec::new(),
-            omissions,
-        };
         // TODO: retain target failures and omissions beside successful container
         // observations; an entry-relative answer remains partial evidence.
         while let Some(joined) = tasks.join_next().await {
             match joined {
-                Ok(Ok(success)) => result.successes.push(success),
-                Ok(Err(failure)) => result.failures.push(failure),
+                Ok(Ok(success)) => live.containers.successes.push(success),
+                Ok(Err(failure)) => live.containers.failures.push(failure),
                 Err(error) => return Err(error.into()),
             }
+            if found(&live) {
+                return Ok(live);
+            }
         }
-        Ok(derive_live_services(result))
+        Ok(live)
     }
 
     /// Converge one Container on `machine_id` to `want`. A refusal answers as the error
@@ -1196,16 +1242,16 @@ impl Client {
     /// Target-specific Container and Docker Volume failures and omissions stay
     /// on the snapshot so planning can derive observer-relative completeness.
     pub(crate) async fn deploy_snapshot(
-        &mut self,
+        &self,
         machines: Vec<MachineObservation>,
     ) -> Result<DeploySnapshot, ConnectError> {
-        let containers = self
-            .live_services_from(&machines, EnvironmentValues::Included)
-            .await?
-            .containers;
-        let volumes = self.list_volumes(&machines).await;
-        let capacity = capacity::observe(self, &machines).await;
-        snapshot_from_partial(machines, containers, volumes, capacity).map_err(ConnectError::Remote)
+        let (live, volumes, capacity) = tokio::join!(
+            self.live_services_from(&machines, EnvironmentValues::Included),
+            self.list_volumes(&machines),
+            capacity::observe(self, &machines),
+        );
+        snapshot_from_partial(machines, live?.containers, volumes, capacity)
+            .map_err(ConnectError::Remote)
     }
 }
 
@@ -1214,16 +1260,33 @@ impl Client {
 /// keeps its own words.
 pub(crate) fn answered_by(machine_id: &MachineId, error: ConnectError) -> RpcError {
     if !error.target_unanswered() {
-        return rpc_error(error);
+        // Only a failure a retry may fix is marked unreached: a refused key or another
+        // lasting failure is what the user acts on, so it keeps its own words.
+        let (lost, unreached) = (
+            error.unreplied(),
+            error.unreached() && error.retry() != ployz_core::Retry::Never,
+        );
+        let error = rpc_error(error);
+        return if lost {
+            error.reply_lost_from(machine_id)
+        } else if unreached {
+            error.unreached()
+        } else {
+            error
+        };
     }
-    let error = rpc_error(error);
+    unanswered_by(machine_id, rpc_error(error))
+}
+
+/// `error`, from a call `machine` left unanswered, naming it in the deepest line.
+pub(crate) fn unanswered_by(machine: impl std::fmt::Display, error: RpcError) -> RpcError {
     let transport = std::iter::once(error.message)
         .chain(error.cause)
         .collect::<Vec<_>>()
         .join(": ");
     RpcError::unanswered_target(
         error.code,
-        format!("Machine {machine_id} did not answer: {transport}"),
+        format!("Machine {machine} did not answer: {transport}"),
     )
 }
 
@@ -1814,7 +1877,7 @@ async fn list_on_machine(
     environment: EnvironmentValues,
 ) -> Result<MachineSuccess<Vec<ployz_core::ContainerObservation>>, MachineFailure<RpcError>> {
     client
-        .read::<op::ListContainers>(
+        .try_read::<op::ListContainers>(
             ListContainersRequest { environment },
             &MachineTarget::from(&machine_id),
         )
@@ -1823,7 +1886,23 @@ async fn list_on_machine(
             machine_id,
             value: list.containers,
         })
-        .map_err(|error| MachineFailure { machine_id, error })
+        .map_err(|error| MachineFailure {
+            machine_id,
+            error: unanswered_kept(error),
+        })
+}
+
+/// [`rpc_error`] in its own words, marked unanswered when the router or this client's
+/// deadline shows the target never answered.
+fn unanswered_kept(error: ConnectError) -> RpcError {
+    if !error.target_unanswered() {
+        return rpc_error(error);
+    }
+    let error = rpc_error(error);
+    RpcError {
+        cause: error.cause,
+        ..RpcError::unanswered_target(error.code, error.message)
+    }
 }
 
 async fn change_on_machine(

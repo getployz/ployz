@@ -160,7 +160,7 @@ async fn resolve_root(programs: &Programs, name: &DockerVolumeName) -> Result<St
 /// The `zfs send` arguments for `stream`, once its names resolve on this Machine.
 async fn stream_args(programs: &Programs, stream: &SendStream) -> Result<Vec<String>, Refusal> {
     let root = resolve_root(programs, &stream.name).await?;
-    let snapshots = lines(
+    let snapshots = complete_lines(
         &programs.zfs,
         &[
             "list",
@@ -197,14 +197,22 @@ async fn stream_args(programs: &Programs, stream: &SendStream) -> Result<Vec<Str
             .output()
             .await
             .map_err(|error| Refusal::Zfs(format!("could not inspect resume token: {error}")))?;
-        if !output.status.success() {
-            return Err(Refusal::Zfs(format!(
-                "could not inspect resume token: {}",
-                String::from_utf8_lossy(&output.stderr).trim()
-            )));
-        }
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
+        if !output.status.success() {
+            // A token naming a snapshot this writer no longer holds names a stream this
+            // Machine cannot send, so the puller drops its partial receive and asks for a
+            // full send. That is judged against the listing above, which succeeded, not by
+            // ZFS's message: a lookup that failed for another reason reads the same. Any
+            // other failure is this Machine's, and the puller keeps its copy.
+            let message = format!("resume token cannot be sent from {root}: {}", stderr.trim());
+            let contents = stdout.lines().chain(stderr.lines());
+            return Err(if names_a_missing_snapshot(contents, &snapshots) {
+                Refusal::Unknown(message)
+            } else {
+                Refusal::Zfs(message)
+            });
+        }
         let mut names = stdout
             .lines()
             .chain(stderr.lines())
@@ -231,18 +239,50 @@ async fn stream_args(programs: &Programs, stream: &SendStream) -> Result<Vec<Str
     Ok(args)
 }
 
+/// Whether the `toguid` or `fromguid` that `zfs send -v -t` prints for a token is a
+/// snapshot missing from `snapshots`, this Machine's `(name, guid)` listing.
+fn names_a_missing_snapshot<'a>(
+    contents: impl Iterator<Item = &'a str>,
+    snapshots: &[(&str, &str)],
+) -> bool {
+    contents
+        .filter_map(|line| {
+            let line = line.trim();
+            line.strip_prefix("toguid = 0x")
+                .or_else(|| line.strip_prefix("fromguid = 0x"))
+        })
+        .filter_map(|hex| u64::from_str_radix(hex, 16).ok())
+        .filter(|guid| *guid != 0)
+        .any(|guid| {
+            !snapshots
+                .iter()
+                .any(|(_, held)| held.parse::<u64>() == Ok(guid))
+        })
+}
+
 async fn lines(program: &Path, args: &[&str]) -> Result<Vec<String>, Refusal> {
+    lines_with(program, args, false).await
+}
+
+/// Like [`lines`], for a listing a 404 is judged from. ZFS exits 0 when it stopped
+/// iterating on an error and says so only on stderr, so any stderr fails the listing.
+async fn complete_lines(program: &Path, args: &[&str]) -> Result<Vec<String>, Refusal> {
+    lines_with(program, args, true).await
+}
+
+async fn lines_with(program: &Path, args: &[&str], quiet: bool) -> Result<Vec<String>, Refusal> {
     let output = Command::new(program)
         .args(args)
         .output()
         .await
         .map_err(|error| Refusal::Zfs(format!("could not run {}: {error}", program.display())))?;
-    if !output.status.success() {
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if !output.status.success() || (quiet && !stderr.trim().is_empty()) {
         return Err(Refusal::Zfs(format!(
             "{} {} failed: {}",
             program.display(),
             args.join(" "),
-            String::from_utf8_lossy(&output.stderr).trim()
+            stderr.trim()
         )));
     }
     Ok(String::from_utf8_lossy(&output.stdout)
@@ -274,9 +314,10 @@ mod tests {
             &zfs,
             r#"#!/bin/sh
 case "$*" in
-  'list -H -o name -t filesystem') printf 'old\nold/ployz\nold/ployz/data\ntank\ntank/ployz\ntank/ployz/data\ntank/ployz-mirror/other\ntank/ployz-mirror/slotted\ntank/ployz-mirror/slotted/fs\n' ;;
+  'list -H -o name -t filesystem') printf 'old\nold/ployz\nold/ployz/data\ntank\ntank/ployz\ntank/ployz/data\ntank/ployz-mirror/other\ntank/ployz-mirror/slotted\ntank/ployz-mirror/slotted/fs\ntank/ployz/flaky\n' ;;
   'list -H -o name,guid -t snapshot -d 1 tank/ployz/data') printf 'tank/ployz/data@w-1-1\t11\ntank/ployz/data@w-1-2\t12\n' ;;
   'list -H -o name,guid -t snapshot -d 1 tank/ployz-mirror/slotted/fs') printf 'tank/ployz-mirror/slotted/fs@w-1-1\t21\ntank/ployz-mirror/slotted/fs@w-1-2\t22\n' ;;
+  'list -H -o name,guid -t snapshot -d 1 tank/ployz/flaky') printf 'tank/ployz/flaky@w-1-2\t12\n'; echo 'cannot iterate snapshots: I/O error' >&2 ;;
   'send tank/ployz/data@w-1-2') printf 'full stream' ;;
   'send tank/ployz-mirror/slotted/fs@w-1-2') printf 'full slot stream' ;;
   'send -i tank/ployz-mirror/slotted/fs@w-1-1 tank/ployz-mirror/slotted/fs@w-1-2') printf 'incremental slot stream' ;;
@@ -289,6 +330,8 @@ case "$*" in
   'send -nvP -t token-wrong-target') printf 'resume token contents:\n\ttoname = tank/ployz/data@w-1-1\n' ;;
   'send -nvP -t token-missing') printf 'resume token contents:\n\ttoname = tank/ployz/data@w-1-3\n' ;;
   'send -nvP -t token-child') printf 'resume token contents:\n\ttoname = tank/ployz/data/child@w-1-2\n' ;;
+  'send -nvP -t token-pruned') printf 'resume token contents:\nnvlist version: 0\n\tfromguid = 0x1f\n\ttoguid = 0xc\n\ttoname = tank/ployz/data@w-1-2\ncannot resume send: incremental source 0x1f no longer exists\n' >&2; exit 1 ;;
+  'send -nvP -t token-io') printf 'resume token contents:\nnvlist version: 0\n\tfromguid = 0xb\n\ttoguid = 0xc\n\ttoname = tank/ployz/data@w-1-2\ncannot resume send: incremental source 0xb no longer exists\n' >&2; exit 1 ;;
   'send -t token-other') printf 'unrelated stream' ;;
   'send -t token-1') printf 'resumed stream' ;;
   'get -Hp -o value refquota tank/ployz/data') printf '1073741824\n' ;;
@@ -455,6 +498,26 @@ esac
             (status, body),
             (StatusCode::OK, "resumed stream".to_owned())
         );
+        shutdown.cancel();
+    }
+
+    #[tokio::test]
+    async fn a_token_whose_base_the_writer_pruned_is_no_stream_but_a_zfs_failure_is() {
+        // The puller answers 404 by dropping its partial receive and asking for a full
+        // send, so a stale token must not read as this Machine failing.
+        let dir = TestDir::new("ployzd-volume-send");
+        let (base, shutdown) = start(&dir, POOLS).await;
+        let (status, body) = get(&base, "/volume-send/data?target=w-1-2&token=token-pruned").await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+        assert!(body.contains("no longer exists"), "{body}");
+        assert!(!body.contains("token-pruned"), "{body}");
+        // A lookup that failed while this writer still holds both snapshots is this
+        // Machine's failure, whatever ZFS says, and the puller must keep its copy.
+        let (status, body) = get(&base, "/volume-send/data?target=w-1-2&token=token-io").await;
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
+        // A listing ZFS cut short on an error exits 0, and is no evidence of a pruned base.
+        let (status, body) = get(&base, "/volume-send/flaky?target=w-1-2&token=token-pruned").await;
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
         shutdown.cancel();
     }
 

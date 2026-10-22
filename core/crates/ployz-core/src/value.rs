@@ -914,7 +914,7 @@ pub struct ManagementAddress(pub Ipv6Addr);
 #[serde(transparent)]
 pub struct MachineGateway(pub Ipv4Addr);
 
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize, TS)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize, TS)]
 #[serde(transparent)]
 pub struct ContainerAddress(pub Ipv4Addr);
 
@@ -1007,6 +1007,17 @@ impl From<CloudEnrollToken> for String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn hostnames_follow_rfc_1035_lengths() {
+        let label = "b".repeat(63);
+        let longest = format!("{label}.{label}.{label}.{}", "c".repeat(61));
+        assert_eq!(longest.len(), 253);
+        assert!(super::IngressHost::parse(&longest).is_ok());
+        assert!(super::CertificateHost::parse(&longest).is_ok());
+        assert!(super::IngressHost::parse(format!("{longest}c")).is_err());
+        assert!(super::IngressHost::parse(format!("{}.example.com", "b".repeat(64))).is_err());
+    }
+
     #[test]
     fn an_upgrade_attempt_id_is_its_uuid_in_lowercase_hex() {
         let id = super::MachineUpgradeAttemptId::from_uuid("0F8FAD5B-D9CB-469F-A165-70867728950E")

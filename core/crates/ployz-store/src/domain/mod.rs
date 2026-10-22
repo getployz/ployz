@@ -3,8 +3,8 @@
 //! Adding and removing either is staged until a Deploy; admission expands generated
 //! ones into routes under the Cluster Domain Cloud reserved for the Organization.
 //!
-//! The Store never looks at DNS, certificates or Servers. Cloud observes them and
-//! passes what it saw as [`DomainEvidence`]; from that, each domain reads Ready,
+//! The Store never looks at DNS, certificates or Servers. Cloud observes them, or the
+//! CLI does in a Standalone Cluster, and passes what it saw as [`DomainEvidence`]; from that, each domain reads Ready,
 //! Setting up or Needs attention, with at most one action.
 
 use ployz_core::config::{
@@ -41,8 +41,8 @@ pub struct DomainEvidence {
     /// The Organization's Cluster Domain, once reserved.
     #[serde(default)]
     pub cluster_domain: Option<ClusterDomain>,
-    /// The Cluster's certificates as its Runtime Watch reported them; none when Cloud
-    /// couldn't observe the Cluster.
+    /// The Cluster's certificates as its Runtime Watch reported them; none when the
+    /// Cluster couldn't be observed.
     #[serde(default)]
     pub certificates: Option<Vec<CertificateObservation>>,
     /// Public addresses of the Servers that accept ingress.
@@ -622,6 +622,7 @@ fn taken_prefixes<'t>(
     let mut taken: Vec<(String, Option<&PublishedHostname>)> =
         crate::names::other_environments(tx, environment)?
             .iter()
+            .map(|other| &other.working)
             .chain(std::iter::once(&environment.working))
             .flat_map(|intent| &intent.services)
             .filter(|service| service.id != own)
@@ -854,10 +855,16 @@ pub(crate) fn domain(
 
 /// Whether any Service of `intent` has a generated domain, which needs a Cluster Domain to deploy.
 pub(crate) fn has_generated(intent: &SavedEnvironmentIntent) -> bool {
+    generated_prefixes(intent).next().is_some()
+}
+
+/// The prefix of each generated domain in `intent`, as `domain rm` names it.
+pub(crate) fn generated_prefixes(intent: &SavedEnvironmentIntent) -> impl Iterator<Item = &str> {
     intent
         .services
         .iter()
-        .any(|service| !service.config.managed_hostnames.is_empty())
+        .flat_map(|service| &service.config.managed_hostnames)
+        .map(|managed| managed.prefix.as_str())
 }
 
 /// `saved` with each generated domain as a route under `cluster_domain`, as the Servers

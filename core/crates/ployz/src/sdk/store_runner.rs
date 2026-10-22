@@ -10,8 +10,8 @@ use std::time::Duration;
 
 use ployz_core::{
     AnonymousVolumes, ContainerId, DeployOperation, DeployOutcome, DeployWarning, ExecutionError,
-    FailedOperation, HealthFailure, LastRun, MachineId, MachineObservation, QualifiedService,
-    RpcError, RpcErrorCode, ServiceName,
+    FailedOperation, HealthFailure, LastRun, MachineId, MachineObservation, Operator,
+    QualifiedService, RpcError, RpcErrorCode, ServiceName,
 };
 use ployz_store::tools::{LogText, SealedValues, Withheld};
 use ployz_store::{
@@ -27,7 +27,9 @@ use ts_rs::TS;
 
 use super::build::BuildOutcome;
 use super::preparation::{BuildReceipt, PreparationInput, UploadDigest, needs_upload};
-use super::{ImageCleanup, PreparedDeploy, RunningBuild, Session, connect_connections};
+use super::{
+    ImageCleanup, PreparedDeploy, Running, RunningBuild, Session, Unprepared, connect_connections,
+};
 use crate::connect::{Client, SystemConnector};
 use crate::context::Connection;
 use crate::deploy::MachineOperations;
@@ -121,8 +123,8 @@ fn receipts(claimed: &Claimed, service: &ServiceName) -> Vec<BuildReceipt> {
         .collect()
 }
 
-/// Run Deployment `deployment` as `runner` on one of `connections`, and
-/// return its summary once its outcome is recorded. Its Git and uploaded Services
+/// Run Deployment `deployment` as `runner`, driving it as `operator`, on one of
+/// `connections`, and return its summary once its outcome is recorded. Its Git and uploaded Services
 /// build first, at once, each from its checkout or the upload in `checkouts`; then
 /// preparation reuses their images. A failed connection, build or preparation is
 /// recorded as not executed; an uploaded Service with neither its upload nor a usable
@@ -134,6 +136,7 @@ fn receipts(claimed: &Claimed, service: &ServiceName) -> Vec<BuildReceipt> {
 /// owns it, it was replaced, cancelled or ended, or this runner already prepared it),
 /// or a storage error.
 pub async fn run_deployment(
+    operator: Operator,
     store: Arc<ConfigStore>,
     deployment: DeploymentId,
     runner: RunnerId,
@@ -145,10 +148,13 @@ pub async fn run_deployment(
         deployment,
         runner,
     };
-    let claimed = {
+    let mut claimed = {
         let (deployment, runner) = (run.deployment.clone(), run.runner.clone());
         super::store_call(&run.store, move |store| store.claim(&deployment, &runner)).await?
     };
+    // The Store lowers the Intent without knowing who will run it.
+    claimed.intent.options.operator = operator;
+    claimed.intent.options.block_unmountable = true;
     let (targets, built) = match checkouts
         .map_err(Unbuilt::Failed)
         .and_then(|sources| targets(&claimed, sources))
@@ -178,6 +184,7 @@ pub async fn run_deployment(
                 .not_executed(Failure {
                     reason: error.to_string(),
                     cause: ployz_core::error_chain::causes(&error),
+                    same_again: false,
                 })
                 .await;
         }
@@ -587,7 +594,7 @@ impl Run {
         let scrub = Scrub::new(&claimed);
         let earlier = earlier(&targets);
         let prepared = if targets.is_empty() && built.is_empty() {
-            self.renewing(session.preview(claimed.intent), || {
+            self.renewing(session.plan(claimed.intent), || {
                 session.inner.cancel.cancel()
             })
             .await
@@ -602,12 +609,7 @@ impl Run {
         };
         let prepared = match prepared {
             Ok(prepared) => prepared,
-            Err(error) => {
-                return match needs_upload(&error) {
-                    Some(services) => self.unbuilt(upload_needed(&earlier, services)).await,
-                    None => self.not_executed(Failure::from(&error)).await,
-                };
-            }
+            Err(unprepared) => return self.unprepared(&earlier, unprepared).await,
         };
         let summary = self
             .record(RunEvidence::Prepared(prepared.preview().clone()))
@@ -861,7 +863,7 @@ impl Run {
         claimed: Claimed,
         targets: Vec<Target>,
         receipts: BTreeMap<ServiceName, BuildReceipt>,
-    ) -> Result<PreparedDeploy, RpcError> {
+    ) -> Result<PreparedDeploy, Unprepared> {
         let mut input = PreparationInput {
             deployment: claimed.input,
             build_receipts: receipts
@@ -885,8 +887,32 @@ impl Run {
             }
         }
         // Delivering images can outlast the lease: keep renewing it.
-        let running = session.prepare_with(input, claimed.intent.registry_auth)?;
+        let running: Running<PreparedDeploy, Unprepared> = session.prepare_with(
+            input,
+            claimed.intent.registry_auth,
+            Some(claimed.intent.options.operator),
+        )?;
         self.renewing(running.finished(), || running.abort()).await
+    }
+
+    /// Records a Deploy its preparation refused: the upload it needs, or nothing
+    /// executed, kept with whether deploying the same thing again fails the same way.
+    async fn unprepared(
+        &self,
+        earlier: &BTreeSet<ServiceName>,
+        unprepared: Unprepared,
+    ) -> Result<DeploymentSummary, RpcError> {
+        let Unprepared { error, same_again } = unprepared;
+        match needs_upload(&error) {
+            Some(services) => self.unbuilt(upload_needed(earlier, services)).await,
+            None => {
+                self.not_executed(Failure {
+                    same_again,
+                    ..Failure::from(&error)
+                })
+                .await
+            }
+        }
     }
 
     /// Wait for `running`'s outcome, recording each Service once every one of its
@@ -1113,32 +1139,21 @@ impl Run {
         let (_, run) = match stopped.entry(*container_id) {
             std::collections::btree_map::Entry::Occupied(read) => read.into_mut(),
             std::collections::btree_map::Entry::Vacant(unread) => {
-                let (log, exit_code) = self.failed_log(client, scrub, machine, *container_id).await;
-                let last_line = match &log {
-                    LogText::Shown(excerpt) => excerpt.lines().last().cloned(),
-                    LogText::Withheld { .. } => None,
-                };
-                unread.insert((
-                    log,
-                    LastRun {
-                        exit_code,
-                        last_line,
-                    },
-                ))
+                unread.insert(self.failed_log(client, scrub, machine, *container_id).await)
             }
         };
         *last_run = Some(run.clone());
     }
 
-    /// The failed Container's scrubbed tail, and the code of its newest stored exit.
+    /// The failed Container's scrubbed tail, and the run its newest stored exit ended.
     async fn failed_log(
         &self,
         client: &Client,
         scrub: &Scrub,
         machine: MachineId,
         container: ContainerId,
-    ) -> (LogText, Option<i64>) {
-        let withheld = |why| (LogText::Withheld { why }, None);
+    ) -> (LogText, LastRun) {
+        let withheld = |why| (LogText::Withheld { why }, LastRun::default());
         let Some(env) = super::container_env(client, machine, container).await else {
             return withheld(Withheld::NoSecretContext);
         };
@@ -1150,15 +1165,15 @@ impl Run {
             return withheld(Withheld::Unanswered);
         };
         match self.settled_sealed_names(&scrub.environment, names).await {
-            Some(names) => (
-                super::tail_excerpt(tail.frames, &scrub.values(&names, env)),
-                tail.exit_code,
-            ),
+            Some(names) => tail.scrubbed(&scrub.values(&names, env)),
             None => (
                 LogText::Withheld {
                     why: Withheld::NoSecretContext,
                 },
-                tail.exit_code,
+                LastRun {
+                    exit_code: tail.exit_code(),
+                    last_line: None,
+                },
             ),
         }
     }

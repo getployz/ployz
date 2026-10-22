@@ -227,6 +227,8 @@ pub(super) struct DiscoveryService {
     pub(super) select_unimplemented: bool,
     /// How SetVolumeCopy fails on these targets; every other target leaves it unimplemented.
     pub(super) set_volume_copy_failures: BTreeMap<MachineId, SwitchFailure>,
+    /// How long each routes read takes to answer, as a slow target does.
+    pub(super) routes_delay: std::time::Duration,
 }
 
 #[derive(Clone)]
@@ -241,6 +243,18 @@ pub(super) enum SwitchFailure {
     Hangs,
     /// The target takes the request, signals it, and never replies.
     Taken(Arc<tokio::sync::Notify>),
+}
+
+/// The first frame of a store with no rows, as a daemon answers at once.
+pub(super) fn empty_watch_frame() -> RuntimeWatchFrame {
+    RuntimeWatchFrame {
+        machines: Vec::new(),
+        containers: Vec::new(),
+        volumes: Vec::new(),
+        certificates: Vec::new(),
+        incomplete_ids: ployz_core::RuntimeWatchIncompleteIds::default(),
+        observed_at: String::new(),
+    }
 }
 
 impl DiscoveryService {
@@ -308,6 +322,7 @@ impl DiscoveryService {
             update_refusal: None,
             select_unimplemented: false,
             set_volume_copy_failures: BTreeMap::new(),
+            routes_delay: std::time::Duration::ZERO,
         }
     }
 
@@ -719,6 +734,7 @@ impl FakeMachine for DiscoveryService {
                 storage: inspect.include_storage.then_some(self.storage),
                 upgrade: None,
                 token: None,
+                sealing: None,
             })
             .encode()
             .unwrap(),
@@ -770,6 +786,7 @@ impl FakeMachine for DiscoveryService {
             assigned_machine,
             visible_peers,
             target_versions: BTreeMap::new(),
+            sealing_key: None,
         };
         Ok(Response::new(
             RpcResponse::from(registered).encode().unwrap(),
@@ -1327,11 +1344,18 @@ impl FakeMachine for DiscoveryService {
         else {
             panic!("expected a routes read");
         };
+        tokio::time::sleep(self.routes_delay).await;
         Ok(Response::new(
             RpcResponse::from(self.routes(&read.service))
                 .encode()
                 .unwrap(),
         ))
+    }
+    async fn read_routed_addresses(
+        &self,
+        _request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        Err(Status::unimplemented("unused"))
     }
     async fn pull_image(
         &self,
@@ -1578,6 +1602,7 @@ fn created_container(
         address: None,
         labels: BTreeMap::new(),
         stopped: false,
+        run: None,
     })
     .unwrap()
 }

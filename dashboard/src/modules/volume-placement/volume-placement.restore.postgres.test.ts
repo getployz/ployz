@@ -1,9 +1,17 @@
 import { it } from "@effect/vitest";
-import { type ConfigCommand, type ConfigStore, type CreateVolume, type Mount, RpcError } from "@ployz/sdk";
+import {
+  type Client, type ConfigCommand, type ConfigStore, type CreateVolume, type MachineId, type Mount, RpcError, type RuntimeWatchView,
+} from "@ployz/sdk";
 import { sql } from "drizzle-orm";
 import { Effect, Layer, Option } from "effect";
 import { expect, vi } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
+import { requirements } from "#/modules/runtime/daemon-compat";
+import { makeOrganizationRuntimeLayer } from "#/modules/runtime/organization-runtime.server";
+import { makePloyzLayer } from "#/modules/runtime/ployz.server";
+import {
+  runtimeWatchFrameFixture, runtimeWatchMachineFixture, runtimeWatchMachineObservationFixture,
+} from "#/modules/runtime/runtime-watch-frame.test-fixture";
 import { failStoreDeploymentUnrun } from "#/modules/config-store/store-deployment.server";
 import { CloudStore, cloudStore, storeTry } from "#/modules/config-store/store-sdk.server";
 import { volumePlacement } from "#/modules/volume-placement/tables";
@@ -14,8 +22,9 @@ import {
   discardPlacement, listPlacements, stageRestore, stampPlacements, writeAdmitted, type PlacementWrite,
 } from "#/modules/volume-placement/volume-placement.server";
 import type { Member } from "#/modules/volume-run/volume-run";
-import { member } from "#/modules/volume-run/volume-run.test-fixture";
+import { COPIES, member } from "#/modules/volume-run/volume-run.test-fixture";
 import { Database } from "#/server/database.server";
+import { noPairingChanges } from "#/test/organization-runtime";
 import { acmeWeb, seedStoreOrganization, storeTestCloud } from "#/test/store-cloud";
 
 const ORGANIZATION = "00000000-0000-4000-8000-00000000d001";
@@ -28,12 +37,9 @@ const admitDeploy = (store: ConfigStore, id: string) => store.write(ORGANIZATION
   command: "admit", admit: "deploy", id, environment: shop, services: [], version: null, accept_volume_loss: [],
 }, { ...acmeWeb(), servers: 1 });
 
-/**
- * Organization ORGANIZATION with project shop, Service web (and any of `writers`), and Volume `data` deployed as `volume` says.
- * Its services are built once, as Cloud's are. Providing the Layer itself would open a new Config Store on every call.
- */
+/** Organization ORGANIZATION with project shop, Service web (and any of `writers`), and Volume `data` deployed as `volume` says. */
 const deployedShop = Effect.fn(function* (volume: Partial<CreateVolume> = {}, writers: string[] = []) {
-  const services = yield* Layer.build(yield* storeTestCloud());
+  const services = yield* storeTestCloud();
   yield* seedStoreOrganization(ORGANIZATION).pipe(Effect.provide(services));
   const store = yield* cloudStore.pipe(Effect.provide(services));
   yield* Effect.promise(async () => {
@@ -85,11 +91,70 @@ it.live("stages a restore as one Store write and a seeded row, and discards both
   expect(effects).toEqual([expect.objectContaining({ kind: "detaches_volume", name: "data", lost_after: { at, restored: name } })]);
 
   members = [member("web-2", "mirror")];
-  expect(yield* restore()).toMatchObject({ ok: false, refusal: { message: "data has no primary answering to restore from." } });
+  expect(yield* restore()).toMatchObject({ ok: false, refusal: { code: "conflict", message: "data has no primary to restore from" } });
   expect((yield* listPlacements(ORGANIZATION).pipe(Effect.provide(services))).map((row) => row.volumeId)).toEqual([id]);
 
   expect(yield* discardPlacement(ORGANIZATION, null, id, shop).pipe(Effect.provide(services))).toEqual({ ok: true, placement: null });
   expect(yield* volumes()).toEqual([{ name: "data", mounts: [{ service: "web", path: "/data" }], change: null }]);
+  expect(yield* listPlacements(ORGANIZATION).pipe(Effect.provide(services))).toEqual([]);
+}));
+
+it.live("refuses a restore while a Server is silent or its report hasn't arrived, and stages nothing", () => Effect.gen(function* () {
+  const { services } = yield* deployedShop();
+  const { machine } = member("web-2", "unanswered");
+  for (const mirror of [member("web-2", "unanswered"), { machine, answered: false, incomplete: true } satisfies Member]) {
+    expect(yield* stageRestore(ORGANIZATION, null, { volumeId: SOURCE, environment: shop, ...point }, () => Effect.succeed([member("web-1", "writer"), mirror]))
+      .pipe(Effect.provide(services))).toMatchObject({ ok: false, refusal: { code: "unanswered", message: "Your servers aren't answering. Try again once they are." } });
+  }
+  expect(yield* listPlacements(ORGANIZATION).pipe(Effect.provide(services))).toEqual([]);
+}));
+
+/**
+ * A Cluster of box-1, holding data's writer with the generation floor, and box-2, holding its mirror on a Ployz that moves
+ * volumes without it, as 0.3.0-beta.1 does. Its version is unknown, so the lack names no release and reads no channel.
+ */
+const floorlessMirror = (() => {
+  const key = Array.from({ length: 32 }, () => 1);
+  const server = (id: string, name: string, capabilities: string[]) => {
+    const machine = runtimeWatchMachineFixture(id, name);
+    return runtimeWatchMachineObservationFixture({ machine: { ...machine, public_key: key, runtime: { ...machine.runtime, daemon_version: "", capabilities } } });
+  };
+  const frame = runtimeWatchFrameFixture({ machines: [server("1".repeat(32), "box-1", [requirements.volumeFloor.capability]), server("2".repeat(32), "box-2", [requirements.volumeMove.capability])] });
+  return makeOrganizationRuntimeLayer(() => Effect.succeed({ kind: "ready", generation: "current", connections: [{ management: "ployz1:preferred" }] }), noPairingChanges)
+    .pipe(Layer.provide(makePloyzLayer({
+      connect: async () => asTestDouble<Client>()({
+        close: async () => {},
+        volumeSwitch: async (machine: MachineId) => ({ copy: machine.startsWith("1") ? COPIES.writer : COPIES.mirror }),
+        runtime: { watch: async function* (): AsyncGenerator<RuntimeWatchView> { yield frame; } },
+      }),
+    })));
+})();
+
+it.live("refuses a restore while a Server holding a copy lacks the generation floor, as the seed run's own observer reads it", () => Effect.gen(function* () {
+  const { services } = yield* deployedShop();
+  expect(yield* stageRestore(ORGANIZATION, null, { volumeId: SOURCE, environment: shop, ...point }).pipe(Effect.provide(floorlessMirror), Effect.provide(services)))
+    .toMatchObject({ ok: false, refusal: { code: "unsupported", message: "Volume restore is not available on box-2." } });
+  expect(yield* listPlacements(ORGANIZATION).pipe(Effect.provide(services))).toEqual([]);
+}));
+
+it.live("refuses a restore the Deploy's seed run would refuse, as it observes the members, and stages nothing", () => Effect.gen(function* () {
+  const { services } = yield* deployedShop();
+  const refusals: [Member[], { code: string; message: string }][] = [
+    [[member("web-1", "writer"), member("web-2", "writer")], { code: "conflict", message: "data has two writers, data-web-1 and data-web-2" }],
+    [[member("web-1", "writer", { epoch: 8 }), member("web-2", "writer", { epoch: 3 })], {
+      code: "conflict", message: "data-web-2 is an old primary that came back; restore once a mirror refresh makes it a mirror",
+    }],
+  ];
+  for (const [members, refusal] of refusals) {
+    const runs: unknown[] = [];
+    const inspect: MemberInspector = (_organization, _environment, _volume, run) => {
+      runs.push(run);
+      return Effect.succeed(members);
+    };
+    expect(yield* stageRestore(ORGANIZATION, null, { volumeId: SOURCE, environment: shop, ...point }, inspect).pipe(Effect.provide(services)))
+      .toMatchObject({ ok: false, refusal });
+    expect(runs).toEqual([expect.objectContaining({ kind: "seed", args: expect.objectContaining({ guid: point.guid, name: point.name }) })]);
+  }
   expect(yield* listPlacements(ORGANIZATION).pipe(Effect.provide(services))).toEqual([]);
 }));
 

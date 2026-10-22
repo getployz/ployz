@@ -138,8 +138,8 @@ export const revokeFleetToken = Effect.fn("FleetToken.revoke")(function* (
           isNull(serverEnrollment.endedAt),
         ))),
       ))
-      .returning({ id: waitingServer.id });
-    return { waitingRemoved: removed.length };
+      .returning({ waiting: sql<boolean>`${waitingServer.rejectedAt} is null and ${stillWaiting}` });
+    return { waitingRemoved: removed.filter((row) => row.waiting).length };
   }));
 });
 

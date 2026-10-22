@@ -114,6 +114,7 @@ async fn real_catch_up_client_retries_readiness_and_placement_to_their_budget() 
                                     storage: None,
                                     upgrade: None,
                                     token: None,
+                                    sealing: None,
                                 })
                             }
                             RpcRequestBody::ListContainers(_) => {
@@ -246,6 +247,7 @@ async fn catch_up_uses_primitives_and_never_replaces_a_key_conflict_or_unknown_s
                                 storage: None,
                                 upgrade: None,
                                 token: None,
+                                sealing: None,
                             })
                         }
                         RpcRequestBody::EnsureContainer(ensure) => match ensure.want {
@@ -455,6 +457,7 @@ async fn top_level_catch_up_uses_fresh_target_eligibility_and_reuses_hidden_full
                                 bridge: BridgeEndpointCapacity::new(1, 1),
                             }),
                             token: None,
+                            sealing: None,
                         }),
                         RpcRequestBody::EnsureContainer(ensure) => match ensure.want {
                             ContainerWant::Running {
@@ -609,6 +612,7 @@ async fn an_ineligible_target_retires_its_own_in_copy() {
                                 upgrade: None,
                                 telemetry: None,
                                 token: None,
+                                sealing: None,
                             })
                         }
                         RpcRequestBody::EnsureContainer(ensure) => match ensure.want {
@@ -873,6 +877,7 @@ async fn catch_up_over_matching_copy(rotation: CopyRotation) -> OverMatching {
                             bridge: BridgeEndpointCapacity::new(4, 0),
                         }),
                         token: None,
+                        sealing: None,
                     }),
                     RpcRequestBody::EnsureContainer(ensure) => {
                         let mut current = current.lock().unwrap();
@@ -1079,6 +1084,7 @@ async fn provisioned_globals_use_target_storage_and_report_unknown() {
                                 bridge: BridgeEndpointCapacity::new(10, 0),
                             }),
                             token: None,
+                            sealing: None,
                         }),
                         RpcRequestBody::ListContainers(_) => RpcResponse::from(ContainerList {
                             containers: Vec::new(),

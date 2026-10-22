@@ -1,5 +1,6 @@
 //! A domain's status: Ready, Setting up or Needs attention, with at most one
-//! action, projected from what Cloud observed of DNS, certificates and Servers.
+//! action, projected from what Cloud, or a standalone CLI, observed of DNS,
+//! certificates and Servers.
 
 use super::*;
 
@@ -182,7 +183,7 @@ fn status(domain: &Domain, deployed: Deployed, evidence: &DomainEvidence) -> Sta
         return blocked;
     }
     if evidence.certificates.is_none() {
-        return setting_up("Cloud can't see the Servers right now");
+        return setting_up("Ployz can't see the Servers right now");
     }
     if ready {
         let proxy = certificate.is_some_and(|certificate| certificate.via_proxy);

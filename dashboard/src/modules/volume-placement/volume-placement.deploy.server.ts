@@ -11,7 +11,7 @@ import { requireAccess } from "#/modules/organization/access.server";
 import { firstRuntimeFrame, type OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import { placementBlockers, placementUpgradeMessage } from "#/modules/volume-placement/daemon-release";
 import { failedRestore, volumePlacement } from "#/modules/volume-placement/tables";
-import { deleteOldCopy, discardPlacement, RESTORE_FAILED, restoreSettled, stagePlacement, view } from "#/modules/volume-placement/volume-placement.server";
+import { deleteOldCopy, discardPlacement, RESTORE_FAILED, restoreSettled, stagePlacement, UNANSWERED, view } from "#/modules/volume-placement/volume-placement.server";
 import {
   appliedMirrors, changeKey, type DeleteCopyInput, drainPlacement, dropChange, nextPlacementStep, observePlacement, type Placement, placementChanges, type PlacementStep, type PlacementVolume,
   sameChange,
@@ -302,8 +302,6 @@ export const readPlacementBlockers: BlockerReader = (organizationId) => firstRun
   }))))),
 );
 
-export const UNANSWERED: StoreRefusal = { code: "unanswered", message: "Your servers aren't answering. Try again once they are.", details: null };
-
 /** Why the organization can't stage a placement or restore yet, or null when it can. */
 export const placementRefusal = Effect.fn("VolumePlacement.refusal")(function* (organizationId: string, read: BlockerReader = readPlacementBlockers) {
   const blockers = yield* read(organizationId).pipe(Effect.catch(() => Effect.succeed(null)));
@@ -383,16 +381,19 @@ export const refreshMirrors = Effect.fn("VolumePlacement.refreshMirrors")(functi
 
 /**
  * A Drain of `server`: stage each primary on it off to its mirror, else to the first Server in `accepting` the planner
- * takes. A Volume a Deploy is moving keeps that move. Returns the names of Volumes nowhere takes.
+ * takes. A Volume a Deploy is moving keeps that move. Returns the names of Volumes nowhere takes, and in `blocked`
+ * each of them with the Server in `unrouted` that would take it, if any: its Ployz can't finish a Move, so upgrading
+ * it lets the Volume move there. `stuck` stays for tabs that read only it.
  */
 export const stageOffServer = Effect.fn("VolumePlacement.stageOffServer")(function* (
-  organizationId: string, server: MachineId, accepting: readonly MachineId[],
+  organizationId: string, server: MachineId, accepting: readonly MachineId[], unrouted: readonly MachineId[] = [],
   observe: CopyObserver = observeOrganizationCopies, inspect: MemberInspector = inspectVolumeCopies,
 ) {
   const copies = yield* observe(organizationId);
   const { drizzle } = yield* Database;
   const rows = yield* drizzle.select().from(volumePlacement).where(eq(volumePlacement.organizationId, organizationId));
   const stuck: string[] = [];
+  const blocked: { volume: string; upgrade: string | null }[] = [];
   for (const volume of yield* environmentVolumes(organizationId, null)) {
     if (!copies.some((copy) => copy.name === volume.dockerVolume && copy.machine_id === server && copy.role === "writer")) continue;
     const found = rows.find((entry) => entry.volumeId === volume.volumeId);
@@ -403,12 +404,18 @@ export const stageOffServer = Effect.fn("VolumePlacement.stageOffServer")(functi
     const staged = drainPlacement({ id: volume.volumeId, name: volume.name }, members, row, accepting, server, owed !== null);
     if (staged === null) {
       stuck.push(volume.name);
+      const upgraded = drainPlacement({ id: volume.volumeId, name: volume.name }, members, row, unrouted, server, owed !== null);
+      const to = members.find((member) => member.machine.id === upgraded?.primary);
+      blocked.push({ volume: volume.name, upgrade: to?.machine.name ?? null });
       continue;
     }
     const written = yield* stagePlacement(organizationId, {
       environment: volume.environment, volumeId: volume.volumeId, staged, mirrors: appliedMirrors(observePlacement(members), row),
     });
-    if (!written.ok) stuck.push(volume.name);
+    if (!written.ok) {
+      stuck.push(volume.name);
+      blocked.push({ volume: volume.name, upgrade: null });
+    }
   }
-  return { stuck };
+  return { stuck, blocked };
 });

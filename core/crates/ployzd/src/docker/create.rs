@@ -6,8 +6,8 @@ use std::{
 use bollard::models::{
     ContainerCreateBody, DeviceMapping as DockerDeviceMapping, DeviceRequest, HealthConfig,
     HostConfig, HostConfigLogConfig, Mount, MountBindOptions, MountBindOptionsPropagationEnum,
-    MountTmpfsOptions, MountType, MountVolumeOptions, MountVolumeOptionsDriverConfig, PortBinding,
-    PortMap, ResourcesUlimits, RestartPolicy, RestartPolicyNameEnum,
+    MountTmpfsOptions, MountType, MountVolumeOptions, MountVolumeOptionsDriverConfig,
+    NetworkingConfig, PortBinding, PortMap, ResourcesUlimits, RestartPolicy, RestartPolicyNameEnum,
 };
 use ployz_core::{
     BindPropagation, BindRecursive, ContainerKind, HEALTHCHECK_DISABLE_SENTINEL, HealthcheckSpec,
@@ -201,6 +201,14 @@ pub(super) fn container_create_body(
             None => (!container.entrypoint.is_empty()).then(|| container.entrypoint.clone()),
         },
         exposed_ports,
+        networking_config: super::bridge_endpoint(super::takes_bridge_ipv6(&labels)).map(
+            |endpoint| NetworkingConfig {
+                endpoints_config: Some(HashMap::from([(
+                    crate::network::DOCKER_NETWORK_NAME.to_owned(),
+                    endpoint,
+                )])),
+            },
+        ),
         labels: Some(labels),
         stop_timeout: container.stop_timeout_secs,
         host_config: Some(host_config),

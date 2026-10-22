@@ -177,6 +177,8 @@ export const serverDrainAttempt = pgTable(
     approvalId: uuid("approval_id"),
     /** The digest of the plan its gate admitted: it runs only while it would destroy exactly that, or nothing. */
     planDigest: text("plan_digest"),
+    /** A try found the servers silent, so the pending row waits for them rather than for another Drain. */
+    serversSilent: boolean("servers_silent").default(false).notNull(),
     requestedAt: timestamp("requested_at", { mode: "date", withTimezone: true }).defaultNow().notNull(),
     startedAt: timestamp("started_at", { mode: "date", withTimezone: true }),
     endedAt: timestamp("ended_at", { mode: "date", withTimezone: true }),
@@ -392,7 +394,10 @@ export const organizationMachine = pgTable(
 
 /**
  * Server Access: one Server's `cli-<id>` Management Client held for one signed-in device or Organization Token.
- * A revoked row keeps no capability and stays until its Server confirms the Clear.
+ * A row without a capability is a claim while its Set is in flight, so one credential Sets one Server once at a
+ * time. A revoked row keeps no capability and stays until its Server confirms the Clear. `claim` names the request
+ * whose Set or Clear is in flight on the slot, so no two act on it at once and a late one touches nothing; a row
+ * with no claim is open to the next one.
  */
 export const serverAccess = pgTable(
   "server_access",
@@ -404,6 +409,7 @@ export const serverAccess = pgTable(
     credentialKind: text("credential_kind").notNull().$type<"session" | "token">(),
     userId: uuid("user_id").notNull(),
     encryptedCapability: jsonb("encrypted_capability").$type<EncryptedSecretValue>(),
+    claim: text("claim"),
     revokedAt: timestamp("revoked_at", { mode: "date", withTimezone: true }),
     createdAt,
     updatedAt,
@@ -419,7 +425,7 @@ export const serverAccess = pgTable(
     index("server_access_credential_idx").on(table.credentialId),
     check("server_access_credential_kind_check", sql`${table.credentialKind} in ('session', 'token')`),
     check("server_access_revoked_shape_check",
-      sql`(${table.revokedAt} is null) = (${table.encryptedCapability} is not null)`),
+      sql`${table.revokedAt} is null or ${table.encryptedCapability} is null`),
   ],
 );
 
@@ -482,5 +488,21 @@ export const enrollmentAllocation = pgTable(
     primaryKey({ columns: [table.organizationId, table.clusterKey] }),
     check("enrollment_allocation_cluster_key_check", sql`${table.clusterKey} ~ '^[0-9a-f]{64}$'`),
     check("enrollment_allocation_assignments_check", sql`jsonb_typeof(${table.assignments}) = 'array'`),
+  ],
+);
+
+export const clusterSealingKey = pgTable(
+  "cluster_sealing_key",
+  {
+    organizationId: uuid("organization_id").notNull()
+      .references(() => organization.id, { onDelete: "cascade" }),
+    clusterKey: text("cluster_key").notNull(),
+    publicKey: text("public_key").notNull(),
+    createdAt,
+  },
+  (table) => [
+    primaryKey({ columns: [table.organizationId, table.clusterKey] }),
+    check("cluster_sealing_key_cluster_key_check", sql`${table.clusterKey} ~ '^[0-9a-f]{64}$'`),
+    check("cluster_sealing_key_public_key_check", sql`${table.publicKey} ~ '^[A-Za-z0-9+/]{43}=$'`),
   ],
 );

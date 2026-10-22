@@ -1,5 +1,5 @@
 import { it } from "@effect/vitest";
-import { Deferred, Effect, Fiber, Layer, Schedule } from "effect";
+import { Deferred, Effect, Fiber, Schedule } from "effect";
 import { eq, sql } from "drizzle-orm";
 import { Inngest } from "inngest";
 import { TestClock } from "effect/testing";
@@ -89,7 +89,7 @@ const landing = (path: string) => Object.fromEntries(new URL(path, "http://cloud
 
 it.live("links only installations the person who started the connect owns on GitHub, in any Organization they manage", () =>
   Effect.gen(function* () {
-    const services = yield* Layer.build(yield* storeTestCloud({ github }));
+    const services = yield* storeTestCloud({ github });
     const run = <A, E, R>(program: Effect.Effect<A, E, R>) => program.pipe(Effect.provide(services));
     const failure = <A, E extends { readonly _tag: string }, R>(program: Effect.Effect<A, E, R>) => run(Effect.flip(program)).pipe(Effect.map((error) => error._tag));
     const linked = (organizationId: string) => run(listGithubInstallationsForOrganization(organizationId)).pipe(
@@ -213,7 +213,7 @@ const hopperCloud = Effect.fn(function* () {
   renamed.clear();
   afterSecondPage = undefined;
   listingAllowed = true;
-  const services = yield* Layer.build(yield* storeTestCloud({ github, inngest }));
+  const services = yield* storeTestCloud({ github, inngest });
   const run = <A, E, R>(program: Effect.Effect<A, E, R>) => program.pipe(Effect.provide(services));
   const ada = { userId: yield* run(seedStoreOrganization(SHOP)) };
   yield* run(upsertGithubInstallation({ installationId: 9, accountLogin: "hopper", accountType: "Organization", accountAvatarUrl: null }));
@@ -279,7 +279,7 @@ it.live("removes a repository GitHub revoked while a sync listed it, once the sy
       revoked.add(9120);
       webhook = yield* elsewhere(processGithubInstallationRepositoriesEvent({
         deliveryId: "delivery-removed-9120", action: "removed", installation: { id: 9 },
-        repositories_added: [], repositories_removed: [{ ...repository(9120), updated_at: "2026-01-01T00:00:00Z" }], sender: { id: 1, login: "carol" },
+        repositories_added: [], repositories_removed: [{ id: 9120 }], sender: { id: 1, login: "carol" },
       }));
       yield* settled(webhook);
     });
@@ -294,12 +294,12 @@ it.live("removes a repository GitHub revoked while a sync listed it, once the sy
 const hopperRepositoriesEvent = (action: "added" | "removed", added: readonly number[], removed: readonly number[]) =>
   processGithubInstallationRepositoriesEvent({
     deliveryId: `delivery-${action}-${[...added, ...removed].join("-")}`, action, installation: { id: 9 },
-    repositories_added: added.map((id) => ({ ...repository(id), updated_at: "2026-01-01T00:00:00Z" })),
-    repositories_removed: removed.map((id) => ({ ...repository(id), updated_at: "2026-01-01T00:00:00Z" })),
+    repositories_added: added.map((id) => ({ id })),
+    repositories_removed: removed.map((id) => ({ id })),
     sender: { id: 1, login: "carol" },
   });
 
-it.live("holds no connection or lock while GitHub keeps a sync waiting, so a webhook for the installation lands meanwhile", () =>
+it.live("holds no connection or lock while GitHub keeps a sync waiting, so a webhook adding a repository lands meanwhile and the sync lists again", () =>
   Effect.gen(function* () {
     const { run, connectHopper, sync, cached } = yield* hopperCloud();
     yield* connectHopper;
@@ -320,10 +320,11 @@ it.live("holds no connection or lock while GitHub keeps a sync waiting, so a web
       expect(held).toEqual({ transactions: 0, locks: 0 });
       REPOSITORY_COUNTS.set(9, 151);
       yield* run(hopperRepositoriesEvent("added", [9150], [])).pipe(Effect.timeout("5 seconds"));
-      expect((yield* cached).has(9150)).toBe(true);
     }).pipe(Effect.ensuring(Deferred.succeed(answer, undefined)));
     yield* Fiber.join(syncing);
-    expect((yield* cached).size).toBe(151);
+    const repositories = yield* cached;
+    expect(repositories.has(9150)).toBe(true);
+    expect(repositories.size).toBe(151);
   }), 60_000);
 
 it.live("lists again rather than undo a webhook that wrote after the sync listed GitHub", () =>

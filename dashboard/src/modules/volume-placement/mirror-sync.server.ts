@@ -8,7 +8,7 @@ import { slotRole } from "#/modules/volume-placement/volume-placement";
 import { deployClaim } from "#/modules/volume-placement/volume-placement.server";
 import { expectOf, roleOf } from "#/modules/volume-run/plan";
 import { volumeMirrorStatus, volumeRun } from "#/modules/volume-run/tables";
-import { ACTIVE_VOLUME_RUN_STATES, type AnsweredMember, copyName, type Member } from "#/modules/volume-run/volume-run";
+import { ACTIVE_VOLUME_RUN_STATES, type AnsweredMember, copyName, type Member, unheardOf } from "#/modules/volume-run/volume-run";
 import { askCopy, type CopyAnswer, DRAIN_MS, type MachineRef, observeVolumeMembers, requestVolumeRun, SwitchAttemptError } from "#/modules/volume-run/volume-run.server";
 import { whileLocked } from "#/server/advisory-lock.server";
 import { Database } from "#/server/database.server";
@@ -35,6 +35,8 @@ export type MirrorSync =
   | { readonly kind: "covered"; readonly run: { readonly id: string; readonly kind: string } }
   | { readonly kind: "deploying"; readonly message: string }
   | { readonly kind: "unanswered"; readonly servers: readonly string[] }
+  | { readonly kind: "lacks"; readonly lacks: readonly string[] }
+  | { readonly kind: "waiting" }
   | { readonly kind: "no_mirror" }
   | { readonly kind: "no_writer" }
   | { readonly kind: "cutting"; readonly server: string }
@@ -89,6 +91,10 @@ function outcomeLines(name: string, sync: MirrorSync): string[] {
       return [`skipped ${name}: ${sync.message}`];
     case "unanswered":
       return [`skipped ${name}, ${sync.servers.join(", ")} ${sync.servers.length === 1 ? "isn't" : "aren't"} answering`];
+    case "lacks":
+      return [`skipped ${name}: ${sync.lacks.join("; ")}`];
+    case "waiting":
+      return [`skipped ${name}, waiting for every server's report`];
     case "no_mirror":
       return [`${name} has no mirror`];
     case "no_writer":
@@ -227,8 +233,10 @@ const syncOnce = Effect.fn("MirrorSync.sync")(function* (organizationId: string,
     const claim = yield* deployClaim(organizationId, placement);
     if (claim !== null) return yield* answer(reported, { kind: "deploying", message: claim.message });
 
-    const silent = members.flatMap((member) => member.answered ? [] : [member.machine.name]);
-    if (silent.length > 0) return yield* answer(reported, { kind: "unanswered", servers: silent });
+    const unheard = unheardOf(members);
+    if (unheard.lacks.length > 0) return yield* answer(reported, { kind: "lacks", lacks: unheard.lacks });
+    if (unheard.silent.length > 0) return yield* answer(reported, { kind: "unanswered", servers: unheard.silent });
+    if (unheard.waiting) return yield* answer(reported, { kind: "waiting" });
     const answered = members.filter((member): member is AnsweredMember => member.answered);
     const roots = answered.filter((member) => roleOf(member) === "writer" || roleOf(member) === "cutting");
     if (roots.length > 1) {

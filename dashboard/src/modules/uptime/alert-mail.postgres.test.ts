@@ -3,7 +3,7 @@ import { it } from "@effect/vitest";
 import { InngestTestEngine } from "@inngest/test";
 import type { JsonValue } from "@ployz/sdk";
 import { sql, type SQL } from "drizzle-orm";
-import { Effect, Layer } from "effect";
+import { Effect } from "effect";
 import { Inngest } from "inngest";
 import { expect, vi } from "vitest";
 import { cloudStore, type CloudStore } from "#/modules/config-store/store-sdk.server";
@@ -38,7 +38,7 @@ const evidence = {
 const setup = Effect.fn(function* () {
   const inngest = new Inngest({ id: "alert-mail-test" });
   const send = vi.spyOn(inngest, "send").mockResolvedValue({ ids: [] });
-  const services = yield* Layer.build(yield* storeTestCloud({ inngest, env: { APP_URL: "https://cloud.example.com" } }));
+  const services = yield* storeTestCloud({ inngest, env: { APP_URL: "https://cloud.example.com" } });
   const provide = <A, E>(effect: Effect.Effect<A, E, Database | AppConfig | InngestClient | CloudStore>) =>
     effect.pipe(Effect.provide(services));
   yield* provide(seedStoreOrganization(ORGANIZATION, { name: "Acme", slug: "acme" }));

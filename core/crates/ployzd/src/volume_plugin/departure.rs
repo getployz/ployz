@@ -15,6 +15,10 @@
 //! sync pulls only when the writer has a newer point, so a mirror of an idle Volume
 //! survives the departure. A slot with no snapshot holds only a resumable receive that
 //! never completed, so it holds no point and is destroyed.
+//!
+//! A seal is a departure that keeps every mirror: a Machine fencing itself after the
+//! Cluster forgot it (#2927) cannot tell whether a copy elsewhere still holds what its
+//! mirror holds, so it seals its roots and leaves every mirror where it is.
 
 use std::collections::BTreeSet;
 
@@ -43,21 +47,32 @@ enum Departure<'datasets> {
     Mirror,
 }
 
+/// What a departure does with a received mirror.
+#[derive(Clone, Copy)]
+enum Mirrors {
+    Destroy,
+    Keep,
+}
+
 impl VolumeStorage {
     /// Demotes every root to a slot and destroys every received mirror, except where a copy
     /// would not stop. Answers the names it changed, for the daemon to forget in Docker,
     /// the names it left, and the names whose demote failed. A failure stops only its own
     /// Volume: a retry answers nothing for a Volume this run changed, so the daemon must
     /// learn of it now.
-    async fn demote_all(&self, now_unix_seconds: i64) -> super::Result<StorageDeparture> {
+    async fn demote_all(
+        &self,
+        now_unix_seconds: i64,
+        mirrors: Mirrors,
+    ) -> super::Result<StorageDeparture> {
         let _guard = self.admit_mutation().await?;
         let Some(pool) = self.pool.one_usable().await? else {
             return Ok(StorageDeparture::default());
         };
         let _pool_guard = self.pool.lock_mutation().await?;
-        // Every receive starts under admission, so once these stop no slot changes
-        // between the scan and the decisions taken from it. A stuck receive may still
-        // write, so its Volume is not judged.
+        // Every receive starts under admission, so once these stop only this departure
+        // changes a slot until it ends. A stuck receive may still write, so its Volume is
+        // not judged.
         let stuck = self.receives.stop_all(self.stop_deadline).await;
         if !stuck.is_empty() {
             tracing::warn!(stuck = %stuck.join(", "), deadline = ?self.stop_deadline, "copies did not stop; leaving their Volumes");
@@ -84,7 +99,7 @@ impl VolumeStorage {
         for name in names {
             let departed = departed_name(&name.to_string())?;
             match self
-                .demote_copy(&pool, &datasets, &name, now_unix_seconds)
+                .demote_copy(&pool, &name, now_unix_seconds, mirrors)
                 .await
             {
                 Ok(true) => departure.demoted.push(departed),
@@ -128,19 +143,21 @@ impl VolumeStorage {
         }
     }
 
-    /// Turns `name`'s root into a sealed slot, or destroys `name`'s received mirror. Answers
-    /// whether it changed anything.
+    /// Turns `name`'s root into a sealed slot, or destroys `name`'s received mirror unless
+    /// `mirrors` keeps it. Answers whether it changed anything. It lists the datasets
+    /// afresh, as an earlier Volume's demote may have made the mirror root.
     async fn demote_copy(
         &self,
         pool: &MachinePool,
-        datasets: &[Dataset],
         name: &DockerVolumeName,
         now_unix_seconds: i64,
+        mirrors: Mirrors,
     ) -> super::Result<bool> {
-        let demoted = match self.departure(pool, datasets, name).await? {
+        let datasets = self.datasets(pool).await?;
+        let demoted = match self.departure(pool, &datasets, name).await? {
             Departure::Root(root) => {
                 self.freeze_root(root, name, now_unix_seconds).await?;
-                self.ensure_mirror_root(pool, datasets).await?;
+                self.ensure_mirror_root(pool, &datasets).await?;
                 let parent = slot_parent(pool, name);
                 self.create_slot_parent(&parent, root.refquota).await?;
                 self.mark_slot_role(&parent, SlotRole::OldCopy).await?;
@@ -161,16 +178,19 @@ impl VolumeStorage {
                 .into());
             }
             Departure::UnsealedSlot(fs) => {
-                self.seal(&fs.name).await?;
+                self.seal_fs(&fs.name).await?;
                 true
             }
             Departure::Departed => false,
-            Departure::Mirror => {
-                self.zfs(&["destroy", "-r", &slot_parent(pool, name)])
-                    .await?;
-                self.receives.forget(name);
-                true
-            }
+            Departure::Mirror => match mirrors {
+                Mirrors::Destroy => {
+                    self.zfs(&["destroy", "-r", &slot_parent(pool, name)])
+                        .await?;
+                    self.receives.forget(name);
+                    true
+                }
+                Mirrors::Keep => false,
+            },
         };
         Ok(demoted)
     }
@@ -283,10 +303,10 @@ impl VolumeStorage {
     ) -> super::Result<()> {
         let fs = slot_fs(pool, name);
         self.zfs(&["rename", &root.name, &fs]).await?;
-        self.seal(&fs).await
+        self.seal_fs(&fs).await
     }
 
-    async fn seal(&self, fs: &str) -> super::Result<()> {
+    async fn seal_fs(&self, fs: &str) -> super::Result<()> {
         self.zfs(&["set", "readonly=on", fs]).await?;
         Ok(())
     }
@@ -296,7 +316,25 @@ pub(super) async fn demote(
     State(storage): State<VolumeStorage>,
 ) -> Json<Result<StorageDeparture, RpcError>> {
     let now = chrono::Utc::now().timestamp();
-    Json(storage.demote_all(now).await.map_err(internal))
+    Json(
+        storage
+            .demote_all(now, Mirrors::Destroy)
+            .await
+            .map_err(internal),
+    )
+}
+
+/// A departure that keeps every mirror; see the module doc.
+pub(super) async fn seal(
+    State(storage): State<VolumeStorage>,
+) -> Json<Result<StorageDeparture, RpcError>> {
+    let now = chrono::Utc::now().timestamp();
+    Json(
+        storage
+            .demote_all(now, Mirrors::Keep)
+            .await
+            .map_err(internal),
+    )
 }
 
 fn departed_name(name: &str) -> super::Result<ployz_core::DockerVolumeName> {

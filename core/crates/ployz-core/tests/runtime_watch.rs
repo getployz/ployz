@@ -229,7 +229,9 @@ fn expected_frame() -> RuntimeWatchFrame {
                     memory_total_bytes: None,
                     running_builds: 0,
                     pool_committable_bytes: None,
+                    store_filesystem: None,
                     capabilities: BTreeSet::new(),
+                    management_identity: None,
                 },
                 build_concurrency: None,
                 },
@@ -325,6 +327,7 @@ fn container_observation() -> ContainerObservation {
         address: None,
         labels: Default::default(),
         stopped: false,
+        run: None,
     })
     .unwrap()
 }

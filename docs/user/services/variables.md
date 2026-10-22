@@ -10,7 +10,8 @@ your app always gets the database of the environment it runs in.
 ## Add a variable
 
 1. Open your service and go to the **Variables** tab.
-2. Click **New Variable**, and enter a **Key** and a **Value**.
+2. Click **New Variable**, and enter a **Key** and a **Value**. Keys use letters, digits and
+   underscores and can't start with a digit. Ployz uppercases what you type.
 3. Tick **Sealed** for a secret: you can't read it back or unseal it. Leave it unticked for a
    value you want to see, or one that holds a [reference](#reference-another-services-variable).
    Click **Add**.
@@ -132,7 +133,7 @@ reference to any variable either way.
 
 | Variable | Value |
 | --- | --- |
-| `PORT` | `8080`, unless you set it. Domains without a target port, and the health check of a service without domains, reach your app on this port. |
+| `PORT` | `8080`, unless you set it. Domains without a target port, and the healthcheck of a service without domains, reach your app on this port. |
 | `PLOYZ_PRIVATE_DOMAIN` | The service's [private address](private-networking.md), like `web.internal` |
 | `PLOYZ_SERVICE_NAME` | The service's private name, like `web` |
 | `PLOYZ_ENVIRONMENT_NAME` | The environment's name, like `production` |
@@ -156,6 +157,9 @@ can't reference it, and it replaces a variable of yours with that name.
   shares with its parent reads the parent's values.
 - **One CLI or agent change holds up to 4 MiB.** A larger `ployz set` or agent edit fails with
   `invalid_argument` and the limit. Split it into smaller changes.
+- **The CLI reads at most 32 MiB of an env file or a `--secret` on stdin.** A wrong path such
+  as `/dev/zero` fails at once with `invalid_argument`. Anything smaller is judged by the limits
+  here.
 - **A variable holds up to 128 KiB, name included.** Linux won't start a program with a longer
   one, so Ployz refuses such a value when you set it, and refuses a deploy where references
   make one longer. When a secret makes it longer, the Deployment fails before anything runs and

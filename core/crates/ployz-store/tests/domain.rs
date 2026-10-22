@@ -326,6 +326,10 @@ fn a_custom_domain_is_added_retargeted_and_held_by_one_service() {
         )
         .unwrap_err();
     assert_eq!(taken.code, RpcErrorCode::Conflict);
+    assert_eq!(
+        taken.message,
+        "Another Service already has app.example.com: web in shop/production"
+    );
 
     // Hostnames under the Cluster Domain are Ployz's to generate, never custom.
     for hostname in ["web.acme.ployz.app", "acme.ployz.app"] {
@@ -433,6 +437,7 @@ fn admit(
             upload: None,
             accept_volume_loss: Vec::new(),
             message: None,
+            prune: false,
         })),
         trusted,
     )
@@ -950,6 +955,7 @@ fn a_deploy_refuses_a_hostname_another_namespace_publishes_naming_its_owner() {
         upload: None,
         accept_volume_loss: Vec::new(),
         message: None,
+        prune: false,
     }));
     store.write_trusted(&who, &staging, &trusted).unwrap();
     let refused = admit(

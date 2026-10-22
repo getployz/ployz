@@ -62,14 +62,24 @@ impl Postgres {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .pop();
-        let mut client = match idle {
-            Some(client) if !client.is_closed() => client,
-            _ => self
-                .config
-                .connect(self.tls.clone())
-                .map_err(storage_error)?,
+        let (mut client, reused) = match idle {
+            Some(client) if !client.is_closed() => (client, true),
+            _ => (self.connect()?, false),
         };
-        let result = run(&mut client, write, work);
+        let result = match run(&mut client, write, work) {
+            Ok(result) => result,
+            // A restart closes every idle connection unnoticed until its next use: starting the
+            // transaction is that use, and nothing ran, so drop them all and start on a fresh one.
+            Err((error, work)) if reused && ended(&client, &error) => {
+                // Dropping a client waits for its connection to close, so it happens outside the lock.
+                let stale =
+                    std::mem::take(&mut *self.idle.lock().unwrap_or_else(PoisonError::into_inner));
+                drop(stale);
+                client = self.connect()?;
+                run(&mut client, write, work).unwrap_or_else(|(error, _)| Err(storage_error(error)))
+            }
+            Err((error, _)) => Err(storage_error(error)),
+        };
         if !client.is_closed() {
             let mut idle = self.idle.lock().unwrap_or_else(PoisonError::into_inner);
             if idle.len() < IDLE {
@@ -78,33 +88,62 @@ impl Postgres {
         }
         result
     }
+
+    fn connect(&self) -> Result<Client, RpcError> {
+        self.config.connect(self.tls.clone()).map_err(storage_error)
+    }
+}
+
+/// Whether `error` says the server ended `client`'s session, as a restart does: its socket
+/// closed, or its last message was a shutdown notice the client hasn't acted on yet.
+fn ended(client: &Client, error: &postgres::Error) -> bool {
+    client.is_closed()
+        || error.is_closed()
+        || error
+            .code()
+            .is_some_and(|code| [SqlState::ADMIN_SHUTDOWN, SqlState::CRASH_SHUTDOWN].contains(code))
 }
 
 /// Writers run read-committed and lock the rows they change (see `scope::lock`);
 /// readers see one snapshot.
-fn run<T>(
-    client: &mut Client,
-    write: bool,
-    work: impl FnOnce(&mut dyn Tx) -> Result<T, RpcError>,
-) -> Result<T, RpcError> {
+fn begin(client: &mut Client, write: bool) -> Result<postgres::Transaction<'_>, postgres::Error> {
     let isolation = if write {
         IsolationLevel::ReadCommitted
     } else {
         IsolationLevel::RepeatableRead
     };
-    let mut transaction = client
+    client
         .build_transaction()
         .isolation_level(isolation)
         .read_only(!write)
         .start()
-        .map_err(storage_error)?;
+}
+
+/// `work` in a transaction on `client`. If starting it fails (BEGIN or its timeouts), it hands
+/// `work` back unrun.
+fn run<T, W: FnOnce(&mut dyn Tx) -> Result<T, RpcError>>(
+    client: &mut Client,
+    write: bool,
+    work: W,
+) -> Result<Result<T, RpcError>, (postgres::Error, W)> {
+    let mut transaction = match begin(client, write) {
+        Ok(transaction) => transaction,
+        Err(error) => return Err((error, work)),
+    };
     // Per transaction, not as startup options: PgBouncer refuses those.
     let millis = TIMEOUT.as_millis();
-    transaction
-        .batch_execute(&format!(
-            "SET LOCAL statement_timeout = {millis}; SET LOCAL lock_timeout = {millis}"
-        ))
-        .map_err(storage_error)?;
+    if let Err(error) = transaction.batch_execute(&format!(
+        "SET LOCAL statement_timeout = {millis}; SET LOCAL lock_timeout = {millis}"
+    )) {
+        return Err((error, work));
+    }
+    Ok(finish(transaction, work))
+}
+
+fn finish<T>(
+    mut transaction: postgres::Transaction<'_>,
+    work: impl FnOnce(&mut dyn Tx) -> Result<T, RpcError>,
+) -> Result<T, RpcError> {
     // Dropping the transaction on an error rolls it back.
     let value = work(&mut PostgresTx(&mut transaction))?;
     transaction.commit().map_err(storage_error)?;

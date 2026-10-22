@@ -95,6 +95,26 @@ async fn partial_observations_reject_catch_up_before_any_placement() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn only_omissions_that_are_not_unarrived_block_catch_up() {
+    let joiner = machine('1', "joiner");
+    let peer = machine('f', "peer");
+    let claimed = machine('e', "claimed");
+    let mut client = fake(&joiner, Vec::new());
+    client.names = vec![
+        (peer.id, peer.name.clone()),
+        (claimed.id, claimed.name.clone()),
+    ];
+    client.unarrived = vec![(claimed.id, claimed.name.clone())];
+    client.omissions = vec![claimed.id];
+    catch_up(&mut client, &joiner).await.unwrap();
+
+    client.omissions.push(peer.id);
+    let message = message(catch_up(&mut client, &joiner).await.unwrap_err(), &joiner);
+    assert!(message.contains("peer: no terminal response"), "{message}");
+    assert!(!message.contains("claimed"), "{message}");
+}
+
+#[tokio::test(start_paused = true)]
 async fn partial_observation_is_retried_in_run() {
     let joiner = machine('1', "joiner");
     let founder = machine('f', "founder");
@@ -483,7 +503,10 @@ async fn interruption_settles_started_work_and_only_reports_unresolved_globals()
         let error = catch_up_globals(&mut client, &joiner, &cancel, |fact| match fact {
             CatchUpFact::Creating(_) => cancel.cancel(),
             CatchUpFact::Running(service) => running.push(service),
-            CatchUpFact::Identified(_) | CatchUpFact::Excluded(_) | CatchUpFact::Failed(_) => {}
+            CatchUpFact::Identified(_)
+            | CatchUpFact::Excluded(_)
+            | CatchUpFact::Failed(_)
+            | CatchUpFact::NotArrived(_) => {}
         })
         .await
         .unwrap_err();
@@ -524,6 +547,7 @@ struct FakeCatchUpClient {
     failures: Vec<ployz_core::MachineFailure<RpcError>>,
     omissions: Vec<MachineId>,
     names: crate::drain::retirement::Names,
+    unarrived: crate::drain::retirement::Names,
     relisted: Option<Vec<ServiceObservation>>,
     listings: u32,
 }
@@ -542,6 +566,7 @@ fn fake(joiner: &Machine, services: Vec<ServiceObservation>) -> FakeCatchUpClien
         failures: Vec::new(),
         omissions: Vec::new(),
         names: Vec::new(),
+        unarrived: Vec::new(),
         relisted: None,
         listings: 0,
     }
@@ -556,9 +581,7 @@ fn flatten(services: &[ServiceObservation]) -> Vec<ContainerObservation> {
 }
 
 impl CatchUpClient for FakeCatchUpClient {
-    async fn live_services(
-        &mut self,
-    ) -> Result<(LiveServices<RpcError>, crate::drain::retirement::Names), Failure> {
+    async fn live_services(&mut self) -> Result<Observed, Failure> {
         self.listings += 1;
         let (services, failures, omissions) = match &self.relisted {
             Some(relisted) if self.listings > 1 => (relisted, Vec::new(), Vec::new()),
@@ -578,7 +601,11 @@ impl CatchUpClient for FakeCatchUpClient {
                 omissions,
             },
         };
-        Ok((live, self.names.clone()))
+        Ok(Observed {
+            live,
+            names: self.names.clone(),
+            unarrived: self.unarrived.clone(),
+        })
     }
 
     async fn bridge_capacity(

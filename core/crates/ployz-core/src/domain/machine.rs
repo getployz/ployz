@@ -12,8 +12,8 @@ use serde::{Deserialize, Serialize};
 use super::NameMatches;
 use crate::{
     AdvertisedEndpoint, FanoutSelector, MachineId, MachineLabelKey, MachineLabelValue, MachineName,
-    MachineSubnet, MachineTarget, ManagementAddress, Placement, SelectedEndpoint, ValueError,
-    WireGuardPublicKey,
+    MachineSubnet, MachineTarget, ManagementAddress, ManagementIdentity, Placement,
+    SelectedEndpoint, ValueError, WireGuardPublicKey,
 };
 
 pub(super) fn resolve_machine_text<'a>(
@@ -140,11 +140,22 @@ pub struct MachineRuntime {
     /// never persisted. Absent when unobserved and from older daemons.
     #[ts(optional = nullable)]
     pub pool_committable_bytes: Option<u64>,
+    /// Filesystem type under the daemon's replicated state, such as `ext4` or `zfs`, or
+    /// its magic number in hex when the daemon does not name it. Absent when unobserved
+    /// and from older daemons.
+    #[ts(optional = nullable)]
+    pub store_filesystem: Option<String>,
     /// Every capability name the daemon binary serves. Empty from a daemon
     /// that predates the field, and when an older entry relays a newer peer's
     /// record, so empty claims nothing.
     #[ts(as = "Option<BTreeSet<String>>", optional)]
     pub capabilities: BTreeSet<String>,
+    /// The daemon's Management Identity as 64 hex digits, so a member can tell a
+    /// Machine that asks whether the Cluster forgot it. Absent from a record written
+    /// by a daemon that predates the field, so absence claims nothing.
+    #[serde(default, with = "crate::management_identity_hex")]
+    #[ts(skip)]
+    pub management_identity: Option<ManagementIdentity>,
 }
 
 /// How many Builds one Machine runs at once.
@@ -652,6 +663,17 @@ impl MachineObservation {
         )
     }
 
+    /// An Unarrived Machine: omitted, never recorded by this observer's admin, and with
+    /// no daemon version in its row. Cloud's Register writes an empty runtime, and a
+    /// daemon publishes its own row, version included, only once it participates, so
+    /// this observer has no sign the Machine ever ran or held a Service Container.
+    #[must_use]
+    pub fn unarrived(&self) -> bool {
+        !self.invites_rpc()
+            && self.membership_evidence.is_none()
+            && self.machine.runtime.daemon_version.is_empty()
+    }
+
     /// Start an observer-relative Machine view with optional observations absent.
     #[must_use]
     pub fn new(machine: Machine, membership: MembershipObservation) -> Self {
@@ -883,7 +905,8 @@ mod placement_tests {
     use crate::{MachineId, MachineName, MachineSubnet, Placement, WireGuardPublicKey};
 
     use super::{
-        BuildConcurrency, BuildConcurrencyUpdate, Machine, MachineUpdate, machine_matches_placement,
+        BuildConcurrency, BuildConcurrencyUpdate, Machine, MachineObservation, MachineUpdate,
+        MembershipEvidence, MembershipObservation, machine_matches_placement,
     };
 
     fn machine(hex: char, name: &str) -> Machine {
@@ -965,6 +988,25 @@ mod placement_tests {
     }
 
     #[test]
+    fn only_an_omitted_row_with_no_sign_of_running_is_unarrived() {
+        let registered =
+            MachineObservation::new(machine('a', "claimed"), MembershipObservation::Down);
+        assert!(registered.unarrived());
+
+        let mut recorded = registered.clone();
+        recorded.membership_evidence = Some(MembershipEvidence::Down);
+        assert!(!recorded.unarrived(), "the admin recorded it, even as Down");
+
+        let mut published = registered.clone();
+        published.machine.runtime.daemon_version = "0.3.0".into();
+        assert!(!published.unarrived(), "the Machine published its own row");
+
+        let mut answering = registered;
+        answering.membership = MembershipObservation::Up;
+        assert!(!answering.unarrived(), "it invites RPC");
+    }
+
+    #[test]
     fn empty_placement_matches_every_machine() {
         let first = machine('a', "first");
         assert!(machine_matches_placement(&first, &Placement::default()));
@@ -1013,6 +1055,42 @@ mod machine_runtime_capabilities_tests {
         let runtime: MachineRuntime =
             serde_json::from_value(json!({ "daemon_version": "0.2.4" })).unwrap();
         assert!(runtime.capabilities.is_empty());
+        assert_eq!(runtime.store_filesystem, None);
+    }
+
+    #[test]
+    fn runtime_store_filesystem_round_trips() {
+        let runtime: MachineRuntime = serde_json::from_value(json!({
+            "daemon_version": "0.3.0",
+            "store_filesystem": "zfs",
+        }))
+        .unwrap();
+        assert_eq!(runtime.store_filesystem.as_deref(), Some("zfs"));
+        let encoded = serde_json::to_value(&runtime).unwrap();
+        assert_eq!(
+            serde_json::from_value::<MachineRuntime>(encoded).unwrap(),
+            runtime
+        );
+    }
+
+    /// A row written by a daemon that encodes the identity differently must still load
+    /// as a Machine; an identity this daemon cannot read claims nothing, like none.
+    #[test]
+    fn runtime_with_an_unreadable_management_identity_decodes_to_none() {
+        for unreadable in [
+            json!("not-hex"),
+            json!([]),
+            json!({}),
+            json!(7),
+            json!(true),
+        ] {
+            let runtime: MachineRuntime = serde_json::from_value(json!({
+                "daemon_version": "0.3.2",
+                "management_identity": unreadable,
+            }))
+            .unwrap();
+            assert_eq!(runtime.management_identity, None, "{unreadable}");
+        }
     }
 
     #[test]

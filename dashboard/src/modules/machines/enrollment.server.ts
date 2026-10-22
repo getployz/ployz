@@ -4,8 +4,9 @@ import { isDeepStrictEqual } from "node:util";
 import type { EncryptedSecretValue } from "#/db/tables";
 import { allocateEnrollment, type EnrollmentSnapshot, type MachineId, type MachineName, type RegisterRequest } from "@ployz/sdk";
 import { and, eq, gt, isNull, lt, ne, or, type SQL, sql } from "drizzle-orm";
-import { Effect, Option, Schema } from "effect";
+import { Cause, Effect, Option, Schema } from "effect";
 import {
+  clusterSealingKey,
   enrollmentAllocation,
   organizationMachine,
   machineEnrollmentToken as schemaMachineEnrollmentToken,
@@ -13,7 +14,7 @@ import {
 import { organizationPairing as schemaOrganizationPairing } from "#/modules/runtime/tables";
 import type { Actor } from "#/modules/identity/actor";
 import { requireAccess, requireAccessById } from "#/modules/organization/access.server";
-import { Ployz, ployzVersion } from "#/modules/runtime/ployz.server";
+import { Ployz, type PloyzProviderError, ployzVersion, RpcError } from "#/modules/runtime/ployz.server";
 import { ClusterOutOfTime, clusterRead, OrganizationRuntime, SESSION_CLOSE_CLUSTER_MS, withClusterBudget } from "#/modules/runtime/organization-runtime.server";
 import { PostHog } from "#/modules/analytics/posthog.server";
 import {
@@ -29,6 +30,7 @@ import {
   waitForJoinSlot,
   type EnrollmentIdentity,
   type EnrollmentCallback,
+  type EnrollmentCallbackSealing,
   type CliMintMachineEnrollmentInput,
   type CliResetPendingEnrollmentInput,
   type MintMachineEnrollmentInput,
@@ -60,6 +62,20 @@ export const CLUSTER_UNREACHABLE = "This Organization's Servers can't be reached
   + "or use Forget Servers in the dashboard.";
 
 const unreachable = () => new Conflict({ message: CLUSTER_UNREACHABLE, userFacing: true });
+
+/** A founding stage's answer while Cloud can't reach the Server; the Server retries it until its own wait ends. */
+const cantReachServer = (cause: unknown) => new Unavailable({
+  message: "Cloud can't reach this Server through the relay or directly.", userFacing: true, cause,
+});
+
+/**
+ * A connect no Server answered becomes `cantReachServer`: Cloud's timeout ran out, or the SDK says the dial failed, got
+ * no status back, or the entry couldn't dial the Server. A Server that refused keeps its error, since retrying won't help.
+ */
+const unlessAnswered = (error: PloyzProviderError | Cause.TimeoutError) =>
+  Cause.isTimeoutError(error) || (error.cause instanceof RpcError && (error.cause.unanswered || error.cause.targetUnreached))
+    ? cantReachServer(error)
+    : error;
 
 export function hashEnrollmentToken(token: string) {
   return crypto.createHash("sha256").update(token).digest("hex");
@@ -665,14 +681,18 @@ export const enrollMachine = Effect.fn("MachineEnrollment.enrollMachine")(
           identity: request, snapshot,
         });
       }));
-      return { session, assignment };
+      return { session, snapshot, assignment };
     });
     return yield* Effect.scoped(Effect.gen(function* () {
-      const { session, assignment } = yield* prepareJoin.pipe(
+      const { session, snapshot, assignment } = yield* prepareJoin.pipe(
         Effect.onError(() => releaseUnsentJoinSlot(input.token, input.identity.machineId, token.organizationId, pairing.secret)),
       );
+      // A row with a daemon version was published by the Machine itself: it joined, and a Register would blank it.
+      const joined = snapshot.machines.find((machine) => machine.id === assignment.machine.id && machine.runtime.daemon_version !== "");
       // The assignment commits before dispatch; a lost response is never replayed.
-      const registration = yield* session.register(assignment);
+      const registration = joined
+        ? { assigned_machine: joined, visible_peers: snapshot.machines.filter((machine) => machine !== joined), target_versions: snapshot.target_versions }
+        : yield* session.register(assignment);
       return { kind: "join" as const, pairing, storage: request.storage, registration };
     }));
   },
@@ -762,11 +782,12 @@ export const publishMachineEnrollment = Effect.fn("MachineEnrollment.publishCand
     }));
     const expectedIv = yield* publish();
     if (expectedIv !== null) {
-      // Shared negotiation confirms the intended Machine; no SQL lock spans the network call.
+      // Shared negotiation confirms the intended Machine; no SQL lock spans the network call. Cloud times the connect
+      // itself, since the SDK's own deadline fails like any cancellation.
       yield* Effect.scoped(Effect.gen(function* () {
         yield* (yield* Ployz).connect({
-          connections: [{ machine_id: input.machineId, management: input.capability }], timeoutMs: 10_000,
-        }, { closeWithin: clusterRead });
+          connections: [{ machine_id: input.machineId, management: input.capability }],
+        }, { closeWithin: clusterRead }).pipe(Effect.timeout(SERVER_REACH_TIMEOUT_MS), Effect.mapError(unlessAnswered));
         yield* publish(expectedIv);
       })).pipe(withClusterBudget(SESSION_CLOSE_CLUSTER_MS));
     }
@@ -813,13 +834,18 @@ export const completeMachineEnrollment = Effect.fn(
     if (!candidate) {
       return yield* new Conflict({ message: "Publish the Machine connection before completion." });
     }
-    // Shared negotiation verifies machine_id before this transaction can make it ready.
+    // Shared negotiation verifies machine_id before this transaction can make it ready. Bounded so the Server hears why.
     yield* Effect.scoped(Effect.gen(function* () {
-      const opened = yield* (yield* OrganizationRuntime).open(token.organizationId, machineId);
-      if (opened.status !== "connected") {
-        return yield* new Unavailable({ message: "Cloud can't reach this Server yet.", userFacing: true, cause: opened });
+      const opened = yield* (yield* OrganizationRuntime).open(token.organizationId, { only: machineId });
+      if (opened.status === "unreachable" && opened.error?.cause instanceof RpcError && unlessAnswered(opened.error) === opened.error) {
+        // Still retryable, as every failed completion is, but a Server that answered isn't blamed on the relay.
+        return yield* new Unavailable({ message: "This Server refused Cloud's connection.", userFacing: true, cause: opened.error });
       }
-    }));
+      if (opened.status !== "connected") return yield* cantReachServer(opened);
+    })).pipe(
+      Effect.catchIf((error) => error instanceof ClusterOutOfTime, (error) => Effect.fail(cantReachServer(error))),
+      withClusterBudget(SERVER_REACH_TIMEOUT_MS),
+    );
 
     const database = yield* Database;
     if (row.founderClaimMachineId !== machineId) {
@@ -831,6 +857,7 @@ export const completeMachineEnrollment = Effect.fn(
           return yield* new Conflict({ message: "The enrollment attempt is no longer current." });
         }
         yield* requireEnrollmentMachine(token.organizationId, current, pairing.secret, machineId, token.claimedPublicKey);
+        yield* recordSealing(token.organizationId, hashEnrollmentToken(pairing.secret), machineId, input.sealing);
       }));
       yield* recordJoined(input.token, machineId, { founder: false });
       yield* reportAttemptCompleted(token.serverEnrollmentId);
@@ -840,6 +867,7 @@ export const completeMachineEnrollment = Effect.fn(
     yield* database.transaction(Effect.gen(function* () {
       yield* commitFounder(token.organizationId, machineId, row.encryptedPairingSecret);
       yield* requireTokenClaimedBy(input.token, machineId);
+      yield* recordSealing(token.organizationId, hashEnrollmentToken(pairing.secret), machineId, input.sealing);
     }));
     // A Cluster Domain that survived teardown points at the founder once the sync reads the runtime frame;
     // completion never sees the founder's IP, and the hourly sync covers a lost event.
@@ -855,6 +883,31 @@ export const completeMachineEnrollment = Effect.fn(
     return { machineId };
   },
 );
+
+/**
+ * Keeps the first Sealing public key a Machine of this pairing generation reports. A later different key is an
+ * error to surface, never a replacement; a Machine without the key is only logged.
+ */
+const recordSealing = Effect.fn("MachineEnrollment.recordSealing")(function* (
+  organizationId: string, clusterKey: string, machineId: MachineId, sealing: EnrollmentCallbackSealing | undefined,
+) {
+  if (sealing === undefined) return;
+  const annotations = { organizationId, machineId };
+  if (sealing.kind === "needs_access") {
+    return yield* Effect.logWarning("A Server joined without its Cluster's Sealing Key.").pipe(Effect.annotateLogs(annotations));
+  }
+  const { drizzle } = yield* Database;
+  yield* drizzle.insert(clusterSealingKey).values({ organizationId, clusterKey, publicKey: sealing.publicKey }).onConflictDoNothing();
+  const [recorded] = yield* drizzle.select({ publicKey: clusterSealingKey.publicKey }).from(clusterSealingKey).where(and(
+    eq(clusterSealingKey.organizationId, organizationId),
+    eq(clusterSealingKey.clusterKey, clusterKey),
+  ));
+  if (recorded !== undefined && recorded.publicKey !== sealing.publicKey) {
+    yield* Effect.logError("A Server reported a Sealing Key unlike the one its Cluster first reported.").pipe(
+      Effect.annotateLogs({ ...annotations, recorded: recorded.publicKey, reported: sealing.publicKey }),
+    );
+  }
+});
 
 const reportAttemptCompleted = Effect.fn("MachineEnrollment.reportAttemptCompleted")(
   function* (serverEnrollmentId: string | null) {

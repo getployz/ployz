@@ -27,12 +27,23 @@ EOF
 cat > "$TMP/bin/curl" <<'EOF'
 #!/bin/sh
 echo "$*" >> "${FAKE_CURL_LOG:-/dev/null}"
+write_out=
 while [ "$#" -gt 0 ]; do
-    if [ "$1" = -o ]; then output=$2; shift 2; else url=$1; shift; fi
+    case "$1" in
+        -o) output=$2; shift 2 ;;
+        -w) write_out=1; shift 2 ;;
+        *) url=$1; shift ;;
+    esac
 done
 src="$FAKE_RELEASE/${url##*/}"
-[ -f "$src" ] || exit 1
+# Like curl: without -f a missing file is a 404 it reports through -w; with -f it fails.
+if [ ! -f "$src" ]; then
+    [ -n "$write_out" ] || exit 22
+    printf 404
+    exit 0
+fi
 cp "$src" "$output"
+[ -z "$write_out" ] || printf 200
 EOF
 chmod 0755 "$TMP/bin/uname" "$TMP/bin/curl"
 
@@ -88,6 +99,33 @@ for case in 'stable:stable channel is unavailable' 'latest:Invalid version' \
     fi
     grep -Fq "${case#*:}" "$TMP/error"
 done
+
+# A version with no release says so, and a missing install directory is named before any download.
+if PATH="$TMP/bin:$PATH" FAKE_OS=Linux FAKE_ARCH=x86_64 FAKE_RELEASE="$TMP/nonexistent" \
+    INSTALL_BIN_DIR="$TMP/install" PLOYZ_GITHUB_URL=https://example.invalid \
+    sh "$ROOT/install.sh" 0.3.0-beta.99 > "$TMP/error" 2>&1; then
+    echo "installed a release that doesn't exist" >&2
+    exit 1
+fi
+grep -Fqx "ERROR: There's no Ployz release 0.3.0-beta.99. Releases: https://example.invalid/releases" "$TMP/error"
+: > "$FAKE_CURL_LOG"
+if PATH="$TMP/bin:$PATH" FAKE_OS=Linux FAKE_ARCH=x86_64 FAKE_RELEASE="$TMP/release" FAKE_CURL_LOG="$FAKE_CURL_LOG" \
+    INSTALL_BIN_DIR="$TMP/nonexistent" PLOYZ_GITHUB_URL=https://example.invalid \
+    sh "$ROOT/install.sh" 1.2.3 > "$TMP/error" 2>&1; then
+    echo "installed into a missing directory" >&2
+    exit 1
+fi
+grep -Fq "$TMP/nonexistent is not a directory" "$TMP/error"
+[ ! -s "$FAKE_CURL_LOG" ]
+# Real curl over file://, as verify-release.sh installs: it reports status 000 on success.
+mkdir -p "$TMP/real-curl-bin"
+cp "$TMP/bin/uname" "$TMP/real-curl-bin/uname"
+pack_release 1.2.3
+mkdir -p "$TMP/mirror/releases/download/v1.2.3" "$TMP/mirror-install"
+cp "$TMP/release/ployz_linux_amd64.tar.gz" "$TMP/release/checksums.txt" "$TMP/mirror/releases/download/v1.2.3/"
+PATH="$TMP/real-curl-bin:$PATH" FAKE_OS=Linux FAKE_ARCH=x86_64 INSTALL_BIN_DIR="$TMP/mirror-install" \
+    PLOYZ_GITHUB_URL="file://$TMP/mirror" sh "$ROOT/install.sh" 1.2.3 > /dev/null
+[ "$("$TMP/mirror-install/ployz" --version)" = 1.2.3 ]
 
 # Missing and mismatched binaries must fail before replacing the installed one.
 for defect in missing wrong-version; do
@@ -236,7 +274,10 @@ grep -Fq 'Run it as root: curl -fsSL https://ployz.sh | sudo sh -s -- 1.2.3 --en
 [ ! -e "$TMP/install/ployz" ]
 [ ! -e "$FLEET_TOKEN_FILE" ]
 
-for value in "${TOKEN%?}" "${TOKEN}0" "${TOKEN%?}!" cet_abc123 PFLT_abc123; do
+for case in "${TOKEN%?}:this one is 47 characters" "${TOKEN}0:this one is 49 characters" \
+    "${TOKEN%?}!:this one has other characters" "PFLT_${TOKEN#pflt_}:this one has other characters" \
+    "cet_abc123:this one is 10 characters"; do
+    value=${case%%:*}
     for flag in '' --enroll; do
         printf '%s\n' "$value" > "$TMP/dev/tty"
         if [ -n "$flag" ]; then
@@ -245,7 +286,8 @@ for value in "${TOKEN%?}" "${TOKEN}0" "${TOKEN%?}!" cet_abc123 PFLT_abc123; do
             echo "accepted $value" >&2
             exit 1
         fi
-        grep -Fq "That isn't a Fleet Token" "$TMP/err"
+        grep -Fqx "ERROR: A Fleet Token is pflt_ and 43 more letters, digits, - or _; ${case#*:}. Copy it again." "$TMP/err"
+        if grep -Fq "$value" "$TMP/err"; then echo "printed $value" >&2; exit 1; fi
         [ ! -e "$TMP/install/ployz" ]
         [ ! -e "$FLEET_TOKEN_FILE" ]
     done

@@ -1,3 +1,4 @@
+// The one map from features to Server capabilities. Cloud code names a capability, never a release number.
 import type { CapabilityName } from "@ployz/sdk/capabilities";
 import { Data } from "effect";
 
@@ -17,6 +18,13 @@ export const requirements = {
   ensureContainer: { capability: "ployz.container.ensure.v1", feature: "Deploys", plural: true },
   metrics: { capability: "ployz.metrics.history.v1", feature: "Metrics", plural: true },
 } as const satisfies Record<string, Requirement>;
+
+/**
+ * A Move's destination starts the moved Service and routes it. No row names that; it shipped in the release that added
+ * `SetVolumeSize`, so that row is its evidence. A Server without it takes the data, then never routes the copy. It sits
+ * outside `requirements`, so a Server refusing `SetVolumeSize` is still named for a resize.
+ */
+export const movedRouting: Requirement = { capability: requirements.volumeSize.capability, feature: "Volume move" };
 
 export function requirementFor(capability: string): Requirement | null {
   return Object.values(requirements).find((requirement) => requirement.capability === capability) ?? null;

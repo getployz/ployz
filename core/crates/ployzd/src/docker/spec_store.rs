@@ -140,6 +140,85 @@ impl MachineSpecStore {
             .collect()
     }
 
+    /// Whether a spec of Service `service_id` names a Container `present` lacks.
+    pub(super) async fn holds_absent(
+        &self,
+        present: Vec<ContainerId>,
+        service_id: String,
+    ) -> Result<bool, Error> {
+        let path = self.path.clone();
+        let absent = blocking(move || {
+            let present = present
+                .iter()
+                .map(ContainerId::as_str)
+                .collect::<HashSet<_>>();
+            let connection = connect(&path)?;
+            let mut statement = connection.prepare("SELECT id, service_spec FROM containers")?;
+            let rows = statement
+                .query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(rows
+                .into_iter()
+                .filter(|(id, _)| !present.contains(id.as_str()))
+                .map(|(_, spec)| spec)
+                .collect::<Vec<_>>())
+        })
+        .await?;
+        for encoded in absent {
+            let spec: ResolvedServiceSpec = serde_json::from_str(&encoded)?;
+            if spec.service_id.as_str() == service_id {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    /// Those of `container_ids` with a spec and no recorded rotation.
+    pub(super) async fn unrotated(
+        &self,
+        container_ids: Vec<ContainerId>,
+    ) -> Result<Vec<ContainerId>, Error> {
+        let path = self.path.clone();
+        blocking(move || {
+            let connection = connect(&path)?;
+            let mut statement = connection.prepare(
+                "SELECT EXISTS (SELECT 1 FROM containers WHERE id = ?1) AND NOT EXISTS (SELECT 1 FROM rotations WHERE id = ?1)",
+            )?;
+            let mut unrotated = Vec::new();
+            for container_id in container_ids {
+                if statement.query_row([container_id.to_string()], |row| row.get::<_, bool>(0))? {
+                    unrotated.push(container_id);
+                }
+            }
+            Ok(unrotated)
+        })
+        .await
+    }
+
+    /// Those of `container_ids` whose spec stores no Healthcheck.
+    pub(super) async fn without_healthcheck(
+        &self,
+        container_ids: Vec<ContainerId>,
+    ) -> Result<Vec<ContainerId>, Error> {
+        let path = self.path.clone();
+        blocking(move || {
+            let connection = connect(&path)?;
+            let mut statement = connection.prepare(
+                "SELECT EXISTS (SELECT 1 FROM containers WHERE id = ?1 AND json_extract(service_spec, '$.container.healthcheck') IS NULL)",
+            )?;
+            let mut without = Vec::new();
+            for container_id in container_ids {
+                if statement.query_row([container_id.to_string()], |row| row.get::<_, bool>(0))? {
+                    without.push(container_id);
+                }
+            }
+            Ok(without)
+        })
+        .await
+    }
+
     /// The run this Machine last stopped for a `Stopped` want, if any.
     pub async fn stopped_run(
         &self,
@@ -252,6 +331,69 @@ impl ConfigOperation<'_> {
         .await?;
         self.store.rotations.send_replace(());
         Ok(())
+    }
+
+    /// Record In for each listed Container that has a spec and no rotation yet.
+    pub(super) async fn adopt_unrotated(
+        &mut self,
+        container_ids: Vec<ContainerId>,
+    ) -> Result<(), Error> {
+        let path = self.store.path.clone();
+        let rotation = serde_json::to_string(&CopyRotation::In)?;
+        blocking(move || {
+            let mut connection = connect(&path)?;
+            let transaction = connection.transaction()?;
+            for container_id in container_ids {
+                transaction.execute(
+                    "INSERT INTO rotations (id, rotation) SELECT id, ?2 FROM containers WHERE id = ?1 ON CONFLICT (id) DO NOTHING",
+                    params![container_id.to_string(), rotation],
+                )?;
+            }
+            transaction.commit()?;
+            Ok(())
+        })
+        .await
+    }
+
+    /// Adopt each listed Container's spec per [`ResolvedServiceSpec::adopt_unprobed`].
+    /// Returns whether any spec changed.
+    pub(super) async fn adopt_unprobed(
+        &mut self,
+        container_ids: Vec<ContainerId>,
+    ) -> Result<bool, Error> {
+        let path = self.store.path.clone();
+        blocking(move || {
+            let mut connection = connect(&path)?;
+            let transaction = connection.transaction()?;
+            let mut adopted = false;
+            for container_id in container_ids {
+                let container_id = container_id.to_string();
+                let Some(encoded) = transaction
+                    .query_row(
+                        "SELECT service_spec FROM containers WHERE id = ?1",
+                        [&container_id],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .optional()?
+                else {
+                    continue;
+                };
+                // Listing skips a spec it cannot decode; it must not stop the others.
+                let Ok(mut spec) = serde_json::from_str::<ResolvedServiceSpec>(&encoded) else {
+                    continue;
+                };
+                if spec.adopt_unprobed() {
+                    transaction.execute(
+                        "UPDATE containers SET service_spec = ?2 WHERE id = ?1",
+                        params![container_id, serde_json::to_string(&spec)?],
+                    )?;
+                    adopted = true;
+                }
+            }
+            transaction.commit()?;
+            Ok(adopted)
+        })
+        .await
     }
 
     /// Record that this Machine stopped `run` for a `Stopped` want, and republish
@@ -644,6 +786,7 @@ mod tests {
     };
 
     use ployz_core::{ContainerId, DockerVolumeName, ResolvedServiceSpec, VolumeGen};
+    use rusqlite::{Connection, params};
     use serde_json::json;
 
     use super::{MachineSpecStore, connect};
@@ -802,6 +945,270 @@ mod tests {
         assert_eq!(observed.copy_gen(), Gen::FIRST);
     }
 
+    #[tokio::test]
+    async fn a_copy_created_before_rotation_existed_is_in_until_a_rotation_is_written() {
+        use crate::docker::{LABEL_GEN, test_support::runtime_with_running_container};
+        use ployz_core::{CopyRotation, MachineId};
+
+        let (runtime, fake, id) = runtime_with_running_container().await;
+        fake.existing_container
+            .lock()
+            .unwrap()
+            .as_mut()
+            .unwrap()
+            .pointer_mut("/Config/Labels")
+            .unwrap()
+            .as_object_mut()
+            .unwrap()
+            .remove(LABEL_GEN)
+            .unwrap();
+        let machine = MachineId::random();
+        let rotation = || async {
+            let [observed] = runtime
+                .list_managed(&machine)
+                .await
+                .unwrap()
+                .try_into()
+                .unwrap();
+            observed.rotation().clone()
+        };
+
+        assert_eq!(rotation().await, CopyRotation::In);
+        assert_eq!(
+            runtime.rotation_turn(&id).await.unwrap().rotation(),
+            &CopyRotation::In
+        );
+        runtime
+            .rotation_turn(&id)
+            .await
+            .unwrap()
+            .write(&CopyRotation::Out)
+            .await
+            .unwrap();
+        assert_eq!(rotation().await, CopyRotation::Out);
+    }
+
+    /// A running Service Container stored with no Healthcheck, created by a daemon from
+    /// before rotation, so it carries no gen label.
+    async fn unstamped_copy_with_no_healthcheck() -> (
+        crate::docker::ContainerRuntime,
+        crate::docker::test_support::FakeDocker,
+        ContainerId,
+    ) {
+        use crate::docker::{LABEL_GEN, test_support::runtime_with_running_container};
+
+        let (runtime, fake, id) = runtime_with_running_container().await;
+        edit_config(&fake, |config| {
+            labels(config).remove(LABEL_GEN).unwrap();
+        });
+        assert_eq!(stored_healthcheck(&runtime, &id).await, None);
+        (runtime, fake, id)
+    }
+
+    fn edit_config(
+        fake: &crate::docker::test_support::FakeDocker,
+        edit: impl FnOnce(&mut serde_json::Map<String, serde_json::Value>),
+    ) {
+        let mut container = fake.existing_container.lock().unwrap();
+        edit(
+            container
+                .as_mut()
+                .unwrap()
+                .pointer_mut("/Config")
+                .unwrap()
+                .as_object_mut()
+                .unwrap(),
+        );
+    }
+
+    fn labels(
+        config: &mut serde_json::Map<String, serde_json::Value>,
+    ) -> &mut serde_json::Map<String, serde_json::Value> {
+        config
+            .get_mut("Labels")
+            .and_then(serde_json::Value::as_object_mut)
+            .unwrap()
+    }
+
+    async fn stored_healthcheck(
+        runtime: &crate::docker::ContainerRuntime,
+        id: &ContainerId,
+    ) -> Option<ployz_core::HealthcheckSpec> {
+        runtime
+            .specs
+            .get(id)
+            .await
+            .unwrap()
+            .unwrap()
+            .container
+            .healthcheck
+    }
+
+    async fn listed_healthcheck(
+        runtime: &crate::docker::ContainerRuntime,
+    ) -> Option<ployz_core::HealthcheckSpec> {
+        let [observed] = runtime
+            .list_managed(&ployz_core::MachineId::random())
+            .await
+            .unwrap()
+            .try_into()
+            .unwrap();
+        observed.resolved_spec.container.healthcheck.clone()
+    }
+
+    #[tokio::test]
+    async fn an_unstamped_copy_with_no_healthcheck_is_disabled_while_no_probe_runs() {
+        let (runtime, _fake, id) = unstamped_copy_with_no_healthcheck().await;
+        let republished = runtime.specs.subscribe_rotations();
+
+        assert_eq!(
+            listed_healthcheck(&runtime).await,
+            Some(ployz_core::HealthcheckSpec::Disabled)
+        );
+        assert!(republished.has_changed().unwrap());
+        assert_eq!(
+            stored_healthcheck(&runtime, &id).await,
+            Some(ployz_core::HealthcheckSpec::Disabled)
+        );
+    }
+
+    #[tokio::test]
+    async fn an_unstamped_copy_with_no_healthcheck_keeps_it_while_the_image_probe_runs() {
+        let (runtime, fake, _id) = unstamped_copy_with_no_healthcheck().await;
+        edit_config(&fake, |config| {
+            config.insert(
+                "Healthcheck".into(),
+                serde_json::json!({"Test": ["CMD-SHELL", "pg_isready"]}),
+            );
+        });
+
+        assert_eq!(listed_healthcheck(&runtime).await, None);
+    }
+
+    #[tokio::test]
+    async fn a_system_copy_with_no_healthcheck_keeps_it() {
+        use crate::docker::LABEL_NAMESPACE;
+
+        let (runtime, fake, _id) = unstamped_copy_with_no_healthcheck().await;
+        edit_config(&fake, |config| {
+            labels(config).insert(
+                LABEL_NAMESPACE.into(),
+                ployz_core::Namespace::system().to_string().into(),
+            );
+        });
+
+        assert_eq!(listed_healthcheck(&runtime).await, None);
+    }
+
+    /// A keyed create retried with the same request must still match what it stored.
+    #[tokio::test]
+    async fn a_copy_this_daemon_created_keeps_the_healthcheck_it_was_asked_for() {
+        use crate::docker::test_support::runtime_with_running_container;
+
+        let (runtime, _fake, _id) = runtime_with_running_container().await;
+
+        assert_eq!(listed_healthcheck(&runtime).await, None);
+    }
+
+    /// 0.3.0-beta.1 through beta.6 stored Disabled before the gen label shipped.
+    #[tokio::test]
+    async fn an_unstamped_copy_stored_disabled_is_left_as_it_was() {
+        let (runtime, _fake, id) = unstamped_copy_with_no_healthcheck().await;
+        let mut spec = runtime.specs.get(&id).await.unwrap().unwrap();
+        spec.container.healthcheck = Some(ployz_core::HealthcheckSpec::Disabled);
+        write_stored(&runtime, &id, &serde_json::to_string(&spec).unwrap());
+        let stored = read_stored(&runtime, &id);
+        let republished = runtime.specs.subscribe_rotations();
+
+        assert_eq!(
+            listed_healthcheck(&runtime).await,
+            Some(ployz_core::HealthcheckSpec::Disabled)
+        );
+        assert!(!republished.has_changed().unwrap());
+        assert_eq!(read_stored(&runtime, &id), stored);
+    }
+
+    #[tokio::test]
+    async fn a_sync_adopts_each_unstamped_copy_whose_spec_decodes() {
+        use crate::docker::LABEL_GEN;
+        use crate::docker::test_support::{
+            FakeDocker, container_request, fake_runtime_with, machine, spec_with_sources,
+        };
+        use ployz_core::{ContainerKind, Namespace};
+
+        let containers = std::sync::Arc::default();
+        let (runtime, _fake) = fake_runtime_with(FakeDocker {
+            named_containers: Some(std::sync::Arc::clone(&containers)),
+            list_named: true,
+            ..Default::default()
+        })
+        .await;
+        let machine = machine();
+        let namespace = Namespace::parse("app").unwrap();
+        let mut ids = Vec::new();
+        for _ in 0..2 {
+            let spec = spec_with_sources(Vec::new());
+            let request = container_request(
+                ContainerKind::ServiceContainer,
+                &namespace,
+                &spec,
+                std::future::ready(None),
+            );
+            ids.push(
+                runtime
+                    .create_with_admission::<_, _, crate::docker::Error>(&machine, request)
+                    .await
+                    .unwrap()
+                    .container_id,
+            );
+        }
+        for container in containers.lock().unwrap().values_mut() {
+            container
+                .pointer_mut("/Config/Labels")
+                .and_then(serde_json::Value::as_object_mut)
+                .unwrap()
+                .remove(LABEL_GEN)
+                .unwrap();
+        }
+        let [undecodable, valid] = ids.try_into().unwrap();
+        write_stored(&runtime, &undecodable, r#"{"container":{}}"#);
+
+        let [observed] = runtime
+            .list_managed(&machine.id)
+            .await
+            .unwrap()
+            .try_into()
+            .unwrap();
+
+        assert_eq!(observed.container_id, valid);
+        assert_eq!(
+            observed.resolved_spec.container.healthcheck,
+            Some(ployz_core::HealthcheckSpec::Disabled)
+        );
+        assert_eq!(read_stored(&runtime, &undecodable), r#"{"container":{}}"#);
+    }
+
+    fn write_stored(runtime: &crate::docker::ContainerRuntime, id: &ContainerId, encoded: &str) {
+        Connection::open(runtime.spec_store_path_for_test())
+            .unwrap()
+            .execute(
+                "UPDATE containers SET service_spec = ?2 WHERE id = ?1",
+                params![id.to_string(), encoded],
+            )
+            .unwrap();
+    }
+
+    fn read_stored(runtime: &crate::docker::ContainerRuntime, id: &ContainerId) -> String {
+        Connection::open(runtime.spec_store_path_for_test())
+            .unwrap()
+            .query_row(
+                "SELECT service_spec FROM containers WHERE id = ?1",
+                [id.to_string()],
+                |row| row.get(0),
+            )
+            .unwrap()
+    }
+
     struct Restorable {
         runtime: crate::docker::ContainerRuntime,
         fake: crate::docker::test_support::FakeDocker,
@@ -893,6 +1300,117 @@ mod tests {
             .unwrap();
         assert_eq!(store.get(&restored).await.unwrap(), Some(copy.spec));
         assert_eq!(store.get(&copy.id).await.unwrap(), None);
+    }
+
+    /// A restore made the copy again under a new ID and never started it, and nothing
+    /// has listed since, so its spec and rotation are still under the old ID.
+    fn restored_unstarted(copy: &Restorable) -> ContainerId {
+        let restored = other_id(&copy.id);
+        for container in copy.containers.lock().unwrap().values_mut() {
+            let fields = container.as_object_mut().unwrap();
+            fields.insert("Id".into(), restored.as_str().into());
+            fields.insert("State".into(), serde_json::json!({ "Status": "created" }));
+        }
+        restored
+    }
+
+    #[tokio::test]
+    async fn a_create_resent_onto_a_restored_copy_adopts_it_instead_of_removing_it() {
+        use crate::docker::test_support::{container_request, machine};
+        use ployz_core::{ContainerKind, Namespace};
+
+        let copy = keyed_copy_in_rotation().await;
+        let restored = restored_unstarted(&copy);
+        let mut machine = machine();
+        machine.id = copy.machine;
+        let namespace = Namespace::parse("app").unwrap();
+        let mut request = container_request(
+            ContainerKind::ServiceContainer,
+            &namespace,
+            &copy.spec,
+            std::future::ready(None),
+        );
+        request.creation_key = Some("restore-1");
+
+        let resent = copy
+            .runtime
+            .create_with_admission::<_, _, crate::docker::Error>(&machine, request)
+            .await
+            .unwrap();
+
+        assert_eq!(resent.container_id, restored);
+        assert_eq!(copy.containers.lock().unwrap().len(), 1);
+        let store = MachineSpecStore::open(copy.runtime.spec_store_path_for_test())
+            .await
+            .unwrap();
+        assert_eq!(store.get(&restored).await.unwrap(), Some(copy.spec));
+        assert_eq!(
+            store.rotation(&restored).await.unwrap(),
+            Some(copy.rotation)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_copy_restored_from_before_slots_were_recorded_is_never_removed() {
+        use crate::docker::test_support::{container_request, machine};
+        use ployz_core::{ContainerKind, Namespace};
+
+        let copy = keyed_copy_in_rotation().await;
+        let restored = restored_unstarted(&copy);
+        connect(copy.runtime.spec_store_path_for_test())
+            .unwrap()
+            .execute("DELETE FROM creations", [])
+            .unwrap();
+        let mut machine = machine();
+        machine.id = copy.machine;
+        let namespace = Namespace::parse("app").unwrap();
+        let mut request = container_request(
+            ContainerKind::ServiceContainer,
+            &namespace,
+            &copy.spec,
+            std::future::ready(None),
+        );
+        request.creation_key = Some("restore-1");
+
+        let resent = copy
+            .runtime
+            .create_with_admission::<_, _, crate::docker::Error>(&machine, request)
+            .await;
+        copy.runtime.list_managed(&copy.machine).await.unwrap();
+
+        assert!(
+            matches!(&resent, Err(crate::docker::Error::SpecNotFound(id)) if *id == restored),
+            "{resent:?}"
+        );
+        assert_eq!(
+            copy.containers.lock().unwrap().len(),
+            1,
+            "its spec may be the one under its old ID, so it is kept"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_slot_holding_a_restored_copy_reads_it_with_its_rotation() {
+        use ployz_core::{ContainerKind, Namespace, SlotKey};
+
+        let copy = keyed_copy_in_rotation().await;
+        let restored = restored_unstarted(&copy);
+        let slot = SlotKey {
+            namespace: Namespace::parse("app").unwrap(),
+            service: copy.spec.name.clone(),
+            kind: ContainerKind::ServiceContainer,
+            creation_key: ployz_core::CreationKey::try_from("restore-1".to_owned()).unwrap(),
+        };
+
+        let found = copy
+            .runtime
+            .inspect_slot(&copy.machine, &slot)
+            .await
+            .unwrap()
+            .expect("the restored copy holds the slot");
+
+        assert_eq!(found.container_id, restored);
+        assert_eq!(found.rotation(), &copy.rotation);
     }
 
     #[tokio::test]

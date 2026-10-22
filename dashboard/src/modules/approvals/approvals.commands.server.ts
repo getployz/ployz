@@ -35,7 +35,7 @@ const waiting = (approval: ApprovalView): typeof Waiting.Type => {
 const answered = (approval: ApprovalView): typeof Answered.Type => ({
   ...waiting(approval),
   destroys: approval.review.effects.map((effect) => {
-    const { verb, name, after } = destroyedLine(effect, approval.command);
+    const { verb, name, after } = destroyedLine(effect, approval.command, approval.review);
     return `${verb}${name === null ? "" : ` ${name}`}${after}`;
   }),
   reason: approval.reason,

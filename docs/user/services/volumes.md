@@ -15,14 +15,14 @@ runs on that server.
 1. Open your environment and click **Create**, then **Volume**. Right-clicking the canvas
    works too.
 2. Enter a **Name**, like `uploads`, and a **Storage limit (GB)**. Names use lowercase letters,
-   digits and hyphens. Anything else is converted, and the field shows the name it saves as. The
-   storage limit is [fixed once you deploy](#choose-the-storage-limit), so leave room to grow.
-   Click **Create volume**.
+   digits and hyphens. Anything else is converted, and the field shows the name it saves as. With
+   Ployz Cloud you can [grow the limit](#choose-the-storage-limit) after you deploy. Click
+   **Create volume**.
 3. Click the new volume, then **Mount on a service**. Pick the service, enter a **Directory** inside
    its containers, like `/app/uploads`, and click **Mount**.
 4. Click **Deploy**.
 
-![A volume's panel: its storage limit, Advanced, and where it is mounted](../images/volume-panel.png)
+![A volume's panel: its storage limit and where it is mounted](../images/volume-panel.png)
 
 The volume shows as a tray under the service's card, and your app reads and writes files at
 that directory. Open the menu at the end of the mount's row and choose **Edit directory** to move it.
@@ -33,11 +33,15 @@ your entered directory if a write fails.
 
 The limit starts at 5 GB. A volume can't grow past it: once it's full, writes fail. The whole
 limit is set aside on the server's disk, so a deploy fails if no server has room for it.
+`--size` refuses a limit under 0.1 GB, whether you add a volume or change one.
 
-You can change the limit under **Storage** in the volume's panel until you deploy the volume.
-If that first deploy fails, the limit stays fixed in the panel. Once the volume deploys, you can
-grow it on Ployz Cloud while its service keeps running. Type a larger **Storage limit** in the
-panel and confirm **Grow volume**. The panel shows the resize until it ends. Before you confirm,
+You can change the limit in the volume's **Settings**, under **Space**, or with
+`ployz volume set data --size 10`, until a deploy starts creating the volume. A deploy that
+fails before it starts creating the volume, for example because no server has room, leaves the
+limit editable, and so does a deploy while no service mounts the volume. If a deploy fails after
+it started creating the volume, the limit stays fixed in the panel. Once the volume deploys, you
+can grow it on Ployz Cloud while its service keeps running. Type a larger **Storage limit** there
+and click **Grow**. The panel shows the resize until it ends. Before you confirm,
 it refuses a smaller limit, a server whose Ployz is too old to grow it or that isn't reporting to
 Cloud, and a size a server reports no room for. You can also grow it from the CLI:
 
@@ -50,6 +54,8 @@ Ployz grows each mirror first and the copy your service writes to last. If one s
 a copy has no room, Ployz refuses the whole resize, names that server, and the volume keeps its
 old limit. `ployz volume runs data` shows how a resize went. The new limit isn't a staged
 change: `ployz diff` shows nothing, and your next deploy leaves the service's container alone.
+In a [Protected environment](../environments/environments.md#protect-an-environment), a member's
+grow from the dashboard or resize from the CLI waits for an owner or admin to approve it.
 A Docker volume has no limit to grow. A version saved before a resize, grow or shrink, deploys
 at the size the volume holds now.
 
@@ -89,7 +95,8 @@ ployz exec web -- df -h /app/uploads
 
 By default, only one container writes to a volume. A service with a volume runs one replica, and no
 other service can mount it. To run more replicas, or to mount it in several services, turn on
-shared writes in the volume's **Storage** → **Advanced** → **Allow shared writes**, or use the CLI:
+**Allow shared writes** in the volume's **Settings** tab, under **Space**. It applies at once,
+without a deploy. From the CLI:
 
 ```sh
 ployz volume set uploads --shared-writes
@@ -101,13 +108,34 @@ doesn't. Everything that mounts the volume still runs on its server.
 ## When its server goes down
 
 The services that mount the volume stop until the server is back. Nothing moves to another
-server on its own, and the CLI can't [move](move-a-volume.md) a volume while its server is down.
-With a mirror, **Use mirror** under the volume's **Copies** moves it there at your next deploy,
-losing the writes since the mirror's last refresh. To keep deploying your other services meanwhile,
-see [When a server goes down](scaling.md#when-a-server-goes-down).
+server on its own, and neither the CLI nor Ployz Cloud [moves](move-a-volume.md) a volume while
+its server is down: that server may still be writing to it. With a mirror, the volume's
+**Copies** says "web-1 is not answering", which changes are lost, like "Changes after 10:36
+lost", and that the mirror can take over once web-1 is forgotten. Under **Live**, web-1 reads **Not answering** instead of
+**Live**. It names no time: Ployz doesn't know when web-1 stopped.
+
+1. Wait if web-1 is coming back. When it answers again, its services start and nothing is lost.
+2. If it's gone for good, an owner or admin
+   [forgets it](../servers/manage-servers.md#forget-a-server-that-is-gone) on its server page.
+   Copies links there. If web-1 runs again as it is, its services keep writing to its own copy,
+   and Ployz never brings that back:
+   [uninstall Ployz on it](../servers/manage-servers.md#forget-a-server-that-is-gone) as soon as
+   it boots.
+3. Back under **Copies**, click **Use mirror**. It stages the mirror as the primary and says
+   which changes are lost: the writes since the mirror's last refresh. The button shows only
+   while the mirror is the volume's last copy. If an old copy from an earlier move also remains,
+   Copies says so instead of offering it: delete that copy first, with
+   `ployz volume mirror rm data-web-3 --if-old-copy --confirm data`, and **Use mirror** appears.
+   `--confirm` names the volume because, with no writer, the mirror and that old copy are all
+   that is left of it; without the flag the command refuses and prints this line.
+4. Deploy. The deploy asks you to confirm **Data loss**, makes the mirror the volume, and starts
+   the services that mount it on that server.
+
+To keep deploying your other services meanwhile, see
+[When a server goes down](scaling.md#when-a-server-goes-down).
 
 > [!WARNING]
-> A volume lives on one server. Add a [mirror](move-a-volume.md#mirror-a-volume) to keep a backup
+> A volume lives on one server. Add a [mirror](mirror-a-volume.md) to keep a backup
 > of it on another of your servers. A mirror holds the data as of its last refresh, nothing
 > newer, and Ployz doesn't switch to it on its own. A snapshot isn't a backup: it stays on the
 > volume's own server and is lost with it.
@@ -123,7 +151,29 @@ deploy and every 15 minutes. A move leaves an old copy on the server it left. Op
 look under **Copies**. An old copy never refreshes, so it doesn't protect the data. Each server
 records which of its copies is a mirror and which is an old copy, so a mirror made with
 `ployz volume mirror` refreshes like any other, and a move from the CLI leaves an old copy too. A
-mirror's age turns amber with a **⚠** once it is more than an hour old.
+mirror's age turns amber with a **⚠** once it is more than an hour old. When the mirror's server
+doesn't report it, its row says why beside that age at once, like "9 minutes ago · Not answering",
+**Can't report this copy** or **Needs a newer Ployz**. The age is when the mirror last matched, not
+when the server stopped.
+
+While a server's report is still on its way, Copies doesn't say the server is down. A primary on
+it reads **Waiting for its report**, and a mirror on it says it is waiting for its server's report.
+That server may still hold the primary, so Copies names it under **Live** before a server that
+isn't answering. While any server's report is on its way, Copies offers no way to forget a server.
+
+When the primary's server answers but can't report its copy, Copies says so, like "web-1 can't
+report this copy" or "web-1 needs a newer Ployz", and offers neither a Forget nor **Use mirror**:
+web-1 is up, and may still hold the volume. Copies names such a server under **Live** before one
+that isn't answering. A server the volume records as its mirror is named under **Live** only when
+no other server is likelier to hold the volume. One staged to become the primary counts as one
+that may hold it, as a failed move returns there. Otherwise it is listed under **Elsewhere**, even
+when it is staged to become the primary. While a change you stage would keep that server as the
+primary, its row offers no **Make primary** or **Remove mirror**.
+
+Under **Live**, the primary reads **Live** only while its server reports it writable. During a
+move, while writes pause on the server it leaves, it reads **Read-only**. A server whose Ployz is
+behind the latest release reads **Needs a newer Ployz**. One that can't report the copy for
+another reason reads **Can't report this copy**.
 
 Copy changes, like a new mirror or a restore, go out with your next deploy. **Redeploy** on a past
 deployment ships what that deployment froze, so it leaves them staged and says **Copies wait for
@@ -143,33 +193,74 @@ copy. See [Move a volume](move-a-volume.md).
 ## When a volume has no writer
 
 Each volume has one writer, the server that mounts it. A server you remove or reinstall turns
-every volume it held into a copy, so the volume keeps its data but has no writer. A deploy of a
-service that mounts such a volume refuses and names where the data is:
+every volume it held into a copy, so the volume keeps its data but has no writer. A deploy does
+not start a service that mounts such a volume. It deploys the other services, reports that
+service and every service that depends on it as **Not attempted**, and the deployment ends
+**Failed** with the reason, which names where the data is:
 
 ```
 Volume data has no writer; web-2 holds its only copy. Make it the writer: ployz volume restore data --from web-2
 ```
 
 Run the `ployz volume restore` line it prints to make that copy the writer again, then deploy.
-While one of your servers is offline, the deploy can't tell whether that server holds the writer,
-so it names that server instead and suggests no restore. See
-[When a server goes down](scaling.md#when-a-server-goes-down).
-If several servers hold copies, it names them. Keep the newest and delete the others from the
-volume's page in Ployz Cloud, which shows whether each is a mirror or an old copy. The error prints
+When none of your servers holds a copy, for example because the only one is on a server you
+removed, the deploy still won't start the service on a new, empty volume:
+
+```
+Volume data was deployed, but no Server in this Cluster holds a copy of it. If a Server you removed still holds its data, add that Server back, then run ployz volume restore data --from <server>
+```
+
+To start over with an empty volume instead, remove it with `ployz volume rm data`, which deletes
+its data, add it again and deploy.
+
+Without Ployz Cloud, `ployz volume restore` runs from the CLI, and the reason prints the same
+line. It asks every server what it holds first, and it refuses while one of them doesn't answer,
+since a copy there could become a second writer. It also refuses while another server holds a
+copy, because a restore needs the only one, and while a server holding a copy runs a Ployz too old
+for it. Then it makes the copy the writer and names the
+snapshot it restored from:
+
+```
+$ ployz volume restore data --from web-2
+Restored data on web-2 from 2026-10-22 20:58:27 UTC; writes after that time are lost.
+Deploy to start the Services that use it.
+next: ployz deploy
+```
+
+Run it again and it says `data's writer is already on web-2; nothing to restore.` and exits 0.
+
+In Ployz Cloud, when the surviving copy is a mirror, the volume's **Copies** lists it and
+**Use mirror** stages the same restore for your next deploy. An old copy gets no button there:
+run the `ployz volume restore` line. While one of your servers is offline, the deploy can't tell whether that
+server holds the writer, so it names that server instead and suggests no restore. See
+[When its server goes down](#when-its-server-goes-down).
+If several servers hold copies, it names them. Keep the newest. In Ployz Cloud, the volume's
+**Copies** shows whether each is a mirror or an old copy. Delete an old copy with the × on its
+row, and a mirror with **Remove mirror**. The error prints
 no `ployz volume mirror rm` line for them, because such a line run later could delete a copy that
-has since become the mirror. A volume that is [mid-move](move-a-volume.md#when-a-move-stops) refuses too, and names the
+has since become the mirror. A volume that is [mid-move](../troubleshooting/volumes.md#a-move-failed-partway) blocks its service too, and names the
 `ployz volume release` line that stops the move. A move that stopped before its first snapshot
 has nothing to release, so it names the `ployz volume move` line that runs the move again.
+Without Ployz Cloud, the error for several copies says to keep the newest, remove each other
+server from the Cluster with `ployz server rm`, which takes its services off it too, then run
+`ployz volume restore`. Or start over empty with `ployz volume rm data`. A mid-move volume says only that stopping the move needs Ployz Cloud.
+
+Services that share a volume are blocked together: when any volume one of them mounts can't be
+mounted, all of them are blocked with that reason, and so is every service that depends on one of
+them. The rest of the deploy still goes ahead.
 
 ## When your servers show Docker only
 
 A volume needs a server that shows **Managed volumes available** on the **Servers** page. A
-server added with **Start without it** shows **Docker only** instead. If none of your servers
-has managed volumes, deploying a volume fails, including the one a database gets.
+server added with **Docker only**, or one that fell back to it because it can't run ZFS, shows
+**Docker only** instead. See [Start without ZFS](../servers/add-a-server.md#start-without-zfs).
+If none of your servers has managed volumes, deploying a volume fails, including the one a
+database gets.
 
-[Add a server](../servers/add-a-server.md) with managed volumes, or, before you deploy, open the
-volume and tick **Use a plain Docker volume (not recommended)** under **Advanced**. It has no
-storage limit, so it can fill the server's disk.
+[Add a server](../servers/add-a-server.md) with managed volumes. Or, before you deploy, open the
+volume's **Settings** and turn on **Plain Docker volume** under **Space**. When you create a
+volume, tick **Use a plain Docker volume (not recommended)** under **Advanced** instead. A plain Docker volume has no storage limit, so it
+can fill the server's disk.
 
 ## Detach a volume
 
@@ -186,8 +277,9 @@ Deleting a deployed volume deletes its data from your servers for good.
 3. Ployz shows **Deletes data** with what goes. Type your `project/environment`, like
    `my-app/production`, and click **Deploy**.
 
-If that deploy fails, deploying again deletes the data without asking again, because your
-confirmation stays with the change. See
+If deleting the data fails, the deployment says why, like `uploads: deleting its data failed:
+it is still in use on Server web-1`. Deploying again deletes the data without asking again,
+because your confirmation stays with the change. See
 [Confirm a deploy that deletes data](../deploy/deployments.md#confirm-a-deploy-that-deletes-data).
 
 A volume that was never deployed holds no data, so it goes on your next deploy without asking.

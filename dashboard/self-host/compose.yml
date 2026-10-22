@@ -1,5 +1,6 @@
-# Self-hosted Ployz Cloud. Setup and upgrades: dashboard/README.md → Self-host.
+# Self-hosted Ployz Cloud. Setup and upgrades: https://ployz.dev/docs/self-hosting.
 # Release assets pin the image tag; from a checkout, set PLOYZ_CLOUD_VERSION.
+# Keep the default name for existing volumes. Set COMPOSE_PROJECT_NAME for another install.
 name: ployz-cloud-self-host
 
 x-app: &app
@@ -25,7 +26,9 @@ services:
     <<: *app
     command: [npm, start]
     ports:
-      - '${WEB_PORT:-3000}:3000'
+      # Loopback for a TLS proxy or tunnel on this host; Docker-published ports skip UFW.
+      # For a proxy on another host, set WEB_BIND to a private address only it reaches.
+      - '${WEB_BIND:-127.0.0.1}:${WEB_PORT:-3000}:3000'
 
   worker:
     <<: *app

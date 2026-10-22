@@ -6,7 +6,7 @@ import { cloudStore, storeTry } from "#/modules/config-store/store-sdk.server";
 import { gitSourceEnvironment } from "#/modules/config-store/git-evidence.server";
 import { type Caller, callerEnvironments } from "#/modules/identity/actor";
 import { beyondEnvironments, lacksPermission, refusalOf } from "#/modules/organization/access.server";
-import type { Permission } from "#/modules/organization/permissions";
+import { can, type Permission } from "#/modules/organization/permissions";
 import { type EnvironmentRef, StoreRefused, type StoreRead, type StoreRefusal } from "./store.contract";
 
 const notProtector: StoreRefusal = { code: "forbidden", message: refusalOf("environments:protect"), details: null };
@@ -23,6 +23,13 @@ export const protectorOnly = (caller: Pick<Caller, "role" | "support" | "credent
   const beyond = beyondEnvironments(environments, { environment });
   return beyond === null ? null : { code: "forbidden", message: beyond, details: { environments: environments ?? [] } };
 };
+
+/**
+ * Whether `caller`'s Member role can protect Environments, though a token's grant may leave `environments:protect` out: an
+ * owner's or admin's Deploy token ships into a Protected Environment as they would, without asking another protector.
+ * The Store's fences on protection and source still read the token's own permissions.
+ */
+export const protector = (caller: Pick<Caller, "role">) => caller.role !== null && can(caller.role, "environments:protect");
 
 /**
  * Refuses `command` when it changes an Environment's protection, or connects, changes or clears a repository or deploy

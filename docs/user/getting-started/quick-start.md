@@ -8,7 +8,7 @@ This page puts a small example app,
 online at an https address on your own server.
 
 You need a GitHub account and a server: Ubuntu LTS, Debian 12–13 or Amazon Linux 2023 with a
-public IP address, that you can reach as root over SSH. A small VPS from any provider, like Hetzner or DigitalOcean, is plenty to
+public IP address and a main disk of 30 GiB or more, that you can reach as root over SSH. A small VPS from any provider, like Hetzner or DigitalOcean, is plenty to
 start. Builds run on it too, so give it 2 GB of memory or more.
 
 ## Sign in
@@ -37,7 +37,7 @@ must listen on the `PORT` variable, or you enter its port in the next step; see
 
 ## Give it an address
 
-1. Click the `express-hello-world` card, then **Settings**, then **Generate Domain** under
+1. Click the `express-hello-world` card, then **Settings**, then **Generate domain** under
    **Networking**.
 2. Leave **Port** blank. The example listens on `PORT`.
 3. Click **Generate Domain**.
@@ -78,7 +78,7 @@ Docker and Ployz, then waits until you say it can join.
 
 ## Deploy
 
-Once the server has joined, **Deploy** appears in the bottom bar, next to **Apply 2 changes**: the new
+Once the server has joined, **Deploy** appears in the bottom bar, next to **2 changes**: the new
 service and its address.
 
 1. Click **Deploy**. The deployment page opens.

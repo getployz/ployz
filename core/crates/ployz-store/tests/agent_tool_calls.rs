@@ -1253,6 +1253,53 @@ fn a_local_store_refuses_every_cloud_tool_before_it_asks_or_writes() {
 }
 
 #[test]
+fn a_local_store_refuses_a_generated_domain_and_takes_a_custom_one() {
+    let store = shop();
+    let local = |tool: &str, input: Value| {
+        drive(
+            &store,
+            StoreAt::Local,
+            tool,
+            input,
+            "local-1",
+            &mut no_cloud,
+        )
+    };
+    local(
+        "service_add",
+        json!({ "name": "web", "image": "traefik/whoami" }),
+    )
+    .ok();
+
+    // Only Cloud reserves the Cluster Domain a generated domain lives under.
+    for input in [
+        json!({ "service": "web" }),
+        json!({ "service": "web", "prefix": "shop" }),
+    ] {
+        let run = local("domain_add", input.clone());
+        assert_eq!(run.writes, 0, "{input}");
+        let refusal = run.refused();
+        assert_eq!(refusal.code, RpcErrorCode::Unsupported, "{refusal:?}");
+        assert_eq!(
+            refusal.message,
+            "Generated domains need Ployz Cloud, which reserves the Cluster Domain they live \
+             under: give web a hostname you own instead"
+        );
+        assert_eq!(refusal.field.as_deref(), Some("hostname"), "{refusal:?}");
+        assert_eq!(
+            refusal.example,
+            Some(json!({ "service": "web", "hostname": "app.example.com" }))
+        );
+    }
+    let missing = local("domain_add", json!({ "service": "nope" })).refused();
+    assert_eq!(missing.code, RpcErrorCode::NotFound, "{missing:?}");
+
+    let custom = json!({ "service": "web", "hostname": "app.example.com" });
+    let added = local("domain_add", custom).ok();
+    assert_eq!(added["domain"]["kind"], "custom", "{added}");
+}
+
+#[test]
 fn there_is_no_separate_sync_tool() {
     assert!(catalog().iter().all(|tool| tool.name != "volume_sync"));
 }
@@ -1835,6 +1882,7 @@ fn deploying() -> (ConfigStore, DeploymentId) {
                 upload: None,
                 accept_volume_loss: Vec::new(),
                 message: None,
+                prune: false,
             }),
         )
         .unwrap();
@@ -2314,6 +2362,7 @@ fn rolled_back_volume() -> (ConfigStore, Trusted) {
                 upload: None,
                 accept_volume_loss: Vec::new(),
                 message: None,
+                prune: false,
             }),
         )
         .unwrap();
@@ -2606,6 +2655,7 @@ fn a_deployments_metrics_refuse_a_service_it_did_not_deploy() {
                     upload: None,
                     accept_volume_loss: Vec::new(),
                     message: None,
+                    prune: false,
                 }),
             )
             .unwrap();
@@ -2820,6 +2870,7 @@ fn service_update_seals_a_secret_it_generates_and_refuses_one_it_is_sent() {
                 upload: None,
                 accept_volume_loss: Vec::new(),
                 message: None,
+                prune: false,
             }),
         )
         .unwrap();

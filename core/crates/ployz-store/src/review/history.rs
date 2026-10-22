@@ -275,7 +275,7 @@ fn snapshot(
         .first()
         .ok_or_else(|| {
             error::not_found(
-                "No saved version has this revision",
+                format!("No saved version has revision {revision}"),
                 json!({ "revision": revision }),
             )
         })?

@@ -39,10 +39,10 @@ what is missing or invalid.
 | `BETTER_AUTH_SECRET` | yes | auth session secret |
 | `APP_ENCRYPTION_SECRET` | yes | 32+ characters; encrypts stored credentials, keep it stable |
 | `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET` | yes | GitHub OAuth App (sign-in) |
-| `GITHUB_APP_ID`, `GITHUB_APP_SLUG`, `GITHUB_APP_PRIVATE_KEY`, `GITHUB_APP_WEBHOOK_SECRET` | yes | GitHub App (repository access) |
+| `GITHUB_APP_ID`, `GITHUB_APP_SLUG`, `GITHUB_APP_PRIVATE_KEY`, `GITHUB_APP_CLIENT_ID`, `GITHUB_APP_CLIENT_SECRET`, `GITHUB_APP_WEBHOOK_SECRET` | yes | GitHub App (repository access) |
 | `INNGEST_EVENT_KEY`, `INNGEST_SIGNING_KEY` | yes | shared with the Inngest server |
 | `PLOYZ_HOSTED_DNS_URL` | yes | Hosted DNS, which grants Cluster Domains: `https://dns.ployz.app/` for Ployz-hosted and Self-hosted Cloud; tests and local dev use a closed port |
-| `INNGEST_BASE_URL`, `INNGEST_CONNECT_GATEWAY_URL` | no | Inngest API and Connect gateway; local dev defaults otherwise |
+| `INNGEST_BASE_URL`, `INNGEST_CONNECT_GATEWAY_URL` | no | Inngest API and Connect gateway; unset, they point at Inngest Cloud, so local and self-hosted setups set both |
 | `BETTER_AUTH_TRUSTED_ORIGINS`, `PORT` | no | `PORT` defaults to 3000 |
 | `POLAR_ACCESS_TOKEN`, `POLAR_WEBHOOK_SECRET`, `POLAR_PRODUCT_ID`, `POLAR_SERVER` | no | all or none; none disables billing and every Organization is unlimited |
 | `UPTIME_ENABLED` | no | `true` on the dashboard when an uptime checker (`uptime/`) runs; unset hides uptime |
@@ -114,8 +114,10 @@ GitHub webhooks ───────► web       ├─► Postgres (ployz_clo
                         worker ◄───┤─► Inngest :8288 API / :8289 Connect ─► Redis
 ```
 
-The image is `linux/amd64`. Put a TLS proxy in front of web's `WEB_PORT`; Inngest's
-UI is bound to `127.0.0.1:8288` for operator use only.
+The image is `linux/amd64`. Put a TLS proxy in front of web's `WEB_PORT`. Web is
+published on `WEB_BIND` (default `127.0.0.1`) because Docker-published ports skip UFW;
+a proxy on another host needs a private `WEB_BIND`, never `0.0.0.0`. Inngest's UI is
+bound to `127.0.0.1:8288` for operator use only.
 
 ### 1. Create the GitHub apps
 
@@ -136,6 +138,8 @@ Copy the Client ID to `GITHUB_CLIENT_ID` and a new client secret to `GITHUB_CLIE
 | Field | Value |
 | --- | --- |
 | Homepage URL | `https://cloud.example.com` |
+| Callback URL | `https://cloud.example.com/api/github/callback` |
+| Request user authorization (OAuth) during installation | Checked |
 | Webhook URL | `https://cloud.example.com/api/github/webhook` (Active) |
 | Webhook secret | `openssl rand -hex 32`, also `GITHUB_APP_WEBHOOK_SECRET` |
 | Repository permissions | Contents: Read-only, Checks: Read and write, Metadata: Read-only, Actions: Read and write, Pull requests: Read-only |
@@ -154,13 +158,22 @@ get no PR Environments until their owner approves the new permissions in GitHub.
 Installation events are delivered without subscribing. Copy the App ID to
 `GITHUB_APP_ID`, the URL name from `github.com/apps/<slug>` to `GITHUB_APP_SLUG`,
 and a generated private key (the whole PEM, quoted) to `GITHUB_APP_PRIVATE_KEY`.
+Copy its Client ID and a new client secret to `GITHUB_APP_CLIENT_ID` and
+`GITHUB_APP_CLIENT_SECRET`.
+
+**One App for both.** The GitHub App can also serve sign-in in place of the OAuth
+App: set `GITHUB_CLIENT_ID`/`GITHUB_CLIENT_SECRET` to its client ID and secret. It
+then needs the account permission Email addresses: Read-only, for private emails at
+sign-in, and both Callback URLs, `/api/github/callback` first and
+`/api/auth/callback/github` second, because GitHub sends a fresh installation back
+to the first one.
 
 ### 2. Configure and start
 
 Download `ployz-cloud-compose.yml` as `compose.yml` and `ployz-cloud.env.example`
 as `.env` from the release into one directory, then fill in `.env`. Every
-uncommented variable is required; web and worker exit with a
-`ConfigError` if one is missing.
+uncommented variable is required; web and worker exit at boot, naming each
+missing or malformed variable.
 Leave all `POLAR_*` and `POSTHOG_*` variables unset.
 
 ```sh
@@ -182,8 +195,13 @@ only attached to a GitHub account already linked in Cloud.
 
 ### Upgrade
 
-Replace `compose.yml` with the new release's asset (or bump
-`PLOYZ_CLOUD_VERSION`), then:
+Replace `compose.yml` with the asset from `releases/download/<tag>/` (or bump
+`PLOYZ_CLOUD_VERSION`), never `releases/latest`: that is the newest stable
+release and silently downgrades a prerelease install. An image older than the
+database refuses `db:migrate`, web and worker startup (`scripts/check-schema.ts`),
+naming its version; `PLOYZ_ALLOW_OLDER_IMAGE=1` starts it anyway, with a warning, for a
+rollback. Hosted web runs the same check, so a Railway rollback past a migration needs that
+variable on web. The user docs' upgrade snippet refuses a downgrade. Then:
 
 ```sh
 docker compose pull

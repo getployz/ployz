@@ -1,13 +1,17 @@
 use ployz_core::{
-    ContainerObservation, ContainerRuntimeObservation, CopyRotation, DEFAULT_HEALTH_MONITOR,
-    DependencyHealthFailure, DeploymentLogId, ExecutionError, HEALTH_POLL_INTERVAL,
-    HealthExpectation, HealthObservation, HealthPoll, HealthcheckSpec, OperationPhase,
-    QualifiedService, classify_health, health_deadline_for, healthcheck_deadline, observed_health,
+    ContainerObservation, ContainerRuntimeObservation, CopyRotation, DependencyHealthFailure,
+    DeploymentLogId, ExecutionError, HEALTH_POLL_INTERVAL, HealthExpectation, HealthObservation,
+    HealthPoll, HealthcheckSpec, OperationPhase, QualifiedService, classify_health,
+    health_deadline_for, healthcheck_deadline, observed_health,
 };
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
 use super::{MachineOperations, Progress};
+
+/// A dependency reading unhealthy or restarting can recover, so the dependent's Deploy
+/// waits this long before it fails.
+const RUNTIME_FAILURE_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
 
 pub(super) async fn wait_healthy<C: MachineOperations>(
     client: &C,
@@ -18,6 +22,7 @@ pub(super) async fn wait_healthy<C: MachineOperations>(
     cancellation: &CancellationToken,
 ) -> Result<(), ExecutionError> {
     let started = Instant::now();
+    let mut reported = std::collections::BTreeSet::new();
     loop {
         if cancellation.is_cancelled() {
             return Err(dependency_health_error(
@@ -25,12 +30,17 @@ pub(super) async fn wait_healthy<C: MachineOperations>(
                 DependencyHealthFailure::Cancelled,
             ));
         }
-        let mut containers = client
-            .service_containers(dependency)
-            .await
-            .map_err(|error| {
-                dependency_health_error(dependency, DependencyHealthFailure::Observation { error })
-            })?;
+        // A Suspect Machine that does not answer is left out as a gap, as a Deploy's gen
+        // choice leaves it; an answered error or an Up Machine's silence still fails the check.
+        let listed = client.listed_copies(dependency).await.map_err(|error| {
+            dependency_health_error(dependency, DependencyHealthFailure::Observation { error })
+        })?;
+        for silent in listed.unanswered {
+            if reported.insert(silent.failure.machine_id) {
+                silent.warn(progress);
+            }
+        }
+        let mut containers = listed.copies;
         containers.retain(|container| {
             container.kind == ployz_core::ContainerKind::ServiceContainer
                 && container.namespace == dependency.namespace
@@ -84,9 +94,9 @@ pub(super) async fn wait_healthy<C: MachineOperations>(
                     observed.resolved_spec.container.healthcheck,
                     Some(HealthcheckSpec::Http(_))
                 ) {
-                    health_deadline.unwrap_or(DEFAULT_HEALTH_MONITOR)
+                    health_deadline.unwrap_or(RUNTIME_FAILURE_GRACE)
                 } else {
-                    DEFAULT_HEALTH_MONITOR
+                    RUNTIME_FAILURE_GRACE
                 },
                 health_deadline,
                 HealthExpectation::Healthy,

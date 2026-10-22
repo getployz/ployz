@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use super::super::waiting::{self, Waiting};
-use crate::cli::{base, env, positional, switch, value};
+use crate::cli::{base, positional, switch, value};
 use crate::cloud_account::{self, Credential};
 use crate::handlers::{Error, leaf_matches, runtime, typed_with};
 use crate::ui::{self, Cell, Hint, Table, printable};
@@ -24,7 +24,7 @@ pub(crate) fn command(command: Command) -> Command {
         .arg(value("first", None).num_args(0..=1).default_missing_value("").value_name("NAME").help("Enroll only the oldest match, or pick NAME as founder"))
         .arg(value("name", None).value_name("PATTERN").help("Server name pattern; put n in braces to number servers"))
         .arg(switch("status", None).help("Follow enrollment stages, or resume open attempts"))
-        .arg(switch("yes", Some('y')).env(env::AUTO_CONFIRM).help("Start after printing the plan without asking"))
+        .arg(crate::cli::yes("Start after printing the plan without asking"))
         .arg(value("storage", None).value_parser(clap::value_parser!(StorageChoice)).help("zfs (default) or none for Docker volumes"))
         .arg(switch("no-spare-disk", None).help("Keep ZFS on the main disk"))
         .arg(switch("no-fallback", None).help("Skip hosts that cannot use ZFS"))

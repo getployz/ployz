@@ -399,6 +399,41 @@ fn cancel_hold() {
 }
 
 #[test]
+fn a_member_cancelling_a_hold_in_protected_production_asks_an_admin() {
+    let (store, system, hold) = waiting();
+    let linus = Actor {
+        principal: Some(ployz_store::Principal::parse("linus").unwrap()),
+        ..system.clone()
+    };
+    let member = Trusted {
+        approval: ployz_store::Approval::Required,
+        permissions: Some(
+            ployz_store::Permission::ALL
+                .iter()
+                .copied()
+                .filter(|held| *held != ployz_store::Permission::EnvironmentsProtect)
+                .collect(),
+        ),
+        ..Trusted::default()
+    };
+    let refused = store
+        .write_trusted(
+            &linus,
+            &Cancel {
+                deployment: hold.id.clone(),
+            },
+            &member,
+        )
+        .unwrap_err();
+    assert_eq!(refused.code.as_str(), "approval_required");
+    assert_eq!(refused.details["protected"], json!(true));
+    assert_eq!(
+        find(&store, &system, &hold).status,
+        DeploymentStatus::WaitingForCi
+    );
+}
+
+#[test]
 fn cancel_then_late_success_mints_nothing() {
     let (store, who, hold) = waiting();
     store
@@ -437,6 +472,7 @@ fn no_servers_at_pass_cancels_with_reason() {
             reason: reason.to_owned(),
             cause: Vec::new(),
             needs_upload: Vec::new(),
+            same_again: false,
         })
     );
 }

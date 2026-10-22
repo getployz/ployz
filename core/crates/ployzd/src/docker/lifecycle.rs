@@ -27,7 +27,8 @@ use crate::{
 };
 
 use super::{
-    ContainerRuntime, Error, ManagedLabels, create, docker_error, spec_store::ConfigOperation,
+    ContainerRuntime, Error, LABEL_SERVICE_ID, ManagedLabels, create, docker_error,
+    spec_store::ConfigOperation,
 };
 
 const CONTAINER_NAME_ATTEMPTS: u8 = 4;
@@ -113,13 +114,11 @@ impl ContainerRuntime {
             admission,
             storage,
         } = request;
-        let reserved_name =
-            creation_key.map(|key| creation_name(&machine.id, namespace, &spec.name, kind, key));
-        if let (Some(name), Some(key)) = (&reserved_name, creation_key) {
+        if let Some(key) = creation_key {
             // Wait for an in-flight create to persist its spec before comparing a retry.
-            let _operation = self.specs.config_operation().await;
+            let mut operation = self.specs.config_operation().await;
             if let Some(existing) = self
-                .matching_creation(machine, namespace, kind, spec, name, key)
+                .matching_creation(&mut operation, machine, namespace, kind, spec, key)
                 .await
                 .map_err(E::from)?
             {
@@ -210,13 +209,13 @@ impl ContainerRuntime {
             )
             .await
         {
-            return Err(self.pull_failure(error).await);
+            return Err(self.pull_failure(Error::ImagePull(error)).await);
         }
         let mut config_operation = self.specs.config_operation().await;
         // Another request may have won while admission and image preparation ran.
-        if let (Some(name), Some(key)) = (&reserved_name, creation_key)
+        if let Some(key) = creation_key
             && let Some(existing) = self
-                .matching_creation(machine, namespace, kind, spec, name, key)
+                .matching_creation(&mut config_operation, machine, namespace, kind, spec, key)
                 .await?
         {
             return Ok(existing);
@@ -242,11 +241,11 @@ impl ContainerRuntime {
                             if let Some(key) = creation_key {
                                 return self
                                     .matching_creation(
+                                        &mut config_operation,
                                         machine,
                                         namespace,
                                         kind,
                                         spec,
-                                        &display_name,
                                         key,
                                     )
                                     .await?
@@ -290,6 +289,8 @@ impl ContainerRuntime {
                     field: "container ID",
                     source,
                 })?;
+            // A daemon killed here leaves a Container no spec describes.
+            crate::faults::kill_inside("CreateContainer.BeforeSpec", None);
             let slot =
                 creation_key.map(|key| super::spec_store::CreationSlot::new(namespace, kind, key));
             if let Err(error) = config_operation
@@ -326,21 +327,36 @@ impl ContainerRuntime {
         spec: &ResolvedServiceSpec,
         key: &str,
     ) -> Result<Option<ContainerCreated>, Error> {
-        let name = creation_name(&machine.id, namespace, &spec.name, kind, key);
-        self.matching_creation(machine, namespace, kind, spec, &name, key)
+        // Wait for an in-flight create to persist its spec, as a create does before comparing.
+        let mut operation = self.specs.config_operation().await;
+        self.matching_creation(&mut operation, machine, namespace, kind, spec, key)
             .await
     }
 
+    /// The Container an earlier create under `key` made. Every caller holds the spec
+    /// store's config lock, so no create is between Docker's create and its spec's write.
     async fn matching_creation(
         &self,
+        operation: &mut ConfigOperation<'_>,
         machine: &Machine,
         namespace: &Namespace,
         kind: ContainerKind,
         spec: &ResolvedServiceSpec,
-        name: &str,
         key: &str,
     ) -> Result<Option<ContainerCreated>, Error> {
-        let Some(existing) = self.keyed_container(&machine.id, name, key).await? else {
+        let name = &creation_name(&machine.id, namespace, &spec.name, kind, key);
+        let existing = match self.keyed_container(&machine.id, name, key).await {
+            Err(Error::SpecNotFound(container_id))
+                if self.half_made(operation, &container_id).await? =>
+            {
+                self.force_remove_container(&container_id).await?;
+                return Ok(None);
+            }
+            // A restore's Container now holds the records it took over.
+            Err(Error::SpecNotFound(_)) => self.keyed_container(&machine.id, name, key).await,
+            found => found,
+        }?;
+        let Some(existing) = existing else {
             return Ok(None);
         };
         if !same_creation(&existing, namespace, kind, spec) {
@@ -352,6 +368,65 @@ impl ContainerRuntime {
         }))
     }
 
+    /// Removes a Container a daemon killed between Docker's create and the spec's write
+    /// left, so nothing stays bound to its Volumes. Creates hold the config lock across
+    /// both, so under it a missing spec is never one still being written.
+    pub(super) async fn discard_half_made(
+        &self,
+        container_id: &ContainerId,
+    ) -> Result<bool, Error> {
+        let mut operation = self.specs.config_operation().await;
+        if !self.half_made(&mut operation, container_id).await? {
+            return Ok(false);
+        }
+        self.force_remove_container(container_id).await?;
+        Ok(true)
+    }
+
+    /// Whether a daemon killed between Docker's create and the spec's write left
+    /// `container_id`: a keyed Container Docker never ran, with no spec. One already gone
+    /// ran nothing either. A restore also makes a Container with no spec under its ID, so
+    /// its slot's old records are adopted first, and a spec of its Service whose
+    /// Container is gone may be its own from before slots were recorded.
+    async fn half_made(
+        &self,
+        operation: &mut ConfigOperation<'_>,
+        container_id: &ContainerId,
+    ) -> Result<bool, Error> {
+        let listed = self.managed_slots().await?;
+        let present = listed.iter().map(|(id, _)| *id).collect::<Vec<_>>();
+        for (old, new) in operation.adopt_restored(listed).await? {
+            eprintln!("adopted restored container {new}, which replaces {old}");
+        }
+        if self.specs.get(container_id).await?.is_some() {
+            return Ok(false);
+        }
+        let inspected = match self
+            .docker
+            .client
+            .inspect_container(container_id.as_str(), None)
+            .await
+            .map_err(|error| docker_error(container_id, error))
+        {
+            Ok(inspected) => inspected,
+            Err(Error::ContainerNotFound(_)) => return Ok(true),
+            Err(error) => return Err(error),
+        };
+        let labels = inspected
+            .config
+            .and_then(|config| config.labels)
+            .unwrap_or_default();
+        let (true, Some(service_id)) = (
+            labels.contains_key(CREATION_KEY)
+                && inspected.state.and_then(|state| state.status)
+                    == Some(ContainerStateStatusEnum::CREATED),
+            labels.get(LABEL_SERVICE_ID),
+        ) else {
+            return Ok(false);
+        };
+        Ok(!self.specs.holds_absent(present, service_id.clone()).await?)
+    }
+
     pub(crate) async fn inspect_slot(
         &self,
         machine_id: &MachineId,
@@ -359,6 +434,18 @@ impl ContainerRuntime {
     ) -> Result<Option<ContainerObservation>, Error> {
         let key = slot.creation_key.as_str();
         let name = creation_name(machine_id, &slot.namespace, &slot.service, slot.kind, key);
+        let container_id = match self.keyed_container(machine_id, &name, key).await {
+            Err(Error::SpecNotFound(container_id)) => container_id,
+            found => return found,
+        };
+        // Under the lock no create is between Docker's create and its spec's write.
+        let mut operation = self.specs.config_operation().await;
+        if self.half_made(&mut operation, &container_id).await? {
+            // Removed, so a slot read as empty holds nothing that keeps its Volumes in use.
+            // The create that follows makes it again.
+            self.force_remove_container(&container_id).await?;
+            return Ok(None);
+        }
         self.keyed_container(machine_id, &name, key).await
     }
 
@@ -431,13 +518,13 @@ impl ContainerRuntime {
         if lost_ployz_network(inspected)
             && let Err(error) = self
                 .docker
-                .client
-                .connect_network(
-                    DOCKER_NETWORK_NAME,
-                    NetworkConnectRequest {
-                        container: container_id.to_string(),
-                        endpoint_config: None,
-                    },
+                .join_bridge(
+                    container_id,
+                    inspected
+                        .config
+                        .as_ref()
+                        .and_then(|config| config.labels.as_ref())
+                        .is_some_and(super::takes_bridge_ipv6),
                 )
                 .await
             // A concurrent start may have attached it first.
@@ -672,14 +759,57 @@ impl ContainerRuntime {
 }
 
 impl super::LocalDocker {
+    /// Connects a Container that lost its bridge endpoint at the next free address,
+    /// holding the gate until Docker records it so no create takes the same one.
+    async fn join_bridge(&self, container_id: &ContainerId, ipv6: bool) -> Result<(), DockerError> {
+        let mut last = self.endpoint_creates.lock().await;
+        let address = match self.bridge().await {
+            Ok(bridge) => bridge
+                .subnet
+                .and_then(|subnet| super::bridge_address::next(subnet, &bridge.taken, *last)),
+            Err(_) => None,
+        };
+        if address.is_some() {
+            *last = address;
+        }
+        self.client
+            .connect_network(
+                DOCKER_NETWORK_NAME,
+                NetworkConnectRequest {
+                    container: container_id.to_string(),
+                    endpoint_config: Some(super::bridge_address::endpoint(ipv6, address)),
+                },
+            )
+            .await
+    }
+
     pub(super) async fn create_container(
         &self,
         options: Option<bollard::query_parameters::CreateContainerOptions>,
-        body: ContainerCreateBody,
+        mut body: ContainerCreateBody,
     ) -> Result<bollard::models::ContainerCreateResponse, Error> {
-        let _gate = self.endpoint_creates.lock().await;
-        if self.bridge_capacity().await?.free_endpoints() == 0 {
+        let mut last = self.endpoint_creates.lock().await;
+        let bridge = self.bridge().await?;
+        if bridge.capacity.free_endpoints() == 0 {
             return Err(Error::EndpointCapacity);
+        }
+        let on_bridge = body
+            .host_config
+            .as_ref()
+            .and_then(|host| host.network_mode.as_deref())
+            == Some(DOCKER_NETWORK_NAME);
+        if on_bridge && let Some(subnet) = bridge.subnet {
+            let address = super::bridge_address::next(subnet, &bridge.taken, *last)
+                .ok_or(Error::EndpointCapacity)?;
+            let endpoints = body
+                .networking_config
+                .get_or_insert_default()
+                .endpoints_config
+                .get_or_insert_default();
+            let endpoint = endpoints.entry(DOCKER_NETWORK_NAME.to_owned()).or_default();
+            endpoint.ipam_config =
+                super::bridge_address::endpoint(false, Some(address)).ipam_config;
+            *last = Some(address);
         }
         let _creating = super::Creating::new(&self.creates);
         Ok(self.client.create_container(options, body).await?)
@@ -878,6 +1008,42 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_container_joins_the_bridge_at_a_static_address() {
+        let (runtime, fake) = fake_runtime_with(FakeDocker {
+            create_barrier: Some(std::sync::Arc::new(tokio::sync::Barrier::new(1))),
+            ..FakeDocker::default()
+        })
+        .await;
+        let namespace = Namespace::parse("app").unwrap();
+        let spec = spec_with_sources(Vec::new());
+        runtime
+            .create_with_admission::<_, _, Error>(
+                &machine(),
+                container_request(
+                    ContainerKind::ServiceContainer,
+                    &namespace,
+                    &spec,
+                    std::future::ready(None),
+                ),
+            )
+            .await
+            .unwrap();
+        let body = fake
+            .request_bodies
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|(path, _)| path.ends_with("/containers/create"))
+            .unwrap()
+            .1
+            .clone();
+        assert_eq!(
+            body.pointer("/NetworkingConfig/EndpointsConfig/ployz/IPAMConfig/IPv4Address"),
+            Some(&serde_json::json!("10.210.0.2")),
+        );
+    }
+
+    #[tokio::test]
     async fn a_keyed_container_is_named_after_its_service() {
         let containers =
             std::sync::Arc::new(std::sync::Mutex::new(std::collections::BTreeMap::new()));
@@ -932,6 +1098,198 @@ mod tests {
             Some(created.container_id),
             "the slot finds the Container it named"
         );
+    }
+
+    /// A keyed create whose spec never reached `machine.db`, as a daemon killed between
+    /// Docker's create and the spec's write leaves it, and the request to create it again.
+    async fn half_made(
+        status: &str,
+    ) -> (
+        ContainerRuntime,
+        std::sync::Arc<std::sync::Mutex<std::collections::BTreeMap<String, serde_json::Value>>>,
+        ContainerId,
+        Result<ContainerCreated, Error>,
+    ) {
+        let containers =
+            std::sync::Arc::new(std::sync::Mutex::new(std::collections::BTreeMap::new()));
+        let (runtime, _fake) = fake_runtime_with(FakeDocker {
+            named_containers: Some(containers.clone()),
+            ..Default::default()
+        })
+        .await;
+        let machine = machine();
+        let namespace = Namespace::parse("app").unwrap();
+        let spec = spec_with_sources(Vec::new());
+        let request = || ContainerRequest {
+            creation_key: Some("plan:0"),
+            ..container_request(
+                ContainerKind::ServiceContainer,
+                &namespace,
+                &spec,
+                std::future::ready(None),
+            )
+        };
+        let first = runtime
+            .create_with_admission::<_, _, Error>(&machine, request())
+            .await
+            .unwrap();
+        runtime
+            .specs
+            .config_operation()
+            .await
+            .remove(&first.container_id)
+            .await
+            .unwrap();
+        for container in containers.lock().unwrap().values_mut() {
+            container["State"] = serde_json::json!({ "Status": status });
+        }
+        let again = runtime
+            .create_with_admission::<_, _, Error>(&machine, request())
+            .await;
+        (runtime, containers, first.container_id, again)
+    }
+
+    #[tokio::test]
+    async fn a_create_resent_after_a_crash_left_its_container_without_a_spec_makes_it_again() {
+        let (runtime, containers, lost, again) = half_made("created").await;
+        let made = again.expect("the resend creates the Container again");
+        assert_ne!(made.container_id, lost);
+        let ids = containers
+            .lock()
+            .unwrap()
+            .values()
+            .map(|container| container["Id"].as_str().unwrap().to_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            ids,
+            vec![made.container_id.to_string()],
+            "the half-made Container is gone, so nothing is left bound to its Volumes"
+        );
+        assert!(
+            runtime
+                .specs
+                .get(&made.container_id)
+                .await
+                .unwrap()
+                .is_some()
+        );
+    }
+
+    /// A Container the create under `key` left, with no spec and Docker state `status`.
+    async fn specless(
+        key: Option<&'static str>,
+        status: &str,
+    ) -> (
+        ContainerRuntime,
+        std::sync::Arc<std::sync::Mutex<std::collections::BTreeMap<String, serde_json::Value>>>,
+        Machine,
+        ResolvedServiceSpec,
+        ContainerId,
+    ) {
+        let containers =
+            std::sync::Arc::new(std::sync::Mutex::new(std::collections::BTreeMap::new()));
+        let (runtime, _fake) = fake_runtime_with(FakeDocker {
+            named_containers: Some(containers.clone()),
+            list_named: true,
+            ..Default::default()
+        })
+        .await;
+        let machine = machine();
+        let namespace = Namespace::parse("app").unwrap();
+        let spec = spec_with_sources(Vec::new());
+        let created = runtime
+            .create_with_admission::<_, _, Error>(
+                &machine,
+                ContainerRequest {
+                    creation_key: key,
+                    ..container_request(
+                        ContainerKind::ServiceContainer,
+                        &namespace,
+                        &spec,
+                        std::future::ready(None),
+                    )
+                },
+            )
+            .await
+            .unwrap();
+        runtime
+            .specs
+            .config_operation()
+            .await
+            .remove(&created.container_id)
+            .await
+            .unwrap();
+        for container in containers.lock().unwrap().values_mut() {
+            container["State"] = serde_json::json!({ "Status": status });
+        }
+        (runtime, containers, machine, spec, created.container_id)
+    }
+
+    #[tokio::test]
+    async fn reading_a_slot_a_crash_left_without_its_spec_empties_it() {
+        let (runtime, containers, machine, spec, _) = specless(Some("plan:0"), "created").await;
+        let slot = SlotKey {
+            namespace: Namespace::parse("app").unwrap(),
+            service: spec.name.clone(),
+            kind: ContainerKind::ServiceContainer,
+            creation_key: ployz_core::CreationKey::try_from("plan:0".to_owned()).unwrap(),
+        };
+
+        let found = runtime.inspect_slot(&machine.id, &slot).await;
+
+        assert!(matches!(found, Ok(None)), "{found:?}");
+        assert!(
+            containers.lock().unwrap().is_empty(),
+            "a slot read as empty holds no Container that keeps its Volumes in use"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_slot_holding_a_started_container_without_its_spec_is_still_reported() {
+        let (runtime, containers, machine, spec, id) = specless(Some("plan:0"), "running").await;
+        let slot = SlotKey {
+            namespace: Namespace::parse("app").unwrap(),
+            service: spec.name.clone(),
+            kind: ContainerKind::ServiceContainer,
+            creation_key: ployz_core::CreationKey::try_from("plan:0".to_owned()).unwrap(),
+        };
+
+        let found = runtime.inspect_slot(&machine.id, &slot).await;
+
+        assert!(
+            matches!(found, Err(Error::SpecNotFound(found)) if found == id),
+            "{found:?}"
+        );
+        assert_eq!(containers.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn listing_removes_a_container_a_crash_left_without_its_spec_and_keeps_a_started_one() {
+        // An abandoned deploy: no create under this key runs again. A restore can make
+        // an unkeyed Container again with no spec, and only keyed ones are adopted.
+        for (key, status, kept) in [
+            (Some("plan:0"), "created", 0),
+            (Some("plan:0"), "running", 1),
+            (None, "created", 1),
+        ] {
+            let (runtime, containers, machine, _, _) = specless(key, status).await;
+            assert!(runtime.list_managed(&machine.id).await.unwrap().is_empty());
+            assert_eq!(
+                containers.lock().unwrap().len(),
+                kept,
+                "a {status} Container keyed {key:?} without its spec"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_running_container_without_a_spec_is_never_removed_to_create_again() {
+        let (_runtime, containers, lost, again) = half_made("running").await;
+        assert!(
+            matches!(again, Err(Error::SpecNotFound(id)) if id == lost),
+            "{again:?}"
+        );
+        assert_eq!(containers.lock().unwrap().len(), 1);
     }
 
     async fn stranded(error: &str) -> (ContainerRuntime, FakeDocker, ContainerId) {

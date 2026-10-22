@@ -672,7 +672,8 @@ fn left_running(row: &Row, frame: &Frame) -> usize {
             | DeployWarning::ObserverRelativeHostnameConflict
             | DeployWarning::SkippedDependencyHealth { .. }
             | DeployWarning::ImagePortMismatch { .. }
-            | DeployWarning::MixedAfterReturn { .. } => None,
+            | DeployWarning::MixedAfterReturn { .. }
+            | DeployWarning::NotInStore { .. } => None,
         })
         .collect::<BTreeSet<_>>()
         .len()
@@ -1002,7 +1003,8 @@ fn notices(frame: &Frame) -> Vec<String> {
                     | DeployWarning::SkippedDependencyHealth { .. }
                     | DeployWarning::ImagePortMismatch { .. }
                     | DeployWarning::LeftRunning { .. }
-                    | DeployWarning::MixedAfterReturn { .. } => None,
+                    | DeployWarning::MixedAfterReturn { .. }
+                    | DeployWarning::NotInStore { .. } => None,
                 })
                 .collect::<BTreeSet<_>>();
             Some(format!(
@@ -1149,6 +1151,24 @@ fn finish(
 
 #[cfg(test)]
 mod tests;
+
+/// What plain output prints for a run that settles on `frame`, its summary included.
+#[cfg(test)]
+pub(crate) fn settled_text(frame: &Frame) -> String {
+    let mut output = Vec::new();
+    changes(&mut output, None, frame, false).unwrap();
+    finish(
+        &mut output,
+        frame,
+        frame,
+        Disposition::Settled,
+        false,
+        80,
+        false,
+    )
+    .unwrap();
+    String::from_utf8(output).unwrap()
+}
 
 /// Additional execution evidence printed only after the outer command adds context.
 #[derive(Debug, Default)]

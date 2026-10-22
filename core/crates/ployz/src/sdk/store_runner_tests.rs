@@ -61,6 +61,7 @@ fn admitted(upload: Option<ployz_store::UploadedSource>) -> (Run, ployz_store::A
                 upload,
                 accept_volume_loss: Vec::new(),
                 message: None,
+                prune: false,
             }),
             &ployz_store::Trusted::default(),
         )
@@ -93,6 +94,7 @@ fn take_over(run: &Run, actor: &ployz_store::Actor) {
                 upload: None,
                 accept_volume_loss: Vec::new(),
                 message: None,
+                prune: false,
             }),
             &ployz_store::Trusted::default(),
         )
@@ -130,6 +132,39 @@ fn after_cancel(token: &CancellationToken) -> tokio::sync::oneshot::Receiver<()>
         let _ = done.send(());
     });
     cleanup
+}
+
+#[tokio::test]
+async fn a_refusal_that_fails_the_same_way_again_is_recorded_as_one() {
+    use crate::deploy::{DeployError, PlanError};
+    let (run, actor) = run();
+    let refusal = DeployError::Plan(PlanError::DependencyCycle {
+        service: "app".into(),
+    });
+    run.unprepared(&BTreeSet::new(), Unprepared::from(refusal))
+        .await
+        .unwrap();
+    let view = run
+        .store
+        .read(
+            &actor,
+            &ployz_store::DeploymentQuery {
+                id: run.deployment.clone(),
+            },
+        )
+        .unwrap();
+    assert!(
+        matches!(
+            &view.deployment.outcome,
+            Some(ployz_store::Outcome::NotExecuted {
+                same_again: true,
+                reason,
+                ..
+            }) if reason == "dependency cycle at service 'app'"
+        ),
+        "{:?}",
+        view.deployment.outcome
+    );
 }
 
 #[tokio::test]
@@ -522,6 +557,11 @@ async fn mock_machine() -> (
     let one = support::machine('a', "one");
     let mut service = support::DeployService::new(one.clone());
     service.uninspectable.insert(container_id('d'));
+    service.uninspectable.insert(container_id('e'));
+    service.retained_envs.as_mut().unwrap().insert(
+        container_id('e'),
+        BTreeMap::from([("PLAIN".to_owned(), "from-docker".to_owned())]),
+    );
     let (address, server) = support::listening(service).await;
     let session = connect_connections(
         vec![Connection::tcp(address)],
@@ -559,12 +599,20 @@ async fn an_older_containers_failed_tail_is_scrubbed_of_the_value_its_machine_re
         .failed_log(&client, &scrub, machine, container_id('d'))
         .await
         .0;
+    let removed = run
+        .failed_log(&client, &scrub, machine, container_id('e'))
+        .await
+        .0;
     session.close().await;
     server.abort();
 
     assert!(
         lines(&older).contains(&"plain [secret PLAIN]".to_owned()),
         "{older:?}"
+    );
+    assert!(
+        lines(&removed).contains(&"plain [secret PLAIN]".to_owned()),
+        "{removed:?}"
     );
     assert!(
         matches!(
@@ -713,6 +761,7 @@ fn separately_uploaded() -> Claimed {
                     }),
                     accept_volume_loss: Vec::new(),
                     message: None,
+                    prune: false,
                 }),
                 &ployz_store::Trusted::default(),
             )
@@ -823,6 +872,12 @@ impl MachineOperations for Recording {
         service: &QualifiedService,
     ) -> Result<Vec<ployz_core::ContainerObservation>, RpcError> {
         MachineOperations::service_containers(&self.client, service).await
+    }
+
+    async fn replicated_containers(
+        &self,
+    ) -> Result<Vec<ployz_core::ContainerObservation>, RpcError> {
+        MachineOperations::replicated_containers(&self.client).await
     }
 
     async fn ensure_container(

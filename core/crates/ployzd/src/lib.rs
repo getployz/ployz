@@ -2,6 +2,7 @@
 
 pub(crate) mod boot_pass;
 mod build;
+pub(crate) mod forgotten_fence;
 
 /// Numeric status returned by the Ployz Docker Volume plugin.
 #[doc(hidden)]
@@ -43,6 +44,7 @@ pub mod observe;
 pub(crate) mod route_acks;
 pub mod runtime_unit;
 pub(crate) mod runtime_watch;
+pub mod sealing_key;
 pub mod socket_activation;
 mod storage;
 #[cfg(test)]

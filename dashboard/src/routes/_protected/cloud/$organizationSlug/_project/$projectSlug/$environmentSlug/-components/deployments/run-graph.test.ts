@@ -208,6 +208,23 @@ describe("run graph", () => {
     expect(cleanup).toMatchObject({ id: "cleanup", name: "Cleanup", column: 4, row: 0, light: "deployed" });
   });
 
+  it("counts the same steps from preparing to the end, whether it failed or Cloud's cleanup joined", () => {
+    const progress = (view: DeploymentView, cleanup: Parameters<typeof makeRunGraph>[1] = null) => {
+      const graph = makeRunGraph(view, cleanup);
+      return `${graph.done} of ${graph.total}`;
+    };
+    const preparing = deployment({ builds: [build("web", { status: "pending" })], nodes: [service("web", [])] });
+    const ended = { status: "failed", in_flight: false } as const;
+    const failed = deployment({ ...ended, builds: [build("web", { status: "failed" })], nodes: [service("web", [], "not_attempted")] });
+    const applied = deployment({ ...ended, status: "applied", builds: [build("web")], nodes: [service("web", [completed()], "deployed")] });
+    expect([
+      progress(preparing),
+      progress(failed, { state: "done", left: [], message: null }),
+      progress(applied),
+      progress(applied, { state: "done", left: [], message: null }),
+    ]).toEqual(["0 of 2", "0 of 2", "2 of 2", "2 of 2"]);
+  });
+
   it("words and lights each way a cleanup goes, naming each Machine a copy was left running on once", () => {
     const left = (machine: string) => ({ machine, service: "web", reason: "did not answer" });
     const light = (state: "waiting" | "done" | "left_running" | "cancelled" | "failed") =>

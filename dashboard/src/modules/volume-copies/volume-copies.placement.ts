@@ -1,10 +1,10 @@
-import type { ChangeKind, MachineId, MachineName } from "@ployz/sdk";
+import type { ChangeKind, MachineId, MachineName, VolumeCopy } from "@ployz/sdk";
 import {
-  appliedMirrors, detachedName, observePlacement, type PlacementItem, type PlacementRow, type PlacementVolume, placementForm,
+  appliedMirrors, detachedName, observePlacement, type PlacementItem, type PlacementRow, type PlacementVolume, placementForm, presumedPrimary,
 } from "#/modules/volume-placement/volume-placement";
 import { runWords } from "#/modules/volume-run/volume-copies";
-import { copyName, type Member, type VolumeRunView } from "#/modules/volume-run/volume-run";
-import type { MirrorCopy, OldCopy, StagedCopy, VolumeCopies } from "./volume-copies";
+import { copyName, type Heard, heardFrom, type Member, type VolumeRunView } from "#/modules/volume-run/volume-run";
+import type { MirrorCopy, OldCopy, PrimaryServer, ServerRef, StagedCopy, VolumeCopies } from "./volume-copies";
 
 /** What the mirror syncs last saw of one mirror. A pull that lands later never clears an older failure. */
 export type MirrorStatusView = {
@@ -32,10 +32,11 @@ export function copiesFromPlacement(input: {
   const observed = observePlacement(members);
   const moving = form.primary.change !== null && row?.staged?.seed === undefined;
   const promoted = moving && appliedMirrors(observed, row).includes(form.primary.server.id);
-  const silent = new Set(members.filter((member) => !member.answered).map((member) => member.machine.id));
-  const pullOf = (id: MachineId) => {
+  const said = new Map(members.map((member) => [member.machine.id, heardFrom(member)]));
+  const heard = (id: MachineId): Heard => said.get(id) ?? "silent";
+  const slotOf = (id: MachineId) => {
     const member = members.find((each) => each.machine.id === id);
-    return member?.answered === true && member.view.copy?.kind === "slot" ? member.view.copy.pull : null;
+    return member?.answered === true && member.view.copy?.kind === "slot" ? member.view.copy : null;
   };
   const target = active === null ? null : runTarget(active);
 
@@ -46,20 +47,21 @@ export function copiesFromPlacement(input: {
     return null;
   };
   const mirror = (item: PlacementItem, staged: StagedCopy | null): MirrorCopy => {
-    const quiet = silent.has(item.server.id);
+    const from = heard(item.server.id);
     const status = input.statuses.find((each) => each.machine === item.server.id);
     const matchedAt = status?.matchedAt == null ? null : new Date(status.matchedAt);
-    const pull = pullOf(item.server.id);
-    const failed = pull?.failure != null || (status?.failedAt != null && (status.okAt === null || status.failedAt > status.okAt));
+    const slot = slotOf(item.server.id);
+    const failed = slot?.pull?.failure != null || (status?.failedAt != null && (status.okAt === null || status.failedAt > status.okAt));
     return {
       kind: "mirror",
       id: item.server.id,
       server: item.server,
       name: copyName(volume.name, item.server.name),
-      refreshedAt: quiet ? matchedAt : syncedAt(item.newest, matchedAt),
-      skipped: quiet ? "silent" : failed ? "failed" : null,
+      refreshedAt: from === "answered" ? syncedAt(item.newest, matchedAt) : matchedAt,
+      skipped: from !== "answered" ? from : failed ? "failed" : null,
+      lastReported: false,
       staged,
-      busy: active?.kind === "sync" || (pull !== null && pull.failure === null) ? "Refreshing" : busyOn(item.server.name),
+      busy: active?.kind === "sync" || (slot !== null && pulling(slot)) ? "Refreshing" : busyOn(item.server.name),
     };
   };
   const old = (item: PlacementItem): OldCopy => ({
@@ -73,11 +75,46 @@ export function copiesFromPlacement(input: {
     busy: busyOn(item.server.name),
   });
 
+  const readOnly = (id: MachineId) => members.some((member) =>
+    member.answered && member.machine.id === id && member.view.copy?.kind === "root" && member.view.copy.readonly);
+  // presumedPrimary names an answering Server only when it reports the primary, which the first arm takes.
+  const unreported = (server: ServerRef | null): PrimaryServer | null => {
+    if (server === null) return null;
+    const from = heard(server.id);
+    return from === "answered" ? null : { id: server.id, name: server.name, state: from };
+  };
+  const primary: PrimaryServer | null = observed.primary !== null
+    ? { ...observed.primary, state: readOnly(observed.primary.id) ? "read_only" : "live" }
+    : form.primary.change === null ? unreported(presumedPrimary(observed, row))
+    : null;
+  // The form's primary is the holder staging uses, not Live's presumption. One that Live doesn't name stays listed where
+  // the Volume records it as a mirror, with its staged-primary badge when it is staged.
+  const outranked = form.primary.change === null && primary !== null && primary.id !== form.primary.server.id
+    && appliedMirrors(observed, row).includes(form.primary.server.id);
+  // Display only: a mirror a silent Server last reported that no placement holds, as `ployz volume mirror` leaves one.
+  // Staging and recovery never read it, and nothing says when that report was, so it shows no age.
+  const placed = new Set([...form.mirrors, form.primary, ...form.detached].map((item) => item.server.id));
+  const lastReported = members.flatMap((member): MirrorCopy[] => {
+    const from = heardFrom(member);
+    if (from === "answered" || member.answered || member.lastMirror !== true) return [];
+    if (placed.has(member.machine.id) || member.machine.id === primary?.id) return [];
+    return [{
+      kind: "mirror",
+      id: member.machine.id,
+      server: member.machine,
+      name: copyName(volume.name, member.machine.name),
+      refreshedAt: null,
+      skipped: from,
+      lastReported: true,
+      staged: null,
+      busy: busyOn(member.machine.name),
+    }];
+  });
   const seed = row?.staged?.seed;
   return {
     volume: { id: volume.id, name: volume.name },
     live: {
-      server: observed.primary ?? (form.primary.change === null ? form.primary.server : null),
+      server: primary,
       restore: seed === undefined ? null : { label: seed.point.name },
       moveTo: moving ? form.primary.server : null,
       busy: active !== null && ["move", "release", "restore", "seed", "deploy"].includes(active.kind) ? runWords(active) : null,
@@ -85,10 +122,20 @@ export function copiesFromPlacement(input: {
     },
     elsewhere: [
       ...form.mirrors.map((item) => mirror(item, stagedOf(item.change))),
-      ...promoted ? [mirror(form.primary, "primary")] : [],
+      ...promoted ? [mirror(form.primary, "primary")] : outranked ? [mirror(form.primary, row?.staged?.primary === form.primary.server.id ? "primary" : null)] : [],
+      ...lastReported,
       ...form.detached.map(old),
     ],
+    unheard: members.flatMap((member) => {
+      const from = heardFrom(member);
+      return from === "answered" || member.machine.id === primary?.id ? [] : [{ ...member.machine, heard: from }];
+    }),
   };
+}
+
+/** A Machine reports a landed pull until the same pull is asked for again, so a slot pulls only while short of its target. */
+function pulling({ pull, newest }: Extract<VolumeCopy, { kind: "slot" }>): boolean {
+  return pull !== null && pull.failure === null && newest?.name !== pull.target;
 }
 
 /**

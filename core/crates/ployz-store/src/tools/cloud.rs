@@ -111,7 +111,8 @@ pub enum Health {
 pub struct LogsAnswer {
     pub servers: Vec<ServerLog>,
     pub seen: Freshness,
-    /// Why each unanswered Server did not answer.
+    /// Why each unanswered Server did not answer, and which Containers' lines each
+    /// Server withheld because their env could not be read to scrub them.
     pub notes: Vec<String>,
 }
 

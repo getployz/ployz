@@ -2,14 +2,14 @@ import type { BuildView, DeploymentView, DeployPreview, DomainRow, NodeOutcome, 
 import { describe, expect, it } from "vitest";
 import type { RuntimeContainerRecord } from "#/modules/runtime/runtime.collection";
 import { asTestDouble } from "#/lib/test-double";
-import { containerTrouble, deployChip, nodeIssues, notSetLabel, publicDomain, restartedServices, runtimeLine, stagedSurface, type RuntimeLens } from "./node-status";
+import { containerTrouble, deployChip, deployEffect, nodeIssues, notSetLabel, publicDomain, runningDeployment, runtimeLine, stagedSurface, type DeployEffect, type RuntimeLens } from "./node-status";
 
 const service: ServiceListing = { source: "image", change: null, template: null, id: "web", row: "web:node" as RowId, name: "web", private_dns: "web" };
 const container = (state: string, health?: string): RuntimeContainerRecord =>
   ({ id: state, displayName: "web", machineId: "m", namespace: "n", kind: "service", runtime: health ? { state, health } : { state } });
 const runtime = (...containers: RuntimeContainerRecord[]) => ({ containers });
 const observed: RuntimeLens = { status: "observed", incomplete: false, observedAt: "2026-09-30T10:00:00Z", noServers: false, offline: new Set() };
-const seen = { lens: observed, desiredReplicas: null, deploying: false };
+const seen = { lens: observed, desiredReplicas: null, deploy: "leaves" as DeployEffect };
 /** The Runtime Watch saying something other than `observed`. */
 const watch = (lens: Partial<RuntimeLens>) => ({ ...seen, lens: { ...observed, ...lens } });
 
@@ -52,6 +52,23 @@ describe("runtimeLine", () => {
     expect(runtimeLine(service, null, watch({ incomplete: true }))).toMatchObject({ word: "Deployed", down: false });
   });
 
+  it("says a grey Not seen running, not Crashed or Stopped, when none of its containers runs while the evidence is incomplete", () => {
+    const partial = watch({ incomplete: true });
+    const notSeen = { word: "Not seen running", tone: "quiet", down: false };
+    expect(runtimeLine(service, runtime(container("exited"), container("restarting")), partial)).toMatchObject(notSeen);
+    expect(runtimeLine(service, runtime({ ...container("exited"), runtime: { state: "exited", code: 0 } }), partial)).toMatchObject(notSeen);
+    expect(nodeIssues(runtimeLine(service, runtime(container("restarting")), partial), [])).toBeNull();
+  });
+
+  it("says Deployed, as with no record, for a record with no container while the evidence is incomplete, leftover hook or not", () => {
+    const partial = watch({ incomplete: true });
+    const leftoverHook = { containers: [], hookContainers: [{ ...container("exited"), kind: "hook" }] };
+    expect(runtimeLine(service, runtime(), partial)).toMatchObject({ word: "Deployed", tone: "quiet", down: false });
+    expect(runtimeLine(service, leftoverHook, partial)).toMatchObject({ word: "Deployed", tone: "quiet", down: false });
+    expect(nodeIssues(runtimeLine(service, leftoverHook, partial), [])).toBeNull();
+    expect(runtimeLine(service, leftoverHook, seen)).toMatchObject({ word: "Not running", tone: "bad", down: true });
+  });
+
   it("never guesses without current evidence: it waits, greys the last word with its age, or says why", () => {
     const since = new Date("2026-09-30T10:00:00Z");
     expect(runtimeLine(service, null, watch({ status: "connecting", observedAt: null })).tone).toBe("pending");
@@ -72,23 +89,81 @@ describe("runtimeLine", () => {
     expect(runtimeLine({ ...service, change: "create" }, runtime(container("restarting")), seen)).toMatchObject({ word: "Crashed", down: true });
   });
 
-  it("says a grey Starting while a Deploy starts a Service no Server has named yet, but keeps any down record", () => {
-    const deploying = { ...seen, deploying: true };
+  it("says a grey Starting while a Deploy starts a Service none of whose containers runs yet, but keeps any down record", () => {
+    const deploying = { ...seen, deploy: "restarts" as const };
     const exited = (code: number) => ({ ...container("exited"), runtime: { state: "exited", code } });
     expect(runtimeLine(service, null, deploying)).toMatchObject({ word: "Starting", tone: "quiet", down: false });
     expect(runtimeLine({ ...service, change: "create" }, null, deploying)).toMatchObject({ word: "Starting", tone: "quiet" });
     expect(runtimeLine({ ...service, change: "delete" }, null, deploying)).toMatchObject({ word: "Not running", down: true });
     expect(runtimeLine(service, null, { ...deploying, lens: { ...observed, status: "unavailable" } })).toMatchObject({ word: "Not running", tone: "quiet" });
-    expect(runtimeLine(service, runtime(), deploying)).toMatchObject({ word: "Not running", tone: "bad", down: true });
+    expect(runtimeLine(service, runtime(), deploying)).toMatchObject({ word: "Starting", tone: "quiet", down: false });
+    expect(nodeIssues(runtimeLine(service, runtime(), deploying), [])).toBeNull();
+    expect(runtimeLine({ ...service, change: "delete" }, runtime(), deploying)).toMatchObject({ word: "Not running", down: true });
     expect(runtimeLine(service, runtime(exited(0)), deploying)).toMatchObject({ word: "Stopped", tone: "bad", down: true });
     expect(runtimeLine(service, runtime(exited(1)), deploying)).toMatchObject({ word: "Crashed", tone: "crashed", down: true });
     expect(runtimeLine(service, runtime(container("restarting")), deploying)).toMatchObject({ word: "Crashed", down: true });
   });
 
+  it("says a grey Starting while a first Deploy runs its pre-deploy command, and Not running for a leftover one outside a Deploy", () => {
+    const hook: RuntimeContainerRecord = { ...container("running"), kind: "hook" };
+    const preDeploy = { containers: [], hookContainers: [hook] };
+    expect(runtimeLine({ ...service, change: "create" }, preDeploy, { ...seen, deploy: "restarts" as const })).toMatchObject({ word: "Starting", tone: "quiet", down: false });
+    expect(runtimeLine(service, preDeploy, seen)).toMatchObject({ word: "Not running", tone: "bad", down: true });
+  });
+
+  describe("while the running Deploy's effect on it is undecided", () => {
+    const undecided = { ...seen, deploy: "undecided" as const };
+    const hook: RuntimeContainerRecord = { ...container("running"), kind: "hook" };
+    const exited = (code: number) => ({ ...container("exited"), runtime: { state: "exited", code } });
+    const empty = { "no record": null, "an empty record": runtime(), "a running pre-deploy hook": { containers: [], hookContainers: [hook] } };
+    const cases = ([null, "create", "update"] as const).flatMap((change) => Object.entries(empty).map(([record, evidence]) => ({ change, record, evidence })));
+
+    it.each(cases)("is never down for a Service with change $change and $record", ({ change, evidence }) => {
+      const status = runtimeLine({ ...service, change }, evidence, undecided);
+      expect(status.down).toBe(false);
+      expect(nodeIssues(status, [])).toBeNull();
+      expect(status).toMatchObject(change === "create" && evidence === null ? { word: "Not deployed", tone: "idle" } : { word: "Checking", tone: "pending" });
+    });
+
+    it("keeps the evidence of a container it has, a Server it lost, the Watch's own state and a removal", () => {
+      const on = (machineId: string) => ({ ...container("running", "healthy"), id: machineId, machineId });
+      expect(runtimeLine(service, runtime(exited(1)), undecided)).toMatchObject({ word: "Crashed", tone: "crashed", down: true });
+      expect(runtimeLine(service, runtime(exited(0)), undecided)).toMatchObject({ word: "Stopped", tone: "bad", down: true });
+      expect(runtimeLine(service, runtime(on("m2")), { ...undecided, lens: { ...observed, offline: new Set(["m2"]) } })).toMatchObject({ word: "Server offline", down: true });
+      expect(runtimeLine(service, runtime(container("running", "healthy")), undecided)).toMatchObject({ word: "Online", tone: "ok" });
+      expect(runtimeLine(service, runtime(container("running", "healthy"), container("exited")), { ...undecided, desiredReplicas: 2 }).word).toBe("Degraded");
+      expect(runtimeLine(service, null, { ...undecided, lens: { ...observed, status: "unavailable" } })).toMatchObject({ word: "Not running", tone: "quiet", down: false });
+      expect(runtimeLine(service, null, { ...undecided, lens: { ...observed, incomplete: true } })).toMatchObject({ word: "Deployed", tone: "quiet" });
+      expect(runtimeLine({ ...service, change: "delete" }, null, undecided)).toMatchObject({ word: "Not running", tone: "bad", down: true });
+      expect(runtimeLine({ ...service, change: "delete" }, runtime(), undecided)).toMatchObject({ word: "Not running", down: true });
+    });
+
+    it("trades a red Not running for Checking on a Service that's really down, while a Deploy that ships it but may not start it has no plan", () => {
+      const reallyDown = runtime();
+      expect(runtimeLine(service, reallyDown, undecided)).toMatchObject({ word: "Checking", down: false });
+      expect(runtimeLine(service, reallyDown, { ...seen, deploy: "leaves" })).toMatchObject({ word: "Not running", tone: "bad", down: true });
+    });
+  });
+
+  it("says a grey Status unavailable, not a shimmer or Not running, when the running Deploy's view is refused or fails to read", () => {
+    const unreadable = { ...seen, deploy: "unreadable" as const };
+    expect(runtimeLine(service, null, unreadable)).toMatchObject({ word: "Status unavailable", tone: "quiet", down: false });
+    expect(runtimeLine({ ...service, change: "update" }, runtime(), unreadable)).toMatchObject({ word: "Status unavailable", tone: "quiet", down: false });
+    expect(nodeIssues(runtimeLine(service, null, unreadable), [])).toBeNull();
+    expect(runtimeLine({ ...service, change: "delete" }, null, unreadable)).toMatchObject({ word: "Not running", down: true });
+    expect(runtimeLine(service, runtime(container("restarting")), unreadable)).toMatchObject({ word: "Crashed", down: true });
+  });
+
+  it("says Not deployed for a new Service with no record until a running Deploy starts it", () => {
+    const create = { ...service, change: "create" as const };
+    expect((["leaves", "undecided", "unreadable"] as const).map((deploy) => runtimeLine(create, null, { ...seen, deploy }).word)).toEqual(["Not deployed", "Not deployed", "Not deployed"]);
+    expect(runtimeLine(create, null, { ...seen, deploy: "restarts" }).word).toBe("Starting");
+  });
+
   it("says Degraded when fewer replicas serve than it asks for, except while a Deploy rolls them or a Server didn't report", () => {
     const one = runtime(container("running", "healthy"), container("exited"));
     expect(runtimeLine(service, one, { ...seen, desiredReplicas: 2 }).word).toBe("Degraded");
-    expect(runtimeLine(service, one, { ...seen, desiredReplicas: 2, deploying: true }).word).toBe("Online");
+    expect(runtimeLine(service, one, { ...seen, desiredReplicas: 2, deploy: "restarts" as const }).word).toBe("Online");
     expect(runtimeLine(service, one, { ...seen, desiredReplicas: 1 }).word).toBe("Online");
     expect(runtimeLine(service, one, { ...watch({ incomplete: true }), desiredReplicas: 2 }).word).toBe("Online");
   });
@@ -262,9 +337,9 @@ describe("deployChip", () => {
   const deployment = (status: "queued" | "running", services: string[], ships = services) => ({ status, services, ships, started_at: status === "running" ? 100 : null, admitted_at: 90 });
 
   it("puts a Deploy in flight first: running, else queued, when it targets the Service or every Service", () => {
-    expect(deployChip({ ...service, change: "update" }, 2, [deployment("queued", []), deployment("running", ["web"])], new Set(["web"]))).toEqual({ kind: "deploying", since: 100 });
+    expect(deployChip({ ...service, change: "update" }, 2, [deployment("queued", []), deployment("running", ["web"])], "restarts")).toEqual({ kind: "deploying", since: 100 });
     expect(deployChip(service, 0, [deployment("queued", ["web"])])).toEqual({ kind: "queued" });
-    expect(deployChip(service, 0, [deployment("running", ["api"])], new Set(["api"]))).toBeNull();
+    expect(deployChip(service, 0, [deployment("running", ["api"])], "leaves")).toBeNull();
   });
 
   it("queues a Service a Deploy ships because a Service it names references it", () => {
@@ -272,26 +347,27 @@ describe("deployChip", () => {
   });
 
   it("says what the next Deploy does otherwise", () => {
-    expect(deployChip({ ...service, change: "create" }, 0, [])).toEqual({ kind: "staged", label: "New", variant: "success" });
-    expect(deployChip({ ...service, change: "update" }, 1, [])).toEqual({ kind: "staged", label: "1 change", variant: "info" });
-    expect(deployChip({ ...service, change: "update" }, 3, [])).toEqual({ kind: "staged", label: "3 changes", variant: "info" });
-    expect(deployChip({ ...service, change: "update" }, 0, [])).toEqual({ kind: "staged", label: "Changed", variant: "info" });
+    expect(deployChip({ ...service, change: "create" }, 0, [])).toEqual({ kind: "staged", label: "New", variant: "changed" });
+    expect(deployChip({ ...service, change: "update" }, 1, [])).toEqual({ kind: "staged", label: "1 change", variant: "changed" });
+    expect(deployChip({ ...service, change: "update" }, 3, [])).toEqual({ kind: "staged", label: "3 changes", variant: "changed" });
+    expect(deployChip({ ...service, change: "update" }, 0, [])).toEqual({ kind: "staged", label: "Changed", variant: "changed" });
     expect(deployChip({ ...service, change: "delete" }, 0, [])).toEqual({ kind: "staged", label: "Removing", variant: "destructive" });
   });
 
   it("shows Deploying only on a Service the running Deploy restarts, once its plan is known", () => {
     const running = [deployment("running", [])];
-    expect(deployChip(service, 0, running, new Set(["web"]))).toEqual({ kind: "deploying", since: 100 });
-    expect(deployChip(service, 0, running, new Set(["api"]))).toBeNull();
-    expect(deployChip({ ...service, change: "update" }, 1, running, new Set())).toEqual({ kind: "staged", label: "1 change", variant: "info" });
-    expect(deployChip(service, 0, [...running, deployment("queued", ["web"])], new Set())).toEqual({ kind: "queued" });
+    expect(deployChip(service, 0, running, "restarts")).toEqual({ kind: "deploying", since: 100 });
+    expect(deployChip(service, 0, running, "leaves")).toBeNull();
+    expect(deployChip({ ...service, change: "update" }, 1, running, "leaves")).toEqual({ kind: "staged", label: "1 change", variant: "changed" });
+    expect(deployChip(service, 0, [...running, deployment("queued", ["web"])], "leaves")).toEqual({ kind: "queued" });
   });
 
-  it("waits for the running Deploy's plan before it shows Deploying", () => {
+  it("waits for the running Deploy's plan before it shows Deploying, and never shows it when the view can't be read", () => {
     const running = [deployment("running", [])];
-    expect(deployChip(service, 0, running, null)).toBeNull();
-    expect(deployChip({ ...service, change: "update" }, 1, running, null)).toEqual({ kind: "staged", label: "1 change", variant: "info" });
-    expect(deployChip(service, 0, [...running, deployment("queued", ["web"])], null)).toEqual({ kind: "queued" });
+    expect(deployChip(service, 0, running, "undecided")).toBeNull();
+    expect(deployChip({ ...service, change: "update" }, 1, running, "undecided")).toEqual({ kind: "staged", label: "1 change", variant: "changed" });
+    expect(deployChip(service, 0, [...running, deployment("queued", ["web"])], "undecided")).toEqual({ kind: "queued" });
+    expect(deployChip(service, 0, running, "unreadable")).toBeNull();
   });
 
   it("never takes Deploying off a card to bring it back, from the running summary through its view, builds and plan", () => {
@@ -300,7 +376,7 @@ describe("deployChip", () => {
     const build = (status: string) => asTestDouble<BuildView>()({ service: "web", status });
     const planned = asTestDouble<DeployPreview>()({ operations: [] });
     const chip = (view: Pick<DeploymentView, "nodes" | "preview" | "builds"> | null) =>
-      deployChip({ ...service, change: "update" }, 1, running, view === null ? null : restartedServices(view))?.kind === "deploying";
+      deployChip({ ...service, change: "update" }, 1, running, deployEffect("web", running[0] ?? null, { result: view === null ? undefined : { ok: true, value: view }, failed: false }))?.kind === "deploying";
     const built = [null, { nodes: [node("pending")], preview: null, builds: [build("building")] },
       { nodes: [node("pending")], preview: null, builds: [build("built")] }, { nodes: [node("pending")], preview: planned, builds: [build("built")] }];
     expect(built.map(chip)).toEqual([false, false, true, true]);
@@ -309,47 +385,81 @@ describe("deployChip", () => {
   });
 
   it("shows Deploying on a Service a narrowed Deploy restarts though it didn't select it", () => {
-    expect(deployChip(service, 0, [deployment("running", ["client"])], new Set(["client", "web"]))).toEqual({ kind: "deploying", since: 100 });
+    const narrowed = deployment("running", ["client"], ["client", "web"]);
+    const node = (name: string) => asTestDouble<NodeOutcome>()({ type: "service", id: name, name, outcome: "pending", rows: [] });
+    const view = { ok: true as const, value: { nodes: [node("client"), node("web")], preview: asTestDouble<DeployPreview>()({ operations: [] }), builds: [] } };
+    expect(deployChip(service, 0, [narrowed], deployEffect("web", narrowed, { result: view, failed: false }))).toEqual({ kind: "deploying", since: 100 });
   });
 });
 
-describe("restartedServices", () => {
+describe("deployEffect", () => {
   const node = (type: string, name: string, outcome: string) => asTestDouble<NodeOutcome>()({ type, id: name, name, outcome, rows: [] });
   const build = (service: string, status: string) => asTestDouble<BuildView>()({ service, status });
   const planned = asTestDouble<DeployPreview>()({ operations: [] });
+  const every = { services: [], ships: [] };
+  const read = (view: Pick<DeploymentView, "nodes" | "preview" | "builds">, failed = false) => ({ result: { ok: true as const, value: view }, failed });
+  const unread = { result: undefined, failed: false };
 
-  it("names the Service nodes the Deploy starts or stops, not the unchanged ones or other kinds", () => {
-    const nodes = [node("service", "web", "pending"), node("service", "api", "unchanged"), node("service", "worker", "deployed"), node("volume", "data", "pending")];
-    expect([...restartedServices({ nodes, preview: planned, builds: [] })]).toEqual(["web", "worker"]);
+  it("restarts the Service nodes the plan starts or stops, and leaves the unchanged ones, other kinds and those it doesn't name", () => {
+    const view = read({ nodes: [node("service", "web", "pending"), node("service", "api", "unchanged"), node("service", "worker", "deployed"), node("volume", "data", "pending")], preview: planned, builds: [] });
+    expect(["web", "api", "worker", "data", "redis"].map((name) => deployEffect(name, every, view))).toEqual(["restarts", "leaves", "restarts", "leaves", "leaves"]);
   });
 
-  it("names only the Services it built a new image for until its plan is recorded", () => {
+  it("restarts only a Service it built a new image for until its plan is recorded; any other is undecided, a reused image included", () => {
     const nodes = ["api", "web", "static", "dockerfile"].map((name) => node("service", name, "pending"));
-    const builds = [build("api", "built"), build("static", "reused"), build("dockerfile", "reused")];
-    expect([...restartedServices({ nodes, preview: null, builds })]).toEqual(["api"]);
+    const builds = [build("api", "built"), build("static", "reused"), build("dockerfile", "building")];
+    expect(["api", "web", "static", "dockerfile"].map((name) => deployEffect(name, every, read({ nodes, preview: null, builds }))))
+      .toEqual(["restarts", "undecided", "undecided", "undecided"]);
+  });
+
+  it("leaves every Service while no Deploy runs, a queued one included: it starts nothing yet", () => {
+    const queued = [{ status: "queued" as const }];
+    expect(runningDeployment(queued)).toBeNull();
+    expect(deployEffect("web", runningDeployment([{ ...every, status: "queued" as const }]), unread)).toBe("leaves");
+    expect(runtimeLine(service, runtime(), { ...seen, deploy: deployEffect("web", null, unread) })).toMatchObject({ word: "Not running", tone: "bad", down: true });
+    expect(runningDeployment([...queued, { status: "running" as const }])).toEqual({ status: "running" });
+  });
+
+  it("leaves a Service a narrowed Deploy doesn't ship, before its view is read", () => {
+    const narrowed = { services: ["api"], ships: ["api", "postgres"] };
+    expect(["web", "api", "postgres"].map((name) => deployEffect(name, narrowed, unread))).toEqual(["leaves", "undecided", "undecided"]);
+  });
+
+  it("is undecided until its view is read, and unreadable once the view is refused or its read fails", () => {
+    expect(deployEffect("web", every, unread)).toBe("undecided");
+    expect(deployEffect("web", every, { result: undefined, failed: true })).toBe("unreadable");
+    expect(deployEffect("web", every, { result: { ok: false, refusal: { code: "not_found", message: "No such Deployment", details: null } }, failed: false })).toBe("unreadable");
+  });
+
+  it("turns undecided into unreadable when a later read fails, and keeps what a recorded plan or built image already says", () => {
+    const pending = [node("service", "web", "pending"), node("service", "api", "pending")];
+    expect(deployEffect("web", every, read({ nodes: pending, preview: null, builds: [] }, true))).toBe("unreadable");
+    expect(deployEffect("api", every, read({ nodes: pending, preview: null, builds: [build("api", "built")] }, true))).toBe("restarts");
+    expect(deployEffect("web", every, read({ nodes: pending, preview: planned, builds: [] }, true))).toBe("restarts");
   });
 
   it("never takes a Service off and back on as its build and then its plan come in", () => {
     const nodes = (outcome: (name: string) => string) => ["api", "web", "static"].map((name) => node("service", name, outcome(name)));
     const pending = nodes(() => "pending");
     const steps = [
-      { nodes: pending, preview: null, builds: [build("api", "pending"), build("web", "pending"), build("static", "pending")] },
-      { nodes: pending, preview: null, builds: [build("api", "building"), build("web", "building"), build("static", "building")] },
-      { nodes: pending, preview: null, builds: [build("api", "building"), build("web", "reused"), build("static", "reused")] },
-      { nodes: pending, preview: null, builds: [build("api", "built"), build("web", "reused"), build("static", "reused")] },
-      { nodes: nodes((name) => name === "static" ? "unchanged" : "pending"), preview: planned, builds: [] },
+      unread,
+      read({ nodes: pending, preview: null, builds: [build("api", "pending"), build("web", "pending"), build("static", "pending")] }),
+      read({ nodes: pending, preview: null, builds: [build("api", "building"), build("web", "building"), build("static", "building")] }),
+      read({ nodes: pending, preview: null, builds: [build("api", "building"), build("web", "reused"), build("static", "reused")] }),
+      read({ nodes: pending, preview: null, builds: [build("api", "built"), build("web", "reused"), build("static", "reused")] }),
+      read({ nodes: nodes((name) => name === "static" ? "unchanged" : "pending"), preview: planned, builds: [] }),
     ];
-    const shown = (name: string) => steps.map((step) => restartedServices(step).has(name));
-    expect(shown("api")).toEqual([false, false, false, true, true]);
-    expect(shown("web")).toEqual([false, false, false, false, true]);
-    expect(shown("static")).toEqual([false, false, false, false, false]);
+    const shown = (name: string) => steps.map((step) => deployEffect(name, every, step));
+    expect(shown("api")).toEqual(["undecided", "undecided", "undecided", "undecided", "restarts", "restarts"]);
+    expect(shown("web")).toEqual(["undecided", "undecided", "undecided", "undecided", "undecided", "restarts"]);
+    expect(shown("static")).toEqual(["undecided", "undecided", "undecided", "undecided", "undecided", "leaves"]);
   });
 });
 
 describe("stagedSurface", () => {
   it("is green for a new node, blue for a change and red for a removal", () => {
-    expect(stagedSurface("create")).toBe("success");
-    expect(stagedSurface("update")).toBe("info");
+    expect(stagedSurface("create")).toBe("changed");
+    expect(stagedSurface("update")).toBe("changed");
     expect(stagedSurface("delete")).toBe("destructive");
     expect(stagedSurface(null)).toBeUndefined();
   });

@@ -171,7 +171,7 @@ export function MetricChart({
           <h3 className="text-sm font-medium">{title}</h3>
           {subtitle ? <span className="text-xs text-muted-foreground">{subtitle}</span> : null}
         </div>
-        <span className="font-mono text-sm text-muted-foreground tabular-nums">{value}</span>
+        <span className="text-sm text-muted-foreground tabular-nums">{value}</span>
       </div>
       <div className="relative">
         <Chart definition={definition} height={height} initialWidth={600} idPrefix={id} ariaLabel={title}

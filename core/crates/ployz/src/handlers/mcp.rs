@@ -94,7 +94,7 @@ pub(super) fn serve(root: &ArgMatches) -> Result<(), Error> {
         _ => Store::Cloud,
     };
     let cloud = std::env::var(crate::cli::env::CLOUD_URL).ok();
-    let token = std::env::var(crate::cli::env::TOKEN).ok();
+    let token = crate::cloud_account::env_token();
     // Only Cloud runs a published command, so a local Store lists none.
     let setup = matches!(store, Store::Cloud)
         .then(|| publishing_setup(&config, cloud.clone(), token.as_deref()));
@@ -344,6 +344,7 @@ fn may_have_landed(error: &LoginError) -> bool {
         | LoginError::Ended
         | LoginError::AwaitingApproval { .. }
         | LoginError::TokenRefused
+        | LoginError::TokenMalformed
         | LoginError::NotMember(_)
         | LoginError::TokenBound
         | LoginError::UnknownOrganization(_)

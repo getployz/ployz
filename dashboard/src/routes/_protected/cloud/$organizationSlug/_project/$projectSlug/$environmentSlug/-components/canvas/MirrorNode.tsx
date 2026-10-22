@@ -7,7 +7,7 @@ import { Spinner } from "#/components/ui/spinner";
 import { useMinute } from "#/hooks/use-minute";
 import { cn } from "#/lib/utils";
 import {
-  cardLine, hangingCopies, type MirrorCopy, type OffsiteCopy, STAGED_WORDS, type StagedCopy, type VolumeCopies,
+  cardLine, hangingCopies, LAST_REPORTED, type MirrorCopy, type OffsiteCopy, STAGED_WORDS, type StagedCopy, type VolumeCopies,
 } from "#/modules/volume-copies/volume-copies";
 import { mirrorResourceId } from "#/modules/volume-placement/volume-placement";
 import { ENVIRONMENT_RESOURCE_ROUTE_TO, ENVIRONMENT_ROUTE_FROM } from "../environment-route-paths";
@@ -40,11 +40,12 @@ function CopyCard({ volume, copy, now }: { volume: VolumeCopies["volume"]; copy:
     </span>
   </>;
 
-  if (copy.kind === "offsite") return <div className={className} data-copy={name}>{content}</div>;
+  if (copy.kind === "offsite") return <div className={className} data-copy={name} data-changed={surface === "changed" || undefined}>{content}</div>;
   const resourceId = mirrorResourceId(volume.id, copy.server.id);
+  const kind = copy.lastReported ? `${LAST_REPORTED.toLowerCase()} mirror` : "mirror";
   return (
-    <Link to={ENVIRONMENT_RESOURCE_ROUTE_TO} params={{ ...params, resourceId }} draggable={false} data-copy={name}
-      aria-label={`${name}, mirror of ${volume.name}`} data-selected={selectedNodeId === resourceId} className={className}>
+    <Link to={ENVIRONMENT_RESOURCE_ROUTE_TO} params={{ ...params, resourceId }} draggable={false} data-copy={name} data-changed={surface === "changed" || undefined}
+      aria-label={`${name}, ${kind} of ${volume.name}`} data-selected={selectedNodeId === resourceId} className={className}>
       {content}
     </Link>
   );

@@ -16,7 +16,7 @@ export function MetricMeter({ label, fraction, className }: { label: string; fra
       <Meter.Track className="h-1.5 w-16 overflow-hidden rounded-full bg-muted">
         <Meter.Indicator className={meterIndicatorClass(fraction)} />
       </Meter.Track>
-      <Meter.Value className="font-mono tabular-nums">{(_, number) => `${Math.round(number)}%`}</Meter.Value>
+      <Meter.Value className="tabular-nums">{(_, number) => `${Math.round(number)}%`}</Meter.Value>
     </Meter.Root>
   );
 }

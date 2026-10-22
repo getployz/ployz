@@ -270,23 +270,31 @@ fn staged(
     })
 }
 
-/// Fix the storage of each Volume of `intent` that `targets` names, the first time
-/// a Deployment targets it: an attempt may prepare storage even when it never
-/// applies, failed, cancelled and retried ones included. Refuse storage the fixed
-/// one doesn't fit under [`StorageRule::Replay`].
-pub(crate) fn fix_storage(
+/// Refuse storage of `intent` that a Volume's fixed storage doesn't fit, under
+/// [`StorageRule::Replay`], before a Deployment of it is admitted.
+pub(crate) fn check_admitted(
     tx: &mut dyn Tx,
     environment: &EnvironmentId,
     intent: &SavedEnvironmentIntent,
-    targets: &[crate::deployment::TargetNode],
+) -> Result<(), RpcError> {
+    check_storage(tx, environment, &intent.volumes, StorageRule::Replay)
+}
+
+/// Fix the storage of each Volume of `intent` that the Deploy Preview a run is about to
+/// execute may prepare, failed, cancelled and retried runs included. A Volume no run
+/// prepared holds no data on any Server, so its storage stays editable.
+pub(crate) fn fix_prepared(
+    tx: &mut dyn Tx,
+    environment: &EnvironmentId,
+    intent: &SavedEnvironmentIntent,
+    prepared: impl Fn(&str) -> bool,
 ) -> Result<(), RpcError> {
     for volume in &intent.volumes {
-        if !targets.iter().any(|node| node.id() == volume.resource_id) {
-            continue;
+        if prepared(&volume.resource_id) {
+            lock_storage(tx, environment, &volume.resource_id, &volume.storage)?;
         }
-        lock_storage(tx, environment, &volume.resource_id, &volume.storage)?;
     }
-    check_storage(tx, environment, &intent.volumes, StorageRule::Replay)
+    Ok(())
 }
 
 /// Fix `volume`'s storage at `storage`, unless it is already fixed.
@@ -499,6 +507,7 @@ mod tests {
                     upload: None,
                     accept_volume_loss: Vec::new(),
                     message: None,
+                    prune: false,
                 }),
                 &Trusted::default(),
             )

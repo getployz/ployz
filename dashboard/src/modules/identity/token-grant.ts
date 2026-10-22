@@ -32,8 +32,9 @@ export const presetGrant = (choice: TokenPreset): TokenGrant => {
 const same = (left: ReadonlyArray<string>, right: ReadonlyArray<string>) =>
   left.length === right.length && left.every((value) => right.includes(value));
 
-export const grantLabel = (grant: TokenGrant): string => {
-  if (grant.permissions === null) return "Full as you";
+/** `as` names who a full token acts as: "you" for the viewer's own, its owner for a teammate's. */
+export const grantLabel = (grant: TokenGrant, as = "you"): string => {
+  if (grant.permissions === null) return `Full as ${as}`;
   if (same(grant.permissions, READ_PERMISSIONS)) return "Read only";
   if (same(grant.permissions, DEPLOY_PERMISSIONS)) return grant.environments === null ? "Deploy" : `Deploy ${grant.environments.join(", ")}`;
   return "Custom";

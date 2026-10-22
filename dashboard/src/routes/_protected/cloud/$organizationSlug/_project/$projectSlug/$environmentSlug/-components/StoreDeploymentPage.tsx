@@ -96,19 +96,19 @@ function RunHeader({ deployment, graph, selected, search, onCancel }: {
         <div className="flex min-w-0 flex-1 flex-col">
           <span className="flex min-w-0 items-center gap-2 [&_svg]:size-4">
             <DeploymentStatusIcon status={deploymentLight(deployment)} />
-            <span className="truncate font-medium">
+            <h1 className="truncate text-2xl font-semibold">
               {deployment.message ? `${deploymentLabel(deployment)} · ${deployment.message}` : `Deployment ${deploymentLabel(deployment)}`}
-            </span>
+            </h1>
           </span>
           <p className="truncate text-xs text-muted-foreground">
             {deploymentStatusLabel(deployment)}
             {/* One that ended as it started has no duration to show. */}
             {started && ended?.getTime() !== started.getTime() ? (
-              <>{" · "}<span className="font-mono tabular-nums">
+              <>{" · "}<span className="tabular-nums">
                 {ended ? formatDuration((ended.getTime() - started.getTime()) / 1000) : <RunningTime from={started} />}
               </span></>
             ) : null}
-            {graph.nodes.length ? ` · ${graph.done} of ${graph.nodes.length}` : null}
+            {graph.total ? ` · ${graph.done} of ${graph.total}` : null}
           </p>
           <p className="break-words text-xs text-muted-foreground">
             {byline}{byline ? " · " : null}

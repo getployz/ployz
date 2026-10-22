@@ -168,6 +168,55 @@ async fn departure_destroys_a_received_mirror_and_the_emptied_mirror_root() {
 }
 
 #[tokio::test]
+async fn seal_keeps_a_pulled_mirror_and_seals_roots() {
+    let test = TestDir::new();
+    let (socket, server) = start(&test, USABLE_POOL, &["root", "volume", "mounted"]);
+    let response = post(&socket, "/Storage.Seal", json!(null)).await;
+    assert_eq!(
+        response,
+        json!({"Ok": {"demoted": ["data"], "stuck": [], "failed": []}})
+    );
+    let log = commands(&test);
+    assert!(
+        log.contains("zfs rename tank/ployz/data tank/ployz-mirror/data/fs\n"),
+        "{log}"
+    );
+    assert!(
+        log.contains("zfs set readonly=on tank/ployz-mirror/data/fs\n"),
+        "{log}"
+    );
+    server.abort();
+
+    let test = TestDir::new();
+    set_property(
+        &test,
+        "tank/ployz-mirror/data/fs",
+        "snapshots",
+        "tank/ployz-mirror/data/fs@w-3-1\t901\t1690000001",
+    );
+    set_property(&test, "tank/ployz-mirror/data/fs", "ployz:pulled", "901");
+    let (socket, server) = start(
+        &test,
+        USABLE_POOL,
+        &["root", "mirror-root", "mirror", "mirror-fs"],
+    );
+    let response = post(&socket, "/Storage.Seal", json!(null)).await;
+    assert_eq!(
+        response,
+        json!({"Ok": {"demoted": [], "stuck": [], "failed": []}})
+    );
+    let log = commands(&test);
+    assert!(!log.contains("zfs destroy"), "{log}");
+    assert!(test.0.join("mirror").exists());
+    let capacity = post(&socket, "/Storage.Inspect", json!(null)).await;
+    assert_eq!(
+        capacity.pointer("/Ok/copies/data/role").unwrap(),
+        &json!("slot")
+    );
+    server.abort();
+}
+
+#[tokio::test]
 async fn departure_keeps_a_mirror_root_a_slot_appeared_in() {
     let test = TestDir::new();
     let (socket, server) = start(&test, USABLE_POOL, &["root", "mirror-root", "mirror"]);
@@ -476,6 +525,25 @@ async fn departure_leaves_a_root_beside_a_slot_that_holds_a_copy_and_demotes_the
     assert!(test.0.join("volume").exists());
     assert!(test.0.join("seed-fs").exists());
     server.abort();
+}
+
+/// The first root's demote makes the mirror root, so the next must not make it again (#3047).
+#[tokio::test]
+async fn departure_of_two_roots_makes_the_mirror_root_once() {
+    for route in ["/Storage.Demote", "/Storage.Seal"] {
+        let test = TestDir::new();
+        let (socket, server) = start(&test, USABLE_POOL, &["root", "volume", "seed-volume"]);
+
+        let response = post(&socket, route, json!(null)).await;
+        assert_eq!(
+            response,
+            json!({"Ok": {"demoted": ["data", "seed"], "stuck": [], "failed": []}}),
+            "{route}"
+        );
+        assert!(test.0.join("mirror-fs").exists(), "{route}");
+        assert!(test.0.join("seed-fs").exists(), "{route}");
+        server.abort();
+    }
 }
 
 /// A Volume whose demote fails after another was demoted still answers that one, so the

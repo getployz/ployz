@@ -1296,6 +1296,16 @@ fn history_preview(
     )
 }
 
+#[test]
+fn history_of_a_revision_no_save_made_names_the_revision() {
+    let (store, who) = shop();
+    publish(&store, &who, None).unwrap();
+    let error = history_preview(&store, &who, 99, ployz_store::HistoryAction::Undo).unwrap_err();
+    assert_eq!(error.code.as_str(), "not_found");
+    assert_eq!(error.message, "No saved version has revision 99");
+    assert_eq!(error.details, json!({ "revision": 99 }));
+}
+
 fn stage_history(
     store: &ConfigStore,
     who: &Actor,
@@ -2399,7 +2409,7 @@ fn history_refuses_a_hostname_another_service_of_the_environment_took_since() {
     publish(&store, &who, None).unwrap();
     assert_eq!(
         refused_undo(&store, &who, 2),
-        "Another Service already has a.example.com"
+        "Another Service already has a.example.com: api in shop/production"
     );
 }
 
@@ -2464,7 +2474,7 @@ fn history_refuses_a_hostname_another_environment_took_since() {
     route(&store, &who, staging(), "web", "a.example.com");
     assert_eq!(
         refused_undo(&store, &who, 2),
-        "Another Service already has a.example.com"
+        "Another Service already has a.example.com: web in shop/staging"
     );
 }
 
@@ -4017,6 +4027,7 @@ fn apply_all(store: &ConfigStore, who: &Actor, trusted: &Trusted) {
                 upload: None,
                 accept_volume_loss: Vec::new(),
                 message: None,
+                prune: false,
             }),
             trusted,
         )
@@ -4387,6 +4398,7 @@ fn approving_a_removal_needs_changes_destroy_but_a_plain_deploy_does_not() {
                 upload: None,
                 accept_volume_loss: Vec::new(),
                 message: None,
+                prune: false,
             }),
             &holding(&stages, Approval::Required, Asks::EveryDeploy),
         )
@@ -4463,6 +4475,7 @@ fn a_new_publication_asks_again_for_a_removal_still_queued() {
                 upload: None,
                 accept_volume_loss: Vec::new(),
                 message: None,
+                prune: false,
             }),
             &Trusted {
                 approval,

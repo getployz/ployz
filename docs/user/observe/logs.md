@@ -31,7 +31,7 @@ For one service, click it on the canvas and open its **Logs** tab.
 
 See [Deployments](../deploy/deployments.md).
 
-![A deployment's Build logs while it builds](../images/deployment-page-build.png)
+![A deployment's build card while it builds](../images/deployment-page-build.png)
 
 ## Read retained logs from the CLI
 
@@ -57,6 +57,26 @@ when it comes back; run the command again.
 Unqualified names without scope, service IDs, container selectors, commands with
 no service arguments, and `--follow` still use live container discovery.
 
+## Secrets in kept logs
+
+Each server keeps a removed container's output, and the variables it ran with, so its logs still
+read after a rollback or removal. Each log file stays up to 30 days after it was last written, so
+a container's older lines can go first. They go sooner when logs and metrics fill their share of
+the disk, or when the disk drops below 10% free (at least 2 GiB).
+
+Everything Ployz captured from your app stays in those files, secrets included. The dashboard, an agent, and
+`ployz logs` through Ployz Cloud hide Sealed values when they show a line. A value shorter than 6 bytes
+is hidden only where its name labels it, as in `PIN=4821`. `ployz logs` run with
+server access, and the files on the server, keep the line as printed. They live in
+`/var/lib/docker/ployz-observe/v1/containers/<container id>/`, or under Docker's data directory
+if you moved it. The log files keep Docker's own permissions, `0640` and owned by root on a
+default Docker install. The `env.json` of variables is `0600`, and Ployz creates each container's
+folder as `0700`.
+
+Don't print secrets from your app. There's no setting today to delete kept logs early or keep them
+for less time. Keeping no secrets in logs on disk is planned after 0.3.0 in
+[#2688](https://github.com/getployz/ployz/issues/2688).
+
 ## Good to know
 
 - **Log collection shares a CPU budget with retained-log reads.** By default, Ployz caps its log helper at
@@ -64,7 +84,7 @@ no service arguments, and `--follow` still use live container discovery.
   work serving those reads has a separate CPU cost.
 - **Logs stay on your servers after a deploy.** Each server keeps what its containers printed,
   so a service's card on an older deployment still shows its output. Ployz keeps up to 5% of the
-  disk for them and for metrics, between 512 MB and 5 GB. Logs stay 30 days, and the oldest go
+  disk for them and for metrics, between 512 MiB and 5 GiB. Logs stay 30 days, and the oldest go
   first. It doesn't copy them anywhere else. To search or keep logs for longer, send them from your app to a log
   service.
 - **A replica that failed keeps its output.** Its exit code appears when the server observed it,
@@ -79,10 +99,11 @@ no service arguments, and `--follow` still use live container discovery.
   a leading `ERROR`, `WARN`, `INFO` or `DEBUG` (or a tag such as `[error]`), after any
   timestamp, sets it. A line without one counts as **Info**, stderr included.
 - **The dashboard never shows a Sealed value.** It replaces each one with `[secret NAME]`, and a
-  variable you seal while you watch is scrubbed from the next lines on. Lines it couldn't check,
-  say because your servers couldn't read the service's variables, show as
-  **Hidden: couldn’t check these lines for Sealed values.** When a server fails, the banner says
-  **Container logs are unavailable.** instead of quoting the server's error.
+  variable you seal while you watch is scrubbed from the next lines on. A container a deploy
+  removed is still checked against the variables it ran with, which its server kept beside its
+  logs. Lines it couldn't check, say because your servers couldn't read the service's variables,
+  show as **Hidden: couldn’t check these lines for Sealed values.** When a server fails, the
+  banner says **Container logs are unavailable.** instead of quoting the server's error.
 - **Detected gaps appear in the log**, saying the lines weren't captured or couldn't be read.
   Missing output can have no gap record, such as when a container ran entirely while log
   collection was down.

@@ -12,6 +12,7 @@ async fn lost_completion_response_reruns_idempotently_when_cloud_is_ready() {
         assigned_machine: founder,
         visible_peers: Vec::new(),
         target_versions: Default::default(),
+        sealing_key: None,
     };
     let enroll = EnrollListen::script([
         json!({
@@ -88,6 +89,7 @@ async fn new_founding_claim_with_reset_resets_then_initializes() {
         assigned_machine: founder.clone(),
         visible_peers: Vec::new(),
         target_versions: Default::default(),
+        sealing_key: None,
     })
     .lose_lifecycle_reply();
     let machine_addr = serve_machine(daemon.clone()).await;
@@ -152,6 +154,7 @@ async fn resumed_founder_uses_the_matching_participating_machine() {
         assigned_machine: founder.clone(),
         visible_peers: Vec::new(),
         target_versions: Default::default(),
+        sealing_key: None,
     });
     let machine_addr = serve_machine(daemon.clone()).await;
     connect_daemon(machine_addr)
@@ -224,6 +227,7 @@ async fn resumed_founder_converges_before_pairing_and_final_completion() {
         assigned_machine: founder.clone(),
         visible_peers: Vec::new(),
         target_versions: Default::default(),
+        sealing_key: None,
     })
     .with_containers(vec![ingress]);
     let machine_addr = serve_machine(daemon.clone()).await;
@@ -316,6 +320,7 @@ async fn founder_tail_recovers_lost_replies_without_replaying_mutations() {
         assigned_machine: founder,
         visible_peers: Vec::new(),
         target_versions: Default::default(),
+        sealing_key: None,
     })
     .with_events(events.clone())
     .transient_founder_tail_failures(1);
@@ -398,6 +403,7 @@ async fn founder_recovery_rejects_replaced_identity() {
             assigned_machine: founder_machine(),
             visible_peers: Vec::new(),
             target_versions: Default::default(),
+            sealing_key: None,
         });
         let daemon = daemon.replace_identity_on_initialize();
         let address = serve_machine(daemon.clone()).await;
@@ -444,6 +450,7 @@ async fn publication_failure_does_not_complete_and_resumes_the_same_founder() {
         assigned_machine: founder,
         visible_peers: Vec::new(),
         target_versions: Default::default(),
+        sealing_key: None,
     });
     let address = serve_machine(daemon.clone()).await;
     let connect = format!("ssh://root@{address}");

@@ -101,12 +101,14 @@ fn decide(existing: Option<&Existing>, desired: &SpecDigest) -> Ensure {
     }
 }
 
+#[derive(Clone)]
 pub(crate) struct ManagedService {
     engine: Engine,
     name: String,
     image: &'static str,
 }
 
+#[derive(Clone)]
 enum Engine {
     Host(Docker),
     Endpoint(LocalDocker),

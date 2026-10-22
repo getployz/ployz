@@ -1,12 +1,12 @@
 import "@tanstack/react-start/server-only";
 import { createHash } from "node:crypto";
 import type { MachineId } from "@ployz/sdk";
-import { and, eq, gt, isNull, or, sql } from "drizzle-orm";
+import { and, eq, gt, isNull, ne, or, sql } from "drizzle-orm";
 import { Data, Effect, Option, Schema } from "effect";
 import { storeSystem } from "#/modules/config-store/config-store.server";
 import { rustMachineIdSchema } from "#/modules/machines/enrollment";
 import {
-  enrollmentAllocation, machineEnrollmentToken, machineRemoveAttempt, organizationMachine, serverAccess,
+  clusterSealingKey, enrollmentAllocation, machineEnrollmentToken, machineRemoveAttempt, organizationMachine, serverAccess,
 } from "#/modules/machines/tables";
 import { cancelOpenServerEnrollments } from "#/modules/machines/waiting/enrollment-run.server";
 import { clusterRead, OrganizationRuntime, SESSION_CLOSE_CLUSTER_MS, withClusterBudget } from "#/modules/runtime/organization-runtime.server";
@@ -93,7 +93,7 @@ const foundingClaimLive = Effect.fn("PairingRemoval.foundingClaimLive")(function
   return live !== undefined;
 });
 
-/** A founding claim no token can finish, which the next Enroll drops before it plans a first server. */
+/** A founding claim no token can finish, which the next Enroll drops before it plans a first server, unless that server made it. */
 export const isDeadFoundingClaim = Effect.fn("PairingRemoval.isDeadFoundingClaim")(function* (pairing: Pairing) {
   return pairing.founderMachineId === null && pairing.removalStartedAt === null && !(yield* foundingClaimLive(pairing));
 });
@@ -169,11 +169,14 @@ const lockWitnessedPairing = Effect.fn("PairingRemoval.lockWitnessed")(function*
   return current === generation && pairing.removalStartedAt === null ? { kind: "witnessed" } as const : { kind: "replaced" } as const;
 });
 
-/** Whether a Server of pairing `generation` other than its removed ones is still enrolled. */
-const othersRemain = Effect.fn("PairingRemoval.othersRemain")(function* (organizationId: string, generation: string) {
+/** Whether a Server of pairing `generation` other than its removed ones, and other than `except`, is still enrolled. */
+const othersRemain = Effect.fn("PairingRemoval.othersRemain")(function* (organizationId: string, generation: string, except?: MachineId) {
   const { drizzle } = yield* Database;
   const [other] = yield* drizzle.select({ machineId: organizationMachine.machineId }).from(organizationMachine)
-    .where(and(eq(organizationMachine.organizationId, organizationId), eq(organizationMachine.clusterKey, generation))).limit(1);
+    .where(and(
+      eq(organizationMachine.organizationId, organizationId), eq(organizationMachine.clusterKey, generation),
+      except === undefined ? undefined : ne(organizationMachine.machineId, except),
+    )).limit(1);
   return other !== undefined;
 });
 
@@ -184,16 +187,21 @@ const replaced = { kind: "kept", reason: "Cloud was paired with a new Cluster si
  * connection: reset, which took every key Cloud held there, or only taken out (`membership`), keeping its state. While
  * that pairing is still the current one, Cloud drops that Server's row of it (its device keys cascade); a pairing that
  * changed since is left untouched. `last` means a reset took the pairing's last Server: the caller clears the Store's
- * Applied State, then `forgetEmptiedPairing`. A pairing already gone was forgotten by an earlier run.
+ * Applied State, then `forgetEmptiedPairing`. A pairing already gone was forgotten by an earlier run. A Server the
+ * Cluster had already forgotten (`unconfirmed`) may still hold Cloud's key, so its row goes only while another Server
+ * keeps the pairing; as the last, nothing is dropped and the answer is `unconfirmed_last`.
  */
 export const dropRemovedServer = Effect.fn("PairingRemoval.dropRemoved")(
-  function* (input: { organizationId: string; machineId: MachineId; generation: string; removal: "reset" | "membership" }) {
+  function* (input: { organizationId: string; machineId: MachineId; generation: string; removal: "reset" | "membership" | "unconfirmed" }) {
     const { organizationId, generation } = input;
     const database = yield* Database;
     return yield* database.transaction(Effect.gen(function* () {
       const pairing = yield* lockWitnessedPairing(organizationId, generation);
       if (pairing.kind === "gone") return { kind: "released" } as const;
       if (pairing.kind === "replaced") return replaced;
+      if (input.removal === "unconfirmed" && !(yield* othersRemain(organizationId, generation, input.machineId))) {
+        return { kind: "unconfirmed_last" } as const;
+      }
       const { drizzle } = yield* Database;
       yield* drizzle.delete(organizationMachine).where(and(
         eq(organizationMachine.organizationId, organizationId),
@@ -227,6 +235,7 @@ export const forgetEmptiedPairing = Effect.fn("PairingRemoval.forgetEmptied")(
       if (yield* othersRemain(organizationId, generation)) return { kind: "others_remain" } satisfies ServerRelease;
       const { drizzle } = yield* Database;
       yield* deleteEnrollmentTokens(organizationId);
+      yield* drizzle.delete(clusterSealingKey).where(eq(clusterSealingKey.organizationId, organizationId));
       yield* drizzle.delete(organizationPairing).where(eq(organizationPairing.organizationId, organizationId));
       return { kind: "released" } satisfies ServerRelease;
     }));
@@ -266,7 +275,7 @@ const lockCluster = Effect.fn("PairingRemoval.lockCluster")(function* (organizat
  * every key Cloud held there went with them and there is nothing to Clear. Under the pairing's lock, a pairing or Server
  * that changed since refuses; otherwise the Store lets go of what ran (`cluster_forgotten`) first, so no new Cluster is
  * founded before it has; then every row of Cloud's hold on the Cluster goes: the pairing (a stuck removal too), its Servers
- * (device keys cascade), allocations, enrollment tokens and the Server removals it was attempting. The Store commits `cluster_forgotten` on its own and it is idempotent, so if the Cloud-row
+ * (device keys cascade), its Sealing public key, allocations, enrollment tokens and the Server removals it was attempting. The Store commits `cluster_forgotten` on its own and it is idempotent, so if the Cloud-row
  * transaction then fails, running Forget Servers again finishes it.
  */
 export const forgetCluster = Effect.fn("PairingRemoval.forgetCluster")(function* (organizationId: string, seen: ClusterSeen) {
@@ -279,6 +288,7 @@ export const forgetCluster = Effect.fn("PairingRemoval.forgetCluster")(function*
     const written = yield* storeSystem(organizationId, { event: "cluster_forgotten" });
     const { drizzle } = yield* Database;
     yield* drizzle.delete(organizationMachine).where(eq(organizationMachine.organizationId, organizationId));
+    yield* drizzle.delete(clusterSealingKey).where(eq(clusterSealingKey.organizationId, organizationId));
     yield* deleteEnrollmentTokens(organizationId);
     yield* drizzle.delete(enrollmentAllocation).where(eq(enrollmentAllocation.organizationId, organizationId));
     yield* drizzle.delete(machineRemoveAttempt).where(eq(machineRemoveAttempt.organizationId, organizationId));

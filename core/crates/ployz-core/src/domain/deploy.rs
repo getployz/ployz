@@ -14,15 +14,15 @@ use super::{
 };
 use crate::{
     ContainerId, DockerVolumeId, DockerVolumeName, IngressHost, MachineId, MachineName, Namespace,
-    ProvisionedVolumeMaximumBytes, QualifiedService, RpcError, ServiceId, ServiceName,
+    Operator, ProvisionedVolumeMaximumBytes, QualifiedService, RpcError, ServiceId, ServiceName,
 };
 use thiserror::Error;
 
 /// Planner knobs for one Deploy.
 ///
 /// `selected` is the Service list this command applies. Empty means full
-/// reconciliation of `DeployIntent.target`. Non-empty means partial. There is
-/// no independent prune flag.
+/// reconciliation of `DeployIntent.target`. Non-empty means partial. `prune`
+/// says how far a full reconciliation removes what the target lacks.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct PlanOptions {
     /// Recreate containers even when the resolved spec matches.
@@ -34,11 +34,45 @@ pub struct PlanOptions {
     /// Service Names this command applies. Empty means full reconciliation.
     #[serde(default)]
     pub selected: Vec<ServiceAttempt>,
-    /// Services this targeted command retires. Each is also in `selected` and
-    /// absent from the target.
+    /// Services this command retires, each absent from the target. A targeted
+    /// command also has each in `selected`.
     #[serde(default, skip_serializing_if = "ServiceRemovals::is_empty")]
     #[ts(optional, as = "Option<Vec<ServiceName>>")]
     pub removals: ServiceRemovals,
+    /// Who runs this Deploy. The runner sets it; a refusal's way back depends on it.
+    #[serde(default, skip_serializing_if = "Operator::is_cloud")]
+    #[ts(optional, as = "Option<Operator>")]
+    pub operator: Operator,
+    /// Plan the other Services when one mounts a Volume nothing can mount, listing it in
+    /// `DeployPreview.blocked`. Only a runner that records each Service's outcome sets it;
+    /// without it that Service refuses the whole Deploy.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[ts(optional, as = "Option<bool>")]
+    pub block_unmountable: bool,
+    /// What a full reconciliation removes beyond `removals`. Absent, it removes
+    /// every observed Service of the Namespace the target lacks.
+    #[serde(default, skip_serializing_if = "PruneScope::is_namespace")]
+    #[ts(optional, as = "Option<PruneScope>")]
+    pub prune: PruneScope,
+}
+
+/// How far a full reconciliation removes what its target lacks.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum PruneScope {
+    /// Every observed Service of the Namespace the target lacks.
+    #[default]
+    Namespace,
+    /// Only `PlanOptions.removals`. Every other observed Service the target lacks
+    /// is kept and reported.
+    Removals,
+}
+
+impl PruneScope {
+    #[must_use]
+    pub const fn is_namespace(&self) -> bool {
+        matches!(self, Self::Namespace)
+    }
 }
 
 /// Services a targeted Deploy tears down by name. It can name only Services,
@@ -100,6 +134,11 @@ pub struct DeployIntent {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     #[ts(as = "Option<BTreeMap<DockerVolumeName, String>>", optional)]
     pub volume_names: BTreeMap<DockerVolumeName, String>,
+    /// The Managed Volumes an earlier Deploy applied. Each holds data on some Server,
+    /// so finding no copy of one on any member means its data left the Cluster.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    #[ts(as = "Option<BTreeSet<DockerVolumeName>>", optional)]
+    pub deployed_volumes: BTreeSet<DockerVolumeName>,
     /// The Cluster Domain generated domains live under. Ployz Cloud publishes DNS for
     /// every hostname one label under it, so messages never ask for a record there.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -142,6 +181,7 @@ impl DeployIntent {
             dependencies: BTreeMap::new(),
             registry_auth: BTreeMap::new(),
             volume_names: BTreeMap::new(),
+            deployed_volumes: BTreeSet::new(),
             cluster_domain: None,
         }
     }
@@ -210,6 +250,13 @@ impl DeployIntent {
         self
     }
 
+    /// The Managed Volumes an earlier Deploy applied.
+    #[must_use]
+    pub fn with_deployed_volumes(mut self, volumes: BTreeSet<DockerVolumeName>) -> Self {
+        self.deployed_volumes = volumes;
+        self
+    }
+
     /// The Cluster Domain this Deploy's generated domains live under.
     #[must_use]
     pub fn with_cluster_domain(mut self, cluster_domain: Option<IngressHost>) -> Self {
@@ -264,6 +311,8 @@ impl DeployIntent {
             Some(PruneRefusal::IncompleteSnapshot)
         } else if !self.options.selected.is_empty() {
             Some(PruneRefusal::SelectedServices)
+        } else if self.options.prune == PruneScope::Removals {
+            Some(PruneRefusal::RemovalsOnly)
         } else {
             None
         }
@@ -640,6 +689,20 @@ pub struct DeployPreview {
     /// completes: copies the Deploy keeps, and copies it starts or updates.
     #[serde(default)]
     pub placed_on: BTreeMap<ServiceName, BTreeSet<MachineId>>,
+    /// Services this Deploy plans nothing for because they cannot run: a Volume with
+    /// no writer or unknown copies, or a dependency so blocked. Each is reported as
+    /// not attempted, and the Deploy fails, while the other Services deploy.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[ts(optional, as = "Option<Vec<BlockedService>>")]
+    pub blocked: Vec<BlockedService>,
+}
+
+/// A Service a Deploy could not plan, and why.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
+pub struct BlockedService {
+    pub service: ServiceName,
+    /// Why, with `details.reason` naming the refusal (`no_writer`).
+    pub error: RpcError,
 }
 
 /// One managed Docker Volume current observations indicate a container operation would create.
@@ -676,6 +739,10 @@ pub enum PruneRefusal {
     IncompleteSnapshot,
     /// The command named specific Services, so it is not a full reconciliation.
     SelectedServices,
+    /// The Deploy removes only the Services its `removals` name: the ones its
+    /// Config Store held and dropped. Every other Service the target lacks is kept
+    /// and reported as [`DeployWarning::NotInStore`].
+    RemovalsOnly,
 }
 
 impl Display for PruneRefusal {
@@ -686,6 +753,9 @@ impl Display for PruneRefusal {
             ),
             Self::SelectedServices => f.write_str(
                 "Pruning is disabled because this command named specific Services, so it is not a full reconciliation.",
+            ),
+            Self::RemovalsOnly => f.write_str(
+                "Pruning is limited to the services this environment removed; any other service running in it is kept and reported.",
             ),
         }
     }
@@ -711,6 +781,7 @@ impl DeployPreview {
             depths: BTreeMap::new(),
             dependencies: Vec::new(),
             placed_on: BTreeMap::new(),
+            blocked: Vec::new(),
         }
     }
 
@@ -722,11 +793,12 @@ impl DeployPreview {
             .any(|warning| warning.observation_gap().is_some())
     }
 
-    /// Whether `operations` is empty. Planned stops and removals are operations;
-    /// `warnings`, `would_remove` and `volumes_to_create` do not count on their own.
+    /// Whether this Deploy has nothing to do: no operations and no blocked Service.
+    /// Planned stops and removals are operations; `warnings`, `would_remove` and
+    /// `volumes_to_create` do not count on their own.
     #[must_use]
     pub fn noop(&self) -> bool {
-        self.operations.is_empty()
+        self.operations.is_empty() && self.blocked.is_empty()
     }
 }
 
@@ -829,11 +901,17 @@ pub enum DeployWarning {
         reason: String,
     },
     /// Cleanup could not reach or confirm `machine` (cut off or powered off).
-    /// Once it is back, a copy left running can answer beside the new copies.
+    /// If it restarts and confirms the new copies within its boot pass, it takes
+    /// its replaced copies out of traffic. Otherwise they keep serving beside
+    /// the new copies. Either way they keep running until the next Deploy.
     MixedAfterReturn {
         /// The Machine's name when the plan knows it, else its id.
         machine: String,
     },
+    /// `service` runs in the Namespace, and neither the target nor the removals
+    /// name it: another Config Store, or a direct Deploy, put it there. The Deploy
+    /// keeps it; `ployz deploy --prune` removes it.
+    NotInStore { service: QualifiedService },
 }
 
 impl DeployWarning {
@@ -864,7 +942,8 @@ impl DeployWarning {
             | Self::SkippedDependencyHealth { .. }
             | Self::ImagePortMismatch { .. }
             | Self::LeftRunning { .. }
-            | Self::MixedAfterReturn { .. } => None,
+            | Self::MixedAfterReturn { .. }
+            | Self::NotInStore { .. } => None,
         }
     }
 }
@@ -920,7 +999,11 @@ impl Display for DeployWarning {
             ),
             Self::MixedAfterReturn { machine } => write!(
                 f,
-                "Once {machine} is back, a copy left running can answer beside the new copies, and a left worker still takes jobs, until the next deploy."
+                "If {machine} restarts and confirms the new copies within a few minutes of starting, it takes its replaced copies out of traffic. Otherwise they keep answering beside the new copies. Either way they keep running, and a left worker still takes jobs, until the next deploy."
+            ),
+            Self::NotInStore { service } => write!(
+                f,
+                "{service}: running, not in this environment; kept. ployz deploy --prune removes it."
             ),
         }
     }
@@ -1369,6 +1452,31 @@ pub struct MachineStorageBudget {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn plan_options_a_runner_did_not_set_read_as_before() {
+        let before = serde_json::json!({
+            "force_recreate": false,
+            "skip_health_monitor": false,
+            "placement_seed": 0,
+            "selected": []
+        });
+        let options: PlanOptions = serde_json::from_value(before.clone()).unwrap();
+        assert_eq!(options.operator, Operator::Cloud);
+        assert!(!options.block_unmountable);
+        assert_eq!(serde_json::to_value(&options).unwrap(), before);
+        let runner = PlanOptions {
+            operator: Operator::Cli,
+            block_unmountable: true,
+            ..options
+        };
+        let written = serde_json::to_value(&runner).unwrap();
+        assert_eq!(written.get("operator"), Some(&serde_json::json!("cli")));
+        assert_eq!(
+            written.get("block_unmountable"),
+            Some(&serde_json::json!(true))
+        );
+    }
 
     #[test]
     fn compensation_lines_say_what_became_of_each_container_in_order() {

@@ -1094,6 +1094,40 @@ async fn a_pull_whose_base_the_writer_lost_starts_over_from_a_full_send() {
 }
 
 #[tokio::test]
+async fn a_pull_whose_token_the_writer_cannot_send_starts_over_from_a_full_send() {
+    let source = Source::start(Some(BOUND), "snapshot w-1-2 12\n").await;
+    source.answer(
+        "token=",
+        StatusCode::NOT_FOUND,
+        "resume token cannot be sent from tank/ployz/data: incremental source no longer exists",
+    );
+    let test = TestDir::new();
+    let (socket, server) = puller(&test, &["root", "mirror", "mirror-fs"], source.port);
+    set_snapshots(&test, SLOT_FS, &[("w-1-1", 11)]);
+    set_property(&test, SLOT_FS, "receive_resume_token", "token-1");
+
+    post(&socket, "/Volume.Copy.Pull", pull("w-1-2")).await;
+    let copy = landed(&socket, "w-1-2").await;
+    assert_eq!(
+        copy.pointer("/Ok/newest/guid"),
+        Some(&json!("12")),
+        "{copy}"
+    );
+    let commands = commands(&test);
+    assert!(commands.contains("zfs receive -A tank/ployz-mirror/data/fs"));
+    assert!(commands.contains("zfs destroy -r tank/ployz-mirror/data/fs"));
+    assert_eq!(
+        source.requests(),
+        [
+            "/volume-bound/data",
+            "/volume-send/data?target=w-1-2&token=token-1",
+            "/volume-send/data?target=w-1-2",
+        ]
+    );
+    server.abort();
+}
+
+#[tokio::test]
 async fn a_pull_resent_with_its_first_expect_continues_a_full_send_that_emptied_the_slot() {
     let source = Source::start(Some(BOUND), "").await;
     source.hold("target=w-1-2", "snapshot w-1-2 12\n");
@@ -1199,6 +1233,36 @@ async fn a_pull_whose_token_the_writer_lost_after_a_first_receive_broke_lands_in
             ][..]
         )
     );
+    server.abort();
+}
+
+#[tokio::test]
+async fn a_resume_the_writer_fails_never_prints_its_token() {
+    let source = Source::start(Some(BOUND), "break\n").await;
+    let test = TestDir::new();
+    let (socket, server) = puller(&test, &["root"], source.port);
+
+    post(&socket, "/Volume.Copy.Pull", pull("w-1-1")).await;
+    let copy = landed(&socket, "w-1-1").await;
+    assert_eq!(copy.pointer("/Ok/resume_token"), Some(&json!("token-1")));
+    let broke = failed(&socket).await;
+    assert!(broke.contains("zfs send -t …"), "{broke}");
+    assert!(!broke.contains("token-1"), "{broke}");
+
+    source.answer("token=", StatusCode::INTERNAL_SERVER_ERROR, "boom");
+    post(&socket, "/Volume.Copy.Pull", pull("w-1-1")).await;
+    post(&socket, "/Volume.Copy.Pull", pull("w-1-1")).await;
+    let mut failure = String::new();
+    for _ in 0..300 {
+        failure = failed(&socket).await;
+        if failure.contains("500") {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(failure.contains("500"), "{failure}");
+    assert!(!failure.contains("token-1"), "{failure}");
+    assert!(failure.contains("target=w-1-1&token=…"), "{failure}");
     server.abort();
 }
 

@@ -1,11 +1,15 @@
 use clap::ArgMatches;
-use ployz_core::{EnrollAs, EnrollRequest, LocalMachinePhase, MachineName, RegisterRequest};
+use ployz_core::{
+    EnrollAs, EnrollRequest, EnrollmentSnapshot, InspectRequest, LocalMachinePhase, MachineId,
+    MachineName, RegisterRequest, WireGuardPublicKey, op,
+};
 
 use super::super::{connect_context, runtime};
 use super::{ConnectionOptions, helpers, target};
 use serde_json::json;
 
 use crate::handlers::{Error, leaf_matches};
+use crate::ui::Hint;
 
 pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
@@ -35,6 +39,10 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
         }
         let mut entry = connect_context(matches, options.context()).await?;
         let snapshot = crate::enrollment::observe_enrollment(&mut entry).await?;
+        let entry_id = entry
+            .call_repeatable::<op::Inspect>(InspectRequest::default(), None)
+            .await?
+            .id;
         let mut target_client = if no_install {
             helpers::connect_direct(matches, &connection).await?
         } else {
@@ -42,13 +50,14 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
         };
         let (details, mut token) =
             helpers::inspect_token(&mut target_client, token_request.clone()).await?;
+        require_another_entry(entry_id, token.id, destination)?;
+        // Before the reset, so a taken name leaves the Server as it was.
+        let name = helpers::machine_name(requested_name, &token)?;
+        require_free_name(&snapshot, token.id, &name, destination)?;
         let history = config.path().with_extension("enrollment");
-        let resuming = crate::enrollment::local::has_assignment(&history, &snapshot, token.id)?
-            || snapshot
-                .machines
-                .iter()
-                .any(|machine| machine.id == token.id && machine.public_key == token.public_key);
-        if details.phase != LocalMachinePhase::Uninitialized && !resuming {
+        if details.phase != LocalMachinePhase::Uninitialized
+            && !resumes(&snapshot, token.id, token.public_key)
+        {
             helpers::confirm(yes, "Reset the Server before adding it to this Cluster?")?;
             helpers::leave(&mut target_client).await?;
             target_client = helpers::reconnect_direct(matches, &connection).await?;
@@ -56,7 +65,6 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
                 .await?
                 .1;
         }
-        let name = helpers::machine_name(requested_name, &token)?;
 
         let assignment = crate::enrollment::local::save_assignment(
             &history,
@@ -88,6 +96,7 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
         Ok::<_, Error>(assigned)
     })?;
     // The Machine joined: everything after is a follow-up that makes the result partial.
+    let mut unarrived = Vec::new();
     let follow_up = (|| {
         connection = connection.with_machine_id(assigned.id);
         config.save_connection(&context_name, connection.clone())?;
@@ -99,9 +108,15 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
             "added Server did not become ready",
         ))?;
 
-        let catch_up = runtime.block_on(async {
+        let catch_up;
+        (unarrived, catch_up) = runtime.block_on(async {
             let mut entry = super::super::reconnect_client(matches, options.context()).await?;
-            Ok::<_, Error>(crate::global_catch_up::follow_globals(&mut entry, &assigned).await)
+            Ok::<_, Error>(
+                crate::global_catch_up::follow_globals(&mut entry, &assigned, |args| {
+                    super::super::recovery_command(matches, &context_name, args)
+                })
+                .await,
+            )
         })?;
         catch_up.map_err(|error| {
             crate::global_catch_up::joined_catch_up_error(error, &assigned, |args| {
@@ -113,9 +128,65 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
         Ok(())
     })();
     crate::ui::emit_committed(
-        json!({ "server": super::server_json(&assigned) }),
+        crate::global_catch_up::with_unarrived(
+            json!({ "server": super::server_json(&assigned) }),
+            &unarrived,
+        ),
         follow_up,
     )
+}
+
+/// A Server that answers as the entry for its own add vouches only for its own state, which
+/// a forgotten Server still holds; another Server's view decides whether it is a member.
+fn require_another_entry(
+    entry: MachineId,
+    target: MachineId,
+    destination: &str,
+) -> Result<(), Error> {
+    if entry != target {
+        return Ok(());
+    }
+    Err(Error::conflict(format!(
+        "{destination} answered as the entry for its own add, so its membership can't be checked. Nothing was enrolled. Run it again with --connect naming another Server of the Cluster."
+    )))
+}
+
+/// A Server's name names one Server: `ps`, `server rm` and the rest select by it.
+fn require_free_name(
+    snapshot: &EnrollmentSnapshot,
+    id: MachineId,
+    name: &MachineName,
+    destination: &str,
+) -> Result<(), Error> {
+    let named = || {
+        snapshot
+            .machines
+            .iter()
+            .filter(|machine| machine.name == *name)
+    };
+    // A Server keeps a name it already holds, even one a concurrent add duplicated.
+    if named().any(|machine| machine.id == id) {
+        return Ok(());
+    }
+    let Some(holder) = named().next() else {
+        return Ok(());
+    };
+    Err(Error::conflict(format!(
+        "Server {name} already has that name (ID {}). Nothing was enrolled.",
+        holder.id
+    ))
+    .hint(Hint::Next(format!(
+        "ployz server add {destination} --name NAME"
+    ))))
+}
+
+/// Only a Server the Cluster lists resumes its join. One this computer assigned that the Cluster
+/// no longer lists was forgotten, and still holds the state it had then.
+fn resumes(snapshot: &EnrollmentSnapshot, id: MachineId, public_key: WireGuardPublicKey) -> bool {
+    snapshot
+        .machines
+        .iter()
+        .any(|machine| machine.id == id && machine.public_key == public_key)
 }
 
 #[cfg(test)]
@@ -126,11 +197,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn add_timeout_surfaces_the_docker_network_recovery() {
+    fn add_timeout_leaves_the_docker_network_recovery_to_the_journal() {
         let message = helpers::readiness_timeout_message("added Server did not become ready");
 
         assert!(message.contains("added Server did not become ready"));
-        assert!(message.contains(DOCKER_NETWORK_CONFLICT_RECOVERY));
+        assert!(!message.contains(DOCKER_NETWORK_CONFLICT_RECOVERY));
     }
 
     #[test]
@@ -176,6 +247,118 @@ mod tests {
             ployz_core::RpcErrorCode::InvalidArgument
         );
         assert!(hints.contains(&crate::ui::Hint::Next("ployz deploy".into())));
+    }
+
+    #[test]
+    fn only_a_server_the_cluster_lists_resumes_its_join() {
+        let history = tempfile::tempdir().unwrap();
+        let survivor = assigned_machine("machine-2", 'b');
+        let mut joined = EnrollmentSnapshot {
+            network: "10.210.0.0/16".parse().unwrap(),
+            machines: vec![survivor.clone()],
+            target_versions: Default::default(),
+        };
+        let returning = assigned_machine("machine-3", 'c');
+        let saved = crate::enrollment::local::save_assignment(
+            history.path(),
+            &RegisterRequest {
+                machine_id: returning.id,
+                assigned_subnet: None,
+                initial_policy: Default::default(),
+                name: returning.name.clone(),
+                storage: ployz_core::StorageChoice::None,
+                public_key: returning.public_key,
+                public_ip: None,
+                advertised_endpoints: vec![ployz_core::AdvertisedEndpoint(
+                    "192.0.2.3:51820".parse().unwrap(),
+                )],
+                runtime: Default::default(),
+            },
+            &joined,
+        )
+        .unwrap();
+        joined.machines.push(saved.machine.clone());
+        assert!(
+            resumes(&joined, returning.id, returning.public_key),
+            "a Server the Cluster lists resumes its join"
+        );
+
+        let forgotten = EnrollmentSnapshot {
+            machines: vec![survivor],
+            ..joined
+        };
+        assert!(
+            !resumes(&forgotten, returning.id, returning.public_key),
+            "a forgotten Server is reset, whatever this computer once assigned it"
+        );
+    }
+
+    #[test]
+    fn a_server_cannot_be_added_through_itself() {
+        let target = assigned_machine("machine-3", 'c');
+        let other = assigned_machine("machine-1", 'a');
+        assert!(require_another_entry(other.id, target.id, "root@machine-3").is_ok());
+        let refusal = require_another_entry(target.id, target.id, "root@machine-3").unwrap_err();
+        let message = refusal.to_string();
+        assert!(
+            message.contains("root@machine-3 answered as the entry"),
+            "a forgotten Server's own view can't vouch for it: {message}"
+        );
+        assert!(
+            message.contains("--connect naming another Server"),
+            "names --connect through another Server: {message}"
+        );
+    }
+
+    #[test]
+    fn a_server_cannot_take_a_name_another_server_has() {
+        let live = assigned_machine("machine-1", 'a');
+        let joining = assigned_machine("machine-3", 'c');
+        let snapshot = EnrollmentSnapshot {
+            network: "10.210.0.0/16".parse().unwrap(),
+            machines: vec![live.clone(), joining.clone()],
+            target_versions: Default::default(),
+        };
+        let refusal =
+            require_free_name(&snapshot, joining.id, &live.name, "root@machine-3").unwrap_err();
+        let message = refusal.to_string();
+        assert!(
+            message.contains("Server machine-1 already has that name"),
+            "names the Server that holds it: {message}"
+        );
+        assert!(
+            refusal.hints().iter().any(|hint| matches!(
+                hint,
+                Hint::Next(next) if next == "ployz server add root@machine-3 --name NAME"
+            )),
+            "next: names --name: {:?}",
+            refusal.hints()
+        );
+        assert!(
+            require_free_name(&snapshot, joining.id, &joining.name, "root@machine-3").is_ok(),
+            "a Server resuming its own join keeps its name"
+        );
+        let twin = Machine {
+            name: live.name.clone(),
+            ..joining.clone()
+        };
+        let duplicated = EnrollmentSnapshot {
+            machines: vec![live.clone(), twin.clone()],
+            ..snapshot.clone()
+        };
+        assert!(
+            require_free_name(&duplicated, twin.id, &twin.name, "root@machine-3").is_ok(),
+            "a Server whose name a concurrent add duplicated still resumes under it"
+        );
+        assert!(
+            require_free_name(
+                &snapshot,
+                joining.id,
+                &MachineName::parse("machine-4").unwrap(),
+                "root@machine-3"
+            )
+            .is_ok()
+        );
     }
 
     fn assigned_machine(name: &str, seed: char) -> Machine {

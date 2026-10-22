@@ -6,6 +6,7 @@
 //! available, and editing Machine Labels evicts nothing.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use ployz_core::{
     AnonymousVolumes, ContainerId, ContainerKind, ContainerLimitsUpdated, ContainerLocator,
@@ -18,8 +19,8 @@ use ployz_core::{
     VolumeRemoved,
 };
 use ployz_core::{
-    AnswerWhen, ContainerRun, DeploymentLogId, Gen, HEALTH_POLL_INTERVAL, HealthFailure,
-    HealthPoll, HealthVerdict, HealthcheckSpec, ReadyWait, health_monitor,
+    AnswerWhen, ContainerRun, DeploymentLogId, Gen, HealthFailure, HealthPoll, HealthVerdict,
+    HealthcheckSpec, ReadyWait, SETTLE_INSPECT_GRACE, health_monitor, settle_deadline,
 };
 
 use self::rotation::RotationWant;
@@ -30,6 +31,14 @@ use crate::docker::{
 };
 use crate::docker_image::ImagePull;
 use crate::machine::{STORAGE_OBSERVATION_TIMEOUT, local_storage};
+
+/// A settle inspects local Docker, so a short poll costs little and sets how late a
+/// verdict is seen. Remote health waits keep `HEALTH_POLL_INTERVAL`.
+const SETTLE_POLL: Duration = Duration::from_millis(100);
+
+/// Reading a copy's sockets is cheap, so a short poll costs little and sets how late
+/// an idle copy is seen.
+const DRAIN_POLL: Duration = Duration::from_millis(50);
 
 #[cfg(test)]
 static SETTLES: std::sync::Mutex<std::collections::BTreeMap<ContainerId, usize>> =
@@ -168,7 +177,7 @@ impl LocalMachine {
                     });
                 }
                 Err(SwitchError::NoWriter
-                    .rpc_error(ployz_core::no_writer_message(
+                    .rpc_error(ployz_core::no_writer_observation(
                         ployz_core::Namespace::declared_volume_name(name).unwrap_or(name.as_str()),
                         &copies,
                     ))
@@ -318,8 +327,10 @@ impl LocalMachine {
     /// already holding a turn deadlocks.
     ///
     /// The stopping mark is set without a turn so replication tells every proxy
-    /// while the drain sleeps. A daemon restart forgets the mark; a still-running
-    /// Container returns to ingress and the resend redoes the drain.
+    /// during the drain. An idle copy ends its drain early, so a proxy that has not
+    /// heard yet may dial the stopped copy and retry another. A daemon restart forgets
+    /// the mark; a still-running Container returns to ingress and the resend redoes the
+    /// drain.
     ///
     /// With a `fence`, the Container holds that Volume and the gen is checked against
     /// its floor under the turn, after the drain: a Deploy that raised the floor
@@ -420,7 +431,8 @@ impl LocalMachine {
             Ok(withdrawal) => withdrawal,
             Err(refused) => return Ok(Err(refused)),
         };
-        tokio::time::sleep(drain.as_duration()).await;
+        let _ =
+            tokio::time::timeout(drain.as_duration(), self.until_idle(containers, container)).await;
         let turn = self.owner.admission_lock().write_owned().await;
         let held = match check().await? {
             Ok(held) => held,
@@ -447,6 +459,32 @@ impl LocalMachine {
         Ok(Ok(containers
             .inspect_managed(container, &machine_id)
             .await?))
+    }
+
+    /// Ends once the copy holds no connection it may still answer, per
+    /// `drain_idle::holds_connection`, with the listening ports remembered across the
+    /// drain's reads. A copy with no connection from off its loopback reads idle at
+    /// once. A copy whose sockets cannot be read never reads idle, so its drain waits
+    /// the full cap.
+    ///
+    /// Every Service copy joins the Ployz network, so its pid's tables list only its
+    /// own sockets. A copy in the host's namespace would list the host's, and read
+    /// busy until the cap.
+    async fn until_idle(
+        &self,
+        containers: &crate::docker::ContainerRuntime,
+        container: &ContainerId,
+    ) {
+        let Ok(Some(pid)) = containers.pid(container).await else {
+            return std::future::pending().await;
+        };
+        let mut listening = std::collections::BTreeSet::new();
+        while !matches!(
+            drain_idle::holds_connection(&self.proc_root, pid, &mut listening),
+            Ok(false)
+        ) {
+            tokio::time::sleep(DRAIN_POLL).await;
+        }
     }
 
     /// The cut's Container half: drain and stop every holder of the Volume, then run
@@ -637,9 +675,13 @@ impl LocalMachine {
         let local = self.clone();
         let shared = self.owner.admission_lock().read_owned().await;
         self.finish_admitted(shared, async move {
-            local.containers.as_ref().ok_or(Error::DockerUnavailable)?;
-            crate::docker::pull_from_ingest(&request.pull, request.source, &request.platform)
-                .await?;
+            let containers = local.containers.as_ref().ok_or(Error::DockerUnavailable)?;
+            if let Err(error) =
+                crate::docker::pull_from_ingest(&request.pull, request.source, &request.platform)
+                    .await
+            {
+                return Err(containers.pull_failure(error).await.into());
+            }
             // Every caller discards this reply; a deploy reads ports from its `PullImage`.
             Ok(ImagePulled::default())
         })
@@ -767,11 +809,27 @@ impl LocalMachine {
         let monitor = health_monitor(spec);
         let mut wait = ReadyWait::new(healthcheck, monitor);
         let started = tokio::time::Instant::now();
+        let limit = settle_deadline(spec);
         let mut first_run = None;
+        let mut seen = (None, false);
         loop {
-            let inspected = containers
-                .inspect_managed_run(container_id, &machine_id)
-                .await?;
+            // Docker can stall an inspect of a Container it OOM-killed, and the
+            // verdict still answers by the deadline.
+            let Ok(inspected) = tokio::time::timeout_at(
+                (started + limit).max(tokio::time::Instant::now() + SETTLE_INSPECT_GRACE),
+                containers.inspect_managed_run(container_id, &machine_id),
+            )
+            .await
+            else {
+                let (last_check, oom_killed) = seen;
+                return Ok(HealthVerdict::TimedOut {
+                    deadline_millis: u64::try_from(limit.as_millis()).ok(),
+                    last_check,
+                    oom_killed,
+                });
+            };
+            let inspected = inspected?;
+            seen = (inspected.details.last_check.clone(), inspected.oom_killed);
             first_run = first_run.or_else(|| inspected.details.run.clone());
             let elapsed = started.elapsed();
             let wake = match wait.poll(&inspected.details, elapsed).0 {
@@ -815,7 +873,7 @@ impl LocalMachine {
                     });
                 }
             };
-            tokio::time::sleep_until(started + (elapsed + HEALTH_POLL_INTERVAL).min(wake)).await;
+            tokio::time::sleep_until(started + (elapsed + SETTLE_POLL).min(wake)).await;
         }
     }
 
@@ -1431,6 +1489,8 @@ fn create_refusal(error: Error) -> Result<ContainerRefusal, Error> {
     Ok(refuse(reason, ployz_core::error_chain::inline(&error)))
 }
 
+#[path = "drain_idle.rs"]
+mod drain_idle;
 #[path = "rotation.rs"]
 mod rotation;
 

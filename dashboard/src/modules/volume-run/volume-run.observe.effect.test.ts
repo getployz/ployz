@@ -1,4 +1,4 @@
-import type { Client, Connection, RuntimeWatchView } from "@ployz/sdk";
+import type { Client, Connection, RuntimeWatchView, VolumeCopyView } from "@ployz/sdk";
 import { assert, it } from "@effect/vitest";
 import { vi } from "vitest";
 import { Deferred, Effect, Fiber, Layer, Queue } from "effect";
@@ -13,6 +13,7 @@ import {
   runtimeWatchFrameFixture,
   runtimeWatchMachineFixture,
   runtimeWatchMachineObservationFixture,
+  runtimeWatchVolumeFixture,
 } from "#/modules/runtime/runtime-watch-frame.test-fixture";
 import { Database, type DatabaseService } from "#/server/database.server";
 import { noPairingChanges } from "#/test/organization-runtime";
@@ -72,6 +73,8 @@ it.effect("a Cluster that never sends a frame fails as one to wait out once the 
 
 const volume = { environmentId: "e1", volumeName: "data", dockerVolume: "production_data", refquotaBytes: 0, recordedBytes: 0 };
 const release = { volumeId: "v1", environment: { project: "web", environment: "production" }, kind: "release", args: {} } as const;
+const move = { volumeId: "v1", environment: { project: "web", environment: "production" }, kind: "move", args: { to: "box-1" } } as const;
+const moveAway = { ...move, args: { to: "box-2" } } as const;
 const unanswered = { ok: false, refusal: { code: "unavailable", message: "Your servers aren't answering. Try again once they are.", details: null } } as const;
 
 // One Server holding only a mirror: a release reads the members, then which slot keeps the Service.
@@ -142,9 +145,10 @@ it.effect("a release whose members read takes 35 seconds and whose next connect 
 
 /**
  * One Server that lacks the generation floor and holds a mirror, so a release names what it lacks; its release channel
- * query waits for the test to answer it, and its inspect answers once `inspected` resolves.
+ * query waits for the test to answer it, and its inspect answers once `inspected` resolves. `capabilities` and `copy`
+ * make it another Server, such as one that lacks something else.
  */
-const lacking = Effect.gen(function* () {
+const lacking = (capabilities: readonly string[] = ["volume_move"], copy: VolumeCopyView["copy"] = COPIES.mirror) => Effect.gen(function* () {
   const queries = yield* Queue.unbounded<() => void>();
   const inspects = yield* Queue.unbounded<void>();
   let interrupted = 0;
@@ -155,7 +159,7 @@ const lacking = Effect.gen(function* () {
     Effect.as([]),
   );
   const floorless = runtimeWatchFrameFixture({
-    machines: [runtimeWatchMachineObservationFixture({ machine: { ...machine, runtime: { ...machine.runtime, capabilities: ["volume_move"] } } })],
+    machines: [runtimeWatchMachineObservationFixture({ machine: { ...machine, public_key: Array.from({ length: 32 }, () => 1), runtime: { ...machine.runtime, capabilities: [...capabilities] } } })],
   });
   const layer = (inspected: Promise<void>) => makeOrganizationRuntimeLayer(
     () => Effect.succeed({ kind: "ready", generation: "current", connections }),
@@ -167,7 +171,7 @@ const lacking = Effect.gen(function* () {
         volumeSwitch: async () => {
           Queue.offerUnsafe(inspects, undefined);
           await inspected;
-          return { copy: COPIES.mirror };
+          return { copy };
         },
         runtime: {
           watch: async function* (): AsyncGenerator<RuntimeWatchView> {
@@ -186,7 +190,7 @@ const lacking = Effect.gen(function* () {
 it.effect("a Server's release channel query that takes 12 seconds finishes, and the member names the release it needs", () =>
   Effect.gen(function* () {
     vi.stubGlobal("fetch", async () => new Response("v0.2.0\n"));
-    const cluster = yield* lacking;
+    const cluster = yield* lacking();
     const observing = yield* observeVolumeMembers("org-1", "pg-data", release).pipe(Effect.provide(cluster.layer(Promise.resolve())), Effect.forkChild);
     const query = yield* Queue.take(cluster.queries);
     yield* TestClock.adjust("12 seconds");
@@ -194,16 +198,64 @@ it.effect("a Server's release channel query that takes 12 seconds finishes, and 
     assert.deepStrictEqual(yield* Fiber.join(observing), [{
       machine: { id: machine.id, name: machine.name },
       answered: false,
-      lack: "Volume move needs a newer Ployz on box-1. 0.2.0 is out.",
+      lack: `Volume move needs a newer Ployz on box-1, which runs ${machine.runtime.daemon_version}. Upgrade it to 0.2.0.`,
+      outdated: true,
     }]);
     assert.strictEqual(cluster.finished(), 1);
     assert.strictEqual(cluster.interrupted(), 0);
   }).pipe(Effect.ensuring(Effect.sync(() => vi.unstubAllGlobals()))),
 );
 
+it.effect("a Server's lack claims no newer Ployz when its release can't be looked up", () =>
+  Effect.gen(function* () {
+    vi.stubGlobal("fetch", async () => { throw new Error("offline"); });
+    // Past the release pointer cache, so an earlier test's release isn't read back.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(Date.now() + 10 * 60_000);
+    const cluster = yield* lacking();
+    const observing = yield* observeVolumeMembers("org-1", "pg-data", release).pipe(Effect.provide(cluster.layer(Promise.resolve())), Effect.forkChild);
+    (yield* Queue.take(cluster.queries))();
+    assert.deepStrictEqual(yield* Fiber.join(observing), [{
+      machine: { id: machine.id, name: machine.name },
+      answered: false,
+      lack: `Volume move is not in Ployz ${machine.runtime.daemon_version} on box-1.`,
+    }]);
+  }).pipe(Effect.ensuring(Effect.sync(() => { vi.useRealTimers(); vi.unstubAllGlobals(); }))),
+);
+
+it.effect("a Move onto a Server whose Ployz can't route the moved copy names its release and the one to upgrade to", () =>
+  Effect.gen(function* () {
+    vi.stubGlobal("fetch", async () => new Response("v0.2.0\n"));
+    // As 0.3.0-beta.6 lists them: it moves the data, then never routes the copy it starts.
+    const cluster = yield* lacking([requirements.volumeMove.capability, requirements.volumeFloor.capability], null);
+    const observing = yield* observeVolumeMembers("org-1", "pg-data", move).pipe(Effect.provide(cluster.layer(Promise.resolve())), Effect.forkChild);
+    (yield* Queue.take(cluster.queries))();
+    assert.deepStrictEqual(yield* Fiber.join(observing), [{
+      machine: { id: machine.id, name: machine.name },
+      answered: false,
+      lack: `Volume move needs a newer Ployz on box-1, which runs ${machine.runtime.daemon_version}. Upgrade it to 0.2.0.`,
+      outdated: true,
+    }]);
+  }).pipe(Effect.ensuring(Effect.sync(() => vi.unstubAllGlobals()))),
+);
+
+it.effect("a Move reads the copy of its destination when that Server routes the moved copy or lists no capabilities, and of a source that can't", () =>
+  Effect.gen(function* () {
+    const read = (capabilities: readonly string[], run: typeof move | typeof moveAway) => Effect.gen(function* () {
+      const cluster = yield* lacking(capabilities, null);
+      const [member] = yield* observeVolumeMembers("org-1", "pg-data", run).pipe(Effect.provide(cluster.layer(Promise.resolve())));
+      return member?.answered;
+    });
+    const beta6 = [requirements.volumeMove.capability, requirements.volumeFloor.capability];
+    assert.strictEqual(yield* read([...beta6, requirements.volumeSize.capability], move), true);
+    assert.strictEqual(yield* read([], move), true);
+    assert.strictEqual(yield* read(beta6, moveAway), true);
+  }),
+);
+
 it.effect("a Server whose inspect never answers is a member that didn't answer after 10 seconds", () =>
   Effect.gen(function* () {
-    const cluster = yield* lacking;
+    const cluster = yield* lacking();
     const observing = yield* observeVolumeMembers("org-1", "pg-data", release).pipe(
       Effect.provide(cluster.layer(new Promise<void>(() => {}))),
       Effect.forkChild,
@@ -239,5 +291,39 @@ it.effect("database reads between a plan's Cluster reads are never interrupted a
     const plan = yield* Fiber.join(planning);
     assert.strictEqual(cluster.interrupted(), 0);
     assert.isTrue(plan.ok);
+  }),
+);
+
+/** One Server that never answers its inspect, whose last report in the frame holds `slotRole`'s slot of pg-data. */
+const lastReported = (slotRole: "mirror" | "old_copy") => makeOrganizationRuntimeLayer(
+  () => Effect.succeed({ kind: "ready", generation: "current", connections }),
+  noPairingChanges,
+).pipe(
+  Layer.provide(makePloyzLayer({
+    connect: async () => asTestDouble<Client>()({
+      close: async () => {},
+      volumeSwitch: () => Promise.reject(new Error("box-1 is powered off")),
+      runtime: {
+        watch: async function* (): AsyncGenerator<RuntimeWatchView> {
+          yield runtimeWatchFrameFixture({
+            machines: [runtimeWatchMachineObservationFixture({ machine })],
+            volumes: [runtimeWatchVolumeFixture(machine.id, "pg-data", {
+              storage: { kind: "provisioned", mountpoint: "/p", bound_bytes: 1, used_bytes: 0, role: "slot", slot_role: slotRole },
+            })],
+          });
+        },
+      },
+    }),
+  })),
+  Layer.merge(Layer.succeed(Database, undefined as never)),
+);
+
+it.effect("a silent Server whose last report held a mirror is a member that didn't answer and last held a mirror", () =>
+  Effect.gen(function* () {
+    const ref = { id: machine.id, name: machine.name };
+    assert.deepStrictEqual(yield* observeVolumeMembers("org-1", "pg-data").pipe(Effect.provide(lastReported("mirror"))),
+      [{ machine: ref, answered: false, lastMirror: true }]);
+    assert.deepStrictEqual(yield* observeVolumeMembers("org-1", "pg-data").pipe(Effect.provide(lastReported("old_copy"))),
+      [{ machine: ref, answered: false }]);
   }),
 );

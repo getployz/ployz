@@ -101,7 +101,8 @@ pub(super) fn rm_command(command: Command) -> Command {
                 .help("PROJECT/ENV, typed to confirm the Environment's removal"),
         )
         .arg(crate::cli::volume_acceptance())
-        .arg(crate::cli::reviewed_version()),
+        .arg(crate::cli::reviewed_version())
+        .arg(crate::cli::approval()),
     )
 }
 
@@ -278,7 +279,8 @@ pub(super) fn shutdown_command(command: Command) -> Command {
         .arg(positional("name", true).help("The Environment to take off the Servers"))
         .arg(project_arg())
         .arg(crate::cli::volume_acceptance())
-        .arg(crate::cli::reviewed_version()),
+        .arg(crate::cli::reviewed_version())
+        .arg(crate::cli::approval()),
     )
 }
 

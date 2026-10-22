@@ -1,10 +1,10 @@
-use std::sync::Arc;
+use std::{net::IpAddr, sync::Arc};
 
 use clap::ArgMatches;
 use ployz_core::{
-    DOCKER_NETWORK_CONFLICT_RECOVERY, EnrollRequest, Enrolled, InspectRequest, LeaveRequest, Left,
-    LocalMachinePhase, MACHINE_START_WAIT, Machine, MachineDetails, MachineName, MachineToken,
-    PinnedAddresses, PublicIpDiscovery, RpcErrorCode, TokenRequest, op,
+    EnrollRequest, Enrolled, InspectRequest, LeaveRequest, Left, LocalMachinePhase,
+    MACHINE_START_WAIT, Machine, MachineDetails, MachineName, MachineToken, PinnedAddresses,
+    PublicIpDiscovery, RpcErrorCode, TokenRequest, op,
 };
 
 use super::parse_endpoints;
@@ -23,17 +23,45 @@ pub(super) fn token_request(matches: &ArgMatches) -> Result<InspectRequest, Erro
     {
         "auto" => PublicIpDiscovery::Auto,
         "" | "none" => PublicIpDiscovery::Disabled,
-        value => PublicIpDiscovery::Override(
-            value
-                .parse()
-                .map_err(|_| Error::usage(format!("invalid public IP {value:?}")))?,
-        ),
+        value => PublicIpDiscovery::Override(public_ip(value)?),
     };
     Ok(InspectRequest {
         advertised_endpoints: parse_endpoints(&string_values(matches, "wg-endpoint"))?,
         token: Some(TokenRequest { public_ip }),
         ..Default::default()
     })
+}
+
+/// A public IP the user gave: refused when no visitor could reach it, warned about when only a
+/// private network could (#2914).
+pub(super) fn public_ip(value: &str) -> Result<IpAddr, Error> {
+    let ip = value
+        .parse::<IpAddr>()
+        .map_err(|_| Error::usage(format!("invalid public IP {value:?}")))?;
+    let unreachable = match ip.to_canonical() {
+        ip if ip.is_unspecified() => Some("an unspecified"),
+        ip if ip.is_loopback() => Some("a loopback"),
+        ip if ip.is_multicast() => Some("a multicast"),
+        IpAddr::V4(v4) if v4.is_link_local() => Some("a link-local"),
+        IpAddr::V6(v6) if v6.is_unicast_link_local() => Some("a link-local"),
+        IpAddr::V4(v4) if v4.is_broadcast() => Some("the broadcast"),
+        IpAddr::V4(_) | IpAddr::V6(_) => None,
+    };
+    if let Some(kind) = unreachable {
+        return Err(Error::usage(format!(
+            "{ip} is {kind} address, which no visitor can reach. Give the address the internet reaches this Server at, or none."
+        )));
+    }
+    let private = match ip.to_canonical() {
+        IpAddr::V4(v4) => v4.is_private(),
+        IpAddr::V6(v6) => v6.is_unique_local(),
+    };
+    if private {
+        crate::ui::warn(format!(
+            "{ip} is a private address: only its own network reaches it, not the internet."
+        ));
+    }
+    Ok(ip)
 }
 
 pub(super) fn pinned(request: &InspectRequest) -> PinnedAddresses {
@@ -206,9 +234,11 @@ pub(in crate::handlers) async fn leave(client: &mut Client) -> Result<(), Error>
     }
 }
 
+/// The CLI can't see why the daemon isn't ready, so it names where the cause
+/// shows rather than prescribing a recovery for one it never observed.
 pub(in crate::handlers) fn readiness_timeout_message(message: &str) -> String {
     format!(
-        "{message}; check `journalctl -u ployz` (a first Corrosion image pull can take several minutes); if ployzd refused a Docker network, safe recovery: {DOCKER_NETWORK_CONFLICT_RECOVERY}"
+        "{message}; check `journalctl -u ployz` (a first Corrosion image pull can take several minutes); if it shows ployzd `refusing to` change a network, follow the safe recovery that line ends with"
     )
 }
 
@@ -282,7 +312,7 @@ mod tests {
     }
 
     #[test]
-    fn readiness_timeout_names_the_start_delay_and_docker_network_recovery() {
+    fn readiness_timeout_names_the_start_delay_and_where_a_refusal_shows() {
         let message = readiness_timeout_message("initial Server did not become ready");
         assert!(
             message.contains("initial Server did not become ready"),
@@ -290,10 +320,20 @@ mod tests {
         );
         assert!(message.contains("journalctl -u ployz"), "{message}");
         assert!(message.contains("Corrosion"), "{message}");
+        assert!(message.contains("`refusing to`"), "{message}");
+    }
+
+    #[test]
+    fn readiness_timeout_never_claims_a_docker_network_conflict() {
+        // The CLI never observes the daemon's refusal, so it must not prescribe
+        // removing a network the daemon may never have refused (#2972).
+        let message = readiness_timeout_message("initial Server did not become ready");
         assert!(
-            message.contains(DOCKER_NETWORK_CONFLICT_RECOVERY),
+            !message.contains(DOCKER_NETWORK_CONFLICT_RECOVERY),
             "{message}"
         );
+        assert!(!message.contains("docker network rm"), "{message}");
+        assert!(!message.contains("systemctl stop"), "{message}");
     }
 
     fn token_with_hostname(hostname: &str) -> MachineToken {

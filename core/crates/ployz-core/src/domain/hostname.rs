@@ -176,6 +176,7 @@ mod tests {
             address: None,
             labels: BTreeMap::new(),
             stopped: false,
+            run: None,
         })
         .unwrap()
     }

@@ -1081,6 +1081,7 @@ mod tests {
             address: None,
             labels: Default::default(),
             stopped: false,
+            run: None,
         })
         .unwrap()
     }

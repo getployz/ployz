@@ -25,14 +25,23 @@ CAPTURES=$("$DOCS/capture-dir.sh" "${1:-}") || exit 1
 WORK=$(mktemp -d /tmp/pz-cloud-capture.XXXXXX) || exit 1
 readonly CAPTURES WORK
 cloud_started=0
-finish() {
+# shellcheck source=server-aside.sh
+source "$DOCS/cloud/server-aside.sh"
+# capture_traps' exit trap calls one of these.
+stop_cloud() {
   if [ "$cloud_started" = 1 ] && [ "${KEEP:-0}" != 1 ]; then
     (cd "$DASH" || exit 1; scripts/verify/down.sh) >/dev/null 2>&1 || true
     echo "dashboard stopped"
   fi
   rm -rf "$WORK"
 }
-trap finish EXIT
+keep_cloud() {
+  echo "Cloud stays up, whatever KEEP says, so you can inspect it:" >&2
+  echo "  docker exec $pg psql -U postgres -d ployz_cloud -c 'TABLE capture_server' -c \"SELECT * FROM organization_machine WHERE organization_id = '$org'\"" >&2
+  echo "then tear it down: (cd $DASH && scripts/verify/down.sh)" >&2
+  rm -rf "$WORK"
+}
+capture_traps
 echo "raw captures in $CAPTURES"
 mkdir -p "$WORK/bin" "$WORK/app" "$WORK/up-app"
 cap=$DOCS/cap.sh
@@ -242,7 +251,11 @@ c deploy "deployment show unknown number" $P deployment show 99
 c deploy "deployment show unknown number --json" $P deployment show 99 --json
 c deploy "deployment show garbage id" $P deployment show not-an-id
 m deploy "deployment start 1 --detach" $P deployment start 1 --detach
-CAP_TIMEOUT=15 m deploy "deployment start 1 (follows; no Server)" $P deployment start 1
+# Cloud counts the seed's Server, which never answers, so a start waits in the
+# queue. Set its row aside to capture the refusal a Server-less Organization gets.
+set_server_aside
+m deploy "deployment start 1 (follows; no Server enrolled)" $P deployment start 1
+restore_server
 m deploy "deployment cancel 1" $P deployment cancel 1
 m deploy "deployment cancel 1 again --json" $P deployment cancel 1 --json
 CAP_TIMEOUT=15 m deploy "deployment redeploy 1 --detach" $P deployment redeploy 1 --detach

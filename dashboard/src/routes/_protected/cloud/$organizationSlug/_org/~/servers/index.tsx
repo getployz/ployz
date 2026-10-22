@@ -37,7 +37,7 @@ export const Route = createFileRoute(
 function RouteComponent() {
   const { organizationSlug } = Route.useParams();
   const { token } = Route.useSearch();
-  const { state, servers } = useServers(organizationSlug);
+  const { state, servers, older } = useServers(organizationSlug);
   const upgrades = useServersUpgrade(organizationSlug, servers);
   const waiting = useWaitingServers(organizationSlug);
   const enrollments = useEnrollmentStatus(organizationSlug);
@@ -52,20 +52,18 @@ function RouteComponent() {
   const canAdd = page.kind !== "first-run" || page.intake;
 
   return (
-    <DashboardPage width="content">
-      {/* The top bar names the page; each row carries its own status, so this bar holds only actions. */}
-      <div className="flex items-center justify-end gap-2">
-        {upgrade === null ? null : <ServersUpgradeBar organizationSlug={organizationSlug} upgrade={upgrade} />}
-        <Button variant="ghost" nativeButton={false} render={<Link to="/cloud/$organizationSlug/~/servers/tokens" params={{ organizationSlug }} />}>
-          Tokens
-        </Button>
-        {canAdd ? (
-          <AddServersDialog
-            organizationSlug={organizationSlug}
-            label={upgrade === null ? "Add servers" : <span className="max-sm:sr-only">Add servers</span>}
-          />
-        ) : null}
-      </div>
+    <DashboardPage width="content" title="Servers" actions={<>
+      {upgrade === null ? null : <ServersUpgradeBar organizationSlug={organizationSlug} upgrade={upgrade} />}
+      <Button variant="ghost" nativeButton={false} render={<Link to="/cloud/$organizationSlug/~/servers/tokens" params={{ organizationSlug }} />}>
+        Tokens
+      </Button>
+      {canAdd ? (
+        <AddServersDialog
+          organizationSlug={organizationSlug}
+          label={upgrade === null ? "Add servers" : <span className="max-sm:sr-only">Add servers</span>}
+        />
+      ) : null}
+    </>}>
       {waiting.isError || enrollments.isError ? (
         <p role="alert">
           Couldn’t load waiting servers or enrollments.{" "}
@@ -77,7 +75,7 @@ function RouteComponent() {
       {page.kind === "loading" ? (
         <ServersSkeleton />
       ) : page.kind === "unreachable" ? (
-        <ServersUnreachable organizationSlug={organizationSlug} />
+        <ServersUnreachable organizationSlug={organizationSlug} older={older} />
       ) : page.kind === "first-run" ? (
         <FirstRunCard key={organizationSlug} organizationSlug={organizationSlug} arrived={page.intake} />
       ) : (
