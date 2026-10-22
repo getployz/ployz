@@ -27,8 +27,15 @@ export type ExcludedServer =
   | { readonly address: string; readonly reason: "port_80" | "port_80_taken" }
   | { readonly server: string; readonly reason: "ingress_down" };
 
-/** What the user sees of the Cluster Domain: its state, and the Servers it does without. */
-export type ClusterDomainStatus = { readonly state: ClusterDomainState; readonly excluded: readonly ExcludedServer[] };
+/**
+ * What the user sees of the Cluster Domain: its state, the Servers it does without, and the IPv6 addresses Cloud
+ * couldn't reach to check port 80.
+ */
+export type ClusterDomainStatus = {
+  readonly state: ClusterDomainState;
+  readonly excluded: readonly ExcludedServer[];
+  readonly unchecked: readonly string[];
+};
 
 export function clusterDomainStatus(
   domain: Pick<ClusterDomainRow, "recordsSyncedAt" | "traffic" | "certificateNotAfter">,
@@ -39,6 +46,7 @@ export function clusterDomainStatus(
   const closed = (probed?.unreachable ?? []).map((server) => server.address);
   const taken = (probed?.taken ?? []).map((server) => server.address);
   const down = (probed?.down ?? []).map((server) => server.name);
+  const unchecked = (probed?.unchecked ?? []).map((server) => server.address);
   // A row checked before `reachable` was stored can't say whether any Server answered, so it reads as none did.
   if (probed?.reachable?.length) {
     return {
@@ -48,6 +56,7 @@ export function clusterDomainStatus(
         ...taken.map((address) => ({ address, reason: "port_80_taken" as const })),
         ...down.map((server) => ({ server, reason: "ingress_down" as const })),
       ],
+      unchecked,
     };
   }
   const state: ClusterDomainState = traffic?.kind === "no_servers" || traffic?.kind === "no_public_ip"
@@ -59,7 +68,7 @@ export function clusterDomainStatus(
     : closed.length > 0
     ? { kind: "attention", reason: "port_80", addresses: closed }
     : clusterDomainState(domain, now);
-  return { state, excluded: [] };
+  return { state, excluded: [], unchecked };
 }
 
 /** The state once some Server carries traffic: what Ployz is still setting up or fixing. */

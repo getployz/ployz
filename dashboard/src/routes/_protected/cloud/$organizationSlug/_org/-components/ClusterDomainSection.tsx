@@ -77,7 +77,10 @@ export function ClusterDomainSection({ organizationSlug, domain, onCheck }: {
 
   const status = domain === null ? null : clusterDomainStatus(domain, new Date());
   const copy = status === null ? { message: "You’ll get one when you generate your first domain.", action: null } as const : statusCopy(status.state);
-  const excluded = status === null ? "" : excludedCopy(status.excluded);
+  const unchecked = status === null || status.unchecked.length === 0
+    ? ""
+    : `Ployz Cloud can’t reach ${status.unchecked.join(", ")} over IPv6, so it didn’t check port 80 there.`;
+  const excluded = status === null ? "" : [excludedCopy(status.excluded), unchecked].filter(Boolean).join(" ");
 
   return (
     <SettingsSection id="cluster-domain" title="Domain" description="Your services get free addresses under this domain.">

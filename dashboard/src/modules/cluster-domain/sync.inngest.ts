@@ -42,7 +42,8 @@ export async function executeSyncClusterDomain(
     runEffect(loadClusterDomain(organizationId).pipe(Effect.map((row) => row?.name ?? null))));
   if (name === null) return { organizationId, skipped: true };
   const probe = await step.run("probe-ingress-servers", () => runEffect(probeIngressServers(organizationId)));
-  const reachable = probe.kind === "probed" ? probe.reachable : [];
+  // With no Server Cloud saw answer, the IPv6 ones it couldn't check still get records: they may be all there is.
+  const reachable = probe.kind !== "probed" ? [] : probe.reachable.length > 0 ? probe.reachable : probe.unchecked;
   // Hosted DNS refuses an empty set, and the last good set is better than none.
   const recordsPut = reachable.length > 0;
   const recordCheck = () => step.run("record-check", () => runEffect(recordClusterDomainCheck(organizationId, probe)));

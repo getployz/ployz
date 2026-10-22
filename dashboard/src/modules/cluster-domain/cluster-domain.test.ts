@@ -49,7 +49,7 @@ describe("clusterDomainStatus", () => {
     ["port 80 blocked, checked before reachable was stored", { ...ready, traffic: { kind: "probed", unreachable: blocked } },
       { kind: "attention", reason: "port_80", addresses: ["203.0.113.1", "2001:db8::1"] }],
   ] as const)("%s", (_, domain, state) => {
-    expect(clusterDomainStatus(domain, now)).toEqual({ state, excluded: none });
+    expect(clusterDomainStatus(domain, now)).toEqual({ state, excluded: none, unchecked: none });
   });
 
   it("serves traffic through the Servers that answer, and names the ones left out", () => {
@@ -58,6 +58,7 @@ describe("clusterDomainStatus", () => {
     expect(clusterDomainStatus(domain, now)).toEqual({
       state: { kind: "ready" },
       excluded: [{ address: "203.0.113.1", reason: "port_80" }, { address: "2001:db8::1", reason: "port_80_taken" }],
+      unchecked: none,
     });
   });
 
@@ -67,6 +68,7 @@ describe("clusterDomainStatus", () => {
     expect(clusterDomainStatus(domain, now)).toEqual({
       state: { kind: "ready" },
       excluded: [{ address: "2001:db8::1", reason: "port_80" }, { server: "web-1", reason: "ingress_down" }],
+      unchecked: none,
     });
   });
 
@@ -76,6 +78,14 @@ describe("clusterDomainStatus", () => {
     expect(clusterDomainStatus(domain, now)).toEqual({
       state: { kind: "setting_up" },
       excluded: [{ address: "203.0.113.1", reason: "port_80" }],
+      unchecked: none,
     });
+  });
+
+  it("never calls an IPv6 address Cloud can't reach closed: it names it unchecked", () => {
+    const ipv6 = [{ machineId: machineId("b"), address: "2001:db8::1" }];
+    const domain = { ...ready, traffic: { kind: "probed", reachable: serving.slice(0, 0), unreachable: serving.slice(0, 0), unchecked: ipv6 } } as const;
+
+    expect(clusterDomainStatus(domain, now)).toEqual({ state: { kind: "ready" }, excluded: none, unchecked: ["2001:db8::1"] });
   });
 });

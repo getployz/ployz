@@ -154,6 +154,19 @@ traffic, in your hosting provider's firewall (like a Hetzner Cloud Firewall or a
 group) as well as the server's own (with UFW, `ufw allow 80/tcp`). Then click **Check again**
 under **Domain** in **Organization → General**.
 
+### IPv6-only servers
+
+Ployz Cloud checks port 80 from its own network, which may have no IPv6 route. When a server with
+only an IPv6 address doesn't answer that check, Ployz doesn't call its port closed. **Domain** in
+**Organization → General** shows **Ployz Cloud can't reach 2001:db8::1 over IPv6, so it didn't
+check port 80 there.**, and your domains don't warn about port 80. If none of your servers answered
+the check, your organization's domain still points at the IPv6-only ones. While another server
+answers, the domain points only at the servers that answered.
+
+Your servers get certificates on their own, so a domain whose certificate arrived works. Open port
+80 and 443 for IPv6 in every firewall, as above. To reach your apps from an IPv4-only network, give
+a server an IPv4 address too.
+
 ## Something else answers on port 80
 
 You'll see **Something else answers on port 80 of 203.0.113.10**. The server answers on port 80,

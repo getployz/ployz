@@ -104,12 +104,14 @@ export const probeIngressServers = Effect.fn("ClusterDomain.probeIngressServers"
   const isDown = ({ machineId }: IngressServerAddress) =>
     !containersUnobserved && !awake.has(machineId) && !unobserved.has(machineId);
   const closed = answering("closed");
+  const silent = closed.filter((server) => !isDown(server)).map(({ machineId, address }) => ({ machineId, address }));
   return {
     kind: "probed",
     reachable: answering("ployz").map(({ machineId, address }) => ({ machineId, address })),
-    unreachable: closed.filter((server) => !isDown(server)).map(({ machineId, address }) => ({ machineId, address })),
+    unreachable: silent.filter(({ address }) => !isIPv6(address)),
     taken: answering("taken").map(({ machineId, address }) => ({ machineId, address })),
     down: closed.filter(isDown),
+    unchecked: silent.filter(({ address }) => isIPv6(address)),
   } satisfies IngressProbe;
 }, Effect.scoped, Effect.catch((error) =>
   Effect.logWarning("No runtime frame for the Cluster Domain sync; records stay as published.", error)
