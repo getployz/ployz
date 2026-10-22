@@ -231,6 +231,19 @@ impl fmt::Debug for RecoveryCode {
     }
 }
 
+impl Serialize for RecoveryCode {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.reveal())
+    }
+}
+
+impl<'de> Deserialize<'de> for RecoveryCode {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let raw = Zeroizing::new(String::deserialize(deserializer)?);
+        Self::parse(&raw).map_err(serde::de::Error::custom)
+    }
+}
+
 /// Whether a Machine holds its Cluster's Sealing Key.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -322,9 +335,21 @@ mod tests {
     }
 
     #[test]
-    fn recovery_code_and_backup_debug_are_redacted() {
+    fn recovery_code_and_backup_round_trip_without_leaking() {
         let code = RecoveryCode::generate();
         assert_eq!(format!("{code:?}"), "RecoveryCode(..)");
+        assert_eq!(
+            serde_json::to_value(&code).unwrap(),
+            serde_json::json!(code.reveal().as_str())
+        );
+        assert_eq!(
+            serde_json::from_value::<RecoveryCode>(serde_json::to_value(&code).unwrap()).unwrap(),
+            code
+        );
+        let refused = serde_json::from_str::<RecoveryCode>("\"ABCDE-FGHIJ-KLMNO-PQRST-UVWXY0\"")
+            .unwrap_err()
+            .to_string();
+        assert!(!refused.contains("ABCDE"), "{refused}");
         let backup = SealingKeyBackup::from_bytes(vec![3; 109]);
         assert_eq!(format!("{backup:?}"), "SealingKeyBackup(..)");
         let json = serde_json::to_string(&backup).unwrap();

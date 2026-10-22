@@ -13,9 +13,9 @@ use ployz_core::{
     EnrollRequest, Enrolled, ForgetRequest, Forgotten, InspectRequest, LeaveRequest, Left,
     LeftPhase, LocalMachinePhase, Machine, MachineDetails, MachineId, MachineIdentity, MachineList,
     MachineObservation, MachineToken, MachineUpdated, ManagementAddress, ManagementClientLabel,
-    MembershipEvidence, PublicIpDiscovery, RegisterRequest, Registered, RpcError, RpcErrorCode,
-    RttObservation, RttStatistics, SelectedEndpoint, StorageDeparture, UpdateMachineRequest,
-    synthesize_membership,
+    MembershipEvidence, PublicIpDiscovery, RecoverySeed, RegisterRequest, Registered, RpcError,
+    RpcErrorCode, RttObservation, RttStatistics, SelectedEndpoint, StorageDeparture,
+    UpdateMachineRequest, synthesize_membership,
 };
 use thiserror::Error;
 use tokio_util::sync::CancellationToken;
@@ -55,6 +55,8 @@ mod management_client;
 mod push_target;
 mod sealing;
 pub(crate) use sealing::Error as SealingError;
+mod sealing_recovery;
+pub(crate) use sealing_recovery::Error as RecoveryError;
 mod upgrade;
 
 #[derive(Clone)]
@@ -149,6 +151,8 @@ pub enum Error {
     Seal(#[from] crate::sealing_key::SealError),
     #[error(transparent)]
     Sealing(#[from] SealingError),
+    #[error(transparent)]
+    Recovery(#[from] RecoveryError),
 }
 
 impl LocalMachine {
@@ -584,14 +588,18 @@ impl LocalMachine {
     /// request is invalid, or storage departure fails.
     pub async fn enroll(&self, request: EnrollRequest) -> Result<Enrolled, Error> {
         let local = self.clone();
-        self.finish_mutation(async move { local.enroll_admitted(request).await })
+        self.finish_mutation(async move { local.enroll_admitted(request, None).await })
             .await
     }
 
-    async fn enroll_admitted(&self, request: EnrollRequest) -> Result<Enrolled, Error> {
+    async fn enroll_admitted(
+        &self,
+        request: EnrollRequest,
+        recovery: Option<RecoverySeed>,
+    ) -> Result<Enrolled, Error> {
         let (plan, installation) = self
             .owner
-            .mutate(move |store| store.plan_enrollment(request, None))
+            .mutate(move |store| store.plan_enrollment(request, recovery))
             .await??;
         let machine = match plan {
             EnrollPlan::Fresh => {

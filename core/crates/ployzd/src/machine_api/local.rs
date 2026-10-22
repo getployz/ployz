@@ -21,7 +21,8 @@ use crate::{
     docker::{ContainerRuntime, ImageIngest},
     logs::{RpcStream, open_journal_logs, serve_logs},
     machine::{
-        LocalMachine, LocalMachineError, LocalMachineRecord, RecordOwner, SealingError, StoreError,
+        LocalMachine, LocalMachineError, LocalMachineRecord, RecordOwner, RecoveryError,
+        SealingError, StoreError,
     },
     network::{ChoiceRefused, EndpointChoice, MACHINE_API_PORT},
     route_acks::{Ackers, routed},
@@ -286,6 +287,44 @@ impl MachineRpc for MachineService {
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         finish(self.local.enroll(expect::<op::Enroll>(request)?).await)
+    }
+
+    async fn enroll_for_recovery(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        finish(
+            self.local
+                .enroll_for_recovery(expect::<op::EnrollForRecovery>(request)?)
+                .await,
+        )
+    }
+
+    async fn wrap_sealing_key(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        let cloud_routed = request
+            .metadata()
+            .contains_key(ployz_core::CLOUD_ROUTED_HEADER);
+        finish(
+            self.local
+                .wrap_sealing_key(expect::<op::WrapSealingKey>(request)?, cloud_routed),
+        )
+    }
+
+    async fn recover_sealing_key(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        let cloud_routed = request
+            .metadata()
+            .contains_key(ployz_core::CLOUD_ROUTED_HEADER);
+        finish(
+            self.local
+                .recover_sealing_key(expect::<op::RecoverSealingKey>(request)?, cloud_routed)
+                .await,
+        )
     }
 
     async fn register(
@@ -956,6 +995,7 @@ fn local_error(error: LocalMachineError) -> Result<Response<OpaquePayload>, Stat
         ),
         LocalMachineError::Upgrade(error) => respond(upgrade_error(error)),
         LocalMachineError::Sealing(error) => respond(sealing_error(error)),
+        LocalMachineError::Recovery(error) => respond(recovery_error(error)),
     }
 }
 
@@ -977,6 +1017,29 @@ fn sealing_error(error: SealingError) -> RpcError {
         SealingError::SealedAnother { .. } => {
             (RpcErrorCode::InvalidArgument, Refusal::SealedAnother)
         }
+    };
+    RpcError {
+        details: refusal.details(),
+        ..RpcError::caused(code, &error)
+    }
+}
+
+/// Refusals name themselves in `details` so the CLI tells a wrong code from a
+/// wrong backup; a key file this Machine cannot use is its own fault.
+fn recovery_error(error: RecoveryError) -> RpcError {
+    use ployz_core::RecoveryRefusal as Refusal;
+    let (code, refusal) = match &error {
+        RecoveryError::Unreadable(_) | RecoveryError::Unwritable(_) => {
+            return RpcError::caused(RpcErrorCode::Internal, &error);
+        }
+        RecoveryError::CloudRouted => (RpcErrorCode::Unsupported, Refusal::CloudRouted),
+        RecoveryError::NotHeld => (RpcErrorCode::Conflict, Refusal::NotHeld),
+        RecoveryError::NothingAwaited => (RpcErrorCode::Conflict, Refusal::NothingAwaited),
+        RecoveryError::NoBackup => (RpcErrorCode::Conflict, Refusal::NoBackup),
+        RecoveryError::Malformed => (RpcErrorCode::InvalidArgument, Refusal::Malformed),
+        RecoveryError::OtherKey(_) => (RpcErrorCode::InvalidArgument, Refusal::OtherKey),
+        RecoveryError::WrongCode => (RpcErrorCode::InvalidArgument, Refusal::WrongCode),
+        RecoveryError::HeldAnother { .. } => (RpcErrorCode::Conflict, Refusal::HeldAnother),
     };
     RpcError {
         details: refusal.details(),
