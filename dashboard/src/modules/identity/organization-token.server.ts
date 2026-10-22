@@ -112,6 +112,9 @@ const tokensReachableBy = (caller: Caller) => {
 };
 
 /** The tokens the Caller can revoke, expired ones included, and the Caller's own signed-in devices. */
+/** A teammate's name as `scope` carries it: a CLI before 0.3.2 prints `scope` raw, so no control character reaches a terminal. */
+const printable = (name: string) => name.replace(/\p{Cc}/gu, "");
+
 export const listCredentials = Effect.fn("OrganizationToken.list")(function* (caller: Caller) {
   const database = yield* Database;
   const now = new Date();
@@ -146,7 +149,7 @@ export const listCredentials = Effect.fn("OrganizationToken.list")(function* (ca
         id: token.id,
         name: token.name,
         kind: token.kind,
-        scope: grantLabel({ permissions: token.permissions, environments: token.environments }, you ? "you" : token.owner.name || token.owner.email),
+        scope: grantLabel({ permissions: token.permissions, environments: token.environments }, you ? "you" : printable(token.owner.name || token.owner.email)),
         owner: { ...token.owner, you },
         created_at: token.createdAt.toISOString(),
         expires_at: token.expiresAt.toISOString(),

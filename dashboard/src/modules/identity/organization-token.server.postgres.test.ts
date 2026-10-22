@@ -1,3 +1,4 @@
+import { eq } from "drizzle-orm";
 import { ConfigProvider, Effect, Layer } from "effect";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
@@ -93,6 +94,18 @@ describe("organization tokens", () => {
       { name: "eve-ci", scope: "Full as Eve", owner: { id: ids.eve, name: "Eve", email: "eve@example.test", you: false } },
     ]);
     expect((await run(listCredentials(callerOf("eve")))).tokens.map(({ scope, owner }) => ({ scope, you: owner.you }))).toEqual([{ scope: "Full as you", you: true }]);
+  });
+
+  it("keeps a teammate's name from writing control characters into a full token's scope", async () => {
+    await tokenOf("eve");
+    await harness.db.update(user).set({ name: "Eve\nFAKE\u001b[2J" }).where(eq(user.id, ids.eve));
+    try {
+      const [listed] = (await run(listCredentials(callerOf("bob")))).tokens;
+      expect(listed?.scope).toBe("Full as EveFAKE[2J");
+      expect(listed?.owner.name).toBe("Eve\nFAKE\u001b[2J");
+    } finally {
+      await harness.db.update(user).set({ name: "Eve" }).where(eq(user.id, ids.eve));
+    }
   });
 
   it("shows support none of the Organization's tokens and lets it revoke none", async () => {
