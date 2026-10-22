@@ -263,8 +263,9 @@ button. Unlike the button, it waits for approval first when a global service wou
 [Destructive actions ask first](../account/organizations.md#destructive-actions-ask-first)).
 The CLI stops waiting after 30 minutes and says so; the drain keeps running in Ployz Cloud.
 
-Servers you run without Ployz Cloud belong to a context on your computer. Signed out, the same
-command drains from your computer through your current context. To use another context, name it:
+[Servers you run without Ployz Cloud](add-a-server.md#run-servers-without-ployz-cloud) belong to a
+context on your computer. Signed out, the same command drains from your computer through your
+current context. To use another context, name it:
 
 ```sh
 ployz server drain web-2 --context my-cluster
@@ -296,9 +297,9 @@ Click it to upgrade every server that's behind, one at a time in name order. You
 while they do. While an upgrade runs, the top of the page reads **Upgrading 1/4**, and the server
 upgrading reads **Upgrading**.
 
-When you upgrade from `0.3.0-beta.6` ([over SSH](#servers-on-030-beta6-or-earlier)), upgrade every
-server back to back: upgraded servers don't route traffic to apps on a server still on
-`0.3.0-beta.6` until it upgrades too ([#2892](https://github.com/getployz/ployz/issues/2892)). As
+When you upgrade from `0.3.0-beta.6` ([the first server over SSH](#servers-on-030-beta6-or-earlier)),
+upgrade every server back to back: upgraded servers don't route traffic to apps on a server still
+on `0.3.0-beta.6` until it upgrades too ([#2892](https://github.com/getployz/ployz/issues/2892)). As
 each server restarts, its domains can answer `503` briefly, for about 6 seconds when the app runs on
 another server.
 
@@ -367,9 +368,9 @@ Naming the other channel fails with `channel_mismatch`. Ployz Cloud upgrades onl
 release on that channel and never moves a server to an older release than it runs. To get
 prereleases, [choose Beta](#choose-stable-or-beta-releases).
 
-Servers you run without Ployz Cloud upgrade from your computer, through your current context or
-the one `--context` names. There you can name an exact version like `0.2.0`, even one older
-than the server runs:
+[Servers you run without Ployz Cloud](add-a-server.md#run-servers-without-ployz-cloud) upgrade
+from your computer, through your current context or the one `--context` names. There you can name
+an exact version like `0.2.0`, even one older than the server runs:
 
 ```sh
 ployz server upgrade 0.2.0 web-1 --context my-cluster
@@ -464,17 +465,16 @@ on.
 
 Starting with the first release after 0.3.0-beta.6, Ployz Cloud and the CLI prove their access in a
 new way on every connection, and servers on 0.3.0-beta.6 or earlier don't understand it. Through
-Ployz's relay, Cloud and a newer CLI can't manage such a server at all, and that includes starting
-its upgrade from the **Servers** page or with `ployz server upgrade`. The server keeps running your
-apps. The CLI stops with:
+Ployz's relay, Cloud and a newer CLI can't connect to such a server directly. The server keeps
+running your apps. When no server in the cluster runs a newer release, the CLI stops with:
 
 ```text
 This Server runs Ployz 0.3.0-beta.6 or earlier, which this release can't reach through the relay.
 ```
 
-Upgrade each such server over SSH from your computer, one at a time. Install the CLI from the beta
-channel; the stable channel is still on a release before the change. Then run it with `--connect`
-and the server's SSH address:
+Upgrade the first server over SSH from your computer. Install the CLI from the beta channel; the
+stable channel is still on a release before the change. Then run it with `--connect` and the
+server's SSH address:
 
 ```sh
 curl -fsSL https://ployz.sh | sh -s -- beta
@@ -484,6 +484,20 @@ ployz server upgrade beta web-1 --connect ssh://root@203.0.113.10
 The server installs the newest release on the channel you name. Then Cloud and the CLI reach it
 through the relay again. If the upgrade fails, the server goes back to the release it ran before
 and keeps running; run the command again.
+
+Once one server runs the newer release, Cloud and the CLI can reach the others through it, so you
+can upgrade the rest from the **Servers** page or with `ployz server upgrade`. Do it right away:
+see [Upgrade Ployz on a server](#upgrade-ployz-on-a-server) for why. If a server still stops with
+the message above, upgrade it over SSH too.
+
+Without SSH from your computer, say with only your provider's console, upgrade a server on the
+server itself:
+
+```sh
+sudo ployzd install --version beta --software-only
+```
+
+`--software-only` replaces Ployz and leaves Docker, packages and storage as they are.
 
 The same boundary holds the other way: a CLI on 0.3.0-beta.6 or earlier can't reach a server on a
 later release. Install the newer CLI from the beta channel with
