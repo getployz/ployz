@@ -210,7 +210,7 @@ impl ContainerRuntime {
             )
             .await
         {
-            return Err(self.pull_failure(error).await);
+            return Err(self.pull_failure(Error::ImagePull(error)).await);
         }
         let mut config_operation = self.specs.config_operation().await;
         // Another request may have won while admission and image preparation ran.
