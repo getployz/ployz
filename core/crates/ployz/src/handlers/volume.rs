@@ -166,10 +166,12 @@ fn storage_flags(command: Command) -> Command {
             value("size", None)
                 .value_name("GB")
                 .value_parser(|size: &str| {
-                    ProvisionedVolumeMaximumBytes::parse_gb(size)
-                        .ok()
-                        .filter(|size| size.get() >= SMALLEST_SIZE)
-                        .ok_or("Use a size of at least 0.1GB, such as 5GB or 0.5GB")
+                    let size = ProvisionedVolumeMaximumBytes::parse_gb(size)
+                        .map_err(|_| "Use a positive size in GB, such as 5GB or 0.5GB")?;
+                    if size.get() < SMALLEST_SIZE {
+                        return Err("Use a size of at least 0.1GB, such as 5GB or 0.5GB");
+                    }
+                    Ok(size)
                 })
                 .help("Managed volume size limit in GB, such as 10GB; new Volumes default to 5GB"),
         )
