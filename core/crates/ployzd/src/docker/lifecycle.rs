@@ -1163,12 +1163,22 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn a_slot_a_crash_left_without_its_spec_reads_empty_until_the_create_runs_again() {
+    /// A Container the create under `key` left, with no spec and Docker state `status`.
+    async fn specless(
+        key: Option<&'static str>,
+        status: &str,
+    ) -> (
+        ContainerRuntime,
+        std::sync::Arc<std::sync::Mutex<std::collections::BTreeMap<String, serde_json::Value>>>,
+        Machine,
+        ResolvedServiceSpec,
+        ContainerId,
+    ) {
         let containers =
             std::sync::Arc::new(std::sync::Mutex::new(std::collections::BTreeMap::new()));
         let (runtime, _fake) = fake_runtime_with(FakeDocker {
             named_containers: Some(containers.clone()),
+            list_named: true,
             ..Default::default()
         })
         .await;
@@ -1179,7 +1189,7 @@ mod tests {
             .create_with_admission::<_, _, Error>(
                 &machine,
                 ContainerRequest {
-                    creation_key: Some("plan:0"),
+                    creation_key: key,
                     ..container_request(
                         ContainerKind::ServiceContainer,
                         &namespace,
@@ -1197,69 +1207,65 @@ mod tests {
             .remove(&created.container_id)
             .await
             .unwrap();
+        for container in containers.lock().unwrap().values_mut() {
+            container["State"] = serde_json::json!({ "Status": status });
+        }
+        (runtime, containers, machine, spec, created.container_id)
+    }
+
+    #[tokio::test]
+    async fn reading_a_slot_a_crash_left_without_its_spec_empties_it() {
+        let (runtime, containers, machine, spec, _) = specless(Some("plan:0"), "created").await;
         let slot = SlotKey {
-            namespace,
+            namespace: Namespace::parse("app").unwrap(),
             service: spec.name.clone(),
             kind: ContainerKind::ServiceContainer,
             creation_key: ployz_core::CreationKey::try_from("plan:0".to_owned()).unwrap(),
         };
+
         let found = runtime.inspect_slot(&machine.id, &slot).await;
+
         assert!(matches!(found, Ok(None)), "{found:?}");
-        for container in containers.lock().unwrap().values_mut() {
-            container["State"] = serde_json::json!({ "Status": "running" });
-        }
-        let found = runtime.inspect_slot(&machine.id, &slot).await;
         assert!(
-            matches!(found, Err(Error::SpecNotFound(id)) if id == created.container_id),
-            "a started Container without its spec is still reported: {found:?}"
+            containers.lock().unwrap().is_empty(),
+            "a slot read as empty holds no Container that keeps its Volumes in use"
         );
     }
 
     #[tokio::test]
+    async fn a_slot_holding_a_started_container_without_its_spec_is_still_reported() {
+        let (runtime, containers, machine, spec, id) = specless(Some("plan:0"), "running").await;
+        let slot = SlotKey {
+            namespace: Namespace::parse("app").unwrap(),
+            service: spec.name.clone(),
+            kind: ContainerKind::ServiceContainer,
+            creation_key: ployz_core::CreationKey::try_from("plan:0".to_owned()).unwrap(),
+        };
+
+        let found = runtime.inspect_slot(&machine.id, &slot).await;
+
+        assert!(
+            matches!(found, Err(Error::SpecNotFound(found)) if found == id),
+            "{found:?}"
+        );
+        assert_eq!(containers.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
     async fn listing_removes_a_container_a_crash_left_without_its_spec_and_keeps_a_started_one() {
-        for (status, kept) in [("created", 0), ("running", 1)] {
-            let containers =
-                std::sync::Arc::new(std::sync::Mutex::new(std::collections::BTreeMap::new()));
-            let (runtime, _fake) = fake_runtime_with(FakeDocker {
-                named_containers: Some(containers.clone()),
-                list_named: true,
-                ..Default::default()
-            })
-            .await;
-            let machine = machine();
-            let namespace = Namespace::parse("app").unwrap();
-            let spec = spec_with_sources(Vec::new());
-            // An abandoned deploy: no create under this key runs again.
-            let created = runtime
-                .create_with_admission::<_, _, Error>(
-                    &machine,
-                    ContainerRequest {
-                        creation_key: Some("plan:0"),
-                        ..container_request(
-                            ContainerKind::ServiceContainer,
-                            &namespace,
-                            &spec,
-                            std::future::ready(None),
-                        )
-                    },
-                )
-                .await
-                .unwrap();
-            runtime
-                .specs
-                .config_operation()
-                .await
-                .remove(&created.container_id)
-                .await
-                .unwrap();
-            for container in containers.lock().unwrap().values_mut() {
-                container["State"] = serde_json::json!({ "Status": status });
-            }
+        // An abandoned deploy: no create under this key runs again. A restore can make
+        // an unkeyed Container again with no spec, and only keyed ones are adopted.
+        for (key, status, kept) in [
+            (Some("plan:0"), "created", 0),
+            (Some("plan:0"), "running", 1),
+            (None, "created", 1),
+        ] {
+            let (runtime, containers, machine, _, _) = specless(key, status).await;
             assert!(runtime.list_managed(&machine.id).await.unwrap().is_empty());
             assert_eq!(
                 containers.lock().unwrap().len(),
                 kept,
-                "a {status} Container without its spec"
+                "a {status} Container keyed {key:?} without its spec"
             );
         }
     }
