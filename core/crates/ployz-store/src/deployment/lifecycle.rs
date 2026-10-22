@@ -55,7 +55,7 @@ pub(crate) fn admit(
         }
     };
     let intent = saved_at(tx, environment, saved)?;
-    crate::volume::fix_storage(tx, environment, &intent, &frozen.nodes)?;
+    crate::volume::check_admitted(tx, environment, &intent)?;
     let environment_id = environment.as_str();
     // Without a new upload, each target Service without a source builds from the upload
     // it last built from.
@@ -1471,6 +1471,18 @@ pub(crate) fn record(
             // What the preview already settles shows while it runs; the rest reads
             // as Pending until what executing it did replaces these.
             stored.run.nodes = settled(&stored.nodes, &saved, &applied, &preview, &[]);
+            let outcomes = node_outcomes(
+                &stored.nodes,
+                &saved,
+                &applied,
+                &Evidence::Planned {
+                    preview: &preview,
+                    confirmed: &[],
+                },
+            );
+            crate::volume::fix_prepared(tx, &stored.summary.environment_id, &saved, |id| {
+                outcomes.get(id) == Some(&NodeStatus::Pending)
+            })?;
             stored.run.preview = Some(preview);
             save(tx, &mut stored)?;
             Ok(stored.summary)

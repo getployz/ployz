@@ -254,7 +254,7 @@ fn code(result: Result<impl std::fmt::Debug, RpcError>) -> RpcErrorCode {
 }
 
 #[test]
-fn draft_storage_is_explicit_and_locks_even_when_deployment_fails() {
+fn draft_storage_is_explicit_and_locks_once_a_run_prepares_it() {
     let create: CreateVolume =
         serde_json::from_value(json!({ "id": VOLUME, "name": "data" })).unwrap();
     assert_eq!(create.storage, VolumeKind::provisioned_default());
@@ -308,6 +308,10 @@ fn draft_storage_is_explicit_and_locks_even_when_deployment_fails() {
             .status,
         DeploymentStatus::Failed
     );
+    // Preparation that failed executed nothing, so no Server holds the Volume yet.
+    assert!(!listed(&store, &who)[0].storage_locked);
+    admit(&store, &who, 2, &[], None).unwrap();
+    prepare(&store, 2, &["web"]);
     assert!(listed(&store, &who)[0].storage_locked);
     for storage in [VolumeKind::Docker {}, VolumeKind::provisioned_default()] {
         let refused = set(storage).unwrap_err();
