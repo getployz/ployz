@@ -889,6 +889,128 @@ mod tests {
         assert_eq!(rotation().await, CopyRotation::Out);
     }
 
+    /// A running Service Container stored with no Healthcheck, created by a daemon from
+    /// before rotation, so it carries no gen label.
+    async fn unstamped_copy_with_no_healthcheck() -> (
+        crate::docker::ContainerRuntime,
+        crate::docker::test_support::FakeDocker,
+        ContainerId,
+    ) {
+        use crate::docker::{LABEL_GEN, test_support::runtime_with_running_container};
+
+        let (runtime, fake, id) = runtime_with_running_container().await;
+        edit_config(&fake, |config| {
+            labels(config).remove(LABEL_GEN).unwrap();
+        });
+        assert_eq!(stored_healthcheck(&runtime, &id).await, None);
+        (runtime, fake, id)
+    }
+
+    fn edit_config(
+        fake: &crate::docker::test_support::FakeDocker,
+        edit: impl FnOnce(&mut serde_json::Map<String, serde_json::Value>),
+    ) {
+        let mut container = fake.existing_container.lock().unwrap();
+        edit(
+            container
+                .as_mut()
+                .unwrap()
+                .pointer_mut("/Config")
+                .unwrap()
+                .as_object_mut()
+                .unwrap(),
+        );
+    }
+
+    fn labels(
+        config: &mut serde_json::Map<String, serde_json::Value>,
+    ) -> &mut serde_json::Map<String, serde_json::Value> {
+        config
+            .get_mut("Labels")
+            .and_then(serde_json::Value::as_object_mut)
+            .unwrap()
+    }
+
+    async fn stored_healthcheck(
+        runtime: &crate::docker::ContainerRuntime,
+        id: &ContainerId,
+    ) -> Option<ployz_core::HealthcheckSpec> {
+        runtime
+            .specs
+            .get(id)
+            .await
+            .unwrap()
+            .unwrap()
+            .container
+            .healthcheck
+    }
+
+    async fn listed_healthcheck(
+        runtime: &crate::docker::ContainerRuntime,
+    ) -> Option<ployz_core::HealthcheckSpec> {
+        let [observed] = runtime
+            .list_managed(&ployz_core::MachineId::random())
+            .await
+            .unwrap()
+            .try_into()
+            .unwrap();
+        observed.resolved_spec.container.healthcheck.clone()
+    }
+
+    #[tokio::test]
+    async fn an_unstamped_copy_with_no_healthcheck_is_disabled_while_no_probe_runs() {
+        let (runtime, _fake, id) = unstamped_copy_with_no_healthcheck().await;
+        let republished = runtime.specs.subscribe_rotations();
+
+        assert_eq!(
+            listed_healthcheck(&runtime).await,
+            Some(ployz_core::HealthcheckSpec::Disabled)
+        );
+        assert!(republished.has_changed().unwrap());
+        assert_eq!(
+            stored_healthcheck(&runtime, &id).await,
+            Some(ployz_core::HealthcheckSpec::Disabled)
+        );
+    }
+
+    #[tokio::test]
+    async fn an_unstamped_copy_with_no_healthcheck_keeps_it_while_the_image_probe_runs() {
+        let (runtime, fake, _id) = unstamped_copy_with_no_healthcheck().await;
+        edit_config(&fake, |config| {
+            config.insert(
+                "Healthcheck".into(),
+                serde_json::json!({"Test": ["CMD-SHELL", "pg_isready"]}),
+            );
+        });
+
+        assert_eq!(listed_healthcheck(&runtime).await, None);
+    }
+
+    #[tokio::test]
+    async fn a_system_copy_with_no_healthcheck_keeps_it() {
+        use crate::docker::LABEL_NAMESPACE;
+
+        let (runtime, fake, _id) = unstamped_copy_with_no_healthcheck().await;
+        edit_config(&fake, |config| {
+            labels(config).insert(
+                LABEL_NAMESPACE.into(),
+                ployz_core::Namespace::system().to_string().into(),
+            );
+        });
+
+        assert_eq!(listed_healthcheck(&runtime).await, None);
+    }
+
+    /// A keyed create retried with the same request must still match what it stored.
+    #[tokio::test]
+    async fn a_copy_this_daemon_created_keeps_the_healthcheck_it_was_asked_for() {
+        use crate::docker::test_support::runtime_with_running_container;
+
+        let (runtime, _fake, _id) = runtime_with_running_container().await;
+
+        assert_eq!(listed_healthcheck(&runtime).await, None);
+    }
+
     struct Restorable {
         runtime: crate::docker::ContainerRuntime,
         fake: crate::docker::test_support::FakeDocker,
