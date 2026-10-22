@@ -4,9 +4,9 @@ import { Effect } from "effect";
 import type { OperationAsked } from "#/modules/approvals/approvals.server";
 import { cloudStore, storeTry } from "#/modules/config-store/store-sdk.server";
 import { gitSourceEnvironment } from "#/modules/config-store/git-evidence.server";
-import { type Caller, callerEnvironments } from "#/modules/identity/actor";
+import { type Caller, callerEnvironments, callerPermissions } from "#/modules/identity/actor";
 import { beyondEnvironments, lacksPermission, refusalOf } from "#/modules/organization/access.server";
-import type { Permission } from "#/modules/organization/permissions";
+import { can, type Permission } from "#/modules/organization/permissions";
 import { type EnvironmentRef, StoreRefused, type StoreRead, type StoreRefusal } from "./store.contract";
 
 const notProtector: StoreRefusal = { code: "forbidden", message: refusalOf("environments:protect"), details: null };
@@ -22,6 +22,18 @@ export const protectorOnly = (caller: Pick<Caller, "role" | "support" | "credent
   const environments = callerEnvironments(caller);
   const beyond = beyondEnvironments(environments, { environment });
   return beyond === null ? null : { code: "forbidden", message: beyond, details: { environments: environments ?? [] } };
+};
+
+/**
+ * What the Store is told `caller` holds for `command`. A token holds its grant, but one whose person can protect ships
+ * into a Protected Environment as they would, unasked: only an owner or admin makes a Deploy token for one. Only the
+ * writes that ship get that, so the token still can't change protection, or a Protected Environment's source, otherwise.
+ */
+export const storePermissions = (caller: Pick<Caller, "role" | "support" | "credential">, command: ConfigCommand | null): Permission[] => {
+  const held = callerPermissions(caller);
+  const ships = command !== null && ["publish", "admit", "sync", "take"].includes(command.command);
+  if (!ships || caller.role === null || !can(caller.role, "environments:protect") || !held.includes("changes:deploy")) return held;
+  return held.includes("environments:protect") ? held : [...held, "environments:protect"];
 };
 
 /**

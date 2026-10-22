@@ -27,7 +27,8 @@ A token acts as you, narrowed by its preset:
   you name. It can't take anything off your servers: a deploy that removes a service, volume or
   domain, or `ployz env shutdown`, needs a Full token.
 
-Give CI a Deploy token for the one environment it ships to. See
+Give CI a Deploy token for the one environment it ships to. An owner's or admin's Deploy token
+deploys into a Protected environment without waiting for another admin. See
 [Make an organization token](../cli/overview.md#make-an-organization-token). An agent you connect
 with `ployz mcp login` gets its own token, and that token can't answer approvals.
 
