@@ -231,7 +231,9 @@ mod tests {
         let json = serde_json::to_string(&env).unwrap();
         let back: BTreeMap<String, EnvValue> = serde_json::from_str(&json).unwrap();
         assert_eq!(back, env);
-        let keys: Vec<_> = back["URL"]
+        let keys: Vec<_> = back
+            .get("URL")
+            .unwrap()
             .sealed_parts()
             .into_iter()
             .map(|part| &part.key)
@@ -251,7 +253,10 @@ mod tests {
         let short = serde_json::json!({ "sealed": STANDARD.encode([1; 47]), "scope": "shared", "key": "A" });
         assert!(serde_json::from_value::<EnvValue>(short).is_err());
         let mut extra = serde_json::to_value(sealed("A")).unwrap();
-        extra["algorithm"] = "x".into();
+        extra
+            .as_object_mut()
+            .unwrap()
+            .insert("algorithm".into(), "x".into());
         assert!(serde_json::from_value::<EnvValue>(extra).is_err());
     }
 

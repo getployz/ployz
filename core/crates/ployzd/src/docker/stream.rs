@@ -7,6 +7,7 @@ use bollard::{
 };
 use chrono::DateTime;
 use futures_util::{Stream, StreamExt};
+use ployz_core::scrub::SealedForms;
 use ployz_core::{
     ContainerId, ExecRequestFrame, ExecResponseFrame, LogMetadata, LogOrigin, LogsOptions,
     MachineId, MachineName, OpaquePayload, RpcError, RpcErrorCode,
@@ -19,6 +20,7 @@ use super::{ContainerRuntime, docker_error};
 use crate::logs::{
     JournalError, LogLineStream, LogSource, RawLogEntry, RpcStream, serve_logs, split_at_space,
 };
+use crate::sealed_env::{self, SealedRecord};
 
 const NANOS_PER_SECOND: i64 = 1_000_000_000;
 const EXEC_OUTPUT_IDLE: Duration = Duration::from_millis(100);
@@ -167,7 +169,20 @@ impl ContainerRuntime {
             machine_id: *machine_id,
             machine_name: machine_name.clone(),
         };
-        let source = self.raw_logs(container_id.as_str(), options)?;
+        let record = SealedRecord::from_label(
+            observation
+                .labels
+                .get(sealed_env::LABEL_SEALED)
+                .map(String::as_str),
+        )
+        .map_err(|error| docker_status(error.into()))?;
+        let mut source = self.raw_logs(container_id.as_str(), options)?;
+        if let Some(record) = record {
+            let secrets = record
+                .secrets(self.sealing_key_dir.as_deref())
+                .map_err(|error| docker_status(error.into()))?;
+            source = sealed_env::scrub_source(source, SealedForms::compile(&secrets));
+        }
         Ok(serve_logs(source, metadata, options.follow))
     }
 

@@ -7,7 +7,7 @@ use std::{
 };
 
 use ployz_core::{
-    CapabilityAdvertisement, CertificateMaterialChange, CertificateMaterialPublished,
+    CapabilityAdvertisement, CertificateMaterialChange, CertificateMaterialPublished, ContainerId,
     ContainerList, ContainerObservation, ContractDescription, EndpointSelected, EnvironmentValues,
     LiveLogTarget, LocalMachinePhase, LogMetadata, LogOrigin, MachineLogService, MachineRpc,
     OpaquePayload, PROTOCOL_MAJOR, RetainedEnvReply, RoutedAddresses, RoutesRead, Rpc, RpcError,
@@ -22,8 +22,10 @@ use crate::{
     logs::{RpcStream, open_journal_logs, serve_logs},
     machine::{LocalMachine, LocalMachineError, LocalMachineRecord, RecordOwner, StoreError},
     network::{ChoiceRefused, EndpointChoice, MACHINE_API_PORT},
+    observe::layout::RetainedEnv,
     route_acks::{Ackers, routed},
     runtime_watch::{RuntimeWatch, RuntimeWatchStream},
+    sealed_env::{self, Lines, SealedRecord},
 };
 
 const DEFAULT_OBSERVE_SOCKET: &str = "/run/ployz/observe.sock";
@@ -175,6 +177,39 @@ impl MachineService {
             }
             Err(_) => Err(unavailable("WireGuard is not running on this Server")),
         }
+    }
+
+    /// The record of the Sealed values `id` was given: from the env ployz-observe
+    /// retained for it, else from the Container's label.
+    async fn sealed_record(&self, id: ContainerId) -> Result<Option<SealedRecord>, Status> {
+        if let Some(env) = self.observe.retained_env(id).await? {
+            return Ok(env.sealed().cloned());
+        }
+        self.containers()
+            .map_err(|error| Status::unavailable(error.message))?
+            .sealed_record(&id)
+            .await
+            .map_err(|error| Status::unavailable(ployz_core::error_chain::inline(&error)))
+    }
+
+    /// The env keys whose values this Machine opened for `id`, removed or not.
+    ///
+    /// # Errors
+    ///
+    /// Returns when neither the retained env nor the Container says, so a caller
+    /// must treat every key as opened.
+    #[expect(
+        dead_code,
+        reason = "SL3 withholds these keys from Operator callers of InspectContainer"
+    )]
+    pub(crate) async fn opened_keys(&self, id: ContainerId) -> Result<BTreeSet<String>, Status> {
+        Ok(self
+            .sealed_record(id)
+            .await?
+            .iter()
+            .flat_map(SealedRecord::keys)
+            .map(str::to_owned)
+            .collect())
     }
 
     fn containers(&self) -> Result<&ContainerRuntime, RpcError> {
@@ -499,7 +534,19 @@ impl MachineRpc for MachineService {
         let request =
             op::LogHistory::from_request_body(request_body(request)?).map_err(invalid_request)?;
         request.validate().map_err(Status::invalid_argument)?;
-        self.observe.history(request).await.map(Response::new)
+        let rows = self.observe.history(request).await?;
+        let service = self.clone();
+        Ok(Response::new(sealed_env::scrub_history(rows, move |id| {
+            let service = service.clone();
+            async move {
+                let record = service.sealed_record(id).await;
+                let key_dir = service
+                    .containers()
+                    .ok()
+                    .and_then(ContainerRuntime::sealing_key_dir);
+                Lines::new(id, record, key_dir)
+            }
+        })))
     }
 
     async fn metric_history(
@@ -517,7 +564,11 @@ impl MachineRpc for MachineService {
     ) -> Result<Response<OpaquePayload>, Status> {
         let request = expect::<op::RetainedEnv>(request)?;
         respond(RetainedEnvReply {
-            environment: self.observe.retained_env(request.container_id).await?,
+            environment: self
+                .observe
+                .retained_env(request.container_id)
+                .await?
+                .map(RetainedEnv::into_values),
         })
     }
 

@@ -21,6 +21,7 @@ mod release;
 pub mod routing;
 pub mod rpc;
 mod rpc_catalog;
+pub mod scrub;
 mod sealed;
 mod sealing;
 pub mod service;

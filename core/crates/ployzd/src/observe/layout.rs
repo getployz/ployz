@@ -64,6 +64,8 @@ use std::{
 use ployz_core::ContainerId;
 use serde::{Deserialize, Serialize};
 
+use crate::sealed_env::SealedRecord;
+
 const STORE_DIR: &str = "ployz-observe";
 pub const VERSION_DIR: &str = "v1";
 pub const CONTAINERS_DIR: &str = "containers";
@@ -336,22 +338,36 @@ pub struct ContainerMeta {
 
 /// The env a Container ran with, kept in `env.json` so its lines can still be
 /// scrubbed once Docker no longer answers an inspect for it. Built from one
-/// inspect's `Config.Env`; what of it is kept is decided here alone.
+/// inspect's `Config.Env` and Sealed label; what of it is kept is decided here
+/// alone. A value this Machine opened is kept only as its [`SealedRecord`].
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct RetainedEnv {
     values: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    sealed: Option<SealedRecord>,
 }
 
 impl RetainedEnv {
-    /// `None` when an entry is not `KEY=value`, as the inspect itself reports it.
+    /// `None` when an entry is not `KEY=value`, as the inspect itself reports it,
+    /// or the Sealed label does not parse.
     #[must_use]
-    pub fn from_inspected(entries: &[String]) -> Option<Self> {
-        crate::docker::parse_environment(entries).map(|values| Self { values })
+    pub fn from_inspected(entries: &[String], sealed_label: Option<&str>) -> Option<Self> {
+        let sealed = SealedRecord::from_label(sealed_label).ok()?;
+        let mut values = crate::docker::parse_environment(entries)?;
+        for key in sealed.iter().flat_map(SealedRecord::keys) {
+            values.remove(key);
+        }
+        Some(Self { values, sealed })
     }
 
     #[must_use]
     pub fn into_values(self) -> BTreeMap<String, String> {
         self.values
+    }
+
+    #[must_use]
+    pub fn sealed(&self) -> Option<&SealedRecord> {
+        self.sealed.as_ref()
     }
 
     /// The env kept in `dir`, or `None` when no inspect wrote one.

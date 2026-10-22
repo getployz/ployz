@@ -24,7 +24,7 @@ pub(crate) mod test_support;
 use std::{
     collections::{BTreeMap, HashMap},
     net::{Ipv4Addr, SocketAddr},
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::Arc,
     time::Duration,
 };
@@ -725,6 +725,36 @@ impl ContainerRuntime {
             .and_then(serde_json::Value::as_u64)
             .and_then(|pid| u32::try_from(pid).ok())
             .filter(|pid| *pid != 0))
+    }
+
+    /// The record of the Sealed values `container_id` was given, from its label.
+    ///
+    /// # Errors
+    ///
+    /// Returns when Docker cannot inspect the Container or its label does not parse.
+    pub(crate) async fn sealed_record(
+        &self,
+        container_id: &ContainerId,
+    ) -> Result<Option<crate::sealed_env::SealedRecord>, Error> {
+        let inspected = decode_raw_inspect(
+            self.docker
+                .client
+                .inspect_container(container_id.as_str(), None)
+                .await,
+            container_id,
+        )?;
+        let label = inspected
+            .config
+            .as_ref()
+            .and_then(|config| config.labels.as_ref())
+            .and_then(|labels| labels.get(crate::sealed_env::LABEL_SEALED));
+        Ok(crate::sealed_env::SealedRecord::from_label(
+            label.map(String::as_str),
+        )?)
+    }
+
+    pub(crate) fn sealing_key_dir(&self) -> Option<&Path> {
+        self.sealing_key_dir.as_deref()
     }
 
     pub async fn inspect_managed(
