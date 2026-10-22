@@ -256,3 +256,446 @@ async fn a_machine_silent_while_a_global_start_checks_its_slot_is_named() {
     );
     server.abort();
 }
+
+/// Route reads that still count Machine '2' as live before its membership reads Down.
+const SUSPECT_READS: usize = 3;
+
+/// The gen of the copy the entry Machine's store keeps on Machine '2'.
+const STORED_GEN: u64 = 5;
+
+/// How Machine '2' answers its Container listing.
+#[derive(Clone, Copy)]
+enum Lists {
+    Never,
+    WithError,
+}
+
+/// Machine '1' is Up and lists `listed`; Machine '2' is `membership` and answers its
+/// listing as `lists`. Its proxy row stays stale until the membership sample reads it
+/// Down.
+#[derive(Clone)]
+struct Pair {
+    membership: MembershipObservation,
+    lists: Lists,
+    /// Whether the entry Machine's store answers. It keeps a copy at [`STORED_GEN`] on
+    /// Machine '2'.
+    store: bool,
+    listed: Vec<ContainerObservation>,
+}
+
+impl Pair {
+    fn suspect_silent() -> Self {
+        Self {
+            membership: MembershipObservation::Suspect,
+            lists: Lists::Never,
+            store: true,
+            listed: Vec::new(),
+        }
+    }
+}
+
+/// Each `EnsureContainer` that reaches Machine '1' is answered with the copy it asked
+/// for, and recorded in `ensured` with its gen.
+async fn live_and_second(
+    ensured: std::sync::Arc<std::sync::Mutex<Vec<(MachineId, Gen)>>>,
+    pair: Pair,
+) -> (
+    Client,
+    tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
+) {
+    let copy = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let reads = std::sync::Arc::new(std::sync::Mutex::new(0));
+    crate::connect::test_support::rpc_client(move |rpc: Request<OpaquePayload>| {
+        let (ensured, copy, reads, pair) =
+            (ensured.clone(), copy.clone(), reads.clone(), pair.clone());
+        async move {
+            let target = rpc
+                .metadata()
+                .get("machine")
+                .map(|value| MachineId::parse(value.to_str().unwrap()).unwrap());
+            #[expect(
+                clippy::wildcard_enum_match_arm,
+                reason = "the fixture answers only what a run on the live Machine sends"
+            )]
+            let response = match rpc.into_inner().decode_request().unwrap().body {
+                RpcRequestBody::DescribeContract(_) => RpcResponse::from(ContractDescription {
+                    machine_id: machine('1'),
+                    protocol_major: PROTOCOL_MAJOR,
+                    daemon_version: "fixture".into(),
+                    capabilities: Default::default(),
+                }),
+                RpcRequestBody::ListMachines(_) => RpcResponse::from(MachineList {
+                    enrollment: None,
+                    machines: vec![
+                        MachineObservation::new(holder('1'), MembershipObservation::Up),
+                        MachineObservation::new(holder('2'), pair.membership),
+                    ],
+                }),
+                RpcRequestBody::ListImages(_) => RpcResponse::from(images("alpine:3.23.3", true)),
+                RpcRequestBody::PullImage(_) => {
+                    RpcResponse::from(ployz_core::ImagePulled::default())
+                }
+                RpcRequestBody::ListContainers(_) if target == Some(machine('2')) => {
+                    match pair.lists {
+                        Lists::WithError => {
+                            return Err(Status::internal("Docker is not running"));
+                        }
+                        Lists::Never => return std::future::pending().await,
+                    }
+                }
+                RpcRequestBody::ListContainers(_) => RpcResponse::from(ployz_core::ContainerList {
+                    containers: pair.listed,
+                }),
+                RpcRequestBody::ReadRoutes(_) => {
+                    let read = {
+                        let mut reads = reads.lock().unwrap();
+                        *reads += 1;
+                        *reads
+                    };
+                    let acked = copy.lock().unwrap().is_some().then(|| container('a'));
+                    let (stale, down) = if read <= SUSPECT_READS {
+                        (Some(Some(BTreeSet::new())), BTreeSet::new())
+                    } else {
+                        (None, BTreeSet::from([machine('2')]))
+                    };
+                    RpcResponse::from(RoutesRead {
+                        routes: [(machine('1'), Some(acked.into_iter().collect()))]
+                            .into_iter()
+                            .chain(stale.map(|stale| (machine('2'), stale)))
+                            .collect(),
+                        complete: true,
+                        down,
+                    })
+                }
+                RpcRequestBody::RuntimeWatch(_) => {
+                    if !pair.store {
+                        return Err(Status::unavailable("the store is not ready"));
+                    }
+                    let mut stored = routed(&machine('2'), &container('b'), running());
+                    stored
+                        .try_update(|parts| parts.r#gen = Some(Gen::new(STORED_GEN)))
+                        .unwrap();
+                    let frame = ployz_core::RuntimeWatchFrame {
+                        machines: Vec::new(),
+                        containers: vec![stored],
+                        volumes: Vec::new(),
+                        certificates: Vec::new(),
+                        incomplete_ids: Default::default(),
+                        observed_at: String::new(),
+                    };
+                    return Ok(Response::new(
+                        ployz_core::encode_runtime_watch_frame(&frame).unwrap(),
+                    ));
+                }
+                RpcRequestBody::EnsureContainer(request) => {
+                    let mut copy = copy.lock().unwrap();
+                    let (spec, r#gen, rotation) = match (request.want, copy.take()) {
+                        (
+                            ContainerWant::Running {
+                                container: RunTarget::New(new),
+                                rotation: RunRotation::Pending,
+                            },
+                            None,
+                        ) => (
+                            new.resolved_spec,
+                            new.r#gen,
+                            ployz_core::CopyRotation::Pending,
+                        ),
+                        (
+                            ContainerWant::Running {
+                                container: RunTarget::Existing(_),
+                                rotation: RunRotation::In { .. },
+                            },
+                            Some((spec, r#gen)),
+                        ) => (spec, r#gen, ployz_core::CopyRotation::In),
+                        (want, _) => panic!("unexpected want: {want:?}"),
+                    };
+                    ensured.lock().unwrap().push((target.unwrap(), r#gen));
+                    *copy = Some((spec.clone(), r#gen));
+                    let now =
+                        ContainerObservation::try_from(ployz_core::ContainerObservationParts {
+                            rotation: Some(rotation),
+                            r#gen: Some(r#gen),
+                            container_id: container('a'),
+                            display_name: "api".into(),
+                            created_at_unix_nanos: 0,
+                            machine_id: target.unwrap(),
+                            namespace: test_namespace(),
+                            kind: ContainerKind::ServiceContainer,
+                            runtime: running(),
+                            effective_healthcheck: None,
+                            resolved_spec: spec,
+                            address: None,
+                            labels: Default::default(),
+                            stopped: false,
+                            run: None,
+                        })
+                        .unwrap();
+                    RpcResponse::from(ployz_core::EnsuredContainer::Ensured {
+                        now: ployz_core::ContainerNow::Present(now),
+                        health: None,
+                    })
+                }
+                other => panic!("unexpected request: {other:?}"),
+            };
+            Ok(Response::new(response.encode().unwrap()))
+        }
+    })
+    .await
+}
+
+/// Run `plan` with the plan's Machine names, keeping the warnings it emits.
+async fn execute_named(
+    plan: Vec<DeployOperation>,
+    client: &Client,
+) -> (DeployOutcome<ExecutionError>, Vec<DeployWarning>) {
+    let (tx, mut events) = tokio::sync::mpsc::unbounded_channel();
+    let outcome = super::super::execute_operation_sequence(
+        &crate::deploy::DeployPlan::for_execution_test(plan, test_namespace())
+            .with_machine_names(&[machine('1'), machine('2')]),
+        &run_id(),
+        client,
+        &CancellationToken::new(),
+        Some(tx),
+    )
+    .await;
+    let mut warnings = Vec::new();
+    while let Ok(event) = events.try_recv() {
+        if let DeployEvent::Warning { warning } = event {
+            warnings.push(warning);
+        }
+    }
+    (outcome, warnings)
+}
+
+fn failed_listing(outcome: &DeployOutcome<ExecutionError>) -> Option<&RpcError> {
+    match outcome {
+        DeployOutcome::Failed {
+            failed:
+                FailedOperation::Operation {
+                    error:
+                        ExecutionError::Machine {
+                            action: MachineAction::ListContainers,
+                            error,
+                        },
+                    ..
+                },
+            ..
+        } => Some(error),
+        DeployOutcome::Success { .. }
+        | DeployOutcome::Failed { .. }
+        | DeployOutcome::Interrupted { .. } => None,
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_suspect_machine_that_never_lists_does_not_stop_a_run_on_a_live_one() {
+    let ensured = std::sync::Arc::default();
+    let (client, server) =
+        live_and_second(std::sync::Arc::clone(&ensured), Pair::suspect_silent()).await;
+    let plan = vec![run(&machine('1'), spec(None, None, None), true)];
+
+    let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
+
+    assert!(
+        matches!(outcome, DeployOutcome::Success { .. }),
+        "{outcome:?}"
+    );
+    let above = Gen::new(STORED_GEN + 1);
+    assert_eq!(
+        *ensured.lock().unwrap(),
+        [(machine('1'), above), (machine('1'), above)],
+        "the copy starts and goes In on the live Machine only, above the silent Machine's stored copy"
+    );
+    server.abort();
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_machine_silent_at_run_time_is_named_as_an_observation_gap() {
+    let (client, server) = live_and_second(std::sync::Arc::default(), Pair::suspect_silent()).await;
+    let plan = vec![run(&machine('1'), spec(None, None, None), true)];
+
+    let (outcome, warnings) = execute_named(plan, &client).await;
+
+    assert!(
+        matches!(outcome, DeployOutcome::Success { .. }),
+        "{outcome:?}"
+    );
+    let gaps: Vec<_> = warnings
+        .iter()
+        .filter_map(DeployWarning::observation_gap)
+        .map(|(machine_id, gap)| (machine_id, gap.machine_name.to_string(), gap.reason))
+        .collect();
+    assert_eq!(
+        gaps,
+        [(
+            machine('2'),
+            "machine-2".to_owned(),
+            ployz_core::ObservationGapReason::Failed
+        )]
+    );
+    server.abort();
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_suspect_machine_that_never_lists_fails_the_service_when_the_store_is_unread() {
+    let ensured = std::sync::Arc::default();
+    let (client, server) = live_and_second(
+        std::sync::Arc::clone(&ensured),
+        Pair {
+            store: false,
+            ..Pair::suspect_silent()
+        },
+    )
+    .await;
+    let plan = vec![run(&machine('1'), spec(None, None, None), true)];
+
+    let (outcome, _) = execute_named(plan, &client).await;
+
+    let error = failed_listing(&outcome).unwrap_or_else(|| panic!("{outcome:?}"));
+    assert_eq!(
+        error.message,
+        "Machine 'machine-2' did not answer and the entry Machine's store could not be read, \
+         so a new copy might not replace that Machine's copies"
+    );
+    assert!(ensured.lock().unwrap().is_empty(), "no copy starts");
+    server.abort();
+}
+
+/// `error` names Machine '2' in its deepest line, the one a person sees, and in its
+/// details.
+fn names_the_second(error: &RpcError) {
+    assert!(error.target_unanswered(), "{error:?}");
+    assert_eq!(
+        error.cause.last().unwrap_or(&error.message),
+        "Machine machine-2 did not answer: target Machine RPC timed out"
+    );
+    assert_eq!(
+        error.details.get("machine_id"),
+        Some(&serde_json::json!(machine('2')))
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_up_machine_that_never_lists_fails_the_service_by_name() {
+    let ensured = std::sync::Arc::default();
+    let (client, server) = live_and_second(
+        std::sync::Arc::clone(&ensured),
+        Pair {
+            membership: MembershipObservation::Up,
+            ..Pair::suspect_silent()
+        },
+    )
+    .await;
+    let plan = vec![run(&machine('1'), spec(None, None, None), true)];
+
+    let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
+
+    let error = failed_listing(&outcome).unwrap_or_else(|| panic!("{outcome:?}"));
+    names_the_second(error);
+    assert!(ensured.lock().unwrap().is_empty(), "no copy starts");
+    server.abort();
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_suspect_machine_that_answers_its_listing_with_an_error_fails_the_service() {
+    let ensured = std::sync::Arc::default();
+    let (client, server) = live_and_second(
+        std::sync::Arc::clone(&ensured),
+        Pair {
+            lists: Lists::WithError,
+            ..Pair::suspect_silent()
+        },
+    )
+    .await;
+    let plan = vec![run(&machine('1'), spec(None, None, None), true)];
+
+    let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
+
+    let error = failed_listing(&outcome).unwrap_or_else(|| panic!("{outcome:?}"));
+    assert_eq!(error.message, "Docker is not running");
+    assert!(ensured.lock().unwrap().is_empty());
+    server.abort();
+}
+
+/// A dependency check that waits on `app/api`, healthy and In on Machine '1'.
+fn dependency_check(membership: MembershipObservation) -> (Pair, Vec<DeployOperation>) {
+    let pair = Pair {
+        membership,
+        listed: vec![routed(&machine('1'), &container('d'), healthy())],
+        ..Pair::suspect_silent()
+    };
+    let plan = vec![DeployOperation::WaitHealthy {
+        machine_id: machine('1'),
+        dependent: QualifiedService::parse("app/web").unwrap(),
+        dependency: QualifiedService::parse("app/api").unwrap(),
+    }];
+    (pair, plan)
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_dependency_check_skips_a_suspect_machine_that_never_lists() {
+    let (pair, plan) = dependency_check(MembershipObservation::Suspect);
+    let (client, server) = live_and_second(std::sync::Arc::default(), pair).await;
+
+    let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
+
+    assert!(
+        matches!(outcome, DeployOutcome::Success { .. }),
+        "{outcome:?}"
+    );
+    server.abort();
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_dependency_check_names_a_suspect_machine_that_never_lists_as_an_observation_gap() {
+    let (pair, plan) = dependency_check(MembershipObservation::Suspect);
+    let (client, server) = live_and_second(std::sync::Arc::default(), pair).await;
+
+    let (outcome, warnings) = execute_named(plan, &client).await;
+
+    assert!(
+        matches!(outcome, DeployOutcome::Success { .. }),
+        "{outcome:?}"
+    );
+    let gaps: Vec<_> = warnings
+        .iter()
+        .filter_map(DeployWarning::observation_gap)
+        .map(|(machine_id, gap)| (machine_id, gap.machine_name.to_string(), gap.reason))
+        .collect();
+    assert_eq!(
+        gaps,
+        [(
+            machine('2'),
+            "machine-2".to_owned(),
+            ployz_core::ObservationGapReason::Failed
+        )]
+    );
+    server.abort();
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_dependency_check_fails_by_name_on_an_up_machine_that_never_lists() {
+    let (pair, plan) = dependency_check(MembershipObservation::Up);
+    let (client, server) = live_and_second(std::sync::Arc::default(), pair).await;
+
+    let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
+
+    let DeployOutcome::Failed {
+        failed:
+            FailedOperation::Operation {
+                error:
+                    ExecutionError::DependencyHealth {
+                        failure: DependencyHealthFailure::Observation { error },
+                        ..
+                    },
+                ..
+            },
+        ..
+    } = &outcome
+    else {
+        panic!("{outcome:?}");
+    };
+    names_the_second(error);
+    server.abort();
+}
