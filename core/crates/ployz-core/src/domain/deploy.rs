@@ -14,7 +14,7 @@ use super::{
 };
 use crate::{
     ContainerId, DockerVolumeId, DockerVolumeName, IngressHost, MachineId, MachineName, Namespace,
-    ProvisionedVolumeMaximumBytes, QualifiedService, RpcError, ServiceId, ServiceName,
+    Operator, ProvisionedVolumeMaximumBytes, QualifiedService, RpcError, ServiceId, ServiceName,
 };
 use thiserror::Error;
 
@@ -39,6 +39,10 @@ pub struct PlanOptions {
     #[serde(default, skip_serializing_if = "ServiceRemovals::is_empty")]
     #[ts(optional, as = "Option<Vec<ServiceName>>")]
     pub removals: ServiceRemovals,
+    /// Who runs this Deploy. The runner sets it; a refusal's way back depends on it.
+    #[serde(default)]
+    #[ts(optional, as = "Option<Operator>")]
+    pub operator: Operator,
 }
 
 /// Services a targeted Deploy tears down by name. It can name only Services,
@@ -653,6 +657,20 @@ pub struct DeployPreview {
     /// completes: copies the Deploy keeps, and copies it starts or updates.
     #[serde(default)]
     pub placed_on: BTreeMap<ServiceName, BTreeSet<MachineId>>,
+    /// Services this Deploy plans nothing for because they cannot run: a Volume with
+    /// no writer or unknown copies, or a dependency so blocked. Each is reported as
+    /// not attempted, and the Deploy fails, while the other Services deploy.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[ts(optional, as = "Option<Vec<BlockedService>>")]
+    pub blocked: Vec<BlockedService>,
+}
+
+/// A Service a Deploy could not plan, and why.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
+pub struct BlockedService {
+    pub service: ServiceName,
+    /// Why, with `details.reason` naming the refusal (`no_writer`).
+    pub error: RpcError,
 }
 
 /// One managed Docker Volume current observations indicate a container operation would create.
@@ -724,6 +742,7 @@ impl DeployPreview {
             depths: BTreeMap::new(),
             dependencies: Vec::new(),
             placed_on: BTreeMap::new(),
+            blocked: Vec::new(),
         }
     }
 

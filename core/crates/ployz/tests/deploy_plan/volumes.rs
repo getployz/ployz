@@ -1,8 +1,9 @@
 use super::support::*;
 use ployz_core::{
-    CopyRole, DockerVolume, DockerVolumeStorageObservation, MachineFailure,
+    CopyRole, DependencyCondition, DockerVolume, DockerVolumeStorageObservation, MachineFailure,
     MachineStorageObservation, PreservedVolume, ProvisionedVolumeMaximumBytes, PruneRefusal,
-    RpcError, RpcErrorCode, ServiceAttempt, ServiceName, VolumeObservationFailure,
+    RpcError, RpcErrorCode, ServiceAttempt, ServiceDependency, ServiceName,
+    VolumeObservationFailure,
 };
 use std::{collections::BTreeMap, num::NonZeroU64};
 
@@ -975,6 +976,92 @@ fn a_deployed_volume_no_member_holds_leaves_a_deploy_of_another_service_alone() 
             .iter()
             .all(|operation| operation.service_name() != Some(&db.name))
     );
+}
+
+/// `web`, which mounts nothing, and `db`, which mounts Managed Volume `data`.
+fn web_and_db() -> (RequestedServiceSpec, RequestedServiceSpec) {
+    let mut db = spec("db");
+    add_named_volume(&mut db, "data");
+    make_provisioned(&mut db, "data", 1_073_741_824);
+    (spec("web"), db)
+}
+
+#[test]
+fn a_full_deploy_blocks_only_the_service_whose_volume_has_no_writer() {
+    let (web, db) = web_and_db();
+    let intent = DeployIntent::apply_all(
+        Namespace::parse("app").unwrap(),
+        [&web, &db],
+        PlanOptions::default(),
+    );
+
+    let preview =
+        preview_deploy(&intent, &copies_snapshot(&[('2', CopyRole::Slot)], vec![])).unwrap();
+
+    let planned: Vec<_> = operations(&preview)
+        .iter()
+        .filter_map(|operation| operation.service_name().cloned())
+        .collect();
+    assert_eq!(planned, [web.name.clone()], "{:?}", operations(&preview));
+    assert!(preview.volumes_to_create.is_empty());
+    let [blocked] = preview.blocked.as_slice() else {
+        panic!("{:?}", preview.blocked)
+    };
+    assert_eq!(blocked.service, db.name);
+    assert_eq!(blocked.error.code, RpcErrorCode::Conflict);
+    assert_eq!(blocked.error.details["reason"], "no_writer");
+    assert!(
+        blocked
+            .error
+            .message
+            .starts_with("Volume data has no writer; second holds its only copy"),
+        "{}",
+        blocked.error.message
+    );
+    assert_eq!(preview.depths.keys().collect::<Vec<_>>(), [&web.name]);
+    assert_eq!(preview.placed_on.keys().collect::<Vec<_>>(), [&web.name]);
+}
+
+#[test]
+fn a_service_that_depends_on_a_blocked_one_is_blocked_too() {
+    let (web, db) = web_and_db();
+    let intent = DeployIntent::apply_all(
+        Namespace::parse("app").unwrap(),
+        [&web, &db],
+        PlanOptions::default(),
+    )
+    .with_dependencies(BTreeMap::from([(
+        web.name.clone(),
+        vec![ServiceDependency {
+            service: db.name.clone(),
+            condition: DependencyCondition::ServiceHealthy,
+        }],
+    )]));
+
+    let preview =
+        preview_deploy(&intent, &copies_snapshot(&[('2', CopyRole::Slot)], vec![])).unwrap();
+
+    assert!(
+        operations(&preview).is_empty(),
+        "{:?}",
+        operations(&preview)
+    );
+    let blocked: Vec<_> = preview
+        .blocked
+        .iter()
+        .map(|blocked| (blocked.service.as_str(), blocked.error.message.as_str()))
+        .collect();
+    assert_eq!(blocked[0].0, "db");
+    assert_eq!(
+        blocked.get(1).copied(),
+        Some(("web", "depends on db, which was not attempted"))
+    );
+    assert!(
+        preview.dependencies.is_empty(),
+        "{:?}",
+        preview.dependencies
+    );
+    assert!(preview.depths.is_empty(), "{:?}", preview.depths);
 }
 
 #[test]

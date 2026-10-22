@@ -12,7 +12,7 @@ use super::{
 use crate::{
     ByteQuantity, ConfigFileName, ConfigMount, ConfigName, ConfigSpec, ConfiguredHealthcheck,
     ContainerResources, CpuNanos, DependencyCondition, DeployIntent, HealthcheckCommand,
-    HealthcheckSpec, HttpHealthcheck, HttpProtocol, IngressHost, Namespace, PlanOptions,
+    HealthcheckSpec, HttpHealthcheck, HttpProtocol, IngressHost, Namespace, Operator, PlanOptions,
     PortPublication, PreDeployCommand, PreDeployHook, PullPolicy, RawVolumeSource,
     RequestedServiceSpec, RestartPolicy, ServiceAttempt, ServiceConfigGraph, ServiceContainerSpec,
     ServiceDependency, ServiceMode, ServiceMount, ServiceName, ServiceRemovals, ServiceVolume,
@@ -465,6 +465,7 @@ pub fn lower_deployment(input: LowerDeploymentInput) -> Result<DeployIntent, Con
             placement_seed: 0,
             selected,
             removals: input.removals,
+            operator: Operator::default(),
         },
     )
     .with_dependencies(dependencies)

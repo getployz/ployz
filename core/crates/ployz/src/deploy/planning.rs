@@ -605,6 +605,7 @@ fn seal_plan(planned: Planned, snapshot: &DeploySnapshot, namespace: &Namespace)
         depths: super::report::depths(&planned.groups),
         dependencies: super::report::dependencies(&planned.groups),
         placed_on,
+        blocked: Vec::new(),
     };
     DeployPlan {
         operations: planned.operations,
@@ -706,6 +707,7 @@ fn assemble_plan(
         &intent.deployed_volumes,
         &target,
         &requested,
+        intent.options.operator,
     )?;
     let name_errors_with_service = requested.len() > 1;
     let mut reservations = PlacementReservations::new(snapshot);

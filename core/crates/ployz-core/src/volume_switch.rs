@@ -425,12 +425,24 @@ pub fn admit_plain_mount(
     }
 }
 
+/// Who drives a Deploy, and so what a refusal can offer as the way back.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum Operator {
+    /// Ployz Cloud, whose Volume Runs make a copy the writer again. An Intent that
+    /// doesn't say is Cloud's.
+    #[default]
+    Cloud,
+    /// The CLI alone, with no Cloud: `ployz volume restore` refuses.
+    Cli,
+}
+
 /// The refusal a plain Deploy of Volume `name` reads when this Server cannot mount its
 /// writer: the Server that holds the writer, the Move a run holds it in, or else how
 /// Restore makes a copy the writer. `name` is the Volume as its owner named it, not its
 /// Docker name.
 #[must_use]
-pub fn no_writer_message(name: &str, copies: &[KnownCopy]) -> String {
+pub fn no_writer_message(name: &str, copies: &[KnownCopy], _operator: Operator) -> String {
     if let Some(writer) = copies.iter().find(|copy| copy.role == CopyRole::Writer) {
         return format!(
             "Volume {name}'s writer is on {}, so this Server cannot mount it",
@@ -553,7 +565,7 @@ mod tests {
     #[test]
     fn no_writer_message_restores_a_single_copy_and_mirrors_need_removing_first() {
         assert_eq!(
-            no_writer_message("data", &[copy("fsn-2", CopyRole::Slot)]),
+            no_writer_message("data", &[copy("fsn-2", CopyRole::Slot)], Operator::Cloud),
             "Volume data has no writer; fsn-2 holds its only copy. Make it the writer: ployz volume restore data --from fsn-2"
         );
         assert_eq!(
@@ -563,19 +575,44 @@ mod tests {
                     copy("fsn-2", CopyRole::Slot),
                     copy("hel-1", CopyRole::Slot),
                     copy("nbg-3", CopyRole::Slot),
-                ]
+                ],
+                Operator::Cloud
             ),
             "Volume data has no writer; it is held as fsn-2 (copy), hel-1 (copy), nbg-3 (copy). Restore needs a single copy: keep the newest, delete each other one from the Volume's page in Ployz Cloud, which shows whether it is a mirror or an old copy, then run ployz volume restore data --from <server you kept>"
         );
         let several = no_writer_message(
             "data",
             &[copy("fsn-2", CopyRole::Slot), copy("hel-1", CopyRole::Slot)],
+            Operator::Cloud,
         );
         assert!(!several.contains("mirror rm"), "{several}");
         assert_eq!(
-            no_writer_message("data", &[]),
+            no_writer_message("data", &[], Operator::Cloud),
             "Volume data was deployed, but no Server in this Cluster holds a copy of it. If a Server you removed still holds its data, add that Server back, then run ployz volume restore data --from <server>"
         );
+    }
+
+    #[test]
+    fn no_writer_message_without_cloud_offers_starting_empty_not_restore() {
+        assert_eq!(
+            no_writer_message("data", &[copy("fsn-2", CopyRole::Slot)], Operator::Cli),
+            "Volume data has no writer; fsn-2 holds its only copy. Keeping its data needs Ployz Cloud, where ployz volume restore data --from fsn-2 makes it the writer. To start over empty, run ployz volume rm data, add it again and deploy"
+        );
+        assert_eq!(
+            no_writer_message("data", &[], Operator::Cli),
+            "Volume data was deployed, but no Server in this Cluster holds a copy of it. If a Server you removed still holds its data, keeping it needs Ployz Cloud: add that Server back, then ployz volume restore data --from <server> makes its copy the writer. To start over empty, run ployz volume rm data, add it again and deploy"
+        );
+        for copies in [
+            vec![copy("hel-1", CopyRole::Switching)],
+            vec![copy("fsn-2", CopyRole::Slot), copy("hel-1", CopyRole::Slot)],
+            vec![copy("hel-1", CopyRole::Writer)],
+        ] {
+            assert_eq!(
+                no_writer_message("data", &copies, Operator::Cli),
+                no_writer_message("data", &copies, Operator::Cloud),
+                "{copies:?}"
+            );
+        }
     }
 
     #[test]
@@ -587,7 +624,7 @@ mod tests {
                 copy("hel-1", CopyRole::Switching),
             ],
         ] {
-            let message = no_writer_message("data", &copies);
+            let message = no_writer_message("data", &copies, Operator::Cloud);
             assert!(
                 message.starts_with("Volume data is mid-Move; it is held as "),
                 "{message}"
@@ -609,7 +646,8 @@ mod tests {
                 &[
                     copy("fsn-2", CopyRole::Slot),
                     copy("hel-1", CopyRole::Writer)
-                ]
+                ],
+                Operator::Cloud
             ),
             "Volume data's writer is on hel-1, so this Server cannot mount it"
         );
