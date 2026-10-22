@@ -88,6 +88,25 @@ const LOOP_LOCK_MODE: u32 = 0o600;
 /// Held for as long as the check-in loop runs, so `status` can tell a record no loop updates any more.
 pub(crate) struct LoopRunning {
     _lock: fs::File,
+    checkin_dir: PathBuf,
+}
+
+/// The check-in directories whose lock this process holds, so the records it writes there say so.
+static HELD: std::sync::Mutex<Vec<PathBuf>> = std::sync::Mutex::new(Vec::new());
+
+fn holds(checkin_dir: &Path) -> bool {
+    HELD.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .iter()
+        .any(|held| held == checkin_dir)
+}
+
+impl Drop for LoopRunning {
+    fn drop(&mut self) {
+        HELD.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .retain(|held| held != &self.checkin_dir);
+    }
 }
 
 /// The loop's lock, or none when another loop already holds it.
@@ -102,16 +121,36 @@ pub(crate) fn hold_loop(paths: &Paths) -> io::Result<Option<LoopRunning>> {
     // A lock an earlier release made readable by all is narrowed too.
     lock.set_permissions(fs::Permissions::from_mode(LOOP_LOCK_MODE))?;
     match lock.try_lock() {
-        Ok(()) => Ok(Some(LoopRunning { _lock: lock })),
+        Ok(()) => {
+            HELD.lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(paths.checkin_dir.clone());
+            Ok(Some(LoopRunning {
+                _lock: lock,
+                checkin_dir: paths.checkin_dir.clone(),
+            }))
+        }
         Err(fs::TryLockError::WouldBlock) => Ok(None),
         Err(fs::TryLockError::Error(error)) => Err(error),
     }
 }
 
-/// Whether a check-in loop ran here and none runs now. A loop older than the lock never made
-/// it, and a user who can't open it (anyone but root) learns nothing, so either claims nothing.
+/// Whether the loop that wrote this host's record held the lock, and none holds it now. A record
+/// from a loop older than the lock, or one that couldn't take it, claims nothing; so does a lock
+/// a user can't open (anyone but root).
 pub(crate) fn loop_stopped(checkin_dir: &Path) -> bool {
-    fs::File::open(checkin_dir.join(LOOP_LOCK)).is_ok_and(|lock| lock.try_lock_shared().is_ok())
+    #[derive(Deserialize)]
+    struct Writer {
+        #[serde(default)]
+        locked: bool,
+    }
+    let locked = fs::read(checkin_dir.join("status.json"))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<Writer>(&bytes).ok())
+        .is_some_and(|writer| writer.locked);
+    locked
+        && fs::File::open(checkin_dir.join(LOOP_LOCK))
+            .is_ok_and(|lock| lock.try_lock_shared().is_ok())
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -496,7 +535,19 @@ impl LocalCheckin {
         let directory = path.parent().unwrap_or(Path::new("."));
         fs::create_dir_all(directory)?;
         let mut file = tempfile::NamedTempFile::new_in(directory)?;
-        serde_json::to_writer_pretty(&mut file, self)?;
+        // Whether the loop writing this held its lock, for `loop_stopped`.
+        #[derive(Serialize)]
+        struct Written<'a> {
+            #[serde(flatten)]
+            record: &'a LocalCheckin,
+            #[serde(skip_serializing_if = "std::ops::Not::not")]
+            locked: bool,
+        }
+        let written = Written {
+            record: self,
+            locked: holds(directory),
+        };
+        serde_json::to_writer_pretty(&mut file, &written)?;
         file.as_file()
             .set_permissions(fs::Permissions::from_mode(STATUS_READABLE_BY_ALL))?;
         file.as_file().sync_all()?;

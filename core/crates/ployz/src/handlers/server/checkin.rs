@@ -120,9 +120,8 @@ pub(crate) fn checkin(root: &ArgMatches) -> Result<(), Error> {
                 "A check-in loop already runs here. `sudo systemctl status ployz-checkin` shows it.",
             ));
         }
+        // Its records then say it ran unlocked, so `status` claims nothing about it.
         Err(error) => {
-            // A lock left by an earlier loop would make `status` call this running one stopped.
-            let _ = fs::remove_file(paths.loop_lock());
             crate::ui::warn(format!("Could not hold the check-in loop's lock: {error}"));
             None
         }
