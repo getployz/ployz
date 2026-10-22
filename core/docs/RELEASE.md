@@ -88,7 +88,7 @@ Apex and channel URLs must serve these bodies.
 
 ## Homebrew
 
-Goreleaser does not touch the tap (the config has no Homebrew step); `scripts/promote-release.sh` writes the formula. Bottles 404 if the formula is pushed while the GitHub release is still a draft. The tap updates only when a **stable** Publish leaves the unscoped `stable` pointer on that tag.
+Goreleaser does not touch the tap: the config has no Homebrew step, and the release workflow also passes `--skip=homebrew`. `scripts/promote-release.sh` writes the formula. Bottles 404 if the formula is pushed while the GitHub release is still a draft. The tap updates only when a **stable** Publish leaves the unscoped `stable` pointer on that tag.
 
 ## Machine daemon
 

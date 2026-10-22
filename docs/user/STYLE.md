@@ -80,7 +80,9 @@ collection of short entries.
 [Service settings](services/settings.md) is the reference for every settings field.
 One H3 per field, and the heading is the field's **exact dashboard label**, so links to it stay
 stable (`services/settings.md#watch-paths`). Under it, one to three sentences: what it does,
-its default, when you'd change it, and a link to the feature page for more.
+its default, when you'd change it, and a link to the feature page for more. Never rename one
+of these headings without updating the links to it, including the `ployz docs` map in
+`core/crates/ployz-store/src/docs.rs`.
 
 ## The CLI
 
