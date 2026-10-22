@@ -27,7 +27,7 @@ function server(input: { membership?: RuntimeMachineRecord["membership"]; servic
   const machine: RuntimeMachineRecord = {
     id: "1".repeat(32), name: "fsn-1", publicIp: null, acceptsIngress: true, endpoints: [], acceptsBuilds: input.acceptsBuilds ?? false,
     acceptsServices: input.acceptsServices ?? true, storage: input.storage === undefined ? "pool" : input.storage, buildConcurrency: null, effectiveBuildConcurrency: 1, runningBuilds: 0,
-    daemonVersion: "0.3.0-beta.2", capabilities: [], poolCommittableBytes: null, membership: input.membership ?? "up", observedContainerCount: 0, observedAt: "2026-10-14T00:00:00Z",
+    daemonVersion: "0.3.0-beta.2", capabilities: [], poolCommittableBytes: null, sealing: null, membership: input.membership ?? "up", observedContainerCount: 0, observedAt: "2026-10-14T00:00:00Z",
   };
   const services = (input.services ?? []).map((name) => ({
     identity: `shop/${name}`, name, namespace: "shop", machineIds: new Set([machine.id]), global: false, runningOn: new Set([machine.id]),
