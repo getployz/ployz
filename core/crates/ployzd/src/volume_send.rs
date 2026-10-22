@@ -197,17 +197,20 @@ async fn stream_args(programs: &Programs, stream: &SendStream) -> Result<Vec<Str
             .output()
             .await
             .map_err(|error| Refusal::Zfs(format!("could not inspect resume token: {error}")))?;
-        // ZFS refuses a token whose base or target this writer no longer holds. That is
-        // a stream this Machine cannot send, so the puller drops its partial receive and
-        // asks for a full send instead of retrying the token forever.
-        if !output.status.success() {
-            return Err(Refusal::Unknown(format!(
-                "resume token cannot be sent from {root}: {}",
-                String::from_utf8_lossy(&output.stderr).trim()
-            )));
-        }
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
+        if !output.status.success() {
+            // A token whose snapshots this writer no longer holds, or that does not parse,
+            // names a stream this Machine cannot send, so the puller drops its partial
+            // receive and asks for a full send. Any other failure is this Machine's, and
+            // the puller keeps its copy.
+            let message = format!("resume token cannot be sent from {root}: {}", stderr.trim());
+            return Err(if unusable_token(&stderr) {
+                Refusal::Unknown(message)
+            } else {
+                Refusal::Zfs(message)
+            });
+        }
         let mut names = stdout
             .lines()
             .chain(stderr.lines())
@@ -232,6 +235,17 @@ async fn stream_args(programs: &Programs, stream: &SendStream) -> Result<Vec<Str
     }
     args.push(target);
     Ok(args)
+}
+
+/// Whether `zfs send -t` refused the token itself, by libzfs's messages under `LC_ALL=C`.
+fn unusable_token(stderr: &str) -> bool {
+    [
+        "no longer exists",
+        "is no longer the same snapshot",
+        "resume token is corrupt",
+    ]
+    .iter()
+    .any(|reason| stderr.contains(reason))
 }
 
 async fn lines(program: &Path, args: &[&str]) -> Result<Vec<String>, Refusal> {
@@ -293,6 +307,7 @@ case "$*" in
   'send -nvP -t token-missing') printf 'resume token contents:\n\ttoname = tank/ployz/data@w-1-3\n' ;;
   'send -nvP -t token-child') printf 'resume token contents:\n\ttoname = tank/ployz/data/child@w-1-2\n' ;;
   'send -nvP -t token-pruned') echo 'cannot resume send: incremental source 0x1f no longer exists' >&2; exit 1 ;;
+  'send -nvP -t token-io') echo 'cannot resume send: I/O error' >&2; exit 1 ;;
   'send -t token-other') printf 'unrelated stream' ;;
   'send -t token-1') printf 'resumed stream' ;;
   'get -Hp -o value refquota tank/ployz/data') printf '1073741824\n' ;;
@@ -463,7 +478,7 @@ esac
     }
 
     #[tokio::test]
-    async fn a_token_whose_base_the_writer_pruned_is_no_stream() {
+    async fn a_token_whose_base_the_writer_pruned_is_no_stream_but_a_zfs_failure_is() {
         // The puller answers 404 by dropping its partial receive and asking for a full
         // send, so a stale token must not read as this Machine failing.
         let dir = TestDir::new("ployzd-volume-send");
@@ -471,6 +486,9 @@ esac
         let (status, body) = get(&base, "/volume-send/data?target=w-1-2&token=token-pruned").await;
         assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
         assert!(body.contains("no longer exists"), "{body}");
+        // A failure of this Machine is not a stale token: the puller must keep its copy.
+        let (status, body) = get(&base, "/volume-send/data?target=w-1-2&token=token-io").await;
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
         shutdown.cancel();
     }
 

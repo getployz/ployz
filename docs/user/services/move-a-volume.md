@@ -353,8 +353,9 @@ Deploy it next. The [agent](../account/agent-sidebar.md) can run the same restor
   [When its server goes down](volumes.md#when-its-server-goes-down).
 - **A mirror is a backup, not an offsite one.** It holds the data as of its last sync, on another
   of your servers. For a copy off your servers, see [Back up a database](databases.md#back-up-a-database).
-- **A mirror that fell behind for good** is refused with `data-web-2 diverged`. Run
-  `ployz volume sync data --full` to copy everything again.
+- **A mirror that fell behind for good** gets a full copy. When the primary no longer holds any
+  point the mirror has, the next sync or move sends the whole volume. To copy everything again on
+  your own, run `ployz volume sync data --full`.
 - **Deleting a volume deletes its mirror.** So does deleting its environment. A mirror that is
   the volume's only copy left is removed only with `--confirm data`, because its data goes with
   it.
