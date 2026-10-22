@@ -161,7 +161,8 @@ Copy its Client ID and a new client secret to `GITHUB_APP_CLIENT_ID` and
 
 **One App for both.** The GitHub App can also serve sign-in in place of the OAuth
 App: set `GITHUB_CLIENT_ID`/`GITHUB_CLIENT_SECRET` to its client ID and secret. It
-then needs both Callback URLs, `/api/github/callback` first and
+then needs the account permission Email addresses: Read-only, for private emails at
+sign-in, and both Callback URLs, `/api/github/callback` first and
 `/api/auth/callback/github` second, because GitHub sends a fresh installation back
 to the first one.
 

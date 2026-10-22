@@ -90,7 +90,8 @@ app's client ID and secret to ask GitHub which installations the person connecti
 
 **One app for both.** You can skip the OAuth App and sign in with the GitHub App: set
 `GITHUB_CLIENT_ID` and `GITHUB_CLIENT_SECRET` to the GitHub App's client ID and secret. Then the
-GitHub App needs both Callback URLs, with `https://cloud.example.com/api/github/callback` first
+GitHub App needs the account permission Email addresses: Read-only, so it can read private
+emails at sign-in, and both Callback URLs, with `https://cloud.example.com/api/github/callback` first
 and `https://cloud.example.com/api/auth/callback/github` second. GitHub sends a fresh
 installation back to the first Callback URL.
 
