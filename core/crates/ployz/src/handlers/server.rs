@@ -1094,6 +1094,9 @@ pub(super) fn upgrade_command(command: Command) -> Command {
                         .action(ArgAction::Append)
                         .help("Server name or ID, in upgrade order"),
                 )
+                .arg(switch("allow-downgrade", None).help(
+                    "Move a Server to an older version than it runs without asking",
+                ))
                 .arg(ingress_image())
 }
 

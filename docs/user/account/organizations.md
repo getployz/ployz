@@ -165,7 +165,7 @@ How you answer depends on where the command runs:
 - Removing or forgetting a server Ployz Cloud manages with `ployz server rm` or
   `ployz server forget SERVER` always asks. `ployz server drain`
   asks when a global service would run on no other server, and `ployz server clean` asks when it
-  would stop a service or delete volume data. `ployz server upgrade` never asks.
+  would stop a service or delete volume data. `ployz server upgrade` never asks for an approval.
 - An agent's stop or restart of a service always asks, and one approval covers one stop or
   restart. Typed in a terminal, `ployz service stop` and `ployz service restart` don't ask yet.
   Starting a service never asks.
