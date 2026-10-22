@@ -2118,7 +2118,8 @@ fn while_a_deployment_rolls_out_status_says_it_skips_the_check() {
     );
 }
 
-fn status_warnings(config: &std::path::Path, flags: &[&str]) -> Vec<String> {
+/// The check's warnings, and whether it was partial.
+fn status_warnings(config: &std::path::Path, flags: &[&str]) -> (Vec<String>, bool) {
     let mut args = vec![
         "ployz",
         "status",
@@ -2128,11 +2129,14 @@ fn status_warnings(config: &std::path::Path, flags: &[&str]) -> Vec<String> {
     args.extend(flags);
     let root = crate::cli::command().try_get_matches_from(args).unwrap();
     let namespace = qualified("app", "web").namespace;
-    assert!(attention(&root, &namespace, &BTreeMap::new(), None, &[]).is_empty());
+    let check = attention(&root, &namespace, &BTreeMap::new(), None, &[]);
+    assert!(check.attention.is_empty());
     let (_, json) = crate::ui::captured(|| crate::ui::show(&json!({})));
-    json.and_then(|json| json.get("warnings").cloned())
+    let warnings = json
+        .and_then(|json| json.get("warnings").cloned())
         .map(|warnings| serde_json::from_value(warnings).unwrap())
-        .unwrap_or_default()
+        .unwrap_or_default();
+    (warnings, check.partial)
 }
 
 #[test]
@@ -2141,7 +2145,8 @@ fn status_warns_when_the_context_it_was_given_does_not_exist() {
     let config = dir.path().join("config.yaml");
     std::fs::write(&config, "contexts:\n  prod:\n    connections: []\n").unwrap();
 
-    let warnings = status_warnings(&config, &["--context", "typo"]);
+    let (warnings, partial) = status_warnings(&config, &["--context", "typo"]);
+    assert!(partial, "a check that couldn't run exits 3");
 
     let [warning] = warnings.as_slice() else {
         panic!("one warning: {warnings:?}");
@@ -2161,7 +2166,10 @@ fn status_checks_nothing_and_says_nothing_with_no_server_set_up() {
     }
     let dir = tempfile::tempdir().unwrap();
 
-    assert!(status_warnings(&dir.path().join("config.yaml"), &[]).is_empty());
+    assert_eq!(
+        status_warnings(&dir.path().join("config.yaml"), &[]),
+        (Vec::new(), false)
+    );
 }
 
 #[test]

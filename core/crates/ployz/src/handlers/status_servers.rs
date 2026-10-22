@@ -76,6 +76,12 @@ pub(super) struct NotServingCopy {
     run: Option<ContainerRun>,
 }
 
+/// What the Server check found, and whether it could not see every Server.
+pub(super) struct ServerCheck {
+    pub(super) attention: Vec<Attention>,
+    pub(super) partial: bool,
+}
+
 /// `deployed` maps each deployed Service's name to the name its containers carry, and
 /// `authored` names every Service in Working State, when the Store says.
 pub(super) fn attention(
@@ -84,7 +90,7 @@ pub(super) fn attention(
     deployed: &BTreeMap<ServiceName, ServiceName>,
     authored: Option<&BTreeSet<ServiceName>>,
     deploying: &[DeploymentSummary],
-) -> Vec<Attention> {
+) -> ServerCheck {
     let leaf = leaf_matches(root);
     let context = leaf.get_one::<String>("context").map(String::as_str);
     let named = context.is_some() || leaf.get_one::<String>("connect").is_some();
@@ -112,25 +118,40 @@ pub(super) fn attention(
                 |words| super::store::next(leaf, words),
             );
             check.warn();
-            check.attention
+            ServerCheck {
+                partial: check.partial(),
+                attention: check.attention,
+            }
         }
-        Ok(None) => Vec::new(),
+        Ok(None) => ServerCheck {
+            attention: Vec::new(),
+            partial: false,
+        },
         Err(Unreached {
             silent: Some(silent),
             ..
-        }) => vec![Attention {
-            reason: "no_server_answers".to_owned(),
-            message: format!("{silent}. {}", silent.next()),
-            deployment: None,
-            next: None,
-            subject: Some(Subject::Unanswered {
-                servers: silent.names().to_vec(),
-            }),
-        }],
-        Err(Unreached { error, .. }) if !named && nothing_set_up(&error) => Vec::new(),
+        }) => ServerCheck {
+            attention: vec![Attention {
+                reason: "no_server_answers".to_owned(),
+                message: format!("{silent}. {}", silent.next()),
+                deployment: None,
+                next: None,
+                subject: Some(Subject::Unanswered {
+                    servers: silent.names().to_vec(),
+                }),
+            }],
+            partial: true,
+        },
+        Err(Unreached { error, .. }) if !named && nothing_set_up(&error) => ServerCheck {
+            attention: Vec::new(),
+            partial: false,
+        },
         Err(Unreached { error, .. }) => {
             crate::ui::warn_cause(UNCHECKED, &error);
-            Vec::new()
+            ServerCheck {
+                attention: Vec::new(),
+                partial: true,
+            }
         }
     }
 }
@@ -809,8 +830,16 @@ impl Check {
         })
     }
 
+    /// A Down Server's copies or anything else the check could not see leaves it partial.
+    /// Skipping it while a deploy runs is on purpose, not a gap.
     fn partial(&self) -> bool {
-        false
+        self.attention
+            .iter()
+            .any(|attention| matches!(attention.subject, Some(Subject::Down { .. })))
+            || self
+                .unseen
+                .iter()
+                .any(|unseen| !matches!(unseen, Unseen::RollingOut(_)))
     }
 
     fn name(&self, machine: &MachineId) -> String {
