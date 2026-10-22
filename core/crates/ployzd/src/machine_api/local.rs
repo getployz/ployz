@@ -868,7 +868,9 @@ fn local_error(error: LocalMachineError) -> Result<Response<OpaquePayload>, Stat
             &error,
         )),
         LocalMachineError::Docker(error) => respond(RpcError::from(&error)),
-        LocalMachineError::StoragePreparation(error) => respond(error),
+        LocalMachineError::StoragePreparation(error) | LocalMachineError::FenceRefused(error) => {
+            respond(error)
+        }
         LocalMachineError::Cleanup(message) => respond(RpcError {
             code: RpcErrorCode::Internal,
             message,

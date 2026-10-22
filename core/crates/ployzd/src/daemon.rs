@@ -352,7 +352,6 @@ impl Daemon {
             .map(|store| Arc::new(store) as Arc<dyn management::Roster>);
         let fence_endpoint = management_endpoint.clone();
         let fence_relay = config.management.relay_url.clone();
-        let fence_admin = corrosion.as_ref().map(RunningCorrosion::admin_client);
         let socket_path = config.socket.clone();
         let ingress_admin = corrosion.as_ref().map(RunningCorrosion::admin_client);
         let boot_admin = corrosion.as_ref().map(RunningCorrosion::admin_client);
@@ -459,7 +458,7 @@ impl Daemon {
                 }
                 Ok(())
             };
-            let boot_pass = async {
+            let boot_pass_and_fence = async {
                 if !wait_for_participation(records.clone(), shutdown.clone()).await? {
                     return Ok(());
                 }
@@ -472,45 +471,34 @@ impl Daemon {
                     return Ok(());
                 };
                 let first_synced = runtime.first_synced();
-                let host = crate::boot_pass::DaemonHost {
+                let machine = crate::machine::LocalMachine::new(local.clone())
+                    .with_containers(Some(runtime))
+                    .with_plugin(plugin.clone())
+                    .with_cluster(Some((replicated.clone(), admin.clone())));
+                let boot = crate::boot_pass::DaemonHost {
                     machine_id: local_id,
-                    machine: crate::machine::LocalMachine::new(local.clone())
-                        .with_containers(Some(runtime))
-                        .with_plugin(plugin.clone())
-                        .with_cluster(Some((replicated.clone(), admin.clone()))),
+                    machine: machine.clone(),
                     replicated,
+                    machines: machines.clone(),
+                    admin: admin.clone(),
+                };
+                let fence = crate::forgotten_fence::FenceDaemon {
+                    machine_id: local_id,
+                    machine,
                     machines,
                     admin,
-                };
-                tokio::select! {
-                    () = shutdown.cancelled() => {}
-                    () = crate::boot_pass::run(host, first_synced, published_routes) => {}
-                }
-                Ok(())
-            };
-            let forgotten_fence = async {
-                if !wait_for_participation(records.clone(), shutdown.clone()).await? {
-                    return Ok(());
-                }
-                let (Some(runtime), Some(replicated), Some(machines), Some(admin)) = (
-                    containers.clone(),
-                    replicated_store.clone(),
-                    machine_view.clone(),
-                    fence_admin,
-                ) else {
-                    return Ok(());
-                };
-                let host = crate::forgotten_fence::DaemonHost {
-                    machine_id: local_id,
-                    machine: crate::machine::LocalMachine::new(local.clone())
-                        .with_containers(Some(runtime))
-                        .with_plugin(plugin.clone())
-                        .with_cluster(Some((replicated, admin))),
-                    machines,
                     endpoint: fence_endpoint,
                     relay: fence_relay,
                 };
-                crate::forgotten_fence::run(host, shutdown.clone()).await;
+                tokio::select! {
+                    () = shutdown.cancelled() => {}
+                    () = async {
+                        tokio::join!(
+                            crate::boot_pass::run(boot, first_synced, published_routes),
+                            crate::forgotten_fence::run(&fence, shutdown.clone()),
+                        );
+                    } => {}
+                }
                 Ok(())
             };
             tokio::try_join!(
@@ -522,8 +510,7 @@ impl Daemon {
                 dns,
                 ingress,
                 certificates,
-                boot_pass,
-                forgotten_fence,
+                boot_pass_and_fence,
             )
             .map(|_| ())
         });

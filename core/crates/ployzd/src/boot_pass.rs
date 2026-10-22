@@ -444,38 +444,6 @@ fn alone(
             .all(|machine| machine.id == *local)
 }
 
-/// One round over the peers' Machine APIs. The first answer wins.
-pub(crate) async fn probe_peers(
-    machines: &MachineView,
-    local: &MachineId,
-    bootstrap: &[Machine],
-) -> Peers {
-    let Some(machines) = machines.current() else {
-        return Peers::Silent;
-    };
-    if alone(&machines, local, bootstrap) {
-        return Peers::Alone;
-    }
-    for peer in machines
-        .observations
-        .iter()
-        .filter(|peer| peer.id != *local)
-    {
-        let address = SocketAddr::new(IpAddr::V6(peer.management_address().0), MACHINE_API_PORT);
-        match tokio::time::timeout(PEER_TIMEOUT, target_versions(address)).await {
-            Ok(Ok(target)) => {
-                tracing::info!("read store versions from {}", peer.name);
-                return Peers::Answered(target);
-            }
-            Ok(Err(error)) => {
-                tracing::debug!(error = %ployz_core::error_chain::inline(&error), "could not ask {}", peer.name);
-            }
-            Err(_) => tracing::debug!("timed out asking {}", peer.name),
-        }
-    }
-    Peers::Silent
-}
-
 pub(crate) struct DaemonHost {
     pub(crate) machine_id: MachineId,
     pub(crate) machine: LocalMachine,
@@ -490,12 +458,35 @@ impl BootHost for DaemonHost {
     }
 
     async fn peer_targets(&self) -> Peers {
-        probe_peers(
-            &self.machines,
+        let Some(machines) = self.machines.current() else {
+            return Peers::Silent;
+        };
+        if alone(
+            &machines,
             &self.machine_id,
             self.machine.record().bootstrap(),
-        )
-        .await
+        ) {
+            return Peers::Alone;
+        }
+        for peer in machines
+            .observations
+            .iter()
+            .filter(|peer| peer.id != self.machine_id)
+        {
+            let address =
+                SocketAddr::new(IpAddr::V6(peer.management_address().0), MACHINE_API_PORT);
+            match tokio::time::timeout(PEER_TIMEOUT, target_versions(address)).await {
+                Ok(Ok(target)) => {
+                    tracing::info!("boot pass read store versions from {}", peer.name);
+                    return Peers::Answered(target);
+                }
+                Ok(Err(error)) => {
+                    tracing::debug!(error = %ployz_core::error_chain::inline(&error), "boot pass could not ask {}", peer.name);
+                }
+                Err(_) => tracing::debug!("boot pass timed out asking {}", peer.name),
+            }
+        }
+        Peers::Silent
     }
 
     async fn local_actor(&self) -> Result<String, CorrosionError> {

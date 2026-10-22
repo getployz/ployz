@@ -131,6 +131,9 @@ pub enum Error {
     Docker(#[from] crate::docker::Error),
     #[error("{0}")]
     Cleanup(String),
+    /// An upgrade is running; the fence is retried once it ends.
+    #[error(transparent)]
+    FenceRefused(RpcError),
     #[error("local operation task failed")]
     OperationTask(#[from] tokio::task::JoinError),
     #[error("Register requires a client-selected Machine Subnet")]
@@ -748,9 +751,13 @@ impl LocalMachine {
     /// cannot know what a copy elsewhere still holds.
     ///
     /// # Errors
-    /// As [`Self::leave`].
-    pub async fn fence_forgotten(&self) -> Result<Left, Error> {
-        self.depart(StorageExit::KeepEveryCopy).await
+    /// As [`Self::leave`], and [`Error::FenceRefused`] where Leave would answer
+    /// [`Left::Refused`].
+    pub async fn fence_forgotten(&self) -> Result<(), Error> {
+        match self.depart(StorageExit::KeepEveryCopy).await? {
+            Left::Left { .. } => Ok(()),
+            Left::Refused { error, .. } => Err(Error::FenceRefused(error)),
+        }
     }
 
     async fn depart(&self, exit: StorageExit) -> Result<Left, Error> {
