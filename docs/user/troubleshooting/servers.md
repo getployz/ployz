@@ -426,8 +426,7 @@ or may not have changed.` and the command still succeeds. Run it again once both
 ls` to save the address on `web-2` too. With more than two servers, repeat the command for any
 server that still shows as not answering.
 
-Run it from your machine with Ployz Cloud or a context that reaches the other servers, or on one of
-the other servers itself. Run on `web-2`, it only saves the address on `web-2`.
+Run it from your machine with Ployz Cloud, or on one of the other servers itself. Run on `web-2`, it only saves the address on `web-2`.
 
 ## Services can't resolve each other's names
 

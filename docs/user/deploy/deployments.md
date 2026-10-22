@@ -41,11 +41,6 @@ variable that isn't there, doesn't either: the deploy leaves that variable out t
 leaves the reference empty in a config file, along with any reference that reads it, and the
 deployment's page and `ployz deploy` name each one.
 
-A deploy also removes every service that runs on the environment's servers but isn't one of the
-environment's services. Their volumes and data stay. `ployz deploy` and
-`ployz deployment show` list each one it removed, such as `postgres: removed 1/1 (not in this
-environment)`, and the summary counts it as removed. `ployz diff` doesn't show them.
-
 **Save only** in **Details**, in the bottom bar's **⋮** menu, or on **Deploy** while you hold Alt,
 records your changes and optional message without deploying them. Ployz shows **Saved, not
 deployed**. Your
@@ -139,8 +134,7 @@ An environment runs one deployment at a time. While one runs, **Deploy** reads *
 and yours waits as **Queued**. If you deploy again while one is waiting, the newest one takes its
 place.
 
-A deploy started outside that queue, say from a second computer's context, can still reach a
-service after a newer deploy did. It fails for that service and leaves the newer version serving.
+A deploy started outside that queue can still reach a service after a newer deploy did. It fails for that service and leaves the newer version serving.
 See [A newer deploy is already serving](../troubleshooting/deployments.md#a-newer-deploy-is-already-serving).
 
 From the CLI, `ployz deploy` keeps following a queued deployment. If it is still queued after 30
