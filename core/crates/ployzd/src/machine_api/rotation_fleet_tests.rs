@@ -327,18 +327,38 @@ impl Fleet {
 
     /// A new copy of `name` on `index` brought In, published to the cluster.
     async fn routed(&self, index: usize, key: &str, name: &str, r#gen: u64) -> ContainerId {
-        let id = self.brought_in(index, key, name, r#gen).await;
+        self.routed_as(index, key, spec(name), r#gen).await
+    }
+
+    async fn routed_as(
+        &self,
+        index: usize,
+        key: &str,
+        spec: ResolvedServiceSpec,
+        r#gen: u64,
+    ) -> ContainerId {
+        let id = self.brought_in_as(index, key, spec, r#gen).await;
         self.published(id, Some(CopyRotation::In)).await;
         id
     }
 
     /// A new copy of `name` on `index` brought In, whether or not the cluster has it yet.
     async fn brought_in(&self, index: usize, key: &str, name: &str, r#gen: u64) -> ContainerId {
+        self.brought_in_as(index, key, spec(name), r#gen).await
+    }
+
+    async fn brought_in_as(
+        &self,
+        index: usize,
+        key: &str,
+        spec: ResolvedServiceSpec,
+        r#gen: u64,
+    ) -> ContainerId {
         let node = self.node(index);
         let created = ensure(
             node,
             ContainerWant::Running {
-                container: RunTarget::New(new_copy(key, spec(name), r#gen)),
+                container: RunTarget::New(new_copy(key, spec, r#gen)),
                 rotation: RunRotation::Pending,
             },
         )
@@ -1832,6 +1852,39 @@ mod rotation_commands {
         let same_gen = fleet.pending(0, "same", "api", 3).await;
         let reply = ensure(fleet.node(0), into(same_gen, None, None)).await;
         assert_eq!(rotation_of(&reply), CopyRotation::In, "{reply:?}");
+    }
+
+    /// A scale-up keeps the older copy and adds a newer one with the same spec, so
+    /// the newer copy does not supersede it and a restart routes it again. The spec
+    /// carries environment and Config content, which a replicated row leaves out.
+    #[tokio::test]
+    async fn a_held_copy_kept_beside_a_newer_one_comes_back_in() {
+        let mut scaled = spec("api");
+        scaled
+            .container
+            .environment
+            .insert("SECRET".to_owned(), "value".into());
+        for newer_on in [0, 1] {
+            let fleet = Fleet::start().await;
+            let older = fleet.routed_as(0, "old", scaled.clone(), 1).await;
+            fleet.routed_as(newer_on, "new", scaled.clone(), 2).await;
+            let restart = || Some(CopyRotation::Held(run("restart")));
+            ensured(
+                &ensure(
+                    fleet.node(0),
+                    held(older, "restart", Some(CopyRotation::In)),
+                )
+                .await,
+            );
+
+            let reply = ensure(fleet.node(0), into(older, Some(run("restart")), restart())).await;
+
+            assert_eq!(
+                rotation_of(&reply),
+                CopyRotation::In,
+                "newer on {newer_on}: {reply:?}"
+            );
+        }
     }
 
     #[tokio::test]
