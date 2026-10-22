@@ -160,7 +160,7 @@ async fn resolve_root(programs: &Programs, name: &DockerVolumeName) -> Result<St
 /// The `zfs send` arguments for `stream`, once its names resolve on this Machine.
 async fn stream_args(programs: &Programs, stream: &SendStream) -> Result<Vec<String>, Refusal> {
     let root = resolve_root(programs, &stream.name).await?;
-    let snapshots = lines(
+    let snapshots = complete_lines(
         &programs.zfs,
         &[
             "list",
@@ -261,17 +261,28 @@ fn names_a_missing_snapshot<'a>(
 }
 
 async fn lines(program: &Path, args: &[&str]) -> Result<Vec<String>, Refusal> {
+    lines_with(program, args, false).await
+}
+
+/// Like [`lines`], for a listing a 404 is judged from. ZFS exits 0 when it stopped
+/// iterating on an error and says so only on stderr, so any stderr fails the listing.
+async fn complete_lines(program: &Path, args: &[&str]) -> Result<Vec<String>, Refusal> {
+    lines_with(program, args, true).await
+}
+
+async fn lines_with(program: &Path, args: &[&str], quiet: bool) -> Result<Vec<String>, Refusal> {
     let output = Command::new(program)
         .args(args)
         .output()
         .await
         .map_err(|error| Refusal::Zfs(format!("could not run {}: {error}", program.display())))?;
-    if !output.status.success() {
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if !output.status.success() || (quiet && !stderr.trim().is_empty()) {
         return Err(Refusal::Zfs(format!(
             "{} {} failed: {}",
             program.display(),
             args.join(" "),
-            String::from_utf8_lossy(&output.stderr).trim()
+            stderr.trim()
         )));
     }
     Ok(String::from_utf8_lossy(&output.stdout)
@@ -303,9 +314,10 @@ mod tests {
             &zfs,
             r#"#!/bin/sh
 case "$*" in
-  'list -H -o name -t filesystem') printf 'old\nold/ployz\nold/ployz/data\ntank\ntank/ployz\ntank/ployz/data\ntank/ployz-mirror/other\ntank/ployz-mirror/slotted\ntank/ployz-mirror/slotted/fs\n' ;;
+  'list -H -o name -t filesystem') printf 'old\nold/ployz\nold/ployz/data\ntank\ntank/ployz\ntank/ployz/data\ntank/ployz-mirror/other\ntank/ployz-mirror/slotted\ntank/ployz-mirror/slotted/fs\ntank/ployz/flaky\n' ;;
   'list -H -o name,guid -t snapshot -d 1 tank/ployz/data') printf 'tank/ployz/data@w-1-1\t11\ntank/ployz/data@w-1-2\t12\n' ;;
   'list -H -o name,guid -t snapshot -d 1 tank/ployz-mirror/slotted/fs') printf 'tank/ployz-mirror/slotted/fs@w-1-1\t21\ntank/ployz-mirror/slotted/fs@w-1-2\t22\n' ;;
+  'list -H -o name,guid -t snapshot -d 1 tank/ployz/flaky') printf 'tank/ployz/flaky@w-1-2\t12\n'; echo 'cannot iterate snapshots: I/O error' >&2 ;;
   'send tank/ployz/data@w-1-2') printf 'full stream' ;;
   'send tank/ployz-mirror/slotted/fs@w-1-2') printf 'full slot stream' ;;
   'send -i tank/ployz-mirror/slotted/fs@w-1-1 tank/ployz-mirror/slotted/fs@w-1-2') printf 'incremental slot stream' ;;
@@ -502,6 +514,9 @@ esac
         // A lookup that failed while this writer still holds both snapshots is this
         // Machine's failure, whatever ZFS says, and the puller must keep its copy.
         let (status, body) = get(&base, "/volume-send/data?target=w-1-2&token=token-io").await;
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
+        // A listing ZFS cut short on an error exits 0, and is no evidence of a pruned base.
+        let (status, body) = get(&base, "/volume-send/flaky?target=w-1-2&token=token-pruned").await;
         assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
         shutdown.cancel();
     }
