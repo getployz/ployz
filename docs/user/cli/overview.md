@@ -210,7 +210,8 @@ shows each server's newest 200 lines at most, with sealed variables scrubbed, an
 `--until`, `--machine` or a container name. Name the environment with `--project` and `--env`
 if the directory isn't linked. A server that doesn't answer Ployz Cloud is named, and the command
 exits 3, as it does when Ployz reads your servers itself. A `deploy` token reads only its own environment, so
-`ployz logs --env production` with a staging token fails with `This token can deploy only to staging.` See
+`ployz logs --env production` with a staging token fails with `This token can deploy only to staging.`,
+even before anything is deployed to production. See
 [Reach a server from the CLI](../servers/manage-servers.md#reach-a-server-from-the-cli).
 
 Pick a member by email or by name. When two members share a name, the command refuses with

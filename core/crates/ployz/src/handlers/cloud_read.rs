@@ -16,22 +16,56 @@ use serde_json::json;
 
 use super::{Error, operator::Scoped};
 use crate::{
-    cloud_account::{self, Credential},
+    cloud_account::{self, Credential, StoreCallError},
     ui::{self, Table},
 };
 
 const NO_SCOPE: &str = "This token reads through Cloud, which reads one Environment at a time; add --project and --env";
 
 fn ask<T: DeserializeOwned>(credential: &Credential, query: CloudQuery) -> Result<T, Error> {
-    super::runtime()?
-        .block_on(cloud_account::approved_answer(
-            credential,
-            Method::POST,
-            "agent/ask",
-            &json!({ "ask": query }),
-            None,
-        ))
-        .map_err(Error::from)
+    refusable(credential, query)?.map_err(Error::from)
+}
+
+/// [`ask`], keeping Cloud's refusal as Cloud sent it.
+fn refusable<T: DeserializeOwned>(
+    credential: &Credential,
+    query: CloudQuery,
+) -> Result<Result<T, StoreCallError>, Error> {
+    Ok(super::runtime()?.block_on(cloud_account::approved_answer(
+        credential,
+        Method::POST,
+        "agent/ask",
+        &json!({ "ask": query }),
+        None,
+    )))
+}
+
+/// Cloud's refusal when it holds the credential to Environments other than `scoped`'s.
+/// With no Service, `logs` reads nothing and asks only for this. Any other answer leaves
+/// the logs empty, since Cloud also refuses a credential its own Environment before a
+/// Deployment fixes the Namespace, naming that Environment among those it holds.
+fn held_elsewhere(credential: &Credential, scoped: &Scoped) -> Result<(), Error> {
+    let asked = CloudQuery::Containers {
+        namespace: scoped.namespace.clone(),
+        service: None,
+    };
+    match refusable::<ContainersAnswer>(credential, asked)? {
+        Err(StoreCallError::Refused(refused))
+            if refused.code.as_str() == "forbidden"
+                && refused
+                    .details
+                    .get("environments")
+                    .and_then(serde_json::Value::as_array)
+                    .is_some_and(|held| {
+                        !held
+                            .iter()
+                            .any(|held| held.as_str() == Some(scoped.environment.as_str()))
+                    }) =>
+        {
+            Err(StoreCallError::Refused(refused).into())
+        }
+        _ => Ok(()),
+    }
 }
 
 /// What `logs` asked for, as Cloud can answer it.
@@ -76,6 +110,9 @@ pub(super) fn logs(credential: &Credential, asked: LogsAsked<'_>) -> Result<(), 
             })
             .collect::<Result<Vec<_>, Error>>()?
     };
+    if services.is_empty() {
+        held_elsewhere(credential, &scoped)?;
+    }
     let unknown = |name: &ServiceName| {
         ServiceSelector::parse(name.as_str())
             .ok()
