@@ -1010,6 +1010,45 @@ mod tests {
     }
 
     #[test]
+    fn a_forgotten_server_rejoining_through_cloud_is_reset_first() {
+        let listed = {
+            let mut machine = crate::global_fixtures::machine('a', "web-3");
+            machine.runtime.daemon_version = "0.3.0".into();
+            machine
+        };
+        let registered = crate::global_fixtures::machine('a', "web-3");
+        let details = |phase| MachineDetails {
+            id: listed.id,
+            phase,
+            public_key: listed.public_key,
+            advertised_endpoints: Vec::new(),
+            machine: Some(listed.clone()),
+            store_version: Default::default(),
+            rtts: Vec::new(),
+            management_clients: Vec::new(),
+            telemetry: None,
+            storage: None,
+            upgrade: None,
+            token: None,
+        };
+        assert_eq!(
+            already_assigned(&details(LocalMachinePhase::Participating), &listed),
+            Some(&listed),
+            "the Cluster lists the Machine as it published itself"
+        );
+        assert_eq!(
+            already_assigned(&details(LocalMachinePhase::Participating), &registered),
+            None,
+            "Cloud registered it afresh, so its participation predates this enrollment"
+        );
+        assert_eq!(
+            already_assigned(&details(LocalMachinePhase::Joining), &registered),
+            Some(&listed),
+            "a join under way hasn't published itself yet"
+        );
+    }
+
+    #[test]
     fn a_rerun_resumes_a_join_already_under_way_for_the_assigned_machine() {
         let assigned = crate::global_fixtures::machine('a', "web-3");
         let other = crate::global_fixtures::machine('b', "web-4");

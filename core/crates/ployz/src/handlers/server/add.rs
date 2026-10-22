@@ -128,6 +128,10 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
     )
 }
 
+fn require_another_entry(_entry: MachineId, _target: MachineId, _name: &str) -> Result<(), Error> {
+    Ok(())
+}
+
 /// Only a Server the Cluster lists resumes its join. One this computer assigned that the Cluster
 /// no longer lists was forgotten, and still holds the state it had then.
 fn resumes(snapshot: &EnrollmentSnapshot, id: MachineId, public_key: WireGuardPublicKey) -> bool {
@@ -238,6 +242,26 @@ mod tests {
         assert!(
             !resumes(&forgotten, returning.id, returning.public_key),
             "a forgotten Server is reset, whatever this computer once assigned it"
+        );
+    }
+
+    #[test]
+    fn a_server_cannot_be_added_through_itself() {
+        let target = assigned_machine("machine-3", 'c');
+        let other = assigned_machine("machine-1", 'a');
+        assert!(require_another_entry(other.id, target.id, "root@machine-3").is_ok());
+        let refusal = require_another_entry(target.id, target.id, "root@machine-3").unwrap_err();
+        let message = refusal.to_string();
+        assert!(
+            message.contains("root@machine-3 answered as the entry"),
+            "a forgotten Server's own view can't vouch for it: {message}"
+        );
+        assert!(
+            refusal
+                .hints()
+                .iter()
+                .any(|hint| matches!(hint, crate::ui::Hint::Next(next) if next.contains("--connect"))),
+            "names --connect through another Server"
         );
     }
 
