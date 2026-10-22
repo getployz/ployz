@@ -329,8 +329,11 @@ The **Servers** page shows **Can't reach your servers right now**, with what you
 reported or nothing at all. Adding a server can fail with `This Organization's Servers can't be
 reached`. A CLI command, or a deployment that couldn't run, says `Server web-1 isn't answering`,
 naming each server it couldn't reach by the name it last reported, or by its ID if Ployz never
-learned one. When a server answered but refused every connection, the error names the server
-tried last, as in `Server web-2, tried last, refused the connection`. When its connection finds no
+learned one. When the CLI asked through Ployz Cloud, it says `Server web-1 isn't answering
+through Ployz Cloud` and asks you to check that the server is online, its Ployz daemon is running,
+and its outgoing https isn't filtered: any of the three looks the same from the CLI. When a server
+answered but refused every connection, the error names the server tried last, as in
+`Server web-2, tried last, refused the connection`. When its connection finds no
 server answering, `ployz status` lists `Server web-1 isn't answering` under **needs attention**, and
 `ployz deploy --plan` warns first that the deploy can't run until it answers. A deploy whose web
 traffic check couldn't reach a server warns `Couldn't check ingress: Server web-1 isn't answering`, with

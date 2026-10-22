@@ -434,6 +434,7 @@ mod tests {
 
         // A connection that failed names its own Server, over the one the caller passed.
         let refused = Failure::from(ConnectError::AllFailed {
+            relayed: false,
             selection: crate::context::ConnectionSource::Cloud,
             attempts: 1,
             server: Some("web-2".into()),

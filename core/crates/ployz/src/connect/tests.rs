@@ -27,6 +27,7 @@ fn setup_retry_classifies_ssh_and_preserves_aggregate_cause() {
         };
         assert_eq!(ssh_error.retry(), retry);
         let error = ConnectError::AllFailed {
+            relayed: false,
             selection: ConnectionSource::Direct,
             attempts: 1,
             server: None,
@@ -1602,4 +1603,28 @@ async fn a_log_stream_left_unread_leaves_room_for_the_next_call() {
         matches!(grant, Ok(Ok(_))),
         "the unread log stream starved the next call: {grant:?}"
     );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_server_unanswered_through_cloud_may_be_offline_or_filtered_not_only_stopped() {
+    let [(relayed, _), (socket, _), _] = staggered_entries();
+    for (entry, said) in [
+        (
+            relayed,
+            "Server machine-1 isn't answering through Ployz Cloud. Check that it is online, its \
+             Ployz daemon is running, and its outgoing https isn't filtered, then retry.",
+        ),
+        (
+            socket,
+            "Server machine-1 isn't answering. Check that its Ployz daemon is running, then retry.",
+        ),
+    ] {
+        let connector =
+            ScriptedConnector::new(vec![(entry.with_name("machine-1"), Scripted::Fails)]);
+        let Err(error) = connect_selected_with(connector.selected(), connector.clone()).await
+        else {
+            panic!("a failing entry connected");
+        };
+        assert_eq!(error.to_string(), said);
+    }
 }
