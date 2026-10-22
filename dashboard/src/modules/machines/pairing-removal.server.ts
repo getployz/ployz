@@ -277,8 +277,10 @@ const lockCluster = Effect.fn("PairingRemoval.lockCluster")(function* (organizat
  * every key Cloud held there went with them and there is nothing to Clear. Under the pairing's lock, a pairing or Server
  * that changed since refuses; otherwise the Store lets go of what ran (`cluster_forgotten`) first, so no new Cluster is
  * founded before it has; then every row of Cloud's hold on the Cluster goes: the pairing (a stuck removal too), its Servers
- * (device keys cascade), its Sealing public key and generator, allocations, enrollment tokens and the Server removals it was attempting. The Store commits `cluster_forgotten` on its own and it is idempotent, so if the Cloud-row
- * transaction then fails, running Forget Servers again finishes it.
+ * (device keys cascade), its Sealing public key and generator, allocations, enrollment tokens and the Server removals it
+ * was attempting. The Organization's Sealing Key and its recovery backup stay, so a later Server can be given the key. The
+ * Store commits `cluster_forgotten` on its own and it is idempotent, so if the Cloud-row transaction then fails, running
+ * Forget Servers again finishes it.
  */
 export const forgetCluster = Effect.fn("PairingRemoval.forgetCluster")(function* (organizationId: string, seen: ClusterSeen) {
   const database = yield* Database;
