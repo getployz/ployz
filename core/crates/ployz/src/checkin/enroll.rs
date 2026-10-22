@@ -237,6 +237,10 @@ pub(super) async fn server_add(
     instruction: &EnrollInstruction,
     progress: &dyn Fn(EnrollStage),
 ) -> Result<Committed, String> {
+    let instruction = &EnrollInstruction {
+        name: add_name(&instruction.name, &system.hostname()),
+        ..instruction.clone()
+    };
     let root = crate::cli::command()
         .try_get_matches_from(add_arguments(
             instruction,
@@ -270,6 +274,16 @@ fn failure_message(error: &crate::handlers::Error) -> String {
         message.push_str(&cause);
     }
     message
+}
+
+/// The `--name` for `server add`. Cloud names a Server by its raw hostname by default, so a
+/// hostname that isn't a Machine Name is normalised here rather than refused as typed.
+pub(super) fn add_name(name: &str, hostname: &str) -> String {
+    if name == hostname && ployz_core::MachineName::parse(name).is_err() {
+        crate::handlers::server::hostname_machine_name(hostname).into()
+    } else {
+        name.to_owned()
+    }
 }
 
 pub(super) fn add_arguments(
