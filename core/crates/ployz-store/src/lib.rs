@@ -64,7 +64,6 @@ pub use build::{
 };
 pub use builders::{BuildOrder, BuildOrderQuery, BuildOrderView, Builder, SetBuildOrder};
 pub use command::*;
-pub use config_item::MAX_FILE_BYTES;
 pub use deployment::{
     CiVerdict, Claimed, DeployedNode, DeploymentStatus, DeploymentSummary, DeploymentView,
     DeploymentWarning, FailedAt, Failure, GitPush, IngressAction, IngressFailure, IngressRepair,
@@ -116,7 +115,6 @@ pub use teardown::{
 pub use trusted::{
     Approval, Asks, ObservationFailure, ObservationStage, Trusted, VolumeObservation,
 };
-pub use variables::MAX_ENV_STRING;
 pub use volume::size::VolumeResized;
 
 /// Who is asking, and in which Organization. Every read and write is scoped to it.

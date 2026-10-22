@@ -6970,75 +6970,54 @@ fn file_of(bytes: &[u8]) -> (tempfile::NamedTempFile, std::fs::File) {
     (file, read)
 }
 
-const MAX_CONFIG_FILE: usize = 256 * 1024;
-const MAX_ENV_FILE: usize = 32 * 1024 * 1024;
+const MAX_CLI_INPUT: usize = 32 * 1024 * 1024;
 
 #[test]
-fn an_input_past_its_limit_is_refused_after_reading_one_byte_past_it() {
+fn an_input_past_the_cli_read_bound_is_refused_after_reading_one_byte_past_it() {
     let store = &Target::Local(tempfile::tempdir().unwrap());
     shop_with_web(store);
     ok(store, &["config", "add", "app", "--mount", "web:/etc/app"]);
     let null = std::process::Stdio::null;
-    let put = ["config", "put", "app", "x.txt", "--from"];
-    // `bytes` is how much was read before stopping: one past the limit.
-    let config_details =
-        json!({ "file": "x.txt", "bytes": MAX_CONFIG_FILE + 1, "max_bytes": MAX_CONFIG_FILE });
-
-    let (exact, _) = file_of(&vec![b'a'; MAX_CONFIG_FILE]);
-    ok(
-        store,
-        &[&put[..], &[exact.path().to_str().unwrap()]].concat(),
-    );
-    for len in [MAX_CONFIG_FILE + 1, 396 * 1024] {
-        let (big, _) = file_of(&vec![b'a'; len]);
-        let big = big.path().to_str().unwrap();
-        let refused = refused_on(store, &[&put[..], &[big]].concat(), null());
+    let refusals = [
+        (
+            vec!["config", "put", "app", "x.txt", "--from", "/dev/zero"],
+            null(),
+            "/dev/zero: the CLI reads at most 32 MiB of a Config file; this one holds more",
+            "/dev/zero",
+        ),
+        (
+            vec!["config", "put", "app", "x.txt"],
+            dev_zero().into(),
+            "stdin: the CLI reads at most 32 MiB of a Config file; this one holds more",
+            "stdin",
+        ),
+        (
+            vec!["set", "web", "--from-env-file", "/dev/zero"],
+            null(),
+            "/dev/zero: the CLI reads at most 32 MiB of an env file; this one holds more",
+            "/dev/zero",
+        ),
+        (
+            vec!["set", "web", "--from-env-file", "-"],
+            dev_zero().into(),
+            "stdin: the CLI reads at most 32 MiB of an env file; this one holds more",
+            "stdin",
+        ),
+        (
+            vec!["set", "web.env.S", "--secret"],
+            dev_zero().into(),
+            "stdin: the CLI reads at most 32 MiB of a secret; this one holds more",
+            "stdin",
+        ),
+    ];
+    for (args, stdin, message, input) in refusals {
+        let refused = refused_on(store, &args, stdin);
+        assert_eq!(refused["message"], message);
         assert_eq!(
-            refused["message"],
-            format!("x.txt: a Config file holds at most 256 KB of text; {big} holds more")
+            refused["details"],
+            json!({ "input": input, "max_bytes": MAX_CLI_INPUT })
         );
-        assert_eq!(refused["details"], config_details);
     }
-    let refused = refused_on(store, &[&put[..], &["/dev/zero"]].concat(), null());
-    assert_eq!(
-        refused["message"],
-        "x.txt: a Config file holds at most 256 KB of text; /dev/zero holds more"
-    );
-    assert_eq!(refused["details"], config_details);
-    let refused = refused_on(store, &put[..4], dev_zero());
-    assert_eq!(
-        refused["message"],
-        "x.txt: a Config file holds at most 256 KB of text; stdin holds more"
-    );
-    assert_eq!(refused["details"], config_details);
-
-    let env_file = ["set", "web", "--from-env-file"];
-    let refused = refused_on(store, &[&env_file[..], &["/dev/zero"]].concat(), null());
-    assert_eq!(
-        refused["message"],
-        "/dev/zero: the CLI reads at most 32 MiB of env file; this one holds more"
-    );
-    assert_eq!(
-        refused["details"],
-        json!({ "file": "/dev/zero", "max_bytes": MAX_ENV_FILE })
-    );
-    let refused = refused_on(store, &[&env_file[..], &["-"]].concat(), dev_zero());
-    assert_eq!(
-        refused["message"],
-        "stdin: the CLI reads at most 32 MiB of env file; this one holds more"
-    );
-    assert_eq!(
-        refused["details"],
-        json!({ "file": "-", "max_bytes": MAX_ENV_FILE })
-    );
-
-    let refused = refused_on(store, &["set", "web.env.S", "--secret"], dev_zero());
-    assert_eq!(
-        refused["message"],
-        "web.env.S: the secret on stdin is too long for a Container's environment: \
-         Linux passes at most 128 KiB per variable, name included"
-    );
-    assert_eq!(refused["details"], json!({ "variable": "S" }));
     let (code, unset) = ployz(Some(store), &["get", "web.env.S"]);
     assert_ne!(code, Some(0), "nothing was set: {unset}");
 }
@@ -7072,9 +7051,29 @@ fn an_env_file_cloud_takes_as_one_edit_is_read_whole() {
 }
 
 #[test]
-fn a_secret_at_the_store_limit_is_set_and_one_past_it_is_refused_alike() {
+fn below_the_cli_read_bound_the_store_judges_an_input_as_on_main() {
     let store = &Target::Local(tempfile::tempdir().unwrap());
     shop_with_web(store);
+    ok(store, &["config", "add", "app", "--mount", "web:/etc/app"]);
+    let null = std::process::Stdio::null;
+    let put = ["config", "put", "app", "x.txt", "--from"];
+    let max_config_file = 256 * 1024;
+
+    let (exact, _) = file_of(&vec![b'a'; max_config_file]);
+    ok(
+        store,
+        &[&put[..], &[exact.path().to_str().unwrap()]].concat(),
+    );
+    for len in [max_config_file + 1, 396 * 1024] {
+        let (big, stdin) = file_of(&vec![b'a'; len]);
+        let details = json!({ "file": "x.txt", "bytes": len, "max_bytes": max_config_file });
+        let big = big.path().to_str().unwrap();
+        let refused = refused_on(store, &[&put[..], &[big]].concat(), null());
+        assert_eq!(refused["details"], details, "{len}");
+        let refused = refused_on(store, &put[..4], stdin);
+        assert_eq!(refused["details"], details, "{len}");
+    }
+
     // `S=VALUE` and its closing NUL: 128 KiB.
     let longest = 128 * 1024 - "S=".len() - 1;
     let mut value = vec![b'v'; longest];
@@ -7082,14 +7081,26 @@ fn a_secret_at_the_store_limit_is_set_and_one_past_it_is_refused_alike() {
     let (_, stdin) = file_of(&value);
     let (code, set) = ployz_on(store, &["set", "web.env.S", "--secret"], stdin);
     assert_eq!(code, Some(0), "{set}");
-
-    // One byte longer the Store refuses it; far longer the CLI stops reading. Both say
-    // which variable.
     for len in [longest + 1, 1024 * 1024] {
         let (_, stdin) = file_of(&vec![b'v'; len]);
         let refused = refused_on(store, &["set", "web.env.S", "--secret"], stdin);
         assert_eq!(refused["details"], json!({ "variable": "S" }), "{len}");
     }
+
+    // A registry credential never becomes a variable, so the 128 KiB limit is not its.
+    let (_, stdin) = file_of(&vec![b't'; 128 * 1024 + 1]);
+    let (code, set) = ployz_on(store, &["set", "web.registryCredential", "--secret"], stdin);
+    assert_eq!(code, Some(0), "{set}");
+
+    // The path is judged before the value's length, as on main.
+    let (_, stdin) = file_of(&vec![b'v'; 200 * 1024]);
+    let refused = failed_on(
+        store,
+        &["set", "missing.env.S", "--secret"],
+        stdin,
+        "not_found",
+    );
+    assert!(refused["details"]["valid_children"].is_array(), "{refused}");
 }
 
 #[test]

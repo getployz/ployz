@@ -5,17 +5,15 @@
 
 use clap::{ArgAction, ArgMatches, Command};
 use ployz_core::config::{FileMode, ReviewLifecycleKind};
-use ployz_core::{ConfigFileName, ConfigName, RpcErrorCode, ServiceName};
+use ployz_core::{ConfigFileName, ConfigName, ServiceName};
 use ployz_store::{
     AttachConfig, ConfigId, ConfigItemQuery, ConfigListing, ConfigMountAt, ConfigStaged,
-    ConfigSummary, ConfigsQuery, CreateConfig, DeleteConfig, DetachConfig, MAX_FILE_BYTES,
-    PutConfigFile, RemoveConfigFile, RenameConfig,
+    ConfigSummary, ConfigsQuery, CreateConfig, DeleteConfig, DetachConfig, PutConfigFile,
+    RemoveConfigFile, RenameConfig,
 };
 
-use serde_json::json;
-
 use super::store::{self, Next};
-use super::{Error, leaf_matches, read_bounded, required};
+use super::{Error, MAX_CLI_INPUT_BYTES, input_too_long, leaf_matches, read_bounded, required};
 use crate::cli::{base, positional, switch, value};
 use crate::failure::io_code;
 use crate::ui::{Cell, Fields, Table, Tone};
@@ -158,23 +156,19 @@ pub(super) fn put(root: &ArgMatches) -> Result<(), Error> {
     {
         Some(path) => (
             std::fs::File::open(path)
-                .and_then(|from| read_bounded(from, MAX_FILE_BYTES))
+                .and_then(|from| read_bounded(from, MAX_CLI_INPUT_BYTES))
                 .map_err(|error| {
                     Error::caused(io_code(&error), format!("Can't read --from {path}"), error)
                 })?,
             path.as_str(),
         ),
-        None => (read_bounded(std::io::stdin(), MAX_FILE_BYTES)?, "stdin"),
+        None => (
+            read_bounded(std::io::stdin(), MAX_CLI_INPUT_BYTES)?,
+            "stdin",
+        ),
     };
+    let bytes = bytes.ok_or_else(|| input_too_long(from, "a Config file"))?;
     let file = file_name(matches)?;
-    // `bytes` is what was read before stopping, one past the limit: the Store's details.
-    let bytes = bytes.ok_or_else(|| {
-        Error::detailed(
-            RpcErrorCode::InvalidArgument,
-            format!("{file}: a Config file holds at most 256 KB of text; {from} holds more"),
-            json!({ "file": file.to_string(), "bytes": MAX_FILE_BYTES + 1, "max_bytes": MAX_FILE_BYTES }),
-        )
-    })?;
     let content = String::from_utf8(bytes).map_err(|_| {
         Error::usage(format!(
             "{file}: a Config file is UTF-8 text; this one is binary"

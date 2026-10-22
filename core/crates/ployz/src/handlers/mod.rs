@@ -46,6 +46,20 @@ pub use cloud::enroll_with_installer as cloud_enroll_with_installer;
 
 pub type Error = Failure;
 
+/// The most bytes the CLI reads of a Config file, env file or secret, so a wrong source
+/// such as `/dev/zero` can't fill memory. It bounds only the read: the Store and Cloud
+/// judge what was read, as they would without it.
+pub(crate) const MAX_CLI_INPUT_BYTES: usize = 32 * 1024 * 1024;
+
+/// The refusal of an `input` past [`MAX_CLI_INPUT_BYTES`], such as `stdin` or a path.
+pub(crate) fn input_too_long(input: &str, what: &str) -> Error {
+    Error::detailed(
+        ployz_core::RpcErrorCode::InvalidArgument,
+        format!("{input}: the CLI reads at most 32 MiB of {what}; this one holds more"),
+        serde_json::json!({ "input": input, "max_bytes": MAX_CLI_INPUT_BYTES }),
+    )
+}
+
 /// All of `source`, or `None` when it holds more than `limit` bytes. Reads at most one
 /// byte past `limit`, so an endless source such as `/dev/zero` is refused at once.
 pub(crate) fn read_bounded(

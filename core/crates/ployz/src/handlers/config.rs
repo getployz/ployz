@@ -14,13 +14,13 @@ use std::collections::BTreeSet;
 use ployz_core::{MachineId, MachineObservation, MachineTarget, RpcErrorCode};
 use ployz_store::{
     Change, DomainRow, DomainsQuery, DomainsView, Edit, EnvironmentQuery, EnvironmentView, Instead,
-    MAX_ENV_STRING, NodeName, Revision, SettingPath, SettingRow, TypedAddresses,
+    NodeName, Revision, SettingPath, SettingRow, TypedAddresses,
 };
 use serde::Serialize;
 use serde_json::{Value, json};
 
 use super::store::{Next, environment, next, scoped, store, with_refresh_hint};
-use super::{Error, leaf_matches, read_bounded};
+use super::{Error, MAX_CLI_INPUT_BYTES, input_too_long, leaf_matches, read_bounded};
 use crate::cli::{positional, switch, value};
 
 pub(super) fn get_command(command: Command) -> Command {
@@ -297,16 +297,8 @@ pub(super) fn set(root: &ArgMatches) -> Result<(), Error> {
                 "--secret reads the value from stdin, never the command line: set web.env.KEY --secret",
             ));
         }
-        let secret = read_bounded(std::io::stdin(), MAX_ENV_STRING)?.ok_or_else(|| {
-            let variable = path.rsplit('.').next().unwrap_or(&path);
-            Error::detailed(
-                RpcErrorCode::InvalidArgument,
-                format!(
-                    "{path}: the secret on stdin is too long for a Container's environment: Linux passes at most 128 KiB per variable, name included"
-                ),
-                json!({ "variable": variable.to_ascii_uppercase() }),
-            )
-        })?;
+        let secret = read_bounded(std::io::stdin(), MAX_CLI_INPUT_BYTES)?
+            .ok_or_else(|| input_too_long("stdin", "a secret"))?;
         // `internal`, as when stdin was read as a string.
         let mut secret = String::from_utf8(secret).map_err(|_| {
             Error::coded(
@@ -403,11 +395,6 @@ fn one_service(matches: &ArgMatches, usage: &'static str) -> Result<String, Erro
     .ok_or_else(|| Error::usage(usage))
 }
 
-/// The most bytes of env file `set --from-env-file` reads, so a wrong path such as
-/// `/dev/zero` can't fill memory. It bounds the CLI's read, not what a file may set: the
-/// Store and Cloud judge the edit the file becomes.
-const MAX_ENV_FILE_BYTES: usize = 32 * 1024 * 1024;
-
 /// `set SERVICE --from-env-file FILE [--secret]`: every variable in the file, in one
 /// edit. A variable the Service already holds as a secret is sealed again, never
 /// made plain.
@@ -419,11 +406,14 @@ fn set_from_env_file(root: &ArgMatches, file: &str) -> Result<(), Error> {
     )?;
     let service = SettingPath::parse(&service)?;
     let (bytes, from) = if file == "-" {
-        (read_bounded(std::io::stdin(), MAX_ENV_FILE_BYTES)?, "stdin")
+        (
+            read_bounded(std::io::stdin(), MAX_CLI_INPUT_BYTES)?,
+            "stdin",
+        )
     } else {
         (
             std::fs::File::open(file)
-                .and_then(|from| read_bounded(from, MAX_ENV_FILE_BYTES))
+                .and_then(|from| read_bounded(from, MAX_CLI_INPUT_BYTES))
                 .map_err(|error| {
                     Error::caused(
                         RpcErrorCode::InvalidArgument,
@@ -434,13 +424,7 @@ fn set_from_env_file(root: &ArgMatches, file: &str) -> Result<(), Error> {
             file,
         )
     };
-    let bytes = bytes.ok_or_else(|| {
-        Error::detailed(
-            RpcErrorCode::InvalidArgument,
-            format!("{from}: the CLI reads at most 32 MiB of env file; this one holds more"),
-            json!({ "file": file, "max_bytes": MAX_ENV_FILE_BYTES }),
-        )
-    })?;
+    let bytes = bytes.ok_or_else(|| input_too_long(from, "an env file"))?;
     // Stdin that isn't text stays `internal`, as when it was read as a string.
     let text = String::from_utf8(bytes).map_err(|_| {
         let code = if file == "-" {

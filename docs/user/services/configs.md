@@ -92,8 +92,8 @@ The CLI and the [Ployz agent](../account/agent-sidebar.md) set the same fields:
 ployz config put app-settings app.conf --from ./app.conf --mode 0440 --uid 1000 --gid 1000
 ```
 
-Without `--from`, or with `--from -`, `ployz config put` reads the file from stdin. It stops
-reading past 256 KB, so a wrong path such as a disk image or `/dev/zero` fails at once.
+Without `--from`, or with `--from -`, `ployz config put` reads the file from stdin. The CLI
+reads at most 32 MiB of it, so a wrong path such as a disk image or `/dev/zero` fails at once.
 
 ## Good to know
 
