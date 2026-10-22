@@ -249,6 +249,10 @@ impl ReplicatedStore {
 
     /// The published Cluster network, or `None` before the founder's
     /// publisher has written it.
+    ///
+    /// # Errors
+    /// Returns an error when the Corrosion query fails, or the stored value
+    /// is not a valid Cluster network.
     pub async fn cluster_network(&self) -> Result<Option<Ipv4Net>, Error> {
         let query = self
             .api
