@@ -479,7 +479,7 @@ fn message(error: &serde_json::Value) -> &str {
 }
 
 #[tokio::test]
-async fn a_sent_cloud_removal_whose_retries_ran_out_says_to_forget_a_server_that_is_gone() {
+async fn a_sent_cloud_removal_whose_retries_ran_out_checks_the_server_before_forgetting_it() {
     let error = removal_ran_out(
         r#"{"error":{"code":"unavailable","message":"Machine remove retries were exhausted.","details":{"unfinished":true}}}"#,
     )
@@ -495,9 +495,10 @@ async fn a_sent_cloud_removal_whose_retries_ran_out_says_to_forget_a_server_that
         message.contains("If the Server is gone but `ployz server ls` still lists it"),
         "{message}"
     );
+    // The Server may still answer, and forgetting one that does leaves its copies unfenced.
     assert_eq!(
         error.pointer("/error/details/next"),
-        Some(&json!("ployz server forget one")),
+        Some(&json!("ployz server ls")),
         "{error}"
     );
 }

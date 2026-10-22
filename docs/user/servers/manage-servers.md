@@ -574,13 +574,18 @@ doesn't approve a removal that resets the server.
 Removing or forgetting a server Ployz Cloud manages always goes through Ployz Cloud, even with
 `--context` or `--connect`: Cloud keeps a record of each server it manages, and removing one behind
 its back would leave that record behind.
+While other servers are listed, Ployz Cloud carries the removal through one of them, since a server
+can't carry its own; your last server carries its own. If none of the others answers Ployz Cloud,
+the removal fails on its first try, names them, and changes nothing: bring one back online, or forget
+the ones that are gone, then remove the server again.
 Ctrl-C stops following the removal but doesn't stop it: it keeps running in Ployz Cloud, and the
 server stays listed, since the removal can still fail.
 
 If Ployz Cloud runs out of retries after it sent the server its reset, the removal didn't finish,
 and Ployz can't say how far it got: the server may have reset, and Ployz Cloud may already have
-dropped it. `ployz server rm` says the removal didn't finish and prints `ployz server forget web-2`
-as its next step, and the **Remove** dialog says the same and points at **Forget server**. If the
+dropped it. `ployz server rm` says the removal didn't finish and prints `ployz server ls` as its
+next step, so you check before you forget anything. The **Remove** dialog says the removal didn't
+finish and points at **Forget server**. If the
 server is gone but `ployz server ls` (or the **Servers** page) still lists it,
 [forget it](#forget-a-server-that-is-gone); if it still answers, remove it again; if it's no longer
 listed, there is nothing left to forget. A removal that runs out of retries before it reaches the
