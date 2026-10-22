@@ -970,30 +970,54 @@ mod rediscover_tests {
         assert_eq!(store.record().machine(), Some(&before));
     }
 
-    #[test]
-    fn a_record_written_before_pins_existed_reads_as_unpinned() {
-        let (dir, store) = founded(PinnedAddresses {
-            public_ip: true,
-            advertised_endpoints: true,
-        });
+    /// A record as `daemon_version` left it, with nothing pinned on disk.
+    fn rewritten_without_pins(
+        dir: &tempfile::TempDir,
+        store: LocalMachineStore,
+        daemon_version: &str,
+    ) -> LocalMachineStore {
         drop(store);
         let path = dir.path().join("data").join(STATE_FILE_NAME);
         let mut json: serde_json::Value =
             serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-        assert!(
-            json.as_object_mut()
-                .unwrap()
-                .remove("pinned_addresses")
-                .is_some()
-        );
+        json.as_object_mut().unwrap().remove("pinned_addresses");
+        *json
+            .pointer_mut("/body/machine/runtime/daemon_version")
+            .unwrap() = daemon_version.into();
         std::fs::write(&path, serde_json::to_vec(&json).unwrap()).unwrap();
+        LocalMachineStore::open(dir.path().join("data")).unwrap()
+    }
 
-        let mut store = LocalMachineStore::open(dir.path().join("data")).unwrap();
+    #[test]
+    fn addresses_from_before_pins_existed_survive_rediscovery() {
+        let (dir, store) = founded(PinnedAddresses::default());
+        let mut store = rewritten_without_pins(&dir, store, "0.3.0-beta.6");
 
         assert_eq!(
-            store.record().pinned_addresses(),
-            PinnedAddresses::default()
+            store.rediscover(moved_host()).unwrap(),
+            Rediscovered::Unchanged
         );
+        let store = reopened(&dir, store);
+        let machine = store.record().machine().unwrap();
+        assert_eq!(machine.public_ip, Some(ip(OLD_IP)));
+        assert_eq!(
+            machine.advertised_endpoints,
+            endpoints(&["10.0.0.4", OLD_IP])
+        );
+        assert_eq!(
+            store.record().pinned_addresses(),
+            PinnedAddresses {
+                public_ip: true,
+                advertised_endpoints: true,
+            }
+        );
+    }
+
+    #[test]
+    fn a_pinning_daemons_record_without_pins_is_rediscovered() {
+        let (dir, store) = founded(PinnedAddresses::default());
+        let mut store = rewritten_without_pins(&dir, store, "0.3.0-beta.7");
+
         assert!(matches!(
             store.rediscover(moved_host()).unwrap(),
             Rediscovered::Updated(_)
