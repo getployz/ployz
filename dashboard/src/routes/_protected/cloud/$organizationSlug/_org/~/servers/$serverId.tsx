@@ -63,14 +63,14 @@ export const Route = createFileRoute(
 
 function RouteComponent() {
   const { organizationSlug, serverId } = Route.useParams();
-  const { state, servers } = useServers(organizationSlug);
+  const { state, servers, older } = useServers(organizationSlug);
   const server = servers.find((candidate) => candidate.machine.id === serverId);
 
   if (state === "loading") {
     return <DashboardPage width="content"><ServerPageSkeleton /></DashboardPage>;
   }
   if (state === "unreachable" || (state === "stale" && !server)) {
-    return <DashboardPage width="content"><ServersUnreachable organizationSlug={organizationSlug} /></DashboardPage>;
+    return <DashboardPage width="content"><ServersUnreachable organizationSlug={organizationSlug} older={older} /></DashboardPage>;
   }
   if (!server) {
     return (

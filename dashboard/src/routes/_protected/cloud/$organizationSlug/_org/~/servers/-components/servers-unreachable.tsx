@@ -1,17 +1,38 @@
 import { useState } from "react";
-import { WifiOffIcon } from "lucide-react";
+import { ArrowUpCircleIcon, WifiOffIcon } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "#/components/ui/alert";
 import { Button } from "#/components/ui/button";
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "#/components/ui/empty";
+import { CopyBlock } from "./copy-block";
 import { ForgetServersDialog, useForgetServersGate } from "../../../-components/forget-servers-dialog";
+
+/** What a Server on an older management protocol runs to upgrade, from a computer that reaches it over SSH. */
+export const SSH_UPGRADE = "curl -fsSL https://ployz.sh | sh -s -- beta\nployz server upgrade beta SERVER --connect ssh://USER@HOST";
 
 /**
  * There is nothing to show: Cloud can't reach the cluster, or the watch dropped or came back incomplete without the
- * Server this page needs. Servers that were deleted can be forgotten from here.
+ * Server this page needs. Servers that were deleted can be forgotten from here. A Server too old for the relay is up,
+ * so it gets its upgrade over SSH rather than a Forget that would drop its data.
  */
-export function ServersUnreachable({ organizationSlug }: { organizationSlug: string }) {
+export function ServersUnreachable({ organizationSlug, older = false }: { organizationSlug: string; older?: boolean }) {
   const [forgetting, setForgetting] = useState(false);
   const { allowed, reason } = useForgetServersGate(organizationSlug);
+  if (older) {
+    return (
+      <Empty variant="first-run">
+        <EmptyHeader>
+          <EmptyMedia variant="icon"><ArrowUpCircleIcon /></EmptyMedia>
+          <EmptyTitle>Upgrade your server over SSH</EmptyTitle>
+          <EmptyDescription>
+            A server runs an older Ployz that Ployz Cloud can’t reach through the relay. Upgrade it from your computer:
+          </EmptyDescription>
+        </EmptyHeader>
+        <EmptyContent className="max-w-xl text-left">
+          <CopyBlock value={SSH_UPGRADE} />
+        </EmptyContent>
+      </Empty>
+    );
+  }
   return (
     <Empty variant="first-run">
       <EmptyHeader>
