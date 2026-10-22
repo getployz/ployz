@@ -802,6 +802,45 @@ mod tests {
         assert_eq!(observed.copy_gen(), Gen::FIRST);
     }
 
+    #[tokio::test]
+    async fn a_copy_created_before_rotation_existed_is_in_until_a_rotation_is_written() {
+        use crate::docker::{LABEL_GEN, test_support::runtime_with_running_container};
+        use ployz_core::{CopyRotation, MachineId};
+
+        let (runtime, fake, id) = runtime_with_running_container().await;
+        fake.existing_container
+            .lock()
+            .unwrap()
+            .as_mut()
+            .unwrap()
+            .pointer_mut("/Config/Labels")
+            .unwrap()
+            .as_object_mut()
+            .unwrap()
+            .remove(LABEL_GEN)
+            .unwrap();
+        let machine = MachineId::random();
+        let rotation = || async {
+            let listed = runtime.list_managed(&machine).await.unwrap();
+            assert_eq!(listed.len(), 1);
+            listed[0].rotation().clone()
+        };
+
+        assert_eq!(rotation().await, CopyRotation::In);
+        assert_eq!(
+            runtime.rotation_turn(&id).await.unwrap().rotation(),
+            &CopyRotation::In
+        );
+        runtime
+            .rotation_turn(&id)
+            .await
+            .unwrap()
+            .write(&CopyRotation::Out)
+            .await
+            .unwrap();
+        assert_eq!(rotation().await, CopyRotation::Out);
+    }
+
     struct Restorable {
         runtime: crate::docker::ContainerRuntime,
         fake: crate::docker::test_support::FakeDocker,
