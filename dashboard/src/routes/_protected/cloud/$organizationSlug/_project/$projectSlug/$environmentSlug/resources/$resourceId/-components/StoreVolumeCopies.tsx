@@ -393,7 +393,7 @@ function AddCopyDialog({ open, onOpenChange, volume, live, servers, mirrorOn, on
 }
 
 /** Its staged actions build the same placement the list would; only Details discards them. */
-function CopyView({ volume, members, row, rows, owed, copies, copy, moveTo, upgrade, seeds, seedRefused, disabled, deploying, stage, restore, refresh, refreshing,
+function CopyView({ volume, members, row, rows, owed, copies, copy, accepting, moveTo, upgrade, seeds, seedRefused, disabled, deploying, stage, restore, refresh, refreshing,
   alert, onBack, now }:
   Resolved & { copy: MirrorCopy; alert: ReactNode; onBack: () => void }) {
   const blocked = upgrade.length > 0;
@@ -405,6 +405,8 @@ function CopyView({ volume, members, row, rows, owed, copies, copy, moveTo, upgr
   // which no placement holds.
   const offered = !blocked && copy.staged === null && !copy.lastReported && !deploying && target?.primary !== copy.server.id ? target : null;
   const movable = placementTargets(volume, members, row, moveTo, owed).move.some((machine) => machine.id === copy.server.id);
+  // Its Ployz takes the data but can't finish a Move: upgrading it is all Make primary waits on.
+  const unrouted = offered !== null && !movable && placementTargets(volume, members, row, accepting, owed).move.some((machine) => machine.id === copy.server.id);
   const promote = offered !== null && movable ? editPlacement(offered, { kind: "move", to: copy.server.id }) : null;
   const remove = offered === null ? null : editPlacement(offered, { kind: "remove_mirror", server: copy.server.id });
   const locked = disabled || deploying;
@@ -452,6 +454,7 @@ function CopyView({ volume, members, row, rows, owed, copies, copy, moveTo, upgr
       </Button>}
       {promote ? <Button variant="outline" disabled={locked} onClick={() => stage(promote, applied)}>Make primary</Button> : null}
     </div>
+    {unrouted ? <p className="text-sm text-muted-foreground">Make primary needs a newer Ployz on {copy.server.name}.</p> : null}
     {promote ? <p className="text-sm text-muted-foreground">
       {stale
         ? `Make primary moves ${services} to ${copy.server.name} on deploy. The deploy catches up first, then pauses writes for the final sync. If ${copy.server.name} can't catch up, the deploy fails and ${live} keeps serving.`

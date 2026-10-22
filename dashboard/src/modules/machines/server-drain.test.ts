@@ -285,9 +285,12 @@ describe("A leftover still running here", () => {
 });
 
 describe("stuckMessage", () => {
-  it("says which Volumes have nowhere to move, and which Servers to upgrade so they can move there", () => {
+  it("names the Server whose upgrade would move each Volume there, and says the rest have nowhere to move", () => {
     expect(stuckMessage(["db"], [])).toBe("db has nowhere to move");
-    expect(stuckMessage(["db"], ["web-2"])).toBe("db has nowhere to move. Upgrade web-2 to move it there");
-    expect(stuckMessage(["db", "cache"], ["web-2", "web-3"])).toBe("db and cache have nowhere to move. Upgrade web-2 and web-3 to move them there");
+    expect(stuckMessage(["db"], [{ volume: "db", server: "web-2" }])).toBe("Upgrade web-2 to move db there");
+    expect(stuckMessage(["db", "cache", "logs"], [{ volume: "db", server: "web-2" }, { volume: "logs", server: "web-2" }]))
+      .toBe("cache has nowhere to move. Upgrade web-2 to move db and logs there");
+    expect(stuckMessage(["db", "cache"], [{ volume: "db", server: "web-2" }, { volume: "cache", server: "web-3" }]))
+      .toBe("Upgrade web-2 to move db there. Upgrade web-3 to move cache there");
   });
 });

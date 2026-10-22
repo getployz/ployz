@@ -23,7 +23,7 @@ export const placementServers = (machines: readonly PlacementMachine[]) =>
     ? new Set<string>()
     : new Set(machines.filter((machine) => machine.acceptsServices && runsPlacement(machine)).map((machine) => machine.id));
 
-/** A Move onto it finishes: its Ployz routes the moved copy once it starts it, or it doesn't say, as the run attempts it. */
+/** A Move onto it finishes: its Ployz routes the moved copy once it starts it. */
 const finishesMoves = (machine: Daemon) => serverSupports(machine, movedRouting) !== false;
 
 /** The Servers a Volume can move to: `placementServers` without the ones whose Ployz takes the data, then never routes the copy. */
@@ -32,10 +32,10 @@ export const moveServers = (machines: readonly PlacementMachine[]) => {
   return new Set(machines.filter((machine) => placeable.has(machine.id) && finishesMoves(machine)).map((machine) => machine.id));
 };
 
-/** The names of the Servers `moveServers` leaves out: the ones to Upgrade before a Volume can move there. */
+/** The Servers `moveServers` leaves out: a Volume can move there once they're upgraded. */
 export const unroutedServers = (machines: readonly PlacementMachine[]) => {
   const placeable = placementServers(machines);
-  return machines.filter((machine) => placeable.has(machine.id) && !finishesMoves(machine)).map((machine) => machine.name);
+  return new Set(machines.filter((machine) => placeable.has(machine.id) && !finishesMoves(machine)).map((machine) => machine.id));
 };
 
 export const restoreOpen = (machines: readonly (StorageServer & { readonly id: string })[], primary: string | null) =>

@@ -381,16 +381,18 @@ export const refreshMirrors = Effect.fn("VolumePlacement.refreshMirrors")(functi
 
 /**
  * A Drain of `server`: stage each primary on it off to its mirror, else to the first Server in `accepting` the planner
- * takes. A Volume a Deploy is moving keeps that move. Returns the names of Volumes nowhere takes.
+ * takes. A Volume a Deploy is moving keeps that move. Returns the names of Volumes nowhere takes, and for each that a
+ * Server in `unrouted` would take, that Server: its Ployz can't finish a Move, so upgrading it lets the Volume move there.
  */
 export const stageOffServer = Effect.fn("VolumePlacement.stageOffServer")(function* (
-  organizationId: string, server: MachineId, accepting: readonly MachineId[],
+  organizationId: string, server: MachineId, accepting: readonly MachineId[], unrouted: readonly MachineId[] = [],
   observe: CopyObserver = observeOrganizationCopies, inspect: MemberInspector = inspectVolumeCopies,
 ) {
   const copies = yield* observe(organizationId);
   const { drizzle } = yield* Database;
   const rows = yield* drizzle.select().from(volumePlacement).where(eq(volumePlacement.organizationId, organizationId));
   const stuck: string[] = [];
+  const upgrades: { volume: string; server: string }[] = [];
   for (const volume of yield* environmentVolumes(organizationId, null)) {
     if (!copies.some((copy) => copy.name === volume.dockerVolume && copy.machine_id === server && copy.role === "writer")) continue;
     const found = rows.find((entry) => entry.volumeId === volume.volumeId);
@@ -401,6 +403,9 @@ export const stageOffServer = Effect.fn("VolumePlacement.stageOffServer")(functi
     const staged = drainPlacement({ id: volume.volumeId, name: volume.name }, members, row, accepting, server, owed !== null);
     if (staged === null) {
       stuck.push(volume.name);
+      const upgraded = drainPlacement({ id: volume.volumeId, name: volume.name }, members, row, unrouted, server, owed !== null);
+      const to = members.find((member) => member.machine.id === upgraded?.primary);
+      if (to !== undefined) upgrades.push({ volume: volume.name, server: to.machine.name });
       continue;
     }
     const written = yield* stagePlacement(organizationId, {
@@ -408,5 +413,5 @@ export const stageOffServer = Effect.fn("VolumePlacement.stageOffServer")(functi
     });
     if (!written.ok) stuck.push(volume.name);
   }
-  return { stuck };
+  return { stuck, upgrades };
 });

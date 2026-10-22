@@ -704,20 +704,32 @@ describe("deploying a Volume placement", () => {
 
   describe("draining a Server", () => {
     const copy = (server: string, role: "writer" | "slot") => ({ machine_id: web(server), name: "shop-production_vol-vol1", role });
-    const drain = (copies: CopyObservation["copies"], accepting: string[]) =>
-      run(stageOffServer(organizationId, web("web-1"), accepting.map(web), () => Effect.succeed(copies), inspect));
+    const drain = (copies: CopyObservation["copies"], accepting: string[], unrouted: string[] = []) =>
+      run(stageOffServer(organizationId, web("web-1"), accepting.map(web), unrouted.map(web), () => Effect.succeed(copies), inspect));
 
     it("stages the primary on the drained Server to its mirror", async () => {
       members = [member("web-1", "writer"), member("web-2", "mirror")];
-      expect(await drain([copy("web-1", "writer"), copy("web-2", "slot")], ["web-2"])).toEqual({ stuck: [] });
+      expect(await drain([copy("web-1", "writer"), copy("web-2", "slot")], ["web-2"])).toEqual({ stuck: [], upgrades: [] });
       expect(await placement()).toMatchObject({ mirrors: [web("web-2")], staged: { primary: web("web-2"), mirrors: [] }, deploymentId: null });
     });
 
     it("names a Volume nowhere takes, and leaves a primary on another Server alone", async () => {
       members = [member("web-1", "writer")];
-      expect(await drain([copy("web-1", "writer")], [])).toEqual({ stuck: ["data"] });
-      expect(await drain([copy("web-2", "writer")], [])).toEqual({ stuck: [] });
+      expect(await drain([copy("web-1", "writer")], [])).toEqual({ stuck: ["data"], upgrades: [] });
+      expect(await drain([copy("web-2", "writer")], [])).toEqual({ stuck: [], upgrades: [] });
       expect(await run(listPlacements(organizationId))).toEqual([]);
+    });
+
+    it("names the Server whose upgrade would take a Volume nowhere else takes, and only that one", async () => {
+      // web-2's Ployz can't finish a Move: it holds the mirror, but the Drain may not move onto it.
+      members = [member("web-1", "writer"), member("web-2", "mirror"), member("web-3", "empty")];
+      expect(await drain([copy("web-1", "writer"), copy("web-2", "slot")], [], ["web-2"])).toEqual({ stuck: ["data"], upgrades: [{ volume: "data", server: "web-2" }] });
+      expect(await run(listPlacements(organizationId))).toEqual([]);
+    });
+
+    it("names no upgrade for a Volume an upgrade wouldn't move", async () => {
+      members = [member("web-1", "writer")];
+      expect(await drain([copy("web-1", "writer")], [], ["web-2"])).toEqual({ stuck: ["data"], upgrades: [] });
     });
   });
 });

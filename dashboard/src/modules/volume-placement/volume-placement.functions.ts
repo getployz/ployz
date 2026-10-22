@@ -50,10 +50,10 @@ export const stageRestoreServerFn = createServerFn({ method: "POST" })
 
 export const stageOffServerServerFn = createServerFn({ method: "POST" })
   .middleware([publicErrorMiddleware, actorMiddleware])
-  .validator(strictValidator(Schema.Struct({ ...Organization.fields, server: Machine, accepting: Schema.Array(Machine) })))
+  .validator(strictValidator(Schema.Struct({ ...Organization.fields, server: Machine, accepting: Schema.Array(Machine), unrouted: Schema.optional(Schema.Array(Machine)) })))
   .handler(({ context, data }) => runActor(context, requireAccess(context.actor, data.organizationSlug, "changes:stage").pipe(
     Effect.flatMap(({ organization }) => placementRefusal(organization.id).pipe(Effect.flatMap((refusal) => refusal === null
-      ? stageOffServer(organization.id, data.server, data.accepting)
+      ? stageOffServer(organization.id, data.server, data.accepting, data.unrouted)
       : Effect.fail(new Conflict({ userFacing: true, message: refusal.message }))))),
   )));
 

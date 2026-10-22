@@ -411,6 +411,7 @@ describe("mirror detail", () => {
   it("offers no Make primary on a Server whose Ployz can't finish a Move, and still offers Remove mirror", () => {
     panel(fresh(), row(["web-2"]), { open: "web-2", unrouted: ["web-2"] });
     expect(screen.queryByRole("button", { name: "Make primary" })).toBeNull();
+    expect(screen.getByText("Make primary needs a newer Ployz on web-2.")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Remove mirror" })).toBeTruthy();
   });
 

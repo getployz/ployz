@@ -385,8 +385,18 @@ export function removeHint(view: DrainView, running: readonly RunningService[], 
   return { kind: "drain", count: split.drainable.length, unowned };
 }
 
-/** The Volumes a Drain found nowhere to move, and the Servers `unrouted` whose upgrade would let them move there. */
-export function stuckMessage(stuck: readonly string[], unrouted: readonly string[]) {
-  const upgrade = unrouted.length > 0 ? `. Upgrade ${listNames([...unrouted])} to move ${stuck.length === 1 ? "it" : "them"} there` : "";
-  return `${listNames([...stuck])} ${stuck.length === 1 ? "has" : "have"} nowhere to move${upgrade}`;
+/**
+ * The Volumes a Drain found nowhere to move. Each in `upgrades` has a Server that would take it once upgraded, whose
+ * Ployz can't finish a Move yet; the rest say only that nowhere takes them.
+ */
+export function stuckMessage(stuck: readonly string[], upgrades: readonly { readonly volume: string; readonly server: string }[]) {
+  const nowhere = stuck.filter((volume) => !upgrades.some((upgrade) => upgrade.volume === volume));
+  const servers = [...new Set(upgrades.map((upgrade) => upgrade.server))];
+  return [
+    ...(nowhere.length > 0 ? [`${listNames(nowhere)} ${nowhere.length === 1 ? "has" : "have"} nowhere to move`] : []),
+    ...servers.map((server) => {
+      const volumes = upgrades.filter((upgrade) => upgrade.server === server).map((upgrade) => upgrade.volume);
+      return `Upgrade ${server} to move ${listNames(volumes)} there`;
+    }),
+  ].join(". ");
 }

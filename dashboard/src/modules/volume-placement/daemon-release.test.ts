@@ -76,6 +76,6 @@ describe("moveServers", () => {
   it("leaves out a Server whose Ployz can't route a moved copy, so a Drain moves onto a current one", () => {
     const machines = [at("web-2", beta6), at("web-3", current)];
     expect([...moveServers(machines)]).toEqual(["web-3"]);
-    expect(unroutedServers(machines)).toEqual(["web-2"]);
+    expect([...unroutedServers(machines)]).toEqual(["web-2"]);
   });
 });
