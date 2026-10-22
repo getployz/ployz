@@ -284,26 +284,6 @@ Without `--enroll`, the script checks in only when `PLOYZ_FLEET_TOKEN` is set, a
 waits longer than you expect, see
 [A server waits for approval](../troubleshooting/servers.md#a-server-waits-for-approval-and-never-shows-up).
 
-## Run servers without Ployz Cloud
-
-Servers can also run without Ployz Cloud, managed only by the CLI on your computer over SSH. They
-belong to a context there instead of an organization, and nothing in the dashboard or that Ployz
-Cloud runs, such as automatic upgrades, reaches them. Add `--standalone` and name a context:
-
-```sh
-# Found a cluster on web-1, in a new context named my-cluster
-ployz server add root@203.0.113.10 --standalone --context my-cluster
-# Add web-2 to it
-ployz server add root@203.0.113.11 --standalone --context my-cluster
-```
-
-When the context doesn't exist yet, the server founds a new cluster, and the context becomes your
-current one. When it exists, the server joins that context's cluster. Without an SSH destination,
-the command adds the server it runs on. `--standalone` isn't listed in `ployz server add --help`.
-
-Commands then act on these servers through your current context, or the one `--context` names,
-as in `ployz server upgrade beta web-1 --context my-cluster`.
-
 ## Open the firewall
 
 Ployz opens the ports it needs on the server itself. If your provider runs a firewall in front of

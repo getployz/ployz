@@ -263,14 +263,6 @@ button. Unlike the button, it waits for approval first when a global service wou
 [Destructive actions ask first](../account/organizations.md#destructive-actions-ask-first)).
 The CLI stops waiting after 30 minutes and says so; the drain keeps running in Ployz Cloud.
 
-[Servers you run without Ployz Cloud](add-a-server.md#run-servers-without-ployz-cloud) belong to a
-context on your computer. Signed out, the same command drains from your computer through your
-current context. To use another context, name it:
-
-```sh
-ployz server drain web-2 --context my-cluster
-```
-
 Under **Web traffic** on a server's page, **Takes web traffic** is a switch. On, the line under it
 reads **Your domains point at 203.0.113.10**: the server's address. Turn it off and a dialog lists the
 domains pointed at your servers. When another server takes web traffic, it keeps serving them; when
@@ -297,10 +289,10 @@ Click it to upgrade every server that's behind, one at a time in name order. You
 while they do. While an upgrade runs, the top of the page reads **Upgrading 1/4**, and the server
 upgrading reads **Upgrading**.
 
-When you upgrade from `0.3.0-beta.6` ([the first server over SSH](#servers-on-030-beta6-or-earlier)),
-upgrade every server back to back: upgraded servers don't route traffic to apps on a server still
-on `0.3.0-beta.6` until it upgrades too ([#2892](https://github.com/getployz/ployz/issues/2892)). As
-each server restarts, its domains can answer `503` briefly, for about 6 seconds when the app runs on
+When you upgrade from `0.3.0-beta.6`, where [the first server needs
+SSH](#servers-on-030-beta6-or-earlier), upgrade every server back to back: upgraded servers don't
+route traffic to apps on a server still on `0.3.0-beta.6` until it upgrades too
+([#2892](https://github.com/getployz/ployz/issues/2892)). As each server restarts, its domains can answer `503` briefly, for about 6 seconds when the app runs on
 another server.
 
 ### Turn on automatic upgrades
@@ -368,12 +360,12 @@ Naming the other channel fails with `channel_mismatch`. Ployz Cloud upgrades onl
 release on that channel and never moves a server to an older release than it runs. To get
 prereleases, [choose Beta](#choose-stable-or-beta-releases).
 
-[Servers you run without Ployz Cloud](add-a-server.md#run-servers-without-ployz-cloud) upgrade
-from your computer, through your current context or the one `--context` names. There you can name
-an exact version like `0.2.0`, even one older than the server runs:
+With `--connect` and a server's SSH address, the upgrade runs from your computer instead of Ployz
+Cloud. There you can name an exact version like `0.3.0-beta.7`, even one older than the server
+runs:
 
 ```sh
-ployz server upgrade 0.2.0 web-1 --context my-cluster
+ployz server upgrade 0.3.0-beta.7 web-1 --connect ssh://root@203.0.113.10
 ```
 
 Ployz releases are signed, starting with the first release after 0.3.0-beta.2. A server checks
@@ -466,7 +458,7 @@ on.
 Starting with the first release after 0.3.0-beta.6, Ployz Cloud and the CLI prove their access in a
 new way on every connection, and servers on 0.3.0-beta.6 or earlier don't understand it. Through
 Ployz's relay, Cloud and a newer CLI can't connect to such a server directly. The server keeps
-running your apps. When no server in the cluster runs a newer release, the CLI stops with:
+running your apps. When the CLI can't reach a server on a newer release first, it stops with:
 
 ```text
 This Server runs Ployz 0.3.0-beta.6 or earlier, which this release can't reach through the relay.

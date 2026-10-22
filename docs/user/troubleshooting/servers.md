@@ -349,7 +349,7 @@ minute; try again then.
 This Server runs Ployz 0.3.0-beta.6 or earlier, which this release can't reach through the relay.
 ```
 
-Upgrade that server over SSH, as in
+Upgrade one server over SSH, then the rest from Cloud, as in
 [Servers on 0.3.0-beta.6 or earlier](../servers/manage-servers.md#servers-on-030-beta6-or-earlier).
 
 A server that answers but refuses says so instead, with its own reason:
