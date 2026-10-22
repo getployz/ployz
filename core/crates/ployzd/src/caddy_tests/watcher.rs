@@ -598,6 +598,7 @@ async fn transient_apply_failure_retries_without_a_replicated_event() {
     let admin = RetryAdmin {
         attempts: Arc::clone(&attempts),
         loads: load_tx,
+        release: None,
     };
     let shutdown = CancellationToken::new();
     let watcher = tokio::spawn(watch_caddy(
@@ -1048,9 +1049,11 @@ async fn no_ack_when_the_caddy_load_fails() {
     let first = state.api_container();
     let (load_tx, mut load_rx) = mpsc::unbounded_channel();
     let attempts = Arc::new(watch::Sender::new(0));
+    let release = Arc::new(tokio::sync::Notify::new());
     let admin = RetryAdmin {
         attempts: Arc::clone(&attempts),
         loads: load_tx,
+        release: Some(Arc::clone(&release)),
     };
     let shutdown = CancellationToken::new();
     let watcher = tokio::spawn(watch_caddy(
@@ -1068,8 +1071,9 @@ async fn no_ack_when_the_caddy_load_fails() {
         .expect("failed load was not retried")
         .unwrap();
     assert_eq!(*attempts.borrow(), 2);
-    // The watcher acks only after a load returns, so a failed load's ack would precede the retry.
+    // The retry is held, so only the failed load could have written an ack yet.
     assert_eq!(state.ack_transactions(), 0, "a failed load wrote an ack");
+    release.notify_one();
     state.wait_for_ack_transactions(1).await;
     assert_eq!(state.last_acks(), vec![ack(&machine, &[&first])]);
 
@@ -1106,6 +1110,7 @@ async fn route_publishes_count_only_this_process() {
     let admin = RetryAdmin {
         attempts: Arc::clone(&attempts),
         loads: load_tx,
+        release: None,
     };
     let (route_publishes, mut published) =
         tokio::sync::watch::channel(crate::ingress::PublishedRoutes::default());
@@ -2544,6 +2549,8 @@ impl CaddyAdmin for TestAdmin {
 struct RetryAdmin {
     attempts: Arc<watch::Sender<usize>>,
     loads: mpsc::UnboundedSender<()>,
+    /// Holds a successful load from returning until notified.
+    release: Option<Arc<tokio::sync::Notify>>,
 }
 
 impl CaddyAdmin for RetryAdmin {
@@ -2561,6 +2568,9 @@ impl CaddyAdmin for RetryAdmin {
             return Err(CaddyError::Admin("temporary load failure".into()));
         }
         self.loads.send(()).unwrap();
+        if let Some(release) = &self.release {
+            release.notified().await;
+        }
         Ok(())
     }
 

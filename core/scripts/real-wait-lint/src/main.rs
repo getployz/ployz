@@ -235,6 +235,8 @@ fn analyze(source: &str, file: &syn::File, in_test: bool) -> Analysis {
         .filter(|f| f.paused)
         .map(|f| f.name.as_str())
         .collect();
+    // Helpers paused only by their callers; a function's own pause() covers only what follows it.
+    let mut inherited: HashSet<&str> = HashSet::new();
     loop {
         let newly_paused: Vec<&str> = fns
             .iter()
@@ -251,14 +253,15 @@ fn analyze(source: &str, file: &syn::File, in_test: bool) -> Analysis {
         if newly_paused.is_empty() {
             break;
         }
-        paused.extend(newly_paused);
+        paused.extend(&newly_paused);
+        inherited.extend(newly_paused);
     }
 
     let lines: Vec<&str> = source.lines().collect();
     let mut findings = Vec::new();
     for test_fn in &fns {
         for sleep in &test_fn.sleeps {
-            let helper_paused = !test_fn.resumes && paused.contains(test_fn.name.as_str());
+            let helper_paused = !test_fn.resumes && inherited.contains(test_fn.name.as_str());
             let real = sleep.clock == Clock::Thread || !(sleep.paused || helper_paused);
             match (real, marked(&lines, sleep.line)) {
                 (true, Some(true)) | (false, None) => {}
@@ -764,6 +767,18 @@ async fn waits() {
 }
 "#;
         assert_eq!(lint(source), ["7: real-clock sleep in test code"]);
+    }
+
+    #[test]
+    fn a_later_pause_leaves_an_earlier_sleep_real() {
+        let source = r#"
+#[tokio::test]
+async fn waits() {
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    tokio::time::pause();
+}
+"#;
+        assert_eq!(lint(source), ["4: real-clock sleep in test code"]);
     }
 
     #[test]

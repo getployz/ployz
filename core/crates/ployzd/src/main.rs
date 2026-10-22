@@ -546,9 +546,12 @@ mod tests {
             failed.notified().await;
             open.store(true, Ordering::SeqCst);
         };
-        let bridged = tokio::time::timeout(Duration::from_secs(5), bridge(input, output, stream));
-        let ((), bridged) = tokio::join!(trigger, bridged);
-        let error = bridged.expect("bridge returned").unwrap_err();
+        let ((), bridged) = tokio::time::timeout(Duration::from_secs(5), async {
+            tokio::join!(trigger, bridge(input, output, stream))
+        })
+        .await
+        .expect("bridge returned");
+        let error = bridged.unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::BrokenPipe);
         assert_eq!(*delivered.lock().unwrap(), b"reply");
         drop(socket);
