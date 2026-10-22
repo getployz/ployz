@@ -4,8 +4,8 @@ description: Give every pull request a temporary copy of your app at its own htt
 ---
 
 Each pull request gets a temporary copy of your app at its own https address. A member's pushes
-redeploy it. Anyone else's pull request waits for a member to approve it. When the pull request merges, production deploys the merge with the
-setting changes the preview made, and the copy and its data are deleted.
+redeploy it. Anyone else's pull request waits for a member to approve it. When the pull request merges, the environment that deploys its target
+branch, usually production, deploys the merge with the setting changes the preview made, and the copy and its data are deleted.
 Closing the pull request without merging deletes it too.
 
 The dashboard calls these PR environments.
@@ -88,7 +88,9 @@ you change, sync and close it like any other branch.
 
 Code reaches production through Git, and so do the preview's setting changes, like a new variable
 or a new service: when the pull request merges on GitHub, every change the preview made since it
-started lands in production.
+started lands in the environment that deploys the branch the pull request merges into. That is
+production, for a pull request into production's branch. Environments below it that deploy the
+same branch get the code, not the settings.
 
 To see what will land, open the preview and click **On merge · 3** at the top right of the canvas.
 The list reads `#142 → production`, one row per change: the service, the setting, then
@@ -116,14 +118,14 @@ you're sure. Only what the preview copied can be removed this way; a service the
 had stays in production untouched.
 
 Ployz posts a **Ployz · ready to merge** check on the pull request that mirrors the list, like
-`3 config changes · TOKEN not set`. It's green, or neutral when a secret is Not set or production
-changed the same setting. It never fails, so it never blocks a merge. Its **Details** link opens
+`3 config changes · TOKEN not set`. It's green, or neutral when a secret is Not set, production
+changed the same setting, or a removal production still uses reads **In use**. It never fails, so it never blocks a merge. Its **Details** link opens
 the list. A pull request into a branch no Environment deploys from reads **Nothing deploys from
 release**: its changes stay in the preview.
 
-When the pull request merges, production gets one saved change, **Merged #142 · 3 changes**, and
-the merge commit's push deploys it with the code. To take it back, click **Undo** beside it in
-production's **Versions**.
+When the pull request merges, production gets one saved version, **Merged #142**, and the merge
+commit's push deploys it with the code. To take it back, open its **⋮** in production's
+**Versions** and choose **Undo these 3 changes**.
 
 The merge deploys every service it changed: one whose own settings changed, one that mounts a
 changed config, and one that reads a changed variable. It does so even for a service with
@@ -131,7 +133,7 @@ auto-deploy off or one that doesn't build from the branch, which redeploys with 
 built. An edit you staged in production but didn't save stays staged.
 
 A removal deploys too: the service's containers stop and go away, and its volumes stay on the
-Machine with their data. The merge opens no approval, because it never deletes volume data.
+server with their data. The merge opens no approval, because it never deletes volume data.
 **Undo** in production's **Versions** brings the service or config back whole, settings and
 secrets included, and the next deploy starts it on the same volumes. If another service took its
 name since, Undo is refused with **api exists. Rename it first.**

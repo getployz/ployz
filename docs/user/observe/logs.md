@@ -31,7 +31,7 @@ For one service, click it on the canvas and open its **Logs** tab.
 
 See [Deployments](../deploy/deployments.md).
 
-![A deployment's Build logs while it builds](../images/deployment-page-build.png)
+![A deployment's build card while it builds](../images/deployment-page-build.png)
 
 ## Read retained logs from the CLI
 
@@ -84,7 +84,7 @@ for less time. Keeping no secrets in logs on disk is planned after 0.3.0 in
   work serving those reads has a separate CPU cost.
 - **Logs stay on your servers after a deploy.** Each server keeps what its containers printed,
   so a service's card on an older deployment still shows its output. Ployz keeps up to 5% of the
-  disk for them and for metrics, between 512 MB and 5 GB. Logs stay 30 days, and the oldest go
+  disk for them and for metrics, between 512 MiB and 5 GiB. Logs stay 30 days, and the oldest go
   first. It doesn't copy them anywhere else. To search or keep logs for longer, send them from your app to a log
   service.
 - **A replica that failed keeps its output.** Its exit code appears when the server observed it,

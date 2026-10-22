@@ -19,7 +19,7 @@ or a project with its volumes' data, protect or unprotect a project's own enviro
 preview environments on or off. It can list an
 environment's deployments, follow one to its end, redeploy a failed, cancelled or unknown one, start
 a queued one now, and cancel one, like the
-[deployment page](../deploy/deployments.md#redeploy-or-cancel-a-deployment)'s buttons. It can also
+[deployment page](../deploy/history-and-rollback.md#redeploy-or-cancel-a-deployment)'s buttons. It can also
 read your GitHub repositories and work on your servers. It doesn't create environments.
 
 The agent never sees or sends a secret's value. It can ask Ployz to give a variable a new

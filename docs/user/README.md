@@ -26,7 +26,9 @@ New to Ployz? Follow these steps from a first deploy to real users.
 
 - [Deploy from GitHub](deploy/github.md): connect GitHub, deploy on push, wait for CI, monorepos
 - [Deploy a Docker image](deploy/docker-image.md): public and private registries
-- [Deployments](deploy/deployments.md): staged changes, Deploy, following and fixing a deployment
+- [Deployments](deploy/deployments.md): staged changes, Deploy, following a deployment, confirming data loss
+- [History and rollback](deploy/history-and-rollback.md): saved versions, undo, roll back, redeploy or cancel
+- [Deploy without downtime](deploy/zero-downtime.md): health checks, update order, servers cut off mid-deploy
 
 ## Services
 

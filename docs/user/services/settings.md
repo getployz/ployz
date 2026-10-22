@@ -226,7 +226,7 @@ Off until you click **Pre-deploy command**. Use it for migrations, like `npm run
 fails or runs past 5 minutes, the deploy fails and the old version keeps running, but Ployz
 doesn't undo what it changed. Turn it off and the next deploy removes the service's old pre-deploy
 containers once they have finished, so `ployz ps` stops listing them. See
-[Deploy without downtime](../deploy/deployments.md#deploy-without-downtime).
+[Deploy without downtime](../deploy/zero-downtime.md#keep-your-app-serving-through-a-deploy).
 
 ### Healthcheck
 
@@ -248,7 +248,7 @@ ployz set web --patch '{"healthcheck":{"path":"/up","timeoutSeconds":60}}'
 ```
 
 Services whose variables reference this one wait until it passes. Click **×** to turn it off. See
-[Deploy without downtime](../deploy/deployments.md#deploy-without-downtime).
+[Deploy without downtime](../deploy/zero-downtime.md#keep-your-app-serving-through-a-deploy).
 
 ### Healthcheck timeout
 
@@ -279,7 +279,7 @@ service with a volume, **Start first** for the rest. Choose **Start first** for 
 **Stop first** when two copies must never run at once, or **Rolling** to replace one server at a
 time, so a failure leaves the later servers on the old version. A service with a volume takes
 **Start first** only when the volume allows shared writes. See
-[Choose how a deploy replaces replicas](../deploy/deployments.md#choose-how-a-deploy-replaces-replicas).
+[Choose how a deploy replaces replicas](../deploy/zero-downtime.md#choose-how-a-deploy-replaces-replicas).
 
 ## Storage
 

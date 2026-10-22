@@ -276,7 +276,7 @@ pub(crate) const DEPLOYMENT_REDEPLOY: Verb = Verb::cloud(
     deploy::redeploy_command,
     deploy::redeploy,
 )
-.docs("deploy/deployments.md")
+.docs("cli/overview.md")
 .needs(Permission::ChangesDeploy);
 pub(crate) const DEPLOYMENT_SHOW: Verb =
     Verb::cloud("deployment show", Never, deploy::show_command, deploy::show)
@@ -402,18 +402,17 @@ pub(crate) const GITHUB_LS: Verb =
 pub(crate) const GITHUB_TREE: Verb =
     Verb::cloud("github tree", Never, github::tree_command, github::tree).docs("deploy/github.md");
 pub(crate) const HISTORY: Verb =
-    Verb::cloud("history", Never, review::history_command, review::history)
-        .docs("deploy/deployments.md");
+    Verb::cloud("history", Never, review::history_command, review::history).docs("cli/overview.md");
 pub(crate) const HISTORY_RESTORE: Verb = Verb::cloud(
     "history restore",
     Never,
     review::restore_command,
     review::history,
 )
-.docs("deploy/deployments.md");
+.docs("cli/overview.md");
 pub(crate) const HISTORY_UNDO: Verb =
     Verb::cloud("history undo", Never, review::undo_command, review::history)
-        .docs("deploy/deployments.md");
+        .docs("cli/overview.md");
 pub(crate) const LINK: Verb =
     Verb::local("link", Never, link::link_command, link::link).docs("cli/overview.md");
 pub(crate) const LOGIN: Verb =

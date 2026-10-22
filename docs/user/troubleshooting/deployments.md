@@ -73,19 +73,36 @@ a completion observed during interruption. An active
 Cloud request can take up to 15 seconds to return. For local execution, Ctrl-C requests
 cancellation and waits for owned work and cleanup to settle. Server enrollment that
 already committed remains committed; follow the recovery hint if Global catch-up or
-ingress work was interrupted.
+web traffic setup was interrupted.
+
+## My deploy failed partway
+
+**Failed**, with some services on the new version and others on the old one
+
+Where a new replica didn't come up, the old ones keep serving. Ployz doesn't roll back. A service
+that already switched keeps the new version, services that depend on the failed one stay as they
+were, and services that don't depend on it may have switched already.
+
+> [!WARNING]
+> Ployz doesn't undo a pre-deploy command. If a migration ran and the deploy then failed, your
+> database keeps the change while the old version of your app runs against it.
+
+- Fix the cause with the entries below, and deploy again.
+- To try the fix in a [branch](../environments/environments.md) first, click
+  **Fix it on a branch** on the deployment's page.
 
 ## My build failed
 
 `Build failed. web: …`
 
 The deployment stopped before it changed anything, so your old version keeps running. Open the
-service's **Build** log and read the end of it: the failing step is there.
+service's build card on the deployment's page and read the end of its log: the failing step is
+there.
 [Troubleshooting builds](builds.md) covers the common causes.
 
 ## My new version never becomes healthy
 
-`container … failed health monitoring: timed out; last check: HTTP 503`, or
+`container … failed health monitoring: did not become healthy within 30s; last check: HTTP 503`, or
 `running (health: unhealthy); last check exited 127: sh: pg_isready: not found`
 
 A new replica didn't pass its **Healthcheck** in time. Ployz stopped it and kept the old version
@@ -100,7 +117,7 @@ or a command's exit code and output.
 - **Listen on `0.0.0.0`**, not `127.0.0.1`. See
   [This app didn't respond](app-not-reachable.md#this-app-didnt-respond).
 - **Answer with a 2xx status, not a redirect** to `https://` or `/login`. See
-  [Deployments](../deploy/deployments.md).
+  [Deploy without downtime](../deploy/zero-downtime.md#keep-your-app-serving-through-a-deploy).
 - **Give it time to boot.** If you lowered **Healthcheck timeout** under **Settings → Deploy**,
   raise it. Otherwise make your app start faster.
 
@@ -156,10 +173,11 @@ service stays **Online**, with an amber **⚠** on its card.
 **The Container is restarting** or **The Container stopped**
 
 The new replica stopped right after it started, and the old version kept running. Any exit code
-can show here. The cause is the last line your app printed, from the same logs the **Deploy** log
-shows; it's left out when the logs couldn't be read, or couldn't be checked for Sealed values.
+can show here. The cause is the last line your app printed, from the same logs the service's card
+on the deployment's page shows; it's left out when the logs couldn't be read, or couldn't be checked for Sealed values.
 
-- Read the **Deploy** log for the rest of what your app printed before it stopped.
+- Read the service's card on the deployment's page for the rest of what your app printed before
+  it stopped.
 - Check the service's **Variables** for one your app needs that's missing or wrong.
 - Fix the **Start command**, or clear it to run the image's own command.
 - Code `137` usually means the replica went over its **Memory limit**. Raise or clear it under
@@ -177,10 +195,10 @@ Ployz didn't start this one. Fix the service the message names first; its **Logs
 `The setup or pre-deploy command failed` with `exited with code 1`, or `timed out`
 
 None of the service's replicas were replaced, so the old version keeps running. Before a service
-starts, Ployz runs its pre-deploy command, then, the first time a new environment deploys it, its
-setup commands. The first one that fails stops the deploy.
+starts, Ployz runs its pre-deploy command, then, in a new environment until the service first
+deploys successfully, its setup commands. The first one that fails stops the deploy.
 
-- Read the **Deploy** log: the command's output is there.
+- Read the service's card on the deployment's page: the command's output is there.
 - `timed out` means it ran longer than 5 minutes. Make it faster, or run the slow part outside
   the deploy.
 - To try the command in a running replica, use the CLI (CLI-only for now):
@@ -207,11 +225,7 @@ nothing to fix.
 - A start command that finishes, instead of running a server, restarts over and over or stops.
   Set **Start command** to the command that runs your app.
 - If it stopped because of something outside your app, like a database that was down, restart
-  it. That's CLI-only for now:
-
-  ```sh
-  ployz service restart api
-  ```
+  it: open the service, click **⋮**, then **Restart**.
 
 A service with some replicas still serving can crash in the rest. `ployz status` names those
 replicas. See
@@ -219,7 +233,9 @@ replicas. See
 
 ## Status says a service serves fewer copies than it should
 
-`api = Serving 0 of 2 copies. web-1 exited with code 1, web-2 restarting.`
+```text
+api   Serving 0 of 2 copies. web-1 exited with code 1, web-2 restarting.
+```
 
 `ployz status` prints this when fewer of a service's replicas serve than its last deploy gave it.
 It names each replica that doesn't serve, with the state `ployz ps` shows for it. A deploy that
@@ -478,21 +494,24 @@ this release. Stop the command and deploy again.
 
 - Another deployment of the environment is running. Yours runs after it; cancel that one from
   **Deployments** if it's stuck.
-- It's building on GitHub Actions, and the run hasn't started or finished. Its **Build** log shows
-  where it is.
+- It's building on GitHub Actions, and the run hasn't started or finished. The service's build
+  card on the deployment's page shows where it is.
 - The bottom bar shows **Add servers**: your organization has no server yet.
-  [Add one](../servers/add-a-server.md).
+  [Add one](../servers/add-a-server.md). **Deploy now** says
+  `This Organization has no servers yet, so nothing deployed. Add one, then deploy again.`
 - Nothing else is running: click **Deploy now** on the deployment's page.
 
 ## My push didn't deploy
 
 - **Auto-deploy** is off under **Settings → Source**, or the push went to another Git branch.
 - **Watch paths** are set and the push changed none of those files.
-- **Wait for CI** is on and a check failed, or no checks ran. Re-run the check on GitHub, or push
-  again.
+- **Wait for CI** is on: the deployment reads **Waiting for CI** until the checks pass, or
+  **CI failed** when one failed. If no checks ran, it waits for your next push. Re-run the check
+  on GitHub, or push again. See [Wait for CI](../deploy/github.md#wait-for-ci).
 - The repository is public and connected without the Ployz GitHub App. See
   [Deploy a public repository without the app](../deploy/github.md#deploy-a-public-repository-without-the-app).
-- Your organization has no servers. [Add one](../servers/add-a-server.md).
+- Your organization has no servers. [Add one](../servers/add-a-server.md). A deploy you start
+  says `This Organization has no servers yet, so nothing deployed. Add one, then deploy again.`
 
 ## My new image didn't deploy
 
@@ -531,7 +550,7 @@ already running keep running. The cause line under it is Docker's own error.
 `api has nothing to run yet: add an image, connect a repository, or run ployz up in its directory`
 
 The service has no source, and its card shows **No source**. Ployz won't deploy the environment
-until it has one. Open its **Settings → Source** and click **Git repository** or **Container
+until it has one. Open its **Settings → Source** and click **GitHub repository** or **Container
 image**, or delete the service. A service you uploaded with `ployz up` has no source in a new
 branch: run `ployz up --env <branch>` from your app's directory.
 
@@ -567,17 +586,55 @@ known only once that one ends. When yours starts, its page and `ployz deployment
 upload it runs, which can differ from the one it showed while it waited. To ship the code in your
 directory instead, run `ployz up`.
 
+## A volume change didn't finish when my deploy failed
+
+**Not reached** beside a volume change in **Details**, `Restore failed. Restore again.`, or
+`the restore waits for the next Deploy.`
+
+A failed deploy drops the volume change it failed on. Volume changes it never got to go back to
+your staged changes, and **Details** marks them **Not reached**. Deploy again to run them. What
+the dropped change leaves behind depends on how far it got:
+
+- A move that failed before the handover leaves the volume on its old server, with all its data.
+  Stage the move again when you're ready.
+- A move that failed after the handover is not undone. The volume belongs to the new server, and
+  your service stays down until the move finishes there. The move stays in your changes, so
+  deploy again to finish it. See [A move failed partway](volumes.md#a-move-failed-partway).
+- A restore that failed is taken back. Your services mount the old volume again, and the new
+  volume goes away. If Ployz can't take it back when the deploy fails, your next deploy fails with
+  `Restore failed. Restore again.` and takes it back then. Restore again once you fix the cause.
+  Redeploying that deployment is refused.
+- A deploy that shipped a restore it couldn't claim fails before it copies anything, with
+  `the restore waits for the next Deploy.` The restore stays staged, so deploy again.
+
 ## Deploy asks me to confirm it deletes data
 
-**Deletes data** or **Data loss**
+**Deletes data**, **Data loss** or **Next deploy deletes data**
 
 This deploy would delete a volume's data: a volume you deleted, a database service, which takes
 its volume with it, or a mirror or detached copy you removed. **Data loss** means it also uses a
 mirror while the primary isn't answering, so changes after the mirror's last refresh are lost.
 
 - If you meant it, type your `project/environment` and click **Deploy**.
-- If you didn't, cancel, then open **Details** in the bottom bar and click **Discard** beside the
-  volume or service.
+- If you didn't, cancel, then open **Details** in the bottom bar, open the volume's or service's
+  **⋮** menu and choose **Discard**.
+- From **Save only**, confirming saves without deleting anything yet. The next deploy deletes the
+  data, including one a push starts.
+
+## A deploy says deleting a volume's data failed
+
+`postgres-data: deleting its data failed: it is still in use on Server web-1`
+
+You deleted a volume, and the deploy couldn't delete its data on a server, so the data is still
+there. The end of the message says why:
+
+- `Server web-1 did not answer` or `the Cluster could not be reached`. Wait until the server is
+  back online on the **Servers** page.
+- `it is still in use on Server web-1`. Something on that server still uses the volume. Stop what
+  uses it.
+- `Server web-1 refused`. See [Troubleshooting servers](servers.md).
+
+Then deploy again to delete the data.
 
 ## My services show Can't reach servers
 
