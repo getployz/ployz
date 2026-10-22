@@ -279,7 +279,8 @@ and preparation may be set up. Fix the cause and run the install again.
 
 Without `--enroll`, the script checks in only when `PLOYZ_FLEET_TOKEN` is set, and ends with
 `A Fleet Token is pflt_ and 43 more letters, digits, - or _` when it holds anything else, followed
-by how long the value was. It never prints the value. It leaves `PLOYZ_ENROLL_TOKEN` to
+by how long the value was, or, at the right length, that it has other characters. It never prints
+the value. It leaves `PLOYZ_ENROLL_TOKEN` to
 `ployz server add`, and refuses a Fleet Token in it, which older install lines put there; use
 `PLOYZ_FLEET_TOKEN` instead. If the server
 waits longer than you expect, see
