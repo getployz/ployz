@@ -221,11 +221,11 @@ async fn forward_attached_exec(
             },
             () = sender.closed() => break Ok(Completion::ClientGone),
             next = output.next() => match next {
-                Some(Ok(output)) => {
-                    if let Err(error) = send_exec(sender, exec_output(output, tty)).await {
-                        break Err(error);
-                    }
-                }
+                Some(Ok(output)) => match send_exec(sender, exec_output(output, tty)).await {
+                    Ok(()) => {}
+                    Err(_) if sender.is_closed() => break Ok(Completion::ClientGone),
+                    Err(error) => break Err(error),
+                },
                 Some(Err(error)) => break Ok(Completion::Failed(error)),
                 None => break Ok(Completion::StreamEnded),
             },
@@ -264,31 +264,41 @@ async fn stop_abandoned_exec(docker: &bollard::Docker, exec_id: &str) {
     if rustix::process::pidfd_send_signal(&process, rustix::process::Signal::TERM).is_err() {
         return;
     }
-    if tokio::time::timeout(ABANDONED_EXEC_GRACE, wait_for_exec_exit(docker, exec_id))
-        .await
-        .is_err()
-    {
+    let exited = tokio::time::timeout(ABANDONED_EXEC_GRACE, wait_for_exec_exit(docker, exec_id));
+    if !matches!(exited.await, Ok(Ok(_))) {
         let _ = rustix::process::pidfd_send_signal(&process, rustix::process::Signal::KILL);
     }
 }
 
 /// A pidfd for the running process of exec `exec_id`, checked to still be it
-/// once the pidfd holds it.
+/// once the pidfd holds it. Docker reports the PID until it handles the exit,
+/// and by then the PID may name another process, so that process must also be
+/// in the cgroup of the exec's container, which an exec joins.
 async fn exec_process(docker: &bollard::Docker, exec_id: &str) -> Option<rustix::fd::OwnedFd> {
-    let running = |inspected: bollard::models::ExecInspectResponse| {
+    let running = |inspected: &bollard::models::ExecInspectResponse| {
         inspected
             .running
             .unwrap_or(false)
             .then_some(inspected.pid)
             .flatten()
     };
-    let pid = running(docker.inspect_exec(exec_id).await.ok()?)?;
+    let inspected = docker.inspect_exec(exec_id).await.ok()?;
+    let pid = running(&inspected)?;
+    let container = inspected.container_id?;
     let process = rustix::process::pidfd_open(
         rustix::process::Pid::from_raw(i32::try_from(pid).ok()?)?,
         rustix::process::PidfdFlags::empty(),
     )
     .ok()?;
-    (running(docker.inspect_exec(exec_id).await.ok()?) == Some(pid)).then_some(process)
+    let init = docker
+        .inspect_container(&container, None)
+        .await
+        .ok()?
+        .state?
+        .pid?;
+    let cgroup = |pid: i64| std::fs::read_to_string(format!("/proc/{pid}/cgroup")).ok();
+    let still = running(&docker.inspect_exec(exec_id).await.ok()?) == Some(pid);
+    (still && cgroup(pid)? == cgroup(init)?).then_some(process)
 }
 
 async fn finish_exec_output(

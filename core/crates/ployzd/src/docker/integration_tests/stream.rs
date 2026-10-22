@@ -134,14 +134,35 @@ async fn exec_forwards_output_while_docker_inspection_is_pending() {
 #[tokio::test]
 async fn an_exec_whose_client_goes_away_stops_its_command() {
     use std::os::unix::process::ExitStatusExt as _;
+    let status = abandoned_exec(false).await;
+    assert_eq!(
+        status.signal(),
+        Some(rustix::process::Signal::TERM.as_raw())
+    );
+}
 
+#[tokio::test]
+async fn an_exec_still_writing_when_its_client_goes_away_stops_its_command() {
+    use std::os::unix::process::ExitStatusExt as _;
+    let status = abandoned_exec(true).await;
+    assert_eq!(
+        status.signal(),
+        Some(rustix::process::Signal::TERM.as_raw())
+    );
+}
+
+/// Run an exec whose command is a local `sleep`, writing output the client never
+/// reads when `noisy`, then drop the client; how the command ended.
+async fn abandoned_exec(noisy: bool) -> std::process::ExitStatus {
     let root = TestDir::new("ployzd-exec-abandoned");
     let docker_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let docker_address = docker_listener.local_addr().unwrap();
     let container_id = ContainerId::parse("b".repeat(64)).unwrap();
     let spec = crate::docker::test_support::spec_with_sources(vec![]);
+    // The container's own process is this test's, so the command shares its cgroup.
     let managed = serde_json::json!({
         "Id": container_id.as_str(),
+        "State": {"Pid": std::process::id()},
         "Config": {"Labels": {
             LABEL_MANAGED: "",
             LABEL_NAMESPACE: "app",
@@ -172,12 +193,29 @@ async fn an_exec_whose_client_goes_away_stops_its_command() {
                     .write_all(b"HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: tcp\r\n\r\n")
                     .await
                     .unwrap();
-                hijacked.push(stream);
+                if noisy {
+                    // Far more than the response channel holds, so forwarding waits on a send.
+                    tokio::spawn(async move {
+                        let mut frame = b"\x01\0\0\0\0\0\x04\0".to_vec();
+                        frame.extend([b'x'; 1024]);
+                        for _ in 0..4096 {
+                            if stream.write_all(&frame).await.is_err() {
+                                return;
+                            }
+                        }
+                        std::future::pending::<()>().await;
+                    });
+                } else {
+                    hijacked.push(stream);
+                }
                 continue;
             } else {
                 let exited = docker_command.lock().unwrap().try_wait().unwrap();
                 match exited {
-                    None => format!(r#"{{"Running":true,"Pid":{pid}}}"#),
+                    None => format!(
+                        r#"{{"Running":true,"Pid":{pid},"ContainerID":"{}"}}"#,
+                        "b".repeat(64)
+                    ),
                     Some(_) => r#"{"Running":false,"ExitCode":143}"#.to_owned(),
                 }
             };
@@ -248,12 +286,9 @@ async fn an_exec_whose_client_goes_away_stops_its_command() {
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     };
-    assert_eq!(
-        status.signal(),
-        Some(rustix::process::Signal::TERM.as_raw())
-    );
     docker_server.abort();
     server.abort();
+    status
 }
 
 /// Accept one request to the fake Docker, returning its stream and path.
