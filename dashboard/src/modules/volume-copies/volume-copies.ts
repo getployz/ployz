@@ -21,7 +21,10 @@ export type MirrorCopy = CopyBase & {
   readonly refreshedAt: Date | null;
   /** Why the last refresh did not land, so the age keeps growing until it catches up. */
   readonly skipped: Exclude<Heard, "answered"> | "failed" | null;
-  /** Known only from its Server's last report: that Server isn't answering and no Deploy recorded the mirror. */
+  /**
+   * Known only from its silent Server's last report, as no placement holds it: shown, never staged or recovered from.
+   * Nothing says when that report was, so it has no age and is never behind.
+   */
   readonly lastReported: boolean;
 };
 
@@ -133,7 +136,7 @@ export function lastAt(copy: VolumeCopy): Date | null {
 
 /** A mirror that has never refreshed protects nothing yet, so it reads as behind. */
 export function isStale(copy: VolumeCopy, now: Date): boolean {
-  return copy.kind === "mirror" && copy.staged !== "new"
+  return copy.kind === "mirror" && copy.staged !== "new" && !copy.lastReported
     && (copy.refreshedAt === null || now.getTime() - copy.refreshedAt.getTime() > STALE_AFTER_MS);
 }
 

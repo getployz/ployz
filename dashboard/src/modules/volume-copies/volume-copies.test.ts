@@ -75,6 +75,11 @@ describe("protected", () => {
     expect(cardLine(mirror(today("14:00"), { lastReported: true, staged: "removing" }), now).words).toBe("");
   });
 
+  it("gives a last-reported mirror no age, never Not yet, since nothing says when its Server reported it", () => {
+    expect(cardLine(mirror(today("14:00"), { lastReported: true, refreshedAt: null, skipped: "silent" }), now))
+      .toEqual({ spin: false, words: "Last reported", age: null, stale: false });
+  });
+
   it("speaks a staged move on the tray", () => {
     expect(traySpeech(pgData([mirror(today("14:00"), { staged: "primary" })], { moveTo: server("web-2") })))
       .toEqual({ tone: "staged", words: "Moving to web-2" });

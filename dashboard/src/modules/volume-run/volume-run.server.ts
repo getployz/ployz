@@ -1360,7 +1360,7 @@ const lastMirror = (volumes: readonly DockerVolume[], machineId: MachineId, dock
 /**
  * Each managed Server's copy of `dockerVolume`; a Server that doesn't answer in time is a member that didn't answer.
  * So is one the frame lists only by id: it is still in the cluster, so a mirror on it is not gone. Each that didn't
- * answer keeps what the frame last recorded of it, the last state that Server published: a mirror there still counts.
+ * answer and last published a mirror there is marked, for Copies to list as last reported; nothing stages from it.
  * For a run, a Server that holds a copy or receives one and lacks the generation floor is a member that lacks it.
  */
 export const observeVolumeMembers = Effect.fn("VolumeRun.observeMembers")(function* (organizationId: string, dockerVolume: string, run?: ObservedRun) {

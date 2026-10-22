@@ -81,9 +81,11 @@ of these actions, so discard it in Details.
 
 A mirror stays listed while its server is not answering. A mirror made with `ployz volume mirror`
 is known only from that server's last report, so its row reads "Last reported" in place of "Mirror
-· 15 min": it may have been removed since. If Copies knows of no copy outside web-1 while another server hasn't
-reported, **Elsewhere** says why, for example "web-2 is not answering, so Copies can't say what is
-outside web-1", rather than that nothing is outside web-1.
+· 15 min", with no age: it may have been removed since. Copies can't make it primary, remove it or
+refresh it until its server answers, and a placement you stage leaves it out. If Copies knows of no
+copy outside web-1 while another server hasn't reported, **Elsewhere** says why, for example "web-2
+is not answering, so Copies can't say what is outside web-1", rather than that nothing is outside
+web-1.
 
 A mirror or an old copy also gives the volume restore points. See [Restore a volume](restore-a-volume.md).
 

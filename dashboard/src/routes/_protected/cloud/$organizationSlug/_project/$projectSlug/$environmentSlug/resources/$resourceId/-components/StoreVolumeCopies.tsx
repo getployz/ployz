@@ -322,7 +322,7 @@ function CopyRow({ copy, now, locked, blocked, onOpen, onDelete, restore = null,
   const state = copy.staged ? STAGED_STATE[copy.staged] : undefined;
   if (copy.kind === "mirror") {
     return <div role="listitem" data-staged={copy.staged ?? undefined}>
-      <Item variant="outline" size="sm" state={state} render={<button type="button" aria-label={`${COPY_WORDS.mirror} on ${title}`} onClick={onOpen} />}
+      <Item variant="outline" size="sm" state={state} render={<button type="button" aria-label={`${copy.lastReported ? `${LAST_REPORTED} mirror` : COPY_WORDS.mirror} on ${title}`} onClick={onOpen} />}
         className="cursor-pointer text-left hover:bg-muted">
         {content}
       </Item>
@@ -389,8 +389,9 @@ function CopyView({ volume, members, row, rows, owed, copies, copy, accepting, u
   const target = targetPlacement(observed, row);
   const applied = appliedMirrors(observed, row);
   // A staged mirror is Details' to discard, and a Deploy running the placement holds it. A mirror the target holds as its
-  // primary, while Live names another Server, has no edit of its own.
-  const offered = !blocked && copy.staged === null && !deploying && target?.primary !== copy.server.id ? target : null;
+  // primary, while Live names another Server, has no edit of its own, nor does one known only from its last report,
+  // which no placement holds.
+  const offered = !blocked && copy.staged === null && !copy.lastReported && !deploying && target?.primary !== copy.server.id ? target : null;
   const movable = placementTargets(volume, members, row, accepting, owed).move.some((machine) => machine.id === copy.server.id);
   const promote = offered !== null && movable ? editPlacement(offered, { kind: "move", to: copy.server.id }) : null;
   const remove = offered === null ? null : editPlacement(offered, { kind: "remove_mirror", server: copy.server.id });
@@ -417,10 +418,10 @@ function CopyView({ volume, members, row, rows, owed, copies, copy, accepting, u
     <Row title="Refresh">
       {copy.lastReported ? `${LAST_REPORTED} by ${copy.server.name}, which may have removed it since` : `Every ${MIRROR_ROUND_MINUTES} min · on deploy`}
     </Row>
-    <Row title="Last">
+    {copy.lastReported ? null : <Row title="Last">
       {last.spin ? <Busy words={last.words} />
         : <span className={cn(last.stale && "text-warning")}>{last.stale ? <TriangleAlertIcon className="mr-1 inline size-3.5" /> : null}{last.words}</span>}
-    </Row>
+    </Row>}
     {skipped === null ? null : <Field orientation="responsive">
       <FieldContent><FieldTitle>Status</FieldTitle><FieldDescription>{skipped}</FieldDescription></FieldContent>
       {skippedBadge ? <Badge variant="warning">Refresh skipped</Badge> : null}
@@ -433,7 +434,7 @@ function CopyView({ volume, members, row, rows, owed, copies, copy, accepting, u
       </span>
     </Row> : null}
     <div data-slot="copy-actions" className="flex flex-wrap gap-2">
-      {copy.staged === "new" ? null : <Button variant="outline" disabled={disabled || last.spin} onClick={refresh}>
+      {copy.staged === "new" || copy.lastReported ? null : <Button variant="outline" disabled={disabled || last.spin} onClick={refresh}>
         {last.spin ? <Spinner role="presentation" aria-hidden="true" data-icon="inline-start" /> : <RefreshCwIcon data-icon="inline-start" />}Refresh now
       </Button>}
       {promote ? <Button variant="outline" disabled={locked} onClick={() => stage(promote, applied)}>Make primary</Button> : null}

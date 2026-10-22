@@ -5,6 +5,7 @@ import { volumeLoss } from "#/modules/config-store/store-volumes";
 import type { Member, VolumeRunView } from "#/modules/volume-run/volume-run";
 import { COPIES, member } from "#/modules/volume-run/volume-run.test-fixture";
 import {
+  appliedMirrors,
   detachedCopies,
   drainPlacement,
   editPlacement,
@@ -86,10 +87,6 @@ describe("presumedPrimary", () => {
     expect(presumed([member("web-1", "unanswered"), mirrorAsOf("web-2", at), lacking, unlisted("web-4")])).toBe(id("web-4"));
   });
 
-  it("presumes a silent Server over one whose last report held a mirror", () => {
-    expect(presumed([lastMirror("web-1"), member("web-2", "unanswered")])).toBe(id("web-2"));
-  });
-
   it("keeps the staged primary first among Servers heard the same way, and the first silent one when nothing is on its way", () => {
     expect(presumed([mirrorAsOf("web-2", at), unlisted("web-1"), unlisted("web-3")], "web-3")).toBe(id("web-3"));
     expect(presumed([member("web-1", "unanswered"), mirrorAsOf("web-2", at), member("web-3", "unanswered")], "web-3")).toBe(id("web-3"));
@@ -129,11 +126,11 @@ describe("serversAnswer", () => {
 });
 
 describe("placementChanges", () => {
-  it("keeps a silent Server's last-known mirror applied with no row, and removes it once a staged placement leaves it out", () => {
+  it("never stages a mirror known only from its silent Server's last report: what staging writes is main's", () => {
     const members = [member("web-1", "writer"), lastMirror("web-2")];
-    expect(targetPlacement(observePlacement(members), null)).toEqual({ primary: id("web-1"), mirrors: [id("web-2")], deletes: [] });
-    expect(changes(members, row(null, { primary: "web-1" }))).toMatchObject([{ kind: "remove_mirror", server: { id: id("web-2") } }]);
-    expect(changes(members, row(null, { primary: "web-1", mirrors: ["web-2"] }))).toEqual([]);
+    expect(appliedMirrors(observePlacement(members), null)).toEqual([]);
+    expect(targetPlacement(observePlacement(members), null)).toEqual({ primary: id("web-1"), mirrors: [], deletes: [] });
+    expect(changes(members, row([], { primary: "web-1" }))).toEqual([]);
   });
 
   it("is empty when nothing is staged", () => {
@@ -438,6 +435,17 @@ describe("recovery", () => {
   const lacking = (server: string) => ({ ...member(server, "unanswered"), lack: `Volume move needs a newer Ployz on ${server}.` });
   const forgotten = [mirrorAsOf("web-2", at)];
 
+  it("reads no Server's last report: one that lacks a capability is still presumed and explained, as on main", () => {
+    // A lacks a capability but last reported a mirror, B reports a current mirror, C is silent. A may hold the writer by now.
+    const a = { machine: { id: id("web-1"), name: "web-1" }, answered: false, lack: "Volume move needs a newer Ployz on web-1." } as const;
+    const others = [mirrorAsOf("web-2", at), member("web-3", "unanswered")];
+    const members: Member[] = [{ ...a, lastMirror: true }, ...others];
+    const unmarked: Member[] = [a, ...others];
+    expect(presumedPrimary(observePlacement(members), null)?.id).toBe(id("web-1"));
+    expect(recover(members, null)).toEqual(recover(unmarked, null));
+    expect(recover(members, null)).toMatchObject({ kind: "unreported", server: { id: id("web-1") } });
+  });
+
   it("is null while the primary answers, even with a silent mirror", () => {
     expect(recover([member("web-1", "writer"), member("web-2", "unanswered")], row(["web-2"]))).toBeNull();
   });
@@ -558,11 +566,6 @@ describe("placementTargets", () => {
     const targets = placementTargets(volume, members, row(["web-2"]), servers, false);
     expect(targets.move.map((server) => server.name)).toEqual(["web-2"]);
     expect(targets.mirror).toEqual([]);
-  });
-
-  it("offers no second mirror while a silent Server's last report holds one the row never recorded", () => {
-    const members = [member("web-1", "writer"), lastMirror("web-2"), pooled("web-3")];
-    expect(placementTargets(volume, members, null, servers, false).mirror).toEqual([]);
   });
 
   it("offers every other Server once the only other copy is detached, since the Deploy deletes it first", () => {

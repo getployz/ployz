@@ -59,7 +59,7 @@ export function copiesFromPlacement(input: {
       name: copyName(volume.name, item.server.name),
       refreshedAt: from === "answered" ? syncedAt(item.newest, matchedAt) : matchedAt,
       skipped: from !== "answered" ? from : failed ? "failed" : null,
-      lastReported: observed.lastMirrors.includes(item.server.id) && !(row?.mirrors ?? []).includes(item.server.id),
+      lastReported: false,
       staged,
       busy: active?.kind === "sync" || (pull !== null && pull.failure === null) ? "Refreshing" : busyOn(item.server.name),
     };
@@ -91,6 +91,25 @@ export function copiesFromPlacement(input: {
   // the Volume records it as a mirror, with its staged-primary badge when it is staged.
   const outranked = form.primary.change === null && primary !== null && primary.id !== form.primary.server.id
     && appliedMirrors(observed, row).includes(form.primary.server.id);
+  // Display only: a mirror a silent Server last reported that no placement holds, as `ployz volume mirror` leaves one.
+  // Staging and recovery never read it, and nothing says when that report was, so it shows no age.
+  const placed = new Set([...form.mirrors, form.primary, ...form.detached].map((item) => item.server.id));
+  const lastReported = members.flatMap((member): MirrorCopy[] => {
+    const from = heardFrom(member);
+    if (from === "answered" || member.answered || member.lastMirror !== true) return [];
+    if (placed.has(member.machine.id) || member.machine.id === primary?.id) return [];
+    return [{
+      kind: "mirror",
+      id: member.machine.id,
+      server: member.machine,
+      name: copyName(volume.name, member.machine.name),
+      refreshedAt: null,
+      skipped: from,
+      lastReported: true,
+      staged: null,
+      busy: busyOn(member.machine.name),
+    }];
+  });
   const seed = row?.staged?.seed;
   return {
     volume: { id: volume.id, name: volume.name },
@@ -104,6 +123,7 @@ export function copiesFromPlacement(input: {
     elsewhere: [
       ...form.mirrors.map((item) => mirror(item, stagedOf(item.change))),
       ...promoted ? [mirror(form.primary, "primary")] : outranked ? [mirror(form.primary, row?.staged?.primary === form.primary.server.id ? "primary" : null)] : [],
+      ...lastReported,
       ...form.detached.map(old),
     ],
     unheard: members.flatMap((member) => {

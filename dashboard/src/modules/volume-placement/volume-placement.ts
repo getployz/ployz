@@ -32,8 +32,6 @@ export type ObservedPlacement = {
   readonly waiting: readonly MachineRef[];
   /** Of `unanswered`, the Servers that are up but lack a capability to report their copy. */
   readonly lacking: readonly MachineRef[];
-  /** Of `unanswered`, the Servers whose last report in the Runtime Watch held a mirror. */
-  readonly lastMirrors: readonly MachineId[];
   /** Every Server in the cluster, answering or not. */
   readonly members: readonly MachineId[];
 };
@@ -139,19 +137,16 @@ export function observePlacement(members: readonly Member[]): ObservedPlacement 
     unanswered: members.filter((member) => !member.answered).map((member) => member.machine),
     waiting: members.filter((member) => heardFrom(member) === "waiting").map((member) => member.machine),
     lacking: members.filter((member) => ["lacks", "outdated"].includes(heardFrom(member))).map((member) => member.machine),
-    lastMirrors: members.flatMap((member) => !member.answered && member.lastMirror ? [member.machine.id] : []),
     members: members.map((member) => member.machine.id),
   };
 }
 
 /**
  * The copies that refresh, by Server: the slots their Servers record as mirrors. A Server that does not answer says
- * nothing, so the mirror last known there stands until it answers: the one the row records, or the one its last report
- * held, as a mirror made with `ployz volume mirror` leaves no row.
+ * nothing, so the mirror the row last recorded there stands until it answers.
  */
 export function appliedMirrors(observed: ObservedPlacement, row: PlacementRow | null): readonly MachineId[] {
-  const recorded = (row?.mirrors ?? []).filter((id) => observed.unanswered.some((server) => server.id === id));
-  const silent = [...new Set([...recorded, ...observed.lastMirrors])];
+  const silent = (row?.mirrors ?? []).filter((id) => observed.unanswered.some((server) => server.id === id));
   return [...observed.copies.filter((copy) => copy.kind === "slot" && copy.role === "mirror").map((copy) => copy.server.id), ...silent];
 }
 
@@ -173,8 +168,9 @@ export function oldCopies(observed: ObservedPlacement, row: PlacementRow | null)
 
 /**
  * The Server presumed to hold the primary: the one that reports it, else, with none answering, one that didn't. A
- * Server the Volume records as a mirror, or whose last report held one, comes last, as it holds a mirror, unless it is
- * the staged primary, which an unfinished move to it leaves recorded. Before it, one whose report is on its way comes first, though the observer lists it last, then one that is up but lacks a capability, then a silent one: each
+ * Server the Volume records as a mirror comes last, as it holds a mirror, unless it is the staged primary, which an
+ * unfinished move to it leaves recorded. Before it, one whose report is on its way
+ * comes first, though the observer lists it last, then one that is up but lacks a capability, then a silent one: each
  * before it may still hold the writer. Among those, the staged primary comes first, since a failed move returns there,
  * else the first listed. Copies names it under Live and the recovery alert reads it. Staging never reads it: an edit,
  * a move and a restore keep main's holder, so what is staged doesn't turn on whose report arrived first.
