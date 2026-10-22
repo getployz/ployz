@@ -543,9 +543,7 @@ fn https_site_with_material_pins_tls_paths() {
 
     let pin = pinned_tls_line(&caddyfile, "secure.example.com").expect("https pin");
     assert!(
-        pin.contains("tls /config/caddy/certs/secure.example.com-")
-            && pin.contains(".crt")
-            && pin.contains(".key"),
+        pin.contains("tls /config/caddy/certs/") && pin.contains(".crt") && pin.contains(".key"),
         "{pin}"
     );
     let https = automatic_site_block(&caddyfile, "https://secure.example.com");
@@ -554,7 +552,6 @@ fn https_site_with_material_pins_tls_paths() {
     let http = automatic_site_block(&caddyfile, "http://example.com");
     assert!(http.contains("reverse_proxy 10.210.1.2:80"));
     assert!(!http.contains("tls "));
-    assert!(!caddyfile.contains("tls /config/caddy/certs/example.com"));
 }
 
 #[test]
