@@ -23,11 +23,13 @@ A token acts as you, narrowed by its preset:
 
 - **Full as you** does everything you can.
 - **Read only** reads and changes nothing.
-- **Deploy** reads what you can read, but stages and deploys changes only in the one environment
-  you name. It can't take anything off your servers: a deploy that removes a service, volume or
+- **Deploy** reads what you can read, but stages and deploys changes only in the environment you
+  name, in every project that has one: a Deploy token for `production` deploys to each project's
+  `production`. The dialog lists those projects next to each environment. It can't take anything off your servers: a deploy that removes a service, volume or
   domain, or `ployz env shutdown`, needs a **Full as you** token.
 
-Give CI a Deploy token for the one environment it ships to. An owner's or admin's Deploy token
+Give CI a Deploy token for the environment it ships to. To keep one project's CI out of another
+project, give that environment a name no other project uses. An owner's or admin's Deploy token
 deploys into a Protected environment without waiting for another admin. See
 [Make an organization token](../cli/overview.md#make-an-organization-token). An agent you connect
 with `ployz mcp login` gets its own token, and that token can't answer approvals.

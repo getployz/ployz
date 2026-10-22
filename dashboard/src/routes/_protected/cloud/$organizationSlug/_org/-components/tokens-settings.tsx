@@ -9,12 +9,13 @@ import { SettingsEmpty, SettingsList, SettingsListItem } from "#/components/sett
 import { SettingsAddButton, SettingsFoot, SettingsSection } from "#/components/settings/settings-section";
 import { Button } from "#/components/ui/button";
 import { Dialog, DialogClose, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "#/components/ui/dialog";
-import { Field, FieldGroup, FieldLabel } from "#/components/ui/field";
+import { Field, FieldDescription, FieldGroup, FieldLabel } from "#/components/ui/field";
 import { Input } from "#/components/ui/input";
 import { NativeSelect, NativeSelectOption } from "#/components/ui/native-select";
 import { Spinner } from "#/components/ui/spinner";
 import { useExclusiveMutation } from "#/hooks/use-exclusive-mutation";
 import { toErrorMessage } from "#/lib/error-message";
+import { listNames } from "#/lib/plural";
 import { projectsQuery, requireView, useStoreView } from "#/modules/config-store/store-view.queries";
 import { createTokenServerFn, revokeTokenServerFn } from "#/modules/identity/organization-token.functions";
 import { organizationTokensQueryOptions, tokensKey } from "#/modules/identity/organization-token.queries";
@@ -104,7 +105,10 @@ function NewTokenDialog({ organizationSlug, onMade, onOpenChange }: {
   onMade: () => void;
   onOpenChange: (open: boolean) => void;
 }) {
-  const environments = [...new Set(requireView(useStoreView(organizationSlug, projectsQuery())).projects.flatMap((project) => project.environments))].sort();
+  const projects = requireView(useStoreView(organizationSlug, projectsQuery())).projects;
+  // A Deploy token names an Environment, not a project, so it reaches that Environment in every project that has one.
+  const projectsWith = (environment: string) => projects.filter((project) => project.environments.includes(environment)).map((project) => project.name).sort();
+  const environments = [...new Set(projects.flatMap((project) => project.environments))].sort();
   const [name, setName] = useState("");
   const [choice, setChoice] = useState<Choice>(environments.length > 0 ? "deploy" : "read");
   const [picked, setEnvironment] = useState<string | null>(null);
@@ -156,8 +160,9 @@ function NewTokenDialog({ organizationSlug, onMade, onOpenChange }: {
                 <Field>
                   <FieldLabel htmlFor="token-environment">Environment</FieldLabel>
                   <NativeSelect id="token-environment" value={environment} onChange={(event) => setEnvironment(event.target.value)}>
-                    {environments.map((candidate) => <NativeSelectOption key={candidate} value={candidate}>{candidate}</NativeSelectOption>)}
+                    {environments.map((candidate) => <NativeSelectOption key={candidate} value={candidate}>{`${candidate} (${projectsWith(candidate).join(", ")})`}</NativeSelectOption>)}
                   </NativeSelect>
+                  <FieldDescription>It can deploy to {environment} in {listNames(projectsWith(environment))}.</FieldDescription>
                 </Field>
               ) : null}
               {make.stalled ? (
