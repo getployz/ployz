@@ -62,6 +62,17 @@ pub(crate) enum Subject {
 pub(crate) struct Operation {
     pub(crate) verb: Verb,
     name: String,
+    #[serde(default)]
+    subject: Option<String>,
+}
+
+impl Operation {
+    fn loses_volume_access(&self) -> bool {
+        matches!(self.verb, Verb::Remove | Verb::Forget)
+            && self.subject.as_deref().is_some_and(|subject| {
+                subject.starts_with("server:") || subject.starts_with("servers:")
+            })
+    }
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
@@ -201,6 +212,7 @@ impl Asked {
             Some(organization) => format!(" in Organization {organization}"),
             None => String::new(),
         };
+        let loses_volume_access = matches!(&self.subject, Subject::Operation(operation) if operation.loses_volume_access());
         let changes_only = self.effects.iter().all(|effect| !destroys(effect.kind));
         let mut lines = vec![if verb == Verb::Publish && changes_only {
             format!("The next deploy{within} after this save:")
@@ -209,7 +221,7 @@ impl Asked {
                 "The next deploy{within} after this save destroys {}:",
                 things(self.effects.len())
             )
-        } else if changes_only {
+        } else if changes_only || loses_volume_access {
             format!("This {}{within}:", verb.noun())
         } else {
             format!(
@@ -220,7 +232,16 @@ impl Asked {
         }];
         for effect in &self.effects {
             let mark = if destroys(effect.kind) { "✕" } else { "~" };
-            lines.push(format!("  {mark} {}", line(effect)));
+            let line = if loses_volume_access && effect.kind == DestructiveKind::DeletesVolume {
+                format!(
+                    "loses access to Volume {}; its data stays on the Server's disk until wiped. \
+                     Wipe or reinstall the disk to erase it; sudo ployz-uninstall keeps the data.",
+                    effect.name
+                )
+            } else {
+                line(effect)
+            };
+            lines.push(format!("  {mark} {line}"));
             if let Some(lost) = &effect.lost_after {
                 lines.push(format!(
                     "    Changes after {} are not in {}",
@@ -565,7 +586,10 @@ mod tests {
         ] {
             let mut operation = serde_json::json!({ "verb": verb, "name": "shop" });
             if let Some(subject) = subject {
-                operation["subject"] = subject.into();
+                operation
+                    .as_object_mut()
+                    .unwrap()
+                    .insert("subject".into(), subject.into());
             }
             let asked: Asked = serde_json::from_value(serde_json::json!({
                 "approval_id": "a1", "approval": "d1",

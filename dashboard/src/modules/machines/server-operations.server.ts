@@ -200,7 +200,7 @@ export function forgetLoses(frame: RuntimeWatchView, machineId: string): DataLos
     .map(({ id }) => ({ kind: "docker_volume" as const, id }));
 }
 
-/** A reset removal deletes the Volumes it confirmed; a forget loses those `forgetLoses` found. */
+/** A reset removal loses access to the Volumes it confirmed; a forget loses those `forgetLoses` found. */
 export type Removal = { readonly reset: boolean; readonly volumes: readonly DataLossIdentity[] };
 
 export function removePlan(

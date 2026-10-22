@@ -16,7 +16,7 @@ import {
   redeemApproval,
   requestApproval,
 } from "#/modules/approvals/approvals.server";
-import type { OperationVerb } from "#/modules/approvals/approvals";
+import { destroyedLine, type OperationVerb } from "#/modules/approvals/approvals";
 import { asTestDouble } from "#/lib/test-double";
 import { decideAndApply } from "#/modules/approvals/apply.server";
 import { operationApprovals } from "#/modules/approvals/tables";
@@ -1051,6 +1051,27 @@ it.live("an agent's destructive operation still asks once a person also owns the
     expect(refusedWith(yield* gate(drainOf(["shop.web"]))).approval).toBe(operationDigest(drainOf(["shop.web"])));
   }));
 
+it.live("an older server removal approval recovers its subject without changing its digest", () =>
+  Effect.gen(function* () {
+    const { provided, caller, gate } = yield* operationCloud();
+    const asked: OperationAsked = {
+      ...drainOf([]), verb: "remove",
+      effects: [{ kind: "deletes_volume", name: "pgdata", node: "v1", path: "volumes/v1" }],
+    };
+    const first = refusedWith(yield* gate(asked));
+    yield* provided(Effect.gen(function* () {
+      const { drizzle } = yield* Database;
+      yield* drizzle.update(operationApprovals).set({
+        review: sql`jsonb_set(${operationApprovals.review}, '{operation}', (${operationApprovals.review}->'operation') - 'subject')`,
+      }).where(eq(operationApprovals.id, first.approval_id));
+    }));
+    const approval = yield* provided(getApproval(caller.organization.id, first.approval_id));
+    expect(approval.digest).toBe(first.approval);
+    expect(approval.review).toMatchObject({ operation: { subject: asked.subject } });
+    const effect = approval.review.effects[0] ?? expect.fail("no volume effect");
+    expect(destroyedLine(effect, approval.command, approval.review).verb).toBe("Loses access to volume");
+  }));
+
 it.live("a destructive operation waits on one approval of exactly its preview, and its retry runs once approved", () =>
   Effect.gen(function* () {
     const { provided, caller, gate, rows } = yield* operationCloud();
@@ -1060,7 +1081,7 @@ it.live("a destructive operation waits on one approval of exactly its preview, a
       effects: asked.effects,
       approval: operationDigest(asked),
       approval_id: expect.any(String),
-      operation: { verb: "drain", name: "fra-1" },
+      operation: { verb: "drain", name: "fra-1", subject: asked.subject },
       organization: caller.organization.slug,
     });
     expect(refusedWith(yield* gate(asked)).approval_id).toBe(first.approval_id);

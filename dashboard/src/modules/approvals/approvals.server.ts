@@ -45,7 +45,8 @@ export const onceFor = (command: ConfigCommand, approvalId: string, reviewed: Di
 };
 
 /** A review as anyone reads it: what runs once approved stays in Cloud, since a Sync's carries the secrets it sets. */
-const shownReview = ({ apply: _apply, ...review }: ApprovalReview): ApprovalReview => review;
+const shownReview = ({ apply: _apply, ...review }: ApprovalReview, subject: string): ApprovalReview =>
+  "operation" in review ? { ...review, operation: { ...review.operation, subject } } : review;
 
 /** An approval as the CLI reads it. */
 function approvalView(row: ApprovalRow) {
@@ -55,7 +56,7 @@ function approvalView(row: ApprovalRow) {
     digest: row.digest,
     command: row.command,
     reason: row.reason,
-    review: shownReview(row.review),
+    review: shownReview(row.review, row.subject),
     protected: row.review.protected !== undefined,
     requested_by: row.requestedByUserId,
     created_at: row.createdAt.toISOString(),
@@ -468,7 +469,7 @@ const requestOperationApproval = Effect.fn("Approvals.requestOperation")(functio
   stale: Stale<never> = staleOperation(asked.verb, digest),
 ) {
   const organizationId = caller.organization.id;
-  const operation = { verb: asked.verb, name: asked.name };
+  const operation = { verb: asked.verb, name: asked.name, subject: asked.subject };
   const shown = { effects: asked.effects, operation: { ...operation, preview: asked.preview } };
   const guarded = asked.protected === undefined ? shown : { ...shown, protected: { environment: asked.protected } };
   const review: ApprovalReview = asked.apply === undefined ? guarded : { ...guarded, apply: asked.apply };
