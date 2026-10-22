@@ -982,6 +982,75 @@ mod tests {
         assert_eq!(store.get(&copy.id).await.unwrap(), None);
     }
 
+    /// A restore made the copy again under a new ID and never started it, and nothing
+    /// has listed since, so its spec and rotation are still under the old ID.
+    fn restored_unstarted(copy: &Restorable) -> ContainerId {
+        let restored = other_id(&copy.id);
+        for container in copy.containers.lock().unwrap().values_mut() {
+            let fields = container.as_object_mut().unwrap();
+            fields.insert("Id".into(), restored.as_str().into());
+            fields.insert("State".into(), serde_json::json!({ "Status": "created" }));
+        }
+        restored
+    }
+
+    #[tokio::test]
+    async fn a_create_resent_onto_a_restored_copy_adopts_it_instead_of_removing_it() {
+        use crate::docker::test_support::{container_request, machine};
+        use ployz_core::{ContainerKind, Namespace};
+
+        let copy = keyed_copy_in_rotation().await;
+        let restored = restored_unstarted(&copy);
+        let mut machine = machine();
+        machine.id = copy.machine;
+        let namespace = Namespace::parse("app").unwrap();
+        let mut request = container_request(
+            ContainerKind::ServiceContainer,
+            &namespace,
+            &copy.spec,
+            std::future::ready(None),
+        );
+        request.creation_key = Some("restore-1");
+
+        let resent = copy
+            .runtime
+            .create_with_admission::<_, _, crate::docker::Error>(&machine, request)
+            .await
+            .unwrap();
+
+        assert_eq!(resent.container_id, restored);
+        assert_eq!(copy.containers.lock().unwrap().len(), 1);
+        let store = MachineSpecStore::open(copy.runtime.spec_store_path_for_test())
+            .await
+            .unwrap();
+        assert_eq!(store.get(&restored).await.unwrap(), Some(copy.spec));
+        assert_eq!(store.rotation(&restored).await.unwrap(), Some(copy.rotation));
+    }
+
+    #[tokio::test]
+    async fn a_slot_holding_a_restored_copy_reads_it_with_its_rotation() {
+        use ployz_core::{ContainerKind, Namespace, SlotKey};
+
+        let copy = keyed_copy_in_rotation().await;
+        let restored = restored_unstarted(&copy);
+        let slot = SlotKey {
+            namespace: Namespace::parse("app").unwrap(),
+            service: copy.spec.name.clone(),
+            kind: ContainerKind::ServiceContainer,
+            creation_key: ployz_core::CreationKey::try_from("restore-1".to_owned()).unwrap(),
+        };
+
+        let found = copy
+            .runtime
+            .inspect_slot(&copy.machine, &slot)
+            .await
+            .unwrap()
+            .expect("the restored copy holds the slot");
+
+        assert_eq!(found.container_id, restored);
+        assert_eq!(found.rotation(), &copy.rotation);
+    }
+
     #[tokio::test]
     async fn a_scan_listed_before_a_replacement_leaves_the_replacements_records() {
         use crate::docker::test_support::{container_request, machine};
