@@ -573,7 +573,7 @@ fn confirm_downgrades(
     let relay = MachineVersion::parse(RELAY_SINCE).expect("RELAY_SINCE is a release version");
     let breaks = if *target < relay {
         "A newer CLI and Ployz Cloud can't reach a Server on it through the relay, so \
-         upgrading it again takes SSH."
+         upgrading it again may take SSH."
     } else {
         "A newer CLI or Ployz Cloud may need what the older release lacks."
     };
@@ -1468,6 +1468,18 @@ mod tests {
             refused.message
         );
         assert!(confirm_downgrades(&servers, &older, true).is_ok());
+        assert!(!refused.message.contains("relay"), "{}", refused.message);
+
+        // Below the relay cut-off the refusal says what the downgrade cuts off.
+        let past_relay = MachineRelease::parse("0.3.0-beta.6").unwrap();
+        let refused = confirm_downgrades(&[running('b', "0.3.0-beta.7")], &past_relay, false)
+            .unwrap_err()
+            .report();
+        assert!(
+            refused.message.contains("through the relay"),
+            "{}",
+            refused.message
+        );
     }
 
     #[test]
