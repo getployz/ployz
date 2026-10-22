@@ -518,6 +518,7 @@ fn failure(view: &DeploymentView, named: &[&str], command: impl Fn(&[&str]) -> S
                 step,
                 log,
                 out_of_memory,
+                unanswered,
                 ..
             } = &row.state
             else {
@@ -550,7 +551,8 @@ fn failure(view: &DeploymentView, named: &[&str], command: impl Fn(&[&str]) -> S
                     | FailedAt::Stop
                     | FailedAt::Remove,
                 ) => logs = true,
-                Some(FailedAt::Pull) => pulled = true,
+                // A pull whose answer was lost may have worked: nothing says the image is bad.
+                Some(FailedAt::Pull) => pulled |= !unanswered,
                 Some(FailedAt::Build) => build_failed = true,
                 Some(FailedAt::Create | FailedAt::Volume) => {}
                 None => logs |= log.is_some(),
@@ -996,6 +998,32 @@ mod tests {
         assert_eq!(
             inspects(&failure(&view, &[], command)),
             ["ployz logs web --project shop --env production"]
+        );
+    }
+
+    #[test]
+    fn a_pull_whose_answer_was_lost_blames_neither_the_image_nor_the_change() {
+        let mut view = view();
+        for node in &mut view.nodes {
+            for row in &mut node.rows {
+                if let RowState::Failed {
+                    step, unanswered, ..
+                } = &mut row.state
+                {
+                    *step = Some(FailedAt::Pull);
+                    *unanswered = true;
+                }
+            }
+        }
+        let failure = failure(&view, &[], command);
+        assert!(inspects(&failure).is_empty(), "{:?}", inspects(&failure));
+        assert!(
+            !failure
+                .hints()
+                .iter()
+                .any(|hint| matches!(hint, Hint::Undo(_))),
+            "{:?}",
+            failure.hints()
         );
     }
 

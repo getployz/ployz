@@ -66,6 +66,28 @@ fn a_machine_answer_keeps_its_own_words() {
 }
 
 #[test]
+fn a_call_whose_connection_dropped_may_still_have_done_the_work() {
+    let dropped = answered_by(
+        &machine_id('a'),
+        ConnectError::from(tonic::Status::from_error(Box::new(std::io::Error::new(
+            std::io::ErrorKind::NotConnected,
+            "connection lost",
+        )))),
+    );
+    assert!(dropped.reply_lost(), "{dropped:?}");
+    assert_eq!(
+        dropped.details.get("machine_id"),
+        Some(&json!(machine_id('a').to_string()))
+    );
+
+    let sent = answered_by(
+        &machine_id('a'),
+        ConnectError::from(tonic::Status::unavailable("Cluster is not available")),
+    );
+    assert!(!sent.reply_lost(), "the daemon answered: {sent:?}");
+}
+
+#[test]
 fn a_machine_that_sends_unavailable_itself_is_not_called_silent() {
     let error = answered_by(
         &machine_id('a'),

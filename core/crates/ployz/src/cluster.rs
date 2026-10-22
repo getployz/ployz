@@ -1253,7 +1253,13 @@ impl Client {
 /// keeps its own words.
 pub(crate) fn answered_by(machine_id: &MachineId, error: ConnectError) -> RpcError {
     if !error.target_unanswered() {
-        return rpc_error(error);
+        let lost = error.unreplied();
+        let error = rpc_error(error);
+        return if lost {
+            error.reply_lost_from(machine_id)
+        } else {
+            error
+        };
     }
     let error = rpc_error(error);
     let transport = std::iter::once(error.message)
