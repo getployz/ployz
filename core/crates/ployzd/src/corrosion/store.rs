@@ -699,11 +699,14 @@ impl ReplicatedStore {
                 .await;
         };
         // A failed renewal keeps serving its material and backs off like a first order. The write
-        // lands only over the material that failed, so another Machine's renewal, read or not, survives.
+        // lands only over the ACME material that failed, so a renewal or publication landing after
+        // the read survives.
         let row = latest.with_backoff(last_error, clock);
         self.api
             .execute([Statement::new(
-                "UPDATE certificates SET body = ? WHERE hostname = ? AND json_extract(body, '$.certificate') = ?",
+                "UPDATE certificates SET body = ? WHERE hostname = ? \
+                 AND json_extract(body, '$.certificate') = ? \
+                 AND NOT coalesce(json_extract(body, '$.published'), 0)",
                 [
                     json!(row.encode()?),
                     json!(key.as_str()),
