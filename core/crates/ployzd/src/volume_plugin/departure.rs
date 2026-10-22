@@ -70,9 +70,9 @@ impl VolumeStorage {
             return Ok(StorageDeparture::default());
         };
         let _pool_guard = self.pool.lock_mutation().await?;
-        // Every receive starts under admission, so once these stop no slot changes
-        // between the scan and the decisions taken from it. A stuck receive may still
-        // write, so its Volume is not judged.
+        // Every receive starts under admission, so once these stop only this departure
+        // changes a slot until it ends. A stuck receive may still write, so its Volume is
+        // not judged.
         let stuck = self.receives.stop_all(self.stop_deadline).await;
         if !stuck.is_empty() {
             tracing::warn!(stuck = %stuck.join(", "), deadline = ?self.stop_deadline, "copies did not stop; leaving their Volumes");
@@ -99,7 +99,7 @@ impl VolumeStorage {
         for name in names {
             let departed = departed_name(&name.to_string())?;
             match self
-                .demote_copy(&pool, &datasets, &name, now_unix_seconds, mirrors)
+                .demote_copy(&pool, &name, now_unix_seconds, mirrors)
                 .await
             {
                 Ok(true) => departure.demoted.push(departed),
@@ -144,19 +144,20 @@ impl VolumeStorage {
     }
 
     /// Turns `name`'s root into a sealed slot, or destroys `name`'s received mirror unless
-    /// `mirrors` keeps it. Answers whether it changed anything.
+    /// `mirrors` keeps it. Answers whether it changed anything. It lists the datasets
+    /// afresh, as an earlier Volume's demote may have made the mirror root.
     async fn demote_copy(
         &self,
         pool: &MachinePool,
-        datasets: &[Dataset],
         name: &DockerVolumeName,
         now_unix_seconds: i64,
         mirrors: Mirrors,
     ) -> super::Result<bool> {
-        let demoted = match self.departure(pool, datasets, name).await? {
+        let datasets = self.datasets(pool).await?;
+        let demoted = match self.departure(pool, &datasets, name).await? {
             Departure::Root(root) => {
                 self.freeze_root(root, name, now_unix_seconds).await?;
-                self.ensure_mirror_root(pool, datasets).await?;
+                self.ensure_mirror_root(pool, &datasets).await?;
                 let parent = slot_parent(pool, name);
                 self.create_slot_parent(&parent, root.refquota).await?;
                 self.mark_slot_role(&parent, SlotRole::OldCopy).await?;
