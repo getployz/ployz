@@ -6532,6 +6532,53 @@ fn a_rollback_asks_about_a_service_whose_outcome_a_failed_deployment_lost() {
 }
 
 #[test]
+fn a_rollback_asks_about_a_service_a_cancelled_deployment_started_but_reported_unexecuted() {
+    let (store, who, a) = cron_started();
+    // api's and cron's Containers wait for health side by side when #2 is cancelled
+    // and the Machine stops answering, so neither is cleaned up.
+    let cancelled = json!({"type": "failed", "error": {"type": "cancelled"}});
+    let mut tracker = RowTracker::default();
+    store
+        .record(
+            &id(2),
+            &a,
+            RunEvidence::Progress(tracker.changes(&progress(&[
+                ("web", "alpha", json!({"type": "completed"})),
+                ("api", "alpha", waiting(0)),
+                ("cron", "alpha", waiting(0)),
+            ]))),
+        )
+        .unwrap();
+    cancel(&store, &who, 2).unwrap();
+    // The runner names api's cancel and reports cron's operation as unexecuted.
+    store
+        .record(
+            &id(2),
+            &a,
+            RunEvidence::Executed {
+                progress: tracker.changes(&progress(&[
+                    ("web", "alpha", json!({"type": "completed"})),
+                    ("api", "alpha", cancelled.clone()),
+                    ("cron", "alpha", cancelled),
+                ])),
+                outcome: Box::new(outcome(json!({
+                    "type": "failed", "completed": [operation("web")],
+                    "failed": {"type": "operation", "operation": operation("api"), "error": {"type": "cancelled"}},
+                    "unexecuted": [operation("cron")]
+                }))),
+                removed: Vec::new(),
+            },
+        )
+        .unwrap();
+    assert_eq!(status(&store, &who, 2), DeploymentStatus::Cancelled);
+    assert!(nodes(&store, &who, 2).contains(&("cron".to_owned(), NodeStatus::NotAttempted)));
+
+    let refused = rollback_to(&store, &who, (3, 1)).unwrap_err();
+    assert_eq!(refused.code.as_str(), "approval_required");
+    assert_eq!(removes_service(&refused), ["cron"]);
+}
+
+#[test]
 fn a_rollback_leaves_alone_a_service_a_failed_deployment_never_attempted() {
     let (store, who, a) = cron_started();
     // #2 stopped at api, before cron: nothing of cron runs.

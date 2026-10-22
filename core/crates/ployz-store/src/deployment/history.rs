@@ -176,15 +176,17 @@ pub(crate) fn head(tx: &mut dyn Tx, environment: &Environment) -> Result<Head, R
 /// without Applied State holding them: every Service of one of unknown outcome,
 /// whose runner lost track of it, and each Service of one that failed or was
 /// cancelled whose work started and didn't finish, or whose outcome its runner was
-/// lost before recording. Only an applied Deployment of every Service settles them;
-/// one of some Services leaves the rest in doubt.
+/// lost before recording. The runner names only the first failure it saw, so a
+/// Service it reports as never attempted may still have a row that started: a
+/// Container it created beside the one it names. Only an applied Deployment of
+/// every Service settles them; one of some Services leaves the rest in doubt.
 fn may_run(
     tx: &mut dyn Tx,
     environment: &EnvironmentId,
 ) -> Result<Vec<SavedServiceIntent>, RpcError> {
     let rows = tx.query(
         &format!(
-            "SELECT saved_revision, nodes, status, run FROM config_deployment \
+            "SELECT saved_revision, nodes, status, run, id FROM config_deployment \
              WHERE environment_id = ?1 AND {NUMBERED} AND started IS NOT NULL \
              AND (status IN ('unknown', 'failed', 'cancelled') \
               OR (status IN ('running', 'cancelling') AND lease <= {})) \
@@ -203,16 +205,24 @@ fn may_run(
             DeploymentStatus::Failed | DeploymentStatus::Cancelled
         );
         let run: Run = row.json(3, "Deployment run")?;
+        let started = if ended {
+            started_runtimes(tx, row.text(4)?)?
+        } else {
+            BTreeSet::new()
+        };
         for node in &nodes {
             let TargetNode::Service { .. } = node else {
                 continue;
             };
-            if ended
-                && !matches!(
-                    run.nodes.get(node.id()),
-                    Some(NodeStatus::Failed | NodeStatus::Unknown)
-                )
-            {
+            let doubtful = match run.nodes.get(node.id()) {
+                Some(NodeStatus::Failed | NodeStatus::Unknown) => true,
+                Some(NodeStatus::Deployed | NodeStatus::Removed | NodeStatus::Unchanged) => false,
+                Some(NodeStatus::Pending | NodeStatus::NotAttempted) | None => node
+                    .runtimes()
+                    .into_iter()
+                    .any(|runtime| started.contains(runtime)),
+            };
+            if ended && !doubtful {
                 continue;
             }
             if let Some(service) = saved
@@ -226,6 +236,20 @@ fn may_run(
         }
     }
     Ok(services)
+}
+
+/// The runtime Services Deployment `id`'s runner began work on, on any Server. A
+/// row keeps when it started however its state is rewritten later, including by
+/// the settling of unfinished rows as never attempted when the Deployment ends.
+fn started_runtimes(tx: &mut dyn Tx, id: &str) -> Result<BTreeSet<ServiceName>, RpcError> {
+    tx.query(
+        "SELECT DISTINCT service FROM config_deployment_row \
+         WHERE deployment_id = ?1 AND started IS NOT NULL",
+        &[id.into()],
+    )?
+    .iter()
+    .map(|row| row.parse(0, "Deployment row"))
+    .collect()
 }
 
 /// The Cluster Domain each generated domain runs under, by node ID and prefix: that
