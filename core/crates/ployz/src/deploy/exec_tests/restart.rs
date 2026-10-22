@@ -15,23 +15,29 @@ async fn a_machine_that_answered_then_went_silent_keeps_its_answer() {
         )
     };
     let attempts = std::cell::Cell::new(0);
-    let error = wait_out_restart(&CancellationToken::new(), || {
-        attempts.set(attempts.get() + 1);
-        let error = if attempts.get() == 1 {
-            answered.clone()
-        } else {
-            silent()
-        };
-        async move { Err::<(), _>(error) }
-    })
+    let error = wait_out_restart(
+        &CancellationToken::new(),
+        || {
+            attempts.set(attempts.get() + 1);
+            let error = if attempts.get() == 1 {
+                answered.clone()
+            } else {
+                silent()
+            };
+            async move { Err::<(), _>(error) }
+        },
+        no_redial,
+    )
     .await
     .unwrap_err();
     assert!(attempts.get() > 2);
     assert_eq!(error, answered);
 
-    let error = wait_out_restart(&CancellationToken::new(), || async {
-        Err::<(), _>(silent())
-    })
+    let error = wait_out_restart(
+        &CancellationToken::new(),
+        || async { Err::<(), _>(silent()) },
+        no_redial,
+    )
     .await
     .unwrap_err();
     assert!(error.target_unanswered());
@@ -40,10 +46,14 @@ async fn a_machine_that_answered_then_went_silent_keeps_its_answer() {
 #[tokio::test(start_paused = true)]
 async fn a_call_on_a_closed_session_is_not_resent() {
     let attempts = std::cell::Cell::new(0);
-    let error = wait_out_restart(&CancellationToken::new(), || {
-        attempts.set(attempts.get() + 1);
-        async { Err::<(), _>(crate::connect::closed_session_error()) }
-    })
+    let error = wait_out_restart(
+        &CancellationToken::new(),
+        || {
+            attempts.set(attempts.get() + 1);
+            async { Err::<(), _>(crate::connect::closed_session_error()) }
+        },
+        no_redial,
+    )
     .await
     .unwrap_err();
     assert_eq!(attempts.get(), 1);
@@ -59,7 +69,10 @@ async fn a_create_whose_entry_daemon_restarted_is_resent_on_a_new_session() {
             Call::Run(machine, ContainerKind::ServiceContainer),
             Reply::Error(crate::connect::closed_session_error()),
         ),
-        created(Call::Run(machine, ContainerKind::ServiceContainer), &container('a')),
+        created(
+            Call::Run(machine, ContainerKind::ServiceContainer),
+            &container('a'),
+        ),
     ]);
     client.redial = Some(Ok(()));
 
@@ -74,7 +87,10 @@ async fn a_create_whose_entry_daemon_restarted_is_resent_on_a_new_session() {
     let [first, second] = slots.as_slice() else {
         panic!("expected two creations, got {slots:?}");
     };
-    assert_eq!(first, second, "the resend lands on the slot the lost create made");
+    assert_eq!(
+        first, second,
+        "the resend lands on the slot the lost create made"
+    );
     client.assert_done();
 }
 
