@@ -35,9 +35,8 @@ Below come the top **Pages**, **Sources**, **Entry pages**, **Campaigns** (`utm_
 **Languages** and **Hosts**. Click a page to see only visits that reached it; click **Page is**
 to flip the filter to every other page, and the cross to clear it.
 
-A dashed stretch of the chart is a partial day. That is today, whose visits are still arriving; a
-day on which some visits could not be counted; or a recent day whose visits may still arrive late,
-because a Machine held them while it could not reach Cloud.
+A dashed stretch of the chart is a partial day. That is today, whose visits are still arriving, or a
+day on which some visits could not be counted.
 
 ## API
 
