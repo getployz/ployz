@@ -27,8 +27,10 @@ is a client courtesy with ordinary deprecation. The Observe Store is
 disposable and outside the promise.
 
 **Before 0.3.0.** 0.3.0 is the first release the promise covers. A Machine on
-a 0.2 release or a 0.3.0 beta is outside it and may need re-enrolling to reach
-0.3.0. Until 0.3.0 ships, any format the promise covers may still change.
+a 0.2 release or a 0.3.0 beta is outside it, yet still upgrades to 0.3.0 in
+place without re-enrolling. On 0.2 or 0.3.0-beta.6 and earlier, the first
+Machine of a Cluster takes that upgrade over SSH, because its relay protocol
+predates 0.3.0's; the rest upgrade through it.
 
 **Rules.** Frozen formats only gain optional fields with defaults. Nothing is
 renamed or repurposed, and readers ignore unknown fields. Replicated bodies

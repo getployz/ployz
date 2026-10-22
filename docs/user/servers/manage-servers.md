@@ -477,7 +477,8 @@ This Server runs Ployz 0.3.0-beta.6 or earlier, which this release can't reach t
 
 Every 0.2 release, 0.2.4 included, is on this side of the boundary. A server on 0.2 upgrades to
 0.3.0 in place the same way: it keeps its apps, volumes and cluster, and doesn't need to be
-enrolled again.
+enrolled again. Upgrade it with the newest CLI, not with a 0.2 CLI's `ployz server upgrade`: that
+installs 0.3.0 but can't confirm the result once the server restarts.
 
 Upgrade the first server over SSH from your computer. Install the newest CLI, then run it with
 `--connect` and the server's SSH address:
