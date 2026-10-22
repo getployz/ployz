@@ -711,6 +711,8 @@ pub(super) fn status(root: &ArgMatches) -> Result<(), Error> {
             Ok(view) => attention.extend(super::status_servers::attention(
                 root,
                 &view.namespace,
+                &view.services,
+                view.authored.as_ref(),
                 &deploying,
             )),
             Err(error) => crate::ui::warn_cause(UNCHECKED, &store.fail(error)),
@@ -892,7 +894,8 @@ fn status_record(status: &Status) -> Fields {
             Some(
                 Subject::NotPickedUp { service, .. }
                 | Subject::StaleAddress { service, .. }
-                | Subject::NotServing { service, .. },
+                | Subject::NotServing { service, .. }
+                | Subject::NoCopies { service },
             ) => Cow::Owned(service.name.to_string()),
             Some(Subject::Down { machine }) => Cow::Owned(machine.to_string()),
             Some(Subject::Unanswered { .. }) | None => Cow::Borrowed("needs attention"),

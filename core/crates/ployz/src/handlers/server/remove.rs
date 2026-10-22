@@ -1,7 +1,7 @@
 use clap::ArgMatches;
 use ployz_core::{
-    DescribeContractRequest, Machine, MachineId, MachineTarget, QualifiedService, RpcError,
-    RpcErrorCode, op,
+    DescribeContractRequest, LiveServices, Machine, MachineId, MachineTarget, QualifiedService,
+    RpcError, RpcErrorCode, op,
 };
 
 use super::super::runtime;
@@ -122,7 +122,7 @@ fn leave(root: &ArgMatches, removal: Removal) -> Result<(), Error> {
         )
         .into());
     }
-    let (cloud, observed, services, movable, replicated_services) = runtime.block_on(async {
+    let (cloud, observed, services, movable, short) = runtime.block_on(async {
         let selected_target = MachineTarget::from(&selected.id);
         let entry = machines
             .iter()
@@ -178,9 +178,8 @@ fn leave(root: &ArgMatches, removal: Removal) -> Result<(), Error> {
         } else {
             movable_services_on(&selected.id, &live)
         };
-        let replicated_services =
-            under_replicated(replicated_services_on(&selected.id, &live), last);
-        Ok::<_, Error>((cloud, observed, services, movable, replicated_services))
+        let short = left_short(&selected.id, &live, last);
+        Ok::<_, Error>((cloud, observed, services, movable, short))
     })?;
     if let Some((warning, drain)) = running_services(
         selected.name.as_str(),
@@ -389,11 +388,16 @@ fn leave(root: &ArgMatches, removal: Removal) -> Result<(), Error> {
                 ));
             }
         }
-        if !replicated_services.is_empty() {
-            crate::ui::warn(format!(
-                "Replicated Services may now be under-replicated: {}. Their replicas were not moved.",
-                super::super::joined(&replicated_services)
-            ));
+        let stopped = if removal == Removal::Reset && reset_failure.is_none() {
+            Stopped::Yes
+        } else {
+            Stopped::Unproven
+        };
+        for warning in short.warnings(stopped) {
+            crate::ui::warn(warning);
+        }
+        if !short.no_copies.is_empty() {
+            crate::ui::hint(&Hint::Next("ployz deploy".to_owned()));
         }
 
         // The removal is committed: print it before local cleanup can fail.
@@ -401,7 +405,8 @@ fn leave(root: &ArgMatches, removal: Removal) -> Result<(), Error> {
             "server": super::server_json(&selected),
             "reset_warning": reset_failure,
             "data_loss": observed.data_loss,
-            "under_replicated": replicated_services,
+            "under_replicated": short.under_replicated,
+            "no_copies": short.no_copies,
             "cloud_released": cloud_released,
             "cloud_kept": cloud_kept,
             "next": (cloud_released == Some(true)).then_some("ployz server add"),
@@ -506,21 +511,86 @@ fn running_services(
     ))
 }
 
+#[derive(Default)]
+struct LeftShort {
+    under_replicated: Vec<QualifiedService>,
+    /// Those of `under_replicated` with every copy on the removed Server, as a listing
+    /// every other Server answered shows.
+    no_copies: Vec<QualifiedService>,
+}
+
+/// Whether the removal stopped the removed Server's copies: a forgotten Server, or one
+/// whose reset failed, may still run them.
+#[derive(Clone, Copy)]
+enum Stopped {
+    Yes,
+    Unproven,
+}
+
+impl LeftShort {
+    fn warnings(&self, stopped: Stopped) -> Vec<String> {
+        let mut warnings = Vec::new();
+        if !self.no_copies.is_empty() {
+            let services = super::super::joined(&self.no_copies);
+            warnings.push(match stopped {
+                Stopped::Yes => format!(
+                    "Replicated Services now run no copies: {services}. Their replicas were not moved."
+                ),
+                Stopped::Unproven => format!(
+                    "No copies of Replicated Services were seen on the remaining Servers: {services}. Their replicas were not moved."
+                ),
+            });
+        }
+        let rest: Vec<&QualifiedService> = self
+            .under_replicated
+            .iter()
+            .filter(|service| !self.no_copies.contains(service))
+            .collect();
+        if !rest.is_empty() {
+            warnings.push(format!(
+                "Replicated Services may now be under-replicated: {}. Their replicas were not moved.",
+                super::super::joined(&rest)
+            ));
+        }
+        warnings
+    }
+}
+
+/// The replicated user Services the removal leaves a replica short: none on the last
+/// Server, whose removal stops everything.
+fn left_short(removed: &MachineId, live: &LiveServices<RpcError>, last: bool) -> LeftShort {
+    let mut short = LeftShort::default();
+    if last {
+        return short;
+    }
+    let others_answered = live
+        .containers
+        .failures
+        .iter()
+        .map(|failure| &failure.machine_id)
+        .chain(&live.containers.omissions)
+        .all(|machine| machine == removed);
+    let services = live.services();
+    for service in replicated_services_on(removed, live) {
+        if service.namespace.is_reserved() {
+            continue;
+        }
+        let elsewhere = services
+            .iter()
+            .filter(|observed| observed.identity == service)
+            .flat_map(|observed| &observed.containers)
+            .any(|copy| copy.as_observation().machine_id != *removed);
+        if others_answered && !elsewhere {
+            short.no_copies.push(service.clone());
+        }
+        short.under_replicated.push(service);
+    }
+    short
+}
+
 /// Each of the `docker` Volumes that keeps a Volume's data, by that Volume's name, so
 /// the list and `--accept-volume-loss` speak Volume names. Best effort: without a
 /// reachable Store, or for a Docker Volume no Environment owns, the Docker name stays.
-/// The replicated user Services the removal leaves a replica short: none on the last
-/// Server, whose removal stops everything.
-fn under_replicated(services: Vec<QualifiedService>, last: bool) -> Vec<QualifiedService> {
-    if last {
-        return Vec::new();
-    }
-    services
-        .into_iter()
-        .filter(|service| !service.namespace.is_reserved())
-        .collect()
-}
-
 fn volume_labels(root: &ArgMatches, docker: &[&str]) -> VolumeLabels {
     let mut owners = Vec::new();
     if docker.is_empty() {
@@ -641,9 +711,9 @@ mod tests {
     use serde_json::{Value, json};
 
     use super::{
-        VolumeOwner, machine_removal_refusal, movable_services_on, qualified_labels,
-        replicated_services_on, reset_removal_refusal, running_services, services_on,
-        under_replicated,
+        Stopped, VolumeOwner, left_short, machine_removal_refusal, movable_services_on,
+        qualified_labels, replicated_services_on, reset_removal_refusal, running_services,
+        services_on,
     };
     use crate::ui::Hint;
 
@@ -825,11 +895,94 @@ mod tests {
         assert_eq!(running_services("gamma", &[], false), None);
     }
 
+    fn api_only_on_a_web_on_both() -> LiveServices<RpcError> {
+        derive_live_services(PartialResult {
+            successes: vec![
+                MachineSuccess {
+                    machine_id: machine_id('a'),
+                    value: vec![
+                        observation('1', 'a', "api", ContainerKind::ServiceContainer, 'a'),
+                        observation('2', 'a', "web", ContainerKind::ServiceContainer, 'b'),
+                    ],
+                },
+                MachineSuccess {
+                    machine_id: machine_id('b'),
+                    value: vec![observation(
+                        '3',
+                        'b',
+                        "web",
+                        ContainerKind::ServiceContainer,
+                        'b',
+                    )],
+                },
+            ],
+            failures: Vec::new(),
+            omissions: Vec::new(),
+        })
+    }
+
     #[test]
-    fn the_last_server_leaves_nothing_under_replicated() {
-        let services = vec![QualifiedService::parse("app/api").unwrap()];
-        assert_eq!(under_replicated(services.clone(), false), services);
-        assert!(under_replicated(services, true).is_empty());
+    fn rm_keeps_every_short_service_under_replicated_and_names_those_with_no_copies() {
+        let short = left_short(&machine_id('a'), &api_only_on_a_web_on_both(), false);
+        assert_eq!(
+            short.no_copies,
+            [QualifiedService::parse("app/api").unwrap()]
+        );
+        assert_eq!(
+            short.under_replicated,
+            [
+                QualifiedService::parse("app/api").unwrap(),
+                QualifiedService::parse("app/web").unwrap()
+            ]
+        );
+    }
+
+    #[test]
+    fn a_reset_says_services_with_no_copies_run_none_apart_from_those_left_short() {
+        let short = left_short(&machine_id('a'), &api_only_on_a_web_on_both(), false);
+        assert_eq!(
+            short.warnings(Stopped::Yes),
+            [
+                "Replicated Services now run no copies: app/api. Their replicas were not moved.",
+                "Replicated Services may now be under-replicated: app/web. Their replicas were not moved.",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_removal_that_left_copies_running_says_only_what_the_remaining_servers_showed() {
+        let short = left_short(&machine_id('a'), &api_only_on_a_web_on_both(), false);
+        assert_eq!(
+            short.warnings(Stopped::Unproven),
+            [
+                "No copies of Replicated Services were seen on the remaining Servers: app/api. Their replicas were not moved.",
+                "Replicated Services may now be under-replicated: app/web. Their replicas were not moved.",
+            ]
+        );
+    }
+
+    #[test]
+    fn rm_claims_no_copies_only_when_every_other_server_answered() {
+        let mut live = api_only_on_a_web_on_both();
+        live.containers.omissions.push(machine_id('c'));
+        let short = left_short(&machine_id('a'), &live, false);
+        assert!(short.no_copies.is_empty());
+        assert_eq!(
+            short.under_replicated,
+            [
+                QualifiedService::parse("app/api").unwrap(),
+                QualifiedService::parse("app/web").unwrap()
+            ]
+        );
+    }
+
+    #[test]
+    fn the_last_server_leaves_nothing_short() {
+        let mut live = api_only_on_a_web_on_both();
+        live.containers.successes.truncate(1);
+        let short = left_short(&machine_id('a'), &live, true);
+        assert!(short.no_copies.is_empty());
+        assert!(short.under_replicated.is_empty());
     }
 
     #[test]

@@ -1,6 +1,6 @@
 //! The Server check of `ployz status`: no Server answering its one connection, each Down
-//! Machine, each Service serving fewer copies than it should, and each live Machine whose
-//! proxy lacks a Service's In copies or still routes its Out or Held ones. What the check
+//! Machine, each Service serving fewer copies than it should or none at all, and each live
+//! Machine whose proxy lacks a Service's In copies or still routes its Out or Held ones. What the check
 //! could not see is a warning, never an all-clear.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -13,7 +13,7 @@ use ployz_core::{
     EnvironmentValues, LiveServices, MachineId, MachineName, MachineObservation, MachineTarget,
     MembershipObservation, Namespace, QualifiedService, ReadRoutedAddressesRequest,
     RoutedAddresses, RoutesRead, RpcError, RpcErrorCode, ServiceContainer, ServiceMode,
-    ServiceObservation, Unacked, op, serving_containers,
+    ServiceName, ServiceObservation, Unacked, op, serving_containers,
 };
 use ployz_store::{DeploymentStatus, DeploymentSummary};
 use serde::Serialize;
@@ -48,6 +48,9 @@ pub(super) enum Subject {
     Down {
         machine: MachineName,
     },
+    NoCopies {
+        service: QualifiedService,
+    },
     StaleAddress {
         service: QualifiedService,
         machine: String,
@@ -67,9 +70,13 @@ pub(super) struct NotServingCopy {
     runtime: ContainerRuntimeObservation,
 }
 
+/// `deployed` maps each deployed Service's name to the name its containers carry, and
+/// `authored` names every Service in Working State, when the Store says.
 pub(super) fn attention(
     root: &ArgMatches,
     namespace: &Namespace,
+    deployed: &BTreeMap<ServiceName, ServiceName>,
+    authored: Option<&BTreeSet<ServiceName>>,
     deploying: &[DeploymentSummary],
 ) -> Vec<Attention> {
     let leaf = leaf_matches(root);
@@ -90,7 +97,9 @@ pub(super) fn attention(
         });
     match observed {
         Ok(Some(observed)) => {
-            let check = judge(observed, namespace, |words| super::store::next(leaf, words));
+            let check = judge(observed, namespace, deployed, authored, |words| {
+                super::store::next(leaf, words)
+            });
             check.warn();
             check.attention
         }
@@ -281,7 +290,13 @@ impl<Fact: PartialEq> ServicesByFact<Fact> {
     }
 }
 
-fn judge(observed: Observed, namespace: &Namespace, next: impl Fn(&[&str]) -> String) -> Check {
+fn judge(
+    observed: Observed,
+    namespace: &Namespace,
+    deployed: &BTreeMap<ServiceName, ServiceName>,
+    authored: Option<&BTreeSet<ServiceName>>,
+    next: impl Fn(&[&str]) -> String,
+) -> Check {
     let Observed { machines, copies } = observed;
     let down: BTreeSet<MachineId> = machines
         .iter()
@@ -337,10 +352,33 @@ fn judge(observed: Observed, namespace: &Namespace, next: impl Fn(&[&str]) -> St
                 .iter()
                 .any(|observed| observed.machine.id == *omitted && observed.unarrived())
         });
-    for service in live.services() {
-        if service.identity.namespace == *namespace
-            && let Some(short) = check.not_serving(service, &down, complete, &next)
-        {
+    let services: Vec<ServiceObservation> = live
+        .services()
+        .into_iter()
+        .filter(|service| service.identity.namespace == *namespace)
+        .collect();
+    // Only a listing from every Machine shows that no copy runs anywhere.
+    if complete && down.is_empty() {
+        for (name, runtime) in deployed {
+            if !services
+                .iter()
+                .any(|service| service.identity.name == *runtime && !service.containers.is_empty())
+            {
+                // A Service gone from Working State deploys only as part of a whole deploy.
+                let removed = authored.is_some_and(|authored| !authored.contains(name));
+                check.attention.push(no_copies(
+                    QualifiedService {
+                        namespace: namespace.clone(),
+                        name: name.clone(),
+                    },
+                    removed,
+                    &next,
+                ));
+            }
+        }
+    }
+    for service in services {
+        if let Some(short) = check.not_serving(service, &down, complete, &next) {
             check.attention.push(short);
         }
     }
@@ -562,6 +600,27 @@ fn stale_address(
             machine,
             addresses,
         }),
+    }
+}
+
+/// Status can't tell a global Service from a replicated one with no copy to read, so the
+/// message also covers a global one whose placement no Server matches.
+fn no_copies(
+    service: QualifiedService,
+    removed: bool,
+    next: impl Fn(&[&str]) -> String,
+) -> Attention {
+    Attention {
+        reason: "no_copies".to_owned(),
+        message: "No copies running. For a global Service, no Server matches its placement."
+            .to_owned(),
+        deployment: None,
+        next: Some(if removed {
+            next(&["deploy"])
+        } else {
+            next(&["deploy", service.name.as_str()])
+        }),
+        subject: Some(Subject::NoCopies { service }),
     }
 }
 

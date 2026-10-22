@@ -386,6 +386,15 @@ is `ployz logs web` when a named replica is still in routing, else `ployz deploy
 replicas still draining beside a full set of new ones, as just after a deploy, add no row. While
 a deployment runs, status skips this check and warns that it did.
 
+When a deployed service has no replica on any server, as after `ployz server rm` took the only
+server it ran on, `ployz status` says `api = No copies running. For a global Service, no Server
+matches its placement.` With `--json` the row has reason `no_copies` and the `service`, and its
+`next` is `ployz deploy api`. When you removed the service from your config but haven't deployed
+since, `next` is plain `ployz deploy`, which finishes removing it. Status says this only when
+every server answered and none is down, since a replica on a server it can't see may still run.
+A global service whose placement no server matches has no replicas, and deploying it again
+places none, so the line stays until you change its placement or a server's labels.
+
 This check has limits:
 
 - A replica removed outside Ployz, for example with `docker rm`, is unseen, so status can't name
