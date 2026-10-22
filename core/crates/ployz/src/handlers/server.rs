@@ -786,6 +786,8 @@ async fn apply_update(
 ) -> Result<(), Error> {
     let accepts_ingress = update.accepts_ingress;
     let public_ip_removed = update.public_ip == PublicIpUpdate::Remove;
+    // Setting or clearing the public IP pins it, so daemon start no longer looks one up.
+    let public_ip_pinned = update.public_ip != PublicIpUpdate::Keep;
     let updated = client
         .invoke_answered::<op::UpdateMachine>(
             UpdateMachineRequest { update },
@@ -829,21 +831,25 @@ async fn apply_update(
         (Err((_, error)), _) => return Err(error.into()),
     };
     crate::ui::stream(format_args!("Updated Server {}.", machine.name));
-    if public_ip_removed {
+    let next =
+        public_ip_removed.then(|| format!("ployz server set {} --public-ip IP", machine.name));
+    if let Some(next) = &next {
         crate::ui::stream(format_args!(
             "Server {} advertises no public IP now, and Ployz won't look one up.",
             machine.name
         ));
-        crate::ui::hint(&Hint::Next(format!(
-            "ployz server set {} --public-ip IP",
-            machine.name
-        )));
+        crate::ui::hint(&Hint::Next(next.clone()));
     }
     // The update is committed; starting the Ingress Proxy for a new ingress role is a
     // follow-up. Turning the role off leaves the proxy serving: Hosted DNS stops
     // advertising the Server at its next sync, and `server rm` stops the proxy.
     if accepts_ingress != Some(true) {
-        return crate::ui::emit(&json!({ "server": server_json(&machine), "endpoint": seeding }));
+        return crate::ui::emit(&json!({
+            "server": server_json(&machine),
+            "endpoint": seeding,
+            "public_ip_pinned": public_ip_pinned,
+            "next": next,
+        }));
     }
     let followed = async {
         crate::cluster::wait_for_role(
@@ -866,6 +872,8 @@ async fn apply_update(
         json!({
             "server": server_json(&machine),
             "endpoint": seeding,
+            "public_ip_pinned": public_ip_pinned,
+            "next": next,
             "ingress": followed.as_ref().ok().and_then(Option::as_ref),
         }),
         followed.map(drop).map_err(|error| {

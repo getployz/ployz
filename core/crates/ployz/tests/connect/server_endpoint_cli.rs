@@ -269,4 +269,29 @@ async fn clearing_a_public_ip_says_none_is_looked_up() {
         stdout.contains("Server one advertises no public IP now, and Ployz won't look one up."),
         "{output:?}"
     );
+    let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .env_remove("PLOYZ_TOKEN")
+        .env("PLOYZ_CLOUD_URL", "http://127.0.0.1:9")
+        .args(["--ployz-config", config.to_str().unwrap(), "--json"])
+        .args([
+            "server",
+            "set",
+            "one",
+            "--public-ip",
+            "none",
+            "--connect",
+            &format!("tcp://{address}"),
+        ])
+        .output()
+        .await
+        .unwrap();
+    let _ = std::fs::remove_file(&config);
+    assert!(output.status.success(), "{output:?}");
+    let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(result["public_ip_pinned"], json!(true), "{result}");
+    assert_eq!(
+        result["next"],
+        json!("ployz server set one --public-ip IP"),
+        "{result}"
+    );
 }
