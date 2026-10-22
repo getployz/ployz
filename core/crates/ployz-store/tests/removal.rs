@@ -1523,6 +1523,16 @@ fn a_shutdown_that_takes_services_off_asks_a_human() {
 
 /// `who` as a person holding every permission, or every one but `environments:protect`.
 fn person(who: &Actor, protects: bool, approval: Approval) -> (Actor, Trusted) {
+    calling(who, protects, (approval, ployz_store::Asks::Destroys))
+}
+
+/// [`person`] calling through a client that asks as `asks` does: `EveryDeploy` for
+/// an agent's token, such as `ployz mcp`'s.
+fn calling(
+    who: &Actor,
+    protects: bool,
+    (approval, asks): (Approval, ployz_store::Asks),
+) -> (Actor, Trusted) {
     let person = Actor {
         principal: Some(ployz_store::Principal::parse("linus").unwrap()),
         ..who.clone()
@@ -1534,6 +1544,7 @@ fn person(who: &Actor, protects: bool, approval: Approval) -> (Actor, Trusted) {
         .collect();
     let trusted = Trusted {
         approval,
+        asks,
         permissions: Some(permissions),
         ..observing(observed())
     };
@@ -1607,6 +1618,83 @@ fn an_admin_shutting_down_protected_production_from_ployz_asks_like_a_removal() 
     )
     .unwrap();
     assert!(shutdown.remove);
+}
+
+#[test]
+fn every_caller_but_cloud_is_asked_before_a_protected_shutdown_takes_anything_off() {
+    use ployz_store::Asks::{Destroys, EveryDeploy};
+    let (store, system) = shop();
+    deploy(&store, &system, "production", 1, &["web", "db"]);
+    protect(&store, &system, "production", true);
+    // As Cloud sends them: a member's sign-in or token, a member's `ployz mcp`
+    // token, an admin's or owner's sign-in or token, and an admin's MCP token.
+    for (protects, approval, asks, protected) in [
+        (false, Approval::Required, Destroys, true),
+        (false, Approval::Required, EveryDeploy, true),
+        (true, Approval::Required, Destroys, false),
+        (true, Approval::Required, EveryDeploy, false),
+    ] {
+        let (caller, trusted) = calling(&system, protects, (approval, asks));
+        let asked = refusal(shut_down(
+            &store,
+            &caller,
+            ("production", 2),
+            &["data"],
+            &trusted,
+        ));
+        assert_eq!(asked.code, RpcErrorCode::from("approval_required"));
+        assert_eq!(
+            asked.details.get("protected").is_some(),
+            protected,
+            "{asks:?} {protects}"
+        );
+    }
+    let deployments = store
+        .read(
+            &system,
+            &ployz_store::DeploymentsQuery {
+                environment: at("production"),
+                limit: None,
+                cursor: None,
+            },
+        )
+        .unwrap();
+    assert_eq!(deployments.deployments.len(), 1, "only the first deploy");
+}
+
+#[test]
+fn retrying_a_failed_shutdown_asks_again() {
+    let (store, system) = branched();
+    let (owner, trusted) = person(&system, true, Approval::Required);
+    let asked = refusal(shut_down(&store, &owner, ("fix", 3), &[], &trusted));
+    let shutdown = shut_down(
+        &store,
+        &owner,
+        ("fix", 3),
+        &[],
+        &approving(&asked, trusted.clone()),
+    )
+    .unwrap();
+    fail(&store, &shutdown.id, &["web"]);
+
+    let retry = |trusted: &Trusted| {
+        store.write_trusted(
+            &owner,
+            &Admit::Retry(ployz_store::Retry {
+                id: id(4),
+                deployment: shutdown.id.clone(),
+                rolls_back: None,
+                version: None,
+                accept_volume_loss: Vec::new(),
+            }),
+            trusted,
+        )
+    };
+    let again = refusal(retry(&trusted));
+    assert_eq!(again.code, RpcErrorCode::from("approval_required"));
+    assert_ne!(again.details["approval"], asked.details["approval"]);
+    let retried = retry(&approving(&again, trusted)).unwrap();
+    assert!(retried.remove);
 }
 
 #[test]

@@ -7,6 +7,7 @@ const here = { project: null, environment: null };
 const id = "00000000-0000-4000-8000-0000000a5301";
 const removeStaging: ConfigCommand = { command: "remove", project: "shop", environment: "staging" };
 const shutDown: ConfigCommand = { command: "admit", admit: "shut_down", id, environment: here, version: null, accept_volume_loss: [] };
+const retry: ConfigCommand = { command: "admit", admit: "retry", id, deployment: id, rolls_back: null, version: null, accept_volume_loss: [] };
 
 it("asks for a removal or shutdown from `ployz` or an agent, never from the dashboard", () => {
   for (const via of ["agent", "cli"] as const) {
@@ -15,6 +16,12 @@ it("asks for a removal or shutdown from `ployz` or an agent, never from the dash
   }
   expect(asksApproval("dashboard", removeStaging)).toBe(false);
   expect(asksApproval("dashboard", shutDown)).toBe(false);
+});
+
+it("sends a retry from `ployz` as one that may ask, since retrying a shutdown takes Services off", () => {
+  expect(asksApproval("cli", retry)).toBe(true);
+  expect(asksApproval("agent", retry)).toBe(true);
+  expect(asksApproval("dashboard", retry)).toBe(false);
 });
 
 it("names a shutdown as a shutdown, not a Deploy", () => {
