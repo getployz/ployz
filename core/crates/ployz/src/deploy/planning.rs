@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use ployz_core::{
     BlockedService, ContainerAction, ContainerId, CopyRotation, DataLoss, DependencyCondition,
@@ -12,7 +12,8 @@ use ployz_core::{
 
 use super::{
     DeployIntent, DeployOperation, DeployPreview, DeploySnapshot, DeployWarning,
-    EliminatingConstraint, HeldIngress, PlanError, PlanOptions, ReplacementOperation,
+    EliminatingConstraint, HeldIngress, HostnameRefusal, PlanError, PlanOptions,
+    ReplacementOperation,
     schedule::{ServiceGroup, Step, TaskKind, starts_container},
 };
 
@@ -44,18 +45,16 @@ struct BoundIntent {
     target: Vec<RequestedServiceSpec>,
     requested: Vec<RequestedServiceSpec>,
     handovers: Vec<HostnameHandover>,
+    retiring: Vec<QualifiedService>,
 }
 
 /// A hostname this Deploy moves between two Services it applies: `from` publishes it
-/// today and its new spec drops it, `to` claims it.
+/// today and its new spec drops it, `to` claims it. `from` waits for `to` to be published
+/// and routed, so the hostname moves once its new owner can answer.
 struct HostnameHandover {
     hostname: IngressHost,
     from: ServiceName,
     to: ServiceName,
-    /// `from` waits for `to` to be published and routed, so the hostname moves once its
-    /// new owner can answer. False when `to` already depends on `from`, where that wait
-    /// would be a cycle and the declared order stands.
-    ordered: bool,
 }
 
 /// Operations and prune results before pending rows are attached.
@@ -638,7 +637,8 @@ fn plan_operations(intent: &DeployIntent, snapshot: &DeploySnapshot) -> Result<P
 
 fn bind(intent: &DeployIntent, snapshot: &DeploySnapshot) -> Result<BoundIntent, PlanError> {
     check_removals(intent)?;
-    let handovers = hostname_handovers(intent, snapshot);
+    let retiring = retiring_services(intent, snapshot);
+    let handovers = hostname_handovers(intent, snapshot, &retiring)?;
     let specs = order_included(intent, &intent.applied_names(), &handovers)?;
     let target: Vec<_> = intent
         .target
@@ -660,83 +660,134 @@ fn bind(intent: &DeployIntent, snapshot: &DeploySnapshot) -> Result<BoundIntent,
         target,
         requested,
         handovers,
+        retiring,
     })
 }
 
+/// The Services this Deploy retires: what a full Deploy prunes, and the removals it
+/// names. Absence is evidence only in a complete snapshot, so a partial one retires
+/// nothing by name.
+fn retiring_services(intent: &DeployIntent, snapshot: &DeploySnapshot) -> Vec<QualifiedService> {
+    let services = snapshot.services_in(&intent.namespace);
+    let mut retiring = if intent
+        .prune_refusal(snapshot.is_observer_complete())
+        .is_none()
+    {
+        obsolete_services(intent, &services)
+    } else {
+        Vec::new()
+    };
+    if snapshot.is_observer_complete() {
+        for service in &services {
+            if intent.options.removals.contains(&service.identity.name)
+                && !retiring.contains(&service.identity)
+            {
+                retiring.push(service.identity.clone());
+            }
+        }
+    }
+    retiring
+}
+
 /// The hostnames moving between two Services this Deploy applies. Each one orders the
-/// Service gaining it before the one dropping it unless that would cycle through the
-/// declared dependencies or an earlier handover.
-fn hostname_handovers(intent: &DeployIntent, snapshot: &DeploySnapshot) -> Vec<HostnameHandover> {
+/// Service gaining it before the one dropping it, so a hostname whose gainer already
+/// waits for its dropper can't move in this Deploy, and neither can one whose dropper
+/// this Deploy leaves out.
+fn hostname_handovers(
+    intent: &DeployIntent,
+    snapshot: &DeploySnapshot,
+    retiring: &[QualifiedService],
+) -> Result<Vec<HostnameHandover>, PlanError> {
     let applied = intent.applied_names();
-    let specs: BTreeMap<&ServiceName, &RequestedServiceSpec> = intent
+    let owners = hostname_owners(
+        snapshot
+            .containers
+            .iter()
+            .filter(|container| !retiring.contains(&container.identity())),
+    );
+    let mut handovers: Vec<HostnameHandover> = Vec::new();
+    for spec in intent
         .target
         .iter()
         .filter(|spec| applied.contains(&spec.name))
-        .map(|spec| (&spec.name, spec))
-        .collect();
-    let owners = hostname_owners(&snapshot.containers);
-    let mut handovers: Vec<HostnameHandover> = Vec::new();
-    for (name, spec) in &specs {
+    {
         for hostname in explicit_ingress_hosts(&spec.ports) {
             let Some(owner) = owners.get(hostname) else {
                 continue;
             };
-            if owner.namespace != intent.namespace || owner.name == **name {
+            if owner.namespace != intent.namespace || owner.name == spec.name {
                 continue;
             }
-            let Some(dropper) = specs.get(&owner.name) else {
+            let Some(dropper) = intent.target.iter().find(|spec| spec.name == owner.name) else {
                 continue;
             };
             if explicit_ingress_hosts(&dropper.ports).any(|kept| kept == hostname) {
                 continue;
             }
-            let ordered = !waits_for(intent, &applied, &handovers, name, &owner.name);
+            let refusal = if !applied.contains(&owner.name) {
+                Some(HostnameRefusal::OwnerNotIncluded)
+            } else {
+                waits_for(intent, &applied, &handovers, &spec.name, &owner.name).map(|because| {
+                    HostnameRefusal::GainerWaitsForOwner {
+                        to: spec.name.clone(),
+                        because,
+                    }
+                })
+            };
+            if let Some(refusal) = refusal {
+                return Err(PlanError::HostnameConflict {
+                    hostname: hostname.clone(),
+                    owner: owner.clone(),
+                    refusal,
+                });
+            }
             handovers.push(HostnameHandover {
                 hostname: hostname.clone(),
                 from: owner.name.clone(),
-                to: (*name).clone(),
-                ordered,
+                to: spec.name.clone(),
             });
         }
     }
-    handovers
+    Ok(handovers)
 }
 
-/// Whether `service` waits for `other` before it starts, directly or through other applied
-/// Services, by declared dependency or by a handover already ordered.
+/// Why `service` waits for `other` before it starts, if it does: a declared dependency or
+/// a handover already ordered, directly or through other applied Services.
 fn waits_for(
     intent: &DeployIntent,
     applied: &BTreeSet<&ServiceName>,
     handovers: &[HostnameHandover],
     service: &ServiceName,
     other: &ServiceName,
-) -> bool {
-    let mut pending = vec![service];
+) -> Option<String> {
+    let mut pending = VecDeque::from([(service, None)]);
     let mut seen = BTreeSet::new();
-    while let Some(name) = pending.pop() {
+    while let Some((name, because)) = pending.pop_front() {
         if name == other {
-            return true;
+            return because;
         }
         if !seen.insert(name) {
             continue;
         }
-        pending.extend(
-            intent
-                .dependencies()
-                .get(name)
-                .into_iter()
-                .flatten()
-                .map(|dependency| &dependency.service)
-                .filter(|dependency| applied.contains(dependency)),
-        );
-        pending.extend(
-            handovers
-                .iter()
-                .filter(|handover| handover.ordered && handover.from == *name)
-                .map(|handover| &handover.to),
-        );
+        let because = |step: String| {
+            if name == service {
+                format!("{name} {step}")
+            } else {
+                format!("{service} waits for {name}, which {step}")
+            }
+        };
+        for dependency in intent.dependencies().get(name).into_iter().flatten() {
+            if applied.contains(&&dependency.service) {
+                let step = because(format!("depends on {}", dependency.service));
+                pending.push_back((&dependency.service, Some(step)));
+            }
+        }
+        for handover in handovers.iter().filter(|handover| handover.from == *name) {
+            let step = because(format!("hands {} to {}", handover.hostname, handover.to));
+            pending.push_back((&handover.to, Some(step)));
+        }
     }
-    false
+    None
 }
 
 fn hostname_policy_for(
@@ -767,25 +818,11 @@ fn assemble_plan(
         target,
         requested,
         handovers,
+        retiring,
     } = bound;
     let services = snapshot.services_in(&intent.namespace);
     let would_remove = obsolete_services(intent, &services);
     let prune_refusal = intent.prune_refusal(snapshot.is_observer_complete());
-    let mut retiring = if prune_refusal.is_none() {
-        would_remove.clone()
-    } else {
-        Vec::new()
-    };
-    // Absence is evidence only in a complete snapshot, so a partial one retires nothing.
-    if snapshot.is_observer_complete() {
-        for service in &services {
-            if intent.options.removals.contains(&service.identity.name)
-                && !retiring.contains(&service.identity)
-            {
-                retiring.push(service.identity.clone());
-            }
-        }
-    }
     let mut warnings = observation::warnings(&intent.namespace, &requested, &retiring, snapshot);
     if prune_refusal == Some(PruneRefusal::RemovalsOnly) {
         warnings.extend(
@@ -831,8 +868,8 @@ fn assemble_plan(
     };
     let mut service_operations = Vec::new();
     let mut ranges = Vec::new();
-    // `requested` places every dependency before its dependents, so a Service whose
-    // dependency is blocked is seen after that dependency was.
+    // `requested` places every dependency before its dependents and a hostname's gainer
+    // before its dropper, so a Service whose dependency or gainer is blocked is seen after it.
     for spec in &requested {
         if blocked.iter().any(|entry| entry.service == spec.name) {
             continue;
@@ -851,6 +888,16 @@ fn assemble_plan(
             blocked.push(BlockedService {
                 service: spec.name.clone(),
                 error: dependency_blocked(&dependency.service),
+            });
+            budget.release(&spec.name);
+            continue;
+        }
+        if let Some(handover) = handovers.iter().find(|handover| {
+            handover.from == spec.name && blocked.iter().any(|entry| entry.service == handover.to)
+        }) {
+            blocked.push(BlockedService {
+                service: spec.name.clone(),
+                error: handover_blocked(handover),
             });
             budget.release(&spec.name);
             continue;
@@ -949,7 +996,7 @@ fn assemble_plan(
         // A Service dropping a hostname replaces its copies only once the Service taking it
         // over is published and routed, so the hostname moves to a copy that answers.
         for handover in &handovers {
-            if handover.ordered && handover.from == name && !dependencies.contains(&handover.to) {
+            if handover.from == name && !dependencies.contains(&handover.to) {
                 dependencies.push(handover.to.clone());
             }
         }
@@ -985,6 +1032,24 @@ fn dependency_blocked(dependency: &ServiceName) -> RpcError {
         code: RpcErrorCode::Conflict,
         message: format!("depends on {dependency}, which was not attempted"),
         details: serde_json::json!({ "reason": "dependency_blocked", "dependency": dependency }),
+        cause: Vec::new(),
+    }
+}
+
+/// Why a Service handing a hostname to a blocked one is blocked too: replacing its copies
+/// would take the hostname from the only copies that answer.
+fn handover_blocked(handover: &HostnameHandover) -> RpcError {
+    RpcError {
+        code: RpcErrorCode::Conflict,
+        message: format!(
+            "hands hostname {} to {}, which was not attempted",
+            handover.hostname, handover.to
+        ),
+        details: serde_json::json!({
+            "reason": "dependency_blocked",
+            "dependency": handover.to,
+            "hostname": handover.hostname,
+        }),
         cause: Vec::new(),
     }
 }
@@ -1028,6 +1093,7 @@ fn reject_hostname_conflicts(
                 return Err(PlanError::HostnameConflict {
                     hostname: hostname.clone(),
                     owner,
+                    refusal: HostnameRefusal::StillPublished,
                 });
             }
             claimed.entry(hostname).or_insert_with(|| identity.clone());
@@ -1202,7 +1268,7 @@ impl<'intent> DependencyWalk<'_, 'intent> {
         let gainers = self
             .handovers
             .iter()
-            .filter(|handover| handover.ordered && handover.from == *name)
+            .filter(|handover| handover.from == *name)
             .map(|handover| &handover.to);
         declared
             .chain(gainers)

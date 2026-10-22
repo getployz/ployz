@@ -640,7 +640,7 @@ async fn preview_rejects_a_visible_owner_of_the_hostname() {
 
     assert!(matches!(
         &error,
-        DeployError::Plan(PlanError::HostnameConflict { hostname, owner })
+        DeployError::Plan(PlanError::HostnameConflict { hostname, owner, .. })
             if hostname.as_str() == "api.opaque.ployz.example"
                 && *owner == QualifiedService::parse("blog/web").unwrap()
     ));

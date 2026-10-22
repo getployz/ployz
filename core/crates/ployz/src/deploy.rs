@@ -747,12 +747,11 @@ pub enum PlanError {
     DependencyCycle { service: String },
     #[error("Docker Volume {id} is unavailable: {message}")]
     DockerVolumeUnavailable { id: DockerVolumeId, message: String },
-    #[error(
-        "hostname {hostname} is already published by {owner}: remove it from that Service first, or use another hostname"
-    )]
+    #[error("{}", .refusal.message(.hostname, .owner))]
     HostnameConflict {
         hostname: IngressHost,
         owner: QualifiedService,
+        refusal: HostnameRefusal,
     },
     /// A Deploy would both run and retire the same Service.
     #[error("Service {service} can't be deployed and removed in one Deploy")]
@@ -763,6 +762,36 @@ pub enum PlanError {
     /// Services of a reserved Namespace are never retired by name.
     #[error("Services in Namespace {namespace} can't be removed by a Deploy")]
     RemovalInReservedNamespace { namespace: Namespace },
+}
+
+/// Why a hostname another Service publishes can't be claimed in this Deploy.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum HostnameRefusal {
+    /// The owner keeps the hostname, or this Deploy leaves the owner alone.
+    StillPublished,
+    /// The owner's staged spec drops the hostname, but this Deploy doesn't include the owner.
+    OwnerNotIncluded,
+    /// `to` takes the hostname but already waits for the owner, `because`, so the owner
+    /// can't wait for `to` and the hostname would answer nowhere for `to`'s whole rollout.
+    GainerWaitsForOwner { to: ServiceName, because: String },
+}
+
+impl HostnameRefusal {
+    fn message(&self, hostname: &IngressHost, owner: &QualifiedService) -> String {
+        match self {
+            Self::StillPublished => format!(
+                "hostname {hostname} is already published by {owner}: remove it from that Service first, or use another hostname"
+            ),
+            Self::OwnerNotIncluded => format!(
+                "hostname {hostname} is published by {owner} until {dropper} deploys: deploy {dropper} too",
+                dropper = owner.name
+            ),
+            Self::GainerWaitsForOwner { to, because } => format!(
+                "hostname {hostname} is published by {owner} and can't move to {to} in the same Deploy: {because}; remove it from {dropper} and deploy, then add it to {to}",
+                dropper = owner.name
+            ),
+        }
+    }
 }
 
 struct MachineNames<'names>(&'names [MachineName]);

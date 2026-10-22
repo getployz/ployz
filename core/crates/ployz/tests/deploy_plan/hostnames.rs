@@ -1,5 +1,5 @@
 use super::support::*;
-use ployz::deploy::preview_deploy;
+use ployz::deploy::{HostnameRefusal, preview_deploy};
 use ployz_core::{
     DeployWarning, HttpProtocol, IngressHost, Namespace, PortPublication, QualifiedService,
     ServiceAttempt,
@@ -29,6 +29,7 @@ fn complete_snapshot_rejects_another_qualified_service_already_publishing_the_ho
         PlanError::HostnameConflict {
             hostname: IngressHost::parse("api.example.com").unwrap(),
             owner: QualifiedService::parse("blog/web").unwrap(),
+            refusal: HostnameRefusal::StillPublished,
         }
     );
     assert_eq!(
@@ -57,6 +58,7 @@ fn visible_conflict_rejects_even_when_the_snapshot_is_incomplete() {
         PlanError::HostnameConflict {
             hostname: IngressHost::parse("api.example.com").unwrap(),
             owner: QualifiedService::parse("blog/web").unwrap(),
+            refusal: HostnameRefusal::StillPublished,
         }
     );
 }
@@ -146,6 +148,7 @@ fn retiring_hostname_winner_does_not_hide_another_namespaces_claim() {
         PlanError::HostnameConflict {
             hostname: IngressHost::parse("api.example.com").unwrap(),
             owner: QualifiedService::parse("blog/web").unwrap(),
+            refusal: HostnameRefusal::StillPublished,
         }
     );
 }
@@ -178,6 +181,7 @@ fn a_service_that_keeps_its_hostname_still_blocks_another_in_the_same_deploy() {
         PlanError::HostnameConflict {
             hostname: IngressHost::parse("api.example.com").unwrap(),
             owner: QualifiedService::parse("app/web").unwrap(),
+            refusal: HostnameRefusal::StillPublished,
         }
     );
 }
@@ -222,7 +226,7 @@ fn two_services_swapping_hostnames_are_refused() {
         .expect_err("a swap can order only one of its two handovers");
     assert_eq!(
         error.to_string(),
-        "hostname api.example.com is published by app/api and can't move to web in the same Deploy: web hands web.example.com to api; remove it from api and deploy, then add it to web"
+        "hostname web.example.com is published by app/web and can't move to api in the same Deploy: api hands api.example.com to web; remove it from web and deploy, then add it to api"
     );
 }
 
@@ -230,14 +234,15 @@ fn two_services_swapping_hostnames_are_refused() {
 fn a_named_deploy_of_the_gainer_alone_says_to_deploy_the_dropper_too() {
     let (web, api) = handover_specs();
     let snapshot = snapshot_with(vec![container('c', '1', &custom_web(), &service_id('a'))]);
-    let mut options = PlanOptions::default();
-    options.selected = vec![ServiceAttempt {
-        name: api.name.clone(),
-    }];
     let intent = DeployIntent::new(
         Namespace::parse("app").unwrap(),
         vec![web.clone(), api.clone()],
-        options,
+        PlanOptions {
+            selected: vec![ServiceAttempt {
+                name: api.name.clone(),
+            }],
+            ..PlanOptions::default()
+        },
     );
     let error = preview_deploy(&intent, &snapshot).unwrap_err();
     assert_eq!(
@@ -276,6 +281,7 @@ fn a_handover_does_not_hide_another_namespaces_claim() {
         PlanError::HostnameConflict {
             hostname: IngressHost::parse("api.example.com").unwrap(),
             owner: QualifiedService::parse("blog/web").unwrap(),
+            refusal: HostnameRefusal::StillPublished,
         }
     );
 }
@@ -353,6 +359,7 @@ fn two_applied_specs_with_the_same_hostname_conflict() {
         PlanError::HostnameConflict {
             hostname: IngressHost::parse("shared.example.com").unwrap(),
             owner: QualifiedService::parse("app/api").unwrap(),
+            refusal: HostnameRefusal::StillPublished,
         }
     );
 }
