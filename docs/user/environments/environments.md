@@ -209,8 +209,8 @@ A new project's default environment starts Protected, and its header shows a **P
 On a phone, the lock shows without the word.
 In a Protected environment, only an owner or admin can connect a repository, change a service's
 deploy branch, or turn protection off. It can't be deleted until you unprotect it. Deleting the
-whole project still takes it, and while a project is being deleted none of its environments can
-be Protected. Environments that existed before Protected shipped start
+whole project still takes it, and while a project is being deleted you can't turn protection on
+for any of its environments. Environments that existed before Protected shipped start
 unprotected.
 
 To change it, open the environment's **Settings → Environment** and flip **Protected**, or run
