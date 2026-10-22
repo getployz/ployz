@@ -77,7 +77,7 @@ pub(crate) enum LoginError {
     )]
     TokenRefused,
     #[error(
-        "PLOYZ_TOKEN is not a token: it is too long or holds a newline or other character a token never has. Copy it again from where it was made."
+        "PLOYZ_TOKEN is not a token: it holds a newline or other character a token never has. Copy it again from where it was made."
     )]
     TokenMalformed,
     #[error("this sign-in's Organization {0} is no longer one of yours")]

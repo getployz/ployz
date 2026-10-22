@@ -1354,9 +1354,6 @@ fn answer<T: DeserializeOwned>(
         (status, _) if status.is_success() => cloud_login::decode(body.to_vec()),
         (StatusCode::UNAUTHORIZED, Credential::Device(_)) => Err(LoginError::Ended),
         (StatusCode::UNAUTHORIZED, Credential::Token { .. }) => Err(LoginError::TokenRefused),
-        (StatusCode::REQUEST_HEADER_FIELDS_TOO_LARGE, Credential::Token { .. }) => {
-            Err(LoginError::TokenMalformed)
-        }
         // Cloud refuses a member's call in the RPC error vocabulary (`claim_required`);
         // only a bare 403 means the sign-in left its Organization.
         (StatusCode::FORBIDDEN, Credential::Device(signed_in)) if refusal(body).is_none() => {
@@ -1564,18 +1561,6 @@ mod tests {
             .unwrap();
         assert!(matches!(error, LoginError::TokenMalformed), "{error:?}");
         assert!(!error.to_string().contains("ployz_sec"), "{error}");
-    }
-
-    #[test]
-    fn a_431_names_ployz_token_as_malformed() {
-        let token = Credential::Token {
-            cloud: "http://cloud.test".to_owned(),
-            token: Secret::new("ployz_secret".to_owned()),
-        };
-        let error =
-            answer::<serde_json::Value>(&token, StatusCode::REQUEST_HEADER_FIELDS_TOO_LARGE, b"")
-                .unwrap_err();
-        assert!(matches!(error, LoginError::TokenMalformed), "{error:?}");
     }
 
     #[tokio::test]
