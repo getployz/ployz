@@ -7334,3 +7334,23 @@ fn config_put_names_the_file_it_cant_read_and_takes_dash_for_stdin() {
     let listed = ok(store, &["config", "ls"]);
     assert!(listed.to_string().contains("app.yml"), "{listed}");
 }
+
+#[test]
+fn a_local_volume_restore_reaches_for_the_servers_instead_of_needing_cloud() {
+    let store = Target::Local(tempfile::tempdir().unwrap());
+    ok(&store, &["project", "new", "shop"]);
+    ok(&store, &["service", "add", "db", "--image", "postgres:17"]);
+    ok(
+        &store,
+        &["volume", "add", "data", "--mount", "db:/var/lib/postgresql"],
+    );
+
+    let (code, json) = ployz(
+        Some(&store),
+        &["volume", "restore", "data", "--from", "web-1"],
+    );
+
+    assert!(matches!(code, Some(1..=3)), "{code:?}: {json}");
+    let message = json["error"]["message"].as_str().unwrap();
+    assert!(!message.contains("need Ployz Cloud"), "{message}");
+}

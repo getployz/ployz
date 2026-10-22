@@ -21,6 +21,7 @@ use super::{Error, leaf_matches};
 use crate::cli::{base, positional, switch, value};
 use crate::ui::{Cell, Fields, Hint, Table, Tone};
 
+mod restore;
 pub(super) mod run;
 
 pub(super) fn group(command: Command) -> Command {
