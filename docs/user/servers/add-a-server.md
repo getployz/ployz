@@ -314,7 +314,7 @@ these there:
   the warning, the command and the list even when the add then fails for another reason, such as
   a down server.
 - **Client IPs stay out of Ployz's ingress logs, not your app's.** Caddy passes the client IP to
-  your app in `X-Forwarded-For`. If your app logs requests, its logs, and the Log Store's copy of
+  your app in `X-Forwarded-For`, over IPv4 and IPv6. If your app logs requests, its logs, and the Log Store's copy of
   them, can hold client IPs and user agents. Those logs are yours to manage.
 
 Next: [manage your servers](manage-servers.md).

@@ -430,6 +430,26 @@ server that still shows as not answering.
 
 Run it from your machine with Ployz Cloud, or on one of the other servers itself. Run on `web-2`, it only saves the address on `web-2`.
 
+## Apps see IPv6 visitors as 10.210.x.1
+
+Through a domain, your app's `X-Forwarded-For` should show each visitor's own address. If it
+shows your server's private gateway, such as `10.210.0.1`, for visitors over IPv6, the server's
+container network has no IPv6. `journalctl -u ployz` says why:
+
+- `learn IPv6 from router advertisements`: the server takes its IPv6 route or address from router
+  advertisements, which IPv6 forwarding would stop. Run the `sysctl -w` command the log names, add
+  the same setting to a file in `/etc/sysctl.d/` so it survives a reboot, then run
+  `sudo systemctl restart ployz`.
+- `Docker's ip6tables is off or uses nftables`: Ployz needs Docker's default iptables firewall
+  with `ip6tables` on. Remove `"ip6tables": false` and `"firewall-backend": "nftables"` from
+  `/etc/docker/daemon.json`, restart Docker, then run `sudo systemctl restart ployz`.
+- `the IPv6 mesh fence failed`: the log line gives ip6tables' reason. Ployz tries again at its
+  next start.
+- `could not take IPv6`: the log line gives Docker's reason. Ployz tries again at its next start.
+
+A port a service publishes on the server always shows IPv6 visitors as the gateway. Give the
+service a domain to see their addresses.
+
 ## Services can't resolve each other's names
 
 A service on the server gets `NXDOMAIN` or a timeout for a name like `postgres.app.internal`,

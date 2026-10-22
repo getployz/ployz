@@ -68,6 +68,30 @@ pub const LABEL_SERVICE_ID: &str = "ployz.service.id";
 pub const LABEL_SERVICE_NAME: &str = "ployz.service.name";
 pub const LABEL_NAMESPACE: &str = "ployz.namespace";
 pub const LABEL_HOOK: &str = "ployz.service.hook";
+
+/// Only the Ingress Proxy takes an IPv6 address on the ployz bridge, so IPv6
+/// visitors reach it by DNAT with their own address (#2837). Every other container
+/// stays IPv4-only, so its published ports keep reaching an app that listens on
+/// IPv4 alone through docker-proxy, as before.
+#[must_use]
+pub(crate) fn takes_bridge_ipv6(labels: &HashMap<String, String>) -> bool {
+    let ingress = QualifiedService::system_ingress();
+    labels.get(LABEL_NAMESPACE) == Some(&ingress.namespace.to_string())
+        && labels.get(LABEL_SERVICE_NAME) == Some(&ingress.name.to_string())
+        && !labels.contains_key(LABEL_HOOK)
+}
+
+/// The ployz bridge endpoint for a container that does or does not take IPv6.
+#[must_use]
+pub(crate) fn bridge_endpoint(ipv6: bool) -> Option<bollard::models::EndpointSettings> {
+    (!ipv6).then(|| bollard::models::EndpointSettings {
+        driver_opts: Some(HashMap::from([(
+            "com.docker.network.endpoint.sysctls".into(),
+            "net.ipv6.conf.IFNAME.disable_ipv6=1".into(),
+        )])),
+        ..Default::default()
+    })
+}
 /// Deployment attempt that created a Service Container.
 pub const LABEL_DEPLOYMENT: &str = "ployz.deployment.id";
 pub const LABEL_GEN: &str = "ployz.gen";
@@ -1831,6 +1855,46 @@ mod tests {
                 true
             ),
             None
+        );
+    }
+
+    #[test]
+    fn only_the_system_ingress_takes_ipv6_on_the_bridge() {
+        let machine_id = MachineId::parse("1".repeat(32)).unwrap();
+        let gateway = MachineGateway(Ipv4Addr::new(10, 210, 0, 1));
+        let ingress = ployz_core::QualifiedService::system_ingress();
+        let caddy = ployz_core::caddy_service_spec("caddy:test".into(), Default::default())
+            .to_resolved(
+                ployz_core::ServiceId::parse("c".repeat(32)).unwrap(),
+                ployz_core::ResolvedUpdateConfig::default(),
+            )
+            .unwrap();
+        let endpoint = |namespace: &ployz_core::Namespace| {
+            let body = create::container_create_body(
+                &machine_id,
+                gateway,
+                ContainerKind::ServiceContainer,
+                namespace,
+                &caddy,
+            )
+            .unwrap();
+            assert!(
+                takes_bridge_ipv6(body.labels.as_ref().unwrap())
+                    == (*namespace == ingress.namespace)
+            );
+            body.networking_config
+                .and_then(|config| config.endpoints_config)
+                .and_then(|endpoints| endpoints.get(crate::network::DOCKER_NETWORK_NAME).cloned())
+        };
+
+        assert_eq!(endpoint(&ingress.namespace), None);
+        assert_eq!(
+            endpoint(&ployz_core::Namespace::parse("app").unwrap())
+                .and_then(|endpoint| endpoint.driver_opts),
+            Some(HashMap::from([(
+                "com.docker.network.endpoint.sysctls".into(),
+                "net.ipv6.conf.IFNAME.disable_ipv6=1".into(),
+            )]))
         );
     }
 

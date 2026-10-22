@@ -70,11 +70,57 @@ pub fn apply_firewall_rules(
         delete_rule("iptables", "mangle", "FORWARD", rule)?;
     }
     let mut ipv6_document = filter_document("ip6tables", &management_policy(management_address))?;
+    if docker_ipv6_firewall() {
+        ipv6_document.push_str(&container_mesh_fence_document()?);
+    }
     ipv6_document.push_str(&build_forward_document(
         "ip6tables",
         &ipv6_build_forwarding(),
     )?);
     restore("ip6tables", &ipv6_document)
+}
+
+/// Docker's NAT66 would rewrite a container's IPv6 into the mesh to this Machine's
+/// management address, which every peer trusts. Nothing in the mesh dials a
+/// container over IPv6, so even replies drop: a container can forge the state of a
+/// DNAT'd connection through hairpin NAT. Container IPv4 into the mesh keeps its own
+/// source and reaches only containers, so it stays open.
+fn container_mesh_fence() -> String {
+    format!("-i {DOCKER_NETWORK_NAME} -o {WIREGUARD_INTERFACE_NAME} -j DROP")
+}
+
+fn container_mesh_fence_document() -> Result<String, NetworkError> {
+    let moves = move_to_top(
+        "ip6tables",
+        "filter",
+        "DOCKER-USER",
+        &container_mesh_fence(),
+    )?;
+    Ok(if moves.is_empty() {
+        moves
+    } else {
+        format!("*filter\n{moves}COMMIT\n")
+    })
+}
+
+/// Docker filters IPv6 itself, so DOCKER-USER exists for the mesh fence. Without it
+/// the bridge gets no IPv6.
+pub(super) fn docker_ipv6_firewall() -> bool {
+    command_succeeds("ip6tables", &["-w", "-t", "filter", "-S", "DOCKER-USER"])
+}
+
+/// Install the mesh fence on its own, ahead of the rest of the firewall.
+///
+/// # Errors
+///
+/// Returns an error when ip6tables rejects the rule.
+pub(super) fn fence_container_ipv6() -> Result<(), NetworkError> {
+    let document = container_mesh_fence_document()?;
+    if document.is_empty() {
+        Ok(())
+    } else {
+        restore("ip6tables", &document)
+    }
 }
 
 /// Build steps route to the internet, never into the Machine's services, across
@@ -438,6 +484,11 @@ pub(super) fn remove_firewall_rules(subnet: MachineSubnet) -> Result<(), Network
     for rule in LOOSE_BUILD_FORWARDING {
         attempt(delete_rule("iptables", "mangle", "FORWARD", rule));
     }
+    if docker_ipv6_firewall() {
+        let fence = container_mesh_fence();
+        let fence = fence.split(' ').collect::<Vec<_>>();
+        attempt(delete_rule("ip6tables", "filter", "DOCKER-USER", &fence));
+    }
     for program in ["iptables", "ip6tables"] {
         attempt(remove_chain(
             program,
@@ -609,6 +660,11 @@ mod tests {
                 "-d 168.63.129.16/32 -j DROP",
             ]
         );
+    }
+
+    #[test]
+    fn containers_never_reach_the_mesh_over_ipv6() {
+        assert_eq!(container_mesh_fence(), "-i ployz -o ployz-wg -j DROP");
     }
 
     #[test]

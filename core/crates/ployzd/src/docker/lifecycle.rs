@@ -436,7 +436,13 @@ impl ContainerRuntime {
                     DOCKER_NETWORK_NAME,
                     NetworkConnectRequest {
                         container: container_id.to_string(),
-                        endpoint_config: None,
+                        endpoint_config: super::bridge_endpoint(
+                            inspected
+                                .config
+                                .as_ref()
+                                .and_then(|config| config.labels.as_ref())
+                                .is_some_and(super::takes_bridge_ipv6),
+                        ),
                     },
                 )
                 .await
