@@ -51,7 +51,9 @@ other name before reading.
 `ployz logs --follow --machine X` with no service named follows every service that runs on X and
 skips the rest.
 When a followed server stops answering, `--follow` names it within about 20 seconds and keeps following the
-others. It ends once none still answers, and exits with code 3. It doesn't pick the server up again
+others. When its daemon restarts, it names it at once:
+`machine-1 stopped answering; its lines are missing from here on.` When that is the server your
+CLI connects through, every server whose lines came through it is named too. It ends once none still answers, and exits with code 3. It doesn't pick the server up again
 when it comes back; run the command again.
 
 Unqualified names without scope, service IDs, container selectors, commands with

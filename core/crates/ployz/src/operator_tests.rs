@@ -581,6 +581,39 @@ async fn log_merger_orders_after_watermarks_and_surfaces_zero_errors_and_stalls(
 }
 
 #[tokio::test]
+async fn a_followed_server_whose_stream_breaks_stopped_answering() {
+    // What a daemon restart leaves on its open log streams: the client's stream fails, no status.
+    let broken = tonic::Status::from_error(Box::new(std::io::Error::other(
+        "h2 protocol error: error reading a body from connection",
+    )));
+    let mut follow = merge_logs(
+        vec![
+            input(
+                "ok-1-production/lg/lg-e89a",
+                vec![Err(LogError::from(broken))],
+            ),
+            LogInput {
+                machine: machine_id('b'),
+                ..input(
+                    "ok-1-production/db/db-0b5c",
+                    vec![Ok(log(metadata("db"), 9, b"nine"))],
+                )
+            },
+        ],
+        CancellationToken::new(),
+    );
+    assert_eq!(
+        follow.recv().await.unwrap().unwrap_err(),
+        LogFault::Stalled(machine_id('a'))
+    );
+    assert_eq!(
+        output_bytes(&follow.recv().await.unwrap().unwrap()),
+        b"nine"
+    );
+    assert!(follow.recv().await.is_none());
+}
+
+#[tokio::test]
 async fn log_merger_closes_empty_flushes_and_surfaces_stream_errors() {
     let mut empty = merge_logs(Vec::new(), CancellationToken::new());
     assert!(empty.recv().await.is_none());
