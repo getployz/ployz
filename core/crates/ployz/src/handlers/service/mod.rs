@@ -737,12 +737,48 @@ pub(super) fn stop_command(command: Command) -> Command {
     ))
 }
 
+/// Linux signal names Docker's stop takes, without `SIG`; `RTMIN+n` and `RTMAX-n` are read apart.
+const SIGNALS: [&str; 34] = [
+    "ABRT", "ALRM", "BUS", "CHLD", "CLD", "CONT", "FPE", "HUP", "ILL", "INT", "IO", "IOT", "KILL",
+    "PIPE", "POLL", "PROF", "PWR", "QUIT", "SEGV", "STKFLT", "STOP", "SYS", "TERM", "TRAP", "TSTP",
+    "TTIN", "TTOU", "URG", "USR1", "USR2", "VTALRM", "WINCH", "XCPU", "XFSZ",
+];
+
+/// A `--signal` Docker can send, checked here so a typo fails before any Server is asked (#2856).
+/// The value passes through as typed: Docker reads a name with or without `SIG`, in any case.
+fn stop_signal(value: &str) -> Result<String, &'static str> {
+    let refused = "expected a signal name like SIGTERM or SIGINT, or a number from 1 to 64";
+    let upper = value.to_ascii_uppercase();
+    let name = upper.strip_prefix("SIG").unwrap_or(&upper);
+    let realtime = |prefix: &str, sign: char| {
+        name.strip_prefix(prefix).is_some_and(|rest| {
+            rest.is_empty()
+                || rest
+                    .strip_prefix(sign)
+                    .and_then(|offset| offset.parse::<u8>().ok())
+                    .is_some_and(|offset| (1..=15).contains(&offset))
+        })
+    };
+    let known = SIGNALS.contains(&name)
+        || realtime("RTMIN", '+')
+        || realtime("RTMAX", '-')
+        || value
+            .parse::<u8>()
+            .is_ok_and(|number| (1..=64).contains(&number));
+    if known {
+        Ok(value.to_owned())
+    } else {
+        Err(refused)
+    }
+}
+
 fn stop_flags(command: Command) -> Command {
     super::store::scoped(command)
         .arg(services())
         .arg(
             value("signal", None)
                 .default_value("SIGTERM")
+                .value_parser(stop_signal)
                 .help("Signal sent to stop each container"),
         )
         .arg(
