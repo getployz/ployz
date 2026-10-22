@@ -176,18 +176,45 @@ export function volumeLabels(owners: readonly VolumeOwner[]): ReadonlyMap<string
   ]));
 }
 
+type Copy = RuntimeWatchView["volumes"][number];
+/** Ployz's own buildkit cache, which `ployz server rm` doesn't count as data loss either. */
+const builderCache = /^buildx_buildkit_ployz-[0-9]+_state$/;
+const oldCopy = ({ storage }: Copy) =>
+  storage.kind === "provisioned" && storage.role === "slot" && (storage.slot_role ?? "mirror") === "old_copy";
+/** A writer, or a mirror; a root mid-switch may be a pull that never finished. */
+const keeps = ({ storage }: Copy) =>
+  storage.kind === "provisioned" && (storage.role === "slot" ? (storage.slot_role ?? "mirror") === "mirror" : storage.role !== "switching");
+
+/**
+ * What forgetting `machineId` loses, from one frame: each Docker volume on it, since its identity is its Machine's, and
+ * each Managed volume copy on it that no other Server holds as a writer or a mirror. An Old copy is older than the
+ * Volume it was cut from, so it neither counts as lost nor keeps one.
+ */
+export function forgetLoses(frame: RuntimeWatchView, machineId: string): DataLossIdentity[] {
+  const kept = new Set(frame.volumes
+    .filter((copy) => copy.id.machine_id !== machineId && keeps(copy))
+    .map(({ id }) => id.name));
+  return frame.volumes
+    .filter((copy) => copy.id.machine_id === machineId && !builderCache.test(copy.id.name)
+      && (copy.storage.kind !== "provisioned" || (!oldCopy(copy) && !kept.has(copy.id.name))))
+    .map(({ id }) => ({ kind: "docker_volume" as const, id }));
+}
+
+/** A reset removal deletes the Volumes it confirmed; a forget loses those `forgetLoses` found. */
+export type Removal = { readonly reset: boolean; readonly volumes: readonly DataLossIdentity[] };
+
 export function removePlan(
   machineId: string,
   name: string,
-  confirmed: readonly DataLossIdentity[] | null,
+  { reset, volumes: lost }: Removal,
   labels: ReadonlyMap<string, string> = new Map(),
 ): OperationAsked {
-  const volumes = [...(confirmed ?? [])].sort((a, b) => byName(volumeName(a), volumeName(b)));
+  const volumes = [...lost].sort((a, b) => byName(volumeName(a), volumeName(b)));
   return {
     subject: `server:${machineId}`,
-    verb: confirmed === null ? "forget" : "remove",
+    verb: reset ? "remove" : "forget",
     name,
-    preview: { server: machineId, reset: confirmed !== null, volumes: volumes.map(volumeName) },
+    preview: { server: machineId, reset, volumes: volumes.map(volumeName) },
     effects: [
       { kind: "removes_server", name, node: machineId, path: `servers/${machineId}` },
       ...volumes.map((identity) => deletesVolume(identity, labels.get(identity.id.name))),
@@ -264,10 +291,11 @@ export const planRemove = Effect.fn("ServerOperations.planRemove")(function* (
   const frame = yield* observe(organizationId);
   const name = serverName(frame, machineId);
   if (name === undefined) return null;
-  const owned = volumeLabels(yield* volumeOwners(organizationId, confirmed ?? []));
-  const labels = new Map((confirmed ?? []).map((identity) =>
+  const removal = confirmed === null ? { reset: false, volumes: forgetLoses(frame, machineId) } : { reset: true, volumes: confirmed };
+  const owned = volumeLabels(yield* volumeOwners(organizationId, removal.volumes));
+  const labels = new Map(removal.volumes.map((identity) =>
     [identity.id.name, owned.get(identity.id.name) ?? volumeMountLabel(frame, identity)]));
-  return removePlan(machineId, name, confirmed, labels);
+  return removePlan(machineId, name, removal, labels);
 });
 
 /**

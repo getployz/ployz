@@ -597,6 +597,9 @@ even if it still shows as up, type `dead` instead:
 ployz server forget web-2 --confirm dead
 ```
 
+The approval Ployz Cloud asks for names the server and each volume whose only copy is on it, as
+those are lost with it. A volume with a mirror or a writer on another server isn't listed.
+
 `ployz server rm` on a server that doesn't answer stops before it changes anything and prints that
 command as its next step. When Ployz Cloud itself doesn't answer, it says to run `ployz server rm`
 again instead. A server that answers but refuses isn't gone: `ployz server rm` prints its reason and
