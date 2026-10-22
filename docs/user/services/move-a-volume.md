@@ -209,7 +209,11 @@ why. What happens next depends on how far it got.
 - **Before Ployz stops your service on the old server**, your service keeps running there, with
   all its data. The run fails and names what went wrong. Run the move again when you're ready.
 - **After it stops and before `web-2` starts it**, Ployz deletes the copy on `web-2` first, then
-  starts your service again on the old server. The run fails and names what went wrong.
+  starts your service again on the old server. The run fails and names what went wrong. If a
+  server doesn't answer, for example because the network split that stopped the move still
+  holds, Ployz waits up to 15 minutes for it, and the release shows "waiting for web-3 to answer
+  (check 1 of 8)". If it stays silent, the release fails with "web-3 did not answer; data's copies
+  are unknown", your service stays stopped, and `ployz volume release data` tries again.
 - **Once `web-2` is told to start your service**, the volume belongs to the new server. Ployz
   finishes the move there: `web-2` starts your service and the old server's container goes. The
   run fails and names what went wrong, and `ployz volume runs data` shows the release that
