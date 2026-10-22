@@ -321,12 +321,18 @@ fn digest(version: &str, bound: &serde_json::Value) -> ApprovalDigest {
 }
 
 /// What a write into one Environment must clear. Cloud says who asks; in a Protected
-/// Environment a caller without `environments:protect` asks for every write that
-/// ships, and Cloud's word that nothing is required does not exempt it. Cloud's own
+/// Environment a caller without `environments:protect`, nor a token of someone who
+/// can protect, asks for every write that ships, and Cloud's word that nothing is
+/// required does not exempt it. Cloud's own
 /// writes name no caller, so they never ask here.
+///
+/// A protector's token is `exempt` rather than unasked everywhere: its grant still
+/// decides what it may destroy, and a retry, which may replay what someone else
+/// destroyed, still asks.
 pub(crate) struct Gate<'a> {
     trusted: &'a Trusted,
     protected: bool,
+    exempt: bool,
 }
 
 impl<'a> Gate<'a> {
@@ -335,12 +341,28 @@ impl<'a> Gate<'a> {
         environment: &EnvironmentId,
         trusted: &'a Trusted,
     ) -> Result<Self, RpcError> {
-        let protected = trusted
+        let asks = trusted
             .permissions
             .as_ref()
             .is_some_and(|held| !held.contains(&Permission::EnvironmentsProtect))
             && crate::scope::protected(tx, environment)?;
-        Ok(Self { trusted, protected })
+        // An agent asks on every deploy anyway; its ask stays Protected, so only an
+        // admin answers it.
+        let protector = trusted.protector && trusted.asks != Asks::EveryDeploy;
+        Ok(Self {
+            trusted,
+            protected: asks && !protector,
+            exempt: asks && protector,
+        })
+    }
+
+    /// The gate a Deploy's retry passes: a protector's token asks there too.
+    pub(crate) const fn retrying(self) -> Self {
+        Self {
+            protected: self.protected || self.exempt,
+            exempt: false,
+            ..self
+        }
     }
 
     /// Whether a retry asks a human at all.
@@ -419,6 +441,9 @@ pub(crate) fn approve(
         Shipping::Publish => Asks::Destroys,
         Shipping::Deploy { .. } => gate.trusted.asks,
     };
+    if gate.exempt && !effects.is_empty() {
+        gate.trusted.admit(Permission::ChangesDestroy)?;
+    }
     if asks == Asks::Destroys && (effects.is_empty() || resaves) {
         return Ok(());
     }

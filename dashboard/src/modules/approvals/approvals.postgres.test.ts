@@ -595,6 +595,31 @@ it.live("a Deploy token for staging is refused a production Deploy before anyone
     expect(yield* pending).toEqual([]);
   }));
 
+it.live("an owner's Deploy token ships into its Protected Environment unasked but can't unprotect it; a member's token still asks", () =>
+  Effect.gen(function* () {
+    const { provided, caller, cli, write, pending, store } = yield* shopRemovingWeb(false);
+    yield* provided(enrollStoreServer(ORGANIZATION));
+    yield* write({ command: "set_environment_protected", environment: here, protected: true });
+    const owner = { ...caller, credential: { kind: "session", id: "session-1" } } satisfies Caller;
+    const { secret: deployToken } = yield* provided(createOrganizationToken(owner,
+      { name: "ci", expiresInDays: 1, preset: { preset: "deploy", environment: "production" } }));
+    const sent = vi.spyOn(store, "write");
+
+    expect(yield* cli(deploy(1), undefined, undefined, deployToken)).toMatchObject({ status: 200 });
+    // The Store's fences on protection and source still see the token's own grant.
+    expect(sent.mock.calls[0]?.[2]).toMatchObject({ protector: true });
+    expect(sent.mock.calls[0]?.[2]?.permissions).not.toContain("environments:protect");
+    expect(yield* cli(publish, undefined, undefined, deployToken)).toMatchObject({ status: 200 });
+    expect(yield* pending).toEqual([]);
+    const unprotect = yield* cli({ command: "set_environment_protected", environment: here, protected: false }, undefined, undefined, deployToken);
+    expect(unprotect).toMatchObject({ status: 403, json: { error: { code: "forbidden" } } });
+
+    const { secret: memberToken } = yield* provided(createOrganizationToken(
+      { ...yield* provided(dashboardMember), credential: { kind: "session", id: "ada-session" }, via: "cli" }, { name: "ada", expiresInDays: 1 }));
+    const asked = yield* cli(deploy(2), undefined, undefined, memberToken);
+    expect(asked.json.error).toMatchObject({ code: "approval_required", details: { protected: true } });
+  }));
+
 it.live("an anonymous agent's Organization has no person to ask: its Deploys and destroys go through as not required", () =>
   Effect.gen(function* () {
     const { provided, userId, cli, store } = yield* shopRemovingWeb();

@@ -224,6 +224,11 @@ fn retry_review<'a>(
     let summary = deployment::owned(tx, who, source)?.summary;
     let id = summary.environment_id;
     let gate = review::Gate::new(tx, &id, trusted)?;
+    let gate = if summary.remove {
+        gate
+    } else {
+        gate.retrying()
+    };
     // Where Cloud requires approval, a retry that takes something off asks too.
     if !summary.remove && !gate.asks_retry() && trusted.approval == Approval::NotRequired {
         return Ok(Asked::Nothing);

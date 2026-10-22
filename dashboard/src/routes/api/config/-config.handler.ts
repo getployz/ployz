@@ -3,7 +3,7 @@ import { Effect, Option, Schema } from "effect";
 import { approvalAsks, asksApproval } from "#/modules/approvals/approvals";
 import { gateOperation, hasApprover, redeemApproval, redeeming, requestApproval } from "#/modules/approvals/approvals.server";
 import { callStore, refusal } from "#/modules/config-store/config-store.server";
-import { protectorOnly, unprotectAsked } from "#/modules/config-store/protected.server";
+import { protector, protectorOnly, unprotectAsked } from "#/modules/config-store/protected.server";
 import { cloudStore } from "#/modules/config-store/store-sdk.server";
 import { StoreCommand, StoreQuery, type StoreCall } from "#/modules/config-store/store.contract";
 import { receiveUpload } from "#/modules/config-store/upload.server";
@@ -77,7 +77,7 @@ export const handleConfigRequest = Effect.fn("ConfigStore.handle")(function* (re
     if (!gated.ok) return refusal(gated.refusal);
   }
   const approval = asks && (yield* hasApprover(caller.organization.id)) ? trusted.approval : "not_required";
-  const gate = { approval, asks: call.operation === "write" ? approvalAsks(caller.via, call.command) : "destroys", permissions: callerPermissions(caller), environments: callerEnvironments(caller) } as const;
+  const gate = { approval, asks: call.operation === "write" ? approvalAsks(caller.via, call.command) : "destroys", permissions: callerPermissions(caller), protector: protector(caller), environments: callerEnvironments(caller) } as const;
   const sent: StoreCall = unprotect === null ? call : { operation: "write", command: unprotect.command };
   const result = yield* callStore(caller.organization.id, caller.userId, sent, { source: "cli", agent }, gate);
   if (result.ok) return Response.json(result.value, { headers: { "cache-control": "no-store" } });

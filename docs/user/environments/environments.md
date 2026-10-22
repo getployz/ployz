@@ -229,7 +229,13 @@ A merge into a Protected environment's deploy branch still deploys. To control w
 [GitHub branch protection](../deploy/github.md#protected-environments).
 
 Only an owner or admin can make a **Deploy** token for a Protected environment. A member who tries
-sees "production is Protected; only an owner or admin can make a Deploy token for it."
+sees "production is Protected; only an owner or admin can make a Deploy token for it." The token
+deploys, syncs and takes there without waiting for another admin, and cancels a deploy someone else
+started. A Deploy token can't destroy, so a deploy that would remove something is refused, even
+when an admin already saved the removal. A retry or rollback still waits for an admin, and so does
+every deploy an agent makes with it. The token still can't turn protection off, connect a
+repository or change the deploy branch. If you stop being an owner or admin, the token's deploys
+ask like a member's.
 
 Protected guards what runs through Ployz. An admin can open a shell on a server, and from there
 reach any environment on it.
