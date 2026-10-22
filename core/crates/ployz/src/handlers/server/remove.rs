@@ -337,12 +337,24 @@ fn leave(root: &ArgMatches, removal: Removal) -> Result<(), Error> {
         ));
         if removal == Removal::Forget {
             // Nothing reaches a forgotten Server to fence it (#2927), so the operator must.
-            crate::ui::warn(format!(
-                "Server {} doesn't know it was forgotten. Wipe or reinstall its disk before it \
-                 runs again. If it comes back as it is, its services keep writing to its old copy \
-                 of each Volume, and those writes are lost: run sudo ployz-uninstall on it at once.",
-                selected.name
-            ));
+            let server = &selected.name;
+            crate::ui::warn(if dead {
+                format!(
+                    "Server {server} doesn't know it was forgotten. If it runs again as it is, \
+                     its services start again on its own copy of each Volume, and Ployz never \
+                     brings back what they write there. When it boots, run ployz server add for \
+                     it with --reset to add it back with that data read-only, or sudo \
+                     ployz-uninstall on it to stop its services and keep the data. Wipe its disk \
+                     instead only if you need nothing on it."
+                )
+            } else {
+                format!(
+                    "Server {server} still runs and doesn't know it was forgotten, so its \
+                     services keep running there. Run ployz server add for it with --reset to add \
+                     it back, or sudo ployz-uninstall on it to stop its services; either keeps its \
+                     Volume data on the disk."
+                )
+            });
         }
         if cloud_released == Some(true) {
             crate::ui::stream("Cloud let go of the Cluster: this Organization has no Server now. Its Environments keep their config; nothing runs until you add a Server.");

@@ -550,13 +550,13 @@ async fn a_server_cloud_manages_is_forgotten_through_cloud() {
         "{result}"
     );
     assert_eq!(result.get("next"), Some(&json!(null)), "{result}");
-    // Nothing reaches a forgotten Server, so the operator must stop it coming back as it is.
+    // Nothing reaches a forgotten Server, so the operator must stop what still runs there.
     assert_eq!(
         result.get("warnings"),
         Some(&json!([
-            "Server two doesn't know it was forgotten. Wipe or reinstall its disk before it \
-             runs again. If it comes back as it is, its services keep writing to its old copy \
-             of each Volume, and those writes are lost: run sudo ployz-uninstall on it at once."
+            "Server two still runs and doesn't know it was forgotten, so its services keep \
+             running there. Run ployz server add for it with --reset to add it back, or sudo \
+             ployz-uninstall on it to stop its services; either keeps its Volume data on the disk."
         ])),
         "{result}"
     );
@@ -1019,6 +1019,18 @@ async fn a_server_that_does_not_answer_leaves_without_a_reset_only_when_dead_is_
 
     let output = run("two", &["--confirm", "dead"]).await;
     assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        result.get("warnings"),
+        Some(&json!([
+            "Server two doesn't know it was forgotten. If it runs again as it is, its services \
+             start again on its own copy of each Volume, and Ployz never brings back what they \
+             write there. When it boots, run ployz server add for it with --reset to add it back \
+             with that data read-only, or sudo ployz-uninstall on it to stop its services and \
+             keep the data. Wipe its disk instead only if you need nothing on it."
+        ])),
+        "{result}"
+    );
     assert_eq!(*removals.lock().unwrap(), [machine_id('b')]);
     assert!(resets.lock().unwrap().is_empty());
     server.abort();

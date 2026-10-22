@@ -314,8 +314,8 @@ fn forgetting_a_lone_server_that_does_not_answer_says_it_is_asking_cloud() {
     asks_to_forget_around_the_approval(&stderr);
     assert!(
         stderr.contains(
-            "A forgotten Server doesn't know it was forgotten. Wipe or reinstall the disk of \
-             each before it runs again."
+            "A forgotten Server doesn't know it was forgotten. If one runs again as it is, its \
+             services start again on its own copy of each Volume"
         ),
         "{stderr}"
     );

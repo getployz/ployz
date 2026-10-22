@@ -219,8 +219,9 @@ function ForgetServerRow({ machine, organizationSlug, gate }: { machine: Runtime
         pendingLabel="Forgetting"
         sentence={<>Ployz takes it out of the cluster without reaching it. A volume with a mirror on another server comes
           back from it: open the volume's Copies, click Use mirror, then deploy. Volumes with no copy elsewhere{" "}
-          <span className="text-destructive">are lost</span>. It won't know it was forgotten. Wipe its disk before it
-          runs again: as it is, it keeps writing to its old copies, and those writes are lost.</>}
+          <span className="text-destructive">are lost</span>. {machine.name} won't know it was forgotten. If it runs
+          again as it is, its services keep writing to its own copies, and Ployz never brings that back: reset or
+          uninstall it as soon as it boots.</>}
         callbacks={{ load, confirm: forget }}
       />
     </>
