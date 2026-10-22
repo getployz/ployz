@@ -3545,8 +3545,10 @@ describe("volume runs", () => {
     it.each(askers)("%s's Move asks someone who can protect it, writes no run until they approve, then runs once", async (_, asker) => {
       const move: VolumeRunInput = { kind: "move", args: { to: "fsn-2" } };
 
-      const { approval, approval_id } = askedOf(await as(asker, move));
+      const admitted = await as(asker, move);
+      const { approval, approval_id } = askedOf(admitted);
 
+      expect(admitted).toMatchObject({ refusal: { details: { protected: { environment: "production" } } } });
       expect(await rows()).toEqual([]);
       expect(await review(approval_id)).toMatchObject({ protected: { environment: "production" } });
       expect(await runEffect(decideApproval({ ...asker, via: "dashboard" }, approval_id, { approve: { digest: approval } })))

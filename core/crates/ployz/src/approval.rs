@@ -34,6 +34,19 @@ pub(crate) struct Asked {
     /// last acted in once a browser has moved the session.
     #[serde(default)]
     organization: Option<String>,
+    /// Set when a Protected Environment asks someone who can't protect it: only another
+    /// person, an owner or admin, can approve, so even a terminal waits.
+    #[serde(default)]
+    protected: Option<serde_json::Value>,
+}
+
+impl Asked {
+    fn for_someone_else(&self) -> bool {
+        !matches!(
+            self.protected,
+            None | Some(serde_json::Value::Null | serde_json::Value::Bool(false))
+        )
+    }
 }
 
 /// What the approval covers: a Store write, which carries its diff, or an operation on one
@@ -286,7 +299,7 @@ pub(crate) fn settle(
     for line in asked.review(verb) {
         crate::ui::note(line);
     }
-    if crate::ui::can_prompt() {
+    if crate::ui::can_prompt() && !asked.for_someone_else() {
         crate::ui::confirm_name(
             asked.name(),
             || Failure::usage("Approving needs a terminal"),
@@ -599,6 +612,23 @@ mod tests {
                 "    Changes after 2026-10-08T11:27:00+02:00 are not in pg-data-0927",
             ]
         );
+    }
+
+    #[test]
+    fn a_protected_ask_waits_for_someone_else_even_at_a_terminal() {
+        let ask = |protected: serde_json::Value| -> Asked {
+            serde_json::from_value(serde_json::json!({
+                "approval_id": "a1",
+                "approval": "d1",
+                "effects": [],
+                "operation": { "verb": "move", "name": "pg-data" },
+                "protected": protected,
+            }))
+            .unwrap()
+        };
+        assert!(ask(serde_json::json!({ "environment": "production" })).for_someone_else());
+        assert!(ask(serde_json::json!(true)).for_someone_else());
+        assert!(!ask(serde_json::Value::Null).for_someone_else());
     }
 
     /// Cloud names every operation it gates with one of its `OperationVerb`s; one this CLI

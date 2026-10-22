@@ -483,10 +483,11 @@ const requestOperationApproval = Effect.fn("Approvals.requestOperation")(functio
     }).onConflictDoUpdate({ ...pending, set: askedAgain(caller, review) }).returning({ id: operationApprovals.id });
     return row ?? (yield* Effect.die("an upsert returned no row"));
   }), stale);
+  const details = { effects: asked.effects, approval: digest, approval_id: recorded.id, operation, organization: caller.organization.slug };
   return {
     code: "approval_required",
     message: `A human must approve this ${asked.verb.replaceAll("_", " ")} of ${asked.name} before it runs.`,
-    details: { effects: asked.effects, approval: digest, approval_id: recorded.id, operation, organization: caller.organization.slug },
+    details: asked.protected === undefined ? details : { ...details, protected: { environment: asked.protected } },
   } satisfies StoreRefusal;
 });
 
