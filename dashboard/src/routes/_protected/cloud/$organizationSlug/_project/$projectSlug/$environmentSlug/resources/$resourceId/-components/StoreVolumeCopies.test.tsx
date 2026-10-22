@@ -36,7 +36,7 @@ const server = (name: string, storage: CopyServer["storage"] = "pool"): CopyServ
 
 function panel(members: Member[], placement: PlacementRow | null, options: {
   open?: string; upgrade?: string[]; servers?: CopyServer[]; matchedAt?: string; refreshing?: boolean; deploying?: boolean; owed?: boolean;
-  forgetGate?: RoleGate; floorless?: string[]; restorable?: string[]; rows?: PlacementRow[];
+  forgetGate?: RoleGate; floorless?: string[]; restorable?: string[]; rows?: PlacementRow[]; unrouted?: string[];
 } = {}) {
   const stage = vi.fn();
   const refresh = vi.fn();
@@ -47,7 +47,8 @@ function panel(members: Member[], placement: PlacementRow | null, options: {
     statuses: options.matchedAt === undefined ? [] : [{ machine: id("web-2"), okAt: options.matchedAt, matchedAt: options.matchedAt, failedAt: null, failure: null }] });
   const router = createRouter({ routeTree: createRootRoute(), history: createMemoryHistory() });
   render(<RouterContextProvider router={router}><VolumeCopiesPanel organizationSlug="ada" forgetGate={options.forgetGate ?? { allowed: true, reason: undefined }} volume={volume} members={members} rows={options.rows ?? (placement ? [placement] : [])} running={null} owed={options.owed ?? false} copies={copies}
-    servers={options.servers ?? members.map((entry) => server(entry.machine.name))} accepting={members.map((entry) => entry.machine.id)} floorless={(options.floorless ?? []).map(id)}
+    servers={options.servers ?? members.map((entry) => server(entry.machine.name))} accepting={members.map((entry) => entry.machine.id)}
+    moveTo={members.filter((entry) => !(options.unrouted ?? []).includes(entry.machine.name)).map((entry) => entry.machine.id)} floorless={(options.floorless ?? []).map(id)}
     upgrade={options.upgrade ?? []} restorable={(options.restorable ?? members.map((entry) => entry.machine.name)).map(id)} disabled={false} deploying={options.deploying ?? false} stage={stage} restore={restore}
     deleteCopy={deleteCopy} refresh={refresh} refreshing={options.refreshing ?? false}
     open={options.open ? id(options.open) : null} onOpen={onOpen} /></RouterContextProvider>);
@@ -406,6 +407,12 @@ describe("VolumeCopiesPanel", () => {
 describe("mirror detail", () => {
   afterEach(cleanup);
   const fresh = () => [member("web-1", "writer"), mirrorAsOf("web-2", new Date(NOW.getTime() - 5 * 60_000))];
+
+  it("offers no Make primary on a Server whose Ployz can't finish a Move, and still offers Remove mirror", () => {
+    panel(fresh(), row(["web-2"]), { open: "web-2", unrouted: ["web-2"] });
+    expect(screen.queryByRole("button", { name: "Make primary" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Remove mirror" })).toBeTruthy();
+  });
 
   it("stages Make primary and Remove mirror, and goes back to the list", () => {
     const { stage, onOpen } = panel(fresh(), row(["web-2"]), { open: "web-2" });

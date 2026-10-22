@@ -9,6 +9,7 @@ import {
   drainSummary,
   drainView,
   removeHint,
+  stuckMessage,
 } from "#/modules/machines/server-drain-view";
 import { runtimeWatchMachineFixture } from "#/modules/runtime/runtime-watch-frame.test-fixture";
 
@@ -280,5 +281,13 @@ describe("A leftover still running here", () => {
   it("counts as stayed, not stopped", () => {
     const value = report([leftover], null, { kind: "observed", services: ["shop/web"], unchosen: [] });
     expect(drainSummary(value, "web-2")).toBe("1 stayed");
+  });
+});
+
+describe("stuckMessage", () => {
+  it("says which Volumes have nowhere to move, and which Servers to upgrade so they can move there", () => {
+    expect(stuckMessage(["db"], [])).toBe("db has nowhere to move");
+    expect(stuckMessage(["db"], ["web-2"])).toBe("db has nowhere to move. Upgrade web-2 to move it there");
+    expect(stuckMessage(["db", "cache"], ["web-2", "web-3"])).toBe("db and cache have nowhere to move. Upgrade web-2 and web-3 to move them there");
   });
 });
