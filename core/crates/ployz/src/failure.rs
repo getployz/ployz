@@ -733,6 +733,7 @@ fn cloud_enroll_code(error: &cloud_enroll::Error) -> RpcErrorCode {
         | cloud_enroll::Error::Connect(_)
         | cloud_enroll::Error::Http(_)
         | cloud_enroll::Error::RetrySameCommand { .. }
+        | cloud_enroll::Error::CloudCantReach
         | cloud_enroll::Error::FounderWait => RpcErrorCode::Unavailable,
         cloud_enroll::Error::Json(_) => RpcErrorCode::Internal,
         cloud_enroll::Error::TokenRefused => RpcErrorCode::Unauthenticated,

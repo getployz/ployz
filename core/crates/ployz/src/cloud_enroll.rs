@@ -52,6 +52,10 @@ pub(crate) enum Error {
         #[source]
         cause: Box<dyn std::error::Error + Send + Sync>,
     },
+    #[error(
+        "Cloud can't reach this Server through the relay or directly. Allow https to relay.ployz.dev from Cloud and from this Server, then enroll it again."
+    )]
+    CloudCantReach,
 }
 
 #[derive(Debug, Error)]
@@ -68,6 +72,7 @@ impl Error {
             | Self::Status { .. }
             | Self::TokenRefused
             | Self::RetrySameCommand { .. }
+            | Self::CloudCantReach
             | Self::FounderWait => false,
         }
     }
@@ -481,9 +486,16 @@ async fn post_callback(
         },
     )
     .await
-    .map_err(|error| Error::RetrySameCommand {
-        operation,
-        cause: Box::new(error),
+    .map_err(|error| match error {
+        crate::setup_retry::Error::Exhausted {
+            last: Some(Error::Status { status: 503, .. }),
+            ..
+        } => Error::CloudCantReach,
+        error @ (crate::setup_retry::Error::Permanent(_)
+        | crate::setup_retry::Error::Exhausted { .. }) => Error::RetrySameCommand {
+            operation,
+            cause: Box::new(error),
+        },
     })
 }
 
@@ -1379,10 +1391,7 @@ mod tests {
                 callback(&url, &token(), MachineId::random(), &credential).await
             };
             let error = result.unwrap_err();
-            assert!(
-                !matches!(error, Error::RetrySameCommand { .. }),
-                "{error:?}"
-            );
+            assert!(matches!(error, Error::CloudCantReach), "{error:?}");
             assert_eq!(
                 error.to_string(),
                 "Cloud can't reach this Server through the relay or directly. Allow https to relay.ployz.dev from Cloud and from this Server, then enroll it again."
