@@ -72,8 +72,11 @@ web was stopped 26s.
 ```
 
 The last line says how long your service was down. `ployz volume runs data` keeps it as the
-move's message. The old server keeps an old copy, `data-web-1`. If the volume already has a mirror
-on `web-2`, the move starts from it. To move to a third server, first remove the old copy with
+move's message. While the old replica is stopped, `ployz status` names it as not serving, with the
+code it exited with. The row goes once the replica on `web-2` runs.
+
+The old server keeps an old copy, `data-web-1`. If the volume already has a mirror on `web-2`, the
+move starts from it. To move to a third server, first remove the old copy with
 the `ployz volume mirror rm` line the move prints.
 
 `ployz volume move`, `release`, `restore`, `mirror`, `mirror rm` and `sync --full` each start a run
