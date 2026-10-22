@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{net::IpAddr, sync::Arc};
 
 use clap::ArgMatches;
 use ployz_core::{
@@ -23,17 +23,45 @@ pub(super) fn token_request(matches: &ArgMatches) -> Result<InspectRequest, Erro
     {
         "auto" => PublicIpDiscovery::Auto,
         "" | "none" => PublicIpDiscovery::Disabled,
-        value => PublicIpDiscovery::Override(
-            value
-                .parse()
-                .map_err(|_| Error::usage(format!("invalid public IP {value:?}")))?,
-        ),
+        value => PublicIpDiscovery::Override(public_ip(value)?),
     };
     Ok(InspectRequest {
         advertised_endpoints: parse_endpoints(&string_values(matches, "wg-endpoint"))?,
         token: Some(TokenRequest { public_ip }),
         ..Default::default()
     })
+}
+
+/// A public IP the user gave: refused when no visitor could reach it, warned about when only a
+/// private network could (#2914).
+pub(super) fn public_ip(value: &str) -> Result<IpAddr, Error> {
+    let ip = value
+        .parse::<IpAddr>()
+        .map_err(|_| Error::usage(format!("invalid public IP {value:?}")))?;
+    let unreachable = match ip {
+        ip if ip.is_unspecified() => Some("an unspecified"),
+        ip if ip.is_loopback() => Some("a loopback"),
+        ip if ip.is_multicast() => Some("a multicast"),
+        IpAddr::V4(v4) if v4.is_link_local() => Some("a link-local"),
+        IpAddr::V6(v6) if v6.is_unicast_link_local() => Some("a link-local"),
+        IpAddr::V4(v4) if v4.is_broadcast() => Some("the broadcast"),
+        IpAddr::V4(_) | IpAddr::V6(_) => None,
+    };
+    if let Some(kind) = unreachable {
+        return Err(Error::usage(format!(
+            "{ip} is {kind} address, which no visitor can reach. Give the address the internet reaches this Server at, or none."
+        )));
+    }
+    let private = match ip {
+        IpAddr::V4(v4) => v4.is_private(),
+        IpAddr::V6(v6) => v6.is_unique_local(),
+    };
+    if private {
+        crate::ui::warn(format!(
+            "{ip} is a private address: only its own network reaches it, not the internet."
+        ));
+    }
+    Ok(ip)
 }
 
 pub(super) fn pinned(request: &InspectRequest) -> PinnedAddresses {

@@ -238,3 +238,35 @@ async fn an_older_entry_still_updates_the_target_it_could_not_seed() {
         "{stderr}"
     );
 }
+
+#[tokio::test]
+async fn clearing_a_public_ip_says_none_is_looked_up() {
+    let mut older = entry('b');
+    older.update_unavailable = false;
+    older.select_unimplemented = true;
+    let (address, _older) = serve_discovery(older).await;
+    let config = std::env::temp_dir().join(format!("ployz-endpoint-{}.yaml", MachineId::random()));
+    let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .env_remove("PLOYZ_TOKEN")
+        .env("PLOYZ_CLOUD_URL", "http://127.0.0.1:9")
+        .args(["--ployz-config", config.to_str().unwrap()])
+        .args([
+            "server",
+            "set",
+            "one",
+            "--public-ip",
+            "",
+            "--connect",
+            &format!("tcp://{address}"),
+        ])
+        .output()
+        .await
+        .unwrap();
+    let _ = std::fs::remove_file(&config);
+    assert!(output.status.success(), "{output:?}");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Server one advertises no public IP now, and Ployz won't look one up."),
+        "{output:?}"
+    );
+}

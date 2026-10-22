@@ -785,6 +785,7 @@ async fn apply_update(
     recovery: ArgMatches,
 ) -> Result<(), Error> {
     let accepts_ingress = update.accepts_ingress;
+    let public_ip_removed = update.public_ip == PublicIpUpdate::Remove;
     let updated = client
         .invoke_answered::<op::UpdateMachine>(
             UpdateMachineRequest { update },
@@ -828,6 +829,16 @@ async fn apply_update(
         (Err((_, error)), _) => return Err(error.into()),
     };
     crate::ui::stream(format_args!("Updated Server {}.", machine.name));
+    if public_ip_removed {
+        crate::ui::stream(format_args!(
+            "Server {} advertises no public IP now, and Ployz won't look one up.",
+            machine.name
+        ));
+        crate::ui::hint(&Hint::Next(format!(
+            "ployz server set {} --public-ip IP",
+            machine.name
+        )));
+    }
     // The update is committed; starting the Ingress Proxy for a new ingress role is a
     // follow-up. Turning the role off leaves the proxy serving: Hosted DNS stops
     // advertising the Server at its next sync, and `server rm` stops the proxy.
@@ -884,11 +895,7 @@ fn parse_update(matches: &ArgMatches) -> Result<MachineUpdate, Error> {
     let public_ip = match matches.get_one::<String>("public-ip").map(String::as_str) {
         None => PublicIpUpdate::Keep,
         Some("") | Some("none") => PublicIpUpdate::Remove,
-        Some(value) => PublicIpUpdate::Set(
-            value
-                .parse::<IpAddr>()
-                .map_err(|_| Error::usage(format!("invalid public IP {value:?}")))?,
-        ),
+        Some(value) => PublicIpUpdate::Set(helpers::public_ip(value)?),
     };
     let build_concurrency = match matches
         .get_one::<String>("build-concurrency")
