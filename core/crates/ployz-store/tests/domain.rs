@@ -820,6 +820,24 @@ fn a_retry_ships_the_cluster_domain_its_source_froze() {
 }
 
 #[test]
+fn adding_a_custom_domain_refuses_new_invalid_names_without_tightening_readers() {
+    let (store, who) = shop();
+    for (hostname, reason) in [
+        ("1.2.3.4", "IP address"),
+        ("ployz.app", "reserved"),
+        ("a.ployz.app", "reserved"),
+        ("xn--zz.com", "punycode"),
+    ] {
+        let legacy: Hostname = serde_json::from_value(json!(hostname)).unwrap();
+        assert_eq!(legacy.as_str(), hostname);
+        let refused = store.write(&who, &add(Some(hostname), None)).unwrap_err();
+        assert_eq!(refused.code, RpcErrorCode::InvalidArgument);
+        assert!(refused.message.contains(reason), "{hostname}: {refused}");
+    }
+    assert!(rows(&store, &who, &Trusted::default()).is_empty());
+}
+
+#[test]
 fn a_custom_domain_under_the_cluster_domain_is_refused() {
     let (store, who) = shop();
     for hostname in [
