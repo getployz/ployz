@@ -564,8 +564,7 @@ fn status_names_a_deployed_service_with_no_copies() {
     );
 }
 
-const NO_COPIES: &str =
-    "No copies running. For a global Service, no Server matches its placement.";
+const NO_COPIES: &str = "No copies running. For a global Service, no Server matches its placement.";
 
 #[test]
 fn a_service_removed_from_config_with_no_copies_points_at_a_plain_deploy() {

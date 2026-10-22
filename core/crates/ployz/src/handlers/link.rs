@@ -712,6 +712,7 @@ pub(super) fn status(root: &ArgMatches) -> Result<(), Error> {
                 root,
                 &view.namespace,
                 &view.services,
+                view.authored.as_ref(),
                 &deploying,
             )),
             Err(error) => crate::ui::warn_cause(UNCHECKED, &store.fail(error)),

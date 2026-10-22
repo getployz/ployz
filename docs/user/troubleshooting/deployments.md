@@ -250,7 +250,7 @@ The line goes away once enough replicas serve. A replica removed outside Ployz, 
 
 ## Status says a service runs no copies
 
-`api = No copies running.`
+`api = No copies running. For a global Service, no Server matches its placement.`
 
 `ployz status` prints this when a deployed service has no replica on any of your servers. It
 checks only when every server answered and none is down. Removing the only server a service ran
@@ -261,8 +261,11 @@ service to start its replicas on the servers you have:
 ployz deploy api
 ```
 
-For a global service, the deploy fails when no server accepts it. Change its placement or a
-server's labels first.
+If you removed the service from your config, status suggests plain `ployz deploy` instead, which
+finishes removing it.
+
+A global service runs only on servers its placement matches. When none matches, deploying it
+places no replica and the line stays. Change its placement or a server's labels, then deploy.
 
 ## My service shows Not seen running
 

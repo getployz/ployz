@@ -70,11 +70,13 @@ pub(super) struct NotServingCopy {
     runtime: ContainerRuntimeObservation,
 }
 
-/// `deployed` maps each deployed Service's name to the name its containers carry.
+/// `deployed` maps each deployed Service's name to the name its containers carry, and
+/// `authored` names every Service in Working State, when the Store says.
 pub(super) fn attention(
     root: &ArgMatches,
     namespace: &Namespace,
     deployed: &BTreeMap<ServiceName, ServiceName>,
+    authored: Option<&BTreeSet<ServiceName>>,
     deploying: &[DeploymentSummary],
 ) -> Vec<Attention> {
     let leaf = leaf_matches(root);
@@ -95,7 +97,7 @@ pub(super) fn attention(
         });
     match observed {
         Ok(Some(observed)) => {
-            let check = judge(observed, namespace, deployed, |words| {
+            let check = judge(observed, namespace, deployed, authored, |words| {
                 super::store::next(leaf, words)
             });
             check.warn();
@@ -292,6 +294,7 @@ fn judge(
     observed: Observed,
     namespace: &Namespace,
     deployed: &BTreeMap<ServiceName, ServiceName>,
+    authored: Option<&BTreeSet<ServiceName>>,
     next: impl Fn(&[&str]) -> String,
 ) -> Check {
     let Observed { machines, copies } = observed;
@@ -361,11 +364,14 @@ fn judge(
                 .iter()
                 .any(|service| service.identity.name == *runtime && !service.containers.is_empty())
             {
+                // A Service gone from Working State deploys only as part of a whole deploy.
+                let removed = authored.is_some_and(|authored| !authored.contains(name));
                 check.attention.push(no_copies(
                     QualifiedService {
                         namespace: namespace.clone(),
                         name: name.clone(),
                     },
+                    removed,
                     &next,
                 ));
             }
@@ -597,12 +603,23 @@ fn stale_address(
     }
 }
 
-fn no_copies(service: QualifiedService, next: impl Fn(&[&str]) -> String) -> Attention {
+/// Status can't tell a global Service from a replicated one with no copy to read, so the
+/// message also covers a global one whose placement no Server matches.
+fn no_copies(
+    service: QualifiedService,
+    removed: bool,
+    next: impl Fn(&[&str]) -> String,
+) -> Attention {
     Attention {
         reason: "no_copies".to_owned(),
-        message: "No copies running.".to_owned(),
+        message: "No copies running. For a global Service, no Server matches its placement."
+            .to_owned(),
         deployment: None,
-        next: Some(next(&["deploy", service.name.as_str()])),
+        next: Some(if removed {
+            next(&["deploy"])
+        } else {
+            next(&["deploy", service.name.as_str()])
+        }),
         subject: Some(Subject::NoCopies { service }),
     }
 }

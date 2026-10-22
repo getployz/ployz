@@ -521,9 +521,9 @@ the drain command. The warning leaves out what a drain won't move: services with
 mount on the server, global services, and Ployz's own web server. On your last server it skips that
 warning. After the removal it warns which replicated services now run no replicas, because all of
 them were on that server, and prints `ployz deploy` as the next step. It warns separately which
-replicated services may now run short of replicas. With `--json` the removal lists them as
-`no_copies` and `under_replicated`. `ployz status` keeps naming a service with no replicas until
-you deploy it.
+other replicated services may now run short of replicas. With `--json` the removal lists every
+service left short as `under_replicated`, and those with no replica on your other servers also as
+`no_copies`. `ployz status` keeps naming a service with no replicas until you deploy it.
 Ployz's build cache isn't one of the volumes you confirm losing.
 Otherwise services that ran only on that server stop. Your next deploy replaces its replicas on your other
 servers, except for services whose volume was on it (see
@@ -655,6 +655,11 @@ copies read-only and keeps their data but can delete its mirrors, even after an 
 add it back while a mirror there may be the last copy of a volume. Wipe or reinstall its disk only
 if you need nothing on it. Ployz no longer lists a forgotten server, so `ployz server rm` can't
 reach it. `ployz server forget` prints this warning each time it forgets servers.
+
+`ployz server forget` warns about replicated services as `ployz server rm` does, with one
+difference. A forgotten server may still run its replicas, so for a service with every replica on
+it, forget says "No copies of Replicated Services were seen on the remaining Servers" rather than
+that the service runs none. With `--json` it lists them as `no_copies` all the same.
 
 To add a forgotten server back, run `ployz server add` for it with `--reset`. It resets the server
 first, as `ployz server rm` would have, and asks before it does; `--yes` skips the question.

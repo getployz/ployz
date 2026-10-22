@@ -388,18 +388,16 @@ fn leave(root: &ArgMatches, removal: Removal) -> Result<(), Error> {
                 ));
             }
         }
-        if !short.no_copies.is_empty() {
-            crate::ui::warn(format!(
-                "Replicated Services now run no copies: {}. Their replicas were not moved.",
-                super::super::joined(&short.no_copies)
-            ));
-            crate::ui::hint(&Hint::Next("ployz deploy".to_owned()));
+        let stopped = if removal == Removal::Reset && reset_failure.is_none() {
+            Stopped::Yes
+        } else {
+            Stopped::Unproven
+        };
+        for warning in short.warnings(stopped) {
+            crate::ui::warn(warning);
         }
-        if !short.under_replicated.is_empty() {
-            crate::ui::warn(format!(
-                "Replicated Services may now be under-replicated: {}. Their replicas were not moved.",
-                super::super::joined(&short.under_replicated)
-            ));
+        if !short.no_copies.is_empty() {
+            crate::ui::hint(&Hint::Next("ployz deploy".to_owned()));
         }
 
         // The removal is committed: print it before local cleanup can fail.
@@ -513,18 +511,53 @@ fn running_services(
     ))
 }
 
-/// Each of the `docker` Volumes that keeps a Volume's data, by that Volume's name, so
-/// the list and `--accept-volume-loss` speak Volume names. Best effort: without a
-/// reachable Store, or for a Docker Volume no Environment owns, the Docker name stays.
-/// The replicated user Services the removal leaves a replica short: none on the last
-/// Server, whose removal stops everything.
 #[derive(Default)]
 struct LeftShort {
-    /// Every copy was on the removed Server, as a listing every other Server answered shows.
-    no_copies: Vec<QualifiedService>,
     under_replicated: Vec<QualifiedService>,
+    /// Those of `under_replicated` with every copy on the removed Server, as a listing
+    /// every other Server answered shows.
+    no_copies: Vec<QualifiedService>,
 }
 
+/// Whether the removal stopped the removed Server's copies: a forgotten Server, or one
+/// whose reset failed, may still run them.
+#[derive(Clone, Copy)]
+enum Stopped {
+    Yes,
+    Unproven,
+}
+
+impl LeftShort {
+    fn warnings(&self, stopped: Stopped) -> Vec<String> {
+        let mut warnings = Vec::new();
+        if !self.no_copies.is_empty() {
+            let services = super::super::joined(&self.no_copies);
+            warnings.push(match stopped {
+                Stopped::Yes => format!(
+                    "Replicated Services now run no copies: {services}. Their replicas were not moved."
+                ),
+                Stopped::Unproven => format!(
+                    "No copies of Replicated Services were seen on the remaining Servers: {services}. Their replicas were not moved."
+                ),
+            });
+        }
+        let rest: Vec<&QualifiedService> = self
+            .under_replicated
+            .iter()
+            .filter(|service| !self.no_copies.contains(service))
+            .collect();
+        if !rest.is_empty() {
+            warnings.push(format!(
+                "Replicated Services may now be under-replicated: {}. Their replicas were not moved.",
+                super::super::joined(&rest)
+            ));
+        }
+        warnings
+    }
+}
+
+/// The replicated user Services the removal leaves a replica short: none on the last
+/// Server, whose removal stops everything.
 fn left_short(removed: &MachineId, live: &LiveServices<RpcError>, last: bool) -> LeftShort {
     let mut short = LeftShort::default();
     if last {
@@ -548,14 +581,16 @@ fn left_short(removed: &MachineId, live: &LiveServices<RpcError>, last: bool) ->
             .flat_map(|observed| &observed.containers)
             .any(|copy| copy.as_observation().machine_id != *removed);
         if others_answered && !elsewhere {
-            short.no_copies.push(service);
-        } else {
-            short.under_replicated.push(service);
+            short.no_copies.push(service.clone());
         }
+        short.under_replicated.push(service);
     }
     short
 }
 
+/// Each of the `docker` Volumes that keeps a Volume's data, by that Volume's name, so
+/// the list and `--accept-volume-loss` speak Volume names. Best effort: without a
+/// reachable Store, or for a Docker Volume no Environment owns, the Docker name stays.
 fn volume_labels(root: &ArgMatches, docker: &[&str]) -> VolumeLabels {
     let mut owners = Vec::new();
     if docker.is_empty() {
@@ -676,8 +711,9 @@ mod tests {
     use serde_json::{Value, json};
 
     use super::{
-        Stopped, VolumeOwner, left_short, machine_removal_refusal, movable_services_on, qualified_labels,
-        replicated_services_on, reset_removal_refusal, running_services, services_on,
+        Stopped, VolumeOwner, left_short, machine_removal_refusal, movable_services_on,
+        qualified_labels, replicated_services_on, reset_removal_refusal, running_services,
+        services_on,
     };
     use crate::ui::Hint;
 
