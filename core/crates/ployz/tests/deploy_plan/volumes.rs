@@ -1340,6 +1340,72 @@ fn a_blocked_service_keeps_the_endpoint_its_old_hook_was_credited_for() {
 }
 
 #[test]
+fn a_blocked_service_taking_back_its_credited_hook_keeps_the_machine_in_debt() {
+    let (mut web, db) = web_and_db();
+    let mut api = spec("api");
+    let mut worker = spec("worker");
+    for spec in [&mut api, &mut worker] {
+        add_named_volume(spec, "a_shared");
+        make_provisioned(spec, "a_shared", 1_073_741_824);
+        spec.placement.constraints = [label_constraint("first")].into();
+    }
+    let mut c = spec("c");
+    let mut d = spec("d");
+    for spec in [&mut c, &mut d, &mut web] {
+        spec.placement.constraints = [label_constraint("second")].into();
+    }
+    for spec in [&mut c, &mut d] {
+        add_named_volume(spec, "z_shared");
+        make_provisioned(spec, "z_shared", 1_073_741_824);
+    }
+    api.pre_deploy = Some(PreDeployHook {
+        command: vec!["migrate".into()].try_into().unwrap(),
+        environment: Default::default(),
+        privileged: None,
+        timeout_millis: None,
+        user: None,
+    });
+    let mut old_api = api.clone();
+    old_api.container.image = "ghcr.io/getployz/api:0".into();
+    let mut old_hook = container('8', '2', &old_api, &service_id('a'));
+    old_hook
+        .try_update(|parts| parts.kind = ContainerKind::PreDeployHook)
+        .unwrap();
+    // second has one free endpoint. api's reservation credits its old hook there, and c and
+    // d spend both. Blocked, api takes its credit back, which leaves second one endpoint in
+    // debt; blocked c's refund only pays that debt, so d's Container takes the last one.
+    let snapshot = DeploySnapshot {
+        capacity: capacity([('1', 3), ('2', 1)]),
+        containers: vec![container('a', '1', &old_api, &service_id('a')), old_hook],
+        ..copies_snapshot(&[('2', CopyRole::Slot)], vec![])
+    };
+    let dependency = vec![ServiceDependency {
+        service: db.name.clone(),
+        condition: DependencyCondition::ServiceHealthy,
+    }];
+    let intent = DeployIntent::apply_all(
+        Namespace::parse("app").unwrap(),
+        [&db, &api, &worker, &c, &d, &web],
+        PlanOptions::default(),
+    )
+    .with_dependencies(BTreeMap::from([
+        (api.name.clone(), dependency.clone()),
+        (c.name.clone(), dependency),
+    ]));
+
+    let preview = runner_preview(&intent, &snapshot);
+
+    assert!(
+        matches!(
+            preview,
+            Err(PlanError::Service { ref service, ref source })
+                if service == "web" && matches!(**source, PlanError::InsufficientCapacity)
+        ),
+        "{preview:?}"
+    );
+}
+
+#[test]
 fn blocked_services_are_reported_in_deploy_order() {
     let (_, db) = web_and_db();
     let mut api = spec("api");

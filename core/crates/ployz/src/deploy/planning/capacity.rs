@@ -59,9 +59,12 @@ impl EndpointDemand {
     }
 }
 
+/// Free endpoints per Machine. A count goes negative when a reservation's credit for an
+/// old hook is taken back after the endpoints it freed were spent: the Machine is in
+/// debt, and later refunds pay the debt before they free anything.
 #[derive(Clone)]
 pub(super) struct CapacityBudget {
-    free: Option<BTreeMap<MachineId, u64>>,
+    free: Option<BTreeMap<MachineId, i64>>,
 }
 
 impl CapacityBudget {
@@ -70,7 +73,12 @@ impl CapacityBudget {
             free: snapshot.capacity.as_ref().map(|capacity| {
                 capacity
                     .iter()
-                    .map(|(id, capacity)| (*id, capacity.free_endpoints()))
+                    .map(|(id, capacity)| {
+                        (
+                            *id,
+                            i64::try_from(capacity.free_endpoints()).unwrap_or(i64::MAX),
+                        )
+                    })
                     .collect()
             }),
         }
@@ -78,10 +86,10 @@ impl CapacityBudget {
 
     pub(super) fn fits(&self, machine_id: &MachineId, peak: u64) -> bool {
         peak == 0
-            || self
-                .free
-                .as_ref()
-                .is_none_or(|free| free.get(machine_id).is_some_and(|free| *free >= peak))
+            || self.free.as_ref().is_none_or(|free| {
+                free.get(machine_id)
+                    .is_some_and(|free| u64::try_from(*free).is_ok_and(|free| free >= peak))
+            })
     }
 
     pub(super) fn fits_demand(&self, machine_id: &MachineId, demand: EndpointDemand) -> bool {
@@ -97,7 +105,9 @@ impl CapacityBudget {
         {
             *free
                 .get_mut(machine_id)
-                .expect("capacity candidates have fresh telemetry") -= demand.persistent;
+                .expect("capacity candidates have fresh telemetry") -=
+                i64::try_from(demand.persistent)
+                    .expect("a Service demands at most a few endpoints");
         }
         true
     }
@@ -147,7 +157,7 @@ impl CapacityBudget {
             let Some(machine_free) = free.get(machine_id) else {
                 continue;
             };
-            available = available.saturating_add(*machine_free);
+            available = available.saturating_add(u64::try_from(*machine_free).unwrap_or(0));
             if available >= required {
                 return true;
             }
