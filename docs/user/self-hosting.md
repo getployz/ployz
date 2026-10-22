@@ -242,6 +242,8 @@ before it stops.
 
 - **Back up one volume.** Everything Ployz Cloud stores, your organizations, projects and
   settings included, is in `ployz-cloud-self-host_postgres-data`.
+- **Restarting Postgres.** While it's down, pages say **This page couldn't load** and try again
+  every few seconds. They come back by themselves within seconds of Postgres starting.
 - **Rate-limit requests in your proxy.** Ployz Cloud doesn't limit most requests itself. If
   your instance is public, set a per-address request rate limit on `/api/` and `/auth/` in
   your proxy or tunnel. Leave out `/api/github/webhook`, since GitHub doesn't resend a
