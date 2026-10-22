@@ -971,6 +971,7 @@ async fn cloud_runner_deploys_a_store_deployment_once() {
     let (address, server) = listening(DeployService::new(machine('a', "one"))).await;
     let run = |runner: &str| {
         ployz::sdk::run_deployment(
+            ployz_core::Operator::Cloud,
             Arc::clone(&store),
             id.clone(),
             RunnerId::parse(runner).unwrap(),
@@ -1024,6 +1025,7 @@ async fn cloud_runner_deploys_a_store_deployment_once() {
         )
         .unwrap();
     let running = tokio::spawn(ployz::sdk::run_deployment(
+        ployz_core::Operator::Cloud,
         Arc::clone(&store),
         second.clone(),
         RunnerId::parse("cloud-run-3").unwrap(),
@@ -1067,6 +1069,7 @@ async fn cloud_runner_deploys_a_store_deployment_once() {
         )
         .unwrap();
     let never = ployz::sdk::run_deployment(
+        ployz_core::Operator::Cloud,
         Arc::clone(&store),
         admit.id.clone(),
         RunnerId::parse("cloud-run-4").unwrap(),
@@ -1319,6 +1322,7 @@ async fn failed_deploy_whose_container_is_removed_still_reports_its_output_lines
     let (address, server) = listening(service).await;
 
     let summary = ployz::sdk::run_deployment(
+        ployz_core::Operator::Cloud,
         Arc::clone(&store),
         id.clone(),
         RunnerId::parse("cloud-run-1").unwrap(),
@@ -1441,6 +1445,7 @@ async fn failed_deploy_whose_container_ran_out_of_memory_says_so() {
         let (address, server) = listening(service).await;
 
         let summary = ployz::sdk::run_deployment(
+            ployz_core::Operator::Cloud,
             Arc::clone(&store),
             id.clone(),
             RunnerId::parse("cloud-run-1").unwrap(),
@@ -1590,6 +1595,7 @@ async fn restarting_deploy_names_its_exit_and_last_line(
     let (address, server) = listening(service).await;
 
     let summary = ployz::sdk::run_deployment(
+        ployz_core::Operator::Cloud,
         Arc::clone(&store),
         id.clone(),
         RunnerId::parse("cloud-run-1").unwrap(),
@@ -1691,6 +1697,7 @@ async fn cloud_runner_applies_an_environment_removal() {
     let (address, server) = listening(service).await;
     let run = |id: DeploymentId, runner: &str| {
         ployz::sdk::run_deployment(
+            ployz_core::Operator::Cloud,
             Arc::clone(&store),
             id,
             RunnerId::parse(runner).unwrap(),
@@ -1841,6 +1848,7 @@ async fn cloud_runner_deletes_only_the_docker_volumes_a_deploy_accepted() {
 
     let first = deploy(1, Vec::new(), Trusted::default(), None).unwrap();
     let ran = ployz::sdk::run_deployment(
+        ployz_core::Operator::Cloud,
         Arc::clone(&store),
         first,
         RunnerId::parse("cloud-run-1").unwrap(),
@@ -1904,6 +1912,7 @@ async fn cloud_runner_deletes_only_the_docker_volumes_a_deploy_accepted() {
     // A same-named Docker Volume that appeared after the review is never deleted.
     held.lock().unwrap().push(on('b'));
     let ran = ployz::sdk::run_deployment(
+        ployz_core::Operator::Cloud,
         Arc::clone(&store),
         second,
         RunnerId::parse("cloud-run-2").unwrap(),
@@ -2027,6 +2036,7 @@ async fn cloud_runner_builds_nothing_on_servers_the_build_order_leaves_out() {
 
         let (address, server) = listening(DeployService::new(machine('a', "one"))).await;
         let summary = ployz::sdk::run_deployment(
+            ployz_core::Operator::Cloud,
             Arc::clone(&store),
             id.clone(),
             RunnerId::parse("cloud-run-1").unwrap(),
@@ -2114,6 +2124,7 @@ async fn a_runner_that_cannot_reach_its_server_names_it() {
             // As Cloud hands them over: the same descriptors the SDK parses.
             let connections = serde_json::from_value(serde_json::json!([connection])).unwrap();
             let summary = ployz::sdk::run_deployment(
+                ployz_core::Operator::Cloud,
                 Arc::clone(&store),
                 id.clone(),
                 RunnerId::parse("cloud-run-1").unwrap(),

@@ -1,12 +1,13 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::{
-    ContainerAction, ContainerId, CopyRotation, DataLoss, DependencyCondition, HookContainer,
-    IngressHost, MachineId, MachineObservation, MembershipObservation, Namespace, ObservedDataLoss,
-    PreservedVolume, PruneRefusal, QualifiedService, RequestedServiceSpec, ServiceContainer,
-    ServiceId, ServiceMode, ServiceName, ServiceObservation, ServicePlacementEligibility,
-    ServicePlacementIneligibleReason, UpdateOrder, VolumeToCreate, explicit_ingress_hosts,
-    hostname_owners, machine_matches_placement, same_service_mode_kind,
+    BlockedService, ContainerAction, ContainerId, CopyRotation, DataLoss, DependencyCondition,
+    HookContainer, IngressHost, MachineId, MachineObservation, MembershipObservation, Namespace,
+    ObservedDataLoss, PreservedVolume, PruneRefusal, QualifiedService, RequestedServiceSpec,
+    RpcError, RpcErrorCode, ServiceContainer, ServiceId, ServiceMode, ServiceName,
+    ServiceObservation, ServicePlacementEligibility, ServicePlacementIneligibleReason, UpdateOrder,
+    VolumeToCreate, explicit_ingress_hosts, hostname_owners, machine_matches_placement,
+    same_service_mode_kind,
 };
 
 use super::{
@@ -53,6 +54,7 @@ struct Planned {
     preserved_volumes: Vec<PreservedVolume>,
     prune_refusal: Option<PruneRefusal>,
     warnings: Vec<DeployWarning>,
+    blocked: Vec<BlockedService>,
 }
 
 /// An admitted, immutable sequence of Deploy operations and its informational preview.
@@ -605,7 +607,7 @@ fn seal_plan(planned: Planned, snapshot: &DeploySnapshot, namespace: &Namespace)
         depths: super::report::depths(&planned.groups),
         dependencies: super::report::dependencies(&planned.groups),
         placed_on,
-        blocked: Vec::new(),
+        blocked: planned.blocked,
     };
     DeployPlan {
         operations: planned.operations,
@@ -718,17 +720,54 @@ fn assemble_plan(
     };
     let mut service_operations = Vec::new();
     let mut ranges = Vec::new();
+    let mut blocked: Vec<BlockedService> = Vec::new();
+    // `requested` places every dependency before its dependents, so a Service whose
+    // dependency is blocked is seen after that dependency was.
     for spec in &requested {
+        if let Some(dependency) = intent
+            .dependencies()
+            .get(&spec.name)
+            .into_iter()
+            .flatten()
+            .find(|dependency| {
+                blocked
+                    .iter()
+                    .any(|entry| entry.service == dependency.service)
+            })
+        {
+            blocked.push(BlockedService {
+                service: spec.name.clone(),
+                error: dependency_blocked(&dependency.service),
+            });
+            continue;
+        }
         let first = service_operations.len();
-        let operations = plan_one_service(
+        let operations = match plan_one_service(
             spec,
             &intent.namespace,
             snapshot,
             &services,
             &mut budget,
             &intent.options,
-        )
-        .map_err(|source| service_error(name_errors_with_service, spec.name.as_str(), source))?;
+        ) {
+            Ok(operations) => operations,
+            // A Volume nobody can mount stops only the Services that mount it: the rest of
+            // the Deploy goes ahead, and these are reported not attempted (bet 8).
+            Err(error @ (PlanError::NoWriter { .. } | PlanError::CopiesUnknown { .. })) => {
+                blocked.push(BlockedService {
+                    service: spec.name.clone(),
+                    error: error.into_rpc_error(),
+                });
+                continue;
+            }
+            Err(source) => {
+                return Err(service_error(
+                    name_errors_with_service,
+                    spec.name.as_str(),
+                    source,
+                ));
+            }
+        };
         if let Some(machine_id) = operations.iter().find_map(|operation| match operation {
             DeployOperation::RunContainer { machine_id, .. }
             | DeployOperation::ReplaceContainer(ReplacementOperation { machine_id, .. }) => {
@@ -792,7 +831,11 @@ fn assemble_plan(
     if !tail.is_empty() {
         groups.push(ServiceGroup {
             service: None,
-            dependencies: requested.iter().map(|spec| spec.name.clone()).collect(),
+            dependencies: requested
+                .iter()
+                .map(|spec| spec.name.clone())
+                .filter(|name| !blocked.iter().any(|entry| entry.service == *name))
+                .collect(),
             steps: tail,
             publish: false,
         });
@@ -805,7 +848,18 @@ fn assemble_plan(
         preserved_volumes,
         prune_refusal,
         warnings,
+        blocked,
     })
+}
+
+/// Why a Service that depends on a blocked one is blocked too.
+fn dependency_blocked(dependency: &ServiceName) -> RpcError {
+    RpcError {
+        code: RpcErrorCode::Conflict,
+        message: format!("depends on {dependency}, which was not attempted"),
+        details: serde_json::json!({ "reason": "dependency_blocked", "dependency": dependency }),
+        cause: Vec::new(),
+    }
 }
 
 fn reject_hostname_conflicts(

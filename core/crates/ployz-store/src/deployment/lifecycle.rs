@@ -1483,6 +1483,7 @@ pub(crate) fn record(
                 });
             let (reason, cause) = real
                 .or_else(|| failure(&outcome, &stored.nodes, &preview.operations))
+                .or_else(|| blocked(&stored.nodes, &preview.blocked))
                 .or_else(|| {
                     success
                         .then(|| undeleted(&stored.nodes, &removed, &preview.operations))
@@ -1553,7 +1554,8 @@ pub(crate) fn record(
                                         && !saved.services.iter().any(|kept| kept.id == *id))
                         }))
             };
-            let status = if success && !nodes.iter().any(unfinished) {
+            // A blocked Service was never attempted, whatever the rest did (bet 8).
+            let status = if success && preview.blocked.is_empty() && !nodes.iter().any(unfinished) {
                 DeploymentStatus::Applied
             } else {
                 DeploymentStatus::Failed
@@ -1751,6 +1753,21 @@ fn failure(
     })
 }
 
+/// Why the first Service the planner blocked was never attempted.
+fn blocked(nodes: &[TargetNode], blocked: &[ployz_core::BlockedService]) -> Option<Failure> {
+    blocked.first().map(|entry| Failure {
+        reason: format!(
+            "{}: {}",
+            current_name(nodes, &entry.service),
+            entry.error.message
+        )
+        .chars()
+        .take(500)
+        .collect(),
+        cause: entry.error.cause.clone(),
+    })
+}
+
 /// Why a Deploy that succeeded left a removed Volume's data behind, in fixed words:
 /// a provider's error can quote its stderr, so only the operator log carries it.
 fn undeleted(
@@ -1836,7 +1853,7 @@ pub(super) enum Evidence<'run> {
 /// Each target node's Node Outcome from `evidence`. A Service the preview plans
 /// nothing for is Unchanged; one it plans for is Pending until confirmed or executed, then all
 /// completed is Deployed (Removed once it left Saved State), some ran is Failed and
-/// none ran is Not attempted. A Service that left Saved State with nothing planned
+/// none ran is Not attempted, as is one the planner blocked. A Service that left Saved State with nothing planned
 /// is Removed when the snapshot saw every Machine, else Not attempted; one with
 /// several runtime Services reads the worst of them. A kept Volume follows the
 /// targeted Services mounting it: Deployed once one of them is, whatever the others do. It is Unchanged when Applied State already
@@ -1862,6 +1879,11 @@ pub(super) fn node_outcomes(
         }
     };
     let service = |name: &ServiceName, kept: bool| match evidence {
+        Evidence::Planned { preview, .. } | Evidence::Executed { preview, .. }
+            if preview.blocked.iter().any(|entry| entry.service == *name) =>
+        {
+            NodeStatus::NotAttempted
+        }
         Evidence::Planned { confirmed, .. } if confirmed.contains(name) => landed(kept),
         Evidence::Planned { preview, .. } => {
             if preview

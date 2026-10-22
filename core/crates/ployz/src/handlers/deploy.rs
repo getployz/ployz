@@ -554,6 +554,7 @@ fn run_here(
         let runtime = runtime;
         runtime
             .block_on(crate::sdk::run_deployment(
+                ployz_core::Operator::Cli,
                 local,
                 id,
                 runner,

@@ -183,8 +183,10 @@ copy. See [Move a volume](move-a-volume.md).
 ## When a volume has no writer
 
 Each volume has one writer, the server that mounts it. A server you remove or reinstall turns
-every volume it held into a copy, so the volume keeps its data but has no writer. A deploy of a
-service that mounts such a volume refuses and names where the data is:
+every volume it held into a copy, so the volume keeps its data but has no writer. A deploy does
+not start a service that mounts such a volume. It deploys the other services, reports that
+service and every service that depends on it as **Not attempted**, and the deployment ends
+**Failed** with the reason, which names where the data is:
 
 ```
 Volume data has no writer; web-2 holds its only copy. Make it the writer: ployz volume restore data --from web-2
@@ -192,14 +194,22 @@ Volume data has no writer; web-2 holds its only copy. Make it the writer: ployz 
 
 Run the `ployz volume restore` line it prints to make that copy the writer again, then deploy.
 When no server in the cluster holds a copy, for example because the only one is on a server you
-removed, the deploy refuses rather than start the service on a new, empty volume:
+removed, the deploy still won't start the service on a new, empty volume:
 
 ```
 Volume data was deployed, but no Server in this Cluster holds a copy of it. If a Server you removed still holds its data, add that Server back, then run ployz volume restore data --from <server>
 ```
 
-To start over with an empty volume instead, remove it with `ployz volume rm data`, add it again
-and deploy.
+To start over with an empty volume instead, remove it with `ployz volume rm data`, which deletes
+its data, add it again and deploy.
+
+Without Ployz Cloud, `ployz volume restore` is not available, so the reason says so instead of
+printing it. Adding a removed server back keeps its copy; making that copy the writer needs
+Ployz Cloud, and starting over empty is the same `ployz volume rm data`:
+
+```
+Volume data has no writer; web-2 holds its only copy, and making it the writer needs Ployz Cloud. To start over with an empty Volume, run ployz volume rm data, which deletes its data, then add it again and deploy
+```
 
 In Ployz Cloud, when the surviving copy is a mirror, the volume's **Copies** lists it and
 **Use mirror** stages the same restore for your next deploy. An old copy gets no button there:
@@ -209,7 +219,7 @@ server holds the writer, so it names that server instead and suggests no restore
 If several servers hold copies, it names them. Keep the newest and delete the others from the
 volume's page in Ployz Cloud, which shows whether each is a mirror or an old copy. The error prints
 no `ployz volume mirror rm` line for them, because such a line run later could delete a copy that
-has since become the mirror. A volume that is [mid-move](move-a-volume.md#when-a-move-stops) refuses too, and names the
+has since become the mirror. A volume that is [mid-move](move-a-volume.md#when-a-move-stops) blocks its service too, and names the
 `ployz volume release` line that stops the move. A move that stopped before its first snapshot
 has nothing to release, so it names the `ployz volume move` line that runs the move again.
 

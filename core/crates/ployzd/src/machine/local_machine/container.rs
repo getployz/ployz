@@ -177,10 +177,9 @@ impl LocalMachine {
                     });
                 }
                 Err(SwitchError::NoWriter
-                    .rpc_error(ployz_core::no_writer_message(
+                    .rpc_error(ployz_core::no_writer_observation(
                         ployz_core::Namespace::declared_volume_name(name).unwrap_or(name.as_str()),
                         &copies,
-                        ployz_core::Operator::Cloud,
                     ))
                     .into())
             }

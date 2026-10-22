@@ -798,16 +798,21 @@ fn a_provisioned_volume_without_a_writer_refuses_and_names_the_way_back() {
             "Restore needs a single copy: keep the newest, delete each other one from the Volume's page in Ployz Cloud, which shows whether it is a mirror or an old copy, then run ployz volume restore data --from <server you kept>",
         ),
     ] {
-        let error = preview_deploy(&intent, &copies_snapshot(&copies, rows)).unwrap_err();
-        assert!(
-            matches!(error, PlanError::NoWriter { .. }),
-            "{case}: {error}"
-        );
-        assert!(error.to_string().contains(needle), "{case}: {error}");
-        let rpc = error.into_rpc_error();
+        let preview = preview_deploy(&intent, &copies_snapshot(&copies, rows)).unwrap();
+        let rpc = only_blocked(&preview);
+        assert!(rpc.message.contains(needle), "{case}: {}", rpc.message);
         assert_eq!(rpc.code, RpcErrorCode::Conflict, "{case}");
         assert_eq!(rpc.details.get("reason").unwrap(), "no_writer", "{case}");
     }
+}
+
+/// The one Service `preview` blocked, and why. Fails when it planned work instead.
+fn only_blocked(preview: &DeployPreview) -> RpcError {
+    assert!(preview.operations.is_empty(), "{:?}", operations(preview));
+    let [blocked] = preview.blocked.as_slice() else {
+        panic!("{:?}", preview.blocked)
+    };
+    blocked.error.clone()
 }
 
 #[test]
@@ -834,18 +839,14 @@ fn a_silent_machine_leaves_the_writer_unknown_instead_of_naming_a_copy() {
                 .insert(machine_id('3'), Err(error)),
         };
 
-        let error = preview_deploy(&intent, &snapshot).unwrap_err();
+        let rpc = only_blocked(&preview_deploy(&intent, &snapshot).unwrap());
 
         assert_eq!(
-            error.to_string(),
+            rpc.message,
             "third did not answer, so Volume data's copies are unknown. Bring third back, or deploy the other services by name",
             "{case}"
         );
-        assert_eq!(
-            error.into_rpc_error().code,
-            RpcErrorCode::Unavailable,
-            "{case}"
-        );
+        assert_eq!(rpc.code, RpcErrorCode::Unavailable, "{case}");
     }
 }
 
@@ -869,15 +870,14 @@ fn a_cloud_volume_without_a_writer_is_named_as_authored() {
     .unwrap();
     let physical = app_volume(&format!("vol-{volume}"));
 
-    let error = preview_deploy(
+    let preview = preview_deploy(
         &intent,
         &copies_snapshot_of(&physical, &[('1', CopyRole::Switching)], vec![]),
     )
-    .unwrap_err();
+    .unwrap();
 
-    assert!(matches!(error, PlanError::NoWriter { .. }), "{error}");
     assert_eq!(
-        error.to_string(),
+        only_blocked(&preview).message,
         "Volume echo is mid-Move; it is held as first (switching); ployz volume release echo stops it"
     );
 }
@@ -908,17 +908,14 @@ fn lowered_echo(deployed: bool) -> (DeployIntent, DockerVolumeName) {
 fn a_deployed_volume_no_member_holds_refuses_instead_of_starting_empty() {
     let (intent, physical) = lowered_echo(true);
 
-    let error = preview_deploy(&intent, &copies_snapshot_of(&physical, &[], vec![])).unwrap_err();
+    let preview = preview_deploy(&intent, &copies_snapshot_of(&physical, &[], vec![])).unwrap();
 
-    assert!(matches!(error, PlanError::NoWriter { .. }), "{error}");
+    let rpc = only_blocked(&preview);
     assert_eq!(
-        error.to_string(),
+        rpc.message,
         "Volume echo was deployed, but no Server in this Cluster holds a copy of it. If a Server you removed still holds its data, add that Server back, then run ployz volume restore echo --from <server>"
     );
-    assert_eq!(
-        error.into_rpc_error().details.get("reason").unwrap(),
-        "no_writer"
-    );
+    assert_eq!(rpc.details.get("reason").unwrap(), "no_writer");
 }
 
 #[test]
@@ -927,9 +924,14 @@ fn a_deployed_volume_with_a_silent_machine_leaves_its_copies_unknown() {
     let mut snapshot = copies_snapshot_of(&physical, &[], vec![]);
     snapshot.storage_capacity.remove(&machine_id('2'));
 
-    let error = preview_deploy(&intent, &snapshot).unwrap_err();
+    let rpc = only_blocked(&preview_deploy(&intent, &snapshot).unwrap());
 
-    assert!(matches!(error, PlanError::CopiesUnknown { .. }), "{error}");
+    assert_eq!(rpc.code, RpcErrorCode::Unavailable, "{}", rpc.message);
+    assert!(
+        rpc.message.contains("copies are unknown"),
+        "{}",
+        rpc.message
+    );
 }
 
 #[test]
@@ -1002,14 +1004,19 @@ fn a_full_deploy_blocks_only_the_service_whose_volume_has_no_writer() {
         .iter()
         .filter_map(|operation| operation.service_name().cloned())
         .collect();
-    assert_eq!(planned, [web.name.clone()], "{:?}", operations(&preview));
+    assert_eq!(
+        planned,
+        std::slice::from_ref(&web.name),
+        "{:?}",
+        operations(&preview)
+    );
     assert!(preview.volumes_to_create.is_empty());
     let [blocked] = preview.blocked.as_slice() else {
         panic!("{:?}", preview.blocked)
     };
     assert_eq!(blocked.service, db.name);
     assert_eq!(blocked.error.code, RpcErrorCode::Conflict);
-    assert_eq!(blocked.error.details["reason"], "no_writer");
+    assert_eq!(blocked.error.details.get("reason").unwrap(), "no_writer");
     assert!(
         blocked
             .error
@@ -1051,7 +1058,7 @@ fn a_service_that_depends_on_a_blocked_one_is_blocked_too() {
         .iter()
         .map(|blocked| (blocked.service.as_str(), blocked.error.message.as_str()))
         .collect();
-    assert_eq!(blocked[0].0, "db");
+    assert_eq!(blocked.first().map(|entry| entry.0), Some("db"));
     assert_eq!(
         blocked.get(1).copied(),
         Some(("web", "depends on db, which was not attempted"))

@@ -169,7 +169,7 @@ its new containers printed. A failed deployment opens on the card that failed.
 | **Preparing** | Started: Ployz unpacks its upload, builds and plans. `ployz deployment ls` says `preparing`. |
 | **Deploying** | Rolling out |
 | **Deployed** | Every change applied |
-| **Failed** | Something stopped it. A service marked **Not attempted** never started. |
+| **Failed** | Something stopped it. A service marked **Not attempted** never started: it waited on a failed service, or mounts a [volume with no writer](../services/volumes.md#when-a-volume-has-no-writer), or depends on one that does. |
 | **Cancelled** | Someone cancelled it. A service it stopped partway reads **Cancelled**, not **Failed**. |
 | **Unknown** | Ployz can't tell what applied. Redeploy it. |
 

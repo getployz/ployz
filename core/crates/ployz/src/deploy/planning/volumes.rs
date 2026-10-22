@@ -416,9 +416,14 @@ impl VolumePlan<'_> {
                 volume_constraints(spec, snapshot, self, &mut machines)?;
                 Ok(())
             })();
-            result.map_err(|source| {
-                super::service_error(name_errors_with_service, spec.name.as_str(), source)
-            })?;
+            match result {
+                // A Volume nobody can mount blocks only its Service, once that Service is
+                // planned; the other definitions still get checked.
+                Err(PlanError::NoWriter { .. } | PlanError::CopiesUnknown { .. }) => {}
+                result => result.map_err(|source| {
+                    super::service_error(name_errors_with_service, spec.name.as_str(), source)
+                })?,
+            }
         }
         Ok(())
     }

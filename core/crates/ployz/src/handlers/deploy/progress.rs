@@ -43,21 +43,30 @@ pub(super) fn frame(view: &DeploymentView) -> Frame {
                 node,
                 build.is_some_and(|build| build.status == BuildStatus::Failed),
             );
-            row.detail = build.map(|build| {
-                let word = match build.status {
-                    BuildStatus::Pending => "build pending",
-                    BuildStatus::Building => "building",
-                    BuildStatus::Built => "built",
-                    BuildStatus::Reused => "build reused",
-                    BuildStatus::Failed => "build failed",
-                };
-                match (&build.server, build.status) {
-                    (
-                        Some(server),
-                        BuildStatus::Building | BuildStatus::Built | BuildStatus::Failed,
-                    ) => format!("{word} on {server}"),
-                    _ => word.to_owned(),
-                }
+            let blocked = view.preview.as_ref().and_then(|preview| {
+                preview
+                    .blocked
+                    .iter()
+                    .find(|entry| entry.service == *runtime)
+                    .map(|entry| entry.error.message.clone())
+            });
+            row.detail = blocked.or_else(|| {
+                build.map(|build| {
+                    let word = match build.status {
+                        BuildStatus::Pending => "build pending",
+                        BuildStatus::Building => "building",
+                        BuildStatus::Built => "built",
+                        BuildStatus::Reused => "build reused",
+                        BuildStatus::Failed => "build failed",
+                    };
+                    match (&build.server, build.status) {
+                        (
+                            Some(server),
+                            BuildStatus::Building | BuildStatus::Built | BuildStatus::Failed,
+                        ) => format!("{word} on {server}"),
+                        _ => word.to_owned(),
+                    }
+                })
             });
         }
         rows.push(row);
@@ -710,10 +719,9 @@ mod tests {
         let text = crate::ui::progress::settled_text(&frame(&view));
 
         assert!(
-            text.contains(&format!("db: not attempted ({reason})")),
+            text.contains(&format!("db: not started ({reason})")),
             "{text}"
         );
-        assert!(text.contains("1 deployed"), "{text}");
         assert!(text.contains("2 not attempted"), "{text}");
         let failure = completion(&view, None, command).unwrap_err();
         assert_eq!(crate::ui::after_result(&failure), 1);
