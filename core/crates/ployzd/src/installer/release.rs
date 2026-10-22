@@ -271,9 +271,11 @@ async fn release_checksum(
     target: &MachineVersion,
     archive: &str,
 ) -> Result<String, Error> {
+    // Every published release has checksums.txt, so without one there is no release.
     let checksums = source
-        .release_file(target, "checksums.txt", "download release checksums")
-        .await?;
+        .release_file_if_present(target, "checksums.txt", "download release checksums")
+        .await?
+        .ok_or_else(|| Error::ReleaseSelection(format!("no such release {target}")))?;
     let signature = source
         .release_file_if_present(
             target,
@@ -574,6 +576,21 @@ mod tests {
             resolve(&MachineRelease::Beta, None).await,
             Err(Error::ReleaseSelection(message)) if message.contains("another release line")
         ));
+    }
+
+    #[tokio::test]
+    async fn a_release_without_checksums_does_not_exist() {
+        // #2888: every published release has checksums.txt, so its absence means no release.
+        let root = tempfile::tempdir().unwrap();
+        let source = ReleaseSource::Local(root.path().to_owned());
+        let target = MachineVersion::parse("0.3.0-beta.99").unwrap();
+        let error = release_checksum(&source, &target, "ployzd.tar.gz")
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "release selection: no such release 0.3.0-beta.99"
+        );
     }
 
     #[test]

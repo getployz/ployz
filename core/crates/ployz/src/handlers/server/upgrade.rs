@@ -10,6 +10,7 @@ use ployz_core::{
 use reqwest::Method;
 use serde::{Deserialize, Serialize};
 use tokio::time::Instant;
+use tokio_util::sync::CancellationToken;
 
 use crate::{
     cloud_account::{self, Credential, Settled, StoreCallError},
@@ -125,7 +126,9 @@ pub(in crate::handlers) fn upgrade(root: &ArgMatches) -> Result<(), Error> {
     with_client(root, |client| {
         Box::pin(async move {
             let machines = selected_machines(client, &selectors).await?;
-            let (result, outcome) = run_all(client, &machines, release, ingress, rerun).await;
+            let cancellation = crate::cancellation::on_ctrl_c();
+            let (result, outcome) =
+                run_all(client, &machines, release, ingress, rerun, &cancellation).await;
             let outcome = outcome.map_err(|error| {
                 super::super::ingress_hints(error, |args| {
                     super::super::rerun(&recovery_matches, args)
@@ -308,6 +311,15 @@ fn cut_short(
     if attempts.is_empty() {
         return Err(error);
     }
+    // A run where no Server upgraded failed outright; it exits partial only after one did.
+    let error = if attempts
+        .iter()
+        .any(|attempt| attempt["outcome"] == "succeeded")
+    {
+        error
+    } else {
+        error.outcome()
+    };
     if let Some(warning) = unattempted_warning(names(unattempted), after) {
         crate::ui::warn(warning);
     }
@@ -345,6 +357,12 @@ fn stopped(server: &str, upgrade: &CloudUpgrade) -> Option<Error> {
         .map(|message| format!(": {message}"))
         .unwrap_or_default();
     let message = match upgrade.outcome.as_str() {
+        "succeeded" if upgrade.from_version == upgrade.target_version => {
+            crate::ui::stream(format_args!(
+                "Server {server} already runs {target}; nothing to do."
+            ));
+            return None;
+        }
         "succeeded" => {
             crate::ui::stream(format_args!("Upgraded Server {server} to {target}."));
             return None;
@@ -388,12 +406,22 @@ async fn run_all(
     release: MachineRelease,
     ingress: IngressImage,
     rerun: String,
+    cancellation: &CancellationToken,
 ) -> (Option<serde_json::Value>, Result<(), Error>) {
     let mut attempts = Vec::new();
     for (index, machine) in machines.iter().enumerate() {
         let attempt_id = MachineUpgradeAttemptId::random();
         let mut seen = None;
-        let stopped = match run_one(client, machine, release.clone(), attempt_id, &mut seen).await {
+        let ran = run_one(
+            client,
+            machine,
+            release.clone(),
+            attempt_id,
+            &mut seen,
+            cancellation,
+        )
+        .await;
+        let stopped = match ran {
             Err(error) => {
                 // An accepted attempt is committed evidence: keep it in the result.
                 attempts.extend(seen.map(|attempt| Attempted {
@@ -402,8 +430,19 @@ async fn run_all(
                 }));
                 error
             }
-            Ok(attempt) => {
-                print_attempt(machine, &attempt);
+            Ok(Ran { attempt, first }) => {
+                // A current daemon settles a Succeeded on its first reply only when it
+                // installed nothing.
+                if let (MachineUpgradeOutcome::Succeeded { version }, true) =
+                    (&attempt.outcome, first)
+                {
+                    crate::ui::stream(format_args!(
+                        "Server {} already runs {version}, at or past {release}; nothing to do.",
+                        machine.name
+                    ));
+                } else {
+                    print_attempt(machine, &attempt);
+                }
                 let stopped = match &attempt.outcome {
                     MachineUpgradeOutcome::Succeeded { .. } => None,
                     MachineUpgradeOutcome::Failed {
@@ -451,7 +490,18 @@ async fn run_all(
         if let Some(warning) = unattempted_warning(names(unattempted), machine.name.as_str()) {
             crate::ui::warn(warning);
         }
-        // A recorded attempt is a result: print it, then exit partial.
+        // A run where no Server upgraded failed outright; it exits partial only after one did.
+        let stopped = if attempts.iter().any(|attempted| {
+            matches!(
+                attempted.attempt.outcome,
+                MachineUpgradeOutcome::Succeeded { .. }
+            )
+        }) {
+            stopped
+        } else {
+            stopped.outcome()
+        };
+        // A recorded attempt is a result: print it, then exit by `stopped`.
         let result = (!attempts.is_empty()).then(|| {
             json!({
                 "attempts": attempts,
@@ -498,6 +548,13 @@ async fn selected_machines(
     Ok(selected)
 }
 
+/// An upgrade's terminal evidence, and whether it settled on the request's first reply.
+#[derive(Debug)]
+struct Ran {
+    attempt: MachineUpgradeAttempt,
+    first: bool,
+}
+
 async fn run_one(
     client: &mut impl UpgradeRequests,
     machine: &Machine,
@@ -505,50 +562,81 @@ async fn run_one(
     attempt_id: MachineUpgradeAttemptId,
     // The latest observed evidence, kept when a later poll fails.
     seen: &mut Option<MachineUpgradeAttempt>,
-) -> Result<MachineUpgradeAttempt, Error> {
+    cancellation: &CancellationToken,
+) -> Result<Ran, Error> {
     let deadline = Instant::now() + OBSERVATION_TIMEOUT;
     let request = RequestMachineUpgradeRequest {
         attempt_id,
         release,
     };
-    let accepted = match client
-        // A Server that cannot take the request within a minute is down, not busy.
-        .request_upgrade(request.clone(), machine, crate::setup_retry::WAIT)
-        .await
-    {
+    // A Server that cannot take the request within a minute is down, not busy.
+    let requested = tokio::select! {
+        requested = client.request_upgrade(request.clone(), machine, crate::setup_retry::WAIT) => requested,
+        () = cancellation.cancelled() => return Err(stopped_following(machine, attempt_id, false)),
+    };
+    let accepted = match requested {
         Ok(accepted) => accepted,
         Err(crate::setup_retry::Error::Permanent(error)) => return Err(error.into()),
         Err(exhausted) => return Err(uncertain(machine, attempt_id, exhausted)),
     };
     *seen = Some(accepted.clone());
     if accepted.is_terminal() {
-        return Ok(accepted);
+        return Ok(Ran {
+            attempt: accepted,
+            first: true,
+        });
     }
     print_attempt(machine, &accepted);
 
     loop {
-        if tokio::time::timeout_at(deadline, tokio::time::sleep(POLL_INTERVAL))
-            .await
-            .is_err()
-        {
+        let waited = tokio::select! {
+            waited = tokio::time::timeout_at(deadline, tokio::time::sleep(POLL_INTERVAL)) => waited,
+            () = cancellation.cancelled() => return Err(stopped_following(machine, attempt_id, true)),
+        };
+        if waited.is_err() {
             return Err(uncertain_timeout(machine, attempt_id));
         }
-        let observed = client
-            .poll_upgrade(
+        let polled = tokio::select! {
+            polled = client.poll_upgrade(
                 request.clone(),
                 machine,
                 deadline.saturating_duration_since(Instant::now()),
-            )
-            .await
-            .map_err(|error| match error {
-                crate::setup_retry::Error::Permanent(error) => error.into(),
-                exhausted => uncertain(machine, attempt_id, exhausted),
-            })?;
+            ) => polled,
+            () = cancellation.cancelled() => return Err(stopped_following(machine, attempt_id, true)),
+        };
+        let observed = polled.map_err(|error| match error {
+            crate::setup_retry::Error::Permanent(error) => error.into(),
+            exhausted => uncertain(machine, attempt_id, exhausted),
+        })?;
         if observed.is_terminal() {
-            return Ok(observed);
+            return Ok(Ran {
+                attempt: observed,
+                first: false,
+            });
         }
         *seen = Some(observed);
     }
+}
+
+/// Ctrl-C stops following an upgrade, never the upgrade: the Server runs it on its own.
+fn stopped_following(
+    machine: &Machine,
+    attempt_id: MachineUpgradeAttemptId,
+    accepted: bool,
+) -> Error {
+    let name = &machine.name;
+    let message = if accepted {
+        format!(
+            "Stopped following upgrade {attempt_id}; Server {name} goes on with it. See how it ended with `ployz server show {name}`."
+        )
+    } else {
+        format!(
+            "Cancelled before Server {name} answered; it may still have started upgrade {attempt_id}. Check with `ployz server show {name}`."
+        )
+    };
+    Error::coded(RpcErrorCode::Internal, message)
+        .hint(journal_hint(attempt_id))
+        .interrupted()
 }
 
 fn print_attempt(machine: &Machine, attempt: &MachineUpgradeAttempt) {
@@ -732,9 +820,54 @@ mod tests {
             MachineRelease::parse("1.2.3").unwrap(),
             IngressImage::Latest,
             "ployz server upgrade 1.2.3 a b".into(),
+            &CancellationToken::new(),
         )
         .await;
         (result, outcome, client.moved)
+    }
+
+    #[tokio::test]
+    async fn a_lone_failed_upgrade_exits_failed_not_partial() {
+        // #2888: one Server that failed to upgrade exited 3, as if part of the run worked.
+        let failed = || MachineUpgradeOutcome::Failed {
+            stage: ployz_core::MachineUpgradeStage::Acquiring,
+            error: "release selection: no such release 0.3.0-beta.99".into(),
+        };
+        let (_, outcome, _) = run_sequence(&[machine('a', 1)], vec![failed()], None).await;
+        assert!(outcome.unwrap_err().is_outcome());
+        let (_, outcome, _) = run_sequence(
+            &[machine('a', 1), machine('b', 2)],
+            vec![succeeded(), failed()],
+            None,
+        )
+        .await;
+        assert!(!outcome.unwrap_err().is_outcome(), "one upgraded: partial");
+    }
+
+    #[tokio::test]
+    async fn ctrl_c_stops_following_and_leaves_the_upgrade_running() {
+        // #2888: Ctrl-C was ignored until the upgrade finished.
+        let cancellation = CancellationToken::new();
+        cancellation.cancel();
+        let mut client = Sequence {
+            outcomes: vec![MachineUpgradeOutcome::Accepted].into(),
+            ingress: None,
+            moved: Vec::new(),
+        };
+        let mut seen = None;
+        let error = run_one(
+            &mut client,
+            &machine('a', 1),
+            MachineRelease::Stable,
+            MachineUpgradeAttemptId::random(),
+            &mut seen,
+            &cancellation,
+        )
+        .await
+        .err()
+        .unwrap();
+        assert!(error.is_interrupted());
+        assert!(error.to_string().contains("ployz server show a"), "{error}");
     }
 
     #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
@@ -875,6 +1008,7 @@ mod tests {
             MachineRelease::parse("beta").unwrap(),
             attempt_id,
             &mut None,
+            &CancellationToken::new(),
         )
         .await
         .unwrap_err();
@@ -904,6 +1038,7 @@ mod tests {
             MachineRelease::parse("1.2.3").unwrap(),
             attempt_id,
             &mut None,
+            &CancellationToken::new(),
         )
         .await
         .unwrap_err()
@@ -1061,6 +1196,7 @@ mod tests {
             )
         };
         let mut seen = None;
+        let cancellation = CancellationToken::new();
         let (attempt, new) = tokio::join!(
             run_one(
                 &mut client,
@@ -1068,11 +1204,12 @@ mod tests {
                 MachineRelease::parse("1.2.3").unwrap(),
                 MachineUpgradeAttemptId::random(),
                 &mut seen,
+                &cancellation,
             ),
             restart
         );
         new.shutdown_background();
-        let attempt = attempt.unwrap();
+        let attempt = attempt.unwrap().attempt;
         assert!(
             matches!(attempt.outcome, MachineUpgradeOutcome::Succeeded { .. }),
             "{attempt:?}"
@@ -1093,6 +1230,7 @@ mod tests {
             MachineRelease::parse("1.2.3").unwrap(),
             MachineUpgradeAttemptId::random(),
             &mut seen,
+            &CancellationToken::new(),
         )
         .await
         .unwrap_err();

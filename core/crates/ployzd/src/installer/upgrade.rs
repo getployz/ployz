@@ -203,6 +203,19 @@ async fn request_locked(
     .await
     .map_err(Error::Resolve)?;
     downgrade.admit(installed.as_ref(), &target)?;
+    if already_installed(&request.release, installed.as_ref(), &target) {
+        // Nothing to install or restart: the attempt settles on its first reply.
+        let stored = StoredAttempt {
+            requested: request.release,
+            attempt: MachineUpgradeAttempt {
+                attempt_id: request.attempt_id,
+                target: target.clone(),
+                outcome: MachineUpgradeOutcome::Succeeded { version: target },
+            },
+        };
+        write(data_dir, &stored)?;
+        return Ok(stored.attempt);
+    }
     let mut stored = StoredAttempt {
         requested: request.release,
         attempt: MachineUpgradeAttempt {
@@ -223,6 +236,16 @@ async fn request_locked(
         admission.clear_active(request.attempt_id.as_str())?;
     }
     Ok(stored.attempt)
+}
+
+/// A channel resolved to the release this Machine already runs, since a channel never
+/// moves it backwards. An exact version reinstalls on request.
+fn already_installed(
+    requested: &MachineRelease,
+    installed: Option<&MachineVersion>,
+    target: &MachineVersion,
+) -> bool {
+    !matches!(requested, MachineRelease::Exact(_)) && installed == Some(target)
 }
 
 async fn settle(
