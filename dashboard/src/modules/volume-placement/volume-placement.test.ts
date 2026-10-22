@@ -503,7 +503,7 @@ describe("recovery", () => {
       kind: "unreported", server: { id: id("web-1"), name: "web-1" }, heard: "lacks", lack: "Volume move needs a newer Ployz on web-1.",
       mirror: { id: id("web-2"), name: "web-2" }, lostAfter: at,
     });
-    const outdated: Member = { machine: { id: id("web-3"), name: "web-3" }, answered: false, lack: "Volume move needs a newer Ployz on web-3. 0.3.1 is out.", outdated: true };
+    const outdated: Member = { machine: { id: id("web-3"), name: "web-3" }, answered: false, lack: "Volume move needs a newer Ployz on web-3, which runs 0.3.0. Upgrade it to 0.3.1.", outdated: true };
     expect(recover([mirrorAsOf("web-2", at), outdated], row(["web-2"])))
       .toMatchObject({ kind: "unreported", server: { name: "web-3" }, heard: "outdated" });
   });

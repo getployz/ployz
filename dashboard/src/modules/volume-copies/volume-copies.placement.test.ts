@@ -20,7 +20,7 @@ type Run = ReturnType<typeof run> | null;
 const lacking = (server: string): Member =>
   ({ machine: { id: id(server), name: server }, answered: false, lack: `Volume copies need a newer Ployz on ${server}.` });
 const outdated = (server: string): Member =>
-  ({ machine: { id: id(server), name: server }, answered: false, lack: `Volume copies need a newer Ployz on ${server}. 0.3.0 is out.`, outdated: true });
+  ({ machine: { id: id(server), name: server }, answered: false, lack: `Volume copies need a newer Ployz on ${server}, which runs 0.2.4. Upgrade it to 0.3.0.`, outdated: true });
 const status = (server: string, seen: Partial<Omit<MirrorStatusView, "machine">>): MirrorStatusView =>
   ({ machine: id(server), okAt: null, matchedAt: null, failedAt: null, failure: null, ...seen });
 const copies = (placement: PlacementRow | null, members = [member("web-1", "writer"), member("web-2", "mirror")], active: Run = null, statuses: MirrorStatusView[] = []) => {

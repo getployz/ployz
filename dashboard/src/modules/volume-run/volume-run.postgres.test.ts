@@ -3066,7 +3066,7 @@ describe("volume runs", () => {
 
         expect(output.result).toMatchObject({ refused: { code: "server_lacks" } });
         expect(verbs).toEqual([]);
-        expect(await rows()).toMatchObject([{ state: "failed", message: "Volume mirror needs a newer Ployz on fsn-2. 0.2.5 is out." }]);
+        expect(await rows()).toMatchObject([{ state: "failed", message: "Volume mirror needs a newer Ployz on fsn-2, which runs 0.2.4. Upgrade it to 0.2.5." }]);
       } finally {
         vi.unstubAllGlobals();
       }
@@ -3099,7 +3099,7 @@ describe("volume runs", () => {
         await execute(run.id);
 
         expect(verbs).toEqual([]);
-        expect(await rows()).toMatchObject([{ state: "failed", message: "Mirror removal needs a newer Ployz on fsn-2. 0.2.5 is out." }]);
+        expect(await rows()).toMatchObject([{ state: "failed", message: "Mirror removal needs a newer Ployz on fsn-2, which runs 0.2.4. Upgrade it to 0.2.5." }]);
       } finally {
         vi.unstubAllGlobals();
       }

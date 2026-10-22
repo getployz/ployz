@@ -40,7 +40,7 @@ import {
   withClusterBudget,
 } from "#/modules/runtime/organization-runtime.server";
 import { RuntimeConnectionFailure } from "#/modules/runtime/runtime-connection-errors";
-import { type Requirement, requirementFor, requirements, serverSupports } from "#/modules/runtime/daemon-compat";
+import { movedRouting, type Requirement, requirementFor, requirements, serverSupports } from "#/modules/runtime/daemon-compat";
 import { observeVolumeCopies, type PloyzSdkError, RpcError, sdkFailureMessage, setVolumeCopyRefusal } from "#/modules/runtime/ployz.server";
 import {
   alreadyOn, newestGuid, type PlanInput, type Planned, planForwardRelease, planFromCopies, type Refusal, type RefusalCode, type ReleaseFrom, restoreSource,
@@ -1459,6 +1459,9 @@ export const observeVolumeMembers = Effect.fn("VolumeRun.observeMembers")(functi
       ? resizeRequirements(run.recordedBytes, run.args.maximum_bytes).find((requirement) => serverSupports(capabilities, requirement) !== true)
       : undefined;
     const sized = run?.kind === "resize" ? { boundBytes: boundOf(frame.volumes, machine.id, dockerVolume) } : {};
+    if (run?.kind === "move" && isDestination(run, ref) && serverSupports(capabilities, movedRouting) === false) {
+      return lacks(movedRouting.capability, run.kind);
+    }
     return session.volumeSwitch(machine.id, { command: "inspect_volume_copy", payload: { name: dockerVolume } }).pipe(
       clusterRead,
       Effect.timeout(OBSERVE_TIMEOUT),
@@ -1495,7 +1498,8 @@ const lackSentence = Effect.fn("VolumeRun.lackSentence")(function* (
   // A newer Ployz is claimed only on proof the Server's release is behind; otherwise the sentence says only what it lacks.
   const missing = `${feature.feature} ${feature.plural ? "are" : "is"} not ${server.daemonVersion === "" ? "available" : `in Ployz ${server.daemonVersion}`} on ${server.name}`;
   if (release !== null && isBehind(server.daemonVersion, release)) {
-    return { lack: `${feature.feature} ${feature.plural ? "need" : "needs"} a newer Ployz on ${server.name}. ${release} is out.`, outdated: true as const };
+    const needs = `${feature.feature} ${feature.plural ? "need" : "needs"} a newer Ployz on ${server.name}`;
+    return { lack: `${needs}, which runs ${server.daemonVersion}. Upgrade it to ${release}.`, outdated: true as const };
   }
   return { lack: release !== null && isCurrent(server.daemonVersion, release) ? `${missing} yet.` : `${missing}.` };
 });
