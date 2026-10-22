@@ -45,11 +45,12 @@ An environment opens on its canvas. Each service is a card, with its volume unde
 
 ## How a change ships
 
-Your edits in the dashboard save as you make them and turn pink, like a draft. Your servers keep
-running what they ran until you click **Deploy**; then Ployz makes them match. A few settings,
+Settings save as you change them, and config files when you click **Save**. Both turn pink, like
+a draft. Your servers keep running what they ran until you click **Deploy**; then Ployz makes them
+match. A few settings,
 like **Auto-deploy**, say "Takes effect at once" and skip the draft.
 
-The bottom bar collects your staged changes and counts them, like **Apply 1 change**. **Details**
+The bottom bar collects your staged changes and counts them, like **1 change**. **Details**
 lets you review or discard each one, and **Deploy** ships them all. Each deploy becomes a
 deployment, with its own page and logs. See [Deployments](../deploy/deployments.md).
 
