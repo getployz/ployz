@@ -140,6 +140,28 @@ impl MachineSpecStore {
             .collect()
     }
 
+    /// Those of `container_ids` with a spec and no recorded rotation.
+    pub(super) async fn unrotated(
+        &self,
+        container_ids: Vec<ContainerId>,
+    ) -> Result<Vec<ContainerId>, Error> {
+        let path = self.path.clone();
+        blocking(move || {
+            let connection = connect(&path)?;
+            let mut statement = connection.prepare(
+                "SELECT EXISTS (SELECT 1 FROM containers WHERE id = ?1) AND NOT EXISTS (SELECT 1 FROM rotations WHERE id = ?1)",
+            )?;
+            let mut unrotated = Vec::new();
+            for container_id in container_ids {
+                if statement.query_row([container_id.to_string()], |row| row.get::<_, bool>(0))? {
+                    unrotated.push(container_id);
+                }
+            }
+            Ok(unrotated)
+        })
+        .await
+    }
+
     /// The run this Machine last stopped for a `Stopped` want, if any.
     pub async fn stopped_run(
         &self,
@@ -252,6 +274,28 @@ impl ConfigOperation<'_> {
         .await?;
         self.store.rotations.send_replace(());
         Ok(())
+    }
+
+    /// Record In for each listed Container that has a spec and no rotation yet.
+    pub(super) async fn adopt_unrotated(
+        &mut self,
+        container_ids: Vec<ContainerId>,
+    ) -> Result<(), Error> {
+        let path = self.store.path.clone();
+        let rotation = serde_json::to_string(&CopyRotation::In)?;
+        blocking(move || {
+            let mut connection = connect(&path)?;
+            let transaction = connection.transaction()?;
+            for container_id in container_ids {
+                transaction.execute(
+                    "INSERT INTO rotations (id, rotation) SELECT id, ?2 FROM containers WHERE id = ?1 ON CONFLICT (id) DO NOTHING",
+                    params![container_id.to_string(), rotation],
+                )?;
+            }
+            transaction.commit()?;
+            Ok(())
+        })
+        .await
     }
 
     /// Record that this Machine stopped `run` for a `Stopped` want, and republish
@@ -800,6 +844,49 @@ mod tests {
         let observed = restarted.inspect_managed(&id, &machine).await.unwrap();
         assert_eq!(observed.rotation(), &held);
         assert_eq!(observed.copy_gen(), Gen::FIRST);
+    }
+
+    #[tokio::test]
+    async fn a_copy_created_before_rotation_existed_is_in_until_a_rotation_is_written() {
+        use crate::docker::{LABEL_GEN, test_support::runtime_with_running_container};
+        use ployz_core::{CopyRotation, MachineId};
+
+        let (runtime, fake, id) = runtime_with_running_container().await;
+        fake.existing_container
+            .lock()
+            .unwrap()
+            .as_mut()
+            .unwrap()
+            .pointer_mut("/Config/Labels")
+            .unwrap()
+            .as_object_mut()
+            .unwrap()
+            .remove(LABEL_GEN)
+            .unwrap();
+        let machine = MachineId::random();
+        let rotation = || async {
+            let [observed] = runtime
+                .list_managed(&machine)
+                .await
+                .unwrap()
+                .try_into()
+                .unwrap();
+            observed.rotation().clone()
+        };
+
+        assert_eq!(rotation().await, CopyRotation::In);
+        assert_eq!(
+            runtime.rotation_turn(&id).await.unwrap().rotation(),
+            &CopyRotation::In
+        );
+        runtime
+            .rotation_turn(&id)
+            .await
+            .unwrap()
+            .write(&CopyRotation::Out)
+            .await
+            .unwrap();
+        assert_eq!(rotation().await, CopyRotation::Out);
     }
 
     struct Restorable {

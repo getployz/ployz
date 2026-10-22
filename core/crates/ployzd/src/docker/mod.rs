@@ -491,7 +491,12 @@ impl ContainerRuntime {
     ///
     /// Returns when Docker or the Machine database cannot be read.
     pub(crate) async fn managed_inventory(&self) -> Result<Vec<ContainerId>, Error> {
-        let listed = self.managed_slots().await?;
+        let containers = self.docker.managed_containers().await?;
+        self.adopt_unrotated(&containers).await?;
+        let listed = containers
+            .into_iter()
+            .map(|(id, labels)| (id, creation_slot(&labels)))
+            .collect::<Vec<_>>();
         if !self.specs.record_creations(listed.clone()).await? {
             return Ok(listed.into_iter().map(|(id, _)| id).collect());
         }
@@ -503,6 +508,40 @@ impl ContainerRuntime {
             eprintln!("adopted restored container {new}, which replaces {old}");
         }
         Ok(listed.into_iter().map(|(id, _)| id).collect())
+    }
+
+    /// A Service Container with no gen label was created by a daemon from before
+    /// rotation, which routed every copy it ran. Until a rotation is written for it,
+    /// it is In.
+    async fn adopt_unrotated(
+        &self,
+        containers: &[(ContainerId, HashMap<String, String>)],
+    ) -> Result<(), Error> {
+        let unstamped = containers
+            .iter()
+            .filter(|(_, labels)| {
+                !labels.contains_key(LABEL_GEN)
+                    && ManagedLabels::parse(labels).is_ok_and(|managed| {
+                        managed.kind == ContainerKind::ServiceContainer
+                            && managed.identity != QualifiedService::system_ingress()
+                    })
+            })
+            .map(|(id, _)| *id)
+            .collect::<Vec<_>>();
+        if unstamped.is_empty() {
+            return Ok(());
+        }
+        let unrotated = self.specs.unrotated(unstamped).await?;
+        if unrotated.is_empty() {
+            return Ok(());
+        }
+        // Rotation turns read under this lock, so none decides on Pending meanwhile.
+        Ok(self
+            .specs
+            .config_operation()
+            .await
+            .adopt_unrotated(unrotated)
+            .await?)
     }
 
     async fn managed_slots(

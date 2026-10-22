@@ -341,7 +341,10 @@ async fn answer(fake: FakeDocker, method: Method, uri: Uri, body: Bytes) -> Resp
                 .unwrap()
                 .as_ref()
                 .map(|container| {
-                    serde_json::json!([{"Id":container.get("Id").expect("fixture has ID")}])
+                    serde_json::json!([{
+                        "Id": container.get("Id").expect("fixture has ID"),
+                        "Labels": container.pointer("/Config/Labels"),
+                    }])
                 })
                 .unwrap_or_else(|| serde_json::json!([]))
         });
