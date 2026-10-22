@@ -728,6 +728,23 @@ impl ResolvedServiceSpec {
         self.config_graph().mounts()
     }
 
+    /// Record no Healthcheck as Disabled, for a Container Docker runs with no probe.
+    /// Returns whether the spec changed.
+    ///
+    /// Up to 0.2.4, a Service set to none lowered to no Healthcheck. Today a user
+    /// Service only lowers through `lower_deployment`, which always sets one, so on a
+    /// user Container this is a legacy record, and with no probe running Disabled
+    /// describes it exactly. Without this, the first Deploy after the upgrade would
+    /// recreate it (#3023). The system Namespace stores none on purpose and is never
+    /// adopted.
+    pub fn adopt_unprobed(&mut self) -> bool {
+        if self.container.healthcheck.is_some() {
+            return false;
+        }
+        self.container.healthcheck = Some(HealthcheckSpec::Disabled);
+        true
+    }
+
     /// Rebuild the deploy input this resolved spec came from.
     #[must_use]
     pub fn to_requested(&self) -> RequestedServiceSpec {

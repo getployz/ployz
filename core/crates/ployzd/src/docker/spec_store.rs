@@ -162,6 +162,28 @@ impl MachineSpecStore {
         .await
     }
 
+    /// Those of `container_ids` whose spec stores no Healthcheck.
+    pub(super) async fn without_healthcheck(
+        &self,
+        container_ids: Vec<ContainerId>,
+    ) -> Result<Vec<ContainerId>, Error> {
+        let path = self.path.clone();
+        blocking(move || {
+            let connection = connect(&path)?;
+            let mut statement = connection.prepare(
+                "SELECT EXISTS (SELECT 1 FROM containers WHERE id = ?1 AND json_extract(service_spec, '$.container.healthcheck') IS NULL)",
+            )?;
+            let mut without = Vec::new();
+            for container_id in container_ids {
+                if statement.query_row([container_id.to_string()], |row| row.get::<_, bool>(0))? {
+                    without.push(container_id);
+                }
+            }
+            Ok(without)
+        })
+        .await
+    }
+
     /// The run this Machine last stopped for a `Stopped` want, if any.
     pub async fn stopped_run(
         &self,
@@ -294,6 +316,44 @@ impl ConfigOperation<'_> {
             }
             transaction.commit()?;
             Ok(())
+        })
+        .await
+    }
+
+    /// Adopt each listed Container's spec per [`ResolvedServiceSpec::adopt_unprobed`].
+    /// Returns whether any spec changed.
+    pub(super) async fn adopt_unprobed(
+        &mut self,
+        container_ids: Vec<ContainerId>,
+    ) -> Result<bool, Error> {
+        let path = self.store.path.clone();
+        blocking(move || {
+            let mut connection = connect(&path)?;
+            let transaction = connection.transaction()?;
+            let mut adopted = false;
+            for container_id in container_ids {
+                let container_id = container_id.to_string();
+                let Some(encoded) = transaction
+                    .query_row(
+                        "SELECT service_spec FROM containers WHERE id = ?1",
+                        [&container_id],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .optional()?
+                else {
+                    continue;
+                };
+                let mut spec: ResolvedServiceSpec = serde_json::from_str(&encoded)?;
+                if spec.adopt_unprobed() {
+                    transaction.execute(
+                        "UPDATE containers SET service_spec = ?2 WHERE id = ?1",
+                        params![container_id, serde_json::to_string(&spec)?],
+                    )?;
+                    adopted = true;
+                }
+            }
+            transaction.commit()?;
+            Ok(adopted)
         })
         .await
     }
