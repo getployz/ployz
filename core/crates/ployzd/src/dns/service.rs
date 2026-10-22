@@ -160,9 +160,10 @@ impl DnsService {
 }
 
 /// Stop the unit, then remove its file and reload. The file stays while the
-/// stop is unfinished: systemd 255, as Ubuntu 24.04 ships it, closes a
-/// stopping unit's stored fds twice when a reload finds its file gone, and
-/// PID 1 aborts (systemd/systemd#35288, fixed in 257).
+/// stop is unfinished: systemd 255, as Ubuntu 24.04 ships it, closes a unit's
+/// stored fds twice when a reload lowers its `FileDescriptorStoreMax`, as a
+/// missing file does, and PID 1 aborts (systemd/systemd#35288, fixed in 257).
+/// A stopped unit has released its store.
 async fn retire_unit(unit_file: &Path) -> io::Result<()> {
     if systemctl(&["stop", UNIT_NAME]).await.is_none() {
         return Ok(());
@@ -279,10 +280,10 @@ mod tests {
     const RETIRE_ROOT: &str = "PLOYZ_DNS_RETIRE_ROOT";
 
     /// Models the unit's stop as a job: `stop --no-block` returns while the
-    /// unit is still stopping, and a blocking `stop` returns once it stopped,
-    /// or fails, as one that outlives its bound does, when `stop-fails` exists. A `daemon-reload` that finds the
-    /// unit file gone while the unit is still stopping marks `pid1-aborted`,
-    /// as systemd 255 does (systemd/systemd#35288).
+    /// unit is still stopping. A blocking `stop` returns once it stopped, or
+    /// fails when `stop-fails` exists, as one that outlives its bound does. A
+    /// `daemon-reload` that finds the unit file gone before the unit stopped
+    /// marks `pid1-aborted`, as systemd 255 does (systemd/systemd#35288).
     const RETIRE_SYSTEMCTL: &str = r#"root="$PLOYZ_DNS_RETIRE_ROOT"
 echo "$*" >> "$root/systemctl.log"
 case "$1" in
