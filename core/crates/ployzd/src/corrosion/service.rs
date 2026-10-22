@@ -303,6 +303,9 @@ impl RunningCorrosion {
 
     pub async fn cleanup(&mut self) -> Result<(), Error> {
         self.keeper.abort();
+        if !self.keeper.is_finished() {
+            let _ = (&mut self.keeper).await;
+        }
         remove(&self.service.service, &self.service.run_dir).await
     }
 }

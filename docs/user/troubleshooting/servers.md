@@ -359,8 +359,11 @@ Upgrade one server over SSH, then the rest from Cloud, as in
 
 A server that answers but refuses says so instead, with its own reason:
 `Server web-1 couldn't give this command access: Cluster store is not available`. It is running, so
-don't forget it. If its cluster store was stopped, as by `docker stop`, Ployz starts it again within a
-few seconds; try again then. Otherwise read why in its logs with `sudo journalctl -u ployz -n 200`.
+don't forget it. Read why in its logs with `sudo journalctl -u ployz -n 200`.
+
+`Ployz's call to your Server's daemon failed` with the cause `Corrosion HTTP request failed` or
+`Connection refused` means the server's cluster store wasn't running. If it was stopped, as by
+`docker stop ployz-corrosion`, Ployz starts it again within a few seconds; try again then.
 
 ## A server shows Offline
 
