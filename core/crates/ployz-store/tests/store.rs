@@ -874,5 +874,18 @@ fn a_postgres_restart_fails_no_command_after_it() {
             "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '{database}'"
         ),
     );
+    // pg_terminate_backend only signals; wait until those sessions are gone, as after a restart.
+    let mut admin = postgres::Client::connect(&server, postgres::NoTls).unwrap();
+    while admin
+        .query_one(
+            "SELECT count(*) FROM pg_stat_activity WHERE datname = $1",
+            &[&database],
+        )
+        .unwrap()
+        .get::<_, i64>(0)
+        > 0
+    {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
     store.write(&who, &create_project("blog")).unwrap();
 }

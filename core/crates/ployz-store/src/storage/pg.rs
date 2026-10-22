@@ -70,7 +70,7 @@ impl Postgres {
             Ok(result) => result,
             // A restart closes every idle connection unnoticed until its next use: BEGIN is
             // that use, and nothing ran, so drop them all and start on a fresh one.
-            Err((_, work)) if reused && client.is_closed() => {
+            Err((error, work)) if reused && ended(&client, &error) => {
                 self.idle
                     .lock()
                     .unwrap_or_else(PoisonError::into_inner)
@@ -92,6 +92,16 @@ impl Postgres {
     fn connect(&self) -> Result<Client, RpcError> {
         self.config.connect(self.tls.clone()).map_err(storage_error)
     }
+}
+
+/// Whether `error` says the server ended `client`'s session, as a restart does: its socket
+/// closed, or its last message was a shutdown notice the client hasn't acted on yet.
+fn ended(client: &Client, error: &postgres::Error) -> bool {
+    client.is_closed()
+        || error.is_closed()
+        || error
+            .code()
+            .is_some_and(|code| [SqlState::ADMIN_SHUTDOWN, SqlState::CRASH_SHUTDOWN].contains(code))
 }
 
 /// Writers run read-committed and lock the rows they change (see `scope::lock`);
