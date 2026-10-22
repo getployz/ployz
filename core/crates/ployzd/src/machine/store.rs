@@ -980,7 +980,12 @@ mod rediscover_tests {
         let path = dir.path().join("data").join(STATE_FILE_NAME);
         let mut json: serde_json::Value =
             serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-        json.as_object_mut().unwrap().remove("pinned_addresses");
+        assert!(
+            json.as_object_mut()
+                .unwrap()
+                .remove("pinned_addresses")
+                .is_some()
+        );
         *json
             .pointer_mut("/body/machine/runtime/daemon_version")
             .unwrap() = daemon_version.into();
