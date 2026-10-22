@@ -58,8 +58,8 @@ function RouteComponent() {
   const supportAvailable = useQuery(organizationStateQueryOptions(organizationSlug)).data?.supportAvailable === true;
 
   return (
-    <DashboardPage width="content">
-      {/* The top bar names the page; the rail, or on phones the strip under the top bar, picks the section. */}
+    <DashboardPage width="content" title="Organization">
+      {/* The rail, or on phones the strip under the top bar, picks the section. */}
       {section === "builds" ? <BuildsSettings organizationSlug={organizationSlug} /> : section === "members" ? <MembersSettings organizationSlug={organizationSlug} /> : section === "tokens" ? <TokensSettings organizationSlug={organizationSlug} /> : section === "github" ? (
         <GithubSettings
           organizationSlug={organizationSlug}

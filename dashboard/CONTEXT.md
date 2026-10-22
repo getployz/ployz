@@ -33,7 +33,8 @@ An Environment resource whose files survive deployments and restarts on the Serv
 _Avoid_: Persistent storage as a resource name, network storage, replicated volume, Provisioned in product copy, ZFS in normal product copy except the Add Server opt-out
 
 **Volume Run**:
-One requested, bounded run over one Volume's copies: Mirror (make a read-only copy on another Server), Sync (refresh it) or Delete Mirror. Cloud runs it step by step, one at a time per Volume, and keeps its row as the user-facing record; each Server admits a step only against its own copy and lease record. A Mirror shows as `data-<server>`. Cloud also starts a Delete Mirror on its own for a mirror whose Volume no Environment still holds.
+One requested, bounded run over one Volume's copies: Mirror (make a read-only copy on another Server), Sync (refresh it), Delete Mirror, Move, Restore or Resize. Cloud runs it step by step, one at a time per Volume, and keeps its row as the user-facing record; each Server admits a step only against its own copy and lease record. A Mirror shows as `data-<server>`. Cloud also starts a Delete Mirror on its own for a mirror whose Volume no Environment still holds.
+The `volume_run` row is the lock. Postgres admits one active row per Volume, each row takes a rising generation from one sequence, and a run claims its row by id, so a duplicate event exits at the claim. A per-Volume Inngest `singleton` must not guard it: it also skipped a taker's run while the yielding run still drained, so a `volume/run.taken` event cancels the run whose row was taken instead. Once a move's cut sends `Writer{start}` to the target, the commitment outlives its run: it stays owed until a release ends done, a restore takes an epoch or the target is removed, and moves, mirrors, syncs and seeds are refused meanwhile. A resize takes no epoch. A grow raises mirrors first and the writer last, then records the size; a shrink records first, then lowers the writer, then each mirror, and is refused while a Deployment of its Environment is in flight. The Store never records more than any copy holds.
 _Avoid_: Replication, backup, job, sync job
 
 **Server Policy**:
@@ -229,7 +230,7 @@ A human's yes or no to one gated write from the CLI, an agent, or a member in a 
 _Avoid_: Confirmation, permission, approval memory
 
 **Agent sidebar**:
-The dashboard's chat with an agent that acts in the Organization through the same commands `ployz mcp` offers, as the signed-in member: the compiled agent tools plus Cloud's published commands marked for agents. Its threads are kept per member and Organization. A Publish or Deploy it starts is a CLI-like write: it always asks for an Approval when the plan destroys something, while the dashboard's own buttons never ask.
+The dashboard's chat with an agent that acts in the Organization through the same commands `ployz mcp` offers, as the signed-in member: the compiled agent tools plus Cloud's published commands marked `agents: true`. A command marked `agents: false` never reaches an agent, in the sidebar, in `ployz mcp` or at `/mcp`. Its threads are kept per member and Organization. A Publish or Deploy it starts is a CLI-like write: it always asks for an Approval when the plan destroys something, while the dashboard's own buttons never ask.
 _Avoid_: Assistant, copilot, AI panel
 
 **Approval card**:

@@ -64,7 +64,7 @@ function NotFound({ signedIn }: { signedIn: boolean }) {
     <div className="flex flex-col items-center gap-6 text-center">
       <PloyzMark className="size-11" decorative />
       <div className="flex flex-col gap-2">
-        <h1 className="text-xl font-semibold">No sandbox at this link</h1>
+        <h1 className="text-2xl font-semibold">No sandbox at this link</h1>
         <p className="text-sm text-muted-foreground">Check the link your agent gave you.</p>
       </div>
       <Link to={signedIn ? "/cloud" : "/auth"} className={buttonVariants({ variant: "outline" })}>
@@ -79,7 +79,7 @@ function Expired({ signedIn }: { signedIn: boolean }) {
     <div className="flex flex-col items-center gap-6 text-center">
       <PloyzMark className="size-11" decorative />
       <div className="flex flex-col gap-2">
-        <h1 className="text-xl font-semibold">This sandbox expired</h1>
+        <h1 className="text-2xl font-semibold">This sandbox expired</h1>
         <p className="text-sm text-muted-foreground">An agent's sandbox lasts a day unless someone keeps it. Run the agent again for a new one.</p>
       </div>
       <Link to={signedIn ? "/cloud" : "/auth"} className={buttonVariants({ variant: "outline" })}>
@@ -94,7 +94,7 @@ function Taken({ signedIn }: { signedIn: boolean }) {
     <div className="flex flex-col items-center gap-6 text-center">
       <PloyzMark className="size-11" decorative />
       <div className="flex flex-col gap-2">
-        <h1 className="text-xl font-semibold">Someone already kept this sandbox</h1>
+        <h1 className="text-2xl font-semibold">Someone already kept this sandbox</h1>
         <p className="text-sm text-muted-foreground">Its owner can invite you to it.</p>
       </div>
       <Link to={signedIn ? "/cloud" : "/auth"} className={buttonVariants({ variant: "outline" })}>
@@ -133,7 +133,7 @@ function Keep({ claim, email }: { claim: Pending; email: string }) {
     <div className="flex flex-col items-center gap-6 text-center">
       <PloyzMark className="size-11" decorative />
       <div className="flex flex-col gap-1">
-        <h1 className="text-xl font-semibold">Keep {claim.organization.name}</h1>
+        <h1 className="text-2xl font-semibold">Keep {claim.organization.name}</h1>
         <ClaimSummary claim={claim} />
         <p className="text-sm text-muted-foreground">You're signed in as {email}.</p>
       </div>

@@ -24,16 +24,8 @@ function RouteComponent() {
   const revoke = useRevokeToken(organizationSlug);
 
   return (
-    <DashboardPage>
-      <div className="flex items-center gap-3">
-        <div className="flex flex-col gap-0.5">
-          <h1 className="text-lg font-semibold">Fleet tokens</h1>
-          <p className="text-sm text-muted-foreground">Servers wait for review, or join an existing cluster on arrival with an Auto token.</p>
-        </div>
-        <div className="ml-auto">
-          <AddServersDialog organizationSlug={organizationSlug} label="New token" />
-        </div>
-      </div>
+    <DashboardPage title="Fleet tokens" actions={<AddServersDialog organizationSlug={organizationSlug} label="New token" />}>
+      <p className="text-sm text-muted-foreground">Servers wait for review, or join an existing cluster on arrival with an Auto token.</p>
       <div className="overflow-x-auto rounded-lg border">
         <Table aria-label="Fleet tokens">
           <TableHeader>

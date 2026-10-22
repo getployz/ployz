@@ -30,7 +30,7 @@ function ListFrame({ service, services, children }: { service: string | null; se
   const items = [{ value: null, label: "All services" }, ...services.map((node) => ({ value: node.id, label: node.name }))];
 
   return (
-    <DashboardPage width="content">
+    <DashboardPage width="content" title="Deployments">
       <div className="flex flex-col gap-3">
         <Select items={items} value={service}
           onValueChange={(next) => void navigate({ to: ".", search: { service: next ?? undefined }, replace: true })}>

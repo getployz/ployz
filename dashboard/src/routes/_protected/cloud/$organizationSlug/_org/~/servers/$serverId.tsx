@@ -67,14 +67,14 @@ function RouteComponent() {
   const server = servers.find((candidate) => candidate.machine.id === serverId);
 
   if (state === "loading") {
-    return <DashboardPage width="content"><ServerPageSkeleton /></DashboardPage>;
+    return <DashboardPage width="content" title="Server"><ServerPageSkeleton /></DashboardPage>;
   }
   if (state === "unreachable" || (state === "stale" && !server)) {
-    return <DashboardPage width="content"><ServersUnreachable organizationSlug={organizationSlug} older={older} /></DashboardPage>;
+    return <DashboardPage width="content" title="Server"><ServersUnreachable organizationSlug={organizationSlug} older={older} /></DashboardPage>;
   }
   if (!server) {
     return (
-      <DashboardPage width="content">
+      <DashboardPage width="content" title="Server">
         <Empty variant="first-run">
           <EmptyHeader>
             <EmptyTitle>This server is no longer in your organization</EmptyTitle>
@@ -88,9 +88,7 @@ function RouteComponent() {
   const stale = state === "stale";
   const { machine } = server;
   return (
-    <DashboardPage width="content">
-      {/* The top bar's crumb names the server. */}
-      <h1 className="sr-only">{server.name}</h1>
+    <DashboardPage width="content" title={server.name}>
       <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm">
         <ServerStatusLabel status={server.status} stale={stale} />
         {machine.publicIp ? (

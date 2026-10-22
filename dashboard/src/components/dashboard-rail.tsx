@@ -17,7 +17,7 @@ export function HomeLink({ organizationSlug, className }: { organizationSlug: st
 
 // One row height in both widths, and every icon's center sits 28px from the rail's edge in both, so narrowing never moves it.
 const row = "flex h-9 shrink-0 items-center gap-2.5 rounded-md px-2.5 text-sm font-medium";
-const rowLink = "text-muted-foreground outline-none hover:bg-muted hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/50 aria-[current=page]:bg-muted aria-[current=page]:text-foreground";
+const rowLink = "text-muted-foreground outline-none hover:bg-muted hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring aria-[current=page]:bg-muted aria-[current=page]:text-foreground";
 
 /**
  * Desktop: the logo, the scope's places, on an Environment the way back to the organization below a divider, and the
@@ -99,7 +99,7 @@ export function PhoneTabBar({ places }: { places: DashboardNavItem[] }) {
       {places.map((place) => (
         <Link key={place.section} to={place.to} params={place.params} search={place.search}
           activeOptions={{ exact: true }} aria-current={place.current ? "page" : undefined}
-          className="flex h-14 flex-1 flex-col items-center justify-center gap-1 text-xs font-medium text-muted-foreground outline-none hover:bg-muted hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/50 aria-[current=page]:text-foreground">
+          className="flex h-14 flex-1 flex-col items-center justify-center gap-1 text-xs font-medium text-muted-foreground outline-none hover:bg-muted hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring aria-[current=page]:text-foreground">
           <place.icon className="size-5" aria-hidden />
           {place.label}
         </Link>
@@ -116,7 +116,7 @@ export function PhoneSections({ places }: { places: DashboardNavItem[] }) {
     <nav aria-label={`${place.label} sections`}
       className="flex h-10 shrink-0 gap-5 overflow-x-auto border-b bg-background px-4 min-wf-nav:hidden">
       {place.sections.map((section) => <SectionLink key={section.label} section={section}
-        className="-mb-px flex items-center border-b-2 border-transparent text-sm font-medium whitespace-nowrap text-muted-foreground outline-none hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/50 aria-[current=page]:border-foreground aria-[current=page]:text-foreground" />)}
+        className="-mb-px flex items-center border-b-2 border-transparent text-sm font-medium whitespace-nowrap text-muted-foreground outline-none hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring aria-[current=page]:border-foreground aria-[current=page]:text-foreground" />)}
     </nav>
   );
 }

@@ -260,6 +260,8 @@ function RetryButton({ retryAt, onRetry }: { retryAt: number | null; onRetry: ()
 
 /** Replies stream in, so remend closes the bold or code span still being written. A wide table scrolls on its own. */
 const markdownComponents: Components = {
+  // The page owns the h1.
+  h1: ({ node: _node, ...props }) => <h2 {...props} />,
   table: ({ node: _node, ...props }) => <div className="typeset-scroll"><table {...props} /></div>,
   a: ({ node: _node, ...props }) => <a {...props} target="_blank" rel="noreferrer" />,
   // Loading an image the model wrote would send its URL, and whatever it smuggled into it, without a click.

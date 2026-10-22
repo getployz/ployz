@@ -85,7 +85,7 @@ function DeviceApproval({ email, organization }: { email: string; organization: 
   if (outcome !== null) {
     return (
       <div className="flex flex-col items-center gap-2 text-center">
-        <h1 className="text-xl font-semibold">
+        <h1 className="text-2xl font-semibold">
           {outcome === "approved" ? "Your terminal is signed in" : "Sign-in denied"}
         </h1>
         <p className="text-sm text-muted-foreground">
@@ -98,7 +98,7 @@ function DeviceApproval({ email, organization }: { email: string; organization: 
   return (
     <form className="flex flex-col items-center gap-6 text-center" onSubmit={approve}>
       <div className="flex flex-col gap-1">
-        <h1 className="text-xl font-semibold">Sign in the Ployz CLI</h1>
+        <h1 className="text-2xl font-semibold">Sign in the Ployz CLI</h1>
         <p className="text-sm text-muted-foreground">
           Signed in as {email}{organization ? ` in ${organization.slug}` : ""}. Approve only if this code matches your terminal.
         </p>

@@ -118,7 +118,7 @@ export default function DashboardAccountMenu({
         aria-current={current ? "page" : undefined}
         render={variant === "row"
           // A rail row like the places above: the avatar and the links hold still as the rail changes width.
-          ? <button type="button" className="flex h-9 w-full min-w-0 items-center gap-2.5 rounded-md px-1 text-left outline-none hover:bg-muted focus-visible:ring-3 focus-visible:ring-ring/50 aria-expanded:bg-muted aria-[current=page]:bg-muted" />
+          ? <button type="button" className="flex h-9 w-full min-w-0 items-center gap-2.5 rounded-md px-1 text-left outline-none hover:bg-muted focus-visible:ring-3 focus-visible:ring-ring aria-expanded:bg-muted aria-[current=page]:bg-muted" />
           : <Button variant="ghost" size="icon-lg" className="size-9 aria-[current=page]:bg-muted" />}
       >
         <Avatar>

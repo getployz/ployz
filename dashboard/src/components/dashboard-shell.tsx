@@ -38,9 +38,9 @@ export function DashboardShell({
   const canvas = useCanvasShowing();
   const page = useAgentPage(scope);
   const [dock, setDock] = useState<HTMLElement | null>(null);
-  // The top bar names the place, so Billing, a section of Organization, reads Organization like its siblings.
-  // Architecture is only the fallback for a route no place claims, such as a miss, so it names nothing here.
-  const placeLabel = places.find((place) => place.current)?.label ?? (section === "architecture" ? null : getDashboardSectionLabel(section));
+  const placeLabel = places.find((place) => place.current)?.label ?? getDashboardSectionLabel(section);
+  // Pages behind the Org Store gate own their h1, so its loading and error states stand in with the place's name.
+  const gateHeading = <h1 className={canvas ? "sr-only" : "text-2xl font-semibold"}>{placeLabel}</h1>;
   return (
     <AgentDock.Provider value={dock}>
     <div className="flex h-dvh min-h-0 overflow-hidden">
@@ -51,18 +51,19 @@ export function DashboardShell({
         {/* The one top bar, over the agent too, so its Agent button never moves. On phones it also carries the logo and the avatar, which live in the rail on desktop. */}
         <header className="flex h-12 shrink-0 items-center gap-2 border-b bg-background px-3 min-wf-nav:px-4">
           <HomeLink organizationSlug={scope.organizationSlug} className="min-wf-nav:hidden" />
+          {/* The bar navigates; each page names itself in its own h1 below it. */}
           {scope.kind === "environment"
             ? <EnvironmentCrumbs scope={scope} />
             : Crumb
-              // A detail page declares its crumb: `Servers / hel-1 ⌄`. The section reads as the list page's title, so it doesn't jump.
+              // A detail page declares its crumb: `Servers / hel-1 ⌄`.
               ? <Crumbs items={[
                   <Link key="section" {...getDashboardDestination(scope, section)}
-                    className="truncate rounded-sm font-semibold text-foreground outline-none hover:underline focus-visible:ring-3 focus-visible:ring-ring/50">
+                    className="truncate rounded-sm font-semibold text-foreground outline-none hover:underline focus-visible:ring-3 focus-visible:ring-ring">
                     {placeLabel}
                   </Link>,
                   <Crumb key="crumb" />,
                 ]} />
-              : placeLabel === null ? null : <h1 className="truncate text-sm font-semibold">{placeLabel}</h1>}
+              : null}
           <div className="ml-auto flex shrink-0 items-center gap-2">
             <AgentButton organizationSlug={scope.organizationSlug} chat={chat} onChat={onChat} />
             <div className="min-wf-nav:hidden"><DashboardAccountMenu scope={scope} /></div>
@@ -83,8 +84,8 @@ export function DashboardShell({
               className="min-h-0 min-w-0 flex-1 overflow-y-auto"
             >
               {/* The one Org Store gate: pages below it read org rows synchronously; chrome above it never waits. */}
-              <CatchBoundary getResetKey={() => scope.organizationSlug} errorComponent={OrgStoreError}>
-                <Suspense fallback={<div className="p-4 md:p-6"><RouteContentSkeleton /></div>}>
+              <CatchBoundary getResetKey={() => scope.organizationSlug} errorComponent={(props) => <OrgStoreError {...props} heading={gateHeading} />}>
+                <Suspense fallback={<div className="flex flex-col gap-4 p-4 md:p-6">{gateHeading}<RouteContentSkeleton /></div>}>
                   <OrgStoreGate organizationSlug={scope.organizationSlug}>{children}</OrgStoreGate>
                 </Suspense>
               </CatchBoundary>
@@ -104,10 +105,11 @@ function OrgStoreGate({ organizationSlug, children }: { organizationSlug: string
   return children;
 }
 
-function OrgStoreError({ reset }: ErrorComponentProps) {
+function OrgStoreError({ reset, heading }: ErrorComponentProps & { heading: ReactNode }) {
   const queries = useQueryErrorResetBoundary();
   return (
-    <div className="p-4 md:p-6">
+    <div className="flex flex-col gap-4 p-4 md:p-6">
+      {heading}
       <RouteErrorAlert
         title="Organization data couldn’t load"
         description="Projects, services, and deployments are unavailable right now. Try loading them again."

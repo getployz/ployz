@@ -27,9 +27,8 @@ function AccountWithoutOrganization() {
         <Link to="/cloud" aria-label="Projects" title="Projects" className={buttonVariants({ variant: "ghost", size: "icon-lg" })}>
           <PloyzMark decorative className="size-7" />
         </Link>
-        <h1 className="text-sm font-semibold">Account</h1>
       </header>
-      <DashboardPage width="content">
+      <DashboardPage width="content" title="Account">
         <AccountSections />
       </DashboardPage>
     </div>

@@ -4,7 +4,6 @@
 @import "shadcn/tailwind.css";
 @import "@fontsource-variable/geist";
 @import "@fontsource-variable/geist-mono";
-@import "../tokens.css";
 
 /* A `.light` subtree (the signed-out pages) stays light when the page is dark, and a `.dark` block inside
    it is dark again. The added parts sit in :where(), so `dark:` keeps its old specificity. */
@@ -42,7 +41,7 @@
   --info-foreground: hsl(0 0% 100%);
   --info-soft: hsl(220 80% 95%);
   --info-border: hsl(220 80% 85%);
-  /* Intent Pink (DESIGN.md): staged intent and focus. `--changed-deep` is the accessible text on staged surfaces. */
+  /* Changed: staged, not deployed yet. `--changed-deep` is the accessible text on staged surfaces. */
   --changed: #d0268c;
   --changed-deep: #a80068;
   --changed-foreground: hsl(0 0% 100%);
@@ -52,7 +51,7 @@
   --live-border: color-mix(in srgb, var(--muted-foreground) 60%, transparent);
   --border: #dedede;
   --input: #dedede;
-  --ring: var(--changed);
+  --ring: #737373;
   --chart-1: hsl(220 80% 55%);
   --chart-2: hsl(180 50% 44%);
   --chart-3: hsl(152 38% 42%);
@@ -117,7 +116,7 @@
   --live-border: color-mix(in srgb, var(--muted-foreground) 60%, transparent);
   --border: #333333;
   --input: #333333;
-  --ring: var(--changed);
+  --ring: #8f8f8f;
   --chart-1: hsl(220 80% 55%);
   --chart-2: hsl(180 50% 44%);
   --chart-3: hsl(152 38% 42%);
@@ -495,7 +494,7 @@
 
 @layer base {
   * {
-    @apply border-border outline-ring/50;
+    @apply border-border outline-ring;
   }
 
   html,

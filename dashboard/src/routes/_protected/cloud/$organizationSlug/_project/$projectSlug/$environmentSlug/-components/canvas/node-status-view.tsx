@@ -1,19 +1,16 @@
 import type { MouseEvent } from "react";
+import type { ReviewLifecycleKind } from "@ployz/sdk";
 import { CloudOffIcon, TriangleAlertIcon } from "lucide-react";
 import { Badge } from "#/components/ui/badge";
 import { RelativeTime, RunningTime } from "#/components/relative-time";
 import { Skeleton } from "#/components/ui/skeleton";
 import { plural } from "#/lib/plural";
 import { cn } from "#/lib/utils";
-import type { DeployChipState, NodeIssues, RuntimeLine, StagedColour, Tone } from "./node-status";
+import { stagedWord, type DeployChipState, type NodeIssues, type RuntimeLine, type StagedColour, type Tone } from "./node-status";
 
-/**
- * How a node shows what the next Deploy does to it, beyond a card's own state: a tray's green, blue or red surface, and
- * its name struck when the Deploy removes it.
- */
+/** Pink keys on `data-changed`, as the no-hand-drawn-staged lint rule requires, so a tray using `surface` sets it too. */
 export const STAGED_CLASSES = {
-  success: { surface: "border-success-border bg-success-soft text-success", name: "" },
-  info: { surface: "border-info-border bg-info-soft text-info", name: "" },
+  changed: { surface: "data-[changed=true]:border-changed-border data-[changed=true]:bg-changed-soft data-[changed=true]:text-changed-deep", name: "" },
   destructive: { surface: "border-destructive-border bg-destructive-soft text-destructive", name: "line-through" },
 } satisfies Record<StagedColour, { surface: string; name: string }>;
 
@@ -85,4 +82,9 @@ export function DeployChip({ chip }: { chip: DeployChipState | null }) {
   if (chip.kind === "deploying") return <Badge variant="info">Deploying <RunningTime from={new Date(chip.since * 1000)} /></Badge>;
   if (chip.kind === "queued") return <Badge variant="secondary">Queued</Badge>;
   return <Badge variant={chip.variant}>{chip.label}</Badge>;
+}
+
+/** A tray's word for what the next Deploy creates or changes, sized to the tray. */
+export function StagedBadge({ change }: { change: ReviewLifecycleKind }) {
+  return <Badge variant="changed" className="h-4.5 shrink-0 px-1.5">{stagedWord(change)}</Badge>;
 }

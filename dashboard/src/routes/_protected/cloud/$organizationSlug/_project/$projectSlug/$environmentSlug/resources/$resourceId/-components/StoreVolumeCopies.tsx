@@ -40,7 +40,7 @@ export type CopiesVolume = PlacementVolume & { readonly mounts: readonly { reado
 
 export type CopyServer = { readonly id: string; readonly name: string; readonly storage: "stateless" | "ready" | "pool" | null };
 
-const STAGED_STATE = { new: "success", removing: "destructive", primary: "changed" } as const satisfies Record<StagedCopy, string>;
+const STAGED_STATE = { new: "changed", removing: "destructive", primary: "changed" } as const satisfies Record<StagedCopy, string>;
 const LIVE_STATE = {
   live: "success", read_only: "info", outdated: "warning", lacks: "secondary", silent: "destructive", waiting: "outline",
 } as const satisfies Record<LiveState, string>;
@@ -362,7 +362,7 @@ function AddCopyDialog({ open, onOpenChange, volume, live, servers, mirrorOn, on
         <DialogDescription>Stages a change. The first copy starts when you deploy.</DialogDescription>
       </DialogHeader>
       <div className="flex flex-col gap-2">
-        <div className="rounded-lg border border-ring px-3 py-2">
+        <div className="rounded-lg border border-foreground px-3 py-2">
           <p className="text-sm font-medium">Mirror</p>
           <p className="text-sm text-muted-foreground">Another server · 15 min behind · fast failover</p>
         </div>
@@ -373,7 +373,7 @@ function AddCopyDialog({ open, onOpenChange, volume, live, servers, mirrorOn, on
             return <button key={server.id} type="button" role="radio" aria-checked={checked} disabled={target === null}
               onClick={() => setPicked(target)}
               className={cn("flex items-center justify-between rounded-md border px-3 py-2 text-left text-sm disabled:opacity-50",
-                checked ? "border-ring bg-muted" : "border-border")}>
+                checked ? "border-foreground bg-muted" : "border-border")}>
               <span>{server.name}</span>
               {note ? <span className="text-muted-foreground">{note}</span> : null}
             </button>;

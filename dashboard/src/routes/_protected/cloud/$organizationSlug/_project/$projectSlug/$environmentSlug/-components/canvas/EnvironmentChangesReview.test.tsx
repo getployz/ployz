@@ -194,7 +194,7 @@ describe("Details", () => {
     const test = review({ groups: [nginx] });
 
     expect(screen.getByText("1 change in fix-api, not yet saved.")).toBeTruthy();
-    expect(screen.getByText("nginx · will be added").className).toContain("text-success");
+    expect(screen.getByText("nginx · will be added").className).toContain("text-changed-deep");
     expect(screen.queryByRole("heading", { level: 3 })).toBeNull();
     fireEvent.click((await menuOf("nginx")).getByRole("menuitem", { name: "Discard" }));
     expect(test.onDiscardNode).toHaveBeenCalledWith(nginx);
@@ -237,7 +237,7 @@ describe("Details", () => {
     ])] });
 
     expect(lineOf("LEGACY_AUTH").getByText("true").className).toContain("line-through");
-    expect(lineOf("FEATURE_SEARCH").getByText("on").className).toContain("text-success");
+    expect(lineOf("FEATURE_SEARCH").getByText("on").className).toContain("text-changed-deep");
   });
 
   it("offers Never sync beside Discard in the menu of a change that arrived, and keeps the review open until the Store answers", async () => {

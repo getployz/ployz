@@ -151,7 +151,7 @@ export function EnvironmentHistory({ revision: picked }: { revision?: number }) 
   const close = () => { request.current += 1; setReview({ kind: "closed" }); };
   const undoing = review.kind === "preview" && review.preview.action === "undo";
   return (
-    <DashboardPage width="content">
+    <DashboardPage width="content" title="Deployments">
       <div className="flex flex-col gap-3">
         {restoring && !(review.kind === "preview" && review.preview.overwritten.length) ? (
           <p role="status" className="flex items-center gap-2 text-sm text-muted-foreground"><Spinner />Restoring…</p>
@@ -172,7 +172,7 @@ export function EnvironmentHistory({ revision: picked }: { revision?: number }) 
             return (
               <li key={revision.revision} aria-current={revision.revision === picked || undefined}
                 ref={revision.revision === picked ? (node) => node?.scrollIntoView({ block: "center" }) : undefined}
-                className={cn("scroll-mt-4 rounded-lg border p-3", revision.revision === picked && "ring-2 ring-ring")}>
+                className={cn("scroll-mt-4 rounded-lg border p-3", revision.revision === picked && "ring-2 ring-foreground")}>
                 <div className="flex items-start justify-between gap-2">
                   <div className="min-w-0">
                     <p className="flex flex-wrap items-center gap-2 font-medium">

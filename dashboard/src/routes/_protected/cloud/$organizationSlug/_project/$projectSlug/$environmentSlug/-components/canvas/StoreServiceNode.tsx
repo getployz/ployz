@@ -12,7 +12,7 @@ import { PickedNode } from "./PickableNode";
 import { useNodePick } from "../new-branch/branch-picking";
 import { getServiceIcon } from "./service-node-helpers";
 import { DeployChip, STAGED_CLASSES, StatusLine } from "./node-status-view";
-import { deployChip, deployEffect, nodeIssues, notSetLabel, publicDomain, runningDeployment, runtimeLine, stagedSurface } from "./node-status";
+import { deployChip, deployEffect, nodeIssues, notSetLabel, publicDomain, runningDeployment, runtimeLine, stagedChip, stagedSurface } from "./node-status";
 import { RuntimeLensContext } from "./RuntimeLensProvider";
 import { ServiceTrays } from "./VolumeTray";
 import { CopyHang } from "./MirrorNode";
@@ -52,7 +52,9 @@ export function StoreServiceCard({ service, domains, changeCount, runtimeIdentit
   const icon = <Avatar><AvatarFallback>{getServiceIcon({ source: { type: service.source } })}</AvatarFallback></Avatar>;
   const title = <CardTitle className={cn("truncate", surface && STAGED_CLASSES[surface].name)}>{name}</CardTitle>;
   const subtitle = domain ? <CardDescription className={cn("truncate", domain.live && "text-foreground")}>{domain.hostname}</CardDescription> : null;
-  const chipBadge = <DeployChip chip={chip} />;
+  // A Deploy in flight takes the chip, so staged work beside it keeps its own word on the pink card.
+  const staged = service.change === null || chip?.kind === "staged" ? null : stagedChip(service.change, changeCount);
+  const chips = chip === null && staged === null ? null : <><DeployChip chip={chip} /><DeployChip chip={staged} /></>;
   const navigate = useNavigate();
   // Secrets it has no value for: deploys skip them, so the card counts them and opens its variables.
   const unset = notSetLabel(notSet);
@@ -91,7 +93,7 @@ export function StoreServiceCard({ service, domains, changeCount, runtimeIdentit
             <CardContent className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-x-3">
               <div className="row-span-2">{icon}</div>
               {title}
-              <div className="justify-self-end">{chipBadge}</div>
+              <div className="flex flex-col items-end gap-1 justify-self-end">{chips}</div>
               <div className="min-w-0">{subtitle}</div>
               <StatusLine status={status} issues={issues} onIssues={openMonitoring} className="justify-self-end" />
             </CardContent>
@@ -100,8 +102,9 @@ export function StoreServiceCard({ service, domains, changeCount, runtimeIdentit
               <div className="flex items-start gap-3">
                 {icon}
                 <div className="min-w-0 flex-1 overflow-hidden">{title}{subtitle}</div>
-                {chipBadge}
               </div>
+              {/* A row of their own, so a running Deploy's clock never squeezes a long name. */}
+              {chips === null ? null : <div className="flex flex-wrap gap-1">{chips}</div>}
             </CardHeader>
             <CardContent className="flex items-center justify-between gap-2"><StatusLine status={status} issues={issues} onIssues={openMonitoring} />{notSetChip}</CardContent>
           </>}

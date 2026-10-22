@@ -75,23 +75,25 @@ it("shows a busy mirror with a spinner and what it is doing", async () => {
   expect(node().querySelector("[aria-hidden]")).not.toBeNull();
 });
 
-it("shows a staged mirror green with New", async () => {
+it("shows a staged mirror pink with New", async () => {
   await show([mirror({ staged: "new", refreshedAt: null })]);
   expect(within(node()).getByText("New")).toBeTruthy();
-  expect(node().className).toMatch(/bg-success-soft/);
+  expect(node().getAttribute("data-changed")).toBe("true");
+  expect(node().className).toMatch(/data-\[changed=true\]:bg-changed-soft/);
 });
 
 it("shows a staged removal red and struck through with Removing", async () => {
   await show([mirror({ staged: "removing" })]);
   expect(node().textContent).toBe("data-web-2Removing");
   expect(node().className).toMatch(/bg-destructive-soft/);
+  expect(node().hasAttribute("data-changed")).toBe(false);
   expect(within(node()).getByText("data-web-2").className).toMatch(/line-through/);
 });
 
-it("shows a mirror staged to become the Primary blue, with Primary", async () => {
+it("shows a mirror staged to become the Primary pink, with Primary", async () => {
   await show([mirror({ staged: "primary" })]);
   expect(within(node()).getByText("Primary")).toBeTruthy();
-  expect(node().className).toMatch(/bg-info-soft/);
+  expect(node().getAttribute("data-changed")).toBe("true");
 });
 
 it("hangs the offsite copy beside the mirror on one bar, and never the old copy", async () => {

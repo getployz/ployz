@@ -14,6 +14,7 @@ To update intents, edit the block above after `pnpm dlx @tanstack/intent@latest 
 
 # Rules
 
+- Check UI changes against the rules in [DESIGN.md](DESIGN.md). A PR body names any rule the change edits.
 - Reading data, changing loaders, or adding pending UI follows [CODING_STANDARDS.md](CODING_STANDARDS.md). Client navigations never hit the network in `beforeLoad`.
 - React Compiler is on. Don't add `useMemo` or `useCallback`.
 - shadcn changes go through the `shadcn` skill first. Use stock composition, variants and sizes. No custom text sizes, padding overrides, or colours.

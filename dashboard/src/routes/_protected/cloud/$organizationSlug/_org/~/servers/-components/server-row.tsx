@@ -13,7 +13,7 @@ export type ServerRowState = "online" | "building" | "offline" | "unknown" | "up
 
 const STATES = {
   online: { word: null, dot: "bg-success", tone: "" },
-  building: { word: "Building", dot: "bg-success", tone: "text-muted-foreground" },
+  building: { word: "Building", dot: "bg-info", tone: "text-muted-foreground" },
   offline: { word: "Offline", dot: "bg-destructive", tone: "text-destructive" },
   unknown: { word: "Unknown", dot: "bg-muted-foreground", tone: "text-muted-foreground" },
   upgrading: { word: "Upgrading", dot: "animate-pulse bg-info", tone: "text-info" },
@@ -67,7 +67,7 @@ export function ServerRow({ organizationSlug, server, upgrade, stale }: {
     <Link
       to="/cloud/$organizationSlug/~/servers/$serverId"
       params={{ organizationSlug, serverId: server.machine.id }}
-      className={cn(SERVER_ROW_GRID, "outline-none transition-colors hover:bg-muted focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:ring-inset")}
+      className={cn(SERVER_ROW_GRID, "outline-none transition-colors hover:bg-muted focus-visible:ring-3 focus-visible:ring-ring focus-visible:ring-inset")}
     >
       <span aria-hidden="true" className={cn("size-2 rounded-full", stale ? "bg-muted-foreground" : dot)} />
       <span className="truncate font-medium">{server.name}</span>

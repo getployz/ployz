@@ -94,8 +94,8 @@ export function SampleTable({ samples, timezone }: { samples: ReadonlyArray<Samp
             <TableCell className="tabular-nums text-muted-foreground">{time.format(sample.ts)}</TableCell>
             <TableCell className="font-mono">{sample.method}</TableCell>
             <TableCell className="truncate font-mono" title={sample.path}>{sample.path}</TableCell>
-            <TableCell className={cn("text-right font-mono tabular-nums", sample.status >= 500 && "text-destructive")}>{sample.status}</TableCell>
-            <TableCell className="text-right font-mono tabular-nums">{formatMs(sample.durationMs)}</TableCell>
+            <TableCell className={cn("text-right tabular-nums", sample.status >= 500 && "text-destructive")}>{sample.status}</TableCell>
+            <TableCell className="text-right tabular-nums">{formatMs(sample.durationMs)}</TableCell>
             <TableCell className="truncate font-mono text-muted-foreground select-all" title={sample.requestId}>{sample.requestId}</TableCell>
           </TableRow>
         ))}

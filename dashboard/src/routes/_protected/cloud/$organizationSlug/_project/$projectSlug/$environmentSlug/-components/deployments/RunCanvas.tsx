@@ -43,7 +43,7 @@ function linked(graph: RunGraph): Edge[] {
 export function RunTime({ timing }: { timing: RunTiming | undefined }) {
   if (!timing) return null;
   return (
-    <span className="shrink-0 font-mono text-muted-foreground tabular-nums">
+    <span className="shrink-0 text-muted-foreground tabular-nums">
       {timing.finished === null ? <RunningTime from={new Date(timing.started * 1000)} /> : formatDuration(timing.finished - timing.started)}
     </span>
   );

@@ -19,7 +19,7 @@ export type SettingsTone = "new" | "changed" | "removed";
  */
 export const CARD_CHILD = "rounded-none border-0 border-t border-border first:border-t-0";
 
-const TONE = { new: "text-success", changed: "", removed: "text-destructive line-through" } satisfies Record<SettingsTone, string>;
+const TONE = { new: "text-changed-deep", changed: "", removed: "text-destructive line-through" } satisfies Record<SettingsTone, string>;
 
 /**
  * A changed row is pink edge to edge. It keeps the card's hairline and drops Item's ring, which would spill over its

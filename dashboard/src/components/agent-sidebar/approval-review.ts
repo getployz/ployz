@@ -2,7 +2,8 @@ import type { DiffView } from "@ployz/sdk";
 import type { ApprovalReview } from "#/modules/approvals/approvals";
 import { changeGroups } from "#/modules/config-store/store-deployments";
 
-export type ChangeLine = { key: string; mark: "+" | "~" | "−"; node: string; text: string };
+/** `name` is a Setting, a variable key when `variable`, or what happened to the node; `values` its machine values. */
+export type ChangeLine = { key: string; mark: "+" | "~" | "−"; node: string; name: string; variable: boolean; values: string };
 
 /** One line per changed node or Setting in `changes`, minus what a destroyed line already says. */
 function changeLines(diff: DiffView, changes: DiffView["changes"], effects: ApprovalReview["effects"]): ChangeLine[] {
@@ -10,14 +11,17 @@ function changeLines(diff: DiffView, changes: DiffView["changes"], effects: Appr
   const destroyedPaths = new Set(effects.map((effect) => effect.path));
   return changeGroups({ ...diff, changes }, []).flatMap((group): ChangeLine[] => {
     if (group.lifecycle === "delete") {
-      return destroyedNodes.has(group.nodeId) ? [] : [{ key: group.nodeId, mark: "−", node: group.nodeName, text: `removed ${group.nodeType}` }];
+      return destroyedNodes.has(group.nodeId) ? [] : [{ key: group.nodeId, mark: "−", node: group.nodeName, name: `removed ${group.nodeType}`, variable: false, values: "" }];
     }
-    if (group.lifecycle === "create") return [{ key: group.nodeId, mark: "+", node: group.nodeName, text: `new ${group.nodeType}` }];
+    if (group.lifecycle === "create") return [{ key: group.nodeId, mark: "+", node: group.nodeName, name: `new ${group.nodeType}`, variable: false, values: "" }];
     return group.rows.filter((row) => !destroyedPaths.has(row.path)).map((row) => ({
       key: row.changeKey,
       mark: row.kind === "add" ? "+" : row.kind === "remove" ? "−" : "~",
       node: group.nodeName,
-      text: row.kind === "update" ? `${row.name} ${row.currentValue} → ${row.newValue}` : `${row.name} ${row.kind === "add" ? row.newValue : row.currentValue}`,
+      name: row.name,
+      variable: row.variable,
+      // A Config file's text is too long for a line; its name says which file.
+      values: row.configFile ? "" : row.kind === "update" ? `${row.currentValue} → ${row.newValue}` : row.kind === "add" ? row.newValue : row.currentValue,
     }));
   });
 }

@@ -14,7 +14,7 @@ import {
 } from "#/lib/schema";
 
 /**
- * Click-to-edit heading used in the canvas inspector overlay. Shared by the
+ * Click-to-edit h2 used in the canvas inspector overlay. Shared by the
  * service, volume and config drawers so renaming behaves identically. Their
  * names are DNS labels, so the draft is converted and the saved name previewed;
  * callers supply the schema the converted name must pass (such as "not taken")
@@ -70,24 +70,26 @@ export function CanvasInspectorNameEditor({
 
   return (
     <>
-      <Button
-        type="button"
-        variant="ghost"
-        size="lg"
-        className="w-full min-w-0 justify-start text-left hover:cursor-text"
-        data-changed={isChanged}
-        title={
-          isChanged && baselineValue != null
-            ? `Deployed: ${baselineValue}`
-            : editTitle
-        }
-        onClick={() => {
-          openEditor();
-        }}
-      >
-        <span className="truncate">{value}</span>
-        <PencilIcon data-icon="inline-end" />
-      </Button>
+      <h2 className="min-w-0">
+        <Button
+          type="button"
+          variant="ghost"
+          size="lg"
+          className="w-full min-w-0 justify-start text-left text-base font-semibold hover:cursor-text"
+          data-changed={isChanged}
+          title={
+            isChanged && baselineValue != null
+              ? `Deployed: ${baselineValue}`
+              : editTitle
+          }
+          onClick={() => {
+            openEditor();
+          }}
+        >
+          <span className="truncate">{value}</span>
+          <PencilIcon data-icon="inline-end" />
+        </Button>
+      </h2>
 
       <CommandDialog
         open={isOpen}

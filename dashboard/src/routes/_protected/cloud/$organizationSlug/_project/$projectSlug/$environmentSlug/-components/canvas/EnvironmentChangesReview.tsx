@@ -220,9 +220,9 @@ function IncludedItem({ item, onRemove, onIncludeNewer }: {
 
 const nodeKinds = { create: "add", update: "update", delete: "remove" } as const;
 const nodeWords = { create: "will be added", update: "will be updated", delete: "will be removed" } as const;
-export const kindText = { add: "text-success", update: "text-changed-deep", remove: "text-destructive" } satisfies Record<ChangeKind, string>;
+export const kindText = { add: "text-changed-deep", update: "text-changed-deep", remove: "text-destructive" } satisfies Record<ChangeKind, string>;
 const kindMarks = {
-  add: { icon: <PlusIcon />, badge: "success", word: "Added" },
+  add: { icon: <PlusIcon />, badge: "changed", word: "Added" },
   update: { icon: <PencilIcon />, badge: "changed", word: "Changed" },
   remove: { icon: <MinusIcon />, badge: "destructive", word: "Removed" },
 } as const;
@@ -261,7 +261,7 @@ function ConfigFileValue({ before, after }: NonNullable<ChangeRow["configFile"]>
   return (
     <div className="ph-no-capture flex flex-col gap-2 py-2">
       {([{ label: "Before", file: before, other: after, color: "text-destructive" },
-        { label: "After", file: after, other: before, color: before ? "text-changed-deep" : "text-success" }]).map(({ label, file, other, color }) => file === null ? null : (
+        { label: "After", file: after, other: before, color: "text-changed-deep" }]).map(({ label, file, other, color }) => file === null ? null : (
         <div key={label} className="min-w-0">
           <p className="flex flex-wrap gap-x-3 text-xs">
             <span className="text-muted-foreground">{label}</span>

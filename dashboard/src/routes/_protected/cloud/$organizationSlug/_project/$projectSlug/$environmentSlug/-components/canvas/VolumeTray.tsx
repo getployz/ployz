@@ -6,7 +6,7 @@ import { cn } from "#/lib/utils";
 import { useNodePick } from "../new-branch/branch-picking";
 import { ENVIRONMENT_RESOURCE_ROUTE_TO, ENVIRONMENT_ROUTE_FROM } from "../environment-route-paths";
 import { stagedSurface } from "./node-status";
-import { STAGED_CLASSES } from "./node-status-view";
+import { STAGED_CLASSES, StagedBadge } from "./node-status-view";
 import { usePendingNode } from "./usePendingNode";
 import type { MountedVolume } from "./types";
 import { usePlacementStaged } from "#/modules/volume-placement/volume-placement.hooks";
@@ -28,7 +28,8 @@ export function VolumeTray({ tray: { volume, sharedWith, mountChanged, writers, 
   const pick = useNodePick(volume.name);
   const speech = copies === null ? null : traySpeech(copies);
   const placed = usePlacementStaged(params.organizationSlug, useLoaderData({ from: ENVIRONMENT_ROUTE_FROM }).store, volume);
-  const surface = stagedSurface(volume.change ?? (mountChanged || placed ? "update" : null));
+  const change = volume.change ?? (mountChanged || placed ? "update" : null);
+  const surface = stagedSurface(change);
   const { name, leaving } = usePendingNode("volume", volume.name);
   const alsoMounted = sharedWith.length > 0 ? `Also mounted by ${listNames(sharedWith)}` : undefined;
   // Several writers on one directory must be said: it's how data gets corrupted.
@@ -46,9 +47,10 @@ export function VolumeTray({ tray: { volume, sharedWith, mountChanged, writers, 
   const content = <>
     <HardDriveIcon className="size-3.5 shrink-0" />
     <span className={cn("min-w-0 flex-1 truncate", surface && STAGED_CLASSES[surface].name)}>{name}</span>
+    {surface === "changed" && change !== null && speech?.tone !== "staged" ? <StagedBadge change={change} /> : null}
     {pick ? <span className="truncate">{pick.label}</span>
       : surface === "destructive" ? <span>Removing</span>
-      : speech ? <span className={cn("flex shrink-0 items-center gap-1", speech.tone === "staged" && "text-info")}>
+      : speech ? <span className={cn("flex shrink-0 items-center gap-1", speech.tone === "staged" && "text-changed-deep")}>
         {speech.tone === "busy" && <Spinner className="size-3" aria-hidden />}{speech.words}
       </span>
       : shared ? <span className="shrink-0 text-warning">shared · {writers} writers</span>
@@ -58,7 +60,7 @@ export function VolumeTray({ tray: { volume, sharedWith, mountChanged, writers, 
 
   if (pick) {
     return (
-      <button type="button" aria-pressed={pick.role === "own"} aria-disabled={pick.fixed || undefined} data-canvas-node={volume.id} {...hover}
+      <button type="button" aria-pressed={pick.role === "own"} aria-disabled={pick.fixed || undefined} data-canvas-node={volume.id} data-changed={surface === "changed" || undefined} {...hover}
         className={cn(className, "w-[calc(100%-0.75rem)] text-left", pick.fixed ? "cursor-default" : "cursor-pointer")}
         onClick={() => { if (!pick.fixed) pick.toggle(); }}>
         {content}
@@ -68,7 +70,7 @@ export function VolumeTray({ tray: { volume, sharedWith, mountChanged, writers, 
   return (
     <Link to={ENVIRONMENT_RESOURCE_ROUTE_TO} params={{ ...params, resourceId: volume.id }}
       search={(prev) => ({ ...prev, tab: selected ? prev.tab : undefined })}
-      data-canvas-node={volume.id} aria-current={selected ? "page" : undefined} draggable={false} className={className} {...hover}
+      data-canvas-node={volume.id} data-changed={surface === "changed" || undefined} aria-current={selected ? "page" : undefined} draggable={false} className={className} {...hover}
       title={shared ? SHARED_VOLUME_WHY : alsoMounted}>
       {content}
     </Link>
@@ -77,12 +79,13 @@ export function VolumeTray({ tray: { volume, sharedWith, mountChanged, writers, 
 
 export function ConfigTray({ tray: { config, dir, mountChanged }, selected }: { tray: MountedConfig; selected: boolean }) {
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
-  const surface = stagedSurface(config.change ?? (mountChanged ? "update" : null));
+  const change = config.change ?? (mountChanged ? "update" : null);
+  const surface = stagedSurface(change);
   const { name, leaving } = usePendingNode("config", config.name);
   return (
     <Link to={ENVIRONMENT_RESOURCE_ROUTE_TO} params={{ ...params, resourceId: config.id }}
       search={(prev) => ({ ...prev, tab: selected ? prev.tab : undefined })}
-      data-canvas-node={config.id} aria-current={selected ? "page" : undefined} draggable={false}
+      data-canvas-node={config.id} data-changed={surface === "changed" || undefined} aria-current={selected ? "page" : undefined} draggable={false}
       preload="intent"
       className={cn(
         "relative -mt-3 mx-1.5 flex h-13 items-end gap-2 rounded-b-xl border border-t-0 bg-muted px-4 pb-2.5 text-xs text-muted-foreground",
@@ -92,6 +95,7 @@ export function ConfigTray({ tray: { config, dir, mountChanged }, selected }: { 
       )}>
       <FolderIcon className="size-3.5 shrink-0" />
       <span className={cn("shrink-0", surface && STAGED_CLASSES[surface].name)}>{name}</span>
+      {surface === "changed" && change !== null ? <StagedBadge change={change} /> : null}
       <span className="min-w-0 flex-1 truncate text-right font-mono">{surface === "destructive" ? "Removing" : dir}</span>
     </Link>
   );
