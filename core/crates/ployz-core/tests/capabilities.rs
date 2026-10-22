@@ -304,7 +304,7 @@ const ABOVE_FLOOR: &[(&str, &str)] = &[
     ),
     (
         "ployz.management.scope.v1",
-        "claims nothing: an older daemon serves an Operator caller as Full, so no Machine opens Sealed values until every Machine advertises it",
+        "gated: an older daemon serves an Operator caller as Full, so a path that sends a Sealed value first checks every Machine in the Cluster advertises it, and refuses otherwise",
     ),
 ];
 
