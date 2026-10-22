@@ -1698,6 +1698,49 @@ fn retrying_a_failed_shutdown_asks_again() {
 }
 
 #[test]
+fn an_agent_retrying_a_shutdown_with_no_server_left_still_asks_a_human() {
+    let (store, system) = branched();
+    let (owner, trusted) = person(&system, true, Approval::Required);
+    let asked = refusal(shut_down(&store, &owner, ("fix", 3), &[], &trusted));
+    let shutdown = shut_down(
+        &store,
+        &owner,
+        ("fix", 3),
+        &[],
+        &approving(&asked, trusted),
+    )
+    .unwrap();
+    fail(&store, &shutdown.id, &["web"]);
+
+    let (agent, trusted) = calling(
+        &system,
+        true,
+        (Approval::Required, ployz_store::Asks::EveryDeploy),
+    );
+    let serverless = Trusted {
+        servers: Some(0),
+        ..trusted
+    };
+    let retry = |trusted: &Trusted| {
+        store.write_trusted(
+            &agent,
+            &Admit::Retry(ployz_store::Retry {
+                id: id(4),
+                deployment: shutdown.id.clone(),
+                rolls_back: None,
+                version: None,
+                accept_volume_loss: Vec::new(),
+            }),
+            trusted,
+        )
+    };
+    let again = refusal(retry(&serverless));
+    assert_eq!(again.code, RpcErrorCode::from("approval_required"));
+    let forgotten = retry(&approving(&again, serverless)).unwrap();
+    assert_eq!(forgotten.status, ployz_store::DeploymentStatus::Applied);
+}
+
+#[test]
 fn a_token_for_another_environment_is_refused_before_anyone_is_asked() {
     let (store, system) = shop();
     deploy(&store, &system, "production", 1, &["web", "db"]);
