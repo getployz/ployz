@@ -1279,6 +1279,11 @@ mod tests {
             Some(&serde_json::Value::Bool(true))
         );
         assert!(json(JOINED).get("stopped").is_none());
+        assert!(
+            json(&WAITING.replace(r#""wait""#, r#""stop""#))
+                .get("stopped")
+                .is_none()
+        );
     }
 
     #[test]
