@@ -379,10 +379,11 @@ running and private DNS keeps answering (with the exceptions in
 the release it ran before.
 The command prints one line per server it tried, the failed one included. The error after it, on
 stderr, says why that server failed.
-It exits 1 when no server upgraded, and 3 when some did before one failed. A version that was
+It exits 1 when no server moved to another release, and 3 when some did before one failed. A version that was
 never released fails with `no such release 0.3.0-beta.99`.
 A server that already runs the newest release on the channel you name, or a newer one, says
-`already runs 0.3.0-beta.7` and is left alone: nothing is reinstalled or restarted.
+`already runs 0.3.0-beta.7`, and a server on this release or later is left alone: nothing is
+reinstalled or restarted.
 Ctrl-C stops the command, not the upgrade: the server finishes it on its own, and
 `ployz server show` says how it ended.
 With `--json`, each entry in `attempts` names its server's id under `server`, and `unattempted`

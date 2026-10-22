@@ -312,10 +312,9 @@ fn cut_short(
         return Err(error);
     }
     // A run where no Server upgraded failed outright; it exits partial only after one did.
-    let error = if attempts
-        .iter()
-        .any(|attempt| attempt["outcome"] == "succeeded")
-    {
+    let error = if attempts.iter().any(|attempt| {
+        attempt["outcome"] == "succeeded" && attempt["from_version"] != attempt["target_version"]
+    }) {
         error
     } else {
         error.outcome()
@@ -358,9 +357,7 @@ fn stopped(server: &str, upgrade: &CloudUpgrade) -> Option<Error> {
         .unwrap_or_default();
     let message = match upgrade.outcome.as_str() {
         "succeeded" if upgrade.from_version == upgrade.target_version => {
-            crate::ui::stream(format_args!(
-                "Server {server} already runs {target}; nothing to do."
-            ));
+            crate::ui::stream(format_args!("Server {server} already runs {target}."));
             return None;
         }
         "succeeded" => {
@@ -409,6 +406,8 @@ async fn run_all(
     cancellation: &CancellationToken,
 ) -> (Option<serde_json::Value>, Result<(), Error>) {
     let mut attempts = Vec::new();
+    // Whether a Server moved to another version: only that makes a later failure partial.
+    let mut upgraded = false;
     for (index, machine) in machines.iter().enumerate() {
         let attempt_id = MachineUpgradeAttemptId::random();
         let mut seen = None;
@@ -430,18 +429,25 @@ async fn run_all(
                 }));
                 error
             }
-            Ok(Ran { attempt, first }) => {
-                // A current daemon settles a Succeeded on its first reply only when it
-                // installed nothing.
-                if let (MachineUpgradeOutcome::Succeeded { version }, true) =
-                    (&attempt.outcome, first)
-                {
-                    crate::ui::stream(format_args!(
-                        "Server {} already runs {version}, at or past {release}; nothing to do.",
-                        machine.name
-                    ));
-                } else {
-                    print_attempt(machine, &attempt);
+            Ok(attempt) => {
+                // The listing read before the run is what the Server ran then.
+                match &attempt.outcome {
+                    MachineUpgradeOutcome::Succeeded { version }
+                        if version.to_string() == machine.runtime.daemon_version =>
+                    {
+                        crate::ui::stream(format_args!(
+                            "Server {} already runs {version}, at or past {release}.",
+                            machine.name
+                        ));
+                    }
+                    MachineUpgradeOutcome::Succeeded { .. } => {
+                        upgraded = true;
+                        print_attempt(machine, &attempt);
+                    }
+                    MachineUpgradeOutcome::Accepted
+                    | MachineUpgradeOutcome::Running { .. }
+                    | MachineUpgradeOutcome::Failed { .. }
+                    | MachineUpgradeOutcome::Interrupted { .. } => print_attempt(machine, &attempt),
                 }
                 let stopped = match &attempt.outcome {
                     MachineUpgradeOutcome::Succeeded { .. } => None,
@@ -491,16 +497,7 @@ async fn run_all(
             crate::ui::warn(warning);
         }
         // A run where no Server upgraded failed outright; it exits partial only after one did.
-        let stopped = if attempts.iter().any(|attempted| {
-            matches!(
-                attempted.attempt.outcome,
-                MachineUpgradeOutcome::Succeeded { .. }
-            )
-        }) {
-            stopped
-        } else {
-            stopped.outcome()
-        };
+        let stopped = if upgraded { stopped } else { stopped.outcome() };
         // A recorded attempt is a result: print it, then exit by `stopped`.
         let result = (!attempts.is_empty()).then(|| {
             json!({
@@ -548,13 +545,6 @@ async fn selected_machines(
     Ok(selected)
 }
 
-/// An upgrade's terminal evidence, and whether it settled on the request's first reply.
-#[derive(Debug)]
-struct Ran {
-    attempt: MachineUpgradeAttempt,
-    first: bool,
-}
-
 async fn run_one(
     client: &mut impl UpgradeRequests,
     machine: &Machine,
@@ -563,7 +553,7 @@ async fn run_one(
     // The latest observed evidence, kept when a later poll fails.
     seen: &mut Option<MachineUpgradeAttempt>,
     cancellation: &CancellationToken,
-) -> Result<Ran, Error> {
+) -> Result<MachineUpgradeAttempt, Error> {
     let deadline = Instant::now() + OBSERVATION_TIMEOUT;
     let request = RequestMachineUpgradeRequest {
         attempt_id,
@@ -581,10 +571,7 @@ async fn run_one(
     };
     *seen = Some(accepted.clone());
     if accepted.is_terminal() {
-        return Ok(Ran {
-            attempt: accepted,
-            first: true,
-        });
+        return Ok(accepted);
     }
     print_attempt(machine, &accepted);
 
@@ -609,10 +596,7 @@ async fn run_one(
             exhausted => uncertain(machine, attempt_id, exhausted),
         })?;
         if observed.is_terminal() {
-            return Ok(Ran {
-                attempt: observed,
-                first: false,
-            });
+            return Ok(observed);
         }
         *seen = Some(observed);
     }
@@ -842,6 +826,16 @@ mod tests {
         )
         .await;
         assert!(!outcome.unwrap_err().is_outcome(), "one upgraded: partial");
+        // A Server already on the target moved nowhere, so a later failure is not partial.
+        let mut current = machine('a', 1);
+        current.runtime.daemon_version = "1.2.3".into();
+        let (_, outcome, _) = run_sequence(
+            &[current, machine('b', 2)],
+            vec![succeeded(), failed()],
+            None,
+        )
+        .await;
+        assert!(outcome.unwrap_err().is_outcome(), "none upgraded: failed");
     }
 
     #[tokio::test]
@@ -1209,7 +1203,7 @@ mod tests {
             restart
         );
         new.shutdown_background();
-        let attempt = attempt.unwrap().attempt;
+        let attempt = attempt.unwrap();
         assert!(
             matches!(attempt.outcome, MachineUpgradeOutcome::Succeeded { .. }),
             "{attempt:?}"
