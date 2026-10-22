@@ -664,6 +664,7 @@ pub(crate) fn shut_down(
     trusted: &Trusted,
 ) -> Result<DeploymentSummary, RpcError> {
     let environment = scope::lock(tx, who, &admit.environment)?;
+    trusted.writes(&environment.summary.name)?;
     guard_removal(tx, &environment)?;
     refuse_running(tx, &environment)?;
     let id = &environment.summary.id;
