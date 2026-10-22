@@ -466,6 +466,10 @@ release first, it stops with:
 This Server runs Ployz 0.3.0-beta.6 or earlier, which this release can't reach through the relay.
 ```
 
+Every 0.2 release, 0.2.4 included, is on this side of the boundary. A server on 0.2 upgrades to
+0.3.0 in place the same way: it keeps its apps, volumes and cluster, and doesn't need to be
+enrolled again.
+
 Upgrade the first server over SSH from your computer. Install the newest CLI, then run it with
 `--connect` and the server's SSH address:
 
