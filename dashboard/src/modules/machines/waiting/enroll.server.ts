@@ -206,11 +206,13 @@ const releaseDeadClaim = Effect.fn("ServerEnrollment.releaseDeadClaim")(function
     founderMachineId: organizationPairing.founderMachineId,
     founderClaimMachineId: organizationPairing.founderClaimMachineId,
     founderPublicKey: organizationPairing.founderPublicKey,
+    removalStartedAt: organizationPairing.removalStartedAt,
   }).from(organizationPairing).where(eq(organizationPairing.organizationId, organizationId));
   if (pairing === undefined || pairing.founderMachineId !== null) return;
   // A founder whose Server came up before its enroll failed finishes only on its own claim, since a new claim needs an uninitialized Server.
   const first = input.first ?? (new Set(input.ids).size === 1 ? input.ids[0] : undefined);
-  if (first !== undefined && WAITING_SERVER_ID.test(first) && (yield* lastClaimedAs(organizationId, first, pairing))) return;
+  if (pairing.removalStartedAt === null && first !== undefined && WAITING_SERVER_ID.test(first)
+    && (yield* lastClaimedAs(organizationId, first, pairing))) return;
   if ((yield* revokeOrganizationPairing(organizationId, { deadClaimOnly: true })).confirmed) return;
   // A first server can't found while the earlier pairing waits on removal, so it ends now rather than failing hours later.
   const database = yield* Database;
