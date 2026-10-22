@@ -9,7 +9,7 @@ import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.serv
 import type { PloyzSession } from "#/modules/runtime/ployz.server";
 import { dockerVolumeName } from "#/modules/volume-run/volume-run";
 import { acmeWeb, seedStoreOrganization, storeTestCloud } from "#/test/store-cloud";
-import { planRemove } from "./server-operations.server";
+import { nameLostVolumes, planRemove } from "./server-operations.server";
 
 const ORGANIZATION = "00000000-0000-4000-8000-00000000f001";
 const fra1 = "f".repeat(32) as MachineId;
@@ -54,5 +54,34 @@ it.live("a Server removal's ask names each Volume it deletes as Ployz names it, 
   expect(plan?.effects).toEqual([
     { kind: "removes_server", name: "fra-1", node: fra1, path: `servers/${fra1}` },
     { kind: "deletes_volume", name: "cache-data", node: `${fra1}/${docker}`, path: `volumes/${fra1}/${docker}` },
+  ]);
+}), 60_000);
+
+it.live("names each Volume a removal loses by its Volume and Environment, and an anonymous Docker volume as one", () => Effect.gen(function* () {
+  const services = yield* storeTestCloud();
+  yield* seedStoreOrganization(ORGANIZATION).pipe(Effect.provide(services));
+  const store = yield* cloudStore.pipe(Effect.provide(services));
+  const shop = { project: "shop", environment: null };
+  yield* Effect.promise(() => store.write(ORGANIZATION, {
+    command: "create_project", id: "00000000-0000-4000-8000-00000000f002", name: "shop", default_environment: "00000000-0000-4000-8000-00000000f003",
+  }));
+  yield* Effect.promise(() => store.write(ORGANIZATION,
+    createVolumeCommand("00000000-0000-4000-8000-00000000f004", shop, "pg-data", { kind: "docker" })));
+  yield* Effect.promise(() => store.write(ORGANIZATION, {
+    command: "create_service", id: "00000000-0000-4000-8000-00000000f005", environment: shop, name: "db", image: "postgres:17",
+  }));
+  yield* Effect.promise(() => store.write(ORGANIZATION, {
+    command: "admit", admit: "deploy", id: "00000000-0000-4000-8000-00000000f006", environment: shop, services: [], version: null, accept_volume_loss: [],
+  }, { ...acmeWeb(), servers: 1 }));
+  const { namespace } = yield* Effect.promise(() => store.read(ORGANIZATION, { query: "namespace", environment: shop }));
+  const { volumes } = yield* Effect.promise(() => store.read(ORGANIZATION, { query: "volumes", environment: shop }));
+  const docker = dockerVolumeName(namespace, volumes[0]?.id ?? "");
+  const anonymous = "68ab0a2eb28fcf4457dd147e161af2ee0ea9ec78823d371133e768d5d8f5f4a0";
+  const lost = [docker, anonymous, "my-cache"].map((name) => ({ kind: "docker_volume" as const, id: { machine_id: fra1, name } }));
+
+  expect(yield* nameLostVolumes(ORGANIZATION, lost).pipe(Effect.provide(services))).toEqual([
+    { docker, name: "pg-data", detail: "shop/production" },
+    { docker: anonymous, name: "Anonymous Docker volume", detail: "68ab0a2eb28f" },
+    { docker: "my-cache", name: "my-cache" },
   ]);
 }), 60_000);
