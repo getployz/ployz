@@ -142,7 +142,7 @@ async fn cancelling_a_deploy_ends_a_redial_still_dialing() {
     let error = wait_out_restart(
         &cancellation,
         || async { Err::<(), _>(crate::connect::closed_session_error()) },
-        || std::future::pending(),
+        std::future::pending,
     )
     .await
     .unwrap_err();
