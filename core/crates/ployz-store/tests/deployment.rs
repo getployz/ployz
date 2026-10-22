@@ -5917,3 +5917,164 @@ fn verifier_failed_retry_of_a_pre_0022_upload_does_not_replace_current_upload() 
         Some(digested('a'))
     );
 }
+
+/// Cloud's evidence for a caller who holds every permission, as an owner's or
+/// admin's sign-in or token does, asking as `asks` does: `EveryDeploy` for an
+/// agent's token, such as `ployz mcp`'s.
+fn protector(approval: Approval, asks: Asks) -> Trusted {
+    Trusted {
+        approval,
+        asks,
+        permissions: Some(Permission::ALL.iter().copied().collect()),
+        ..Trusted::default()
+    }
+}
+
+/// [`unprotecting`], a member's sign-in or token, asking as `asks` does.
+fn member(approval: Approval, asks: Asks) -> Trusted {
+    Trusted {
+        asks,
+        ..unprotecting(approval)
+    }
+}
+
+fn as_person(who: &Actor, name: &str) -> Actor {
+    Actor {
+        principal: Some(Principal::parse(name).unwrap()),
+        ..who.clone()
+    }
+}
+
+/// [`shop`] with #1 running `web` and `api`, then #2 adding `cron`.
+fn cron_added() -> (ConfigStore, Actor) {
+    let (store, who) = shop();
+    apply_both(&store, &who, 1);
+    store
+        .write(
+            &who,
+            &CreateService {
+                id: ServiceLineageId::parse("00000000-0000-4000-8000-000000000005").unwrap(),
+                environment: EnvironmentRef::default(),
+                name: ServiceName::parse("cron").unwrap(),
+                image: Some("nginx:1".into()),
+                template: None,
+            },
+        )
+        .unwrap();
+    admit(&store, &who, 2, &[], None).unwrap();
+    apply(&store, 2);
+    (store, who)
+}
+
+#[test]
+fn a_rollback_that_takes_a_service_off_asks_and_names_it() {
+    let (store, who) = cron_added();
+    let rollback = |trusted: &Trusted| {
+        store.write_trusted(
+            &who,
+            &Admit::Retry(Retry {
+                id: id(3),
+                deployment: id(1),
+                rolls_back: None,
+                version: None,
+                accept_volume_loss: Vec::new(),
+            }),
+            trusted,
+        )
+    };
+    for (trusted, protected) in [
+        (protector(Approval::Required, Asks::Destroys), false),
+        (protector(Approval::Required, Asks::EveryDeploy), false),
+        (member(Approval::Required, Asks::Destroys), true),
+        (member(Approval::Required, Asks::EveryDeploy), true),
+    ] {
+        let refused = rollback(&trusted).unwrap_err();
+        assert_eq!(refused.code.as_str(), "approval_required", "{trusted:?}");
+        assert_eq!(refused.details.get("protected").is_some(), protected);
+        let removes: Vec<&str> = refused.details["effects"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|effect| effect["kind"] == "removes_service")
+            .map(|effect| effect["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(removes, ["cron"], "{trusted:?}");
+    }
+    let owner = protector(Approval::Required, Asks::Destroys);
+    let refused = rollback(&owner).unwrap_err();
+    let rolled = rollback(&Trusted {
+        approval: approved(&refused),
+        ..owner
+    })
+    .unwrap();
+    assert_eq!(rolled.status, DeploymentStatus::Queued);
+}
+
+#[test]
+fn a_retry_that_takes_nothing_off_still_asks_nothing() {
+    let (store, who) = shop();
+    admit(&store, &who, 1, &[], None).unwrap();
+    fail_api(&store, 1);
+    let retried = store
+        .write_trusted(
+            &who,
+            &Admit::Retry(Retry {
+                id: id(2),
+                deployment: id(1),
+                rolls_back: None,
+                version: None,
+                accept_volume_loss: Vec::new(),
+            }),
+            &protector(Approval::Required, Asks::Destroys),
+        )
+        .unwrap();
+    assert_eq!(retried.status, DeploymentStatus::Queued);
+}
+
+#[test]
+fn cancelling_someone_elses_deployment_in_protected_production_asks_an_admin() {
+    let (store, system) = shop();
+    let (grace, linus) = (as_person(&system, "grace"), as_person(&system, "linus"));
+    let cancel_as = |who: &Actor, n: u8, trusted: &Trusted| {
+        store.write_trusted(who, &Cancel { deployment: id(n) }, trusted)
+    };
+    deploy_trusted(
+        &store,
+        &grace,
+        1,
+        &protector(Approval::NotRequired, Asks::Destroys),
+    )
+    .unwrap();
+
+    for asks in [Asks::Destroys, Asks::EveryDeploy] {
+        let refused = cancel_as(&linus, 1, &member(Approval::Required, asks)).unwrap_err();
+        assert_eq!(refused.code.as_str(), "approval_required");
+        assert_eq!(
+            refused.message,
+            "production is Protected; an admin must approve this cancel."
+        );
+        assert_eq!(refused.details["protected"], json!(true));
+        assert_eq!(status(&store, &system, 1), DeploymentStatus::Queued);
+    }
+    let refused = cancel_as(&linus, 1, &member(Approval::NotRequired, Asks::Destroys)).unwrap_err();
+    let cancelled = cancel_as(&linus, 1, &member(approved(&refused), Asks::Destroys)).unwrap();
+    assert_eq!(cancelled.status, DeploymentStatus::Cancelled);
+
+    // Grace may cancel anyone's, and Linus his own once it runs as his.
+    deploy_trusted(
+        &store,
+        &linus,
+        2,
+        &protector(Approval::NotRequired, Asks::Destroys),
+    )
+    .unwrap();
+    cancel_as(&linus, 2, &member(Approval::NotRequired, Asks::Destroys)).unwrap();
+    deploy_trusted(
+        &store,
+        &linus,
+        3,
+        &protector(Approval::NotRequired, Asks::Destroys),
+    )
+    .unwrap();
+    cancel_as(&grace, 3, &protector(Approval::Required, Asks::Destroys)).unwrap();
+}
