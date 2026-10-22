@@ -622,6 +622,7 @@ fn taken_prefixes<'t>(
     let mut taken: Vec<(String, Option<&PublishedHostname>)> =
         crate::names::other_environments(tx, environment)?
             .iter()
+            .map(|other| &other.working)
             .chain(std::iter::once(&environment.working))
             .flat_map(|intent| &intent.services)
             .filter(|service| service.id != own)

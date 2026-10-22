@@ -326,6 +326,10 @@ fn a_custom_domain_is_added_retargeted_and_held_by_one_service() {
         )
         .unwrap_err();
     assert_eq!(taken.code, RpcErrorCode::Conflict);
+    assert_eq!(
+        taken.message,
+        "Another Service already has app.example.com: web in shop/production"
+    );
 
     // Hostnames under the Cluster Domain are Ployz's to generate, never custom.
     for hostname in ["web.acme.ployz.app", "acme.ployz.app"] {

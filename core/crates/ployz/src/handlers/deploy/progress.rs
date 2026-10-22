@@ -7,7 +7,9 @@ use crate::ui::{
     progress::{Detail, Diagnostic, Frame, LogTail, Row, Run, State, Subject, Timing},
 };
 use ployz_core::config::{RuntimeFailureKind, RuntimeOutcomeSummary};
-use ployz_core::{QualifiedService, RpcError, RpcErrorCode, ServiceName, config::MEM_LIMIT_MAX};
+use ployz_core::{
+    DeployWarning, QualifiedService, RpcError, RpcErrorCode, ServiceName, config::MEM_LIMIT_MAX,
+};
 use ployz_store::{
     BuildStatus, DeployedNode, DeploymentStatus, DeploymentSummary, DeploymentView,
     DeploymentWarning, FailedAt, IngressAction, IngressFailure, NodeOutcome, NodeStatus, RowState,
@@ -126,13 +128,27 @@ pub(super) fn frame(view: &DeploymentView) -> Frame {
                         | DeploymentWarning::IngressUnchecked { .. } => None,
                     }),
             )
+            .map(|warning| by_service_name(view, warning.clone()))
             .fold(Vec::new(), |mut notices, warning| {
-                if !notices.contains(warning) {
-                    notices.push(warning.clone());
+                if !notices.contains(&warning) {
+                    notices.push(warning);
                 }
                 notices
             }),
     }
+}
+
+/// `warning` naming its Service by its name, not the runtime name its containers run under.
+fn by_service_name(view: &DeploymentView, mut warning: DeployWarning) -> DeployWarning {
+    if let DeployWarning::ImagePortMismatch { service, .. } = &mut warning
+        && let Some((name, _)) = view
+            .runtime_names
+            .iter()
+            .find(|(_, runtime)| *runtime == service)
+    {
+        *service = name.clone();
+    }
+    warning
 }
 
 /// Service `name`'s row from its recorded work on each Server, read against the plan
@@ -870,6 +886,27 @@ mod tests {
         assert_eq!(
             failure.json().pointer("/details/progress/logs/0/service"),
             Some(&json!("shop-production/private-web"))
+        );
+    }
+
+    #[test]
+    fn a_renamed_services_port_warning_names_it_by_its_service_name() {
+        let mut view = view();
+        view.deployment.warnings = vec![serde_json::from_value(json!({"warning": {
+            "type": "image_port_mismatch", "service": "private-web", "service_id": "c".repeat(32),
+            "image": "nginx", "machines": ["a".repeat(32)], "exposed": [80], "routed": [8080],
+        }}))
+        .unwrap()];
+        let notices: Vec<_> = frame(&view)
+            .notices
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        assert_eq!(
+            notices,
+            [
+                "web's image nginx exposes 80; its domains send to 8080. Set the domain port or PORT."
+            ]
         );
     }
 

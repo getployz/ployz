@@ -546,7 +546,7 @@ fn no_reachable_server(
         .collect::<Vec<_>>();
     let message = match shown.as_slice() {
         // This CLI's own connection to it failed: Cloud reached it to hand that over.
-        [one] if cause.is_some() => crate::connect::not_answering(one),
+        [one] if let Some(cause) = &cause => crate::connect::not_answering(one, relayed(cause)),
         [one] => format!(
             "Server {one} isn't answering. If it just joined or restarted, try again in a moment."
         ),
@@ -563,6 +563,11 @@ fn no_reachable_server(
     )
 }
 
+/// Whether `error` is a connection whose last try went through Ployz Cloud's relay.
+fn relayed(error: &ConnectError) -> bool {
+    matches!(error, ConnectError::AllFailed { relayed: true, .. })
+}
+
 /// Whether `report` is [`no_reachable_server`]'s: Servers Cloud knows that didn't answer,
 /// and none that refused.
 pub(super) fn servers_unanswered(report: &RpcError) -> bool {
@@ -572,8 +577,11 @@ pub(super) fn servers_unanswered(report: &RpcError) -> bool {
 }
 
 /// The Servers of a Cluster none of whose Servers answered, by name where the failure
-/// says which; empty when it doesn't.
-pub(super) struct Silent(Vec<String>);
+/// says which, empty when it doesn't, and whether it asked through Ployz Cloud's relay.
+pub(super) struct Silent {
+    names: Vec<String>,
+    relayed: bool,
+}
 
 impl Silent {
     /// Whether `error` is a connection no Server answered: Servers Cloud knows that
@@ -583,52 +591,71 @@ impl Silent {
         let report = error.report();
         if servers_unanswered(&report) {
             let names = report.details.get("servers").and_then(Value::as_array);
-            return Some(Self(
-                names
+            return Some(Self {
+                names: names
                     .into_iter()
                     .flatten()
                     .filter_map(|name| Some(name.as_str()?.to_owned()))
                     .collect(),
-            ));
+                // With no connection of its own to try, this CLI asked Cloud.
+                relayed: error.connect_error().is_none_or(relayed),
+            });
         }
         let ConnectError::AllFailed {
             reached: false,
             attempts,
             server,
+            relayed,
             ..
         } = error.connect_error()?
         else {
             return None;
         };
         // With more than one connection, the one Server named is only the last tried.
-        Some(Self(if *attempts == 1 {
-            server.iter().cloned().collect()
-        } else {
-            Vec::new()
-        }))
+        Some(Self {
+            names: if *attempts == 1 {
+                server.iter().cloned().collect()
+            } else {
+                Vec::new()
+            },
+            relayed: *relayed,
+        })
     }
 
     pub(super) fn names(&self) -> &[String] {
-        &self.0
+        &self.names
     }
 
     /// What to check, for the Server or Servers named.
     pub(super) fn next(&self) -> &'static str {
-        match self.0.as_slice() {
-            [_] => "Check that its Ployz daemon is running.",
-            _ => "Check that the Ployz daemon is running on your Servers.",
+        match (self.names.as_slice(), self.relayed) {
+            ([_], false) => "Check that its Ployz daemon is running.",
+            (_, false) => "Check that the Ployz daemon is running on your Servers.",
+            ([_], true) => {
+                "Check that it is online, its Ployz daemon is running, and its outgoing https \
+                 isn't filtered."
+            }
+            (_, true) => {
+                "Check that your Servers are online, their Ployz daemon is running, and their \
+                 outgoing https isn't filtered."
+            }
         }
     }
 }
 
 impl std::fmt::Display for Silent {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self.0.as_slice() {
-            [] => formatter.write_str("No Server is answering"),
-            [one] => write!(formatter, "Server {one} isn't answering"),
+        let through = if self.relayed {
+            " through Ployz Cloud"
+        } else {
+            ""
+        };
+        match self.names.as_slice() {
+            [] => write!(formatter, "No Server is answering{through}"),
+            [one] => write!(formatter, "Server {one} isn't answering{through}"),
             many => write!(
                 formatter,
-                "None of your Servers is answering ({})",
+                "None of your Servers is answering{through} ({})",
                 super::joined(many)
             ),
         }
@@ -1403,6 +1430,25 @@ mod tests {
             format!("None of your Servers is answering (web-1, {gone})")
         );
         assert_eq!(both.names(), ["web-1".to_owned(), gone]);
+    }
+
+    #[test]
+    fn a_server_silent_through_cloud_may_be_offline_or_filtered() {
+        let error = Error::from(ConnectError::AllFailed {
+            selection: crate::context::ConnectionSource::Cloud,
+            attempts: 1,
+            server: Some("machine-1".into()),
+            relayed: true,
+            retry: ployz_core::Retry::AfterRestart,
+            reached: false,
+            last: None,
+        });
+        let silent = Silent::of(&error).expect("no Server answered");
+        assert_eq!(
+            format!("{silent}. {}", silent.next()),
+            "Server machine-1 isn't answering through Ployz Cloud. Check that it is online, its \
+             Ployz daemon is running, and its outgoing https isn't filtered."
+        );
     }
 
     #[tokio::test]

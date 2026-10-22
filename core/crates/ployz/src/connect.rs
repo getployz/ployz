@@ -691,6 +691,7 @@ async fn connect_selected(
     }
     let mut last_error = None;
     let mut server = None;
+    let mut relayed = false;
     let mut retry = Retry::Never;
     let mut reached = false;
     for (index, (connection, error)) in failures {
@@ -710,11 +711,13 @@ async fn connect_selected(
         reached |= !error.unreached();
         last_error = Some(error);
         server = connection.server();
+        relayed = matches!(connection.transport(), Transport::Management(_));
     }
     Err(ConnectError::AllFailed {
         selection: selected.source,
         attempts: selected.connections.len(),
         server,
+        relayed,
         retry,
         reached,
         last: last_error.map(Box::new),
@@ -888,12 +891,14 @@ pub enum ConnectError {
     Context(#[from] ContextError),
     #[error("Could not inspect {path}.")]
     Path { path: PathBuf, source: io::Error },
-    #[error("{}", all_failed(*attempts, selection, *reached, server.as_deref(), last.as_deref()))]
+    #[error("{}", all_failed(*attempts, selection, *reached, server.as_deref(), *relayed, last.as_deref()))]
     AllFailed {
         selection: ConnectionSource,
         attempts: usize,
         /// The Server the last connection tried enters, by name or else Machine ID.
         server: Option<String>,
+        /// The last connection tried went through Ployz Cloud's relay.
+        relayed: bool,
         /// [`Retry::AfterRestart`] when any connection may still come up.
         retry: Retry,
         /// A daemon answered at least one connection, even if `last` did not reach one.
@@ -914,11 +919,20 @@ pub enum ConnectError {
     Value(#[from] ployz_core::ValueError),
 }
 
-const NOT_ANSWERING_NEXT: &str = "Check that its Ployz daemon is running, then retry.";
+/// That a Server gave no answer, and what to check. Through Ployz Cloud's relay, the
+/// Server's network is as likely the cause as its daemon.
+fn isnt_answering(relayed: bool) -> &'static str {
+    if relayed {
+        "isn't answering through Ployz Cloud. Check that it is online, its Ployz daemon is \
+         running, and its outgoing https isn't filtered, then retry."
+    } else {
+        "isn't answering. Check that its Ployz daemon is running, then retry."
+    }
+}
 
 /// `server`, by name or Machine ID, gave no answer to a connection this process made.
-pub(crate) fn not_answering(server: &str) -> String {
-    format!("Server {server} isn't answering. {NOT_ANSWERING_NEXT}")
+pub(crate) fn not_answering(server: &str, relayed: bool) -> String {
+    format!("Server {server} {}", isnt_answering(relayed))
 }
 
 /// Say a daemon answered when one did: a refusal is not an unreachable Server. Name the
@@ -928,10 +942,11 @@ fn all_failed(
     selection: &ConnectionSource,
     reached: bool,
     server: Option<&str>,
+    relayed: bool,
     last: Option<&ConnectError>,
 ) -> String {
     match (attempts, reached, server) {
-        (1, false, Some(server)) => not_answering(server),
+        (1, false, Some(server)) => not_answering(server, relayed),
         (1, false, None) => "Ployz couldn't reach your Server's daemon.".into(),
         (1, true, Some(server)) => {
             format!("Server {server}'s daemon answered, but the connection was refused.")
@@ -939,16 +954,17 @@ fn all_failed(
         (1, true, None) => "Your Server's daemon answered, but the connection was refused.".into(),
         (_, false, Some(server)) => format!(
             "Ployz couldn't reach a Server's daemon through any of the {attempts} connections from {selection}. \
-             Server {server}, tried last, isn't answering. {NOT_ANSWERING_NEXT}"
+             Server {server}, tried last, {}",
+            isnt_answering(relayed)
         ),
         (_, false, None) => format!(
             "Ployz couldn't reach a Server's daemon through any of the {attempts} connections from {selection}."
         ),
         (_, true, Some(server)) => {
             let how = if last.is_some_and(|last| !last.unreached()) {
-                "refused the connection.".into()
+                "refused the connection."
             } else {
-                format!("isn't answering. {NOT_ANSWERING_NEXT}")
+                isnt_answering(relayed)
             };
             format!(
                 "A Server's daemon answered, but the {attempts} connections from {selection} all failed. \

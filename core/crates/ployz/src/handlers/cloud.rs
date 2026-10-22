@@ -960,6 +960,7 @@ mod tests {
             io::ErrorKind::ConnectionRefused
         ))));
         assert!(!retry_local_connect(&ConnectError::AllFailed {
+            relayed: false,
             selection: ConnectionSource::LocalSocket,
             attempts: 1,
             server: None,
