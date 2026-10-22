@@ -305,18 +305,28 @@ fn serve(
                 "uninstall_url": "https://github.com/organizations/acme/settings/installations/7",
             }),
         ),
-        (Some(who), "/api/cli/server-access") if who.organization.as_str() == "linus" => (
-            403,
-            json!({ "error": {
-                "code": "forbidden",
-                "message": "Server access needs an admin. Ask an owner or admin of acme.",
-                "details": { "organization": "acme" },
-            } }),
-        ),
+        (Some(who), "/api/cli/server-access")
+            if who.organization.as_str() == "linus"
+                || runtime_refusal(who.organization.as_str()).is_some() =>
+        {
+            (
+                403,
+                json!({ "error": {
+                    "code": "forbidden",
+                    "message": "Server access needs an admin. Ask an owner or admin of acme.",
+                    "details": { "organization": "acme" },
+                } }),
+            )
+        }
         (Some(_), "/api/cli/server-access") => (
             200,
             json!({ "connections": [{ "tcp": engine() }], "unreachable": [] }),
         ),
+        (Some(who), "/api/cli/agent/ask")
+            if let Some(refused) = runtime_refusal(who.organization.as_str()) =>
+        {
+            refused
+        }
         (Some(_), "/api/cli/agent/ask") => (200, servers_read(&body)),
         (Some(_), route) if let Some(route) = route.strip_prefix("/api/cli/") => {
             approvals.run(&method, route, &body, approval.as_deref())
@@ -329,6 +339,41 @@ fn serve(
         "HTTP/1.1 {status} X\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{reply}",
         reply.len()
     )
+}
+
+/// How this Cloud refuses every runtime read in Organization `organization`, which it
+/// also refuses Server access. `stagehand` acts with a deploy token held to staging,
+/// which Cloud refuses each Namespace no Deployment has fixed, its own included.
+fn runtime_refusal(organization: &str) -> Option<(u16, Value)> {
+    let (status, code, message, details) = match organization {
+        "stagehand" => (
+            403,
+            "forbidden",
+            "This token can deploy only to staging.",
+            json!({ "environments": ["staging"] }),
+        ),
+        "serverless" => (
+            409,
+            "conflict",
+            "This Organization has no servers yet. Add one from a terminal; staging still works without one.",
+            json!({ "fix": { "fix": "connect_servers" } }),
+        ),
+        "unanswered" => (
+            503,
+            "unavailable",
+            "Your servers aren't answering. Try again once they are.",
+            json!({ "fix": { "fix": "connect_servers" } }),
+        ),
+        "unpermitted" => (
+            403,
+            "forbidden",
+            "This token's grant doesn't include servers:read.",
+            json!({ "permission": "servers:read" }),
+        ),
+        _ => return None,
+    };
+    let error = json!({ "code": code, "message": message, "details": details });
+    Some((status, json!({ "error": error })))
 }
 
 /// What this Cloud's Servers answer when Cloud reads them: `web-1` has one log line
@@ -4272,6 +4317,50 @@ fn reading_through_cloud_refuses_a_name_nothing_answered_for() {
                 .to_owned()
         )
     );
+}
+
+#[test]
+fn a_staging_token_is_refused_logs_of_another_environment_with_nothing_deployed() {
+    let stagehand = Target::Cloud {
+        url: fake_cloud(),
+        token: "ployz_stagehand",
+    };
+    ok(&stagehand, &["project", "new", "shop"]);
+    for args in [&["logs"][..], &["ps"]] {
+        let refused = error(&stagehand, args);
+        assert_eq!(
+            (&refused["code"], &refused["message"], &refused["details"]),
+            (
+                &json!("forbidden"),
+                &json!("This token can deploy only to staging."),
+                &json!({ "environments": ["staging"] }),
+            ),
+            "{args:?}"
+        );
+    }
+}
+
+#[test]
+fn logs_of_an_environment_with_nothing_deployed_stay_empty_unless_its_scope_refuses() {
+    let stagehand = Target::Cloud {
+        url: fake_cloud(),
+        token: "ployz_stagehand",
+    };
+    ok(&stagehand, &["project", "new", "shop"]);
+    ok(&stagehand, &["env", "new", "staging"]);
+    // Cloud refuses the token's own Namespace too until a Deployment fixes it.
+    assert_eq!(
+        ok(&stagehand, &["logs", "--env", "staging"]),
+        json!({ "logs": [] })
+    );
+    for token in ["ployz_serverless", "ployz_unanswered", "ployz_unpermitted"] {
+        let target = Target::Cloud {
+            url: fake_cloud(),
+            token,
+        };
+        ok(&target, &["project", "new", "shop"]);
+        assert_eq!(ok(&target, &["logs"]), json!({ "logs": [] }), "{token}");
+    }
 }
 
 #[test]
