@@ -103,7 +103,8 @@ pub(crate) fn retirements(
 
 /// The name of Service lineage `id` and every runtime Service it may run as: by
 /// `applied`, and by each started or queued Deployment since the last one that
-/// removed it, less each runtime an Applied Deployment since tore down beside it.
+/// removed it, less each runtime an Applied Deployment whose snapshot was complete
+/// since tore down beside it.
 fn ran_as(
     tx: &mut dyn Tx,
     environment: &EnvironmentId,
@@ -142,31 +143,31 @@ fn ran_as(
             break;
         }
         let nodes: Vec<TargetNode> = row.json(0, "Deployment")?;
-        let done = row.text(2)? == "applied";
+        // Applied means every operation the preview planned completed, and a
+        // preview plans removals only from a complete snapshot: only then did the
+        // Deployment tear down what it shipped beside. What any other one shipped
+        // or tried to tear down may run still.
+        let torn = row.text(2)? == "applied"
+            && run.preview.as_ref().is_some_and(|preview| {
+                preview.prune_refusal != Some(ployz_core::PruneRefusal::IncompleteSnapshot)
+            });
         for node in nodes.iter().filter(|node| node.id() == id.as_str()) {
             if let TargetNode::Service {
                 name: then,
-                runtime,
                 removals,
                 ..
             } = node
             {
                 name.get_or_insert_with(|| then.clone());
-                // An Applied Deployment tore down what it shipped beside; what any
-                // other one shipped or tried to tear down may run still.
-                if done {
+                if torn {
                     torn_down.extend(removals.iter().cloned());
-                    if !torn_down.contains(runtime) {
-                        runtimes.extend([runtime.clone()]);
-                    }
-                } else {
-                    runtimes.extend(
-                        node.runtimes()
-                            .into_iter()
-                            .filter(|runtime| !torn_down.contains(*runtime))
-                            .cloned(),
-                    );
                 }
+                runtimes.extend(
+                    node.runtimes()
+                        .into_iter()
+                        .filter(|runtime| !torn_down.contains(*runtime))
+                        .cloned(),
+                );
             }
         }
     }

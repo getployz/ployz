@@ -493,6 +493,76 @@ fn a_full_deploy_tears_down_the_runtime_a_renamed_service_ran_as() {
 }
 
 #[test]
+fn a_full_deploy_keeps_a_refused_runtime_removal_for_the_next_complete_one() {
+    let (store, who) = retiring_api();
+    let gone = deploy(&store, &who, 3, &[]).unwrap();
+    assert_eq!(
+        run(&store, &gone.id, preview(&["api"], true), &["api"]),
+        DeploymentStatus::Applied
+    );
+    assert_eq!(applied(&store, &who), ["web"]);
+    store
+        .write(
+            &who,
+            &Edit {
+                environment: EnvironmentRef::default(),
+                expect: None,
+                changes: vec![Change::Set {
+                    path: SettingPath::parse("web.privateDns").unwrap(),
+                    value: json!("front"),
+                }],
+            },
+        )
+        .unwrap();
+    publish(&store, &who);
+    // A snapshot missing a Machine refuses the removal of `web`, and the Deployment
+    // still lands Applied on `front` alone.
+    let refused = deploy(&store, &who, 4, &[]).unwrap();
+    let claimed = store.claim(&refused.id, &runner()).unwrap();
+    assert_eq!(
+        claimed.intent.options.removals,
+        ployz_core::ServiceRemovals::from_names([name("web")])
+    );
+    store
+        .record(
+            &refused.id,
+            &runner(),
+            RunEvidence::Prepared(preview(&["front"], false)),
+        )
+        .unwrap();
+    assert_eq!(
+        store
+            .record(&refused.id, &runner(), succeeded(&["front"]))
+            .unwrap()
+            .status,
+        DeploymentStatus::Applied
+    );
+    let outcomes = outcomes(&store, &who, &refused.id);
+    assert!(
+        outcomes.contains(&("web".to_owned(), NodeStatus::Deployed)),
+        "{outcomes:?}"
+    );
+    // Nothing removed `web`, so the next full Deployment carries it again.
+    let again = deploy(&store, &who, 5, &[]).unwrap();
+    let claimed = store.claim(&again.id, &runner()).unwrap();
+    assert_eq!(
+        claimed.intent.options.removals,
+        ployz_core::ServiceRemovals::from_names([name("web")])
+    );
+    assert_eq!(
+        run(&store, &again.id, preview(&["web"], true), &["web"]),
+        DeploymentStatus::Applied
+    );
+    let done = deploy(&store, &who, 6, &[]).unwrap();
+    let claimed = store.claim(&done.id, &runner()).unwrap();
+    assert!(
+        claimed.intent.options.removals.is_empty(),
+        "{:?}",
+        claimed.intent.options.removals
+    );
+}
+
+#[test]
 fn redeploying_a_full_deployment_runs_the_service_a_queued_full_deployment_removes() {
     let (store, who) = retiring_api();
     let queued = deploy(&store, &who, 3, &[]).unwrap();
