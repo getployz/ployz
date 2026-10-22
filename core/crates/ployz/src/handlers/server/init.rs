@@ -21,10 +21,10 @@ pub(in crate::handlers) fn init(root: &ArgMatches) -> Result<(), Error> {
     }
     let options = ConnectionOptions::from_matches(root)?;
     let config = options.load_or_empty_config()?;
-    let context_name = matches
-        .get_one::<String>("context")
-        .cloned()
-        .unwrap_or_else(|| "default".into());
+    let context_name = config
+        .context_name(options.context())
+        .unwrap_or("default")
+        .to_owned();
     if config
         .contexts
         .get(&context_name)
