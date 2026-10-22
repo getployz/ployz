@@ -1252,15 +1252,12 @@ async fn a_resume_the_writer_fails_never_prints_its_token() {
     source.answer("token=", StatusCode::INTERNAL_SERVER_ERROR, "boom");
     post(&socket, "/Volume.Copy.Pull", pull("w-1-1")).await;
     post(&socket, "/Volume.Copy.Pull", pull("w-1-1")).await;
-    let mut failure = String::new();
-    for _ in 0..300 {
-        failure = failed(&socket).await;
-        if failure.contains("500") {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-    assert!(failure.contains("500"), "{failure}");
+    let failure = poll(async || {
+        let failure = failed(&socket).await;
+        failure.contains("500").then_some(failure)
+    })
+    .await
+    .expect("the resume never failed on the writer's 500");
     assert!(!failure.contains("token-1"), "{failure}");
     assert!(failure.contains("target=w-1-1&token=…"), "{failure}");
     server.abort();

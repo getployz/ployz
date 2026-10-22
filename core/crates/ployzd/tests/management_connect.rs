@@ -281,6 +281,7 @@ async fn a_reply_finished_as_shutdown_drains_reaches_the_caller() {
     shutdown.cancel();
     // The in-process relay answers the drain's PING well within this; waiting longer
     // only makes the reply more surely the last thing written before the close.
+    // real-wait: hyper's GOAWAY and PING round trip crosses real sockets and signals nothing.
     tokio::time::sleep(Duration::from_millis(200)).await;
     gate.release.add_permits(1);
     assert_eq!(

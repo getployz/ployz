@@ -284,6 +284,7 @@ async fn abandoned_exec(noisy: bool) -> std::process::ExitStatus {
             let _ = command.lock().unwrap().kill();
             panic!("the exec's command outlived its client");
         }
+        // real-wait: the command is a separate process, and its exit signals nothing in-process.
         tokio::time::sleep(Duration::from_millis(50)).await;
     };
     docker_server.abort();

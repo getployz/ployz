@@ -309,14 +309,8 @@ impl Fleet {
         container: ContainerId,
         observed: impl Fn(&ContainerRuntimeObservation) -> bool,
     ) {
-        tokio::time::timeout(SETTLE, async {
-            loop {
-                let row = self.store.container(&container).await.unwrap();
-                if row.is_some_and(|row| observed(&row.runtime)) {
-                    return;
-                }
-                tokio::time::sleep(Duration::from_millis(20)).await;
-            }
+        self.container_until(container, |row| {
+            row.is_some_and(|row| observed(&row.runtime))
         })
         .await
         .unwrap_or_else(|_| panic!("{container} never published in that runtime"));
@@ -1361,15 +1355,14 @@ async fn a_running_copy_set_out_as_its_acked_sibling_exits_stays_routed() {
             fleet
                 .node(1)
                 .set_state(b, json!({"Status": "exited", "ExitCode": 1}));
-            tokio::time::timeout(SETTLE, async {
-                while fleet.store.container(&b).await.unwrap().is_none_or(|row| {
-                    !matches!(row.runtime, ContainerRuntimeObservation::Exited { .. })
-                }) {
-                    tokio::time::sleep(Duration::from_millis(20)).await;
-                }
-            })
-            .await
-            .unwrap_or_else(|_| panic!("{b} never published as exited"));
+            fleet
+                .container_until(b, |row| {
+                    row.is_some_and(|row| {
+                        matches!(row.runtime, ContainerRuntimeObservation::Exited { .. })
+                    })
+                })
+                .await
+                .unwrap_or_else(|_| panic!("{b} never published as exited"));
             reading.wait().await;
         }
     );

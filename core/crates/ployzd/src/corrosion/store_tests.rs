@@ -369,13 +369,10 @@ async fn publisher_publishes_the_founders_sealing_public_key() {
         shutdown.clone(),
     ));
 
-    tokio::time::timeout(Duration::from_secs(5), async {
-        while cluster.sealing_public_key() != Some(held.to_string()) {
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-    })
-    .await
-    .expect("the founder's Sealing public key was never published");
+    let published = tokio::time::timeout(Duration::from_secs(5), cluster.sealing_public_key())
+        .await
+        .expect("the founder's Sealing public key was never published");
+    assert_eq!(published, held.to_string());
 
     shutdown.cancel();
     publisher.await.unwrap().unwrap();

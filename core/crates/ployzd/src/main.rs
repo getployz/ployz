@@ -401,6 +401,7 @@ mod tests {
     use tokio::{
         io::{AsyncReadExt, ReadBuf, duplex},
         net::UnixListener,
+        sync::Notify,
     };
 
     use super::*;
@@ -463,6 +464,7 @@ mod tests {
     struct HeldOutput {
         open: Arc<AtomicBool>,
         held: Vec<u8>,
+        wrote: Arc<Notify>,
         delivered: Arc<Mutex<Vec<u8>>>,
     }
 
@@ -473,6 +475,7 @@ mod tests {
             buf: &[u8],
         ) -> Poll<io::Result<usize>> {
             self.held.extend_from_slice(buf);
+            self.wrote.notify_one();
             Poll::Ready(Ok(buf.len()))
         }
 
@@ -491,8 +494,11 @@ mod tests {
         }
     }
 
-    /// Stdin that fails once `broken` is set.
-    struct BreakingInput(Arc<AtomicBool>);
+    /// Stdin that fails once `broken` is set, notifying `failed` when a read fails.
+    struct BreakingInput {
+        broken: Arc<AtomicBool>,
+        failed: Arc<Notify>,
+    }
 
     impl AsyncRead for BreakingInput {
         fn poll_read(
@@ -500,7 +506,8 @@ mod tests {
             cx: &mut Context<'_>,
             _: &mut ReadBuf<'_>,
         ) -> Poll<io::Result<()>> {
-            if self.0.load(Ordering::SeqCst) {
+            if self.broken.load(Ordering::SeqCst) {
+                self.failed.notify_one();
                 return Poll::Ready(Err(io::ErrorKind::BrokenPipe.into()));
             }
             cx.waker().wake_by_ref();
@@ -516,24 +523,30 @@ mod tests {
         let broken = Arc::new(AtomicBool::new(false));
         let open = Arc::new(AtomicBool::new(false));
         let delivered = Arc::new(Mutex::new(Vec::new()));
+        let wrote = Arc::new(Notify::new());
+        let failed = Arc::new(Notify::new());
         let output = HeldOutput {
             open: Arc::clone(&open),
             held: Vec::new(),
+            wrote: Arc::clone(&wrote),
             delivered: Arc::clone(&delivered),
+        };
+        let input = BreakingInput {
+            broken: Arc::clone(&broken),
+            failed: Arc::clone(&failed),
         };
         let stream = UnixStream::connect(&path).await.unwrap();
         let (mut socket, _) = listener.accept().await.unwrap();
         socket.write_all(b"reply").await.unwrap();
+        // The reply is held when stdin breaks, and the output opens only after the bridge
+        // has stopped copying, so only its final flush can deliver the reply.
         let trigger = async {
-            tokio::time::sleep(Duration::from_millis(50)).await;
+            wrote.notified().await;
             broken.store(true, Ordering::SeqCst);
-            tokio::time::sleep(Duration::from_millis(50)).await;
+            failed.notified().await;
             open.store(true, Ordering::SeqCst);
         };
-        let bridged = tokio::time::timeout(
-            Duration::from_secs(5),
-            bridge(BreakingInput(Arc::clone(&broken)), output, stream),
-        );
+        let bridged = tokio::time::timeout(Duration::from_secs(5), bridge(input, output, stream));
         let ((), bridged) = tokio::join!(trigger, bridged);
         let error = bridged.expect("bridge returned").unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::BrokenPipe);

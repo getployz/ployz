@@ -729,13 +729,14 @@ async fn ingress_never_reads_or_subscribes_to_ingress_routes() {
     let first = state.api_container();
     let (load_tx, mut load_rx) = mpsc::unbounded_channel();
     let admin = TestAdmin { loads: load_tx };
+    let (route_publishes, mut published) = watch::channel(Default::default());
     let shutdown = CancellationToken::new();
     let watcher = tokio::spawn(watch_caddy(
         machine.clone(),
         ReplicatedStore::new(ApiClient::http1(address, &"a".repeat(64)).unwrap()),
         no_down,
         directory.join(CONFIG_FILE),
-        tokio::sync::watch::channel(Default::default()).0,
+        route_publishes,
         shutdown.clone(),
         move || std::future::ready(Ok(Some(admin.clone()))),
     ));
@@ -763,20 +764,27 @@ async fn ingress_never_reads_or_subscribes_to_ingress_routes() {
     let challenged = next_load(&mut load_rx).await;
     assert!(challenged.contains("acme-challenge"), "{challenged}");
 
+    let passes = timeout(
+        Duration::from_secs(5),
+        published.wait_for(|published| published.count == 3),
+    )
+    .await
+    .expect("the challenge pass never finished")
+    .unwrap()
+    .count;
     let queries = state.container_queries();
-    settle().await;
     pause();
     advance(Duration::from_secs(5)).await;
     settle().await;
     resume();
-    timeout(Duration::from_secs(1), async {
-        while state.container_queries() == queries {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
+    state.wait_for_container_queries(queries + 1).await;
+    timeout(
+        Duration::from_secs(5),
+        published.wait_for(|published| published.count > passes),
+    )
     .await
-    .expect("watcher did not resnapshot");
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    .expect("the resnapshot pass never finished")
+    .unwrap();
 
     assert_eq!(state.ack_transactions(), 2);
     let statements = state.statements.lock().unwrap().clone();
@@ -1929,8 +1937,10 @@ async fn routed_addresses_stand_while_the_caddy_that_loaded_them_refuses_a_new_l
 
     std::fs::remove_dir_all(directory.join("certs")).unwrap();
     std::fs::write(directory.join("certs"), b"blocks certificate preparation").unwrap();
+    let queries = state.container_queries();
     state.set_address(api.container_id, [10, 210, 1, 7]);
-    tokio::time::sleep(Duration::from_secs(2)).await;
+    // The retry's query follows the refused pass's publish.
+    state.wait_for_container_queries(queries + 2).await;
     assert!(
         loads.try_recv().is_err(),
         "the new config never reached Caddy"

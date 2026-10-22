@@ -23,7 +23,7 @@ use super::{ApiClient, ReplicatedStore};
 #[derive(Clone)]
 struct ClusterKv {
     network: Option<String>,
-    sealing_public_key: Option<String>,
+    sealing_public_key: tokio::sync::watch::Sender<Option<String>>,
     machines: BTreeMap<String, String>,
     containers: BTreeMap<String, (String, String)>,
     volumes: BTreeMap<(String, String), String>,
@@ -54,7 +54,7 @@ impl ClusterKv {
         let (certificate_changes, _) = broadcast::channel(16);
         Self {
             network: Some("10.210.0.0/16".into()),
-            sealing_public_key: None,
+            sealing_public_key: tokio::sync::watch::Sender::new(None),
             machines: BTreeMap::new(),
             containers: BTreeMap::new(),
             volumes: BTreeMap::new(),
@@ -218,8 +218,10 @@ impl FakeCluster {
         let _ = kv.machine_changes.send(());
     }
 
-    pub(crate) fn sealing_public_key(&self) -> Option<String> {
-        self.kv.lock().unwrap().sealing_public_key.clone()
+    pub(crate) async fn sealing_public_key(&self) -> String {
+        let mut published = self.kv.lock().unwrap().sealing_public_key.subscribe();
+        let key = published.wait_for(Option::is_some).await.unwrap();
+        key.clone().unwrap()
     }
 
     pub(crate) fn subscription_tokens(&self) -> Vec<String> {
@@ -474,8 +476,9 @@ fn execute(kv: &Mutex<ClusterKv>, statements: Vec<Statement>) -> Bytes {
                     "INSERT INTO cluster (key, value) VALUES ('sealing_public_key', ?)",
                 ) =>
             {
-                if kv.sealing_public_key.is_none() {
-                    kv.sealing_public_key = Some(text_param(&statement.params, 0).to_owned());
+                if kv.sealing_public_key.borrow().is_none() {
+                    kv.sealing_public_key
+                        .send_replace(Some(text_param(&statement.params, 0).to_owned()));
                 }
             }
             query if query.starts_with("INSERT INTO volumes (machine_id, name, volume)") => {
