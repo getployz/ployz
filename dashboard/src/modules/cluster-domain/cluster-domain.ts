@@ -24,12 +24,12 @@ export type ClusterDomainState =
 
 /** An ingress Server left out of the Cluster Domain's records while other Servers carry its traffic. */
 export type ExcludedServer =
-  | { readonly address: string; readonly reason: "port_80" | "port_80_taken" }
+  | { readonly address: string; readonly reason: "port_80" | "port_80_taken" | "unchecked" }
   | { readonly server: string; readonly reason: "ingress_down" };
 
 /**
  * What the user sees of the Cluster Domain: its state, the Servers it does without, and the IPv6 addresses Cloud
- * couldn't reach to check port 80.
+ * couldn't reach to check port 80 but still names because no other Server answered.
  */
 export type ClusterDomainStatus = {
   readonly state: ClusterDomainState;
@@ -55,8 +55,9 @@ export function clusterDomainStatus(
         ...closed.map((address) => ({ address, reason: "port_80" as const })),
         ...taken.map((address) => ({ address, reason: "port_80_taken" as const })),
         ...down.map((server) => ({ server, reason: "ingress_down" as const })),
+        ...unchecked.map((address) => ({ address, reason: "unchecked" as const })),
       ],
-      unchecked,
+      unchecked: [],
     };
   }
   const state: ClusterDomainState = traffic?.kind === "no_servers" || traffic?.kind === "no_public_ip"

@@ -82,6 +82,17 @@ describe("clusterDomainStatus", () => {
     });
   });
 
+  it("leaves an unchecked IPv6 Server out while another Server answers, and says why", () => {
+    const ipv6 = [{ machineId: machineId("b"), address: "2001:db8::1" }];
+    const domain = { ...ready, traffic: { kind: "probed", reachable: serving, unreachable: serving.slice(0, 0), unchecked: ipv6 } } as const;
+
+    expect(clusterDomainStatus(domain, now)).toEqual({
+      state: { kind: "ready" },
+      excluded: [{ address: "2001:db8::1", reason: "unchecked" }],
+      unchecked: none,
+    });
+  });
+
   it("never calls an IPv6 address Cloud can't reach closed: it names it unchecked", () => {
     const ipv6 = [{ machineId: machineId("b"), address: "2001:db8::1" }];
     const domain = { ...ready, traffic: { kind: "probed", reachable: serving.slice(0, 0), unreachable: serving.slice(0, 0), unchecked: ipv6 } } as const;

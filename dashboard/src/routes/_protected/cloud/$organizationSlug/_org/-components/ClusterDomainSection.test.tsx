@@ -94,6 +94,18 @@ describe("ClusterDomainSection", () => {
     expect(screen.getByText("Check again")).toBeTruthy();
   });
 
+  it("says traffic skips an unchecked IPv6 Server while another answers", () => {
+    const mixed = { ...ready, traffic: {
+      kind: "probed",
+      reachable: [{ machineId: machineId("a"), address: "203.0.113.1" }],
+      unreachable: [],
+      unchecked: [{ machineId: machineId("b"), address: "2001:db8::1" }],
+    } } as Omit<ClusterDomainRow, "id">;
+    render(<ClusterDomainSection organizationSlug="acme" domain={mixed} onCheck={vi.fn()} />);
+
+    expect(screen.getByText("Ployz Cloud can’t reach 2001:db8::1 over IPv6 to check port 80, so traffic skips it.")).toBeTruthy();
+  });
+
   it("says Ployz Cloud couldn't check an IPv6-only Server, rather than calling its port closed", () => {
     const ipv6 = { ...ready, traffic: {
       kind: "probed",

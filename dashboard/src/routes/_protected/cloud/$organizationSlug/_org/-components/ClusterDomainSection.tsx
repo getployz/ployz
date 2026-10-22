@@ -48,7 +48,13 @@ function excludedCopy(excluded: readonly ExcludedServer[]) {
   const closed = on("port_80");
   const taken = on("port_80_taken");
   const down = on("ingress_down");
-  return [closed && `Port 80 closed on ${closed}.`, taken && `Port 80 taken on ${taken}.`, down && `Ingress isn’t running on ${down}.`]
+  const unchecked = on("unchecked");
+  return [
+    closed && `Port 80 closed on ${closed}.`,
+    taken && `Port 80 taken on ${taken}.`,
+    down && `Ingress isn’t running on ${down}.`,
+    unchecked && `Ployz Cloud can’t reach ${unchecked} over IPv6 to check port 80, so traffic skips it.`,
+  ]
     .filter(Boolean).join(" ");
 }
 

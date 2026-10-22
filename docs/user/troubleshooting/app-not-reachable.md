@@ -154,19 +154,6 @@ traffic, in your hosting provider's firewall (like a Hetzner Cloud Firewall or a
 group) as well as the server's own (with UFW, `ufw allow 80/tcp`). Then click **Check again**
 under **Domain** in **Organization → General**.
 
-### IPv6-only servers
-
-Ployz Cloud checks port 80 from its own network, which may have no IPv6 route. When a server with
-only an IPv6 address doesn't answer that check, Ployz doesn't call its port closed. **Domain** in
-**Organization → General** shows **Ployz Cloud can't reach 2001:db8::1 over IPv6, so it didn't
-check port 80 there.**, and your domains don't warn about port 80. If none of your servers answered
-the check, your organization's domain still points at the IPv6-only ones. While another server
-answers, the domain points only at the servers that answered.
-
-Your servers get certificates on their own, so a domain whose certificate arrived works. Open port
-80 and 443 for IPv6 in every firewall, as above. To reach your apps from an IPv4-only network, give
-a server an IPv4 address too.
-
 ## Something else answers on port 80
 
 You'll see **Something else answers on port 80 of 203.0.113.10**. The server answers on port 80,
@@ -184,6 +171,22 @@ Stop that web server, or move it to another server. To keep Ployz Cloud on the s
 publish it through a Cloudflare Tunnel instead. Once port 80 is free, the server starts its
 ingress on its own within a minute. You don't need to remove and re-add the server. Then click
 **Check again** under **Domain** in **Organization → General**.
+
+## My servers only have IPv6 addresses
+
+Ployz Cloud checks port 80 from its own network, which may have no IPv6 route. When a server with
+only an IPv6 address doesn't answer that check, Ployz doesn't call its port closed. **Domain** in
+**Organization → General** shows **Ployz Cloud can't reach 2001:db8::1 over IPv6, so it didn't
+check port 80 there.**
+
+- When every server is IPv6-only, your organization's domain still points at them.
+- When another server answers the check, the domain points only at the servers that answered, and
+  **Domain** says traffic skips the IPv6 ones.
+
+Ployz can't confirm such a server takes traffic, so check it yourself from a network with IPv6:
+`curl -I http://web.<your domain>`. Open TCP port 80 and TCP and UDP port 443 for IPv6 in every
+firewall, as in [Port 80 is closed](#port-80-is-closed). To reach your apps from an IPv4-only
+network, give a server an IPv4 address too.
 
 ## Ingress isn't running
 
