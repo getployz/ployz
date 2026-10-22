@@ -4,7 +4,7 @@ import { isDeepStrictEqual } from "node:util";
 import type { EncryptedSecretValue } from "#/db/tables";
 import { allocateEnrollment, type EnrollmentSnapshot, type MachineId, type MachineName, type RegisterRequest } from "@ployz/sdk";
 import { and, eq, gt, isNull, lt, ne, or, type SQL, sql } from "drizzle-orm";
-import { Effect, Option, Schema } from "effect";
+import { Cause, Effect, Option, Schema } from "effect";
 import {
   enrollmentAllocation,
   organizationMachine,
@@ -13,7 +13,7 @@ import {
 import { organizationPairing as schemaOrganizationPairing } from "#/modules/runtime/tables";
 import type { Actor } from "#/modules/identity/actor";
 import { requireAccess, requireAccessById } from "#/modules/organization/access.server";
-import { Ployz, ployzVersion } from "#/modules/runtime/ployz.server";
+import { Ployz, type PloyzProviderError, ployzVersion, RpcError } from "#/modules/runtime/ployz.server";
 import { ClusterOutOfTime, clusterRead, OrganizationRuntime, SESSION_CLOSE_CLUSTER_MS, withClusterBudget } from "#/modules/runtime/organization-runtime.server";
 import { PostHog } from "#/modules/analytics/posthog.server";
 import {
@@ -65,6 +65,15 @@ const unreachable = () => new Conflict({ message: CLUSTER_UNREACHABLE, userFacin
 const cantReachServer = (cause: unknown) => new Unavailable({
   message: "Cloud can't reach this Server through the relay or directly.", userFacing: true, cause,
 });
+
+/**
+ * A connect no Server answered becomes `cantReachServer`: Cloud's timeout ran out, or the SDK says the dial failed, got
+ * no status back, or the entry couldn't dial the Server. A Server that refused keeps its error, since retrying won't help.
+ */
+const unlessAnswered = (error: PloyzProviderError | Cause.TimeoutError) =>
+  Cause.isTimeoutError(error) || (error.cause instanceof RpcError && (error.cause.unanswered || error.cause.targetUnreached))
+    ? cantReachServer(error)
+    : error;
 
 export function hashEnrollmentToken(token: string) {
   return crypto.createHash("sha256").update(token).digest("hex");
@@ -771,11 +780,12 @@ export const publishMachineEnrollment = Effect.fn("MachineEnrollment.publishCand
     }));
     const expectedIv = yield* publish();
     if (expectedIv !== null) {
-      // Shared negotiation confirms the intended Machine; no SQL lock spans the network call.
+      // Shared negotiation confirms the intended Machine; no SQL lock spans the network call. Cloud times the connect
+      // itself, since the SDK's own deadline fails like any cancellation.
       yield* Effect.scoped(Effect.gen(function* () {
         yield* (yield* Ployz).connect({
-          connections: [{ machine_id: input.machineId, management: input.capability }], timeoutMs: SERVER_REACH_TIMEOUT_MS,
-        }, { closeWithin: clusterRead }).pipe(Effect.mapError(cantReachServer));
+          connections: [{ machine_id: input.machineId, management: input.capability }],
+        }, { closeWithin: clusterRead }).pipe(Effect.timeout(SERVER_REACH_TIMEOUT_MS), Effect.mapError(unlessAnswered));
         yield* publish(expectedIv);
       })).pipe(withClusterBudget(SESSION_CLOSE_CLUSTER_MS));
     }
