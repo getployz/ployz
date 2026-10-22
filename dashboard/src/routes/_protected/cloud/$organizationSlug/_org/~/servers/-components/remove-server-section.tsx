@@ -14,6 +14,7 @@ import {
 } from "#/modules/machines/machine-removal.functions";
 import { withMissingDataLossIdentities, type DataLossList } from "#/modules/runtime/data-loss-confirm";
 import type { DataLossIdentity } from "#/modules/runtime/data-loss-identity";
+import type { LostVolumeName } from "#/modules/machines/server-operations.server";
 import { removedToast } from "./removed-toast";
 import { removalFailureMessage, type MachineRemoveResult } from "#/modules/machines/machine-removal";
 import type { RuntimeMachineRecord } from "#/modules/runtime/runtime.collection";
@@ -57,8 +58,11 @@ async function waitForMachineRemoveAttempt(
   }
 }
 
-const volumes = (rust: DataLossList["rust"]) =>
-  rust.map((identity): DeletionItem => ({ kind: "volume", name: identity.id.name }));
+/** Each lost Docker volume by the name Cloud found for it; one found since, by its Docker name. */
+const volumes = (rust: DataLossList["rust"], names: readonly LostVolumeName[]) => rust.map(({ id }): DeletionItem => {
+  const named = names.find(({ docker }) => docker === id.name);
+  return { kind: "volume", name: named?.name ?? id.name, detail: named?.detail };
+});
 
 /**
  * Removing a Server resets it and takes it out of the cluster; its volumes stay on its disk, unused. The `last` one takes
@@ -78,6 +82,7 @@ export function RemoveServerSection({ machine, organizationSlug, last, offline, 
   const markHere = useStillHere();
   const clusterReleased = useClusterReleased();
   const abortRef = useRef<AbortController | null>(null);
+  const namesRef = useRef<readonly LostVolumeName[]>([]);
 
   function onOpenChange(next: boolean) {
     if (!next) abortRef.current?.abort();
@@ -117,10 +122,11 @@ export function RemoveServerSection({ machine, organizationSlug, last, offline, 
         </>}
         callbacks={{
           load: async () => {
-            const { rust } = await loadMachineDataLossServerFn({
+            const { rust, names } = await loadMachineDataLossServerFn({
               data: { organizationSlug, machineId: machine.id },
             });
-            return { items: volumes(rust), evidence: rust };
+            namesRef.current = names;
+            return { items: volumes(rust, names), evidence: rust };
           },
           confirm: async (identities) => {
             abortRef.current?.abort();
@@ -144,7 +150,7 @@ export function RemoveServerSection({ machine, organizationSlug, last, offline, 
               return;
             }
             const { rust } = withMissingDataLossIdentities({ rust: identities, cloud: [] }, result.missing);
-            return { items: volumes(rust), evidence: rust };
+            return { items: volumes(rust, namesRef.current), evidence: rust };
           },
         }}
       />
@@ -184,7 +190,7 @@ function ForgetServerRow({ machine, organizationSlug, gate }: { machine: Runtime
 
   const load = async () => {
     const lost = await loadMachineDataLossServerFn({ data: { organizationSlug, machineId: machine.id } })
-      .then(({ rust }) => volumes(rust), () => []);
+      .then(({ rust, names }) => volumes(rust, names), () => []);
     return { items: lost, evidence: null };
   };
 

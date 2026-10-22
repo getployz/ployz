@@ -33,7 +33,7 @@ import { Database } from "#/server/database.server";
 import { NotFound } from "#/server/public-error";
 import { dropRemovedServer, forgetEmptiedPairing } from "#/modules/machines/pairing-removal.server";
 import { loadOrganizationConnections } from "#/modules/machines/connections.server";
-import { planRemove } from "#/modules/machines/server-operations.server";
+import { nameLostVolumes, planRemove } from "#/modules/machines/server-operations.server";
 import { storeSystem } from "#/modules/config-store/config-store.server";
 import { observeOrganization, releaseLanesOff } from "#/modules/volume-run/volume-run.server";
 
@@ -334,10 +334,11 @@ export const loadMachineDataLoss = Effect.fn("MachineRemoval.loadDataLoss")(
             }),
         ),
       );
-    return {
+    const dataLoss = {
       rust,
       cloud: [{ kind: "machine", name: input.machineId }],
     } satisfies DataLossList;
+    return { ...dataLoss, names: yield* nameLostVolumes(organization.id, rust) };
   },
 );
 
