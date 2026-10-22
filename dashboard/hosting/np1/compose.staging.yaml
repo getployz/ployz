@@ -1,0 +1,85 @@
+# Ployz hosted stack, staging, on np1 (Uncloud single-machine cluster).
+# Deploy on np1:  /root/ployz/bin/uc --connect unix:///run/uncloud/uncloud.sock deploy -f /root/ployz/compose.staging.yaml -y [service...]
+# Env files sit next to this file on np1 only (mode 0600). Postgres and Redis credentials were generated on np1.
+# Image tags are the commits Railway staging ran at the move: ployz 487748a, inngest v1.46.0.
+
+services:
+  ployz-staging-web:
+    image: ghcr.io/getployz/ployz-cloud:487748a1f7576b55500910e8d341b7481334d37e
+    env_file: .env.web.staging
+    mem_limit: 1g
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080/api/health').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 4
+      start_period: 60s
+    # staging.ployz.dev is DNS-only, so the peer is the client. web trusts X-Real-IP (RAILWAY_ENVIRONMENT_ID is set).
+    x-caddy: |
+      staging.ployz.dev {
+        reverse_proxy {{upstreams 8080}} {
+          header_up X-Real-IP {remote_host}
+        }
+        log
+      }
+
+  ployz-staging-worker:
+    image: ghcr.io/getployz/ployz-cloud:487748a1f7576b55500910e8d341b7481334d37e
+    command: ["node", ".output/worker/index.mjs"]
+    env_file: .env.worker.staging
+    mem_limit: 1g
+    stop_grace_period: 60s
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080/ready').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 4
+      start_period: 60s
+
+  # Internal only: no published port or Caddy route.
+  ployz-staging-inngest:
+    image: inngest/inngest:v1.46.0
+    command: ["sh", "-c", "exec inngest start --postgres-uri \"$$INNGEST_POSTGRES_URI\" --postgres-max-open-conns 4 --postgres-max-idle-conns 2"]
+    env_file: .env.inngest.staging
+    mem_limit: 512m
+
+  ployz-staging-redis-inngest:
+    image: redis:8.10.0
+    command: ["sh", "-c", "exec redis-server --requirepass \"$$REDIS_PASSWORD\" --appendonly yes --maxmemory 200mb --maxmemory-policy noeviction"]
+    env_file: .env.redis-inngest.staging
+    mem_limit: 256m
+    healthcheck:
+      test: ["CMD-SHELL", "REDISCLI_AUTH=\"$$REDIS_PASSWORD\" redis-cli ping | grep -q PONG"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    volumes:
+      - ployz-staging-redis-inngest:/data
+
+  # App database and Inngest state (schema inngest), restored from Railway staging.
+  ployz-staging-postgres:
+    image: postgres:18-alpine
+    env_file: .env.postgres.staging
+    mem_limit: 1g
+    shm_size: 256m
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d railway"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+    volumes:
+      - ployz-staging-postgres:/var/lib/postgresql
+
+volumes:
+  ployz-staging-redis-inngest:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /volumes/ployz-staging-redis-inngest
+  ployz-staging-postgres:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /volumes/ployz-staging-postgres

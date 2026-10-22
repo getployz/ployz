@@ -1,0 +1,125 @@
+# Ployz hosted stack, production, on np1 (Uncloud single-machine cluster).
+# Deploy on np1:  /root/ployz/bin/uc --connect unix:///run/uncloud/uncloud.sock deploy -f /root/ployz/compose.prod.yaml -y [service...]
+# Env files sit next to this file on np1 only (mode 0600); see ~/.config/railway-exit/np1-env-map.md.
+# Image tags: ployz-cloud v0.3.0-beta.7 (c923362) for web and worker; at the move from Railway it was 487748a. ployz-uptime 487748a, ployz-site eb2d7d7 (site) and 3eb6e3a (tools-api),
+# hosted-dns cb2e04f, inngest v1.46.0.
+
+services:
+  ployz-web:
+    image: ghcr.io/getployz/ployz-cloud:v0.3.0-beta.7
+    env_file: .env.web.production
+    mem_limit: 2g
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080/api/health').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 4
+      start_period: 60s
+    # ployz.dev is proxied by Cloudflare. web trusts X-Real-IP when RAILWAY_ENVIRONMENT_ID is set (env file),
+    # so Caddy always overwrites it: with CF-Connecting-IP when the peer is a Cloudflare edge
+    # (https://www.cloudflare.com/ips/), otherwise with the peer address, so a direct caller cannot spoof it.
+    x-caddy: |
+      ployz.dev {
+        @cloudflare remote_ip 173.245.48.0/20 103.21.244.0/22 103.22.200.0/22 103.31.4.0/22 141.101.64.0/18 108.162.192.0/18 190.93.240.0/20 188.114.96.0/20 197.234.240.0/22 198.41.128.0/17 162.158.0.0/15 104.16.0.0/13 104.24.0.0/14 172.64.0.0/13 131.0.72.0/22 2400:cb00::/32 2606:4700::/32 2803:f800::/32 2405:b500::/32 2405:8100::/32 2a06:98c0::/29 2c0f:f248::/32
+        handle @cloudflare {
+          reverse_proxy {{upstreams 8080}} {
+            header_up X-Real-IP {http.request.header.CF-Connecting-IP}
+          }
+        }
+        handle {
+          reverse_proxy {{upstreams 8080}} {
+            header_up X-Real-IP {remote_host}
+          }
+        }
+        log
+      }
+
+  ployz-worker:
+    image: ghcr.io/getployz/ployz-cloud:v0.3.0-beta.7
+    command: ["node", ".output/worker/index.mjs"]
+    env_file: .env.worker.production
+    mem_limit: 2g
+    stop_grace_period: 120s
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080/ready').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 4
+      start_period: 60s
+
+  # Internal only: no published port or Caddy route. web and worker reach it at ployz-inngest.internal.
+  ployz-inngest:
+    image: inngest/inngest:v1.46.0
+    command: ["sh", "-c", "exec inngest start --postgres-uri \"$$INNGEST_POSTGRES_URI\" --postgres-max-open-conns 4 --postgres-max-idle-conns 2"]
+    env_file: .env.inngest.production
+    mem_limit: 1g
+
+  ployz-redis-inngest:
+    image: redis:8.10.0
+    command: ["sh", "-c", "exec redis-server --requirepass \"$$REDIS_PASSWORD\" --appendonly yes --maxmemory 400mb --maxmemory-policy noeviction"]
+    env_file: .env.redis-inngest.production
+    mem_limit: 512m
+    healthcheck:
+      test: ["CMD-SHELL", "REDISCLI_AUTH=\"$$REDIS_PASSWORD\" redis-cli ping | grep -q PONG"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    volumes:
+      - redis-inngest-data:/data
+
+  # Private: web reaches it through MARKETING_ORIGIN.
+  ployz-site:
+    image: ployz/site:eb2d7d7
+    env_file: .env.site.production
+    mem_limit: 256m
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  ployz-tools-api:
+    image: ployz/tools-api:3eb6e3a
+    env_file: .env.tools-api.production
+    mem_limit: 384m
+
+  ployz-uptime:
+    image: ghcr.io/getployz/ployz-uptime:487748a1f7576b55500910e8d341b7481334d37e
+    command: ["control"]
+    env_file: .env.uptime.production
+    mem_limit: 256m
+    # Remote agents (EC2) reach control here; every agent call carries UPTIME_AGENT_TOKEN.
+    x-ports:
+      - uptime-control.ployz.dev:8080/https
+
+  ployz-uptime-agent-eu:
+    image: ghcr.io/getployz/ployz-uptime:487748a1f7576b55500910e8d341b7481334d37e
+    command: ["agent"]
+    env_file: .env.uptime-agent-eu.production
+    mem_limit: 256m
+
+  ployz-hosted-dns:
+    image: ployz/hosted-dns:cb2e04f
+    env_file: .env.hosted-dns.production
+    mem_limit: 256m
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/healthz"]
+      interval: 15s
+      timeout: 5s
+      retries: 4
+    # dns.ployz.app is DNS-only, so Caddy sees the client directly. CLIENT_IP_HEADER=x-real-ip.
+    x-caddy: |
+      dns.ployz.app {
+        reverse_proxy {{upstreams 8080}} {
+          header_up X-Real-IP {remote_host}
+        }
+        log
+      }
+
+volumes:
+  redis-inngest-data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /volumes/ployz-prod-redis-inngest
