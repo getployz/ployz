@@ -1704,6 +1704,50 @@ impl RpcError {
         }
     }
 
+    /// `self` from a call to `machine_id` whose connection dropped after it went out and
+    /// before an answer came back, so the target may have done the work. Read back by
+    /// [`Self::reply_lost`]. Details that aren't an object are kept unmarked.
+    #[must_use]
+    pub fn reply_lost_from(mut self, machine_id: &crate::MachineId) -> Self {
+        if self.details.is_null() {
+            self.details = Value::Object(serde_json::Map::new());
+        }
+        if let Value::Object(details) = &mut self.details {
+            details.insert(REPLY_LOST_KEY.into(), Value::Bool(true));
+            details
+                .entry("machine_id")
+                .or_insert_with(|| Value::String(machine_id.to_string()));
+        }
+        self
+    }
+
+    /// `self` from a call that never reached its target, so the target did nothing with
+    /// it. Read back by [`Self::never_reached`]. Details that aren't an object are kept
+    /// unmarked.
+    #[must_use]
+    pub fn unreached(mut self) -> Self {
+        if self.details.is_null() {
+            self.details = Value::Object(serde_json::Map::new());
+        }
+        if let Value::Object(details) = &mut self.details {
+            details.insert(REACHED_KEY.into(), Value::Bool(false));
+        }
+        self
+    }
+
+    /// Whether the call never reached its target.
+    #[must_use]
+    pub fn never_reached(&self) -> bool {
+        self.details.get(REACHED_KEY).and_then(Value::as_bool) == Some(false)
+    }
+
+    /// Whether the connection dropped before the target's answer came back, so the
+    /// target may have done the work.
+    #[must_use]
+    pub fn reply_lost(&self) -> bool {
+        self.details.get(REPLY_LOST_KEY).and_then(Value::as_bool) == Some(true)
+    }
+
     /// Whether the target Machine didn't answer, rather than answering with this error.
     #[must_use]
     pub fn target_unanswered(&self) -> bool {
@@ -1831,6 +1875,8 @@ impl fmt::Display for CapabilityRefusal {
 pub const TARGET_UNANSWERED_KEY: &str = "ployz-target-unanswered";
 
 const TARGET_UNANSWERED_REASON: &str = "target_unanswered";
+const REPLY_LOST_KEY: &str = "reply_lost";
+const REACHED_KEY: &str = "reached";
 
 /// [`caused_status`] as `Unavailable`, marked [`TARGET_UNANSWERED_KEY`].
 #[cfg(not(target_arch = "wasm32"))]

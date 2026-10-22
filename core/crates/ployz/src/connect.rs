@@ -1108,6 +1108,23 @@ pub(crate) fn keep_target_reply(
     }
 }
 
+/// A call that went out and lost its answer may have been done, and a later attempt that
+/// never reached the target says nothing about it, so the earlier loss stands. A target
+/// that stayed silent is stronger news than an earlier drop, and a failure that no retry
+/// fixes, such as a refused SSH key, is what the user has to act on.
+pub(crate) fn keep_lost_call(lost: Option<ConnectError>, error: ConnectError) -> ConnectError {
+    match lost {
+        Some(lost)
+            if error.unreached()
+                && !error.target_unanswered()
+                && error.retry() != ployz_core::Retry::Never =>
+        {
+            lost
+        }
+        _ => error,
+    }
+}
+
 /// A gRPC transport failure. Display is the status message, not Status Debug.
 #[derive(Clone, Debug, Eq, Error, PartialEq)]
 #[error("{message}")]

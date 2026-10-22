@@ -523,28 +523,47 @@ where
     // A Machine that answered on an earlier attempt was not silent throughout: its
     // answer stands in for a later silence, as `call_retried` keeps it.
     let mut answer: Option<RpcError> = None;
+    // A resend that never reached the Machine says nothing of a send whose answer was
+    // lost: the Machine may have done that one.
+    let mut lost: Option<RpcError> = None;
     loop {
-        let outcome = op().await.map_err(|error| {
-            if error.target_unanswered() {
-                return answer.clone().unwrap_or(error);
-            }
-            answer = Some(error.clone());
-            error
-        });
-        match outcome {
+        let error = match op().await {
             Ok(value) => return Ok(value),
-            Err(error)
-                if error.code.retry() != Retry::Never
-                    && !crate::connect::on_closed_session(&error)
-                    && Instant::now() < deadline
-                    && !cancellation.is_cancelled() =>
-            {
-                tokio::select! {
-                    () = cancellation.cancelled() => return Err(error),
-                    () = tokio::time::sleep(RESTART_POLL) => {}
-                }
+            Err(error) => error,
+        };
+        if error.reply_lost() {
+            lost = Some(error.clone());
+        }
+        // Whether to send again follows what this attempt met. A resend that didn't reach
+        // the Machine reports the earlier loss instead of itself.
+        let closed = crate::connect::on_closed_session(&error);
+        let (error, retry) = match &lost {
+            Some(lost) if error.never_reached() => (lost.clone(), error.code.retry()),
+            _ if error.target_unanswered() => {
+                let error = answer.clone().unwrap_or(error);
+                let retry = error.code.retry();
+                (error, retry)
             }
-            Err(error) => return Err(error),
+            _ => {
+                if !error.reply_lost() {
+                    lost = None;
+                }
+                answer = Some(error.clone());
+                let retry = error.code.retry();
+                (error, retry)
+            }
+        };
+        let again = retry != Retry::Never
+            && !closed
+            && !crate::connect::on_closed_session(&error)
+            && Instant::now() < deadline
+            && !cancellation.is_cancelled();
+        if !again {
+            return Err(error);
+        }
+        tokio::select! {
+            () = cancellation.cancelled() => return Err(error),
+            () = tokio::time::sleep(RESTART_POLL) => {}
         }
     }
 }

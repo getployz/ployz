@@ -1220,6 +1220,42 @@ fn only_a_target_reply_outlasts_a_later_silence() {
 }
 
 #[test]
+fn a_call_that_lost_its_answer_outlasts_a_retry_that_never_reached_the_target() {
+    let lost = || {
+        ConnectError::from(tonic::Status::from_error(Box::new(io::Error::new(
+            io::ErrorKind::NotConnected,
+            "connection lost",
+        ))))
+    };
+    let unreached = || ConnectError::Io(io::Error::new(io::ErrorKind::TimedOut, "SSH timed out"));
+
+    let error = keep_lost_call(Some(lost()), unreached());
+    assert!(error.unreplied(), "{error}");
+
+    let answered = keep_lost_call(
+        Some(lost()),
+        ConnectError::from(tonic::Status::unavailable("Machine is not participating")),
+    );
+    assert!(
+        answered.target_replied(),
+        "a later answer stands: {answered}"
+    );
+    assert!(!keep_lost_call(None, unreached()).unreplied());
+
+    let refused_key = {
+        use std::os::unix::process::ExitStatusExt;
+        ConnectError::SshProbe {
+            target: "host".to_owned(),
+            status: std::process::ExitStatus::from_raw(255 << 8),
+            failure: SshFailure::Auth,
+            detail: "Permission denied (publickey)".into(),
+        }
+    };
+    let kept = keep_lost_call(Some(lost()), refused_key);
+    assert_eq!(kept.retry(), ployz_core::Retry::Never, "{kept}");
+}
+
+#[test]
 fn a_closed_session_does_not_outlast_a_later_silence() {
     let closed = || {
         ConnectError::Rpc(TransportError {

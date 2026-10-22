@@ -375,6 +375,12 @@ keep their old replicas. Once the server is back, deploy again to finish the res
 ployz deploy
 ```
 
+When the connection drops in the middle of a step, the deploy can't tell whether the server did
+it. It says so instead of blaming the step: `db: The connection to Server web-1 dropped during
+pull image, so it may have happened anyway`, with `cause: connection lost`. Your image and your
+change are fine, so the deploy doesn't point you at them. A step that created or started a
+replica may have left the new replica running beside the old one. The next deploy removes it.
+
 ## My upload or log stream fails on a slow connection
 
 `keep-alive timed out`
