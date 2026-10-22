@@ -42,9 +42,10 @@ function CopyCard({ volume, copy, now }: { volume: VolumeCopies["volume"]; copy:
 
   if (copy.kind === "offsite") return <div className={className} data-copy={name} data-changed={surface === "changed" || undefined}>{content}</div>;
   const resourceId = mirrorResourceId(volume.id, copy.server.id);
+  const kind = copy.lastReported ? `${LAST_REPORTED.toLowerCase()} mirror` : "mirror";
   return (
     <Link to={ENVIRONMENT_RESOURCE_ROUTE_TO} params={{ ...params, resourceId }} draggable={false} data-copy={name} data-changed={surface === "changed" || undefined}
-      aria-label={`${name}, ${copy.lastReported ? `${LAST_REPORTED.toLowerCase()} mirror` : "mirror"} of ${volume.name}`} data-selected={selectedNodeId === resourceId} className={className}>
+      aria-label={`${name}, ${kind} of ${volume.name}`} data-selected={selectedNodeId === resourceId} className={className}>
       {content}
     </Link>
   );
