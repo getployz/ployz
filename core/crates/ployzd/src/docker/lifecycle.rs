@@ -434,19 +434,27 @@ impl ContainerRuntime {
     ) -> Result<Option<ContainerObservation>, Error> {
         let key = slot.creation_key.as_str();
         let name = creation_name(machine_id, &slot.namespace, &slot.service, slot.kind, key);
-        let container_id = match self.keyed_container(machine_id, &name, key).await {
-            Err(Error::SpecNotFound(container_id)) => container_id,
-            found => return found,
-        };
-        // Under the lock no create is between Docker's create and its spec's write.
-        let mut operation = self.specs.config_operation().await;
-        if self.half_made(&mut operation, &container_id).await? {
-            // Removed, so a slot read as empty holds nothing that keeps its Volumes in use.
-            // The create that follows makes it again.
-            self.force_remove_container(&container_id).await?;
-            return Ok(None);
+        let found = self.keyed_container(machine_id, &name, key).await;
+        if !matches!(found, Err(Error::SpecNotFound(_))) {
+            return found;
         }
-        self.keyed_container(machine_id, &name, key).await
+        // Under the lock no create is between Docker's create and its spec's write. A
+        // create that ran while this waited may have replaced the Container, so the slot
+        // is read again.
+        let mut operation = self.specs.config_operation().await;
+        match self.keyed_container(machine_id, &name, key).await {
+            Err(Error::SpecNotFound(container_id))
+                if self.half_made(&mut operation, &container_id).await? =>
+            {
+                // Removed, so a slot read as empty holds nothing that keeps its Volumes in
+                // use. The create that follows makes it again.
+                self.force_remove_container(&container_id).await?;
+                Ok(None)
+            }
+            // A restore's Container now holds the records it took over.
+            Err(Error::SpecNotFound(_)) => self.keyed_container(machine_id, &name, key).await,
+            found => found,
+        }
     }
 
     async fn keyed_container(
