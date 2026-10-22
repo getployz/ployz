@@ -10,9 +10,10 @@ use std::{
 use bollard::{
     Docker,
     models::{
-        EndpointIpamConfig, EndpointSettings, Ipam, IpamConfig, NetworkConnectRequest,
-        NetworkCreateRequest, NetworkDisconnectRequest, NetworkInspect,
+        ContainerSummary, EndpointIpamConfig, EndpointSettings, Ipam, IpamConfig,
+        NetworkConnectRequest, NetworkCreateRequest, NetworkDisconnectRequest, NetworkInspect,
     },
+    query_parameters::ListContainersOptionsBuilder,
 };
 use defguard_wireguard_rs::{
     InterfaceConfiguration, Kernel, WGApi, WireguardInterfaceApi,
@@ -34,7 +35,8 @@ use crate::docker_image::is_not_found;
 use super::{
     ChoiceRefused, DOCKER_NETWORK_NAME, EndpointChoice, MACHINE_API_PORT, MeshPeer, NetworkError,
     WIREGUARD_INTERFACE_NAME, WIREGUARD_KEEPALIVE_SECONDS, WIREGUARD_PORT, WireGuardPrivateKey,
-    attach_peer_selections, checked_command, choose_endpoint, firewall::remove_firewall_rules,
+    attach_peer_selections, checked_command, choose_endpoint,
+    firewall::{docker_ipv6_firewall, fence_container_ipv6, remove_firewall_rules},
     peers_for,
 };
 use crate::{
@@ -415,16 +417,29 @@ impl NetworkPlane {
     }
 
     async fn ensure_docker_network(&self) -> Result<bool, NetworkError> {
+        let ipv6 = bridge_ipv6_allowed().then(|| docker_network_ipv6(self.machine.subnet));
+        if ipv6.is_some() {
+            // Before any container holds IPv6 that NAT66 could carry into the mesh.
+            fence_container_ipv6()?;
+        }
+        let created = self.ensure_docker_network_shape(ipv6.as_ref()).await?;
+        self.rejoin_detached().await;
+        Ok(created)
+    }
+
+    async fn ensure_docker_network_shape(
+        &self,
+        ipv6: Option<&IpamConfig>,
+    ) -> Result<bool, NetworkError> {
         let subnet = self.machine.subnet.to_string();
         let gateway = self.machine.subnet.gateway().0.to_string();
         let required_options = required_docker_network_options(self.mtu);
-        let ipv6 = bridge_ipv6_allowed().then(|| docker_network_ipv6(self.machine.subnet));
-        let request = docker_network_request(self.machine.subnet, &required_options, ipv6.as_ref());
+        let request = docker_network_request(self.machine.subnet, &required_options, ipv6);
         match self.docker.inspect_network(DOCKER_NETWORK_NAME, None).await {
             Ok(network) => {
                 if docker_network_matches(&network, &subnet, &gateway, &required_options) {
-                    if !docker_network_ipv6_matches(&network, ipv6.as_ref()) {
-                        self.readdress_docker_network(&network, request).await?;
+                    if !docker_network_ipv6_matches(&network, ipv6) {
+                        self.readdress_docker_network(&network, request).await;
                     }
                     return Ok(false);
                 }
@@ -475,19 +490,27 @@ impl NetworkPlane {
     }
 
     /// Docker can't change a network's addressing in place, so the bridge is replaced
-    /// under its attached containers. Each running container keeps running and gets its
-    /// IPv4 address back, so routes and Internal DNS records stay valid.
+    /// under its members, stopped ones included, since a stopped container keeps the
+    /// old network's ID and could not start. Running containers keep running and get
+    /// their IPv4 addresses back, so routes and Internal DNS records stay valid. A
+    /// failure leaves the bridge serving as it was; the next start tries again.
     async fn readdress_docker_network(
         &self,
         network: &NetworkInspect,
         request: NetworkCreateRequest,
-    ) -> Result<(), NetworkError> {
-        let attached = attached_endpoints(network);
+    ) {
+        let members = match self.bridge_members().await {
+            Ok(members) => members,
+            Err(error) => {
+                report_readdress(&error);
+                return;
+            }
+        };
         let mut detached = Vec::new();
-        let mut replaced = Ok(());
-        for (container, ipv4) in &attached {
+        let mut disconnected = Ok(());
+        for member in members.iter().filter(|member| member.attached) {
             let disconnect = NetworkDisconnectRequest {
-                container: container.clone(),
+                container: member.id.clone(),
                 force: Some(true),
             };
             match self
@@ -495,28 +518,27 @@ impl NetworkPlane {
                 .disconnect_network(DOCKER_NETWORK_NAME, disconnect)
                 .await
             {
-                Ok(()) => detached.push((container, ipv4)),
+                Ok(()) => detached.push(member),
                 Err(error) if is_not_found(&error) => {}
                 Err(error) => {
-                    replaced = Err(error.into());
+                    disconnected = Err(error.into());
                     break;
                 }
             }
         }
-        if replaced.is_ok() {
-            replaced = self.replace_docker_network(network, request).await;
+        if let Err(error) = match disconnected {
+            Ok(()) => self.replace_docker_network(network, request).await,
+            Err(error) => Err(error),
+        } {
+            report_readdress(&error);
         }
-        for (container, ipv4) in detached {
-            if let Err(error) = self.reconnect(container, ipv4.as_deref()).await {
-                eprintln!(
-                    "container {container} could not rejoin the {DOCKER_NETWORK_NAME} network: {error}",
-                    error = ployz_core::error_chain::inline(&error),
-                );
-            }
+        for member in detached {
+            self.rejoin(&member.id, member.ipv4.as_deref()).await;
         }
-        replaced
     }
 
+    /// Falls back to the IPv4-only bridge when Docker refuses the dual-stack one, so
+    /// IPv6 trouble never leaves the Machine without a network.
     async fn replace_docker_network(
         &self,
         network: &NetworkInspect,
@@ -528,16 +550,43 @@ impl NetworkPlane {
             Err(error) if is_not_found(&error) => {}
             Err(error) => return Err(error.into()),
         }
-        self.docker.create_network(request).await?;
+        let ipv4_only = NetworkCreateRequest {
+            enable_ipv6: Some(false),
+            ipam: network.ipam.clone(),
+            ..request.clone()
+        };
+        if let Err(error) = self.docker.create_network(request).await {
+            self.docker.create_network(ipv4_only).await?;
+            return Err(error.into());
+        }
         Ok(())
     }
 
+    async fn bridge_members(&self) -> Result<Vec<BridgeMember>, NetworkError> {
+        let containers = self
+            .docker
+            .list_containers(Some(
+                ListContainersOptionsBuilder::default().all(true).build(),
+            ))
+            .await?;
+        Ok(bridge_members(&containers))
+    }
+
+    /// A container created on the bridge that lost its endpoint, such as one a
+    /// readdress detached before ployzd stopped, joins it again.
+    async fn rejoin_detached(&self) {
+        match self.bridge_members().await {
+            Ok(members) => {
+                for member in members.iter().filter(|member| !member.attached) {
+                    self.rejoin(&member.id, None).await;
+                }
+            }
+            Err(error) => report_readdress(&error),
+        }
+    }
+
     /// Falls back to any free address when the old one can't be had.
-    async fn reconnect(
-        &self,
-        container: &str,
-        ipv4: Option<&str>,
-    ) -> Result<(), bollard::errors::Error> {
+    async fn rejoin(&self, container: &str, ipv4: Option<&str>) {
         let connect = |ipv4: Option<&str>| NetworkConnectRequest {
             container: container.to_owned(),
             endpoint_config: ipv4.map(|address| EndpointSettings {
@@ -548,19 +597,66 @@ impl NetworkPlane {
                 ..Default::default()
             }),
         };
-        match self
+        let mut result = self
             .docker
             .connect_network(DOCKER_NETWORK_NAME, connect(ipv4))
-            .await
-        {
-            Err(_) if ipv4.is_some() => {
-                self.docker
-                    .connect_network(DOCKER_NETWORK_NAME, connect(None))
-                    .await
-            }
-            result => result,
+            .await;
+        if result.is_err() && ipv4.is_some() {
+            result = self
+                .docker
+                .connect_network(DOCKER_NETWORK_NAME, connect(None))
+                .await;
+        }
+        if let Err(error) = result {
+            eprintln!(
+                "container {container} could not rejoin the {DOCKER_NETWORK_NAME} network: {error}",
+                error = ployz_core::error_chain::inline(&error),
+            );
         }
     }
+}
+
+fn report_readdress(error: &NetworkError) {
+    eprintln!(
+        "the {DOCKER_NETWORK_NAME} network could not take IPv6 and stays as it was: {error}",
+        error = ployz_core::error_chain::inline(error),
+    );
+}
+
+/// A container on the ployz bridge, or created for it.
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct BridgeMember {
+    id: String,
+    ipv4: Option<String>,
+    attached: bool,
+}
+
+fn bridge_members(containers: &[ContainerSummary]) -> Vec<BridgeMember> {
+    let mut members = containers
+        .iter()
+        .filter_map(|container| {
+            let endpoint = container
+                .network_settings
+                .as_ref()
+                .and_then(|settings| settings.networks.as_ref())
+                .and_then(|networks| networks.get(DOCKER_NETWORK_NAME));
+            let created_on = container
+                .host_config
+                .as_ref()
+                .and_then(|host| host.network_mode.as_deref())
+                == Some(DOCKER_NETWORK_NAME);
+            (endpoint.is_some() || created_on).then(|| BridgeMember {
+                id: container.id.clone().unwrap_or_default(),
+                ipv4: endpoint
+                    .and_then(|endpoint| endpoint.ip_address.clone())
+                    .filter(|address| !address.is_empty()),
+                attached: endpoint.is_some(),
+            })
+        })
+        .filter(|member| !member.id.is_empty())
+        .collect::<Vec<_>>();
+    members.sort();
+    members
 }
 
 /// Docker turns on IPv6 forwarding for a dual-stack bridge, and a forwarding
@@ -569,6 +665,13 @@ impl NetworkPlane {
 /// its bridge stays IPv4-only until the operator sets 2, which the next start sees.
 fn bridge_ipv6_allowed() -> bool {
     if !host_has_ipv6() {
+        return false;
+    }
+    if !docker_ipv6_firewall() {
+        eprintln!(
+            "the {DOCKER_NETWORK_NAME} network stays IPv4-only, so apps see IPv6 visitors as its gateway: \
+             Docker's ip6tables is off, so Ployz can't fence container IPv6 out of the mesh."
+        );
         return false;
     }
     let listing = |args: &[&str]| {
@@ -591,7 +694,7 @@ fn bridge_ipv6_allowed() -> bool {
     }
     let settings = exposed
         .iter()
-        .map(|interface| format!("net.ipv6.conf.{interface}.accept_ra=2"))
+        .map(|interface| format!("net.ipv6.conf.{}.accept_ra=2", interface.replace('.', "/")))
         .collect::<Vec<_>>()
         .join(" ");
     eprintln!(
@@ -704,26 +807,6 @@ fn docker_network_ipv6_matches(network: &NetworkInspect, wanted: Option<&IpamCon
     network.enable_ipv6.unwrap_or(false) == wanted.is_some()
         && observed.map(|config| (&config.subnet, &config.gateway))
             == wanted.map(|config| (&config.subnet, &config.gateway))
-}
-
-/// Attached containers by ID, each with the IPv4 address it holds.
-fn attached_endpoints(network: &NetworkInspect) -> Vec<(String, Option<String>)> {
-    let mut attached = network
-        .containers
-        .iter()
-        .flatten()
-        .map(|(container, endpoint)| {
-            let ipv4 = endpoint
-                .ipv4_address
-                .as_deref()
-                .and_then(|address| address.split('/').next())
-                .filter(|address| !address.is_empty())
-                .map(str::to_owned);
-            (container.clone(), ipv4)
-        })
-        .collect::<Vec<_>>();
-    attached.sort();
-    attached
 }
 
 fn read_retained_device(

@@ -1,5 +1,5 @@
 use super::*;
-use bollard::models::EndpointResource;
+use bollard::models::{ContainerSummary, EndpointSettings};
 
 fn installed_peer(seed: u8) -> Peer {
     let mut peer = Peer::new(Key::new([seed; 32]));
@@ -661,10 +661,7 @@ fn subnet(value: &str) -> ployz_core::MachineSubnet {
     ployz_core::MachineSubnet::parse(value).unwrap()
 }
 
-fn inspected(
-    request: &NetworkCreateRequest,
-    attached: HashMap<String, EndpointResource>,
-) -> NetworkInspect {
+fn inspected(request: &NetworkCreateRequest) -> NetworkInspect {
     NetworkInspect {
         name: Some(request.name.clone()),
         id: Some("owned-network".into()),
@@ -674,7 +671,6 @@ fn inspected(
         ipam: request.ipam.clone(),
         options: request.options.clone(),
         labels: request.labels.clone(),
-        containers: Some(attached),
         ..Default::default()
     }
 }
@@ -697,7 +693,7 @@ fn a_dual_stack_bridge_matches_itself_and_an_ipv4_only_one_needs_readdressing() 
     let ipv6 = docker_network_ipv6(machine);
     let dual = docker_network_request(machine, &options, Some(&ipv6));
     assert_eq!(dual.enable_ipv6, Some(true));
-    let dual = inspected(&dual, HashMap::new());
+    let dual = inspected(&dual);
     assert!(docker_network_matches(
         &dual,
         "10.210.1.0/24",
@@ -706,10 +702,7 @@ fn a_dual_stack_bridge_matches_itself_and_an_ipv4_only_one_needs_readdressing() 
     ));
     assert!(docker_network_ipv6_matches(&dual, Some(&ipv6)));
 
-    let ipv4_only = inspected(
-        &docker_network_request(machine, &options, None),
-        HashMap::new(),
-    );
+    let ipv4_only = inspected(&docker_network_request(machine, &options, None));
     assert!(docker_network_matches(
         &ipv4_only,
         "10.210.1.0/24",
@@ -722,29 +715,48 @@ fn a_dual_stack_bridge_matches_itself_and_an_ipv4_only_one_needs_readdressing() 
 }
 
 #[test]
-fn readdressing_reconnects_every_attached_container_at_its_ipv4_address() {
-    let endpoint = |ipv4: Option<&str>| EndpointResource {
-        ipv4_address: ipv4.map(Into::into),
+fn readdressing_takes_stopped_and_detached_bridge_containers_and_pins_ipv4() {
+    use bollard::models::{ContainerSummaryHostConfig, ContainerSummaryNetworkSettings};
+    let container = |id: &str, mode: &str, endpoint: Option<&str>| ContainerSummary {
+        id: Some(id.into()),
+        host_config: Some(ContainerSummaryHostConfig {
+            network_mode: Some(mode.into()),
+            ..Default::default()
+        }),
+        network_settings: Some(ContainerSummaryNetworkSettings {
+            networks: Some(
+                endpoint
+                    .map(|address| {
+                        HashMap::from([(
+                            DOCKER_NETWORK_NAME.to_owned(),
+                            EndpointSettings {
+                                ip_address: Some(address.into()),
+                                ..Default::default()
+                            },
+                        )])
+                    })
+                    .unwrap_or_default(),
+            ),
+        }),
         ..Default::default()
     };
-    let network = inspected(
-        &docker_network_request(
-            subnet("10.210.1.0/24"),
-            &required_docker_network_options(1420),
-            None,
-        ),
-        HashMap::from([
-            ("b".repeat(64), endpoint(Some("10.210.1.7/24"))),
-            ("a".repeat(64), endpoint(Some("10.210.1.5/24"))),
-            ("c".repeat(64), endpoint(None)),
-        ]),
-    );
+    let member = |id: &str, ipv4: Option<&str>, attached| BridgeMember {
+        id: id.into(),
+        ipv4: ipv4.map(Into::into),
+        attached,
+    };
     assert_eq!(
-        attached_endpoints(&network),
+        bridge_members(&[
+            container("running", "ployz", Some("10.210.1.5")),
+            container("stopped", "ployz", Some("")),
+            container("detached", "ployz", None),
+            container("elsewhere", "bridge", None),
+            container("host", "host", None),
+        ]),
         [
-            ("a".repeat(64), Some("10.210.1.5".to_owned())),
-            ("b".repeat(64), Some("10.210.1.7".to_owned())),
-            ("c".repeat(64), None),
+            member("detached", None, false),
+            member("running", Some("10.210.1.5"), true),
+            member("stopped", None, true),
         ]
     );
 }
