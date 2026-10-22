@@ -1480,8 +1480,18 @@ pub(crate) fn record(
                     confirmed: &[],
                 },
             );
+            // A shared Volume reads Not attempted when one Service mounting it is
+            // blocked, yet the run still prepares it for any other that is planned.
+            let pending = |id: &str| outcomes.get(id) == Some(&NodeStatus::Pending);
             crate::volume::fix_prepared(tx, &stored.summary.environment_id, &saved, |id| {
-                outcomes.get(id) == Some(&NodeStatus::Pending)
+                pending(id)
+                    || saved.services.iter().any(|service| {
+                        pending(&service.id)
+                            && service
+                                .volume_attachments
+                                .iter()
+                                .any(|mount| mount.volume_resource_id == id)
+                    })
             })?;
             stored.run.preview = Some(preview);
             save(tx, &mut stored)?;

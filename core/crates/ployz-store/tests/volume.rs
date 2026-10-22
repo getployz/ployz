@@ -1638,6 +1638,54 @@ fn a_shared_volume_lands_with_the_one_confirmed_service_whatever_the_other_does(
 }
 
 #[test]
+fn a_shared_volume_one_planned_service_mounts_locks_whatever_blocks_the_other() {
+    let (store, who) = shop();
+    store
+        .write(
+            &who,
+            &CreateService {
+                id: ServiceLineageId::parse("00000000-0000-4000-8000-000000000004").unwrap(),
+                environment: EnvironmentRef::default(),
+                name: ServiceName::parse("api").unwrap(),
+                image: Some("caddy:2".into()),
+                template: None,
+            },
+        )
+        .unwrap();
+    set_shared_writes(&store, &who, true).unwrap();
+    edit(
+        &store,
+        &who,
+        Change::Set {
+            path: path("api.mounts.data"),
+            value: json!("/srv"),
+        },
+    )
+    .unwrap();
+    admit(&store, &who, 1, &[], None).unwrap();
+    let runner = RunnerId::parse("runner").unwrap();
+    store.claim(&id(1), &runner).unwrap();
+    // The run prepares data for api, while web waits on something else.
+    let preview: DeployPreview = serde_json::from_value(json!({
+        "namespace": "shop-production",
+        "operations": [{
+            "index": 0, "machine_id": "a".repeat(32), "service_name": "api",
+            "operation": remove_web(), "status": {"type": "pending"}
+        }],
+        "warnings": [], "would_remove": [], "preserved_volumes": [],
+        "blocked": [{
+            "service": "web",
+            "error": {"code": "conflict", "message": "blocked", "details": {}}
+        }]
+    }))
+    .unwrap();
+    store
+        .record(&id(1), &runner, RunEvidence::Prepared(preview))
+        .unwrap();
+    assert!(listed(&store, &who)[0].storage_locked);
+}
+
+#[test]
 fn a_running_deploy_shows_a_volume_unchanged_once_its_preview_plans_nothing_that_mounts_it() {
     let (store, who) = shop();
     // A new Volume waits with the Service that mounts it.
