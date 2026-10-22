@@ -290,6 +290,8 @@ impl ContainerRuntime {
                     field: "container ID",
                     source,
                 })?;
+            // A daemon killed here leaves a Container no spec describes.
+            crate::faults::kill_inside("CreateContainer.BeforeSpec", None);
             let slot =
                 creation_key.map(|key| super::spec_store::CreationSlot::new(namespace, kind, key));
             if let Err(error) = config_operation
