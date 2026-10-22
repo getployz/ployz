@@ -429,6 +429,20 @@ once. The command exits 3. Deploy the service to put a replica in service:
 ployz deploy web
 ```
 
+## A restarted replica is left out of routing
+
+`Container … is left Held and not routed: copy … of app/web is In at gen 3, newer than this copy's gen 2. The newer copy serves the Service; ployz deploy web replaces this one.`
+
+A later deploy changed the service and started a newer replica, but this older one was still
+running its old version. `ployz service restart` and `ployz service start` keep it out of routing,
+so two versions never answer at once. The command exits 3. A replica a deploy kept as it was,
+such as the existing ones when you only raised the replica count, isn't affected. It goes back into
+routing. Deploy the service to replace the old replica:
+
+```sh
+ployz deploy web
+```
+
 ## Ployz restarted on a server during my deploy
 
 `cause: connection to the daemon closed` or `cause: stream closed because of a broken pipe`

@@ -6,6 +6,7 @@ mod lifecycle;
 mod limits;
 mod managed_service;
 mod observe;
+pub(crate) use observe::published_spec;
 mod peer_pull;
 pub(crate) use peer_pull::ImageProxy;
 mod spec_store;
@@ -350,6 +351,18 @@ impl ContainerRuntime {
         container_ids: Vec<ContainerId>,
     ) -> Result<BTreeMap<ContainerId, ployz_core::CopyRotation>, Error> {
         Ok(self.specs.rotations(container_ids).await?)
+    }
+
+    /// The full spec this Machine recorded when it created `container_id`.
+    ///
+    /// # Errors
+    ///
+    /// Returns when the Machine database cannot be read.
+    pub async fn spec(
+        &self,
+        container_id: &ContainerId,
+    ) -> Result<Option<ployz_core::ResolvedServiceSpec>, Error> {
+        Ok(self.specs.get(container_id).await?)
     }
 
     /// Report this Container as `stopping` until the returned Withdrawal drops,

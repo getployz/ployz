@@ -620,7 +620,10 @@ fn started(copy: &Copy, brought: BroughtIn) -> Result<UserStarted, RpcError> {
                     rotation_name(&copy.rotation),
                     error.message
                 ),
-                "Remove it; the newer copy serves the Service.",
+                &format!(
+                    "The newer copy serves the Service; ployz deploy {} replaces this one.",
+                    copy.service.name
+                ),
             );
             Err(error)
         }

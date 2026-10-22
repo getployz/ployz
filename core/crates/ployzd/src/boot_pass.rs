@@ -227,7 +227,7 @@ pub(crate) fn superseded(
 /// What a Deploy asked of a copy. The planner resolves each copy's update order on
 /// its own: a replacement whose predecessor holds a host port stops first, while a
 /// new copy starts first. So copies one Deploy started can differ there alone.
-fn deploy_input(spec: &ResolvedServiceSpec) -> RequestedServiceSpec {
+pub(crate) fn deploy_input(spec: &ResolvedServiceSpec) -> RequestedServiceSpec {
     let mut requested = spec.to_requested();
     requested.update.order = None;
     requested

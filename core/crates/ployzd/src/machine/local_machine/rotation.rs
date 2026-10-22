@@ -13,11 +13,13 @@ use ployz_core::{
     ContainerId, ContainerKind, ContainerLocator, ContainerNow, ContainerObservation,
     ContainerRefusal, ContainerRefusalReason, ContainerRuntimeObservation, ContainerWant,
     CopyRotation, DeploymentLogId, EnsuredContainer, Gen, HealthVerdict, MachineId,
-    QualifiedService, RotationEdge, RotationRefusal, RotationTarget, RunRotation, RunTarget,
+    QualifiedService, ResolvedServiceSpec, RotationEdge, RotationRefusal, RotationTarget,
+    RunRotation, RunTarget, SpecChange, compare_specs,
 };
 
 use super::{Error, LocalMachine, not_found_refusal, redacted, refuse};
-use crate::docker::ContainerRuntime;
+use crate::boot_pass::deploy_input;
+use crate::docker::{ContainerRuntime, published_spec};
 use crate::route_acks::{Ackers, Membership, routed};
 
 #[derive(Clone, Debug)]
@@ -52,6 +54,7 @@ struct CopyState {
     service: QualifiedService,
     r#gen: Gen,
     rotation: CopyRotation,
+    spec: ResolvedServiceSpec,
 }
 
 impl CopyState {
@@ -61,6 +64,7 @@ impl CopyState {
             service: observed.identity(),
             r#gen: observed.copy_gen(),
             rotation: observed.rotation().clone(),
+            spec: observed.resolved_spec.clone(),
         }
     }
 }
@@ -149,6 +153,7 @@ impl LocalMachine {
                 ),
                 r#gen: new.r#gen,
                 rotation: CopyRotation::Pending,
+                spec: new.resolved_spec.clone(),
             },
             (ContainerNow::Absent { .. }, RunTarget::Existing(_)) => {
                 return Ok(refused(now, not_found_refusal(&locator)));
@@ -213,8 +218,12 @@ impl LocalMachine {
                 health: Some(health),
             });
         }
-        self.write(CopyState::of(observed), want, expect, Some(health))
-            .await
+        // `started` went through wire redaction, so keep the full spec read before it.
+        let copy = CopyState {
+            spec: copy.spec,
+            ..CopyState::of(observed)
+        };
+        self.write(copy, want, expect, Some(health)).await
     }
 
     /// Starts an existing copy for an In want, as [`start_fenced`] does.
@@ -334,9 +343,10 @@ impl LocalMachine {
         Ok(guard.map_or(Checked::Allowed(to), Checked::Refused))
     }
 
-    /// Refuse In while a newer copy of the Service is already In. This Machine's copies
-    /// are listed afresh from their labels and record, so one created since `observed`
-    /// was read still counts and no health check runs under the turn.
+    /// Refuse In while a newer copy of the Service that supersedes this one is already
+    /// In. This Machine's copies are listed afresh from their labels and record, so one
+    /// created since `observed` was read still counts and no health check runs under
+    /// the turn.
     async fn newer_in(
         &self,
         copy: &CopyState,
@@ -344,23 +354,31 @@ impl LocalMachine {
     ) -> Result<Option<ContainerRefusal>, Error> {
         let machine_id = self.record().id();
         let containers = self.containers.as_ref().ok_or(Error::DockerUnavailable)?;
-        let local = containers
-            .service_copies(&copy.service)
-            .await?
-            .into_iter()
-            .filter(|local| local.rotation == CopyRotation::In)
-            .map(|local| (local.container_id, local.r#gen));
-        let newer = observed
+        let published = published_spec(copy.spec.clone());
+        let mut newer = observed
             .into_iter()
             .filter(|observed| {
                 observed.machine_id != machine_id
                     && is_sibling(copy, observed)
                     && *observed.rotation() == CopyRotation::In
+                    && observed.copy_gen() > copy.r#gen
+                    && supersedes(&observed.resolved_spec, &published)
             })
             .map(|observed| (observed.container_id, observed.copy_gen()))
-            .chain(local)
-            .filter(|(id, r#gen)| Some(*id) != copy.id && *r#gen > copy.r#gen)
-            .max_by_key(|(_, r#gen)| *r#gen);
+            .collect::<Vec<_>>();
+        for local in containers.service_copies(&copy.service).await? {
+            if local.rotation != CopyRotation::In
+                || Some(local.container_id) == copy.id
+                || local.r#gen <= copy.r#gen
+            {
+                continue;
+            }
+            let spec = containers.spec(&local.container_id).await?;
+            if spec.is_none_or(|spec| supersedes(&spec, &copy.spec)) {
+                newer.push((local.container_id, local.r#gen));
+            }
+        }
+        let newer = newer.into_iter().max_by_key(|(_, r#gen)| *r#gen);
         Ok(newer.map(|(id, r#gen)| {
             refuse(
                 ContainerRefusalReason::OlderThanIn,
@@ -494,6 +512,14 @@ impl LocalMachine {
             })
             .collect())
     }
+}
+
+/// A newer copy supersedes `current` when a Deploy of the newer copy's spec would
+/// make a new Container in its place. A Deploy that only scales up keeps the older
+/// copies, so they are not superseded. A replicated row has no environment or
+/// Config content, so `current` is compared as published against one.
+fn supersedes(newer: &ResolvedServiceSpec, current: &ResolvedServiceSpec) -> bool {
+    compare_specs(current, &deploy_input(newer)) == SpecChange::NeedsRecreate
 }
 
 fn is_sibling(copy: &CopyState, observed: &ContainerObservation) -> bool {

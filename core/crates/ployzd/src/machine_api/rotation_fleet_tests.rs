@@ -596,6 +596,13 @@ fn spec(name: &str) -> ResolvedServiceSpec {
     spec
 }
 
+/// `name` after a Deploy that changed its image, so its copies replace older ones.
+fn redeployed(name: &str) -> ResolvedServiceSpec {
+    let mut spec = spec(name);
+    spec.container.image = "example.test/api:2".to_owned();
+    spec
+}
+
 /// A Service whose health follows the Docker healthcheck status.
 fn checked_spec(name: &str) -> ResolvedServiceSpec {
     let mut spec = spec(name);
@@ -943,7 +950,7 @@ async fn gone_drains_an_out_copy_and_refuses_an_in_copy() {
 #[tokio::test]
 async fn older_copy_and_stale_expect() {
     let fleet = Fleet::start().await;
-    let newer = fleet.routed(1, "new", "api", 2).await;
+    let newer = fleet.routed_as(1, "new", redeployed("api"), 2).await;
     let older = fleet.pending(0, "old", "api", 1).await;
 
     let reply = ensure(
@@ -1468,7 +1475,7 @@ async fn older_than_in_relists_local_copies_under_the_turn() {
         ensure(node, into(a, None, Some(CopyRotation::Pending))),
         async {
             before_turn.wait().await;
-            let b = fleet.routed(0, "b", "api", 2).await;
+            let b = fleet.routed_as(0, "b", redeployed("api"), 2).await;
             before_turn.wait().await;
             b
         }
@@ -1840,7 +1847,7 @@ mod rotation_commands {
     #[tokio::test]
     async fn older_than_in_is_refused() {
         let fleet = Fleet::start().await;
-        fleet.routed(2, "new", "api", 3).await;
+        fleet.routed_as(2, "new", redeployed("api"), 3).await;
         let older = fleet.pending(0, "old", "api", 2).await;
         fleet.routed(1, "other", "web", 9).await;
 
