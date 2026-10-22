@@ -67,7 +67,8 @@ export function redeployLine(command: string, review: ApprovalReview) {
   return rollback ? `Back to #${deployment}. ${rollback.body}.` : `Ships #${deployment} again.`;
 }
 
-const losesVolumeAccess = (review?: ApprovalReview) => review !== undefined && "operation" in review
+/** A Server removal: its Volumes' data stays on the disk, so the card lists effects rather than destruction. */
+export const losesVolumeAccess = (review?: ApprovalReview) => review !== undefined && "operation" in review
   && review.operation.verb === "remove" && review.operation.subject?.startsWith("server:") === true;
 
 /** The card's badge: a Save deletes nothing until the next Deploy, and a Deploy that only deletes Volumes counts them. An agent's Deploy that destroys nothing still asks. */
