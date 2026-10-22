@@ -64,7 +64,10 @@ check-in refreshes the row. Offline servers have stopped checking in.
 3. Choose **Volumes**. ZFS gives volumes size limits. ZFS uses the main disk. You can fall back
    to Docker where ZFS cannot run. **Docker only** has no managed volume size limits.
 4. Keep **Hostnames**, or choose **Pattern** under **Names** and enter `web-{n}` to get
-   `web-1`, `web-2`, and so on. Choose whether the servers run **Services**, **Web traffic**,
+   `web-1`, `web-2`, and so on. A hostname becomes a valid server name: lowercase, with each
+   run of other characters turned into one hyphen, so `HP-WIN11` becomes `hp-win11` and
+   `my_box.lan` becomes `my-box-lan`. A hostname with no letters or digits gets a name such as
+   `server-0f1e2d3c`. Choose whether the servers run **Services**, **Web traffic**,
    and **Builds**. Review the names, storage choices and any **Skip** reasons, then click
    **Enroll N**. For a selection across providers or networks, first check that every source
    belongs to you.
