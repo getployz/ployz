@@ -924,8 +924,8 @@ mod tests {
         let error = outcome.unwrap_err();
         assert!(error.is_interrupted());
         assert_eq!(
-            error.report().details["next"],
-            "ployz server upgrade stable a"
+            error.report().details.get("next").cloned(),
+            Some(json!("ployz server upgrade stable a"))
         );
     }
 
