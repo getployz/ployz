@@ -41,7 +41,7 @@ env:
 
 jobs:
   changes:
-    if: ${{ !github.event.pull_request.draft }}
+    if: false  # throwaway: prove a skipped upstream fails CI ready
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
