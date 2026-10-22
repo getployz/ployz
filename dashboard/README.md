@@ -39,10 +39,10 @@ what is missing or invalid.
 | `BETTER_AUTH_SECRET` | yes | auth session secret |
 | `APP_ENCRYPTION_SECRET` | yes | 32+ characters; encrypts stored credentials, keep it stable |
 | `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET` | yes | GitHub OAuth App (sign-in) |
-| `GITHUB_APP_ID`, `GITHUB_APP_SLUG`, `GITHUB_APP_PRIVATE_KEY`, `GITHUB_APP_WEBHOOK_SECRET` | yes | GitHub App (repository access) |
+| `GITHUB_APP_ID`, `GITHUB_APP_SLUG`, `GITHUB_APP_PRIVATE_KEY`, `GITHUB_APP_CLIENT_ID`, `GITHUB_APP_CLIENT_SECRET`, `GITHUB_APP_WEBHOOK_SECRET` | yes | GitHub App (repository access) |
 | `INNGEST_EVENT_KEY`, `INNGEST_SIGNING_KEY` | yes | shared with the Inngest server |
 | `PLOYZ_HOSTED_DNS_URL` | yes | Hosted DNS, which grants Cluster Domains: `https://dns.ployz.app/` for Ployz-hosted and Self-hosted Cloud; tests and local dev use a closed port |
-| `INNGEST_BASE_URL`, `INNGEST_CONNECT_GATEWAY_URL` | no | Inngest API and Connect gateway; local dev defaults otherwise |
+| `INNGEST_BASE_URL`, `INNGEST_CONNECT_GATEWAY_URL` | no | Inngest API and Connect gateway; unset, they point at Inngest Cloud, so local and self-hosted setups set both |
 | `BETTER_AUTH_TRUSTED_ORIGINS`, `PORT` | no | `PORT` defaults to 3000 |
 | `POLAR_ACCESS_TOKEN`, `POLAR_WEBHOOK_SECRET`, `POLAR_PRODUCT_ID`, `POLAR_SERVER` | no | all or none; none disables billing and every Organization is unlimited |
 | `UPTIME_ENABLED` | no | `true` on the dashboard when an uptime checker (`uptime/`) runs; unset hides uptime |
