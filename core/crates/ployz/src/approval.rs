@@ -385,6 +385,7 @@ fn unanswered(error: &LoginError) -> bool {
         | LoginError::SignedOut
         | LoginError::Ended
         | LoginError::TokenRefused
+        | LoginError::TokenMalformed
         | LoginError::NotMember(_)
         | LoginError::Unsupported(_)
         | LoginError::Status { .. }
