@@ -72,8 +72,7 @@ On a server upgraded from an earlier release, the web server Ployz already ran t
 old behavior: a request that had reached the powered-off server can hang for about 15 minutes.
 That lasts until the web server is created again. To do that now, open the server's page, turn
 **Takes web traffic** off, then on again. While it's off, that server doesn't answer on ports 80
-and 443, so do one server at a time. Servers you run without Ployz Cloud have no command for this
-yet ([#2526](https://github.com/getployz/ployz/issues/2526)).
+and 443, so do one server at a time.
 
 ## This app isn't running
 
