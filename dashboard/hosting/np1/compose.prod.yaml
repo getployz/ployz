@@ -1,12 +1,12 @@
 # Ployz hosted stack, production, on np1 (Uncloud single-machine cluster).
 # Deploy on np1:  /root/ployz/bin/uc --connect unix:///run/uncloud/uncloud.sock deploy -f /root/ployz/compose.prod.yaml -y [service...]
 # Env files sit next to this file on np1 only (mode 0600); see ~/.config/railway-exit/np1-env-map.md.
-# Image tags: ployz-cloud v0.3.0-beta.7 (c923362) for web and worker; at the move from Railway it was 487748a. ployz-uptime 487748a, ployz-site eb2d7d7 (site) and 3eb6e3a (tools-api),
+# Image tags: ployz-cloud built locally from e9126b09 (main, after v0.3.0-beta.7) for web and worker, since CI published no image for it; at the move from Railway it was 487748a. ployz-uptime 487748a, ployz-site eb2d7d7 (site) and 3eb6e3a (tools-api),
 # hosted-dns cb2e04f, inngest v1.46.0.
 
 services:
   ployz-web:
-    image: ghcr.io/getployz/ployz-cloud:v0.3.0-beta.7
+    image: ployz/ployz-cloud:e9126b09-np1
     env_file: .env.web.production
     mem_limit: 2g
     healthcheck:
@@ -35,7 +35,7 @@ services:
       }
 
   ployz-worker:
-    image: ghcr.io/getployz/ployz-cloud:v0.3.0-beta.7
+    image: ployz/ployz-cloud:e9126b09-np1
     command: ["node", ".output/worker/index.mjs"]
     env_file: .env.worker.production
     mem_limit: 2g
