@@ -327,18 +327,38 @@ impl Fleet {
 
     /// A new copy of `name` on `index` brought In, published to the cluster.
     async fn routed(&self, index: usize, key: &str, name: &str, r#gen: u64) -> ContainerId {
-        let id = self.brought_in(index, key, name, r#gen).await;
+        self.routed_as(index, key, spec(name), r#gen).await
+    }
+
+    async fn routed_as(
+        &self,
+        index: usize,
+        key: &str,
+        spec: ResolvedServiceSpec,
+        r#gen: u64,
+    ) -> ContainerId {
+        let id = self.brought_in_as(index, key, spec, r#gen).await;
         self.published(id, Some(CopyRotation::In)).await;
         id
     }
 
     /// A new copy of `name` on `index` brought In, whether or not the cluster has it yet.
     async fn brought_in(&self, index: usize, key: &str, name: &str, r#gen: u64) -> ContainerId {
+        self.brought_in_as(index, key, spec(name), r#gen).await
+    }
+
+    async fn brought_in_as(
+        &self,
+        index: usize,
+        key: &str,
+        spec: ResolvedServiceSpec,
+        r#gen: u64,
+    ) -> ContainerId {
         let node = self.node(index);
         let created = ensure(
             node,
             ContainerWant::Running {
-                container: RunTarget::New(new_copy(key, spec(name), r#gen)),
+                container: RunTarget::New(new_copy(key, spec, r#gen)),
                 rotation: RunRotation::Pending,
             },
         )
@@ -573,6 +593,13 @@ fn spec(name: &str) -> ResolvedServiceSpec {
     let mut spec = spec_with_sources(Vec::new());
     spec.name = ployz_core::ServiceName::parse(name).unwrap();
     spec.update.monitor_millis = Some(0);
+    spec
+}
+
+/// `name` after a Deploy that changed its image, so its copies replace older ones.
+fn redeployed(name: &str) -> ResolvedServiceSpec {
+    let mut spec = spec(name);
+    spec.container.image = "example.test/api:2".to_owned();
     spec
 }
 
@@ -923,7 +950,7 @@ async fn gone_drains_an_out_copy_and_refuses_an_in_copy() {
 #[tokio::test]
 async fn older_copy_and_stale_expect() {
     let fleet = Fleet::start().await;
-    let newer = fleet.routed(1, "new", "api", 2).await;
+    let newer = fleet.routed_as(1, "new", redeployed("api"), 2).await;
     let older = fleet.pending(0, "old", "api", 1).await;
 
     let reply = ensure(
@@ -1448,7 +1475,7 @@ async fn older_than_in_relists_local_copies_under_the_turn() {
         ensure(node, into(a, None, Some(CopyRotation::Pending))),
         async {
             before_turn.wait().await;
-            let b = fleet.routed(0, "b", "api", 2).await;
+            let b = fleet.routed_as(0, "b", redeployed("api"), 2).await;
             before_turn.wait().await;
             b
         }
@@ -1820,7 +1847,7 @@ mod rotation_commands {
     #[tokio::test]
     async fn older_than_in_is_refused() {
         let fleet = Fleet::start().await;
-        fleet.routed(2, "new", "api", 3).await;
+        fleet.routed_as(2, "new", redeployed("api"), 3).await;
         let older = fleet.pending(0, "old", "api", 2).await;
         fleet.routed(1, "other", "web", 9).await;
 
@@ -1832,6 +1859,86 @@ mod rotation_commands {
         let same_gen = fleet.pending(0, "same", "api", 3).await;
         let reply = ensure(fleet.node(0), into(same_gen, None, None)).await;
         assert_eq!(rotation_of(&reply), CopyRotation::In, "{reply:?}");
+    }
+
+    /// A scale-up keeps the older copy and adds a newer one with the same spec, so
+    /// the newer copy does not supersede it and a restart routes it again. The spec
+    /// carries environment and Config content, which a replicated row leaves out.
+    #[tokio::test]
+    async fn a_held_copy_kept_beside_a_newer_one_comes_back_in() {
+        let mut scaled = spec("api");
+        scaled
+            .container
+            .environment
+            .insert("SECRET".to_owned(), "value".into());
+        for newer_on in [0, 1] {
+            let fleet = Fleet::start().await;
+            let older = fleet.routed_as(0, "old", scaled.clone(), 1).await;
+            fleet.routed_as(newer_on, "new", scaled.clone(), 2).await;
+            let restart = || Some(CopyRotation::Held(run("restart")));
+            ensured(
+                &ensure(
+                    fleet.node(0),
+                    held(older, "restart", Some(CopyRotation::In)),
+                )
+                .await,
+            );
+
+            let reply = ensure(fleet.node(0), into(older, Some(run("restart")), restart())).await;
+
+            assert_eq!(
+                rotation_of(&reply),
+                CopyRotation::In,
+                "newer on {newer_on}: {reply:?}"
+            );
+        }
+    }
+
+    /// A Deploy held the old copy and brought its replacement In: forced, after a limits
+    /// change, or for an environment change another Machine's row cannot show. Its spec
+    /// matches as far as this Machine sees, so only the run tells the old copy it was
+    /// replaced when the Deploy restores it.
+    #[tokio::test]
+    async fn a_copy_its_restoring_run_replaced_stays_out() {
+        for newer_on in [0, 1] {
+            let fleet = Fleet::start().await;
+            let older = fleet.routed(0, "old", "api", 1).await;
+            let deploy = || Some(CopyRotation::Held(run("deploy-2")));
+            ensured(
+                &ensure(
+                    fleet.node(0),
+                    held(older, "deploy-2", Some(CopyRotation::In)),
+                )
+                .await,
+            );
+            let mut replacement = new_copy("new", spec("api"), 2);
+            replacement.deployment_id = Some(run("deploy-2"));
+            let created = ensure(
+                fleet.node(newer_on),
+                ContainerWant::Running {
+                    container: RunTarget::New(replacement),
+                    rotation: RunRotation::Pending,
+                },
+            )
+            .await;
+            let newer = present(&created);
+            let reply = ensure(
+                fleet.node(newer_on),
+                into(newer, None, Some(CopyRotation::Pending)),
+            )
+            .await;
+            assert_eq!(rotation_of(&reply), CopyRotation::In, "{reply:?}");
+            fleet.published(newer, Some(CopyRotation::In)).await;
+
+            let reply = ensure(fleet.node(0), into(older, Some(run("deploy-2")), deploy())).await;
+
+            let message = refused(&reply, ContainerRefusalReason::OlderThanIn);
+            assert!(
+                message.contains(&newer.to_string()),
+                "newer on {newer_on}: {message}"
+            );
+            assert_eq!(fleet.node(0).rotation(older).await, deploy().unwrap());
+        }
     }
 
     #[tokio::test]

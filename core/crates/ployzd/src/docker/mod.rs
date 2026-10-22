@@ -6,6 +6,7 @@ mod lifecycle;
 mod limits;
 mod managed_service;
 mod observe;
+pub(crate) use observe::published_spec;
 mod peer_pull;
 pub(crate) use peer_pull::ImageProxy;
 mod spec_store;
@@ -219,6 +220,8 @@ pub struct ServiceCopy {
     pub container_id: ContainerId,
     pub r#gen: Gen,
     pub rotation: ployz_core::CopyRotation,
+    /// The Deploy run that created it, from its `LABEL_DEPLOYMENT`.
+    pub deployment: Option<ployz_core::DeploymentLogId>,
 }
 
 /// One existing copy's rotation, read under the lock `remove` takes and held until
@@ -350,6 +353,18 @@ impl ContainerRuntime {
         container_ids: Vec<ContainerId>,
     ) -> Result<BTreeMap<ContainerId, ployz_core::CopyRotation>, Error> {
         Ok(self.specs.rotations(container_ids).await?)
+    }
+
+    /// The full spec this Machine recorded when it created `container_id`.
+    ///
+    /// # Errors
+    ///
+    /// Returns when the Machine database cannot be read.
+    pub async fn spec(
+        &self,
+        container_id: &ContainerId,
+    ) -> Result<Option<ployz_core::ResolvedServiceSpec>, Error> {
+        Ok(self.specs.get(container_id).await?)
     }
 
     /// Report this Container as `stopping` until the returned Withdrawal drops,
@@ -584,6 +599,9 @@ impl ContainerRuntime {
                 container_id,
                 r#gen: label_gen(&labels),
                 rotation: rotations.remove(&container_id).unwrap_or_default(),
+                deployment: labels
+                    .get(LABEL_DEPLOYMENT)
+                    .and_then(|label| ployz_core::DeploymentLogId::parse(label).ok()),
             })
             .collect())
     }
