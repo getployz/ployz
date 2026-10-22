@@ -332,7 +332,6 @@ export const freshOperationDigest: OperationDigest<Effect.Services<ReturnType<ty
       case "remove_mirror":
       case "move":
       case "restore":
-      case "sync":
       case "stop":
       case "restart":
       case "unprotect":

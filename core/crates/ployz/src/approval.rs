@@ -69,7 +69,6 @@ pub(crate) enum Verb {
     Unprotect,
     Move,
     Restore,
-    Sync,
 }
 
 impl Verb {
@@ -90,7 +89,6 @@ impl Verb {
             Self::Unprotect => "unprotecting",
             Self::Move => "move",
             Self::Restore => "restore",
-            Self::Sync => "sync",
         }
     }
 
@@ -111,7 +109,6 @@ impl Verb {
             Self::Unprotect => "unprotected",
             Self::Move => "moved",
             Self::Restore => "restored",
-            Self::Sync => "synced",
         }
     }
 
@@ -132,8 +129,7 @@ impl Verb {
             | Self::Restart
             | Self::Unprotect
             | Self::Move
-            | Self::Restore
-            | Self::Sync => "of",
+            | Self::Restore => "of",
         }
     }
 }

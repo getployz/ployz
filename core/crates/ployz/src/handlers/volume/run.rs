@@ -395,7 +395,6 @@ pub(crate) fn sync_command(command: Command) -> Command {
     )
     .arg(positional("volume", true).help("Volume name"))
     .arg(switch("full", None).help("Copy everything again as a run, for a Mirror that fell behind for good"))
-    .arg(approval_arg().requires("full"))
     .arg(wait_flag().requires("full"))
 }
 
@@ -738,8 +737,8 @@ fn approved(
             RunAsk::Restore { from } => {
                 (Verb::Restore, words("restore", &["--from", from.as_str()]))
             }
-            RunAsk::Sync { .. } => (Verb::Sync, words("sync", &["--full"])),
             RunAsk::Mirror { .. }
+            | RunAsk::Sync { .. }
             | RunAsk::DeleteMirror { .. }
             | RunAsk::DeleteOldCopy { .. }
             | RunAsk::Resize { .. } => {

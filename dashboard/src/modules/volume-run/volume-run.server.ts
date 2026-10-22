@@ -24,7 +24,7 @@ import type { OperationVerb } from "#/modules/approvals/approvals";
 import { readStore } from "#/modules/config-store/config-store.server";
 import { refusedWith } from "#/modules/config-store/store-sdk.server";
 import type { StoreRefusal } from "#/modules/config-store/store.contract";
-import type { JsonValue } from "#/db/tables";
+import type { JsonObject, JsonValue } from "#/db/tables";
 import type { InngestRunStatus } from "#/modules/inngest/client";
 import { createVolumeRunRequestedEvent, createVolumeRunTakenEvent } from "#/modules/inngest/events";
 import { enqueueEvent } from "#/modules/operations/outbox.server";
@@ -475,17 +475,39 @@ const VERBS = {
 
 /**
  * The verb a run asks under in a Protected Environment, for one by someone who can't protect it that interrupts or takes
- * off what runs there: a move stops its Service for the last copy, a restore drops writes, a sync can seal an old copy.
+ * off what runs there: a move stops its Service for the last copy, a restore drops writes.
  */
 const PROTECTED_VERBS = {
   ...VERBS,
   move: "move",
   restore: "restore",
-  sync: "sync",
 } satisfies Record<VolumeRunKind, OperationVerb | null>;
 
-/** The phases that interrupt or take off what runs; a mirror, a plain sync, a seed and a resize leave it running. */
-const INTERRUPTS: ReadonlySet<string> = new Set(["move", "landed", "restore", "demote", "release", "delete_mirror"]);
+/**
+ * The phases that interrupt or take off what runs. A mirror, a sync, a seed and a resize leave it running. A demote seals
+ * an older second primary, which Ployz's own sync does unasked too.
+ */
+const INTERRUPTS: ReadonlySet<string> = new Set(["move", "landed", "restore", "release", "delete_mirror"]);
+
+/** The Server a guarded phase moves to or restores from, so its approval covers no other. */
+function phaseServer(phase: PlannedPhase): JsonObject {
+  const named = (member: AnsweredMember) => ({ machine: member.machine.id, name: member.machine.name });
+  switch (phase.kind) {
+    case "move":
+    case "landed":
+      return { to: named(phase.target) };
+    case "restore":
+      return { from: named(phase.from) };
+    case "delete_mirror":
+    case "release":
+    case "mirror":
+    case "sync":
+    case "demote":
+    case "seed":
+    case "resize":
+      return {};
+  }
+}
 
 type PlanRequest = { readonly volumeId: string; readonly environment: EnvironmentRef } & VolumeRunInput;
 
@@ -604,7 +626,7 @@ export const planOnCluster = Effect.fn("VolumeRun.planOnCluster")(function* (
     subject: `volume:${input.volumeId}`,
     verb,
     name: volume.volumeName,
-    preview: { volume: input.volumeId, copies: effects.map((effect) => effect.node) },
+    preview: { volume: input.volumeId, copies: effects.map((effect) => effect.node), ...phaseServer(phase) },
     effects,
   });
   const asked = verb === null ? null : askedAs(verb);

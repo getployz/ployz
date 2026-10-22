@@ -3562,6 +3562,39 @@ describe("volume runs", () => {
       expect(await review(approval_id)).toMatchObject({ protected: { environment: "production" } });
     });
 
+    it("an approved Move to one Server moves to no other", async () => {
+      machines = [...machines, { name: "fsn-3", pool: true, copy: null }];
+      const { approval, approval_id } = askedOf(await as(member, { kind: "move", args: { to: "fsn-2" } }));
+      await runEffect(decideApproval(protector, approval_id, { approve: { digest: approval } }));
+
+      expect(await as(member, { kind: "move", args: { to: "fsn-3" } }, approval_id)).toMatchObject({ ok: false, refusal: { code: "approval_required" } });
+      expect(await review(approval_id)).toMatchObject({ operation: { preview: { to: { name: "fsn-2" } } } });
+      expect(await rows()).toEqual([]);
+    });
+
+    it("a Restore names the Server it restores from", async () => {
+      machines = [{ name: "fsn-1", pool: true, copy: null }, { name: "fsn-2", pool: true, copy: slotCopy(base) }];
+
+      const { approval_id } = askedOf(await as(member, { kind: "restore", args: { from: "fsn-2" } }));
+
+      expect(await review(approval_id)).toMatchObject({ operation: { preview: { from: { name: "fsn-2" } } }, protected: { environment: "production" } });
+    });
+
+    it("a member can't decide another member's Release", async () => {
+      const { approval, approval_id } = askedOf(await as(member, { kind: "release", args: {} }));
+      const peer: Caller = { ...member, userId: protectorId, via: "dashboard" };
+
+      expect(await runEffect(decideApproval(peer, approval_id, { approve: { digest: approval } }))).toMatchObject({ ok: false });
+    });
+
+    it("a member seals an older second primary unasked, as Ployz's own sync would", async () => {
+      machines = [{ name: "fsn-1", pool: true, copy: writerCopy(base, 3) }, { name: "fsn-2", pool: true, copy: writerCopy(snap("20"), 5) }];
+
+      expect(await as(member, { kind: "sync", args: { full: true } })).toMatchObject({ ok: true });
+      await harness.pool.query("truncate table volume_run cascade");
+      expect(await as(member, { kind: "mirror", args: { to: "fsn-2" } })).toMatchObject({ ok: true });
+    });
+
     it("someone who can protect it moves unasked, and a member still mirrors unasked", async () => {
       expect(await as({ ...caller, via: "cli" }, { kind: "move", args: { to: "fsn-2" } })).toMatchObject({ ok: true });
       await harness.pool.query("truncate table volume_run cascade");

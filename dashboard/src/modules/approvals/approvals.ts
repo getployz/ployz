@@ -7,7 +7,7 @@ export const APPROVAL_STATUSES = ["pending", "approved", "denied", "superseded"]
 export type ApprovalStatus = (typeof APPROVAL_STATUSES)[number];
 
 /** The operations `ployz` and agents run through Cloud that may wait for a human. Upgrade and a Service start never do. */
-export type OperationVerb = "drain" | "set" | "clean" | "remove" | "forget" | "release" | "remove_mirror" | "stop" | "restart" | "unprotect" | "move" | "restore" | "sync";
+export type OperationVerb = "drain" | "set" | "clean" | "remove" | "forget" | "release" | "remove_mirror" | "stop" | "restart" | "unprotect" | "move" | "restore";
 
 /** An operation as a human approves it: its verb, what it acts on by name, and the preview its digest covers. */
 export type OperationReview = { verb: OperationVerb; name: string; preview: JsonValue };
@@ -64,9 +64,6 @@ export function redeployLine(command: string, review: ApprovalReview) {
   return rollback ? `Back to #${deployment}. ${rollback.body}.` : `Ships #${deployment} again.`;
 }
 
-/** A Volume Run a Protected Environment asks about, though it destroys nothing. */
-const VOLUME_RUN_BADGES: Partial<Record<string, string>> = { move: "Moves volume", restore: "Restores volume", release: "Releases volume" };
-
 /** The card's badge: a Save deletes nothing until the next Deploy, and a Deploy that only deletes Volumes counts them. An agent's Deploy that destroys nothing still asks. */
 export function approvalBadge(command: string, review: ApprovalReview) {
   const { effects } = review;
@@ -78,7 +75,10 @@ export function approvalBadge(command: string, review: ApprovalReview) {
   if (command === "sync") return "Syncs";
   if (command === "take") return "Takes";
   if (command === "cancel") return "Cancels deploy";
-  if (effects.length === 0) return VOLUME_RUN_BADGES[command] ?? "Deploys";
+  if (command === "move") return "Moves volume";
+  if (command === "restore") return "Restores volume";
+  if (command === "release" && effects.length === 0) return "Releases volume";
+  if (effects.length === 0) return "Deploys";
   if (effects.every((effect) => effect.kind === "deletes_volume")) {
     return `Deletes ${effects.length} ${effects.length === 1 ? "volume" : "volumes"}`;
   }
