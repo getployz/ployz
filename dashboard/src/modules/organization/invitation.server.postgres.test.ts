@@ -120,8 +120,12 @@ describe("invite links", () => {
     expect((await run(readInvite(token, ids.ada)))).toMatchObject({ state: "pending", member: true });
 
     await run(acceptInvite(token, ids.eve));
-    expect((await run(readInvite(token, ids.eve)))).toMatchObject({ state: "accepted", member: true });
+    expect((await run(readInvite(token, ids.eve)))).toMatchObject({ state: "accepted", member: true, membershipEnded: false });
     await harness.db.delete(member).where(and(eq(member.organizationId, ACME), eq(member.userId, ids.eve)));
+    // Removed, Eve's own spent invite says her membership ended; to anyone else it was just used.
+    expect((await run(readInvite(token, ids.eve)))).toMatchObject({ state: "accepted", member: false, membershipEnded: true });
+    expect((await run(readInvite(token, ids.dan)))).toMatchObject({ state: "accepted", member: false, membershipEnded: false });
+    expect((await run(readInvite(token, null)))?.membershipEnded).toBe(false);
   });
 
   it("keeps only a hash of the token, so the stored row cannot be replayed as a link", async () => {
