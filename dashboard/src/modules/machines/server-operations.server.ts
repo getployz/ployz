@@ -283,6 +283,28 @@ const volumeOwners = Effect.fn("ServerOperations.volumeOwners")(function* (
   return owners;
 });
 
+/** A lost Docker volume as the Remove server dialog lists it: an Environment's Volume by its name, and where it lives. */
+export type LostVolumeName = { readonly docker: string; readonly name: string; readonly detail?: string };
+
+/** Docker names a volume no one named by a 64-hex id; it backs a container's anonymous mount. */
+const ANONYMOUS_VOLUME = /^[0-9a-f]{64}$/;
+
+export const nameLostVolumes = Effect.fn("ServerOperations.nameLostVolumes")(function* (
+  organizationId: string,
+  lost: readonly DataLossIdentity[],
+) {
+  // Names only label what the Server answered; a Config Store that can't be read leaves the Docker names, not no list.
+  const found = yield* volumeOwners(organizationId, lost).pipe(
+    Effect.catch((error) => Effect.logWarning("Could not name lost volumes.", { error }).pipe(Effect.as([]))),
+  );
+  const owners = new Map(found.map((owner) => [owner.dockerName, owner]));
+  return lost.map(({ id: { name: docker } }): LostVolumeName => {
+    const owner = owners.get(docker);
+    if (owner !== undefined) return { docker, name: owner.volume, detail: `${owner.project}/${owner.environment}` };
+    return ANONYMOUS_VOLUME.test(docker) ? { docker, name: "Anonymous volume", detail: docker.slice(0, 12) } : { docker, name: docker };
+  });
+});
+
 export const planRemove = Effect.fn("ServerOperations.planRemove")(function* (
   organizationId: string,
   machineId: string,

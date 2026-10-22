@@ -2,7 +2,9 @@ import type { MachineId, RuntimeWatchView } from "@ployz/sdk";
 import { describe, expect, it } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
 import { operationDigest } from "#/modules/approvals/approvals.server";
-import { cleanPlan, drainPlan, forgetLoses, ingressOffPlan, removePlan, volumeLabels } from "#/modules/machines/server-operations.server";
+import { Effect, Layer } from "effect";
+import { CloudStore, ConfigStoreOpenFailure } from "#/modules/config-store/store-sdk.server";
+import { cleanPlan, drainPlan, forgetLoses, ingressOffPlan, nameLostVolumes, removePlan, volumeLabels } from "#/modules/machines/server-operations.server";
 import type { ServerPolicyChange } from "#/modules/machines/server-policy";
 
 const here = "a".repeat(32);
@@ -268,5 +270,14 @@ describe("ingressOffPlan", () => {
 
   it("is null for a Server the frame doesn't hold", () => {
     expect(ingressOffPlan(web({ here: [true, "203.0.113.1"], there: [false, null] }), "c".repeat(32), off)).toBeNull();
+  });
+});
+
+describe("nameLostVolumes", () => {
+  it("names each lost volume by its Docker name when the Config Store can't be read, so the Server's answer still shows", async () => {
+    const down = Layer.succeed(CloudStore, { open: Effect.fail(new ConfigStoreOpenFailure({ cause: "down" })) });
+    const docker = "shop-production_vol-1";
+    const named = await Effect.runPromise(nameLostVolumes("org", [{ kind: "docker_volume", id: { machine_id: here as MachineId, name: docker } }]).pipe(Effect.provide(down)));
+    expect(named).toEqual([{ docker, name: docker }]);
   });
 });
