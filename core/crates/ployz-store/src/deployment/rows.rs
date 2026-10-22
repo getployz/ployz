@@ -465,7 +465,17 @@ impl Failure {
                     | HealthFailure::TimedOut { .. }
                     | HealthFailure::Runtime { .. } => vec![failure.to_string()],
                 };
-                if let HealthFailure::Runtime { .. } = failure {
+                // Only a Container that stopped on its own ends with its last line. A
+                // running one's check result is the cause; what it printed while Ployz
+                // stopped it is not.
+                if let HealthFailure::Runtime {
+                    observation:
+                        ContainerRuntimeObservation::Restarting
+                        | ContainerRuntimeObservation::Exited { .. }
+                        | ContainerRuntimeObservation::Dead,
+                    ..
+                } = failure
+                {
                     cause.extend(last_run.as_ref().and_then(|run| run.last_line.clone()));
                 }
                 (reason, cause)
@@ -1112,8 +1122,9 @@ fn merge_mounting_row(kept: &mut ServerRow, row: &ServerRow) {
 #[cfg(test)]
 mod tests {
     use ployz_core::{
-        ContainerId, ContainerRuntimeObservation, ExecutionError, HealthFailure, HookFailure,
-        MachineAction, OperationPhase, OperationRow, OperationStatus, RpcError, RpcErrorCode,
+        ContainerId, ContainerRuntimeObservation, ExecutionError, HealthFailure, HealthObservation,
+        HookFailure, LastHealthCheck, LastRun, MachineAction, OperationPhase, OperationRow,
+        OperationStatus, RpcError, RpcErrorCode,
     };
 
     use super::{Failure, RowPhase, RowState};
@@ -1398,6 +1409,52 @@ mod tests {
         assert_eq!(
             reason(ContainerRuntimeObservation::Dead),
             "The Container stopped"
+        );
+    }
+
+    fn checked(observation: ContainerRuntimeObservation, last_line: &str) -> Failure {
+        Failure::of(
+            &ExecutionError::Health {
+                container_id: ContainerId::parse("a".repeat(64)).unwrap(),
+                failure: HealthFailure::Runtime {
+                    observation,
+                    last_check: Some(LastHealthCheck::exited(127, "sh: pg_isready: not found")),
+                },
+                out_of_memory: None,
+                last_run: Some(LastRun {
+                    exit_code: None,
+                    last_line: Some(last_line.to_owned()),
+                }),
+            },
+            &[],
+        )
+    }
+
+    #[test]
+    fn a_running_container_s_failed_check_is_the_deepest_cause() {
+        // What the app printed while Ployz stopped it is not why its check failed (#2841).
+        let failed = checked(
+            ContainerRuntimeObservation::Running {
+                health: HealthObservation::Unhealthy,
+            },
+            "[notice] 1#1: signal 29 (SIGIO) received",
+        );
+        assert_eq!(failed.reason, "The Container failed its health check");
+        assert_eq!(
+            failed.cause,
+            ["running (health: unhealthy); last check exited 127: sh: pg_isready: not found"]
+        );
+    }
+
+    #[test]
+    fn a_container_that_stopped_ends_with_its_last_line() {
+        let failed = checked(
+            ContainerRuntimeObservation::Restarting,
+            "panic: no DATABASE_URL",
+        );
+        assert_eq!(
+            failed.cause.last().map(String::as_str),
+            Some("panic: no DATABASE_URL")
         );
     }
 
