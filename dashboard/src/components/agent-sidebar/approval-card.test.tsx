@@ -170,6 +170,25 @@ it("names a Server operation by its verb and Server, with nothing folded", () =>
   expect(card.queryByText(/other change/)).toBeNull();
 });
 
+it("says a Server removal leaves lost Volume data on the disk", () => {
+  show(asTestDouble<ApprovalView>()({
+    ...approval,
+    command: "remove",
+    review: {
+      effects: [
+        { kind: "removes_server", name: "fra-1", node: "m1", path: "servers/m1" },
+        { kind: "deletes_volume", name: "pgdata", node: "v1", path: "volumes/v1" },
+      ],
+      operation: { subject: "server:m1", verb: "remove", name: "fra-1", preview: {} },
+    },
+  }));
+  const card = within(screen.getByLabelText("Remove fra-1 needs approval"));
+  expect(card.getByText("Removes server", { selector: '[data-slot="badge"]' })).toBeTruthy();
+  expect(card.getByRole("list", { name: "Destroys" }).textContent).toContain("Loses access to volume pgdata. Its data stays on the Server's disk until wiped.");
+  expect(card.getByRole("list", { name: "Destroys" }).textContent).toContain("Wipe or reinstall the disk to erase it; sudo ployz-uninstall keeps the data.");
+  expect(card.queryByText(/Not recoverable/)).toBeNull();
+});
+
 it("says a Save deletes nothing until the next deploy, and approving it saves without deploying", async () => {
   decide.mockResolvedValue(({ ok: true, approval: { ...approval, command: "publish", status: "approved", decided_at: "2026-10-08T12:01:00.000Z" } }) as never);
   const { onSettled } = show(asTestDouble<ApprovalView>()({ ...approval, command: "publish" }));

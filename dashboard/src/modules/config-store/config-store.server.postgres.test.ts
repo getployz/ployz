@@ -530,7 +530,7 @@ it.live(
           const asked = yield* runAgentCall(agent, unprotectByAgent(key, approvalId));
           if (!("asking" in asked)) return assert.fail(`no approval asked: ${JSON.stringify(asked)}`);
           assert.strictEqual(asked.asking.refusal.code, "approval_required");
-          assert.deepInclude(asked.asking.refusal.details, { operation: { verb: "unprotect", name: "shop/production" } });
+          expect(asked.asking.refusal.details).toMatchObject({ operation: { verb: "unprotect", name: "shop/production" } });
           const { approval } = asked.asking.refusal.details as { approval: string };
           return { id: asked.asking.approvalId, digest: approval };
         });
@@ -806,7 +806,7 @@ it.live(
           const call = { tool: "environment_protect", input: { protected: false }, key: `default-${surface}`, approvalId: null, page: { at: "organization" as const } };
           const asked = yield* runAgentCall(agent, call);
           if (!("asking" in asked)) return assert.fail(`no approval asked: ${JSON.stringify(asked)}`);
-          assert.deepInclude(asked.asking.refusal.details, { operation: { verb: "unprotect", name: "shop/production" } });
+          expect(asked.asking.refusal.details).toMatchObject({ operation: { verb: "unprotect", name: "shop/production" } });
           const { approval } = asked.asking.refusal.details as { approval: string };
           assert.isTrue((yield* decideApproval({ ...alice, via: "dashboard" }, asked.asking.approvalId, { approve: { digest: approval } })).ok);
 

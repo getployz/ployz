@@ -379,13 +379,16 @@ fn leave(root: &ArgMatches, removal: Removal) -> Result<(), Error> {
                 ),
                 "Reset does not erase volume data.",
             ));
-        } else {
+        } else if removal == Removal::Reset {
             for loss in &observed.data_loss {
                 crate::ui::stream(format_args!(
                     "Reset left the data of Volume {} on {}.",
                     volume_label(&labels, loss),
                     selected.name
                 ));
+            }
+            if !observed.data_loss.is_empty() {
+                crate::ui::stream("Wipe or reinstall the Server's disk to erase that data; sudo ployz-uninstall keeps the data.");
             }
         }
         let stopped = if removal == Removal::Reset && reset_failure.is_none() {

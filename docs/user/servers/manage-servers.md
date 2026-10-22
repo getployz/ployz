@@ -579,6 +579,11 @@ either, since no one could approve. One
 approval removes the server once, and approving a forget doesn't approve a removal that resets
 the server.
 
+When you remove a server, the approval names each volume Ployz loses access to. The removal
+doesn't erase those volumes' data: it stays on that server's disk until you wipe or reinstall
+the disk. `sudo ployz-uninstall` keeps volume data. Forgetting a server says the volume's data
+is deleted, since a server you forget may already be gone with its disk.
+
 Removing or forgetting a server Ployz Cloud manages always goes through Ployz Cloud, even with
 `--context` or `--connect`: Cloud keeps a record of each server it manages, and removing one behind
 its back would leave that record behind.

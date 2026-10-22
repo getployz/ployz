@@ -780,7 +780,7 @@ describe("callCloud", () => {
         code: "approval_required",
         details: expect.objectContaining({
           effects: [{ kind: "removes_domain", name: "shop.example.com", node: "shop.example.com", path: "domains/shop.example.com" }],
-          operation: { verb: "set", name: "web-2" },
+          operation: { verb: "set", name: "web-2", subject: `server:${MACHINE}` },
         }),
       }) });
       expect(send).not.toHaveBeenCalled();
@@ -829,7 +829,7 @@ describe("callCloud", () => {
         const asked = yield* callCloud(caller, { act: act(verb, attempt, only) }).pipe(Effect.provide(services));
         expect(asked).toEqual({ ok: false, refusal: expect.objectContaining({
           code: "approval_required",
-          details: expect.objectContaining({ operation: { verb, name } }),
+          details: expect.objectContaining({ operation: expect.objectContaining({ verb, name }) }),
         }) });
       }
       expect(yield* drizzle.select().from(serviceAct)).toEqual([]);
