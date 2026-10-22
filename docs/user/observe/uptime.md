@@ -12,8 +12,8 @@ reaches it. When the check can't get through, the service shows a red **⚠ Unre
 2. Open its **Monitoring** tab.
 
 The status line reads **Up**, **Unreachable** or **Checking**, with the share of checks that
-passed. It reads **Not checked** when the service has no public domain. **Response time** and
-the history strip cover the last hour. Pick a quick range from 5 minutes to 30 days, or type a **From** and **Until**. Click an incident to see what each
+passed. A service with no public domain has no uptime check, so the tab starts with its
+metrics. **Response time** and the history strip cover the last hour. Pick a quick range from 5 minutes to 30 days, or type a **From** and **Until**. Click an incident to see what each
 check got back. Below them come the service's [metrics](metrics.md), on the same time axis.
 
 <!-- screenshot: the Monitoring tab of web, Up with its response time chart -->

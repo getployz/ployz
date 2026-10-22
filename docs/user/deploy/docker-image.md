@@ -10,8 +10,8 @@ pulls the image onto your servers and runs it, with nothing to build.
 
 Before you deploy, find the port the image listens on, like 80 for nginx. Ployz sends traffic
 to the port in the service's `PORT` variable, `8080` unless you set it, so give it the image's
-port: on the domain, or as a `PORT` [variable](../services/variables.md). If you miss it, the
-deploy warns and names the image's ports. See [Domains](../services/domains.md).
+port: on the domain, or as a `PORT` [variable](../services/variables.md). If you miss it and the
+image declares the ports it listens on, the deploy warns and names them. See [Domains](../services/domains.md).
 
 1. Open your project and click **Create**, then **Docker image**.
 2. Enter the image, such as `nginx:1.27`, and click **Continue**. For a private image, add its

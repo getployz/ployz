@@ -95,7 +95,7 @@ When GitHub can't take a build, the build log says why, and the next builder tak
 | **GitHub, then your servers** | The default. GitHub first when the repository has the workflow, otherwise your servers. |
 | **Your servers, then GitHub** | Your servers first. GitHub only when none of your servers runs builds. |
 | **Your servers only** | Never GitHub, unless a service prefers **GitHub Actions**. |
-| **GitHub only** | Only GitHub, and a build waits for a GitHub runner however long that takes. Uploads from `ployz up` still build on your servers, and a service that prefers one of your servers tries that server first. |
+| **GitHub only** | Only GitHub, and a build waits for a GitHub runner however long that takes. Uploads from `ployz up` still build on your servers, and a service that prefers one of your servers builds on your servers while any of them runs builds. |
 
 ## Prefer a builder for one service
 
@@ -113,9 +113,10 @@ ployz set web.preferredBuilder=machine-1
 ployz set web --patch '{"preferredBuilder":"machine-1"}'
 ```
 
-The service tries that builder first, then follows the build order. So if a preferred server
-doesn't start the build in time, a build with **GitHub only** goes to GitHub. If that server is
-gone or doesn't run builds when a build starts, the build follows the build order alone. **Auto** follows the build order alone.
+The service tries that builder first, then follows the build order. A service that prefers a
+server builds on your servers, even with **GitHub only**, as long as one of them runs builds. It
+goes to GitHub only when none of them does. If the preferred server is gone or doesn't run
+builds, another of your servers takes the build. **Auto** follows the build order alone.
 **Preferred Builder** applies at once, from the next build.
 
 A deploy names the server each service built on. When GitHub came first and couldn't take
