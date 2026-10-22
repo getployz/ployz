@@ -321,8 +321,9 @@ fn digest(version: &str, bound: &serde_json::Value) -> ApprovalDigest {
 }
 
 /// What a write into one Environment must clear. Cloud says who asks; in a Protected
-/// Environment a caller without `environments:protect` asks for every write that
-/// ships, and Cloud's word that nothing is required does not exempt it. Cloud's own
+/// Environment a caller without `environments:protect`, nor a token of someone who
+/// can protect, asks for every write that ships, and Cloud's word that nothing is
+/// required does not exempt it. Cloud's own
 /// writes name no caller, so they never ask here.
 pub(crate) struct Gate<'a> {
     trusted: &'a Trusted,
@@ -335,10 +336,11 @@ impl<'a> Gate<'a> {
         environment: &EnvironmentId,
         trusted: &'a Trusted,
     ) -> Result<Self, RpcError> {
-        let protected = trusted
-            .permissions
-            .as_ref()
-            .is_some_and(|held| !held.contains(&Permission::EnvironmentsProtect))
+        let protected = !trusted.protector
+            && trusted
+                .permissions
+                .as_ref()
+                .is_some_and(|held| !held.contains(&Permission::EnvironmentsProtect))
             && crate::scope::protected(tx, environment)?;
         Ok(Self { trusted, protected })
     }

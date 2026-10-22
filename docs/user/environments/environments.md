@@ -230,8 +230,8 @@ A merge into a Protected environment's deploy branch still deploys. To control w
 
 Only an owner or admin can make a **Deploy** token for a Protected environment. A member who tries
 sees "production is Protected; only an owner or admin can make a Deploy token for it." The token
-deploys, syncs and takes there the way its owner or admin would: it doesn't wait for another admin,
-and only a deploy that destroys something asks for approval. It still can't
+deploys, syncs and takes there without waiting for another admin. A Deploy token can't destroy, so
+a deploy that would is refused. It still can't
 turn protection off, connect a repository or change the deploy branch. If its person stops being an
 owner or admin, its deploys ask like a member's.
 

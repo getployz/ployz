@@ -4,7 +4,7 @@ import { Effect } from "effect";
 import type { OperationAsked } from "#/modules/approvals/approvals.server";
 import { cloudStore, storeTry } from "#/modules/config-store/store-sdk.server";
 import { gitSourceEnvironment } from "#/modules/config-store/git-evidence.server";
-import { type Caller, callerEnvironments, callerPermissions } from "#/modules/identity/actor";
+import { type Caller, callerEnvironments } from "#/modules/identity/actor";
 import { beyondEnvironments, lacksPermission, refusalOf } from "#/modules/organization/access.server";
 import { can, type Permission } from "#/modules/organization/permissions";
 import { type EnvironmentRef, StoreRefused, type StoreRead, type StoreRefusal } from "./store.contract";
@@ -25,16 +25,11 @@ export const protectorOnly = (caller: Pick<Caller, "role" | "support" | "credent
 };
 
 /**
- * What the Store is told `caller` holds for `command`. A token holds its grant, but one whose person can protect ships
- * into a Protected Environment as they would, unasked: only an owner or admin makes a Deploy token for one. Only the
- * writes that ship get that, so the token still can't change protection, or a Protected Environment's source, otherwise.
+ * Whether `caller`'s person can protect Environments, though a token's grant may leave `environments:protect` out: an
+ * owner's or admin's Deploy token ships into a Protected Environment as they would, without asking another protector.
+ * The Store's fences on protection and source still read the token's own permissions.
  */
-export const storePermissions = (caller: Pick<Caller, "role" | "support" | "credential">, command: ConfigCommand | null): Permission[] => {
-  const held = callerPermissions(caller);
-  const ships = command !== null && ["publish", "admit", "sync", "take"].includes(command.command);
-  if (!ships || caller.role === null || !can(caller.role, "environments:protect") || !held.includes("changes:deploy")) return held;
-  return held.includes("environments:protect") ? held : [...held, "environments:protect"];
-};
+export const protector = (caller: Pick<Caller, "role">) => caller.role !== null && can(caller.role, "environments:protect");
 
 /**
  * Refuses `command` when it changes an Environment's protection, or connects, changes or clears a repository or deploy
