@@ -466,9 +466,20 @@ fn write_certificate_errors(output: &mut String, sites: &[IngressSite]) {
             continue;
         };
         if !header {
-            output.push_str("\n# Skipped certificate issuance:\n");
+            output.push_str("\n# Certificates not served:\n");
             header = true;
         }
+        // CA error detail can quote what the domain served, so it stays on this comment line.
+        let error: String = error
+            .chars()
+            .map(|character| {
+                if character.is_control() {
+                    ' '
+                } else {
+                    character
+                }
+            })
+            .collect();
         let _ = writeln!(output, "# - {}: {error}", site.hostname);
     }
 }

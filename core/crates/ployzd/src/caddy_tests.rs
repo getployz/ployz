@@ -823,7 +823,7 @@ fn last_error_is_a_skipped_certificate_comment() {
     );
 
     for diagnostic in [
-        "Skipped certificate issuance",
+        "Certificates not served",
         "secure.example.com resolves to 198.51.100.10",
     ] {
         assert!(caddyfile.contains(diagnostic));
@@ -864,7 +864,7 @@ fn last_error_is_omitted_once_material_exists() {
         &certificates,
     );
 
-    assert!(!caddyfile.contains("Skipped certificate issuance"));
+    assert!(!caddyfile.contains("Certificates not served"));
     assert!(!caddyfile.contains("stale"));
 }
 
@@ -1091,9 +1091,8 @@ fn certificate_error_text_cannot_add_caddyfile_lines() {
         .lines()
         .filter(|line| line.contains("evil.example") || line.contains("pwned"))
         .collect();
-    assert_eq!(injected.len(), 1, "{caddyfile}");
     assert!(
-        injected[0].starts_with("# - example.com: refused"),
+        matches!(injected.as_slice(), [line] if line.starts_with("# - example.com: refused")),
         "{caddyfile}"
     );
 }

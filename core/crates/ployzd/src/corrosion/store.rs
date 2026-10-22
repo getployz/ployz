@@ -764,11 +764,12 @@ impl ReplicatedStore {
 
     /// Return decoded certificate rows and typed incomplete certificate hostnames.
     ///
-    /// An incomplete row is listed in `incomplete_ids`; it is not a deletion.
+    /// An incomplete row is listed in `incomplete_ids`; it is not a deletion. A row that
+    /// won't decode is logged and left out.
     ///
     /// # Errors
     ///
-    /// Returns if rows cannot be read or decoded.
+    /// Returns if rows cannot be read.
     pub async fn certificate_rows(
         &self,
     ) -> Result<ReplicatedObservations<(CertificateHost, CertificateRow), CertificateHost>, Error>
@@ -783,12 +784,14 @@ impl ReplicatedStore {
         let mut observations = Vec::new();
         let mut incomplete_ids = Vec::new();
         for [hostname, encoded] in query.rows(["hostname", "body"])? {
-            let hostname = CertificateHost::parse(text(&hostname, "certificate hostname")?)?;
             let encoded = text(&encoded, "certificate body")?;
+            let Some(hostname) = certificate_host(text(&hostname, "certificate hostname")?) else {
+                continue;
+            };
             if is_incomplete_document(encoded) {
                 incomplete_ids.push(hostname);
-            } else {
-                observations.push((hostname, CertificateRow::decode(encoded)?));
+            } else if let Some(row) = decode_certificate_row(&hostname, encoded) {
+                observations.push((hostname, row));
             }
         }
         Ok(ReplicatedObservations {
@@ -809,11 +812,13 @@ impl ReplicatedStore {
             .await?;
         let mut rows = BTreeMap::new();
         for [hostname, encoded] in query.rows(["hostname", "body"])? {
-            let hostname = CertificateHost::parse(text(&hostname, "certificate hostname")?)?;
-            rows.insert(
-                hostname,
-                CertificateRow::decode(text(&encoded, "certificate body")?)?,
-            );
+            let encoded = text(&encoded, "certificate body")?;
+            let Some(hostname) = certificate_host(text(&hostname, "certificate hostname")?) else {
+                continue;
+            };
+            if let Some(row) = decode_certificate_row(&hostname, encoded) {
+                rows.insert(hostname, row);
+            }
         }
         Ok(rows)
     }
@@ -1083,4 +1088,23 @@ impl RuntimeWatchChanges {
             result = self.cluster.changed() => result,
         }
     }
+}
+
+// One row that won't decode must not hide every other certificate, so it is logged and skipped.
+fn certificate_host(hostname: &str) -> Option<CertificateHost> {
+    CertificateHost::parse(hostname)
+        .inspect_err(|error| tracing::warn!(%error, "skipping certificate row"))
+        .ok()
+}
+
+fn decode_certificate_row(hostname: &CertificateHost, encoded: &str) -> Option<CertificateRow> {
+    CertificateRow::decode(encoded)
+        .inspect_err(|error| {
+            tracing::warn!(
+                %hostname,
+                error = %ployz_core::error_chain::inline(error),
+                "skipping certificate row"
+            );
+        })
+        .ok()
 }

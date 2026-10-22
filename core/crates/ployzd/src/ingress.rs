@@ -446,6 +446,104 @@ impl CaddyInput {
     }
 }
 
+/// Certificates by file stem: those Caddy loaded last, and those it refused with its reason.
+/// A stem names one site's material, so new material for a refused site is tried again.
+#[derive(Default)]
+struct CaddyCertificates {
+    accepted: BTreeSet<String>,
+    refused: BTreeMap<String, String>,
+}
+
+impl CaddyCertificates {
+    /// Serve each refused site without HTTPS and name the refusal in its place, so one site's
+    /// certificate never blocks the rest of the config.
+    fn quarantine(&mut self, projection: &mut IngressProjection) {
+        let mut current = BTreeSet::new();
+        for site in &mut projection.sites {
+            let Some(stem) = pinned_stem(site) else {
+                continue;
+            };
+            if let Some(error) = self.refused.get(&stem)
+                && let Some(certificate) = &mut site.certificate
+            {
+                certificate.material = None;
+                certificate.last_error = Some(format!("Caddy refused it: {error}"));
+            }
+            current.insert(stem);
+        }
+        self.refused.retain(|stem, _| current.contains(stem));
+    }
+
+    fn accept(&mut self, projection: &IngressProjection) {
+        self.accepted = projection.sites.iter().filter_map(pinned_stem).collect();
+    }
+
+    /// After Caddy refuses `projection`, load it without the certificates Caddy has not loaded
+    /// before, then add those back one at a time. Returns whether Caddy refused any of them.
+    async fn find_refused<A: CaddyAdmin>(
+        &mut self,
+        projection: &IngressProjection,
+        admin: &A,
+    ) -> bool {
+        let suspects: Vec<_> = projection
+            .sites
+            .iter()
+            .filter_map(pinned_stem)
+            .filter(|stem| !self.accepted.contains(stem))
+            .collect();
+        let mut excluded: BTreeSet<_> = suspects.iter().cloned().collect();
+        if excluded.is_empty()
+            || caddy::load(&without(projection, &excluded), Some(admin))
+                .await
+                .is_err()
+        {
+            return false;
+        }
+        let mut refused = false;
+        for stem in suspects {
+            excluded.remove(&stem);
+            match caddy::load(&without(projection, &excluded), Some(admin)).await {
+                Ok(_) => {}
+                Err(caddy::Error::Admin(error)) => {
+                    tracing::warn!(
+                        certificate = %stem,
+                        %error,
+                        "Caddy refused a certificate; serving its site without HTTPS"
+                    );
+                    excluded.insert(stem.clone());
+                    self.refused.insert(stem, error);
+                    refused = true;
+                }
+                Err(_) => {
+                    excluded.insert(stem);
+                    break;
+                }
+            }
+        }
+        self.accept(&without(projection, &excluded));
+        refused
+    }
+}
+
+/// The file stem of the certificate the Caddyfile pins for `site`.
+fn pinned_stem(site: &IngressSite) -> Option<String> {
+    site.https()
+        .map(|(material, _)| certificate_file_stem(&site.hostname, material))
+}
+
+/// `projection` with the pinned certificates named in `excluded` left out.
+fn without(projection: &IngressProjection, excluded: &BTreeSet<String>) -> IngressProjection {
+    let mut projection = projection.clone();
+    for site in &mut projection.sites {
+        if pinned_stem(site).is_some_and(|stem| excluded.contains(&stem))
+            && let Some(certificate) = &mut site.certificate
+        {
+            certificate.material = None;
+        }
+    }
+    projection
+}
+
 /// Watch replicated ingress inputs and concretely apply changed projections to Caddy.
 ///
 /// # Errors
@@ -476,6 +574,7 @@ where
     // Kept while every copy is out of reach.
     let mut routed = ProxyRoutes::new();
     let mut down = DownMachines::new(machine.id);
+    let mut certificates = CaddyCertificates::default();
     'watch: loop {
         let subscriptions = async {
             tokio::try_join!(
@@ -510,12 +609,13 @@ where
                 replicated.containers().await,
                 replicated.certificate_state().await,
             ) {
-                (Ok(containers), Ok(certificates)) => {
+                (Ok(containers), Ok(rows)) => {
                     let containers = service_containers(containers.observations);
                     let routes =
                         proxy_routes(&containers, |machine| down.contains(machine), &routed);
-                    let projection =
-                        IngressProjection::derive(&machine, &containers, &certificates, &routes);
+                    let mut projection =
+                        IngressProjection::derive(&machine, &containers, &rows, &routes);
+                    certificates.quarantine(&mut projection);
                     Ok((
                         newest_local_ingress(&machine, &containers),
                         serves_nothing(&machine.id, takes_ingress, &containers),
@@ -552,10 +652,22 @@ where
                                         admin.as_ref(),
                                     )
                                     .await;
+                                    if let (Err(ApplyError::BeforeServing(_)), Some(admin)) =
+                                        (&applied, admin.as_ref())
+                                        && certificates.find_refused(&input.projection, admin).await
+                                    {
+                                        // Probing reloaded Caddy; derive again without the refused.
+                                        last_input = None;
+                                        continue;
+                                    }
                                     // A refused load leaves the earlier one serving. Any other
                                     // failure may have replaced the file Caddy restarts from.
                                     match (&applied, admin.is_some()) {
-                                        (Ok(()), _) => last_input = Some(input),
+                                        (Ok(()), true) => {
+                                            certificates.accept(&input.projection);
+                                            last_input = Some(input);
+                                        }
+                                        (Ok(()), false) => last_input = Some(input),
                                         (Err(ApplyError::BeforeServing(_)), true) => {}
                                         (Err(_), _) => last_input = None,
                                     }
@@ -837,10 +949,7 @@ pub(crate) fn write_certificate_files(
     let directory = certificate_directory(config_file)?;
     prepare(&directory)?;
     for site in sites {
-        let Some(certificate) = &site.certificate else {
-            continue;
-        };
-        let Some(material) = &certificate.material else {
+        let Some((material, _)) = site.https() else {
             continue;
         };
         let stem = certificate_file_stem(&site.hostname, material);
@@ -865,18 +974,18 @@ pub(crate) fn remove_stale_certificate_files(
     let keep: BTreeSet<String> = sites
         .iter()
         .filter_map(|site| {
-            site.certificate
-                .as_ref()
-                .and_then(|certificate| certificate.material.as_ref())
-                .map(|material| {
-                    let stem = certificate_file_stem(&site.hostname, material);
-                    [format!("{stem}.crt"), format!("{stem}.key")]
-                })
+            site.https().map(|(material, _)| {
+                let stem = certificate_file_stem(&site.hostname, material);
+                [format!("{stem}.crt"), format!("{stem}.key")]
+            })
         })
         .flatten()
         .collect();
     for entry in fs::read_dir(directory)? {
         let entry = entry?;
+        if entry.file_type()?.is_dir() {
+            continue;
+        }
         let name = entry.file_name();
         let Some(name) = name.to_str() else {
             continue;

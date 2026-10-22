@@ -607,7 +607,7 @@ async fn hostname_resolving_elsewhere_is_refused_then_issues_when_dns_points_her
     // Verification goes through the hostname, so the elsewhere address never answers.
     let refused = "outside.example.com did not answer on port 80";
     wait_config(&cluster, 0, |config| {
-        config.contains("# Skipped certificate issuance:") && config.contains(refused)
+        config.contains("# Certificates not served:") && config.contains(refused)
     })
     .await;
     tokio::time::sleep(Duration::from_secs(2)).await;
