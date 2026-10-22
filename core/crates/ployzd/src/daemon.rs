@@ -353,6 +353,10 @@ impl Daemon {
         let socket_path = config.socket.clone();
         let ingress_admin = corrosion.as_ref().map(RunningCorrosion::admin_client);
         let boot_admin = corrosion.as_ref().map(RunningCorrosion::admin_client);
+        // The tunnel reads a joined Machine's Cluster network from the replicated store.
+        let management_cluster = corrosion
+            .as_ref()
+            .map(|running| (running.store().clone(), running.admin_client()));
         let local_for_servers = local.clone();
         let shutdown_for_servers = shutdown.clone();
         let servers = tokio::spawn(async move {
@@ -367,7 +371,8 @@ impl Daemon {
                             management_endpoint,
                             crate::machine::LocalMachine::new(local.clone())
                                 .with_containers(containers.clone())
-                                .with_plugin(plugin.clone()),
+                                .with_plugin(plugin.clone())
+                                .with_cluster(management_cluster),
                             machine_api.clone(),
                             grants,
                             roster,
