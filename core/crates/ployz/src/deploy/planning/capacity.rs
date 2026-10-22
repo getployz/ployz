@@ -108,6 +108,13 @@ impl CapacityBudget {
         }
     }
 
+    /// Undo one `release`: an endpoint of `machine_id` stays in use after all.
+    pub(super) fn take(&mut self, machine_id: &MachineId) {
+        if let Some(free) = self.free.as_mut().and_then(|free| free.get_mut(machine_id)) {
+            *free = free.saturating_sub(1);
+        }
+    }
+
     pub(super) fn error_for<'a>(
         &self,
         machine_ids: impl IntoIterator<Item = &'a MachineId>,

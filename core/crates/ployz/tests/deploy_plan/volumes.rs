@@ -1,11 +1,14 @@
 use super::support::*;
 use ployz_core::{
-    CopyRole, DependencyCondition, DockerVolume, DockerVolumeStorageObservation, MachineFailure,
-    MachineStorageObservation, PreservedVolume, ProvisionedVolumeMaximumBytes, PruneRefusal,
-    RpcError, RpcErrorCode, ServiceAttempt, ServiceDependency, ServiceName,
-    VolumeObservationFailure,
+    ContainerKind, CopyRole, DependencyCondition, DockerVolume, DockerVolumeStorageObservation,
+    MachineFailure, MachineStorageObservation, PreDeployHook, PreservedVolume,
+    ProvisionedVolumeMaximumBytes, PruneRefusal, RpcError, RpcErrorCode, ServiceAttempt,
+    ServiceDependency, ServiceName, VolumeObservationFailure,
 };
-use std::{collections::BTreeMap, num::NonZeroU64};
+use std::{
+    collections::BTreeMap,
+    num::{NonZeroU32, NonZeroU64},
+};
 
 fn maximum_bytes(bytes: u64) -> ProvisionedVolumeMaximumBytes {
     ProvisionedVolumeMaximumBytes::new(NonZeroU64::new(bytes).unwrap())
@@ -1259,6 +1262,81 @@ fn a_blocked_dependent_gives_back_the_endpoint_its_shared_reservation_took() {
         preview.placed_on.get(&web.name),
         Some(&[machine_id('1')].into())
     );
+}
+
+#[test]
+fn a_blocked_service_keeps_the_endpoint_its_old_hook_was_credited_for() {
+    let (mut web, db) = web_and_db();
+    let mut api = spec("api");
+    let mut worker = spec("worker");
+    for spec in [&mut api, &mut worker] {
+        add_named_volume(spec, "shared");
+        make_provisioned(spec, "shared", 1_073_741_824);
+    }
+    api.pre_deploy = Some(PreDeployHook {
+        command: vec!["migrate".into()].try_into().unwrap(),
+        environment: Default::default(),
+        privileged: None,
+        timeout_millis: None,
+        user: None,
+    });
+    let mut old_api = api.clone();
+    old_api.container.image = "ghcr.io/getployz/api:0".into();
+    let mut old_hook = container('8', '1', &old_api, &service_id('a'));
+    old_hook
+        .try_update(|parts| parts.kind = ContainerKind::PreDeployHook)
+        .unwrap();
+    // On first, 2 endpoints are free. api's reservation first credits its old hook, takes
+    // one for a new hook and none for the Container it replaces, and worker takes one.
+    // Blocked, api gives back only its hook: its old Container and hook keep running, so
+    // one endpoint is left for web.
+    let snapshot = DeploySnapshot {
+        capacity: capacity([('1', 2), ('2', 0)]),
+        containers: vec![container('a', '1', &old_api, &service_id('a')), old_hook],
+        ..copies_snapshot(&[('2', CopyRole::Slot)], vec![])
+    };
+    for (replicas, fits) in [(1, true), (2, false)] {
+        web.mode = ServiceMode::Replicated {
+            replicas: NonZeroU32::new(replicas).unwrap(),
+        };
+        let intent = DeployIntent::apply_all(
+            Namespace::parse("app").unwrap(),
+            [&db, &api, &worker, &web],
+            PlanOptions::default(),
+        )
+        .with_dependencies(BTreeMap::from([(
+            api.name.clone(),
+            vec![ServiceDependency {
+                service: db.name.clone(),
+                condition: DependencyCondition::ServiceHealthy,
+            }],
+        )]));
+
+        let preview = runner_preview(&intent, &snapshot);
+
+        if fits {
+            let preview = preview.unwrap_or_else(|error| panic!("{replicas} replicas: {error}"));
+            let blocked: Vec<_> = preview
+                .blocked
+                .iter()
+                .map(|blocked| blocked.service.as_str())
+                .collect();
+            assert_eq!(blocked, ["db", "api"]);
+            assert_eq!(
+                preview.placed_on.get(&web.name),
+                Some(&[machine_id('1')].into())
+            );
+        } else {
+            assert!(
+                matches!(
+                    preview,
+                    Err(PlanError::Service { ref service, ref source })
+                        if service == "web" && matches!(**source, PlanError::InsufficientCapacity)
+                ),
+                "{replicas} replicas: {preview:?}"
+            );
+        }
+    }
 }
 
 #[test]
