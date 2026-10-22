@@ -1195,6 +1195,55 @@ mod tests {
     }
 
     #[test]
+    fn a_public_ip_nobody_can_reach_is_refused() {
+        let set = |ip: &str| {
+            let matches = crate::cli::command()
+                .try_get_matches_from(["ployz", "server", "set", "node-a", "--public-ip", ip])
+                .unwrap();
+            parse_update(leaf_matches(&matches)).map(|update| update.public_ip)
+        };
+        let add = |ip: &str| {
+            let matches = crate::cli::command()
+                .try_get_matches_from(["ployz", "server", "add", "root@node-a", "--public-ip", ip])
+                .unwrap();
+            helpers::token_request(leaf_matches(&matches)).map(|_| ())
+        };
+        for unreachable in [
+            "0.0.0.0",
+            "::",
+            "127.0.0.1",
+            "::1",
+            "169.254.1.1",
+            "fe80::1",
+            "224.0.0.1",
+            "ff02::1",
+            "255.255.255.255",
+        ] {
+            let refused = set(unreachable).unwrap_err();
+            assert_eq!(
+                refused.report().code,
+                RpcErrorCode::InvalidArgument,
+                "{unreachable}"
+            );
+            assert!(refused.to_string().contains(unreachable), "{refused}");
+            assert!(add(unreachable).is_err(), "{unreachable}");
+        }
+        for allowed in [
+            "203.0.113.9",
+            "2001:db8::9",
+            "10.0.0.5",
+            "192.168.1.2",
+            "fd00::5",
+        ] {
+            assert_eq!(
+                set(allowed).unwrap(),
+                PublicIpUpdate::Set(allowed.parse().unwrap())
+            );
+            assert!(add(allowed).is_ok(), "{allowed}");
+        }
+    }
+
+    #[test]
     fn set_cli_rejects_an_empty_patch_and_maps_none_to_public_ip_removal() {
         let command = crate::cli::command();
         let empty = command
