@@ -61,7 +61,6 @@ type ServerResult =
  * older than the newest release on the channel for its line) in name order, one at a time; an automatic one skips a
  * Halted release. It stops at the first outcome that isn't `succeeded`; a Server that went
  * offline or refuses as Busy is skipped and records nothing. An automatic one that didn't finish mails the members.
- * Whatever the results, it then asks for the Cluster's Sealing Key to be backfilled, since upgraded Servers can now hold it.
  */
 export async function executeRollOutServerUpgrade(
   { event, step, runId }: { event: { data: unknown }; step: StepTools; runId: string },

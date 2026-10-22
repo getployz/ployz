@@ -108,32 +108,26 @@ pub enum SkipReason {
     CannotInstall,
 }
 
-/// A Machine's row in the entry's list.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct Listed {
     pub id: MachineId,
-    /// Whether its peers see it up enough to answer an RPC.
     pub invites_rpc: bool,
 }
 
-/// What one Machine looked like when asked.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum Sight {
     Unknown { reason: String },
     Seen(Seen),
 }
 
-/// A Machine that answered Inspect with its Sealing state.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct Seen {
     pub phase: LocalMachinePhase,
-    /// Its WireGuard key as it reported it; a holder seals the key to this.
-    pub public_key: WireGuardPublicKey,
+    pub wireguard_key: WireGuardPublicKey,
     pub sealing: Sealing,
     pub can: Can,
 }
 
-/// Which backfill routes a Machine's daemon offers.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) struct Can {
     pub generate: bool,
@@ -154,21 +148,18 @@ impl Seen {
     }
 }
 
-/// What the observation settles before anything is sent.
 #[derive(Debug, PartialEq)]
 pub(crate) enum Plan {
-    /// Nothing to carry; the report says why.
     Stop(BackfillSealingKeyReport),
-    /// Ask `generator` for a key, then carry it from there.
-    Generate { generator: MachineId },
-    /// Carry `public_key` from `sources`, the holders that can share it, in id order.
+    Generate {
+        generator: MachineId,
+    },
     Distribute {
         public_key: SealingPublicKey,
         sources: Vec<MachineId>,
     },
 }
 
-/// Settle which key the Cluster has, from what was seen.
 pub(crate) fn plan(
     request: &BackfillSealingKeyRequest,
     sights: &BTreeMap<MachineId, Sight>,
@@ -208,7 +199,6 @@ pub(crate) fn plan(
     }
 }
 
-/// No Machine seen holds a key: who makes one.
 fn generation(generator: Option<MachineId>, sights: &BTreeMap<MachineId, Sight>) -> Plan {
     let Some(generator) = generator else {
         let candidate = seen(sights)
@@ -238,16 +228,12 @@ fn seen(sights: &BTreeMap<MachineId, Sight>) -> impl Iterator<Item = (MachineId,
     })
 }
 
-/// Who gets the key, and every other Machine's outcome, settled before anything is sent.
 #[derive(Debug, PartialEq)]
 pub(crate) struct Distribution {
-    /// Each Machine to carry the key to, with the WireGuard key it is sealed to, in id order.
     pub recipients: Vec<(MachineId, WireGuardPublicKey)>,
     pub settled: Vec<MachineBackfill>,
 }
 
-/// Sort every Machine seen against the settled `public_key`. `generated` is the Machine
-/// that made the key this pass, whose Inspect predates it.
 pub(crate) fn distribution(
     public_key: SealingPublicKey,
     sights: &BTreeMap<MachineId, Sight>,
@@ -275,7 +261,7 @@ pub(crate) fn distribution(
                         reason: SkipReason::CannotInstall,
                     },
                     None => {
-                        distribution.recipients.push((machine, seen.public_key));
+                        distribution.recipients.push((machine, seen.wireguard_key));
                         continue;
                     }
                 },
@@ -288,7 +274,6 @@ pub(crate) fn distribution(
     distribution
 }
 
-/// The bounded Machine RPCs one pass makes. A fake stands in for tests.
 pub(crate) trait BackfillClient {
     async fn list(&mut self) -> Result<Vec<Listed>, RpcError>;
     async fn observe(&mut self, listed: &[Listed]) -> BTreeMap<MachineId, Sight>;
@@ -308,12 +293,6 @@ pub(crate) trait BackfillClient {
     ) -> Result<(), RpcError>;
 }
 
-/// One pass: observe, settle the key, carry it.
-///
-/// # Errors
-///
-/// Returns the entry's error when the Cluster's Machines cannot be listed. Everything a
-/// Machine refuses after that is in the report.
 pub(crate) async fn execute<C: BackfillClient>(
     client: &mut C,
     request: &BackfillSealingKeyRequest,
@@ -363,7 +342,6 @@ pub(crate) async fn execute<C: BackfillClient>(
     })
 }
 
-/// Carry the key to `recipient` from the first source that shares and installs.
 async fn carry<C: BackfillClient>(
     client: &mut C,
     sources: &[MachineId],
@@ -470,7 +448,6 @@ impl BackfillClient for Client {
     }
 }
 
-/// Ask one Machine what routes it offers and whether it holds the key.
 async fn observe(mut client: Client, id: MachineId) -> (MachineId, Sight) {
     let target = MachineTarget::from(&id);
     let unknown = |reason: String| (id, Sight::Unknown { reason });
@@ -498,7 +475,7 @@ async fn observe(mut client: Client, id: MachineId) -> (MachineId, Sight) {
         id,
         Sight::Seen(Seen {
             phase: details.phase,
-            public_key: details.public_key,
+            wireguard_key: details.public_key,
             sealing,
             can: Can {
                 generate: description.supports(GENERATE_SEALING_KEY_CAPABILITY),

@@ -959,8 +959,6 @@ fn local_error(error: LocalMachineError) -> Result<Response<OpaquePayload>, Stat
     }
 }
 
-/// Refusals name themselves in `details` so an operator tells them apart; a key file
-/// it cannot use is this Machine's fault, not the caller's.
 fn sealing_error(error: SealingError) -> RpcError {
     use ployz_core::SealingRefusal as Refusal;
     let (code, refusal) = match &error {

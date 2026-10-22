@@ -28,7 +28,6 @@ const send = vi.spyOn(inngest, "send").mockResolvedValue({ ids: [] });
 
 describe("ensure-cluster-sealing-key", () => {
   let harness: PostgresTestHarness;
-  /** What the Cluster answers each backfill with, in order; unset means no Cluster is paired. */
   let reports: BackfillSealingKeyReport[] | null;
   let unreachable: boolean;
   const requests: BackfillSealingKeyRequest[] = [];
@@ -78,7 +77,6 @@ describe("ensure-cluster-sealing-key", () => {
     "select machine_id from cluster_sealing_key_generator where organization_id = $1 and cluster_key = $2",
     [organizationId, clusterKey],
   )).rows.map(({ machine_id }) => machine_id as string);
-  /** Events the run sent, through its step tools or the client. */
   const sentEvents = (output: Awaited<ReturnType<typeof ensure>>) =>
     vi.mocked(output.ctx.step.sendEvent).mock.calls.length + send.mock.calls.length;
 
@@ -133,7 +131,7 @@ describe("ensure-cluster-sealing-key", () => {
 
       const output = await ensure();
 
-      expect(output.result).toEqual({ organizationId, result: "generator_gone", terminal: false });
+      expect(output.result).toEqual({ organizationId, result: "generator_gone", awaitsOperator: false });
       expect(requests).toEqual([{ expected: null, generator: machine("2") }]);
       expect(await generators()).toEqual([]);
     });
@@ -163,7 +161,7 @@ describe("ensure-cluster-sealing-key", () => {
       reports = [{ result: "distributed", public_key: sealingKey("A"), machines: [] }];
       await ensure();
 
-      expect(output.result).toEqual({ organizationId, result: "distributed", terminal: false });
+      expect(output.result).toEqual({ organizationId, result: "distributed", awaitsOperator: false });
       expect(await recordedKeys()).toEqual([sealingKey("A")]);
       expect(requests).toEqual([{ expected: null, generator: null }, { expected: sealingKey("A"), generator: null }]);
     });
@@ -176,7 +174,7 @@ describe("ensure-cluster-sealing-key", () => {
 
       const output = await ensure();
 
-      expect(output.result).toEqual({ organizationId, result: "distributed", terminal: false });
+      expect(output.result).toEqual({ organizationId, result: "distributed", awaitsOperator: false });
       expect(requests).toEqual([{ expected: null, generator: null }, { expected: null, generator: machine("2") }]);
       expect(await generators()).toEqual([machine("2")]);
       expect(await recordedKeys()).toEqual([sealingKey("A")]);
@@ -191,7 +189,7 @@ describe("ensure-cluster-sealing-key", () => {
 
       const output = await ensure();
 
-      expect(output.result).toEqual({ organizationId, result: "waiting", terminal: false });
+      expect(output.result).toEqual({ organizationId, result: "waiting", awaitsOperator: false });
       expect(requests[1]).toEqual({ expected: null, generator: machine("2") });
       expect(await generators()).toEqual([machine("2")]);
     });
@@ -218,12 +216,12 @@ describe("ensure-cluster-sealing-key", () => {
 
       const output = await ensure();
 
-      expect(output.result).toEqual({ organizationId, result: report.result, terminal: false });
+      expect(output.result).toEqual({ organizationId, result: report.result, awaitsOperator: false });
       expect(requests).toHaveLength(1);
       expect(await recordedKeys()).toEqual([]);
     });
 
-    it("ends terminal on awaits_recovery after a generator was chosen, sending nothing and keeping the row", async () => {
+    it("stops for the operator on awaits_recovery after a generator was chosen, sending nothing and keeping the row", async () => {
       reports = [
         { result: "needs_generator", candidate: machine("2") },
         { result: "awaits_recovery", generator: machine("2") },
@@ -232,20 +230,20 @@ describe("ensure-cluster-sealing-key", () => {
       const output = await ensure();
 
       expect(output.error).toBeUndefined();
-      expect(output.result).toEqual({ organizationId, result: "awaits_recovery", terminal: true });
+      expect(output.result).toEqual({ organizationId, result: "awaits_recovery", awaitsOperator: true });
       expect(requests).toHaveLength(2);
       expect(sentEvents(output)).toBe(0);
       expect(await generators()).toEqual([machine("2")]);
     });
 
-    it("ends terminal on no_holder with one backfill", async () => {
+    it("stops for the operator on no_holder with one backfill", async () => {
       await runEffect(recordSealingPublicKey(organizationId, clusterKey, sealingKey("A")));
       reports = [{ result: "no_holder", expected: sealingKey("A") }];
 
       const output = await ensure();
 
       expect(output.error).toBeUndefined();
-      expect(output.result).toEqual({ organizationId, result: "no_holder", terminal: true });
+      expect(output.result).toEqual({ organizationId, result: "no_holder", awaitsOperator: true });
       expect(requests).toEqual([{ expected: sealingKey("A"), generator: null }]);
       expect(sentEvents(output)).toBe(0);
     });

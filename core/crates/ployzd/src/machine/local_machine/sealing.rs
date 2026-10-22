@@ -16,7 +16,6 @@ use thiserror::Error as ThisError;
 use super::LocalMachine;
 use crate::sealing_key::{OpenError, SealingKey};
 
-/// Why a Sealing Key route refused. The RPC adapter maps these once.
 #[derive(Debug, ThisError)]
 pub enum Error {
     #[error("this Machine's Sealing Key could not be read")]
@@ -52,17 +51,6 @@ pub enum Error {
 }
 
 impl LocalMachine {
-    /// Generate the Cluster's Sealing Key on this Machine and publish its public half.
-    ///
-    /// A Machine that already holds a key answers with that key's public half. One that
-    /// holds none generates only when the Cluster has published no key and awaits no
-    /// recovery; otherwise the operator should carry the existing key instead.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`super::Error::NotParticipating`] before participation, [`Error::Published`]
-    /// or [`Error::AwaitsRecovery`] when the Cluster already names a key, and
-    /// [`Error::Unreadable`] or [`Error::Unwritable`] when the key file cannot be used.
     pub(crate) async fn generate_sealing_key(
         &self,
         GenerateSealingKeyRequest {}: GenerateSealingKeyRequest,
@@ -107,15 +95,6 @@ impl LocalMachine {
         Ok(SealingKeyHeld { public_key })
     }
 
-    /// Seal this Machine's Sealing Key to another Machine's WireGuard key, as this
-    /// Machine. The recipient must be published with exactly that key, so a stale
-    /// roster never seals to a key the Cluster no longer trusts.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`Error::NotHeld`] without a key, [`Error::UnknownMachine`] or
-    /// [`Error::WireGuardKeyMismatch`] when the recipient is not published as named,
-    /// and [`super::Error::Seal`] for a WireGuard key nothing can seal to.
     pub(crate) async fn share_sealing_key(
         &self,
         request: ShareSealingKeyRequest,
@@ -143,17 +122,6 @@ impl LocalMachine {
         Ok(SealingKeyShared { sealed })
     }
 
-    /// Install a Sealing Key another Machine sealed to this one, and publish its
-    /// public half. Installing the key this Machine already holds is a no-op.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`super::Error::NotParticipating`] before participation,
-    /// [`Error::UnknownMachine`] or [`Error::Unopenable`] when the sender is not who the
-    /// caller named, [`Error::SealedAnother`], [`Error::HeldAnother`],
-    /// [`Error::Published`], or [`Error::AwaitsRecovery`] when the key disagrees with
-    /// what the caller, this Machine, or the Cluster names, and [`Error::Unreadable`] or
-    /// [`Error::Unwritable`] when the key file cannot be used.
     pub(crate) async fn install_sealing_key(
         &self,
         request: InstallSealingKeyRequest,

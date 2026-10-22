@@ -15,26 +15,22 @@ import { clusterRead, OrganizationRuntime, withClusterBudget } from "#/modules/r
 import { organizationPairing } from "#/modules/runtime/tables";
 import { Database } from "#/server/database.server";
 
-/** How long one backfill may spend in the Cluster: each Machine is asked in turn, and a generation is one more round. */
 const BACKFILL_CLUSTER_BUDGET_MS = 60_000;
 
 export class SealingBackfillUnreachable extends Data.TaggedError("SealingBackfillUnreachable")<{
   readonly cause: unknown;
 }> {}
 
-/** The pairing generation a backfill runs for, and what Cloud kept of its Sealing Key. */
 export type SealingBackfillTarget = {
   readonly clusterKey: string;
   readonly expected: BackfillSealingKeyRequest["expected"];
   readonly generator: MachineId | null;
 };
 
-/** What a run does after one report. */
 export type SealingBackfillNext =
   | { readonly next: "rerun"; readonly generator: MachineId }
-  | { readonly next: "stop"; readonly result: BackfillSealingKeyReport["result"]; readonly terminal: boolean };
+  | { readonly next: "stop"; readonly result: BackfillSealingKeyReport["result"]; readonly awaitsOperator: boolean };
 
-/** The founded, unremoved Cluster's pairing generation and its recorded key and generator; none without one. */
 export const loadSealingBackfillTarget = Effect.fn("SealingBackfill.loadTarget")(function* (organizationId: string) {
   const { drizzle } = yield* Database;
   const [pairing] = yield* drizzle.select({
@@ -51,7 +47,6 @@ export const loadSealingBackfillTarget = Effect.fn("SealingBackfill.loadTarget")
   } satisfies SealingBackfillTarget;
 });
 
-/** Asks the Cluster to bring each Machine to its Sealing Key; none when no Cluster answers for the Organization. */
 export const backfillClusterSealingKey = Effect.fn("SealingBackfill.backfill")(function* (
   organizationId: string, request: BackfillSealingKeyRequest,
 ) {
@@ -61,14 +56,10 @@ export const backfillClusterSealingKey = Effect.fn("SealingBackfill.backfill")(f
   return yield* session.connected.backfillSealingKey(request).pipe(clusterRead);
 }, Effect.scoped, withClusterBudget(BACKFILL_CLUSTER_BUDGET_MS));
 
-/**
- * Acts on one report: records a distributed key, chooses or forgets the generator, and logs the rest. `rerun` asks for
- * one more backfill with the chosen generator; a stop marked `terminal` waits on an operator, not on another run.
- */
 export const handleSealingBackfillReport = Effect.fn("SealingBackfill.handleReport")(function* (
   organizationId: string, clusterKey: string, report: BackfillSealingKeyReport,
 ) {
-  const stop = (terminal = false): SealingBackfillNext => ({ next: "stop", result: report.result, terminal });
+  const stop = (awaitsOperator = false): SealingBackfillNext => ({ next: "stop", result: report.result, awaitsOperator });
   switch (report.result) {
     case "distributed": {
       yield* recordSealingPublicKey(organizationId, clusterKey, report.public_key);

@@ -507,7 +507,6 @@ export const clusterSealingKey = pgTable(
   ],
 );
 
-// The Machine chosen to generate a Cluster's Sealing Key when none of its Machines holds one.
 export const clusterSealingKeyGenerator = pgTable(
   "cluster_sealing_key_generator",
   {

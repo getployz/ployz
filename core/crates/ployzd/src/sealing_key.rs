@@ -122,7 +122,7 @@ impl SealingKey {
     }
 
     /// Seal the key to `recipient` so only `sender`'s WireGuard key could
-    /// have produced the blob; a backfill holder shares the key this way.
+    /// have produced the blob.
     ///
     /// # Errors
     /// Refuses a low-order recipient key, which no HPKE secret can be derived

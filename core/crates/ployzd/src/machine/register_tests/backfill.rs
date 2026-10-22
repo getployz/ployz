@@ -33,7 +33,6 @@ impl Peer {
         }
     }
 
-    /// A founder enrolled before Sealing Keys existed: Participating, holding none.
     async fn needing_access(prefix: &str, replicated: &ReplicatedStore) -> Self {
         let peer = Self::participating(prefix, replicated).await;
         SealingKey::set(&peer.dir, None).unwrap();

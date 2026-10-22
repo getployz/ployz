@@ -1857,7 +1857,6 @@ fn sealing_key_backfill_rpcs_have_one_typed_wire_contract() {
             .unwrap(),
         shared
     );
-    // Ciphertext crosses the wire as base64 text, never as the redacted Debug form.
     let wire = serde_json::to_value(RpcResponse::from(shared)).unwrap();
     assert_eq!(wire.pointer("/kind"), Some(&json!("sealing_key_shared")));
     assert_eq!(wire.pointer("/payload/sealed"), Some(&json!("AQID")));

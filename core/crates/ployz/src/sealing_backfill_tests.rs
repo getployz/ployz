@@ -33,7 +33,7 @@ const ALL: Can = Can {
 fn seen(n: u8, sealing: Sealing) -> Sight {
     Sight::Seen(Seen {
         phase: LocalMachinePhase::Participating,
-        public_key: wg(n),
+        wireguard_key: wg(n),
         sealing,
         can: ALL,
     })
@@ -92,8 +92,6 @@ fn failure(message: &str) -> RpcError {
         cause: Vec::new(),
     }
 }
-
-// Planner.
 
 #[test]
 fn expected_key_holders_are_the_sources() {
@@ -220,8 +218,6 @@ fn a_holder_outranks_the_chosen_generator() {
     );
 }
 
-// Distribution.
-
 #[test]
 fn distribution_sorts_every_machine_against_the_key() {
     let sights = sights(vec![
@@ -270,8 +266,6 @@ fn distribution_sorts_every_machine_against_the_key() {
         }
     );
 }
-
-// One pass against a fake Cluster.
 
 #[derive(Debug, PartialEq)]
 enum Call {
@@ -512,8 +506,6 @@ fn any_other_generation_error_is_carried_in_the_report() {
         }
     );
 }
-
-// Wire shape.
 
 #[test]
 fn empty_request_means_nothing_expected_and_no_generator() {

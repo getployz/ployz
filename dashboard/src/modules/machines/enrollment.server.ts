@@ -887,7 +887,7 @@ export const completeMachineEnrollment = Effect.fn(
 
 /**
  * Keeps the first Sealing public key a Machine of this pairing generation reports. A later different key is an
- * error to surface, never a replacement; a Machine without the key asks for the Cluster's key to be backfilled.
+ * error to surface, never a replacement.
  */
 const recordSealing = Effect.fn("MachineEnrollment.recordSealing")(function* (
   organizationId: string, clusterKey: string, machineId: MachineId, sealing: EnrollmentCallbackSealing | undefined,
@@ -896,7 +896,6 @@ const recordSealing = Effect.fn("MachineEnrollment.recordSealing")(function* (
   const annotations = { organizationId, machineId };
   if (sealing.kind === "needs_access") {
     yield* Effect.logWarning("A Server joined without its Cluster's Sealing Key.").pipe(Effect.annotateLogs(annotations));
-    // The backfill reads the pairing itself, so one sent before a rolled-back join only finds nothing to do.
     return yield* sendInngestEvent(createSealingKeyEnsureRequestedEvent({ organizationId })).pipe(
       Effect.catch((error) => Effect.logWarning("Sealing Key backfill request failed; enrollment continues.", error)),
     );

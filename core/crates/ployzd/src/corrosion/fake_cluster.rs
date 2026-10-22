@@ -226,7 +226,6 @@ impl FakeCluster {
         key.clone().unwrap()
     }
 
-    /// Mark the Cluster as waiting on a lost-key recovery, as that flow writes it.
     pub(crate) fn write_sealing_awaits_recovery(&self, key: &str) {
         self.kv.lock().unwrap().sealing_awaits_recovery = Some(key.to_owned());
     }
