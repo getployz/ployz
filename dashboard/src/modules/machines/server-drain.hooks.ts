@@ -53,8 +53,8 @@ export function useServerDrain(
     const accepting = [...moveServers(machines)].filter((id) => id !== server.id);
     const unrouted = [...unroutedServers(machines)].filter((id) => id !== server.id);
     stageOffServerServerFn({ data: { organizationSlug, server: server.id, accepting, unrouted } }).then(
-      ({ stuck, upgrades }) => {
-        if (stuck.length > 0) toast.error(stuckMessage(stuck, upgrades));
+      ({ blocked }) => {
+        if (blocked.length > 0) toast.error(stuckMessage(blocked));
         void queryClient.invalidateQueries({ queryKey: volumePlacementKeys.all });
       },
       (error: Error) => toast.error(toErrorMessage(error, `Could not move the volumes off ${server.name}`)),

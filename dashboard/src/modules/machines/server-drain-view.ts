@@ -386,17 +386,14 @@ export function removeHint(view: DrainView, running: readonly RunningService[], 
 }
 
 /**
- * The Volumes a Drain found nowhere to move. Each in `upgrades` has a Server that would take it once upgraded, whose
- * Ployz can't finish a Move yet; the rest say only that nowhere takes them.
+ * The Volumes a Drain found nowhere to move. One with an `upgrade` names a Server that would take it once upgraded,
+ * whose Ployz can't finish a Move yet; the rest say only that nowhere takes them.
  */
-export function stuckMessage(stuck: readonly string[], upgrades: readonly { readonly volume: string; readonly server: string }[]) {
-  const nowhere = stuck.filter((volume) => !upgrades.some((upgrade) => upgrade.volume === volume));
-  const servers = [...new Set(upgrades.map((upgrade) => upgrade.server))];
+export function stuckMessage(blocked: readonly { readonly volume: string; readonly upgrade: string | null }[]) {
+  const nowhere = blocked.filter((entry) => entry.upgrade === null).map((entry) => entry.volume);
+  const servers = [...new Set(blocked.flatMap((entry) => entry.upgrade ?? []))];
   return [
     ...(nowhere.length > 0 ? [`${listNames(nowhere)} ${nowhere.length === 1 ? "has" : "have"} nowhere to move`] : []),
-    ...servers.map((server) => {
-      const volumes = upgrades.filter((upgrade) => upgrade.server === server).map((upgrade) => upgrade.volume);
-      return `Upgrade ${server} to move ${listNames(volumes)} there`;
-    }),
+    ...servers.map((server) => `Upgrade ${server} to move ${listNames(blocked.filter((entry) => entry.upgrade === server).map((entry) => entry.volume))} there`),
   ].join(". ");
 }

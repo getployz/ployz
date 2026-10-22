@@ -286,11 +286,16 @@ describe("A leftover still running here", () => {
 
 describe("stuckMessage", () => {
   it("names the Server whose upgrade would move each Volume there, and says the rest have nowhere to move", () => {
-    expect(stuckMessage(["db"], [])).toBe("db has nowhere to move");
-    expect(stuckMessage(["db"], [{ volume: "db", server: "web-2" }])).toBe("Upgrade web-2 to move db there");
-    expect(stuckMessage(["db", "cache", "logs"], [{ volume: "db", server: "web-2" }, { volume: "logs", server: "web-2" }]))
+    expect(stuckMessage([{ volume: "db", upgrade: null }])).toBe("db has nowhere to move");
+    expect(stuckMessage([{ volume: "db", upgrade: "web-2" }])).toBe("Upgrade web-2 to move db there");
+    expect(stuckMessage([{ volume: "db", upgrade: "web-2" }, { volume: "cache", upgrade: null }, { volume: "logs", upgrade: "web-2" }]))
       .toBe("cache has nowhere to move. Upgrade web-2 to move db and logs there");
-    expect(stuckMessage(["db", "cache"], [{ volume: "db", server: "web-2" }, { volume: "cache", server: "web-3" }]))
+    expect(stuckMessage([{ volume: "db", upgrade: "web-2" }, { volume: "cache", upgrade: "web-3" }]))
       .toBe("Upgrade web-2 to move db there. Upgrade web-3 to move cache there");
+  });
+
+  it("keeps a Volume nowhere takes when another Environment's Volume of the same name can move once a Server is upgraded", () => {
+    expect(stuckMessage([{ volume: "data", upgrade: "web-2" }, { volume: "data", upgrade: null }]))
+      .toBe("data has nowhere to move. Upgrade web-2 to move data there");
   });
 });
