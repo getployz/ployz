@@ -1077,12 +1077,20 @@ mod machine_runtime_capabilities_tests {
     /// as a Machine; an identity this daemon cannot read claims nothing, like none.
     #[test]
     fn runtime_with_an_unreadable_management_identity_decodes_to_none() {
-        let runtime: MachineRuntime = serde_json::from_value(json!({
-            "daemon_version": "0.3.2",
-            "management_identity": "not-hex",
-        }))
-        .unwrap();
-        assert_eq!(runtime.management_identity, None);
+        for unreadable in [
+            json!("not-hex"),
+            json!([]),
+            json!({}),
+            json!(7),
+            json!(true),
+        ] {
+            let runtime: MachineRuntime = serde_json::from_value(json!({
+                "daemon_version": "0.3.2",
+                "management_identity": unreadable,
+            }))
+            .unwrap();
+            assert_eq!(runtime.management_identity, None, "{unreadable}");
+        }
     }
 
     #[test]

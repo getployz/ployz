@@ -152,7 +152,7 @@ pub mod management_identity_hex {
             .serialize(serializer)
     }
 
-    /// A value that is not 64 lowercase hex digits reads as `None`: an identity this
+    /// Any value that is not a string of 64 lowercase hex digits reads as `None`: an identity this
     /// daemon cannot read claims nothing, and must not keep the row from loading.
     ///
     /// # Errors
@@ -160,8 +160,9 @@ pub mod management_identity_hex {
     pub fn deserialize<'de, D: Deserializer<'de>>(
         deserializer: D,
     ) -> Result<Option<ManagementIdentity>, D::Error> {
-        Ok(Option::<String>::deserialize(deserializer)?
-            .and_then(|value| ManagementIdentity::parse_hex(&value).ok()))
+        Ok(serde_json::Value::deserialize(deserializer)?
+            .as_str()
+            .and_then(|value| ManagementIdentity::parse_hex(value).ok()))
     }
 }
 
