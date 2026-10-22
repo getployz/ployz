@@ -11,8 +11,8 @@ use std::{
 
 use ployz_core::{
     EnrollAs, EnrollRequest, LocalMachinePhase, Machine, MachineId, MachineNow, MachineUpdate,
-    MachineUpdateError, ManagementClientLabel, PinnedAddresses, PublicIpUpdate, Registered,
-    SelectedEndpoint, apply_machine_update,
+    MachineUpdateError, ManagementClientLabel, PinnedAddresses, PublicIpUpdate, RecoverySeed,
+    Registered, SelectedEndpoint, apply_machine_update,
 };
 use reqwest::Url;
 use thiserror::Error;
@@ -300,7 +300,28 @@ impl LocalMachineStore {
     /// Rejects missing endpoints or peers, an invalid network, an assignment for
     /// another Machine or key, or a failed save.
     pub fn enroll(&mut self, request: EnrollRequest) -> Result<EnrollPlan, StoreError> {
-        let (plan, installation) = self.plan_enrollment(request)?;
+        self.enroll_with(request, None)
+    }
+
+    /// Persist a fresh founding that holds no Sealing Key until it recovers
+    /// the one `recovery` names.
+    ///
+    /// # Errors
+    /// As [`Self::enroll`], and rejects a request that does not found a Cluster.
+    pub fn enroll_for_recovery(
+        &mut self,
+        request: EnrollRequest,
+        recovery: RecoverySeed,
+    ) -> Result<EnrollPlan, StoreError> {
+        self.enroll_with(request, Some(recovery))
+    }
+
+    fn enroll_with(
+        &mut self,
+        request: EnrollRequest,
+        recovery: Option<RecoverySeed>,
+    ) -> Result<EnrollPlan, StoreError> {
+        let (plan, installation) = self.plan_enrollment(request, recovery)?;
         if matches!(plan, EnrollPlan::Fresh) {
             self.install(installation)?;
         }
@@ -312,6 +333,7 @@ impl LocalMachineStore {
     pub(crate) fn plan_enrollment(
         &self,
         request: EnrollRequest,
+        recovery: Option<RecoverySeed>,
     ) -> Result<(EnrollPlan, Installation), StoreError> {
         let EnrollRequest {
             role,
@@ -329,11 +351,15 @@ impl LocalMachineStore {
                 name,
                 FoundingCluster {
                     network: cluster_network,
+                    recovery,
                 },
                 initial_policy,
                 public_ip,
                 advertised_endpoints,
             )?,
+            EnrollAs::Member { .. } if recovery.is_some() => {
+                return Err(StoreError::RecoveryWithoutFounding);
+            }
             EnrollAs::Member { registration } => self.member(registration)?,
         };
         let wanted = body.machine().expect("an enrollment owns its Machine");
@@ -381,12 +407,13 @@ impl LocalMachineStore {
             runtime: local_runtime(&self.data_dir),
             build_concurrency: None,
         };
+        let sealing_key = cluster.recovery.is_none().then(SealingKey::generate);
         Ok((
             LocalMachineBody::Participating {
                 machine,
                 origin: ParticipationOrigin::Founder { cluster },
             },
-            Some(SealingKey::generate()),
+            sealing_key,
         ))
     }
 
@@ -740,6 +767,8 @@ pub enum StoreError {
     NotJoining,
     #[error("machine is already initialized")]
     AlreadyInitialized,
+    #[error("only a founding Machine recovers a Sealing Key")]
+    RecoveryWithoutFounding,
     #[error("at least one advertised endpoint is required")]
     MissingEndpoints,
     #[error("at least one visible peer is required to join")]

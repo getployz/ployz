@@ -140,6 +140,16 @@ impl From<SealingKeyBackup> for String {
     }
 }
 
+/// What a founder of an Organization's next Cluster recovers instead of
+/// generating a Sealing Key: the public key its sealed values need, and the
+/// backup that holds it when Cloud has one.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+pub struct RecoverySeed {
+    pub expected_public_key: SealingPublicKey,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backup: Option<SealingKeyBackup>,
+}
+
 const RECOVERY_CODE_ALPHABET: &[u8; 32] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
 const RECOVERY_CODE_LEN: usize = 26;
 const RECOVERY_CODE_GROUPS: [usize; 5] = [5, 5, 5, 5, 6];
@@ -161,31 +171,33 @@ impl RecoveryCode {
         let mut code = Zeroizing::new([0; RECOVERY_CODE_LEN]);
         OsRng.unwrap_err().fill_bytes(code.as_mut_slice());
         for symbol in code.iter_mut() {
-            *symbol = RECOVERY_CODE_ALPHABET[usize::from(*symbol & 31)];
+            let index = *symbol & 31;
+            *symbol = if index < 26 {
+                b'A' + index
+            } else {
+                b'2' + index - 26
+            };
         }
         Self(code)
     }
 
     /// Accepts any case and ignores dashes and whitespace.
     pub fn parse(input: &str) -> Result<Self, RecoveryCodeError> {
+        let mut symbols = input
+            .bytes()
+            .filter(|byte| *byte != b'-' && !byte.is_ascii_whitespace())
+            .map(|byte| byte.to_ascii_uppercase());
         let mut code = Zeroizing::new([0; RECOVERY_CODE_LEN]);
-        let mut len = 0;
-        for byte in input.bytes() {
-            if byte == b'-' || byte.is_ascii_whitespace() {
-                continue;
-            }
-            let symbol = byte.to_ascii_uppercase();
-            if len == RECOVERY_CODE_LEN || !RECOVERY_CODE_ALPHABET.contains(&symbol) {
-                return Err(RecoveryCodeError);
-            }
-            code[len] = symbol;
-            len += 1;
+        for slot in code.iter_mut() {
+            *slot = symbols
+                .next()
+                .filter(|symbol| RECOVERY_CODE_ALPHABET.contains(symbol))
+                .ok_or(RecoveryCodeError)?;
         }
-        if len == RECOVERY_CODE_LEN {
-            Ok(Self(code))
-        } else {
-            Err(RecoveryCodeError)
+        if symbols.next().is_some() {
+            return Err(RecoveryCodeError);
         }
+        Ok(Self(code))
     }
 
     /// The canonical symbols, without dashes.

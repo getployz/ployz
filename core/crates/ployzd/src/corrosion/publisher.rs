@@ -136,7 +136,9 @@ pub async fn run_machine_publisher(
         }
     }
     loop {
-        if let Some(replicated) = &replicated {
+        if let Some(replicated) = &replicated
+            && awaited_sealing_key_published(replicated, &local.record()).await
+        {
             let record = local.record();
             if let Some(network) = record.cluster_network()
                 && let Err(error) = replicated.publish_cluster_network(network).await
@@ -195,6 +197,30 @@ pub async fn run_machine_publisher(
                     return Ok(());
                 }
             }
+        }
+    }
+}
+
+/// A founder awaiting recovery names the Sealing public key before it publishes
+/// anything else, so no Machine that sees its Cluster misses it.
+async fn awaited_sealing_key_published(
+    replicated: &ReplicatedStore,
+    record: &LocalMachineRecord,
+) -> bool {
+    let Some(seed) = record.recovery_seed() else {
+        return true;
+    };
+    match replicated
+        .publish_sealing_awaits_recovery(seed.expected_public_key)
+        .await
+    {
+        Ok(()) => true,
+        Err(error) => {
+            eprintln!(
+                "failed to publish the Sealing public key awaiting recovery: {error}",
+                error = ployz_core::error_chain::inline(&error),
+            );
+            false
         }
     }
 }

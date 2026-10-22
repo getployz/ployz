@@ -48,11 +48,15 @@ pub(crate) fn restore(
     expected: &SealingPublicKey,
 ) -> Result<SealingKey, RestoreError> {
     let bytes = backup.as_bytes();
-    if bytes.len() != BACKUP_LEN || bytes[0] != VERSION {
+    if bytes.len() != BACKUP_LEN {
         return Err(RestoreError::Malformed);
     }
     let (header, rest) = bytes.split_at(HEADER_LEN);
-    if header[1..] != expected.as_bytes()[..] {
+    let (&version, public_key) = header.split_first().ok_or(RestoreError::Malformed)?;
+    if version != VERSION {
+        return Err(RestoreError::Malformed);
+    }
+    if public_key != expected.as_bytes() {
         return Err(RestoreError::OtherKey);
     }
     let (salt, rest) = rest.split_at(SALT_LEN);
@@ -148,6 +152,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "tampers with a fixed-length backup"
+    )]
     fn backup_whose_header_names_another_key_does_not_open() {
         let key = SealingKey::generate();
         let other = SealingKey::generate().public_key();
@@ -172,6 +180,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "tampers with a fixed-length backup"
+    )]
     fn malformed_backup_is_refused() {
         let key = SealingKey::generate();
         let code = RecoveryCode::generate();

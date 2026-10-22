@@ -1036,6 +1036,7 @@ fn store_error(error: StoreError) -> RpcError {
         | StoreError::NotJoining
         | StoreError::AlreadyRunning(_) => RpcErrorCode::Conflict,
         StoreError::MissingEndpoints
+        | StoreError::RecoveryWithoutFounding
         | StoreError::MissingPeers
         | StoreError::IdentityMismatch
         | StoreError::KeyMismatch

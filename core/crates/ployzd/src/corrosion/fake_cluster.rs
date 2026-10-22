@@ -230,6 +230,16 @@ impl FakeCluster {
         self.kv.lock().unwrap().sealing_awaits_recovery = Some(key.to_owned());
     }
 
+    /// The Cluster network and awaited Sealing public key, read together.
+    pub(crate) fn network_and_awaited_key(&self) -> (Option<String>, Option<String>) {
+        let kv = self.kv.lock().unwrap();
+        (kv.network.clone(), kv.sealing_awaits_recovery.clone())
+    }
+
+    pub(crate) fn clear_network(&self) {
+        self.kv.lock().unwrap().network = None;
+    }
+
     pub(crate) fn subscription_tokens(&self) -> Vec<String> {
         self.kv.lock().unwrap().tokens.clone()
     }
@@ -492,6 +502,15 @@ fn execute(kv: &Mutex<ClusterKv>, statements: Vec<Statement>) -> Bytes {
                 if kv.sealing_public_key.borrow().is_none() {
                     kv.sealing_public_key
                         .send_replace(Some(text_param(&statement.params, 0).to_owned()));
+                }
+            }
+            query
+                if query.starts_with(
+                    "INSERT INTO cluster (key, value) VALUES ('sealing_awaits_recovery', ?)",
+                ) =>
+            {
+                if kv.sealing_awaits_recovery.is_none() {
+                    kv.sealing_awaits_recovery = Some(text_param(&statement.params, 0).to_owned());
                 }
             }
             query if query.starts_with("INSERT INTO volumes (machine_id, name, volume)") => {

@@ -803,6 +803,7 @@ fn legal_bodies_round_trip() {
                     origin: ParticipationOrigin::Founder {
                         cluster: ployzd::machine::FoundingCluster {
                             network: "10.210.0.0/16".parse().unwrap(),
+                            recovery: None,
                         },
                     },
                 },

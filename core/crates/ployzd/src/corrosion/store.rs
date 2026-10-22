@@ -296,6 +296,22 @@ impl ReplicatedStore {
         Ok(())
     }
 
+    /// Name the Sealing public key a keyless founder waits to recover. The
+    /// first write wins and nothing clears it; a published
+    /// `sealing_public_key` supersedes it.
+    pub async fn publish_sealing_awaits_recovery(
+        &self,
+        key: SealingPublicKey,
+    ) -> Result<(), Error> {
+        self.api
+            .execute([Statement::new(
+                "INSERT INTO cluster (key, value) VALUES ('sealing_awaits_recovery', ?) ON CONFLICT (key) DO NOTHING",
+                [json!(key.to_string())],
+            )])
+            .await?;
+        Ok(())
+    }
+
     /// The Cluster's published Sealing public key, or `None` for a Cluster
     /// founded before Sealing Keys existed and not yet backfilled.
     ///

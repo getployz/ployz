@@ -591,7 +591,7 @@ impl LocalMachine {
     async fn enroll_admitted(&self, request: EnrollRequest) -> Result<Enrolled, Error> {
         let (plan, installation) = self
             .owner
-            .mutate(move |store| store.plan_enrollment(request))
+            .mutate(move |store| store.plan_enrollment(request, None))
             .await??;
         let machine = match plan {
             EnrollPlan::Fresh => {
