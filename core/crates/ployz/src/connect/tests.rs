@@ -781,6 +781,33 @@ async fn local_socket_that_accepts_but_never_serves_fails_as_starting() {
     assert_eq!(error.retry(), Retry::AfterRestart, "{error}");
 }
 
+#[tokio::test]
+async fn a_silent_entry_does_not_hold_back_one_that_answers() {
+    let root = tempfile::tempdir().unwrap();
+    let silent = root.path().join("silent.sock");
+    let _backlog = std::os::unix::net::UnixListener::bind(&silent).unwrap();
+    let answering = root.path().join("answering.sock");
+    let daemon = test_support::unix_daemon(&answering, |body| async move {
+        panic!("connect asks only for confirmation, not {body:?}")
+    });
+    let selected = SelectedConnections {
+        source: ConnectionSource::Cloud,
+        connections: vec![
+            Connection::unix(&silent).unwrap(),
+            Connection::unix(&answering).unwrap(),
+        ],
+    };
+    let started = std::time::Instant::now();
+    let connected = connect_selected_with(selected, Arc::new(SystemConnector::default())).await;
+    let waited = started.elapsed();
+    daemon.shutdown_background();
+    connected.expect("the answering entry connects");
+    assert!(
+        waited < CONNECT_CONFIRM_TIMEOUT,
+        "waited {waited:?} on the silent entry before trying the answering one"
+    );
+}
+
 #[test]
 fn a_dropped_connection_keeps_the_network_reason_as_the_deepest_cause() {
     #[derive(Debug, thiserror::Error)]
