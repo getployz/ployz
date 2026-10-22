@@ -1093,3 +1093,48 @@ fn the_record_is_a_system_event_by_event_name() {
         "volume_resized"
     );
 }
+
+#[test]
+fn a_deploy_whose_preparation_failed_leaves_the_size_editable() {
+    let (store, who) = shop(managed(10));
+    admit(&store, &who, 1).unwrap();
+    let runner = RunnerId::parse("runner").unwrap();
+    store.claim(&id(1), &runner).unwrap();
+    store
+        .record(
+            &id(1),
+            &runner,
+            RunEvidence::NotExecuted("Not enough disk space".to_owned().into()),
+        )
+        .unwrap();
+
+    assert!(!listing(&store, &who, "data").storage_locked);
+    set_storage(&store, &who, "data", managed(5)).unwrap();
+    assert_eq!(listing(&store, &who, "data").volume.storage, managed(5));
+}
+
+#[test]
+fn an_unmounted_volume_a_deploy_never_prepares_stays_editable() {
+    let (store, who) = shop(managed(10));
+    store
+        .write(
+            &who,
+            &CreateVolume {
+                shared_writes: false,
+                storage_locked: false,
+                restored_from: None,
+                storage: managed(999_999),
+                id: VolumeId::parse(CACHE).unwrap(),
+                environment: EnvironmentRef::default(),
+                name: VolumeName::parse("cache").unwrap(),
+                mounts: Vec::new(),
+            },
+        )
+        .unwrap();
+    deploy(&store, &who, 1);
+
+    assert!(listing(&store, &who, "data").storage_locked);
+    assert!(!listing(&store, &who, "cache").storage_locked);
+    set_storage(&store, &who, "cache", managed(7)).unwrap();
+    assert_eq!(listing(&store, &who, "cache").volume.storage, managed(7));
+}
