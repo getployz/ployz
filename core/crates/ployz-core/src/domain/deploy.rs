@@ -40,7 +40,7 @@ pub struct PlanOptions {
     #[ts(optional, as = "Option<Vec<ServiceName>>")]
     pub removals: ServiceRemovals,
     /// Who runs this Deploy. The runner sets it; a refusal's way back depends on it.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Operator::is_cloud")]
     #[ts(optional, as = "Option<Operator>")]
     pub operator: Operator,
     /// Plan the other Services when one mounts a Volume nothing can mount, listing it in
@@ -1410,6 +1410,28 @@ pub struct MachineStorageBudget {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn plan_options_a_runner_did_not_set_read_as_before() {
+        let before = serde_json::json!({
+            "force_recreate": false,
+            "skip_health_monitor": false,
+            "placement_seed": 0,
+            "selected": []
+        });
+        let options: PlanOptions = serde_json::from_value(before.clone()).unwrap();
+        assert_eq!(options.operator, Operator::Cloud);
+        assert!(!options.block_unmountable);
+        assert_eq!(serde_json::to_value(&options).unwrap(), before);
+        let runner = PlanOptions {
+            operator: Operator::Cli,
+            block_unmountable: true,
+            ..options
+        };
+        let written = serde_json::to_value(&runner).unwrap();
+        assert_eq!(written["operator"], "cli");
+        assert_eq!(written["block_unmountable"], true);
+    }
 
     #[test]
     fn compensation_lines_say_what_became_of_each_container_in_order() {

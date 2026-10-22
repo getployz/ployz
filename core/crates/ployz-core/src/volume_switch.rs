@@ -437,6 +437,14 @@ pub enum Operator {
     Cli,
 }
 
+impl Operator {
+    /// Whether this is the default, Ployz Cloud, which serialized Intents leave out.
+    #[must_use]
+    pub const fn is_cloud(&self) -> bool {
+        matches!(self, Self::Cloud)
+    }
+}
+
 /// What a Machine saw of Volume `name` when it could not mount a writer: the Server that
 /// holds the writer, the Move holding it, or the copies left. No command line: a Machine
 /// does not know who drives the Deploy, so it cannot name the way back. `name` is the
