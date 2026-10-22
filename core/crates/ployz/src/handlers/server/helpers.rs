@@ -92,19 +92,43 @@ pub(in crate::handlers) async fn inspect_token(
     Ok((details, token))
 }
 
+/// The `--name` the user passed, refused with the normalised form when it isn't a Machine Name.
+pub(in crate::handlers) fn requested_name(
+    matches: &ArgMatches,
+) -> Result<Option<MachineName>, Error> {
+    let Some(requested) = matches.get_one::<String>("name") else {
+        return Ok(None);
+    };
+    MachineName::parse(requested.as_str())
+        .map(Some)
+        .map_err(|error| match MachineName::from_hostname(requested) {
+            Some(suggested) => Error::caused(
+                RpcErrorCode::InvalidArgument,
+                format!("{requested:?} is not a Server name. Try --name {suggested}."),
+                error,
+            ),
+            None => error.into(),
+        })
+}
+
 pub(in crate::handlers) fn machine_name(
     requested: Option<MachineName>,
     token: &MachineToken,
-) -> Result<MachineName, Error> {
-    match requested {
-        Some(name) => Ok(name),
-        None if token.runtime.hostname.is_empty() => Err(Error::usage(
-            "Server name is required because the remote hostname is empty",
-        )),
-        None => Ok(MachineName::parse(
-            token.runtime.hostname.to_ascii_lowercase(),
-        )?),
-    }
+) -> MachineName {
+    requested.unwrap_or_else(|| hostname_machine_name(&token.runtime.hostname))
+}
+
+/// The Machine Name a Server takes from its hostname when none was asked for, said on stderr.
+pub(crate) fn hostname_machine_name(hostname: &str) -> MachineName {
+    let name = MachineName::from_hostname(hostname).unwrap_or_else(|| {
+        let suffix = uuid::Uuid::new_v4().simple().to_string();
+        MachineName::parse(format!("server-{}", &suffix[..8]))
+            .expect("server- and hex digits make a DNS label")
+    });
+    crate::ui::note(format_args!(
+        "Naming this Server {name}, from its hostname {hostname:?}."
+    ));
+    name
 }
 
 pub(super) fn configure_ssh_key(
@@ -287,27 +311,58 @@ mod tests {
     }
 
     #[test]
-    fn init_derives_a_machine_name_by_lowercasing_a_dns_label_hostname() {
+    fn an_unnamed_server_takes_its_hostname_normalised() {
+        let long = "x".repeat(70);
+        for (hostname, name) in [
+            ("Vultr1", "vultr1"),
+            ("machine-a", "machine-a"),
+            ("HP-WIN11", "hp-win11"),
+            ("build_box.lan", "build-box-lan"),
+            (long.as_str(), &long[..63]),
+        ] {
+            assert_eq!(
+                machine_name(None, &token_with_hostname(hostname)).as_str(),
+                name
+            );
+        }
+    }
+
+    #[test]
+    fn an_unusable_hostname_falls_back_to_a_generated_name() {
+        for hostname in ["", "___"] {
+            let name = machine_name(None, &token_with_hostname(hostname));
+            let suffix = name.as_str().strip_prefix("server-").unwrap();
+            assert_eq!(suffix.len(), 8, "{name}");
+        }
+    }
+
+    #[test]
+    fn a_requested_name_wins_over_the_hostname() {
+        let requested = MachineName::parse("web-1").unwrap();
         assert_eq!(
-            machine_name(None, &token_with_hostname("Vultr1"))
-                .unwrap()
-                .as_str(),
-            "vultr1"
-        );
-        assert_eq!(
-            machine_name(None, &token_with_hostname("machine-a"))
-                .unwrap()
-                .as_str(),
-            "machine-a"
+            machine_name(Some(requested.clone()), &token_with_hostname("HP-WIN11")),
+            requested
         );
     }
 
     #[test]
-    fn init_requires_a_name_when_the_remote_hostname_is_empty() {
-        let token = token_with_hostname("");
+    fn an_invalid_requested_name_is_refused_with_its_normalised_form() {
+        let matches = |name: &str| {
+            clap::Command::new("add")
+                .arg(clap::Arg::new("name").long("name"))
+                .get_matches_from(["add", "--name", name])
+        };
         assert_eq!(
-            machine_name(None, &token).unwrap_err().to_string(),
-            "Server name is required because the remote hostname is empty"
+            crate::ui::chain_text(&requested_name(&matches("HP-WIN11")).unwrap_err()),
+            "\"HP-WIN11\" is not a Server name. Try --name hp-win11: invalid Machine Name \"HP-WIN11\": a 1-63 character lowercase DNS label"
+        );
+        assert_eq!(
+            requested_name(&matches("___")).unwrap_err().to_string(),
+            "invalid Machine Name \"___\": a 1-63 character lowercase DNS label"
+        );
+        assert_eq!(
+            requested_name(&matches("web-1")).unwrap().unwrap().as_str(),
+            "web-1"
         );
     }
 

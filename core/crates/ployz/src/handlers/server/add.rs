@@ -22,10 +22,7 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
         connection,
         matches.get_one::<String>("ssh-key").map(String::as_str),
     )?;
-    let requested_name = matches
-        .get_one::<String>("name")
-        .map(MachineName::parse)
-        .transpose()?;
+    let requested_name = helpers::requested_name(matches)?;
     let token_request = helpers::token_request(matches)?;
     let pinned = helpers::pinned(&token_request);
     let wireguard_mtu = matches.get_one::<u32>("wg-mtu").copied();
@@ -52,7 +49,7 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
             helpers::inspect_token(&mut target_client, token_request.clone()).await?;
         require_another_entry(entry_id, token.id, destination)?;
         // Before the reset, so a taken name leaves the Server as it was.
-        let name = helpers::machine_name(requested_name, &token)?;
+        let name = helpers::machine_name(requested_name, &token);
         require_free_name(&snapshot, token.id, &name, destination)?;
         let history = config.path().with_extension("enrollment");
         if details.phase != LocalMachinePhase::Uninitialized

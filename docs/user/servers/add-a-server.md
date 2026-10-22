@@ -39,7 +39,9 @@ A script, such as cloud-init or `ssh host '...'`, has no terminal to answer the 
 `export PLOYZ_ENROLL_TOKEN=pmet_…` before the line: it keeps that variable through `sudo`. You can
 also pipe the token to `sudo ployz server add --token-stdin` after the install part of the line.
 
-The server takes its hostname as its name; to choose another, run
+The server takes its hostname as its name, lowercased, with anything else a name can't hold, such
+as `_` or `.`, turned into `-`; `HP-WIN11` becomes `hp-win11`. The line prints the name it chose.
+To choose another, run
 `ployz server add --command --name web-1` and the printed line keeps the name. It keeps every other
 flag that shapes the server too, such as `--storage`, `--label-add` or `--accepts-ingress`. When it
 finishes, the server shows on the **Servers** page, ready for builds, services and web traffic. If

@@ -1,5 +1,5 @@
 use clap::ArgMatches;
-use ployz_core::{EnrollAs, EnrollRequest, LocalMachinePhase, MachineName, MachineRelease};
+use ployz_core::{EnrollAs, EnrollRequest, LocalMachinePhase, MachineRelease};
 
 use super::super::runtime;
 use super::{ConnectionOptions, helpers};
@@ -39,10 +39,7 @@ pub(in crate::handlers) fn init(root: &ArgMatches) -> Result<(), Error> {
         )?,
     };
     let local = destination.is_none();
-    let requested_name = matches
-        .get_one::<String>("name")
-        .map(MachineName::parse)
-        .transpose()?;
+    let requested_name = helpers::requested_name(matches)?;
     let token_request = helpers::token_request(matches)?;
     let pinned = helpers::pinned(&token_request);
     let cluster_network = *matches
@@ -78,7 +75,7 @@ pub(in crate::handlers) fn init(root: &ArgMatches) -> Result<(), Error> {
             target = helpers::reconnect_direct(matches, &connection).await?;
             token = helpers::inspect_token(&mut target, token_request).await?.1;
         }
-        let name = helpers::machine_name(requested_name, &token)?;
+        let name = helpers::machine_name(requested_name, &token);
         let machine = helpers::enroll(
             &mut target,
             EnrollRequest {
