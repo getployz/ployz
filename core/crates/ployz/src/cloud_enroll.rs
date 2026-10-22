@@ -1343,6 +1343,55 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn enrollment_stages_name_the_relay_when_cloud_never_reaches_the_server() {
+        for publishing in [true, false] {
+            let (listener, url) = listen().await;
+            let server = tokio::spawn(async move {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                read_http(&mut stream).await;
+                tokio::io::AsyncWriteExt::write_all(
+                    &mut stream,
+                    &http_response(503, "Service Unavailable", b"{}"),
+                )
+                .await
+                .unwrap();
+                // Spend the stage's wait during the client's pause between attempts, never mid-request.
+                read_http(&mut stream).await;
+                tokio::time::sleep(Duration::from_millis(200)).await;
+                tokio::time::pause();
+                tokio::time::advance(crate::setup_retry::WAIT).await;
+                tokio::time::resume();
+            });
+            let credential = PairingCredential::parse("pairing-secret").unwrap();
+            let result = if publishing {
+                publish(
+                    &url,
+                    &token(),
+                    MachineId::random(),
+                    &credential,
+                    &ManagementCapability::new(
+                        ployz_core::ManagementIdentity::from_bytes([1; 32]),
+                        [2; 32],
+                    ),
+                )
+                .await
+            } else {
+                callback(&url, &token(), MachineId::random(), &credential).await
+            };
+            let error = result.unwrap_err();
+            assert!(
+                !matches!(error, Error::RetrySameCommand { .. }),
+                "{error:?}"
+            );
+            assert_eq!(
+                error.to_string(),
+                "Cloud can't reach this Server through the relay or directly. Allow https to relay.ployz.dev from Cloud and from this Server, then enroll it again."
+            );
+            server.await.unwrap();
+        }
+    }
+
+    #[tokio::test]
     async fn callback_errors_redact_capability_and_pairing_credentials() {
         for publishing in [true, false] {
             let (listener, url) = listen().await;
