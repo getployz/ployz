@@ -218,14 +218,21 @@ where
     }
 }
 
+/// The local Machine this enrollment already joined, if any. A participating Machine counts
+/// only when Cloud found it listed as it published itself; Cloud registers a forgotten one
+/// afresh, with no daemon version, and its participation predates this enrollment.
 fn already_assigned<'a>(details: &'a MachineDetails, assigned: &Machine) -> Option<&'a Machine> {
-    matches!(
-        details.phase,
-        LocalMachinePhase::Joining | LocalMachinePhase::Participating
-    )
-    .then_some(details.machine.as_ref())
-    .flatten()
-    .filter(|machine| machine.id == assigned.id)
+    let resumable = match details.phase {
+        LocalMachinePhase::Joining => true,
+        LocalMachinePhase::Participating => !assigned.runtime.daemon_version.is_empty(),
+        LocalMachinePhase::Uninitialized
+        | LocalMachinePhase::Resetting
+        | LocalMachinePhase::Unrecognized(_) => false,
+    };
+    resumable
+        .then_some(details.machine.as_ref())
+        .flatten()
+        .filter(|machine| machine.id == assigned.id)
 }
 
 async fn enroll_current_identity(
@@ -1050,7 +1057,8 @@ mod tests {
 
     #[test]
     fn a_rerun_resumes_a_join_already_under_way_for_the_assigned_machine() {
-        let assigned = crate::global_fixtures::machine('a', "web-3");
+        let mut assigned = crate::global_fixtures::machine('a', "web-3");
+        assigned.runtime.daemon_version = "0.3.0".into();
         let other = crate::global_fixtures::machine('b', "web-4");
         let details = |phase, machine: Option<&Machine>| MachineDetails {
             id: assigned.id,

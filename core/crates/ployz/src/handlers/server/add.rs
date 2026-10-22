@@ -1,7 +1,7 @@
 use clap::ArgMatches;
 use ployz_core::{
-    EnrollAs, EnrollRequest, EnrollmentSnapshot, LocalMachinePhase, MachineId, MachineName,
-    RegisterRequest, WireGuardPublicKey,
+    EnrollAs, EnrollRequest, EnrollmentSnapshot, InspectRequest, LocalMachinePhase, MachineId,
+    MachineName, RegisterRequest, WireGuardPublicKey, op,
 };
 
 use super::super::{connect_context, runtime};
@@ -38,6 +38,10 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
         }
         let mut entry = connect_context(matches, options.context()).await?;
         let snapshot = crate::enrollment::observe_enrollment(&mut entry).await?;
+        let entry_id = entry
+            .call_repeatable::<op::Inspect>(InspectRequest::default(), None)
+            .await?
+            .id;
         let mut target_client = if no_install {
             helpers::connect_direct(matches, &connection).await?
         } else {
@@ -45,6 +49,7 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
         };
         let (details, mut token) =
             helpers::inspect_token(&mut target_client, token_request.clone()).await?;
+        require_another_entry(entry_id, token.id, destination)?;
         let history = config.path().with_extension("enrollment");
         if details.phase != LocalMachinePhase::Uninitialized
             && !resumes(&snapshot, token.id, token.public_key)
@@ -128,8 +133,22 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
     )
 }
 
-fn require_another_entry(_entry: MachineId, _target: MachineId, _name: &str) -> Result<(), Error> {
-    Ok(())
+/// A Server that answers as the entry for its own add vouches only for its own state, which
+/// a forgotten Server still holds; another Server's view decides whether it is a member.
+fn require_another_entry(
+    entry: MachineId,
+    target: MachineId,
+    destination: &str,
+) -> Result<(), Error> {
+    if entry != target {
+        return Ok(());
+    }
+    Err(Error::conflict(format!(
+        "{destination} answered as the entry for its own add, so its membership can't be checked. No changes made."
+    ))
+    .hint(crate::ui::Hint::Next(
+        "connect through another Server of the Cluster with --connect".into(),
+    )))
 }
 
 /// Only a Server the Cluster lists resumes its join. One this computer assigned that the Cluster
@@ -257,10 +276,9 @@ mod tests {
             "a forgotten Server's own view can't vouch for it: {message}"
         );
         assert!(
-            refusal
-                .hints()
-                .iter()
-                .any(|hint| matches!(hint, crate::ui::Hint::Next(next) if next.contains("--connect"))),
+            refusal.hints().iter().any(
+                |hint| matches!(hint, crate::ui::Hint::Next(next) if next.contains("--connect"))
+            ),
             "names --connect through another Server"
         );
     }
