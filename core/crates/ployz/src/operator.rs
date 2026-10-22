@@ -454,8 +454,23 @@ pub async fn open_exec(
         .live_services_from(&machines, EnvironmentValues::Redacted)
         .await?;
     let services = live.services();
-    let service = select_service(&services, service_selector)?;
-    let container = select_exec_container(service, container_selector)?.as_observation();
+    let selected = select_service(&services, service_selector)
+        .map_err(OperatorError::from)
+        .and_then(|service| Ok((service, select_exec_container(service, container_selector)?)));
+    let (service, container) = match selected {
+        Ok((service, container)) => (service, container.as_observation()),
+        Err(error) => {
+            // The container may be on a Server that did not answer: name it.
+            crate::ui::Gaps::of(&live.containers)
+                .named(
+                    machines
+                        .iter()
+                        .map(|machine| (machine.machine.id, &machine.machine.name)),
+                )
+                .warn();
+            return Err(error);
+        }
+    };
     let machine_id = container.machine_id;
     let config = ExecRequestFrame::Config(ExecConfig {
         container_id: container.container_id,
