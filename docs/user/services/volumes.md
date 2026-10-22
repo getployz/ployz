@@ -38,6 +38,10 @@ You can change the limit in the volume's **Settings**, under **Space**, or with
 `ployz volume set data --size 10`, until a deploy starts creating the volume. A deploy that
 fails before it starts creating the volume, for example because no server has room, leaves the
 limit editable, and so does a deploy while no service mounts the volume. If a deploy fails after
+You can change the limit in the volume's **Settings**, under **Space**, or with
+`ployz volume set data --size 10`, until a deploy starts creating the volume. A deploy that
+fails before it starts creating the volume, for example because no server has room, leaves the
+limit editable, and so does a deploy while no service mounts the volume. If a deploy fails after
 it started creating the volume, the limit stays fixed in the panel. Once the volume deploys, you
 can grow it on Ployz Cloud while its service keeps running. Type a larger **Storage limit** there
 and click **Grow**. The panel shows the resize until it ends. Before you confirm,
