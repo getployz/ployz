@@ -258,8 +258,8 @@ names a draining container only when the service has too few others serving.
 If anything stayed or failed, the drain stopped early, or it couldn't check what's left on the server, the button
 reads **Drain again**. Turning services back on doesn't move anything back.
 
-`ployz server drain web-2` does the same from the CLI, and waits for an approval first when a
-global service would run on no other server (see
+`ployz server drain web-2` does the same from the CLI and exits non-zero if anything stayed or
+failed. It waits for an approval first when a global service would run on no other server (see
 [Destructive actions ask first](../account/organizations.md#destructive-actions-ask-first)).
 
 Under **Web traffic** on a server's page, **Takes web traffic** is a switch. On, the line under it
@@ -323,7 +323,7 @@ per organization, so **Upgrade** and **Try again** wait while one is running.
 ### Choose Stable or Beta releases
 
 Click the **Upgrade settings** icon at the top of the **Servers** page and set **Releases** to
-**Stable** or **Beta**. Stable is the default; Beta gets fixes early, as prereleases like `0.3.1-beta.1`. Only an
+**Stable** or **Beta**. Stable is the default; Beta gets fixes early, as prereleases like `0.3.2-beta.1`. Only an
 owner or admin, or [Ployz support](../account/organizations.md#let-ployz-support-in), can change it, and it applies to every upgrade, automatic or by hand. The **Servers** page
 and each server's page then show the newest release on that channel.
 
@@ -555,7 +555,9 @@ When Ployz Cloud manages the server, `ployz server rm` and `ployz server forget`
 an approval (see
 [Destructive actions ask first](../account/organizations.md#destructive-actions-ask-first))
 before they take the server out, and so does an agent that removes or forgets one. The
-**Remove server** and **Forget server** dialogs don't ask: confirming one is the approval. One
+**Remove server** and **Forget server** dialogs don't ask: confirming one is the approval. An
+[agent sandbox](../account/try-without-an-account.md) that no person has claimed yet doesn't ask
+either, since no one could approve. One
 approval removes the server once, and approving a forget doesn't approve a removal that resets
 the server.
 

@@ -236,7 +236,7 @@ These `ployz env` commands do what the dashboard's environment controls do. See
 | --- | --- |
 | **New environment** | `ployz env new qa` |
 | **Default environment** in **Settings → Project** | `ployz env default staging` |
-| **Keep it after syncing into production** | `ployz env keep --env staging` |
+| **Keep staging** in the Sync button's ▾ menu | `ployz env keep --env staging` |
 | **Never sync** on a variable | `ployz env never-sync web.env.APP_ENV --env staging` |
 | **On merge** on a preview environment | `ployz env on-merge --env pr-142` |
 | **Branch setup** in production's **Settings → Environment** | `ployz env setup --env production --setup 'web=pnpm db:seed'` |
@@ -343,8 +343,8 @@ deploy would reach answers. With `--json` these are the `attention` rows; that o
 `no_server_answers` and names the servers in `servers`. It comes from the same single connection
 status makes to check your servers (below), not a separate one. A server that accepts the
 connection but never answers takes 5 seconds to give up on, and status tries each server once.
-A check that can't finish adds no row. Instead it warns which servers didn't answer, so no row
-doesn't prove a server answered. A context or `--connect` that reaches Ployz on this server
+A check that can't finish adds no row. Instead it warns why, naming the servers that didn't
+answer when it knows them, so no row doesn't prove a server answered. A context or `--connect` that reaches Ployz on this server
 through its local socket never gets this row; the **this server** line covers it. Signed in to Cloud, status asks
 Cloud for server access once per run. The first `ployz status` or other server command for a
 sign-in or token also waits while Cloud sets up your access on each server.
