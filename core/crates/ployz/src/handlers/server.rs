@@ -751,13 +751,13 @@ pub(super) fn set(root: &ArgMatches) -> Result<(), Error> {
         .and_then(|endpoints| endpoints.first())
         .map(|endpoint| SelectedEndpoint(endpoint.0));
     let recovery = matches.clone();
-    let ingress_off = update.accepts_ingress == Some(false);
-    let yes = matches.get_flag("yes");
+    // `--yes` reads nothing: on the `--wg-endpoint` path the Cluster may be too degraded to list.
+    let ask = update.accepts_ingress == Some(false) && !matches.get_flag("yes");
     let Some(address) = seed else {
         return with_client(root, |client| {
             Box::pin(async move {
-                if ingress_off {
-                    confirm_ingress_off(&client.machines().await?, &selector, yes)?;
+                if ask {
+                    confirm_ingress_off(&client.machines().await?, &selector)?;
                 }
                 apply_update(client, selector, update, None, ingress, rerun, recovery).await
             })
@@ -766,9 +766,9 @@ pub(super) fn set(root: &ArgMatches) -> Result<(), Error> {
     super::runtime()?.block_on(async {
         let context = matches.get_one::<String>("context").map(String::as_str);
         // Ask before seeding: a refusal leaves every Server unchanged.
-        if ingress_off {
+        if ask {
             let machines = connect(matches, context).await?.machines().await?;
-            confirm_ingress_off(&machines, &selector, yes)?;
+            confirm_ingress_off(&machines, &selector)?;
         }
         let entries = entries(matches, context).await?;
         let connector =
@@ -796,12 +796,11 @@ pub(super) fn set(root: &ArgMatches) -> Result<(), Error> {
     })
 }
 
-/// Turning web traffic off on the Server `selector` names, asked first when no other online
-/// Server would still take it. `--yes` answers the question.
+/// Ask before turning web traffic off on the Server `selector` names when no other online
+/// Server would still take it.
 fn confirm_ingress_off(
     machines: &[MachineObservation],
     selector: &MachineTarget,
-    yes: bool,
 ) -> Result<(), Error> {
     let target = crate::cluster::visible_machine(selector, machines)?;
     let serves_web = |observed: &MachineObservation| {
@@ -813,7 +812,7 @@ fn confirm_ingress_off(
                 && serves_web(observed)
                 && observed.invites_rpc()
         });
-    if yes || !last {
+    if !last {
         return Ok(());
     }
     let name = &target.machine.name;
@@ -1167,7 +1166,7 @@ pub(super) fn set_command(command: Command) -> Command {
                     "Where peers reach this Server over WireGuard; every other Server the command reaches dials the first one now, even if this Server is unreachable",
                 ))
                 .arg(ingress_image())
-                .arg(switch("yes", Some('y')).env(env::AUTO_CONFIRM).help("Turn off web traffic on the last Server taking it without asking"))
+                .arg(crate::cli::yes("Turn off web traffic on the last Server taking it without asking"))
                 .arg(positional("server", true).help("Server name or ID"))
 }
 
@@ -1474,7 +1473,7 @@ mod tests {
         let fra1 = MachineTarget::parse("fra-1").unwrap();
         let off = |other: MachineObservation| {
             let machines = [web("fra-1", true, Some("203.0.113.1"), Down), other];
-            confirm_ingress_off(&machines, &fra1, false).map_err(|error| error.report())
+            confirm_ingress_off(&machines, &fra1).map_err(|error| error.report())
         };
 
         // Tests run in Plain mode, so the question is a refusal naming --yes.
@@ -1504,13 +1503,8 @@ mod tests {
         for online in [Up, Suspect] {
             off(web("fra-2", true, Some("203.0.113.2"), online)).unwrap();
         }
-        let machines = [
-            web("fra-1", true, Some("203.0.113.1"), Up),
-            web("fra-2", false, None, Up),
-        ];
-        confirm_ingress_off(&machines, &fra1, true).unwrap();
         let already_off = [web("fra-1", false, Some("203.0.113.1"), Up)];
-        confirm_ingress_off(&already_off, &fra1, false).unwrap();
+        confirm_ingress_off(&already_off, &fra1).unwrap();
     }
 
     #[tokio::test]
