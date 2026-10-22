@@ -39,9 +39,9 @@ Details, and you drop it in Details. A deploy that removes a mirror asks you to 
   "data-web-1 is no longer an old copy, so nothing was deleted" and the mirror stays. A Ployz Cloud
   from before `--if-old-copy` refuses the line and deletes nothing.
 - A move or mirror deletes the old copies on other servers first. Details says so. An old copy on
-  the server you move or mirror onto stays, so Ployz sends only what changed since. If the primary
-  no longer holds any point that old copy has, for example after an earlier move onto that server
-  failed, Ployz sends the whole volume instead.
+  the server you move or mirror onto stays, so Ployz sends only what changed since. When an
+  earlier move onto that server failed and the primary has since pruned what it was sending, Ployz
+  sends the whole volume instead.
 - When the primary's server stops answering, Copies says "web-1 is not answering" and when
   changes are lost from, for example "Changes after 10:36 lost", or "Changes after 8 Oct, 10:36
   lost" when that was on an earlier day. It offers no move while web-1 is silent, since web-1 may

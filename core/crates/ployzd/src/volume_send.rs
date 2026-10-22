@@ -306,7 +306,7 @@ case "$*" in
   'send -nvP -t token-wrong-target') printf 'resume token contents:\n\ttoname = tank/ployz/data@w-1-1\n' ;;
   'send -nvP -t token-missing') printf 'resume token contents:\n\ttoname = tank/ployz/data@w-1-3\n' ;;
   'send -nvP -t token-child') printf 'resume token contents:\n\ttoname = tank/ployz/data/child@w-1-2\n' ;;
-  'send -nvP -t token-pruned') echo 'cannot resume send: incremental source 0x1f no longer exists' >&2; exit 1 ;;
+  'send -nvP -t token-pruned') printf 'resume token contents:\nnvlist version: 0\n\tfromguid = 0x1f\n\ttoname = tank/ployz/data@w-1-2\ncannot resume send: incremental source 0x1f no longer exists\n' >&2; exit 1 ;;
   'send -nvP -t token-io') echo 'cannot resume send: I/O error' >&2; exit 1 ;;
   'send -t token-other') printf 'unrelated stream' ;;
   'send -t token-1') printf 'resumed stream' ;;
@@ -486,6 +486,7 @@ esac
         let (status, body) = get(&base, "/volume-send/data?target=w-1-2&token=token-pruned").await;
         assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
         assert!(body.contains("no longer exists"), "{body}");
+        assert!(!body.contains("token-pruned"), "{body}");
         // A failure of this Machine is not a stale token: the puller must keep its copy.
         let (status, body) = get(&base, "/volume-send/data?target=w-1-2&token=token-io").await;
         assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
