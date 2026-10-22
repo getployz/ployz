@@ -42,9 +42,7 @@ leaves the reference empty in a config file, along with any reference that reads
 deployment's page and `ployz deploy` name each one.
 
 A deploy also removes every service that runs on the environment's servers but isn't one of the
-environment's services. That happens when more than one copy of a project deploys to the same
-servers without Ployz Cloud, for example from two computers: each copy's deploy removes the
-services only the other copy has. Their volumes and data stay. `ployz deploy` and
+environment's services. Their volumes and data stay. `ployz deploy` and
 `ployz deployment show` list each one it removed, such as `postgres: removed 1/1 (not in this
 environment)`, and the summary counts it as removed. `ployz diff` doesn't show them.
 
