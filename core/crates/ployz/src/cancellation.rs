@@ -2,7 +2,7 @@
 
 use std::sync::{
     Arc, OnceLock,
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 
 use tokio_util::sync::CancellationToken;
@@ -11,6 +11,8 @@ use tokio_util::sync::CancellationToken;
 /// prompt reads keys, and for good once a command listens for Ctrl-C itself.
 static DIES: OnceLock<Arc<AtomicBool>> = OnceLock::new();
 static GRACEFUL: AtomicBool = AtomicBool::new(false);
+/// How many [`SigtermCancels`] guards are alive; SIGTERM cancels only while one is.
+static SIGTERM_CANCELS: AtomicUsize = AtomicUsize::new(0);
 
 /// Subscribe to Ctrl-C for async-only commands already running on Tokio.
 /// The listener is registered before SIGINT stops ending the process, so no
@@ -37,11 +39,11 @@ pub(crate) fn on_ctrl_c() -> CancellationToken {
     cancellation
 }
 
-/// Ctrl-C or SIGTERM for the rest of the process, usable from synchronous code
-/// before any runtime polls. SIGTERM, which CI runners, `timeout`, systemd and
-/// container stops send, cancels a deploy like Ctrl-C so it settles its owned
-/// work instead of dying with it in flight. The listener is never torn down, so
-/// a late signal always has a reader and every caller shares one token.
+/// Ctrl-C for the rest of the process, usable from synchronous code before any
+/// runtime polls. The listener is never torn down, so a late signal always has a
+/// reader and every caller shares one token. It also hears SIGTERM, but only a
+/// [`SigtermCancels`] turns that into a cancel; otherwise SIGTERM still ends the
+/// process, since a caller may stop reading the token once its wait is over.
 pub(crate) fn interrupted() -> std::io::Result<CancellationToken> {
     static TOKEN: std::sync::Mutex<Option<CancellationToken>> = std::sync::Mutex::new(None);
     let mut token = TOKEN
@@ -59,12 +61,38 @@ pub(crate) fn interrupted() -> std::io::Result<CancellationToken> {
     std::thread::Builder::new()
         .name("ployz-interrupt".into())
         .spawn(move || {
-            for _ in signals.forever() {
+            for signal in signals.forever() {
+                if signal == signal_hook::consts::SIGTERM
+                    && SIGTERM_CANCELS.load(Ordering::SeqCst) == 0
+                {
+                    let _ = signal_hook::low_level::emulate_default_handler(signal);
+                }
                 cancel.cancel();
             }
         })?;
     claim_graceful();
     Ok(token.insert(cancelled).clone())
+}
+
+/// [`interrupted`], with SIGTERM cancelling it like Ctrl-C until the guard
+/// drops. Hold it only while the token is read, as a deploy does while it
+/// follows and settles its owned work: CI runners, `timeout`, systemd and
+/// container stops send SIGTERM, and the work must settle, not be orphaned.
+pub(crate) fn interrupted_or_terminated() -> std::io::Result<(CancellationToken, SigtermCancels)> {
+    let token = interrupted()?;
+    SIGTERM_CANCELS.fetch_add(1, Ordering::SeqCst);
+    Ok((token, SigtermCancels(())))
+}
+
+/// While alive, SIGTERM cancels the [`interrupted`] token instead of ending the
+/// process.
+#[must_use = "SIGTERM ends the process again once this drops"]
+pub(crate) struct SigtermCancels(());
+
+impl Drop for SigtermCancels {
+    fn drop(&mut self) {
+        SIGTERM_CANCELS.fetch_sub(1, Ordering::SeqCst);
+    }
 }
 
 /// From here on a listener answers SIGINT, so it must no longer end the
@@ -102,12 +130,12 @@ pub(crate) fn while_prompting<T>(ask: impl FnOnce() -> T) -> std::io::Result<T> 
 mod tests {
     use std::time::Duration;
 
-    // Raises a real signal at the test process; nextest runs every test in a
-    // process of its own, so the shared token never leaks into another test.
+    // These raise real signals at the test process; nextest runs every test in
+    // a process of its own, so the shared token never leaks into another test.
 
     #[test]
-    fn sigterm_cancels_like_ctrl_c() {
-        let token = super::interrupted().unwrap();
+    fn sigterm_cancels_like_ctrl_c_while_a_deploy_holds_it() {
+        let (token, _sigterm) = super::interrupted_or_terminated().unwrap();
         signal_hook::low_level::raise(signal_hook::consts::SIGTERM).unwrap();
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
         while !token.is_cancelled() {
@@ -117,5 +145,29 @@ mod tests {
             );
             std::thread::sleep(Duration::from_millis(10));
         }
+    }
+
+    #[test]
+    fn sigterm_still_ends_the_process_outside_a_deploy() {
+        use std::os::unix::process::ExitStatusExt as _;
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "cancellation::tests::listener_without_a_guard_raises_sigterm",
+                "--exact",
+                "--ignored",
+                "--nocapture",
+            ])
+            .stdout(std::process::Stdio::null())
+            .status()
+            .unwrap();
+        assert_eq!(status.signal(), Some(signal_hook::consts::SIGTERM));
+    }
+
+    #[test]
+    #[ignore = "child of sigterm_still_ends_the_process_outside_a_deploy"]
+    fn listener_without_a_guard_raises_sigterm() {
+        let _token = super::interrupted().unwrap();
+        signal_hook::low_level::raise(signal_hook::consts::SIGTERM).unwrap();
+        std::thread::sleep(Duration::from_secs(5));
     }
 }

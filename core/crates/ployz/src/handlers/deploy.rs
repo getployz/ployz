@@ -376,7 +376,7 @@ pub(super) fn execute(
     events: Option<std::io::BufWriter<std::fs::File>>,
 ) -> Result<Shipped, Error> {
     let hint = hint_for(matches, admitted);
-    let signal = crate::cancellation::interrupted()?;
+    let (signal, _sigterm) = crate::cancellation::interrupted_or_terminated()?;
     let mut runner = match store.local() {
         // Admission can end it at once, with nothing to run.
         Some(local) if admitted.status.in_flight() => {
