@@ -6316,10 +6316,14 @@ fn a_rollback_asks_about_a_service_a_deployment_of_unknown_outcome_may_have_star
     assert_eq!(removes, ["cron"]);
 }
 
-/// [`shop`] with #1 applying web and api, then #2 adding cron and starting before its
-/// runner lost track of it.
-fn cron_lost() -> (ConfigStore, Actor) {
-    let (store, who) = shop();
+/// [`shop`] with #1 applying web and api, then #2 adding cron and starting on
+/// the runner returned.
+fn cron_started() -> (ConfigStore, Actor, RunnerId) {
+    cron_started_in(backend::open())
+}
+
+fn cron_started_in(store: ConfigStore) -> (ConfigStore, Actor, RunnerId) {
+    let (store, who) = shop_in(store);
     apply_both(&store, &who, 1);
     store
         .write(
@@ -6343,8 +6347,42 @@ fn cron_lost() -> (ConfigStore, Actor) {
             RunEvidence::Prepared(preview(&["web", "api", "cron"])),
         )
         .unwrap();
+    (store, who, a)
+}
+
+/// [`cron_started`], then #2's runner lost track of it.
+fn cron_lost() -> (ConfigStore, Actor) {
+    let (store, who, a) = cron_started();
     store.claim(&id(2), &a).unwrap_err();
     (store, who)
+}
+
+/// What executing [`preview`] did when `done` completed, `failed` stopped it and
+/// `unexecuted` never ran.
+fn failed_at(done: &[&str], failed: &str, unexecuted: &[&str]) -> RunEvidence {
+    RunEvidence::Executed {
+        progress: Vec::new(),
+        outcome: Box::new(outcome(json!({
+            "type": "failed",
+            "completed": done.iter().map(|service| operation(service)).collect::<Vec<_>>(),
+            "failed": {"type": "operation", "operation": operation(failed), "error": {
+                "type": "machine", "action": "CreateContainer",
+                "error": {"code": "unavailable", "message": "connection lost", "details": {}}
+            }},
+            "unexecuted": unexecuted.iter().map(|service| operation(service)).collect::<Vec<_>>()
+        }))),
+        removed: Vec::new(),
+    }
+}
+
+fn removes_service(refused: &RpcError) -> Vec<&str> {
+    refused.details["effects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|effect| effect["kind"] == "removes_service")
+        .map(|effect| effect["name"].as_str().unwrap())
+        .collect()
 }
 
 fn rollback_to(
@@ -6455,4 +6493,54 @@ fn a_deploy_queued_behind_one_that_is_later_lost_asks_about_its_services_when_ad
         .map(|effect| effect["name"].as_str().unwrap())
         .collect();
     assert_eq!(removes, ["cron"]);
+}
+
+#[test]
+fn a_rollback_asks_about_a_service_a_failed_deployment_may_have_left_running() {
+    let (store, who, a) = cron_started();
+    // Creating cron's Container didn't finish, so Applied State lacks it; its
+    // Container may still run.
+    store
+        .record(&id(2), &a, failed_at(&["web", "api"], "cron", &[]))
+        .unwrap();
+    assert_eq!(status(&store, &who, 2), DeploymentStatus::Failed);
+    assert!(nodes(&store, &who, 2).contains(&("cron".to_owned(), NodeStatus::Failed)));
+
+    let refused = rollback_to(&store, &who, (3, 1)).unwrap_err();
+    assert_eq!(refused.code.as_str(), "approval_required");
+    assert_eq!(removes_service(&refused), ["cron"]);
+}
+
+#[test]
+fn a_rollback_asks_about_a_service_whose_outcome_a_failed_deployment_lost() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = backend::fresh_url(&dir);
+    let (store, who, a) = cron_started_in(ConfigStore::open(&url, backend::key()).unwrap());
+    store
+        .record(&id(2), &a, failed_at(&["web"], "api", &["cron"]))
+        .unwrap();
+    // Its runner was lost before recording what became of cron.
+    rewrite_run(&url, 2, |run| {
+        run["nodes"]["00000000-0000-4000-8000-000000000005"] = json!("unknown");
+    });
+    assert_eq!(status(&store, &who, 2), DeploymentStatus::Failed);
+    assert!(nodes(&store, &who, 2).contains(&("cron".to_owned(), NodeStatus::Unknown)));
+
+    let refused = rollback_to(&store, &who, (3, 1)).unwrap_err();
+    assert_eq!(refused.code.as_str(), "approval_required");
+    assert_eq!(removes_service(&refused), ["cron"]);
+}
+
+#[test]
+fn a_rollback_leaves_alone_a_service_a_failed_deployment_never_attempted() {
+    let (store, who, a) = cron_started();
+    // #2 stopped at api, before cron: nothing of cron runs.
+    store
+        .record(&id(2), &a, failed_at(&["web"], "api", &["cron"]))
+        .unwrap();
+    assert_eq!(status(&store, &who, 2), DeploymentStatus::Failed);
+    assert!(nodes(&store, &who, 2).contains(&("cron".to_owned(), NodeStatus::NotAttempted)));
+
+    let rolled = rollback_to(&store, &who, (3, 1)).unwrap();
+    assert_eq!(rolled.status, DeploymentStatus::Queued);
 }

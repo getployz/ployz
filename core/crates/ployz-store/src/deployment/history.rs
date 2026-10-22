@@ -172,18 +172,22 @@ pub(crate) fn head(tx: &mut dyn Tx, environment: &Environment) -> Result<Head, R
     Ok(head)
 }
 
-/// The Services `environment`'s Deployments of unknown outcome may have started: each
-/// started, then its runner lost track of it. Only an applied Deployment of every
-/// Service settles them; one of some Services leaves the rest in doubt.
+/// The Services `environment`'s Deployments that started may have left running
+/// without Applied State holding them: every Service of one of unknown outcome,
+/// whose runner lost track of it, and each Service of one that failed or was
+/// cancelled whose work started and didn't finish, or whose outcome its runner was
+/// lost before recording. Only an applied Deployment of every Service settles them;
+/// one of some Services leaves the rest in doubt.
 fn may_run(
     tx: &mut dyn Tx,
     environment: &EnvironmentId,
 ) -> Result<Vec<SavedServiceIntent>, RpcError> {
     let rows = tx.query(
         &format!(
-            "SELECT saved_revision, nodes FROM config_deployment \
+            "SELECT saved_revision, nodes, status, run FROM config_deployment \
              WHERE environment_id = ?1 AND {NUMBERED} AND started IS NOT NULL \
-             AND (status = 'unknown' OR (status IN ('running', 'cancelling') AND lease <= {})) \
+             AND (status IN ('unknown', 'failed', 'cancelled') \
+              OR (status IN ('running', 'cancelling') AND lease <= {})) \
              AND number > COALESCE((SELECT MAX(number) FROM config_deployment \
               WHERE environment_id = ?1 AND status = 'applied' AND services = '[]'), 0)",
             now()
@@ -194,10 +198,23 @@ fn may_run(
     for row in &rows {
         let saved = saved_at(tx, environment, row.number(0, "revision")?)?;
         let nodes: Vec<TargetNode> = row.json(1, "Deployment")?;
+        let ended = matches!(
+            row.variant::<DeploymentStatus>(2, "Deployment status")?,
+            DeploymentStatus::Failed | DeploymentStatus::Cancelled
+        );
+        let run: Run = row.json(3, "Deployment run")?;
         for node in &nodes {
             let TargetNode::Service { .. } = node else {
                 continue;
             };
+            if ended
+                && !matches!(
+                    run.nodes.get(node.id()),
+                    Some(NodeStatus::Failed | NodeStatus::Unknown)
+                )
+            {
+                continue;
+            }
             if let Some(service) = saved
                 .services
                 .iter()
