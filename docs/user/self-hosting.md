@@ -162,8 +162,10 @@ installation back to the first Callback URL.
    }
    ```
 
-   Ployz Cloud listens only on `127.0.0.1`, so nothing outside the server can skip your proxy.
-   If your proxy runs on another server, set `WEB_BIND` in `.env` to a private address of this
+   Ployz Cloud listens only on `127.0.0.1`, so other machines can't skip your proxy. If your
+   proxy or `cloudflared` runs in a Docker container on this server, attach it to the
+   `ployz-cloud-self-host_default` network and point it at `http://web:3000`. If your proxy
+   runs on another server, set `WEB_BIND` in `.env` to a private address of this
    server that only the proxy can reach. Don't set it to `0.0.0.0`: ports that Docker publishes
    skip firewalls like UFW, so anyone could reach Ployz Cloud over plain http, past your
    proxy's TLS and rate limits.
@@ -203,29 +205,38 @@ In CI, set `PLOYZ_CLOUD_URL` next to `PLOYZ_TOKEN`; see
 
 ## Upgrade
 
-Pick the release to move to on the [releases page](https://github.com/getployz/ployz/releases):
-the newest one on your channel. If you run a beta, pick the newest release marked
-**Pre-release**. Don't use `releases/latest` here: it's the newest stable release, so it would
-move a beta back to an older release. An older Ployz Cloud on a newer database passes the
-migration and health check, then fails every request.
+Pick the release to move to on the [releases page](https://github.com/getployz/ployz/releases).
+If you run a beta, pick the newest release marked **Pre-release**. Don't use `releases/latest`
+here: it's the newest stable release, so it would move a beta back to an older release. An
+older Ployz Cloud on a newer database passes the migration and health check, then fails every
+request.
 
-Set `VERSION` to that release's tag, then run:
+Set `VERSION` to that release's tag, then run the rest. It refuses a tag older than the one
+you run now:
 
 ```sh
-VERSION=v0.3.0-beta.8
-current=$(sed -n 's|.*ghcr.io/getployz/ployz-cloud:||p' compose.yml)
-oldest=$(printf '%s\n' "$current" "$VERSION" | tr - '~' | sort -V | head -n 1 | tr '~' -)
-if [ "$oldest" = "$current" ]; then
+VERSION=vX.Y.Z
+current=$(docker compose config --images | sed -n 's|^ghcr.io/getployz/ployz-cloud:||p' | head -n 1)
+verdict=$(awk -v from="$current" -v to="$VERSION" '
+  function key(tag, p, n) {
+    if (tag !~ /^v[0-9]+\.[0-9]+\.[0-9]+(-[a-z]+\.[0-9]+)?$/) return ""
+    n = split(substr(tag, 2), p, "[.-]")
+    return sprintf("%06d.%06d.%06d.%s.%06d", p[1], p[2], p[3], n > 3 ? "a" p[4] : "z", p[5])
+  }
+  BEGIN {
+    if (key(to) == "") print "Set VERSION to a release tag, like v1.2.3 or v1.2.3-beta.4."
+    else if (key(from) == "") print "Could not read the current release from compose.yml."
+    else if (key(to) < key(from)) print to " is older than " from ". Not downgrading."
+  }')
+if [ -n "$verdict" ]; then
+  echo "$verdict"
+else
   curl -fsSLo compose.yml "https://github.com/getployz/ployz/releases/download/$VERSION/ployz-cloud-compose.yml" &&
     docker compose pull &&
     docker compose run --rm web npm run db:migrate &&
     docker compose up -d
-else
-  echo "$VERSION is older than $current. Not downgrading."
 fi
 ```
-
-The check refuses a tag older than the one in your `compose.yml`.
 
 Nothing migrates the database on start, so run the migration on every upgrade.
 `docker compose up -d` can take up to 30 minutes: `worker` finishes the work it's running

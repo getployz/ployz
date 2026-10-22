@@ -8,7 +8,7 @@ const COMPOSE = readFileSync(join(process.cwd(), "self-host/compose.yml"), "utf8
 // interface would bypass the TLS proxy and its rate limits.
 it("publishes self-host ports on loopback by default", () => {
   const published = [...COMPOSE.matchAll(/^\s+ports:\n((?:\s+(?:#|- ).*\n)+)/gm)].flatMap((match) =>
-    [...(match[1] ?? "").matchAll(/- '([^']+)'/g)].map((item) => item[1]),
+    [...(match[1] ?? "").matchAll(/^\s+- (.+)$/gm)].map((item) => (item[1] ?? "").replace(/^['"]|['"]$/g, "")),
   );
   expect(published.length).toBeGreaterThan(0);
   for (const port of published) {
