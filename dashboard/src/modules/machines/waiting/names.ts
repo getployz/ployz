@@ -24,3 +24,12 @@ const pick = (words: readonly string[]) => words[randomInt(words.length)];
 export function generateTokenName() {
   return `${pick(ADJECTIVES)}-${pick(BIRDS)}`;
 }
+
+/**
+ * The Machine Name a hostname becomes, by ployz-core's `MachineName::from_hostname`: each run of characters a DNS label
+ * refuses turned into one `-`, lowercased, cut to 63 characters and trimmed of `-`. Null when nothing usable is left.
+ */
+export function machineNameFromHostname(hostname: string) {
+  const label = hostname.replace(/[^A-Za-z0-9]+/gu, "-").toLowerCase().replace(/^-/u, "").slice(0, 63).replace(/-$/u, "");
+  return label === "" ? null : label;
+}

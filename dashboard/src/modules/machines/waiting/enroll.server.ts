@@ -9,6 +9,7 @@ import { isDeadFoundingClaim, lockOrganizationEnrollment, revokeOrganizationPair
 import { machineEnrollmentToken, organizationMachine } from "#/modules/machines/tables";
 import type { StoredReport } from "#/modules/machines/waiting/checkin-wire";
 import { cancelServerEnrollments } from "#/modules/machines/waiting/enrollment-run.server";
+import { machineNameFromHostname } from "#/modules/machines/waiting/names";
 import {
   COMMITTED_STAGES,
   ENROLL_MIN_CLI_VERSION,
@@ -136,7 +137,10 @@ export function planServerEnrollment(
     hostname: row.report.hostname,
     role: row.id === founder ? "founder" : "joiner",
     instruction: {
-      name: names.kind === "hostnames" ? row.report.hostname : names.pattern.replaceAll("{n}", String(index + 1)),
+      // An unusable hostname gets the engine's `server-` fallback, from the id so the preview and the start agree.
+      name: names.kind === "hostnames"
+        ? machineNameFromHostname(row.report.hostname) ?? `server-${row.id.slice(0, 8)}`
+        : names.pattern.replaceAll("{n}", String(index + 1)),
       storage,
       policy,
     },
