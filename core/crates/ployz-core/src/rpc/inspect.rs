@@ -55,6 +55,10 @@ pub struct MachineDetails {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional = nullable)]
     pub upgrade: Option<crate::MachineUpgradeAttempt>,
+    /// Absent from a daemon that predates the Sealing Key, or before enrollment.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional = nullable)]
+    pub sealing: Option<crate::Sealing>,
     /// Present only when the request asked for it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional = nullable)]

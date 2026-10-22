@@ -219,6 +219,7 @@ async fn deploy_snapshot_waits_out_a_silent_machine_once_not_per_phase() {
                             storage: None,
                             upgrade: None,
                             token: None,
+                            sealing: None,
                         })
                     }
                     other => panic!("unexpected Deploy Snapshot RPC: {other:?}"),

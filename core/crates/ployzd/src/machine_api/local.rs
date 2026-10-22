@@ -887,6 +887,10 @@ fn local_error(error: LocalMachineError) -> Result<Response<OpaquePayload>, Stat
             ployz_core::rpc::caused_status(tonic::Code::Internal, &error),
         ),
         LocalMachineError::Upgrade(error) => respond(upgrade_error(error)),
+        LocalMachineError::SealingKey(error) => Err(ployz_core::rpc::caused_status(
+            tonic::Code::Internal,
+            &error,
+        )),
     }
 }
 
@@ -945,6 +949,7 @@ fn store_error(error: StoreError) -> RpcError {
         | StoreError::MissingPeers
         | StoreError::IdentityMismatch
         | StoreError::KeyMismatch
+        | StoreError::SealingKey(_)
         | StoreError::InvalidNetwork(_) => RpcErrorCode::InvalidArgument,
         StoreError::MachineUpdate(ployz_core::MachineUpdateError::DuplicateName) => {
             RpcErrorCode::Conflict

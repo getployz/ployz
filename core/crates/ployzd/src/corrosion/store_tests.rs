@@ -49,6 +49,7 @@ async fn catch_up_waits_for_removal_and_rechecks_phase() {
                     assigned_machine: machine.clone(),
                     visible_peers: vec![machine],
                     target_versions: BTreeMap::new(),
+                    sealing_key: None,
                 },
             },
             wireguard_mtu: None,
@@ -328,6 +329,56 @@ async fn publisher_republishes_when_pool_committable_bytes_change() {
     shutdown.cancel();
     publisher.await.unwrap().unwrap();
     server.abort();
+    let _ = std::fs::remove_dir_all(data_dir);
+}
+
+#[tokio::test]
+async fn publisher_publishes_the_founders_sealing_public_key() {
+    use std::time::Duration;
+
+    let cluster = crate::corrosion::fake_cluster::FakeCluster::start();
+    let replicated = cluster.store();
+    let data_dir = std::env::temp_dir().join(format!("ployzd-sealing-{}", MachineId::random()));
+    let mut store = LocalMachineStore::open(&data_dir).unwrap();
+    store
+        .enroll(ployz_core::EnrollRequest {
+            role: ployz_core::EnrollAs::Founder {
+                initial_policy: Default::default(),
+                name: ployz_core::MachineName::parse("local").unwrap(),
+                cluster_network: "10.210.0.0/16".parse().unwrap(),
+                public_ip: None,
+                advertised_endpoints: vec![ployz_core::AdvertisedEndpoint(
+                    "192.0.2.1:51820".parse().unwrap(),
+                )],
+            },
+            wireguard_mtu: None,
+            pinned: Default::default(),
+        })
+        .unwrap();
+    let held = crate::sealing_key::SealingKey::load(&data_dir)
+        .unwrap()
+        .expect("the founder holds a Sealing Key")
+        .public_key();
+    let owner = RecordOwner::spawn(store).unwrap();
+    let shutdown = tokio_util::sync::CancellationToken::new();
+    let view = crate::corrosion::MachineView::start(replicated.clone(), shutdown.clone());
+    let publisher = tokio::spawn(crate::corrosion::run_machine_publisher(
+        Some((replicated, view)),
+        owner,
+        crate::corrosion::LiveRuntime::unobserved(),
+        shutdown.clone(),
+    ));
+
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while cluster.sealing_public_key() != Some(held.to_string()) {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("the founder's Sealing public key was never published");
+
+    shutdown.cancel();
+    publisher.await.unwrap().unwrap();
     let _ = std::fs::remove_dir_all(data_dir);
 }
 

@@ -108,6 +108,7 @@ fn join_request(record: &crate::machine::LocalMachineRecord) -> EnrollRequest {
                 assigned_machine,
                 visible_peers: vec![peer],
                 target_versions: BTreeMap::new(),
+                sealing_key: None,
             },
         },
         wireguard_mtu: None,

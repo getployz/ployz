@@ -155,6 +155,7 @@ fn initialize_and_join_persist_the_only_supported_transitions() {
                     assigned_machine: assigned.clone(),
                     visible_peers: vec![initialized.clone()],
                     target_versions: BTreeMap::from([("actor".into(), 4)]),
+                    sealing_key: None,
                 },
             },
             wireguard_mtu: None,
@@ -968,6 +969,7 @@ fn join_rejects_empty_local_endpoints_without_changing_the_durable_record() {
                     assigned_machine: assigned,
                     visible_peers: vec![peer],
                     target_versions: BTreeMap::new(),
+                    sealing_key: None,
                 },
             },
             wireguard_mtu: None,
@@ -1027,6 +1029,7 @@ async fn join_preserves_identity_rejects_wrong_inputs_and_resumes_after_lost_res
         assigned_machine: assigned,
         visible_peers: vec![peer],
         target_versions: BTreeMap::from([("actor".into(), 4)]),
+        sealing_key: None,
     };
     let member = |registration: Registered, wireguard_mtu| EnrollRequest {
         role: EnrollAs::Member { registration },

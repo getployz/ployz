@@ -17,7 +17,7 @@ use ployz_core::{
     CERTIFICATE_POLICY_CLUSTER_KEY, CertificateHost, ClusterRoute, ContainerId,
     ContainerObservation, DockerVolume, DockerVolumeId, DockerVolumeName, ForgottenAnswer,
     IngressHost, IssuanceClock, Machine, MachineId, ManagementIdentity, QualifiedService,
-    forgotten_key,
+    SealingPublicKey, forgotten_key,
 };
 use serde_json::json;
 
@@ -278,6 +278,16 @@ impl ReplicatedStore {
             .execute([Statement::new(
                 "INSERT INTO cluster (key, value) VALUES ('network', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value",
                 [json!(network.to_string())],
+            )])
+            .await?;
+        Ok(())
+    }
+
+    pub async fn publish_sealing_public_key(&self, key: SealingPublicKey) -> Result<(), Error> {
+        self.api
+            .execute([Statement::new(
+                "INSERT INTO cluster (key, value) VALUES ('sealing_public_key', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+                [json!(key.to_string())],
             )])
             .await?;
         Ok(())

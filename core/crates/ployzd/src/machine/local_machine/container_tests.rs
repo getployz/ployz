@@ -282,6 +282,7 @@ async fn joining_admits_direct_create() {
                         assigned_machine: machine,
                         visible_peers: vec![peer],
                         target_versions: Default::default(),
+                        sealing_key: None,
                     },
                 },
                 wireguard_mtu: None,

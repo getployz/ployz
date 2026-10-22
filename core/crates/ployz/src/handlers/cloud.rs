@@ -925,6 +925,7 @@ mod tests {
                 storage: None,
                 upgrade: None,
                 token: None,
+                sealing: None,
             };
             let observed = details.clone();
             let reached = std::sync::Arc::new(tokio::sync::Notify::new());
@@ -1004,6 +1005,7 @@ mod tests {
                                 assigned_machine: machine,
                                 visible_peers: Vec::new(),
                                 target_versions: Default::default(),
+                                sealing_key: None,
                             },
                         },
                         &policy,
@@ -1055,6 +1057,7 @@ mod tests {
             storage: None,
             upgrade: None,
             token: None,
+            sealing: None,
         };
         assert_eq!(
             already_assigned(&details(LocalMachinePhase::Participating), &listed),
@@ -1102,6 +1105,7 @@ mod tests {
             storage: None,
             upgrade: None,
             token: None,
+            sealing: None,
         };
         for phase in [LocalMachinePhase::Joining, LocalMachinePhase::Participating] {
             assert_eq!(

@@ -12,6 +12,7 @@ async fn cloud_resume_refuses_policy_mismatch_without_editing_the_machine() {
             assigned_machine: founder.clone(),
             visible_peers: Vec::new(),
             target_versions: Default::default(),
+            sealing_key: None,
         };
         let pairing = json!({ "secret": PAIRING });
         let response = if resume_founder {
