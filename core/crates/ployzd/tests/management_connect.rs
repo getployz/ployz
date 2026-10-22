@@ -25,9 +25,10 @@ use ployz::{
     context::Connection,
 };
 use ployz_core::{
-    AdvertisedEndpoint, DescribeContractRequest, EnrollAs, EnrollRequest, ForgottenAnswer,
-    MANAGEMENT_ALPN, MachineId, MachineName, MachineRpcClient, ManagementCapability,
-    ManagementClientLabel, ManagementIdentity, RpcErrorCode, SetManagementClientRequest, op,
+    AdvertisedEndpoint, ContainerId, DescribeContractRequest, EnrollAs, EnrollRequest, ExecConfig,
+    ExecOptions, ExecRequestFrame, ForgottenAnswer, MANAGEMENT_ALPN, MachineId, MachineName,
+    MachineRpcClient, ManagementCapability, ManagementClientLabel, ManagementIdentity,
+    RpcErrorCode, SetManagementClientRequest, op,
 };
 use ployzd::{
     corrosion::ReplicatedStore,
@@ -455,6 +456,117 @@ async fn rotating_or_clearing_one_slot_revokes_only_its_holder() {
 
     shutdown.cancel();
     server.await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_cloud_slot_drives_the_machine_but_never_execs_or_tunnels() {
+    let (_map, relay_url, _relay) = run_relay_server().await.unwrap();
+    let (_dir, owner, local) = participating_in("127.0.0.0/16").await;
+    let set = |label: ManagementClientLabel| {
+        let local = local.clone();
+        async move {
+            let capability = local
+                .set_management_client(SetManagementClientRequest::Set { label })
+                .await
+                .unwrap()
+                .capability
+                .unwrap();
+            let key = *SecretKey::from_bytes(capability.client_secret())
+                .public()
+                .as_bytes();
+            local.activate_management_client(key).await.unwrap();
+            capability
+        }
+    };
+    let cloud_capability = set(cloud()).await;
+    let cli_capability = set(ManagementClientLabel::parse("cli-device").unwrap()).await;
+    let endpoint = management::bind(
+        local.record().management_secret(),
+        &ManagementConfig {
+            relay_url: relay_url.clone(),
+            port: 0,
+            relay_tls: CaTlsConfig::insecure_skip_verify(),
+        },
+    )
+    .await
+    .unwrap();
+    let shutdown = CancellationToken::new();
+    let server = tokio::spawn(management::serve(
+        endpoint,
+        local.clone(),
+        MachineApi::builder(owner).build(),
+        Arc::default(),
+        None::<ReplicatedStore>,
+        shutdown.clone(),
+    ));
+    let connector = SystemConnector::default().with_management_relay(ManagementRelay::custom(
+        relay_url,
+        CaTlsConfig::insecure_skip_verify(),
+    ));
+    let cloud_channel = connector
+        .connect(&connection(&cloud_capability))
+        .await
+        .unwrap();
+    let cli_channel = connector
+        .connect(&connection(&cli_capability))
+        .await
+        .unwrap();
+
+    activate(cloud_channel.clone()).await;
+    let refused = exec(cloud_channel).await.unwrap_err();
+    assert_eq!(refused.code(), tonic::Code::PermissionDenied, "{refused:?}");
+    assert!(
+        refused
+            .message()
+            .contains("ployz.container.exec.v1 needs Full access"),
+        "{refused:?}"
+    );
+    if let Err(status) = exec(cli_channel).await {
+        assert_ne!(status.code(), tonic::Code::PermissionDenied, "{status:?}");
+    }
+
+    let echo = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let target = echo.local_addr().unwrap().to_string();
+    match connector
+        .dial_proxy(&connection(&cloud_capability), "tcp", &target)
+        .await
+    {
+        Err(ConnectError::Attempt(message)) => {
+            assert!(message.contains("tunnels need Full access"), "{message}");
+        }
+        other => panic!("a cloud tunnel must be refused, got {:?}", other.err()),
+    }
+    connector
+        .dial_proxy(&connection(&cli_capability), "tcp", &target)
+        .await
+        .unwrap();
+
+    shutdown.cancel();
+    server.await.unwrap();
+}
+
+async fn exec(channel: Channel) -> Result<(), tonic::Status> {
+    let config = ExecRequestFrame::Config(ExecConfig {
+        container_id: ContainerId::parse("a".repeat(64)).unwrap(),
+        options: ExecOptions {
+            command: vec!["sh".into()],
+            attach_stdin: false,
+            attach_stdout: true,
+            attach_stderr: true,
+            tty: false,
+            detach: false,
+        },
+    })
+    .encode()
+    .unwrap();
+    let request = tonic::Request::new(tokio_stream::iter([config]));
+    tokio::time::timeout(
+        Duration::from_secs(10),
+        MachineRpcClient::new(channel).exec(request),
+    )
+    .await
+    .expect("exec must answer")
+    .map(drop)
 }
 
 async fn contract() {

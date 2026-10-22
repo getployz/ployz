@@ -2680,9 +2680,12 @@ mod ensure_container {
             .await
             .unwrap();
 
-        for (id, code) in [
-            (ContainerId::parse("a".repeat(64)).unwrap(), Code::NotFound),
-            (stray, Code::InvalidArgument),
+        let unknown = ContainerId::parse("a".repeat(64)).unwrap();
+        // A forwarded request an Operator client sent is refused here as at its entry.
+        for (id, from_operator, code) in [
+            (unknown, false, Code::NotFound),
+            (stray, false, Code::InvalidArgument),
+            (unknown, true, Code::PermissionDenied),
         ] {
             let config = ExecRequestFrame::Config(ExecConfig {
                 container_id: id,
@@ -2697,8 +2700,14 @@ mod ensure_container {
             })
             .encode()
             .unwrap();
+            let mut request = Request::new(tokio_stream::iter([config]));
+            if from_operator {
+                request
+                    .metadata_mut()
+                    .insert(ployz_core::OPERATOR_SCOPE_HEADER, "1".parse().unwrap());
+            }
             let status = client
-                .exec(Request::new(tokio_stream::iter([config])))
+                .exec(request)
                 .await
                 .expect_err("exec must refuse before any Docker exec is created");
             assert_eq!(status.code(), code, "{id}");
