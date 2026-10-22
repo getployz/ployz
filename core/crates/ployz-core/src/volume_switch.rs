@@ -456,7 +456,7 @@ pub fn no_writer_message(name: &str, copies: &[KnownCopy]) -> String {
     }
     match copies {
         [] => format!(
-            "Volume {name} has no writer and no Server in this Cluster holds a copy of it. A Server removed while it held the Volume keeps the data on its disk: add that Server back, then run ployz volume restore {name} --from <server>"
+            "Volume {name} was deployed, but no Server in this Cluster holds a copy of it. If a Server you removed still holds its data, add that Server back, then run ployz volume restore {name} --from <server>"
         ),
         [only] => format!(
             "Volume {name} has no writer; {} holds its only copy. Make it the writer: ployz volume restore {name} --from {}",
@@ -574,7 +574,7 @@ mod tests {
         assert!(!several.contains("mirror rm"), "{several}");
         assert_eq!(
             no_writer_message("data", &[]),
-            "Volume data has no writer and no Server in this Cluster holds a copy of it. A Server removed while it held the Volume keeps the data on its disk: add that Server back, then run ployz volume restore data --from <server>"
+            "Volume data was deployed, but no Server in this Cluster holds a copy of it. If a Server you removed still holds its data, add that Server back, then run ployz volume restore data --from <server>"
         );
     }
 

@@ -912,7 +912,7 @@ fn a_deployed_volume_no_member_holds_refuses_instead_of_starting_empty() {
     assert!(matches!(error, PlanError::NoWriter { .. }), "{error}");
     assert_eq!(
         error.to_string(),
-        "Volume echo has no writer and no Server in this Cluster holds a copy of it. A Server removed while it held the Volume keeps the data on its disk: add that Server back, then run ployz volume restore echo --from <server>"
+        "Volume echo was deployed, but no Server in this Cluster holds a copy of it. If a Server you removed still holds its data, add that Server back, then run ployz volume restore echo --from <server>"
     );
     assert_eq!(
         error.into_rpc_error().details.get("reason").unwrap(),
