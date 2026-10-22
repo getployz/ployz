@@ -371,11 +371,7 @@ your servers until it reboots or you remove it.
    it.
 2. Make sure UDP 51820 is open between your servers.
 3. If the server is gone for good, [forget it](../servers/manage-servers.md#forget-a-server-that-is-gone),
-   then deploy again. Its page offers **Forget server** while it's offline, or from the CLI:
-
-   ```sh
-   ployz server forget web-2 --confirm dead
-   ```
+   then deploy again. Its page offers **Forget server** while it's offline.
 
    See [When a server goes down](../services/scaling.md#when-a-server-goes-down) for which
    services come back, and [When its server goes down](../services/volumes.md#when-its-server-goes-down)
