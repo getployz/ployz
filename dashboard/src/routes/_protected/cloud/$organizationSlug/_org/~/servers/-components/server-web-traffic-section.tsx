@@ -2,6 +2,7 @@ import { Button } from "#/components/ui/button";
 import { Spinner } from "#/components/ui/spinner";
 import { Switch } from "#/components/ui/switch";
 import { SettingsRow, SettingsSection } from "#/components/settings/settings-section";
+import type { RoleGate } from "#/modules/organization/members.queries";
 import { webTrafficBusy, webTrafficChecked, type WebTrafficView } from "#/modules/machines/server-web-traffic-view";
 
 /**
@@ -9,12 +10,14 @@ import { webTrafficBusy, webTrafficChecked, type WebTrafficView } from "#/module
  * (the dialog is the page's), then stops it. A change under way dims the switch where it sits until the Server shows
  * the outcome; one that didn't take says why above the switch, with Retry.
  */
-export function ServerWebTrafficSection({ view, onTurnOn, onAskOff, unavailable }: {
+export function ServerWebTrafficSection({ view, onTurnOn, onAskOff, unavailable, gate }: {
   view: WebTrafficView;
   onTurnOn: () => void;
   onAskOff: () => void;
   /** Why the switch can't move now (the Server is offline, or the page can't see it); null when it can. */
   unavailable: string | null;
+  /** Whether your role may operate Servers. */
+  gate: RoleGate;
 }) {
   const busy = webTrafficBusy(view);
   return (
@@ -24,7 +27,7 @@ export function ServerWebTrafficSection({ view, onTurnOn, onAskOff, unavailable 
           label={<>Couldn’t {view.want === "on" ? "start" : "stop"} web traffic</>}
           hint={<span role="alert" className="text-destructive">{view.reason}</span>}
           commit="none"
-          control={<Button variant="outline" disabled={unavailable !== null} onClick={view.want === "on" ? onTurnOn : onAskOff}>Retry</Button>}
+          control={<Button variant="outline" disabled={unavailable !== null || !gate.allowed} title={gate.reason} onClick={view.want === "on" ? onTurnOn : onAskOff}>Retry</Button>}
         />
       ) : null}
       <SettingsRow
@@ -35,7 +38,8 @@ export function ServerWebTrafficSection({ view, onTurnOn, onAskOff, unavailable 
           <Switch
             aria-label="Takes web traffic"
             checked={webTrafficChecked(view)}
-            disabled={busy || unavailable !== null}
+            disabled={busy || unavailable !== null || !gate.allowed}
+            title={gate.reason}
             onCheckedChange={(checked) => (checked ? onTurnOn() : onAskOff())}
           />
         )}

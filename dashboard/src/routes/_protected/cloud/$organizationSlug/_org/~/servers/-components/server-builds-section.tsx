@@ -6,11 +6,12 @@ import { Switch } from "#/components/ui/switch";
 import type { RuntimeMachineRecord } from "#/modules/runtime/runtime.collection";
 import type { BuildConcurrencyChange } from "#/modules/machines/server-policy";
 import { useServerPolicy } from "#/modules/machines/server-policy.hooks";
+import type { RoleGate } from "#/modules/organization/members.queries";
 
 const BUILD_CONCURRENCY_CHOICES = [1, 2, 4, 8];
 
 /** One Server's part in builds: whether it takes them, and how many at once. Where builds run first is org-wide. */
-export function ServerBuildsSection({ machine, organizationSlug }: { machine: RuntimeMachineRecord; organizationSlug: string }) {
+export function ServerBuildsSection({ machine, organizationSlug, gate }: { machine: RuntimeMachineRecord; organizationSlug: string; gate: RoleGate }) {
   const policy = useServerPolicy(machine, organizationSlug, "build settings");
   const choices = [
     ...new Set([
@@ -34,6 +35,8 @@ export function ServerBuildsSection({ machine, organizationSlug }: { machine: Ru
           <Switch
             aria-label="Run builds here"
             checked={policy.acceptsBuilds}
+            disabled={!gate.allowed}
+            title={gate.reason}
             onCheckedChange={(acceptsBuilds) => policy.request({ acceptsBuilds })}
           />
         )}
@@ -44,13 +47,14 @@ export function ServerBuildsSection({ machine, organizationSlug }: { machine: Ru
             commit="change"
             control={(
               <Select
+                disabled={!gate.allowed}
                 value={String(policy.concurrency)}
                 onValueChange={(value) => {
                   if (value === "automatic") policy.request({ buildConcurrency: "automatic" });
                   else if (value) policy.request({ buildConcurrency: Number(value) });
                 }}
               >
-                <SelectTrigger aria-label="Builds at once">
+                <SelectTrigger aria-label="Builds at once" title={gate.reason}>
                   <SelectValue>{label(policy.concurrency)}</SelectValue>
                 </SelectTrigger>
                 <SelectContent>

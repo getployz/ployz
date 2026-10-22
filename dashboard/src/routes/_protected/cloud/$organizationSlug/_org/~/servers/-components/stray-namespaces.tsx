@@ -7,7 +7,9 @@ import { Button } from "#/components/ui/button";
 import { plural } from "#/lib/plural";
 import { loadNamespaceDataLossServerFn, removeNamespaceServerFn } from "#/modules/machines/namespace-cleanup.functions";
 import { useStrayNamespaces } from "#/modules/machines/namespace-cleanup.queries";
+import { OPERATE_REFUSED } from "#/modules/machines/server-policy.hooks";
 import type { Server } from "#/modules/machines/use-servers";
+import { useRoleGate } from "#/modules/organization/members.queries";
 import type { DataLossIdentity } from "#/modules/runtime/data-loss-identity";
 
 /**
@@ -18,6 +20,7 @@ export function StrayNamespaces({ organizationSlug, server, servers }: { organiz
   const namespaces = server.services.flatMap((service) => service.namespace ?? []);
   const strays = useStrayNamespaces(organizationSlug, namespaces);
   const [removing, setRemoving] = useState<string | null>(null);
+  const gate = useRoleGate(organizationSlug, "servers:operate", OPERATE_REFUSED);
   if (strays.size === 0) return null;
   const servicesOf = (namespace: string) => server.services.filter((service) => service.namespace === namespace);
   const volumes = (lost: readonly DataLossIdentity[]) => lost.map((identity): DeletionItem => ({
@@ -37,7 +40,7 @@ export function StrayNamespaces({ organizationSlug, server, servers }: { organiz
             hint={`Not in any Project · ${plural(servicesOf(namespace).length, "service")}`}
             commit="none"
             actions={(
-              <Button variant="outline" size="sm" onClick={() => setRemoving(namespace)}>
+              <Button variant="outline" size="sm" disabled={!gate.allowed} title={gate.reason} onClick={() => setRemoving(namespace)}>
                 <Trash2Icon data-icon="inline-start" />
                 Remove
               </Button>
