@@ -1,3 +1,4 @@
+pub(crate) mod bridge_address;
 mod checks;
 mod create;
 mod http_health;
@@ -100,7 +101,8 @@ pub const LABEL_HOOK_PRE_DEPLOY: &str = "pre-deploy";
 #[derive(Clone)]
 pub struct LocalDocker {
     client: Docker,
-    endpoint_creates: Arc<Mutex<()>>,
+    /// Serializes bridge endpoint creates, and holds the last bridge address handed out.
+    endpoint_creates: Arc<Mutex<Option<std::net::Ipv4Addr>>>,
     /// Counts container creates, so a stranded ingress retry can tell a newer
     /// container may have appeared since its scan, or be appearing still.
     creates: Arc<Creates>,
@@ -140,7 +142,7 @@ impl LocalDocker {
     fn from_client(client: Docker) -> Self {
         Self {
             client,
-            endpoint_creates: Arc::new(Mutex::new(())),
+            endpoint_creates: Arc::new(Mutex::new(None)),
             creates: Arc::default(),
         }
     }
