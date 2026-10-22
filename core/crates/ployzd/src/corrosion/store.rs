@@ -15,8 +15,9 @@ use futures_util::Stream;
 use ipnet::Ipv4Net;
 use ployz_core::{
     CERTIFICATE_POLICY_CLUSTER_KEY, CertificateHost, ClusterRoute, ContainerId,
-    ContainerObservation, DockerVolume, DockerVolumeId, DockerVolumeName, IngressHost,
-    IssuanceClock, Machine, MachineId, QualifiedService,
+    ContainerObservation, DockerVolume, DockerVolumeId, DockerVolumeName, ForgottenAnswer,
+    IngressHost, IssuanceClock, Machine, MachineId, ManagementIdentity, QualifiedService,
+    forgotten_key,
 };
 use serde_json::json;
 
@@ -78,6 +79,7 @@ impl MachinePublicationGuard<'_> {
                 let mut machine = machine.clone();
                 machine.runtime.running_builds = overlay.running_builds;
                 machine.runtime.pool_committable_bytes = overlay.pool_committable_bytes;
+                machine.runtime.management_identity = Some(local.management_secret().public_key());
                 Some(machine)
             }
             LocalMachineBody::Uninitialized { .. }
@@ -91,23 +93,25 @@ impl MachinePublicationGuard<'_> {
     }
 
     pub(crate) async fn remove(&self, machine_id: &MachineId) -> Result<(), Error> {
+        self.store.api.execute(removal(machine_id)).await
+    }
+
+    /// Remove a Machine another Machine forgot, leaving a tombstone keyed by the
+    /// row's Management Identity so the forgotten Machine can learn it was forgotten
+    /// (#2927). A row without an identity leaves none. One transaction, so no
+    /// reader sees the row gone and the tombstone absent.
+    pub(crate) async fn forget(&self, machine_id: &MachineId) -> Result<(), Error> {
+        let tombstone = Statement::new(
+            "INSERT INTO cluster (key, value) \
+             SELECT 'forgotten:' || json_extract(info, '$.runtime.management_identity'), id \
+             FROM machines \
+             WHERE id = ? AND json_extract(info, '$.runtime.management_identity') IS NOT NULL \
+             ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+            [json!(machine_id)],
+        );
         self.store
             .api
-            .execute([
-                Statement::new(
-                    "DELETE FROM volumes WHERE machine_id = ?",
-                    [json!(machine_id)],
-                ),
-                Statement::new(
-                    "DELETE FROM containers WHERE machine_id = ?",
-                    [json!(machine_id)],
-                ),
-                Statement::new(
-                    "DELETE FROM ingress_routes WHERE machine_id = ?",
-                    [json!(machine_id)],
-                ),
-                Statement::new("DELETE FROM machines WHERE id = ?", [json!(machine_id)]),
-            ])
+            .execute(std::iter::once(tombstone).chain(removal(machine_id)))
             .await
     }
 
@@ -214,6 +218,38 @@ impl ReplicatedStore {
 
     pub async fn remove_machine(&self, machine_id: &MachineId) -> Result<(), Error> {
         self.machine_publication().await.remove(machine_id).await
+    }
+
+    pub async fn forget_machine(&self, machine_id: &MachineId) -> Result<(), Error> {
+        self.machine_publication().await.forget(machine_id).await
+    }
+
+    /// What this Machine knows about `identity`: Listed when a Machine row carries
+    /// it or the id its tombstone names is listed again, Forgotten when only the
+    /// tombstone remains, NoAnswer when nothing mentions it.
+    pub async fn forgotten(&self, identity: ManagementIdentity) -> Result<ForgottenAnswer, Error> {
+        let key = forgotten_key(&identity);
+        let query = self
+            .api
+            .query(Statement::new(
+                "SELECT (SELECT value FROM cluster WHERE key = ?) AS forgotten_id, \
+                 EXISTS (SELECT 1 FROM machines \
+                         WHERE json_extract(info, '$.runtime.management_identity') = ? \
+                         OR id = (SELECT value FROM cluster WHERE key = ?)) AS listed",
+                [json!(key), json!(identity.to_hex()), json!(key)],
+            ))
+            .await?;
+        let rows = query.rows(["forgotten_id", "listed"])?;
+        let Some([forgotten_id, listed]) = rows.first() else {
+            return Ok(ForgottenAnswer::NoAnswer);
+        };
+        Ok(if listed.as_i64() == Some(1) {
+            ForgottenAnswer::Listed
+        } else if forgotten_id.is_null() {
+            ForgottenAnswer::NoAnswer
+        } else {
+            ForgottenAnswer::Forgotten
+        })
     }
 
     pub(crate) async fn machine_publication(&self) -> MachinePublicationGuard<'_> {
@@ -1116,4 +1152,23 @@ fn decode_certificate_row(hostname: &CertificateHost, encoded: &str) -> Option<C
             );
         })
         .ok()
+}
+
+/// The deletes that take a Machine and everything it published out of the Cluster.
+fn removal(machine_id: &MachineId) -> [Statement; 4] {
+    [
+        Statement::new(
+            "DELETE FROM volumes WHERE machine_id = ?",
+            [json!(machine_id)],
+        ),
+        Statement::new(
+            "DELETE FROM containers WHERE machine_id = ?",
+            [json!(machine_id)],
+        ),
+        Statement::new(
+            "DELETE FROM ingress_routes WHERE machine_id = ?",
+            [json!(machine_id)],
+        ),
+        Statement::new("DELETE FROM machines WHERE id = ?", [json!(machine_id)]),
+    ]
 }

@@ -720,7 +720,7 @@ impl LocalMachine {
             }
             local
                 .replicated()?
-                .remove_machine(&request.machine_id)
+                .forget_machine(&request.machine_id)
                 .await?;
             Ok(Forgotten::Forgotten)
         })

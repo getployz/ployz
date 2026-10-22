@@ -12,8 +12,8 @@ use serde::{Deserialize, Serialize};
 use super::NameMatches;
 use crate::{
     AdvertisedEndpoint, FanoutSelector, MachineId, MachineLabelKey, MachineLabelValue, MachineName,
-    MachineSubnet, MachineTarget, ManagementAddress, Placement, SelectedEndpoint, ValueError,
-    WireGuardPublicKey,
+    MachineSubnet, MachineTarget, ManagementAddress, ManagementIdentity, Placement,
+    SelectedEndpoint, ValueError, WireGuardPublicKey,
 };
 
 pub(super) fn resolve_machine_text<'a>(
@@ -150,6 +150,12 @@ pub struct MachineRuntime {
     /// record, so empty claims nothing.
     #[ts(as = "Option<BTreeSet<String>>", optional)]
     pub capabilities: BTreeSet<String>,
+    /// The daemon's Management Identity as 64 hex digits, so a member can tell a
+    /// Machine that asks whether the Cluster forgot it. Absent from a record written
+    /// by a daemon that predates the field, so absence claims nothing.
+    #[serde(default, with = "crate::management_identity_hex")]
+    #[ts(as = "Option<String>", optional = nullable)]
+    pub management_identity: Option<ManagementIdentity>,
 }
 
 /// How many Builds one Machine runs at once.

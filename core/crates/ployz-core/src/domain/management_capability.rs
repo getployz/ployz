@@ -105,6 +105,62 @@ impl ManagementIdentity {
     pub const fn as_bytes(&self) -> &[u8; 32] {
         &self.0
     }
+
+    /// Lowercase hex of the public key: the form Machine records and tombstones carry.
+    #[must_use]
+    pub fn to_hex(&self) -> String {
+        self.0.iter().map(|byte| format!("{byte:02x}")).collect()
+    }
+
+    /// Parse the 64-digit lowercase hex form.
+    ///
+    /// # Errors
+    /// Returns a [`ValueError`] when `value` is not 64 lowercase hex digits.
+    pub fn parse_hex(value: &str) -> Result<Self, ValueError> {
+        if !crate::value::is_lower_hex(value, 64) {
+            return Err(ValueError::new(
+                "Management Identity",
+                value,
+                "64 lowercase hex digits",
+            ));
+        }
+        let mut bytes = [0; 32];
+        for (byte, pair) in bytes.iter_mut().zip(value.as_bytes().chunks(2)) {
+            *byte = u8::from_str_radix(std::str::from_utf8(pair).expect("ascii hex"), 16)
+                .expect("checked lowercase hex");
+        }
+        Ok(Self(bytes))
+    }
+}
+
+/// Serde form of an optional [`ManagementIdentity`] as 64 lowercase hex digits, for
+/// records that outlive this crate's byte layout.
+pub mod management_identity_hex {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    use super::ManagementIdentity;
+
+    /// # Errors
+    /// Fails only when the serializer does.
+    pub fn serialize<S: Serializer>(
+        identity: &Option<ManagementIdentity>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        identity
+            .as_ref()
+            .map(ManagementIdentity::to_hex)
+            .serialize(serializer)
+    }
+
+    /// # Errors
+    /// Fails when the value is present and is not 64 lowercase hex digits.
+    pub fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Option<ManagementIdentity>, D::Error> {
+        Option::<String>::deserialize(deserializer)?
+            .map(|value| ManagementIdentity::parse_hex(&value).map_err(serde::de::Error::custom))
+            .transpose()
+    }
 }
 
 /// Protected bearer granting shared administrative Machine RPC access to one Machine:
