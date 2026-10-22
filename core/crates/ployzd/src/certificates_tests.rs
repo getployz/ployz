@@ -56,7 +56,11 @@ async fn certificate_loop_outlives_corrosion_outages() {
         shutdown.clone(),
     ));
 
-    drop(down.accept().await.unwrap());
+    let (attempt, _) = tokio::time::timeout(Duration::from_secs(10), down.accept())
+        .await
+        .expect("the certificate loop never tried to subscribe")
+        .unwrap();
+    drop(attempt);
     drop(down);
     cluster.restart();
     subscribed(

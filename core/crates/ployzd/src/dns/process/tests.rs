@@ -315,7 +315,9 @@ async fn drains_an_in_flight_forwarded_query_on_sigterm() {
         .send_to(&query(FORWARDED), harness.listen())
         .await
         .unwrap();
-    asked.notified().await;
+    tokio::time::timeout(SETTLE, asked.notified())
+        .await
+        .expect("the forwarded query never reached the upstream");
     shutdown.cancel();
     answer.notify_one();
     let answered = recv(&client, SETTLE)
