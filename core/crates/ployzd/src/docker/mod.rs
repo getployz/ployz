@@ -1407,12 +1407,12 @@ pub enum Error {
     SlotNameOccupied(String),
     #[error("image pull failed")]
     ImagePull(#[source] bollard::errors::Error),
-    /// A pull failed while the Docker root had almost no free space.
+    /// A registry or peer pull failed while the Docker root had almost no free space.
     #[error("{full}")]
     DiskFull {
         full: ployz_core::DiskFull,
         #[source]
-        source: bollard::errors::Error,
+        source: Box<dyn std::error::Error + Send + Sync>,
     },
     #[error("pre-deploy container requested without a pre-deploy hook")]
     MissingPreDeployHook,
