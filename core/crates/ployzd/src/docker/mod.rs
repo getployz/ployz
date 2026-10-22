@@ -531,11 +531,7 @@ impl ContainerRuntime {
         if unstamped.is_empty() {
             return Ok(());
         }
-        let recorded = self.specs.rotations(unstamped.clone()).await?;
-        let unrotated = unstamped
-            .into_iter()
-            .filter(|id| !recorded.contains_key(id))
-            .collect::<Vec<_>>();
+        let unrotated = self.specs.unrotated(unstamped).await?;
         if unrotated.is_empty() {
             return Ok(());
         }

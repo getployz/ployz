@@ -140,6 +140,28 @@ impl MachineSpecStore {
             .collect()
     }
 
+    /// Those of `container_ids` with a spec and no recorded rotation.
+    pub(super) async fn unrotated(
+        &self,
+        container_ids: Vec<ContainerId>,
+    ) -> Result<Vec<ContainerId>, Error> {
+        let path = self.path.clone();
+        blocking(move || {
+            let connection = connect(&path)?;
+            let mut statement = connection.prepare(
+                "SELECT EXISTS (SELECT 1 FROM containers WHERE id = ?1) AND NOT EXISTS (SELECT 1 FROM rotations WHERE id = ?1)",
+            )?;
+            let mut unrotated = Vec::new();
+            for container_id in container_ids {
+                if statement.query_row([container_id.to_string()], |row| row.get::<_, bool>(0))? {
+                    unrotated.push(container_id);
+                }
+            }
+            Ok(unrotated)
+        })
+        .await
+    }
+
     /// The run this Machine last stopped for a `Stopped` want, if any.
     pub async fn stopped_run(
         &self,
