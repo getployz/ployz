@@ -116,7 +116,10 @@ async fn a_cloud_enrollment_whose_ingress_keeps_restarting_prints_its_exit_and_l
     let failure =
         failed(support::DeployService::new(support::machine('a', "one")).restart_containers())
             .await;
-    let failure = crate::handlers::cloud::ingress_incomplete(failure);
+    let failure = crate::handlers::cloud::ingress_incomplete(
+        crate::cloud_enroll::Command::ServerAdd,
+        failure,
+    );
     let text = crate::ui::plain(&failure);
     assert!(
         text.starts_with(
@@ -135,10 +138,21 @@ fn an_ingress_failure_without_deploy_evidence_keeps_its_headline() {
         init.report().message,
         "Server initialized; ingress deployment incomplete."
     );
-    let cloud = crate::handlers::cloud::ingress_incomplete(failure());
+    let cloud = crate::handlers::cloud::ingress_incomplete(
+        crate::cloud_enroll::Command::ServerAdd,
+        failure(),
+    );
     assert_eq!(
         cloud.report().message,
         "Server initialized; Ingress deployment incomplete. Rerun the same ployz server add command without --reset, keeping all other options, to reconcile it."
+    );
+    let enrolled = crate::handlers::cloud::ingress_incomplete(
+        crate::cloud_enroll::Command::ServerEnroll,
+        failure(),
+    );
+    assert_eq!(
+        enrolled.report().message,
+        "Server initialized; Ingress deployment incomplete. Run ployz server enroll again, or use Enroll in Servers > Waiting to join, to reconcile it."
     );
     let set =
         crate::handlers::server::ingress_incomplete("Server updated", failure(), String::new());

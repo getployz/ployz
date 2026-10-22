@@ -14,7 +14,8 @@ use ployz_core::{
 
 use super::{Error, config_path, leaf_matches, runtime};
 use crate::cloud_enroll::{
-    self, CloudPairing, EnrollIdentity, EnrollStage, InitializeMode, Join, Outcome,
+    self, CloudPairing, Command as EnrollCommand, EnrollIdentity, EnrollStage, InitializeMode,
+    Join, Outcome,
 };
 use crate::connect::{Client, ConnectError};
 use crate::context::{Connection, ContextError, SelectedConnections, Transport};
@@ -88,17 +89,25 @@ where
     InstallFuture: Future<Output = Result<(), Error>>,
 {
     runtime()?
-        .block_on(run_enrollment(root, &token, cloud_url, install, &|stage| {
-            if stage == EnrollStage::Enrolling && !ui::json() {
-                ui::note("Asking Cloud to enroll this Server…");
-            }
-        }))
+        .block_on(run_enrollment(
+            EnrollCommand::ServerAdd,
+            root,
+            &token,
+            cloud_url,
+            install,
+            &|stage| {
+                if stage == EnrollStage::Enrolling && !ui::json() {
+                    ui::note("Asking Cloud to enroll this Server…");
+                }
+            },
+        ))
         .and_then(|printed| printed)
 }
 
 /// Enroll as `server add` does, reporting Joining only after the daemon accepts
 /// enrollment, then send Cloud the best-effort setup report for the outcome.
 pub(crate) async fn run_enrollment<Install, InstallFuture>(
+    command: EnrollCommand,
     root: &ArgMatches,
     token: &CloudEnrollToken,
     cloud_url: &str,
@@ -110,7 +119,16 @@ where
     InstallFuture: Future<Output = Result<(), Error>>,
 {
     let mut report = SetupReport::start();
-    let setup = enroll_steps(root, token, cloud_url, install, &mut report, progress).await;
+    let setup = enroll_steps(
+        command,
+        root,
+        token,
+        cloud_url,
+        install,
+        &mut report,
+        progress,
+    )
+    .await;
     report
         .send(
             &cloud_enroll::report_url(cloud_url),
@@ -122,6 +140,7 @@ where
 }
 
 async fn enroll_steps<Install, InstallFuture>(
+    command: EnrollCommand,
     root: &ArgMatches,
     token: &CloudEnrollToken,
     cloud_url: &str,
@@ -162,6 +181,7 @@ where
     }
     report.step(Step::Enroll);
     let (details, machine_token, name, outcome) = enroll_current_identity(
+        command,
         &mut client,
         requested_name,
         requested_storage.choice(),
@@ -177,6 +197,7 @@ where
         Outcome::Join(join) => {
             report.enrolled(join.storage.choice(), false);
             enroll_join(
+                command,
                 matches,
                 client,
                 details,
@@ -197,6 +218,7 @@ where
         } => {
             report.enrolled(storage.choice(), true);
             enroll_founder(
+                command,
                 matches,
                 client,
                 details,
@@ -252,7 +274,12 @@ fn unlisted_participation(details: &MachineDetails, assigned: &Machine) -> Resul
     )))
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the enrollment request carries its originating command"
+)]
 async fn enroll_current_identity(
+    command: EnrollCommand,
     client: &mut Client,
     requested_name: Option<MachineName>,
     requested_storage: StorageChoice,
@@ -277,7 +304,7 @@ async fn enroll_current_identity(
         initial_policy.clone(),
     );
     progress(EnrollStage::Enrolling);
-    let outcome = cloud_enroll::enroll(url, token, &identity, progress).await?;
+    let outcome = cloud_enroll::enroll(command, url, token, &identity, progress).await?;
     Ok((details, machine_token, name, outcome))
 }
 
@@ -286,6 +313,7 @@ async fn enroll_current_identity(
     reason = "the join tail consumes the existing cloud-enroll command interface"
 )]
 async fn enroll_join<Install, InstallFuture>(
+    command: EnrollCommand,
     matches: &ArgMatches,
     mut client: Client,
     details: MachineDetails,
@@ -367,6 +395,7 @@ where
     // Cloud may use the replacement after publication, revoking this key.
     // A committed join remains enrolled even when Global catch-up needs a separate retry.
     cloud_enroll::publish(
+        command,
         callback_url,
         token,
         assigned.id,
@@ -374,7 +403,15 @@ where
         &capability,
     )
     .await?;
-    cloud_enroll::callback(callback_url, token, assigned.id, &pairing.secret, sealing).await?;
+    cloud_enroll::callback(
+        command,
+        callback_url,
+        token,
+        assigned.id,
+        &pairing.secret,
+        sealing,
+    )
+    .await?;
     ui::stream(format_args!("Joined Server {}.", assigned.name));
     // The join is committed; a catch-up failure makes it partial.
     Ok(ui::emit_committed(
@@ -400,6 +437,7 @@ enum FounderLocalState {
     reason = "the founder tail consumes the existing cloud-enroll command interface"
 )]
 async fn enroll_founder<Install, InstallFuture>(
+    command: EnrollCommand,
     matches: &ArgMatches,
     mut client: Client,
     details: MachineDetails,
@@ -510,9 +548,10 @@ where
         && let Some(requested) = ingress
     {
         let incomplete = |error: crate::deploy::ApplyError| {
-            ingress_incomplete(super::ingress_hints(Error::from(error), |args| {
-                super::rerun(matches, args)
-            }))
+            ingress_incomplete(
+                command,
+                super::ingress_hints(Error::from(error), |args| super::rerun(matches, args)),
+            )
         };
         // An interrupted Apply may have completed mutations. Do not replay it.
         match crate::deploy::apply_requested(&mut ready, &requested, false, false, "default").await
@@ -529,9 +568,16 @@ where
     let sealing = sealing(&mut ready).await?;
     progress(EnrollStage::Publishing);
     // Repeated Set stages a fresh capability; its first operational RPC completes rotation.
-    let capability = set_cloud_management_client(matches, &mut ready).await
-        .map_err(|error| error.context("Server initialized; Cloud Pairing publication incomplete. Rerun the same ployz server add command without --reset, keeping all other options."))?;
+    let capability = set_cloud_management_client(matches, &mut ready)
+        .await
+        .map_err(|error| {
+            error.context(format!(
+                "Server initialized; Cloud Pairing publication incomplete. {}.",
+                command.again()
+            ))
+        })?;
     cloud_enroll::publish(
+        command,
         &cloud_enroll::callback_url(cloud_url),
         token,
         machine.id,
@@ -540,6 +586,7 @@ where
     )
     .await?;
     cloud_enroll::callback(
+        command,
         &cloud_enroll::callback_url(cloud_url),
         token,
         machine.id,
@@ -562,10 +609,10 @@ async fn sealing(client: &mut Client) -> Result<Option<ployz_core::Sealing>, Err
 }
 
 /// The first Server is enrolled but its Ingress Proxy deploy failed.
-pub(crate) fn ingress_incomplete(error: Error) -> Error {
+pub(crate) fn ingress_incomplete(command: EnrollCommand, error: Error) -> Error {
     let headline =
         super::ingress_headline("Server initialized; Ingress deployment incomplete", &error);
-    error.context(format!("{headline} Rerun the same ployz server add command without --reset, keeping all other options, to reconcile it."))
+    error.context(format!("{headline} {}, to reconcile it.", command.again()))
 }
 
 /// The first Server's result. Founding it, Cloud deploys the Organization's saved
@@ -989,6 +1036,7 @@ mod tests {
             let enrolling = async {
                 if founder {
                     enroll_founder(
+                        EnrollCommand::ServerAdd,
                         matches,
                         client,
                         details,
@@ -1017,6 +1065,7 @@ mod tests {
                     .await
                 } else {
                     enroll_join(
+                        EnrollCommand::ServerAdd,
                         matches,
                         client,
                         details,
