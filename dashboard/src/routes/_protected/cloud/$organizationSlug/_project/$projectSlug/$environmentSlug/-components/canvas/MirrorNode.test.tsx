@@ -15,7 +15,7 @@ const volume = asTestDouble<VolumeListing>()({ id: "vol-1", name: "data", mounts
 const minutesAgo = (minutes: number) => new Date(Date.now() - minutes * 60_000);
 const mirror = (extra: Partial<MirrorCopy> = {}): MirrorCopy => ({
   kind: "mirror", id: "m2", server: { id: "m2" as MachineId, name: "web-2" }, name: "data-web-2", refreshedAt: minutesAgo(4),
-  skipped: null, staged: null, busy: null, ...extra,
+  skipped: null, lastReported: false, staged: null, busy: null, ...extra,
 });
 const offsite: OffsiteCopy = {
   kind: "offsite", id: "acme-backups", bucket: "acme-backups", region: "eu-central-1", keep: 7, uploadedAt: minutesAgo(10), staged: null, busy: null,
@@ -27,6 +27,7 @@ const copiesOf = (elsewhere: VolumeCopies["elsewhere"]): VolumeCopies => ({
   volume: { id: volume.id, name: volume.name },
   live: { server: { id: "m1" as MachineId, name: "web-1", state: "live" }, restore: null, moveTo: null, busy: null, snapshots: null },
   elsewhere,
+  unheard: [],
 });
 
 afterEach(cleanup);

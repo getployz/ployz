@@ -5,6 +5,7 @@ import { volumeLoss } from "#/modules/config-store/store-volumes";
 import type { Member, VolumeRunView } from "#/modules/volume-run/volume-run";
 import { COPIES, member } from "#/modules/volume-run/volume-run.test-fixture";
 import {
+  appliedMirrors,
   detachedCopies,
   drainPlacement,
   editPlacement,
@@ -52,6 +53,8 @@ const row = (mirrors: string[] | null, staged: { primary: string; mirrors?: stri
   deploymentId: null,
 });
 const pooled = (server: string) => member(server, "empty");
+/** A Server that didn't answer, whose last report in the Runtime Watch held a mirror, as `ployz volume mirror` leaves one. */
+const lastMirror = (server: string): Member => ({ machine: { id: id(server), name: server }, answered: false, lastMirror: true });
 const at = new Date(2026, 9, 10, 10, 36);
 const mirrorAsOf = (server: string, when: Date): Member => {
   const base = member(server, "mirror");
@@ -124,6 +127,13 @@ describe("serversAnswer", () => {
 });
 
 describe("placementChanges", () => {
+  it("never stages a mirror known only from its silent Server's last report: what staging writes is main's", () => {
+    const members = [member("web-1", "writer"), lastMirror("web-2")];
+    expect(appliedMirrors(observePlacement(members), null)).toEqual([]);
+    expect(targetPlacement(observePlacement(members), null)).toEqual({ primary: id("web-1"), mirrors: [], deletes: [] });
+    expect(changes(members, row([], { primary: "web-1" }))).toEqual([]);
+  });
+
   it("is empty when nothing is staged", () => {
     expect(changes([member("web-1", "writer"), member("web-2", "mirror")], row(["web-2"]))).toEqual([]);
   });
@@ -425,6 +435,17 @@ describe("recovery", () => {
     recovery(volume, members, placement, accepting, owed, floorless);
   const lacking = (server: string) => ({ ...member(server, "unanswered"), lack: `Volume move needs a newer Ployz on ${server}.` });
   const forgotten = [mirrorAsOf("web-2", at)];
+
+  it("reads no Server's last report: one that lacks a capability is still presumed and explained, as on main", () => {
+    // A lacks a capability but last reported a mirror, B reports a current mirror, C is silent. A may hold the writer by now.
+    const a = { machine: { id: id("web-1"), name: "web-1" }, answered: false, lack: "Volume move needs a newer Ployz on web-1." } as const;
+    const others = [mirrorAsOf("web-2", at), member("web-3", "unanswered")];
+    const members: Member[] = [{ ...a, lastMirror: true }, ...others];
+    const unmarked: Member[] = [a, ...others];
+    expect(presumedPrimary(observePlacement(members), null)?.id).toBe(id("web-1"));
+    expect(recover(members, null)).toEqual(recover(unmarked, null));
+    expect(recover(members, null)).toMatchObject({ kind: "unreported", server: { id: id("web-1") } });
+  });
 
   it("is null while the primary answers, even with a silent mirror", () => {
     expect(recover([member("web-1", "writer"), member("web-2", "unanswered")], row(["web-2"]))).toBeNull();

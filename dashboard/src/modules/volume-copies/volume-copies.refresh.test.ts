@@ -7,7 +7,7 @@ const now = new Date("2026-10-12T16:00:00Z");
 const minutesAgo = (minutes: number) => new Date(now.getTime() - minutes * 60_000);
 const mirror = (refreshedAt: Date | null, extra: Partial<MirrorCopy> = {}): MirrorCopy => ({
   kind: "mirror", id: "web-2", server: { id: "web-2".padEnd(32, "0") as MachineId, name: "web-2" }, name: "pg-data-web-2",
-  refreshedAt, skipped: null, staged: null, busy: null, ...extra,
+  refreshedAt, skipped: null, lastReported: false, staged: null, busy: null, ...extra,
 });
 
 describe("mirrorLast", () => {

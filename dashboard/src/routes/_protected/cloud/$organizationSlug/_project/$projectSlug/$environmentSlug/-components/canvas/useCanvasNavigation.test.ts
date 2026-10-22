@@ -44,7 +44,8 @@ it("widens a node's box by the copies hung under it, so revealing it keeps every
   const server = { id: "web-2" as MachineId, name: "web-2" };
   const copies: VolumeCopies = {
     volume: { id: "v", name: "v" }, live: { server: { ...server, state: "live" }, restore: null, moveTo: null, busy: null, snapshots: null },
-    elsewhere: [1, 2, 3].map((n) => ({ kind: "mirror", id: `m${n}`, server, name: `m${n}`, refreshedAt: null, skipped: null, staged: null, busy: null })),
+    elsewhere: [1, 2, 3].map((n) => ({ kind: "mirror", id: `m${n}`, server, name: `m${n}`, refreshedAt: null, skipped: null, lastReported: false, staged: null, busy: null })),
+    unheard: [],
   };
   const node = (hang: readonly VolumeCopies[]) =>
     asTestDouble<CanvasResourceNode>()({ position: { x: 100, y: 50 }, measured: { width: 288, height: 300 }, data: { hang } });
@@ -56,7 +57,8 @@ it("fits the whole canvas with the copies hung under a node in view, not just it
   const server = { id: "web-2" as MachineId, name: "web-2" };
   const copies: VolumeCopies = {
     volume: { id: "v", name: "v" }, live: { server: { ...server, state: "live" }, restore: null, moveTo: null, busy: null, snapshots: null },
-    elsewhere: [1, 2, 3].map((n) => ({ kind: "mirror", id: `m${n}`, server, name: `m${n}`, refreshedAt: null, skipped: null, staged: null, busy: null })),
+    elsewhere: [1, 2, 3].map((n) => ({ kind: "mirror", id: `m${n}`, server, name: `m${n}`, refreshedAt: null, skipped: null, lastReported: false, staged: null, busy: null })),
+    unheard: [],
   };
   const hung = asTestDouble<CanvasResourceNode>()({ position: { x: 0, y: 0 }, measured: { width: 288, height: 300 }, data: { hang: [copies] } });
   const viewport = fitViewport([hung], 400, 600);

@@ -17,6 +17,7 @@ const observing = (incomplete: readonly MachineId[]) => observeVolumeMembers("or
     open: () => Effect.succeed({ status: "connected" as const, connected: asTestDouble<ConnectedRuntimeClient>()({
       watchFirstFrame: () => Effect.succeed({
         machines: [{ machine: { id: A, name: "a", public_key: Array.from({ length: 32 }, () => 1), runtime: { daemon_version: "" } }, storage: { state: "pool" } }],
+        volumes: [],
         incomplete_ids: { machines: [...incomplete] },
       }),
       volumeSwitch: () => Effect.succeed({ copy: COPIES.writer }),

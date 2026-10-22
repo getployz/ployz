@@ -21,6 +21,11 @@ export type MirrorCopy = CopyBase & {
   readonly refreshedAt: Date | null;
   /** Why the last refresh did not land, so the age keeps growing until it catches up. */
   readonly skipped: Exclude<Heard, "answered"> | "failed" | null;
+  /**
+   * Known only from its silent Server's last report, as no placement holds it: shown, never staged or recovered from.
+   * Nothing says when that report was, so it has no age and is never behind.
+   */
+  readonly lastReported: boolean;
 };
 
 export type OffsiteCopy = CopyBase & {
@@ -71,10 +76,15 @@ export type LiveCopy = {
   readonly snapshots: readonly Snapshot[] | null;
 };
 
+/** A Server outside Live that didn't report its copy, and what was heard from it instead. */
+export type UnheardServer = ServerRef & { readonly heard: Exclude<Heard, "answered"> };
+
 export type VolumeCopies = {
   readonly volume: { readonly id: string; readonly name: string };
   readonly live: LiveCopy;
   readonly elsewhere: readonly VolumeCopy[];
+  /** While any is listed, what is outside Live isn't known. */
+  readonly unheard: readonly UnheardServer[];
 };
 
 export const STALE_AFTER_MS = 60 * 60_000;
@@ -90,6 +100,20 @@ const UNHEARD_WORDS = {
  * says when it stopped. Needs a newer Ployz only once its release is known to be behind.
  */
 export const LIVE_WORDS = { live: "Live", read_only: "Read-only", ...UNHEARD_WORDS } as const satisfies Record<LiveState, string>;
+
+const UNHEARD_CLAUSES = {
+  outdated: (name) => `${name} needs a newer Ployz`,
+  lacks: (name) => `${name} can't report this copy`,
+  silent: (name) => `${name} is not answering`,
+  waiting: (name) => `${name}'s report hasn't arrived`,
+} as const satisfies Record<Exclude<Heard, "answered">, (name: string) => string>;
+
+/** Elsewhere's line when it lists no copy: that nothing is outside Live, or which Servers keep Copies from knowing. */
+export function nothingElsewhere(copies: VolumeCopies): string {
+  const live = copies.live.server?.name ?? "its server";
+  if (copies.unheard.length === 0) return `Nothing outside ${live}. If ${live} dies, ${copies.volume.name} goes with it.`;
+  return `${copies.unheard.map((server) => UNHEARD_CLAUSES[server.heard](server.name)).join(" and ")}, so Copies can't say what is outside ${live}.`;
+}
 
 /** Why a mirror's Server didn't report it just now, said beside its age however fresh: the age is only its last match. */
 export function unheardReason(copy: VolumeCopy): string | null {
@@ -112,7 +136,7 @@ export function lastAt(copy: VolumeCopy): Date | null {
 
 /** A mirror that has never refreshed protects nothing yet, so it reads as behind. */
 export function isStale(copy: VolumeCopy, now: Date): boolean {
-  return copy.kind === "mirror" && copy.staged !== "new"
+  return copy.kind === "mirror" && copy.staged !== "new" && !copy.lastReported
     && (copy.refreshedAt === null || now.getTime() - copy.refreshedAt.getTime() > STALE_AFTER_MS);
 }
 
@@ -125,13 +149,20 @@ export function addableCopies(copies: VolumeCopies, served: readonly AddableCopy
 
 export type CardLine = { readonly spin: boolean; readonly words: string; readonly age: string | null; readonly stale: boolean };
 
-/** A staged removal drops the kind word so the Removing badge reads alone. */
+/** What a mirror known only from its silent Server's last report says in place of its kind: it may be gone since. */
+export const LAST_REPORTED = "Last reported";
+
+/**
+ * A staged removal drops the kind word so the Removing badge reads alone. A mirror known only from its Server's last
+ * report reads as last reported, staged or not, never as a mirror held now.
+ */
 export function cardLine(copy: VolumeCopy, now: Date): CardLine {
   if (copy.busy !== null) return { spin: true, words: copy.busy, age: null, stale: false };
-  if (copy.staged !== null) return { spin: false, words: copy.staged === "removing" ? "" : COPY_WORDS[copy.kind], age: null, stale: false };
+  const words = copy.kind === "mirror" && copy.lastReported ? LAST_REPORTED : COPY_WORDS[copy.kind];
+  if (copy.staged !== null) return { spin: false, words: copy.staged === "removing" ? "" : words, age: null, stale: false };
   const at = lastAt(copy);
   const stale = isStale(copy, now);
-  return { spin: false, words: COPY_WORDS[copy.kind], age: at === null ? (stale ? "Not yet" : null) : age(at, now), stale };
+  return { spin: false, words, age: at === null ? (stale ? "Not yet" : null) : age(at, now), stale };
 }
 
 export type TraySpeech = { readonly tone: "busy" | "staged"; readonly words: string };

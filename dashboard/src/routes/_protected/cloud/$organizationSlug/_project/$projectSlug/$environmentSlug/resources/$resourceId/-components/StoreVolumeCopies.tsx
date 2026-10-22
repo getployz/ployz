@@ -18,8 +18,8 @@ import { type RoleGate, useRoleGate } from "#/modules/organization/members.queri
 import { requirements, serverSupports } from "#/modules/runtime/daemon-compat";
 import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
 import {
-  addableCopies, cardLine, COPY_WORDS, isStale, LIVE_WORDS, type LiveState, type MirrorCopy, type OldCopy, STAGED_WORDS, type StagedCopy,
-  unheardReason, type VolumeCopies, type VolumeCopy,
+  addableCopies, cardLine, COPY_WORDS, isStale, LAST_REPORTED, LIVE_WORDS, type LiveState, type MirrorCopy, type OldCopy, STAGED_WORDS, type StagedCopy,
+  nothingElsewhere, unheardReason, type VolumeCopies, type VolumeCopy,
 } from "#/modules/volume-copies/volume-copies";
 import { useRefreshMirror } from "#/modules/volume-copies/volume-copies.hooks";
 import { copiesFromPlacement } from "#/modules/volume-copies/volume-copies.placement";
@@ -215,7 +215,6 @@ function CopiesView({ volume, members, row, rows, owed, copies, target, servers,
   const mirrorOn = placementTargets(volume, members, row, accepting, owed).mirror.filter((server) => server.id !== target.primary);
   const canAdd = !blocked && mirrorOn.length > 0 && addableCopies(copies, ["mirror"]).length > 0;
   const { live } = copies;
-  const liveName = live.server?.name ?? "its server";
 
   return <div className="flex flex-col gap-4">
     {alert}
@@ -237,7 +236,7 @@ function CopiesView({ volume, members, row, rows, owed, copies, target, servers,
     </Group>
     <Group label="Elsewhere">
       {copies.elsewhere.length === 0
-        ? <p className="text-sm text-muted-foreground">Nothing outside {liveName}. If {liveName} dies, {volume.name} goes with it.</p>
+        ? <p className="text-sm text-muted-foreground">{nothingElsewhere(copies)}</p>
         : copies.elsewhere.map((copy) => <CopyRow key={copy.id} copy={copy} now={now} locked={locked} blocked={blocked}
           onOpen={() => { if (copy.kind === "mirror") onOpen(copy.server.id); }} onDelete={copy.kind === "old" ? () => setDeleting(copy) : null}
           restore={copy.kind === "old" ? restoreOffer(volume, members, rows, copy.server.id, disabled || deploying, restore) : null} seeds={seeds}
@@ -308,7 +307,7 @@ function CopyRow({ copy, now, locked, blocked, onOpen, onDelete, restore = null,
   const description = line.spin ? <Busy words={line.words} />
     : copy.staged === "new" ? `${COPY_WORDS[copy.kind]} · on deploy`
     : <>
-      {[line.words, copy.kind === "mirror" ? "15 min" : null].filter(Boolean).join(" · ")}
+      {[line.words, copy.kind === "mirror" && !copy.lastReported ? "15 min" : null].filter(Boolean).join(" · ")}
       {line.age ? <> · <span className={cn(line.stale && "text-warning")}>{line.stale ? <TriangleAlertIcon className="mr-1 inline size-3.5" /> : null}{copy.kind === "old" && copy.since ? lossMoment(copy.since, now) : line.age}</span></> : null}
       {unheard ? ` · ${unheard}` : null}
     </>;
@@ -331,7 +330,7 @@ function CopyRow({ copy, now, locked, blocked, onOpen, onDelete, restore = null,
   const state = copy.staged ? STAGED_STATE[copy.staged] : undefined;
   if (copy.kind === "mirror") {
     return <div role="listitem" data-staged={copy.staged ?? undefined}>
-      <Item variant="outline" size="sm" state={state} render={<button type="button" aria-label={`${COPY_WORDS.mirror} on ${title}`} onClick={onOpen} />}
+      <Item variant="outline" size="sm" state={state} render={<button type="button" aria-label={`${copy.lastReported ? `${LAST_REPORTED} mirror` : COPY_WORDS.mirror} on ${title}`} onClick={onOpen} />}
         className="cursor-pointer text-left hover:bg-muted">
         {content}
       </Item>
@@ -398,8 +397,9 @@ function CopyView({ volume, members, row, rows, owed, copies, copy, accepting, u
   const target = targetPlacement(observed, row);
   const applied = appliedMirrors(observed, row);
   // A staged mirror is Details' to discard, and a Deploy running the placement holds it. A mirror the target holds as its
-  // primary, while Live names another Server, has no edit of its own.
-  const offered = !blocked && copy.staged === null && !deploying && target?.primary !== copy.server.id ? target : null;
+  // primary, while Live names another Server, has no edit of its own, nor does one known only from its last report,
+  // which no placement holds.
+  const offered = !blocked && copy.staged === null && !copy.lastReported && !deploying && target?.primary !== copy.server.id ? target : null;
   const movable = placementTargets(volume, members, row, accepting, owed).move.some((machine) => machine.id === copy.server.id);
   const promote = offered !== null && movable ? editPlacement(offered, { kind: "move", to: copy.server.id }) : null;
   const remove = offered === null ? null : editPlacement(offered, { kind: "remove_mirror", server: copy.server.id });
@@ -423,11 +423,13 @@ function CopyView({ volume, members, row, rows, owed, copies, copy, accepting, u
       {copy.staged ? <Badge variant={STAGED_STATE[copy.staged]}>{STAGED_WORDS[copy.staged]}</Badge> : null}
     </div>
     <Row title="Server">{copy.server.name}</Row>
-    <Row title="Refresh">Every {MIRROR_ROUND_MINUTES} min · on deploy</Row>
-    <Row title="Last">
+    <Row title="Refresh">
+      {copy.lastReported ? `${LAST_REPORTED} by ${copy.server.name}, which may have removed it since` : `Every ${MIRROR_ROUND_MINUTES} min · on deploy`}
+    </Row>
+    {copy.lastReported ? null : <Row title="Last">
       {last.spin ? <Busy words={last.words} />
         : <span className={cn(last.stale && "text-warning")}>{last.stale ? <TriangleAlertIcon className="mr-1 inline size-3.5" /> : null}{last.words}</span>}
-    </Row>
+    </Row>}
     {skipped === null ? null : <Field orientation="responsive">
       <FieldContent><FieldTitle>Status</FieldTitle><FieldDescription>{skipped}</FieldDescription></FieldContent>
       {skippedBadge ? <Badge variant="warning">Refresh skipped</Badge> : null}
@@ -441,7 +443,7 @@ function CopyView({ volume, members, row, rows, owed, copies, copy, accepting, u
       </span>
     </Row> : null}
     <div data-slot="copy-actions" className="flex flex-wrap gap-2">
-      {copy.staged === "new" ? null : <Button variant="outline" disabled={disabled || last.spin} onClick={refresh}>
+      {copy.staged === "new" || copy.lastReported ? null : <Button variant="outline" disabled={disabled || last.spin} onClick={refresh}>
         {last.spin ? <Spinner role="presentation" aria-hidden="true" data-icon="inline-start" /> : <RefreshCwIcon data-icon="inline-start" />}Refresh now
       </Button>}
       {promote ? <Button variant="outline" disabled={locked} onClick={() => stage(promote, applied)}>Make primary</Button> : null}

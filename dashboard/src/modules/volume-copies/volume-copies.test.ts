@@ -11,7 +11,7 @@ const snapshots = (n: number): Snapshot[] =>
   Array.from({ length: n }, (_, i) => ({ id: `s${i}`, at: today("05:00"), kind: "hourly", note: null, kept: false, bytes: 20e6 }));
 
 const mirror = (refreshedAt: Date, extra: Partial<MirrorCopy> = {}): MirrorCopy => ({
-  kind: "mirror", id: "web-2", server: server("web-2"), name: "pg-data-web-2", refreshedAt, skipped: null, staged: null, busy: null, ...extra,
+  kind: "mirror", id: "web-2", server: server("web-2"), name: "pg-data-web-2", refreshedAt, skipped: null, lastReported: false, staged: null, busy: null, ...extra,
 });
 const offsite: OffsiteCopy = {
   kind: "offsite", id: "acme-backups", bucket: "acme-backups", region: "eu-central-1", keep: 7, uploadedAt: today("07:04"), staged: null, busy: null,
@@ -22,11 +22,13 @@ const pgData = (elsewhere: VolumeCopies["elsewhere"], live: Partial<VolumeCopies
   volume: { id: "v1", name: "pg-data" },
   live: { server: { ...server("web-1"), state: "live" }, restore: null, moveTo: null, busy: null, snapshots: snapshots(13), ...live },
   elsewhere,
+  unheard: [],
 });
 const redisData: VolumeCopies = {
   volume: { id: "v2", name: "redis-data" },
   live: { server: { ...server("web-2"), state: "live" }, restore: null, moveTo: null, busy: null, snapshots: snapshots(4) },
   elsewhere: [],
+  unheard: [],
 };
 
 describe("protected", () => {
@@ -65,6 +67,17 @@ describe("protected", () => {
 
   it("drops the kind from a card staged for removal, leaving the badge", () => {
     expect(cardLine(mirror(today("14:00"), { staged: "removing" }), now).words).toBe("");
+  });
+
+  it("words a mirror known only from its Server's last report as last reported, staged or not", () => {
+    expect(cardLine(mirror(today("14:00"), { lastReported: true }), now).words).toBe("Last reported");
+    expect(cardLine(mirror(today("14:00"), { lastReported: true, staged: "primary" }), now).words).toBe("Last reported");
+    expect(cardLine(mirror(today("14:00"), { lastReported: true, staged: "removing" }), now).words).toBe("");
+  });
+
+  it("gives a last-reported mirror no age, never Not yet, since nothing says when its Server reported it", () => {
+    expect(cardLine(mirror(today("14:00"), { lastReported: true, refreshedAt: null, skipped: "silent" }), now))
+      .toEqual({ spin: false, words: "Last reported", age: null, stale: false });
   });
 
   it("speaks a staged move on the tray", () => {

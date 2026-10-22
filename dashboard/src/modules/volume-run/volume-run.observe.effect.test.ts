@@ -13,6 +13,7 @@ import {
   runtimeWatchFrameFixture,
   runtimeWatchMachineFixture,
   runtimeWatchMachineObservationFixture,
+  runtimeWatchVolumeFixture,
 } from "#/modules/runtime/runtime-watch-frame.test-fixture";
 import { Database, type DatabaseService } from "#/server/database.server";
 import { noPairingChanges } from "#/test/organization-runtime";
@@ -257,5 +258,39 @@ it.effect("database reads between a plan's Cluster reads are never interrupted a
     const plan = yield* Fiber.join(planning);
     assert.strictEqual(cluster.interrupted(), 0);
     assert.isTrue(plan.ok);
+  }),
+);
+
+/** One Server that never answers its inspect, whose last report in the frame holds `slotRole`'s slot of pg-data. */
+const lastReported = (slotRole: "mirror" | "old_copy") => makeOrganizationRuntimeLayer(
+  () => Effect.succeed({ kind: "ready", generation: "current", connections }),
+  noPairingChanges,
+).pipe(
+  Layer.provide(makePloyzLayer({
+    connect: async () => asTestDouble<Client>()({
+      close: async () => {},
+      volumeSwitch: () => Promise.reject(new Error("box-1 is powered off")),
+      runtime: {
+        watch: async function* (): AsyncGenerator<RuntimeWatchView> {
+          yield runtimeWatchFrameFixture({
+            machines: [runtimeWatchMachineObservationFixture({ machine })],
+            volumes: [runtimeWatchVolumeFixture(machine.id, "pg-data", {
+              storage: { kind: "provisioned", mountpoint: "/p", bound_bytes: 1, used_bytes: 0, role: "slot", slot_role: slotRole },
+            })],
+          });
+        },
+      },
+    }),
+  })),
+  Layer.merge(Layer.succeed(Database, undefined as never)),
+);
+
+it.effect("a silent Server whose last report held a mirror is a member that didn't answer and last held a mirror", () =>
+  Effect.gen(function* () {
+    const ref = { id: machine.id, name: machine.name };
+    assert.deepStrictEqual(yield* observeVolumeMembers("org-1", "pg-data").pipe(Effect.provide(lastReported("mirror"))),
+      [{ machine: ref, answered: false, lastMirror: true }]);
+    assert.deepStrictEqual(yield* observeVolumeMembers("org-1", "pg-data").pipe(Effect.provide(lastReported("old_copy"))),
+      [{ machine: ref, answered: false }]);
   }),
 );
