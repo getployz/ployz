@@ -16,6 +16,7 @@ const graph: RunGraph = {
     node: { type: "service", id: "api-id", name: "api", outcome: "deployed", rows: [] } }],
   edges: [],
   done: 1,
+  total: 1,
 };
 
 it("lets a mouse click reach a card's link", async () => {

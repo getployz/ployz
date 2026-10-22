@@ -405,7 +405,10 @@ export function outcomeReason(outcome: Outcome | null) {
   if (outcome.type === "executed" && outcome.cancelled) return undefined;
   const reason = outcome.reason ?? undefined;
   const cause = outcome.cause?.at(-1);
-  return reason && cause ? `${reason}: ${cause}` : reason;
+  if (!reason || !cause) return reason;
+  // A reason in whole sentences, such as a Server that isn't answering, takes its cause inside its first one.
+  const end = reason.search(/[.!?](?=\s|$)/);
+  return end < 0 ? `${reason}: ${cause}` : `${reason.slice(0, end)} (${cause})${reason.slice(end)}`;
 }
 
 /**
