@@ -622,10 +622,11 @@ volume and they keep writing there. Ployz can't make that copy read-only, and a 
 sync or release of the volume doesn't reach it. Ployz never brings back what they write there,
 and if you've restored the volume on another server, the two copies drift apart.
 
-So decide before a forgotten server runs again. As soon as it boots, either run
-`ployz server add` for it with `--reset`, which makes its copies read-only and keeps their data,
-or run `sudo ployz-uninstall` on it. That stops the services Ployz runs there;
-Docker, your images and your volume data stay on the disk. Wipe or reinstall its disk instead only
+So decide before a forgotten server runs again. As soon as it boots, run `sudo ployz-uninstall`
+on it. That stops the services Ployz runs there and keeps every copy of a volume on the disk, along
+with Docker and your images. To keep the server instead, run `ployz server add` for it with
+`--reset`: the reset makes its copies read-only and keeps their data, but deletes its mirrors, so
+uninstall first if a mirror there may be the last copy of a volume. Wipe or reinstall its disk only
 if you need nothing on it. Ployz no longer lists a forgotten server, so `ployz server rm` can't
 reach it. `ployz server forget` prints this warning each time it forgets servers.
 

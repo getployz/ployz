@@ -39,6 +39,6 @@ it("says a mirrored volume comes back from its mirror, and only a volume with no
   );
   expect(dialog.textContent).not.toContain("can't be recovered");
   expect(dialog.textContent).toContain(
-    "web-1 won't know it was forgotten. If it runs again as it is, its services keep writing to its own copies, and Ployz never brings that back: reset or uninstall it as soon as it boots.",
+    "web-1 won't know it was forgotten. If it runs again as it is, its services keep writing to its own copies, and Ployz never brings that back: run sudo ployz-uninstall on it as soon as it boots.",
   );
 });

@@ -342,17 +342,17 @@ fn leave(root: &ArgMatches, removal: Removal) -> Result<(), Error> {
                 format!(
                     "Server {server} doesn't know it was forgotten. If it runs again as it is, \
                      its services start again on its own copy of each Volume, and Ployz never \
-                     brings back what they write there. When it boots, run ployz server add for \
-                     it with --reset to add it back with that data read-only, or sudo \
-                     ployz-uninstall on it to stop its services and keep the data. Wipe its disk \
-                     instead only if you need nothing on it."
+                     brings back what they write there. When it boots, run sudo ployz-uninstall \
+                     on it to stop them and keep every Volume copy on its disk. ployz server add \
+                     for it with --reset adds it back and keeps its writer copies read-only, but \
+                     deletes its mirrors. Wipe its disk only if you need nothing on it."
                 )
             } else {
                 format!(
                     "Server {server} still runs and doesn't know it was forgotten, so its \
-                     services keep running there. Run ployz server add for it with --reset to add \
-                     it back, or sudo ployz-uninstall on it to stop its services; either keeps its \
-                     Volume data on the disk."
+                     services keep running there. Run sudo ployz-uninstall on it to stop them and \
+                     keep every Volume copy on its disk, or ployz server add for it with --reset \
+                     to add it back; the reset deletes its mirrors."
                 )
             });
         }
