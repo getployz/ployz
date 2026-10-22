@@ -1867,3 +1867,51 @@ fn an_earlier_lost_answer_never_hides_a_silent_target() {
     ));
     assert!(crate::connect::keep_lost_call(Some(lost), silent).target_unanswered());
 }
+
+#[tokio::test(start_paused = true)]
+async fn a_lost_answer_never_hides_a_closed_session_or_a_refused_key() {
+    let machine = machine('1');
+    let lost = RpcError {
+        code: RpcErrorCode::Unavailable,
+        message: "connection lost".into(),
+        details: serde_json::Value::Null,
+        cause: Vec::new(),
+    }
+    .reply_lost_from(&machine);
+    let closed = RpcError {
+        code: RpcErrorCode::Unavailable,
+        message: "transport session closed".into(),
+        details: serde_json::json!({ "reason": "session_closed" }),
+        cause: Vec::new(),
+    }
+    .unreached();
+    let refused_key = crate::cluster::answered_by(&machine, {
+        use std::os::unix::process::ExitStatusExt;
+        crate::connect::ConnectError::SshProbe {
+            target: "host".to_owned(),
+            status: std::process::ExitStatus::from_raw(255 << 8),
+            failure: crate::connect::SshFailure::Auth,
+            detail: "Permission denied (publickey)".into(),
+        }
+    });
+
+    let started = tokio::time::Instant::now();
+    let mut replies = vec![closed, lost.clone()];
+    let error = wait_out_restart(&CancellationToken::new(), || {
+        let reply = replies.pop().expect("no resend after a closed session");
+        async move { Err::<(), _>(reply) }
+    })
+    .await
+    .unwrap_err();
+    assert!(error.reply_lost(), "{error:?}");
+    assert!(started.elapsed() < RESTART_WAIT, "{:?}", started.elapsed());
+
+    let mut replies = vec![refused_key, lost];
+    let error = wait_out_restart(&CancellationToken::new(), || {
+        let reply = replies.pop().expect("no resend after a refused key");
+        async move { Err::<(), _>(reply) }
+    })
+    .await
+    .unwrap_err();
+    assert!(error.message.contains("Permission denied"), "{error:?}");
+}

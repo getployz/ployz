@@ -1259,7 +1259,12 @@ impl Client {
 /// keeps its own words.
 pub(crate) fn answered_by(machine_id: &MachineId, error: ConnectError) -> RpcError {
     if !error.target_unanswered() {
-        let (lost, unreached) = (error.unreplied(), error.unreached());
+        // Only a failure a retry may fix is marked unreached: a refused key or another
+        // lasting failure is what the user acts on, so it keeps its own words.
+        let (lost, unreached) = (
+            error.unreplied(),
+            error.unreached() && error.retry() != ployz_core::Retry::Never,
+        );
         let error = rpc_error(error);
         return if lost {
             error.reply_lost_from(machine_id)

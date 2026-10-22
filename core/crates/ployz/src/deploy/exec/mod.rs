@@ -534,9 +534,10 @@ where
         if error.reply_lost() {
             lost = Some(error.clone());
         }
-        // A resend that didn't reach the Machine reports the earlier loss, but whether to
-        // send again still follows what this attempt met.
-        let (error, again) = match &lost {
+        // Whether to send again follows what this attempt met. A resend that didn't reach
+        // the Machine reports the earlier loss instead of itself.
+        let closed = crate::connect::on_closed_session(&error);
+        let (error, retry) = match &lost {
             Some(lost) if error.never_reached() => (lost.clone(), error.code.retry()),
             _ if error.target_unanswered() => {
                 let error = answer.clone().unwrap_or(error);
@@ -552,7 +553,8 @@ where
                 (error, retry)
             }
         };
-        let again = again != Retry::Never
+        let again = retry != Retry::Never
+            && !closed
             && !crate::connect::on_closed_session(&error)
             && Instant::now() < deadline
             && !cancellation.is_cancelled();
