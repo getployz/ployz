@@ -1386,7 +1386,7 @@ mod tests {
                 )
                 .await
                 .unwrap();
-                // Spend the stage's wait during the client's pause between attempts, never mid-request.
+                // Spend the stage's wait while the second attempt awaits its answer, so it ends in flight.
                 read_http(&mut stream).await;
                 tokio::time::sleep(Duration::from_millis(200)).await;
                 tokio::time::pause();
