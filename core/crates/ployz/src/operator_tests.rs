@@ -16,6 +16,67 @@ use ployz_core::{
 
 use super::*;
 
+#[tokio::test(start_paused = true)]
+async fn exec_on_a_server_that_answers_does_not_wait_on_a_silent_one() {
+    use ployz_core::{ContainerList, MachineList, RpcRequestBody, RpcResponse};
+    let answering = machine_observation(1, "machine-1");
+    let machines = vec![answering.clone(), machine_observation(2, "machine-2")];
+    let answering = answering.machine.id;
+    let (mut client, server) = crate::connect::test_support::rpc_exec_routes(
+        move |rpc: tonic::Request<OpaquePayload>| {
+            let machines = machines.clone();
+            async move {
+                let target = rpc.metadata().get(ployz_core::ONE_TARGET_HEADER).cloned();
+                if target.is_some_and(|target| target != answering.as_str()) {
+                    std::future::pending::<()>().await;
+                }
+                #[expect(
+                    clippy::wildcard_enum_match_arm,
+                    reason = "fixture answers only the exec lookup"
+                )]
+                let response = match rpc.into_inner().decode_request().unwrap().body {
+                    RpcRequestBody::ListMachines(_) => RpcResponse::from(MachineList {
+                        enrollment: None,
+                        machines,
+                    }),
+                    RpcRequestBody::ListContainers(_) => RpcResponse::from(ContainerList {
+                        containers: vec![container_on(
+                            &"a".repeat(64),
+                            "api",
+                            ServiceId::parse("1".repeat(32)).unwrap(),
+                            ContainerKind::ServiceContainer,
+                            answering,
+                            "api",
+                        )],
+                    }),
+                    other => panic!("unexpected exec lookup RPC: {other:?}"),
+                };
+                Ok(tonic::Response::new(response.encode().unwrap()))
+            }
+        },
+        |_| async { Ok(tonic::Response::new(stream::empty())) },
+    )
+    .await;
+
+    let started = tokio::time::Instant::now();
+    let session = open_exec(
+        &mut client,
+        &ServiceSelector::parse("app/api").unwrap(),
+        None,
+        exec_options(Vec::new(), ExecMode::Attached { tty: false }),
+    )
+    .await;
+    let waited = started.elapsed();
+    server.abort();
+
+    let session = session.expect("exec opens on the Server that answered");
+    assert_eq!(session.target.machine_id, answering);
+    assert!(
+        waited < crate::connect::TARGET_RPC_TIMEOUT,
+        "waited {waited:?} on the silent Server"
+    );
+}
+
 #[test]
 fn exec_without_a_container_picks_a_running_one() {
     let mut service = observed_service();
