@@ -456,7 +456,8 @@ pub(crate) fn approve(
 /// `retry` of a removal) while that destroys `effects`, unless
 /// no approval is required or Cloud holds a human's approval of exactly this. Into a
 /// Protected Environment, a caller who asks there asks even when Cloud requires
-/// nothing, as a Deploy does.
+/// nothing, as a Deploy does; an agent asks even when nothing is left to take off,
+/// as its every retry does.
 ///
 /// # Errors
 /// `approval_required`, naming the effects, the `version:digest` to approve and the
@@ -468,7 +469,7 @@ pub(crate) fn approve_shut_down(
     effects: &BTreeSet<DestructiveEffect>,
     gate: &Gate<'_>,
 ) -> Result<(), RpcError> {
-    if effects.is_empty() && !gate.protected {
+    if effects.is_empty() && !gate.asks_retry() {
         return Ok(());
     }
     if !effects.is_empty() {

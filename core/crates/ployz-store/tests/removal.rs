@@ -1702,14 +1702,7 @@ fn an_agent_retrying_a_shutdown_with_no_server_left_still_asks_a_human() {
     let (store, system) = branched();
     let (owner, trusted) = person(&system, true, Approval::Required);
     let asked = refusal(shut_down(&store, &owner, ("fix", 3), &[], &trusted));
-    let shutdown = shut_down(
-        &store,
-        &owner,
-        ("fix", 3),
-        &[],
-        &approving(&asked, trusted),
-    )
-    .unwrap();
+    let shutdown = shut_down(&store, &owner, ("fix", 3), &[], &approving(&asked, trusted)).unwrap();
     fail(&store, &shutdown.id, &["web"]);
 
     let (agent, trusted) = calling(

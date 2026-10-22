@@ -169,9 +169,9 @@ pub(crate) fn admit(
                 false => None,
             };
             match asked {
-                Asked::Removal(environment, review) => {
+                Asked::Removal(environment, review, asks) => {
                     trusted.writes(&environment.summary.name)?;
-                    if forget.is_none() {
+                    if forget.is_none() || asks {
                         crate::removal::ask_taking_off(
                             tx,
                             who,
@@ -203,8 +203,10 @@ pub(crate) fn admit(
 /// What a retry asks a human about, read before it queues.
 enum Asked<'a> {
     /// A removal's retry takes its Environment off the Servers again, so it asks as
-    /// a shutdown does, about what the Environment runs now.
-    Removal(Box<scope::Environment>, review::Review),
+    /// a shutdown does, about what the Environment runs now. The flag is whether
+    /// the caller asks on every retry, as an agent does, even one with nothing left
+    /// to take off.
+    Removal(Box<scope::Environment>, review::Review, bool),
     /// Any other retry that may ask: the review it approves.
     Retry(review::Review, review::Gate<'a>),
     Nothing,
@@ -229,7 +231,7 @@ fn retry_review<'a>(
     let environment = scope::load_by_id(tx, &id)?;
     let review = review::review(tx, &environment)?;
     Ok(match summary.remove {
-        true => Asked::Removal(Box::new(environment), review),
+        true => Asked::Removal(Box::new(environment), review, gate.asks_retry()),
         false => Asked::Retry(review, gate),
     })
 }
