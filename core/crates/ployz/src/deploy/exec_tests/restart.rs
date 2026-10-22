@@ -95,6 +95,39 @@ async fn a_create_whose_entry_daemon_restarted_is_resent_on_a_new_session() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn a_create_lost_with_its_entry_daemon_is_removed_on_a_new_session() {
+    let machine = machine('1');
+    let plan = vec![run(&machine, spec(Some(0), None, None), false)];
+    let dropped = crate::cluster::answered_by(
+        &machine,
+        crate::connect::ConnectError::from(tonic::Status::from_error(Box::new(
+            std::io::Error::new(std::io::ErrorKind::BrokenPipe, "connection lost"),
+        ))),
+    );
+    let mut client = Scripted::new(vec![
+        Step(
+            Call::Run(machine, ContainerKind::ServiceContainer),
+            Reply::Error(dropped),
+        ),
+        Step(
+            Call::DiscardSlot(machine, ContainerKind::ServiceContainer),
+            Reply::Error(crate::connect::closed_session_error()),
+        ),
+        ok(Call::DiscardSlot(machine, ContainerKind::ServiceContainer)),
+    ]);
+    client.redial = Some(Ok(()));
+
+    let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
+
+    assert!(
+        matches!(outcome, DeployOutcome::Failed { .. }),
+        "{outcome:?}"
+    );
+    assert_eq!(*client.redials.lock().unwrap(), 1);
+    client.assert_done();
+}
+
+#[tokio::test(start_paused = true)]
 async fn an_entry_that_never_answers_again_fails_the_create_once_the_restart_wait_ends() {
     let machine = machine('1');
     let plan = vec![run(&machine, spec(Some(0), None, None), false)];

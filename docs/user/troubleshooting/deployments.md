@@ -379,9 +379,11 @@ When the connection drops in the middle of a step, the deploy can't tell whether
 it. It says so instead of blaming the step: `db: The connection to Server web-1 dropped during
 pull image, so it may have happened anyway`, with `cause: connection lost`. Your image and your
 change are fine, so the deploy doesn't point you at them. A step that created or started a
-replica may have left the new replica running beside the old one. It takes no traffic, and
-`ployz status` names it as `1 copy no deploy brought into routing takes no traffic`. The
-next deploy removes it.
+replica may have left the new replica running beside the old one. If only Ployz on that server
+restarted, as after a crash, the deploy connects to it again for up to a minute: it removes the new
+replica, or carries on and finishes. Otherwise the new replica takes no traffic, `ployz status`
+names it as `1 copy no deploy brought into routing takes no traffic`, and the next deploy removes
+it.
 
 ## My upload or log stream fails on a slow connection
 
