@@ -177,6 +177,7 @@ fn stored_log<'de, D: serde::Deserializer<'de>>(
 pub enum RowPhase {
     Starting,
     CreatingContainer,
+    WaitingForLogStore,
     StartingContainer,
     WaitingForHealth,
     WaitingForHook,
@@ -191,7 +192,7 @@ pub enum RowPhase {
 impl RowPhase {
     const fn failed_at(self) -> Option<FailedAt> {
         match self {
-            Self::CreatingContainer => Some(FailedAt::Create),
+            Self::CreatingContainer | Self::WaitingForLogStore => Some(FailedAt::Create),
             Self::StartingContainer => Some(FailedAt::Start),
             Self::WaitingForHealth => Some(FailedAt::Health),
             Self::WaitingForHook => Some(FailedAt::Hook),
@@ -211,6 +212,7 @@ impl From<&OperationPhase> for RowPhase {
         match phase {
             OperationPhase::Starting => Self::Starting,
             OperationPhase::CreatingContainer => Self::CreatingContainer,
+            OperationPhase::WaitingForLogStore => Self::WaitingForLogStore,
             OperationPhase::StartingContainer => Self::StartingContainer,
             OperationPhase::WaitingForHealth { .. } => Self::WaitingForHealth,
             OperationPhase::WaitingForHook { .. } => Self::WaitingForHook,
@@ -659,6 +661,7 @@ fn container(row: &OperationRow, last: Option<ContainerId>) -> Option<ContainerI
             | OperationPhase::UpdatingContainer => row.operation.container_id(),
             OperationPhase::Starting
             | OperationPhase::CreatingContainer
+            | OperationPhase::WaitingForLogStore
             | OperationPhase::StartingContainer
             | OperationPhase::RemovingVolume => None,
             OperationPhase::Compensating => last,

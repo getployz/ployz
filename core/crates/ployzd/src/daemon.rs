@@ -29,8 +29,10 @@ use crate::{
         CorrosionConfig, CorrosionPaths, DEFAULT_CONTAINER_NAME, Error as CorrosionError,
         LiveRuntime, MachineView, RunningCorrosion, remove_retained, run_machine_publisher,
     },
-    dns::DnsService,
-    docker::{ContainerRuntime, ImageIngest, LocalDocker, MachineSpecStore, SpecStoreError},
+    dns::{DnsService, InstalledExe},
+    docker::{
+        ContainerRuntime, ImageIngest, LocalDocker, LogStore, MachineSpecStore, SpecStoreError,
+    },
     ingress,
     machine::{
         InterruptedReset, LocalMachineBody, LocalMachineRecord, LocalMachineStore, Opened,
@@ -256,7 +258,13 @@ impl Daemon {
                 match LocalDocker::connect() {
                     Ok(docker) => Some(
                         ContainerRuntime::new(docker, specs)
-                            .with_sealing_key(config.data_dir.clone()),
+                            .with_sealing_key(config.data_dir.clone())
+                            .with_log_store(match config.units {
+                                UnitSupervision::Systemd => {
+                                    LogStore::Systemd(InstalledExe::current().ok().map(Arc::new))
+                                }
+                                UnitSupervision::External => LogStore::Unsupervised,
+                            }),
                     ),
                     Err(error) => {
                         eprintln!(

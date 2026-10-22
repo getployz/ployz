@@ -15,23 +15,29 @@ async fn a_machine_that_answered_then_went_silent_keeps_its_answer() {
         )
     };
     let attempts = std::cell::Cell::new(0);
-    let error = wait_out_restart(&CancellationToken::new(), || {
-        attempts.set(attempts.get() + 1);
-        let error = if attempts.get() == 1 {
-            answered.clone()
-        } else {
-            silent()
-        };
-        async move { Err::<(), _>(error) }
-    })
+    let error = wait_out_restart(
+        &CancellationToken::new(),
+        |_| {},
+        || {
+            attempts.set(attempts.get() + 1);
+            let error = if attempts.get() == 1 {
+                answered.clone()
+            } else {
+                silent()
+            };
+            async move { Err::<(), _>(error) }
+        },
+    )
     .await
     .unwrap_err();
     assert!(attempts.get() > 2);
     assert_eq!(error, answered);
 
-    let error = wait_out_restart(&CancellationToken::new(), || async {
-        Err::<(), _>(silent())
-    })
+    let error = wait_out_restart(
+        &CancellationToken::new(),
+        |_| {},
+        || async { Err::<(), _>(silent()) },
+    )
     .await
     .unwrap_err();
     assert!(error.target_unanswered());
@@ -40,10 +46,14 @@ async fn a_machine_that_answered_then_went_silent_keeps_its_answer() {
 #[tokio::test(start_paused = true)]
 async fn a_call_on_a_closed_session_is_not_resent() {
     let attempts = std::cell::Cell::new(0);
-    let error = wait_out_restart(&CancellationToken::new(), || {
-        attempts.set(attempts.get() + 1);
-        async { Err::<(), _>(crate::connect::closed_session_error()) }
-    })
+    let error = wait_out_restart(
+        &CancellationToken::new(),
+        |_| {},
+        || {
+            attempts.set(attempts.get() + 1);
+            async { Err::<(), _>(crate::connect::closed_session_error()) }
+        },
+    )
     .await
     .unwrap_err();
     assert_eq!(attempts.get(), 1);
@@ -317,5 +327,57 @@ async fn a_create_whose_connection_drops_fails_without_waiting_out_a_restart() {
         "{outcome:?}"
     );
     assert!(started.elapsed() < RESTART_WAIT, "{:?}", started.elapsed());
+    client.assert_done();
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_run_shows_it_waits_for_the_log_store_until_ployzd_opens_its_values() {
+    let machine = machine('1');
+    let plan = vec![run(&machine, spec(Some(0), None, None), false)];
+    let call = || Call::Run(machine, ContainerKind::ServiceContainer);
+    let client = Scripted::new(vec![
+        Step(
+            call(),
+            Reply::Error(
+                refusal(
+                    ContainerRefusalReason::LogStoreUpgrading,
+                    "the Log Store still runs the software from before an upgrade",
+                )
+                .into_error(),
+            ),
+        ),
+        created(call(), &container('a')),
+    ]);
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+
+    let outcome = super::super::execute_operation_sequence(
+        &crate::deploy::DeployPlan::for_execution_test(plan, test_namespace()),
+        &run_id(),
+        &client,
+        &CancellationToken::new(),
+        Some(tx),
+    )
+    .await;
+
+    assert!(
+        matches!(outcome, DeployOutcome::Success { .. }),
+        "{outcome:?}"
+    );
+    let mut phases = Vec::new();
+    while let Ok(event) = rx.try_recv() {
+        if let DeployEvent::Progress { rows, .. } = event {
+            phases.extend(rows.into_iter().filter_map(|row| {
+                if let ployz_core::OperationStatus::Running { phase } = row.status {
+                    Some(phase)
+                } else {
+                    None
+                }
+            }));
+        }
+    }
+    assert!(
+        phases.contains(&OperationPhase::WaitingForLogStore),
+        "{phases:?}"
+    );
     client.assert_done();
 }

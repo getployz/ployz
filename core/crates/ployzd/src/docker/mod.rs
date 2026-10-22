@@ -48,6 +48,7 @@ use serde_json::json;
 use thiserror::Error;
 use tokio::sync::{Mutex, watch};
 
+use crate::dns::InstalledExe;
 use checks::CheckRecords;
 use http_health::probe as http_health_probe;
 use observe::ObservationSink;
@@ -304,6 +305,33 @@ pub struct ContainerRuntime {
     checks: Arc<std::sync::Mutex<CheckRecords>>,
     stranded: Arc<tokio::sync::Mutex<observe::StrandedIngress>>,
     sealing_key_dir: Option<PathBuf>,
+    log_store: LogStore,
+}
+
+/// How ployzd learns whether the Log Store runs software from before an upgrade,
+/// which would write opened values to disk.
+#[derive(Clone, Default)]
+pub(crate) enum LogStore {
+    /// No unit runs the Log Store beside this daemon.
+    #[default]
+    Unsupervised,
+    /// `ployz-observe.service` runs it, and should run this daemon's binary. `None`
+    /// when that binary could not be identified, so no Sealed value opens.
+    Systemd(Option<Arc<InstalledExe>>),
+    #[cfg(test)]
+    Upgrading,
+}
+
+impl LogStore {
+    async fn upgrading(&self) -> bool {
+        match self {
+            Self::Unsupervised => false,
+            Self::Systemd(None) => true,
+            Self::Systemd(Some(own)) => crate::observe::unit::runs_other_software(own).await,
+            #[cfg(test)]
+            Self::Upgrading => true,
+        }
+    }
 }
 
 impl ContainerRuntime {
@@ -318,6 +346,7 @@ impl ContainerRuntime {
             checks: Arc::new(std::sync::Mutex::new(CheckRecords::new(chrono::Utc::now()))),
             stranded: Arc::default(),
             sealing_key_dir: None,
+            log_store: LogStore::default(),
         }
     }
 
@@ -325,6 +354,13 @@ impl ContainerRuntime {
     #[must_use]
     pub fn with_sealing_key(mut self, data_dir: PathBuf) -> Self {
         self.sealing_key_dir = Some(data_dir);
+        self
+    }
+
+    /// Opens no Sealed value while `log_store` runs software from before an upgrade.
+    #[must_use]
+    pub(crate) fn with_log_store(mut self, log_store: LogStore) -> Self {
+        self.log_store = log_store;
         self
     }
 
@@ -1544,7 +1580,10 @@ impl Error {
             // A peer pull is idempotent, so a rerun is safe whatever docker printed.
             | Self::PeerPull(_)
             | Self::UnregistryNotReady { .. }
-            | Self::Sealed(crate::sealed_env::OpenError::KeyMissing) => RpcErrorCode::Unavailable,
+            | Self::Sealed(
+                crate::sealed_env::OpenError::KeyMissing
+                | crate::sealed_env::OpenError::LogStoreUpgrading,
+            ) => RpcErrorCode::Unavailable,
             Self::Sealed(_) | Self::MissingPreDeployHook
             | Self::EndpointCapacity
             | Self::DurationOverflow
@@ -2884,24 +2923,41 @@ mod sealed_output_tests {
         cluster: &Cluster,
     ) -> (ContainerRuntime, Machine, ContainerId, Containers) {
         let containers = Containers::default();
+        let (runtime, machine, created) =
+            create_with_env(cluster, LogStore::Unsupervised, &containers, true).await;
+        (runtime, machine, created.unwrap().container_id, containers)
+    }
+
+    /// Create a Service Container beside `log_store`, holding Sealed `TOKEN` when
+    /// `sealed` and only Text values otherwise.
+    async fn create_with_env(
+        cluster: &Cluster,
+        log_store: LogStore,
+        containers: &Containers,
+        sealed: bool,
+    ) -> (ContainerRuntime, Machine, Result<ContainerCreated, Error>) {
         let (runtime, _fake) = fake_runtime_with(FakeDocker {
             named_containers: Some(containers.clone()),
             ..Default::default()
         })
         .await;
-        let runtime = runtime.with_sealing_key(cluster.dir.0.clone());
+        let runtime = runtime
+            .with_sealing_key(cluster.dir.0.clone())
+            .with_log_store(log_store);
         let machine = machine();
         let namespace = Namespace::parse("app").unwrap();
         let mut spec = test_support::spec_with_sources(Vec::new());
         spec.container.sealed_identity = Some(cluster.identity.clone());
-        spec.container.environment.insert(
-            "TOKEN".into(),
+        let token = if sealed {
             EnvValue::Sealed(cluster.seal(
                 "TOKEN",
                 SealedScope::Service(cluster.identity.service),
                 OPENED,
-            )),
-        );
+            ))
+        } else {
+            EnvValue::Text(OPENED.into())
+        };
+        spec.container.environment.insert("TOKEN".into(), token);
         let created = runtime
             .create_with_admission::<_, _, Error>(
                 &machine,
@@ -2912,9 +2968,40 @@ mod sealed_output_tests {
                     std::future::ready(None),
                 ),
             )
-            .await
-            .unwrap();
-        (runtime, machine, created.container_id, containers)
+            .await;
+        (runtime, machine, created)
+    }
+
+    #[tokio::test]
+    async fn no_sealed_value_opens_while_the_log_store_runs_older_software() {
+        let cluster = Cluster::new();
+        let containers = Containers::default();
+
+        let (_runtime, _machine, created) =
+            create_with_env(&cluster, LogStore::Upgrading, &containers, true).await;
+
+        assert!(
+            matches!(
+                created,
+                Err(Error::Sealed(
+                    crate::sealed_env::OpenError::LogStoreUpgrading
+                ))
+            ),
+            "{created:?}"
+        );
+        assert!(containers.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn text_values_create_while_the_log_store_runs_older_software() {
+        let cluster = Cluster::new();
+        let containers = Containers::default();
+
+        let (_runtime, _machine, created) =
+            create_with_env(&cluster, LogStore::Upgrading, &containers, false).await;
+
+        assert!(created.is_ok(), "{created:?}");
+        assert_eq!(containers.lock().unwrap().len(), 1);
     }
 
     /// A Service Container holding Sealed `TOKEN`, whose checks print it. Docker's
@@ -2955,14 +3042,19 @@ mod sealed_output_tests {
 
         let docker = serde_json::to_string(&*containers.lock().unwrap()).unwrap();
         assert!(docker.contains(&format!("TOKEN={OPENED}")), "{docker}");
-        let store = runtime.spec_store_path_for_test().parent().unwrap();
-        let mut pending = vec![store.to_owned()];
+        let store = runtime.spec_store_path_for_test();
+        let name = store.file_name().unwrap().to_str().unwrap();
         let holds =
             |bytes: &[u8], text: &str| bytes.windows(text.len()).any(|w| w == text.as_bytes());
         let mut held_the_spec = false;
-        while let Some(path) = pending.pop() {
-            if path.is_dir() {
-                pending.extend(std::fs::read_dir(&path).unwrap().map(|e| e.unwrap().path()));
+        for entry in std::fs::read_dir(store.parent().unwrap()).unwrap() {
+            let path = entry.unwrap().path();
+            if !path
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with(name)
+            {
                 continue;
             }
             let bytes = std::fs::read(&path).unwrap();

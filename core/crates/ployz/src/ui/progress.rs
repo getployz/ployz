@@ -151,6 +151,7 @@ impl GraphService {
                 RowPhase::WaitingForHealth => "waiting for health",
                 RowPhase::Compensating => "rolling back",
                 RowPhase::WaitingForSwitch => "switching",
+                RowPhase::WaitingForLogStore => "waiting for log store",
                 RowPhase::Starting
                 | RowPhase::CreatingContainer
                 | RowPhase::StartingContainer
@@ -229,6 +230,7 @@ impl State {
             Self::Running(phase) => match phase {
                 RowPhase::Starting => "starting",
                 RowPhase::CreatingContainer => "creating",
+                RowPhase::WaitingForLogStore => "waiting for log store",
                 RowPhase::StartingContainer => "starting",
                 RowPhase::WaitingForHealth => "waiting for health",
                 RowPhase::WaitingForHook => "waiting for hook",

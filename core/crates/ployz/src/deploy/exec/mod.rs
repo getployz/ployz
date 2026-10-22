@@ -142,6 +142,15 @@ pub(crate) trait MachineOperations {
         machine_id: &MachineId,
         want: ContainerWant,
     ) -> Result<(ContainerNow, Option<HealthVerdict>), RpcError>;
+    /// [`Self::ensure_container`], showing each refusal it waits out to `waiting`.
+    async fn ensure_container_waiting(
+        &self,
+        machine_id: &MachineId,
+        want: ContainerWant,
+        _waiting: impl FnMut(&RpcError),
+    ) -> Result<(ContainerNow, Option<HealthVerdict>), RpcError> {
+        self.ensure_container(machine_id, want).await
+    }
     async fn inspect_container(
         &self,
         machine_id: &MachineId,
@@ -487,10 +496,22 @@ macro_rules! restart_policy {
                     restart_policy!(@send $policy $(($reason))? self $name $($arg)*)
                 }
             )*
+
+            async fn ensure_container_waiting(
+                &self,
+                machine_id: &MachineId,
+                want: ContainerWant,
+                waiting: impl FnMut(&RpcError),
+            ) -> Result<(ContainerNow, Option<HealthVerdict>), RpcError> {
+                wait_out_restart(self.cancellation, waiting, || {
+                    self.inner.ensure_container(machine_id, want.clone())
+                })
+                .await
+            }
         }
     };
     (@send wait $self:ident $name:ident $($arg:ident)*) => {
-        wait_out_restart($self.cancellation, || $self.inner.$name($(Clone::clone(&$arg)),*)).await
+        wait_out_restart($self.cancellation, |_| {}, || $self.inner.$name($(Clone::clone(&$arg)),*)).await
     };
     (@send once($reason:literal) $self:ident $name:ident $($arg:ident)*) => {
         $self.inner.$name($($arg),*).await
@@ -514,6 +535,7 @@ restart_policy! {
 
 async fn wait_out_restart<T, Fut>(
     cancellation: &CancellationToken,
+    mut waiting: impl FnMut(&RpcError),
     mut op: impl FnMut() -> Fut,
 ) -> Result<T, RpcError>
 where
@@ -539,6 +561,7 @@ where
                     && Instant::now() < deadline
                     && !cancellation.is_cancelled() =>
             {
+                waiting(&error);
                 tokio::select! {
                     () = cancellation.cancelled() => return Err(error),
                     () = tokio::time::sleep(RESTART_POLL) => {}
@@ -2642,7 +2665,19 @@ async fn run_new<C: MachineOperations>(
         }),
         rotation: RunRotation::Pending,
     };
-    let ensured = client.ensure_container(machine_id, want);
+    let mut phase = OperationPhase::CreatingContainer;
+    let ensured = client.ensure_container_waiting(machine_id, want, |refused| {
+        let now = if refused.container_refusal() == Some(ContainerRefusalReason::LogStoreUpgrading)
+        {
+            OperationPhase::WaitingForLogStore
+        } else {
+            OperationPhase::CreatingContainer
+        };
+        if now != phase {
+            progress.set_running(index, now.clone());
+            phase = now;
+        }
+    });
     let ensured = match answer {
         AnswerWhen::Started => ensured.await,
         // A cancel abandons the Machine's health wait; the caller then discards

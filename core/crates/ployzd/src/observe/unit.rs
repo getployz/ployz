@@ -11,6 +11,12 @@ use crate::{
 
 const UNIT_NAME: &str = "ployz-observe.service";
 
+/// Whether the Observe Store still runs software other than `own`, as it does
+/// between an upgrade and its restart.
+pub(crate) async fn runs_other_software(own: &InstalledExe) -> bool {
+    runtime_unit::runs_other_software(UNIT_NAME, own).await
+}
+
 /// Write the runtime unit and start the Observe Store, restarting it when
 /// systemd reloaded the unit or it runs other software. A legacy unit in `/etc` shadows the runtime one until
 /// the next install removes it; both run the same binary path.

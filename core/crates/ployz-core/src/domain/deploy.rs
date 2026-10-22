@@ -1314,6 +1314,9 @@ pub enum OperationStatus {
 pub enum OperationPhase {
     Starting,
     CreatingContainer,
+    /// The Machine opens the new Container's Sealed values once its Log Store has
+    /// restarted into upgraded software.
+    WaitingForLogStore,
     StartingContainer,
     WaitingForHealth {
         container_id: ContainerId,
