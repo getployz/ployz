@@ -737,38 +737,39 @@ pub(super) fn stop_command(command: Command) -> Command {
     ))
 }
 
-/// Linux signal names Docker's stop takes, without `SIG`; `RTMIN+n` and `RTMAX-n` are read apart.
-const SIGNALS: [&str; 34] = [
+/// Linux signal names Docker's stop takes, without `SIG`, beside `RTMIN+1..=15` and `RTMAX-1..=14`.
+const SIGNALS: [&str; 36] = [
     "ABRT", "ALRM", "BUS", "CHLD", "CLD", "CONT", "FPE", "HUP", "ILL", "INT", "IO", "IOT", "KILL",
     "PIPE", "POLL", "PROF", "PWR", "QUIT", "SEGV", "STKFLT", "STOP", "SYS", "TERM", "TRAP", "TSTP",
-    "TTIN", "TTOU", "URG", "USR1", "USR2", "VTALRM", "WINCH", "XCPU", "XFSZ",
+    "TTIN", "TTOU", "URG", "USR1", "USR2", "VTALRM", "WINCH", "XCPU", "XFSZ", "RTMIN", "RTMAX",
 ];
 
 /// A `--signal` Docker can send, checked here so a typo fails before any Server is asked (#2856).
-/// The value passes through as typed: Docker reads a name with or without `SIG`, in any case.
+/// The value passes through as typed: Docker reads a name with or without `SIG`, in any case, and
+/// an empty one as the image's own stop signal.
 fn stop_signal(value: &str) -> Result<String, &'static str> {
-    let refused = "expected a signal name like SIGTERM or SIGINT, or a number from 1 to 64";
     let upper = value.to_ascii_uppercase();
     let name = upper.strip_prefix("SIG").unwrap_or(&upper);
-    let realtime = |prefix: &str, sign: char| {
-        name.strip_prefix(prefix).is_some_and(|rest| {
-            rest.is_empty()
-                || rest
-                    .strip_prefix(sign)
-                    .and_then(|offset| offset.parse::<u8>().ok())
-                    .is_some_and(|offset| (1..=15).contains(&offset))
+    let offset = |prefix: &str, last: u8| {
+        name.strip_prefix(prefix).is_some_and(|offset| {
+            !offset.starts_with('0')
+                && offset.bytes().all(|byte| byte.is_ascii_digit())
+                && offset
+                    .parse::<u8>()
+                    .is_ok_and(|offset| (1..=last).contains(&offset))
         })
     };
-    let known = SIGNALS.contains(&name)
-        || realtime("RTMIN", '+')
-        || realtime("RTMAX", '-')
+    let known = value.is_empty()
+        || SIGNALS.contains(&name)
+        || offset("RTMIN+", 15)
+        || offset("RTMAX-", 14)
         || value
             .parse::<u8>()
             .is_ok_and(|number| (1..=64).contains(&number));
     if known {
         Ok(value.to_owned())
     } else {
-        Err(refused)
+        Err("expected a signal name like SIGTERM or SIGINT, or a number from 1 to 64")
     }
 }
 

@@ -550,7 +550,19 @@ fn a_stop_signal_docker_would_refuse_is_refused_before_any_server() {
             crate::cli::command()
                 .try_get_matches_from(["ployz", "service", command, "api", "--signal", signal])
         };
-        for refused in ["NOPE", "SIGNOPE", "0", "65", "TERM9", ""] {
+        for refused in [
+            "NOPE",
+            "SIGNOPE",
+            "SIGSIGTERM",
+            "0",
+            "65",
+            "TERM9",
+            "RTMAX-15",
+            "RTMIN+16",
+            "RTMIN+0",
+            "RTMIN+01",
+            "RTMIN++1",
+        ] {
             let error = signal(refused).unwrap_err();
             assert_eq!(
                 error.kind(),
@@ -575,7 +587,14 @@ fn a_stop_signal_docker_would_refuse_is_refused_before_any_server() {
             "SIGRTMIN+3",
             "RTMAX-1",
         ] {
-            assert!(signal(taken).is_ok(), "{taken}");
+            let matches = signal(taken).unwrap();
+            assert_eq!(
+                leaf_matches(&matches)
+                    .get_one::<String>("signal")
+                    .map(String::as_str),
+                Some(taken),
+                "{taken} reaches Docker as typed"
+            );
         }
     }
 }
