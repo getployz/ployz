@@ -466,13 +466,12 @@ release first, it stops with:
 This Server runs Ployz 0.3.0-beta.6 or earlier, which this release can't reach through the relay.
 ```
 
-Upgrade the first server over SSH from your computer. Install the CLI from the beta channel; the
-stable channel is still on a release before the change. Then run it with `--connect` and the
-server's SSH address:
+Upgrade the first server over SSH from your computer. Install the newest CLI, then run it with
+`--connect` and the server's SSH address:
 
 ```sh
-curl -fsSL https://ployz.sh | sh -s -- beta
-ployz server upgrade beta web-1 --connect ssh://root@203.0.113.10
+curl -fsSL https://ployz.sh | sh
+ployz server upgrade stable web-1 --connect ssh://root@203.0.113.10
 ```
 
 The server installs the newest release on the channel you name. Then Cloud and the CLI reach it
@@ -488,14 +487,13 @@ Without SSH from your computer, say with only your provider's console, upgrade a
 server itself:
 
 ```sh
-sudo ployzd install --version beta --software-only
+sudo ployzd install --version stable --software-only
 ```
 
 `--software-only` replaces Ployz and leaves Docker, packages and storage as they are.
 
 The same boundary holds the other way: a CLI on 0.3.0-beta.6 or earlier can't reach a server on a
-later release. Install the newer CLI from the beta channel with
-`curl -fsSL https://ployz.sh | sh -s -- beta`.
+later release. Install the newer CLI with `curl -fsSL https://ployz.sh | sh`.
 
 ## Remove a server
 

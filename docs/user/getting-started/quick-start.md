@@ -54,7 +54,7 @@ this first server from your terminal, so it joins and can take the deploy.
 1. [Install the CLI](../cli/overview.md#install-the-cli) and sign in:
 
    ```sh
-   curl -fsSL https://ployz.sh | sh -s -- beta
+   curl -fsSL https://ployz.sh | sh
    ployz login
    ```
 
