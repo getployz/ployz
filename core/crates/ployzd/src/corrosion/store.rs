@@ -674,7 +674,8 @@ impl ReplicatedStore {
             .await
     }
 
-    /// Record why a hostname has no certificate and when the Cluster may try again.
+    /// Record why a hostname has no certificate, or why its renewal failed, and when the Cluster may
+    /// try again.
     ///
     /// # Errors
     ///
@@ -689,12 +690,26 @@ impl ReplicatedStore {
         let Some((key, latest)) = self.acme_row(hostname).await? else {
             return Ok(());
         };
-        // A failed renewal keeps serving its material and backs off like a first order, unless
-        // another Machine renewed meanwhile: the new material carries no stale failure.
-        if latest.material() != tried {
-            return Ok(());
-        }
-        self.upsert_certificate(&key, &latest.with_backoff(last_error, clock))
+        let Some(tried) = tried else {
+            if latest.material().is_some() {
+                return Ok(());
+            }
+            return self
+                .upsert_certificate(&key, &latest.with_backoff(last_error, clock))
+                .await;
+        };
+        // A failed renewal keeps serving its material and backs off like a first order. The write
+        // lands only over the material that failed, so another Machine's renewal, read or not, survives.
+        let row = latest.with_backoff(last_error, clock);
+        self.api
+            .execute([Statement::new(
+                "UPDATE certificates SET body = ? WHERE hostname = ? AND json_extract(body, '$.certificate') = ?",
+                [
+                    json!(row.encode()?),
+                    json!(key.as_str()),
+                    json!(tried.certificate()),
+                ],
+            )])
             .await
     }
 
