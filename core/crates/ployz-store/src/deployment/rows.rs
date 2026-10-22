@@ -946,7 +946,7 @@ pub(crate) fn servers(
 }
 
 /// Each runtime Service's rows, by the Machine they ran on.
-fn by_service(
+pub(super) fn by_service(
     tx: &mut dyn Tx,
     stored: &Stored,
 ) -> Result<BTreeMap<ServiceName, BTreeMap<MachineId, ServerRow>>, RpcError> {
@@ -986,19 +986,28 @@ fn by_service(
     Ok(by_service)
 }
 
-/// The rows of runtime Services no node targets, which a full reconciliation removes
-/// because this Store doesn't hold them.
+/// The rows of the runtime Services the Deployment's preview plans to remove as
+/// obsolete and no node targets: Services this Store doesn't hold, which a full
+/// reconciliation removes. Empty without a preview.
 pub(super) fn untargeted(
-    tx: &mut dyn Tx,
     stored: &Stored,
-) -> Result<BTreeMap<ServiceName, Vec<ServerRow>>, RpcError> {
+    by_service: &BTreeMap<ServiceName, BTreeMap<MachineId, ServerRow>>,
+) -> BTreeMap<ServiceName, Vec<ServerRow>> {
+    let Some(preview) = &stored.run.preview else {
+        return BTreeMap::new();
+    };
     let targeted: BTreeSet<&ServiceName> =
         stored.nodes.iter().flat_map(TargetNode::runtimes).collect();
-    Ok(by_service(tx, stored)?
-        .into_iter()
-        .filter(|(service, _)| !targeted.contains(service))
-        .map(|(service, rows)| (service, rows.into_values().collect()))
-        .collect())
+    preview
+        .would_remove
+        .iter()
+        .map(|obsolete| &obsolete.name)
+        .filter(|service| !targeted.contains(service))
+        .filter_map(|service| {
+            let rows = by_service.get(service)?;
+            Some((service.clone(), rows.values().cloned().collect()))
+        })
+        .collect()
 }
 
 /// Each node's rows. A mounted Volume's or Config's rows read the Deployment's Saved
@@ -1006,9 +1015,9 @@ pub(super) fn untargeted(
 pub(super) fn of_nodes(
     tx: &mut dyn Tx,
     stored: &Stored,
+    by_service: &BTreeMap<ServiceName, BTreeMap<MachineId, ServerRow>>,
     saved: &mut Option<SavedEnvironmentIntent>,
 ) -> Result<BTreeMap<String, Vec<ServerRow>>, RpcError> {
-    let by_service = by_service(tx, stored)?;
     if by_service.is_empty() {
         return Ok(BTreeMap::new());
     }

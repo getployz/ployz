@@ -362,7 +362,8 @@ pub(crate) fn view(
     let stored = owned(tx, who, id)?;
     let environment = scope::load_by_id(tx, &stored.summary.environment_id)?;
     let mut saved = None;
-    let mut rows = super::rows::of_nodes(tx, &stored, &mut saved)?;
+    let by_service = super::rows::by_service(tx, &stored)?;
+    let mut rows = super::rows::of_nodes(tx, &stored, &by_service, &mut saved)?;
     let mut targets: Vec<&TargetNode> = stored.nodes.iter().collect();
     targets.sort_by(|a, b| a.listed().cmp(&b.listed()));
     // Only nodes sharing a kind and name need Saved State to order, which is rare.
@@ -413,7 +414,7 @@ pub(crate) fn view(
         .collect();
     let builds = build::views(tx, &stored)?;
     let rolls_back = undone(tx, &stored.summary)?;
-    let untargeted = super::rows::untargeted(tx, &stored)?;
+    let untargeted = super::rows::untargeted(&stored, &by_service);
     Ok(DeploymentView {
         builds,
         runtime_names,
@@ -550,7 +551,8 @@ pub(crate) fn all_in_flight(
 /// The Servers Deployment `id` failed on, by name, sorted.
 pub(crate) fn failed_on(tx: &mut dyn Tx, id: &DeploymentId) -> Result<Vec<String>, RpcError> {
     let stored = load(tx, id)?;
-    let mut servers: Vec<String> = super::rows::of_nodes(tx, &stored, &mut None)?
+    let by_service = super::rows::by_service(tx, &stored)?;
+    let mut servers: Vec<String> = super::rows::of_nodes(tx, &stored, &by_service, &mut None)?
         .into_values()
         .flatten()
         .filter(|row| {
@@ -598,7 +600,8 @@ pub(crate) fn unanswered_on(
     id: &DeploymentId,
 ) -> Result<BTreeSet<ployz_core::MachineId>, RpcError> {
     let stored = load(tx, id)?;
-    Ok(super::rows::of_nodes(tx, &stored, &mut None)?
+    let by_service = super::rows::by_service(tx, &stored)?;
+    Ok(super::rows::of_nodes(tx, &stored, &by_service, &mut None)?
         .into_values()
         .flatten()
         .filter(|row| {
