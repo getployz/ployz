@@ -128,6 +128,32 @@ async fn a_create_lost_with_its_entry_daemon_is_removed_on_a_new_session() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn a_target_silent_after_a_redial_is_reported_not_the_closed_session() {
+    let attempts = std::cell::Cell::new(0);
+    let error = wait_out_restart(
+        &CancellationToken::new(),
+        || {
+            attempts.set(attempts.get() + 1);
+            let error = if attempts.get() == 1 {
+                crate::connect::closed_session_error()
+            } else {
+                RpcError::unanswered_target(
+                    RpcErrorCode::Unavailable,
+                    "Machine did not answer: deadline has elapsed".into(),
+                )
+            };
+            async move { Err::<(), _>(error) }
+        },
+        || async { Some(Ok(())) },
+    )
+    .await
+    .unwrap_err();
+
+    assert!(attempts.get() > 2);
+    assert!(error.target_unanswered(), "{error:?}");
+}
+
+#[tokio::test(start_paused = true)]
 async fn cancelling_a_deploy_ends_a_redial_still_dialing() {
     let cancellation = CancellationToken::new();
     tokio::spawn({
