@@ -197,9 +197,12 @@ async fn stream_args(programs: &Programs, stream: &SendStream) -> Result<Vec<Str
             .output()
             .await
             .map_err(|error| Refusal::Zfs(format!("could not inspect resume token: {error}")))?;
+        // ZFS refuses a token whose base or target this writer no longer holds. That is
+        // a stream this Machine cannot send, so the puller drops its partial receive and
+        // asks for a full send instead of retrying the token forever.
         if !output.status.success() {
-            return Err(Refusal::Zfs(format!(
-                "could not inspect resume token: {}",
+            return Err(Refusal::Unknown(format!(
+                "resume token cannot be sent from {root}: {}",
                 String::from_utf8_lossy(&output.stderr).trim()
             )));
         }
