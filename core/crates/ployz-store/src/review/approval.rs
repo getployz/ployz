@@ -346,10 +346,13 @@ impl<'a> Gate<'a> {
             .as_ref()
             .is_some_and(|held| !held.contains(&Permission::EnvironmentsProtect))
             && crate::scope::protected(tx, environment)?;
+        // An agent asks on every deploy anyway; its ask stays Protected, so only an
+        // admin answers it.
+        let protector = trusted.protector && trusted.asks != Asks::EveryDeploy;
         Ok(Self {
             trusted,
-            protected: asks && !trusted.protector,
-            exempt: asks && trusted.protector,
+            protected: asks && !protector,
+            exempt: asks && protector,
         })
     }
 

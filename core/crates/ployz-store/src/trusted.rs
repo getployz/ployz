@@ -54,7 +54,7 @@ pub struct Trusted {
     #[serde(default)]
     #[ts(optional)]
     pub permissions: Option<BTreeSet<Permission>>,
-    /// Whether the caller's person can protect Environments, though its token's grant may
+    /// Whether the caller's Member role can protect Environments, though its token's grant may
     /// leave `environments:protect` out: an owner's or admin's Deploy token. A write that
     /// ships into a Protected Environment doesn't ask another protector for it. Every fence
     /// that keys on the permission still reads [`Self::permissions`].

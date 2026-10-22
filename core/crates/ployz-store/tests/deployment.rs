@@ -5352,6 +5352,19 @@ fn a_protectors_deploy_token_ships_into_protected_production_unasked() {
 }
 
 #[test]
+fn a_protectors_agent_still_asks_an_admin_in_protected_production() {
+    let (store, who) = shop();
+    apply_both(&store, &who, 1);
+    set_replicas(&store, &who, "api", 2);
+    let agent = Trusted {
+        asks: Asks::EveryDeploy,
+        ..protectors_deploy_token(Approval::NotRequired)
+    };
+    let refused = deploy_trusted(&store, &who, 2, &agent).unwrap_err();
+    assert_admin_asked(&refused);
+}
+
+#[test]
 fn a_protectors_deploy_token_cannot_ship_a_saved_removal_into_protected_production() {
     let (store, who) = shop();
     apply_both(&store, &who, 1);

@@ -25,7 +25,7 @@ export const protectorOnly = (caller: Pick<Caller, "role" | "support" | "credent
 };
 
 /**
- * Whether `caller`'s person can protect Environments, though a token's grant may leave `environments:protect` out: an
+ * Whether `caller`'s Member role can protect Environments, though a token's grant may leave `environments:protect` out: an
  * owner's or admin's Deploy token ships into a Protected Environment as they would, without asking another protector.
  * The Store's fences on protection and source still read the token's own permissions.
  */
