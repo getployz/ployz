@@ -153,8 +153,8 @@ How you answer depends on where the command runs:
   [Protected environment](../environments/environments.md#protect-an-environment), redeploying from the CLI or the
   dashboard never asks, except from the CLI when it takes something off: redeploying a
   `ployz env shutdown`, or rolling back to a deploy from before a service was added, asks as a
-  deploy that removes the same would. In a Protected environment, a member's redeploy asks an
-  admin, as their deploy does.
+  deploy that removes the same would. In a Protected environment, a member's save, deploy or
+  redeploy asks an admin even when it removes nothing.
 - `ployz project rm`, `ployz env rm` and `ployz env shutdown` ask when they would take something
   off the servers. `ployz org rm`, `ployz server forget` with no server named and
   `ployz env protect --off` always ask.
