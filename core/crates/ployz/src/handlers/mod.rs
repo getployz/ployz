@@ -173,7 +173,7 @@ fn wants_json(args: &[std::ffi::OsString]) -> bool {
 /// A flag written before the command that takes it, `ployz --project web status`:
 /// clap would offer the nearest top-level flag, so name the command's own instead.
 /// A flag another command takes, `server show --project`, is one this command lacks,
-/// not a typo of its nearest flag, unless that flag shares its stem: `server ls --wait`
+/// not a typo of its nearest flag, unless that flag is [`close`]: `server ls --wait`
 /// keeps clap's `--waiting`. One after `--` is an operand, and keeps clap's error.
 fn misplaced_flag(error: clap::Error, tree: &Command, args: &[std::ffi::OsString]) -> clap::Error {
     use clap::error::{ContextKind, ContextValue, ErrorKind};
@@ -206,11 +206,11 @@ fn misplaced_flag(error: clap::Error, tree: &Command, args: &[std::ffi::OsString
     fn anywhere(command: &Command, long: &str) -> bool {
         takes(command, long) || command.get_subcommands().any(|sub| anywhere(sub, long))
     }
-    let stem_suggested = matches!(
+    let close_suggested = matches!(
         error.get(ContextKind::SuggestedArg),
         Some(ContextValue::String(suggested)) if suggested
             .strip_prefix("--")
-            .is_some_and(|suggested| suggested.starts_with(long) || long.starts_with(suggested))
+            .is_some_and(|suggested| close(long, suggested))
     );
     let path = reached(tree, args);
     let Some(command) = (!path.is_empty())
@@ -224,7 +224,7 @@ fn misplaced_flag(error: clap::Error, tree: &Command, args: &[std::ffi::OsString
     };
     let tip = if takes(command, long) {
         format!("'{path} --{long}' exists; put it after the command")
-    } else if !command.has_subcommands() && anywhere(tree, long) && !stem_suggested {
+    } else if !command.has_subcommands() && anywhere(tree, long) && !close_suggested {
         format!("'{path}' takes no --{long}")
     } else {
         return error;
@@ -233,6 +233,33 @@ fn misplaced_flag(error: clap::Error, tree: &Command, args: &[std::ffi::OsString
         ErrorKind::UnknownArgument,
         format!("unexpected argument '{invalid}' found\n\n  tip: {tip}\n"),
     )
+}
+
+/// Whether clap's suggestion is a likely typo fix for `long`: one starts the other
+/// (`--wait`, `--waiting`), or they are at most two edits apart (`--reset`, `--preset`).
+fn close(long: &str, suggested: &str) -> bool {
+    if suggested.starts_with(long) || long.starts_with(suggested) {
+        return true;
+    }
+    // Levenshtein distance, one row at a time.
+    let mut previous = (0..=suggested.chars().count()).collect::<Vec<_>>();
+    for (i, a) in long.chars().enumerate() {
+        let mut row = vec![i + 1];
+        for ((b, diagonal), above) in suggested
+            .chars()
+            .zip(&previous)
+            .zip(previous.iter().skip(1))
+        {
+            let left = row.last().copied().unwrap_or(i + 1);
+            row.push(
+                (diagonal + usize::from(a != b))
+                    .min(above + 1)
+                    .min(left + 1),
+            );
+        }
+        previous = row;
+    }
+    previous.last().is_some_and(|distance| *distance <= 2)
 }
 
 /// Report a rejected command line: clap's own rendering, or one JSON error under `--json`.
@@ -831,6 +858,12 @@ mod tests {
         let error = rejected(&["server", "token", "create", "--expires-in", "7d"]);
         assert!(
             error.contains("tip: a similar argument exists: '--expires'"),
+            "{error}"
+        );
+        assert!(!error.contains("takes no"), "{error}");
+        let error = rejected(&["token", "new", "ci", "--reset", "read"]);
+        assert!(
+            error.contains("tip: a similar argument exists: '--preset'"),
             "{error}"
         );
         assert!(!error.contains("takes no"), "{error}");
