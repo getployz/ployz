@@ -76,10 +76,10 @@ pub(crate) fn interrupted() -> std::io::Result<CancellationToken> {
     Ok(token.insert(cancelled).clone())
 }
 
-/// Whether SIGHUP must keep the disposition the process started with, as
-/// `nohup` asks: a listener would replace its ignore. Linux says which signals
-/// are ignored; elsewhere `nohup` moves stderr off the terminal, and a hangup
-/// without one ends the process as before.
+/// Whether SIGHUP must keep the disposition the process started with: ignored,
+/// as `nohup` asks, a listener would replace the ignore. Linux says which
+/// signals are ignored. Where that can't be read, and off Linux where no safe
+/// call tells, SIGHUP keeps the disposition it started with, as before.
 fn hangup_ignored() -> bool {
     #[cfg(target_os = "linux")]
     {
@@ -91,12 +91,11 @@ fn hangup_ignored() -> bool {
                     .find_map(|line| line.strip_prefix("SigIgn:"))
                     .and_then(|mask| u64::from_str_radix(mask.trim(), 16).ok())
             })
-            .is_some_and(|mask| mask & (1 << (signal_hook::consts::SIGHUP - 1)) != 0)
+            .is_none_or(|mask| mask & (1 << (signal_hook::consts::SIGHUP - 1)) != 0)
     }
     #[cfg(not(target_os = "linux"))]
     {
-        use std::io::IsTerminal as _;
-        !std::io::stderr().is_terminal()
+        true
     }
 }
 
@@ -201,6 +200,7 @@ mod tests {
     }
 
     // A closed terminal or a dropped SSH session sends SIGHUP.
+    #[cfg(target_os = "linux")]
     #[test]
     fn sighup_cancels_like_ctrl_c_while_a_deploy_holds_it() {
         let (token, _sigterm) = super::interrupted_or_terminated().unwrap();
