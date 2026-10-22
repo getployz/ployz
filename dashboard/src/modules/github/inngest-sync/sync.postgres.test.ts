@@ -224,7 +224,7 @@ it.live(
       ]);
       assert.deepStrictEqual(SYNC_GITHUB_REPOSITORIES_SINGLETON, {
         key: "event.data.installationId",
-        mode: "skip",
+        mode: "cancel",
       });
     }),
   60_000,

@@ -113,3 +113,9 @@ it("hangs nothing under a Volume whose only other copy is old", async () => {
   await show([old]);
   expect(document.querySelector("[data-copy]")).toBeNull();
 });
+
+it("names a mirror known only from its silent Server's last report as last reported", async () => {
+  await show([mirror({ lastReported: true })]);
+  const link = screen.getByRole("link", { name: "data-web-2, last reported mirror of data" });
+  expect(link.textContent).toMatch(/^data-web-2Last reported · /);
+});

@@ -15,7 +15,7 @@ describe("GitHub repository sync Inngest adapter", () => {
         triggers: [{ event: githubRepositoriesSyncRequestedEventType }],
         singleton: {
           key: "event.data.installationId",
-          mode: "skip",
+          mode: "cancel",
         },
         concurrency: [{ key: "event.data.installationId", limit: 1 }],
       }),

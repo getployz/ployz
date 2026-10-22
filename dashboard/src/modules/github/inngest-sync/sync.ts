@@ -16,9 +16,14 @@ import { decodeInngestEnvelope } from "#/modules/inngest/envelope";
 import { githubRepositoriesSyncRequestedEventType } from "#/modules/inngest/events";
 import { runInngestEffect } from "#/server/run.server";
 
+/**
+ * A request replaces the installation's running sync rather than being skipped: a run that already wrote may still be
+ * finishing, and would never see what prompted the request. A write the replaced run commits after the new run began
+ * listing bumps the cache version, so the new run lists again rather than writing over it.
+ */
 export const SYNC_GITHUB_REPOSITORIES_SINGLETON = {
   key: "event.data.installationId",
-  mode: "skip",
+  mode: "cancel",
 } as const;
 
 const GithubRepositorySyncEventData = Schema.Struct({
