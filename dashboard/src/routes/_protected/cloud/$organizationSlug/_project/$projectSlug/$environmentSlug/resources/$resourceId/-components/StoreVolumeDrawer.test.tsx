@@ -32,7 +32,7 @@ afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
 type CopiesData = ReturnType<typeof copies.useVolumeCopies>;
 
-async function openDrawer(url: string, volume: Partial<VolumeListing>, copy: MachineId | null = null, { realMounts = false, data = {} }: { realMounts?: boolean; data?: Partial<CopiesData> } = {}) {
+async function openDrawer(url: string, volume: Partial<VolumeListing>, copy: MachineId | null = null, { realMounts = false, data = {}, opens = true }: { realMounts?: boolean; data?: Partial<CopiesData>; opens?: boolean } = {}) {
   vi.stubGlobal("scrollTo", () => {});
   vi.spyOn(changes, "useStoreChangeActions").mockReturnValue(asTestDouble<ReturnType<typeof changes.useStoreChangeActions>>()({ dialog: null }));
   vi.spyOn(copies, "useVolumeCopies").mockReturnValue(asTestDouble<CopiesData>()({ copies: null, holders: null, running: null, ...data }));
@@ -78,9 +78,15 @@ async function openDrawer(url: string, volume: Partial<VolumeListing>, copy: Mac
     project.addChildren([environmentRoute.addChildren([canvas.addChildren([resource])])]),
   ])])]), history: createMemoryHistory({ initialEntries: [url] }) });
   render(<QueryClientProvider client={queryClient}><RouterProvider router={router} /></QueryClientProvider>);
-  await screen.findByRole("tab", { name: "Copies" });
+  if (opens) await screen.findByRole("tab", { name: "Copies" });
   return queryClient;
 }
+
+it("names a missing resource neutrally, since a deleted Config lands here too", async () => {
+  await openDrawer("/cloud/acme/shop/production/resources/vol", { id: "other" }, null, { opens: false });
+  await screen.findByText("This environment has no such resource. It may have been deleted.");
+  expect(screen.queryByText(/no such volume/)).toBeNull();
+});
 
 it("opens a mirror on the Copies tab, even from a URL that had Settings open", async () => {
   await openDrawer("/cloud/acme/shop/production/resources/vol~web-2?tab=settings", {}, "web-2" as MachineId);
