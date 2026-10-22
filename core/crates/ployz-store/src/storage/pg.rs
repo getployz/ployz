@@ -71,10 +71,10 @@ impl Postgres {
             // A restart closes every idle connection unnoticed until its next use: starting the
             // transaction is that use, and nothing ran, so drop them all and start on a fresh one.
             Err((error, work)) if reused && ended(&client, &error) => {
-                self.idle
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .clear();
+                // Dropping a client waits for its connection to close, so it happens outside the lock.
+                let stale =
+                    std::mem::take(&mut *self.idle.lock().unwrap_or_else(PoisonError::into_inner));
+                drop(stale);
                 client = self.connect()?;
                 run(&mut client, write, work).unwrap_or_else(|(error, _)| Err(storage_error(error)))
             }
