@@ -52,13 +52,26 @@ it("accepts a shipped migration whose file was edited after it was applied", asy
 });
 
 it("accepts history for a migration the image renamed or folded into its baseline", async () => {
-  await harness.pool.query("insert into drizzle.__drizzle_migrations (hash, created_at, name) values ($1, $2, $3)", [
+  // Applied before the migrations the image still ships, as a renamed or folded migration was.
+  await harness.pool.query("insert into drizzle.__drizzle_migrations (id, hash, created_at, name) values (-1, $1, $2, $3)", [
     "a-migration-main-renamed", Date.UTC(2026, 9, 11, 18, 42), "20261011184200_service_act",
   ]);
   try {
     await expect(check()).resolves.toBeUndefined();
   } finally {
     await harness.pool.query("delete from drizzle.__drizzle_migrations where hash = $1", ["a-migration-main-renamed"]);
+  }
+});
+
+it("refuses a migration merged out of order that the image doesn't ship, applied after its own", async () => {
+  // Older than the image's newest migration, as #2960's rollback past deployment_cleanup would leave it.
+  await harness.pool.query("insert into drizzle.__drizzle_migrations (hash, created_at, name) values ($1, $2, $3)", [
+    "migration-merged-out-of-order", Date.UTC(2026, 9, 1), "20261001000000_not_shipped",
+  ]);
+  try {
+    await expect(check()).rejects.toThrow(/Use a newer Ployz Cloud image/);
+  } finally {
+    await harness.pool.query("delete from drizzle.__drizzle_migrations where hash = $1", ["migration-merged-out-of-order"]);
   }
 });
 
