@@ -1,5 +1,5 @@
 use ployz::context::{Config, Connection, Context};
-use ployz::enrollment::local::{has_assignment, save_assignment};
+use ployz::enrollment::local::save_assignment;
 use ployz_core::{
     AdvertisedEndpoint, EnrollmentAssignment, EnrollmentSnapshot, MachineId, MachineName,
     RegisterRequest, StorageChoice, WireGuardPublicKey, allocate_enrollment,
@@ -192,7 +192,6 @@ fn independent_processes_serialize_stale_snapshots_and_resume_after_exit() {
     let resumed = concurrent(temp.path(), &[2, 2]);
     assert_eq!(resumed.first().unwrap(), assignments.first().unwrap());
     assert_eq!(resumed.first().unwrap(), resumed.get(1).unwrap());
-    assert!(has_assignment(temp.path(), &snapshot(1), request(2).machine_id).unwrap());
 }
 
 #[test]
@@ -269,11 +268,11 @@ fn moving_a_reset_machine_transfers_scope_witness_without_merging_history() {
 }
 
 #[test]
-fn corrupt_history_is_an_error_when_checking_saved_work() {
+fn corrupt_history_is_an_error_when_saving_an_assignment() {
     let temp = tempfile::tempdir().unwrap();
     fs::write(temp.path().join("assignments.json"), b"invalid JSON").unwrap();
     assert!(matches!(
-        has_assignment(temp.path(), &snapshot(1), request(2).machine_id),
+        save_assignment(temp.path(), &request(2), &snapshot(1)),
         Err(ployz::enrollment::local::Error::Serialization(_))
     ));
 }

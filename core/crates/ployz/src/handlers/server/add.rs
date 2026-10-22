@@ -47,7 +47,7 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
             helpers::inspect_token(&mut target_client, token_request.clone()).await?;
         let history = config.path().with_extension("enrollment");
         if details.phase != LocalMachinePhase::Uninitialized
-            && !resumes(&history, &snapshot, token.id, token.public_key)?
+            && !resumes(&snapshot, token.id, token.public_key)
         {
             helpers::confirm(yes, "Reset the Server before adding it to this Cluster?")?;
             helpers::leave(&mut target_client).await?;
@@ -128,19 +128,13 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
     )
 }
 
-fn resumes(
-    history: &std::path::Path,
-    snapshot: &EnrollmentSnapshot,
-    id: MachineId,
-    public_key: WireGuardPublicKey,
-) -> Result<bool, Error> {
-    Ok(
-        crate::enrollment::local::has_assignment(history, snapshot, id)?
-            || snapshot
-                .machines
-                .iter()
-                .any(|machine| machine.id == id && machine.public_key == public_key),
-    )
+/// Only a Server the Cluster lists resumes its join. One this computer assigned that the Cluster
+/// no longer lists was forgotten, and still holds the state it had then.
+fn resumes(snapshot: &EnrollmentSnapshot, id: MachineId, public_key: WireGuardPublicKey) -> bool {
+    snapshot
+        .machines
+        .iter()
+        .any(|machine| machine.id == id && machine.public_key == public_key)
 }
 
 #[cfg(test)]
@@ -233,7 +227,7 @@ mod tests {
         .unwrap();
         joined.machines.push(saved.machine.clone());
         assert!(
-            resumes(history.path(), &joined, returning.id, returning.public_key).unwrap(),
+            resumes(&joined, returning.id, returning.public_key),
             "a Server the Cluster lists resumes its join"
         );
 
@@ -242,7 +236,7 @@ mod tests {
             ..joined
         };
         assert!(
-            !resumes(history.path(), &forgotten, returning.id, returning.public_key).unwrap(),
+            !resumes(&forgotten, returning.id, returning.public_key),
             "a forgotten Server is reset, whatever this computer once assigned it"
         );
     }
