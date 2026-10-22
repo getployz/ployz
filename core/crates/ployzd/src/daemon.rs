@@ -347,6 +347,9 @@ impl Daemon {
             management::bind(local_record.management_secret(), &config.management)
                 .await
                 .map_err(io::Error::other)?;
+        let roster = replicated_store.clone();
+        let fence_endpoint = management_endpoint.clone();
+        let fence_relay = config.management.relay_url.clone();
         let socket_path = config.socket.clone();
         let ingress_admin = corrosion.as_ref().map(RunningCorrosion::admin_client);
         let boot_admin = corrosion.as_ref().map(RunningCorrosion::admin_client);
@@ -367,6 +370,7 @@ impl Daemon {
                                 .with_plugin(plugin.clone()),
                             machine_api.clone(),
                             grants,
+                            roster,
                             shutdown.clone(),
                         )
                         .await;
@@ -452,7 +456,7 @@ impl Daemon {
                 }
                 Ok(())
             };
-            let boot_pass = async {
+            let boot_pass_and_fence = async {
                 if !wait_for_participation(records.clone(), shutdown.clone()).await? {
                     return Ok(());
                 }
@@ -465,19 +469,33 @@ impl Daemon {
                     return Ok(());
                 };
                 let first_synced = runtime.first_synced();
-                let host = crate::boot_pass::DaemonHost {
+                let machine = crate::machine::LocalMachine::new(local.clone())
+                    .with_containers(Some(runtime))
+                    .with_plugin(plugin.clone())
+                    .with_cluster(Some((replicated.clone(), admin.clone())));
+                let boot = crate::boot_pass::DaemonHost {
                     machine_id: local_id,
-                    machine: crate::machine::LocalMachine::new(local.clone())
-                        .with_containers(Some(runtime))
-                        .with_plugin(plugin.clone())
-                        .with_cluster(Some((replicated.clone(), admin.clone()))),
+                    machine: machine.clone(),
                     replicated,
+                    machines: machines.clone(),
+                    admin: admin.clone(),
+                };
+                let fence = crate::forgotten_fence::FenceDaemon {
+                    machine_id: local_id,
+                    machine,
                     machines,
                     admin,
+                    endpoint: fence_endpoint,
+                    relay: fence_relay,
                 };
                 tokio::select! {
                     () = shutdown.cancelled() => {}
-                    () = crate::boot_pass::run(host, first_synced, published_routes) => {}
+                    () = async {
+                        tokio::join!(
+                            crate::boot_pass::run(boot, first_synced, published_routes),
+                            crate::forgotten_fence::run(&fence, shutdown.clone()),
+                        );
+                    } => {}
                 }
                 Ok(())
             };
@@ -490,7 +508,7 @@ impl Daemon {
                 dns,
                 ingress,
                 certificates,
-                boot_pass,
+                boot_pass_and_fence,
             )
             .map(|_| ())
         });

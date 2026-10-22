@@ -6,8 +6,8 @@ use std::{
 };
 
 use ployz_core::{
-    CertificateHost, ContainerId, DockerVolume, DockerVolumeId, DockerVolumeName, IngressHost,
-    IssuanceClock, IssuanceFailure, Machine, MachineId, QualifiedService,
+    CertificateHost, ContainerId, DockerVolume, DockerVolumeId, DockerVolumeName, ForgottenAnswer,
+    IngressHost, IssuanceClock, IssuanceFailure, Machine, MachineId, QualifiedService,
 };
 use serde_json::json;
 
@@ -221,7 +221,8 @@ async fn publication_guard_rechecks_the_local_phase() {
     let store = ReplicatedStore::new(
         ApiClient::new(listener.local_addr().unwrap(), &"a".repeat(64)).unwrap(),
     );
-    let (machine, local) = participating_record();
+    let (mut machine, local) = participating_record();
+    machine.runtime.management_identity = Some(local.management_secret().public_key());
     let publication = store.machine_publication().await;
     assert_eq!(
         publication.publishable_machine(&local, RuntimeOverlay::default()),
@@ -699,6 +700,94 @@ async fn remove_machine_deletes_route_ack() {
     assert_eq!(
         store.ingress_routes().await.unwrap(),
         BTreeMap::from([((kept, api), IngressRouteRow::Acked(ack))])
+    );
+    task.abort();
+}
+
+#[tokio::test]
+async fn forget_leaves_a_tombstone_only_the_forgotten_identity_matches() {
+    let (store, task) = identity_store(corrosion_db()).await;
+    let (machine, local) = participating_record();
+    let identity = local.management_secret().public_key();
+    let other = crate::management::ManagementSecret::generate().public_key();
+    let publication = store.machine_publication().await;
+    let published = publication
+        .publishable_machine(&local, RuntimeOverlay::default())
+        .unwrap();
+    assert_eq!(published.runtime.management_identity, Some(identity));
+    publication.publish(&published).await.unwrap();
+    drop(publication);
+    assert_eq!(
+        store.forgotten(identity).await.unwrap(),
+        ForgottenAnswer::Listed
+    );
+
+    store.forget_machine(&machine.id).await.unwrap();
+    assert_eq!(store.machine(machine.id.as_str()).await.unwrap(), None);
+    assert_eq!(
+        store.forgotten(identity).await.unwrap(),
+        ForgottenAnswer::Forgotten
+    );
+    assert_eq!(
+        store.forgotten(other).await.unwrap(),
+        ForgottenAnswer::NoAnswer
+    );
+
+    // An Entry's Register writes the id back without an identity: Listed wins.
+    store.publish_local_machine(&machine).await.unwrap();
+    assert_eq!(
+        store.forgotten(identity).await.unwrap(),
+        ForgottenAnswer::Listed
+    );
+    store.forget_machine(&machine.id).await.unwrap();
+
+    let mut twin = published.clone();
+    twin.id = MachineId::parse("c".repeat(32)).unwrap();
+    store.publish_local_machine(&twin).await.unwrap();
+    assert_eq!(
+        store.forgotten(identity).await.unwrap(),
+        ForgottenAnswer::Listed
+    );
+    task.abort();
+}
+
+#[tokio::test]
+async fn forget_of_a_row_without_an_identity_writes_no_tombstone() {
+    let (store, task) = identity_store(corrosion_db()).await;
+    let (machine, local) = participating_record();
+    store.publish_local_machine(&machine).await.unwrap();
+
+    store.forget_machine(&machine.id).await.unwrap();
+
+    assert_eq!(store.machine(machine.id.as_str()).await.unwrap(), None);
+    assert_eq!(
+        store
+            .forgotten(local.management_secret().public_key())
+            .await
+            .unwrap(),
+        ForgottenAnswer::NoAnswer
+    );
+    task.abort();
+}
+
+#[tokio::test]
+async fn leave_writes_no_tombstone() {
+    let (store, task) = identity_store(corrosion_db()).await;
+    let (machine, local) = participating_record();
+    let identity = local.management_secret().public_key();
+    let publication = store.machine_publication().await;
+    let published = publication
+        .publishable_machine(&local, RuntimeOverlay::default())
+        .unwrap();
+    publication.publish(&published).await.unwrap();
+    drop(publication);
+
+    store.remove_machine(&machine.id).await.unwrap();
+
+    assert_eq!(store.machine(machine.id.as_str()).await.unwrap(), None);
+    assert_eq!(
+        store.forgotten(identity).await.unwrap(),
+        ForgottenAnswer::NoAnswer
     );
     task.abort();
 }

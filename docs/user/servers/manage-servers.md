@@ -638,11 +638,20 @@ server during the download stops the pull and keeps the mirror. It also pulls on
 volume wrote since the mirror's last refresh, so the mirror of a volume that wrote nothing since
 pulls nothing and stays.
 
-A forgotten server doesn't know it was removed, and neither your other servers nor Ployz Cloud
-can reach it to tell it. If it runs again as it is, it starts its services on its own copy of each
-volume and they keep writing there. Ployz can't make that copy read-only, and a later move, mirror,
-sync or release of the volume doesn't reach it. Ployz never brings back what they write there,
-and if you've restored the volume on another server, the two copies drift apart.
+A forgotten server isn't told it was removed. If it runs again as it is, it starts its services on
+its own copy of each volume and they keep writing there, and a later move, mirror, sync or release
+of the volume doesn't reach it. Ployz never brings back what they write there, and if you've
+restored the volume on another server, the two copies drift apart.
+
+A forgotten server stops its services itself as a best effort, and only when it was unreachable
+when it was forgotten. It needs the server and at least one other server to have run Ployz 0.3.1 or
+later while it was still connected, and the server that forgot it to run 0.3.1 or later. Once its
+network returns and it has heard nothing from a server for a minute, it asks that server whether it
+was forgotten, and when one says so it resets itself as `ployz server rm` would, except that it
+keeps every volume copy on its disk, mirrors included. Its services stop up to about 15 minutes
+after its network returns, and `journalctl -u ployz` on it says `this Machine was forgotten by its
+Cluster`. Nothing stops them when it can't reach any of those servers, or when the versions don't
+line up. Those cases, and the minutes before it asks, are yours to cover.
 
 So decide before a forgotten server runs again. As soon as it boots, run `sudo ployz-uninstall`
 on it. That stops the services Ployz runs there and keeps every copy of a volume on the disk, along

@@ -39,7 +39,7 @@ it("says a mirrored volume comes back from its mirror, and only a volume with no
   );
   expect(dialog.textContent).not.toContain("can't be recovered");
   expect(dialog.textContent).toContain(
-    "web-1 won't know it was forgotten. If it runs again as it is, its services keep writing to its own copies, and Ployz never brings that back: run sudo ployz-uninstall on it as soon as it boots.",
+    "web-1 isn't told it was forgotten. If it runs again as it is, its services keep writing to its own copies, and Ployz never brings that back: run sudo ployz-uninstall on it as soon as it boots. As a best effort, if it and at least one other server ran 0.3.1 or later while it was still connected, and the server that forgot it runs 0.3.1 or later, it stops them itself up to about 15 minutes after its network returns.",
   );
 });
 

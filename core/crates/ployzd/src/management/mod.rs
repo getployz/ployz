@@ -26,8 +26,8 @@ use iroh::{
     tls::CaTlsConfig,
 };
 use ployz_core::{
-    BUILD_GRANT_ALPN, DEFAULT_RELAY_URL, MANAGEMENT_ALPN, MANAGEMENT_PORT, MANAGEMENT_PROOF_LABEL,
-    ManagementProof, Rpc, TUNNEL_ALPN, op,
+    BUILD_GRANT_ALPN, DEFAULT_RELAY_URL, FORGOTTEN_ALPN, MANAGEMENT_ALPN, MANAGEMENT_PORT,
+    MANAGEMENT_PROOF_LABEL, ManagementProof, Rpc, TUNNEL_ALPN, op,
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, watch};
@@ -40,8 +40,10 @@ use tonic::{
 use crate::machine::{LocalMachine, LocalMachineRecord};
 
 pub mod build_grant;
+pub mod forgotten;
 mod tunnel;
 pub use build_grant::BuildGrants;
+pub use forgotten::Roster;
 
 /// Application close code sent when the remote key is not admitted and no tombstone holds it.
 pub const CLIENT_REFUSED: VarInt = VarInt::from_u32(0x50);
@@ -119,8 +121,8 @@ impl std::fmt::Debug for ManagementSecret {
     }
 }
 
-/// Bind the management endpoint: the Machine RPC, tunnel and Build Grant ALPNs, no address
-/// lookup, only the configured relay.
+/// Bind the management endpoint: the Machine RPC, tunnel, Build Grant and forgotten
+/// ALPNs, no address lookup, only the configured relay.
 ///
 /// # Errors
 /// Returns the iroh bind error when the UDP port or crypto provider is unavailable.
@@ -139,6 +141,7 @@ pub async fn bind(
             MANAGEMENT_ALPN.to_vec(),
             TUNNEL_ALPN.to_vec(),
             BUILD_GRANT_ALPN.to_vec(),
+            FORGOTTEN_ALPN.to_vec(),
         ])
         .relay_mode(RelayMode::custom([config.relay_url.clone()]))
         .ca_tls_config(config.relay_tls.clone())
@@ -173,11 +176,16 @@ pub struct ProvenClient(pub [u8; 32]);
 ///
 /// Connections on the tunnel ALPN each relay one port-forward TCP stream into the
 /// Cluster network for a slot's accepted key.
-pub async fn serve<S>(
+///
+/// Connections on the forgotten ALPN are answered from `roster` by their transport key
+/// alone and closed; see [`forgotten`]. Only a Participating Machine answers; pass
+/// `None::<ReplicatedStore>` to have every asker hear NoAnswer.
+pub async fn serve<S, R>(
     endpoint: Endpoint,
     local: LocalMachine,
     api: S,
     grants: Arc<BuildGrants>,
+    roster: R,
     shutdown: CancellationToken,
 ) where
     S: Service<http::Request<Body>, Response = http::Response<Body>, Error = Infallible>
@@ -185,8 +193,10 @@ pub async fn serve<S>(
         + Send
         + 'static,
     S::Future: Send,
+    R: Roster,
 {
     let records = local.owner().watch();
+    let answers = Arc::new(forgotten::Answers::new(roster));
     let handshakes = Arc::new(Semaphore::new(MAX_CONCURRENT_HANDSHAKES));
     let mut connections = tokio::task::JoinSet::new();
     loop {
@@ -207,6 +217,7 @@ pub async fn serve<S>(
             records.clone(),
             api.clone(),
             Arc::clone(&grants),
+            Arc::clone(&answers),
             shutdown.clone(),
         ));
     }
@@ -214,12 +225,13 @@ pub async fn serve<S>(
     endpoint.close().await;
 }
 
-async fn serve_connection<S>(
+async fn serve_connection<S, R>(
     incoming: Incoming,
     permit: OwnedSemaphorePermit,
     mut records: watch::Receiver<Arc<LocalMachineRecord>>,
     api: S,
     grants: Arc<BuildGrants>,
+    answers: Arc<forgotten::Answers<R>>,
     shutdown: CancellationToken,
 ) where
     S: Service<http::Request<Body>, Response = http::Response<Body>, Error = Infallible>
@@ -227,6 +239,7 @@ async fn serve_connection<S>(
         + Send
         + 'static,
     S::Future: Send,
+    R: Roster,
 {
     let connection = match incoming.await {
         Ok(connection) => connection,
@@ -243,6 +256,12 @@ async fn serve_connection<S>(
     if connection.alpn() == TUNNEL_ALPN {
         drop(permit);
         tunnel::serve(connection, records, shutdown).await;
+        return;
+    }
+    if connection.alpn() == FORGOTTEN_ALPN {
+        drop(permit);
+        let phase = records.borrow().phase();
+        forgotten::serve(connection, phase, &answers).await;
         return;
     }
     let Some((remote, streams)) = (tokio::select! {
