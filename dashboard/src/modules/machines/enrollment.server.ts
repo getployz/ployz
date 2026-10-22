@@ -61,6 +61,11 @@ export const CLUSTER_UNREACHABLE = "This Organization's Servers can't be reached
 
 const unreachable = () => new Conflict({ message: CLUSTER_UNREACHABLE, userFacing: true });
 
+/** A founding stage's answer while Cloud can't reach the Server; the Server retries it until its own wait ends. */
+const cantReachServer = (cause: unknown) => new Unavailable({
+  message: "Cloud can't reach this Server through the relay or directly.", userFacing: true, cause,
+});
+
 export function hashEnrollmentToken(token: string) {
   return crypto.createHash("sha256").update(token).digest("hex");
 }
@@ -769,8 +774,8 @@ export const publishMachineEnrollment = Effect.fn("MachineEnrollment.publishCand
       // Shared negotiation confirms the intended Machine; no SQL lock spans the network call.
       yield* Effect.scoped(Effect.gen(function* () {
         yield* (yield* Ployz).connect({
-          connections: [{ machine_id: input.machineId, management: input.capability }], timeoutMs: 10_000,
-        }, { closeWithin: clusterRead });
+          connections: [{ machine_id: input.machineId, management: input.capability }], timeoutMs: SERVER_REACH_TIMEOUT_MS,
+        }, { closeWithin: clusterRead }).pipe(Effect.mapError(cantReachServer));
         yield* publish(expectedIv);
       })).pipe(withClusterBudget(SESSION_CLOSE_CLUSTER_MS));
     }
@@ -817,13 +822,14 @@ export const completeMachineEnrollment = Effect.fn(
     if (!candidate) {
       return yield* new Conflict({ message: "Publish the Machine connection before completion." });
     }
-    // Shared negotiation verifies machine_id before this transaction can make it ready.
+    // Shared negotiation verifies machine_id before this transaction can make it ready. Bounded so the Server hears why.
     yield* Effect.scoped(Effect.gen(function* () {
       const opened = yield* (yield* OrganizationRuntime).open(token.organizationId, { only: machineId });
-      if (opened.status !== "connected") {
-        return yield* new Unavailable({ message: "Cloud can't reach this Server yet.", userFacing: true, cause: opened });
-      }
-    }));
+      if (opened.status !== "connected") return yield* cantReachServer(opened);
+    })).pipe(
+      Effect.catchIf((error) => error instanceof ClusterOutOfTime, (error) => Effect.fail(cantReachServer(error))),
+      withClusterBudget(SERVER_REACH_TIMEOUT_MS),
+    );
 
     const database = yield* Database;
     if (row.founderClaimMachineId !== machineId) {

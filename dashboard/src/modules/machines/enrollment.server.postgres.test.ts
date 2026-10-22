@@ -820,7 +820,7 @@ describe("organization enrollment coordinator", () => {
     const before = await harness.pool.query("select * from organization_machine");
     fake.connection.error = new Error(message);
     expect(await fake.coordinator.publish({ ...attempt, capability: "ployz1:unverified" }))
-      .toMatchObject({ failure: { _tag: "PloyzProviderError" } });
+      .toMatchObject({ failure: { _tag: "Unavailable" } });
     expect((await harness.pool.query("select * from organization_machine")).rows).toEqual(before.rows);
   });
 
