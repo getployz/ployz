@@ -314,7 +314,10 @@ deleted. Then unset `PLOYZ_TOKEN` and run `ployz login`, or make a new token in 
 you're still in. To revoke it,
 find its ID with `ployz token ls`, then run `ployz token rm ID`. If it names a server that's
 offline, run it again once that server is back. Owners and admins see and can revoke every
-organization token in the organization, not only their own. Members see only theirs.
+organization token in the organization, not only their own. Members see only theirs. OWNER
+says whose each token is: `you`, or the teammate's name, and a teammate's `full` token shows as
+`Full as Grace`. With `--json`, each token has an `owner` with its `id`, `name`, `email` and
+`you`. A Cloud older than 0.3.2 names no owner: OWNER is empty and `--json` leaves `owner` out.
 
 Only your login can make or revoke tokens. A token can't do either, so a leaked one can't make
 another that outlives it, or revoke the rest. While `PLOYZ_TOKEN` is set, Ployz acts with the token

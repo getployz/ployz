@@ -127,7 +127,18 @@ const token = {
   scope: "Deploy staging",
   expires_at: "2027-01-01T00:00:00Z",
   expired: false,
+  owner: { name: "Ada", email: "ada@example.test", you: true },
 };
+
+it("says whose a teammate's token is, unless its scope already names them", () => {
+  const grace = { name: "Grace", email: "grace@example.test", you: false };
+  const { rerender } = render(<TokenItem token={token} revoking={false} onRevoke={vi.fn()} />);
+  expect(screen.getByText(/^Deploy staging · Expires/)).toBeTruthy();
+  rerender(<TokenItem token={{ ...token, owner: grace }} revoking={false} onRevoke={vi.fn()} />);
+  expect(screen.getByText(/^Deploy staging · by Grace · Expires/)).toBeTruthy();
+  rerender(<TokenItem token={{ ...token, scope: "Full as Grace", owner: grace }} revoking={false} onRevoke={vi.fn()} />);
+  expect(screen.getByText(/^Full as Grace · Expires/)).toBeTruthy();
+});
 
 it("asks before revoking a token, and revokes only on confirm", async () => {
   const onRevoke = vi.fn();
