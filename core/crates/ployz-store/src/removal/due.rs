@@ -655,6 +655,28 @@ fn unobserved(
     ))
 }
 
+/// Ask a human, for `command`, before `environment` comes off the Servers as
+/// `review` saw it, as a Deploy that removes the same would ask.
+pub(crate) fn ask_taking_off(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    (environment, review): (&Environment, &crate::review::Review),
+    command: &str,
+    trusted: &Trusted,
+) -> Result<(), RpcError> {
+    let id = &environment.summary.id;
+    let deployed = approval::deployed(&review.head);
+    let cluster_domains = if crate::domain::has_generated(&deployed) {
+        deployment::cluster_domains(tx, id, &review.head)?
+    } else {
+        Default::default()
+    };
+    let empty = scope::empty(&environment.working.environment_slug);
+    let effects = approval::destructive_effects(&deployed, &empty, &cluster_domains);
+    let gate = approval::Gate::new(tx, id, trusted)?;
+    approval::approve_shut_down(who, command, review, &effects, &gate)
+}
+
 /// Take an Environment off the Servers and keep it: a Server's shutdown. It
 /// writes no mark, and asks a human as a Deploy that removes the same would.
 pub(crate) fn shut_down(
@@ -695,15 +717,7 @@ pub(crate) fn shut_down(
         )?,
     };
     if forget.is_none() {
-        let deployed = approval::deployed(&review.head);
-        let cluster_domains = if crate::domain::has_generated(&deployed) {
-            deployment::cluster_domains(tx, id, &review.head)?
-        } else {
-            Default::default()
-        };
-        let effects = approval::destructive_effects(&deployed, &empty, &cluster_domains);
-        let gate = approval::Gate::new(tx, id, trusted)?;
-        approval::approve_shut_down(who, &review, &effects, &gate)?;
+        ask_taking_off(tx, who, (&environment, &review), "shut_down", trusted)?;
     }
     let frozen = deployment::freeze(
         id,

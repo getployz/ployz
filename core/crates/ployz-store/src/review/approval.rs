@@ -452,7 +452,8 @@ pub(crate) fn approve(
     gate.require(bound, message, (effects, diff))
 }
 
-/// Refuse taking an Environment off the Servers while that destroys `effects`, unless
+/// Refuse taking an Environment off the Servers for `command` (`shut_down`, or the
+/// `retry` of a removal) while that destroys `effects`, unless
 /// no approval is required or Cloud holds a human's approval of exactly this. Into a
 /// Protected Environment, a caller who asks there asks even when Cloud requires
 /// nothing, as a Deploy does.
@@ -462,6 +463,7 @@ pub(crate) fn approve(
 /// fresh `diff`, and `protected` when the Environment's protection asked.
 pub(crate) fn approve_shut_down(
     who: &Actor,
+    command: &str,
     review: &Review,
     effects: &BTreeSet<DestructiveEffect>,
     gate: &Gate<'_>,
@@ -481,7 +483,7 @@ pub(crate) fn approve_shut_down(
             .join(", ");
         format!("A human must approve this first: {asked}")
     });
-    let bound = bound(who, "shut_down", &diff.environment.id, effects);
+    let bound = bound(who, command, &diff.environment.id, effects);
     gate.require(bound, message, (effects, diff))
 }
 

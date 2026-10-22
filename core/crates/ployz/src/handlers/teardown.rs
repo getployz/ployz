@@ -961,6 +961,7 @@ mod tests {
             &["env", "shutdown", "production", "--project", "shop"][..],
             &["env", "rm", "staging", "--project", "shop"],
             &["project", "rm", "shop"],
+            &["deployment", "redeploy", "00000000-0000-4000-8000-000000000101"],
         ] {
             let parsed = crate::cli::command()
                 .try_get_matches_from(["ployz"].iter().chain(args).chain(&["--approval", "apr_1"]))

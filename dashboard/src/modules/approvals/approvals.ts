@@ -87,13 +87,16 @@ export function approvalCommand(command: ConfigCommand) {
 const agentShips = (via: Caller["via"], command: ConfigCommand) =>
   via === "agent" && command.command === "admit" && (command.admit === "deploy" || command.admit === "retry");
 
-/** Cloud can't tell a person running `ployz` from an agent running it, so only a dashboard confirm stands as the approval. */
+/**
+ * Cloud can't tell a person running `ployz` from an agent running it, so only a dashboard confirm stands as the approval.
+ * A retry counts: retrying a shutdown takes its Environment off the Servers again, and the Store asks only then.
+ */
 const askedRemoval = (via: Caller["via"], command: ConfigCommand) =>
-  via !== "dashboard" && (command.command === "remove" || (command.command === "admit" && command.admit === "shut_down"));
+  via !== "dashboard" && (command.command === "remove" || (command.command === "admit" && (command.admit === "shut_down" || command.admit === "retry")));
 
 /**
  * The writes that may wait for a human: a Save (the Store's publish), a manual Deploy, a Sync or Take (into a Protected
- * Environment), an agent's retry, and a Project or Environment removal or shutdown from `ployz` or an agent.
+ * Environment), a retry, and a Project or Environment removal or shutdown from `ployz` or an agent.
  */
 export function asksApproval(via: Caller["via"], command: ConfigCommand) {
   return command.command === "publish" || (command.command === "admit" && command.admit === "deploy")
