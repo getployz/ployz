@@ -353,6 +353,13 @@ pub(crate) fn needs_upload(error: &RpcError) -> Option<Vec<ServiceName>> {
     }
 }
 
+/// Whether `error` says deploying the same thing again fails the same way: a planner
+/// refusal that holds against the same Cluster until something staged changes.
+/// Planned with or without a build, it carries the same key.
+pub(crate) fn same_again(error: &RpcError) -> bool {
+    error.details.get("same_again") == Some(&Value::Bool(true))
+}
+
 /// A frozen deployment lowered with each built Service's source replaced by a pending
 /// image, plus what its checkout and fingerprint need.
 struct Frozen {

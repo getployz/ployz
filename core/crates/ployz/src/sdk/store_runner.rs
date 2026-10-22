@@ -26,7 +26,7 @@ use tokio_util::sync::CancellationToken;
 use ts_rs::TS;
 
 use super::build::BuildOutcome;
-use super::preparation::{BuildReceipt, PreparationInput, UploadDigest, needs_upload};
+use super::preparation::{self, BuildReceipt, PreparationInput, UploadDigest, needs_upload};
 use super::{ImageCleanup, PreparedDeploy, RunningBuild, Session, connect_connections};
 use crate::connect::{Client, SystemConnector};
 use crate::context::Connection;
@@ -182,6 +182,7 @@ pub async fn run_deployment(
                 .not_executed(Failure {
                     reason: error.to_string(),
                     cause: ployz_core::error_chain::causes(&error),
+                    same_again: false,
                 })
                 .await;
         }
@@ -609,7 +610,11 @@ impl Run {
             Err(error) => {
                 return match needs_upload(&error) {
                     Some(services) => self.unbuilt(upload_needed(&earlier, services)).await,
-                    None => self.not_executed(Failure::from(&error)).await,
+                    None => {
+                        let mut failure = Failure::from(&error);
+                        failure.same_again = preparation::same_again(&error);
+                        self.not_executed(failure).await
+                    }
                 };
             }
         };

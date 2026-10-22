@@ -813,6 +813,42 @@ impl fmt::Display for MachineNames<'_> {
 }
 
 impl PlanError {
+    /// Deploying the same thing again is refused this way again: against the same
+    /// Cluster, only a change to what is staged somewhere gets past it. A hostname's
+    /// owner is read from the Containers Servers reported, so retiring it elsewhere
+    /// counts. What a Server answered, had room for, or holds stays false, as does
+    /// every refusal not listed here: the retry it keeps is the safe default.
+    #[must_use]
+    pub fn same_again(&self) -> bool {
+        match self {
+            Self::HostnameConflict { .. }
+            | Self::ConflictingHostPublications { .. }
+            | Self::DuplicateTargetService { .. }
+            | Self::ConflictingDockerVolumeDefinitions { .. }
+            | Self::MixedVolumeModes { .. }
+            | Self::DependencyCycle { .. }
+            | Self::RemovalInTarget { .. }
+            | Self::RemovalNotSelected { .. }
+            | Self::RemovalInReservedNamespace { .. } => true,
+            Self::Service { source, .. } => source.same_again(),
+            Self::Storage { .. }
+            | Self::HostPortConflict { .. }
+            | Self::CapacityUnknown
+            | Self::InsufficientCapacity
+            | Self::NoEligibleMachines { .. }
+            | Self::ServiceModeCannotChange
+            | Self::NoWriter { .. }
+            | Self::VolumeServerTakesNoServices { .. }
+            | Self::CopiesUnknown { .. }
+            | Self::ProvisionedVolumeStorageRequired { .. }
+            | Self::ProvisionedVolumeStorageUnavailable
+            | Self::ProvisionedVolumeStorageUnknown { .. }
+            | Self::ExistingPlainVolume { .. }
+            | Self::ExistingProvisionedVolumeMismatch { .. }
+            | Self::DockerVolumeUnavailable { .. } => false,
+        }
+    }
+
     /// Readable SDK failure with structured storage details preserved through service context.
     #[must_use]
     pub fn into_rpc_error(self) -> RpcError {
@@ -874,7 +910,11 @@ impl PlanError {
             | Self::RemovalInReservedNamespace { .. }) => RpcError {
                 code: RpcErrorCode::InvalidArgument,
                 message: error.to_string(),
-                details: serde_json::Value::Null,
+                details: if error.same_again() {
+                    serde_json::json!({"same_again": true})
+                } else {
+                    serde_json::Value::Null
+                },
                 cause: Vec::new(),
             },
         }

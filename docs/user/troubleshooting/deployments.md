@@ -50,7 +50,10 @@ So a Service that failed to pull on one Server and to start on another shows onl
 `ployz logs <service>`.
 
 A failed build or an image that won't pull fails the same way again, so neither offers
-`retry: ployz deploy`. An image that won't pull offers `undo: ployz history undo N` to go back
+`retry: ployz deploy`. Nor does a deploy the planner refused for something in your
+configuration, such as a hostname another service already publishes or two services that
+depend on each other. Its message says what to change, and deploying again without a change
+fails the same way. An image that won't pull offers `undo: ployz history undo N` to go back
 to the version before it, even when another Server's failure picked the `inspect:` line. A failed `ployz up` retries with `ployz up`, which uploads your fixed
 directory; `ployz deploy` would ship the last upload that built. `up` leaves out the `Open`
 lines when the deploy failed. When a newer deployment, such as a push, takes the place of the

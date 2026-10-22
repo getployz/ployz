@@ -62,6 +62,7 @@ fn a_follow_read_error_cannot_detach_owned_work_even_when_cancel_is_refused() {
             RunEvidence::NotExecuted(ployz_store::Failure {
                 reason: "owned setup ended".into(),
                 cause: Vec::new(),
+                same_again: false,
             }),
         )?;
         worker_finished.store(true, Ordering::SeqCst);
@@ -158,6 +159,7 @@ fn following_returns_when_the_owned_runner_ends_not_at_the_next_poll() {
             RunEvidence::NotExecuted(ployz_store::Failure {
                 reason: "owned setup ended".into(),
                 cause: Vec::new(),
+                same_again: false,
             }),
         )?;
         ended_at.send(std::time::Instant::now()).unwrap();

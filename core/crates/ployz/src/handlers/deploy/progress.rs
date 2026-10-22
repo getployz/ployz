@@ -640,6 +640,18 @@ fn failure(view: &DeploymentView, named: &[&str], command: impl Fn(&[&str]) -> S
             &[&["history", "undo", revision.as_str()][..], &scope].concat(),
         )));
     }
+    // A refusal that holds until something staged changes gets no retry, not even
+    // `up`: its message says what to change, and a build that failed is the one case
+    // where a fresh upload is that change.
+    if matches!(
+        &view.deployment.outcome,
+        Some(ployz_store::Outcome::NotExecuted {
+            same_again: true,
+            ..
+        })
+    ) {
+        return failure;
+    }
     // An upload deploys again only from `up`: a Deploy ships the last one that built.
     if view.deployment.upload.is_some() {
         return failure.hint(Hint::Retry(command(&[&["up"][..], &scope].concat())));
@@ -1284,6 +1296,44 @@ mod tests {
             hints(&failure(&view, &[], command)),
             ["inspect: ployz logs --deployment 7 --build web --project shop --env production"]
         );
+    }
+
+    fn refused(view: &mut DeploymentView, same_again: bool) {
+        view.nodes.clear();
+        view.deployment.outcome = Some(
+            serde_json::from_value(json!({
+                "type": "not_executed",
+                "reason": "hostname shop.example.com is already published by blog/web",
+                "cause": [], "needs_upload": [], "same_again": same_again
+            }))
+            .unwrap(),
+        );
+    }
+
+    #[test]
+    fn a_refusal_that_fails_the_same_way_again_never_says_to_deploy_again() {
+        let mut view = view();
+        refused(&mut view, true);
+        assert_eq!(hints(&failure(&view, &["web"], command)), [""; 0]);
+    }
+
+    #[test]
+    fn a_refusal_a_retry_may_get_past_still_says_to_deploy_again() {
+        let mut view = view();
+        refused(&mut view, false);
+        assert_eq!(
+            hints(&failure(&view, &["web"], command)),
+            ["retry: ployz deploy web --project shop --env production"]
+        );
+    }
+
+    #[test]
+    fn a_refused_upload_never_says_to_up_again_either() {
+        let mut view = view();
+        view.deployment.upload =
+            Some(serde_json::from_value(json!({"digest": "a".repeat(64)})).unwrap());
+        refused(&mut view, true);
+        assert_eq!(hints(&failure(&view, &[], command)), [""; 0]);
     }
 
     #[test]

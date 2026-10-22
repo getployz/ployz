@@ -299,6 +299,12 @@ pub struct Failure {
     pub reason: String,
     #[serde(default)]
     pub cause: Vec<String>,
+    /// Deploying the same thing again fails this way again: against the same
+    /// Cluster, the refusal holds until something staged changes, so a retry alone
+    /// never gets past it. Rows from before this field read false, as does every
+    /// failure a retry may get past.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub same_again: bool,
 }
 
 impl From<String> for Failure {
@@ -306,6 +312,7 @@ impl From<String> for Failure {
         Self {
             reason,
             cause: Vec::new(),
+            same_again: false,
         }
     }
 }
@@ -323,6 +330,7 @@ impl From<&RpcError> for Failure {
             None => Self {
                 reason: error.message.clone(),
                 cause: ployz_core::error_chain::causes(error),
+                same_again: false,
             },
         }
     }
@@ -533,7 +541,11 @@ impl Failure {
             ),
             ExecutionError::Cancelled => ("Cancelled".to_owned(), Vec::new()),
         };
-        Self { reason, cause }
+        Self {
+            reason,
+            cause,
+            same_again: false,
+        }
     }
 }
 
@@ -705,7 +717,7 @@ fn state(
         }
     }
     if let Some(error) = failed.or(cancelled) {
-        let Failure { reason, cause } = Failure::of(error, operations);
+        let Failure { reason, cause, .. } = Failure::of(error, operations);
         return RowState::Failed {
             reason,
             cause,
@@ -866,7 +878,16 @@ pub(super) fn failed_or_cancelled(
                     .and_then(failed_on_its_own)
                     .or(row.optional_int(3)?);
                 let machine = row.text(1)?.to_owned();
-                failed.push((at, service, machine, Failure { reason, cause }));
+                failed.push((
+                    at,
+                    service,
+                    machine,
+                    Failure {
+                        reason,
+                        cause,
+                        same_again: false,
+                    },
+                ));
             }
             StoppedBy::CANCEL => {
                 cancelled.insert(service);
@@ -1456,6 +1477,24 @@ mod tests {
             failed.cause.last().map(String::as_str),
             Some("panic: no DATABASE_URL")
         );
+    }
+
+    #[test]
+    fn a_failure_row_from_before_same_again_reads_back_as_one_a_retry_may_get_past() {
+        let old: Failure =
+            serde_json::from_str(r#"{"reason":"capacity unknown","cause":["fsn-1"]}"#).unwrap();
+        assert!(!old.same_again);
+        assert_eq!(
+            serde_json::to_value(&old).unwrap(),
+            serde_json::json!({"reason": "capacity unknown", "cause": ["fsn-1"]})
+        );
+        let refused = Failure {
+            same_again: true,
+            ..Failure::from("hostname taken".to_owned())
+        };
+        let json = serde_json::to_value(&refused).unwrap();
+        assert_eq!(json.get("same_again"), Some(&serde_json::Value::Bool(true)));
+        assert!(serde_json::from_value::<Failure>(json).unwrap().same_again);
     }
 
     #[test]

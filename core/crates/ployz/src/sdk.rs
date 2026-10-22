@@ -1418,6 +1418,10 @@ pub(crate) fn preparation_error(
 ) -> RpcError {
     use crate::sdk::prepare::PreparationError;
     let message = crate::ui::rpc_error(RpcErrorCode::Internal, &error).message;
+    let same_again = matches!(
+        &error,
+        PreparationError::Plan(crate::deploy::DeployError::Plan(plan)) if plan.same_again()
+    );
     match error {
         PreparationError::Selection(error) => {
             let details = if let ConnectError::Remote(error) = &error {
@@ -1478,9 +1482,17 @@ pub(crate) fn preparation_error(
             cause: Vec::new(),
         },
         PreparationError::Build(_) | PreparationError::Plan(_) | PreparationError::Delivery(_) => {
+            let mut details = serde_json::Map::new();
+            details.insert(
+                "preparation".into(),
+                serde_json::json!({"kind":"failed", "message":message}),
+            );
+            if same_again {
+                details.insert("same_again".into(), Value::Bool(true));
+            }
             RpcError {
                 code: RpcErrorCode::Internal,
-                details: serde_json::json!({"preparation":{"kind":"failed", "message":message}}),
+                details: Value::Object(details),
                 message,
                 cause: Vec::new(),
             }

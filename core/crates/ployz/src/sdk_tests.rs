@@ -1,4 +1,5 @@
 use super::*;
+use crate::sdk::preparation::same_again;
 
 #[test]
 fn build_failures_show_readable_messages_and_keep_structured_evidence() {
@@ -144,4 +145,93 @@ fn requested_cancellation_preserves_unknown_stage_and_evidence() {
             .unwrap()
             .is_object()
     );
+}
+
+fn plan_refusal(error: crate::deploy::PlanError) -> RpcError {
+    preparation_error(
+        crate::sdk::prepare::PreparationError::Plan(crate::deploy::DeployError::Plan(error)),
+        false,
+    )
+}
+
+#[test]
+fn a_hostname_another_service_publishes_fails_the_same_way_again() {
+    use crate::deploy::{HostnameRefusal, PlanError};
+    use ployz_core::{IngressHost, Namespace, QualifiedService, ServiceName};
+    let conflict = || PlanError::HostnameConflict {
+        hostname: IngressHost::parse("shop.example.com").unwrap(),
+        owner: QualifiedService::new(
+            Namespace::parse("blog").unwrap(),
+            ServiceName::parse("web").unwrap(),
+        ),
+        refusal: HostnameRefusal::StillPublished,
+    };
+    let error = plan_refusal(conflict());
+    assert_eq!(error.code, RpcErrorCode::Internal);
+    assert!(
+        error
+            .message
+            .contains("shop.example.com is already published by blog/web"),
+        "{}",
+        error.message
+    );
+    assert_eq!(
+        error.details.pointer("/preparation/kind").unwrap(),
+        "failed"
+    );
+    assert!(same_again(&error));
+    // An image-only Deploy plans without preparing: its refusal says the same.
+    let planned = RpcError::from(crate::deploy::DeployError::Plan(conflict()));
+    assert_eq!(planned.code, RpcErrorCode::InvalidArgument);
+    assert!(same_again(&planned));
+    let in_service = PlanError::Service {
+        service: "shop".into(),
+        source: Box::new(PlanError::DependencyCycle {
+            service: "web".into(),
+        }),
+    };
+    assert!(same_again(&plan_refusal(in_service)));
+}
+
+#[test]
+fn a_refusal_a_retry_may_get_past_does_not_claim_to_fail_the_same_way_again() {
+    use crate::deploy::PlanError;
+    use ployz_core::ServiceName;
+    for refusal in [
+        PlanError::CapacityUnknown,
+        PlanError::InsufficientCapacity,
+        PlanError::NoEligibleMachines {
+            constraints: crate::deploy::EliminatingConstraints::new(Vec::new()),
+        },
+        PlanError::HostPortConflict {
+            service: ServiceName::parse("web").unwrap(),
+        },
+    ] {
+        let message = refusal.to_string();
+        let planned = refusal.clone().into_rpc_error();
+        assert!(!same_again(&planned), "{message}");
+        assert_eq!(planned.details, serde_json::Value::Null, "{message}");
+        let error = plan_refusal(refusal);
+        assert!(!same_again(&error), "{message}");
+        assert_eq!(error.details.get("same_again"), None, "{message}");
+    }
+    let delivery = preparation_error(
+        crate::sdk::prepare::PreparationError::Delivery("the image never arrived".into()),
+        false,
+    );
+    assert!(!same_again(&delivery));
+    let unknown = RpcError {
+        code: RpcErrorCode::Unknown("in_rotation".into()),
+        message: "Machine is in rotation".into(),
+        details: serde_json::json!({"preparation": {"kind": "failed"}}),
+        cause: Vec::new(),
+    };
+    assert!(!same_again(&unknown));
+    let internal = RpcError {
+        code: RpcErrorCode::Internal,
+        message: "runner lost".into(),
+        details: serde_json::Value::Null,
+        cause: Vec::new(),
+    };
+    assert!(!same_again(&internal));
 }
