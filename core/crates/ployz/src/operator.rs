@@ -521,7 +521,10 @@ pub async fn open_exec(
         .map_err(OperatorError::from)
         .and_then(|service| Ok((service, select_exec_container(service, container_selector)?)));
     let gaps = &live.containers;
-    let unanswered = !gaps.failures.is_empty() || !gaps.omissions.is_empty();
+    // A named container gets its own error: "no running container of the Service"
+    // would contradict a Server that answered with one.
+    let unanswered =
+        container_selector.is_none() && (!gaps.failures.is_empty() || !gaps.omissions.is_empty());
     let (service, container) = match selected {
         Ok((service, container)) if !unanswered || is_running(container) => {
             (service, container.as_observation())

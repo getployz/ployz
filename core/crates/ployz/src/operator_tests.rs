@@ -178,6 +178,24 @@ async fn exec_without_a_running_container_names_the_servers_that_did_not_answer(
 }
 
 #[tokio::test(start_paused = true)]
+async fn exec_with_a_container_selector_keeps_its_own_error_beside_a_silent_server() {
+    let (mut client, server) = exec_cluster(vec![api_on_machine_one(running())], false).await;
+    let (session, _) = timed_exec(&mut client, "app/api", Some("missing")).await;
+    server.abort();
+
+    assert!(
+        matches!(
+            session,
+            Err(OperatorError::Container(
+                ployz_core::ContainerSelectorError::NotFound { .. }
+            ))
+        ),
+        "{:?}",
+        session.err()
+    );
+}
+
+#[tokio::test(start_paused = true)]
 async fn exec_with_every_server_answering_keeps_the_no_running_service_error() {
     let (mut client, server) = exec_cluster(Vec::new(), true).await;
     let (session, _) = timed_exec(&mut client, "app/api", None).await;
