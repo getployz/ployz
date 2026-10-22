@@ -309,7 +309,11 @@ impl Failure {
     pub fn causes(&self) -> Vec<String> {
         match &self.inner {
             Inner::Command { error, .. } if refusal_before_context(error.as_ref()).is_none() => {
-                ui::causes(error.as_ref())
+                match error.downcast_ref::<ConnectError>() {
+                    // Transparent, so the chain below it skips the causes the daemon sent.
+                    Some(ConnectError::Remote(remote)) => ui::causes(remote),
+                    _ => ui::causes(error.as_ref()),
+                }
             }
             Inner::Command { .. } | Inner::Partial | Inner::Exit(_) => Vec::new(),
         }
@@ -963,6 +967,10 @@ impl From<ConnectError> for Failure {
         match error {
             ConnectError::Context(error) => error.into(),
             ConnectError::Value(error) => error.into(),
+            // The daemon answered with its own failure: print that, not a failed call.
+            ConnectError::Rpc(error) if error.answered() => {
+                Self::command(ConnectError::Remote(error.to_rpc_error()))
+            }
             error => Self::command(error),
         }
     }
@@ -1332,6 +1340,23 @@ mod tests {
             "A Server's daemon answered, but the 2 connections from Cloud all failed. \
              Server web-2, tried last, isn't answering. Check that its Ployz daemon is running, then retry."
         );
+    }
+
+    #[test]
+    fn a_daemon_that_answered_with_an_error_is_not_blamed_for_the_call() {
+        let sent = RpcError {
+            code: RpcErrorCode::Internal,
+            message: "Corrosion HTTP request failed".into(),
+            details: Value::Null,
+            cause: vec!["Connection refused (os error 111)".into()],
+        };
+        let failure = Failure::from(ConnectError::Rpc(crate::connect::TransportError::from(
+            ployz_core::rpc::caused_status(tonic::Code::Internal, &sent),
+        )));
+        assert_eq!(failure.to_string(), "Corrosion HTTP request failed");
+        assert_eq!(failure.causes(), ["Connection refused (os error 111)"]);
+        assert_eq!(failure.report().code, RpcErrorCode::Internal);
+        assert!(failure.daemon_answered());
     }
 
     #[test]

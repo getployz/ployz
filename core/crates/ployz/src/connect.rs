@@ -1135,6 +1135,17 @@ pub struct TransportError {
 }
 
 impl TransportError {
+    /// The target's daemon sent this status itself, with its own message.
+    pub(crate) fn answered(&self) -> bool {
+        !(self.unanswered
+            || self.local
+            || self.budget_expired
+            || self.routed_unanswered
+            || self.routed_unreached
+            || self.session_closed
+            || self.message.is_empty())
+    }
+
     pub(crate) fn budget_expired(message: &str) -> Self {
         Self {
             budget_expired: true,
