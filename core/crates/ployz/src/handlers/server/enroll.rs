@@ -3,7 +3,7 @@
 //! The first Server founds the Cluster. Signed in, the CLI asks Cloud for an enrollment token,
 //! then installs over SSH (`DESTINATION`), enrolls the host it runs on, or prints one line to
 //! paste on the Server (`--command`).
-//! A hidden `--standalone` founds or joins a Cluster without Cloud, for tests.
+//! A hidden `--standalone` founds or joins a Cluster without Cloud.
 
 use std::io::BufRead;
 use std::path::PathBuf;
@@ -431,7 +431,8 @@ fn standalone(root: &ArgMatches) -> Result<(), Error> {
     let config = options.load_or_empty_config()?;
     let joins = config
         .context_name(options.context())
-        .is_some_and(|name| config.contexts.contains_key(name));
+        .and_then(|name| config.contexts.get(name))
+        .is_some_and(|context| !context.connections.is_empty());
     if joins {
         super::add(root)
     } else {

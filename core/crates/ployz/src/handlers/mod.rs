@@ -540,7 +540,11 @@ fn shell_word(arg: &str) -> std::borrow::Cow<'_, str> {
 
 fn rerun(matches: &ArgMatches, args: &[&str]) -> String {
     let connect = matches.get_one::<String>("connect");
-    let context = matches.try_get_one::<String>("context").ok().flatten();
+    let context = matches
+        .try_get_one::<String>("context")
+        .ok()
+        .flatten()
+        .filter(|_| takes_value(args.iter().copied(), "context"));
     let args = ["ployz"]
         .into_iter()
         .chain(config_flag(matches).into_iter().flatten())
@@ -570,13 +574,20 @@ fn recovery_command(matches: &ArgMatches, context: &str, command: &[&str]) -> St
         .chain(config_flag(matches).into_iter().flatten())
         .chain(connect)
         .chain(command.iter().copied())
-        .chain(["--context", context]);
-    // A hint that names a removed command is worse than no hint.
+        .chain(
+            takes_value(command.iter().copied(), "context")
+                .then_some(["--context", context])
+                .into_iter()
+                .flatten(),
+        );
     debug_assert!(
         crate::cli::command()
             .try_get_matches_from(args.clone())
-            .is_ok(),
-        "recovery hint does not parse: {command:?}"
+            .is_ok_and(|matches| {
+                matches.value_source("context") != Some(clap::parser::ValueSource::CommandLine)
+                    || takes_value(command_path(&matches).split(' '), "context")
+            }),
+        "recovery hint does not parse or accept its context: {command:?}"
     );
     shell_words::join(args)
 }

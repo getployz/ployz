@@ -53,7 +53,7 @@ pub(crate) fn compiled() -> Command {
         Command::new("ployz"),
         "Run Services on your Servers: deploy, inspect and manage them",
     )
-    .mut_arg("context", |arg| arg.global(true))
+    .mut_arg("context", |arg| arg.env(None::<&str>).global(true))
     .styles(crate::ui::clap_styles())
     .after_help(handlers::catalog::SIGNPOST)
     .arg(switch("version", Some('V')).help("Print version"))

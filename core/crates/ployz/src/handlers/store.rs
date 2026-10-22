@@ -358,13 +358,14 @@ impl<'m> Store<'m> {
         }
     }
 
-    /// `--context`; without it, this reaches the Cluster `--connect` or the current
-    /// context names.
+    /// A context override only for commands that take it; other commands observe
+    /// through `--connect` or the current context.
     fn context(&self) -> Option<&str> {
         self.matches
             .try_get_one::<String>("context")
             .ok()
             .flatten()
+            .filter(|_| super::takes_value(self.words.iter().map(String::as_str), "context"))
             .map(String::as_str)
     }
 

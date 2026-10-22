@@ -340,7 +340,8 @@ error, such as the operating system's or the server's own message.
 Commands that take `--context` accept it before or after the command. For example,
 `ployz --context verify server ls` and `ployz server ls --context verify` act on the same
 Servers. `-c` is the short form. Commands that use only Ployz Cloud, such as `ployz config ls`,
-refuse a context.
+refuse a context. `ctx ls`, `ctx use`, and `ctx rm` also refuse `--context`; `ctx use`
+and `ctx rm` take the context's name as a positional argument.
 
 A command prints its result on stdout and everything else on stderr: progress, warnings, the
 `next:` line, prompts and errors. `ployz service ls > services.txt` saves only the table.

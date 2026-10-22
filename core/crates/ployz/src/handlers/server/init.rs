@@ -25,7 +25,11 @@ pub(in crate::handlers) fn init(root: &ArgMatches) -> Result<(), Error> {
         .get_one::<String>("context")
         .cloned()
         .unwrap_or_else(|| "default".into());
-    if config.contexts.contains_key(&context_name) {
+    if config
+        .contexts
+        .get(&context_name)
+        .is_some_and(|context| !context.connections.is_empty())
+    {
         return Err(Error::conflict(format!(
             "context {context_name:?} already exists"
         )));
