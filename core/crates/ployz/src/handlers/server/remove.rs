@@ -683,7 +683,7 @@ fn machine_removal_refusal(error: RpcError, name: &str) -> Error {
             .context(format!(
                 "Server {name} could not be reset; forget it to take it out of the Cluster without a reset."
             ))
-            .hint(Hint::Next(format!("ployz server forget {name}")))
+            .hint(Hint::Next(format!("ployz server forget {name} --confirm dead")))
     } else {
         error.into()
     }
@@ -761,7 +761,9 @@ mod tests {
         );
         assert_eq!(
             refusal.hints(),
-            [Hint::Next("ployz server forget fra-1".into())]
+            [Hint::Next(
+                "ployz server forget fra-1 --confirm dead".into()
+            )]
         );
         assert_eq!(refusal.causes(), ["Server fra-1 did not respond"]);
         assert_eq!(refusal.report().code, RpcErrorCode::Unavailable);

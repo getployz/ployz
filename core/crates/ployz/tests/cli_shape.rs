@@ -415,6 +415,8 @@ fn usage_errors_exit_2() {
         ],
         &["completion", "--json", "bash"],
         &["exec", "--json", "api"],
+        &["login", "--cloud-url", "ftp://x"],
+        &["server", "add", "root@"],
     ] {
         let (code, stderr) = run_human(args);
         assert_eq!(code, Some(2), "{args:?}: {stderr}");
@@ -2159,6 +2161,47 @@ fn root_help_ends_with_the_catalog_pointer() {
     );
 }
 
+#[test]
+fn a_non_http_cloud_url_names_where_it_came_from() {
+    let output = human_output(&["login"], &[("PLOYZ_CLOUD_URL", "ftp://x")]);
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stderr.contains("PLOYZ_CLOUD_URL takes a host"), "{stderr}");
+    let output = human_output(&["login", "--cloud-url", "ftp://x"], &[]);
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stderr.contains("--cloud-url takes a host"), "{stderr}");
+}
+
+#[test]
+fn explaining_a_setting_name_alone_points_at_the_setting() {
+    let output = human_output(&["explain", "mounts"], &[]);
+    assert_eq!(output.status.code(), Some(0));
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.contains("mounts.replicas"), "{stdout}");
+    let output = human_output(&["explain", "web"], &[]);
+    assert_eq!(String::from_utf8(output.stderr).unwrap(), "");
+    for setting in ["mounts", "env", "image", "domains"] {
+        let output = human_output(&["explain", setting], &[]);
+        assert_eq!(output.status.code(), Some(0), "{setting}");
+        let stderr = String::from_utf8(output.stderr).unwrap();
+        let suggested = stderr
+            .strip_prefix(&format!("{setting} is also a Setting; `"))
+            .and_then(|rest| rest.strip_suffix("` describes it.\n"))
+            .unwrap_or_else(|| panic!("{stderr}"));
+        let words = shell_words::split(suggested).unwrap();
+        let (ployz, args) = words.split_first().unwrap();
+        assert_eq!(ployz, "ployz", "{suggested}");
+        let args = args.iter().map(String::as_str).collect::<Vec<_>>();
+        let output = human_output(&args, &[]);
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "{suggested}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
+
 #[cfg(unix)]
 #[test]
 fn a_store_url_that_is_not_unicode_is_a_usage_error() {
@@ -2593,7 +2636,7 @@ fn results_on_stdout_side_channel_on_stderr() {
     let (stdout, stderr) = run(&["service", "inspect", "web"]);
     assert!(stdout.starts_with("service = web\n"), "{stdout}");
     assert!(
-        stdout.contains("\nimage = \"nginx:1\" (default -)\n"),
+        stdout.contains("\nimage = \"nginx:1\" (no default)\n"),
         "{stdout}"
     );
     assert!(stdout.contains("\nreplicas = 1 (default)\n"), "{stdout}");

@@ -89,6 +89,10 @@ pub(crate) fn add(root: &ArgMatches) -> Result<(), Error> {
     if matches.get_flag("standalone") {
         return standalone(root);
     }
+    // Before any token is asked for or minted, so a mistyped destination costs none.
+    if let Some(destination) = matches.get_one::<String>("destination") {
+        destination.parse::<crate::context::Connection>()?;
+    }
     let cloud = matches
         .get_one::<String>("cloud-url")
         .map_or(DEFAULT_CLOUD, String::as_str);

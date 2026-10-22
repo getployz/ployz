@@ -4689,6 +4689,21 @@ fn remove_web(store: &ConfigStore, who: &Actor) {
         .unwrap();
 }
 
+#[test]
+fn a_deploy_naming_a_service_staged_for_removal_says_a_full_deploy_removes_it() {
+    let (store, who) = shop();
+    apply_both(&store, &who, 1);
+    remove_web(&store, &who);
+    let refused = admit(&store, &who, 2, &["web"], None).unwrap_err();
+    assert_eq!(refused.code.as_str(), "not_found");
+    assert_eq!(
+        refused.message,
+        "Service web is staged for removal; a full Deploy removes it"
+    );
+    let missing = admit(&store, &who, 2, &["shop"], None).unwrap_err();
+    assert_eq!(missing.message, "No Service named shop to deploy");
+}
+
 fn approved(refused: &RpcError) -> Approval {
     assert_eq!(refused.code.as_str(), "approval_required");
     let approval = refused.details["approval"].as_str().unwrap();

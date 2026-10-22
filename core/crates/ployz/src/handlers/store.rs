@@ -1074,7 +1074,7 @@ pub(crate) fn domain_changes<'a>(
 }
 
 /// A Setting's value as `get` and `inspect` show it, marked when it is the default
-/// and followed by the default when it is not: `3 (default 1)`.
+/// and followed by the default when it is not: `3 (default 1)`, or `(no default)`.
 pub(crate) fn valued(row: &ployz_store::SettingRow) -> String {
     let value = plain(&row.value);
     // A variable or mount (`SERVICE.env.KEY`, `SERVICE.mounts.VOLUME`) has no
@@ -1084,6 +1084,8 @@ pub(crate) fn valued(row: &ployz_store::SettingRow) -> String {
         format!("{value} (default)")
     } else if removable && row.default.is_null() {
         value
+    } else if row.default.is_null() {
+        format!("{value} (no default)")
     } else {
         format!("{value} (default {})", plain(&row.default))
     }
@@ -1389,7 +1391,7 @@ mod tests {
     }
 
     #[test]
-    fn a_set_setting_without_a_default_shows_its_default_as_nothing() {
+    fn a_set_setting_without_a_default_says_it_has_none() {
         let row = |path: &str, value: serde_json::Value| ployz_store::SettingRow {
             path: ployz_store::SettingPath::parse(path).unwrap(),
             value,
@@ -1400,7 +1402,7 @@ mod tests {
         };
         assert_eq!(
             valued(&row("web.startCommand", json!("npm start"))),
-            "\"npm start\" (default -)"
+            "\"npm start\" (no default)"
         );
         assert_eq!(valued(&row("web.startCommand", json!(null))), "- (default)");
         assert_eq!(valued(&row("web.env.PORT", json!("3000"))), "\"3000\"");
