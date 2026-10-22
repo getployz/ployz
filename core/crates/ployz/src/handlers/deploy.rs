@@ -138,6 +138,7 @@ pub(super) fn redeploy_command(command: Command) -> Command {
         crate::cli::VOLUME_ACCEPTANCE
     )))
     .arg(crate::cli::reviewed_version())
+    .arg(crate::cli::approval())
 }
 
 pub(super) fn start_command(command: Command) -> Command {
@@ -151,6 +152,7 @@ pub(super) fn start_command(command: Command) -> Command {
 pub(super) fn cancel_command(command: Command) -> Command {
     scoped(command.about("Cancel a Deployment: a queued one never runs, a running one stops"))
         .arg(id())
+        .arg(crate::cli::approval())
 }
 
 fn id() -> clap::Arg {
@@ -1355,7 +1357,13 @@ pub(super) fn start(root: &ArgMatches) -> Result<(), Error> {
 
 pub(super) fn cancel(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
-    let store = store(root)?;
+    // An approval refusal names this command again, with the same Deployment.
+    let words: Vec<&str> = matches
+        .get_one::<String>("id")
+        .map(String::as_str)
+        .into_iter()
+        .collect();
+    let store = store(root)?.args(words);
     let id = deployment_id(matches, &store, "id")?;
     store
         .try_write_checked(
