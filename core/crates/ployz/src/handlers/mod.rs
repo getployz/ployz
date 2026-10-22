@@ -173,7 +173,8 @@ fn wants_json(args: &[std::ffi::OsString]) -> bool {
 /// A flag written before the command that takes it, `ployz --project web status`:
 /// clap would offer the nearest top-level flag, so name the command's own instead.
 /// A flag another command takes, `server show --project`, is one this command lacks,
-/// not a typo of its nearest flag. One after `--` is an operand, and keeps clap's error.
+/// not a typo of its nearest flag, unless that flag shares its stem: `server ls --wait`
+/// keeps clap's `--waiting`. One after `--` is an operand, and keeps clap's error.
 fn misplaced_flag(error: clap::Error, tree: &Command, args: &[std::ffi::OsString]) -> clap::Error {
     use clap::error::{ContextKind, ContextValue, ErrorKind};
     if error.kind() != ErrorKind::UnknownArgument {
@@ -205,6 +206,12 @@ fn misplaced_flag(error: clap::Error, tree: &Command, args: &[std::ffi::OsString
     fn anywhere(command: &Command, long: &str) -> bool {
         takes(command, long) || command.get_subcommands().any(|sub| anywhere(sub, long))
     }
+    let stem_suggested = matches!(
+        error.get(ContextKind::SuggestedArg),
+        Some(ContextValue::String(suggested)) if suggested
+            .strip_prefix("--")
+            .is_some_and(|suggested| suggested.starts_with(long) || long.starts_with(suggested))
+    );
     let path = reached(tree, args);
     let Some(command) = (!path.is_empty())
         .then(|| {
@@ -217,7 +224,7 @@ fn misplaced_flag(error: clap::Error, tree: &Command, args: &[std::ffi::OsString
     };
     let tip = if takes(command, long) {
         format!("'{path} --{long}' exists; put it after the command")
-    } else if !command.has_subcommands() && anywhere(tree, long) {
+    } else if !command.has_subcommands() && anywhere(tree, long) && !stem_suggested {
         format!("'{path}' takes no --{long}")
     } else {
         return error;
@@ -799,6 +806,40 @@ mod tests {
         assert!(!error.contains("--connect"), "{error}");
         let error = tip(&["server", "show", "web-1", "--conect", "p"]);
         assert!(error.contains("--connect"), "{error}");
+    }
+
+    #[test]
+    fn a_flag_of_another_command_keeps_clap_suggestion_of_a_close_one() {
+        let rejected = |args: &[&str]| {
+            let tree = crate::cli::compiled();
+            let args = args
+                .iter()
+                .map(std::ffi::OsString::from)
+                .collect::<Vec<_>>();
+            let error = tree
+                .clone()
+                .try_get_matches_from(std::iter::once("ployz".into()).chain(args.clone()))
+                .unwrap_err();
+            misplaced_flag(error, &tree, &args).to_string()
+        };
+        let error = rejected(&["server", "ls", "--wait"]);
+        assert!(
+            error.contains("tip: a similar argument exists: '--waiting'"),
+            "{error}"
+        );
+        assert!(!error.contains("takes no"), "{error}");
+        let error = rejected(&["server", "token", "create", "--expires-in", "7d"]);
+        assert!(
+            error.contains("tip: a similar argument exists: '--expires'"),
+            "{error}"
+        );
+        assert!(!error.contains("takes no"), "{error}");
+        let error = rejected(&["server", "show", "web-1", "--project", "p"]);
+        assert!(
+            error.contains("tip: 'server show' takes no --project"),
+            "{error}"
+        );
+        assert!(!error.contains("--connect"), "{error}");
     }
 
     fn command() -> Command {
