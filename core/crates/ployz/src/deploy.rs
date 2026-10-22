@@ -679,11 +679,9 @@ pub enum PlanError {
     },
     /// The Volume's writer is on a Machine that accepts no services, as after a drain.
     #[error(
-        "{service} can't start: its Volume {volume} is on {machine}, which doesn't run services. Turn them back on with ployz server set {machine} --accepts-services=true"
+        "Volume {volume} is on {machine}, which doesn't run services. Turn them back on with ployz server set {machine} --accepts-services=true"
     )]
     VolumeServerTakesNoServices {
-        /// The Service that mounts the Volume.
-        service: ServiceName,
         /// The Volume, as its owner named it.
         volume: String,
         /// The Machine holding the Volume's writer.

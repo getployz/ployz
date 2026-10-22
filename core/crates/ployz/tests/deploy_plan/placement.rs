@@ -1646,7 +1646,7 @@ fn next_deploy_relocates_after_policy_edits_but_preserves_volume_locality() {
                 .unwrap();
         let failure = plan_deploy([&service], &snapshot, PlanOptions::default()).unwrap_err();
         let expected = if revoke_role {
-            "its Volume data is on first, which doesn't run services"
+            "Volume data is on first, which doesn't run services"
         } else {
             "app_data"
         };

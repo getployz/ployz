@@ -469,6 +469,11 @@ fn failure(view: &DeploymentView, named: &[&str], command: impl Fn(&[&str]) -> S
         view.environment.name.as_str(),
     ];
     let deployment = target(&view.deployment);
+    // A Service the plan blocked is blocked again until its cause changes.
+    let blocked = view
+        .preview
+        .as_ref()
+        .is_some_and(|preview| !preview.blocked.is_empty());
     let lost_to_newer = matches!(
         &view.deployment.outcome,
         Some(ployz_store::Outcome::Executed { summary, .. })
@@ -638,7 +643,7 @@ fn failure(view: &DeploymentView, named: &[&str], command: impl Fn(&[&str]) -> S
     if view.deployment.upload.is_some() {
         return failure.hint(Hint::Retry(command(&[&["up"][..], &scope].concat())));
     }
-    if same_again || bad_image {
+    if same_again || bad_image || blocked {
         return failure;
     }
     // Not `deployment.services`: admission adds the Services it retires, which no deploy can name.
@@ -733,6 +738,14 @@ mod tests {
         let failure = completion(&view, None, &[], command).unwrap_err();
         assert_eq!(crate::ui::after_result(&failure), 1);
         assert!(failure.to_string().contains(reason), "{failure}");
+        assert!(
+            !failure
+                .hints()
+                .iter()
+                .any(|hint| matches!(hint, Hint::Retry(_))),
+            "{:?}",
+            failure.hints()
+        );
     }
 
     #[test]

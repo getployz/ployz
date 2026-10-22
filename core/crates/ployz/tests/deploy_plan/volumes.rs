@@ -1106,8 +1106,8 @@ fn a_volume_on_a_server_that_accepts_no_services_blocks_only_its_service() {
     assert_eq!(blocked.service, db.name);
     assert_eq!(
         blocked.error.message,
-        "db can't start: its Volume data is on second, which doesn't run services. Turn them \
-         back on with ployz server set second --accepts-services=true"
+        "Volume data is on second, which doesn't run services. Turn them back on with ployz \
+         server set second --accepts-services=true"
     );
 }
 
@@ -1124,8 +1124,8 @@ fn a_direct_preview_names_the_volume_its_server_and_the_way_back() {
 
     assert_eq!(
         error.to_string(),
-        "db can't start: its Volume data is on second, which doesn't run services. Turn them \
-         back on with ployz server set second --accepts-services=true"
+        "Volume data is on second, which doesn't run services. Turn them back on with ployz \
+         server set second --accepts-services=true"
     );
 }
 

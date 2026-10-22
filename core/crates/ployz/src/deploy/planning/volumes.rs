@@ -1067,7 +1067,6 @@ fn refused_location(
             )
         })
         .then(|| PlanError::VolumeServerTakesNoServices {
-            service: spec.name.clone(),
             volume: plan.authored(name).to_owned(),
             machine: first,
         })
