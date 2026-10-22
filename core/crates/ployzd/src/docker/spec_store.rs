@@ -748,6 +748,7 @@ mod tests {
     };
 
     use ployz_core::{ContainerId, DockerVolumeName, ResolvedServiceSpec, VolumeGen};
+    use rusqlite::{Connection, params};
     use serde_json::json;
 
     use super::{MachineSpecStore, connect};
@@ -1069,6 +1070,105 @@ mod tests {
         let (runtime, _fake, _id) = runtime_with_running_container().await;
 
         assert_eq!(listed_healthcheck(&runtime).await, None);
+    }
+
+    /// 0.3.0-beta.1 through beta.6 stored Disabled before the gen label shipped.
+    #[tokio::test]
+    async fn an_unstamped_copy_stored_disabled_is_left_as_it_was() {
+        let (runtime, _fake, id) = unstamped_copy_with_no_healthcheck().await;
+        let mut spec = runtime.specs.get(&id).await.unwrap().unwrap();
+        spec.container.healthcheck = Some(ployz_core::HealthcheckSpec::Disabled);
+        write_stored(&runtime, &id, &serde_json::to_string(&spec).unwrap());
+        let stored = read_stored(&runtime, &id);
+        let republished = runtime.specs.subscribe_rotations();
+
+        assert_eq!(
+            listed_healthcheck(&runtime).await,
+            Some(ployz_core::HealthcheckSpec::Disabled)
+        );
+        assert!(!republished.has_changed().unwrap());
+        assert_eq!(read_stored(&runtime, &id), stored);
+    }
+
+    #[tokio::test]
+    async fn a_sync_adopts_each_unstamped_copy_whose_spec_decodes() {
+        use crate::docker::LABEL_GEN;
+        use crate::docker::test_support::{
+            FakeDocker, container_request, fake_runtime_with, machine, spec_with_sources,
+        };
+        use ployz_core::{ContainerKind, Namespace};
+
+        let containers = std::sync::Arc::default();
+        let (runtime, _fake) = fake_runtime_with(FakeDocker {
+            named_containers: Some(std::sync::Arc::clone(&containers)),
+            list_named: true,
+            ..Default::default()
+        })
+        .await;
+        let machine = machine();
+        let namespace = Namespace::parse("app").unwrap();
+        let mut ids = Vec::new();
+        for _ in 0..2 {
+            let spec = spec_with_sources(Vec::new());
+            let request = container_request(
+                ContainerKind::ServiceContainer,
+                &namespace,
+                &spec,
+                std::future::ready(None),
+            );
+            ids.push(
+                runtime
+                    .create_with_admission::<_, _, crate::docker::Error>(&machine, request)
+                    .await
+                    .unwrap()
+                    .container_id,
+            );
+        }
+        for container in containers.lock().unwrap().values_mut() {
+            container
+                .pointer_mut("/Config/Labels")
+                .and_then(serde_json::Value::as_object_mut)
+                .unwrap()
+                .remove(LABEL_GEN)
+                .unwrap();
+        }
+        let [undecodable, valid] = ids.try_into().unwrap();
+        write_stored(&runtime, &undecodable, r#"{"container":{}}"#);
+
+        let [observed] = runtime
+            .list_managed(&machine.id)
+            .await
+            .unwrap()
+            .try_into()
+            .unwrap();
+
+        assert_eq!(observed.container_id, valid);
+        assert_eq!(
+            observed.resolved_spec.container.healthcheck,
+            Some(ployz_core::HealthcheckSpec::Disabled)
+        );
+        assert_eq!(read_stored(&runtime, &undecodable), r#"{"container":{}}"#);
+    }
+
+    fn write_stored(runtime: &crate::docker::ContainerRuntime, id: &ContainerId, encoded: &str) {
+        Connection::open(runtime.spec_store_path_for_test())
+            .unwrap()
+            .execute(
+                "UPDATE containers SET service_spec = ?2 WHERE id = ?1",
+                params![id.to_string(), encoded],
+            )
+            .unwrap();
+    }
+
+    fn read_stored(runtime: &crate::docker::ContainerRuntime, id: &ContainerId) -> String {
+        Connection::open(runtime.spec_store_path_for_test())
+            .unwrap()
+            .query_row(
+                "SELECT service_spec FROM containers WHERE id = ?1",
+                [id.to_string()],
+                |row| row.get(0),
+            )
+            .unwrap()
     }
 
     struct Restorable {
