@@ -136,6 +136,8 @@ Copy the Client ID to `GITHUB_CLIENT_ID` and a new client secret to `GITHUB_CLIE
 | Field | Value |
 | --- | --- |
 | Homepage URL | `https://cloud.example.com` |
+| Callback URL | `https://cloud.example.com/api/github/callback` |
+| Request user authorization (OAuth) during installation | Checked |
 | Webhook URL | `https://cloud.example.com/api/github/webhook` (Active) |
 | Webhook secret | `openssl rand -hex 32`, also `GITHUB_APP_WEBHOOK_SECRET` |
 | Repository permissions | Contents: Read-only, Checks: Read and write, Metadata: Read-only, Actions: Read and write, Pull requests: Read-only |
@@ -154,6 +156,15 @@ get no PR Environments until their owner approves the new permissions in GitHub.
 Installation events are delivered without subscribing. Copy the App ID to
 `GITHUB_APP_ID`, the URL name from `github.com/apps/<slug>` to `GITHUB_APP_SLUG`,
 and a generated private key (the whole PEM, quoted) to `GITHUB_APP_PRIVATE_KEY`.
+Copy its Client ID and a new client secret to `GITHUB_APP_CLIENT_ID` and
+`GITHUB_APP_CLIENT_SECRET`.
+
+**One App for both.** The GitHub App can also serve sign-in in place of the OAuth
+App: set `GITHUB_CLIENT_ID`/`GITHUB_CLIENT_SECRET` to its client ID and secret. It
+then needs the account permission Email addresses: Read-only, for private emails at
+sign-in, and both Callback URLs, `/api/github/callback` first and
+`/api/auth/callback/github` second, because GitHub sends a fresh installation back
+to the first one.
 
 ### 2. Configure and start
 
