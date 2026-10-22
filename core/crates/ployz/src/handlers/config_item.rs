@@ -13,8 +13,9 @@ use ployz_store::{
 };
 
 use super::store::{self, Next};
-use super::{Error, leaf_matches, required};
+use super::{Error, MAX_CLI_INPUT_BYTES, input_too_long, leaf_matches, read_bounded, required};
 use crate::cli::{base, positional, switch, value};
+use crate::failure::io_code;
 use crate::ui::{Cell, Fields, Table, Tone};
 
 pub(super) fn group(command: Command) -> Command {
@@ -46,7 +47,7 @@ pub(super) fn put_command(command: Command) -> Command {
         .arg(
             value("from", None)
                 .value_name("PATH")
-                .help("Read the file from PATH instead of stdin"),
+                .help("Read the file from PATH instead of stdin; - is stdin"),
         )
         .arg(
             value("mode", None)
@@ -149,14 +150,24 @@ pub(super) fn create(root: &ArgMatches) -> Result<(), Error> {
 
 pub(super) fn put(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
-    let bytes = match matches.get_one::<String>("from") {
-        Some(path) => std::fs::read(path)?,
-        None => {
-            let mut bytes = Vec::new();
-            std::io::Read::read_to_end(&mut std::io::stdin(), &mut bytes)?;
-            bytes
-        }
+    let (bytes, from) = match matches
+        .get_one::<String>("from")
+        .filter(|path| *path != "-")
+    {
+        Some(path) => (
+            std::fs::File::open(path)
+                .and_then(|from| read_bounded(from, MAX_CLI_INPUT_BYTES))
+                .map_err(|error| {
+                    Error::caused(io_code(&error), format!("Can't read --from {path}"), error)
+                })?,
+            path.as_str(),
+        ),
+        None => (
+            read_bounded(std::io::stdin(), MAX_CLI_INPUT_BYTES)?,
+            "stdin",
+        ),
     };
+    let bytes = bytes.ok_or_else(|| input_too_long(from, "a Config file"))?;
     let file = file_name(matches)?;
     let content = String::from_utf8(bytes).map_err(|_| {
         Error::usage(format!(

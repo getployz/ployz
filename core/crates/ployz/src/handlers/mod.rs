@@ -46,6 +46,32 @@ pub use cloud::enroll_with_installer as cloud_enroll_with_installer;
 
 pub type Error = Failure;
 
+/// The most bytes the CLI reads of a Config file, env file or secret, so a wrong source
+/// such as `/dev/zero` can't fill memory. It bounds only the read: the Store and Cloud
+/// judge what was read, as they would without it.
+pub(crate) const MAX_CLI_INPUT_BYTES: usize = 32 * 1024 * 1024;
+
+/// The refusal of an `input` past [`MAX_CLI_INPUT_BYTES`], such as `stdin` or a path.
+pub(crate) fn input_too_long(input: &str, what: &str) -> Error {
+    Error::detailed(
+        ployz_core::RpcErrorCode::InvalidArgument,
+        format!("{input}: the CLI reads at most 32 MiB of {what}; this one holds more"),
+        serde_json::json!({ "input": input, "max_bytes": MAX_CLI_INPUT_BYTES }),
+    )
+}
+
+/// All of `source`, or `None` when it holds more than `limit` bytes. Reads at most one
+/// byte past `limit`, so an endless source such as `/dev/zero` is refused at once.
+pub(crate) fn read_bounded(
+    source: impl std::io::Read,
+    limit: usize,
+) -> std::io::Result<Option<Vec<u8>>> {
+    let mut bytes = Vec::new();
+    let past = u64::try_from(limit).unwrap_or(u64::MAX).saturating_add(1);
+    std::io::Read::read_to_end(&mut source.take(past), &mut bytes)?;
+    Ok((bytes.len() <= limit).then_some(bytes))
+}
+
 pub fn run() -> Result<(), Error> {
     let mut command = crate::cli::command();
     let args = std::env::args_os().skip(1).collect::<Vec<_>>();
@@ -612,6 +638,28 @@ pub(crate) type Handler = fn(&ArgMatches) -> Result<(), Error>;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An endless source that counts the bytes it serves.
+    struct Endless(usize);
+
+    impl std::io::Read for &mut Endless {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            buf.fill(b'a');
+            self.0 += buf.len();
+            Ok(buf.len())
+        }
+    }
+
+    #[test]
+    fn a_bounded_read_takes_at_most_one_byte_past_its_limit() {
+        for limit in [0, 1, 4096, 256 * 1024] {
+            let mut source = Endless(0);
+            assert_eq!(read_bounded(&mut source, limit).unwrap(), None);
+            assert!(source.0 <= limit + 1, "{limit}: read {}", source.0);
+        }
+        let exact = read_bounded(&[b'a'; 10][..], 10).unwrap();
+        assert_eq!(exact.as_deref(), Some(&[b'a'; 10][..]));
+    }
 
     #[test]
     fn a_retry_line_escapes_what_would_steer_the_terminal() {

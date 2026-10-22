@@ -157,6 +157,9 @@ can't reference it, and it replaces a variable of yours with that name.
   shares with its parent reads the parent's values.
 - **One CLI or agent change holds up to 4 MiB.** A larger `ployz set` or agent edit fails with
   `invalid_argument` and the limit. Split it into smaller changes.
+- **The CLI reads at most 32 MiB of an env file or a `--secret` on stdin.** A wrong path such
+  as `/dev/zero` fails at once with `invalid_argument`. Anything smaller is judged by the limits
+  here.
 - **A variable holds up to 128 KiB, name included.** Linux won't start a program with a longer
   one, so Ployz refuses such a value when you set it, and refuses a deploy where references
   make one longer. When a secret makes it longer, the Deployment fails before anything runs and

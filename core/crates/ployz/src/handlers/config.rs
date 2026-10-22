@@ -20,7 +20,7 @@ use serde::Serialize;
 use serde_json::{Value, json};
 
 use super::store::{Next, environment, next, scoped, store, with_refresh_hint};
-use super::{Error, leaf_matches};
+use super::{Error, MAX_CLI_INPUT_BYTES, input_too_long, leaf_matches, read_bounded};
 use crate::cli::{positional, switch, value};
 
 pub(super) fn get_command(command: Command) -> Command {
@@ -297,7 +297,15 @@ pub(super) fn set(root: &ArgMatches) -> Result<(), Error> {
                 "--secret reads the value from stdin, never the command line: set web.env.KEY --secret",
             ));
         }
-        let mut secret = std::io::read_to_string(std::io::stdin())?;
+        let secret = read_bounded(std::io::stdin(), MAX_CLI_INPUT_BYTES)?
+            .ok_or_else(|| input_too_long("stdin", "a secret"))?;
+        // `internal`, as when stdin was read as a string.
+        let mut secret = String::from_utf8(secret).map_err(|_| {
+            Error::coded(
+                RpcErrorCode::Internal,
+                format!("{path}: the secret on stdin isn't UTF-8 text"),
+            )
+        })?;
         // `echo VALUE |` ends it with a newline that is not part of the secret.
         if secret.ends_with('\n') {
             secret.pop();
@@ -397,11 +405,35 @@ fn set_from_env_file(root: &ArgMatches, file: &str) -> Result<(), Error> {
         "--from-env-file takes one SERVICE: set web --from-env-file .env",
     )?;
     let service = SettingPath::parse(&service)?;
-    let text = if file == "-" {
-        std::io::read_to_string(std::io::stdin())?
+    let (bytes, from) = if file == "-" {
+        (
+            read_bounded(std::io::stdin(), MAX_CLI_INPUT_BYTES)?,
+            "stdin",
+        )
     } else {
-        std::fs::read_to_string(file).map_err(|_| Error::usage("Can't read the env file"))?
+        (
+            std::fs::File::open(file)
+                .and_then(|from| read_bounded(from, MAX_CLI_INPUT_BYTES))
+                .map_err(|error| {
+                    Error::caused(
+                        RpcErrorCode::InvalidArgument,
+                        format!("Can't read the env file {file}"),
+                        error,
+                    )
+                })?,
+            file,
+        )
     };
+    let bytes = bytes.ok_or_else(|| input_too_long(from, "an env file"))?;
+    // Stdin that isn't text stays `internal`, as when it was read as a string.
+    let text = String::from_utf8(bytes).map_err(|_| {
+        let code = if file == "-" {
+            RpcErrorCode::Internal
+        } else {
+            RpcErrorCode::InvalidArgument
+        };
+        Error::coded(code, format!("{from}: an env file is UTF-8 text"))
+    })?;
     // A key the file repeats takes its last value, in its first place; variables are
     // uppercase, so case doesn't make a new key.
     let mut variables: Vec<(String, String)> = Vec::new();

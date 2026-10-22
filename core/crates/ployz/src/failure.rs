@@ -753,7 +753,7 @@ fn http_status_code(status: u16) -> RpcErrorCode {
     }
 }
 
-fn io_code(error: &io::Error) -> RpcErrorCode {
+pub(crate) fn io_code(error: &io::Error) -> RpcErrorCode {
     use io::ErrorKind;
     let kind = error.kind();
     if kind == ErrorKind::NotFound {
