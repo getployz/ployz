@@ -838,7 +838,9 @@ pub(crate) fn cancel(
         summary.status,
         DeploymentStatus::WaitingForCi | DeploymentStatus::Queued | DeploymentStatus::Running
     );
-    if theirs && stops {
+    // Cancelling a removal keeps what runs, as `cancel_removal` does, so only a
+    // Deployment that ships asks.
+    if theirs && stops && !summary.remove {
         approval::approve_cancel(tx, who, &summary, trusted)?;
     }
     let cancelled = deployment::cancel(tx, who, id)?;
