@@ -347,6 +347,9 @@ impl Daemon {
             management::bind(local_record.management_secret(), &config.management)
                 .await
                 .map_err(io::Error::other)?;
+        let roster = replicated_store
+            .clone()
+            .map(|store| Arc::new(store) as Arc<dyn management::Roster>);
         let socket_path = config.socket.clone();
         let ingress_admin = corrosion.as_ref().map(RunningCorrosion::admin_client);
         let boot_admin = corrosion.as_ref().map(RunningCorrosion::admin_client);
@@ -367,6 +370,7 @@ impl Daemon {
                                 .with_plugin(plugin.clone()),
                             machine_api.clone(),
                             grants,
+                            roster,
                             shutdown.clone(),
                         )
                         .await;
