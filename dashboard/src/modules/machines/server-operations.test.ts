@@ -158,7 +158,7 @@ describe("forgetLoses", () => {
       storage: plain ? { kind: "plain", driver: "local" } : { kind: "provisioned", role, slot_role: slot },
     })),
   });
-  const names = (frame: RuntimeWatchView) => forgetLoses(frame, here).map(({ id }) => `${id.machine_id === here ? "here" : id.machine_id}/${id.name}`);
+  const names = (frame: RuntimeWatchView) => forgetLoses(frame, here).map(({ id }) => `${id.machine_id === here ? "here" : id.machine_id}/${id.name}`).sort();
 
   it("loses each Volume whose writer is on the Server and has no mirror or writer on another Server", () => {
     expect(names(copies([
@@ -184,6 +184,10 @@ describe("forgetLoses", () => {
       { machine: here, name: "an-old-copy", role: "slot", slot: "old_copy" },
       { machine: there, name: "theirs", role: "writer" },
     ]))).toEqual([]);
+  });
+
+  it("never counts Ployz's own build cache as lost", () => {
+    expect(names(copies([{ machine: here, name: "buildx_buildkit_ployz-0_state", plain: true }]))).toEqual([]);
   });
 
   it("loses the last mirror of a Volume whose writer is gone", () => {

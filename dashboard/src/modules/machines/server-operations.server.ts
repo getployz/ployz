@@ -177,6 +177,8 @@ export function volumeLabels(owners: readonly VolumeOwner[]): ReadonlyMap<string
 }
 
 type Copy = RuntimeWatchView["volumes"][number];
+/** Ployz's own buildkit cache, which `ployz server rm` doesn't count as data loss either. */
+const builderCache = /^buildx_buildkit_ployz-[0-9]+_state$/;
 const oldCopy = ({ storage }: Copy) =>
   storage.kind === "provisioned" && storage.role === "slot" && (storage.slot_role ?? "mirror") === "old_copy";
 
@@ -190,10 +192,9 @@ export function forgetLoses(frame: RuntimeWatchView, machineId: string): DataLos
     .filter((copy) => copy.id.machine_id !== machineId && copy.storage.kind === "provisioned" && !oldCopy(copy))
     .map(({ id }) => id.name));
   return frame.volumes
-    .filter((copy) => copy.id.machine_id === machineId
+    .filter((copy) => copy.id.machine_id === machineId && !builderCache.test(copy.id.name)
       && (copy.storage.kind !== "provisioned" || (!oldCopy(copy) && !kept.has(copy.id.name))))
-    .map(({ id }) => ({ kind: "docker_volume" as const, id }))
-    .sort((a, b) => byName(volumeName(a), volumeName(b)));
+    .map(({ id }) => ({ kind: "docker_volume" as const, id }));
 }
 
 /** A reset removal deletes the Volumes it confirmed; a forget loses those `forgetLoses` found. */

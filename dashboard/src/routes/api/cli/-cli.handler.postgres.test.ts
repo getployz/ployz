@@ -2334,7 +2334,7 @@ it.live(
   60_000,
 );
 
-type FraRunsGlobal = { destroys: boolean; namespace: string };
+type FraRunsGlobal = { destroys: boolean; namespace: string; holdsOnlyCopy?: string };
 
 const operationClusterOf = (plan: FraRunsGlobal) => Layer.succeed(OrganizationRuntime, {
   cancel: () => Effect.void,
@@ -2343,7 +2343,9 @@ const operationClusterOf = (plan: FraRunsGlobal) => Layer.succeed(OrganizationRu
     connected: asTestDouble<PloyzSession>()({
       watchFirstFrame: () => Effect.succeed(asTestDouble<RuntimeWatchView>()({
         machines: [{ machine: { id: fra1, name: "fra-1" } }],
-        volumes: [],
+        volumes: plan.holdsOnlyCopy === undefined
+          ? []
+          : [{ id: { machine_id: fra1, name: plan.holdsOnlyCopy }, storage: { kind: "provisioned", role: "writer" } }],
         services: plan.destroys
           ? [{
             identity: `${plan.namespace}/web`,
@@ -2432,6 +2434,28 @@ for (const operation of operations) {
     60_000,
   );
 }
+
+it.live(
+  "a CLI forget of a Server holding a Volume's only copy asks to delete that Volume too",
+  () =>
+    Effect.gen(function* () {
+      const plan: FraRunsGlobal = { destroys: false, namespace: "left-behind", holdsOnlyCopy: "left-behind_vol-1" };
+      const layer = yield* cliLayer(fakeServers().layer, { runtime: operationClusterOf(plan), inngest: new Inngest({ id: "cli-forget-volume-test" }) });
+      yield* Effect.gen(function* () {
+        const alice = yield* signUp("alice");
+        const forget = operations[0];
+
+        const asked = yield* cli(forget.method, forget.path, alice, forget.body);
+        assert.deepStrictEqual([asked.status, asked.json.error?.code], [409, "approval_required"], asked.text);
+        const effects = asked.json.error?.details?.effects ?? assert.fail("no effects");
+        assert.deepStrictEqual(effects.map(({ kind, name }) => [kind, name]), [
+          ["removes_server", "fra-1"],
+          ["deletes_volume", "on fra-1"],
+        ]);
+      }).pipe(Effect.provide(layer));
+    }),
+  60_000,
+);
 
 it.live(
   "a CLI drain that loses the last copy of a Global asks, and an approved retry starts one drain",
