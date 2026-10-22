@@ -5,6 +5,8 @@ on:
   # Marking a PR ready starts CI, later pushes run it again, and converting back to draft fails CI ready again.
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
+  # The merge queue runs the PR checks on the PR merged with main and the PRs queued ahead of it.
+  merge_group:
   push:
     branches: [main]
   workflow_dispatch:
@@ -54,7 +56,7 @@ jobs:
       - id: select
         name: Select checks from the complete change
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before || '' }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before || '' }}
           # cargo metadata --no-deps needs no compiler, so skip installing the pinned toolchain.
           RUSTUP_TOOLCHAIN: stable
         run: python3 scripts/ci.py select "$BASE_SHA" "$GITHUB_SHA"
@@ -307,7 +309,7 @@ jobs:
   # Not a check: no PR waits on it, so it stays out of ready.
   verify-binaries:
     needs: changes
-    if: github.event_name != 'pull_request'
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     defaults:
       run:
         working-directory: core
