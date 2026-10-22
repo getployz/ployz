@@ -2,12 +2,11 @@ import { useEffect, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { toErrorMessage } from "#/lib/error-message";
-import { listNames } from "#/lib/plural";
 import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
-import { placementBlockers, placementServers } from "#/modules/volume-placement/daemon-release";
+import { moveServers, placementBlockers, unroutedServers } from "#/modules/volume-placement/daemon-release";
 import { stageOffServerServerFn } from "#/modules/volume-placement/volume-placement.functions";
 import { volumePlacementKeys } from "#/modules/volume-placement/volume-placement.queries";
-import { drainView, type DrainView } from "./server-drain-view";
+import { drainView, type DrainView, stuckMessage } from "./server-drain-view";
 import { requestServerDrainServerFn } from "./server-drain.functions";
 import { serverDrainKeys, useServerDrains } from "./server-drain.queries";
 
@@ -51,10 +50,11 @@ export function useServerDrain(
 
   const stageOff = () => {
     if (placementBlockers(machines).length > 0) return;
-    const accepting = [...placementServers(machines)].filter((id) => id !== server.id);
+    const accepting = [...moveServers(machines)].filter((id) => id !== server.id);
+    const unrouted = unroutedServers(machines).filter((name) => name !== server.name);
     stageOffServerServerFn({ data: { organizationSlug, server: server.id, accepting } }).then(
       ({ stuck }) => {
-        if (stuck.length > 0) toast.error(`${listNames(stuck)} ${stuck.length === 1 ? "has" : "have"} nowhere to move`);
+        if (stuck.length > 0) toast.error(stuckMessage(stuck, unrouted));
         void queryClient.invalidateQueries({ queryKey: volumePlacementKeys.all });
       },
       (error: Error) => toast.error(toErrorMessage(error, `Could not move the volumes off ${server.name}`)),

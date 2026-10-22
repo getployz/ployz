@@ -1,6 +1,7 @@
 import type { DrainReport, MachineRef, MoveFailure, OldCopyEnd, ServiceDrain, StayReason, Unconfirmed } from "@ployz/sdk";
 import type { DrainEndCode, LatestDrains } from "#/modules/machines/server-drain";
 import { splitQualifiedService } from "#/modules/machines/server-services";
+import { listNames } from "#/lib/plural";
 
 export type DrainTone = "moved" | "stopped" | "stayed" | "failed" | "neutral";
 
@@ -382,4 +383,10 @@ export function removeHint(view: DrainView, running: readonly RunningService[], 
     return { kind: "pinned", names: names(split.drainable), unowned };
   }
   return { kind: "drain", count: split.drainable.length, unowned };
+}
+
+/** The Volumes a Drain found nowhere to move, and the Servers `unrouted` whose upgrade would let them move there. */
+export function stuckMessage(stuck: readonly string[], unrouted: readonly string[]) {
+  const upgrade = unrouted.length > 0 ? `. Upgrade ${listNames([...unrouted])} to move ${stuck.length === 1 ? "it" : "them"} there` : "";
+  return `${listNames([...stuck])} ${stuck.length === 1 ? "has" : "have"} nowhere to move${upgrade}`;
 }
