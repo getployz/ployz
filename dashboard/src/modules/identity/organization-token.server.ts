@@ -5,7 +5,7 @@ import { Effect } from "effect";
 import { type Caller, callerCan, type TokenKind } from "#/modules/identity/actor";
 import { readStore } from "#/modules/config-store/config-store.server";
 import { requireClaimed } from "#/modules/identity/claim-required.server";
-import { organizationToken, session } from "#/modules/identity/tables";
+import { organizationToken, session, user } from "#/modules/identity/tables";
 import { FULL_GRANT, grantLabel, presetGrant, type TokenGrant, type TokenPreset } from "#/modules/identity/token-grant";
 import { Database } from "#/server/database.server";
 import { NotFound, Validation } from "#/server/public-error";
@@ -124,8 +124,10 @@ export const listCredentials = Effect.fn("OrganizationToken.list")(function* (ca
       expiresAt: organizationToken.expiresAt,
       permissions: organizationToken.permissions,
       environments: organizationToken.environments,
+      owner: { id: user.id, name: user.name, email: user.email },
     })
     .from(organizationToken)
+    .innerJoin(user, eq(user.id, organizationToken.userId))
     .where(tokensReachableBy(caller))
     .orderBy(asc(organizationToken.createdAt), asc(organizationToken.id));
   const devices = yield* database.drizzle
@@ -138,16 +140,20 @@ export const listCredentials = Effect.fn("OrganizationToken.list")(function* (ca
     ))
     .orderBy(asc(session.createdAt), asc(session.id));
   return {
-    tokens: tokens.map((token) => ({
-      id: token.id,
-      name: token.name,
-      kind: token.kind,
-      scope: grantLabel({ permissions: token.permissions, environments: token.environments }),
-      created_at: token.createdAt.toISOString(),
-      expires_at: token.expiresAt.toISOString(),
-      expired: token.expiresAt <= now,
-      current: caller.credential.id === token.id,
-    })),
+    tokens: tokens.map((token) => {
+      const you = token.owner.id === caller.userId;
+      return {
+        id: token.id,
+        name: token.name,
+        kind: token.kind,
+        scope: grantLabel({ permissions: token.permissions, environments: token.environments }, you ? "you" : token.owner.name || token.owner.email),
+        owner: { ...token.owner, you },
+        created_at: token.createdAt.toISOString(),
+        expires_at: token.expiresAt.toISOString(),
+        expired: token.expiresAt <= now,
+        current: caller.credential.id === token.id,
+      };
+    }),
     devices: devices.map((device) => ({
       id: device.id,
       created_at: device.createdAt.toISOString(),

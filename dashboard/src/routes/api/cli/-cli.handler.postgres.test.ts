@@ -403,10 +403,14 @@ it.live(
 
         assert.strictEqual((yield* cli("GET", "tokens", {})).status, 401);
         assert.strictEqual((yield* cli("GET", "tokens", { bearer: "ployz_unknown" })).status, 401);
-        assert.strictEqual(
-          (yield* cli("POST", "tokens", alice, { name: " ", expires_in_days: 30 })).status, 422);
-        assert.strictEqual(
-          (yield* cli("POST", "tokens", alice, { name: "ci", expires_in_days: 366 })).status, 422);
+        for (const name of [" ", "x".repeat(65)]) {
+          const unnamed = yield* cli("POST", "tokens", alice, { name, expires_in_days: 30 });
+          assert.strictEqual(unnamed.status, 422);
+          assert.match(unnamed.text, /"A token's name is 1 to 64 characters\. No changes made\."/);
+        }
+        const long = yield* cli("POST", "tokens", alice, { name: "ci", expires_in_days: 366 });
+        assert.strictEqual(long.status, 422);
+        assert.notMatch(long.text, /name/);
 
         const made = yield* cli("POST", "tokens", alice, { name: "ci", expires_in_days: 30 });
         const token = made.json.token ?? assert.fail("no token");

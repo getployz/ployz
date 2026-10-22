@@ -155,6 +155,8 @@ const decodeBody = <S extends Schema.ConstraintDecoder<unknown>>(schema: S, requ
     Effect.mapError(() => new Validation({ message, userFacing: true })),
   );
 
+const NewTokenName = Schema.Struct({ name: NewToken.fields.name });
+
 /**
  * `/api/cli/*`: the `ployz` CLI's account surface (Organizations, making and removing them, Organization Tokens, signed-in devices, Fleet Tokens, Waiting Servers and their Server Enrollments,
  * GitHub connections), and removing, draining, upgrading or cleaning up after a Server Cloud manages through durable runs, or forgetting deleted ones (Forget Servers), and reading or deciding an approval a destructive write waits on. Every call acts as one Caller, bound to one Organization. Replies are snake_case JSON for the CLI.
@@ -204,8 +206,10 @@ export const handleCliRequest = Effect.fn("Cli.handle")(function* (request: Requ
           Effect.catchTag("StoreRefused", (refused) => Effect.succeed(refusal(refused.refusal))),
         );
       }
+      // The CLI checks the rest before it asks, so a bad name is the one a person can send; it is named alone.
+      yield* decodeBody(NewTokenName, request.clone(), "A token's name is 1 to 64 characters. No changes made.");
       const input = yield* decodeBody(NewToken, request,
-        "A token needs a name of 1 to 64 characters, expires_in_days of 1 to 365, and a kind of cli or agent.");
+        "A token expires in 1 to 365 days, and its kind is cli or agent. No changes made.");
       const preset = yield* knownEnvironment(caller, yield* presetOf(input));
       return yield* createOrganizationToken(caller, { name: input.name, expiresInDays: input.expires_in_days, kind: input.kind, preset }).pipe(
         Effect.map((token) => ({ token })),

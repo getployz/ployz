@@ -175,7 +175,7 @@ pub(super) fn token_list(root: &ArgMatches) -> Result<(), Error> {
         cloud_account::credentials(credential).await
     })?;
     let mut table = Table::new(
-        ["KIND", "ID", "NAME", "SCOPE", "EXPIRES", "STATE"],
+        ["KIND", "ID", "NAME", "OWNER", "SCOPE", "EXPIRES", "STATE"],
         "No tokens or signed-in devices.",
     );
     let current = |current| {
@@ -190,6 +190,12 @@ pub(super) fn token_list(root: &ArgMatches) -> Result<(), Error> {
             Cell::from(token.kind.as_str()),
             Cell::from(&token.id),
             Cell::from(token.name.escape_debug().to_string()),
+            Cell::from(match &token.owner {
+                Some(owner) if owner.you => "you".to_owned(),
+                Some(owner) if owner.name.is_empty() => owner.email.escape_debug().to_string(),
+                Some(owner) => owner.name.escape_debug().to_string(),
+                None => String::new(),
+            }),
             Cell::from(&token.scope),
             Cell::from(token.expires_at.to_string()),
             if token.expired {
@@ -207,6 +213,7 @@ pub(super) fn token_list(root: &ArgMatches) -> Result<(), Error> {
                 "ployz login {}",
                 device.created_at.get(..10).unwrap_or(&device.created_at)
             )),
+            Cell::from("you"),
             Cell::from("Full as you"),
             Cell::from(device.expires_at.to_string()),
             current(device.current),
@@ -216,6 +223,7 @@ pub(super) fn token_list(root: &ArgMatches) -> Result<(), Error> {
         table.row([
             Cell::from(super::store::word(&revoking.kind)),
             Cell::from(&revoking.id),
+            Cell::from(""),
             Cell::from(""),
             Cell::from(""),
             Cell::from(""),

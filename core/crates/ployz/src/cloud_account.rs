@@ -196,6 +196,18 @@ pub(crate) struct TokenEntry {
     #[serde(default)]
     pub(crate) kind: TokenKind,
     pub(crate) scope: String,
+    /// Whose token it is. A Cloud older than 0.3.2 names no owner.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) owner: Option<TokenOwner>,
+}
+
+/// The member a listed token acts as; `you` when that is the caller.
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct TokenOwner {
+    pub(crate) id: String,
+    pub(crate) name: String,
+    pub(crate) email: String,
+    pub(crate) you: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
