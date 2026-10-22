@@ -18,6 +18,10 @@ want it on.
 2. Click **Make primary**. The mirror shows **Primary** in pink until you deploy.
 3. Click **Deploy**.
 
+A mirror on a server running 0.3.0-beta.6 offers no **Make primary** and reads "Make primary needs
+a newer Ployz on web-2.": that release can take the volume but can't put the moved service back in
+web traffic. Upgrade the server first.
+
 <!-- screenshot: a mirror's panel with Make primary -->
 
 Details lists the steps: "Stop · Final sync · Start", with "Catch up" first when the mirror last
@@ -51,7 +55,9 @@ A move or a new mirror deletes old copies on other servers first, and Details sa
 **Drain** on a server's page moves each volume there off at the next deploy, to its mirror or else
 to the first other server that runs services. The page says how many, like "Next deploy moves 2
 volumes". Each environment's next deploy moves its own volumes. Drain's moves wait for every server
-with storage to have a newer Ployz too.
+with storage to have a newer Ployz too. Drain skips a server running 0.3.0-beta.6. When a volume
+then has nowhere to go but that server, Drain names it: "Upgrade web-2 to move data there". A volume
+nowhere would take reads "data has nowhere to move".
 
 ## Move from the CLI
 

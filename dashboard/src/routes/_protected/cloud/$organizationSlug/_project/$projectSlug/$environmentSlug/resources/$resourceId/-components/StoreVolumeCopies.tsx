@@ -24,7 +24,7 @@ import {
 import { useRefreshMirror } from "#/modules/volume-copies/volume-copies.hooks";
 import { copiesFromPlacement } from "#/modules/volume-copies/volume-copies.placement";
 import { MIRROR_ROUND_MINUTES, mirrorLast, skippedWords } from "#/modules/volume-copies/volume-copies.refresh";
-import { placementBlockers, placementServers, restoreOpen } from "#/modules/volume-placement/daemon-release";
+import { moveServers, placementBlockers, placementServers, restoreOpen } from "#/modules/volume-placement/daemon-release";
 import {
   appliedMirrors, editPlacement, lossMoment, observePlacement, type Placement, type PlacementEdit, type PlacementRow,
   placementTargets, type PlacementVolume, type Recovery, recovery, type RestorePoint, restorePoints, seedOffer, targetPlacement,
@@ -61,6 +61,7 @@ export function useVolumeCopies(organizationSlug: string, environment: Environme
   const copies = members === undefined ? null
     : copiesFromPlacement({ volume, members, row, active: running, statuses: mirror.statuses });
   const accepting = placementServers(lens.machines);
+  const moveTo = moveServers(lens.machines);
   const floorless = new Set(lens.machines.filter((machine) => serverSupports(machine, requirements.volumeFloor) === false).map((machine) => machine.id));
   return {
     organizationSlug,
@@ -74,6 +75,7 @@ export function useVolumeCopies(organizationSlug: string, environment: Environme
     holders: holdersOf(volume.id, members, lens.status === "observed" ? lens.machines : null, lens.volumeCopies),
     servers: lens.machines.filter((machine) => machine.acceptsServices),
     accepting: members?.filter((member) => accepting.has(member.machine.id)).map((member) => member.machine.id) ?? [],
+    moveTo: members?.filter((member) => moveTo.has(member.machine.id)).map((member) => member.machine.id) ?? [],
     floorless: members?.filter((member) => floorless.has(member.machine.id)).map((member) => member.machine.id) ?? [],
     upgrade: placementBlockers(lens.machines),
     restorable: members?.filter((member) => restoreOpen(lens.machines, member.machine.id)).map((member) => member.machine.id) ?? [],
@@ -102,6 +104,8 @@ export type CopiesPanelProps = {
   servers: readonly CopyServer[];
   /** Servers that accept Services and run the volume verbs: the only ones a move or a mirror may name. */
   accepting: readonly MachineId[];
+  /** Of `accepting`, the Servers a Volume can move to: their Ployz routes the moved copy once it starts it. */
+  moveTo: readonly MachineId[];
   floorless: readonly MachineId[];
   upgrade: readonly string[];
   /** The Servers whose Ployz can restore a point onto the copy they hold as primary. */
@@ -389,7 +393,7 @@ function AddCopyDialog({ open, onOpenChange, volume, live, servers, mirrorOn, on
 }
 
 /** Its staged actions build the same placement the list would; only Details discards them. */
-function CopyView({ volume, members, row, rows, owed, copies, copy, accepting, upgrade, seeds, seedRefused, disabled, deploying, stage, restore, refresh, refreshing,
+function CopyView({ volume, members, row, rows, owed, copies, copy, accepting, moveTo, upgrade, seeds, seedRefused, disabled, deploying, stage, restore, refresh, refreshing,
   alert, onBack, now }:
   Resolved & { copy: MirrorCopy; alert: ReactNode; onBack: () => void }) {
   const blocked = upgrade.length > 0;
@@ -400,7 +404,9 @@ function CopyView({ volume, members, row, rows, owed, copies, copy, accepting, u
   // primary, while Live names another Server, has no edit of its own, nor does one known only from its last report,
   // which no placement holds.
   const offered = !blocked && copy.staged === null && !copy.lastReported && !deploying && target?.primary !== copy.server.id ? target : null;
-  const movable = placementTargets(volume, members, row, accepting, owed).move.some((machine) => machine.id === copy.server.id);
+  const movable = placementTargets(volume, members, row, moveTo, owed).move.some((machine) => machine.id === copy.server.id);
+  // Its Ployz takes the data but can't finish a Move: upgrading it is all Make primary waits on.
+  const unrouted = offered !== null && !movable && placementTargets(volume, members, row, accepting, owed).move.some((machine) => machine.id === copy.server.id);
   const promote = offered !== null && movable ? editPlacement(offered, { kind: "move", to: copy.server.id }) : null;
   const remove = offered === null ? null : editPlacement(offered, { kind: "remove_mirror", server: copy.server.id });
   const locked = disabled || deploying;
@@ -448,6 +454,7 @@ function CopyView({ volume, members, row, rows, owed, copies, copy, accepting, u
       </Button>}
       {promote ? <Button variant="outline" disabled={locked} onClick={() => stage(promote, applied)}>Make primary</Button> : null}
     </div>
+    {unrouted ? <p className="text-sm text-muted-foreground">Make primary needs a newer Ployz on {copy.server.name}.</p> : null}
     {promote ? <p className="text-sm text-muted-foreground">
       {stale
         ? `Make primary moves ${services} to ${copy.server.name} on deploy. The deploy catches up first, then pauses writes for the final sync. If ${copy.server.name} can't catch up, the deploy fails and ${live} keeps serving.`

@@ -9,6 +9,7 @@ import {
   drainSummary,
   drainView,
   removeHint,
+  stuckMessage,
 } from "#/modules/machines/server-drain-view";
 import { runtimeWatchMachineFixture } from "#/modules/runtime/runtime-watch-frame.test-fixture";
 
@@ -280,5 +281,21 @@ describe("A leftover still running here", () => {
   it("counts as stayed, not stopped", () => {
     const value = report([leftover], null, { kind: "observed", services: ["shop/web"], unchosen: [] });
     expect(drainSummary(value, "web-2")).toBe("1 stayed");
+  });
+});
+
+describe("stuckMessage", () => {
+  it("names the Server whose upgrade would move each Volume there, and says the rest have nowhere to move", () => {
+    expect(stuckMessage([{ volume: "db", upgrade: null }])).toBe("db has nowhere to move");
+    expect(stuckMessage([{ volume: "db", upgrade: "web-2" }])).toBe("Upgrade web-2 to move db there");
+    expect(stuckMessage([{ volume: "db", upgrade: "web-2" }, { volume: "cache", upgrade: null }, { volume: "logs", upgrade: "web-2" }]))
+      .toBe("cache has nowhere to move. Upgrade web-2 to move db and logs there");
+    expect(stuckMessage([{ volume: "db", upgrade: "web-2" }, { volume: "cache", upgrade: "web-3" }]))
+      .toBe("Upgrade web-2 to move db there. Upgrade web-3 to move cache there");
+  });
+
+  it("keeps a Volume nowhere takes when another Environment's Volume of the same name can move once a Server is upgraded", () => {
+    expect(stuckMessage([{ volume: "data", upgrade: "web-2" }, { volume: "data", upgrade: null }]))
+      .toBe("data has nowhere to move. Upgrade web-2 to move data there");
   });
 });
