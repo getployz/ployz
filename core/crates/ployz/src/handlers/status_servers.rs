@@ -284,6 +284,8 @@ async fn observe(
 
 struct Check {
     attention: Vec<Attention>,
+    /// A Down Server that may hold copies; one that never arrived holds none.
+    unchecked_down: bool,
     unseen: Vec<Unseen>,
     names: HashMap<MachineId, MachineName>,
 }
@@ -350,6 +352,9 @@ fn judge(
                 }),
             })
             .collect(),
+        unchecked_down: machines
+            .iter()
+            .any(|observed| down.contains(&observed.machine.id) && !observed.unarrived()),
         unseen: Vec::new(),
         names: machines
             .iter()
@@ -833,9 +838,7 @@ impl Check {
     /// A Down Server's copies or anything else the check could not see leaves it partial.
     /// Skipping it while a deploy runs is on purpose, not a gap.
     fn partial(&self) -> bool {
-        self.attention
-            .iter()
-            .any(|attention| matches!(attention.subject, Some(Subject::Down { .. })))
+        self.unchecked_down
             || self
                 .unseen
                 .iter()

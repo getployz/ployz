@@ -1041,6 +1041,10 @@ fn a_server_that_never_arrived_does_not_hide_a_draining_copy() {
         messages(&check)
     );
     assert!(warned(&check).is_empty());
+    assert!(
+        !check.partial(),
+        "a Server that never arrived holds no copies to miss"
+    );
 }
 
 #[test]
