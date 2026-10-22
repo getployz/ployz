@@ -227,6 +227,24 @@ leaves that Organization even if you switched to another one in the dashboard si
 Pass `--yes` to skip the question. It then moves this device to another Organization of yours,
 the way `ployz org rm` does, and prints which one.
 
+## Change environments from the CLI
+
+These `ployz env` commands do what the dashboard's environment controls do. See
+[Environments](../environments/environments.md) for what each one means.
+
+| In the dashboard | From the CLI |
+| --- | --- |
+| **New environment** | `ployz env new qa` |
+| **Default environment** in **Settings → Project** | `ployz env default staging` |
+| **Keep it after syncing into production** | `ployz env keep --env staging` |
+| **Never sync** on a variable | `ployz env never-sync web.env.APP_ENV --env staging` |
+| **On merge** on a preview environment | `ployz env on-merge --env pr-142` |
+| **Branch setup** in production's **Settings → Environment** | `ployz env setup --env production --setup 'web=pnpm db:seed'` |
+| **Make it separate** on a shared service | `ployz env copy web --env staging` |
+
+`keep` and `never-sync` take `--off` to undo. `ployz env copy` gives the branch its own copy of the
+service, and a volume it mounts starts empty. `ployz env --help` lists the rest.
+
 ## Deploy a directory
 
 > [!WARNING]
