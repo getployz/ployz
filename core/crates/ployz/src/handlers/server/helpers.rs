@@ -35,12 +35,12 @@ pub(super) fn token_request(matches: &ArgMatches) -> Result<InspectRequest, Erro
 /// A public IP the user gave: refused when no visitor could reach it, warned about when only a
 /// private network could (#2914).
 pub(super) fn public_ip(value: &str) -> Result<IpAddr, Error> {
-    // An IPv4-mapped IPv6 address is stored as the IPv4 it carries, so DNS publishes an A record.
+    // Judged as the IPv4 an IPv4-mapped address carries, but returned as typed: an enrollment
+    // retry must repeat its request exactly.
     let ip = value
         .parse::<IpAddr>()
-        .map_err(|_| Error::usage(format!("invalid public IP {value:?}")))?
-        .to_canonical();
-    let unreachable = match ip {
+        .map_err(|_| Error::usage(format!("invalid public IP {value:?}")))?;
+    let unreachable = match ip.to_canonical() {
         ip if ip.is_unspecified() => Some("an unspecified"),
         ip if ip.is_loopback() => Some("a loopback"),
         ip if ip.is_multicast() => Some("a multicast"),
@@ -54,7 +54,7 @@ pub(super) fn public_ip(value: &str) -> Result<IpAddr, Error> {
             "{value} is {kind} address, which no visitor can reach. Give the address the internet reaches this Server at, or none."
         )));
     }
-    let private = match ip {
+    let private = match ip.to_canonical() {
         IpAddr::V4(v4) => v4.is_private(),
         IpAddr::V6(v6) => v6.is_unique_local(),
     };

@@ -930,7 +930,8 @@ fn parse_update(matches: &ArgMatches) -> Result<MachineUpdate, Error> {
     let public_ip = match matches.get_one::<String>("public-ip").map(String::as_str) {
         None => PublicIpUpdate::Keep,
         Some("") | Some("none") => PublicIpUpdate::Remove,
-        Some(value) => PublicIpUpdate::Set(helpers::public_ip(value)?),
+        // Stored as the IPv4 an IPv4-mapped address carries, so DNS publishes an A record.
+        Some(value) => PublicIpUpdate::Set(helpers::public_ip(value)?.to_canonical()),
     };
     let build_concurrency = match matches
         .get_one::<String>("build-concurrency")
@@ -1287,6 +1288,11 @@ mod tests {
         assert_eq!(
             set("::ffff:203.0.113.9").unwrap(),
             PublicIpUpdate::Set("203.0.113.9".parse().unwrap())
+        );
+        assert_eq!(
+            helpers::public_ip("::ffff:203.0.113.9").unwrap(),
+            "::ffff:203.0.113.9".parse::<IpAddr>().unwrap(),
+            "server add repeats an enrollment's request as typed"
         );
     }
 
