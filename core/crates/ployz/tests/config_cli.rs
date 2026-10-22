@@ -171,6 +171,7 @@ fn dispatch(store: &std::sync::Arc<ConfigStore>, written: &Written) {
         let unreachable = ployz::context::Connection::tcp("127.0.0.1:1".parse().unwrap());
         // Its Deployment ends not executed, or was replaced before it started.
         let _ = runtime.block_on(ployz::sdk::run_deployment(
+            ployz_core::Operator::Cloud,
             store,
             id,
             RunnerId::parse("cloud-worker").unwrap(),

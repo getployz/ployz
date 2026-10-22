@@ -14,7 +14,7 @@ use super::{
 };
 use crate::{
     ContainerId, DockerVolumeId, DockerVolumeName, IngressHost, MachineId, MachineName, Namespace,
-    ProvisionedVolumeMaximumBytes, QualifiedService, RpcError, ServiceId, ServiceName,
+    Operator, ProvisionedVolumeMaximumBytes, QualifiedService, RpcError, ServiceId, ServiceName,
 };
 use thiserror::Error;
 
@@ -39,6 +39,16 @@ pub struct PlanOptions {
     #[serde(default, skip_serializing_if = "ServiceRemovals::is_empty")]
     #[ts(optional, as = "Option<Vec<ServiceName>>")]
     pub removals: ServiceRemovals,
+    /// Who runs this Deploy. The runner sets it; a refusal's way back depends on it.
+    #[serde(default, skip_serializing_if = "Operator::is_cloud")]
+    #[ts(optional, as = "Option<Operator>")]
+    pub operator: Operator,
+    /// Plan the other Services when one mounts a Volume nothing can mount, listing it in
+    /// `DeployPreview.blocked`. Only a runner that records each Service's outcome sets it;
+    /// without it that Service refuses the whole Deploy.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[ts(optional, as = "Option<bool>")]
+    pub block_unmountable: bool,
 }
 
 /// Services a targeted Deploy tears down by name. It can name only Services,
@@ -653,6 +663,20 @@ pub struct DeployPreview {
     /// completes: copies the Deploy keeps, and copies it starts or updates.
     #[serde(default)]
     pub placed_on: BTreeMap<ServiceName, BTreeSet<MachineId>>,
+    /// Services this Deploy plans nothing for because they cannot run: a Volume with
+    /// no writer or unknown copies, or a dependency so blocked. Each is reported as
+    /// not attempted, and the Deploy fails, while the other Services deploy.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[ts(optional, as = "Option<Vec<BlockedService>>")]
+    pub blocked: Vec<BlockedService>,
+}
+
+/// A Service a Deploy could not plan, and why.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
+pub struct BlockedService {
+    pub service: ServiceName,
+    /// Why, with `details.reason` naming the refusal (`no_writer`).
+    pub error: RpcError,
 }
 
 /// One managed Docker Volume current observations indicate a container operation would create.
@@ -724,6 +748,7 @@ impl DeployPreview {
             depths: BTreeMap::new(),
             dependencies: Vec::new(),
             placed_on: BTreeMap::new(),
+            blocked: Vec::new(),
         }
     }
 
@@ -735,11 +760,12 @@ impl DeployPreview {
             .any(|warning| warning.observation_gap().is_some())
     }
 
-    /// Whether `operations` is empty. Planned stops and removals are operations;
-    /// `warnings`, `would_remove` and `volumes_to_create` do not count on their own.
+    /// Whether this Deploy has nothing to do: no operations and no blocked Service.
+    /// Planned stops and removals are operations; `warnings`, `would_remove` and
+    /// `volumes_to_create` do not count on their own.
     #[must_use]
     pub fn noop(&self) -> bool {
-        self.operations.is_empty()
+        self.operations.is_empty() && self.blocked.is_empty()
     }
 }
 
@@ -1384,6 +1410,31 @@ pub struct MachineStorageBudget {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn plan_options_a_runner_did_not_set_read_as_before() {
+        let before = serde_json::json!({
+            "force_recreate": false,
+            "skip_health_monitor": false,
+            "placement_seed": 0,
+            "selected": []
+        });
+        let options: PlanOptions = serde_json::from_value(before.clone()).unwrap();
+        assert_eq!(options.operator, Operator::Cloud);
+        assert!(!options.block_unmountable);
+        assert_eq!(serde_json::to_value(&options).unwrap(), before);
+        let runner = PlanOptions {
+            operator: Operator::Cli,
+            block_unmountable: true,
+            ..options
+        };
+        let written = serde_json::to_value(&runner).unwrap();
+        assert_eq!(written.get("operator"), Some(&serde_json::json!("cli")));
+        assert_eq!(
+            written.get("block_unmountable"),
+            Some(&serde_json::json!(true))
+        );
+    }
 
     #[test]
     fn compensation_lines_say_what_became_of_each_container_in_order() {

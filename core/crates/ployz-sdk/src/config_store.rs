@@ -236,6 +236,7 @@ impl ConfigStore {
             .await?;
         to_json(
             ployz::sdk::run_deployment(
+                ployz_core::Operator::Cloud,
                 Arc::clone(&self.store),
                 deployment,
                 runner,

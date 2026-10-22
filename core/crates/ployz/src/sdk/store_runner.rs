@@ -10,8 +10,8 @@ use std::time::Duration;
 
 use ployz_core::{
     AnonymousVolumes, ContainerId, DeployOperation, DeployOutcome, DeployWarning, ExecutionError,
-    FailedOperation, HealthFailure, LastRun, MachineId, MachineObservation, QualifiedService,
-    RpcError, RpcErrorCode, ServiceName,
+    FailedOperation, HealthFailure, LastRun, MachineId, MachineObservation, Operator,
+    QualifiedService, RpcError, RpcErrorCode, ServiceName,
 };
 use ployz_store::tools::{LogText, SealedValues, Withheld};
 use ployz_store::{
@@ -121,8 +121,8 @@ fn receipts(claimed: &Claimed, service: &ServiceName) -> Vec<BuildReceipt> {
         .collect()
 }
 
-/// Run Deployment `deployment` as `runner` on one of `connections`, and
-/// return its summary once its outcome is recorded. Its Git and uploaded Services
+/// Run Deployment `deployment` as `runner`, driving it as `operator`, on one of
+/// `connections`, and return its summary once its outcome is recorded. Its Git and uploaded Services
 /// build first, at once, each from its checkout or the upload in `checkouts`; then
 /// preparation reuses their images. A failed connection, build or preparation is
 /// recorded as not executed; an uploaded Service with neither its upload nor a usable
@@ -134,6 +134,7 @@ fn receipts(claimed: &Claimed, service: &ServiceName) -> Vec<BuildReceipt> {
 /// owns it, it was replaced, cancelled or ended, or this runner already prepared it),
 /// or a storage error.
 pub async fn run_deployment(
+    operator: Operator,
     store: Arc<ConfigStore>,
     deployment: DeploymentId,
     runner: RunnerId,
@@ -145,10 +146,13 @@ pub async fn run_deployment(
         deployment,
         runner,
     };
-    let claimed = {
+    let mut claimed = {
         let (deployment, runner) = (run.deployment.clone(), run.runner.clone());
         super::store_call(&run.store, move |store| store.claim(&deployment, &runner)).await?
     };
+    // The Store lowers the Intent without knowing who will run it.
+    claimed.intent.options.operator = operator;
+    claimed.intent.options.block_unmountable = true;
     let (targets, built) = match checkouts
         .map_err(Unbuilt::Failed)
         .and_then(|sources| targets(&claimed, sources))
@@ -885,7 +889,11 @@ impl Run {
             }
         }
         // Delivering images can outlast the lease: keep renewing it.
-        let running = session.prepare_with(input, claimed.intent.registry_auth)?;
+        let running = session.prepare_with(
+            input,
+            claimed.intent.registry_auth,
+            Some(claimed.intent.options.operator),
+        )?;
         self.renewing(running.finished(), || running.abort()).await
     }
 

@@ -1,8 +1,9 @@
 use super::support::*;
 use ployz_core::{
-    CopyRole, DockerVolume, DockerVolumeStorageObservation, MachineFailure,
+    CopyRole, DependencyCondition, DockerVolume, DockerVolumeStorageObservation, MachineFailure,
     MachineStorageObservation, PreservedVolume, ProvisionedVolumeMaximumBytes, PruneRefusal,
-    RpcError, RpcErrorCode, ServiceAttempt, ServiceName, VolumeObservationFailure,
+    RpcError, RpcErrorCode, ServiceAttempt, ServiceDependency, ServiceName,
+    VolumeObservationFailure,
 };
 use std::{collections::BTreeMap, num::NonZeroU64};
 
@@ -774,6 +775,39 @@ fn only_a_writer_copy_pins_a_provisioned_volume() {
     }
 }
 
+/// Plan `intent` as the Store runner does: a Service whose Volume nothing can mount
+/// is blocked while the rest are planned.
+fn runner_preview(
+    intent: &DeployIntent,
+    snapshot: &DeploySnapshot,
+) -> Result<DeployPreview, PlanError> {
+    let mut intent = intent.clone();
+    intent.options.block_unmountable = true;
+    preview_deploy(&intent, snapshot)
+}
+
+#[test]
+fn a_direct_preview_refuses_a_volume_without_a_writer_as_a_whole() {
+    let intent = automatic_provisioned_intent();
+
+    let error =
+        preview_deploy(&intent, &copies_snapshot(&[('2', CopyRole::Slot)], vec![])).unwrap_err();
+
+    assert!(
+        matches!(
+            &error,
+            PlanError::NoWriter { .. } | PlanError::Service { .. }
+        ),
+        "{error}"
+    );
+    assert!(
+        error
+            .to_string()
+            .contains("Volume data has no writer; second holds its only copy"),
+        "{error}"
+    );
+}
+
 #[test]
 fn a_provisioned_volume_without_a_writer_refuses_and_names_the_way_back() {
     let intent = automatic_provisioned_intent();
@@ -797,16 +831,21 @@ fn a_provisioned_volume_without_a_writer_refuses_and_names_the_way_back() {
             "Restore needs a single copy: keep the newest, delete each other one from the Volume's page in Ployz Cloud, which shows whether it is a mirror or an old copy, then run ployz volume restore data --from <server you kept>",
         ),
     ] {
-        let error = preview_deploy(&intent, &copies_snapshot(&copies, rows)).unwrap_err();
-        assert!(
-            matches!(error, PlanError::NoWriter { .. }),
-            "{case}: {error}"
-        );
-        assert!(error.to_string().contains(needle), "{case}: {error}");
-        let rpc = error.into_rpc_error();
+        let preview = runner_preview(&intent, &copies_snapshot(&copies, rows)).unwrap();
+        let rpc = only_blocked(&preview);
+        assert!(rpc.message.contains(needle), "{case}: {}", rpc.message);
         assert_eq!(rpc.code, RpcErrorCode::Conflict, "{case}");
         assert_eq!(rpc.details.get("reason").unwrap(), "no_writer", "{case}");
     }
+}
+
+/// The one Service `preview` blocked, and why. Fails when it planned work instead.
+fn only_blocked(preview: &DeployPreview) -> RpcError {
+    assert!(preview.operations.is_empty(), "{:?}", operations(preview));
+    let [blocked] = preview.blocked.as_slice() else {
+        panic!("{:?}", preview.blocked)
+    };
+    blocked.error.clone()
 }
 
 #[test]
@@ -833,18 +872,14 @@ fn a_silent_machine_leaves_the_writer_unknown_instead_of_naming_a_copy() {
                 .insert(machine_id('3'), Err(error)),
         };
 
-        let error = preview_deploy(&intent, &snapshot).unwrap_err();
+        let rpc = only_blocked(&runner_preview(&intent, &snapshot).unwrap());
 
         assert_eq!(
-            error.to_string(),
+            rpc.message,
             "third did not answer, so Volume data's copies are unknown. Bring third back, or deploy the other services by name",
             "{case}"
         );
-        assert_eq!(
-            error.into_rpc_error().code,
-            RpcErrorCode::Unavailable,
-            "{case}"
-        );
+        assert_eq!(rpc.code, RpcErrorCode::Unavailable, "{case}");
     }
 }
 
@@ -868,15 +903,14 @@ fn a_cloud_volume_without_a_writer_is_named_as_authored() {
     .unwrap();
     let physical = app_volume(&format!("vol-{volume}"));
 
-    let error = preview_deploy(
+    let preview = runner_preview(
         &intent,
         &copies_snapshot_of(&physical, &[('1', CopyRole::Switching)], vec![]),
     )
-    .unwrap_err();
+    .unwrap();
 
-    assert!(matches!(error, PlanError::NoWriter { .. }), "{error}");
     assert_eq!(
-        error.to_string(),
+        only_blocked(&preview).message,
         "Volume echo is mid-Move; it is held as first (switching); ployz volume release echo stops it"
     );
 }
@@ -907,17 +941,14 @@ fn lowered_echo(deployed: bool) -> (DeployIntent, DockerVolumeName) {
 fn a_deployed_volume_no_member_holds_refuses_instead_of_starting_empty() {
     let (intent, physical) = lowered_echo(true);
 
-    let error = preview_deploy(&intent, &copies_snapshot_of(&physical, &[], vec![])).unwrap_err();
+    let preview = runner_preview(&intent, &copies_snapshot_of(&physical, &[], vec![])).unwrap();
 
-    assert!(matches!(error, PlanError::NoWriter { .. }), "{error}");
+    let rpc = only_blocked(&preview);
     assert_eq!(
-        error.to_string(),
+        rpc.message,
         "Volume echo was deployed, but no Server in this Cluster holds a copy of it. If a Server you removed still holds its data, add that Server back, then run ployz volume restore echo --from <server>"
     );
-    assert_eq!(
-        error.into_rpc_error().details.get("reason").unwrap(),
-        "no_writer"
-    );
+    assert_eq!(rpc.details.get("reason").unwrap(), "no_writer");
 }
 
 #[test]
@@ -926,16 +957,21 @@ fn a_deployed_volume_with_a_silent_machine_leaves_its_copies_unknown() {
     let mut snapshot = copies_snapshot_of(&physical, &[], vec![]);
     snapshot.storage_capacity.remove(&machine_id('2'));
 
-    let error = preview_deploy(&intent, &snapshot).unwrap_err();
+    let rpc = only_blocked(&runner_preview(&intent, &snapshot).unwrap());
 
-    assert!(matches!(error, PlanError::CopiesUnknown { .. }), "{error}");
+    assert_eq!(rpc.code, RpcErrorCode::Unavailable, "{}", rpc.message);
+    assert!(
+        rpc.message.contains("copies are unknown"),
+        "{}",
+        rpc.message
+    );
 }
 
 #[test]
 fn a_volume_no_deploy_applied_yet_is_created() {
     let (intent, physical) = lowered_echo(false);
 
-    let preview = preview_deploy(&intent, &copies_snapshot_of(&physical, &[], vec![])).unwrap();
+    let preview = runner_preview(&intent, &copies_snapshot_of(&physical, &[], vec![])).unwrap();
 
     assert_eq!(
         preview.volumes_to_create.len(),
@@ -968,12 +1004,153 @@ fn a_deployed_volume_no_member_holds_leaves_a_deploy_of_another_service_alone() 
     )
     .with_deployed_volumes([app_volume("data")].into());
 
-    let preview = preview_deploy(&intent, &copies_snapshot(&[], vec![])).unwrap();
+    let preview = runner_preview(&intent, &copies_snapshot(&[], vec![])).unwrap();
 
     assert!(
         operations(&preview)
             .iter()
             .all(|operation| operation.service_name() != Some(&db.name))
+    );
+}
+
+/// `web`, which mounts nothing, and `db`, which mounts Managed Volume `data`.
+fn web_and_db() -> (RequestedServiceSpec, RequestedServiceSpec) {
+    let mut db = spec("db");
+    add_named_volume(&mut db, "data");
+    make_provisioned(&mut db, "data", 1_073_741_824);
+    (spec("web"), db)
+}
+
+#[test]
+fn a_full_deploy_blocks_only_the_service_whose_volume_has_no_writer() {
+    let (web, db) = web_and_db();
+    let intent = DeployIntent::apply_all(
+        Namespace::parse("app").unwrap(),
+        [&web, &db],
+        PlanOptions::default(),
+    );
+
+    let preview =
+        runner_preview(&intent, &copies_snapshot(&[('2', CopyRole::Slot)], vec![])).unwrap();
+
+    let planned: Vec<_> = operations(&preview)
+        .iter()
+        .filter_map(|operation| operation.service_name().cloned())
+        .collect();
+    assert_eq!(
+        planned,
+        std::slice::from_ref(&web.name),
+        "{:?}",
+        operations(&preview)
+    );
+    assert!(preview.volumes_to_create.is_empty());
+    let [blocked] = preview.blocked.as_slice() else {
+        panic!("{:?}", preview.blocked)
+    };
+    assert_eq!(blocked.service, db.name);
+    assert_eq!(blocked.error.code, RpcErrorCode::Conflict);
+    assert_eq!(blocked.error.details.get("reason").unwrap(), "no_writer");
+    assert!(
+        blocked
+            .error
+            .message
+            .starts_with("Volume data has no writer; second holds its only copy"),
+        "{}",
+        blocked.error.message
+    );
+    assert_eq!(preview.depths.keys().collect::<Vec<_>>(), [&web.name]);
+    assert_eq!(preview.placed_on.keys().collect::<Vec<_>>(), [&web.name]);
+}
+
+#[test]
+fn a_service_that_depends_on_a_blocked_one_is_blocked_too() {
+    let (web, db) = web_and_db();
+    let intent = DeployIntent::apply_all(
+        Namespace::parse("app").unwrap(),
+        [&web, &db],
+        PlanOptions::default(),
+    )
+    .with_dependencies(BTreeMap::from([(
+        web.name.clone(),
+        vec![ServiceDependency {
+            service: db.name.clone(),
+            condition: DependencyCondition::ServiceHealthy,
+        }],
+    )]));
+
+    let preview =
+        runner_preview(&intent, &copies_snapshot(&[('2', CopyRole::Slot)], vec![])).unwrap();
+
+    assert!(
+        operations(&preview).is_empty(),
+        "{:?}",
+        operations(&preview)
+    );
+    let blocked: Vec<_> = preview
+        .blocked
+        .iter()
+        .map(|blocked| (blocked.service.as_str(), blocked.error.message.as_str()))
+        .collect();
+    assert_eq!(blocked.first().map(|entry| entry.0), Some("db"));
+    assert_eq!(
+        blocked.get(1).copied(),
+        Some(("web", "depends on db, which was not attempted"))
+    );
+    assert!(
+        preview.dependencies.is_empty(),
+        "{:?}",
+        preview.dependencies
+    );
+    assert!(preview.depths.is_empty(), "{:?}", preview.depths);
+}
+
+#[test]
+fn a_blocked_dependent_prepares_none_of_its_volumes() {
+    let (mut web, db) = web_and_db();
+    add_named_volume(&mut web, "shared");
+    make_provisioned(&mut web, "shared", 1_073_741_824);
+    let mut api = spec("api");
+    add_named_volume(&mut api, "shared");
+    make_provisioned(&mut api, "shared", 1_073_741_824);
+    add_named_volume(&mut api, "own");
+    make_provisioned(&mut api, "own", 1_073_741_824);
+    let intent = DeployIntent::apply_all(
+        Namespace::parse("app").unwrap(),
+        [&web, &db, &api],
+        PlanOptions::default(),
+    )
+    .with_dependencies(BTreeMap::from([(
+        api.name.clone(),
+        vec![ServiceDependency {
+            service: db.name.clone(),
+            condition: DependencyCondition::ServiceHealthy,
+        }],
+    )]));
+
+    let preview =
+        runner_preview(&intent, &copies_snapshot(&[('2', CopyRole::Slot)], vec![])).unwrap();
+
+    assert!(
+        preview
+            .blocked
+            .iter()
+            .any(|blocked| blocked.service == api.name),
+        "{:?}",
+        preview.blocked
+    );
+    let own = app_volume("own");
+    assert!(
+        preview
+            .volumes_to_create
+            .iter()
+            .all(|volume| volume.name != own),
+        "{:?}",
+        preview.volumes_to_create
+    );
+    assert!(
+        !format!("{:?}", operations(&preview)).contains(own.as_str()),
+        "{:?}",
+        operations(&preview)
     );
 }
 

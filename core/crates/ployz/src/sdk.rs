@@ -594,11 +594,12 @@ impl Session {
     /// # Errors
     /// Rejects a closed session. Preparation failures arrive through `finished`.
     pub fn prepare(&self, input: PreparationInput) -> Result<RunningPreparation, RpcError> {
-        self.prepare_with(input, std::collections::BTreeMap::new())
+        self.prepare_with(input, std::collections::BTreeMap::new(), None)
     }
 
     /// [`Self::prepare`], pulling private images with `registry_auth`, which a
-    /// lowering input never carries.
+    /// lowering input never carries. A `runner` plans as that operator and blocks a
+    /// Service whose Volume nothing can mount instead of refusing the Deploy.
     pub(crate) fn prepare_with(
         &self,
         input: PreparationInput,
@@ -606,6 +607,7 @@ impl Session {
             ployz_core::ServiceName,
             ployz_core::RegistryAuth,
         >,
+        runner: Option<ployz_core::Operator>,
     ) -> Result<RunningPreparation, RpcError> {
         let mut client = self.client()?;
         let token = self.inner.cancel.child_token();
@@ -613,6 +615,10 @@ impl Session {
         Ok(Running::spawn(token.clone(), move |reporter| async move {
             let mut captured = capture(input).await?;
             captured.intent.registry_auth = registry_auth;
+            if let Some(operator) = runner {
+                captured.intent.options.operator = operator;
+                captured.intent.options.block_unmountable = true;
+            }
             if token.is_cancelled() {
                 return Err(preparation_error(
                     crate::sdk::prepare::PreparationError::Cancelled,

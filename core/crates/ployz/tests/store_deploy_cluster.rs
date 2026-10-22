@@ -489,6 +489,7 @@ async fn cloud_s_runner_builds_git_services_and_a_retry_rebuilds_only_what_faile
                 .collect();
             store.pin(&id, &pins).unwrap();
             ployz::sdk::run_deployment(
+                ployz_core::Operator::Cloud,
                 Arc::clone(&store),
                 id.clone(),
                 RunnerId::parse(format!("cloud-{n}")).unwrap(),
@@ -670,6 +671,7 @@ async fn cloud_s_runner_builds_an_upload_then_reuses_it_or_asks_for_a_new_one() 
                 )
                 .unwrap();
             ployz::sdk::run_deployment(
+                ployz_core::Operator::Cloud,
                 Arc::clone(&store),
                 id.clone(),
                 RunnerId::parse(format!("cloud-{n}")).unwrap(),

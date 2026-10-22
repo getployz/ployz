@@ -437,19 +437,119 @@ pub fn admit_plain_mount(
     }
 }
 
-/// The refusal a plain Deploy of Volume `name` reads when this Server cannot mount its
-/// writer: the Server that holds the writer, the Move a run holds it in, or else how
-/// Restore makes a copy the writer. `name` is the Volume as its owner named it, not its
-/// Docker name.
+/// Who drives a Deploy, and so what a refusal can offer as the way back.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum Operator {
+    /// Ployz Cloud, whose Volume Runs make a copy the writer again. An Intent that
+    /// doesn't say is Cloud's.
+    #[default]
+    Cloud,
+    /// The CLI alone, with no Cloud: `ployz volume restore` refuses.
+    Cli,
+}
+
+impl Operator {
+    /// Whether this is the default, Ployz Cloud, which serialized Intents leave out.
+    #[must_use]
+    pub const fn is_cloud(&self) -> bool {
+        matches!(self, Self::Cloud)
+    }
+}
+
+/// What a Machine saw of Volume `name` when it could not mount a writer: the Server that
+/// holds the writer, the Move holding it, or the copies left. No command line: a Machine
+/// does not know who drives the Deploy, so it cannot name the way back. `name` is the
+/// Volume as its owner named it, not its Docker name.
 #[must_use]
-pub fn no_writer_message(name: &str, copies: &[KnownCopy]) -> String {
-    if let Some(writer) = copies.iter().find(|copy| copy.role == CopyRole::Writer) {
-        return format!(
+pub fn no_writer_observation(name: &str, copies: &[KnownCopy]) -> String {
+    match NoWriterCase::of(copies) {
+        NoWriterCase::WriterElsewhere(writer) => format!(
             "Volume {name}'s writer is on {}, so this Server cannot mount it",
             writer.machine
-        );
+        ),
+        NoWriterCase::MidMove => format!(
+            "Volume {name} is mid-Move; it is held as {}",
+            listed(copies)
+        ),
+        NoWriterCase::NoCopy => {
+            format!("Volume {name} was deployed, but no Server in this Cluster holds a copy of it")
+        }
+        NoWriterCase::OneCopy(only) => {
+            format!(
+                "Volume {name} has no writer; {} holds its only copy",
+                only.machine
+            )
+        }
+        NoWriterCase::SeveralCopies => {
+            format!(
+                "Volume {name} has no writer; it is held as {}",
+                listed(copies)
+            )
+        }
     }
-    let listed = copies
+}
+
+/// The refusal a plain Deploy of Volume `name` reads when no Server can mount its writer:
+/// what was observed, then the way back `operator` can take. Restore is Cloud's: the CLI
+/// alone is told that making a copy the writer needs Cloud, or that `ployz volume rm`
+/// starts over empty.
+#[must_use]
+pub fn no_writer_message(name: &str, copies: &[KnownCopy], operator: Operator) -> String {
+    let observed = no_writer_observation(name, copies);
+    match (NoWriterCase::of(copies), operator) {
+        (NoWriterCase::WriterElsewhere(_), _) => observed,
+        (NoWriterCase::MidMove, _) => {
+            format!("{observed}; ployz volume release {name} stops it")
+        }
+        (NoWriterCase::NoCopy, Operator::Cloud) => format!(
+            "{observed}. If a Server you removed still holds its data, add that Server back, then run ployz volume restore {name} --from <server>"
+        ),
+        (NoWriterCase::NoCopy, Operator::Cli) => format!(
+            "{observed}. If a Server you removed still holds its data, add that Server back to keep that copy; making it the writer needs Ployz Cloud. To start over with an empty Volume, run ployz volume rm {name}, which deletes its data, then add it again and deploy"
+        ),
+        (NoWriterCase::OneCopy(only), Operator::Cloud) => format!(
+            "{observed}. Make it the writer: ployz volume restore {name} --from {}",
+            only.machine
+        ),
+        (NoWriterCase::OneCopy(_), Operator::Cli) => format!(
+            "{observed}, and making it the writer needs Ployz Cloud. To start over with an empty Volume, run ployz volume rm {name}, which deletes its data, then add it again and deploy"
+        ),
+        // Copies carry no age, so the operator picks which one to keep. They carry no slot
+        // role either, so no removal line is printed: run late, it could delete a live mirror.
+        (NoWriterCase::SeveralCopies, _) => format!(
+            "{observed}. Restore needs a single copy: keep the newest, delete each other one from the Volume's page in Ployz Cloud, which shows whether it is a mirror or an old copy, then run ployz volume restore {name} --from <server you kept>"
+        ),
+    }
+}
+
+/// Why a Volume has no writer this Server can mount, read off the copies known of it.
+enum NoWriterCase<'a> {
+    WriterElsewhere(&'a KnownCopy),
+    MidMove,
+    NoCopy,
+    OneCopy(&'a KnownCopy),
+    SeveralCopies,
+}
+
+impl<'a> NoWriterCase<'a> {
+    fn of(copies: &'a [KnownCopy]) -> Self {
+        if let Some(writer) = copies.iter().find(|copy| copy.role == CopyRole::Writer) {
+            return Self::WriterElsewhere(writer);
+        }
+        if copies.iter().any(|copy| copy.role == CopyRole::Switching) {
+            return Self::MidMove;
+        }
+        match copies {
+            [] => Self::NoCopy,
+            [only] => Self::OneCopy(only),
+            _ => Self::SeveralCopies,
+        }
+    }
+}
+
+fn listed(copies: &[KnownCopy]) -> String {
+    copies
         .iter()
         .map(|copy| {
             let role = if copy.role == CopyRole::Switching {
@@ -460,26 +560,7 @@ pub fn no_writer_message(name: &str, copies: &[KnownCopy]) -> String {
             format!("{} ({role})", copy.machine)
         })
         .collect::<Vec<_>>()
-        .join(", ");
-    if copies.iter().any(|copy| copy.role == CopyRole::Switching) {
-        return format!(
-            "Volume {name} is mid-Move; it is held as {listed}; ployz volume release {name} stops it"
-        );
-    }
-    match copies {
-        [] => format!(
-            "Volume {name} was deployed, but no Server in this Cluster holds a copy of it. If a Server you removed still holds its data, add that Server back, then run ployz volume restore {name} --from <server>"
-        ),
-        [only] => format!(
-            "Volume {name} has no writer; {} holds its only copy. Make it the writer: ployz volume restore {name} --from {}",
-            only.machine, only.machine
-        ),
-        // Copies carry no age, so the operator picks which one to keep. They carry no slot
-        // role either, so no removal line is printed: run late, it could delete a live mirror.
-        _ => format!(
-            "Volume {name} has no writer; it is held as {listed}. Restore needs a single copy: keep the newest, delete each other one from the Volume's page in Ployz Cloud, which shows whether it is a mirror or an old copy, then run ployz volume restore {name} --from <server you kept>"
-        ),
-    }
+        .join(", ")
 }
 
 #[cfg(test)]
@@ -565,7 +646,7 @@ mod tests {
     #[test]
     fn no_writer_message_restores_a_single_copy_and_mirrors_need_removing_first() {
         assert_eq!(
-            no_writer_message("data", &[copy("fsn-2", CopyRole::Slot)]),
+            no_writer_message("data", &[copy("fsn-2", CopyRole::Slot)], Operator::Cloud),
             "Volume data has no writer; fsn-2 holds its only copy. Make it the writer: ployz volume restore data --from fsn-2"
         );
         assert_eq!(
@@ -575,18 +656,74 @@ mod tests {
                     copy("fsn-2", CopyRole::Slot),
                     copy("hel-1", CopyRole::Slot),
                     copy("nbg-3", CopyRole::Slot),
-                ]
+                ],
+                Operator::Cloud
             ),
             "Volume data has no writer; it is held as fsn-2 (copy), hel-1 (copy), nbg-3 (copy). Restore needs a single copy: keep the newest, delete each other one from the Volume's page in Ployz Cloud, which shows whether it is a mirror or an old copy, then run ployz volume restore data --from <server you kept>"
         );
         let several = no_writer_message(
             "data",
             &[copy("fsn-2", CopyRole::Slot), copy("hel-1", CopyRole::Slot)],
+            Operator::Cloud,
         );
         assert!(!several.contains("mirror rm"), "{several}");
         assert_eq!(
-            no_writer_message("data", &[]),
+            no_writer_message("data", &[], Operator::Cloud),
             "Volume data was deployed, but no Server in this Cluster holds a copy of it. If a Server you removed still holds its data, add that Server back, then run ployz volume restore data --from <server>"
+        );
+    }
+
+    #[test]
+    fn no_writer_message_without_cloud_offers_starting_empty_not_restore() {
+        assert_eq!(
+            no_writer_message("data", &[copy("fsn-2", CopyRole::Slot)], Operator::Cli),
+            "Volume data has no writer; fsn-2 holds its only copy, and making it the writer needs Ployz Cloud. To start over with an empty Volume, run ployz volume rm data, which deletes its data, then add it again and deploy"
+        );
+        assert_eq!(
+            no_writer_message("data", &[], Operator::Cli),
+            "Volume data was deployed, but no Server in this Cluster holds a copy of it. If a Server you removed still holds its data, add that Server back to keep that copy; making it the writer needs Ployz Cloud. To start over with an empty Volume, run ployz volume rm data, which deletes its data, then add it again and deploy"
+        );
+        for copies in [vec![], vec![copy("fsn-2", CopyRole::Slot)]] {
+            let message = no_writer_message("data", &copies, Operator::Cli);
+            assert!(!message.contains("volume restore"), "{message}");
+        }
+        for copies in [
+            vec![copy("hel-1", CopyRole::Switching)],
+            vec![copy("fsn-2", CopyRole::Slot), copy("hel-1", CopyRole::Slot)],
+            vec![copy("hel-1", CopyRole::Writer)],
+        ] {
+            assert_eq!(
+                no_writer_message("data", &copies, Operator::Cli),
+                no_writer_message("data", &copies, Operator::Cloud),
+                "{copies:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn no_writer_observation_reports_what_the_machine_saw_without_a_command() {
+        let cases = [
+            vec![],
+            vec![copy("fsn-2", CopyRole::Slot)],
+            vec![copy("fsn-2", CopyRole::Slot), copy("hel-1", CopyRole::Slot)],
+            vec![copy("hel-1", CopyRole::Switching)],
+            vec![copy("hel-1", CopyRole::Writer)],
+        ];
+        for copies in cases {
+            let observed = no_writer_observation("data", &copies);
+            assert!(!observed.contains("ployz "), "{observed}");
+            assert!(
+                no_writer_message("data", &copies, Operator::Cloud).starts_with(&observed),
+                "{observed}"
+            );
+            assert!(
+                no_writer_message("data", &copies, Operator::Cli).starts_with(&observed),
+                "{observed}"
+            );
+        }
+        assert_eq!(
+            no_writer_observation("data", &[copy("fsn-2", CopyRole::Slot)]),
+            "Volume data has no writer; fsn-2 holds its only copy"
         );
     }
 
@@ -599,7 +736,7 @@ mod tests {
                 copy("hel-1", CopyRole::Switching),
             ],
         ] {
-            let message = no_writer_message("data", &copies);
+            let message = no_writer_message("data", &copies, Operator::Cloud);
             assert!(
                 message.starts_with("Volume data is mid-Move; it is held as "),
                 "{message}"
@@ -621,7 +758,8 @@ mod tests {
                 &[
                     copy("fsn-2", CopyRole::Slot),
                     copy("hel-1", CopyRole::Writer)
-                ]
+                ],
+                Operator::Cloud
             ),
             "Volume data's writer is on hel-1, so this Server cannot mount it"
         );

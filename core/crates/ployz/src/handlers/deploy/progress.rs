@@ -43,21 +43,30 @@ pub(super) fn frame(view: &DeploymentView) -> Frame {
                 node,
                 build.is_some_and(|build| build.status == BuildStatus::Failed),
             );
-            row.detail = build.map(|build| {
-                let word = match build.status {
-                    BuildStatus::Pending => "build pending",
-                    BuildStatus::Building => "building",
-                    BuildStatus::Built => "built",
-                    BuildStatus::Reused => "build reused",
-                    BuildStatus::Failed => "build failed",
-                };
-                match (&build.server, build.status) {
-                    (
-                        Some(server),
-                        BuildStatus::Building | BuildStatus::Built | BuildStatus::Failed,
-                    ) => format!("{word} on {server}"),
-                    _ => word.to_owned(),
-                }
+            let blocked = view.preview.as_ref().and_then(|preview| {
+                preview
+                    .blocked
+                    .iter()
+                    .find(|entry| entry.service == *runtime)
+                    .map(|entry| entry.error.message.clone())
+            });
+            row.detail = blocked.or_else(|| {
+                build.map(|build| {
+                    let word = match build.status {
+                        BuildStatus::Pending => "build pending",
+                        BuildStatus::Building => "building",
+                        BuildStatus::Built => "built",
+                        BuildStatus::Reused => "build reused",
+                        BuildStatus::Failed => "build failed",
+                    };
+                    match (&build.server, build.status) {
+                        (
+                            Some(server),
+                            BuildStatus::Building | BuildStatus::Built | BuildStatus::Failed,
+                        ) => format!("{word} on {server}"),
+                        _ => word.to_owned(),
+                    }
+                })
             });
         }
         rows.push(row);
@@ -674,6 +683,49 @@ mod tests {
         assert!(frame.rows.iter().any(
             |row| matches!(&row.subject, Subject::Node { name, .. } if name == "Volume data")
         ));
+    }
+
+    #[test]
+    fn a_blocked_service_reads_not_attempted_with_its_reason_and_fails_the_deploy() {
+        let reason = "Volume data has no writer; fsn-2 holds its only copy";
+        let mut view = view();
+        view.runtime_names.clear();
+        view.deployment.outcome = Some(
+            serde_json::from_value(json!({
+                "type": "executed", "summary": {}, "reason": format!("db: {reason}"), "cause": []
+            }))
+            .unwrap(),
+        );
+        view.nodes = serde_json::from_value(json!([
+            {"type": "service", "id": "cccccccc-cccc-4ccc-8ccc-cccccccccccc", "name": "web", "outcome": "deployed", "rows": [
+                {"machine_id": "a".repeat(32), "server": "edge", "state": "completed", "started_at": 1, "finished_at": 2}
+            ]},
+            {"type": "service", "id": "dddddddd-dddd-4ddd-8ddd-dddddddddddd", "name": "db", "outcome": "not_attempted", "rows": []},
+            {"type": "volume", "id": "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee", "name": "data", "outcome": "not_attempted", "rows": []}
+        ]))
+        .unwrap();
+        view.preview = Some(
+            serde_json::from_value(json!({
+                "namespace": "shop-production", "warnings": [],
+                "operations": [],
+                "blocked": [{
+                    "service": "db",
+                    "error": {"code": "conflict", "message": reason, "details": {"reason": "no_writer"}}
+                }]
+            }))
+            .unwrap(),
+        );
+
+        let text = crate::ui::progress::settled_text(&frame(&view));
+
+        assert!(
+            text.contains(&format!("db: not started ({reason})")),
+            "{text}"
+        );
+        assert!(text.contains("2 not attempted"), "{text}");
+        let failure = completion(&view, None, command).unwrap_err();
+        assert_eq!(crate::ui::after_result(&failure), 1);
+        assert!(failure.to_string().contains(reason), "{failure}");
     }
 
     #[test]

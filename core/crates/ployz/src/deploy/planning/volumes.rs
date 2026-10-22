@@ -8,7 +8,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::{
     CopyRole, DockerVolumeId, DockerVolumeName, DockerVolumeStorageObservation, KnownCopy,
-    MachineId, MachineObservation, Namespace, PlacementConstraint, PreservedVolume,
+    MachineId, MachineObservation, Namespace, Operator, PlacementConstraint, PreservedVolume,
     RequestedServiceSpec, ServiceMode, ServiceName, ServiceObservation,
     ServicePlacementEligibility, ServiceStorageSpec, ServiceVolume, ServiceVolumeGraph,
     VolumeSource, owned_volume_namespace,
@@ -33,6 +33,7 @@ pub(super) struct VolumePlan<'snapshot> {
     /// Deployed Volumes the applied Services mount. A lost one an unselected Service
     /// mounts leaves this Deploy alone.
     deployed_volumes: BTreeSet<DockerVolumeName>,
+    operator: Operator,
     assignments: BTreeMap<MachineId, BTreeMap<ServiceName, ServiceStorageSpec>>,
 }
 
@@ -75,6 +76,7 @@ impl<'snapshot> VolumePlan<'snapshot> {
         deployed_volumes: &BTreeSet<DockerVolumeName>,
         target: &[RequestedServiceSpec],
         requested: &[RequestedServiceSpec],
+        operator: Operator,
     ) -> Result<Self, PlanError> {
         reject_mixed_volume_modes(&managed_volume_uses(requested))?;
         let plan = Self {
@@ -85,6 +87,7 @@ impl<'snapshot> VolumePlan<'snapshot> {
                 .into_keys()
                 .filter(|name| deployed_volumes.contains(name))
                 .collect(),
+            operator,
             assignments: BTreeMap::new(),
         };
         plan.validate_provisioned_volume_definitions(target)?;
@@ -117,6 +120,14 @@ impl<'snapshot> VolumePlan<'snapshot> {
                     .map(move |volume| (*id, volume))
             })
         })
+    }
+
+    /// Drop every commitment recorded for `service`, which this Deploy does not attempt.
+    pub(super) fn release(&mut self, service: &ServiceName) {
+        for specs in self.assignments.values_mut() {
+            specs.remove(service);
+        }
+        self.assignments.retain(|_, specs| !specs.is_empty());
     }
 
     fn assign(&mut self, machine_id: MachineId, spec: &RequestedServiceSpec) {
@@ -192,6 +203,7 @@ impl<'snapshot> VolumePlan<'snapshot> {
                     return Err(PlanError::NoWriter {
                         name: authored.to_owned(),
                         copies,
+                        operator: self.operator,
                     });
                 }
             }
@@ -412,9 +424,14 @@ impl VolumePlan<'_> {
                 volume_constraints(spec, snapshot, self, &mut machines)?;
                 Ok(())
             })();
-            result.map_err(|source| {
-                super::service_error(name_errors_with_service, spec.name.as_str(), source)
-            })?;
+            match result {
+                // A Volume nobody can mount blocks only its Service, once that Service is
+                // planned; the other definitions still get checked.
+                Err(PlanError::NoWriter { .. } | PlanError::CopiesUnknown { .. }) => {}
+                result => result.map_err(|source| {
+                    super::service_error(name_errors_with_service, spec.name.as_str(), source)
+                })?,
+            }
         }
         Ok(())
     }
