@@ -445,8 +445,8 @@ ployz deploy web
 A replica a deploy kept as it was, such as the existing ones when you only raised the replica
 count, goes back into routing. For a replica on another server, Ployz sees only the settings that
 server shares, which leave out variable values and config file contents. So if a deploy changed only
-those and failed before it removed the old replica, a restart there can route the old replica again.
-Deploy the service to replace it.
+those and couldn't replace the replica on a server, for example because that server was unreachable,
+the old replica keeps serving there, and a restart routes it again. Deploy the service to replace it.
 
 ## Ployz restarted on a server during my deploy
 
