@@ -87,6 +87,7 @@ pub(crate) fn head(tx: &mut dyn Tx, environment: &Environment) -> Result<Head, R
         intent: applied.clone(),
         applied,
         in_flight: Vec::new(),
+        may_run: may_run(tx, id)?,
     };
     for row in &rows {
         let saved = saved_at(tx, id, row.number(1, "revision")?)?;
@@ -169,6 +170,44 @@ pub(crate) fn head(tx: &mut dyn Tx, environment: &Environment) -> Result<Head, R
         head.in_flight.push(target);
     }
     Ok(head)
+}
+
+/// The Services `environment`'s Deployments of unknown outcome since its last applied
+/// one may have started: each started, then its runner lost track of it.
+fn may_run(
+    tx: &mut dyn Tx,
+    environment: &EnvironmentId,
+) -> Result<Vec<SavedServiceIntent>, RpcError> {
+    let rows = tx.query(
+        &format!(
+            "SELECT saved_revision, nodes FROM config_deployment \
+             WHERE environment_id = ?1 AND {NUMBERED} AND started IS NOT NULL \
+             AND (status = 'unknown' OR (status IN ('running', 'cancelling') AND lease <= {})) \
+             AND number > COALESCE((SELECT MAX(number) FROM config_deployment \
+              WHERE environment_id = ?1 AND status = 'applied'), 0)",
+            now()
+        ),
+        &[environment.as_str().into()],
+    )?;
+    let mut services: Vec<SavedServiceIntent> = Vec::new();
+    for row in &rows {
+        let saved = saved_at(tx, environment, row.number(0, "revision")?)?;
+        let nodes: Vec<TargetNode> = row.json(1, "Deployment")?;
+        for node in &nodes {
+            let TargetNode::Service { .. } = node else {
+                continue;
+            };
+            if let Some(service) = saved
+                .services
+                .iter()
+                .find(|service| service.id == node.id())
+                && services.iter().all(|held| held.id != service.id)
+            {
+                services.push(service.clone());
+            }
+        }
+    }
+    Ok(services)
 }
 
 /// The Cluster Domain each generated domain runs under, by node ID and prefix: that

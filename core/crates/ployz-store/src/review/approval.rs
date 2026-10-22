@@ -140,6 +140,7 @@ pub(crate) fn deployed(head: &Head) -> SavedEnvironmentIntent {
             );
         }
     }
+    add_missing(&mut deployed.services, &head.may_run, |service| &service.id);
     deployed
 }
 
@@ -584,7 +585,11 @@ pub(crate) fn approve_retry(
     let retired = deployed
         .services
         .iter()
-        .filter(|service| rollback.retires.iter().any(|id| id.as_str() == service.id))
+        .filter(|service| {
+            rollback.retires.iter().any(|id| id.as_str() == service.id)
+                || (!rollback.rolls_back.is_empty()
+                    && rollback.ships.iter().all(|id| id.as_str() != service.id))
+        })
         .map(|service| DestructiveEffect {
             kind: DestructiveKind::RemovesService,
             name: service.slug.clone(),

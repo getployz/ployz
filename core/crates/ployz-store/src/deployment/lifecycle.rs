@@ -672,6 +672,7 @@ pub(crate) fn retry(
         rolls_back: undone(tx, &stored.summary)?,
         removes: Vec::new(),
         retires: Vec::new(),
+        ships: Vec::new(),
     };
     if let Some(confirmed) = &retry.rolls_back
         && *confirmed != rollback.rolls_back
@@ -722,6 +723,15 @@ pub(crate) fn retry(
             }
         })
         .filter(|_| !rollback.rolls_back.is_empty())
+        .collect();
+    rollback.ships = nodes
+        .iter()
+        .filter_map(|node| match node {
+            TargetNode::Service { id, .. } if !node.retires() => Some(id.clone()),
+            TargetNode::Service { .. } | TargetNode::Volume { .. } | TargetNode::Config { .. } => {
+                None
+            }
+        })
         .collect();
     // A retry builds from what its source did, but sends nothing.
     let retried_uploads = stored.service_uploads.clone().map(|uploads| {
@@ -805,6 +815,9 @@ pub(crate) struct Rollback {
     pub(crate) rolls_back: Vec<u64>,
     pub(crate) removes: Vec<VolumeLoss>,
     pub(crate) retires: Vec<ServiceLineageId>,
+    /// The Services it ships. A rollback ships its whole revision, so it takes off
+    /// any other Service that runs, or may.
+    pub(crate) ships: Vec<ServiceLineageId>,
 }
 
 /// The Deployments of `deployment`'s Environment after it that may have changed
