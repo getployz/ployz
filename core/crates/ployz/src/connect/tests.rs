@@ -1241,6 +1241,18 @@ fn a_call_that_lost_its_answer_outlasts_a_retry_that_never_reached_the_target() 
         "a later answer stands: {answered}"
     );
     assert!(!keep_lost_call(None, unreached()).unreplied());
+
+    let refused_key = {
+        use std::os::unix::process::ExitStatusExt;
+        ConnectError::SshProbe {
+            target: "host".to_owned(),
+            status: std::process::ExitStatus::from_raw(255 << 8),
+            failure: SshFailure::Auth,
+            detail: "Permission denied (publickey)".into(),
+        }
+    };
+    let kept = keep_lost_call(Some(lost()), refused_key);
+    assert_eq!(kept.retry(), ployz_core::Retry::Never, "{kept}");
 }
 
 #[test]

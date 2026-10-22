@@ -347,6 +347,8 @@ impl Client {
             tokio::time::sleep(delay).await;
             redial = true;
             if error.target_replied() {
+                // The target answered after the loss: that answer is the news now.
+                lost = None;
                 reply = Some(error);
             } else if error.unreplied() {
                 lost = Some(error);
@@ -1257,10 +1259,12 @@ impl Client {
 /// keeps its own words.
 pub(crate) fn answered_by(machine_id: &MachineId, error: ConnectError) -> RpcError {
     if !error.target_unanswered() {
-        let lost = error.unreplied();
+        let (lost, unreached) = (error.unreplied(), error.unreached());
         let error = rpc_error(error);
         return if lost {
             error.reply_lost_from(machine_id)
+        } else if unreached {
+            error.unreached()
         } else {
             error
         };

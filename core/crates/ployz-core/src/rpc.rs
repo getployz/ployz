@@ -1721,6 +1721,26 @@ impl RpcError {
         self
     }
 
+    /// `self` from a call that never reached its target, so the target did nothing with
+    /// it. Read back by [`Self::never_reached`]. Details that aren't an object are kept
+    /// unmarked.
+    #[must_use]
+    pub fn unreached(mut self) -> Self {
+        if self.details.is_null() {
+            self.details = Value::Object(serde_json::Map::new());
+        }
+        if let Value::Object(details) = &mut self.details {
+            details.insert(REACHED_KEY.into(), Value::Bool(false));
+        }
+        self
+    }
+
+    /// Whether the call never reached its target.
+    #[must_use]
+    pub fn never_reached(&self) -> bool {
+        self.details.get(REACHED_KEY).and_then(Value::as_bool) == Some(false)
+    }
+
     /// Whether the connection dropped before the target's answer came back, so the
     /// target may have done the work.
     #[must_use]
@@ -1856,6 +1876,7 @@ pub const TARGET_UNANSWERED_KEY: &str = "ployz-target-unanswered";
 
 const TARGET_UNANSWERED_REASON: &str = "target_unanswered";
 const REPLY_LOST_KEY: &str = "reply_lost";
+const REACHED_KEY: &str = "reached";
 
 /// [`caused_status`] as `Unavailable`, marked [`TARGET_UNANSWERED_KEY`].
 #[cfg(not(target_arch = "wasm32"))]

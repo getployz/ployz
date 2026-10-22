@@ -1824,3 +1824,46 @@ async fn application_failure_and_cancellation_retain_prepared_storage() {
         client.assert_done();
     }
 }
+
+#[tokio::test(start_paused = true)]
+async fn a_lost_answer_outlasts_a_resend_that_never_reached_the_server() {
+    let machine = machine('1');
+    // `call_retried` keeps a lost answer only when it was worth retrying.
+    let lost = || {
+        RpcError {
+            code: RpcErrorCode::Unavailable,
+            message: "connection lost".into(),
+            details: serde_json::Value::Null,
+            cause: Vec::new(),
+        }
+        .reply_lost_from(&machine)
+    };
+    let unreached = || {
+        crate::cluster::answered_by(
+            &machine,
+            crate::connect::ConnectError::Io(std::io::Error::new(
+                std::io::ErrorKind::ConnectionRefused,
+                "connection refused",
+            )),
+        )
+    };
+    let mut replies = vec![unreached(), lost()];
+    let error = wait_out_restart(&CancellationToken::new(), || {
+        let reply = replies.pop().unwrap_or_else(unreached);
+        async move { Err::<(), _>(reply) }
+    })
+    .await
+    .unwrap_err();
+    assert!(error.reply_lost(), "{error:?}");
+}
+
+#[test]
+fn an_earlier_lost_answer_never_hides_a_silent_target() {
+    let lost = crate::connect::ConnectError::from(tonic::Status::from_error(Box::new(
+        std::io::Error::new(std::io::ErrorKind::NotConnected, "connection lost"),
+    )));
+    let silent = crate::connect::ConnectError::Rpc(crate::connect::TransportError::budget_expired(
+        "target Machine RPC timed out",
+    ));
+    assert!(crate::connect::keep_lost_call(Some(lost), silent).target_unanswered());
+}
