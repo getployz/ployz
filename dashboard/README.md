@@ -172,8 +172,8 @@ to the first one.
 
 Download `ployz-cloud-compose.yml` as `compose.yml` and `ployz-cloud.env.example`
 as `.env` from the release into one directory, then fill in `.env`. Every
-uncommented variable is required; web and worker exit with a
-`ConfigError` if one is missing.
+uncommented variable is required; web and worker exit at boot, naming each
+missing or malformed variable.
 Leave all `POLAR_*` and `POSTHOG_*` variables unset.
 
 ```sh

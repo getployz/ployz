@@ -1,9 +1,12 @@
 import "@tanstack/react-start/server-only";
 import {
+  Cause,
   Config,
+  ConfigProvider,
   Context,
   Data,
   Effect,
+  Exit,
   Layer,
   Option,
   type Redacted,
@@ -273,6 +276,16 @@ const makeAppConfig = Effect.gen(function* () {
     supportStaffUserIds: polar.mode === "self_hosted" ? [] : parseUserIds(raw.supportStaffUserIds),
   } as const;
 });
+
+/** The startup report for an environment Cloud can't run with, naming each bad variable; undefined when it loads. */
+export const startupConfigFailure = (env?: Record<string, string>): string | undefined => {
+  const provider = ConfigProvider.fromEnv(env === undefined ? undefined : { env });
+  const exit = Effect.runSyncExit(makeAppConfig.pipe(Effect.provideService(ConfigProvider.ConfigProvider, provider)));
+  if (Exit.isSuccess(exit)) return undefined;
+  const error = Cause.squash(exit.cause);
+  const detail = error instanceof Config.ConfigError || error instanceof InvalidConfiguration ? error.message : String(error);
+  return `Invalid configuration. Fix these environment variables (.env for a Self-hosted Cloud):\n${detail}`;
+};
 
 export class AppConfig extends Context.Service<AppConfig>()("ployz/AppConfig", {
   make: makeAppConfig,

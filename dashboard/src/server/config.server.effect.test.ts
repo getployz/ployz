@@ -1,6 +1,6 @@
 import { assert, describe, it } from "@effect/vitest";
 import { Config, ConfigProvider, Effect, Redacted } from "effect";
-import { AppConfig, InvalidConfiguration } from "#/server/config.server";
+import { AppConfig, InvalidConfiguration, startupConfigFailure } from "#/server/config.server";
 
 const requiredEnvironment = {
   DATABASE_URL: "postgres://postgres:postgres@localhost:5432/ployz_cloud",
@@ -204,4 +204,29 @@ describe("AppConfig", () => {
       }
     }),
   );
+});
+
+describe("startupConfigFailure", () => {
+  it("is undefined for a valid environment", () => {
+    assert.isUndefined(startupConfigFailure(requiredEnvironment));
+  });
+
+  it("names every bad variable, without printing secret values", () => {
+    const report = startupConfigFailure({
+      ...without(requiredEnvironment, "GITHUB_CLIENT_ID"),
+      BETTER_AUTH_SECRET: "",
+      APP_URL: "cloud.example.com",
+      APP_ENCRYPTION_SECRET: "short-secret-value",
+    });
+    assert.isString(report);
+    for (const name of ["GITHUB_CLIENT_ID", "BETTER_AUTH_SECRET", "APP_URL", "APP_ENCRYPTION_SECRET"]) {
+      assert.include(report, name);
+    }
+    assert.notInclude(report, "short-secret-value");
+  });
+
+  it("names a partial set's variables", () => {
+    const report = startupConfigFailure({ ...requiredEnvironment, ...without(postShibaMail, "MAIL_FROM") });
+    assert.include(report, "MAIL_FROM");
+  });
 });
