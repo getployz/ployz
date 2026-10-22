@@ -27,6 +27,13 @@ it("asks before deleting a new service, since nothing is left to discard", () =>
   expect(remove).toHaveBeenCalledOnce();
 });
 
+it("keeps a new service when its delete is cancelled", () => {
+  const remove = danger("create");
+  fireEvent.click(screen.getByRole("button", { name: "Delete service" }));
+  fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+  expect(remove).not.toHaveBeenCalled();
+});
+
 it("stages a saved service's deletion for the next deploy without asking", () => {
   const remove = danger(null);
   screen.getByText("The service is removed on your next deploy.");
