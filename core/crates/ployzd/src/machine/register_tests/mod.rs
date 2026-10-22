@@ -34,6 +34,27 @@ async fn register_rejects_an_uninitialized_machine() {
     let _ = std::fs::remove_dir_all(data_dir);
 }
 
+/// A founder answers RPCs as soon as it restarts Participating, before its
+/// publisher writes the Cluster network: callers must read that as not ready.
+#[tokio::test]
+async fn unpublished_cluster_network_reads_as_unavailable() {
+    let (replicated, server) = fake_cluster::store_without_network().await;
+    let (data_dir, store, founder) = open_store("ployzd-unpublished-network");
+    replicated.publish_local_machine(&founder).await.unwrap();
+    let service = machine_service(store, replicated, None);
+
+    let registered = rpc_register(&service, request("joiner", WireGuardPublicKey([1; 32])))
+        .await
+        .unwrap_err();
+    assert_eq!(registered.code, RpcErrorCode::Unavailable, "{registered:?}");
+    let listed = rpc_list_machines(&service).await.unwrap_err();
+    assert_eq!(listed.code, RpcErrorCode::Unavailable, "{listed:?}");
+
+    server.abort();
+    drop(service);
+    let _ = std::fs::remove_dir_all(data_dir);
+}
+
 #[tokio::test]
 async fn register_rpc_exact_replay_returns_the_original_joinable_assignment() {
     let (data_dir, store, founder) = open_store("ployzd-register-replay");
