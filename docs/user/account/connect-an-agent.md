@@ -55,7 +55,8 @@ with `approval_required`, anything it would remove, and a link to your organizat
 
 A service stop or restart, and removing or forgetting a server, wait the same way. A server
 drain, removing a project or environment, and releasing a volume wait when they would take
-something off your servers.
+something off your servers. None of this waits in an [Agent sandbox](try-without-an-account.md)
+nobody has claimed yet.
 
 Until you answer, trying again only asks again, and nothing changes. A denied approval stays
 denied. Only you approve, in the dashboard. The agent can't approve its own request, and

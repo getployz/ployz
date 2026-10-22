@@ -116,7 +116,8 @@ can also drain or remove a server, or clean up what a deleted environment left o
 It can remove a project, an environment or the whole organization, forget every server, or turn
 an environment's protection off. Ployz refuses that command with `approval_required`, naming what
 it would remove and the approval it opened for you. Every organization works this way, and no
-setting turns it off.
+setting turns it off. The one exception is an [Agent sandbox](try-without-an-account.md) nobody
+has claimed yet: no person could answer there, so nothing asks until someone keeps it.
 
 How you answer depends on where the command runs:
 
