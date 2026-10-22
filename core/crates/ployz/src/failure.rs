@@ -309,11 +309,7 @@ impl Failure {
     pub fn causes(&self) -> Vec<String> {
         match &self.inner {
             Inner::Command { error, .. } if refusal_before_context(error.as_ref()).is_none() => {
-                match error.downcast_ref::<ConnectError>() {
-                    // Transparent, so the chain below it skips the causes the daemon sent.
-                    Some(ConnectError::Remote(remote)) => ui::causes(remote),
-                    _ => ui::causes(error.as_ref()),
-                }
+                ui::causes(error.as_ref())
             }
             Inner::Command { .. } | Inner::Partial | Inner::Exit(_) => Vec::new(),
         }
@@ -984,6 +980,7 @@ impl From<OperatorError> for Failure {
     fn from(error: OperatorError) -> Self {
         match error {
             OperatorError::Connect(error) => error.into(),
+            OperatorError::Rpc(error) => ConnectError::Rpc(error).into(),
             OperatorError::Protocol(error) => error.into(),
             error => Self::command(error),
         }
@@ -1357,6 +1354,31 @@ mod tests {
         assert_eq!(failure.causes(), ["Connection refused (os error 111)"]);
         assert_eq!(failure.report().code, RpcErrorCode::Internal);
         assert!(failure.daemon_answered());
+
+        let wrapped = failure.context("Couldn't list servers.");
+        assert_eq!(
+            wrapped.causes().last().map(String::as_str),
+            Some("Connection refused (os error 111)")
+        );
+        assert!(
+            ui::row(&wrapped)
+                .ends_with("Corrosion HTTP request failed: Connection refused (os error 111)"),
+            "{}",
+            ui::row(&wrapped)
+        );
+    }
+
+    #[test]
+    fn a_status_the_daemon_did_not_attach_details_to_keeps_the_call_wording() {
+        let failure = Failure::from(ConnectError::Rpc(crate::connect::TransportError::from(
+            tonic::Status::unavailable(
+                "grpc-status header missing, mapped from HTTP status code 502",
+            ),
+        )));
+        assert_eq!(
+            failure.to_string(),
+            "Ployz's call to your Server's daemon failed."
+        );
     }
 
     #[test]
