@@ -64,12 +64,26 @@ Custom domains are free.
 3. Create the DNS records below at your DNS provider.
 4. Click **Deploy**.
 
-Domains ignore case. Ployz saves `Acme.COM` as `acme.com`, so you see it in lowercase
-everywhere.
+Domains ignore case and surrounding whitespace. Ployz saves ` Acme.COM ` as `acme.com`,
+so you see it in lowercase everywhere.
 
 You can enter a domain with non-Latin letters, like `пример.рф`. Ployz saves it in the
 `xn--` form DNS uses, `xn--e1afmkfd.xn--p1ai`, and shows that form everywhere, DNS records
 included.
+
+`ployz domain add web app.example.com.` trims one trailing root dot, since it names the
+same domain as `app.example.com`.
+
+New custom domains must be hostnames you own. Ployz refuses IP addresses, names whose
+last label is all digits, invalid punycode `xn--` labels, `ployz.app` and its subdomains,
+and names in your organization's Cluster Domain zone. Use generated domains for Ployz's
+reserved zones. Older stored domains remain readable and removable. You can re-add one
+on the same service and environment to change its port. Names in your organization's Cluster Domain zone still require generated domains.
+
+For an invalid hostname, `ployz domain add` names the reason and exits with code 2.
+Drop any URL scheme, port or path. A hostname cannot contain underscores or wildcards.
+Use at most 63 ASCII characters per label and 253 for the whole hostname after conversion
+to punycode.
 
 A service can have any number of custom domains next to its generated domains, each with its
 own port.

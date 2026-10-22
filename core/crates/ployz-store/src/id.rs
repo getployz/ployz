@@ -184,6 +184,108 @@ store_string!(
     Hostname, "a hostname like app.example.com", is_hostname, normalize = normalize_hostname
 );
 
+impl Hostname {
+    /// Parse a newly added custom domain, keeping stored hostname readers compatible.
+    ///
+    /// # Errors
+    /// Returns `invalid_argument` explaining the invalid part, without echoing input.
+    pub fn parse_custom(value: &str) -> Result<Self, RpcError> {
+        let invalid = |message| error::invalid(message, serde_json::Value::Null);
+        let value = value.trim();
+        if value.contains("://") {
+            return Err(invalid("Drop the URL scheme. Enter only the hostname."));
+        }
+        if value.contains('*') {
+            return Err(invalid(
+                "Wildcard domains are not supported. Add each hostname.",
+            ));
+        }
+        let address = value.strip_suffix('.').unwrap_or(value);
+        let address = address
+            .strip_prefix('[')
+            .and_then(|value| value.strip_suffix(']'))
+            .unwrap_or(address);
+        if address.parse::<std::net::IpAddr>().is_ok() {
+            return Err(invalid(
+                "An IP address cannot be a custom domain. Enter a hostname you own.",
+            ));
+        }
+        if value.contains(['/', '\\']) {
+            return Err(invalid("Drop the URL path. Enter only the hostname."));
+        }
+        if value.contains(':') {
+            return Err(invalid(
+                "Drop the port. Set the target port with the domain's port option.",
+            ));
+        }
+        if value.contains('_') {
+            return Err(invalid(
+                "A hostname cannot contain an underscore. Use letters, digits or inner hyphens.",
+            ));
+        }
+        if value.contains(['?', '#']) {
+            return Err(invalid(
+                "Drop the URL query or fragment. Enter only the hostname.",
+            ));
+        }
+        if value.chars().any(|c| c.is_whitespace() || c.is_control()) {
+            return Err(invalid(
+                "A hostname cannot contain whitespace or control characters.",
+            ));
+        }
+        let value = idna::domain_to_ascii(value).map_err(|_| {
+            if value
+                .split('.')
+                .any(|label| label.to_ascii_lowercase().starts_with("xn--"))
+            {
+                invalid("The hostname contains an invalid punycode A-label.")
+            } else {
+                invalid("The hostname contains invalid internationalized domain characters.")
+            }
+        })?;
+        let value = value.strip_suffix('.').unwrap_or(&value);
+        if value.len() > 253 {
+            return Err(invalid(
+                "The hostname is too long. Use at most 253 ASCII characters after IDNA conversion.",
+            ));
+        }
+        if value.split('.').any(|label| label.len() > 63) {
+            return Err(invalid(
+                "A hostname label is too long. Use at most 63 ASCII characters per label after IDNA conversion.",
+            ));
+        }
+        if value.split('.').any(str::is_empty) {
+            return Err(invalid(
+                "A hostname cannot contain an empty label. Use one dot between labels.",
+            ));
+        }
+        if value
+            .split('.')
+            .any(|label| label.starts_with('-') || label.ends_with('-'))
+        {
+            return Err(invalid(
+                "A hostname label cannot start or end with a hyphen. Use hyphens only inside labels.",
+            ));
+        }
+        if value
+            .rsplit('.')
+            .next()
+            .is_some_and(|label| label.bytes().all(|byte| byte.is_ascii_digit()))
+        {
+            return Err(invalid(
+                "An IP address cannot be a custom domain. Enter a hostname you own.",
+            ));
+        }
+        let hostname = Self::parse(value).map_err(|_| invalid("A hostname needs at least two nonempty DNS labels with letters, digits or inner hyphens."))?;
+        if value == "ployz.app" || value.ends_with(".ployz.app") {
+            return Err(invalid(
+                "The ployz.app zone is reserved for Ployz-generated domains. Use a domain you own.",
+            ));
+        }
+        Ok(hostname)
+    }
+}
+
 /// DNS ignores case and carries Unicode names as punycode, so `Acme.COM ` names
 /// `acme.com` and `пример.рф` names `xn--e1afmkfd.xn--p1ai`. A name IDNA refuses
 /// keeps the ASCII-lowercase form it had before IDNA: saved routes and prefixes
@@ -473,6 +575,33 @@ mod config_ref_tests {
 #[cfg(test)]
 mod hostname_tests {
     use super::Hostname;
+
+    #[test]
+    fn custom_hostnames_refuse_numeric_suffixes() {
+        for (value, reason) in [
+            ("127.1", "IP address"),
+            ("1.2.3.4.5", "IP address"),
+            ("host.123", "IP address"),
+            ("１２７.１", "IP address"),
+        ] {
+            let refused = Hostname::parse_custom(value).unwrap_err();
+            assert!(refused.message.contains(reason), "{value}: {refused}");
+        }
+    }
+
+    #[test]
+    fn custom_hostnames_explain_invalid_labels() {
+        for (value, reason) in [
+            ("-foo.com", "start or end with a hyphen"),
+            ("foo-.com", "start or end with a hyphen"),
+            ("foo.-bar.com", "start or end with a hyphen"),
+            ("foo..com", "empty label"),
+            ("foo.com..", "empty label"),
+        ] {
+            let refused = Hostname::parse_custom(value).unwrap_err();
+            assert!(refused.message.contains(reason), "{value}: {refused}");
+        }
+    }
 
     #[test]
     fn a_hostname_in_any_case_is_stored_lowercase() {

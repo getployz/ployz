@@ -1889,6 +1889,72 @@ fn an_agent_adds_checks_and_removes_domains() {
 }
 
 #[test]
+fn domain_add_explains_invalid_custom_hostnames() {
+    let long_label = format!("{}.example.com", "a".repeat(64));
+    let long_name = format!(
+        "{}.{}.{}.{}",
+        "a".repeat(63),
+        "b".repeat(63),
+        "c".repeat(63),
+        "d".repeat(62)
+    );
+    for store in &targets() {
+        ok(store, &["project", "new", "shop"]);
+        ok(store, &["service", "add", "web", "--image", "nginx"]);
+        for (host, reason) in [
+            ("1.2.3.4", "IP address"),
+            ("127.1", "IP address"),
+            ("1.2.3.4.5", "IP address"),
+            ("-foo.com", "start or end with a hyphen"),
+            ("foo..com", "empty label"),
+            ("foo.-bar.com", "start or end with a hyphen"),
+            ("2001:db8::1", "IP address"),
+            ("[::1]", "IP address"),
+            ("ployz.app", "reserved"),
+            ("a.ployz.app", "reserved"),
+            ("xn--zz.com", "punycode"),
+            ("*.example.com", "Add each hostname"),
+            (long_label.as_str(), "label is too long"),
+            (long_name.as_str(), "hostname is too long"),
+            ("https://x.example.com", "scheme"),
+            ("host.com:8080", "port"),
+            ("x.example.com/path", "path"),
+            ("under_score.example.com", "underscore"),
+        ] {
+            let refused = failed(store, &["domain", "add", "web", "--", host], 2);
+            assert_eq!(
+                refused["code"],
+                json!("invalid_argument"),
+                "{host}: {refused}"
+            );
+            assert!(
+                refused["message"].as_str().unwrap().contains(reason),
+                "{host}: {refused}"
+            );
+        }
+        assert_eq!(ok(store, &["get", "web.domains"])["domains"], json!([]));
+    }
+}
+
+#[test]
+fn domain_add_normalizes_a_trailing_root_dot() {
+    for store in &targets() {
+        ok(store, &["project", "new", "shop"]);
+        ok(store, &["service", "add", "web", "--image", "nginx"]);
+        for (typed, stored) in [
+            ("App.Example.com.", "app.example.com"),
+            ("пример.рф.", "xn--e1afmkfd.xn--p1ai"),
+            ("xn--e1afmkfd.xn--p1ai", "xn--e1afmkfd.xn--p1ai"),
+        ] {
+            assert_eq!(
+                ok(store, &["domain", "add", "web", typed])["domain"]["hostname"],
+                json!(stored)
+            );
+        }
+    }
+}
+
+#[test]
 fn standalone_refuses_a_generated_domain() {
     let store = Target::Local(tempfile::tempdir().unwrap());
     let store = &store;
