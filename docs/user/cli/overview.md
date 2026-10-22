@@ -263,10 +263,11 @@ ployz up --project my-app --env staging
 ```
 
 Always pass `--project` in CI, or `ployz up` creates a new project named after the checkout.
-If no service in that project already builds from an upload, `ployz up` adds one named after
-the directory and builds it, as it does in a new project. It stops and says why, adding no
-service and linking nothing, when a service builds from Git (run `ployz deploy` to ship it) or
-when a service that pulls an image already has the directory's name.
+`ployz up` ships the directory to each of the project's services that build from an upload or
+have no source yet. If there's none, it adds one named after the directory and builds it, as it
+does in a new project. In that case it stops and says why, adding no service and linking
+nothing, when a service builds from Git (run `ployz deploy` to ship it) or when a service that
+pulls an image already has the directory's name.
 
 Ployz ignores spaces and newlines around `PLOYZ_TOKEN`, as a paste into a secret or `.env` file
 often leaves. A value that is still not a token, such as one with a newline inside it, fails with
