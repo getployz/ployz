@@ -642,8 +642,8 @@ mod tests {
 
     use super::{
         VolumeOwner, machine_removal_refusal, movable_services_on, qualified_labels,
-        replicated_services_on, reset_removal_refusal, running_services, services_on,
-        under_replicated,
+        left_short, replicated_services_on, reset_removal_refusal, running_services,
+        services_on,
     };
     use crate::ui::Hint;
 
@@ -825,11 +825,67 @@ mod tests {
         assert_eq!(running_services("gamma", &[], false), None);
     }
 
+    fn api_only_on_a_web_on_both() -> LiveServices<RpcError> {
+        derive_live_services(PartialResult {
+            successes: vec![
+                MachineSuccess {
+                    machine_id: machine_id('a'),
+                    value: vec![
+                        observation('1', 'a', "api", ContainerKind::ServiceContainer, 'a'),
+                        observation('2', 'a', "web", ContainerKind::ServiceContainer, 'b'),
+                    ],
+                },
+                MachineSuccess {
+                    machine_id: machine_id('b'),
+                    value: vec![observation(
+                        '3',
+                        'b',
+                        "web",
+                        ContainerKind::ServiceContainer,
+                        'b',
+                    )],
+                },
+            ],
+            failures: Vec::new(),
+            omissions: Vec::new(),
+        })
+    }
+
     #[test]
-    fn the_last_server_leaves_nothing_under_replicated() {
-        let services = vec![QualifiedService::parse("app/api").unwrap()];
-        assert_eq!(under_replicated(services.clone(), false), services);
-        assert!(under_replicated(services, true).is_empty());
+    fn rm_splits_services_left_with_no_copies_from_those_left_short() {
+        let short = left_short(&machine_id('a'), &api_only_on_a_web_on_both(), false);
+        assert_eq!(
+            short.no_copies,
+            [QualifiedService::parse("app/api").unwrap()]
+        );
+        assert_eq!(
+            short.under_replicated,
+            [QualifiedService::parse("app/web").unwrap()]
+        );
+    }
+
+    #[test]
+    fn rm_claims_no_copies_only_when_every_other_server_answered() {
+        let mut live = api_only_on_a_web_on_both();
+        live.containers.omissions.push(machine_id('c'));
+        let short = left_short(&machine_id('a'), &live, false);
+        assert!(short.no_copies.is_empty());
+        assert_eq!(
+            short.under_replicated,
+            [
+                QualifiedService::parse("app/api").unwrap(),
+                QualifiedService::parse("app/web").unwrap()
+            ]
+        );
+    }
+
+    #[test]
+    fn the_last_server_leaves_nothing_short() {
+        let mut live = api_only_on_a_web_on_both();
+        live.containers.successes.truncate(1);
+        let short = left_short(&machine_id('a'), &live, true);
+        assert!(short.no_copies.is_empty());
+        assert!(short.under_replicated.is_empty());
     }
 
     #[test]

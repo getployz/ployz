@@ -145,9 +145,26 @@ fn web_routed_at(copies: &[(char, [u8; 4])]) -> RoutedAddresses {
 }
 
 fn judged_in_app(observed: Observed) -> Check {
-    judge(observed, &qualified("app", "web").namespace, |words| {
-        format!("ployz {}", words.join(" "))
-    })
+    judged_deploying(observed, &[])
+}
+
+/// `deployed` pairs each Service's name with the name its containers carry.
+fn judged_deploying(observed: Observed, deployed: &[(&str, &str)]) -> Check {
+    let deployed: BTreeMap<ServiceName, ServiceName> = deployed
+        .iter()
+        .map(|(name, runtime)| {
+            (
+                ServiceName::parse(*name).unwrap(),
+                ServiceName::parse(*runtime).unwrap(),
+            )
+        })
+        .collect();
+    judge(
+        observed,
+        &qualified("app", "web").namespace,
+        &deployed,
+        |words| format!("ployz {}", words.join(" ")),
+    )
 }
 
 fn warned(check: &Check) -> Vec<String> {
@@ -491,6 +508,97 @@ fn a_crashing_copy_on_a_down_machine_shows_only_the_down_row() {
             "machine": "machine-3",
         }])
     );
+}
+
+fn web_running_beside_deployed(
+    machines: Vec<MachineObservation>,
+    live: LiveServices<RpcError>,
+    deployed: &[(&str, &str)],
+) -> Check {
+    judged_deploying(
+        Observed {
+            machines,
+            copies: Copies::Listed {
+                live,
+                reads: Vec::new(),
+                routed: BTreeMap::new(),
+            },
+        },
+        deployed,
+    )
+}
+
+#[test]
+fn status_names_a_deployed_service_with_no_copies() {
+    let [one, two, three] = machines();
+    let check = web_running_beside_deployed(
+        listed(&[&one, &two, &three], &[]),
+        listed_copies(vec![web_copy(&one, '1', CopyRotation::In, healthy(), 1, 1)]),
+        &[("web", "web"), ("api", "api")],
+    );
+
+    assert_eq!(
+        serde_json::to_value(&check.attention).unwrap(),
+        json!([{
+            "reason": "no_copies",
+            "message": "No copies running.",
+            "next": "ployz deploy api",
+            "service": "app/api",
+        }])
+    );
+    assert!(warned(&check).is_empty());
+    assert_eq!(
+        super::super::link::rendered(check.attention),
+        "organization  ?\nsigned in as  local\napi           No copies running.\n"
+    );
+}
+
+#[test]
+fn a_renamed_service_is_found_by_the_name_its_copies_carry() {
+    let [one, two, three] = machines();
+    let check = web_running_beside_deployed(
+        listed(&[&one, &two, &three], &[]),
+        listed_copies(vec![web_copy(&one, '1', CopyRotation::In, healthy(), 1, 1)]),
+        &[("site", "web")],
+    );
+
+    assert!(check.attention.is_empty());
+}
+
+#[test]
+fn a_down_server_hides_a_deployed_service_with_no_copies_behind_its_down_row() {
+    let [one, two, three] = machines();
+    let check = web_running_beside_deployed(
+        listed(&[&one, &two], &[&three]),
+        omitted_by(
+            listed_copies(vec![web_copy(&one, '1', CopyRotation::In, healthy(), 1, 1)]),
+            &three,
+        ),
+        &[("web", "web"), ("api", "api")],
+    );
+
+    let reasons: Vec<&str> = check
+        .attention
+        .iter()
+        .map(|attention| attention.reason.as_str())
+        .collect();
+    assert_eq!(reasons, ["machine_down"]);
+}
+
+#[test]
+fn an_unanswered_server_hides_a_deployed_service_with_no_copies_behind_its_warning() {
+    let [one, two, three] = machines();
+    let check = web_running_beside_deployed(
+        listed(&[&one, &two, &three], &[]),
+        unanswered_by(
+            listed_copies(vec![web_copy(&one, '1', CopyRotation::In, healthy(), 1, 1)]),
+            &two,
+        ),
+        &[("web", "web"), ("api", "api")],
+    );
+
+    assert!(check.attention.is_empty());
+    assert_eq!(warned(&check), [MACHINE_2_DID_NOT_ANSWER]);
 }
 
 #[test]
