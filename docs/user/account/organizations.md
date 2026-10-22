@@ -1,6 +1,6 @@
 ---
 title: Organizations and billing
-description: Your organization, its settings, deleting it, and what Pro costs.
+description: Your organization, its settings, deleting it, and billing.
 ---
 
 An organization holds your projects, your servers and your billing. The first time you sign in,
@@ -39,13 +39,16 @@ In the sidebar, click **Organization** for its settings:
 - **General**: your organization's **Display name**. Owners and admins can change it: type a new
   one and press Enter or click the check. Its URL stays the same. Below it, your organization's
   **Domain**, which your services' free addresses live under.
-  It appears when you generate your first domain. Below it, **Allow support access**, and **Forget all
+  Until you generate your first domain, it reads **No domain yet**. Below it, **Allow support access**, and **Forget all
   servers** for when your servers were deleted.
 - **Members**: who's in the organization, their roles, and, for owners and admins, pending
   invites. See
   [Invite people](#invite-people).
+- **Tokens**: organization tokens. See
+  [Make an organization token](../cli/overview.md#make-an-organization-token).
+- **GitHub**: the connected GitHub App. See [Deploy from GitHub](../deploy/github.md).
 - **Builds**: where builds run. See [Where builds run](../builds/where-builds-run.md).
-- **Billing**: your plan.
+- **Billing** (when billing is on): your plan.
 
 ![Organization → General: the domain and the Danger section](../images/organization-general.png)
 
@@ -57,7 +60,7 @@ everything the role below it can, and more:
 | Role   | Can do |
 | ------ | ------ |
 | Member | See the organization, its members, projects, servers, volumes, variables, logs and metrics. Create projects and environments, edit projects, stage changes, deploy, destroy and merge them, restart and stop services, answer approvals, and make their own organization tokens. |
-| Admin  | Also change the organization's settings and support access, invite people, change roles and remove members, manage everyone's tokens and agents, connect GitHub, delete projects and environments, delete volume copies, and add, operate, open a shell on and remove servers. |
+| Admin  | Also change the organization's settings and support access, invite people, change roles and remove members, manage everyone's tokens and agents, connect GitHub, delete projects and environments, protect and unprotect environments, delete volume copies, and add, operate, open a shell on and remove servers. |
 | Owner  | Also manage billing, delete the organization, and make or remove an owner. |
 
 When you try something your role can't do, Ployz says who can: "Only an owner or admin of this
@@ -66,10 +69,10 @@ project's configuration that your role can't make is refused with the permission
 `Needs environment:delete`; `ployz <command> --help` names that permission before you run it.
 
 To invite someone, go to **Organization → Members** and click **Invite**. Pick **Member** or
-**Admin**, add their email, and click **Make link**. When Ployz Cloud has email on, it emails the
+**Admin**, add their email if you like, and click **Make link**. When Ployz Cloud has email on, it emails the
 link to that address, and the dialog tells you where it went. A self-hosted Cloud without email,
 or an invite with no email, sends nothing, so copy the link from the dialog and send it to them
-yourself. Whoever opens the link, signs in and clicks **Join** joins with that role, so share it
+yourself. Whoever opens the link, signs in and clicks **Join** and the organization's name joins with that role, so share it
 only with the person you mean. A link works once and expires after 7 days. Someone already in
 the organization who opens it sees **You're in** and **Open** instead, and keeps their role.
 Owners and admins see pending invites, who sent them and when they expire. Click **Revoke** to
@@ -99,7 +102,7 @@ more it sees:
 - **Config files**: what's in each config file. Off, support sees each file's name and mount but
   not its contents.
 - **Container logs**: what your containers print, including a failed health check's output.
-  Build logs are always visible.
+  What a build prints is always visible.
 
 All three start off, and turning support access off turns them off. Each applies on support's
 next request. Support sees these switches but can't change them. It can still change anything
@@ -158,13 +161,16 @@ How you answer depends on where the command runs:
 - `ployz project rm`, `ployz env rm` and `ployz env shutdown` ask when they would take something
   off the servers. `ployz org rm`, `ployz server forget` with no server named and
   `ployz env protect --off` always ask.
-- Removing a server Ployz Cloud manages with `ployz server rm` always asks. `ployz server drain`
+- Removing or forgetting a server Ployz Cloud manages with `ployz server rm` or
+  `ployz server forget SERVER` always asks. `ployz server drain`
   asks when a global service would run on no other server, and `ployz server clean` asks when it
   would stop a service or delete volume data. `ployz server upgrade` never asks.
 - An agent's stop or restart of a service always asks, and one approval covers one stop or
   restart. Typed in a terminal, `ployz service stop` and `ployz service restart` don't ask yet.
   Starting a service never asks.
-- Dashboard buttons and dialogs never ask: confirming a dialog is your approval. When the
+- Dashboard buttons and dialogs never ask: confirming a dialog is your approval. The exception
+  is a member's deploy, sync, restart, stop or volume grow in a Protected environment, which waits
+  for an owner or admin (see [Permissions](permissions.md#protect-production)). When the
   [Ployz agent](agent-sidebar.md) does the same thing for you, it asks.
 - If the change moves on after Ployz asked, your approval no longer fits it, and the command asks
   again about the new one.
@@ -188,13 +194,13 @@ two logins, ask for the same thing, each gets an approval of their own to answer
 An approval runs its command once. Sending it again for another run asks again, with a new
 approval to answer, even when the command and target are the same, such as changing a member back
 to a role you changed once already. A retry of the same deploy, or the same request sent again with
-its request key, answers what the first one started and runs nothing new. A save or deploy the
-Config Store refuses leaves its approval unused.
+its request key, answers what the first one started and runs nothing new. A save or deploy that
+Ployz refuses leaves its approval unused.
 
 You can answer from a terminal too. `ployz org approval ls` lists the approvals waiting,
 `ployz org approval show ID` shows what one would remove, and `ployz org approval approve ID` or
 `ployz org approval deny ID --reason "keep the volume"` answers it. Approving asks you to type the
-organization's name, so it needs a terminal.
+organization's slug, so it needs a terminal.
 
 An agent can't answer an approval: `ployz mcp`, an agent you connected to Ployz Cloud and the
 Ployz agent can neither approve nor deny one. When the Ployz agent or an agent you connected to
@@ -241,7 +247,7 @@ is disabled.
 
 1. [Delete every project](../environments/environments.md#delete-a-project) in it. **Delete
    organization** stays disabled until you do.
-2. **Cancel Pro first.** Deleting the organization doesn't cancel it: go to
+2. **Cancel any subscription first**, such as the old $9 Pro plan. Deleting the organization doesn't cancel it: go to
    **Organization → Billing → Manage billing**.
 3. Go to **Organization → General** and click **Delete organization**.
 4. Type the organization's slug, as the dialog shows it, and click **Delete**.
