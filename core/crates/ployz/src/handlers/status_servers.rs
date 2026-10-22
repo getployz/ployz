@@ -809,6 +809,10 @@ impl Check {
         })
     }
 
+    fn partial(&self) -> bool {
+        false
+    }
+
     fn name(&self, machine: &MachineId) -> String {
         self.names
             .get(machine)

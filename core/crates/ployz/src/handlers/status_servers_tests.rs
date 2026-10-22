@@ -2163,3 +2163,42 @@ fn status_checks_nothing_and_says_nothing_with_no_server_set_up() {
 
     assert!(status_warnings(&dir.path().join("config.yaml"), &[]).is_empty());
 }
+
+#[test]
+fn a_check_that_could_not_see_every_server_is_partial() {
+    let [one, two, three] = machines();
+    let copies = || {
+        listed_copies(vec![
+            web_copy(&one, '1', CopyRotation::In, healthy(), 2, 1),
+            web_copy(&two, '2', CopyRotation::In, healthy(), 2, 1),
+        ])
+    };
+    assert!(
+        !judged(listed(&[&one, &two, &three], &[]), copies()).partial(),
+        "every Server answered"
+    );
+    assert!(
+        judged(
+            listed(&[&one, &two], &[&three]),
+            omitted_by(copies(), &three)
+        )
+        .partial(),
+        "a Down Server's copies went unchecked"
+    );
+    assert!(
+        judged(
+            listed(&[&one, &two, &three], &[]),
+            omitted_by(copies(), &three)
+        )
+        .partial(),
+        "a Server that didn't answer"
+    );
+    assert!(
+        !judged_in_app(Observed {
+            machines: listed(&[&one, &two, &three], &[]),
+            copies: Copies::RollingOut(rolling_out(&[deployment(12, "running")]).unwrap()),
+        })
+        .partial(),
+        "status skips the copy check on purpose while a deploy runs"
+    );
+}
