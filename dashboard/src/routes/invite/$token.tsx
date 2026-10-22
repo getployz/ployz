@@ -35,6 +35,8 @@ function InvitePage() {
           <Notice title="This invite doesn't exist" detail="Check the link, or ask for a new one." signedIn={session !== null} />
         ) : invite.member ? (
           <Member invite={invite} />
+        ) : invite.membershipEnded ? (
+          <Notice title="Membership ended" detail={`Ask someone in ${invite.organization} for a new invite.`} signedIn />
         ) : invite.state !== "pending" ? (
           <Notice title={UNUSABLE[invite.state]} detail={`Ask someone in ${invite.organization} for a new one.`} signedIn={session !== null} />
         ) : session ? (

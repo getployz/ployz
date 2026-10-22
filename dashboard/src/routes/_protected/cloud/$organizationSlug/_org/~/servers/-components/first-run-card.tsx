@@ -47,7 +47,7 @@ export function FirstRunCard({ organizationSlug, arrived }: { organizationSlug: 
             className="w-fit"
             disabled={!gate.allowed || mint.isPending}
             title={gate.reason}
-            onClick={() => mint.mutate({ name: null, expiresIn: "7d", autoEnroll: null })}
+            onClick={() => mint.mutate({ name: null, expiresIn: "1d", autoEnroll: null })}
           >
             {mint.isPending ? <Spinner data-icon="inline-start" /> : <TerminalIcon data-icon="inline-start" />}
             Get install command
@@ -55,7 +55,7 @@ export function FirstRunCard({ organizationSlug, arrived }: { organizationSlug: 
         ) : (
           <div className="flex flex-col gap-3">
             <InstallTabs target={mint.data} />
-            <p className="text-sm text-warning">Shown once. Expires in {cliLifetimeLabel("7d")}.</p>
+            <p className="text-sm text-warning">Shown once. Expires in {cliLifetimeLabel("1d")}.</p>
             <div className="flex items-center gap-2 text-sm text-muted-foreground">
               <Spinner />
               Listening for servers…
