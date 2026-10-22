@@ -706,7 +706,7 @@ pub(crate) const VOLUME_MIRROR: Verb = Verb::cloud(
     volume::run::mirror,
 )
 .keeps_running(KeepsRunning::With("--wait"))
-.docs("services/move-a-volume.md")
+.docs("services/mirror-a-volume.md")
 .tool(ToolId::VolumeMirror);
 pub(crate) const VOLUME_MIRROR_RM: Verb = Verb::cloud(
     "volume mirror rm",
@@ -715,7 +715,7 @@ pub(crate) const VOLUME_MIRROR_RM: Verb = Verb::cloud(
     volume::run::remove_mirror,
 )
 .keeps_running(KeepsRunning::With("--wait"))
-.docs("services/move-a-volume.md")
+.docs("services/mirror-a-volume.md")
 .tool(ToolId::VolumeMirrorRemove);
 pub(crate) const VOLUME_MOVE: Verb = Verb::cloud(
     "volume move",
@@ -748,7 +748,7 @@ pub(crate) const VOLUME_RESTORE: Verb = Verb::cloud(
     volume::run::restore,
 )
 .keeps_running(KeepsRunning::With("--wait"))
-.docs("services/move-a-volume.md")
+.docs("services/restore-a-volume.md")
 .tool(ToolId::VolumeRestore);
 pub(crate) const VOLUME_RM: Verb =
     Verb::cloud("volume rm", Never, volume::remove_command, volume::remove)
@@ -771,7 +771,7 @@ pub(crate) const VOLUME_SYNC: Verb = Verb::cloud(
     volume::run::sync,
 )
 .keeps_running(KeepsRunning::With("--wait"))
-.docs("services/move-a-volume.md")
+.docs("services/mirror-a-volume.md")
 .tool(ToolId::VolumeMirror);
 
 pub(crate) const VERBS: &[Verb] = &[

@@ -33,7 +33,8 @@ the services that need it.
 
 Click a service on the canvas to open its panel. **Deployments** lists its
 [deployments](../deploy/deployments.md), **Variables** holds its [variables](variables.md),
-**Logs** shows what it [prints](../observe/logs.md), and **Settings** holds the rest, from its
+**Logs** shows what it [prints](../observe/logs.md), **Monitoring** shows its
+[metrics](../observe/metrics.md), and **Settings** holds the rest, from its
 source to its restart policy: [Service settings](settings.md) explains each field.
 
 ## Rename a service
@@ -43,7 +44,7 @@ source to its restart policy: [Service settings](settings.md) explains each fiel
 
 The rename is staged. Other services keep reaching it at its private name, which stays the same,
 and [references](variables.md#reference-another-services-variable) to it keep working. To change
-the private name, see [Private Networking](settings.md#private-networking). Once you deploy, deploy
+the private name, see [Private address](settings.md#private-address). Once you deploy, deploy
 progress, failure output and `ployz ps` show the new name.
 
 If an older environment has a service named `configs`, rename it before editing its settings:
@@ -75,7 +76,9 @@ server after the service is deleted.
 ## Restart, stop or open a shell
 
 Open the service and click **⋮** next to its name. A running service offers **Restart** and
-**Stop**. A stopped one offers **Start**, and shows a **Start** button in its header too.
+**Stop**. A stopped one offers **Start**, and shows a **Start** button in its header too. In a
+[Protected environment](../environments/environments.md#protect-an-environment), a member sees
+**Request restart** and **Request stop**, which ask an owner or admin.
 
 - **Restart** goes one container at a time, across every server, so the others keep serving.
   The header counts them, like **Restarting 4/12**. If a container doesn't come back, the restart

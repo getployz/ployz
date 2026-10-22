@@ -1,15 +1,16 @@
 ---
 title: Restore a volume
-description: Bring a volume back to an earlier point, as a new volume, from its mirror or an old copy.
+description: Bring a volume back to an earlier point as a new volume, or make a copy the volume when its server is gone.
 ---
 
-A volume with a mirror has restore points: the copies the mirror took on each deploy and every
-15 minutes. An old copy keeps the last point it held. Restoring one makes a new volume with that point's files and moves your service onto
-it. The original volume stays until you delete it.
+A volume's [mirror](mirror-a-volume.md) gives it a restore point: the mirror's latest refresh,
+taken on each deploy and every 15 minutes. An old copy keeps the last point it held. Restoring a
+point makes a new volume with that point's files and moves your service onto it. The original
+volume stays until you delete it.
 
 Restore works on managed volumes in Ployz Cloud. Every server with storage needs a newer Ployz
 first. Until then the points list without **Restore**. A volume with no mirror and no old copy has no points. Add a mirror
-with **Add copy** under the volume's **Copies**. See [Move a volume](move-a-volume.md).
+with **Add copy** under the volume's **Copies**. See [Mirror a volume](mirror-a-volume.md).
 
 ## In Ployz Cloud
 
@@ -38,6 +39,27 @@ Deploy runs it before your services. Ployz copies the point to the original's se
 new volume, and starts your service on it. The original keeps its data and its mirror; it shows as
 not mounted. Delete it from its **Settings** tab when you no longer need it.
 
+## Restore a volume in place
+
+When the server that wrote a volume is gone, make a copy on another server the volume again. In
+Ployz Cloud, **Use mirror** does this for a mirror. See
+[When its server goes down](volumes.md#when-its-server-goes-down). For any copy, run:
+
+```sh
+ployz volume restore data --from web-2
+```
+
+Restore needs `web-2` to hold the only copy of the volume. If other servers hold copies, it is
+refused and names them. Remove them with `ployz volume mirror rm`, or remove their server, first.
+A mirror holds the data as of its last refresh, so restoring one loses the writes after it. The
+run says when that was: `data restored on web-2 from <time>; writes after that time are lost`.
+
+Restore doesn't start your service, so deploy it next. The [agent](../account/agent-sidebar.md)
+can run the same restore. In a
+[Protected environment](../environments/environments.md#protect-an-environment), a restore from a
+member, or from a token or an agent without `environments:protect`, waits for an owner or admin to
+approve it.
+
 ## Good to know
 
 - **A point is volume data, not a database point in time.** It holds the files as the mirror last
@@ -64,8 +86,5 @@ not mounted. Delete it from its **Settings** tab when you no longer need it.
   mirror, and **Restore** returns.
 - **The original's server must answer** for the copy to run. If the point's mirror is gone by then,
   the deploy fails and names the point.
-- **When the volume's server is gone,** restore its copy on another server in place instead, from
-  the CLI or the [agent](../account/agent-sidebar.md). See
-  [Restore a volume from a copy](move-a-volume.md#restore-a-volume).
 - **Points stay on your servers.** A mirror isn't an offsite backup, and S3 backups are not here
   yet. For a copy off your servers, see [Back up a database](databases.md#back-up-a-database).
