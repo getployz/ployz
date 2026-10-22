@@ -10,10 +10,10 @@ use serde_json::{Value, json};
 
 use super::{Retire, Scope, TargetNode};
 use crate::{
-    Actor, Admit, Command, ConfigStore, CreateProject, CreateService, CreateVolume, Deploy,
-    DeploymentId, DeploymentStatus, DeploymentSummary, EnvironmentId, EnvironmentRef, Mount,
+    Actor, Admit, Change, Command, ConfigStore, CreateProject, CreateService, CreateVolume, Deploy,
+    DeploymentId, DeploymentStatus, DeploymentSummary, Edit, EnvironmentId, EnvironmentRef, Mount,
     NodeStatus, OrganizationId, ProjectId, ProjectName, Publish, RemoveService, Retry, RunEvidence,
-    RunnerId, ServiceLineageId, Trusted, VolumeId, VolumeName,
+    RunnerId, ServiceLineageId, SettingPath, Trusted, VolumeId, VolumeName,
 };
 
 fn uuid(n: u8) -> String {
@@ -412,6 +412,79 @@ fn a_full_deploy_replaces_a_dropped_service_whose_name_a_new_one_took() {
             .iter()
             .any(|spec| spec.name == name("api"))
     );
+    assert!(
+        claimed.intent.options.removals.is_empty(),
+        "{:?}",
+        claimed.intent.options.removals
+    );
+}
+
+#[test]
+fn a_full_deploy_tears_down_the_runtime_a_renamed_service_ran_as() {
+    let (store, who) = retiring_api();
+    store
+        .write(
+            &who,
+            &Edit {
+                environment: EnvironmentRef::default(),
+                expect: None,
+                changes: vec![Change::Set {
+                    path: SettingPath::parse("web.privateDns").unwrap(),
+                    value: json!("front"),
+                }],
+            },
+        )
+        .unwrap();
+    publish(&store, &who);
+    let admitted = deploy(&store, &who, 3, &[]).unwrap();
+    let web = ServiceLineageId::parse(uuid(3)).unwrap();
+    let web_node = nodes(&store, &admitted.id)
+        .into_iter()
+        .find(|node| node.id() == web.as_str())
+        .expect("the renamed Service is a node");
+    assert_eq!(
+        web_node,
+        TargetNode::Service {
+            id: web,
+            name: name("web"),
+            runtime: name("front"),
+            removals: ployz_core::ServiceRemovals::from_names([name("web")]),
+        }
+    );
+    let claimed = store.claim(&admitted.id, &runner()).unwrap();
+    assert!(
+        claimed
+            .intent
+            .target
+            .iter()
+            .any(|spec| spec.name == name("front"))
+    );
+    assert_eq!(
+        claimed.intent.options.removals,
+        ployz_core::ServiceRemovals::from_names([name("api"), name("web")])
+    );
+    assert_eq!(
+        run(
+            &store,
+            &admitted.id,
+            preview(&["front", "api", "web"], true),
+            &["front", "api", "web"]
+        ),
+        DeploymentStatus::Applied
+    );
+    let outcomes = outcomes(&store, &who, &admitted.id);
+    assert!(
+        outcomes.contains(&("web".to_owned(), NodeStatus::Deployed)),
+        "{outcomes:?}"
+    );
+    assert!(
+        outcomes.contains(&("api".to_owned(), NodeStatus::Removed)),
+        "{outcomes:?}"
+    );
+    assert_eq!(applied(&store, &who), ["web"]);
+    // Torn down once, the old runtime is no later Deployment's to remove.
+    let again = deploy(&store, &who, 4, &[]).unwrap();
+    let claimed = store.claim(&again.id, &runner()).unwrap();
     assert!(
         claimed.intent.options.removals.is_empty(),
         "{:?}",

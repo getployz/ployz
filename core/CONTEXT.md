@@ -221,7 +221,7 @@ The complete desired Services for one Deploy together with which of those Servic
 It is derived from an Environment's Saved State when a Deploy is admitted, never authored directly. Compose files are not an input.
 
 **Prune Scope**:
-How far a full reconciliation removes what its target lacks. `namespace` removes every observer-visible Service of the resolved user Namespace the target lacks: the direct Deploy's default, and what a Config Store Deploy admitted with prune lowers. `removals` removes only the Deploy's removals, the Services this Config Store held and since dropped; every other running Service is kept and reported as a Deploy Warning. A Config Store lowers a full Deploy as `removals` unless it was admitted with prune, so two Stores driving one Cluster never remove each other's Services. A targeted Deploy has no Prune Scope to apply.
+How far a full reconciliation removes what its target lacks. `namespace` removes every observer-visible Service of the resolved user Namespace the target lacks: the direct Deploy's default, and what a Config Store Deploy admitted with prune lowers. `removals` removes only the Deploy's removals: the Services this Config Store held and since dropped, and the runtime names its Services ran as and no longer do; every other running Service is kept and reported as a Deploy Warning. A Config Store lowers a full Deploy as `removals` unless it was admitted with prune, so two Stores driving one Cluster never remove each other's Services. A targeted Deploy has no Prune Scope to apply.
 _Avoid_: prune flag on Service Attempt, ownership of a Service by a Store, orphan
 _Avoid_: leftover filtered Compose project, Compose as an authoring format, Cloud Attempt Target, Full/Partial/Adhoc as kinds of Deploy
 

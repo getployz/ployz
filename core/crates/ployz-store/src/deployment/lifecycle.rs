@@ -1021,7 +1021,7 @@ fn retried(
         match node {
             TargetNode::Service {
                 id, name, removals, ..
-            } if !removals.is_empty() => {
+            } if node.retires() => {
                 if latest
                     .services
                     .iter()

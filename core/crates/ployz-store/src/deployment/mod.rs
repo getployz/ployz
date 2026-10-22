@@ -580,8 +580,9 @@ pub(crate) enum TargetNode {
         name: ServiceName,
         /// The runtime Service it lowers to, which its Node Outcome is confirmed by.
         runtime: ServiceName,
-        /// For a Service the Deployment retires: every runtime Service it
-        /// tears down, `runtime` among them.
+        /// The runtime Services it tears down beside `runtime`, which it ran as and
+        /// no longer does; for a Service the Deployment retires, every runtime
+        /// Service it tears down, `runtime` among them.
         #[serde(default, skip_serializing_if = "ServiceRemovals::is_empty")]
         removals: ServiceRemovals,
     },
@@ -637,14 +638,16 @@ impl TargetNode {
 
     /// Whether it is a Service the Deployment tears down.
     pub(crate) fn retires(&self) -> bool {
-        matches!(self, Self::Service { removals, .. } if !removals.is_empty())
+        matches!(self, Self::Service { runtime, removals, .. } if removals.contains(runtime))
     }
 
-    /// The runtime Services whose Node Outcome settles it.
+    /// The runtime Services it ships or tears down, whose rows are its own.
     pub(crate) fn runtimes(&self) -> Vec<&ServiceName> {
         match self {
-            Self::Service { removals, .. } if !removals.is_empty() => removals.iter().collect(),
-            Self::Service { runtime, .. } => vec![runtime],
+            Self::Service { removals, .. } if self.retires() => removals.iter().collect(),
+            Self::Service {
+                runtime, removals, ..
+            } => std::iter::once(runtime).chain(removals.iter()).collect(),
             Self::Volume { .. } | Self::Config { .. } => Vec::new(),
         }
     }
@@ -855,10 +858,11 @@ pub(crate) struct Stored {
 
 impl Stored {
     /// What it lowers: the Saved Services it ships and the runtime Services it
-    /// tears down. A full Deploy ships every Service of `saved`, its revision, and
-    /// tears down each node `saved` lacks: one frozen before teardowns were, as
-    /// the runtime Service it ran as then, unless a Service of `saved` runs as it
-    /// now and so replaces it.
+    /// tears down, beside each shipped one those it no longer runs as. A full
+    /// Deploy ships every Service of `saved`, its revision, and tears down each
+    /// node `saved` lacks: one frozen before teardowns were, as the runtime
+    /// Service it ran as then, unless a Service of `saved` runs as it now and so
+    /// replaces it.
     pub(crate) fn lowering(&self, saved: &SavedEnvironmentIntent) -> Ships {
         let full = self.summary.services.is_empty();
         let mut shipped = Vec::new();
@@ -871,7 +875,7 @@ impl Stored {
                 removals: gone,
             } = node
             {
-                if !gone.is_empty() {
+                if node.retires() {
                     removals.extend(gone.iter().cloned());
                 } else if full
                     && !saved
@@ -887,6 +891,7 @@ impl Stored {
                         removals.extend([runtime.clone()]);
                     }
                 } else {
+                    removals.extend(gone.iter().cloned());
                     shipped.push(name);
                 }
             }

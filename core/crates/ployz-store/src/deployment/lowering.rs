@@ -6,8 +6,10 @@ use super::*;
 pub(crate) enum Scope<'a> {
     /// Every Service, Volume and Config, including the removal of those Applied
     /// State holds and Saved does not, which deletes the Docker Volumes `losses`
-    /// names. It tears down the Services `retire` names, from [`dropped`], and
-    /// with `prune` every other Service running in the Namespace too.
+    /// names. It tears down what `retire` names, from [`dropped`]: each Service
+    /// Saved dropped, and beside each it ships, the runtime Services that one no
+    /// longer runs as. With `prune` it tears down every other Service running in
+    /// the Namespace too.
     All {
         losses: &'a [VolumeLoss],
         retire: &'a [Retire],
@@ -47,20 +49,20 @@ impl<'a> Scope<'a> {
     }
 }
 
-/// A Service a narrowed Deployment tears down: one Saved no longer holds.
+/// A Service whose runtime Services a Deployment tears down: one Saved no longer
+/// holds, by every runtime it may still run as; or, on a full Deployment, one
+/// Saved still holds, by those it ran as and no longer does.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct Retire {
     pub(crate) id: ServiceLineageId,
     pub(crate) name: ServiceName,
-    /// Every runtime Service it may still run as.
     pub(crate) runtimes: ServiceRemovals,
 }
 
 /// What tearing down the Services `removed` takes once Saved revision `saved`
-/// dropped them: each by the runtime Services Applied State and every started or
-/// queued Deployment since the last one that removed it runs it as. One still in
-/// `saved`, or that never ran nor will, has nothing to tear down, and a runtime
-/// Service another kept Service runs is never one.
+/// dropped them: each by the runtime Services it may run as, by [`ran_as`]. One
+/// still in `saved`, or that never ran nor will, has nothing to tear down, and a
+/// runtime Service another kept Service runs is never one.
 pub(crate) fn retirements(
     tx: &mut dyn Tx,
     environment: &EnvironmentId,
@@ -84,44 +86,7 @@ pub(crate) fn retirements(
         {
             continue;
         }
-        let mut name = None;
-        let mut runtimes = ServiceRemovals::default();
-        if let Some(service) = applied
-            .services
-            .iter()
-            .find(|service| service.id == id.as_str())
-        {
-            name = Some(
-                ServiceName::parse(service.slug.as_str())
-                    .map_err(|_| error::corrupt("Service name"))?,
-            );
-            runtimes.extend([service.config.private_dns.clone()]);
-        }
-        let rows = tx.query(
-            "SELECT nodes, run FROM config_deployment \
-             WHERE environment_id = ?1 AND number IS NOT NULL \
-             AND (started IS NOT NULL OR status = 'queued') \
-             AND nodes LIKE ?2 \
-             ORDER BY number DESC",
-            &[
-                environment.as_str().into(),
-                format!("%\"{id}\"%").as_str().into(),
-            ],
-        )?;
-        for row in &rows {
-            let run: Run = row.json(1, "Deployment")?;
-            // What ran it before a Deployment removed it is gone.
-            if run.nodes.get(id.as_str()) == Some(&NodeStatus::Removed) {
-                break;
-            }
-            let nodes: Vec<TargetNode> = row.json(0, "Deployment")?;
-            for node in nodes.iter().filter(|node| node.id() == id.as_str()) {
-                if let TargetNode::Service { name: then, .. } = node {
-                    name.get_or_insert_with(|| then.clone());
-                    runtimes.extend(node.runtimes().into_iter().cloned());
-                }
-            }
-        }
+        let (name, runtimes) = ran_as(tx, environment, &applied, id)?;
         let runtimes = ServiceRemovals::from_names(
             runtimes.iter().filter(|name| !kept.contains(name)).cloned(),
         );
@@ -136,9 +101,116 @@ pub(crate) fn retirements(
     Ok(retire)
 }
 
+/// The name of Service lineage `id` and every runtime Service it may run as: by
+/// `applied`, and by each started or queued Deployment since the last one that
+/// removed it, less each runtime an Applied Deployment since tore down beside it.
+fn ran_as(
+    tx: &mut dyn Tx,
+    environment: &EnvironmentId,
+    applied: &SavedEnvironmentIntent,
+    id: &ServiceLineageId,
+) -> Result<(Option<ServiceName>, ServiceRemovals), RpcError> {
+    let mut name = None;
+    let mut runtimes = ServiceRemovals::default();
+    if let Some(service) = applied
+        .services
+        .iter()
+        .find(|service| service.id == id.as_str())
+    {
+        name = Some(
+            ServiceName::parse(service.slug.as_str())
+                .map_err(|_| error::corrupt("Service name"))?,
+        );
+        runtimes.extend([service.config.private_dns.clone()]);
+    }
+    let rows = tx.query(
+        "SELECT nodes, run, status FROM config_deployment \
+         WHERE environment_id = ?1 AND number IS NOT NULL \
+         AND (started IS NOT NULL OR status = 'queued') \
+         AND nodes LIKE ?2 \
+         ORDER BY number DESC",
+        &[
+            environment.as_str().into(),
+            format!("%\"{id}\"%").as_str().into(),
+        ],
+    )?;
+    let mut torn_down = BTreeSet::new();
+    for row in &rows {
+        let run: Run = row.json(1, "Deployment")?;
+        // What ran it before a Deployment removed it is gone.
+        if run.nodes.get(id.as_str()) == Some(&NodeStatus::Removed) {
+            break;
+        }
+        let nodes: Vec<TargetNode> = row.json(0, "Deployment")?;
+        let done = row.text(2)? == "applied";
+        for node in nodes.iter().filter(|node| node.id() == id.as_str()) {
+            if let TargetNode::Service {
+                name: then,
+                runtime,
+                removals,
+                ..
+            } = node
+            {
+                name.get_or_insert_with(|| then.clone());
+                // An Applied Deployment tore down what it shipped beside; what any
+                // other one shipped or tried to tear down may run still.
+                if done {
+                    torn_down.extend(removals.iter().cloned());
+                    if !torn_down.contains(runtime) {
+                        runtimes.extend([runtime.clone()]);
+                    }
+                } else {
+                    runtimes.extend(
+                        node.runtimes()
+                            .into_iter()
+                            .filter(|runtime| !torn_down.contains(*runtime))
+                            .cloned(),
+                    );
+                }
+            }
+        }
+    }
+    Ok((name, runtimes))
+}
+
+/// What a full Deployment of `saved` tears down beside each Service it ships: the
+/// runtime Services the Service ran as, by [`ran_as`], and no Service of `saved`
+/// runs as now.
+fn renamed(
+    tx: &mut dyn Tx,
+    environment: &EnvironmentId,
+    saved: &SavedEnvironmentIntent,
+) -> Result<Vec<Retire>, RpcError> {
+    let applied = applied_state(tx, environment, saved)?;
+    let runs: BTreeSet<&ServiceName> = saved
+        .services
+        .iter()
+        .map(|service| &service.config.private_dns)
+        .collect();
+    let mut retire = Vec::new();
+    for service in &saved.services {
+        let id = parse_stored(&service.id)?;
+        let (_, runtimes) = ran_as(tx, environment, &applied, &id)?;
+        let runtimes = ServiceRemovals::from_names(
+            runtimes.iter().filter(|name| !runs.contains(name)).cloned(),
+        );
+        if !runtimes.is_empty() {
+            retire.push(Retire {
+                id,
+                name: ServiceName::parse(service.slug.as_str())
+                    .map_err(|_| error::corrupt("Service name"))?,
+                runtimes,
+            });
+        }
+    }
+    Ok(retire)
+}
+
 /// What a full Deployment of `saved` tears down: each Service `landing` may run
 /// and `saved` dropped, and each a Deployment that started and ended short of
-/// Applied put in place and `saved` lacks, by [`retirements`].
+/// Applied put in place and `saved` lacks, by [`retirements`]; and beside each
+/// Service it ships, the runtime Services that one no longer runs as, by
+/// [`renamed`].
 pub(crate) fn dropped(
     tx: &mut dyn Tx,
     environment: &EnvironmentId,
@@ -173,7 +245,9 @@ pub(crate) fn dropped(
             }
         }
     }
-    retirements(tx, environment, saved, &removed)
+    let mut retire = retirements(tx, environment, saved, &removed)?;
+    retire.extend(renamed(tx, environment, saved)?);
+    Ok(retire)
 }
 
 /// What a Deployment lowers: the Saved Services it ships and the runtime
@@ -276,10 +350,13 @@ pub(crate) fn freeze(
                 .iter()
                 .any(|service| service.config.private_dns == *name)
         };
-        if saved
+        let held = saved
             .services
             .iter()
-            .any(|service| service.id == gone.id.as_str())
+            .any(|service| service.id == gone.id.as_str());
+        // Only a full Deployment tears down, beside a Service it ships, what that
+        // one no longer runs as.
+        if held && !full
             || retire.iter().take(at).any(|earlier| earlier.id == gone.id)
             || gone.runtimes.iter().any(running)
         {
@@ -290,25 +367,33 @@ pub(crate) fn freeze(
         }
         removals.extend(gone.runtimes.iter().cloned());
     }
+    let holds =
+        |service: &SavedServiceIntent| retire.iter().find(|gone| gone.id.as_str() == service.id);
     let mut nodes: Vec<TargetNode> = if full {
+        let shipping = |service: &SavedServiceIntent| {
+            let mut node = TargetNode::service(service)?;
+            if let (Some(gone), TargetNode::Service { removals, .. }) = (holds(service), &mut node)
+            {
+                removals.extend(gone.runtimes.iter().cloned());
+            }
+            Ok(node)
+        };
         // A dropped Service that ran is its teardown; one that never ran is just gone.
         let tearing_down = |service: &SavedServiceIntent| {
-            retire
-                .iter()
-                .find(|gone| gone.id.as_str() == service.id)
-                .map_or_else(|| TargetNode::service(service), TargetNode::retire)
+            holds(service).map_or_else(|| TargetNode::service(service), TargetNode::retire)
         };
         // A teardown of a Service nothing may run is one a failed attempt left behind.
         let left_behind = retire.iter().filter(|gone| {
             !dropped
                 .services
                 .iter()
+                .chain(&saved.services)
                 .any(|service| service.id == gone.id.as_str())
         });
         saved
             .services
             .iter()
-            .map(TargetNode::service)
+            .map(shipping)
             .chain(dropped.services.iter().map(tearing_down))
             .chain(left_behind.map(TargetNode::retire))
             .collect::<Result<_, _>>()?
