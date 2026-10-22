@@ -1,5 +1,4 @@
 use super::*;
-use crate::sdk::preparation::same_again;
 
 #[test]
 fn build_failures_show_readable_messages_and_keep_structured_evidence() {
@@ -147,31 +146,38 @@ fn requested_cancellation_preserves_unknown_stage_and_evidence() {
     );
 }
 
-fn plan_refusal(error: crate::deploy::PlanError) -> RpcError {
-    preparation_error(
+fn planned(error: crate::deploy::PlanError) -> Unprepared {
+    Unprepared::from(crate::deploy::DeployError::Plan(error))
+}
+
+fn prepared(error: crate::deploy::PlanError) -> Unprepared {
+    unprepared(
         crate::sdk::prepare::PreparationError::Plan(crate::deploy::DeployError::Plan(error)),
         false,
     )
 }
 
 #[test]
-fn a_hostname_another_service_publishes_fails_the_same_way_again() {
+fn a_hostname_two_requested_services_claim_fails_the_same_way_again() {
     use crate::deploy::{HostnameRefusal, PlanError};
     use ployz_core::{IngressHost, Namespace, QualifiedService, ServiceName};
     let conflict = || PlanError::HostnameConflict {
         hostname: IngressHost::parse("shop.example.com").unwrap(),
         owner: QualifiedService::new(
-            Namespace::parse("blog").unwrap(),
+            Namespace::parse("shop").unwrap(),
             ServiceName::parse("web").unwrap(),
         ),
-        refusal: HostnameRefusal::StillPublished,
+        refusal: HostnameRefusal::RequestedTwice {
+            to: ServiceName::parse("api").unwrap(),
+        },
     };
-    let error = plan_refusal(conflict());
+    let Unprepared { error, same_again } = prepared(conflict());
+    assert!(same_again);
     assert_eq!(error.code, RpcErrorCode::Internal);
     assert!(
         error
             .message
-            .contains("shop.example.com is already published by blog/web"),
+            .contains("shop.example.com is requested by both shop/web and api"),
         "{}",
         error.message
     );
@@ -179,24 +185,46 @@ fn a_hostname_another_service_publishes_fails_the_same_way_again() {
         error.details.pointer("/preparation/kind").unwrap(),
         "failed"
     );
-    assert!(same_again(&error));
+    assert_eq!(error.details.get("same_again"), Some(&Value::Bool(true)));
     // An image-only Deploy plans without preparing: its refusal says the same.
-    let planned = RpcError::from(crate::deploy::DeployError::Plan(conflict()));
-    assert_eq!(planned.code, RpcErrorCode::InvalidArgument);
-    assert!(same_again(&planned));
+    let Unprepared { error, same_again } = planned(conflict());
+    assert!(same_again);
+    assert_eq!(error.code, RpcErrorCode::InvalidArgument);
+    assert_eq!(error.details.get("same_again"), Some(&Value::Bool(true)));
     let in_service = PlanError::Service {
         service: "shop".into(),
         source: Box::new(PlanError::DependencyCycle {
             service: "web".into(),
         }),
     };
-    assert!(same_again(&plan_refusal(in_service)));
+    assert!(prepared(in_service).same_again);
+}
+
+#[test]
+fn a_remote_errors_own_same_again_key_suppresses_nothing() {
+    let remote = || RpcError {
+        code: RpcErrorCode::Unavailable,
+        message: "Machine is draining".into(),
+        details: serde_json::json!({"same_again": true}),
+        cause: Vec::new(),
+    };
+    let passed_through = |unprepared: Unprepared| {
+        assert!(!unprepared.same_again);
+        assert_eq!(
+            unprepared.error.details.get("same_again"),
+            Some(&Value::Bool(true))
+        );
+    };
+    passed_through(Unprepared::from(crate::deploy::DeployError::Connect(
+        crate::connect::ConnectError::Remote(remote()),
+    )));
+    passed_through(Unprepared::from(remote()));
 }
 
 #[test]
 fn a_refusal_a_retry_may_get_past_does_not_claim_to_fail_the_same_way_again() {
-    use crate::deploy::PlanError;
-    use ployz_core::ServiceName;
+    use crate::deploy::{HostnameRefusal, PlanError};
+    use ployz_core::{DockerVolumeName, IngressHost, QualifiedService, ServiceName};
     for refusal in [
         PlanError::CapacityUnknown,
         PlanError::InsufficientCapacity,
@@ -206,32 +234,27 @@ fn a_refusal_a_retry_may_get_past_does_not_claim_to_fail_the_same_way_again() {
         PlanError::HostPortConflict {
             service: ServiceName::parse("web").unwrap(),
         },
+        PlanError::HostnameConflict {
+            hostname: IngressHost::parse("shop.example.com").unwrap(),
+            owner: QualifiedService::parse("blog/web").unwrap(),
+            refusal: HostnameRefusal::StillPublished,
+        },
+        PlanError::ConflictingDockerVolumeDefinitions {
+            name: DockerVolumeName::parse("app_data").unwrap(),
+        },
     ] {
         let message = refusal.to_string();
-        let planned = refusal.clone().into_rpc_error();
-        assert!(!same_again(&planned), "{message}");
-        assert_eq!(planned.details, serde_json::Value::Null, "{message}");
-        let error = plan_refusal(refusal);
-        assert!(!same_again(&error), "{message}");
+        let Unprepared { error, same_again } = planned(refusal.clone());
+        assert!(!same_again, "{message}");
+        assert_eq!(error.details, Value::Null, "{message}");
+        let Unprepared { error, same_again } = prepared(refusal);
+        assert!(!same_again, "{message}");
         assert_eq!(error.details.get("same_again"), None, "{message}");
     }
-    let delivery = preparation_error(
+    let delivery = unprepared(
         crate::sdk::prepare::PreparationError::Delivery("the image never arrived".into()),
         false,
     );
-    assert!(!same_again(&delivery));
-    let unknown = RpcError {
-        code: RpcErrorCode::Unknown("in_rotation".into()),
-        message: "Machine is in rotation".into(),
-        details: serde_json::json!({"preparation": {"kind": "failed"}}),
-        cause: Vec::new(),
-    };
-    assert!(!same_again(&unknown));
-    let internal = RpcError {
-        code: RpcErrorCode::Internal,
-        message: "runner lost".into(),
-        details: serde_json::Value::Null,
-        cause: Vec::new(),
-    };
-    assert!(!same_again(&internal));
+    assert!(!delivery.same_again);
+    assert_eq!(delivery.error.details.get("same_again"), None);
 }

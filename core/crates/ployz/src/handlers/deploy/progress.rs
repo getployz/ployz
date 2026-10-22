@@ -1303,7 +1303,7 @@ mod tests {
         view.deployment.outcome = Some(
             serde_json::from_value(json!({
                 "type": "not_executed",
-                "reason": "hostname shop.example.com is already published by blog/web",
+                "reason": "hostname shop.example.com is requested by both shop/web and api: keep it on one of them",
                 "cause": [], "needs_upload": [], "same_again": same_again
             }))
             .unwrap(),

@@ -1086,16 +1086,23 @@ fn reject_hostname_conflicts(
     for spec in requested {
         let identity = QualifiedService::new(namespace.clone(), spec.name.clone());
         for hostname in explicit_ingress_hosts(&spec.ports) {
-            if let Some(owner) = claimed
-                .get(hostname)
-                .cloned()
-                .or_else(|| owner_of(hostname, &spec.name))
+            let refused = match claimed.get(hostname) {
+                Some(owner) => Some((
+                    owner.clone(),
+                    HostnameRefusal::RequestedTwice {
+                        to: spec.name.clone(),
+                    },
+                )),
+                None => owner_of(hostname, &spec.name)
+                    .map(|owner| (owner, HostnameRefusal::StillPublished)),
+            };
+            if let Some((owner, refusal)) = refused
                 && owner != identity
             {
                 return Err(PlanError::HostnameConflict {
                     hostname: hostname.clone(),
                     owner,
-                    refusal: HostnameRefusal::StillPublished,
+                    refusal,
                 });
             }
             claimed.entry(hostname).or_insert_with(|| identity.clone());

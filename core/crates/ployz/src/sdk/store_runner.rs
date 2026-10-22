@@ -26,8 +26,10 @@ use tokio_util::sync::CancellationToken;
 use ts_rs::TS;
 
 use super::build::BuildOutcome;
-use super::preparation::{self, BuildReceipt, PreparationInput, UploadDigest, needs_upload};
-use super::{ImageCleanup, PreparedDeploy, RunningBuild, Session, connect_connections};
+use super::preparation::{BuildReceipt, PreparationInput, UploadDigest, needs_upload};
+use super::{
+    ImageCleanup, PreparedDeploy, Running, RunningBuild, Session, Unprepared, connect_connections,
+};
 use crate::connect::{Client, SystemConnector};
 use crate::context::Connection;
 use crate::deploy::MachineOperations;
@@ -592,7 +594,7 @@ impl Run {
         let scrub = Scrub::new(&claimed);
         let earlier = earlier(&targets);
         let prepared = if targets.is_empty() && built.is_empty() {
-            self.renewing(session.preview(claimed.intent), || {
+            self.renewing(session.plan(claimed.intent), || {
                 session.inner.cancel.cancel()
             })
             .await
@@ -607,16 +609,7 @@ impl Run {
         };
         let prepared = match prepared {
             Ok(prepared) => prepared,
-            Err(error) => {
-                return match needs_upload(&error) {
-                    Some(services) => self.unbuilt(upload_needed(&earlier, services)).await,
-                    None => {
-                        let mut failure = Failure::from(&error);
-                        failure.same_again = preparation::same_again(&error);
-                        self.not_executed(failure).await
-                    }
-                };
-            }
+            Err(unprepared) => return self.unprepared(&earlier, unprepared).await,
         };
         let summary = self
             .record(RunEvidence::Prepared(prepared.preview().clone()))
@@ -870,7 +863,7 @@ impl Run {
         claimed: Claimed,
         targets: Vec<Target>,
         receipts: BTreeMap<ServiceName, BuildReceipt>,
-    ) -> Result<PreparedDeploy, RpcError> {
+    ) -> Result<PreparedDeploy, Unprepared> {
         let mut input = PreparationInput {
             deployment: claimed.input,
             build_receipts: receipts
@@ -894,12 +887,32 @@ impl Run {
             }
         }
         // Delivering images can outlast the lease: keep renewing it.
-        let running = session.prepare_with(
+        let running: Running<PreparedDeploy, Unprepared> = session.prepare_with(
             input,
             claimed.intent.registry_auth,
             Some(claimed.intent.options.operator),
         )?;
         self.renewing(running.finished(), || running.abort()).await
+    }
+
+    /// Records a Deploy its preparation refused: the upload it needs, or nothing
+    /// executed, kept with whether deploying the same thing again fails the same way.
+    async fn unprepared(
+        &self,
+        earlier: &BTreeSet<ServiceName>,
+        unprepared: Unprepared,
+    ) -> Result<DeploymentSummary, RpcError> {
+        let Unprepared { error, same_again } = unprepared;
+        match needs_upload(&error) {
+            Some(services) => self.unbuilt(upload_needed(earlier, services)).await,
+            None => {
+                self.not_executed(Failure {
+                    same_again,
+                    ..Failure::from(&error)
+                })
+                .await
+            }
+        }
     }
 
     /// Wait for `running`'s outcome, recording each Service once every one of its

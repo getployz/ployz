@@ -784,9 +784,21 @@ pub enum HostnameRefusal {
     /// `to` takes the hostname but already waits for the owner, `because`, so the owner
     /// can't wait for `to` and the hostname would answer nowhere for `to`'s whole rollout.
     GainerWaitsForOwner { to: ServiceName, because: String },
+    /// `to`, another Service this Deploy requests, claims the hostname too.
+    RequestedTwice { to: ServiceName },
 }
 
 impl HostnameRefusal {
+    /// Decided from this Deploy's intent alone, so the same Deploy is refused the same
+    /// way until something staged changes. A publisher observed outside what this
+    /// Deploy applies can drop the hostname on its own, so those keep their retry.
+    fn same_again(&self) -> bool {
+        match self {
+            Self::StillPublished | Self::OwnerNotIncluded => false,
+            Self::GainerWaitsForOwner { .. } | Self::RequestedTwice { .. } => true,
+        }
+    }
+
     fn message(&self, hostname: &IngressHost, owner: &QualifiedService) -> String {
         match self {
             Self::StillPublished => format!(
@@ -799,6 +811,9 @@ impl HostnameRefusal {
             Self::GainerWaitsForOwner { to, because } => format!(
                 "hostname {hostname} is published by {owner} and can't move to {to} in the same Deploy: {because}; remove it from {dropper} and deploy, then add it to {to}",
                 dropper = owner.name
+            ),
+            Self::RequestedTwice { to } => format!(
+                "hostname {hostname} is requested by both {owner} and {to}: keep it on one of them"
             ),
         }
     }
@@ -813,25 +828,27 @@ impl fmt::Display for MachineNames<'_> {
 }
 
 impl PlanError {
-    /// Deploying the same thing again is refused this way again: against the same
-    /// Cluster, only a change to what is staged somewhere gets past it. A hostname's
-    /// owner is read from the Containers Servers reported, so retiring it elsewhere
-    /// counts. What a Server answered, had room for, or holds stays false, as does
-    /// every refusal not listed here: the retry it keeps is the safe default.
+    /// Deploying the same thing again is refused this way again: the refusal was
+    /// decided from this Deploy's intent alone, so it holds until something staged
+    /// changes. A refusal the snapshot, placement or a Server's labels take part in
+    /// stays false, since another Deploy landing or a label changing can clear it, as
+    /// does every refusal not listed here: the retry it keeps is the safe default.
     #[must_use]
     pub fn same_again(&self) -> bool {
         match self {
-            Self::HostnameConflict { .. }
-            | Self::ConflictingHostPublications { .. }
+            Self::ConflictingHostPublications { .. }
             | Self::DuplicateTargetService { .. }
-            | Self::ConflictingDockerVolumeDefinitions { .. }
             | Self::MixedVolumeModes { .. }
             | Self::DependencyCycle { .. }
             | Self::RemovalInTarget { .. }
             | Self::RemovalNotSelected { .. }
             | Self::RemovalInReservedNamespace { .. } => true,
+            Self::HostnameConflict { refusal, .. } => refusal.same_again(),
             Self::Service { source, .. } => source.same_again(),
-            Self::Storage { .. }
+            // Two Services may disagree about one Docker Volume only on a Server both
+            // are placed on, which its labels decide.
+            Self::ConflictingDockerVolumeDefinitions { .. }
+            | Self::Storage { .. }
             | Self::HostPortConflict { .. }
             | Self::CapacityUnknown
             | Self::InsufficientCapacity

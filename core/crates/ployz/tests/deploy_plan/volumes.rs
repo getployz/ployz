@@ -1785,6 +1785,63 @@ fn partial_apply_rejects_different_bounds_for_colocated_global_volumes() {
 }
 
 #[test]
+fn a_volume_definition_conflict_placement_decides_keeps_its_retry() {
+    let mut first = global_service("first", "first", 1_073_741_824);
+    first.placement.constraints =
+        [ployz_core::PlacementConstraint::parse("node.labels.a == yes").unwrap()].into();
+    let mut second = global_service("second", "first", 2_147_483_648);
+    second.placement.constraints =
+        [ployz_core::PlacementConstraint::parse("node.labels.b == yes").unwrap()].into();
+    let intent = DeployIntent::apply_all(
+        Namespace::parse("app").unwrap(),
+        [&first, &second],
+        PlanOptions::default(),
+    );
+    let labelled = |hex, name, labels: &[&str]| {
+        let mut machine = machine(hex, name);
+        machine.machine.labels = labels
+            .iter()
+            .map(|label| (label.parse().unwrap(), "yes".parse().unwrap()))
+            .collect();
+        machine.storage = Some(MachineStorageObservation::Ready);
+        machine
+    };
+
+    let refused = preview_deploy(
+        &intent,
+        &DeploySnapshot {
+            machines: vec![
+                labelled('1', "both", &["a", "b"]),
+                labelled('2', "second", &["b"]),
+            ],
+            ..storage_snapshot()
+        },
+    )
+    .unwrap_err();
+    assert!(
+        matches!(
+            &refused,
+            PlanError::Service { source, .. }
+                if matches!(source.as_ref(), PlanError::ConflictingDockerVolumeDefinitions { .. })
+        ),
+        "{refused:?}"
+    );
+    assert!(!refused.same_again(), "{refused}");
+
+    preview_deploy(
+        &intent,
+        &DeploySnapshot {
+            machines: vec![
+                labelled('1', "both", &["a"]),
+                labelled('2', "second", &["b"]),
+            ],
+            ..storage_snapshot()
+        },
+    )
+    .expect("a label taken off the Server lets the identical Deploy through");
+}
+
+#[test]
 fn colocated_global_services_reject_conflicting_provisioned_labels() {
     let first = global_service("first", "first", 1_073_741_824);
     let mut second = global_service("second", "first", 1_073_741_824);

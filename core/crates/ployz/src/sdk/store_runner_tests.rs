@@ -123,6 +123,39 @@ impl Drop for Dropped {
 }
 
 #[tokio::test]
+async fn a_refusal_that_fails_the_same_way_again_is_recorded_as_one() {
+    use crate::deploy::{DeployError, PlanError};
+    let (run, actor) = run();
+    let refusal = DeployError::Plan(PlanError::DependencyCycle {
+        service: "app".into(),
+    });
+    run.unprepared(&BTreeSet::new(), Unprepared::from(refusal))
+        .await
+        .unwrap();
+    let view = run
+        .store
+        .read(
+            &actor,
+            &ployz_store::DeploymentQuery {
+                id: run.deployment.clone(),
+            },
+        )
+        .unwrap();
+    assert!(
+        matches!(
+            &view.deployment.outcome,
+            Some(ployz_store::Outcome::NotExecuted {
+                same_again: true,
+                reason,
+                ..
+            }) if reason == "dependency cycle at service 'app'"
+        ),
+        "{:?}",
+        view.deployment.outcome
+    );
+}
+
+#[tokio::test]
 async fn cancellation_drops_pending_connection_setup() {
     let (run, actor) = run();
     let dropped = Arc::new(AtomicBool::new(false));
