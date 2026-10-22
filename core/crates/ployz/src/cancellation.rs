@@ -15,15 +15,13 @@ static GRACEFUL: AtomicBool = AtomicBool::new(false);
 /// Subscribe to Ctrl-C for async-only commands already running on Tokio.
 /// The listener is registered before SIGINT stops ending the process, so no
 /// Ctrl-C falls between the two; without one, SIGINT keeps its default action.
-/// SIGTERM, which CI runners, `timeout`, systemd and container stops send,
-/// cancels the same way.
+/// SIGTERM keeps its default action here: some of these commands stop reading
+/// the token partway, and a supervisor's SIGTERM must still end them.
 pub(crate) fn on_ctrl_c() -> CancellationToken {
-    use tokio::signal::unix::{SignalKind, signal};
     let cancellation = CancellationToken::new();
-    let (Ok(mut interrupt), Ok(mut terminate)) = (
-        signal(SignalKind::interrupt()),
-        signal(SignalKind::terminate()),
-    ) else {
+    let Ok(mut interrupt) =
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())
+    else {
         return cancellation;
     };
     claim_graceful();
@@ -33,9 +31,6 @@ pub(crate) fn on_ctrl_c() -> CancellationToken {
             () = signal.cancelled() => {}
             received = interrupt.recv() => if received.is_some() {
                 signal.cancel();
-            },
-            received = terminate.recv() => if received.is_some() {
-                signal.cancel();
             }
         }
     });
@@ -43,8 +38,10 @@ pub(crate) fn on_ctrl_c() -> CancellationToken {
 }
 
 /// Ctrl-C or SIGTERM for the rest of the process, usable from synchronous code
-/// before any runtime polls. The listener is never torn down, so a late signal
-/// always has a reader and every caller shares one token.
+/// before any runtime polls. SIGTERM, which CI runners, `timeout`, systemd and
+/// container stops send, cancels a deploy like Ctrl-C so it settles its owned
+/// work instead of dying with it in flight. The listener is never torn down, so
+/// a late signal always has a reader and every caller shares one token.
 pub(crate) fn interrupted() -> std::io::Result<CancellationToken> {
     static TOKEN: std::sync::Mutex<Option<CancellationToken>> = std::sync::Mutex::new(None);
     let mut token = TOKEN
@@ -105,8 +102,8 @@ pub(crate) fn while_prompting<T>(ask: impl FnOnce() -> T) -> std::io::Result<T> 
 mod tests {
     use std::time::Duration;
 
-    // Each test raises a real signal at its own process; nextest runs every
-    // test in a process of its own, so the shared token never leaks between them.
+    // Raises a real signal at the test process; nextest runs every test in a
+    // process of its own, so the shared token never leaks into another test.
 
     #[test]
     fn sigterm_cancels_like_ctrl_c() {
@@ -120,14 +117,5 @@ mod tests {
             );
             std::thread::sleep(Duration::from_millis(10));
         }
-    }
-
-    #[tokio::test]
-    async fn sigterm_cancels_an_async_command_like_ctrl_c() {
-        let token = super::on_ctrl_c();
-        signal_hook::low_level::raise(signal_hook::consts::SIGTERM).unwrap();
-        tokio::time::timeout(Duration::from_secs(5), token.cancelled())
-            .await
-            .expect("SIGTERM did not cancel");
     }
 }
