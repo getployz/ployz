@@ -5705,7 +5705,10 @@ fn a_size_the_store_refuses_never_says_it_was_staged() {
     let store = &Target::Local(tempfile::tempdir().unwrap());
     ok(store, &["project", "new", "shop"]);
     ok(store, &["service", "add", "web", "--image", "web:1"]);
-    ok(store, &["volume", "add", "data", "--docker"]);
+    ok(
+        store,
+        &["volume", "add", "data", "--docker", "--mount", "web:/data"],
+    );
     applied(store, "production");
     let home = tempfile::tempdir().unwrap();
     let (code, stderr) = person(

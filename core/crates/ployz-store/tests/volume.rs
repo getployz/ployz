@@ -254,7 +254,7 @@ fn code(result: Result<impl std::fmt::Debug, RpcError>) -> RpcErrorCode {
 }
 
 #[test]
-fn draft_storage_is_explicit_and_locks_even_when_deployment_fails() {
+fn draft_storage_is_explicit_and_locks_once_a_run_prepares_it() {
     let create: CreateVolume =
         serde_json::from_value(json!({ "id": VOLUME, "name": "data" })).unwrap();
     assert_eq!(create.storage, VolumeKind::provisioned_default());
@@ -308,6 +308,10 @@ fn draft_storage_is_explicit_and_locks_even_when_deployment_fails() {
             .status,
         DeploymentStatus::Failed
     );
+    // Preparation that failed executed nothing, so no Server holds the Volume yet.
+    assert!(!listed(&store, &who)[0].storage_locked);
+    admit(&store, &who, 2, &[], None).unwrap();
+    prepare(&store, 2, &["web"]);
     assert!(listed(&store, &who)[0].storage_locked);
     for storage in [VolumeKind::Docker {}, VolumeKind::provisioned_default()] {
         let refused = set(storage).unwrap_err();
@@ -316,6 +320,46 @@ fn draft_storage_is_explicit_and_locks_even_when_deployment_fails() {
     }
     assert!(set(managed).unwrap().staged.is_empty());
     assert_eq!(listed(&store, &who)[0].volume.storage, managed);
+}
+
+#[test]
+fn a_deployment_admitted_before_an_earlier_run_fixed_the_storage_is_refused_at_claim() {
+    let (store, who) = shop();
+    admit(&store, &who, 1, &[], None).unwrap();
+    let runner = RunnerId::parse("runner").unwrap();
+    store.claim(&id(1), &runner).unwrap();
+    // #1 is still building, so nothing fixed data's storage yet.
+    store
+        .write(
+            &who,
+            &SetVolumeStorage {
+                environment: EnvironmentRef::default(),
+                volume: VolumeName::parse("data").unwrap(),
+                storage: VolumeKind::provisioned_default(),
+            },
+        )
+        .unwrap();
+    admit(&store, &who, 2, &[], None).unwrap();
+    let preview: DeployPreview = serde_json::from_value(json!({
+        "namespace": "shop-production",
+        "operations": [{
+            "index": 0, "machine_id": "a".repeat(32), "service_name": "web",
+            "operation": remove_web(), "status": {"type": "pending"}
+        }],
+        "warnings": [], "would_remove": [], "preserved_volumes": []
+    }))
+    .unwrap();
+    store
+        .record(&id(1), &runner, RunEvidence::Prepared(preview))
+        .unwrap();
+
+    let refused = store.claim(&id(2), &runner).unwrap_err();
+    assert_eq!(refused.code, RpcErrorCode::Conflict);
+    assert_eq!(refused.details["storage_locked"], true);
+    let view = store
+        .read(&who, &ployz_store::DeploymentQuery { id: id(2) })
+        .unwrap();
+    assert_eq!(view.deployment.status, DeploymentStatus::Failed);
 }
 
 #[test]
@@ -1631,6 +1675,54 @@ fn a_shared_volume_lands_with_the_one_confirmed_service_whatever_the_other_does(
             .iter()
             .any(|change| change.name == "data" || change.name == "web")
     );
+}
+
+#[test]
+fn a_shared_volume_one_planned_service_mounts_locks_whatever_blocks_the_other() {
+    let (store, who) = shop();
+    store
+        .write(
+            &who,
+            &CreateService {
+                id: ServiceLineageId::parse("00000000-0000-4000-8000-000000000004").unwrap(),
+                environment: EnvironmentRef::default(),
+                name: ServiceName::parse("api").unwrap(),
+                image: Some("caddy:2".into()),
+                template: None,
+            },
+        )
+        .unwrap();
+    set_shared_writes(&store, &who, true).unwrap();
+    edit(
+        &store,
+        &who,
+        Change::Set {
+            path: path("api.mounts.data"),
+            value: json!("/srv"),
+        },
+    )
+    .unwrap();
+    admit(&store, &who, 1, &[], None).unwrap();
+    let runner = RunnerId::parse("runner").unwrap();
+    store.claim(&id(1), &runner).unwrap();
+    // The run prepares data for api, while web waits on something else.
+    let preview: DeployPreview = serde_json::from_value(json!({
+        "namespace": "shop-production",
+        "operations": [{
+            "index": 0, "machine_id": "a".repeat(32), "service_name": "api",
+            "operation": remove_web(), "status": {"type": "pending"}
+        }],
+        "warnings": [], "would_remove": [], "preserved_volumes": [],
+        "blocked": [{
+            "service": "web",
+            "error": {"code": "conflict", "message": "blocked", "details": {}}
+        }]
+    }))
+    .unwrap();
+    store
+        .record(&id(1), &runner, RunEvidence::Prepared(preview))
+        .unwrap();
+    assert!(listed(&store, &who)[0].storage_locked);
 }
 
 #[test]

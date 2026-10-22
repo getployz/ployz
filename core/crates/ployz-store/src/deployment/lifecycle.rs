@@ -55,7 +55,7 @@ pub(crate) fn admit(
         }
     };
     let intent = saved_at(tx, environment, saved)?;
-    crate::volume::fix_storage(tx, environment, &intent, &frozen.nodes)?;
+    crate::volume::check_admitted(tx, environment, &intent)?;
     let environment_id = environment.as_str();
     // Without a new upload, each target Service without a source builds from the upload
     // it last built from.
@@ -1192,6 +1192,24 @@ pub(crate) fn claim(
     };
     let sources = build::sources_of(tx, &stored)?;
     let saved = held_revision(tx, &stored)?;
+    // An earlier run may have fixed a Volume's storage since this one was admitted.
+    if let Err(refused) = crate::volume::check_admitted(tx, &stored.summary.environment_id, &saved)
+    {
+        if refused.code != ployz_core::RpcErrorCode::Conflict {
+            return Err(refused);
+        }
+        finish(
+            tx,
+            stored,
+            Outcome::NotExecuted {
+                reason: refused.message.clone(),
+                cause: Vec::new(),
+                needs_upload: Vec::new(),
+            },
+            DeploymentStatus::Failed,
+        )?;
+        return Ok(Err(refused));
+    }
     let branch = crate::branch::lowering(tx, &stored.summary.environment_id, &saved)?;
     let ships = stored.lowering(&saved);
     let deployed = deployed_volumes(tx, &stored.summary.environment_id, &saved)?;
@@ -1471,6 +1489,28 @@ pub(crate) fn record(
             // What the preview already settles shows while it runs; the rest reads
             // as Pending until what executing it did replaces these.
             stored.run.nodes = settled(&stored.nodes, &saved, &applied, &preview, &[]);
+            let outcomes = node_outcomes(
+                &stored.nodes,
+                &saved,
+                &applied,
+                &Evidence::Planned {
+                    preview: &preview,
+                    confirmed: &[],
+                },
+            );
+            // A shared Volume reads Not attempted when one Service mounting it is
+            // blocked, yet the run still prepares it for any other that is planned.
+            let pending = |id: &str| outcomes.get(id) == Some(&NodeStatus::Pending);
+            crate::volume::fix_prepared(tx, &stored.summary.environment_id, &saved, |id| {
+                pending(id)
+                    || saved.services.iter().any(|service| {
+                        pending(&service.id)
+                            && service
+                                .volume_attachments
+                                .iter()
+                                .any(|mount| mount.volume_resource_id == id)
+                    })
+            })?;
             stored.run.preview = Some(preview);
             save(tx, &mut stored)?;
             Ok(stored.summary)
