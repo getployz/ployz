@@ -178,13 +178,14 @@ pub struct ProvenClient(pub [u8; 32]);
 /// Cluster network for a slot's accepted key.
 ///
 /// Connections on the forgotten ALPN are answered from `roster` by their transport key
-/// alone and closed; see [`forgotten`]. Without a roster every asker hears NoAnswer.
-pub async fn serve<S>(
+/// alone and closed; see [`forgotten`]. Only a Participating Machine answers; pass
+/// `None::<ReplicatedStore>` to have every asker hear NoAnswer.
+pub async fn serve<S, R>(
     endpoint: Endpoint,
     local: LocalMachine,
     api: S,
     grants: Arc<BuildGrants>,
-    roster: Option<Arc<dyn Roster>>,
+    roster: R,
     shutdown: CancellationToken,
 ) where
     S: Service<http::Request<Body>, Response = http::Response<Body>, Error = Infallible>
@@ -192,8 +193,10 @@ pub async fn serve<S>(
         + Send
         + 'static,
     S::Future: Send,
+    R: Roster,
 {
     let records = local.owner().watch();
+    let answers = Arc::new(forgotten::Answers::new(roster));
     let handshakes = Arc::new(Semaphore::new(MAX_CONCURRENT_HANDSHAKES));
     let mut connections = tokio::task::JoinSet::new();
     loop {
@@ -214,7 +217,7 @@ pub async fn serve<S>(
             records.clone(),
             api.clone(),
             Arc::clone(&grants),
-            roster.clone(),
+            Arc::clone(&answers),
             shutdown.clone(),
         ));
     }
@@ -222,13 +225,13 @@ pub async fn serve<S>(
     endpoint.close().await;
 }
 
-async fn serve_connection<S>(
+async fn serve_connection<S, R>(
     incoming: Incoming,
     permit: OwnedSemaphorePermit,
     mut records: watch::Receiver<Arc<LocalMachineRecord>>,
     api: S,
     grants: Arc<BuildGrants>,
-    roster: Option<Arc<dyn Roster>>,
+    answers: Arc<forgotten::Answers<R>>,
     shutdown: CancellationToken,
 ) where
     S: Service<http::Request<Body>, Response = http::Response<Body>, Error = Infallible>
@@ -236,6 +239,7 @@ async fn serve_connection<S>(
         + Send
         + 'static,
     S::Future: Send,
+    R: Roster,
 {
     let connection = match incoming.await {
         Ok(connection) => connection,
@@ -255,8 +259,9 @@ async fn serve_connection<S>(
         return;
     }
     if connection.alpn() == FORGOTTEN_ALPN {
-        // The permit stays held: an anonymous asker costs one roster read.
-        forgotten::answer(connection, roster.as_ref()).await;
+        drop(permit);
+        let phase = records.borrow().phase();
+        forgotten::serve(connection, phase, &answers).await;
         return;
     }
     let Some((remote, streams)) = (tokio::select! {

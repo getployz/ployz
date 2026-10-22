@@ -347,9 +347,7 @@ impl Daemon {
             management::bind(local_record.management_secret(), &config.management)
                 .await
                 .map_err(io::Error::other)?;
-        let roster = replicated_store
-            .clone()
-            .map(|store| Arc::new(store) as Arc<dyn management::Roster>);
+        let roster = replicated_store.clone();
         let fence_endpoint = management_endpoint.clone();
         let fence_relay = config.management.relay_url.clone();
         let socket_path = config.socket.clone();
