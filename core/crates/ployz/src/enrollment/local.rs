@@ -116,28 +116,3 @@ fn load_scopes(path: &Path) -> Result<Vec<Scope>, Error> {
         Err(error) => Err(error.into()),
     }
 }
-
-/// Check whether a joining Machine has saved work in this observed scope before
-/// deciding whether a nonempty local lifecycle requires a destructive reset.
-/// Allocation still validates all retry inputs under the lock.
-///
-/// # Errors
-/// Returns unreadable or invalid history errors; never treats them as missing work.
-pub fn has_assignment(
-    directory: &Path,
-    snapshot: &EnrollmentSnapshot,
-    id: MachineId,
-) -> Result<bool, Error> {
-    Ok(load_scopes(&directory.join("assignments.json"))?
-        .iter()
-        .any(|scope| {
-            snapshot
-                .machines
-                .iter()
-                .any(|machine| scope.peers.contains(&(machine.id, machine.public_key)))
-                && scope
-                    .assignments
-                    .iter()
-                    .any(|assignment| assignment.machine.id == id)
-        }))
-}

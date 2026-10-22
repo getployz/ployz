@@ -618,6 +618,9 @@ turns read-only but the run fails; run it again once that service stops. Anythin
 `ployz server rm` can't reach it: run `sudo ployz-uninstall` on a server you don't mean to keep. It
 stops the services Ployz runs there; Docker, your images and your volume data stay on the disk.
 
+To add a forgotten server back, run `ployz server add` for it with `--reset`. It resets the server
+first, as `ployz server rm` would have, and asks before it does; `--yes` skips the question.
+
 ## Clean up after a deleted environment
 
 If removing an environment stopped partway, its services and volumes can stay on your servers.
