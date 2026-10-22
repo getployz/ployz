@@ -134,10 +134,19 @@ impl CorrosionConfig {
                 },
             )
             .await?;
+            let kept = service.clone();
+            let keeper = tokio::spawn(keep(
+                move || {
+                    let (service, files) = (kept.clone(), files.clone());
+                    async move { service.start(&files).await }
+                },
+                KEEP_EVERY,
+            ));
             Ok(RunningCorrosion {
                 store: ReplicatedStore::new(api),
                 admin,
                 service,
+                keeper,
             })
         })
         .await
@@ -200,6 +209,7 @@ impl CorrosionConfig {
     }
 }
 
+#[derive(Clone)]
 struct InstalledFiles {
     token: String,
     config: Vec<u8>,
@@ -228,6 +238,52 @@ pub struct RunningCorrosion {
     store: ReplicatedStore,
     admin: AdminClient,
     service: DockerService,
+    keeper: tokio::task::JoinHandle<()>,
+}
+
+impl Drop for RunningCorrosion {
+    fn drop(&mut self) {
+        self.keeper.abort();
+    }
+}
+
+/// How often a running daemon checks that its Corrosion container still runs.
+const KEEP_EVERY: Duration = Duration::from_secs(2);
+
+/// Docker's `unless-stopped` policy restarts a Corrosion that crashed, not one someone
+/// stopped, and every read and write on this Machine goes through it. So while the
+/// daemon runs, it ensures the container again every `every`: one inspect a tick, and a
+/// start or create when it's gone. Bound: it ends when the daemon drops its
+/// [`RunningCorrosion`] or removes Corrosion.
+async fn keep<F, Fut>(ensure: F, every: Duration)
+where
+    F: Fn() -> Fut,
+    Fut: Future<Output = Result<Ensure, Error>>,
+{
+    let mut ticks = tokio::time::interval(every);
+    ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    ticks.tick().await;
+    let mut failing = false;
+    loop {
+        ticks.tick().await;
+        match ensure().await {
+            Ok(Ensure::Keep) => failing = false,
+            Ok(ensure) => {
+                failing = false;
+                tracing::warn!(?ensure, "Corrosion wasn't running; ployzd started it again");
+            }
+            Err(error) => {
+                if !failing {
+                    tracing::warn!(
+                        error = %ployz_core::error_chain::inline(&error),
+                        "Corrosion isn't running and ployzd couldn't start it; it tries again every {}s",
+                        every.as_secs()
+                    );
+                }
+                failing = true;
+            }
+        }
+    }
 }
 
 impl RunningCorrosion {
@@ -246,10 +302,12 @@ impl RunningCorrosion {
     }
 
     pub async fn cleanup(&mut self) -> Result<(), Error> {
+        self.keeper.abort();
         remove(&self.service.service, &self.service.run_dir).await
     }
 }
 
+#[derive(Clone)]
 struct DockerService {
     service: ManagedService,
     data_dir: PathBuf,
@@ -511,6 +569,36 @@ struct AdminConfig {
 mod tests {
     use super::*;
     use tokio::time::Instant;
+
+    #[tokio::test(start_paused = true)]
+    async fn a_stopped_corrosion_is_started_again_while_the_daemon_runs() {
+        let ensured = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = ensured.clone();
+        // Running, then someone stops it, then it runs again.
+        let states = std::sync::Arc::new(std::sync::Mutex::new(
+            vec![Ensure::Keep, Ensure::Start, Ensure::Keep].into_iter(),
+        ));
+        let keeper = tokio::spawn(keep(
+            move || {
+                let next = states.lock().unwrap().next().unwrap_or(Ensure::Keep);
+                seen.lock().unwrap().push(next);
+                async move { Ok(next) }
+            },
+            KEEP_EVERY,
+        ));
+        tokio::time::sleep(KEEP_EVERY * 3 + Duration::from_millis(1)).await;
+        keeper.abort();
+        assert_eq!(
+            ensured
+                .lock()
+                .unwrap()
+                .iter()
+                .take(3)
+                .copied()
+                .collect::<Vec<_>>(),
+            [Ensure::Keep, Ensure::Start, Ensure::Keep]
+        );
+    }
 
     #[test]
     fn corrosion_container_rotates_its_logs() {

@@ -332,8 +332,8 @@ tried last, as in `Server web-2, tried last, refused the connection`. When its c
 server answering, `ployz status` lists `Server web-1 isn't answering` under **needs attention**, and
 `ployz deploy --plan` warns first that the deploy can't run until it answers. A deploy whose web
 traffic check couldn't reach a server warns `Couldn't check ingress: Server web-1 isn't answering`, with
-what the connection said in parentheses. A server that just joined or restarted answers within a
-minute; try again then.
+what the connection said in parentheses, and exits 3. A server that just joined or restarted
+answers within a minute; try again then.
 
 1. Check at your provider that the servers are running.
 2. On a server, run `sudo systemctl status ployz`. If Ployz is stopped, start it with
@@ -359,7 +359,8 @@ Upgrade one server over SSH, then the rest from Cloud, as in
 
 A server that answers but refuses says so instead, with its own reason:
 `Server web-1 couldn't give this command access: Cluster store is not available`. It is running, so
-don't forget it. Read why in its logs with `sudo journalctl -u ployz -n 200`.
+don't forget it. If its cluster store was stopped, as by `docker stop`, Ployz starts it again within a
+few seconds; try again then. Otherwise read why in its logs with `sudo journalctl -u ployz -n 200`.
 
 ## A server shows Offline
 
