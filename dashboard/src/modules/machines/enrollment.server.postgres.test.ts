@@ -1,6 +1,6 @@
 import { generateKeyPairSync, sign } from "node:crypto";
 import { testConfigEnvironment } from "#/test/config-environment";
-import { loadOrganizationConnections } from "#/modules/machines/connections.server";
+import { loadOrganizationConnections, SERVER_REACH_TIMEOUT_MS } from "#/modules/machines/connections.server";
 import type { Client, ConnectOptions, EnrollmentAssignment, EnrollmentSnapshot, RuntimeWatchView } from "@ployz/sdk";
 import { registerRequestFromEnrollmentIdentity, rustMachineIdSchema } from "./enrollment";
 import { ConfigProvider, Effect, Exit, Layer, ManagedRuntime, Result, Schema } from "effect";
@@ -42,7 +42,7 @@ import { disableOrganizationPairing, dropRemovedServer, revokeOrganizationPairin
 import { asTestDouble } from "#/lib/test-double";
 import { readCollection } from "#/collections/read.server";
 import { firstRuntimeFrame, OrganizationRuntime, OrganizationRuntimeLive, SESSION_CLOSE_CLUSTER_MS } from "#/modules/runtime/organization-runtime.server";
-import { makePloyzLayer } from "#/modules/runtime/ployz.server";
+import { makePloyzLayer, RpcError } from "#/modules/runtime/ployz.server";
 import { InngestClient } from "#/modules/inngest/client";
 import { GithubApi } from "#/modules/github/github-observation.api";
 import { Polar } from "#/modules/billing/polar-provider.server";
@@ -753,6 +753,64 @@ describe("organization enrollment coordinator", () => {
     expect(fake.aborts.aborted().at(-1)).toBe(true);
   }, 30_000);
 
+  const cantReach = expect.objectContaining({
+    _tag: "Unavailable", userFacing: true, message: expect.stringContaining("through the relay or directly"),
+  });
+
+  const undialed = () => new RpcError({ code: "unavailable", message: "tcp connect error", details: null, unanswered: true });
+  const unrouted = () => new RpcError({ code: "unavailable", message: "relay could not dial", details: null, targetUnreached: true });
+  const refused = () => new RpcError({ code: "permission_denied", message: "identity mismatch", details: null });
+
+  it.each([
+    ["the dial fails", (fake: ReturnType<typeof fakeSession>) => { fake.connection.error = undialed(); }],
+    ["the entry can't dial it", (fake: ReturnType<typeof fakeSession>) => { fake.connection.error = unrouted(); }],
+    ["nothing answers in time", (fake: ReturnType<typeof fakeSession>) => { fake.connection.beforeConnect = () => new Promise(() => {}); }],
+  ])("answers a refresh Cloud can't reach because %s with a retryable 503 that says why", async (_case, unreachable) => {
+    const fake = fakeSession(harness.database);
+    const attempt = await pendingFounder(fake);
+    await fake.coordinator.publish({ ...attempt, capability });
+    unreachable(fake);
+    const refreshed = await fake.coordinator.publish({ ...attempt, capability: "ployz1:rotated" });
+    if (!Result.isFailure(refreshed)) throw new Error("Refresh succeeded without reaching the Machine");
+    expect(refreshed.failure).toEqual(cantReach);
+    expect(statusForPublicError(encodePublicError(refreshed.failure))).toBe(503);
+  }, 45_000);
+
+  it("keeps a Server's refusal of a refresh, so the Server doesn't retry it as unreachable", async () => {
+    const fake = fakeSession(harness.database);
+    const attempt = await pendingFounder(fake);
+    await fake.coordinator.publish({ ...attempt, capability });
+    fake.connection.error = refused();
+    const refreshed = await fake.coordinator.publish({ ...attempt, capability: "ployz1:rotated" });
+    if (!Result.isFailure(refreshed)) throw new Error("Refresh succeeded past the Server's refusal");
+    expect(refreshed.failure).toMatchObject({ _tag: "PloyzProviderError" });
+    expect(statusForPublicError(encodePublicError(refreshed.failure))).not.toBe(503);
+  });
+
+  it("answers a completion Cloud can't reach with a retryable 503 that says why, within its reach time", async () => {
+    const fake = fakeSession(harness.database);
+    const attempt = await pendingFounder(fake);
+    await fake.coordinator.publish({ ...attempt, capability });
+    fake.connection.beforeConnect = () => new Promise(() => {});
+    const started = performance.now();
+    const completed = await fake.coordinator.completeFounding(attempt);
+    expect(performance.now() - started).toBeLessThan(SERVER_REACH_TIMEOUT_MS + 2_000);
+    if (!Result.isFailure(completed)) throw new Error("Completion succeeded without reaching the Machine");
+    expect(completed.failure).toEqual(cantReach);
+    expect(statusForPublicError(encodePublicError(completed.failure))).toBe(503);
+  }, 45_000);
+
+  it("names a Server's refusal of completion instead of blaming the relay", async () => {
+    const fake = fakeSession(harness.database);
+    const attempt = await pendingFounder(fake);
+    await fake.coordinator.publish({ ...attempt, capability });
+    fake.connection.error = refused();
+    const completed = await fake.coordinator.completeFounding(attempt);
+    if (!Result.isFailure(completed)) throw new Error("Completion succeeded past the Server's refusal");
+    expect(completed.failure).toMatchObject({ _tag: "Unavailable", message: "This Server refused Cloud's connection." });
+    expect(statusForPublicError(encodePublicError(completed.failure))).toBe(503);
+  });
+
   const keyed = (key: number, secret = 0xee) => `ployz1:${Buffer.concat([Buffer.alloc(32, key), Buffer.alloc(32, secret)]).toString("base64url")}`;
 
   it("keeps the management key a refreshed capability carries, and asks for its push target again", async () => {
@@ -785,14 +843,17 @@ describe("organization enrollment coordinator", () => {
     expect(fake.connected).toHaveLength(connections);
   });
 
-  it.each(["unreachable", "identity mismatch"])("preserves saved credentials when refresh verification fails: %s", async (message) => {
+  it.each([
+    ["unreachable", undialed, "Unavailable"],
+    ["identity mismatch", refused, "PloyzProviderError"],
+  ])("preserves saved credentials when refresh verification fails: %s", async (_case, error, tag) => {
     const fake = fakeSession(harness.database);
     const attempt = await pendingFounder(fake);
     await fake.coordinator.publish({ ...attempt, capability });
     const before = await harness.pool.query("select * from organization_machine");
-    fake.connection.error = new Error(message);
+    fake.connection.error = error();
     expect(await fake.coordinator.publish({ ...attempt, capability: "ployz1:unverified" }))
-      .toMatchObject({ failure: { _tag: "PloyzProviderError" } });
+      .toMatchObject({ failure: { _tag: tag } });
     expect((await harness.pool.query("select * from organization_machine")).rows).toEqual(before.rows);
   });
 
