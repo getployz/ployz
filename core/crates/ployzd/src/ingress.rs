@@ -895,7 +895,8 @@ fn certificate_directory(config_file: &Path) -> io::Result<std::path::PathBuf> {
         .join(CERTS_DIR))
 }
 
-/// Stable material-derived filename stem shared by certificate writing and renderers.
+/// Stable filename stem shared by certificate writing and renderers. It is a fixed-length
+/// digest of the hostname and material, so a 253-character hostname stays under NAME_MAX.
 #[must_use]
 pub(crate) fn certificate_file_stem(
     hostname: &IngressHost,
@@ -905,11 +906,13 @@ pub(crate) fn certificate_file_stem(
     use sha2::{Digest, Sha256};
 
     let mut digest = Sha256::new();
+    digest.update((hostname.as_str().len() as u64).to_le_bytes());
+    digest.update(hostname.as_str().as_bytes());
     digest.update((material.certificate().len() as u64).to_le_bytes());
     digest.update(material.certificate().as_bytes());
     digest.update((material.private_key().len() as u64).to_le_bytes());
     digest.update(material.private_key().as_bytes());
-    format!("{hostname}-{}", hex_encode(digest.finalize()))
+    hex_encode(digest.finalize())
 }
 
 fn prepare_directory(path: &Path) -> io::Result<()> {

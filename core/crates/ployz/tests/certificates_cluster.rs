@@ -58,10 +58,7 @@ async fn custom_https_hostname_obtains_a_certificate_from_a_fake_ca() {
     )
     .await;
     wait_running(&mut client, &custom_id, 1).await;
-    wait_config(&cluster, 0, |config| {
-        config.contains("tls /config/caddy/certs/app.example.com-")
-    })
-    .await;
+    wait_config(&cluster, 0, |config| pins_tls(config, "app.example.com")).await;
     assert_eq!(ca.ordered(), vec!["app.example.com".to_owned()]);
     assert!(certificate_bodies(&cluster, 0).contains("BEGIN CERTIFICATE"));
     wait_https(&cluster, 0, "app.example.com").await;
@@ -134,13 +131,11 @@ async fn several_machines_order_once_and_every_machine_answers() {
     wait_running(&mut client, &broken_id, 1).await;
 
     wait_config(&cluster, 0, |config| {
-        config.contains("tls /config/caddy/certs/app.example.com-")
-            && config.contains("tls /config/caddy/certs/web.example.com-")
+        pins_tls(config, "app.example.com") && pins_tls(config, "web.example.com")
     })
     .await;
     wait_config(&cluster, 1, |config| {
-        config.contains("tls /config/caddy/certs/app.example.com-")
-            && config.contains("tls /config/caddy/certs/web.example.com-")
+        pins_tls(config, "app.example.com") && pins_tls(config, "web.example.com")
     })
     .await;
 
@@ -193,7 +188,7 @@ async fn down_machine_does_not_block_ordering() {
     .await;
     wait_running(&mut client, &app_id, 1).await;
     wait_config(&cluster, living_index, |config| {
-        config.contains("tls /config/caddy/certs/app.example.com-")
+        pins_tls(config, "app.example.com")
     })
     .await;
     assert_eq!(ca.ordered(), vec!["app.example.com".to_owned()]);
@@ -229,10 +224,7 @@ async fn certificate_renews_before_expiry_without_restart() {
     )
     .await;
     wait_running(&mut client, &app_id, 1).await;
-    wait_config(&cluster, 0, |config| {
-        config.contains("tls /config/caddy/certs/app.example.com-")
-    })
-    .await;
+    wait_config(&cluster, 0, |config| pins_tls(config, "app.example.com")).await;
     assert_eq!(ca.ordered(), vec!["app.example.com".to_owned()]);
     wait_https(&cluster, 0, "app.example.com").await;
     let issued = issued_certificates(&cluster, 0);
@@ -278,14 +270,8 @@ async fn machines_holding_the_same_certificate_renew_once() {
     )
     .await;
     wait_running(&mut client, &app_id, 1).await;
-    wait_config(&cluster, 0, |config| {
-        config.contains("tls /config/caddy/certs/app.example.com-")
-    })
-    .await;
-    wait_config(&cluster, 1, |config| {
-        config.contains("tls /config/caddy/certs/app.example.com-")
-    })
-    .await;
+    wait_config(&cluster, 0, |config| pins_tls(config, "app.example.com")).await;
+    wait_config(&cluster, 1, |config| pins_tls(config, "app.example.com")).await;
     assert_eq!(count_orders(&ca.ordered(), "app.example.com"), 1);
     let issued = issued_certificates(&cluster, 0);
 
@@ -332,10 +318,7 @@ async fn failed_renewal_keeps_serving_the_existing_certificate() {
     )
     .await;
     wait_running(&mut client, &app_id, 1).await;
-    wait_config(&cluster, 0, |config| {
-        config.contains("tls /config/caddy/certs/app.example.com-")
-    })
-    .await;
+    wait_config(&cluster, 0, |config| pins_tls(config, "app.example.com")).await;
     wait_https(&cluster, 0, "app.example.com").await;
     let issued = issued_certificates(&cluster, 0);
     ca.set_validation("127.0.0.1", 1);
@@ -380,18 +363,12 @@ async fn joining_machine_serves_existing_certificate() {
     )
     .await;
     wait_running(&mut client, &app_id, 1).await;
-    wait_config(&cluster, 0, |config| {
-        config.contains("tls /config/caddy/certs/app.example.com-")
-    })
-    .await;
+    wait_config(&cluster, 0, |config| pins_tls(config, "app.example.com")).await;
     assert_eq!(ca.ordered(), vec!["app.example.com".to_owned()]);
 
     let second = cluster.add_machine(0, 1, "machine-2").await.unwrap();
     cli(&direct, &ingress_role(&second));
-    wait_config(&cluster, 1, |config| {
-        config.contains("tls /config/caddy/certs/app.example.com-")
-    })
-    .await;
+    wait_config(&cluster, 1, |config| pins_tls(config, "app.example.com")).await;
     wait_https(&cluster, 1, "app.example.com").await;
     assert_eq!(ca.ordered(), vec!["app.example.com".to_owned()]);
 }
@@ -429,10 +406,8 @@ async fn published_material_is_served_never_renewed_and_clear_returns_it_to_acme
     )
     .await;
     wait_running(&mut client, &app_id, 1).await;
-    let published_config = wait_config(&cluster, 0, |config| {
-        config.contains("tls /config/caddy/certs/app.example.com-")
-    })
-    .await;
+    let published_config =
+        wait_config(&cluster, 0, |config| pins_tls(config, "app.example.com")).await;
     wait_https(&cluster, 0, "app.example.com").await;
     tokio::time::sleep(Duration::from_secs(5)).await;
     assert_eq!(ca.ordered(), Vec::<String>::new());
@@ -440,7 +415,7 @@ async fn published_material_is_served_never_renewed_and_clear_returns_it_to_acme
 
     clear_material(&mut client, "app.example.com").await;
     wait_config(&cluster, 0, |config| {
-        config.contains("tls /config/caddy/certs/app.example.com-") && config != published_config
+        pins_tls(config, "app.example.com") && config != published_config
     })
     .await;
     assert_eq!(ca.ordered(), vec!["app.example.com".to_owned()]);
@@ -495,8 +470,7 @@ async fn published_wildcard_covers_hostnames_so_acme_orders_nothing() {
     wait_running(&mut client, &app_id, 1).await;
     wait_running(&mut client, &web_id, 1).await;
     wait_config(&cluster, 0, |config| {
-        config.contains("tls /config/caddy/certs/app.example.com-")
-            && config.contains("tls /config/caddy/certs/web.example.com-")
+        pins_tls(config, "app.example.com") && pins_tls(config, "web.example.com")
     })
     .await;
     wait_https(&cluster, 0, "app.example.com").await;
@@ -646,7 +620,7 @@ async fn hostname_resolving_elsewhere_is_refused_then_issues_when_dns_points_her
 
     point_dns(&cluster, "outside.example.com", ip);
     wait_config(&cluster, 0, |config| {
-        config.contains("tls /config/caddy/certs/outside.example.com-")
+        pins_tls(config, "outside.example.com")
     })
     .await;
     assert_eq!(ca.ordered(), vec!["outside.example.com".to_owned()]);
@@ -930,8 +904,17 @@ fn curl_https(cluster: &Cluster, index: usize, hostname: &str) -> String {
         .machine_shell(
             index,
             &format!(
-                r#"cert=$(ls /var/lib/ployz/ingress/caddy/certs/{hostname}-*.crt | head -n1); curl -fsS --cacert "$cert" --resolve {hostname}:443:127.0.0.1 https://{hostname} || true"#
+                r#"cert=$(awk '$0 == "https://{hostname} {{" {{ site = 1 }} site && $1 == "tls" {{ print $2; exit }}' /var/lib/ployz/ingress/caddy/Caddyfile | sed 's#^/config/caddy#/var/lib/ployz/ingress/caddy#'); curl -fsS --cacert "$cert" --resolve {hostname}:443:127.0.0.1 https://{hostname} || true"#
             ),
         )
         .unwrap_or_default()
+}
+
+fn pins_tls(config: &str, hostname: &str) -> bool {
+    let header = format!("https://{hostname} {{");
+    config
+        .lines()
+        .skip_while(|line| *line != header)
+        .take_while(|line| *line != "}")
+        .any(|line| line.starts_with("\ttls /config/caddy/certs/"))
 }

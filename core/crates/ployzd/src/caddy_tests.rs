@@ -543,9 +543,7 @@ fn https_site_with_material_pins_tls_paths() {
 
     let pin = pinned_tls_line(&caddyfile, "secure.example.com").expect("https pin");
     assert!(
-        pin.contains("tls /config/caddy/certs/secure.example.com-")
-            && pin.contains(".crt")
-            && pin.contains(".key"),
+        pin.contains("tls /config/caddy/certs/") && pin.contains(".crt") && pin.contains(".key"),
         "{pin}"
     );
     let https = automatic_site_block(&caddyfile, "https://secure.example.com");
@@ -554,7 +552,6 @@ fn https_site_with_material_pins_tls_paths() {
     let http = automatic_site_block(&caddyfile, "http://example.com");
     assert!(http.contains("reverse_proxy 10.210.1.2:80"));
     assert!(!http.contains("tls "));
-    assert!(!caddyfile.contains("tls /config/caddy/certs/example.com"));
 }
 
 #[test]
@@ -1066,8 +1063,23 @@ async fn failed_load_preserves_the_last_caddyfile() {
 
 #[tokio::test]
 async fn reconcile_writes_material_and_pins_it_before_load() {
-    let directory =
-        std::env::temp_dir().join(format!("ployz-caddy-cert-test-{}", std::process::id()));
+    reconcile_writes_material_for("secure.example.com").await;
+}
+
+#[tokio::test]
+async fn reconcile_writes_material_for_the_longest_valid_hostname() {
+    let label = "b".repeat(63);
+    let hostname = format!("{label}.{label}.{label}.2001-41d0-303-1da9-100--31.sslip.io");
+    assert_eq!(hostname.len(), 227);
+    reconcile_writes_material_for(&hostname).await;
+}
+
+async fn reconcile_writes_material_for(hostname: &str) {
+    let directory = std::env::temp_dir().join(format!(
+        "ployz-caddy-cert-test-{}-{}",
+        std::process::id(),
+        hostname.len()
+    ));
     let path = directory.join(CONFIG_FILE);
     std::fs::create_dir_all(&directory).unwrap();
     let machine = Machine {
@@ -1091,11 +1103,11 @@ async fn reconcile_writes_material_and_pins_it_before_load() {
         &machine.id,
         "api",
         Some([10, 210, 1, 2]),
-        vec![ingress("secure.example.com", 8443, HttpProtocol::Https)],
+        vec![ingress(hostname, 8443, HttpProtocol::Https)],
     )];
     let material = test_material();
     let certificates = BTreeMap::from([(
-        CertificateHost::parse("secure.example.com").unwrap(),
+        CertificateHost::parse(hostname).unwrap(),
         CertificateRow::from_parts(
             Some((material.clone(), ployz_core::ClusterRoute::Direct)),
             None,
@@ -1114,8 +1126,9 @@ async fn reconcile_writes_material_and_pins_it_before_load() {
         .unwrap();
 
     let caddyfile = std::fs::read_to_string(&path).unwrap();
-    let pin = pinned_tls_line(&caddyfile, "secure.example.com").expect("https pin");
+    let pin = pinned_tls_line(&caddyfile, hostname).expect("https pin");
     let (cert_name, key_name) = pinned_file_names(pin);
+    assert_eq!((cert_name.len(), key_name.len()), (68, 68), "{cert_name}");
     let cert = certs.join(&cert_name);
     let key = certs.join(&key_name);
     assert_eq!(
@@ -1212,8 +1225,12 @@ fn automatic_site_block(caddyfile: &str, address: &str) -> String {
 }
 
 fn pinned_tls_line<'a>(caddyfile: &'a str, hostname: &str) -> Option<&'a str> {
-    let needle = format!("tls /config/caddy/certs/{hostname}-");
-    caddyfile.lines().find(|line| line.contains(&needle))
+    let header = format!("https://{hostname} {{");
+    caddyfile
+        .lines()
+        .skip_while(|line| *line != header)
+        .take_while(|line| *line != "}")
+        .find(|line| line.starts_with("\ttls /config/caddy/certs/"))
 }
 
 fn pinned_file_names(pin: &str) -> (String, String) {
