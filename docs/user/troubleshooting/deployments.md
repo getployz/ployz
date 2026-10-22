@@ -54,7 +54,7 @@ A failed build or an image that won't pull fails the same way again, so neither 
 configuration, such as two of your services claiming the same hostname, two services that
 depend on each other, or a service you asked to remove that your configuration still
 contains. Its message says what to change, and deploying again without a change fails the
-same way. A hostname a running service still publishes keeps the retry, even when this
+same way. A hostname another service still publishes keeps the retry, even when this
 deploy moves it: a deploy of that service can drop the hostname before you try again. A refused `ployz up` gets no `retry: ployz up` for the same
 reason. An image that won't pull offers `undo: ployz history undo N` to go back
 to the version before it, even when another Server's failure picked the `inspect:` line. A failed `ployz up` retries with `ployz up`, which uploads your fixed
