@@ -467,7 +467,10 @@ case "$*" in
         ;;
       break)
         cat >/dev/null
+        # Like OpenZFS, it names the resume token in the command that resumes it.
         echo 'cannot receive: connection reset' >&2
+        echo 'A resuming stream can be generated on the sending system by running:' >&2
+        echo '    zfs send -t token-1' >&2
         echo 'token-1' > "$d/receive_resume_token"
         echo off > "$d/readonly.new"
         mv "$d/readonly.new" "$d/readonly"

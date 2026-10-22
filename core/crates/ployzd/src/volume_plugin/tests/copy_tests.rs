@@ -1222,6 +1222,9 @@ async fn a_resume_the_writer_fails_never_prints_its_token() {
     post(&socket, "/Volume.Copy.Pull", pull("w-1-1")).await;
     let copy = landed(&socket, "w-1-1").await;
     assert_eq!(copy.pointer("/Ok/resume_token"), Some(&json!("token-1")));
+    let broke = failed(&socket).await;
+    assert!(broke.contains("zfs send -t …"), "{broke}");
+    assert!(!broke.contains("token-1"), "{broke}");
 
     source.answer("token=", StatusCode::INTERNAL_SERVER_ERROR, "boom");
     post(&socket, "/Volume.Copy.Pull", pull("w-1-1")).await;
