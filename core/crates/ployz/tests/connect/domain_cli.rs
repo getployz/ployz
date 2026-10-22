@@ -13,26 +13,48 @@ use super::*;
 
 const HOST: &str = "web.example.com";
 
-/// `ployz --json ARGS` over `address`, with its own home and the in-process Store in `store`.
-async fn ployz(store: &Path, address: std::net::SocketAddr, args: &[&str]) -> Value {
+/// How the CLI finds the Standalone Cluster's Server.
+#[derive(Clone, Copy)]
+enum Reach {
+    /// `--connect`.
+    Flag,
+    /// The current context, on a device also signed in to Cloud.
+    SignedInContext,
+}
+
+/// `ployz --json ARGS` reaching the Server at `address` as `reach` says, with its own
+/// home and the in-process Store in `store`.
+async fn ployz(store: &Path, address: std::net::SocketAddr, reach: Reach, args: &[&str]) -> Value {
     let home = tempfile::tempdir().unwrap();
-    let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
+    let config = home.path().join("config.yaml");
+    let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"));
+    command
         .current_dir(home.path())
         .env("HOME", home.path())
         .env_remove("XDG_CONFIG_HOME")
-        .env("PLOYZ_CONFIG", home.path().join("config.yaml"))
+        .env("PLOYZ_CONFIG", &config)
         .env("PLOYZ_STORE", format!("sqlite:{}", store.display()))
         .env_remove("PLOYZ_TOKEN")
         .env("PLOYZ_CLOUD_URL", "http://127.0.0.1:9")
         .env_remove("PLOYZ_PROJECT")
         .env_remove("PLOYZ_ENV")
-        .arg("--json")
-        .arg("--connect")
-        .arg(format!("tcp://{address}"))
-        .args(args)
-        .output()
-        .await
-        .unwrap();
+        .arg("--json");
+    match reach {
+        Reach::Flag => {
+            command.arg("--connect").arg(format!("tcp://{address}"));
+        }
+        Reach::SignedInContext => {
+            std::fs::write(
+                &config,
+                format!(
+                    "current_context: lab\ncontexts:\n  lab:\n    connections:\n      - tcp: {address}\n        machine_id: 0123456789abcdef0123456789abcdef\n        name: machine-1\n"
+                ),
+            )
+            .unwrap();
+            command.env("PLOYZ_TOKEN", "ployz_pat_not_this_cluster");
+        }
+    }
+    let output = command.args(args).output().await.unwrap();
     assert!(output.status.success(), "{output:?}");
     let stdout = String::from_utf8_lossy(&output.stdout);
     serde_json::from_str(&stdout).unwrap()
@@ -85,8 +107,13 @@ fn applied(store: &Path) {
         .unwrap();
 }
 
-#[tokio::test]
-async fn a_live_domain_reads_ready_without_a_cloud() {
+/// A Server whose certificate for [`HOST`] is issued, and a Store whose deployed
+/// Service `web` has that domain.
+async fn live_domain() -> (
+    tempfile::TempDir,
+    std::net::SocketAddr,
+    tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
+) {
     let service = DiscoveryService::new(test_description());
     let mut frame = empty_watch_frame();
     frame.machines.push(machine('a', "one"));
@@ -101,23 +128,22 @@ async fn a_live_domain_reads_ready_without_a_cloud() {
     let (address, server) = serve_discovery(service).await;
     let dir = tempfile::tempdir().unwrap();
     let store = dir.path().join("store.db");
-
-    ployz(&store, address, &["project", "new", "shop"]).await;
-    ployz(
-        &store,
-        address,
+    for args in [
+        &["project", "new", "shop"][..],
         &["service", "add", "web", "--image", "nginx:1"],
-    )
-    .await;
-    ployz(
-        &store,
-        address,
         &["domain", "add", "web", HOST, "--port", "80"],
-    )
-    .await;
+    ] {
+        ployz(&store, address, Reach::Flag, args).await;
+    }
     applied(&store);
+    (dir, address, server)
+}
 
-    let listed = ployz(&store, address, &["domain", "ls"]).await;
+#[tokio::test]
+async fn a_live_domain_reads_ready_without_a_cloud() {
+    let (dir, address, server) = live_domain().await;
+    let store = dir.path().join("store.db");
+    let listed = ployz(&store, address, Reach::Flag, &["domain", "ls"]).await;
     assert_eq!(
         listed.pointer("/domains/0/status"),
         Some(&json!("ready")),
@@ -128,7 +154,28 @@ async fn a_live_domain_reads_ready_without_a_cloud() {
         Some(&Value::Null),
         "{listed}"
     );
-    let checked = ployz(&store, address, &["domain", "check", HOST]).await;
+    let checked = ployz(&store, address, Reach::Flag, &["domain", "check", HOST]).await;
+    assert_eq!(
+        checked.pointer("/domain/status"),
+        Some(&json!("ready")),
+        "{checked}"
+    );
+    server.abort();
+}
+
+/// A device signed in to Cloud still reads its Standalone Cluster through the current
+/// context, never the Cloud Organization's Servers.
+#[tokio::test]
+async fn a_signed_in_device_reads_its_standalone_cluster() {
+    let (dir, address, server) = live_domain().await;
+    let store = dir.path().join("store.db");
+    let checked = ployz(
+        &store,
+        address,
+        Reach::SignedInContext,
+        &["domain", "check", HOST],
+    )
+    .await;
     assert_eq!(
         checked.pointer("/domain/status"),
         Some(&json!("ready")),

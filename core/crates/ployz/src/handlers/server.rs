@@ -85,12 +85,21 @@ pub(super) async fn connect(matches: &ArgMatches, context: Option<&str>) -> Resu
         .ok_or_else(no_servers)
 }
 
+/// Whether to reach the Cluster through Cloud's Server Access when signed in: not
+/// for `--connect` or `--context`, nor for the in-process Store, whose Cluster is
+/// never a Cloud Organization's.
+fn through_cloud(matches: &ArgMatches, context: Option<&str>) -> bool {
+    matches.get_one::<String>("connect").is_none()
+        && context.is_none()
+        && !super::store::local_mode()
+}
+
 /// [`connect`], or `None` when Cloud says this Organization has no Servers yet.
 pub(super) async fn connect_or_none(
     matches: &ArgMatches,
     context: Option<&str>,
 ) -> Result<Option<Client>, Error> {
-    if matches.get_one::<String>("connect").is_none() && context.is_none() {
+    if through_cloud(matches, context) {
         let store = CredentialStore::beside(&super::config_path(matches)?);
         match cloud_account::from_env(&store).await {
             Ok(credential) => {
@@ -98,7 +107,7 @@ pub(super) async fn connect_or_none(
             }
             Err(LoginError::SignedOut) => {
                 // Signed out with no context or local daemon: the fix is signing in, not a
-                // config file. The hidden test Store is never signed in, so it keeps the cause.
+                // config file.
                 return super::connect_context(matches, context)
                     .await
                     .map(Some)
@@ -106,7 +115,7 @@ pub(super) async fn connect_or_none(
                         let no_config = std::error::Error::source(&error)
                             .and_then(|source| source.downcast_ref::<ContextError>())
                             .is_some_and(|source| *source == ContextError::NoConfig);
-                        if no_config && !super::store::local_mode() {
+                        if no_config {
                             LoginError::SignedOut.into()
                         } else {
                             error
@@ -316,7 +325,7 @@ pub(super) async fn connect_or_unanswered(
     matches: &ArgMatches,
     context: Option<&str>,
 ) -> Result<Reached, Error> {
-    if matches.get_one::<String>("connect").is_none() && context.is_none() {
+    if through_cloud(matches, context) {
         let store = CredentialStore::beside(&super::config_path(matches)?);
         if let Ok(credential) = cloud_account::from_env(&store).await {
             let access = cloud_account::server_access(&credential).await?;

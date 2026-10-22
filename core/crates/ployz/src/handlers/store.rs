@@ -9,10 +9,10 @@ use unicode_segmentation::UnicodeSegmentation as _;
 use unicode_width::UnicodeWidthStr as _;
 
 use ployz_store::{
-    Actor, Admit, Ask, ConfigStore, DeploymentId, DeploymentSummary, DnsLookup, DomainEvidence,
-    EnvironmentRef, Hostname, ObservationFailure, OrganizationId, ProjectName, Publish, Published,
-    Removal, RemovalsQuery, Remove, SealingKey, Sweep, SystemEvent, Tell, Trusted, View,
-    VolumeObservation, Written,
+    Actor, Admit, Ask, ConfigStore, DeploymentId, DeploymentSummary, DomainEvidence,
+    EnvironmentRef, ObservationFailure, OrganizationId, ProjectName, Publish, Published, Removal,
+    RemovalsQuery, Remove, SealingKey, Sweep, SystemEvent, Tell, Trusted, View, VolumeObservation,
+    Written,
 };
 
 use super::{Error, config_path, leaf_matches, runtime};
@@ -41,8 +41,7 @@ impl From<StoreCallError> for Error {
     }
 }
 
-/// How long a domain read waits on the Servers, and then on DNS, before it reads
-/// them as unobserved.
+/// How long a domain read waits on the Servers before it reads them as unobserved.
 const OBSERVE_DOMAINS_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// The Organization of the hidden in-process Store.
@@ -192,16 +191,11 @@ impl<'m> Store<'m> {
     }
 
     /// Answer `query` about domains. Cloud observes the Servers itself; for the
-    /// in-process Store this CLI does, as Cloud would: one Runtime Watch frame and,
-    /// for a check of `hostname`, what DNS answers for it now.
-    pub(crate) fn read_domains<Q: Ask>(
-        &self,
-        query: &Q,
-        hostname: Option<&Hostname>,
-    ) -> Result<Q::View, Error> {
+    /// in-process Store this CLI does, from one Runtime Watch frame.
+    pub(crate) fn read_domains<Q: Ask>(&self, query: &Q) -> Result<Q::View, Error> {
         let seen = match &self.backend {
             Backend::Local(..) => Trusted {
-                domains: self.observe_domains(hostname),
+                domains: self.observe_domains(),
                 ..Trusted::default()
             },
             Backend::Cloud(..) => Trusted::default(),
@@ -430,53 +424,35 @@ impl<'m> Store<'m> {
         })))
     }
 
-    /// The Servers' certificates and ingress addresses, and what DNS answers for
-    /// `hostname`. Servers this can't reach leave the certificates unobserved, and DNS
-    /// that doesn't answer leaves the lookup out.
-    fn observe_domains(&self, hostname: Option<&Hostname>) -> DomainEvidence {
+    /// The Servers' certificates and ingress addresses. Servers this can't reach
+    /// leave the certificates unobserved. DNS failures reach a status through the
+    /// certificate attempts that met them.
+    fn observe_domains(&self) -> DomainEvidence {
         let mut evidence = DomainEvidence::default();
         let Ok(runtime) = runtime() else {
             return evidence;
         };
         let context = self.context();
-        runtime.block_on(async {
-            let frame = tokio::time::timeout(OBSERVE_DOMAINS_TIMEOUT, async {
-                super::server::connect(self.matches, context)
-                    .await
-                    .ok()?
-                    .runtime_frame()
-                    .await
-                    .ok()
-            });
-            if let Ok(Some(frame)) = frame.await {
-                evidence.ingress_addresses = frame
-                    .machines
-                    .iter()
-                    .filter(|observed| observed.machine.accepts_ingress)
-                    .filter_map(|observed| observed.machine.public_ip)
-                    .map(|address| address.to_string())
-                    .collect();
-                evidence.certificates = Some(frame.certificates);
-            }
-            if let Some(hostname) = hostname {
-                let found = tokio::time::timeout(
-                    OBSERVE_DOMAINS_TIMEOUT,
-                    tokio::net::lookup_host((hostname.as_str(), 0)),
-                );
-                if let Ok(Ok(addresses)) = found.await {
-                    let mut addresses = addresses
-                        .map(|address| address.ip().to_string())
-                        .collect::<Vec<_>>();
-                    addresses.sort_unstable();
-                    addresses.dedup();
-                    evidence.lookups.push(DnsLookup {
-                        hostname: hostname.clone(),
-                        cname: None,
-                        addresses,
-                    });
-                }
-            }
-        });
+        let observe = async {
+            super::server::connect(self.matches, context)
+                .await
+                .ok()?
+                .runtime_frame()
+                .await
+                .ok()
+        };
+        let frame = runtime
+            .block_on(async { tokio::time::timeout(OBSERVE_DOMAINS_TIMEOUT, observe).await });
+        if let Ok(Some(frame)) = frame {
+            evidence.ingress_addresses = frame
+                .machines
+                .iter()
+                .filter(|observed| observed.machine.accepts_ingress)
+                .filter_map(|observed| observed.machine.public_ip)
+                .map(|address| address.to_string())
+                .collect();
+            evidence.certificates = Some(frame.certificates);
+        }
         evidence
     }
 

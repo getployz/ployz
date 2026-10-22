@@ -206,7 +206,7 @@ pub(super) fn list(root: &ArgMatches) -> Result<(), Error> {
         environment: store::environment(matches)?,
         service,
     };
-    let view = store::store(root)?.read_domains(&query, None)?;
+    let view = store::store(root)?.read_domains(&query)?;
     let next = view
         .domains
         .iter()
@@ -241,15 +241,7 @@ pub(super) fn check(root: &ArgMatches) -> Result<(), Error> {
         environment: store::environment(matches)?,
         domain: required(matches, "domain")?,
     };
-    let store = store::store(root)?;
-    let mut view = store.read_domains(&query, None)?;
-    // A check asks DNS about a custom hostname now; Cloud does so for its own reads.
-    if store.local().is_some()
-        && let DomainName::Custom { hostname } = &view.domain.domain.name
-    {
-        let hostname = hostname.clone();
-        view = store.read_domains(&query, Some(&hostname))?;
-    }
+    let view = store::store(root)?.read_domains(&query)?;
     let next = next(matches, view.domain.action.as_ref());
     let row = &view.domain;
     let [domain, service, port, status, reason] = cells(row);
