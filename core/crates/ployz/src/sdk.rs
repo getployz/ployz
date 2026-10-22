@@ -12,6 +12,7 @@ use crate::connect::{
 };
 use crate::context::{Connection, ConnectionSource, SelectedConnections};
 use crate::deploy::{DeployIntent, DeployPlan, VolumeFate};
+use crate::sealing_backfill::{BackfillSealingKeyReport, BackfillSealingKeyRequest};
 use ployz_core::{
     CertificateMaterialPublished, ClusterTeardown, ContractDescription, DataLossConfirmation,
     DeployEvent, DeployOutcome, DescribeContractRequest, EnrollmentAssignment, EnrollmentSnapshot,
@@ -979,6 +980,26 @@ impl Session {
             .drain(&target, scope, &self.inner.cancel, &mut |_| {})
             .await
             .map_err(RpcError::from)
+    }
+
+    /// Give every Participating Machine of a Cluster founded before Sealing Keys the one
+    /// Sealing Key: observe each listed Machine, settle the key from its holders or ask
+    /// `request.generator` for one, then carry it, sealed to each recipient's WireGuard
+    /// key, from a holder to each Machine that needs access. Each Machine RPC is bounded
+    /// and safe to repeat; rerun the whole verb after a `waiting` or a failed Machine.
+    /// The report carries no ciphertext.
+    ///
+    /// # Errors
+    ///
+    /// Returns a generated [`RpcError`] when the session is closed, or this entry's error
+    /// when the Cluster's Machines cannot be listed. A Machine's refusal is in the report.
+    pub async fn backfill_sealing_key(
+        &self,
+        request: BackfillSealingKeyRequest,
+    ) -> Result<BackfillSealingKeyReport, RpcError> {
+        let mut client = self.client()?;
+        self.until_closed(crate::sealing_backfill::execute(&mut client, &request))
+            .await
     }
 
     /// Start the Ingress Proxy on `machine` once its ingress role is on: wait until this

@@ -76,6 +76,8 @@ fn typescript_declarations() -> String {
     declarations.add::<DeployOutcome<ExecutionError>>();
     declarations.add::<DeployPreview>();
     declarations.add::<crate::drain::DrainReport>();
+    declarations.add::<crate::sealing_backfill::BackfillSealingKeyRequest>();
+    declarations.add::<crate::sealing_backfill::BackfillSealingKeyReport>();
     declarations.add::<crate::drain::DrainScope>();
     declarations.add::<crate::ingress::IngressCheck>();
     declarations.add::<ExecutionError>();
