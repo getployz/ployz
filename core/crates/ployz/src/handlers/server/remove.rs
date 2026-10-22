@@ -336,23 +336,28 @@ fn leave(root: &ArgMatches, removal: Removal) -> Result<(), Error> {
             selected.name
         ));
         if removal == Removal::Forget {
-            // Nothing reaches a forgotten Server to fence it (#2927), so the operator must.
+            // A forgotten Server fences itself only when it and a peer run 0.3.1 or later
+            // and it reaches that peer (#2927); until then, and otherwise, the operator must.
             let server = &selected.name;
             crate::ui::warn(if dead {
                 format!(
-                    "Server {server} doesn't know it was forgotten. If it runs again as it is, its \
+                    "Server {server} isn't told it was forgotten. If it runs again as it is, its \
                      services start again on its own copy of each Volume, and Ployz never brings back \
-                     what they write there. When it boots, run sudo ployz-uninstall on it to stop them \
-                     and keep every Volume copy on its disk. Adding it back with ployz server add --reset \
-                     keeps its writer copies read-only but can delete its mirrors, so don't while one may \
-                     be a Volume's last copy. Wipe its disk only if you need nothing on it."
+                     what they write there. On 0.3.1 or later it stops them itself a few minutes after \
+                     it reaches an old peer on 0.3.1 or later, keeping every Volume copy on its disk. \
+                     Otherwise, when it boots, run sudo ployz-uninstall on it to do the same. Adding it \
+                     back with ployz server add --reset keeps its writer copies read-only but can delete \
+                     its mirrors, so don't while one may be a Volume's last copy. Wipe its disk only if \
+                     you need nothing on it."
                 )
             } else {
                 format!(
-                    "Server {server} still runs and doesn't know it was forgotten, so its services keep \
-                     running there. Run sudo ployz-uninstall on it to stop them and keep every Volume \
-                     copy on its disk. Adding it back with ployz server add --reset can delete its \
-                     mirrors, so don't while one may be a Volume's last copy."
+                    "Server {server} still runs and isn't told it was forgotten, so its services keep \
+                     running there. On 0.3.1 or later it stops them itself a few minutes after it \
+                     reaches an old peer on 0.3.1 or later, keeping every Volume copy on its disk. \
+                     Otherwise run sudo ployz-uninstall on it to do the same. Adding it back with \
+                     ployz server add --reset can delete its mirrors, so don't while one may be a \
+                     Volume's last copy."
                 )
             });
         }
