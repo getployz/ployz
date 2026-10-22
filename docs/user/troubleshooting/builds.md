@@ -10,13 +10,13 @@ Build failed. web: npm run build: process "npm run build" did not complete succe
 ```
 
 It names the step that failed and its exit code. The step's output is in the
-[build log](../builds/overview.md#read-the-build-log): open the service's tab, then **Build**,
-and read the lines above the one that starts with `ERROR`. A build on GitHub Actions
+[build log](../builds/overview.md#read-the-build-log): click the service's build card on the
+deployment's page, and read the lines above the one that starts with `ERROR`. A build on GitHub Actions
 fails with `Build failed. web: a build step failed`; the run on GitHub, linked at the top of
 the log, has the full output. From the CLI, `ployz logs --deployment N --build web` prints
 the same log. Your current version keeps running.
 
-Fix the cause and deploy again. **Redeploy** rebuilds the same commit and settings, so it only
+Fix the cause and deploy again. **Redeploy** uses the same commit and settings, so it only
 helps when the fix was on a server.
 
 ## Railpack can't tell how to build my app
@@ -33,7 +33,8 @@ why.
 
 ## The build passes, but my app never starts
 
-The image starts the wrong command, or none, and the **Deploy** log shows the failure. Set
+The image starts the wrong command, or none, and the service's card on the deployment's page
+shows the failure. Set
 **Start command** under **Settings → Deploy**, like `node server.js`, and deploy. See
 [Troubleshooting deployments](deployments.md) for other reasons.
 
@@ -75,9 +76,9 @@ The build ran out of memory.
   [Build resources and cache](../builds/build-resources-and-cache.md#cap-cpu-memory-and-cache).
 - For Node, add a variable like `NODE_OPTIONS=--max-old-space-size=2048`.
 
-## My build waits with no output
+## My build is waiting its turn
 
-The build is waiting its turn.
+The build waits until a builder can take it.
 
 - If the log shows `Waiting for a build slot`, the server named above it is already running as
   many builds as it allows, maybe for another project. Raise its **Builds at once** on the
@@ -142,6 +143,9 @@ like 32-bit ARM. Ployz can't build for it.
 ## The build server runs out of disk
 
 You'll see `no space left on device`.
+
+By default, build servers free cache to keep a fifth of their Docker disk free. These steps help
+when that isn't enough:
 
 - Clear the build cache, CLI-only for now: run `ployz server build-cache-clear` on the server
   as root.

@@ -16,7 +16,8 @@ container registry. To choose where builds run, see [Where builds run](where-bui
 
 Every deploy that includes a GitHub service builds it, unless nothing that goes into the build
 changed: then Ployz reuses the image it already has. A push that auto-deploys builds the pushed
-commit, and **Redeploy** builds the same commit again.
+commit, and **Redeploy** uses the same commit again, so it reuses the image unless something the
+build reads changed.
 
 **Deploy** in the dashboard deploys the whole environment, so every GitHub service in it
 moves to the newest commit on its Git branch, even if you changed only one service.
