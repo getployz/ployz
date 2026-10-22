@@ -304,20 +304,21 @@ pub fn exec(root: &ArgMatches) -> Result<(), Error> {
         ServiceSelector::parse(typed.clone())?,
         scope(root)?.as_ref(),
     )?;
-    let scope_flags: String = ["project", "env"]
+    let scope_flags: Vec<(&str, String)> = ["project", "env"]
         .into_iter()
         .filter(|id| leaf.value_source(id) == Some(ValueSource::CommandLine))
-        .filter_map(|id| Some(format!("--{id} {} ", leaf.get_one::<String>(id)?)))
+        .filter_map(|id| Some((id, leaf.get_one::<String>(id)?.clone())))
         .collect();
     let container = leaf
         .get_one::<String>("container")
         .filter(|selector| !selector.is_empty())
         .map(|selector| ContainerSelector::parse(selector.as_str()))
         .transpose()?;
-    let command = leaf
+    let command: Vec<String> = leaf
         .get_many::<String>("command")
         .map(|values| values.cloned().collect())
         .unwrap_or_default();
+    let again = exec_again(&typed, leaf.get_flag("no-tty"), &scope_flags, &command);
     let options = exec_options(
         command,
         ExecMode::resolve(
@@ -365,10 +366,7 @@ pub fn exec(root: &ArgMatches) -> Result<(), Error> {
                 .await
             {
                 let hint = if stopped.another_runs {
-                    Hint::Retry(format!(
-                        "ployz exec {scope_flags}{}",
-                        session.target.identity
-                    ))
+                    Hint::Retry(again)
                 } else {
                     Hint::Inspect("ployz ps".into())
                 };
@@ -382,6 +380,25 @@ pub fn exec(root: &ArgMatches) -> Result<(), Error> {
             }
         })
     })
+}
+
+/// The `ployz exec` that runs `command` again as it was typed: the Service by the name the
+/// user gave, `-T` when they asked for no terminal, and the Project and Environment they named.
+/// No container: the retry attaches to whichever of the Service's containers runs.
+fn exec_again(service: &str, no_tty: bool, scope: &[(&str, String)], command: &[String]) -> String {
+    let mut words = vec!["ployz".to_owned(), "exec".to_owned()];
+    if no_tty {
+        words.push("-T".to_owned());
+    }
+    words.push(service.to_owned());
+    for (flag, value) in scope {
+        words.extend([format!("--{flag}"), value.clone()]);
+    }
+    if !command.is_empty() {
+        words.push("--".to_owned());
+        words.extend(command.iter().cloned());
+    }
+    shell_words::join(words)
 }
 
 /// How long a failed exec waits to learn whether its container stopped before it
@@ -1296,6 +1313,28 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn the_retry_after_a_stopped_container_runs_the_same_command_again() {
+        let scope = [
+            ("project", "a--b".to_owned()),
+            ("env", "production".to_owned()),
+        ];
+        assert_eq!(
+            exec_again("s1", true, &scope, &["sleep".to_owned(), "120".to_owned()]),
+            "ployz exec -T s1 --project a--b --env production -- sleep 120"
+        );
+        assert_eq!(
+            exec_again(
+                "web",
+                false,
+                &[],
+                &["sh".to_owned(), "-c".to_owned(), "echo hi".to_owned()]
+            ),
+            "ployz exec web -- sh -c 'echo hi'"
+        );
+        assert_eq!(exec_again("web", false, &[], &[]), "ployz exec web");
+    }
 
     #[tokio::test]
     async fn a_local_port_in_use_is_named_in_the_refusal() {
