@@ -106,6 +106,9 @@ installation back to the first Callback URL.
    curl -fsSLo .env https://github.com/getployz/ployz/releases/latest/download/ployz-cloud.env.example
    ```
 
+   `releases/latest` is the newest stable release. To run a prerelease, like a beta, replace
+   `latest/download` with `download/<tag>`, for example `download/v0.3.0-beta.7`.
+
 2. Generate the secrets, one per line:
 
    ```sh
@@ -128,7 +131,8 @@ installation back to the first Callback URL.
    | `PLOYZ_HOSTED_DNS_URL` | Optional. `compose.yml` sets `https://dns.ployz.app/` when it is unset |
 
    Leave every `POLAR_*` and `POSTHOG_*` variable unset: that turns off billing and product
-   analytics. If a required value is missing, `web` and `worker` stop with a `ConfigError`.
+   analytics. If a required value is missing or malformed, `web` and `worker` stop at startup,
+   and `docker compose logs web worker` names each variable to fix.
    To turn on the [Ployz agent](account/agent-sidebar.md), set `ANTHROPIC_API_KEY`.
    Email is optional too. Ployz Cloud sends none while `POSTSHIBA_API_KEY`, `POSTSHIBA_TEAM_ID`,
    `POSTSHIBA_CLUSTER_ID`, and `MAIL_FROM` are unset. Set all four to send through
@@ -149,14 +153,22 @@ installation back to the first Callback URL.
    docker compose up -d
    ```
 
-2. Point your proxy or tunnel at port 3000, or at `WEB_PORT` if you set it. With Caddy on a
-   separate server, the whole config is:
+2. Point your proxy or tunnel at port 3000, or at `WEB_PORT` if you set it. With Caddy on the
+   same server as Ployz Cloud, the whole config is:
 
    ```
    cloud.example.com {
      reverse_proxy localhost:3000
    }
    ```
+
+   Ployz Cloud listens only on `127.0.0.1`, so other machines can't skip your proxy. If your
+   proxy or `cloudflared` runs in a Docker container on this server, attach it to the
+   `ployz-cloud-self-host_default` network and point it at `http://web:3000`. If your proxy
+   runs on another server, set `WEB_BIND` in `.env` to a private address of this
+   server that only the proxy can reach. Don't set it to `0.0.0.0`: ports that Docker publishes
+   skip firewalls like UFW, so anyone could reach Ployz Cloud over plain http, past your
+   proxy's TLS and rate limits.
 
 3. Run `docker compose ps`. Ployz Cloud is ready when `worker` shows **healthy**.
 
@@ -193,13 +205,37 @@ In CI, set `PLOYZ_CLOUD_URL` next to `PLOYZ_TOKEN`; see
 
 ## Upgrade
 
-Download the new release's compose file over `compose.yml`, then:
+Pick the release to move to on the [releases page](https://github.com/getployz/ployz/releases).
+If you run a beta, pick the newest release marked **Pre-release**. Don't use `releases/latest`
+here: it's the newest stable release, so it would move a beta back to an older release. An
+older Ployz Cloud on a newer database passes the migration and health check, then fails every
+request.
+
+Set `VERSION` to that release's tag, then run the rest. It refuses a tag older than the one
+you run now:
 
 ```sh
-curl -fsSLo compose.yml https://github.com/getployz/ployz/releases/latest/download/ployz-cloud-compose.yml
-docker compose pull
-docker compose run --rm web npm run db:migrate
-docker compose up -d
+VERSION=vX.Y.Z
+current=$(docker compose config --images | sed -n 's|^ghcr.io/getployz/ployz-cloud:||p' | head -n 1)
+verdict=$(awk -v from="$current" -v to="$VERSION" '
+  function key(tag, p, n) {
+    if (tag !~ /^v[0-9]+\.[0-9]+\.[0-9]+(-[a-z]+\.[0-9]+)?$/) return ""
+    n = split(substr(tag, 2), p, "[.-]")
+    return sprintf("%06d.%06d.%06d.%s.%06d", p[1], p[2], p[3], n > 3 ? "a" p[4] : "z", p[5])
+  }
+  BEGIN {
+    if (key(to) == "") print "Set VERSION to a release tag, like v1.2.3 or v1.2.3-beta.4."
+    else if (key(from) == "") print "Could not read the current release from compose.yml."
+    else if (key(to) < key(from)) print to " is older than " from ". Not downgrading."
+  }')
+if [ -n "$verdict" ]; then
+  echo "$verdict"
+else
+  curl -fsSLo compose.yml "https://github.com/getployz/ployz/releases/download/$VERSION/ployz-cloud-compose.yml" &&
+    docker compose pull &&
+    docker compose run --rm web npm run db:migrate &&
+    docker compose up -d
+fi
 ```
 
 Nothing migrates the database on start, so run the migration on every upgrade.

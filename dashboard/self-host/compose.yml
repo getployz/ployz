@@ -25,7 +25,9 @@ services:
     <<: *app
     command: [npm, start]
     ports:
-      - '${WEB_PORT:-3000}:3000'
+      # Loopback for a TLS proxy or tunnel on this host; Docker-published ports skip UFW.
+      # For a proxy on another host, set WEB_BIND to a private address only it reaches.
+      - '${WEB_BIND:-127.0.0.1}:${WEB_PORT:-3000}:3000'
 
   worker:
     <<: *app
