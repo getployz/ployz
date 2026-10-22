@@ -490,3 +490,20 @@ export const enrollmentAllocation = pgTable(
     check("enrollment_allocation_assignments_check", sql`jsonb_typeof(${table.assignments}) = 'array'`),
   ],
 );
+
+/** The public half of each Cloud Cluster generation's Sealing Key, as its Servers first reported it. */
+export const clusterSealingKey = pgTable(
+  "cluster_sealing_key",
+  {
+    organizationId: uuid("organization_id").notNull()
+      .references(() => organization.id, { onDelete: "cascade" }),
+    clusterKey: text("cluster_key").notNull(),
+    publicKey: text("public_key").notNull(),
+    createdAt,
+  },
+  (table) => [
+    primaryKey({ columns: [table.organizationId, table.clusterKey] }),
+    check("cluster_sealing_key_cluster_key_check", sql`${table.clusterKey} ~ '^[0-9a-f]{64}$'`),
+    check("cluster_sealing_key_public_key_check", sql`${table.publicKey} ~ '^[A-Za-z0-9+/]{43}=$'`),
+  ],
+);

@@ -1,12 +1,14 @@
-import { generateKeyPairSync, sign } from "node:crypto";
+import { createHash, generateKeyPairSync, randomBytes, type KeyObject, sign } from "node:crypto";
 import { Effect } from "effect";
 import { Inngest } from "inngest";
 import { afterAll, beforeAll, beforeEach, expect, it, vi } from "vitest";
 import { InngestClient } from "#/modules/inngest/client";
+import type { CheckinRequest } from "#/modules/machines/waiting/checkin-wire";
 import { checkinMessage } from "#/modules/machines/waiting/checkin.server";
 import { createFleetToken } from "#/modules/machines/waiting/fleet-token.server";
 import { handleCheckin, observedIp } from "#/routes/api/checkin/-handler";
 import { type PostgresTestHarness, startPostgresTestHarness } from "#/test/postgres";
+import { SecretEncryption } from "#/utils/encrypted-secret.server";
 
 const ada = { userId: "00000000-0000-4000-8000-000000000701" };
 
@@ -42,8 +44,7 @@ const post = (body: Buffer, headers: Record<string, string>) =>
     "203.0.113.7",
   ), InngestClient, inngest));
 
-const signed = (bearer: string, body: Uint8Array) => {
-  const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+const signed = (bearer: string, body: Uint8Array, { publicKey, privateKey }: { publicKey: KeyObject; privateKey: KeyObject } = generateKeyPairSync("ed25519")) => {
   const key = Buffer.from(publicKey.export({ format: "jwk" }).x ?? "", "base64url").toString("hex");
   const json = Buffer.from(JSON.stringify({ ...JSON.parse(Buffer.from(body).toString()), checkinKey: key }));
   const timestamp = BigInt(Math.floor(Date.now() / 1000));
@@ -140,4 +141,79 @@ it("strips the port a proxy appends to a forwarded hop", () => {
   expect(observedIp(new Headers({ "x-forwarded-for": "198.51.100.99, 203.0.113.7:5678" }), undefined, "127.0.0.1")).toBe("203.0.113.7");
   expect(observedIp(new Headers({ "x-forwarded-for": "[2001:db8::7]:5678, 10.0.0.1:443" }), undefined, "::1")).toBe("2001:db8::7");
   expect(observedIp(new Headers({ "x-forwarded-for": "[2001:db8::7]" }), undefined, "::1")).toBe("2001:db8::7");
+});
+
+const adaOrg = "00000000-0000-4000-8000-000000000711";
+const sealingKeys = async () => (await harness.pool.query("select cluster_key, public_key from cluster_sealing_key")).rows;
+
+const pair = (secret: string) => harness.runEffect(Effect.gen(function* () {
+  const encryption = yield* SecretEncryption;
+  yield* Effect.promise(() => harness.pool.query(
+    `insert into organization_pairing (organization_id, founder_machine_id, founder_claim_machine_id, founder_public_key, encrypted_pairing_secret)
+     values ($1, repeat('a', 32), repeat('a', 32), repeat('b', 64), $2)
+     on conflict (organization_id) do update set encrypted_pairing_secret = excluded.encrypted_pairing_secret`,
+    [adaOrg, JSON.stringify(encryption.encrypt(secret))],
+  ));
+}));
+
+const joinedHost = async () => {
+  const host = generateKeyPairSync("ed25519");
+  const first = signed(token, checkin, host);
+  await post(first.json, first.headers);
+  const machineId = randomBytes(16).toString("hex");
+  const { rows: [enrolled] } = await harness.pool.query<{ id: string }>(
+    `with server as (
+       insert into organization_machine (organization_id, machine_id, cluster_key, encrypted_capability)
+       values ($1, $2, repeat('c', 64), '{}')
+     )
+     insert into server_enrollment (organization_id, waiting_server_id, fleet_token_id, role, instruction, enroll_token_id, state, machine_id, ended_at)
+     select organization_id, id, fleet_token_id, 'joiner', '{}', gen_random_uuid(), 'joined', $2, now() from waiting_server
+     order by first_seen_at desc limit 1 returning id`,
+    [adaOrg, machineId],
+  );
+  return async (sealing: CheckinRequest["sealing"], attemptId = enrolled?.id) => {
+    const body = Buffer.from(JSON.stringify({ ...JSON.parse(checkin.toString()), attempt: { attemptId, stage: "joined" }, sealing }));
+    const { json, headers } = signed(token, body, host);
+    expect((await post(json, headers)).status).toBe(200);
+  };
+};
+
+const held = (byte: number) => ({ kind: "held", publicKey: Buffer.alloc(32, byte).toString("base64") }) as const;
+const generation = (secret: string) => createHash("sha256").update(secret).digest("hex");
+
+it("records the first Sealing Key a pairing generation's Servers report, and keeps it", async () => {
+  await pair("pairing-1");
+  const report = await joinedHost();
+  await report(held(1));
+  await report(held(1));
+  expect(await sealingKeys()).toEqual([{ cluster_key: generation("pairing-1"), public_key: held(1).publicKey }]);
+
+  await (await joinedHost())(held(2));
+  expect(await sealingKeys()).toEqual([{ cluster_key: generation("pairing-1"), public_key: held(1).publicKey }]);
+});
+
+it("files each pairing generation's Sealing Key apart", async () => {
+  await pair("pairing-1");
+  await (await joinedHost())(held(1));
+  await pair("pairing-2");
+  await (await joinedHost())(held(2));
+  expect(await sealingKeys()).toEqual(expect.arrayContaining([
+    { cluster_key: generation("pairing-1"), public_key: held(1).publicKey },
+    { cluster_key: generation("pairing-2"), public_key: held(2).publicKey },
+  ]));
+});
+
+it("records nothing for a Server that needs access, names another host's attempt, or has no pairing", async () => {
+  await pair("pairing-1");
+  const report = await joinedHost();
+  await report({ kind: "needs_access" });
+  await report(held(1), "00000000-0000-4000-8000-000000000000");
+  await report(held(1), "not-an-attempt");
+  const [theirs] = (await harness.pool.query<{ id: string }>("select id from server_enrollment")).rows;
+  await (await joinedHost())(held(1), theirs?.id);
+  expect(await sealingKeys()).toEqual([]);
+
+  await harness.pool.query("delete from organization_pairing");
+  await report(held(1));
+  expect(await sealingKeys()).toEqual([]);
 });

@@ -6,7 +6,7 @@
 
 use std::{collections::BTreeMap, time::Duration};
 
-use ployz_core::CloudEnrollToken;
+use ployz_core::{CloudEnrollToken, SealingPublicKey};
 use serde::{Deserialize, Serialize};
 
 use crate::cloud_enroll::EnrollStage;
@@ -30,6 +30,29 @@ pub(super) struct CheckinRequest<'a> {
     pub(super) probe: Option<probe::Report>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) attempt: Option<&'a Attempt>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) sealing: Option<Sealing>,
+}
+
+/// Whether the Machine this attempt enrolled holds its Cluster's Sealing Key.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
+pub(super) enum Sealing {
+    Held { public_key: SealingPublicKey },
+    NeedsAccess,
+}
+
+impl From<ployz_core::Sealing> for Sealing {
+    fn from(sealing: ployz_core::Sealing) -> Self {
+        match sealing {
+            ployz_core::Sealing::Held { public_key } => Self::Held { public_key },
+            ployz_core::Sealing::NeedsAccess => Self::NeedsAccess,
+        }
+    }
 }
 
 /// The enroll attempt this host is running, or last ran, for Cloud's instruction `attempt_id`.

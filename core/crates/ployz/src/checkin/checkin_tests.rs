@@ -49,6 +49,7 @@ struct FakeHost {
     finishes: Option<(PathBuf, &'static str)>,
     stale: Option<String>,
     member_of_cluster_as: Option<String>,
+    sealing: Option<ployz_core::Sealing>,
 }
 
 impl Host for FakeHost {
@@ -98,6 +99,10 @@ impl Host for FakeHost {
 
     async fn participating(&self) -> Option<String> {
         self.member_of_cluster_as.clone()
+    }
+
+    async fn sealing(&self) -> Option<ployz_core::Sealing> {
+        self.sealing
     }
 
     async fn discard_zfs_build(&self) -> Result<(), String> {
@@ -2438,6 +2443,9 @@ async fn a_server_in_another_cluster_is_blocked_before_enroll() {
     let (url, server) = cloud("200 OK", r#"{"kind":"wait","retryAfter":30}"#).await;
     let host = FakeHost {
         member_of_cluster_as: Some("box-1".to_owned()),
+        sealing: Some(ployz_core::Sealing::Held {
+            public_key: ployz_core::SealingPublicKey::from_bytes([3; 32]),
+        }),
         ..FakeHost::default()
     };
     pass(&host, &mut client(&url), &key(), &paths, Utc::now()).await;
@@ -2447,6 +2455,10 @@ async fn a_server_in_another_cluster_is_blocked_before_enroll() {
         "{request}"
     );
     assert!(request.contains("ployz server rm box-1"), "{request}");
+    assert!(
+        !request.contains("sealing"),
+        "another Cluster's key is never reported: {request}"
+    );
     let status = LocalCheckin::read(&paths.status()).unwrap().unwrap();
     assert_eq!(status.headline().title, "Blocked");
 }
