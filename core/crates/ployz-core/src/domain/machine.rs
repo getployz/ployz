@@ -154,7 +154,7 @@ pub struct MachineRuntime {
     /// Machine that asks whether the Cluster forgot it. Absent from a record written
     /// by a daemon that predates the field, so absence claims nothing.
     #[serde(default, with = "crate::management_identity_hex")]
-    #[ts(as = "Option<String>", optional = nullable)]
+    #[ts(skip)]
     pub management_identity: Option<ManagementIdentity>,
 }
 
@@ -1071,6 +1071,18 @@ mod machine_runtime_capabilities_tests {
             serde_json::from_value::<MachineRuntime>(encoded).unwrap(),
             runtime
         );
+    }
+
+    /// A row written by a daemon that encodes the identity differently must still load
+    /// as a Machine; an identity this daemon cannot read claims nothing, like none.
+    #[test]
+    fn runtime_with_an_unreadable_management_identity_decodes_to_none() {
+        let runtime: MachineRuntime = serde_json::from_value(json!({
+            "daemon_version": "0.3.2",
+            "management_identity": "not-hex",
+        }))
+        .unwrap();
+        assert_eq!(runtime.management_identity, None);
     }
 
     #[test]
