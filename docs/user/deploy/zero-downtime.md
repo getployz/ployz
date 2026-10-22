@@ -33,13 +33,14 @@ Your app keeps serving the whole time.
 ## Choose how a deploy replaces replicas
 
 Under **Settings → Deploy**, **Update order** picks how a deploy swaps old replicas for new ones.
-Whichever you choose, visitors reach the new version only once every new replica is ready.
+With **Start first** or **Stop first**, visitors reach the new version only once every new replica
+is ready. With **Rolling**, they reach each server's new replica as soon as it's ready.
 
 | Update order | What happens | Downtime |
 | --- | --- | --- |
 | **Start first** | New replicas start beside the old ones, and the old ones stop once the new ones are ready. Two copies run for a moment. | None |
 | **Stop first** | On every server at once, each old replica stops, then its replacement starts. Traffic moves to the new replicas when they're all ready. | From the stop until every new replica is ready |
-| **Rolling** | Stop first, one server at a time. The old replicas on the other servers keep serving until the last server's turn. If a server's new replica fails, the servers after it keep the old version. | From the last server's stop until every new replica is ready |
+| **Rolling** | Stop first, one server at a time. A server's new replica takes traffic once it's ready, before the next server's old replica stops, so old and new versions serve together. If a server's new replica fails, the servers after it keep the old version. | None with replicas on two or more servers. On one server, as Stop first |
 | **Automatic** | **Stop first** for a service with a volume, **Start first** for the rest. | As above |
 
 **Automatic** is the default. A service with a volume can use **Start first** only when the volume
