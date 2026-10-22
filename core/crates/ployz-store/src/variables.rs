@@ -535,7 +535,7 @@ pub(crate) fn stored(mut parts: Vec<ValuePart>) -> SavedVariableValue {
 
 /// The longest `KEY=value` string Linux passes a program, with its closing NUL:
 /// `MAX_ARG_STRLEN`. A Container given a longer one never starts.
-const MAX_ENV_STRING: usize = 128 * 1024;
+pub const MAX_ENV_STRING: usize = 128 * 1024;
 
 const TOO_LONG: &str = "too long for a Container's environment: Linux passes at most 128 KiB per variable, name included";
 

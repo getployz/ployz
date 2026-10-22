@@ -46,6 +46,18 @@ pub use cloud::enroll_with_installer as cloud_enroll_with_installer;
 
 pub type Error = Failure;
 
+/// All of `source`, or `None` when it holds more than `limit` bytes. Reads at most one
+/// byte past `limit`, so an endless source such as `/dev/zero` is refused at once.
+pub(crate) fn read_bounded(
+    source: impl std::io::Read,
+    limit: usize,
+) -> std::io::Result<Option<Vec<u8>>> {
+    let mut bytes = Vec::new();
+    let past = u64::try_from(limit).unwrap_or(u64::MAX).saturating_add(1);
+    std::io::Read::read_to_end(&mut source.take(past), &mut bytes)?;
+    Ok((bytes.len() <= limit).then_some(bytes))
+}
+
 pub fn run() -> Result<(), Error> {
     let mut command = crate::cli::command();
     let args = std::env::args_os().skip(1).collect::<Vec<_>>();

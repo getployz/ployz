@@ -6905,3 +6905,118 @@ fn a_removal_without_volumes_names_the_server_that_did_not_answer_cloud() {
     assert!(said.contains(&format!("Waiting on web-1: {why}")), "{said}");
     assert!(!said.contains(CLOUD_SERVER), "ids are machinery: {said}");
 }
+
+/// Run `ployz --json ARGS` on `stdin`. An input read without bound would fill memory,
+/// so the run is killed after 3 s and the test fails instead of hanging.
+fn ployz_on(
+    store: &Target,
+    args: &[&str],
+    stdin: impl Into<std::process::Stdio>,
+) -> (Option<i32>, Value) {
+    let home = tempfile::tempdir().unwrap();
+    let mut child = store
+        .command(home.path())
+        .arg("--json")
+        .args(args)
+        .stdin(stdin)
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    while child.try_wait().unwrap().is_none() {
+        if std::time::Instant::now() > deadline {
+            child.kill().unwrap();
+            child.wait().unwrap();
+            panic!("{args:?} still reading after 3 s");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let output = child.wait_with_output().unwrap();
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let json = serde_json::from_str(&stdout)
+        .unwrap_or_else(|error| panic!("stdout is not one JSON object ({error}): {stdout:?}"));
+    (output.status.code(), json)
+}
+
+/// A refusal of a too-long input, read no further than its limit.
+fn refused_on(store: &Target, args: &[&str], stdin: impl Into<std::process::Stdio>) -> String {
+    let (code, json) = ployz_on(store, args, stdin);
+    assert_eq!(code, Some(2), "{args:?}: {json}");
+    assert_eq!(json["error"]["code"], "invalid_argument", "{json}");
+    json["error"]["message"].as_str().unwrap().to_owned()
+}
+
+fn dev_zero() -> std::fs::File {
+    std::fs::File::open("/dev/zero").unwrap()
+}
+
+#[test]
+fn an_input_past_its_limit_is_refused_after_reading_one_byte_past_it() {
+    let store = &Target::Local(tempfile::tempdir().unwrap());
+    shop_with_web(store);
+    ok(store, &["config", "add", "app", "--mount", "web:/etc/app"]);
+    let null = std::process::Stdio::null;
+
+    let big = tempfile::NamedTempFile::new().unwrap();
+    std::fs::write(big.path(), "a".repeat(396 * 1024)).unwrap();
+    let big = big.path().to_str().unwrap();
+    let put = ["config", "put", "app", "x.txt", "--from"];
+    assert_eq!(
+        refused_on(store, &[&put[..], &[big]].concat(), null()),
+        format!("x.txt: a Config file holds at most 256 KB of text; {big} holds more")
+    );
+    assert_eq!(
+        refused_on(store, &[&put[..], &["/dev/zero"]].concat(), null()),
+        "x.txt: a Config file holds at most 256 KB of text; /dev/zero holds more"
+    );
+    assert_eq!(
+        refused_on(store, &put[..4], dev_zero()),
+        "x.txt: a Config file holds at most 256 KB of text; stdin holds more"
+    );
+
+    let env_file = ["set", "web", "--from-env-file"];
+    assert_eq!(
+        refused_on(store, &[&env_file[..], &["/dev/zero"]].concat(), null()),
+        "/dev/zero: an env file holds at most 4 MiB; this one holds more"
+    );
+    assert_eq!(
+        refused_on(store, &[&env_file[..], &["-"]].concat(), dev_zero()),
+        "stdin: an env file holds at most 4 MiB; this one holds more"
+    );
+
+    assert_eq!(
+        refused_on(store, &["set", "web.env.S", "--secret"], dev_zero()),
+        "web.env.S: the secret on stdin is too long for a Container's environment: \
+         Linux passes at most 128 KiB per variable, name included"
+    );
+    let (code, unset) = ployz(Some(store), &["get", "web.env.S"]);
+    assert_ne!(code, Some(0), "nothing was set: {unset}");
+}
+
+#[test]
+fn config_put_names_the_file_it_cant_read_and_takes_dash_for_stdin() {
+    let store = &Target::Local(tempfile::tempdir().unwrap());
+    shop_with_web(store);
+    ok(store, &["config", "add", "app", "--mount", "web:/etc/app"]);
+    let dir = tempfile::tempdir().unwrap();
+    let missing = dir.path().join("missing.yml");
+    let missing = missing.to_str().unwrap();
+    let refused = error(
+        store,
+        &["config", "put", "app", "app.yml", "--from", missing],
+    );
+    assert_eq!(refused["message"], format!("Can't read --from {missing}"));
+    assert_eq!(
+        refused["cause"],
+        json!(["No such file or directory (os error 2)"])
+    );
+
+    let (code, put) = ployz_with_stdin(
+        store,
+        &["config", "put", "app", "app.yml", "--from", "-"],
+        "a: 1\n",
+    );
+    assert_eq!(code, Some(0), "{put}");
+    let listed = ok(store, &["config", "ls"]);
+    assert!(listed.to_string().contains("app.yml"), "{listed}");
+}
