@@ -41,6 +41,16 @@ it("names a shutdown as a shutdown, not a Deploy", () => {
   expect(approvalSubject(approvalCommand(shutDown), review)).toMatchObject({ verb: "Shut down", name: "staging" });
 });
 
+it("names a shutdown's retry a shutdown, so an approver never reads it as a redeploy", () => {
+  const environment = { name: "production", project: "shop" };
+  const removes = asTestDouble<ApprovalReview>()({ effects: [{ kind: "removes_service" }], diff: { environment } });
+  expect(approvalSubject(approvalCommand(retry), removes)).toMatchObject({ verb: "Shut down", name: "production" });
+  expect(approvalBadge(approvalCommand(retry), removes)).toBe("Destroys 1 thing");
+  const redeploy = asTestDouble<ApprovalReview>()({ effects: [], diff: { environment }, redeploy: { deployment: 4, rolls_back: [] } });
+  expect(approvalSubject(approvalCommand(retry), redeploy)).toMatchObject({ verb: "Redeploy" });
+  expect(approvalBadge(approvalCommand(retry), redeploy)).toBe("Redeploys");
+});
+
 it("lists a Store write's Environment under its Project, so two production approvals read apart", () => {
   const review = asTestDouble<ApprovalReview>()({ effects: [], diff: { environment: { name: "production", project: "mcp-lab" } } });
   expect(approvalTarget("deploy", review)).toEqual({ verb: "Deploy", name: "mcp-lab/production" });
