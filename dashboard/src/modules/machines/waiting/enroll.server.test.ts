@@ -85,6 +85,16 @@ describe("names", () => {
     expect(plan.rows.map((r) => r.instruction.name)).toEqual(["host-a", "host-b"]);
   });
 
+  it("plans the Machine Name a hostname normalises to, else one from the waiting server's id", () => {
+    const id = "0f1e2d3c-4b5a-4968-8776-655443322110";
+    const plan = planned(planServerEnrollment(
+      input({ ids: ["a", id] }),
+      [row("a", { report: { hostname: "HP-WIN11" } }), row(id, { report: { hostname: "___" } })],
+      founded,
+    ));
+    expect(plan.rows.map((r) => [r.hostname, r.instruction.name])).toEqual([["HP-WIN11", "hp-win11"], ["___", "server-0f1e2d3c"]]);
+  });
+
   it("numbers a pattern from the founder down", () => {
     const plan = planned(planServerEnrollment(
       input({ ids: ["a", "b", "c"], first: "c", names: { kind: "pattern", pattern: "web-{n}" } }),
