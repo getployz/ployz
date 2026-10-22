@@ -2889,10 +2889,11 @@ fn an_agent_adds_mounts_detaches_and_removes_volumes() {
             json!("not_found")
         );
 
-        // Nothing deployed loses data, so there is nothing to accept, and --yes is no bypass.
+        // Nothing deployed loses data, so there is nothing to accept. --yes answers only
+        // --prune's ask, so the deploy runs and fails for want of a Server.
         let accept = error(store, &["deploy", "--accept-volume-loss", "data"]);
         assert_eq!(accept["code"], json!("invalid_argument"));
-        failed(store, &["deploy", "--yes"], 2);
+        failed(store, &["deploy", "--yes"], 1);
     }
 }
 
