@@ -387,6 +387,8 @@ const CLI_NEXT: &[(&str, CliNext)] = &[
     ("deployment ls", CliNext::Tool("deployment_list", None)),
     ("diff", CliNext::Tool("review", None)),
     ("domain add", CliNext::Tool("domain_add", Some("service"))),
+    // A removal is never proposed to a call that did not ask for one.
+    ("domain rm", CliNext::Drop),
     (
         "service rename",
         CliNext::Tool("service_rename", Some("service")),
