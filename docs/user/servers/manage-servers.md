@@ -503,7 +503,9 @@ on a later release. Install the newer CLI with `curl -fsSL https://ployz.sh | sh
 > finished copying stays as a copy. Copy off any data you need first.
 
 1. Open the server and click **Remove server**.
-2. Ployz lists the volumes on the server. Type the server's name and click **Remove**.
+2. Ployz lists the volumes on the server: each of your volumes by its name and its project and
+   environment, such as `pg-data` in `shop/production`. A volume Docker made with no name shows as
+   **Anonymous volume**. Type the server's name and click **Remove**.
 
 The server you remove and every server Ployz reaches it through must run a Ployz that can remove
 servers. If one doesn't, the removal stops and says "Server removal
