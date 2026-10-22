@@ -33,7 +33,7 @@ fn complete_snapshot_rejects_another_qualified_service_already_publishing_the_ho
     );
     assert_eq!(
         error.to_string(),
-        "hostname api.example.com is already published by blog/web"
+        "hostname api.example.com is already published by blog/web: remove it from that Service first, or use another hostname"
     );
 }
 

@@ -123,6 +123,12 @@ For any other status, see [My app isn't reachable](../troubleshooting/app-not-re
 Click the trash icon on the domain. It shows **Removed on your next deploy** and keeps serving
 until you deploy. To keep it, discard the change in **Details** before you deploy.
 
+## Move a domain to another service
+
+Remove the domain from the service that has it, add it to the other service, and deploy once.
+Ployz starts the new service first and moves the domain over once it's healthy, so the domain
+is down for a moment at most, not for a whole deploy.
+
 ## Good to know
 
 - **No wildcards.** Ployz doesn't support domains like `*.example.com`. Add each hostname.

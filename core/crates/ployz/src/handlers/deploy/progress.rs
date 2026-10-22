@@ -443,23 +443,28 @@ fn superseded(
 }
 
 fn failure(view: &DeploymentView, named: &[&str], command: impl Fn(&[&str]) -> String) -> Failure {
-    let (reason, cause) = match &view.deployment.outcome {
-        Some(
-            ployz_store::Outcome::Executed {
-                reason: Some(reason),
-                cause,
-                cancelled: false,
-                ..
-            }
-            | ployz_store::Outcome::NotExecuted { reason, cause, .. },
-        ) => (reason.clone(), cause.clone()),
+    let (reason, cause, code) = match &view.deployment.outcome {
+        Some(ployz_store::Outcome::Executed {
+            reason: Some(reason),
+            cause,
+            cancelled: false,
+            ..
+        }) => (reason.clone(), cause.clone(), None),
+        Some(ployz_store::Outcome::NotExecuted {
+            reason,
+            cause,
+            code,
+            ..
+        }) => (reason.clone(), cause.clone(), code.clone()),
         _ if view.deployment.status == DeploymentStatus::Cancelled => (
             format!("Deployment {} was cancelled.", view.deployment.label()),
             Vec::new(),
+            None,
         ),
         _ => (
             format!("Deployment {} did not complete.", view.deployment.label()),
             Vec::new(),
+            None,
         ),
     };
     let scope = [
@@ -633,6 +638,10 @@ fn failure(view: &DeploymentView, named: &[&str], command: impl Fn(&[&str]) -> S
         failure = failure.hint(Hint::Undo(command(
             &[&["history", "undo", revision.as_str()][..], &scope].concat(),
         )));
+    }
+    // A refusal the same request can never get past has no retry: its reason names the way out.
+    if code.is_some_and(|code| code.retry() == ployz_core::Retry::Never) {
+        return failure;
     }
     // An upload deploys again only from `up`: a Deploy ships the last one that built.
     if view.deployment.upload.is_some() {

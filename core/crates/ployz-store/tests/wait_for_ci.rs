@@ -472,6 +472,7 @@ fn no_servers_at_pass_cancels_with_reason() {
             reason: reason.to_owned(),
             cause: Vec::new(),
             needs_upload: Vec::new(),
+            code: None,
         })
     );
 }

@@ -747,7 +747,9 @@ pub enum PlanError {
     DependencyCycle { service: String },
     #[error("Docker Volume {id} is unavailable: {message}")]
     DockerVolumeUnavailable { id: DockerVolumeId, message: String },
-    #[error("hostname {hostname} is already published by {owner}")]
+    #[error(
+        "hostname {hostname} is already published by {owner}: remove it from that Service first, or use another hostname"
+    )]
     HostnameConflict {
         hostname: IngressHost,
         owner: QualifiedService,

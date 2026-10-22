@@ -646,7 +646,7 @@ async fn preview_rejects_a_visible_owner_of_the_hostname() {
     ));
     assert_eq!(
         error.to_string(),
-        "hostname api.opaque.ployz.example is already published by blog/web"
+        "hostname api.opaque.ployz.example is already published by blog/web: remove it from that Service first, or use another hostname"
     );
     server.abort();
 }

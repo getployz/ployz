@@ -482,6 +482,11 @@ pub enum Outcome {
         cause: Vec<String>,
         #[serde(default)]
         needs_upload: Vec<ServiceName>,
+        /// The refusal's code when preparation refused, so a reader knows whether the
+        /// same Deploy can succeed next time.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        code: Option<ployz_core::RpcErrorCode>,
     },
     /// A removal that needed no runner: nothing of its Environment ever ran on a
     /// Server.
