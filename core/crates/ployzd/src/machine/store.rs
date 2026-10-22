@@ -628,6 +628,7 @@ impl LocalMachineStore {
                 fs::remove_file(entry.path())?;
             }
         }
+        File::open(&self.data_dir)?.sync_all()?;
         fs::remove_file(self.data_dir.join(STATE_FILE_NAME))?;
         if self.data_dir.join(super::PREPARE_DIR_NAME).exists() {
             fs::remove_file(self.data_dir.join(LOCK_FILE_NAME))?;

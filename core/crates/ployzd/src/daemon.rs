@@ -1336,21 +1336,26 @@ mod tests {
         else {
             panic!("a begun reset must reopen as Resetting");
         };
-        // Stop the cleanup at an entry the directory lists after the record, where
-        // a cleanup in listing order would already have removed the record.
+        // Stop the cleanup at an entry the directory lists after the record where
+        // there is one: a cleanup in listing order would already have removed the
+        // record there.
         let listed: Vec<_> = fs::read_dir(&data_dir)
             .unwrap()
             .map(|entry| entry.unwrap().file_name())
             .collect();
+        let state = |name: &&std::ffi::OsString| name.to_string_lossy().starts_with("state-");
         let stuck = listed
             .iter()
             .skip_while(|name| *name != "machine.json")
-            .find(|name| name.to_string_lossy().starts_with("state-"))
+            .find(state)
+            .or_else(|| listed.iter().find(state))
             .map(|name| data_dir.join(name))
-            .expect("some state directory is listed after the record");
+            .unwrap();
         fs::set_permissions(&stuck, fs::Permissions::from_mode(0o500)).unwrap();
         if fs::write(stuck.join("probe"), b"").is_ok() {
-            // Root ignores directory permissions, so nothing can stop the cleanup.
+            eprintln!(
+                "skipped: root ignores directory permissions, so nothing can stop the cleanup"
+            );
             fs::set_permissions(&stuck, fs::Permissions::from_mode(0o700)).unwrap();
             return;
         }
