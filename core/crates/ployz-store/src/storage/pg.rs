@@ -68,8 +68,8 @@ impl Postgres {
         };
         let result = match run(&mut client, write, work) {
             Ok(result) => result,
-            // A restart closes every idle connection unnoticed until its next use: BEGIN is
-            // that use, and nothing ran, so drop them all and start on a fresh one.
+            // A restart closes every idle connection unnoticed until its next use: starting the
+            // transaction is that use, and nothing ran, so drop them all and start on a fresh one.
             Err((error, work)) if reused && ended(&client, &error) => {
                 self.idle
                     .lock()
@@ -119,29 +119,31 @@ fn begin(client: &mut Client, write: bool) -> Result<postgres::Transaction<'_>, 
         .start()
 }
 
-/// `work` in a transaction on `client`; a BEGIN that fails hands `work` back unrun.
+/// `work` in a transaction on `client`. If starting it fails (BEGIN or its timeouts), it hands
+/// `work` back unrun.
 fn run<T, W: FnOnce(&mut dyn Tx) -> Result<T, RpcError>>(
     client: &mut Client,
     write: bool,
     work: W,
 ) -> Result<Result<T, RpcError>, (postgres::Error, W)> {
-    match begin(client, write) {
-        Ok(transaction) => Ok(finish(transaction, work)),
-        Err(error) => Err((error, work)),
+    let mut transaction = match begin(client, write) {
+        Ok(transaction) => transaction,
+        Err(error) => return Err((error, work)),
+    };
+    // Per transaction, not as startup options: PgBouncer refuses those.
+    let millis = TIMEOUT.as_millis();
+    if let Err(error) = transaction.batch_execute(&format!(
+        "SET LOCAL statement_timeout = {millis}; SET LOCAL lock_timeout = {millis}"
+    )) {
+        return Err((error, work));
     }
+    Ok(finish(transaction, work))
 }
 
 fn finish<T>(
     mut transaction: postgres::Transaction<'_>,
     work: impl FnOnce(&mut dyn Tx) -> Result<T, RpcError>,
 ) -> Result<T, RpcError> {
-    // Per transaction, not as startup options: PgBouncer refuses those.
-    let millis = TIMEOUT.as_millis();
-    transaction
-        .batch_execute(&format!(
-            "SET LOCAL statement_timeout = {millis}; SET LOCAL lock_timeout = {millis}"
-        ))
-        .map_err(storage_error)?;
     // Dropping the transaction on an error rolls it back.
     let value = work(&mut PostgresTx(&mut transaction))?;
     transaction.commit().map_err(storage_error)?;
