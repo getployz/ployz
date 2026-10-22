@@ -355,6 +355,7 @@ where
         )
         .await?
     };
+    let sealing = sealing(&mut ready).await?;
     progress(EnrollStage::Publishing);
     // Mint a fresh capability; Cloud verifies replacements when enrollment resumes.
     let capability = set_cloud_management_client(matches, &mut ready).await?;
@@ -373,7 +374,6 @@ where
         &capability,
     )
     .await?;
-    let sealing = sealing(&mut ready).await?;
     cloud_enroll::callback(callback_url, token, assigned.id, &pairing.secret, sealing).await?;
     ui::stream(format_args!("Joined Server {}.", assigned.name));
     // The join is committed; a catch-up failure makes it partial.
@@ -518,6 +518,7 @@ where
                     }))
                 })?;
     }
+    let sealing = sealing(&mut ready).await?;
     progress(EnrollStage::Publishing);
     // Repeated Set stages a fresh capability; its first operational RPC completes rotation.
     let capability = set_cloud_management_client(matches, &mut ready).await
@@ -530,7 +531,6 @@ where
         &capability,
     )
     .await?;
-    let sealing = sealing(&mut ready).await?;
     cloud_enroll::callback(
         &cloud_enroll::callback_url(cloud_url),
         token,
