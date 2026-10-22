@@ -36,6 +36,17 @@ for (const table of ["__drizzle_migrations", "__drizzle_migrations_analytics"]) 
   });
 }
 
+it("accepts a shipped migration whose file was edited after it was applied", async () => {
+  const row = await harness.pool.query<{ id: number; hash: string }>(
+    "update drizzle.__drizzle_migrations set hash = 'hash-of-the-file-before-an-edit' where id = (select min(id) from drizzle.__drizzle_migrations) returning id, (select hash from drizzle.__drizzle_migrations where id = (select min(id) from drizzle.__drizzle_migrations)) as hash",
+  );
+  try {
+    await expect(check()).resolves.toBeUndefined();
+  } finally {
+    await harness.pool.query("update drizzle.__drizzle_migrations set hash = $2 where id = $1", [row.rows[0]?.id, row.rows[0]?.hash]);
+  }
+});
+
 it("accepts a fresh database without either migrations table", async () => {
   try {
     await harness.pool.query("alter schema drizzle rename to saved_drizzle");
