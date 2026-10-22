@@ -10,7 +10,8 @@ pulls the image onto your servers and runs it, with nothing to build.
 
 Before you deploy, find the port the image listens on, like 80 for nginx. Ployz sends traffic
 to the port in the service's `PORT` variable, `8080` unless you set it, so give it the image's
-port: on the domain, or as a `PORT` [variable](../services/variables.md).
+port: on the domain, or as a `PORT` [variable](../services/variables.md). If you miss it, the
+deploy warns and names the image's ports. See [Domains](../services/domains.md).
 
 1. Open your project and click **Create**, then **Docker image**.
 2. Enter the image, such as `nginx:1.27`, and click **Continue**. For a private image, add its
@@ -75,10 +76,10 @@ With more than one project, or to deploy to an environment other than the defaul
 | AWS ECR Public | A token from `aws ecr-public get-login-password --region us-east-1` |
 | Any other registry | A username and a password or token |
 
-<!-- screenshot: the Registry credentials field with "Credentials configured" and the Docker Hub host -->
+<!-- screenshot: the Registry credentials row showing "Docker Hub · docker.io" -->
 
-Ployz stores the secret encrypted and never shows it again; the service shows **Credentials
-configured**. To replace it, click the pencil. A new secret takes effect at once, not as a staged
+Ployz stores the secret encrypted and never shows it again. The **Registry credentials** row
+shows the provider and registry, like **Docker Hub · docker.io**. To replace it, click the pencil. A new secret takes effect at once, not as a staged
 change, and Discard can't bring the old one back. **Disconnect** stops using credentials from
 your next deploy, and **Restore** undoes it until then.
 
