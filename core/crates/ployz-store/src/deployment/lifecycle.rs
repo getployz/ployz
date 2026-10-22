@@ -249,7 +249,7 @@ pub(crate) fn admitted_by_user(
 }
 
 /// Who admitted Deployment `id`, by the immutable id Cloud authenticated: none for
-/// Cloud's own automation and for one admitted before Cloud sent it.
+/// Cloud's own automation and for one an older Cloud admitted.
 pub(crate) fn admitter(tx: &mut dyn Tx, id: &DeploymentId) -> Result<Option<String>, RpcError> {
     let rows = tx.query(
         "SELECT admitted_by_user FROM config_deployment WHERE id = ?1",

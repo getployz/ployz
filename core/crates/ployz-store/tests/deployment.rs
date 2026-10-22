@@ -6140,6 +6140,13 @@ fn a_deployment_admitted_without_a_user_id_is_someones_own_by_name() {
         &protector(Approval::NotRequired, Asks::Destroys),
     )
     .unwrap();
+
+    // Linus cancels his own by name, though Cloud sends his id now.
+    let mine = signed_in("u-linus", member(Approval::Required, Asks::Destroys));
+    store
+        .write_trusted(&linus, &Cancel { deployment: id(1) }, &mine)
+        .unwrap();
+    // Grace's is someone else's to him, with his id sent or not.
     deploy_trusted(
         &store,
         &grace,
@@ -6147,13 +6154,6 @@ fn a_deployment_admitted_without_a_user_id_is_someones_own_by_name() {
         &protector(Approval::NotRequired, Asks::Destroys),
     )
     .unwrap();
-
-    // Linus cancels his own by name, whether or not Cloud sends his id now.
-    let mine = signed_in("u-linus", member(Approval::Required, Asks::Destroys));
-    store
-        .write_trusted(&linus, &Cancel { deployment: id(1) }, &mine)
-        .unwrap();
-    // Grace's is someone else's to him either way.
     let refused = store
         .write_trusted(&linus, &Cancel { deployment: id(2) }, &mine)
         .unwrap_err();
