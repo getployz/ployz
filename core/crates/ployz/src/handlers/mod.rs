@@ -172,6 +172,8 @@ fn wants_json(args: &[std::ffi::OsString]) -> bool {
 
 /// A flag written before the command that takes it, `ployz --project web status`:
 /// clap would offer the nearest top-level flag, so name the command's own instead.
+/// A flag another command takes, `server show --project`, is one this command lacks,
+/// not a typo of its nearest flag. One after `--` is an operand, and keeps clap's error.
 fn misplaced_flag(error: clap::Error, tree: &Command, args: &[std::ffi::OsString]) -> clap::Error {
     use clap::error::{ContextKind, ContextValue, ErrorKind};
     if error.kind() != ErrorKind::UnknownArgument {
@@ -186,24 +188,43 @@ fn misplaced_flag(error: clap::Error, tree: &Command, args: &[std::ffi::OsString
     else {
         return error;
     };
-    let path = reached(tree, args);
-    let takes = !path.is_empty()
-        && path
-            .split(' ')
-            .try_fold(tree, |command, name| command.find_subcommand(name))
-            .is_some_and(|command| {
-                command
-                    .get_arguments()
-                    .any(|arg| arg.get_long() == Some(long))
-            });
-    if !takes {
+    let named = |arg: &std::ffi::OsString| {
+        arg.to_str()
+            .and_then(|arg| arg.strip_prefix("--"))
+            .and_then(|flag| flag.split('=').next())
+            == Some(long)
+    };
+    if !args.iter().take_while(|arg| *arg != "--").any(named) {
         return error;
     }
+    fn takes(command: &Command, long: &str) -> bool {
+        command
+            .get_arguments()
+            .any(|arg| arg.get_long() == Some(long))
+    }
+    fn anywhere(command: &Command, long: &str) -> bool {
+        takes(command, long) || command.get_subcommands().any(|sub| anywhere(sub, long))
+    }
+    let path = reached(tree, args);
+    let Some(command) = (!path.is_empty())
+        .then(|| {
+            path.split(' ')
+                .try_fold(tree, |command, name| command.find_subcommand(name))
+        })
+        .flatten()
+    else {
+        return error;
+    };
+    let tip = if takes(command, long) {
+        format!("'{path} --{long}' exists; put it after the command")
+    } else if !command.has_subcommands() && anywhere(tree, long) {
+        format!("'{path}' takes no --{long}")
+    } else {
+        return error;
+    };
     clap::Error::raw(
         ErrorKind::UnknownArgument,
-        format!(
-            "unexpected argument '{invalid}' found\n\n  tip: '{path} --{long}' exists; put it after the command\n"
-        ),
+        format!("unexpected argument '{invalid}' found\n\n  tip: {tip}\n"),
     )
 }
 
@@ -768,6 +789,16 @@ mod tests {
         );
         let error = tip(&["--nonsense", "status"]);
         assert!(!error.contains("exists; put it after"), "{error}");
+        let error = tip(&["get", "--", "web.image", "--project", "p"]);
+        assert!(!error.contains("put it after"), "{error}");
+        let error = tip(&["server", "show", "web-1", "--project", "p"]);
+        assert!(
+            error.contains("tip: 'server show' takes no --project"),
+            "{error}"
+        );
+        assert!(!error.contains("--connect"), "{error}");
+        let error = tip(&["server", "show", "web-1", "--conect", "p"]);
+        assert!(error.contains("--connect"), "{error}");
     }
 
     fn command() -> Command {
