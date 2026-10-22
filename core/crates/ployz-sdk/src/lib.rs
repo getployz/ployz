@@ -681,6 +681,30 @@ impl Client {
         to_json(&attempt)
     }
 
+    /// Give every Participating Machine of a Cluster founded before Sealing Keys the one
+    /// Sealing Key. Each Machine RPC is bounded and safe to repeat; rerun after a
+    /// `waiting` report or a failed Machine. The report carries no ciphertext.
+    ///
+    /// # Errors
+    ///
+    /// Returns a generated [`RpcError`] JSON payload when `request` is not a
+    /// BackfillSealingKeyRequest, the session is closed, or the Cluster's Machines cannot
+    /// be listed. A Machine's refusal is in the report.
+    #[napi(ts_return_type = "Promise<BackfillSealingKeyReport>")]
+    pub async fn backfill_sealing_key(
+        &self,
+        #[napi(ts_arg_type = "BackfillSealingKeyRequest")] request: serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        let request: ployz::sealing_backfill::BackfillSealingKeyRequest =
+            from_js(request).map_err(invalid_argument)?;
+        let report = self
+            .inner
+            .backfill_sealing_key(request)
+            .await
+            .map_err(rpc_to_napi)?;
+        to_json(&report)
+    }
+
     /// Live Observation of Data Loss that destroying `namespace` would cause.
     ///
     /// `destroy_volumes` false is empty. Mutates nothing.
