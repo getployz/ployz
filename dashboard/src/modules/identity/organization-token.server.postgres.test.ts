@@ -84,6 +84,17 @@ describe("organization tokens", () => {
     expect(await listedBy("ada")).toEqual(["eve-ci"]);
   });
 
+  it("names each token's owner, and calls only the viewer's own full tokens theirs", async () => {
+    await tokenOf("ada");
+    await tokenOf("eve");
+    const listed = (await run(listCredentials(callerOf("bob")))).tokens.map(({ name, scope, owner }) => ({ name, scope, owner }));
+    expect(listed).toEqual([
+      { name: "ada-ci", scope: "Full as Ada", owner: { id: ids.ada, name: "Ada", email: "ada@example.test", you: false } },
+      { name: "eve-ci", scope: "Full as Eve", owner: { id: ids.eve, name: "Eve", email: "eve@example.test", you: false } },
+    ]);
+    expect((await run(listCredentials(callerOf("eve")))).tokens.map(({ scope, owner }) => ({ scope, you: owner.you }))).toEqual([{ scope: "Full as you", you: true }]);
+  });
+
   it("shows support none of the Organization's tokens and lets it revoke none", async () => {
     const ada = await tokenOf("ada");
     const support: Caller = {

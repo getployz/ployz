@@ -107,7 +107,11 @@ fn fake_cloud(browser: Arc<Mutex<Browser>>, routes: Arc<Mutex<Vec<String>>>) -> 
                     json!({
                         "tokens": [{ "id": "t1", "name": TOKEN_NAME,
                             "created_at": "2026-01-01", "expires_at": "2030-01-01",
-                            "expired": false, "current": false, "scope": "Full as you" }],
+                            "expired": false, "current": false, "scope": "Full as you" },
+                            { "id": "t2", "name": "grace-ci",
+                            "created_at": "2026-01-01", "expires_at": "2030-01-01",
+                            "expired": false, "current": false, "scope": "Full as Grace",
+                            "owner": { "id": "u2", "name": "Grace", "email": "grace@example.test", "you": false } }],
                         "devices": [{ "id": "d1", "created_at": "2026-10-18T02:49:32.724Z",
                             "expires_at": "2026-10-25T02:49:32.724Z", "current": true }],
                         "revoking": [],
@@ -224,8 +228,39 @@ fn token_ls_says_which_login_each_device_is_and_what_it_can_do() {
     let stdout = String::from_utf8(listed.stdout).unwrap();
     assert!(
         stdout.lines().any(|line| line
-            == "device\td1\tployz login 2026-10-18\tFull as you\t2026-10-25T02:49:32.724Z\tcurrent"),
+            == "device\td1\tployz login 2026-10-18\tyou\tFull as you\t2026-10-25T02:49:32.724Z\tcurrent"),
         "{stdout}"
+    );
+}
+
+#[test]
+fn token_ls_names_whose_each_token_is() {
+    let cloud = fake_cloud(Arc::new(Mutex::new(Browser::Approved)), Arc::default());
+    let dir = tempfile::tempdir().unwrap();
+    let config = dir.path().join("config.yaml");
+    for args in [
+        vec!["login", "--json", "--cloud-url", &cloud],
+        vec!["login", "--json"],
+    ] {
+        assert!(ployz(&config, &args).status.success());
+    }
+    let listed = ployz(&config, &["token", "ls"]);
+    assert!(listed.status.success());
+    let stdout = String::from_utf8(listed.stdout).unwrap();
+    assert!(
+        stdout
+            .lines()
+            .any(|line| line == "cli\tt2\tgrace-ci\tGrace\tFull as Grace\t2030-01-01\t-"),
+        "{stdout}"
+    );
+    let json = ployz(&config, &["--json", "token", "ls"]);
+    assert!(json.status.success());
+    let json = json_of(&json);
+    assert_eq!(json.pointer("/tokens/1/owner/name").unwrap(), "Grace");
+    assert_eq!(
+        json.pointer("/tokens/0/owner"),
+        None,
+        "an older Cloud names no owner"
     );
 }
 
