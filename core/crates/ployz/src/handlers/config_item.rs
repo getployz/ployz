@@ -12,9 +12,12 @@ use ployz_store::{
     PutConfigFile, RemoveConfigFile, RenameConfig,
 };
 
+use serde_json::json;
+
 use super::store::{self, Next};
 use super::{Error, leaf_matches, read_bounded, required};
 use crate::cli::{base, positional, switch, value};
+use crate::failure::io_code;
 use crate::ui::{Cell, Fields, Table, Tone};
 
 pub(super) fn group(command: Command) -> Command {
@@ -157,21 +160,20 @@ pub(super) fn put(root: &ArgMatches) -> Result<(), Error> {
             std::fs::File::open(path)
                 .and_then(|from| read_bounded(from, MAX_FILE_BYTES))
                 .map_err(|error| {
-                    Error::caused(
-                        RpcErrorCode::InvalidArgument,
-                        format!("Can't read --from {path}"),
-                        error,
-                    )
+                    Error::caused(io_code(&error), format!("Can't read --from {path}"), error)
                 })?,
             path.as_str(),
         ),
         None => (read_bounded(std::io::stdin(), MAX_FILE_BYTES)?, "stdin"),
     };
     let file = file_name(matches)?;
+    // `bytes` is what was read before stopping, one past the limit: the Store's details.
     let bytes = bytes.ok_or_else(|| {
-        Error::usage(format!(
-            "{file}: a Config file holds at most 256 KB of text; {from} holds more"
-        ))
+        Error::detailed(
+            RpcErrorCode::InvalidArgument,
+            format!("{file}: a Config file holds at most 256 KB of text; {from} holds more"),
+            json!({ "file": file.to_string(), "bytes": MAX_FILE_BYTES + 1, "max_bytes": MAX_FILE_BYTES }),
+        )
     })?;
     let content = String::from_utf8(bytes).map_err(|_| {
         Error::usage(format!(

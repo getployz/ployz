@@ -298,12 +298,22 @@ pub(super) fn set(root: &ArgMatches) -> Result<(), Error> {
             ));
         }
         let secret = read_bounded(std::io::stdin(), MAX_ENV_STRING)?.ok_or_else(|| {
-            Error::usage(format!(
-                "{path}: the secret on stdin is too long for a Container's environment: Linux passes at most 128 KiB per variable, name included"
-            ))
+            let variable = path.rsplit('.').next().unwrap_or(&path);
+            Error::detailed(
+                RpcErrorCode::InvalidArgument,
+                format!(
+                    "{path}: the secret on stdin is too long for a Container's environment: Linux passes at most 128 KiB per variable, name included"
+                ),
+                json!({ "variable": variable.to_ascii_uppercase() }),
+            )
         })?;
-        let mut secret = String::from_utf8(secret)
-            .map_err(|_| Error::usage(format!("{path}: the secret on stdin isn't UTF-8 text")))?;
+        // `internal`, as when stdin was read as a string.
+        let mut secret = String::from_utf8(secret).map_err(|_| {
+            Error::coded(
+                RpcErrorCode::Internal,
+                format!("{path}: the secret on stdin isn't UTF-8 text"),
+            )
+        })?;
         // `echo VALUE |` ends it with a newline that is not part of the secret.
         if secret.ends_with('\n') {
             secret.pop();
@@ -393,10 +403,10 @@ fn one_service(matches: &ArgMatches, usage: &'static str) -> Result<String, Erro
     .ok_or_else(|| Error::usage(usage))
 }
 
-/// The most bytes of env file `set --from-env-file` reads: Cloud refuses a Store request
-/// body over 4 MiB (`MAX_REQUEST_BYTES` in its config handler), so a longer file can't
-/// arrive as one edit.
-const MAX_ENV_FILE_BYTES: usize = 4 * 1024 * 1024;
+/// The most bytes of env file `set --from-env-file` reads, so a wrong path such as
+/// `/dev/zero` can't fill memory. It bounds the CLI's read, not what a file may set: the
+/// Store and Cloud judge the edit the file becomes.
+const MAX_ENV_FILE_BYTES: usize = 32 * 1024 * 1024;
 
 /// `set SERVICE --from-env-file FILE [--secret]`: every variable in the file, in one
 /// edit. A variable the Service already holds as a secret is sealed again, never
@@ -425,12 +435,21 @@ fn set_from_env_file(root: &ArgMatches, file: &str) -> Result<(), Error> {
         )
     };
     let bytes = bytes.ok_or_else(|| {
-        Error::usage(format!(
-            "{from}: an env file holds at most 4 MiB; this one holds more"
-        ))
+        Error::detailed(
+            RpcErrorCode::InvalidArgument,
+            format!("{from}: the CLI reads at most 32 MiB of env file; this one holds more"),
+            json!({ "file": file, "max_bytes": MAX_ENV_FILE_BYTES }),
+        )
     })?;
-    let text = String::from_utf8(bytes)
-        .map_err(|_| Error::usage(format!("{from}: an env file is UTF-8 text")))?;
+    // Stdin that isn't text stays `internal`, as when it was read as a string.
+    let text = String::from_utf8(bytes).map_err(|_| {
+        let code = if file == "-" {
+            RpcErrorCode::Internal
+        } else {
+            RpcErrorCode::InvalidArgument
+        };
+        Error::coded(code, format!("{from}: an env file is UTF-8 text"))
+    })?;
     // A key the file repeats takes its last value, in its first place; variables are
     // uppercase, so case doesn't make a new key.
     let mut variables: Vec<(String, String)> = Vec::new();

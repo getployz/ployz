@@ -625,6 +625,28 @@ pub(crate) type Handler = fn(&ArgMatches) -> Result<(), Error>;
 mod tests {
     use super::*;
 
+    /// An endless source that counts the bytes it serves.
+    struct Endless(usize);
+
+    impl std::io::Read for &mut Endless {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            buf.fill(b'a');
+            self.0 += buf.len();
+            Ok(buf.len())
+        }
+    }
+
+    #[test]
+    fn a_bounded_read_takes_at_most_one_byte_past_its_limit() {
+        for limit in [0, 1, 4096, 256 * 1024] {
+            let mut source = Endless(0);
+            assert_eq!(read_bounded(&mut source, limit).unwrap(), None);
+            assert!(source.0 <= limit + 1, "{limit}: read {}", source.0);
+        }
+        let exact = read_bounded(&[b'a'; 10][..], 10).unwrap();
+        assert_eq!(exact.as_deref(), Some(&[b'a'; 10][..]));
+    }
+
     #[test]
     fn a_retry_line_escapes_what_would_steer_the_terminal() {
         assert_eq!(shell_word("web-*"), "'web-*'");

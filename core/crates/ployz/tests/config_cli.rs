@@ -6907,7 +6907,7 @@ fn a_removal_without_volumes_names_the_server_that_did_not_answer_cloud() {
 }
 
 /// Run `ployz --json ARGS` on `stdin`. An input read without bound would fill memory,
-/// so the run is killed after 3 s and the test fails instead of hanging.
+/// so the run is killed after 15 s and the test fails instead of hanging.
 fn ployz_on(
     store: &Target,
     args: &[&str],
@@ -6922,12 +6922,12 @@ fn ployz_on(
         .stdout(std::process::Stdio::piped())
         .spawn()
         .unwrap();
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
     while child.try_wait().unwrap().is_none() {
         if std::time::Instant::now() > deadline {
             child.kill().unwrap();
             child.wait().unwrap();
-            panic!("{args:?} still reading after 3 s");
+            panic!("{args:?} still reading after 15 s");
         }
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
@@ -6938,17 +6938,40 @@ fn ployz_on(
     (output.status.code(), json)
 }
 
+/// The `--json` error of a run on `stdin` that fails with `code`, and its exit status:
+/// 2 for `invalid_argument`, 1 otherwise.
+fn failed_on(
+    store: &Target,
+    args: &[&str],
+    stdin: impl Into<std::process::Stdio>,
+    code: &str,
+) -> Value {
+    let (exit, json) = ployz_on(store, args, stdin);
+    let expected = if code == "invalid_argument" { 2 } else { 1 };
+    assert_eq!(exit, Some(expected), "{args:?}: {json}");
+    assert_eq!(json["error"]["code"], code, "{json}");
+    json["error"].clone()
+}
+
 /// A refusal of a too-long input, read no further than its limit.
-fn refused_on(store: &Target, args: &[&str], stdin: impl Into<std::process::Stdio>) -> String {
-    let (code, json) = ployz_on(store, args, stdin);
-    assert_eq!(code, Some(2), "{args:?}: {json}");
-    assert_eq!(json["error"]["code"], "invalid_argument", "{json}");
-    json["error"]["message"].as_str().unwrap().to_owned()
+fn refused_on(store: &Target, args: &[&str], stdin: impl Into<std::process::Stdio>) -> Value {
+    failed_on(store, args, stdin, "invalid_argument")
 }
 
 fn dev_zero() -> std::fs::File {
     std::fs::File::open("/dev/zero").unwrap()
 }
+
+/// A temporary file holding `bytes`, opened for reading.
+fn file_of(bytes: &[u8]) -> (tempfile::NamedTempFile, std::fs::File) {
+    let file = tempfile::NamedTempFile::new().unwrap();
+    std::fs::write(file.path(), bytes).unwrap();
+    let read = std::fs::File::open(file.path()).unwrap();
+    (file, read)
+}
+
+const MAX_CONFIG_FILE: usize = 256 * 1024;
+const MAX_ENV_FILE: usize = 32 * 1024 * 1024;
 
 #[test]
 fn an_input_past_its_limit_is_refused_after_reading_one_byte_past_it() {
@@ -6956,41 +6979,172 @@ fn an_input_past_its_limit_is_refused_after_reading_one_byte_past_it() {
     shop_with_web(store);
     ok(store, &["config", "add", "app", "--mount", "web:/etc/app"]);
     let null = std::process::Stdio::null;
-
-    let big = tempfile::NamedTempFile::new().unwrap();
-    std::fs::write(big.path(), "a".repeat(396 * 1024)).unwrap();
-    let big = big.path().to_str().unwrap();
     let put = ["config", "put", "app", "x.txt", "--from"];
-    assert_eq!(
-        refused_on(store, &[&put[..], &[big]].concat(), null()),
-        format!("x.txt: a Config file holds at most 256 KB of text; {big} holds more")
+    // `bytes` is how much was read before stopping: one past the limit.
+    let config_details =
+        json!({ "file": "x.txt", "bytes": MAX_CONFIG_FILE + 1, "max_bytes": MAX_CONFIG_FILE });
+
+    let (exact, _) = file_of(&vec![b'a'; MAX_CONFIG_FILE]);
+    ok(
+        store,
+        &[&put[..], &[exact.path().to_str().unwrap()]].concat(),
     );
+    for len in [MAX_CONFIG_FILE + 1, 396 * 1024] {
+        let (big, _) = file_of(&vec![b'a'; len]);
+        let big = big.path().to_str().unwrap();
+        let refused = refused_on(store, &[&put[..], &[big]].concat(), null());
+        assert_eq!(
+            refused["message"],
+            format!("x.txt: a Config file holds at most 256 KB of text; {big} holds more")
+        );
+        assert_eq!(refused["details"], config_details);
+    }
+    let refused = refused_on(store, &[&put[..], &["/dev/zero"]].concat(), null());
     assert_eq!(
-        refused_on(store, &[&put[..], &["/dev/zero"]].concat(), null()),
+        refused["message"],
         "x.txt: a Config file holds at most 256 KB of text; /dev/zero holds more"
     );
+    assert_eq!(refused["details"], config_details);
+    let refused = refused_on(store, &put[..4], dev_zero());
     assert_eq!(
-        refused_on(store, &put[..4], dev_zero()),
+        refused["message"],
         "x.txt: a Config file holds at most 256 KB of text; stdin holds more"
     );
+    assert_eq!(refused["details"], config_details);
 
     let env_file = ["set", "web", "--from-env-file"];
+    let refused = refused_on(store, &[&env_file[..], &["/dev/zero"]].concat(), null());
     assert_eq!(
-        refused_on(store, &[&env_file[..], &["/dev/zero"]].concat(), null()),
-        "/dev/zero: an env file holds at most 4 MiB; this one holds more"
+        refused["message"],
+        "/dev/zero: the CLI reads at most 32 MiB of env file; this one holds more"
     );
     assert_eq!(
-        refused_on(store, &[&env_file[..], &["-"]].concat(), dev_zero()),
-        "stdin: an env file holds at most 4 MiB; this one holds more"
+        refused["details"],
+        json!({ "file": "/dev/zero", "max_bytes": MAX_ENV_FILE })
+    );
+    let refused = refused_on(store, &[&env_file[..], &["-"]].concat(), dev_zero());
+    assert_eq!(
+        refused["message"],
+        "stdin: the CLI reads at most 32 MiB of env file; this one holds more"
+    );
+    assert_eq!(
+        refused["details"],
+        json!({ "file": "-", "max_bytes": MAX_ENV_FILE })
     );
 
+    let refused = refused_on(store, &["set", "web.env.S", "--secret"], dev_zero());
     assert_eq!(
-        refused_on(store, &["set", "web.env.S", "--secret"], dev_zero()),
+        refused["message"],
         "web.env.S: the secret on stdin is too long for a Container's environment: \
          Linux passes at most 128 KiB per variable, name included"
     );
+    assert_eq!(refused["details"], json!({ "variable": "S" }));
     let (code, unset) = ployz(Some(store), &["get", "web.env.S"]);
     assert_ne!(code, Some(0), "nothing was set: {unset}");
+}
+
+#[test]
+fn an_env_file_cloud_takes_as_one_edit_is_read_whole() {
+    let store = &Target::Local(tempfile::tempdir().unwrap());
+    shop_with_web(store);
+    // A long comment past Cloud's 4 MiB request cap becomes a short edit.
+    let mut text = b"#".to_vec();
+    text.extend(std::iter::repeat_n(b'x', 4 * 1024 * 1024));
+    text.extend(b"\nA=ok\n");
+    assert_eq!(text.len(), 4_194_311);
+    let (file, _) = file_of(&text);
+    ok(
+        store,
+        &[
+            "set",
+            "web",
+            "--from-env-file",
+            file.path().to_str().unwrap(),
+        ],
+    );
+    let (_, stdin) = file_of(&text);
+    let (code, set) = ployz_on(store, &["set", "web", "--from-env-file", "-"], stdin);
+    assert_eq!(code, Some(0), "{set}");
+    assert_eq!(
+        ok(store, &["get", "web.env.A"])["settings"][0]["value"],
+        json!("ok")
+    );
+}
+
+#[test]
+fn a_secret_at_the_store_limit_is_set_and_one_past_it_is_refused_alike() {
+    let store = &Target::Local(tempfile::tempdir().unwrap());
+    shop_with_web(store);
+    // `S=VALUE` and its closing NUL: 128 KiB.
+    let longest = 128 * 1024 - "S=".len() - 1;
+    let mut value = vec![b'v'; longest];
+    value.push(b'\n');
+    let (_, stdin) = file_of(&value);
+    let (code, set) = ployz_on(store, &["set", "web.env.S", "--secret"], stdin);
+    assert_eq!(code, Some(0), "{set}");
+
+    // One byte longer the Store refuses it; far longer the CLI stops reading. Both say
+    // which variable.
+    for len in [longest + 1, 1024 * 1024] {
+        let (_, stdin) = file_of(&vec![b'v'; len]);
+        let refused = refused_on(store, &["set", "web.env.S", "--secret"], stdin);
+        assert_eq!(refused["details"], json!({ "variable": "S" }), "{len}");
+    }
+}
+
+#[test]
+fn an_unreadable_input_keeps_its_error_code() {
+    let store = &Target::Local(tempfile::tempdir().unwrap());
+    shop_with_web(store);
+    ok(store, &["config", "add", "app", "--mount", "web:/etc/app"]);
+    let null = std::process::Stdio::null;
+
+    let dir = tempfile::tempdir().unwrap();
+    let missing = dir.path().join("missing.yml");
+    let missing = missing.to_str().unwrap();
+    let put = ["config", "put", "app", "app.yml", "--from"];
+    let refused = failed_on(store, &[&put[..], &[missing]].concat(), null(), "not_found");
+    assert_eq!(refused["message"], format!("Can't read --from {missing}"));
+    let refused = failed_on(
+        store,
+        &["set", "web", "--from-env-file", missing],
+        null(),
+        "invalid_argument",
+    );
+    assert_eq!(
+        refused["message"],
+        format!("Can't read the env file {missing}")
+    );
+
+    let locked = dir.path().join("locked.yml");
+    std::fs::write(&locked, "a: 1\n").unwrap();
+    std::fs::set_permissions(&locked, std::os::unix::fs::PermissionsExt::from_mode(0o000)).unwrap();
+    // root reads it anyway.
+    if std::fs::File::open(&locked).is_err() {
+        let locked = locked.to_str().unwrap();
+        let refused = failed_on(store, &[&put[..], &[locked]].concat(), null(), "internal");
+        assert_eq!(refused["message"], format!("Can't read --from {locked}"));
+        assert_eq!(refused["cause"], json!(["Permission denied (os error 13)"]));
+    }
+
+    let binary = || file_of(&[0xff, 0xfe, b'\n']).1;
+    let refused = failed_on(
+        store,
+        &["set", "web.env.S", "--secret"],
+        binary(),
+        "internal",
+    );
+    assert_eq!(
+        refused["message"],
+        "web.env.S: the secret on stdin isn't UTF-8 text"
+    );
+    let refused = failed_on(
+        store,
+        &["set", "web", "--from-env-file", "-"],
+        binary(),
+        "internal",
+    );
+    assert_eq!(refused["message"], "stdin: an env file is UTF-8 text");
 }
 
 #[test]
