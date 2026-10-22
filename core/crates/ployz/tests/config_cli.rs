@@ -1457,6 +1457,7 @@ fn server_access(
             while reader.read_line(&mut line).unwrap() > 2 {
                 line.clear();
             }
+            // real-wait: a slow Cloud reply is what the CLI process must wait out.
             std::thread::sleep(delay);
             write!(
                 stream,
@@ -7065,6 +7066,7 @@ fn ployz_on(
             child.wait().unwrap();
             panic!("{args:?} still reading after 15 s");
         }
+        // real-wait: polls the CLI child, which signals nothing before it exits.
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
     let output = child.wait_with_output().unwrap();

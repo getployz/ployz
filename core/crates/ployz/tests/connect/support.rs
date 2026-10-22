@@ -1344,6 +1344,7 @@ impl FakeMachine for DiscoveryService {
         else {
             panic!("expected a routes read");
         };
+        // real-wait: a slow routes reply is what a CLI process under test must wait out.
         tokio::time::sleep(self.routes_delay).await;
         Ok(Response::new(
             RpcResponse::from(self.routes(&read.service))
