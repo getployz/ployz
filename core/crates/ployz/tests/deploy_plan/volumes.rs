@@ -1009,6 +1009,33 @@ fn a_silent_volume_server_leaves_a_deploy_of_another_service_alone() {
             .iter()
             .all(|operation| operation.service_name() != Some(&db.name))
     );
+
+    let depends = intent.clone().with_dependencies(BTreeMap::from([(
+        web.name.clone(),
+        vec![ployz_core::ServiceDependency {
+            service: db.name.clone(),
+            condition: ployz_core::DependencyCondition::ServiceStarted,
+        }],
+    )]));
+    assert!(matches!(
+        preview_deploy(&depends, &snapshot),
+        Err(PlanError::Service { source, .. })
+            if matches!(*source, PlanError::CopiesUnknown { .. })
+    ));
+
+    let mut pinned = intent.clone();
+    for service in &mut pinned.target {
+        if service.name == db.name {
+            service.placement.constraints = [label_constraint("second")].into();
+        }
+    }
+    snapshot.machines.last_mut().unwrap().membership = MembershipObservation::Down;
+    let preview = preview_deploy(&pinned, &snapshot).unwrap();
+    assert!(
+        operations(&preview)
+            .iter()
+            .all(|operation| operation.service_name() != Some(&db.name))
+    );
 }
 
 #[test]
