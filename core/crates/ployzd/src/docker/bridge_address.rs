@@ -13,12 +13,32 @@ use crate::network::DOCKER_NETWORK_NAME;
 /// The ployz endpoint of a Container, with `ipv4` pinned. Only the Ingress Proxy
 /// takes IPv6.
 pub(crate) fn endpoint(ipv6: bool, ipv4: Option<Ipv4Addr>) -> EndpointSettings {
-    let mut endpoint = super::bridge_endpoint(ipv6).unwrap_or_default();
-    endpoint.ipam_config = ipv4.map(|address| EndpointIpamConfig {
-        ipv4_address: Some(address.to_string()),
-        ..Default::default()
-    });
+    pin(super::bridge_endpoint(ipv6).unwrap_or_default(), ipv4)
+}
+
+/// `endpoint` with `ipv4` pinned, keeping any other address it asks for.
+pub(crate) fn pin(mut endpoint: EndpointSettings, ipv4: Option<Ipv4Addr>) -> EndpointSettings {
+    let Some(address) = ipv4 else {
+        return endpoint;
+    };
     endpoint
+        .ipam_config
+        .get_or_insert_with(EndpointIpamConfig::default)
+        .ipv4_address = Some(address.to_string());
+    endpoint
+}
+
+/// What a Container's current endpoint asks Docker for, so it rejoins with the same
+/// aliases, links and options. The addresses Docker assigned are dropped.
+pub(crate) fn reconnect(current: EndpointSettings) -> EndpointSettings {
+    EndpointSettings {
+        ipam_config: current.ipam_config,
+        links: current.links,
+        aliases: current.aliases,
+        driver_opts: current.driver_opts,
+        gw_priority: current.gw_priority,
+        ..Default::default()
+    }
 }
 
 /// The address pinned on a ployz endpoint.
@@ -118,6 +138,35 @@ mod tests {
         assert_eq!(next(subnet(), &BTreeSet::new(), None), Some(address(2)));
         let full = (2..=254).map(address).collect();
         assert_eq!(next(subnet(), &full, None), None);
+    }
+
+    #[test]
+    fn a_container_rejoins_with_its_own_aliases_and_options_at_its_pin() {
+        let current: EndpointSettings = serde_json::from_value(serde_json::json!({
+            "Aliases": ["db"],
+            "DriverOpts": { "com.docker.network.endpoint.sysctls": "x" },
+            "IPAMConfig": { "IPv6Address": "fdcd::9" },
+            "IPAddress": "10.210.3.9",
+            "EndpointID": "e",
+            "NetworkID": "n",
+        }))
+        .unwrap();
+        let rejoined = serde_json::to_value(pin(reconnect(current), Some(address(9)))).unwrap();
+        let at = |pointer: &str| rejoined.pointer(pointer).cloned();
+        assert_eq!(at("/Aliases"), Some(serde_json::json!(["db"])));
+        assert_eq!(
+            at("/DriverOpts/com.docker.network.endpoint.sysctls"),
+            Some(serde_json::json!("x"))
+        );
+        assert_eq!(
+            at("/IPAMConfig/IPv4Address"),
+            Some(serde_json::json!("10.210.3.9"))
+        );
+        assert_eq!(
+            at("/IPAMConfig/IPv6Address"),
+            Some(serde_json::json!("fdcd::9"))
+        );
+        assert!(at("/EndpointID").is_none_or(|id| id.is_null()));
     }
 
     #[test]
