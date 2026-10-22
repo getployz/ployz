@@ -55,10 +55,14 @@ reconnect.
 
 The private network also stays connected while Ployz stops, restarts or upgrades on a server.
 Your running services keep reaching services on the other servers. The first upgrade to 0.3.1
-on a server with IPv6 enabled is the exception: Ployz adds IPv6 to the server's container
-network, so its containers drop off the network for about two seconds. They keep running, but
-connections open to them at that moment can close, and some can come back at a different private
-address, as after a reboot.
+is the exception. Ployz fixes each container's private address, and on a server with IPv6 it also
+adds IPv6 to the container network, so containers drop off the network for up to about two
+seconds. They keep running and keep their addresses, but connections open to them at that moment
+can close.
+
+A container keeps its private address when Docker or the server restarts, so traffic for one
+service never reaches another that came back at its address. A new container takes an address
+no other container has used recently.
 
 ## Connect to another service
 

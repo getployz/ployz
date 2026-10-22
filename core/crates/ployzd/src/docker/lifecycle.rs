@@ -436,12 +436,16 @@ impl ContainerRuntime {
                     DOCKER_NETWORK_NAME,
                     NetworkConnectRequest {
                         container: container_id.to_string(),
-                        endpoint_config: super::bridge_endpoint(
-                            inspected
-                                .config
-                                .as_ref()
-                                .and_then(|config| config.labels.as_ref())
-                                .is_some_and(super::takes_bridge_ipv6),
+                        endpoint_config: Some(
+                            self.docker
+                                .bridge_join(
+                                    inspected
+                                        .config
+                                        .as_ref()
+                                        .and_then(|config| config.labels.as_ref())
+                                        .is_some_and(super::takes_bridge_ipv6),
+                                )
+                                .await?,
                         ),
                     },
                 )
@@ -678,14 +682,46 @@ impl ContainerRuntime {
 }
 
 impl super::LocalDocker {
+    /// The endpoint a Container rejoins the bridge with, at the next free address.
+    async fn bridge_join(&self, ipv6: bool) -> Result<bollard::models::EndpointSettings, Error> {
+        let mut last = self.endpoint_creates.lock().await;
+        let bridge = self.bridge().await?;
+        let address = bridge
+            .subnet
+            .and_then(|subnet| super::bridge_address::next(subnet, &bridge.taken, *last));
+        if address.is_some() {
+            *last = address;
+        }
+        Ok(super::bridge_address::endpoint(ipv6, address))
+    }
+
     pub(super) async fn create_container(
         &self,
         options: Option<bollard::query_parameters::CreateContainerOptions>,
-        body: ContainerCreateBody,
+        mut body: ContainerCreateBody,
     ) -> Result<bollard::models::ContainerCreateResponse, Error> {
-        let _gate = self.endpoint_creates.lock().await;
-        if self.bridge_capacity().await?.free_endpoints() == 0 {
+        let mut last = self.endpoint_creates.lock().await;
+        let bridge = self.bridge().await?;
+        if bridge.capacity.free_endpoints() == 0 {
             return Err(Error::EndpointCapacity);
+        }
+        let on_bridge = body
+            .host_config
+            .as_ref()
+            .and_then(|host| host.network_mode.as_deref())
+            == Some(DOCKER_NETWORK_NAME);
+        if on_bridge && let Some(subnet) = bridge.subnet {
+            let address = super::bridge_address::next(subnet, &bridge.taken, *last)
+                .ok_or(Error::EndpointCapacity)?;
+            let endpoints = body
+                .networking_config
+                .get_or_insert_default()
+                .endpoints_config
+                .get_or_insert_default();
+            let endpoint = endpoints.entry(DOCKER_NETWORK_NAME.to_owned()).or_default();
+            endpoint.ipam_config =
+                super::bridge_address::endpoint(false, Some(address)).ipam_config;
+            *last = Some(address);
         }
         let _creating = super::Creating::new(&self.creates);
         Ok(self.client.create_container(options, body).await?)
@@ -881,6 +917,42 @@ mod tests {
             "host",
             serde_json::json!({})
         )));
+    }
+
+    #[tokio::test]
+    async fn a_container_joins_the_bridge_at_a_static_address() {
+        let (runtime, fake) = fake_runtime_with(FakeDocker {
+            create_barrier: Some(std::sync::Arc::new(tokio::sync::Barrier::new(1))),
+            ..FakeDocker::default()
+        })
+        .await;
+        let namespace = Namespace::parse("app").unwrap();
+        let spec = spec_with_sources(Vec::new());
+        runtime
+            .create_with_admission::<_, _, Error>(
+                &machine(),
+                container_request(
+                    ContainerKind::ServiceContainer,
+                    &namespace,
+                    &spec,
+                    std::future::ready(None),
+                ),
+            )
+            .await
+            .unwrap();
+        let body = fake
+            .request_bodies
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|(path, _)| path.ends_with("/containers/create"))
+            .unwrap()
+            .1
+            .clone();
+        assert_eq!(
+            body.pointer("/NetworkingConfig/EndpointsConfig/ployz/IPAMConfig/IPv4Address"),
+            Some(&serde_json::json!("10.210.0.2")),
+        );
     }
 
     #[tokio::test]
