@@ -126,8 +126,12 @@ pub(super) fn frame(view: &DeploymentView) -> Frame {
                         | DeploymentWarning::IngressUnchecked { .. } => None,
                     }),
             )
-            .cloned()
-            .collect(),
+            .fold(Vec::new(), |mut notices, warning| {
+                if !notices.contains(warning) {
+                    notices.push(warning.clone());
+                }
+                notices
+            }),
     }
 }
 
@@ -353,12 +357,20 @@ pub(super) fn completion(
         .preview
         .as_ref()
         .is_some_and(|preview| preview.has_observation_gaps())
+        || left_a_gap(view)
         || left_a_copy_running(view)
         || ingress_unchecked(view).next().is_some()
     {
         return Err(Failure::partial());
     }
     Ok(())
+}
+
+/// The run found a Server it could not fully observe after the plan was made.
+fn left_a_gap(view: &DeploymentView) -> bool {
+    view.deployment.warnings.iter().any(|warning| {
+        matches!(warning, DeploymentWarning::Deploy { warning } if warning.observation_gap().is_some())
+    })
 }
 
 fn left_a_copy_running(view: &DeploymentView) -> bool {
@@ -1497,6 +1509,28 @@ mod tests {
                 },
             },
         ];
+        let failure = completion(&view, None, &[], command).unwrap_err();
+        assert_eq!(crate::ui::after_result(&failure), 3);
+    }
+
+    #[test]
+    fn an_applied_deploy_with_a_gap_found_at_run_time_is_partial() {
+        use ployz_core::{MachineName, ObservationGap, ObservationGapReason, ObservationKind};
+        let mut view = view();
+        view.deployment.status = DeploymentStatus::Applied;
+        view.deployment.outcome = None;
+        assert!(completion(&view, None, &[], command).is_ok());
+        view.deployment.warnings = vec![DeploymentWarning::Deploy {
+            warning: ployz_core::DeployWarning::ObservationFailed {
+                gap: Some(ObservationGap {
+                    machine_name: MachineName::parse("one").unwrap(),
+                    reason: ObservationGapReason::Failed,
+                }),
+                kind: ObservationKind::Container,
+                machine_id: ployz_core::MachineId::random(),
+                message: "Machine one did not answer: deadline has elapsed".into(),
+            },
+        }];
         let failure = completion(&view, None, &[], command).unwrap_err();
         assert_eq!(crate::ui::after_result(&failure), 3);
     }

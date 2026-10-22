@@ -947,6 +947,7 @@ fn assemble_plan(
             Err(
                 error @ (PlanError::NoWriter { .. }
                 | PlanError::CopiesUnknown { .. }
+                | PlanError::VolumeHolderUnknown { .. }
                 | PlanError::VolumeServerTakesNoServices { .. }),
             ) if intent.options.block_unmountable => {
                 blocked.push(BlockedService {
@@ -1622,6 +1623,8 @@ fn placement_candidates<'snapshot>(
         .machines
         .iter()
         .filter(|machine| machine.invites_rpc())
+        // A Suspect Machine that left this observer's listing unanswered would stall a start.
+        .filter(|machine| !snapshot.silent(machine))
         .filter(|machine| {
             !matches!(
                 requested.placement_eligibility_in_namespace(
@@ -1692,10 +1695,13 @@ fn placement_error(
         }]);
     }
     let mut down = Vec::new();
+    let mut silent = Vec::new();
     let mut refused = Vec::new();
     for machine in matched {
         if machine.membership == MembershipObservation::Down {
             down.push(machine.machine.name.clone());
+        } else if snapshot.silent(machine) {
+            silent.push(machine.machine.name.clone());
         } else if matches!(
             spec.placement_eligibility_in_namespace(
                 namespace,
@@ -1712,6 +1718,9 @@ fn placement_error(
     let mut constraints = Vec::new();
     if !down.is_empty() {
         constraints.push(EliminatingConstraint::MachineDown { names: down });
+    }
+    if !silent.is_empty() {
+        constraints.push(EliminatingConstraint::Unanswered { names: silent });
     }
     if !refused.is_empty() {
         constraints.push(EliminatingConstraint::WorkNotAccepted { names: refused });

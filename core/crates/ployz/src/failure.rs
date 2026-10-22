@@ -657,6 +657,7 @@ fn plan_code(error: &PlanError) -> RpcErrorCode {
         | PlanError::HostnameConflict { .. } => RpcErrorCode::Conflict,
         PlanError::CapacityUnknown
         | PlanError::CopiesUnknown { .. }
+        | PlanError::VolumeHolderUnknown { .. }
         | PlanError::ProvisionedVolumeStorageUnknown { .. }
         | PlanError::DockerVolumeUnavailable { .. } => RpcErrorCode::Unavailable,
     }
