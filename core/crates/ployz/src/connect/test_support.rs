@@ -34,6 +34,11 @@ impl Connector for Connected {
     }
 }
 
+/// A connector whose every dial opens `channel`.
+pub(crate) fn connector(channel: Channel) -> Arc<dyn Connector> {
+    Arc::new(Connected(channel))
+}
+
 pub(crate) async fn rpc_client<F, Fut>(
     rpc: F,
 ) -> (

@@ -128,6 +128,34 @@ async fn a_create_lost_with_its_entry_daemon_is_removed_on_a_new_session() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn cancelling_a_deploy_ends_a_redial_still_dialing() {
+    let cancellation = CancellationToken::new();
+    tokio::spawn({
+        let cancellation = cancellation.clone();
+        async move {
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            cancellation.cancel();
+        }
+    });
+    let started = tokio::time::Instant::now();
+
+    let error = wait_out_restart(
+        &cancellation,
+        || async { Err::<(), _>(crate::connect::closed_session_error()) },
+        || std::future::pending(),
+    )
+    .await
+    .unwrap_err();
+
+    assert!(crate::connect::on_closed_session(&error));
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(5),
+        "{:?}",
+        started.elapsed()
+    );
+}
+
+#[tokio::test(start_paused = true)]
 async fn an_entry_that_never_answers_again_fails_the_create_once_the_restart_wait_ends() {
     let machine = machine('1');
     let plan = vec![run(&machine, spec(Some(0), None, None), false)];

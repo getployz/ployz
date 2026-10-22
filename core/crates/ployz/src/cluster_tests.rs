@@ -545,3 +545,22 @@ async fn a_redial_the_new_daemon_refuses_forgets_the_machine_it_replaced() {
     assert_eq!(redialed_into_a_refusal(false).await, None);
     assert_eq!(redialed_into_a_refusal(true).await, None);
 }
+
+#[tokio::test]
+async fn a_redial_whose_entry_fails_its_check_leaves_every_clone_on_the_old_channel() {
+    let (mut client, _old) = crate::connect::test_support::rpc_client(|_| async {
+        Err(tonic::Status::not_found("answered by the old daemon"))
+    })
+    .await;
+    let (other, _new) = crate::connect::test_support::rpc_client(|_| async {
+        Err(tonic::Status::unavailable("not ready"))
+    })
+    .await;
+    client.connector = crate::connect::test_support::connector(other.channel());
+    let clone = client.clone();
+
+    assert!(client.redial_shared().await.is_err());
+
+    let answer = clone.entry_id().await.unwrap_err();
+    assert!(format!("{answer:?}").contains("old daemon"), "{answer:?}");
+}
