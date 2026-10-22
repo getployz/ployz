@@ -406,9 +406,10 @@ export function outcomeReason(outcome: Outcome | null) {
   const reason = outcome.reason ?? undefined;
   const cause = outcome.cause?.at(-1);
   if (!reason || !cause) return reason;
-  // A reason in whole sentences, such as a Server that isn't answering, takes its cause inside its first one.
-  const end = reason.search(/[.!?](?=\s|$)/);
-  return end < 0 ? `${reason}: ${cause}` : `${reason.slice(0, end)} (${cause})${reason.slice(end)}`;
+  // A reason in whole sentences takes its cause as a closing one. Never split a reason: a dot inside may be an image tag's,
+  // and with several Servers tried the cause is the last one's.
+  if (!/[.!?]$/.test(reason.trimEnd())) return `${reason}: ${cause}`;
+  return `${reason.trimEnd()} Cause: ${cause}${/[.!?]$/.test(cause) ? "" : "."}`;
 }
 
 /**
