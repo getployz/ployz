@@ -658,6 +658,22 @@ fn a_left_pending_copy_of_a_removed_service_points_at_a_whole_deploy() {
 }
 
 #[test]
+fn a_copy_with_no_recorded_rotation_is_not_named_left_pending() {
+    let [one, ..] = machines();
+    let check = judged_copies(vec![edited(
+        web_copy(&one, '1', CopyRotation::Pending, healthy(), 1, 1),
+        |parts| parts.rotation = None,
+    )]);
+
+    assert!(
+        check
+            .attention
+            .iter()
+            .all(|attention| attention.reason != "copies_left_pending")
+    );
+}
+
+#[test]
 fn a_copy_left_pending_on_a_down_server_is_not_named() {
     let [one, two, three] = machines();
     let check = judged(

@@ -408,8 +408,8 @@ server dropped, or when Cloud moved a stopped service's volume. `ployz status` n
 With `--json` the row has reason `copies_left_pending`, the `service`, and `copies` in the same
 shape as above. Its `next` is `ployz deploy web`, which removes a replica a failed deploy left.
 When you removed the service from your config but haven't deployed since,
-`next` is plain `ployz deploy`. A replica on a down server isn't named. While a server joins, a
-replica it's still starting for a global service can be named until it's in routing.
+`next` is plain `ployz deploy`. A replica on a down server isn't named. While a server joins, or
+Cloud moves a volume, a replica that's still starting can be named until it's in routing.
 
 This check has limits:
 

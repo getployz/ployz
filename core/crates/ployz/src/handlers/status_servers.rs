@@ -1,8 +1,8 @@
 //! The Server check of `ployz status`: no Server answering its one connection, each Down
 //! Machine, each Service serving fewer copies than it should or none at all, each copy no
-//! deploy brought into routing, and each live
-//! Machine whose proxy lacks a Service's In copies or still routes its Out or Held ones. What the check
-//! could not see is a warning, never an all-clear.
+//! deploy brought into routing, and each live Machine whose proxy lacks a Service's In copies
+//! or still routes its Out or Held ones. What the check could not see is a warning, never an
+//! all-clear.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::time::{Duration, SystemTime};
@@ -859,7 +859,8 @@ impl Check {
             .iter()
             .map(ServiceContainer::as_observation)
             .filter(|copy| {
-                *copy.rotation() == CopyRotation::Pending && !down.contains(&copy.machine_id)
+                // A copy with no recorded rotation predates rotations, and deploys keep it.
+                copy.rotation == Some(CopyRotation::Pending) && !down.contains(&copy.machine_id)
             })
             .collect();
         if left.is_empty() {
