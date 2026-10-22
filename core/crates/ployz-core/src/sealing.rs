@@ -3,6 +3,7 @@ use std::fmt;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
+use zeroize::Zeroizing;
 
 use crate::ValueError;
 
@@ -97,6 +98,127 @@ impl From<SealedSealingKey> for String {
     }
 }
 
+/// The Sealing Key wrapped under a recovery code. Cloud stores it; only the
+/// code opens it.
+#[derive(Clone, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(try_from = "String", into = "String")]
+#[ts(type = "string")]
+pub struct SealingKeyBackup(Vec<u8>);
+
+impl SealingKeyBackup {
+    #[must_use]
+    pub const fn from_bytes(bytes: Vec<u8>) -> Self {
+        Self(bytes)
+    }
+
+    #[must_use]
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.0
+    }
+}
+
+impl fmt::Debug for SealingKeyBackup {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("SealingKeyBackup(..)")
+    }
+}
+
+impl TryFrom<String> for SealingKeyBackup {
+    type Error = ValueError;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        STANDARD
+            .decode(&value)
+            .map(Self)
+            .map_err(|_| ValueError::new("Sealing Key backup", value, "base64"))
+    }
+}
+
+impl From<SealingKeyBackup> for String {
+    fn from(value: SealingKeyBackup) -> Self {
+        STANDARD.encode(value.0)
+    }
+}
+
+const RECOVERY_CODE_ALPHABET: &[u8; 32] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+const RECOVERY_CODE_LEN: usize = 26;
+const RECOVERY_CODE_GROUPS: [usize; 5] = [5, 5, 5, 5, 6];
+
+/// The secret that opens a [`SealingKeyBackup`]: 26 base32 symbols, 130 bits.
+#[derive(Clone, Eq, PartialEq)]
+pub struct RecoveryCode(Zeroizing<[u8; RECOVERY_CODE_LEN]>);
+
+#[derive(Debug, thiserror::Error)]
+#[error("recovery code must be 26 letters and digits 2 to 7")]
+pub struct RecoveryCodeError;
+
+impl RecoveryCode {
+    #[cfg(not(target_arch = "wasm32"))]
+    #[must_use]
+    pub fn generate() -> Self {
+        use rand_core::{OsRng, RngCore as _, TryRngCore as _};
+
+        let mut code = Zeroizing::new([0; RECOVERY_CODE_LEN]);
+        OsRng.unwrap_err().fill_bytes(code.as_mut_slice());
+        for symbol in code.iter_mut() {
+            *symbol = RECOVERY_CODE_ALPHABET[usize::from(*symbol & 31)];
+        }
+        Self(code)
+    }
+
+    /// Accepts any case and ignores dashes and whitespace.
+    pub fn parse(input: &str) -> Result<Self, RecoveryCodeError> {
+        let mut code = Zeroizing::new([0; RECOVERY_CODE_LEN]);
+        let mut len = 0;
+        for byte in input.bytes() {
+            if byte == b'-' || byte.is_ascii_whitespace() {
+                continue;
+            }
+            let symbol = byte.to_ascii_uppercase();
+            if len == RECOVERY_CODE_LEN || !RECOVERY_CODE_ALPHABET.contains(&symbol) {
+                return Err(RecoveryCodeError);
+            }
+            code[len] = symbol;
+            len += 1;
+        }
+        if len == RECOVERY_CODE_LEN {
+            Ok(Self(code))
+        } else {
+            Err(RecoveryCodeError)
+        }
+    }
+
+    /// The canonical symbols, without dashes.
+    #[must_use]
+    pub fn as_bytes(&self) -> &[u8] {
+        self.0.as_slice()
+    }
+
+    /// The code as a person copies it, in dash-separated groups.
+    #[must_use]
+    pub fn reveal(&self) -> Zeroizing<String> {
+        let mut grouped = Zeroizing::new(String::with_capacity(
+            RECOVERY_CODE_LEN + RECOVERY_CODE_GROUPS.len() - 1,
+        ));
+        let mut rest = self.as_bytes();
+        for (index, len) in RECOVERY_CODE_GROUPS.into_iter().enumerate() {
+            if index > 0 {
+                grouped.push('-');
+            }
+            let (group, tail) = rest.split_at(len);
+            grouped.extend(group.iter().map(|&symbol| char::from(symbol)));
+            rest = tail;
+        }
+        grouped
+    }
+}
+
+impl fmt::Debug for RecoveryCode {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("RecoveryCode(..)")
+    }
+}
+
 /// Whether a Machine holds its Cluster's Sealing Key.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -156,5 +278,47 @@ mod tests {
     fn sealed_key_debug_is_redacted() {
         let sealed = SealedSealingKey::from_bytes(vec![9; 48]);
         assert_eq!(format!("{sealed:?}"), "SealedSealingKey(..)");
+    }
+
+    #[test]
+    fn recovery_code_reads_back_from_its_grouped_form() {
+        let code = RecoveryCode::generate();
+        let grouped = code.reveal();
+        assert_eq!(grouped.len(), 30);
+        assert_eq!(
+            grouped.split('-').map(str::len).collect::<Vec<_>>(),
+            [5, 5, 5, 5, 6]
+        );
+        assert_eq!(RecoveryCode::parse(&grouped).unwrap(), code);
+        assert_eq!(
+            RecoveryCode::parse(&format!(" {} \n", grouped.to_lowercase())).unwrap(),
+            code
+        );
+        assert_ne!(RecoveryCode::generate(), code);
+    }
+
+    #[test]
+    fn recovery_code_refuses_wrong_length_or_symbols() {
+        let valid = "ABCDE-FGHIJ-KLMNO-PQRST-UVWXYZ";
+        assert!(RecoveryCode::parse(valid).is_ok());
+        assert!(RecoveryCode::parse("ABCDE-FGHIJ-KLMNO-PQRST-UVWXY").is_err());
+        assert!(RecoveryCode::parse("ABCDE-FGHIJ-KLMNO-PQRST-UVWXYZ2").is_err());
+        assert!(RecoveryCode::parse("ABCDE-FGHIJ-KLMNO-PQRST-UVWXY1").is_err());
+        assert!(RecoveryCode::parse("").is_err());
+        let error = RecoveryCode::parse("ABCDE-FGHIJ-KLMNO-PQRST-UVWXY0").unwrap_err();
+        assert!(!error.to_string().contains("ABCDE"));
+    }
+
+    #[test]
+    fn recovery_code_and_backup_debug_are_redacted() {
+        let code = RecoveryCode::generate();
+        assert_eq!(format!("{code:?}"), "RecoveryCode(..)");
+        let backup = SealingKeyBackup::from_bytes(vec![3; 109]);
+        assert_eq!(format!("{backup:?}"), "SealingKeyBackup(..)");
+        let json = serde_json::to_string(&backup).unwrap();
+        assert_eq!(
+            serde_json::from_str::<SealingKeyBackup>(&json).unwrap(),
+            backup
+        );
     }
 }

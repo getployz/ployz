@@ -4009,6 +4009,7 @@ dependencies = [
  "minisign-verify",
  "oci-spec",
  "prost",
+ "rand_core 0.9.5",
  "semver",
  "serde",
  "serde_json",
@@ -4020,6 +4021,7 @@ dependencies = [
  "ts-rs",
  "url",
  "uuid",
+ "zeroize",
 ]
 
 [[package]]
@@ -4105,6 +4107,7 @@ dependencies = [
  "base64 0.22.1",
  "bollard",
  "bytes",
+ "chacha20poly1305",
  "chrono",
  "clap",
  "defguard_wireguard_rs",
@@ -4113,6 +4116,7 @@ dependencies = [
  "futures-util",
  "hex",
  "hickory-server",
+ "hkdf",
  "hpke",
  "http",
  "http-body",
@@ -4141,6 +4145,7 @@ dependencies = [
  "sd-notify",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "sha2 0.11.0",
  "socket2 0.6.5",
  "tempfile",

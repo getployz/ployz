@@ -183,6 +183,16 @@ impl SealingKey {
     }
 }
 
+impl SealingKey {
+    pub(crate) const fn from_secret(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
+
+    pub(crate) const fn secret(&self) -> &[u8; 32] {
+        &self.0
+    }
+}
+
 impl Drop for SealingKey {
     fn drop(&mut self) {
         self.0.zeroize();

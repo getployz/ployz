@@ -45,6 +45,7 @@ pub(crate) mod route_acks;
 pub mod runtime_unit;
 pub(crate) mod runtime_watch;
 pub mod sealing_key;
+mod sealing_recovery;
 pub mod socket_activation;
 mod storage;
 #[cfg(test)]
