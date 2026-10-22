@@ -3623,8 +3623,18 @@ describe("volume runs", () => {
       await runEffect(decideApproval(protector, approval_id, { approve: { digest: approval } }));
 
       expect(await as(member, { kind: "move", args: { to: "fsn-3" } }, approval_id)).toMatchObject({ ok: false, refusal: { code: "approval_required" } });
-      expect(await review(approval_id)).toMatchObject({ operation: { name: "data to fsn-2", preview: { to: "fsn-2" } } });
+      expect(await review(approval_id)).toMatchObject({ operation: { name: "data to fsn-2", preview: { to: { name: "fsn-2", machine: idOf("fsn-2") } } } });
       expect(await rows()).toEqual([]);
+    });
+
+    it("an approved Move to a Server by its id moves to no other Machine of that name", async () => {
+      machines = [...machines, { name: "fsn-3", pool: true, copy: null }];
+      const { approval, approval_id } = askedOf(await as(member, { kind: "move", args: { to: "fsn-3", machine: idOf("fsn-3") } }));
+      await runEffect(decideApproval(protector, approval_id, { approve: { digest: approval } }));
+
+      expect(await as(member, { kind: "move", args: { to: "fsn-3", machine: idOf("fsn-2") } }, approval_id)).toMatchObject({ ok: false });
+      expect(await rows()).toEqual([]);
+      expect(await review(approval_id)).toMatchObject({ operation: { preview: { to: { name: "fsn-3", machine: idOf("fsn-3") } } } });
     });
 
     it("a Restore names the Server it restores from", async () => {
@@ -3632,7 +3642,7 @@ describe("volume runs", () => {
 
       const { approval_id } = askedOf(await as(member, { kind: "restore", args: { from: "fsn-2" } }));
 
-      expect(await review(approval_id)).toMatchObject({ operation: { name: "data from fsn-2", preview: { from: "fsn-2" } }, protected: { environment: "production" } });
+      expect(await review(approval_id)).toMatchObject({ operation: { name: "data from fsn-2", preview: { from: { name: "fsn-2", machine: idOf("fsn-2") } } }, protected: { environment: "production" } });
     });
 
     it("a member can't decide another member's Release", async () => {

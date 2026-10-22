@@ -492,12 +492,15 @@ const PROTECTED_VERBS = {
  * resizes from and to. It comes from the request, not the step admission plans first, so an approval holds whichever
  * step the worker reaches and covers no other Server or size.
  */
-function requestPreview(volume: ResolvedVolume, input: VolumeRunInput): JsonObject {
+function requestPreview(volume: ResolvedVolume, input: VolumeRunInput, members: readonly Member[]): JsonObject {
+  // A Server by its name and the Machine that name resolves to now, or the one the request named by id.
+  const server = (name: string, machine: string | undefined) =>
+    ({ name, machine: machine ?? members.find((member) => member.machine.name === name)?.machine.id ?? null });
   switch (input.kind) {
     case "move":
-      return { to: input.args.to };
+      return { to: server(input.args.to, input.args.machine) };
     case "restore":
-      return { from: input.args.from };
+      return { from: server(input.args.from, input.args.machine) };
     case "resize":
       return { recorded_bytes: volume.recordedBytes, maximum_bytes: input.args.maximum_bytes };
     case "mirror":
@@ -646,7 +649,7 @@ export const planOnCluster = Effect.fn("VolumeRun.planOnCluster")(function* (
     subject: `volume:${input.volumeId}`,
     verb,
     name: requestName(volume, input),
-    preview: { volume: input.volumeId, copies: effects.map((effect) => effect.node), ...requestPreview(volume, input) },
+    preview: { volume: input.volumeId, copies: effects.map((effect) => effect.node), ...requestPreview(volume, input, members.value) },
     effects,
   });
   const asked = verb === null ? null : askedAs(verb);
