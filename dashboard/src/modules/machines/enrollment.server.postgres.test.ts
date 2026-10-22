@@ -800,6 +800,16 @@ describe("organization enrollment coordinator", () => {
     expect(statusForPublicError(encodePublicError(completed.failure))).toBe(503);
   }, 45_000);
 
+  it("doesn't call a completion that failed without the SDK's answer a refusal", async () => {
+    const fake = fakeSession(harness.database);
+    const attempt = await pendingFounder(fake);
+    await fake.coordinator.publish({ ...attempt, capability });
+    fake.connection.error = new Error("Connecting to the organization's machines timed out");
+    const completed = await fake.coordinator.completeFounding(attempt);
+    if (!Result.isFailure(completed)) throw new Error("Completion succeeded without reaching the Machine");
+    expect(completed.failure).toEqual(cantReach);
+  });
+
   it("names a Server's refusal of completion instead of blaming the relay", async () => {
     const fake = fakeSession(harness.database);
     const attempt = await pendingFounder(fake);
