@@ -1,9 +1,10 @@
 use std::net::Ipv4Addr;
 
 use std::num::NonZeroU32;
+use std::time::{Duration, SystemTime};
 
 use ployz_core::{
-    ContainerAddress, ContainerKind, ContainerObservation, ContainerObservationParts,
+    ContainerAddress, ContainerKind, ContainerObservation, ContainerObservationParts, ContainerRun,
     DEPLOYMENT_ID_LABEL, DeploymentLogId, HealthObservation, Machine, MachineFailure,
     MachineSuccess, MembershipEvidence, PartialResult, RpcErrorCode, ServiceMode, ServiceName,
     service_containers,
@@ -144,6 +145,10 @@ fn web_routed_at(copies: &[(char, [u8; 4])]) -> RoutedAddresses {
     }
 }
 
+fn now() -> SystemTime {
+    SystemTime::UNIX_EPOCH + Duration::from_secs(1_800_000_000)
+}
+
 fn judged_in_app(observed: Observed) -> Check {
     judged_deploying(observed, &[])
 }
@@ -172,6 +177,7 @@ fn judged_authoring(observed: Observed, deployed: &[(&str, &str)], authored: &[&
     judge(
         observed,
         &qualified("app", "web").namespace,
+        now(),
         &deployed,
         Some(&authored),
         |words| format!("ployz {}", words.join(" ")),
@@ -286,6 +292,72 @@ fn status_names_a_service_whose_copies_crash() {
         super::super::link::rendered(check.attention),
         "organization  ?\nsigned in as  local\nweb           Serving 0 of 2 copies. machine-1 restarting, machine-2 exited with code 1.\n"
     );
+}
+
+fn restarted(copy: ContainerObservation, restarts: i64, up: Duration) -> ContainerObservation {
+    let started = now() - up;
+    edited(copy, |parts| {
+        parts.run = Some(ContainerRun {
+            restart_count: restarts,
+            started_at_unix_nanos: started
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+                .try_into()
+                .unwrap(),
+        });
+    })
+}
+
+fn up_without_a_check() -> ContainerRuntimeObservation {
+    ContainerRuntimeObservation::Running {
+        health: HealthObservation::NotConfigured,
+    }
+}
+
+#[test]
+fn status_names_a_crash_looping_copy_while_it_is_briefly_up() {
+    let [_, two, _] = machines();
+    let check = judged_copies(vec![restarted(
+        web_copy(&two, '2', CopyRotation::In, up_without_a_check(), 1, 1),
+        6,
+        Duration::from_secs(3),
+    )]);
+
+    assert_eq!(
+        serde_json::to_value(&check.attention).unwrap(),
+        json!([{
+            "reason": "copies_not_serving",
+            "message": "Serving 0 of 1 copy. machine-2 restarted 6 times, up 3 s.",
+            "next": "ployz logs web",
+            "service": "app/web",
+            "serving": 0,
+            "wanted": 1,
+            "copies": [{
+                "machine": "machine-2",
+                "container": "2".repeat(64),
+                "rotation": "in",
+                "runtime": {"state": "running", "health": "not_configured"},
+                "run": {"restart_count": 6, "started_at_unix_nanos": 1_799_999_997_000_000_000_i64},
+            }],
+        }])
+    );
+    assert_eq!(
+        super::super::link::rendered(check.attention),
+        "organization  ?\nsigned in as  local\nweb           Serving 0 of 1 copy. machine-2 restarted 6 times, up 3 s.\n"
+    );
+}
+
+#[test]
+fn a_copy_that_stays_up_after_docker_restarted_it_is_no_row() {
+    let [_, two, _] = machines();
+    let check = judged_copies(vec![restarted(
+        web_copy(&two, '2', CopyRotation::In, up_without_a_check(), 1, 1),
+        6,
+        Duration::from_secs(60),
+    )]);
+
+    assert!(check.attention.is_empty(), "{:?}", messages(&check));
 }
 
 #[test]
