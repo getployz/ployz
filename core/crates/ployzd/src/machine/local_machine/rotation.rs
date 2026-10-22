@@ -354,10 +354,10 @@ impl LocalMachine {
     /// created since `observed` was read still counts and no health check runs under
     /// the turn.
     ///
-    /// A replicated row carries no environment or Config content, so a copy on another
-    /// Machine whose row matches this one may still differ there. One that `run` created
-    /// replaced this copy whatever the rows show, as when a stop-first Deploy restores
-    /// the copy it held.
+    /// A copy that `run` created replaced this one whatever the specs show, as when a
+    /// Deploy restores the copy it held after starting a replacement it forced or that
+    /// a limits change needed. A replicated row carries no environment or Config
+    /// content, so on another Machine a change to those alone is seen only this way.
     async fn newer_in(
         &self,
         copy: &CopyState,
@@ -374,7 +374,7 @@ impl LocalMachine {
                     && is_sibling(copy, observed)
                     && *observed.rotation() == CopyRotation::In
                     && observed.copy_gen() > copy.r#gen
-                    && (run.is_some() && observed.deploy_label().as_ref() == run
+                    && (created_by(observed.deploy_label().as_ref(), run)
                         || supersedes(&observed.resolved_spec, &published))
             })
             .map(|observed| (observed.container_id, observed.copy_gen()))
@@ -384,6 +384,10 @@ impl LocalMachine {
                 || Some(local.container_id) == copy.id
                 || local.r#gen <= copy.r#gen
             {
+                continue;
+            }
+            if created_by(local.deployment.as_ref(), run) {
+                newer.push((local.container_id, local.r#gen));
                 continue;
             }
             let spec = containers.spec(&local.container_id).await?;
@@ -533,6 +537,10 @@ impl LocalMachine {
 /// Config content, so `current` is compared as published against one.
 fn supersedes(newer: &ResolvedServiceSpec, current: &ResolvedServiceSpec) -> bool {
     compare_specs(current, &deploy_input(newer)) == SpecChange::NeedsRecreate
+}
+
+fn created_by(deployment: Option<&DeploymentLogId>, run: Option<&DeploymentLogId>) -> bool {
+    run.is_some() && deployment == run
 }
 
 fn is_sibling(copy: &CopyState, observed: &ContainerObservation) -> bool {

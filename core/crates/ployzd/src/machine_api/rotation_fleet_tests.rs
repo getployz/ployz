@@ -1894,55 +1894,51 @@ mod rotation_commands {
         }
     }
 
-    /// A stop-first Deploy that changed only the environment held the old copy, then
-    /// brought its new copy In on another Machine. That Machine's row shows no
-    /// environment, so only the run tells the old copy it was replaced.
+    /// A Deploy held the old copy and brought its replacement In: forced, after a limits
+    /// change, or for an environment change another Machine's row cannot show. Its spec
+    /// matches as far as this Machine sees, so only the run tells the old copy it was
+    /// replaced when the Deploy restores it.
     #[tokio::test]
     async fn a_copy_its_restoring_run_replaced_stays_out() {
-        let fleet = Fleet::start().await;
-        let with_env = |value: &str| {
-            let mut spec = spec("api");
-            spec.container
-                .environment
-                .insert("VERSION".to_owned(), value.to_owned());
-            spec
-        };
-        let older = fleet.routed_as(0, "old", with_env("1"), 1).await;
-        let deploy = || Some(CopyRotation::Held(run("deploy-2")));
-        ensured(
-            &ensure(
-                fleet.node(0),
-                held(older, "deploy-2", Some(CopyRotation::In)),
+        for newer_on in [0, 1] {
+            let fleet = Fleet::start().await;
+            let older = fleet.routed(0, "old", "api", 1).await;
+            let deploy = || Some(CopyRotation::Held(run("deploy-2")));
+            ensured(
+                &ensure(
+                    fleet.node(0),
+                    held(older, "deploy-2", Some(CopyRotation::In)),
+                )
+                .await,
+            );
+            let mut replacement = new_copy("new", spec("api"), 2);
+            replacement.deployment_id = Some(run("deploy-2"));
+            let created = ensure(
+                fleet.node(newer_on),
+                ContainerWant::Running {
+                    container: RunTarget::New(replacement),
+                    rotation: RunRotation::Pending,
+                },
             )
-            .await,
-        );
-        let mut replacement = new_copy("new", with_env("2"), 2);
-        replacement.deployment_id = Some(run("deploy-2"));
-        let created = ensure(
-            fleet.node(1),
-            ContainerWant::Running {
-                container: RunTarget::New(replacement),
-                rotation: RunRotation::Pending,
-            },
-        )
-        .await;
-        let newer = present(&created);
-        let reply = ensure(
-            fleet.node(1),
-            into(newer, None, Some(CopyRotation::Pending)),
-        )
-        .await;
-        assert_eq!(rotation_of(&reply), CopyRotation::In, "{reply:?}");
-        fleet.published(newer, Some(CopyRotation::In)).await;
+            .await;
+            let newer = present(&created);
+            let reply = ensure(
+                fleet.node(newer_on),
+                into(newer, None, Some(CopyRotation::Pending)),
+            )
+            .await;
+            assert_eq!(rotation_of(&reply), CopyRotation::In, "{reply:?}");
+            fleet.published(newer, Some(CopyRotation::In)).await;
 
-        let reply = ensure(fleet.node(0), into(older, Some(run("deploy-2")), deploy())).await;
+            let reply = ensure(fleet.node(0), into(older, Some(run("deploy-2")), deploy())).await;
 
-        let message = refused(&reply, ContainerRefusalReason::OlderThanIn);
-        assert!(message.contains(&newer.to_string()), "{message}");
-        assert_eq!(
-            fleet.node(0).rotation(older).await,
-            CopyRotation::Held(run("deploy-2"))
-        );
+            let message = refused(&reply, ContainerRefusalReason::OlderThanIn);
+            assert!(
+                message.contains(&newer.to_string()),
+                "newer on {newer_on}: {message}"
+            );
+            assert_eq!(fleet.node(0).rotation(older).await, deploy().unwrap());
+        }
     }
 
     #[tokio::test]

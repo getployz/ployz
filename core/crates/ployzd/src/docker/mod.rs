@@ -220,6 +220,8 @@ pub struct ServiceCopy {
     pub container_id: ContainerId,
     pub r#gen: Gen,
     pub rotation: ployz_core::CopyRotation,
+    /// The Deploy run that created it, from its `LABEL_DEPLOYMENT`.
+    pub deployment: Option<ployz_core::DeploymentLogId>,
 }
 
 /// One existing copy's rotation, read under the lock `remove` takes and held until
@@ -597,6 +599,9 @@ impl ContainerRuntime {
                 container_id,
                 r#gen: label_gen(&labels),
                 rotation: rotations.remove(&container_id).unwrap_or_default(),
+                deployment: labels
+                    .get(LABEL_DEPLOYMENT)
+                    .and_then(|label| ployz_core::DeploymentLogId::parse(label).ok()),
             })
             .collect())
     }

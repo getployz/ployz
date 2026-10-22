@@ -433,15 +433,20 @@ ployz deploy web
 
 `Container … is left Held and not routed: copy … of app/web is In at gen 3, newer than this copy's gen 2. The newer copy serves the Service; ployz deploy web replaces this one.`
 
-A later deploy changed the service and started a newer replica, but this older one was still
-running its old version. `ployz service restart` and `ployz service start` keep it out of routing,
-because the newer version serves the service. The command exits 3. A replica a deploy kept as it was,
-such as the existing ones when you only raised the replica count, isn't affected. It goes back into
-routing. Deploy the service to replace the old replica:
+A later deploy changed the service and started a newer replica, but this older one still runs the
+old version. `ployz service restart` and `ployz service start` keep it out of routing, because the
+newer version serves the service. The command exits 3. Deploy the service to replace the old
+replica:
 
 ```sh
 ployz deploy web
 ```
+
+A replica a deploy kept as it was, such as the existing ones when you only raised the replica
+count, goes back into routing. For a replica on another server, Ployz sees only the settings that
+server shares, which leave out variable values and config file contents. So if a deploy changed only
+those and failed before it removed the old replica, a restart there can route the old replica again.
+Deploy the service to replace it.
 
 ## Ployz restarted on a server during my deploy
 
