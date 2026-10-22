@@ -46,8 +46,11 @@ deployment's page and `ployz deploy` name each one.
 A deploy removes only the services you removed from the environment, such as with
 `ployz service rm`. It keeps any other service running in the environment, and `ployz deploy` and
 `ployz deployment show` name each one, such as `postgres: running, not in this environment; kept`.
-To remove those too, run `ployz deploy --prune`. It asks first. In a script or with `--json`, add
-`--yes`, or it stops with `confirmation_required` and deploys nothing. Their volumes and data stay.
+Only a deploy of the whole environment removes a service: after `ployz service rm big`,
+`ployz deploy big` fails with `Service big is staged for removal; a full Deploy removes it`, and
+plain `ployz deploy` removes it. To remove those kept services too, run `ployz deploy --prune`.
+It asks first. In a script or with `--json`, add `--yes`, or it stops with `confirmation_required`
+and deploys nothing. Their volumes and data stay.
 
 **Save only** in **Details**, in the bottom bar's **⋮** menu, or on **Deploy** while you hold Alt,
 records your changes and optional message without deploying them. Ployz shows **Saved, not

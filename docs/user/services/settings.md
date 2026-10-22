@@ -7,11 +7,14 @@ Open a service on the canvas, then click **Settings**. Your changes are staged u
 [deploy](../deploy/deployments.md), except the few marked **Takes effect at once**.
 
 From the CLI, `ployz get web` prints each setting with its value and default, then the
-service's domains. Text prints in quotes, like `"nginx:1"`, and `-` means unset. An invisible
+service's domains. Text prints in quotes, like `"nginx:1"`, and `-` means unset. A setting
+with no default, such as `image`, says `(no default)` beside its value. An invisible
 character, such as a right-to-left override, prints as its code, like `\u{202e}`, so text
 reads as stored. `ployz get
 web.domains` prints only the domains; change them with the `ployz domain` commands, not
 `ployz set`. `ployz explain web` lists every setting a service takes, with its default.
+`ployz explain mounts` lists them for a service named `mounts`, and says `ployz explain
+SERVICE.mounts` describes the setting.
 `ployz diff` shows what you staged, and `ployz discard` undoes it.
 
 ## Source
