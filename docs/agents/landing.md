@@ -51,9 +51,15 @@ panel had a 60% real-bug rate; CodeRabbit had 11%.
 - Open PRs as drafts. CI skips drafts, so push freely while the work settles.
 - Run `gh pr ready <n>` once the branch is done. That starts CI, and every later push
   runs it again. `gh pr ready <n> --undo` pauses CI while you rework.
-- Once review is clean, arm auto-merge: `gh pr merge <n> --auto --merge`. GitHub merges
-  when the required "CI ready" check passes and the PR has no conflicts. The branch does
-  not need to be up to date with main.
+- Once review is clean, queue the PR: `gh pr merge <n> --auto`. Never merge with
+  `--admin`, which skips the queue.
+- Main has a merge queue. A PR joins it once "CI ready" passes on its head and it has no
+  conflicts. The queue then runs CI again on the PR merged with main and the PRs ahead of
+  it, and merges it (as a merge commit) only if that run passes. Two PRs that pass alone
+  but break main together fail there instead of on main. The branch does not need to be
+  up to date with main.
+- A PR the queue drops for a failed run leaves the queue and stays open. Fix it or
+  rerun, then run `gh pr merge <n> --auto` again.
 - Keep stacks short and merge each layer as soon as it is green. Ship unfinished work
   dark, behind a flag, in place of a tall stack.
 
