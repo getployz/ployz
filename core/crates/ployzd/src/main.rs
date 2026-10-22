@@ -167,8 +167,8 @@ fn main() -> ExitCode {
     code
 }
 
-/// The main thread's stack, which tokio's 2 MiB default for its own threads is not. In a
-/// debug build a boot pass that sets a replaced copy Out polls about 2.1 MB of frames (#3092).
+/// The usual main-thread stack; tokio's own threads default to 2 MiB. In a debug build a boot
+/// pass that sets a replaced copy Out polls about 2.1 MB of frames (#3092).
 const THREAD_STACK: usize = 8 * 1024 * 1024;
 
 fn runtime() -> io::Result<tokio::runtime::Runtime> {
@@ -388,22 +388,6 @@ async fn bridge(
 
 #[cfg(test)]
 mod tests {
-    /// Uses about `depth` × 32 KiB of stack in a debug build, the array and its copy.
-    fn deep(depth: usize) -> usize {
-        let frame = std::hint::black_box([1_u8; 16 * 1024]);
-        if depth == 0 {
-            return usize::from(frame[0]);
-        }
-        deep(depth - 1) + usize::from(frame[1])
-    }
-
-    #[test]
-    fn a_daemon_task_has_room_for_a_deep_poll() {
-        let runtime = super::runtime().unwrap();
-        let task = runtime.spawn(async { deep(128) });
-        assert_eq!(runtime.block_on(task).unwrap(), 129);
-    }
-
     use std::{
         pin::Pin,
         sync::{
@@ -420,6 +404,22 @@ mod tests {
     };
 
     use super::*;
+
+    /// Uses about `depth` × 32 KiB of stack in a debug build, the array and its copy.
+    fn deep(depth: usize) -> usize {
+        let frame = std::hint::black_box([1_u8; 16 * 1024]);
+        if depth == 0 {
+            return usize::from(frame[0]);
+        }
+        deep(depth - 1) + usize::from(frame[1])
+    }
+
+    #[test]
+    fn a_daemon_task_has_room_for_a_deep_poll() {
+        let runtime = super::runtime().unwrap();
+        let task = runtime.spawn(async { deep(128) });
+        assert_eq!(runtime.block_on(task).unwrap(), 129);
+    }
 
     fn release(value: &str) -> MachineRelease {
         MachineRelease::parse(value).unwrap()
