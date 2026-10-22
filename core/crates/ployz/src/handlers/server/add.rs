@@ -156,11 +156,17 @@ fn require_free_name(
     id: MachineId,
     name: &MachineName,
 ) -> Result<(), Error> {
-    let Some(holder) = snapshot
-        .machines
-        .iter()
-        .find(|machine| machine.id != id && machine.name == *name)
-    else {
+    let named = || {
+        snapshot
+            .machines
+            .iter()
+            .filter(|machine| machine.name == *name)
+    };
+    // A Server keeps a name it already holds, even one a concurrent add duplicated.
+    if named().any(|machine| machine.id == id) {
+        return Ok(());
+    }
+    let Some(holder) = named().next() else {
         return Ok(());
     };
     Err(Error::conflict(format!(
@@ -318,6 +324,18 @@ mod tests {
         assert!(
             require_free_name(&snapshot, joining.id, &joining.name).is_ok(),
             "a Server resuming its own join keeps its name"
+        );
+        let twin = Machine {
+            name: live.name.clone(),
+            ..joining.clone()
+        };
+        let duplicated = EnrollmentSnapshot {
+            machines: vec![live.clone(), twin.clone()],
+            ..snapshot.clone()
+        };
+        assert!(
+            require_free_name(&duplicated, twin.id, &twin.name).is_ok(),
+            "a Server whose name a concurrent add duplicated still resumes under it"
         );
         assert!(
             require_free_name(
