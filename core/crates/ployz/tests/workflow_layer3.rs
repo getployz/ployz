@@ -173,10 +173,21 @@ async fn machine_rm_warns_when_replicated_services_are_left_under_replicated() {
             String::from_utf8_lossy(&removed.stderr)
         );
         let stderr = String::from_utf8_lossy(&removed.stderr);
-        assert!(
-            stderr.contains("Replicated Services now run no copies: workflow/replicated"),
-            "{stderr}"
-        );
+        // A forgotten Server keeps running its copies, so forget claims only what the
+        // remaining Servers showed.
+        let (said, unsaid) = match verb {
+            "rm" => (
+                "Replicated Services now run no copies: workflow/replicated",
+                "were seen on the remaining Servers",
+            ),
+            _ => (
+                "No copies of Replicated Services were seen on the remaining Servers: workflow/replicated",
+                "now run no copies",
+            ),
+        };
+        assert!(stderr.contains(said), "{stderr}");
+        assert!(!stderr.contains(unsaid), "{stderr}");
+        assert!(stderr.contains("next: ployz deploy"), "{stderr}");
         assert!(
             stderr.contains("Server machine-2 is running Services: workflow/replicated."),
             "{stderr}"

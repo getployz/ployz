@@ -676,7 +676,7 @@ mod tests {
     use serde_json::{Value, json};
 
     use super::{
-        VolumeOwner, left_short, machine_removal_refusal, movable_services_on, qualified_labels,
+        Stopped, VolumeOwner, left_short, machine_removal_refusal, movable_services_on, qualified_labels,
         replicated_services_on, reset_removal_refusal, running_services, services_on,
     };
     use crate::ui::Hint;
@@ -886,7 +886,7 @@ mod tests {
     }
 
     #[test]
-    fn rm_splits_services_left_with_no_copies_from_those_left_short() {
+    fn rm_keeps_every_short_service_under_replicated_and_names_those_with_no_copies() {
         let short = left_short(&machine_id('a'), &api_only_on_a_web_on_both(), false);
         assert_eq!(
             short.no_copies,
@@ -894,7 +894,34 @@ mod tests {
         );
         assert_eq!(
             short.under_replicated,
-            [QualifiedService::parse("app/web").unwrap()]
+            [
+                QualifiedService::parse("app/api").unwrap(),
+                QualifiedService::parse("app/web").unwrap()
+            ]
+        );
+    }
+
+    #[test]
+    fn a_reset_says_services_with_no_copies_run_none_apart_from_those_left_short() {
+        let short = left_short(&machine_id('a'), &api_only_on_a_web_on_both(), false);
+        assert_eq!(
+            short.warnings(Stopped::Yes),
+            [
+                "Replicated Services now run no copies: app/api. Their replicas were not moved.",
+                "Replicated Services may now be under-replicated: app/web. Their replicas were not moved.",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_removal_that_left_copies_running_says_only_what_the_remaining_servers_showed() {
+        let short = left_short(&machine_id('a'), &api_only_on_a_web_on_both(), false);
+        assert_eq!(
+            short.warnings(Stopped::Unproven),
+            [
+                "No copies of Replicated Services were seen on the remaining Servers: app/api. Their replicas were not moved.",
+                "Replicated Services may now be under-replicated: app/web. Their replicas were not moved.",
+            ]
         );
     }
 

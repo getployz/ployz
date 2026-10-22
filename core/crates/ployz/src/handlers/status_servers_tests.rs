@@ -148,8 +148,14 @@ fn judged_in_app(observed: Observed) -> Check {
     judged_deploying(observed, &[])
 }
 
-/// `deployed` pairs each Service's name with the name its containers carry.
+/// `deployed` pairs each Service's name with the name its containers carry. Each is
+/// also in Working State.
 fn judged_deploying(observed: Observed, deployed: &[(&str, &str)]) -> Check {
+    let authored: Vec<&str> = deployed.iter().map(|(name, _)| *name).collect();
+    judged_authoring(observed, deployed, &authored)
+}
+
+fn judged_authoring(observed: Observed, deployed: &[(&str, &str)], authored: &[&str]) -> Check {
     let deployed: BTreeMap<ServiceName, ServiceName> = deployed
         .iter()
         .map(|(name, runtime)| {
@@ -159,10 +165,15 @@ fn judged_deploying(observed: Observed, deployed: &[(&str, &str)]) -> Check {
             )
         })
         .collect();
+    let authored: BTreeSet<ServiceName> = authored
+        .iter()
+        .map(|name| ServiceName::parse(*name).unwrap())
+        .collect();
     judge(
         observed,
         &qualified("app", "web").namespace,
         &deployed,
+        Some(&authored),
         |words| format!("ployz {}", words.join(" ")),
     )
 }
@@ -541,7 +552,7 @@ fn status_names_a_deployed_service_with_no_copies() {
         serde_json::to_value(&check.attention).unwrap(),
         json!([{
             "reason": "no_copies",
-            "message": "No copies running.",
+            "message": NO_COPIES,
             "next": "ployz deploy api",
             "service": "app/api",
         }])
@@ -549,7 +560,37 @@ fn status_names_a_deployed_service_with_no_copies() {
     assert!(warned(&check).is_empty());
     assert_eq!(
         super::super::link::rendered(check.attention),
-        "organization  ?\nsigned in as  local\napi           No copies running.\n"
+        format!("organization  ?\nsigned in as  local\napi           {NO_COPIES}\n")
+    );
+}
+
+const NO_COPIES: &str =
+    "No copies running. For a global Service, no Server matches its placement.";
+
+#[test]
+fn a_service_removed_from_config_with_no_copies_points_at_a_plain_deploy() {
+    let [one, two, three] = machines();
+    let check = judged_authoring(
+        Observed {
+            machines: listed(&[&one, &two, &three], &[]),
+            copies: Copies::Listed {
+                live: listed_copies(vec![web_copy(&one, '1', CopyRotation::In, healthy(), 1, 1)]),
+                reads: Vec::new(),
+                routed: BTreeMap::new(),
+            },
+        },
+        &[("web", "web"), ("api", "api")],
+        &["web"],
+    );
+
+    assert_eq!(
+        serde_json::to_value(&check.attention).unwrap(),
+        json!([{
+            "reason": "no_copies",
+            "message": NO_COPIES,
+            "next": "ployz deploy",
+            "service": "app/api",
+        }])
     );
 }
 
@@ -1964,7 +2005,7 @@ fn status_warnings(config: &std::path::Path, flags: &[&str]) -> Vec<String> {
     args.extend(flags);
     let root = crate::cli::command().try_get_matches_from(args).unwrap();
     let namespace = qualified("app", "web").namespace;
-    assert!(attention(&root, &namespace, &BTreeMap::new(), &[]).is_empty());
+    assert!(attention(&root, &namespace, &BTreeMap::new(), None, &[]).is_empty());
     let (_, json) = crate::ui::captured(|| crate::ui::show(&json!({})));
     json.and_then(|json| json.get("warnings").cloned())
         .map(|warnings| serde_json::from_value(warnings).unwrap())
