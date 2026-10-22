@@ -27,7 +27,10 @@ fn uuid(n: u8) -> String {
 
 /// Project `shop` with Service `web` in `production`, and Service `web` in `staging`.
 fn shop() -> (ConfigStore, Actor) {
-    let store = backend::open();
+    shop_in(backend::open())
+}
+
+fn shop_in(store: ConfigStore) -> (ConfigStore, Actor) {
     let who = Actor::system(OrganizationId::parse("org").unwrap());
     store
         .write(
@@ -824,6 +827,8 @@ fn adding_a_custom_domain_refuses_new_invalid_names_without_tightening_readers()
     let (store, who) = shop();
     for (hostname, reason) in [
         ("1.2.3.4", "IP address"),
+        ("127.1", "IP address"),
+        ("1.2.3.4.5", "IP address"),
         ("ployz.app", "reserved"),
         ("a.ployz.app", "reserved"),
         ("xn--zz.com", "punycode"),
@@ -838,22 +843,107 @@ fn adding_a_custom_domain_refuses_new_invalid_names_without_tightening_readers()
 }
 
 #[test]
+fn readding_a_legacy_custom_domain_changes_its_port_only_where_it_exists() {
+    for hostname in ["1.2.3.4", "a.ployz.app", "xn--zz.com"] {
+        let dir = tempfile::tempdir().unwrap();
+        let url = backend::fresh_url(&dir);
+        let (store, who) = shop_in(ConfigStore::open(&url, backend::key()).unwrap());
+        store
+            .write(&who, &add(Some("legacy.example.com"), Some(80)))
+            .unwrap();
+        backend::execute(
+            &url,
+            &format!(
+                "UPDATE config_environment SET working = replace(working, 'legacy.example.com', '{hostname}')"
+            ),
+        );
+        let changed = store.write(&who, &add(Some(hostname), Some(8080))).unwrap();
+        assert!(!changed.added);
+        assert_eq!(changed.written.domain.port, Some(8080));
+        let current = rows(&store, &who, &Trusted::default());
+        assert_eq!(current.len(), 1);
+        assert_eq!(current[0].domain.shown(), hostname);
+        assert_eq!(current[0].domain.port, Some(8080));
+        let refused = store
+            .write(
+                &who,
+                &AddDomain {
+                    environment: at(Some("staging")),
+                    ..add(Some(hostname), Some(8080))
+                },
+            )
+            .unwrap_err();
+        assert_eq!(refused.code, RpcErrorCode::InvalidArgument);
+    }
+}
+
+#[test]
+fn custom_domain_validation_follows_scope_and_service_resolution() {
+    let (store, who) = shop();
+    let unprivileged = Trusted {
+        permissions: Some(Default::default()),
+        ..Trusted::default()
+    };
+    assert_eq!(
+        store
+            .write_trusted(&who, &add(Some("1.2.3.4"), None), &unprivileged)
+            .unwrap_err()
+            .code
+            .as_str(),
+        "forbidden"
+    );
+    let missing_environment = AddDomain {
+        environment: at(Some("missing")),
+        ..add(Some("1.2.3.4"), None)
+    };
+    assert_eq!(
+        store.write(&who, &missing_environment).unwrap_err().code,
+        RpcErrorCode::NotFound
+    );
+    let outsider = Actor::system(OrganizationId::parse("other").unwrap());
+    assert_eq!(
+        store
+            .write(&outsider, &add(Some("1.2.3.4"), None))
+            .unwrap_err()
+            .code,
+        RpcErrorCode::NotFound
+    );
+    let missing_service = AddDomain {
+        service: ServiceName::parse("missing").unwrap(),
+        ..add(Some("1.2.3.4"), None)
+    };
+    assert_eq!(
+        store.write(&who, &missing_service).unwrap_err().code,
+        RpcErrorCode::NotFound
+    );
+}
+
+#[test]
 fn a_custom_domain_under_the_cluster_domain_is_refused() {
     let (store, who) = shop();
-    let mut trusted = cloud();
-    trusted.domains.cluster_domain.as_mut().unwrap().name = host("cluster.example.com");
-    for hostname in [
-        "cluster.example.com",
-        "web-shop.cluster.example.com",
-        "a.b.cluster.example.com",
-    ] {
-        let refused = store
-            .write_trusted(&who, &add(Some(hostname), None), &trusted)
-            .unwrap_err();
-        assert_eq!(refused.code, RpcErrorCode::InvalidArgument, "{hostname}");
+    for cluster in ["acme.ployz.app", "cluster.example.com"] {
+        let mut trusted = cloud();
+        trusted.domains.cluster_domain.as_mut().unwrap().name = host(cluster);
+        for hostname in [
+            cluster.to_owned(),
+            format!("web-shop.{cluster}"),
+            format!("a.b.{cluster}"),
+        ] {
+            let refused = store
+                .write_trusted(&who, &add(Some(&hostname), None), &trusted)
+                .unwrap_err();
+            assert_eq!(refused.code, RpcErrorCode::InvalidArgument, "{hostname}");
+            assert!(
+                refused.message.contains(&format!(
+                    "is under {cluster}, which Ployz generates domains in"
+                )),
+                "{refused}"
+            );
+            assert_eq!(refused.details["cluster_domain"], json!(cluster));
+        }
     }
     store
-        .write_trusted(&who, &add(Some("notcluster.example.com"), None), &trusted)
+        .write_trusted(&who, &add(Some("notcluster.example.com"), None), &cloud())
         .unwrap();
 }
 

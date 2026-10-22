@@ -1903,6 +1903,11 @@ fn domain_add_explains_invalid_custom_hostnames() {
         ok(store, &["service", "add", "web", "--image", "nginx"]);
         for (host, reason) in [
             ("1.2.3.4", "IP address"),
+            ("127.1", "IP address"),
+            ("1.2.3.4.5", "IP address"),
+            ("-foo.com", "start or end with a hyphen"),
+            ("foo..com", "empty label"),
+            ("foo.-bar.com", "start or end with a hyphen"),
             ("2001:db8::1", "IP address"),
             ("[::1]", "IP address"),
             ("ployz.app", "reserved"),
@@ -1916,7 +1921,7 @@ fn domain_add_explains_invalid_custom_hostnames() {
             ("x.example.com/path", "path"),
             ("under_score.example.com", "underscore"),
         ] {
-            let refused = failed(store, &["domain", "add", "web", host], 2);
+            let refused = failed(store, &["domain", "add", "web", "--", host], 2);
             assert_eq!(
                 refused["code"],
                 json!("invalid_argument"),

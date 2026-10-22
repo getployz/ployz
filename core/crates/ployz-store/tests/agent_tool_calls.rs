@@ -32,7 +32,10 @@ fn who() -> Actor {
 }
 
 fn shop() -> ConfigStore {
-    let store = backend::open();
+    shop_in(backend::open())
+}
+
+fn shop_in(store: ConfigStore) -> ConfigStore {
     store
         .write(
             &who(),
@@ -617,6 +620,44 @@ fn review_reads_domain_changes_as_domains() {
         }),
         "{review}"
     );
+}
+
+#[test]
+fn domain_update_changes_the_port_of_a_legacy_custom_domain() {
+    for hostname in ["1.2.3.4", "a.ployz.app", "xn--zz.com"] {
+        let dir = tempfile::tempdir().unwrap();
+        let url = backend::fresh_url(&dir);
+        let store = shop_in(ConfigStore::open(&url, backend::key()).unwrap());
+        call(
+            &store,
+            "service_add",
+            json!({"name": "web", "image": "nginx:1"}),
+            "service",
+        )
+        .ok();
+        call(
+            &store,
+            "domain_add",
+            json!({"service": "web", "hostname": "legacy.example.com", "port": 80}),
+            "domain",
+        )
+        .ok();
+        backend::execute(
+            &url,
+            &format!(
+                "UPDATE config_environment SET working = replace(working, 'legacy.example.com', '{hostname}')"
+            ),
+        );
+        let updated = call(
+            &store,
+            "domain_update",
+            json!({"domain": hostname, "port": 8080}),
+            "update",
+        )
+        .ok();
+        assert_eq!(updated["domain"]["hostname"], json!(hostname));
+        assert_eq!(updated["domain"]["port"], json!(8080));
+    }
 }
 
 #[test]

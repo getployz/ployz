@@ -560,6 +560,33 @@ mod hostname_tests {
     use super::Hostname;
 
     #[test]
+    fn custom_hostnames_refuse_numeric_suffixes() {
+        for (value, reason) in [
+            ("127.1", "IP address"),
+            ("1.2.3.4.5", "IP address"),
+            ("host.123", "IP address"),
+            ("１２７.１", "IP address"),
+        ] {
+            let refused = Hostname::parse_custom(value).unwrap_err();
+            assert!(refused.message.contains(reason), "{value}: {refused}");
+        }
+    }
+
+    #[test]
+    fn custom_hostnames_explain_invalid_labels() {
+        for (value, reason) in [
+            ("-foo.com", "start or end with a hyphen"),
+            ("foo-.com", "start or end with a hyphen"),
+            ("foo.-bar.com", "start or end with a hyphen"),
+            ("foo..com", "empty label"),
+            ("foo.com..", "empty label"),
+        ] {
+            let refused = Hostname::parse_custom(value).unwrap_err();
+            assert!(refused.message.contains(reason), "{value}: {refused}");
+        }
+    }
+
+    #[test]
     fn a_hostname_in_any_case_is_stored_lowercase() {
         assert_eq!(Hostname::parse(" Acme.COM ").unwrap().as_str(), "acme.com");
         let sent: Hostname = serde_json::from_value(serde_json::json!("App.Example.com")).unwrap();
