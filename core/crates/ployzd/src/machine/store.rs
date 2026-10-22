@@ -611,12 +611,15 @@ impl LocalMachineStore {
         if persisted != self.record {
             return Err(StoreError::OwnershipLost(self.data_dir.clone()));
         }
-        if !self.data_dir.join(super::PREPARE_DIR_NAME).exists() {
-            return fs::remove_dir_all(&self.data_dir).map_err(StoreError::Io);
-        }
+        // The record goes last. A cleanup that stops partway, as one killed at the
+        // unit's stop timeout does, leaves a directory that still opens as
+        // Resetting, so the next start finishes the reset instead of refusing an
+        // unowned directory.
         for entry in fs::read_dir(&self.data_dir)? {
             let entry = entry?;
-            if entry.file_name() == super::PREPARE_DIR_NAME {
+            let name = entry.file_name();
+            if name == STATE_FILE_NAME || name == LOCK_FILE_NAME || name == super::PREPARE_DIR_NAME
+            {
                 continue;
             }
             if entry.file_type()?.is_dir() {
@@ -625,7 +628,13 @@ impl LocalMachineStore {
                 fs::remove_file(entry.path())?;
             }
         }
-        Ok(())
+        File::open(&self.data_dir)?.sync_all()?;
+        fs::remove_file(self.data_dir.join(STATE_FILE_NAME))?;
+        if self.data_dir.join(super::PREPARE_DIR_NAME).exists() {
+            fs::remove_file(self.data_dir.join(LOCK_FILE_NAME))?;
+            return Ok(());
+        }
+        fs::remove_dir_all(&self.data_dir).map_err(StoreError::Io)
     }
 }
 

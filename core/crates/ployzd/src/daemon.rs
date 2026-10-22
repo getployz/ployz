@@ -1313,6 +1313,78 @@ mod tests {
         );
     }
 
+    /// A reset killed while it clears the data directory, as systemd does when
+    /// the reset outlives the unit's stop timeout, must leave a directory the
+    /// next start still recognises as a reset to finish.
+    #[tokio::test]
+    async fn data_dir_cleanup_that_stops_partway_keeps_the_reset_for_retry() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let root = TestDir::new("ployzd-partial-reset-cleanup");
+        let data_dir = root.0.join("data");
+        let mut store = LocalMachineStore::open(&data_dir).unwrap();
+        let old_id = store.record().id();
+        for n in 0..8 {
+            let dir = data_dir.join(format!("state-{n}"));
+            fs::create_dir(&dir).unwrap();
+            fs::write(dir.join("rows"), b"rows").unwrap();
+        }
+        store.begin_reset().unwrap();
+        drop(store);
+        let Opened::Resetting(interrupted) =
+            LocalMachineStore::open_with_admission(&data_dir, data_dir.join(".run")).unwrap()
+        else {
+            panic!("a begun reset must reopen as Resetting");
+        };
+        // Stop the cleanup at an entry the directory lists after the record where
+        // there is one: a cleanup in listing order would already have removed the
+        // record there.
+        let listed: Vec<_> = fs::read_dir(&data_dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        let state = |name: &&std::ffi::OsString| name.to_string_lossy().starts_with("state-");
+        let stuck = listed
+            .iter()
+            .skip_while(|name| *name != "machine.json")
+            .find(state)
+            .or_else(|| listed.iter().find(state))
+            .map(|name| data_dir.join(name))
+            .unwrap();
+        fs::set_permissions(&stuck, fs::Permissions::from_mode(0o500)).unwrap();
+        if fs::write(stuck.join("probe"), b"").is_ok() {
+            eprintln!(
+                "skipped: root ignores directory permissions, so nothing can stop the cleanup"
+            );
+            fs::set_permissions(&stuck, fs::Permissions::from_mode(0o700)).unwrap();
+            return;
+        }
+
+        let result =
+            finish_interrupted_reset(interrupted, async { Ok(()) }, async { Ok(()) }).await;
+
+        assert!(
+            result.is_err(),
+            "the cleanup stopped at {}",
+            stuck.display()
+        );
+        let Opened::Resetting(interrupted) =
+            LocalMachineStore::open_with_admission(&data_dir, data_dir.join(".run")).unwrap()
+        else {
+            panic!("a partly cleared data directory must reopen as Resetting");
+        };
+        assert_eq!(interrupted.record().id(), old_id);
+        fs::set_permissions(&stuck, fs::Permissions::from_mode(0o700)).unwrap();
+        let store = finish_interrupted_reset(interrupted, async { Ok(()) }, async { Ok(()) })
+            .await
+            .unwrap();
+        assert_ne!(store.record().id(), old_id);
+        assert_eq!(
+            store.record().phase(),
+            ployz_core::LocalMachinePhase::Uninitialized
+        );
+    }
+
     #[tokio::test]
     async fn failed_network_removal_keeps_interrupted_reset_identity_for_retry() {
         let root = TestDir::new("ployzd-interrupted-network-reset-retry");
