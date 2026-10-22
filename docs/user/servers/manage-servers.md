@@ -380,7 +380,8 @@ the release it ran before.
 The command prints one line per server it tried, the failed one included. The error after it, on
 stderr, says why that server failed.
 It exits 1 when a server's upgrade failed before any server moved to another release, and 3
-when some did first, or when a server's result is unknown because it stopped answering. A version that was
+when some did first, or when a server took the upgrade and then stopped answering, since it may
+still finish. A version that was
 never released fails with `no such release 0.3.0-beta.99`.
 A server that already runs the newest release on the channel you name, or a newer one, says
 `already runs 0.3.0-beta.7`, and a server on this release or later is left alone: nothing is
