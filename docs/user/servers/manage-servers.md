@@ -296,8 +296,10 @@ Click it to upgrade every server that's behind, one at a time in name order. You
 while they do. While an upgrade runs, the top of the page reads **Upgrading 1/4**, and the server
 upgrading reads **Upgrading**.
 
-When you upgrade from `0.3.0-beta.6`, upgrade every server back to back. Upgraded servers don't route
-traffic to apps on a server still on `0.3.0-beta.6` until it upgrades too.
+When you upgrade from `0.3.0-beta.6`, upgrade every server back to back: upgraded servers don't route
+traffic to apps on a server still on `0.3.0-beta.6` until it upgrades too
+([#2892](https://github.com/getployz/ployz/issues/2892)). As each server restarts, its domains can
+answer `503` for a few seconds, up to about 5 s for an app running on another server.
 
 ### Turn on automatic upgrades
 
