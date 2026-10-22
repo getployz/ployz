@@ -289,6 +289,7 @@ case "$*" in
   'send -nvP -t token-wrong-target') printf 'resume token contents:\n\ttoname = tank/ployz/data@w-1-1\n' ;;
   'send -nvP -t token-missing') printf 'resume token contents:\n\ttoname = tank/ployz/data@w-1-3\n' ;;
   'send -nvP -t token-child') printf 'resume token contents:\n\ttoname = tank/ployz/data/child@w-1-2\n' ;;
+  'send -nvP -t token-pruned') echo 'cannot resume send: incremental source 0x1f no longer exists' >&2; exit 1 ;;
   'send -t token-other') printf 'unrelated stream' ;;
   'send -t token-1') printf 'resumed stream' ;;
   'get -Hp -o value refquota tank/ployz/data') printf '1073741824\n' ;;
@@ -455,6 +456,18 @@ esac
             (status, body),
             (StatusCode::OK, "resumed stream".to_owned())
         );
+        shutdown.cancel();
+    }
+
+    #[tokio::test]
+    async fn a_token_whose_base_the_writer_pruned_is_no_stream() {
+        // The puller answers 404 by dropping its partial receive and asking for a full
+        // send, so a stale token must not read as this Machine failing.
+        let dir = TestDir::new("ployzd-volume-send");
+        let (base, shutdown) = start(&dir, POOLS).await;
+        let (status, body) = get(&base, "/volume-send/data?target=w-1-2&token=token-pruned").await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+        assert!(body.contains("no longer exists"), "{body}");
         shutdown.cancel();
     }
 

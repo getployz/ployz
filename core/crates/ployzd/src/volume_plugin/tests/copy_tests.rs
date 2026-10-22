@@ -1103,6 +1103,40 @@ async fn a_pull_whose_base_the_writer_lost_starts_over_from_a_full_send() {
 }
 
 #[tokio::test]
+async fn a_pull_whose_token_the_writer_cannot_send_starts_over_from_a_full_send() {
+    let source = Source::start(Some(BOUND), "snapshot w-1-2 12\n").await;
+    source.answer(
+        "token=",
+        StatusCode::NOT_FOUND,
+        "resume token cannot be sent from tank/ployz/data: incremental source no longer exists",
+    );
+    let test = TestDir::new();
+    let (socket, server) = puller(&test, &["root", "mirror", "mirror-fs"], source.port);
+    set_snapshots(&test, SLOT_FS, &[("w-1-1", 11)]);
+    set_property(&test, SLOT_FS, "receive_resume_token", "token-1");
+
+    post(&socket, "/Volume.Copy.Pull", pull("w-1-2")).await;
+    let copy = landed(&socket, "w-1-2").await;
+    assert_eq!(
+        copy.pointer("/Ok/newest/guid"),
+        Some(&json!("12")),
+        "{copy}"
+    );
+    let commands = commands(&test);
+    assert!(commands.contains("zfs receive -A tank/ployz-mirror/data/fs"));
+    assert!(commands.contains("zfs destroy -r tank/ployz-mirror/data/fs"));
+    assert_eq!(
+        source.requests(),
+        [
+            "/volume-bound/data",
+            "/volume-send/data?target=w-1-2&token=token-1",
+            "/volume-send/data?target=w-1-2",
+        ]
+    );
+    server.abort();
+}
+
+#[tokio::test]
 async fn a_pull_resent_with_its_first_expect_continues_a_full_send_that_emptied_the_slot() {
     let source = Source::start(Some(BOUND), "").await;
     source.hold("target=w-1-2", "snapshot w-1-2 12\n");
