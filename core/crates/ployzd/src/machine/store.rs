@@ -432,7 +432,7 @@ impl LocalMachineStore {
         installed.body = installation.body;
         installed.wireguard_mtu = installation.wireguard_mtu;
         installed.pinned_addresses = installation.pinned;
-        SealingKey::store(&self.data_dir, installation.sealing_key.as_ref())?;
+        SealingKey::set(&self.data_dir, installation.sealing_key.as_ref())?;
         save(&self.data_dir, &installed)?;
         self.record = installed;
         Ok(())

@@ -174,8 +174,6 @@ pub(super) async fn attempt<H: Host>(
     }
 }
 
-/// Tell Cloud whether the joined Machine holds its Cluster's Sealing Key. A join is not
-/// followed by another check-in, and a lost report is only bookkeeping Cloud lacks.
 async fn report_sealing<H: Host>(
     host: &H,
     client: &CheckinClient,

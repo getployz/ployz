@@ -34,7 +34,6 @@ pub(super) struct CheckinRequest<'a> {
     pub(super) sealing: Option<Sealing>,
 }
 
-/// Whether the Machine this attempt enrolled holds its Cluster's Sealing Key.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(
     tag = "kind",

@@ -491,7 +491,6 @@ export const enrollmentAllocation = pgTable(
   ],
 );
 
-/** The public half of each Cloud Cluster generation's Sealing Key, as its Servers first reported it. */
 export const clusterSealingKey = pgTable(
   "cluster_sealing_key",
   {

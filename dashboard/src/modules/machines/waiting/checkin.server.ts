@@ -219,8 +219,6 @@ const admit = Effect.fn("Checkin.admit")(function* (
   return probe === null ? answer : { ...answer, probe };
 });
 
-// Only a host Cloud enrolled reports, right after its join, so its key is filed under the current pairing generation.
-// The first report wins, so a later disagreement is an error to surface, never state to repair.
 const recordSealing = Effect.fn("Checkin.recordSealing")(function* (
   organizationId: string,
   waitingServerId: string,

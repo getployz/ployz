@@ -39,7 +39,6 @@ impl SealingKey {
         SealingPublicKey::from_bytes(Kem::sk_to_pk(&self.private()).to_bytes().into())
     }
 
-    /// The key this Machine holds, or `None` when it joined without one.
     pub(crate) fn load(data_dir: &Path) -> io::Result<Option<Self>> {
         match fs::read(data_dir.join(FILE_NAME)) {
             Ok(bytes) => <[u8; 32]>::try_from(bytes)
@@ -52,8 +51,7 @@ impl SealingKey {
         }
     }
 
-    /// Make `key` the one this Machine holds, readable by root only.
-    pub(crate) fn store(data_dir: &Path, key: Option<&Self>) -> io::Result<()> {
+    pub(crate) fn set(data_dir: &Path, key: Option<&Self>) -> io::Result<()> {
         let path = data_dir.join(FILE_NAME);
         match key {
             Some(key) => crate::filesystem::atomic_write(&path, &key.0, 0o600),
@@ -64,7 +62,6 @@ impl SealingKey {
         }
     }
 
-    /// Seal this key so only the holder of `recipient`'s private half can open it.
     pub(crate) fn seal_to(&self, recipient: &WireGuardPublicKey) -> SealedSealingKey {
         let recipient = <Kem as hpke::Kem>::PublicKey::from_bytes(&recipient.0)
             .expect("an X25519 public key is any 32 bytes");
@@ -136,7 +133,7 @@ mod tests {
         assert_eq!(SealingKey::load(&dir.0).unwrap(), None);
 
         let key = SealingKey::generate();
-        SealingKey::store(&dir.0, Some(&key)).unwrap();
+        SealingKey::set(&dir.0, Some(&key)).unwrap();
 
         let mode = fs::metadata(dir.0.join(FILE_NAME))
             .unwrap()
@@ -145,9 +142,9 @@ mod tests {
         assert_eq!(mode & 0o777, 0o600);
         assert_eq!(SealingKey::load(&dir.0).unwrap(), Some(key));
 
-        SealingKey::store(&dir.0, None).unwrap();
+        SealingKey::set(&dir.0, None).unwrap();
         assert_eq!(SealingKey::load(&dir.0).unwrap(), None);
-        SealingKey::store(&dir.0, None).unwrap();
+        SealingKey::set(&dir.0, None).unwrap();
     }
 
     #[test]
