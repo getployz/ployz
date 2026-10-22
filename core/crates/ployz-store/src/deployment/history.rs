@@ -43,6 +43,19 @@ pub(crate) fn applied_state(
     scope::nodes(&rows, like, "Applied State")
 }
 
+/// The resource ID of each Volume Applied State holds: a Deploy put its data on a Server.
+pub(crate) fn deployed_volumes(
+    tx: &mut dyn Tx,
+    environment: &EnvironmentId,
+    like: &SavedEnvironmentIntent,
+) -> Result<BTreeSet<String>, RpcError> {
+    Ok(applied_state(tx, environment, like)?
+        .volumes
+        .into_iter()
+        .map(|volume| volume.resource_id)
+        .collect())
+}
+
 /// What reviews compare Working State against: Applied State, overlaid with the
 /// target nodes of the newest Deployment in flight, if any. Its token changes
 /// whenever a Deployment is admitted or ends.

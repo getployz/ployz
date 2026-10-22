@@ -318,6 +318,51 @@ fn draft_storage_is_explicit_and_locks_even_when_deployment_fails() {
 }
 
 #[test]
+fn a_deploy_after_one_that_applied_a_managed_volume_marks_it_deployed() {
+    let (store, who) = shop();
+    store
+        .write(
+            &who,
+            &SetVolumeStorage {
+                environment: EnvironmentRef::default(),
+                volume: VolumeName::parse("data").unwrap(),
+                storage: VolumeKind::provisioned_default(),
+            },
+        )
+        .unwrap();
+    let runner = RunnerId::parse("runner").unwrap();
+    admit(&store, &who, 1, &[], None).unwrap();
+    store.claim(&id(1), &runner).unwrap();
+    store
+        .record(
+            &id(1),
+            &runner,
+            RunEvidence::NotExecuted("Preparation stopped".into()),
+        )
+        .unwrap();
+    admit(&store, &who, 2, &[], None).unwrap();
+    let failed_before = prepare(&store, 2, &["web"]);
+    assert!(failed_before.intent.deployed_volumes.is_empty());
+    store
+        .record(
+            &id(2),
+            &runner,
+            RunEvidence::Confirmed(vec![ServiceName::parse("web").unwrap()]),
+        )
+        .unwrap();
+    execute(&store, 2, Vec::new());
+
+    admit(&store, &who, 3, &[], None).unwrap();
+    let claimed = store.claim(&id(3), &runner).unwrap();
+
+    assert_eq!(
+        texts(&claimed.intent.deployed_volumes.iter().collect::<Vec<_>>()),
+        [DOCKER_VOLUME]
+    );
+    assert_eq!(claimed.input["volumes"][0]["deployed"], true);
+}
+
+#[test]
 fn a_volume_created_with_its_storage_locked_refuses_other_storage_before_any_deploy() {
     let (store, who) = shop();
     let managed = VolumeKind::Provisioned {

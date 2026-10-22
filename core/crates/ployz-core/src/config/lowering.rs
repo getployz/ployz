@@ -97,6 +97,9 @@ pub struct LowerDeploymentVolume {
     pub volume_resource_id: String,
     /// Fixed once the Volume's first Deployment is requested.
     pub storage: VolumeKind,
+    /// A Deploy applied it, so its data is on some Server. Written only when set.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub deployed: bool,
 }
 
 /// One Config the Namespace holds, its references resolved.
@@ -147,7 +150,7 @@ pub fn lower_deployment(input: LowerDeploymentInput) -> Result<DeployIntent, Con
     let volume_sources: BTreeMap<_, _> = input
         .volumes
         .iter()
-        .map(|v| (v.volume_resource_id.as_str(), v.storage))
+        .map(|v| (v.volume_resource_id.as_str(), (v.storage, v.deployed)))
         .collect();
     let config_sources: BTreeMap<_, _> = input
         .configs
@@ -162,6 +165,7 @@ pub fn lower_deployment(input: LowerDeploymentInput) -> Result<DeployIntent, Con
     let dependencies = deployment_dependencies(&snapshots, &input.lineages, &config_sources);
     let mut target: Vec<RequestedServiceSpec> = Vec::new();
     let mut volume_names = BTreeMap::new();
+    let mut deployed_volumes = BTreeSet::new();
     for (parsed, snapshot) in snapshots {
         let ServiceConfig {
             settings: config,
@@ -249,7 +253,8 @@ pub fn lower_deployment(input: LowerDeploymentInput) -> Result<DeployIntent, Con
         let mut volumes = Vec::new();
         let mut mounts = Vec::new();
         for mount in configured_mounts {
-            let Some(storage) = volume_sources.get(mount.volume_resource_id.as_str()) else {
+            let Some((storage, deployed)) = volume_sources.get(mount.volume_resource_id.as_str())
+            else {
                 continue;
             };
             let name = format!("vol-{}", mount.volume_resource_id);
@@ -267,11 +272,16 @@ pub fn lower_deployment(input: LowerDeploymentInput) -> Result<DeployIntent, Con
                         .map_err(lowering_error)?,
                     labels: BTreeMap::new(),
                 },
-                VolumeKind::Provisioned { maximum_bytes } => RawVolumeSource::Provisioned {
-                    name,
-                    maximum_bytes: *maximum_bytes,
-                    labels: BTreeMap::new(),
-                },
+                VolumeKind::Provisioned { maximum_bytes } => {
+                    if *deployed {
+                        deployed_volumes.insert(input.namespace.volume_name(&name));
+                    }
+                    RawVolumeSource::Provisioned {
+                        name,
+                        maximum_bytes: *maximum_bytes,
+                        labels: BTreeMap::new(),
+                    }
+                }
             };
             volumes.push(ServiceVolume {
                 reference: reference.clone(),
@@ -459,6 +469,7 @@ pub fn lower_deployment(input: LowerDeploymentInput) -> Result<DeployIntent, Con
     )
     .with_dependencies(dependencies)
     .with_volume_names(volume_names)
+    .with_deployed_volumes(deployed_volumes)
     .with_cluster_domain(input.cluster_domain))
 }
 

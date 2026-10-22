@@ -751,7 +751,8 @@ pub(crate) const VOLUME_RESTORE: Verb = Verb::cloud(
 .docs("services/move-a-volume.md")
 .tool(ToolId::VolumeRestore);
 pub(crate) const VOLUME_RM: Verb =
-    Verb::cloud("volume rm", Never, volume::remove_command, volume::remove);
+    Verb::cloud("volume rm", Never, volume::remove_command, volume::remove)
+        .docs("services/volumes.md");
 pub(crate) const VOLUME_RUNS: Verb = Verb::cloud(
     "volume runs",
     Never,

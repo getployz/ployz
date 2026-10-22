@@ -1107,9 +1107,11 @@ pub(crate) fn claim(
     let saved = held_revision(tx, &stored)?;
     let branch = crate::branch::lowering(tx, &stored.summary.environment_id, &saved)?;
     let (services, removals) = stored.lowering();
+    let deployed = deployed_volumes(tx, &stored.summary.environment_id, &saved)?;
     let lowered = lower(
         &stored.summary.environment_id,
         &saved,
+        &deployed,
         (&services, &removals),
         (stored.namespace.clone(), stored.cluster_domain.as_ref()),
         &branch,
@@ -1261,9 +1263,11 @@ pub(crate) fn input(
     let saved = held_revision(tx, stored)?;
     let branch = crate::branch::lowering(tx, &stored.summary.environment_id, &saved)?;
     let (services, removals) = stored.lowering();
+    let deployed = deployed_volumes(tx, &stored.summary.environment_id, &saved)?;
     lower(
         &stored.summary.environment_id,
         &saved,
+        &deployed,
         (&services, &removals),
         (stored.namespace.clone(), stored.cluster_domain.as_ref()),
         &branch,

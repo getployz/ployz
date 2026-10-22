@@ -100,6 +100,11 @@ pub struct DeployIntent {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     #[ts(as = "Option<BTreeMap<DockerVolumeName, String>>", optional)]
     pub volume_names: BTreeMap<DockerVolumeName, String>,
+    /// The Managed Volumes an earlier Deploy applied. Each holds data on some Server,
+    /// so finding no copy of one on any member means its data left the Cluster.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    #[ts(as = "Option<BTreeSet<DockerVolumeName>>", optional)]
+    pub deployed_volumes: BTreeSet<DockerVolumeName>,
     /// The Cluster Domain generated domains live under. Ployz Cloud publishes DNS for
     /// every hostname one label under it, so messages never ask for a record there.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -142,6 +147,7 @@ impl DeployIntent {
             dependencies: BTreeMap::new(),
             registry_auth: BTreeMap::new(),
             volume_names: BTreeMap::new(),
+            deployed_volumes: BTreeSet::new(),
             cluster_domain: None,
         }
     }
@@ -207,6 +213,13 @@ impl DeployIntent {
     #[must_use]
     pub fn with_volume_names(mut self, names: BTreeMap<DockerVolumeName, String>) -> Self {
         self.volume_names = names;
+        self
+    }
+
+    /// The Managed Volumes an earlier Deploy applied.
+    #[must_use]
+    pub fn with_deployed_volumes(mut self, volumes: BTreeSet<DockerVolumeName>) -> Self {
+        self.deployed_volumes = volumes;
         self
     }
 

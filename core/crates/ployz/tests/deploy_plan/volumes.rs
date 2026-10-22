@@ -881,6 +881,102 @@ fn a_cloud_volume_without_a_writer_is_named_as_authored() {
     );
 }
 
+/// The Deploy Intent of one Service mounting Managed Volume `echo`, which a Deploy
+/// applied before when `deployed`.
+fn lowered_echo(deployed: bool) -> (DeployIntent, DockerVolumeName) {
+    let volume = "3f2a6c1e-8d4b-4e7a-9c15-2b6d8e0f4a71";
+    let intent = ployz_core::config::lower_deployment(
+        serde_json::from_value(serde_json::json!({
+            "namespace": "app",
+            "snapshots": [{
+                "serviceId": "web",
+                "config": {"version": 2, "privateDns": "web", "healthcheck": {"type": "none"},
+                    "restartPolicy": "on-failure",
+                    "source": {"type": "image", "version": 1, "image": "nginx:latest", "credentials": {"type": "none"}},
+                    "mounts": [{"volumeResourceId": volume, "volumeName": "echo", "mountPath": "/data"}]}
+            }],
+            "volumes": [{"volumeResourceId": volume, "storage": {"kind": "provisioned", "maximumBytes": 1_073_741_824}, "deployed": deployed}]
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    (intent, app_volume(&format!("vol-{volume}")))
+}
+
+#[test]
+fn a_deployed_volume_no_member_holds_refuses_instead_of_starting_empty() {
+    let (intent, physical) = lowered_echo(true);
+
+    let error = preview_deploy(&intent, &copies_snapshot_of(&physical, &[], vec![])).unwrap_err();
+
+    assert!(matches!(error, PlanError::NoWriter { .. }), "{error}");
+    assert_eq!(
+        error.to_string(),
+        "Volume echo was deployed, but no Server in this Cluster holds a copy of it. If a Server you removed still holds its data, add that Server back, then run ployz volume restore echo --from <server>"
+    );
+    assert_eq!(
+        error.into_rpc_error().details.get("reason").unwrap(),
+        "no_writer"
+    );
+}
+
+#[test]
+fn a_deployed_volume_with_a_silent_machine_leaves_its_copies_unknown() {
+    let (intent, physical) = lowered_echo(true);
+    let mut snapshot = copies_snapshot_of(&physical, &[], vec![]);
+    snapshot.storage_capacity.remove(&machine_id('2'));
+
+    let error = preview_deploy(&intent, &snapshot).unwrap_err();
+
+    assert!(matches!(error, PlanError::CopiesUnknown { .. }), "{error}");
+}
+
+#[test]
+fn a_volume_no_deploy_applied_yet_is_created() {
+    let (intent, physical) = lowered_echo(false);
+
+    let preview = preview_deploy(&intent, &copies_snapshot_of(&physical, &[], vec![])).unwrap();
+
+    assert_eq!(
+        preview.volumes_to_create.len(),
+        1,
+        "{:?}",
+        operations(&preview)
+    );
+}
+
+#[test]
+fn a_deployed_volume_no_member_holds_leaves_a_deploy_of_another_service_alone() {
+    let mut db = requested(ServiceMode::Replicated {
+        replicas: NonZeroU32::new(1).unwrap(),
+    });
+    db.name = ServiceName::parse("db").unwrap();
+    add_named_volume(&mut db, "data");
+    make_provisioned(&mut db, "data", 1_073_741_824);
+    let web = requested(ServiceMode::Replicated {
+        replicas: NonZeroU32::new(1).unwrap(),
+    });
+    let intent = DeployIntent::apply_all(
+        Namespace::parse("app").unwrap(),
+        [&web, &db],
+        PlanOptions {
+            selected: vec![ServiceAttempt {
+                name: web.name.clone(),
+            }],
+            ..PlanOptions::default()
+        },
+    )
+    .with_deployed_volumes([app_volume("data")].into());
+
+    let preview = preview_deploy(&intent, &copies_snapshot(&[], vec![])).unwrap();
+
+    assert!(
+        operations(&preview)
+            .iter()
+            .all(|operation| operation.service_name() != Some(&db.name))
+    );
+}
+
 #[test]
 fn unselected_provisioned_service_leaves_stateless_machine_unchanged() {
     let applied = requested(ServiceMode::Replicated {
