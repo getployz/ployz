@@ -1114,6 +1114,58 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_slot_a_crash_left_without_its_spec_reads_empty_until_the_create_runs_again() {
+        let containers =
+            std::sync::Arc::new(std::sync::Mutex::new(std::collections::BTreeMap::new()));
+        let (runtime, _fake) = fake_runtime_with(FakeDocker {
+            named_containers: Some(containers.clone()),
+            ..Default::default()
+        })
+        .await;
+        let machine = machine();
+        let namespace = Namespace::parse("app").unwrap();
+        let spec = spec_with_sources(Vec::new());
+        let created = runtime
+            .create_with_admission::<_, _, Error>(
+                &machine,
+                ContainerRequest {
+                    creation_key: Some("plan:0"),
+                    ..container_request(
+                        ContainerKind::ServiceContainer,
+                        &namespace,
+                        &spec,
+                        std::future::ready(None),
+                    )
+                },
+            )
+            .await
+            .unwrap();
+        runtime
+            .specs
+            .config_operation()
+            .await
+            .remove(&created.container_id)
+            .await
+            .unwrap();
+        let slot = SlotKey {
+            namespace,
+            service: spec.name.clone(),
+            kind: ContainerKind::ServiceContainer,
+            creation_key: ployz_core::CreationKey::try_from("plan:0".to_owned()).unwrap(),
+        };
+        let found = runtime.inspect_slot(&machine.id, &slot).await;
+        assert!(matches!(found, Ok(None)), "{found:?}");
+        for container in containers.lock().unwrap().values_mut() {
+            container["State"] = serde_json::json!({ "Status": "running" });
+        }
+        let found = runtime.inspect_slot(&machine.id, &slot).await;
+        assert!(
+            matches!(found, Err(Error::SpecNotFound(id)) if id == created.container_id),
+            "a started Container without its spec is still reported: {found:?}"
+        );
+    }
+
+    #[tokio::test]
     async fn a_running_container_without_a_spec_is_never_removed_to_create_again() {
         let (_runtime, containers, lost, again) = half_made("running").await;
         assert!(
