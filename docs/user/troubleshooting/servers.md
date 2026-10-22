@@ -344,18 +344,18 @@ minute; try again then.
    it yourself, then try again.
 4. If you deleted the servers, see
    [Forget servers you deleted](../servers/manage-servers.md#forget-servers-you-deleted).
-5. If the servers run Ployz 0.3.0-beta.6 or earlier, Cloud can't reach them through the relay.
+5. If the servers run Ployz 0.2 or 0.3.0-beta.6 and earlier, Cloud can't reach them through the relay.
    Upgrade one over SSH, then the rest from Cloud, as in
-   [Servers on 0.3.0-beta.6 or earlier](../servers/manage-servers.md#servers-on-030-beta6-or-earlier).
+   [Servers on 0.2 or 0.3.0-beta.6 and earlier](../servers/manage-servers.md#servers-on-02-or-030-beta6-and-earlier).
 
-## The CLI says a server runs 0.3.0-beta.6 or earlier
+## The CLI says a server runs 0.2 or 0.3.0-beta.6 and earlier
 
 ```text
-This Server runs Ployz 0.3.0-beta.6 or earlier, which this release can't reach through the relay.
+This Server runs Ployz 0.2 or a 0.3.0 beta up to beta.6, which this release can't reach through the relay.
 ```
 
 Upgrade one server over SSH, then the rest from Cloud, as in
-[Servers on 0.3.0-beta.6 or earlier](../servers/manage-servers.md#servers-on-030-beta6-or-earlier).
+[Servers on 0.2 or 0.3.0-beta.6 and earlier](../servers/manage-servers.md#servers-on-02-or-030-beta6-and-earlier).
 
 A server that answers but refuses says so instead, with its own reason:
 `Server web-1 couldn't give this command access: Cluster store is not available`. It is running, so

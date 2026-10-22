@@ -234,10 +234,10 @@ describe("createRuntimeEventsResponse", () => {
   });
 
   it.each([
-    { code: "unsupported", message: "This Server runs Ployz 0.3.0-beta.6 or earlier, which this release can't reach through the relay.", details: { management_protocol: "older" } },
+    { code: "unsupported", message: "This Server runs Ployz 0.2 or a 0.3.0 beta up to beta.6, which this release can't reach through the relay.", details: { management_protocol: "older" } },
     {
       code: "internal",
-      message: "A Server's daemon answered, but the 2 connections from the Cluster all failed. Server machine-1, tried last, refused the connection: This Server runs Ployz 0.3.0-beta.6 or earlier, which this release can't reach through the relay.",
+      message: "A Server's daemon answered, but the 2 connections from the Cluster all failed. Server machine-1, tried last, refused the connection: This Server runs Ployz 0.2 or a 0.3.0 beta up to beta.6, which this release can't reach through the relay.",
       details: null,
     },
   ])("says a Server needs its upgrade over SSH when it speaks the older protocol", async (cause) => {

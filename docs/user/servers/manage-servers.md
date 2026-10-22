@@ -290,7 +290,7 @@ while they do. While an upgrade runs, the top of the page reads **Upgrading 1/4*
 upgrading reads **Upgrading**.
 
 When you upgrade from `0.3.0-beta.6`, where [the first server needs
-SSH](#servers-on-030-beta6-or-earlier), upgrade every server back to back: upgraded servers don't
+SSH](#servers-on-02-or-030-beta6-and-earlier), upgrade every server back to back: upgraded servers don't
 route traffic to apps on a server still on `0.3.0-beta.6` until it upgrades too
 ([#2892](https://github.com/getployz/ployz/issues/2892)). As each server restarts, its domains can
 answer `503` briefly, for about 6 seconds when the app runs on another server.
@@ -407,8 +407,8 @@ the command follows the upgrade that's running.
 
 Ployz Cloud and the CLI keep working with servers that run an older Ployz release, back to the
 first release after 0.3.0-beta.6. The **Servers** page shows each one and offers its upgrade, as in
-[Upgrade Ployz on a server](#upgrade-ployz-on-a-server). A server on 0.3.0-beta.6 or earlier is the
-exception: see [Servers on 0.3.0-beta.6 or earlier](#servers-on-030-beta6-or-earlier).
+[Upgrade Ployz on a server](#upgrade-ployz-on-a-server). A server on 0.2 or 0.3.0-beta.6 and earlier is
+the exception: see [Servers on 0.2 or 0.3.0-beta.6 and earlier](#servers-on-02-or-030-beta6-and-earlier).
 
 When a server's release can't serve a feature, the feature names that server:
 
@@ -462,17 +462,17 @@ Server web-2 needs a newer Ployz. It cannot serve ployz.container.ensure.v1.
 Upgrade the server and run `ployz drain` again. The rerun finds services already off and carries
 on.
 
-### Servers on 0.3.0-beta.6 or earlier
+### Servers on 0.2 or 0.3.0-beta.6 and earlier
 
 Starting with the first release after 0.3.0-beta.6, Ployz Cloud and the CLI prove their access in a
-new way on every connection, and servers on 0.3.0-beta.6 or earlier don't understand it. Through
+new way on every connection, and servers on 0.2 or 0.3.0-beta.6 and earlier don't understand it. Through
 Ployz's relay, Cloud and a newer CLI can't connect to such a server directly. The server keeps
 running your apps. When Cloud's last try to reach your servers lands on such a server, the
 **Servers** page reads **Upgrade your server over SSH** and shows the commands below. When the CLI can't reach a server on a newer
 release first, it stops with:
 
 ```text
-This Server runs Ployz 0.3.0-beta.6 or earlier, which this release can't reach through the relay.
+This Server runs Ployz 0.2 or a 0.3.0 beta up to beta.6, which this release can't reach through the relay.
 ```
 
 Every 0.2 release, 0.2.4 included, is on this side of the boundary. A server on 0.2 upgrades to
@@ -506,8 +506,8 @@ sudo ployzd install --version stable --software-only
 
 `--software-only` replaces Ployz and leaves Docker, packages and storage as they are.
 
-The same boundary holds the other way: a CLI on 0.3.0-beta.6 or earlier can't reach a server on a
-later release. Install the newer CLI with `curl -fsSL https://ployz.sh | sh`.
+The same boundary holds the other way: a CLI on 0.2 or 0.3.0-beta.6 and earlier can't reach a server
+on a later release. Install the newer CLI with `curl -fsSL https://ployz.sh | sh`.
 
 ## Remove a server
 

@@ -726,11 +726,11 @@ pub enum ConnectError {
     ClientRefused,
     #[error("Machine confirmed this Management Client was cleared")]
     ClientCleared,
-    /// The Machine speaks the management protocol of Ployz 0.3.0-beta.6 or earlier, which
+    /// The Machine speaks the management protocol of Ployz 0.2 or 0.3.0-beta.6 and earlier, which
     /// this release does not; only its own upgrade reaches it, over SSH.
     #[error(
-        "This Server runs Ployz 0.3.0-beta.6 or earlier, which this release can't reach through the relay. \
-         Upgrade it over SSH: ployz server upgrade beta SERVER --connect ssh://USER@HOST. \
+        "This Server runs Ployz 0.2 or a 0.3.0 beta up to beta.6, which this release can't reach through the relay. \
+         Upgrade it over SSH: ployz server upgrade stable SERVER --connect ssh://USER@HOST. \
          Docs: ployz docs servers/manage-servers.md"
     )]
     OlderMachine,

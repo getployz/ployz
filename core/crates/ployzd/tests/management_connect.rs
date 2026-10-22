@@ -141,7 +141,7 @@ async fn a_machine_on_the_previous_management_protocol_is_named_as_older() {
         Err(error @ ConnectError::OlderMachine) => assert!(
             error
                 .to_string()
-                .contains("ployz server upgrade beta SERVER --connect ssh://USER@HOST"),
+                .contains("ployz server upgrade stable SERVER --connect ssh://USER@HOST"),
             "the error names the SSH upgrade the docs give: {error}"
         ),
         Err(error) => panic!("expected OlderMachine, got: {error} ({error:?})"),

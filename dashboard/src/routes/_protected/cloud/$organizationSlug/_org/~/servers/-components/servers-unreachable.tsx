@@ -7,7 +7,7 @@ import { CopyBlock } from "./copy-block";
 import { ForgetServersDialog, useForgetServersGate } from "../../../-components/forget-servers-dialog";
 
 /** What a Server on an older management protocol runs to upgrade, from a computer that reaches it over SSH. */
-export const SSH_UPGRADE = "curl -fsSL https://ployz.sh | sh -s -- beta\nployz server upgrade beta SERVER --connect ssh://USER@HOST";
+export const SSH_UPGRADE = "curl -fsSL https://ployz.sh | sh\nployz server upgrade stable SERVER --connect ssh://USER@HOST";
 
 /**
  * There is nothing to show: Cloud can't reach the cluster, or the watch dropped or came back incomplete without the
@@ -24,7 +24,7 @@ export function ServersUnreachable({ organizationSlug, older = false }: { organi
           <EmptyMedia variant="icon"><ArrowUpCircleIcon /></EmptyMedia>
           <EmptyTitle>Upgrade your server over SSH</EmptyTitle>
           <EmptyDescription>
-            A server runs an older Ployz that Ployz Cloud can’t reach through the relay. Upgrade it from your computer:
+            A server runs an older Ployz that Ployz Cloud can’t reach through the relay. Upgrade it from your computer, then upgrade the rest from the Servers page. On your computer, run:
           </EmptyDescription>
         </EmptyHeader>
         <EmptyContent className="max-w-xl text-left">
