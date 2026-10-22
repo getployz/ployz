@@ -97,6 +97,8 @@ export function StoreVolumeSize({ organizationSlug, environment, volume, recorde
     ? `${runWords(other)}. Grow it once that finishes.`
     : restoredSmaller
     ? `A restored revision asks for ${gb(working)}; the servers keep ${gb(recorded)}. Enter ${gigabytes(recorded)} to keep it.`
+    : asks
+    ? "Grows live on every server that holds a copy, once an owner or admin approves it. Can't shrink yet."
     : "Grows live on every server that holds a copy. Can't shrink yet.";
 
   return (

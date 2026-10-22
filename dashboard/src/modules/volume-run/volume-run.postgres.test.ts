@@ -3642,6 +3642,12 @@ describe("volume runs", () => {
       expect(await runEffect(decideApproval(peer, approval_id, { approve: { digest: approval } }))).toMatchObject({ ok: false });
     });
 
+    it("a member's Move asks even when its first step seals an older second primary", async () => {
+      machines = [{ name: "fsn-1", pool: true, copy: writerCopy(base, 3) }, { name: "fsn-2", pool: true, copy: writerCopy(snap("20"), 5) }, { name: "fsn-3", pool: true, copy: null }];
+
+      expect(await as(member, { kind: "move", args: { to: "fsn-3" } })).toMatchObject({ ok: false, refusal: { code: "approval_required" } });
+    });
+
     it("a member seals an older second primary unasked, as Ployz's own sync would", async () => {
       machines = [{ name: "fsn-1", pool: true, copy: writerCopy(base, 3) }, { name: "fsn-2", pool: true, copy: writerCopy(snap("20"), 5) }];
 
@@ -3664,7 +3670,7 @@ describe("volume runs", () => {
         const { approval, approval_id } = askedOf(admitted);
 
         expect(admitted).toMatchObject({ refusal: { details: { protected: { environment: "production" } } } });
-        expect(await review(approval_id)).toMatchObject({ operation: { verb: "resize", name: "data to 20 GB", preview: { maximum_bytes: 20 * GB } } });
+        expect(await review(approval_id)).toMatchObject({ operation: { verb: "resize", name: "data from 10 GB to 20 GB", preview: { recorded_bytes: 10 * GB, maximum_bytes: 20 * GB } } });
         expect(await rows()).toEqual([]);
         await runEffect(decideApproval(protector, approval_id, { approve: { digest: approval } }));
         expect(await as(asker, grow(30), approval_id)).toMatchObject({ ok: false, refusal: { code: "approval_required" } });
@@ -3677,7 +3683,27 @@ describe("volume runs", () => {
         const { approval, approval_id } = askedOf(await as({ ...member, via: "dashboard" }, grow(20)));
 
         expect(await runEffect(decideAndApply(protector, approval_id, { approve: { digest: approval } }))).toMatchObject({ ok: true });
-        expect(await rows()).toMatchObject([{ kind: "resize" }]);
+        const ran = await harness.pool.query<{ args: unknown; requested_by_user_id: string }>("select args, requested_by_user_id from volume_run");
+        expect(ran.rows).toEqual([{ args: { maximum_bytes: 20 * GB }, requested_by_user_id: userId }]);
+      });
+
+      it("an approved grow asks again once the Volume's size moved, so it never runs as a shrink", async () => {
+        const { approval, approval_id } = askedOf(await as(member, grow(20)));
+        storeVolumes = [{ id: volumeId, name: "data", storage: { kind: "provisioned", maximumBytes: 30 * GB }, recorded_storage: 30 * GB }];
+        await runEffect(decideApproval(protector, approval_id, { approve: { digest: approval } }));
+
+        expect(await as(member, grow(20), approval_id)).toMatchObject({ ok: false, refusal: { code: "approval_required" } });
+        expect(await rows()).toEqual([]);
+      });
+
+      it("a grow asks even when its first step seals an older second primary", async () => {
+        machines = [
+          { name: "fsn-1", pool: true, copy: writerCopy(base, 3), capabilities: serves, bound: 10 * GB },
+          { name: "fsn-2", pool: true, copy: writerCopy(snap("20"), 5), capabilities: serves, bound: 10 * GB },
+        ];
+
+        expect(await as(member, grow(20))).toMatchObject({ ok: false, refusal: { code: "approval_required" } });
+        expect(await rows()).toEqual([]);
       });
 
       it("someone who can protect it grows unasked", async () => {

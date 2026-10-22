@@ -227,9 +227,10 @@ who asked. The member sees their own request under **Requested**, marked **Waiti
 admin.**, and can't approve or deny it. Neither can an owner or admin decide a request they made. A deploy, sync or take from `ployz` or an agent asks
 the same way, and so do `ployz env shutdown` and cancelling a deploy someone else started. So does
 anything from `ployz` or an agent that stops or takes off what a volume serves:
-`ployz volume move`, `restore`, `release` and `mirror rm`, and a resize with `ployz volume set
---size`, which can't be undone. The approval covers only the server it moves to or restores from,
-or the size it resizes to. Adding a mirror or syncing doesn't ask.
+`ployz volume move`, `restore`, `release` and `mirror rm`, and any resize with `ployz volume set
+--size`. The approval covers only the server it moves to or restores from, or the size it resizes
+from and to, so a resize asks again if the volume's size changed meanwhile. Adding a mirror or
+syncing doesn't ask.
 
 A merge into a Protected environment's deploy branch still deploys. To control who can merge, use
 [GitHub branch protection](../deploy/github.md#protected-environments).
