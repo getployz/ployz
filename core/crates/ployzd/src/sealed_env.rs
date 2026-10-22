@@ -50,8 +50,6 @@ pub enum OpenError {
     Unbound(String),
     #[error("env {0} does not open with this Cluster's Sealing Key")]
     Unopenable(String),
-    #[error("the Log Store still runs the software from before an upgrade")]
-    LogStoreUpgrading,
 }
 
 /// A Container's env with every Sealed value opened, and the record of them.

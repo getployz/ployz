@@ -1487,9 +1487,6 @@ fn create_refusal(error: Error) -> Result<ContainerRefusal, Error> {
         Error::Docker(Docker::Sealed(OpenError::KeyMissing)) => {
             ContainerRefusalReason::SealingKeyMissing
         }
-        Error::Docker(Docker::Sealed(OpenError::LogStoreUpgrading)) => {
-            ContainerRefusalReason::LogStoreUpgrading
-        }
         Error::Docker(Docker::Sealed(
             OpenError::MissingIdentity(_)
             | OpenError::SealedPort

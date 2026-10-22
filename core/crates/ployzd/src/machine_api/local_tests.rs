@@ -77,11 +77,9 @@ async fn retained_env_answers_no_opened_value_and_names_the_opened_keys() {
 
     for from_operator in [false, true] {
         let mut request = Request::new(
-            op::RetainedEnv::into_request(ployz_core::RetainedEnvRequest {
-                container_id: id,
-            })
-            .encode()
-            .unwrap(),
+            op::RetainedEnv::into_request(ployz_core::RetainedEnvRequest { container_id: id })
+                .encode()
+                .unwrap(),
         );
         if from_operator {
             request

@@ -29,10 +29,8 @@ use crate::{
         CorrosionConfig, CorrosionPaths, DEFAULT_CONTAINER_NAME, Error as CorrosionError,
         LiveRuntime, MachineView, RunningCorrosion, remove_retained, run_machine_publisher,
     },
-    dns::{DnsService, InstalledExe},
-    docker::{
-        ContainerRuntime, ImageIngest, LocalDocker, LogStore, MachineSpecStore, SpecStoreError,
-    },
+    dns::DnsService,
+    docker::{ContainerRuntime, ImageIngest, LocalDocker, MachineSpecStore, SpecStoreError},
     ingress,
     machine::{
         InterruptedReset, LocalMachineBody, LocalMachineRecord, LocalMachineStore, Opened,
@@ -43,6 +41,7 @@ use crate::{
     management::{self, ManagementConfig},
     network::{CORROSION_GOSSIP_PORT, NetworkError, NetworkPlane},
     runtime_unit::UnitSupervision,
+    sealed_compat::LogStore,
 };
 
 /// How the daemon attaches a Container Runtime.
@@ -259,12 +258,7 @@ impl Daemon {
                     Ok(docker) => Some(
                         ContainerRuntime::new(docker, specs)
                             .with_sealing_key(config.data_dir.clone())
-                            .with_log_store(match config.units {
-                                UnitSupervision::Systemd => {
-                                    LogStore::Systemd(InstalledExe::current().ok().map(Arc::new))
-                                }
-                                UnitSupervision::External => LogStore::Unsupervised,
-                            }),
+                            .with_log_store(LogStore::of(config.units)),
                     ),
                     Err(error) => {
                         eprintln!(

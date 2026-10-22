@@ -48,7 +48,7 @@ use serde_json::json;
 use thiserror::Error;
 use tokio::sync::{Mutex, watch};
 
-use crate::dns::InstalledExe;
+use crate::sealed_compat::LogStore;
 use checks::CheckRecords;
 use http_health::probe as http_health_probe;
 use observe::ObservationSink;
@@ -306,32 +306,6 @@ pub struct ContainerRuntime {
     stranded: Arc<tokio::sync::Mutex<observe::StrandedIngress>>,
     sealing_key_dir: Option<PathBuf>,
     log_store: LogStore,
-}
-
-/// How ployzd learns whether the Log Store runs software from before an upgrade,
-/// which would write opened values to disk.
-#[derive(Clone, Default)]
-pub(crate) enum LogStore {
-    /// No unit runs the Log Store beside this daemon.
-    #[default]
-    Unsupervised,
-    /// `ployz-observe.service` runs it, and should run this daemon's binary. `None`
-    /// when that binary could not be identified, so no Sealed value opens.
-    Systemd(Option<Arc<InstalledExe>>),
-    #[cfg(test)]
-    Upgrading,
-}
-
-impl LogStore {
-    async fn upgrading(&self) -> bool {
-        match self {
-            Self::Unsupervised => false,
-            Self::Systemd(None) => true,
-            Self::Systemd(Some(own)) => crate::observe::unit::runs_other_software(own).await,
-            #[cfg(test)]
-            Self::Upgrading => true,
-        }
-    }
 }
 
 impl ContainerRuntime {
@@ -1501,6 +1475,8 @@ pub enum Error {
     #[error(transparent)]
     Sealed(#[from] crate::sealed_env::OpenError),
     #[error(transparent)]
+    LogStoreUpgrading(#[from] crate::sealed_compat::LogStoreUpgrading),
+    #[error(transparent)]
     SpecStore(#[from] SpecStoreError),
     #[error(transparent)]
     ReplicatedStore(#[from] crate::corrosion::Error),
@@ -1652,10 +1628,8 @@ impl Error {
             // A peer pull is idempotent, so a rerun is safe whatever docker printed.
             | Self::PeerPull(_)
             | Self::UnregistryNotReady { .. }
-            | Self::Sealed(
-                crate::sealed_env::OpenError::KeyMissing
-                | crate::sealed_env::OpenError::LogStoreUpgrading,
-            ) => RpcErrorCode::Unavailable,
+            | Self::Sealed(crate::sealed_env::OpenError::KeyMissing)
+            | Self::LogStoreUpgrading(_) => RpcErrorCode::Unavailable,
             Self::Sealed(_) | Self::MissingPreDeployHook
             | Self::EndpointCapacity
             | Self::DurationOverflow
@@ -3053,14 +3027,11 @@ mod sealed_output_tests {
             create_with_env(&cluster, LogStore::Upgrading, &containers, true).await;
 
         assert!(
-            matches!(
-                created,
-                Err(Error::Sealed(
-                    crate::sealed_env::OpenError::LogStoreUpgrading
-                ))
-            ),
+            matches!(created, Err(Error::LogStoreUpgrading(_))),
             "{created:?}"
         );
+        let refused = ployz_core::RpcError::from(&created.unwrap_err());
+        assert_eq!(refused.code, RpcErrorCode::Unavailable);
         assert!(containers.lock().unwrap().is_empty());
     }
 

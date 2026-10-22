@@ -1288,8 +1288,7 @@ impl ContainerRefusal {
         let code = match self.reason {
             ContainerRefusalReason::NotFound => RpcErrorCode::NotFound,
             ContainerRefusalReason::NotParticipating
-            | ContainerRefusalReason::SealingKeyMissing
-            | ContainerRefusalReason::LogStoreUpgrading => RpcErrorCode::Unavailable,
+            | ContainerRefusalReason::SealingKeyMissing => RpcErrorCode::Unavailable,
             ContainerRefusalReason::InvalidIngress
             | ContainerRefusalReason::SealedValueUnopenable => RpcErrorCode::InvalidArgument,
             ContainerRefusalReason::NotEligible
@@ -1307,7 +1306,7 @@ impl ContainerRefusal {
         RpcError {
             code,
             message: self.message,
-            details: serde_json::json!({ REFUSAL: self.reason }),
+            details: Value::Null,
             cause: Vec::new(),
         }
     }
@@ -1338,9 +1337,6 @@ pub enum ContainerRefusalReason {
     SealingKeyMissing,
     /// A Sealed value is bound elsewhere or does not open with this Cluster's key.
     SealedValueUnopenable,
-    /// The Log Store still runs the software from before an upgrade, which would write
-    /// opened values to disk, so no Sealed value opens until it restarts.
-    LogStoreUpgrading,
     #[serde(other)]
     Unrecognized,
 }
@@ -1796,12 +1792,6 @@ impl RpcError {
         self.details.get("reason").and_then(Value::as_str) == Some(TARGET_UNANSWERED_REASON)
     }
 
-    /// Why the Machine refused a Container want, when this error is that refusal.
-    #[must_use]
-    pub fn container_refusal(&self) -> Option<ContainerRefusalReason> {
-        ContainerRefusalReason::deserialize(self.details.get(REFUSAL)?).ok()
-    }
-
     /// The capability this error says its target Machine lacks, if it is a refusal.
     #[must_use]
     pub fn refusal(&self) -> Option<CapabilityRefusal> {
@@ -1841,7 +1831,6 @@ impl RpcError {
 }
 
 const MISSING_IMAGE: &str = "missing_image";
-const REFUSAL: &str = "refusal";
 const PULL_POLICY: &str = "pull_policy";
 const DISK_FULL: &str = "disk_full";
 

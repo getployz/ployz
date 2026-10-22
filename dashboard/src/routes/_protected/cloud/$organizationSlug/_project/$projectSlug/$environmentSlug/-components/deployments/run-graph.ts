@@ -29,7 +29,6 @@ export function rowPhaseLabel(phase: RowPhase): string {
   switch (phase) {
     case "starting": return "Starting";
     case "creating_container": return "Creating container";
-    case "waiting_for_log_store": return "Waiting for log store";
     case "starting_container": return "Starting container";
     case "waiting_for_health": return "Waiting for health";
     case "waiting_for_hook": return "Waiting for hook";

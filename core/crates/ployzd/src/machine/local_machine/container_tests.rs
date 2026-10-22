@@ -1459,7 +1459,7 @@ mod stopped_on_request {
         let EnsuredContainer::Ensured {
             now: ContainerNow::Present(observed),
             ..
-        } = local.ensure_container(want).await.unwrap()
+        } = Box::pin(local.ensure_container(want)).await.unwrap()
         else {
             panic!("the want was refused");
         };
