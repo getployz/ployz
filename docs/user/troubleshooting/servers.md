@@ -429,6 +429,17 @@ server that still shows as not answering.
 Run it from your machine with Ployz Cloud or a context that reaches the other servers, or on one of
 the other servers itself. Run on `web-2`, it only saves the address on `web-2`.
 
+## Apps see IPv6 visitors as 10.210.x.1
+
+If your app's `X-Forwarded-For` shows your server's private gateway, such as `10.210.0.1`, for
+visitors over IPv6, the server's container network has no IPv6. `journalctl -u ployz` says why:
+
+- `stays IPv4-only ... learn IPv6 from router advertisements`: the server takes its IPv6 route
+  or address from router advertisements, which IPv6 forwarding would stop. Run the `sysctl -w`
+  command the log names, add the same setting to a file in `/etc/sysctl.d/` so it survives a
+  reboot, then run `sudo systemctl restart ployz`.
+- No such line: IPv6 is turned off on the server, so there are no IPv6 visitors to see.
+
 ## Services can't resolve each other's names
 
 A service on the server gets `NXDOMAIN` or a timeout for a name like `postgres.app.internal`,

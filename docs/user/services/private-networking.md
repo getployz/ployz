@@ -14,6 +14,11 @@ own. Every pair of servers is linked by an encrypted WireGuard tunnel, over thei
 when they share one and over the internet when they don't. Every container gets a private
 address on that network.
 
+On a server with IPv6, each container also gets a private IPv6 address on its own server. It
+lets IPv6 visitors reach your app, and a port your service publishes, with their own address,
+and lets your containers reach the internet over IPv6. It never reaches other servers: services
+reach each other over the private IPv4 addresses.
+
 ```mermaid
 flowchart LR
   subgraph s1["Server 1"]
@@ -49,7 +54,10 @@ carry on, but a connection a service holds open to it over TCP can close, and th
 reconnect.
 
 The private network also stays connected while Ployz stops, restarts or upgrades on a server.
-Your running services keep reaching services on the other servers.
+Your running services keep reaching services on the other servers. The first upgrade to 0.3.0
+on a server with IPv6 is the exception: Ployz adds IPv6 to the server's container network, so
+its containers drop off the network for about a second. They keep running and keep their
+addresses, but connections open to them at that moment can close.
 
 ## Connect to another service
 
