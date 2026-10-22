@@ -560,7 +560,7 @@ fn an_out_copy_that_exited_is_no_row() {
 }
 
 #[test]
-fn a_pending_copy_that_restarts_is_no_row() {
+fn a_pending_copy_that_restarts_is_left_over_not_short() {
     let [one, ..] = machines();
     let check = judged_copies(vec![web_copy(
         &one,
@@ -571,7 +571,60 @@ fn a_pending_copy_that_restarts_is_no_row() {
         1,
     )]);
 
-    assert!(check.attention.is_empty());
+    assert_eq!(
+        messages(&check),
+        ["1 copy left by a deploy that did not finish takes no traffic. machine-1 restarting."]
+    );
+}
+
+#[test]
+fn status_names_a_copy_a_failed_deploy_left_running_beside_the_serving_one() {
+    let [one, ..] = machines();
+    let unhealthy = ContainerRuntimeObservation::Running {
+        health: HealthObservation::Unhealthy,
+    };
+    let check = judged_copies(vec![
+        web_copy(&one, '1', CopyRotation::In, healthy(), 1, 1),
+        web_copy(&one, '2', CopyRotation::Pending, unhealthy, 1, 2),
+    ]);
+
+    assert_eq!(
+        serde_json::to_value(&check.attention).unwrap(),
+        json!([{
+            "reason": "copies_left_pending",
+            "message": "1 copy left by a deploy that did not finish takes no traffic. machine-1 running, unhealthy.",
+            "next": "ployz deploy web",
+            "service": "app/web",
+            "copies": [{
+                "machine": "machine-1",
+                "container": "2".repeat(64),
+                "rotation": "pending",
+                "runtime": {"state": "running", "health": "unhealthy"},
+            }],
+        }])
+    );
+    assert!(warned(&check).is_empty());
+}
+
+#[test]
+fn a_copy_left_pending_on_a_down_server_is_not_named() {
+    let [one, two, three] = machines();
+    let check = judged(
+        listed(&[&one, &three], &[&two]),
+        listed_copies(vec![
+            web_copy(&one, '1', CopyRotation::In, healthy(), 1, 1),
+            web_copy(&two, '2', CopyRotation::Pending, healthy(), 1, 2),
+        ]),
+    );
+
+    assert_eq!(
+        check
+            .attention
+            .iter()
+            .map(|attention| attention.reason.as_str())
+            .collect::<Vec<_>>(),
+        ["machine_down"]
+    );
 }
 
 fn cut_for_a_volume_move(machine: &Machine) -> ContainerObservation {
@@ -961,7 +1014,10 @@ fn the_count_comes_from_the_newest_kept_copy_not_from_a_failed_deploy() {
 
     assert_eq!(
         messages(&check),
-        ["Serving 2 of 4 copies. machine-1 restarting, machine-3 restarting."]
+        [
+            "Serving 2 of 4 copies. machine-1 restarting, machine-3 restarting.",
+            "2 copies left by a deploy that did not finish take no traffic. machine-2 running, healthy, machine-3 running, healthy."
+        ]
     );
 }
 

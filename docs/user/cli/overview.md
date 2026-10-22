@@ -401,6 +401,15 @@ every server answered and none is down, since a replica on a server it can't see
 A global service whose placement no server matches has no replicas, and deploying it again
 places none, so the line stays until you change its placement or a server's labels.
 
+When a deploy created a replica but didn't finish bringing it into routing, for example because
+the connection to its server dropped, that replica keeps running and takes no traffic. `ployz
+status` names it, like
+`web = 1 copy left by a deploy that did not finish takes no traffic. web-1 running, unhealthy.`
+With `--json` the row has reason `copies_left_pending`, the `service`, and `copies` in the same
+shape as above, and its `next` is `ployz deploy web`, which removes the replica. A replica on a
+down server isn't named. While a server joins, a replica it's still starting for a global
+service can be named until it's in routing.
+
 This check has limits:
 
 - A replica removed outside Ployz, for example with `docker rm`, is unseen, so status can't name
