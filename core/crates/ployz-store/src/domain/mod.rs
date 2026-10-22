@@ -371,6 +371,9 @@ pub(crate) fn add_domain(
             json!({}),
         ));
     }
+    if let Some(hostname) = &add.hostname {
+        Hostname::parse_custom(hostname.as_str())?;
+    }
     let mut environment = scope::lock(tx, who, &add.environment)?;
     // Hostnames under the Cluster Domain are Ployz's to hand out, never custom.
     let cluster = cluster_of(tx, &environment, trusted)?;

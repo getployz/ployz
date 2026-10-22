@@ -840,18 +840,20 @@ fn adding_a_custom_domain_refuses_new_invalid_names_without_tightening_readers()
 #[test]
 fn a_custom_domain_under_the_cluster_domain_is_refused() {
     let (store, who) = shop();
+    let mut trusted = cloud();
+    trusted.domains.cluster_domain.as_mut().unwrap().name = host("cluster.example.com");
     for hostname in [
-        "acme.ployz.app",
-        "web-shop.acme.ployz.app",
-        "a.b.acme.ployz.app",
+        "cluster.example.com",
+        "web-shop.cluster.example.com",
+        "a.b.cluster.example.com",
     ] {
         let refused = store
-            .write_trusted(&who, &add(Some(hostname), None), &cloud())
+            .write_trusted(&who, &add(Some(hostname), None), &trusted)
             .unwrap_err();
         assert_eq!(refused.code, RpcErrorCode::InvalidArgument, "{hostname}");
     }
     store
-        .write_trusted(&who, &add(Some("notacme.ployz.app"), None), &cloud())
+        .write_trusted(&who, &add(Some("notcluster.example.com"), None), &trusted)
         .unwrap();
 }
 

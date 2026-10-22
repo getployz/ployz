@@ -71,6 +71,19 @@ You can enter a domain with non-Latin letters, like `пример.рф`. Ployz s
 `xn--` form DNS uses, `xn--e1afmkfd.xn--p1ai`, and shows that form everywhere, DNS records
 included.
 
+`ployz domain add web app.example.com.` trims one trailing root dot, since it names the
+same domain as `app.example.com`. It also trims surrounding whitespace.
+
+Custom domains must be hostnames you own. Ployz refuses IP addresses, invalid punycode
+`xn--` labels, `ployz.app` and its subdomains, and names in your organization's Cluster
+Domain zone. Use generated domains for Ployz's reserved zones. Older stored domains remain
+readable and removable. Re-adding one, including to change its port, applies these checks.
+
+For an invalid hostname, `ployz domain add` names the reason and exits with code 2.
+Drop any URL scheme, port or path. A hostname cannot contain underscores or wildcards.
+Use at most 63 ASCII characters per label and 253 for the whole hostname after conversion
+to punycode.
+
 A service can have any number of custom domains next to its generated domains, each with its
 own port.
 
