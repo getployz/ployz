@@ -51,8 +51,8 @@ you deploy; see [Scaling](../services/scaling.md#add-a-server).
 ## Add servers from the dashboard
 
 Before your first server, the **Servers** page shows one card instead of a list. Click
-**Get install command** and it makes a token that works for 7 days and shows the install line
-with the token under it, then **Shown once. Expires in 7d.** Copy the token now: Ployz can't show
+**Get install command** and it makes a token that works for 24 hours and shows the install line
+with the token under it, then **Shown once. Expires in 24h.** Copy the token now: Ployz can't show
 it again. Paste the line in a shell on the server, as root or as a user with `sudo`, and paste the
 token when it asks. The card then says **Listening for servers…** until the first one checks in.
 

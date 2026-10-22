@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
+import * as fleetTokenFunctions from "#/modules/machines/waiting/fleet-token.functions";
 import * as memberFunctions from "#/modules/organization/members.functions";
 import { membersKey, ROLE_CHECKING, ROLE_UNCHECKED } from "#/modules/organization/members.queries";
 import { FirstRunCard } from "./first-run-card";
@@ -38,4 +39,16 @@ it("offers the install command on a support visit, as Cloud does", () => {
   client.setQueryData(membersKey("ada"), { members: [], invites: [], mail: false, support: true });
   render(<QueryClientProvider client={client}><FirstRunCard organizationSlug="ada" arrived={false} /></QueryClientProvider>);
   expect(screen.getByRole("button", { name: "Get install command" })).toHaveProperty("disabled", false);
+});
+
+it("makes the same 24-hour token as Add servers and ployz server token create", async () => {
+  const create = vi.spyOn(fleetTokenFunctions, "createFleetTokenServerFn").mockResolvedValue({
+    token: "pflt_first", id: "token-1", name: "brisk-otter", expiresAt: "2026-10-24T10:00:00Z", cloudOrigin: "https://ployz.dev", ployzVersion: "1.2.3",
+  });
+  const client = new QueryClient();
+  client.setQueryData(membersKey("ada"), { members: [], invites: [], mail: false, support: true });
+  render(<QueryClientProvider client={client}><FirstRunCard organizationSlug="ada" arrived={false} /></QueryClientProvider>);
+  fireEvent.click(screen.getByRole("button", { name: "Get install command" }));
+  await screen.findByText("Shown once. Expires in 24h.");
+  expect(create).toHaveBeenCalledWith({ data: expect.objectContaining({ expiresIn: "1d" }) });
 });
