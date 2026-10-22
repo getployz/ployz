@@ -1114,6 +1114,60 @@ async fn a_removed_service_retires_every_copy_through_out_and_ends_empty() {
     client.assert_done();
 }
 
+/// Every store still lists the In copy on a Down Server, so live proxies would keep
+/// routing a copy sent Out beside it until that Server is back.
+#[tokio::test(start_paused = true)]
+async fn a_removal_with_a_copy_on_an_unobserved_server_names_it_and_takes_no_copy_out() {
+    let (live, away) = (machine('1'), machine('3'));
+    let (here, there) = (container('a'), container('b'));
+    let plan = crate::deploy::DeployPlan::for_execution_test(
+        vec![DeployOperation::RemoveContainer {
+            machine_id: live,
+            container_id: here,
+            purpose: ployz_core::RemoveContainerPurpose::Retire,
+        }],
+        test_namespace(),
+    )
+    .with_machine_names(&[live, away])
+    .with_unobserved(&[away]);
+    let client = Scripted {
+        down: BTreeSet::from([away]),
+        store: Store::Copies,
+        ..Scripted::new(vec![observed(Call::Inspect(live, here), running())])
+    }
+    .with_copy(&live, &here, CopyRotation::In)
+    .with_copy(&away, &there, CopyRotation::In)
+    .routing(&api());
+
+    let outcome = super::execute_operation_sequence(
+        &plan,
+        &run_id(),
+        &client,
+        &CancellationToken::new(),
+        None,
+    )
+    .await;
+
+    let DeployOutcome::Failed {
+        failed:
+            FailedOperation::Operation {
+                error:
+                    ExecutionError::Machine {
+                        action: MachineAction::RemoveContainer,
+                        error,
+                    },
+                ..
+            },
+        ..
+    } = &outcome
+    else {
+        panic!("{outcome:?}");
+    };
+    assert!(error.message.contains("machine-3"), "{}", error.message);
+    assert!(client.moves().is_empty(), "{:?}", client.moves());
+    client.assert_done();
+}
+
 #[tokio::test]
 async fn stop_error_restores_the_healthy_held_copy() {
     let machine = machine('1');

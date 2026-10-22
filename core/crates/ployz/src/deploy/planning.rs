@@ -180,6 +180,23 @@ impl DeployPlan {
             .collect();
         self
     }
+
+    /// The plan's snapshot listed no Containers on `machines`, as for a Down Machine.
+    #[cfg(test)]
+    pub(super) fn with_unobserved(mut self, machines: &[MachineId]) -> Self {
+        self.preview
+            .warnings
+            .extend(
+                machines
+                    .iter()
+                    .map(|machine_id| DeployWarning::ObservationOmitted {
+                        gap: None,
+                        kind: ployz_core::ObservationKind::Container,
+                        machine_id: *machine_id,
+                    }),
+            );
+        self
+    }
 }
 
 /// One group per Service in operation order, each after the one before it, so
