@@ -856,3 +856,23 @@ fn private_dns_is_staged_unique_and_unset_to_the_service_name() {
     .unwrap();
     assert_eq!(value(&store, &who, "site.privateDns"), json!("site"));
 }
+
+#[test]
+fn a_postgres_restart_fails_no_command_after_it() {
+    let Ok(server) = std::env::var("PLOYZ_STORE_TEST_POSTGRES") else {
+        return;
+    };
+    let url = fresh_url(&tempfile::tempdir().unwrap());
+    let store = ConfigStore::open(&url, backend::key()).unwrap();
+    let who = actor(&uuid("org-restart"));
+    store.write(&who, &create_project("shop")).unwrap();
+    // A restart ends every connection, the ones the Store keeps idle included.
+    let database = url.rsplit('/').next().unwrap();
+    backend::execute(
+        &server,
+        &format!(
+            "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '{database}'"
+        ),
+    );
+    store.write(&who, &create_project("blog")).unwrap();
+}
