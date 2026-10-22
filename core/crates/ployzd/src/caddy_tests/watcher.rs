@@ -2205,6 +2205,116 @@ async fn a_restart_beside_a_refused_certificate_never_drops_what_caddy_serves() 
     std::fs::remove_dir_all(directory).unwrap();
 }
 
+#[tokio::test]
+async fn routed_addresses_follow_a_probe_load_when_the_next_apply_fails() {
+    let WatcherFixture {
+        machine,
+        state,
+        address,
+        server,
+        directory,
+    } = watcher_fixture().await;
+    let api = state.api_container();
+    let (load_tx, mut load_rx) = mpsc::unbounded_channel();
+    let admin = FailingAfter {
+        inner: RefusingAdmin {
+            refused: "https://bad.example.com {",
+            loads: load_tx,
+            running: Arc::default(),
+        },
+        loads_left: Arc::new(AtomicUsize::new(2)),
+    };
+    let (route_publishes, mut published) =
+        tokio::sync::watch::channel(crate::ingress::PublishedRoutes::default());
+    let shutdown = CancellationToken::new();
+    let watcher = tokio::spawn(watch_caddy(
+        machine.clone(),
+        ReplicatedStore::new(ApiClient::http1(address, &"a".repeat(64)).unwrap()),
+        no_down,
+        directory.join(CONFIG_FILE),
+        route_publishes,
+        shutdown.clone(),
+        move || std::future::ready(Ok(Some(admin.clone()))),
+    ));
+    let first = BTreeMap::from([(
+        api.identity(),
+        BTreeMap::from([(api.container_id, api.address.unwrap())]),
+    )]);
+    assert!(next_load(&mut load_rx).await.contains("10.210.1.2:80"));
+    published
+        .wait_for(|published| published.addresses.as_ref() == Some(&first))
+        .await
+        .unwrap();
+
+    state.write_certificates(&[("bad.example.com", material_body("bad.example.com"))]);
+    state.containers.lock().unwrap().push(observation(
+        4,
+        &machine.id,
+        "web",
+        Some([10, 210, 1, 5]),
+        vec![ingress("bad.example.com", 8443, HttpProtocol::Https)],
+    ));
+    state.set_address(api.container_id, [10, 210, 1, 7]);
+    assert!(next_load(&mut load_rx).await.contains("10.210.1.7:80"));
+    timeout(
+        Duration::from_secs(5),
+        published.wait_for(|published| published.addresses.as_ref() != Some(&first)),
+    )
+    .await
+    .expect("the probe loaded 10.210.1.7, yet a failed apply still claims 10.210.1.2")
+    .unwrap();
+
+    shutdown.cancel();
+    watcher.await.unwrap().unwrap();
+    server.abort();
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[tokio::test]
+async fn certificates_caddy_loaded_before_a_failed_caddyfile_write_survive_an_admin_outage() {
+    let WatcherFixture {
+        machine,
+        state,
+        address,
+        server,
+        directory,
+    } = watcher_fixture().await;
+    state.mutate(|parts| {
+        parts.resolved_spec.ports = vec![ingress("good.example.com", 8443, HttpProtocol::Https)];
+    });
+    state.write_certificates(&[("good.example.com", material_body("good.example.com"))]);
+    let caddyfile = directory.join(CONFIG_FILE);
+    std::fs::create_dir_all(&caddyfile).unwrap();
+    let (load_tx, mut load_rx) = mpsc::unbounded_channel();
+    let admin = TestAdmin { loads: load_tx };
+    let admin_up = Arc::new(AtomicBool::new(true));
+    let shutdown = CancellationToken::new();
+    let watcher = tokio::spawn(watch_caddy(
+        machine,
+        ReplicatedStore::new(ApiClient::http1(address, &"a".repeat(64)).unwrap()),
+        no_down,
+        caddyfile.clone(),
+        tokio::sync::watch::channel(Default::default()).0,
+        shutdown.clone(),
+        {
+            let admin_up = Arc::clone(&admin_up);
+            move || std::future::ready(Ok(admin_up.load(Ordering::SeqCst).then(|| admin.clone())))
+        },
+    ));
+    let loaded = next_load(&mut load_rx).await;
+    assert!(loaded.contains("https://good.example.com {"), "{loaded}");
+
+    admin_up.store(false, Ordering::SeqCst);
+    std::fs::remove_dir(&caddyfile).unwrap();
+    let written = wait_for_caddyfile(&caddyfile, "").await;
+    assert!(written.contains("https://good.example.com {"), "{written}");
+
+    shutdown.cancel();
+    watcher.await.unwrap().unwrap();
+    server.abort();
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
 fn material(hostname: &str) -> CertificateMaterial {
     let pair = rcgen::generate_simple_self_signed([hostname.to_owned()]).unwrap();
     CertificateMaterial::parse(pair.cert.pem(), pair.signing_key.serialize_pem()).unwrap()
@@ -2353,6 +2463,37 @@ impl CaddyAdmin for RefusingAdmin {
                 Some(stem.to_owned())
             })
             .collect())
+    }
+}
+
+/// Fails every load `inner` would accept once `loads_left` loads have succeeded.
+#[derive(Clone)]
+struct FailingAfter {
+    inner: RefusingAdmin,
+    loads_left: Arc<AtomicUsize>,
+}
+
+impl CaddyAdmin for FailingAfter {
+    async fn adapt(&self, caddyfile: &str) -> Result<String, CaddyError> {
+        self.inner.adapt(caddyfile).await
+    }
+
+    async fn load(&self, caddyfile: &str) -> Result<(), CaddyError> {
+        if !caddyfile.contains(self.inner.refused)
+            && self
+                .loads_left
+                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
+                    left.checked_sub(1)
+                })
+                .is_err()
+        {
+            return Err(CaddyError::Io(std::io::Error::other("admin socket closed")));
+        }
+        self.inner.load(caddyfile).await
+    }
+
+    async fn loaded_certificates(&self) -> Result<BTreeSet<String>, CaddyError> {
+        self.inner.loaded_certificates().await
     }
 }
 
