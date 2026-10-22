@@ -291,6 +291,8 @@ Manage mounts from the [config](configs.md) or [volume](volumes.md) panel.
 ### Delete service
 
 The service keeps running until your next deploy, and discarding the change brings it back. A
+service marked **New** was never saved, so there's nothing to discard: **Delete service** asks
+first, then deletes it and its unsaved settings at once. A
 database's service takes its volume and data with it, unless another service mounts the volume,
 and the deploy asks you to confirm. See
 [Confirm a deploy that deletes data](../deploy/deployments.md#confirm-a-deploy-that-deletes-data).

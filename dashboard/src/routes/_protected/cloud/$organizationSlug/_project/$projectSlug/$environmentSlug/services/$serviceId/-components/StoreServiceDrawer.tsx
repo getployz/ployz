@@ -43,6 +43,7 @@ import { HealthcheckSettings } from "./HealthcheckField";
 import { StoreBranchField, StoreDockerfileField, StorePreferredBuilderField, useRepositoryRef, useSourceLock } from "./StoreGitFields";
 import { SERVICE_SETTINGS_SECTIONS, type ServiceSettingsSectionId } from "./service-settings-sections";
 import { useRemoveStoreService } from "./useDeleteService";
+import { ConfirmDialog } from "#/components/confirm-dialog";
 import { StoreServiceVariablesTab } from "./ServiceVariablesTab";
 import { StoreNetworkingSection } from "./StoreNetworkingSection";
 import { useServiceRuntime } from "./useServiceRuntime";
@@ -693,16 +694,25 @@ function StoreRegistryCredentials({ state, image }: { state: StoreService; image
   );
 }
 
-function StoreDangerSection({ state }: { state: StoreService }) {
+/** A saved Service's deletion is staged until the next deploy; a new one's is gone at once, so it asks first. */
+export function StoreDangerSection({ state }: { state: StoreService }) {
   const remove = useRemoveStoreService(state.environment, state.service);
+  const isNew = state.service.change === "create";
+  const [confirming, setConfirming] = useState(false);
   return (
-    <SettingsDanger label="Delete this service" hint="The service is removed on your next deploy."
-      action={(
-        <Button variant="destructive" onClick={remove}>
-          <Trash2Icon data-icon="inline-start" />
-          Delete service
-        </Button>
-      )} />
+    <>
+      <SettingsDanger label="Delete this service"
+        hint={isNew ? "It's new, so it's deleted at once, with its unsaved settings." : "The service is removed on your next deploy."}
+        action={(
+          <Button variant="destructive" onClick={isNew ? () => setConfirming(true) : remove}>
+            <Trash2Icon data-icon="inline-start" />
+            Delete service
+          </Button>
+        )} />
+      <ConfirmDialog open={confirming} onOpenChange={setConfirming} title="Delete this service?"
+        description={`${state.service.name} is new and will be deleted, with its unsaved settings.`}
+        actionLabel="Delete" variant="destructive" onConfirm={remove} />
+    </>
   );
 }
 
