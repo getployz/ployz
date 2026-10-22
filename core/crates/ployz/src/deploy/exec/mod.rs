@@ -224,6 +224,11 @@ pub(crate) trait MachineOperations {
     ) -> Result<RoutesRead, RpcError>;
     /// [`Self::read_routes`] as the entry Machine this client reaches reads it.
     async fn read_entry_routes(&self, service: &QualifiedService) -> Result<RoutesRead, RpcError>;
+    /// Dial the entry Machine again on the same connection, after the session a call
+    /// went out on closed. None when this client can't.
+    async fn redial(&self) -> Option<Result<(), RpcError>> {
+        None
+    }
 }
 
 impl MachineOperations for Client {

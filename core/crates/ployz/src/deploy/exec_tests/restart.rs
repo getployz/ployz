@@ -50,6 +50,65 @@ async fn a_call_on_a_closed_session_is_not_resent() {
     assert_eq!(error.code, RpcErrorCode::Unavailable);
 }
 
+#[tokio::test(start_paused = true)]
+async fn a_create_whose_entry_daemon_restarted_is_resent_on_a_new_session() {
+    let machine = machine('1');
+    let plan = vec![run(&machine, spec(Some(0), None, None), false)];
+    let mut client = Scripted::new(vec![
+        Step(
+            Call::Run(machine, ContainerKind::ServiceContainer),
+            Reply::Error(crate::connect::closed_session_error()),
+        ),
+        created(Call::Run(machine, ContainerKind::ServiceContainer), &container('a')),
+    ]);
+    client.redial = Some(Ok(()));
+
+    let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
+
+    assert!(
+        matches!(outcome, DeployOutcome::Success { .. }),
+        "{outcome:?}"
+    );
+    assert_eq!(*client.redials.lock().unwrap(), 1);
+    let slots = client.slots.lock().unwrap();
+    let [first, second] = slots.as_slice() else {
+        panic!("expected two creations, got {slots:?}");
+    };
+    assert_eq!(first, second, "the resend lands on the slot the lost create made");
+    client.assert_done();
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_entry_that_never_answers_again_fails_the_create_once_the_restart_wait_ends() {
+    let machine = machine('1');
+    let plan = vec![run(&machine, spec(Some(0), None, None), false)];
+    let closed = || {
+        Step(
+            Call::Run(machine, ContainerKind::ServiceContainer),
+            Reply::Error(crate::connect::closed_session_error()),
+        )
+    };
+    let mut client = Scripted::new(vec![
+        closed(),
+        Step(
+            Call::DiscardSlot(machine, ContainerKind::ServiceContainer),
+            Reply::Error(crate::connect::closed_session_error()),
+        ),
+    ]);
+    client.redial = Some(Err(unavailable("entry Machine reconnect failed")));
+    let started = tokio::time::Instant::now();
+
+    let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
+
+    assert!(
+        matches!(outcome, DeployOutcome::Failed { .. }),
+        "{outcome:?}"
+    );
+    assert!(started.elapsed() >= RESTART_WAIT, "{:?}", started.elapsed());
+    assert!(*client.redials.lock().unwrap() > 1);
+    client.assert_done();
+}
+
 fn resent(machine: MachineId, id: &ContainerId) -> [Step; 2] {
     [
         failed_unavailable(

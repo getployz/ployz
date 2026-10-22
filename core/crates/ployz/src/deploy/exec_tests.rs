@@ -283,6 +283,9 @@ struct Scripted {
     moves: Mutex<Vec<Move>>,
     /// Each live proxy's route once each move was applied.
     listed: Mutex<Vec<BTreeMap<MachineId, Option<BTreeSet<ContainerId>>>>>,
+    /// What dialing the entry again answers; none when this client can't.
+    redial: Option<Result<(), RpcError>>,
+    redials: Mutex<usize>,
 }
 
 impl Scripted {
@@ -327,6 +330,8 @@ impl Scripted {
             store_reads: Mutex::new(0),
             moves: Mutex::new(Vec::new()),
             listed: Mutex::new(Vec::new()),
+            redial: None,
+            redials: Mutex::new(0),
         }
     }
 
@@ -1093,6 +1098,12 @@ fn edge_refusal(refused: ployz_core::RotationRefusal) -> ContainerRefusal {
 }
 
 impl MachineOperations for Scripted {
+    async fn redial(&self) -> Option<Result<(), RpcError>> {
+        let answer = self.redial.clone()?;
+        *self.redials.lock().unwrap() += 1;
+        Some(answer)
+    }
+
     async fn prepare_volumes(
         &self,
         machine_id: &MachineId,
