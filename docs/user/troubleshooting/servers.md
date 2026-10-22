@@ -340,7 +340,7 @@ minute; try again then.
 4. If you deleted the servers, see
    [Forget servers you deleted](../servers/manage-servers.md#forget-servers-you-deleted).
 5. If the servers run Ployz 0.3.0-beta.6 or earlier, Cloud can't reach them through the relay.
-   Upgrade each one over SSH, as in
+   Upgrade one over SSH, then the rest from Cloud, as in
    [Servers on 0.3.0-beta.6 or earlier](../servers/manage-servers.md#servers-on-030-beta6-or-earlier).
 
 ## The CLI says a server runs 0.3.0-beta.6 or earlier
@@ -349,7 +349,7 @@ minute; try again then.
 This Server runs Ployz 0.3.0-beta.6 or earlier, which this release can't reach through the relay.
 ```
 
-Upgrade that server over SSH, as in
+Upgrade one server over SSH, then the rest from Cloud, as in
 [Servers on 0.3.0-beta.6 or earlier](../servers/manage-servers.md#servers-on-030-beta6-or-earlier).
 
 A server that answers but refuses says so instead, with its own reason:
@@ -384,7 +384,7 @@ server comes back from a stop with a new address, the other servers learn it, an
 warning; restart Ployz on it with `sudo systemctl restart ployz` to try again.
 
 An address you chose yourself never changes on its own. That means `--public-ip` or `--wg-endpoint`
-given to `ployz server init`, `ployz server add` or `ployz server set`. To change it, run
+given to `ployz server add` or `ployz server set`. To change it, run
 `ployz server set` again.
 
 A server on 0.3.0-beta.6 or earlier keeps the public IP and network addresses it has when you
