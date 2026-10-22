@@ -1,5 +1,8 @@
 use clap::ArgMatches;
-use ployz_core::{EnrollAs, EnrollRequest, LocalMachinePhase, MachineName, RegisterRequest};
+use ployz_core::{
+    EnrollAs, EnrollRequest, EnrollmentSnapshot, LocalMachinePhase, MachineId, MachineName,
+    RegisterRequest, WireGuardPublicKey,
+};
 
 use super::super::{connect_context, runtime};
 use super::{ConnectionOptions, helpers, target};
@@ -43,12 +46,9 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
         let (details, mut token) =
             helpers::inspect_token(&mut target_client, token_request.clone()).await?;
         let history = config.path().with_extension("enrollment");
-        let resuming = crate::enrollment::local::has_assignment(&history, &snapshot, token.id)?
-            || snapshot
-                .machines
-                .iter()
-                .any(|machine| machine.id == token.id && machine.public_key == token.public_key);
-        if details.phase != LocalMachinePhase::Uninitialized && !resuming {
+        if details.phase != LocalMachinePhase::Uninitialized
+            && !resumes(&history, &snapshot, token.id, token.public_key)?
+        {
             helpers::confirm(yes, "Reset the Server before adding it to this Cluster?")?;
             helpers::leave(&mut target_client).await?;
             target_client = helpers::reconnect_direct(matches, &connection).await?;
@@ -128,6 +128,21 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
     )
 }
 
+fn resumes(
+    history: &std::path::Path,
+    snapshot: &EnrollmentSnapshot,
+    id: MachineId,
+    public_key: WireGuardPublicKey,
+) -> Result<bool, Error> {
+    Ok(
+        crate::enrollment::local::has_assignment(history, snapshot, id)?
+            || snapshot
+                .machines
+                .iter()
+                .any(|machine| machine.id == id && machine.public_key == public_key),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use ployz_core::DOCKER_NETWORK_CONFLICT_RECOVERY;
@@ -186,6 +201,50 @@ mod tests {
             ployz_core::RpcErrorCode::InvalidArgument
         );
         assert!(hints.contains(&crate::ui::Hint::Next("ployz deploy".into())));
+    }
+
+    #[test]
+    fn only_a_server_the_cluster_lists_resumes_its_join() {
+        let history = tempfile::tempdir().unwrap();
+        let survivor = assigned_machine("machine-2", 'b');
+        let mut joined = EnrollmentSnapshot {
+            network: "10.210.0.0/16".parse().unwrap(),
+            machines: vec![survivor.clone()],
+            target_versions: Default::default(),
+        };
+        let returning = assigned_machine("machine-3", 'c');
+        let saved = crate::enrollment::local::save_assignment(
+            history.path(),
+            &RegisterRequest {
+                machine_id: returning.id,
+                assigned_subnet: None,
+                initial_policy: Default::default(),
+                name: returning.name.clone(),
+                storage: ployz_core::StorageChoice::None,
+                public_key: returning.public_key,
+                public_ip: None,
+                advertised_endpoints: vec![ployz_core::AdvertisedEndpoint(
+                    "192.0.2.3:51820".parse().unwrap(),
+                )],
+                runtime: Default::default(),
+            },
+            &joined,
+        )
+        .unwrap();
+        joined.machines.push(saved.machine.clone());
+        assert!(
+            resumes(history.path(), &joined, returning.id, returning.public_key).unwrap(),
+            "a Server the Cluster lists resumes its join"
+        );
+
+        let forgotten = EnrollmentSnapshot {
+            machines: vec![survivor],
+            ..joined
+        };
+        assert!(
+            !resumes(history.path(), &forgotten, returning.id, returning.public_key).unwrap(),
+            "a forgotten Server is reset, whatever this computer once assigned it"
+        );
     }
 
     fn assigned_machine(name: &str, seed: char) -> Machine {
