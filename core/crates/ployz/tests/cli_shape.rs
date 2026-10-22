@@ -2473,9 +2473,10 @@ fn no_error_derive_interpolates_its_source() {
                 }));
                 // A message that is only its source repeats it exactly, and the chain drops
                 // a line equal to the one above it.
-                if sources
-                    .iter()
-                    .any(|source| message.value() == format!("{{{source}}}"))
+                if arguments.trim().is_empty()
+                    && sources
+                        .iter()
+                        .any(|source| message.value() == format!("{{{source}}}"))
                 {
                     continue;
                 }
