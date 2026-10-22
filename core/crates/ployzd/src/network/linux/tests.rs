@@ -715,7 +715,7 @@ fn a_dual_stack_bridge_matches_itself_and_an_ipv4_only_one_needs_readdressing() 
 }
 
 #[test]
-fn readdressing_takes_stopped_and_detached_bridge_containers_and_pins_ipv4() {
+fn readdressing_takes_stopped_and_detached_bridge_containers() {
     use bollard::models::{ContainerSummaryHostConfig, ContainerSummaryNetworkSettings};
     let container = |id: &str, mode: &str, endpoint: Option<&str>| ContainerSummary {
         id: Some(id.into()),

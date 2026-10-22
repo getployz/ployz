@@ -439,8 +439,11 @@ container network has no IPv6. `journalctl -u ployz` says why:
   advertisements, which IPv6 forwarding would stop. Run the `sysctl -w` command the log names, add
   the same setting to a file in `/etc/sysctl.d/` so it survives a reboot, then run
   `sudo systemctl restart ployz`.
-- `Docker's ip6tables is off`: turn `ip6tables` back on in `/etc/docker/daemon.json`, restart
-  Docker, then run `sudo systemctl restart ployz`.
+- `Docker's ip6tables is off or uses nftables`: Ployz needs Docker's default iptables firewall
+  with `ip6tables` on. Remove `"ip6tables": false` and `"firewall-backend": "nftables"` from
+  `/etc/docker/daemon.json`, restart Docker, then run `sudo systemctl restart ployz`.
+- `the IPv6 mesh fence failed`: the log line gives ip6tables' reason. Ployz tries again at its
+  next start.
 - `could not take IPv6`: the log line gives Docker's reason. Ployz tries again at its next start.
 
 A port a service publishes on the server always shows IPv6 visitors as the gateway. Give the
