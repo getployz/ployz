@@ -611,6 +611,23 @@ async fn a_followed_server_whose_stream_breaks_stopped_answering() {
         b"nine"
     );
     assert!(follow.recv().await.is_none());
+
+    // A status the client made itself names its own failure and ends the follow.
+    let too_large = tonic::Status::out_of_range("Error, encoded message length too large");
+    let mut decode = merge_logs(
+        vec![input(
+            "ok-1-production/lg/lg-e89a",
+            vec![Err(LogError::from(too_large))],
+        )],
+        CancellationToken::new(),
+    );
+    let Err(LogFault::Error(error)) = decode.recv().await.unwrap() else {
+        panic!("expected the decode error")
+    };
+    assert!(
+        error.contains("encoded message length too large"),
+        "{error}"
+    );
 }
 
 #[tokio::test]

@@ -53,8 +53,10 @@ skips the rest.
 When a followed server stops answering, `--follow` names it within about 20 seconds and keeps following the
 others. When its daemon restarts, it names it at once:
 `machine-1 stopped answering; its lines are missing from here on.` When that is the server your
-CLI connects through, every server whose lines came through it is named too. It ends once none still answers, and exits with code 3. It doesn't pick the server up again
-when it comes back; run the command again.
+CLI connects through, every server whose lines came through it is named too. `ployz logs
+--machine X` without `--follow` names a server the same way when its daemon restarts mid-read.
+It ends once none still answers, and exits with code 3. It doesn't pick the server up again when
+it comes back; run the command again.
 
 Unqualified names without scope, service IDs, container selectors, commands with
 no service arguments, and `--follow` still use live container discovery.
