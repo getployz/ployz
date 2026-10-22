@@ -1,6 +1,6 @@
-import type { ConfigCommand } from "@ployz/sdk";
+import type { ConfigCommand, DestructiveEffect } from "@ployz/sdk";
 import { expect, it } from "vitest";
-import { type ApprovalReview, approvalBadge, approvalCommand, approvalSubject, approvalTarget, asksApproval } from "#/modules/approvals/approvals";
+import { type ApprovalReview, approvalBadge, approvalCommand, approvalSubject, approvalTarget, asksApproval, destroyedLine } from "#/modules/approvals/approvals";
 import { asTestDouble } from "#/lib/test-double";
 
 const here = { project: null, environment: null };
@@ -63,4 +63,25 @@ it("badges a Protected Volume Run by what it does to the Volume, never as a Depl
   expect(approvalBadge("release", run("release"))).toBe("Releases volume");
   expect(approvalBadge("resize", run("resize"))).toBe("Resizes volume");
   expect(approvalSubject("move", run("move"))).toMatchObject({ verb: "Move", name: "pg-data" });
+});
+
+const deletedVolume: DestructiveEffect = { kind: "deletes_volume", name: "pgdata", node: "v1", path: "volumes/v1" };
+
+it("says server removal and forgetting lose access while the disk keeps volume data", () => {
+  for (const [subject, command] of [["server:box", "remove"], ["server:box", "forget"], ["servers:acme", "forget"]] as const) {
+    const review: ApprovalReview = { effects: [deletedVolume], operation: { subject, verb: command, name: "box", preview: {} } };
+    const line = destroyedLine(deletedVolume, command, review);
+    expect(`${line.verb} ${line.name}${line.after}`).toBe("Loses access to volume pgdata. Its data stays on the Server's disk until wiped. Wipe or reinstall the disk to erase it; sudo ployz-uninstall keeps the data.");
+    expect(approvalBadge(command, review)).toBe(command === "remove" ? "Removes server" : subject.startsWith("servers:") ? "Forgets servers" : "Forgets server");
+  }
+});
+
+it("keeps real volume deletion wording for project removal, namespace clean and deploy", () => {
+  for (const [subject, command] of [["project:shop", "remove"], ["namespace:shop", "clean"], ["server:box", "clean"]] as const) {
+    const review: ApprovalReview = { effects: [deletedVolume], operation: { subject, verb: command, name: "shop", preview: {} } };
+    expect(destroyedLine(deletedVolume, command, review)).toEqual({ verb: "Deletes volume", name: "pgdata", after: ". Not recoverable." });
+    expect(approvalBadge(command, review)).toBe("Deletes 1 volume");
+  }
+  expect(destroyedLine(deletedVolume)).toEqual({ verb: "Deletes volume", name: "pgdata", after: ". Not recoverable." });
+  expect(destroyedLine(deletedVolume, "publish")).toEqual({ verb: "Next deploy deletes volume", name: "pgdata", after: "." });
 });

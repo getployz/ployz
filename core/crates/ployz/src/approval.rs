@@ -525,6 +525,63 @@ mod tests {
     }
 
     #[test]
+    fn server_removal_approval_keeps_volume_data_on_disk() {
+        for (subject, verb) in [
+            ("server:box", "remove"),
+            ("server:box", "forget"),
+            ("servers:acme", "forget"),
+        ] {
+            let asked: Asked = serde_json::from_value(serde_json::json!({
+                "approval_id": "a1", "approval": "d1",
+                "effects": [{ "kind": "deletes_volume", "name": "pgdata", "node": "v1", "path": "volumes/v1" }],
+                "operation": { "subject": subject, "verb": verb, "name": "box" },
+            })).unwrap();
+            let review = asked.review(asked.verb()).join("\n");
+            assert!(review.contains("loses access to Volume pgdata"), "{review}");
+            assert!(
+                review.contains("its data stays on the Server's disk until wiped"),
+                "{review}"
+            );
+            assert!(
+                review.contains("Wipe or reinstall the disk to erase it"),
+                "{review}"
+            );
+            assert!(
+                review.contains("sudo ployz-uninstall keeps the data"),
+                "{review}"
+            );
+            assert!(!review.contains("deletes Volume"), "{review}");
+            assert!(!review.contains("destroys"), "{review}");
+        }
+    }
+
+    #[test]
+    fn volume_deletion_approval_still_says_it_deletes_data() {
+        for (subject, verb) in [
+            (Some("project:shop"), "remove"),
+            (Some("namespace:shop"), "clean"),
+            (Some("server:box"), "clean"),
+            (None, "remove"),
+        ] {
+            let mut operation = serde_json::json!({ "verb": verb, "name": "shop" });
+            if let Some(subject) = subject {
+                operation["subject"] = subject.into();
+            }
+            let asked: Asked = serde_json::from_value(serde_json::json!({
+                "approval_id": "a1", "approval": "d1",
+                "effects": [{ "kind": "deletes_volume", "name": "pgdata", "node": "v1", "path": "volumes/v1" }],
+                "operation": operation,
+            })).unwrap();
+            assert!(
+                asked
+                    .review(asked.verb())
+                    .join("\n")
+                    .contains("deletes Volume pgdata and its data")
+            );
+        }
+    }
+
+    #[test]
     fn a_role_change_reads_as_a_change_in_its_organization() {
         let asked = asked("set", "changes_role");
         assert_eq!(
