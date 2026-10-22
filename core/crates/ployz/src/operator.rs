@@ -196,6 +196,14 @@ pub enum OperatorError {
         #[source]
         source: TransportError,
     },
+    #[error(
+        "Lost the connection to {server}; exec ended, but the command may still be running there."
+    )]
+    ExecConnectionLost {
+        server: String,
+        #[source]
+        source: TransportError,
+    },
     #[error("Could not open {service} logs on Machine {machine_name}.")]
     OpenMachineLogs {
         service: MachineLogService,
@@ -463,8 +471,34 @@ pub fn select_proxy_container(
 
 pub struct ExecSession {
     pub input: mpsc::Sender<OpaquePayload>,
-    pub output: Streaming<OpaquePayload>,
+    pub output: ExecOutput,
     pub target: ExecTarget,
+}
+
+/// The frames an exec's Server sends back.
+pub struct ExecOutput {
+    frames: Streaming<OpaquePayload>,
+    /// The Server's name, or its ID when the Cluster lists no name for it.
+    server: String,
+}
+
+impl ExecOutput {
+    /// The next frame. A stream that breaks without the Server's own answer lost
+    /// its connection to the Server.
+    pub async fn next(&mut self) -> Option<Result<OpaquePayload, OperatorError>> {
+        let frame = self.frames.next().await?;
+        Some(frame.map_err(|status| {
+            let source = TransportError::from_stream_status(status);
+            if source.answered() {
+                OperatorError::Rpc(source)
+            } else {
+                OperatorError::ExecConnectionLost {
+                    server: self.server.clone(),
+                    source,
+                }
+            }
+        }))
+    }
 }
 
 /// The container an exec session runs in.
@@ -557,28 +591,26 @@ pub async fn open_exec(
         .send(config)
         .await
         .map_err(|_| OperatorError::StreamClosed)?;
-    let output = client
+    let server = machines
+        .iter()
+        .find(|machine| machine.machine.id == machine_id)
+        .map_or_else(
+            || machine_id.to_string(),
+            |machine| machine.machine.name.to_string(),
+        );
+    let frames = client
         .exec_stream(
             &MachineTarget::from(&machine_id),
             tokio_stream::wrappers::ReceiverStream::new(receiver),
         )
         .await
-        .map_err(|source| {
-            let server = machines
-                .iter()
-                .find(|machine| machine.machine.id == machine_id)
-                .map_or_else(
-                    || machine_id.to_string(),
-                    |machine| machine.machine.name.to_string(),
-                );
-            OperatorError::StartExec {
-                container: container.display_name.clone(),
-                source: source.addressed_as(&server),
-            }
+        .map_err(|source| OperatorError::StartExec {
+            container: container.display_name.clone(),
+            source: source.addressed_as(&server),
         })?;
     Ok(ExecSession {
         input: sender,
-        output,
+        output: ExecOutput { frames, server },
         target: ExecTarget {
             identity: service.identity.clone(),
             machine_id,
