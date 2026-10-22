@@ -166,7 +166,9 @@ mod tests {
     #[test]
     #[ignore = "child of sigterm_still_ends_the_process_outside_a_deploy"]
     fn listener_without_a_guard_raises_sigterm() {
-        let _token = super::interrupted().unwrap();
+        // A deploy took the guard and dropped it, so its token is no longer read.
+        let (_token, sigterm) = super::interrupted_or_terminated().unwrap();
+        drop(sigterm);
         signal_hook::low_level::raise(signal_hook::consts::SIGTERM).unwrap();
         std::thread::sleep(Duration::from_secs(5));
     }
