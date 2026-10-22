@@ -144,10 +144,7 @@ enum ObserveCommand {
 fn main() -> ExitCode {
     let args = Args::parse();
     let dial_stdio = matches!(args.command, Some(Command::DialStdio));
-    let runtime = match tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-    {
+    let runtime = match runtime() {
         Ok(runtime) => runtime,
         Err(error) => {
             eprintln!("{error}", error = ployz_core::error_chain::inline(&error),);
@@ -168,6 +165,17 @@ fn main() -> ExitCode {
         runtime.shutdown_timeout(Duration::from_secs(5));
     }
     code
+}
+
+/// The usual main-thread stack; tokio's own threads default to 2 MiB. In a debug build a boot
+/// pass that sets a replaced copy Out polls about 2.1 MB of frames (#3092).
+const THREAD_STACK: usize = 8 * 1024 * 1024;
+
+fn runtime() -> io::Result<tokio::runtime::Runtime> {
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .thread_stack_size(THREAD_STACK)
+        .build()
 }
 
 fn daemon_error_exit_code(error: &Error) -> ExitCode {
@@ -396,6 +404,22 @@ mod tests {
     };
 
     use super::*;
+
+    /// Uses about `depth` × 32 KiB of stack in a debug build, the array and its copy.
+    fn deep(depth: usize) -> usize {
+        let frame = std::hint::black_box([1_u8; 16 * 1024]);
+        if depth == 0 {
+            return usize::from(frame[0]);
+        }
+        deep(depth - 1) + usize::from(frame[1])
+    }
+
+    #[test]
+    fn a_daemon_task_has_room_for_a_deep_poll() {
+        let runtime = super::runtime().unwrap();
+        let task = runtime.spawn(async { deep(128) });
+        assert_eq!(runtime.block_on(task).unwrap(), 129);
+    }
 
     fn release(value: &str) -> MachineRelease {
         MachineRelease::parse(value).unwrap()
