@@ -11,8 +11,9 @@ use crate::cli::{
     base, env, log_flags, machine_policy_flags, many, positional, switch, value, volume_acceptance,
 };
 use ployz_core::{
-    AdvertisedEndpoint, BuildConcurrencyUpdate, Machine, MachineName, MachineTarget, MachineUpdate,
-    PublicIpUpdate, RpcError, RpcErrorCode, SelectedEndpoint, UpdateMachineRequest, op,
+    AdvertisedEndpoint, BuildConcurrencyUpdate, Machine, MachineName, MachineObservation,
+    MachineTarget, MachineUpdate, PublicIpUpdate, RpcError, RpcErrorCode, SelectedEndpoint,
+    UpdateMachineRequest, op,
 };
 
 use serde_json::{Value, json};
@@ -751,15 +752,25 @@ pub(super) fn set(root: &ArgMatches) -> Result<(), Error> {
         .and_then(|endpoints| endpoints.first())
         .map(|endpoint| SelectedEndpoint(endpoint.0));
     let recovery = matches.clone();
+    // `--yes` reads nothing: on the `--wg-endpoint` path the Cluster may be too degraded to list.
+    let ask = update.accepts_ingress == Some(false) && !matches.get_flag("yes");
     let Some(address) = seed else {
         return with_client(root, |client| {
-            Box::pin(apply_update(
-                client, selector, update, None, ingress, rerun, recovery,
-            ))
+            Box::pin(async move {
+                if ask {
+                    confirm_ingress_off(&client.machines().await?, &selector)?;
+                }
+                apply_update(client, selector, update, None, ingress, rerun, recovery).await
+            })
         });
     };
     super::runtime()?.block_on(async {
         let context = matches.get_one::<String>("context").map(String::as_str);
+        // Ask before seeding: a refusal leaves every Server unchanged.
+        if ask {
+            let machines = connect(matches, context).await?.machines().await?;
+            confirm_ingress_off(&machines, &selector)?;
+        }
         let entries = entries(matches, context).await?;
         let connector =
             SystemConnector::default().with_ssh_timeout(crate::cli::ssh_timeout(matches));
@@ -784,6 +795,44 @@ pub(super) fn set(root: &ArgMatches) -> Result<(), Error> {
         )
         .await
     })
+}
+
+/// Ask before turning web traffic off on the Server `selector` names when no other online
+/// Server would still take it.
+fn confirm_ingress_off(
+    machines: &[MachineObservation],
+    selector: &MachineTarget,
+) -> Result<(), Error> {
+    let target = crate::cluster::visible_machine(selector, machines)?;
+    let serves_web = |observed: &MachineObservation| {
+        observed.machine.accepts_ingress && observed.machine.public_ip.is_some()
+    };
+    let last = serves_web(target)
+        && !machines.iter().any(|observed| {
+            observed.machine.id != target.machine.id
+                && serves_web(observed)
+                && observed.invites_rpc()
+        });
+    if !last {
+        return Ok(());
+    }
+    let name = &target.machine.name;
+    crate::ui::confirm(
+        &format!(
+            "Turn off web traffic on {name}, the last Server taking it? Every domain goes dark"
+        ),
+        || {
+            Error::coded(
+                RpcErrorCode::ConfirmationRequired,
+                format!(
+                    "{name} is the last online Server taking web traffic; turning it off takes \
+                     every domain dark. No changes made."
+                ),
+            )
+            .hint(Hint::Retry(super::typed_with(&["--yes"])))
+        },
+        "Cancelled. Web traffic stays on.",
+    )
 }
 
 /// No Server took the endpoint and none was reached to update the target: the first failure.
@@ -1105,7 +1154,7 @@ pub(super) fn remove_command(command: Command) -> Command {
 
 pub(super) fn set_command(command: Command) -> Command {
     machine_policy_flags(base(command, "Change a Server's name, labels, roles, public IP or build concurrency")
-                .long_about("Change a Server's name, labels, roles, public IP or build concurrency. --accepts-ingress=true also starts the Ingress Proxy on that Server; rerun the same command to finish a start that failed. --accepts-ingress=false stops advertising the Server in Hosted DNS from the next sync, but its Ingress Proxy keeps serving until `ployz server rm`."))
+                .long_about("Change a Server's name, labels, roles, public IP or build concurrency. --accepts-ingress=true also starts the Ingress Proxy on that Server; rerun the same command to finish a start that failed. --accepts-ingress=false stops advertising the Server in Hosted DNS from the next sync, but its Ingress Proxy keeps serving until `ployz server rm`. When no other online Server with a public IP takes web traffic, --accepts-ingress=false asks first; pass --yes to skip the question, which non-interactive runs need."))
                 .arg(many("label-rm", None).value_name("KEY").help("Remove the label KEY; repeat for more"))
                 .arg(value("name", None).help("Its new name"))
                 .arg(value("public-ip", None).value_name("IP|none").help("The public IP it advertises; none advertises none"))
@@ -1118,6 +1167,7 @@ pub(super) fn set_command(command: Command) -> Command {
                     "Where peers reach this Server over WireGuard; every other Server the command reaches dials the first one now, even if this Server is unreachable",
                 ))
                 .arg(ingress_image())
+                .arg(crate::cli::yes("Turn off web traffic on the last Server taking it without asking"))
                 .arg(positional("server", true).help("Server name or ID"))
 }
 
@@ -1391,6 +1441,71 @@ mod tests {
                 .as_str(),
             "all"
         );
+    }
+
+    fn web(
+        name: &str,
+        accepts_ingress: bool,
+        public_ip: Option<&str>,
+        membership: ployz_core::MembershipObservation,
+    ) -> MachineObservation {
+        MachineObservation::new(
+            Machine {
+                labels: Default::default(),
+                accepts_builds: true,
+                accepts_services: true,
+                accepts_ingress,
+                id: ployz_core::MachineId::random(),
+                name: MachineName::parse(name).unwrap(),
+                subnet: "10.210.0.0/24".parse().unwrap(),
+                public_key: ployz_core::WireGuardPublicKey([1; 32]),
+                public_ip: public_ip.map(|ip| ip.parse().unwrap()),
+                advertised_endpoints: Vec::new(),
+                runtime: Default::default(),
+                build_concurrency: None,
+            },
+            membership,
+        )
+    }
+
+    #[test]
+    fn web_traffic_off_asks_only_when_no_other_online_server_takes_it() {
+        use ployz_core::MembershipObservation::{Down, Suspect, Unknown, Up};
+        let fra1 = MachineTarget::parse("fra-1").unwrap();
+        let off = |other: MachineObservation| {
+            let machines = [web("fra-1", true, Some("203.0.113.1"), Down), other];
+            confirm_ingress_off(&machines, &fra1).map_err(|error| error.report())
+        };
+
+        // Tests run in Plain mode, so the question is a refusal naming --yes.
+        let refused = off(web("fra-2", false, Some("203.0.113.2"), Up)).unwrap_err();
+        assert_eq!(refused.code, RpcErrorCode::ConfirmationRequired);
+        assert!(refused.message.contains("fra-1"), "{}", refused.message);
+        assert!(
+            refused
+                .details
+                .get("retry")
+                .and_then(Value::as_str)
+                .is_some_and(|retry| retry.ends_with(" --yes")),
+            "{:?}",
+            refused.details
+        );
+        for offline in [Down, Unknown] {
+            let refused = off(web("fra-2", true, Some("203.0.113.2"), offline)).unwrap_err();
+            assert_eq!(refused.code, RpcErrorCode::ConfirmationRequired);
+        }
+        let refused = off(web("fra-2", true, None, Up)).unwrap_err();
+        assert_eq!(
+            refused.code,
+            RpcErrorCode::ConfirmationRequired,
+            "no public IP serves no web"
+        );
+
+        for online in [Up, Suspect] {
+            off(web("fra-2", true, Some("203.0.113.2"), online)).unwrap();
+        }
+        let already_off = [web("fra-1", false, Some("203.0.113.1"), Up)];
+        confirm_ingress_off(&already_off, &fra1).unwrap();
     }
 
     #[tokio::test]
