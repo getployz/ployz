@@ -354,6 +354,7 @@ pub(super) fn completion(
         .as_ref()
         .is_some_and(|preview| preview.has_observation_gaps())
         || left_a_copy_running(view)
+        || ingress_unchecked(view).next().is_some()
     {
         return Err(Failure::partial());
     }
@@ -1423,6 +1424,18 @@ mod tests {
     }
 
     #[test]
+    fn an_applied_deploy_that_couldnt_check_ingress_is_partial() {
+        let mut view = view();
+        view.deployment.status = DeploymentStatus::Applied;
+        view.deployment.outcome = None;
+        view.deployment.warnings = vec![DeploymentWarning::IngressUnchecked {
+            cause: "Server lab-1 isn't answering".into(),
+        }];
+        let failure = completion(&view, None, &[], command).unwrap_err();
+        assert_eq!(crate::ui::after_result(&failure), 3);
+    }
+
+    #[test]
     fn only_a_failed_deploy_exits_1_and_a_superseded_one_stays_partial() {
         let mut view = view();
         for (status, code) in [
@@ -1662,7 +1675,8 @@ mod tests {
             },
         ];
         assert!(!noop(&view) && visible(&view));
-        assert!(completion(&view, None, &[], command).is_ok());
+        let partial = completion(&view, None, &[], command).unwrap_err();
+        assert_eq!(crate::ui::after_result(&partial), 3);
         assert!(frame(&view).rows.iter().any(|row| {
             row.subject == Subject::Unlocated(QualifiedService::system_ingress())
                 && row.state == State::Unknown
