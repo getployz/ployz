@@ -590,10 +590,9 @@ async fn a_zfs_build_that_cannot_be_discarded_fails_the_attempt_before_enrolling
 }
 
 #[test]
-fn a_cloud_name_taken_from_an_invalid_hostname_is_normalised() {
-    assert_eq!(add_name("HP-WIN11", "HP-WIN11"), "hp-win11");
-    assert_eq!(add_name("my_box.lan", "my_box.lan"), "my-box-lan");
-    assert!(add_name("___", "___").starts_with("server-"));
+fn a_cloud_name_taken_from_an_invalid_hostname_is_left_to_server_add() {
+    assert_eq!(add_name("HP-WIN11", "HP-WIN11"), "");
+    assert_eq!(add_name("___", "___"), "");
     // A valid hostname, and a name Cloud didn't take from the hostname, pass through as given.
     assert_eq!(add_name("box-1", "box-1"), "box-1");
     assert_eq!(add_name("Web-1", "box-1"), "Web-1");
@@ -625,12 +624,12 @@ fn the_add_arguments_carry_the_whole_instruction_and_a_root_config_without_home(
             "--yes",
             "--connect",
             "unix:///run/ployz/ployz.sock",
-            "--name",
-            "web-1",
             "--storage",
             "zfs",
             "--cloud-url",
             "https://cloud.example",
+            "--name",
+            "web-1",
             "--accepts-builds=false",
             "--accepts-services=true",
             "--accepts-ingress=true",

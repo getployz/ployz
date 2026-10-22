@@ -238,7 +238,7 @@ pub(super) async fn server_add(
     progress: &dyn Fn(EnrollStage),
 ) -> Result<Committed, String> {
     let instruction = &EnrollInstruction {
-        name: add_name(&instruction.name, &system.hostname()),
+        name: add_name(&instruction.name, &system.hostname()).to_owned(),
         ..instruction.clone()
     };
     let root = crate::cli::command()
@@ -276,13 +276,14 @@ fn failure_message(error: &crate::handlers::Error) -> String {
     message
 }
 
-/// The `--name` for `server add`. Cloud names a Server by its raw hostname by default, so a
-/// hostname that isn't a Machine Name is normalised here rather than refused as typed.
-pub(super) fn add_name(name: &str, hostname: &str) -> String {
+/// The `--name` for `server add`, empty to leave it out. Cloud names a Server by its raw
+/// hostname by default, so a hostname that isn't a Machine Name is left to `server add`,
+/// which normalises the hostname, rather than refused as typed.
+pub(super) fn add_name<'a>(name: &'a str, hostname: &str) -> &'a str {
     if name == hostname && ployz_core::MachineName::parse(name).is_err() {
-        crate::handlers::server::hostname_machine_name(hostname).into()
+        ""
     } else {
-        name.to_owned()
+        name
     }
 }
 
@@ -306,8 +307,6 @@ pub(super) fn add_arguments(
         "--yes",
         "--connect",
         &format!("unix://{}", crate::connect::DEFAULT_LOCAL_SOCKET),
-        "--name",
-        &instruction.name,
         "--storage",
         &storage,
         "--cloud-url",
@@ -315,6 +314,9 @@ pub(super) fn add_arguments(
     ]
     .map(str::to_owned)
     .into();
+    if !instruction.name.is_empty() {
+        arguments.extend(["--name".to_owned(), instruction.name.clone()]);
+    }
     arguments.extend([
         format!("--accepts-builds={}", policy.accepts_builds),
         format!("--accepts-services={}", policy.accepts_services),

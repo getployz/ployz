@@ -48,7 +48,6 @@ mod waiting;
 
 use add::add;
 pub(super) use enroll::{enroll_token, requested_storage};
-pub(crate) use helpers::hostname_machine_name;
 pub(super) use helpers::{
     check_listed, confirm, connect_direct, enroll, inspect_token, leave, machine_name,
     readiness_timeout_message, requested_name,
