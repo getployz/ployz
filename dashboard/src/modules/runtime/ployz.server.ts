@@ -1,5 +1,7 @@
 import "@tanstack/react-start/server-only";
 import type {
+  BackfillSealingKeyReport,
+  BackfillSealingKeyRequest,
   Client,
   CloudQuery,
   LogOptions, LogEvent, LogHistoryOptions, LogHistoryPage,
@@ -113,6 +115,8 @@ export interface PloyzSession {
   readonly startIngress: (machine: MachineTarget) => Effect.Effect<IngressCheck, PloyzSdkError>;
   /** Stop and remove the web server on a Server. */
   readonly stopIngress: (machine: MachineTarget) => Effect.Effect<void, PloyzSdkError>;
+  /** Bring every Machine of the Cluster to hold its Sealing Key, generating one only on `generator`. */
+  readonly backfillSealingKey: (request: BackfillSealingKeyRequest) => Effect.Effect<BackfillSealingKeyReport, PloyzSdkError>;
   /** Ask one Server to Upgrade; resending it with the same attempt ID is the poll. */
   readonly requestMachineUpgrade: (
     machine: MachineTarget,
@@ -348,6 +352,7 @@ function wrapClient(client: Client): PloyzSession {
     removeContainer: (machine, container) => sdkPromise("remove container", () => client.removeContainer(machine, container)),
     copyContainerImage: (source, container, dest) =>
       sdkPromise("copy container image", () => client.copyContainerImage(source, container, dest)),
+    backfillSealingKey: (request) => sdkPromise("backfill sealing key", () => client.backfillSealingKey(request)),
     requestMachineUpgrade: (machine, attemptId, release) =>
       sdkPromise("request machine upgrade", () => client.requestMachineUpgrade(machine, { attempt_id: attemptId, release })),
     publishCertificateMaterial: (request) =>

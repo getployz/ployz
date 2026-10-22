@@ -6,7 +6,6 @@ import { allocateEnrollment, type EnrollmentSnapshot, type MachineId, type Machi
 import { and, eq, gt, isNull, lt, ne, or, type SQL, sql } from "drizzle-orm";
 import { Cause, Effect, Option, Schema } from "effect";
 import {
-  clusterSealingKey,
   enrollmentAllocation,
   organizationMachine,
   machineEnrollmentToken as schemaMachineEnrollmentToken,
@@ -37,6 +36,7 @@ import {
   type ReadMachineEnrollmentInput,
   type ResetPendingEnrollmentInput,
 } from "#/modules/machines/enrollment";
+import { recordSealingPublicKey } from "#/modules/machines/sealing-key.server";
 import { SecretEncryption } from "#/utils/encrypted-secret.server";
 import { sendInngestEvent } from "#/modules/inngest/client";
 import {
@@ -896,17 +896,7 @@ const recordSealing = Effect.fn("MachineEnrollment.recordSealing")(function* (
   if (sealing.kind === "needs_access") {
     return yield* Effect.logWarning("A Server joined without its Cluster's Sealing Key.").pipe(Effect.annotateLogs(annotations));
   }
-  const { drizzle } = yield* Database;
-  yield* drizzle.insert(clusterSealingKey).values({ organizationId, clusterKey, publicKey: sealing.publicKey }).onConflictDoNothing();
-  const [recorded] = yield* drizzle.select({ publicKey: clusterSealingKey.publicKey }).from(clusterSealingKey).where(and(
-    eq(clusterSealingKey.organizationId, organizationId),
-    eq(clusterSealingKey.clusterKey, clusterKey),
-  ));
-  if (recorded !== undefined && recorded.publicKey !== sealing.publicKey) {
-    yield* Effect.logError("A Server reported a Sealing Key unlike the one its Cluster first reported.").pipe(
-      Effect.annotateLogs({ ...annotations, recorded: recorded.publicKey, reported: sealing.publicKey }),
-    );
-  }
+  yield* recordSealingPublicKey(organizationId, clusterKey, sealing.publicKey).pipe(Effect.annotateLogs(annotations));
 });
 
 const reportAttemptCompleted = Effect.fn("MachineEnrollment.reportAttemptCompleted")(
