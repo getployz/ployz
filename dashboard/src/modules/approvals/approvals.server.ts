@@ -13,6 +13,7 @@ import {
   approvalSubject,
   type OperationVerb,
   type ServiceApply,
+  type VolumeApply,
 } from "#/modules/approvals/approvals";
 import { operationApprovals } from "#/modules/approvals/tables";
 import { user } from "#/modules/identity/tables";
@@ -452,7 +453,7 @@ export type OperationAsked = {
   /** The Protected Environment it lands in when its asker can't protect it, so a protector approves it, even from the dashboard. */
   protected?: string;
   /** What to run as the asker once approved: a dashboard ask that waits for a protector. */
-  apply?: ServiceApply;
+  apply?: ServiceApply | VolumeApply;
   /**
    * Its run records the approval it ran under, once, so carrying that approval again answers or finishes that run
    * instead of starting another. The gate leaves such an approval unspent; it spends every other one on its one run.

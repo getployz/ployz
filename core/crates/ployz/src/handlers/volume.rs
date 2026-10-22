@@ -48,6 +48,7 @@ pub(super) fn set_command(command: Command) -> Command {
     .arg(positional("volume", true).help("Volume name"))
     .arg(shared_writes_flag())
     .arg(run::wait_flag().conflicts_with_all(["docker", "shared-writes"]))
+    .arg(crate::cli::approval().conflicts_with_all(["docker", "shared-writes"]))
     .group(
         clap::ArgGroup::new("volume-change")
             .args(["size", "docker", "shared-writes"])

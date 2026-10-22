@@ -219,15 +219,17 @@ disabled. `ployz env ls` shows which are Protected. Branches and preview environ
 Protected. Turning protection off from the CLI or an agent waits for you to approve.
 
 A member can still ask for changes in a Protected environment. Their buttons read **Request
-deploy**, **Request sync**, **Request restart** and **Request stop**, and clicking one shows
+deploy**, **Request sync**, **Request restart** and **Request stop**, and a volume's **Storage
+limit** confirms with **Request grow**. Clicking one shows
 **Requested**. The request waits under **Waiting on you** in the [Agent panel](../account/agent-sidebar.md#approve-or-deny-a-deploy)
 of every owner or admin, with the name of who asked. Once one approves it, it runs as the member
 who asked. The member sees their own request under **Requested**, marked **Waiting on an owner or
 admin.**, and can't approve or deny it. Neither can an owner or admin decide a request they made. A deploy, sync or take from `ployz` or an agent asks
 the same way, and so do `ployz env shutdown` and cancelling a deploy someone else started. So does
 anything from `ployz` or an agent that stops or takes off what a volume serves:
-`ployz volume move`, `restore`, `release` and `mirror rm`. The approval covers only the server it
-moves to or restores from. Adding a mirror or syncing doesn't ask.
+`ployz volume move`, `restore`, `release` and `mirror rm`, and a resize with `ployz volume set
+--size`, which can't be undone. The approval covers only the server it moves to or restores from,
+or the size it resizes to. Adding a mirror or syncing doesn't ask.
 
 A merge into a Protected environment's deploy branch still deploys. To control who can merge, use
 [GitHub branch protection](../deploy/github.md#protected-environments).

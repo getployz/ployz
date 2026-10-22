@@ -70,6 +70,7 @@ import { type DeployLane, fenceDeployVolume, finishDeployVolumes, placeDeployVol
 import type { Caller } from "#/modules/identity/actor";
 import { runVolume } from "#/modules/operations/operations.server";
 import { decideApproval } from "#/modules/approvals/approvals.server";
+import { decideAndApply } from "#/modules/approvals/apply.server";
 import { FULL_GRANT } from "#/modules/identity/token-grant";
 import type { Database } from "#/server/database.server";
 import { makeInngestEffectRunner, type runInngestEffect } from "#/server/run.server";
@@ -3647,6 +3648,41 @@ describe("volume runs", () => {
       expect(await as(member, { kind: "sync", args: { full: true } })).toMatchObject({ ok: true });
       await harness.pool.query("truncate table volume_run cascade");
       expect(await as(member, { kind: "mirror", args: { to: "fsn-2" } })).toMatchObject({ ok: true });
+    });
+
+    describe("a grow", () => {
+      const serves = [requirements.volumeFloor.capability, requirements.volumeSize.capability, requirements.volumeShrink.capability];
+      const grow = (gigabytes: number): VolumeRunInput => ({ kind: "resize", args: { maximum_bytes: gigabytes * GB } });
+
+      beforeEach(() => {
+        storeVolumes = [{ id: volumeId, name: "data", storage: { kind: "provisioned", maximumBytes: 10 * GB }, recorded_storage: 10 * GB }];
+        machines = [{ name: "fsn-1", pool: true, copy: writerCopy(), capabilities: serves, bound: 10 * GB }];
+      });
+
+      it.each(askers)("%s's grow asks someone who can protect it, for that size only", async (_, asker) => {
+        const admitted = await as(asker, grow(20));
+        const { approval, approval_id } = askedOf(admitted);
+
+        expect(admitted).toMatchObject({ refusal: { details: { protected: { environment: "production" } } } });
+        expect(await review(approval_id)).toMatchObject({ operation: { verb: "resize", preview: { maximum_bytes: 20 * GB } } });
+        expect(await rows()).toEqual([]);
+        await runEffect(decideApproval(protector, approval_id, { approve: { digest: approval } }));
+        expect(await as(asker, grow(30), approval_id)).toMatchObject({ ok: false, refusal: { code: "approval_required" } });
+        expect(await as(asker, grow(20), approval_id)).toMatchObject({ ok: true });
+        expect(await rows()).toMatchObject([{ kind: "resize" }]);
+      });
+
+      it("a member's grow from the dashboard runs as they asked once someone who can protect it approves", async () => {
+        await harness.pool.query("insert into member (user_id, organization_id, role) values ($1, $2, 'member')", [userId, organizationId]);
+        const { approval, approval_id } = askedOf(await as({ ...member, via: "dashboard" }, grow(20)));
+
+        expect(await runEffect(decideAndApply(protector, approval_id, { approve: { digest: approval } }))).toMatchObject({ ok: true });
+        expect(await rows()).toMatchObject([{ kind: "resize" }]);
+      });
+
+      it("someone who can protect it grows unasked", async () => {
+        expect(await as({ ...caller, via: "cli" }, grow(20))).toMatchObject({ ok: true });
+      });
     });
 
     it("someone who can protect it moves unasked, and a member still mirrors unasked", async () => {

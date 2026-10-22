@@ -475,21 +475,23 @@ const VERBS = {
 
 /**
  * The verb a run asks under in a Protected Environment, for one by someone who can't protect it that interrupts or takes
- * off what runs there: a move stops its Service for the last copy, a restore drops writes.
+ * off what runs there, or can't be undone: a move stops its Service for the last copy, a restore drops writes, and a
+ * grow can't shrink back.
  */
 const PROTECTED_VERBS = {
   ...VERBS,
   move: "move",
   restore: "restore",
+  resize: "resize",
 } satisfies Record<VolumeRunKind, OperationVerb | null>;
 
 /**
- * The phases that interrupt or take off what runs. A mirror, a sync, a seed and a resize leave it running. A demote seals
- * an older second primary, which Ployz's own sync does unasked too.
+ * The phases a Protected Environment holds: those that interrupt or take off what runs, and a resize. A mirror, a sync
+ * and a seed leave it running. A demote seals an older second primary, which Ployz's own sync does unasked too.
  */
-const INTERRUPTS: ReadonlySet<string> = new Set(["move", "landed", "restore", "release", "delete_mirror"]);
+const GUARDED: ReadonlySet<string> = new Set(["move", "landed", "restore", "release", "delete_mirror", "resize"]);
 
-/** The Server a guarded phase moves to or restores from, so its approval covers no other. */
+/** The Server a guarded phase moves to or restores from, or the size it resizes to, so its approval covers no other. */
 function phaseServer(phase: PlannedPhase): JsonObject {
   const named = (member: AnsweredMember) => ({ machine: member.machine.id, name: member.machine.name });
   switch (phase.kind) {
@@ -498,13 +500,14 @@ function phaseServer(phase: PlannedPhase): JsonObject {
       return { to: named(phase.target) };
     case "restore":
       return { from: named(phase.from) };
+    case "resize":
+      return { maximum_bytes: phase.to };
     case "delete_mirror":
     case "release":
     case "mirror":
     case "sync":
     case "demote":
     case "seed":
-    case "resize":
       return {};
   }
 }
@@ -631,7 +634,7 @@ export const planOnCluster = Effect.fn("VolumeRun.planOnCluster")(function* (
   });
   const asked = verb === null ? null : askedAs(verb);
   const guarding = PROTECTED_VERBS[input.kind];
-  const guard = asked ?? (guarding !== null && INTERRUPTS.has(phase.kind) ? askedAs(guarding) : null);
+  const guard = asked ?? (guarding !== null && GUARDED.has(phase.kind) ? askedAs(guarding) : null);
   const ids = (members: readonly AnsweredMember[]) => members.map((member) => member.machine.id);
   const pinned = input.kind === "release" ? { ...input, args: { plan: { sources: ids(release.sources), forgets: ids(release.forgets) } } } : resolved;
   return { ok: true, volume, asked, guard, input: pinned } satisfies ClusterPlan;

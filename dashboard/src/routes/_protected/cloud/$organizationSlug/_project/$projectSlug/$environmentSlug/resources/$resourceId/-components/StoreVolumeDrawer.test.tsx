@@ -10,6 +10,7 @@ import * as scopes from "#/collections/use-collection-scope";
 import { asTestDouble } from "#/lib/test-double";
 import * as mounts from "#/modules/config-store/StoreVolumeMounts";
 import * as functions from "#/modules/config-store/store.functions";
+import * as protectedAsk from "#/modules/config-store/use-protected-ask";
 import type { StoreResult } from "#/modules/config-store/store.contract";
 import { diffQuery, environmentSettingsQuery, servicesQuery, storeViewOptions, volumesQuery } from "#/modules/config-store/store-view.queries";
 import { useStoreWriter } from "#/modules/config-store/store-write";
@@ -163,6 +164,21 @@ it("grows a deployed volume after a plain confirm, then shows the run until it e
   expect(limit().hasAttribute("disabled")).toBe(true);
   read.mockResolvedValue({ ...growing, state: "failed", message: "fsn-2 has no room to grow data to 20 GB" });
   await screen.findByText("fsn-2 has no room to grow data to 20 GB", {}, { timeout: 5_000 });
+  expect(limit().hasAttribute("disabled")).toBe(false);
+});
+
+it("in a Protected environment a member's grow is a request an owner or admin approves, with no run to watch", async () => {
+  vi.spyOn(protectedAsk, "useProtectedAsk").mockReturnValue(true);
+  await openDrawer(SETTINGS, deployed(), null, { data: { holders: holders() } });
+  const resize = vi.spyOn(runs, "resizeVolumeServerFn").mockResolvedValue({ requested: true });
+  const read = vi.spyOn(runs, "getVolumeRunServerFn");
+  enter("20");
+  const dialog = await screen.findByRole("alertdialog");
+  within(dialog).getByText("Grow data from 10 GB to 20 GB on fsn-1 and its mirror on fsn-2. Its services keep running. An owner or admin approves it first.");
+  fireEvent.click(within(dialog).getByRole("button", { name: "Request grow" }));
+  await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+  expect(resize).toHaveBeenCalledTimes(1);
+  expect(read).not.toHaveBeenCalled();
   expect(limit().hasAttribute("disabled")).toBe(false);
 });
 

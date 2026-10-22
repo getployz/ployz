@@ -252,6 +252,11 @@ fn removal_words(
     words
 }
 
+/// A size as `volume set --size` reads it back, such as `20GB` or `0.5GB`.
+fn size_word(maximum_bytes: ProvisionedVolumeMaximumBytes) -> String {
+    maximum_bytes.to_string().replace(' ', "")
+}
+
 impl Serialize for Full {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         serializer.serialize_bool(true)
@@ -737,11 +742,14 @@ fn approved(
             RunAsk::Restore { from } => {
                 (Verb::Restore, words("restore", &["--from", from.as_str()]))
             }
+            RunAsk::Resize { maximum_bytes } => (
+                Verb::Resize,
+                words("set", &["--size", size_word(*maximum_bytes).as_str()]),
+            ),
             RunAsk::Mirror { .. }
             | RunAsk::Sync { .. }
             | RunAsk::DeleteMirror { .. }
-            | RunAsk::DeleteOldCopy { .. }
-            | RunAsk::Resize { .. } => {
+            | RunAsk::DeleteOldCopy { .. } => {
                 return Ok(runtime.block_on(start(credential, volume_id, asked, None)));
             }
         }

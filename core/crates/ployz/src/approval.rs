@@ -82,6 +82,7 @@ pub(crate) enum Verb {
     Unprotect,
     Move,
     Restore,
+    Resize,
 }
 
 impl Verb {
@@ -102,6 +103,7 @@ impl Verb {
             Self::Unprotect => "unprotecting",
             Self::Move => "move",
             Self::Restore => "restore",
+            Self::Resize => "resize",
         }
     }
 
@@ -122,6 +124,7 @@ impl Verb {
             Self::Unprotect => "unprotected",
             Self::Move => "moved",
             Self::Restore => "restored",
+            Self::Resize => "resized",
         }
     }
 
@@ -142,7 +145,8 @@ impl Verb {
             | Self::Restart
             | Self::Unprotect
             | Self::Move
-            | Self::Restore => "of",
+            | Self::Restore
+            | Self::Resize => "of",
         }
     }
 }

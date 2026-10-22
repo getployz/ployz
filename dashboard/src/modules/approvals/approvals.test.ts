@@ -61,5 +61,6 @@ it("badges a Protected Volume Run by what it does to the Volume, never as a Depl
   expect(approvalBadge("move", run("move"))).toBe("Moves volume");
   expect(approvalBadge("restore", run("restore"))).toBe("Restores volume");
   expect(approvalBadge("release", run("release"))).toBe("Releases volume");
+  expect(approvalBadge("resize", run("resize"))).toBe("Resizes volume");
   expect(approvalSubject("move", run("move"))).toMatchObject({ verb: "Move", name: "pg-data" });
 });
