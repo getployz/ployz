@@ -242,6 +242,10 @@ export function unavailableRuntimeSnapshot(
 export const CLUSTER_UNREACHABLE_ERROR =
   "The cluster is expected but unreachable.";
 
+/** Cloud reached a Server that speaks the management protocol of Ployz 0.3.0-beta.6 or earlier: only an upgrade over SSH reaches it. */
+export const OLDER_SERVERS_ERROR =
+  "A Server runs Ployz 0.3.0-beta.6 or earlier, which Ployz Cloud can't reach through the relay.";
+
 /** Pairing is present but Cloud cannot dial an entry Machine. Clearing rows
  * prevents prior observations from being rendered as current membership. */
 export function unreachableRuntimeSnapshot(error: string): RuntimeSnapshot {

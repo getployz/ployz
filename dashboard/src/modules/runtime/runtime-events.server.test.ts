@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { PloyzProviderError } from "#/modules/runtime/ployz.server";
-import { CLUSTER_UNREACHABLE_ERROR } from "#/modules/runtime/runtime.collection";
+import { CLUSTER_UNREACHABLE_ERROR, OLDER_SERVERS_ERROR } from "#/modules/runtime/runtime.collection";
 import { createRuntimeEventsResponse } from "#/modules/runtime/runtime-events.server";
 import {
   runtimeWatchCertificateFixture,
@@ -231,6 +231,27 @@ describe("createRuntimeEventsResponse", () => {
     expect(statusText).toContain('"status":"unreachable"');
     expect(statusText).not.toContain('"machines"');
     expect(await reader?.read()).toMatchObject({ done: true });
+  });
+
+  it.each([
+    { code: "unsupported", message: "This Server runs Ployz 0.3.0-beta.6 or earlier, which this release can't reach through the relay.", details: { management_protocol: "older" } },
+    {
+      code: "unsupported",
+      message: "Server machine-1's daemon answered, but the connection was refused.: This Server runs Ployz 0.3.0-beta.6 or earlier, which this release can't reach through the relay.",
+      details: null,
+    },
+  ])("says a Server needs its upgrade over SSH when it speaks the older protocol", async (cause) => {
+    const response = createRuntimeEventsResponse({
+      request: new Request("http://localhost/api/runtime/events"),
+      status: "unreachable",
+      error: new PloyzProviderError({ operation: "connect", cause }),
+    });
+    const reader = response.body?.getReader();
+
+    await reader?.read();
+    const statusText = new TextDecoder().decode((await reader?.read())?.value);
+
+    expect(statusText).toContain(`"error":${JSON.stringify(OLDER_SERVERS_ERROR)}`);
   });
 
   it("falls back to the cluster unreachable copy when the provider error has no message", async () => {

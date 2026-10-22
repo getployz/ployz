@@ -1,6 +1,6 @@
 import { useLiveQuery } from "@tanstack/react-db";
 import { useCollectionScope } from "#/collections/use-collection-scope";
-import { getRuntimeCollections, projectRuntimeServiceRecord } from "#/modules/runtime/runtime.collection";
+import { getRuntimeCollections, OLDER_SERVERS_ERROR, projectRuntimeServiceRecord } from "#/modules/runtime/runtime.collection";
 import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
 import { servicesOnServers } from "./server-services";
 import { serverListState, serverStatus, sortServers } from "./server-status";
@@ -9,7 +9,12 @@ import { serverListState, serverStatus, sortServers } from "./server-status";
 export function useServerList(organizationSlug: string) {
   const runtime = useRuntimeLens(organizationSlug);
   const servers = sortServers(runtime.machines.map((machine) => ({ machine, name: machine.name, status: serverStatus(machine) })));
-  return { state: serverListState(runtime.status, servers.length, runtime.incomplete), servers };
+  return {
+    state: serverListState(runtime.status, servers.length, runtime.incomplete),
+    servers,
+    /** Cloud can't reach a Server because it runs Ployz 0.3.0-beta.6 or earlier; only an upgrade over SSH does. */
+    older: runtime.status === "unreachable" && runtime.error === OLDER_SERVERS_ERROR,
+  };
 }
 
 export type ServerListItem = ReturnType<typeof useServerList>["servers"][number];
@@ -21,6 +26,7 @@ export function useServers(organizationSlug: string) {
   const services = servicesOnServers(runtimeServices.map(projectRuntimeServiceRecord));
   return {
     state: list.state,
+    older: list.older,
     servers: list.servers.map((server) => ({
       ...server,
       services: services.filter((service) => service.machineIds.has(server.machine.id)),
