@@ -366,6 +366,38 @@ fn a_removal_s_retry_line_keeps_if_old_copy() {
     );
 }
 
+#[test]
+fn a_resize_s_retry_line_carries_its_size_and_approval() {
+    for size in ["20", "0.5"] {
+        let word = size_word(ProvisionedVolumeMaximumBytes::parse_gb(size).unwrap());
+        assert_eq!(word, format!("{size}GB"));
+        let retry = parsed(&[
+            "ployz",
+            "volume",
+            "set",
+            "data",
+            "--size",
+            &word,
+            "--approval",
+            "apr_1",
+        ])
+        .unwrap();
+        assert_eq!(path(&retry), "volume set");
+    }
+    assert!(
+        parsed(&[
+            "ployz",
+            "volume",
+            "set",
+            "data",
+            "--shared-writes=true",
+            "--approval",
+            "apr_1"
+        ])
+        .is_err()
+    );
+}
+
 /// A Cloud from before `--if-old-copy`: it knows these kinds only, and drops fields it doesn't know.
 fn cloud_before_if_old_copy() -> String {
     fake_cloud(|_, sent| {

@@ -388,7 +388,7 @@ export const OPERATIONS = {
       ui: {
         fn: "resizeVolumeServerFn",
         input: ResizeVolumeInput,
-        ungated: "The human confirms in the page's own dialog.",
+        ungated: "The human confirms in the page's own dialog; in a Protected Environment, someone who can't protect it requests the grow instead.",
         options: {
           volume: { via: "volumeId" },
           environment: { via: "environment" },

@@ -50,6 +50,8 @@ Ployz grows each mirror first and the copy your service writes to last. If one s
 a copy has no room, Ployz refuses the whole resize, names that server, and the volume keeps its
 old limit. `ployz volume runs data` shows how a resize went. The new limit isn't a staged
 change: `ployz diff` shows nothing, and your next deploy leaves the service's container alone.
+In a [Protected environment](../environments/environments.md#protect-an-environment), a member's
+grow from the dashboard or resize from the CLI waits for an owner or admin to approve it.
 A Docker volume has no limit to grow. A version saved before a resize, grow or shrink, deploys
 at the size the volume holds now.
 

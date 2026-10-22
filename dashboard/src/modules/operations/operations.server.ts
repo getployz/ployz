@@ -202,11 +202,14 @@ const removal = (
  */
 const guardedVolume = Effect.fn("Operations.guardedVolume")(function* (
   caller: Caller,
-  { asked, guard, volume, environment }: Pick<Extract<VolumeRunPlan, { ok: true }>, "asked" | "guard" | "volume" | "environment">,
+  { asked, guard, volume, environment, input }: Pick<Extract<VolumeRunPlan, { ok: true }>, "asked" | "guard" | "volume" | "environment" | "input">,
 ) {
   if (guard === null || protectorOnly(caller, environment.name) === null) return asked;
   if (!(yield* environmentProtected(caller.organization.id, environment.project, volume.environmentId))) return asked;
-  return { ...guard, protected: environment.name } satisfies OperationAsked;
+  const protectedAsk = { ...guard, protected: environment.name } satisfies OperationAsked;
+  // The dashboard's grow waits as a request, and runs as its asker once someone who can protect it approves.
+  if (caller.via !== "dashboard" || input.kind !== "resize") return protectedAsk;
+  return { ...protectedAsk, apply: { volumeId: input.volumeId, environment: input.environment, maximum_bytes: input.args.maximum_bytes } } satisfies OperationAsked;
 });
 
 /** A Volume Run whose id is its attempt, so a replayed request reads back the run it started. */

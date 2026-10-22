@@ -70,6 +70,7 @@ import { type DeployLane, fenceDeployVolume, finishDeployVolumes, placeDeployVol
 import type { Caller } from "#/modules/identity/actor";
 import { runVolume } from "#/modules/operations/operations.server";
 import { decideApproval } from "#/modules/approvals/approvals.server";
+import { decideAndApply } from "#/modules/approvals/apply.server";
 import { FULL_GRANT } from "#/modules/identity/token-grant";
 import type { Database } from "#/server/database.server";
 import { makeInngestEffectRunner, type runInngestEffect } from "#/server/run.server";
@@ -3622,8 +3623,18 @@ describe("volume runs", () => {
       await runEffect(decideApproval(protector, approval_id, { approve: { digest: approval } }));
 
       expect(await as(member, { kind: "move", args: { to: "fsn-3" } }, approval_id)).toMatchObject({ ok: false, refusal: { code: "approval_required" } });
-      expect(await review(approval_id)).toMatchObject({ operation: { preview: { to: { name: "fsn-2" } } } });
+      expect(await review(approval_id)).toMatchObject({ operation: { name: "data to fsn-2", preview: { to: { name: "fsn-2", machine: idOf("fsn-2") } } } });
       expect(await rows()).toEqual([]);
+    });
+
+    it("an approved Move to a Server by its id moves to no other Machine of that name", async () => {
+      machines = [...machines, { name: "fsn-3", pool: true, copy: null }];
+      const { approval, approval_id } = askedOf(await as(member, { kind: "move", args: { to: "fsn-3", machine: idOf("fsn-3") } }));
+      await runEffect(decideApproval(protector, approval_id, { approve: { digest: approval } }));
+
+      expect(await as(member, { kind: "move", args: { to: "fsn-3", machine: idOf("fsn-2") } }, approval_id)).toMatchObject({ ok: false });
+      expect(await rows()).toEqual([]);
+      expect(await review(approval_id)).toMatchObject({ operation: { preview: { to: { name: "fsn-3", machine: idOf("fsn-3") } } } });
     });
 
     it("a Restore names the Server it restores from", async () => {
@@ -3631,7 +3642,7 @@ describe("volume runs", () => {
 
       const { approval_id } = askedOf(await as(member, { kind: "restore", args: { from: "fsn-2" } }));
 
-      expect(await review(approval_id)).toMatchObject({ operation: { preview: { from: { name: "fsn-2" } } }, protected: { environment: "production" } });
+      expect(await review(approval_id)).toMatchObject({ operation: { name: "data from fsn-2", preview: { from: { name: "fsn-2", machine: idOf("fsn-2") } } }, protected: { environment: "production" } });
     });
 
     it("a member can't decide another member's Release", async () => {
@@ -3641,12 +3652,82 @@ describe("volume runs", () => {
       expect(await runEffect(decideApproval(peer, approval_id, { approve: { digest: approval } }))).toMatchObject({ ok: false });
     });
 
+    it("a member's Move asks even when its first step seals an older second primary, and its approval covers that Server only", async () => {
+      machines = [
+        { name: "fsn-1", pool: true, copy: writerCopy(base, 3) },
+        { name: "fsn-2", pool: true, copy: writerCopy(snap("20"), 5) },
+        { name: "fsn-3", pool: true, copy: null },
+        { name: "fsn-4", pool: true, copy: null },
+      ];
+      const { approval, approval_id } = askedOf(await as(member, { kind: "move", args: { to: "fsn-3" } }));
+      await runEffect(decideApproval(protector, approval_id, { approve: { digest: approval } }));
+
+      expect(await as(member, { kind: "move", args: { to: "fsn-4" } }, approval_id)).toMatchObject({ ok: false, refusal: { code: "approval_required" } });
+      expect(await rows()).toEqual([]);
+      expect(await as(member, { kind: "move", args: { to: "fsn-3" } }, approval_id)).toMatchObject({ ok: true });
+    });
+
     it("a member seals an older second primary unasked, as Ployz's own sync would", async () => {
       machines = [{ name: "fsn-1", pool: true, copy: writerCopy(base, 3) }, { name: "fsn-2", pool: true, copy: writerCopy(snap("20"), 5) }];
 
       expect(await as(member, { kind: "sync", args: { full: true } })).toMatchObject({ ok: true });
       await harness.pool.query("truncate table volume_run cascade");
       expect(await as(member, { kind: "mirror", args: { to: "fsn-2" } })).toMatchObject({ ok: true });
+    });
+
+    describe("a grow", () => {
+      const serves = [requirements.volumeFloor.capability, requirements.volumeSize.capability, requirements.volumeShrink.capability];
+      const grow = (gigabytes: number): VolumeRunInput => ({ kind: "resize", args: { maximum_bytes: gigabytes * GB } });
+
+      beforeEach(() => {
+        storeVolumes = [{ id: volumeId, name: "data", storage: { kind: "provisioned", maximumBytes: 10 * GB }, recorded_storage: 10 * GB }];
+        machines = [{ name: "fsn-1", pool: true, copy: writerCopy(), capabilities: serves, bound: 10 * GB }];
+      });
+
+      it.each(askers)("%s's grow asks someone who can protect it, for that size only", async (_, asker) => {
+        const admitted = await as(asker, grow(20));
+        const { approval, approval_id } = askedOf(admitted);
+
+        expect(admitted).toMatchObject({ refusal: { details: { protected: { environment: "production" } } } });
+        expect(await review(approval_id)).toMatchObject({ operation: { verb: "resize", name: "data from 10 GB to 20 GB", preview: { recorded_bytes: 10 * GB, maximum_bytes: 20 * GB } } });
+        expect(await rows()).toEqual([]);
+        await runEffect(decideApproval(protector, approval_id, { approve: { digest: approval } }));
+        expect(await as(asker, grow(30), approval_id)).toMatchObject({ ok: false, refusal: { code: "approval_required" } });
+        expect(await as(asker, grow(20), approval_id)).toMatchObject({ ok: true });
+        expect(await rows()).toMatchObject([{ kind: "resize" }]);
+      });
+
+      it("a member's grow from the dashboard runs as they asked once someone who can protect it approves", async () => {
+        await harness.pool.query("insert into member (user_id, organization_id, role) values ($1, $2, 'member')", [userId, organizationId]);
+        const { approval, approval_id } = askedOf(await as({ ...member, via: "dashboard" }, grow(20)));
+
+        expect(await runEffect(decideAndApply(protector, approval_id, { approve: { digest: approval } }))).toMatchObject({ ok: true });
+        const ran = await harness.pool.query<{ args: unknown; requested_by_user_id: string }>("select args, requested_by_user_id from volume_run");
+        expect(ran.rows).toEqual([{ args: { maximum_bytes: 20 * GB }, requested_by_user_id: userId }]);
+      });
+
+      it("an approved grow asks again once the Volume's size moved, so it never runs as a shrink", async () => {
+        const { approval, approval_id } = askedOf(await as(member, grow(20)));
+        storeVolumes = [{ id: volumeId, name: "data", storage: { kind: "provisioned", maximumBytes: 30 * GB }, recorded_storage: 30 * GB }];
+        await runEffect(decideApproval(protector, approval_id, { approve: { digest: approval } }));
+
+        expect(await as(member, grow(20), approval_id)).toMatchObject({ ok: false, refusal: { code: "approval_required" } });
+        expect(await rows()).toEqual([]);
+      });
+
+      it("a grow asks even when its first step seals an older second primary", async () => {
+        machines = [
+          { name: "fsn-1", pool: true, copy: writerCopy(base, 3), capabilities: serves, bound: 10 * GB },
+          { name: "fsn-2", pool: true, copy: writerCopy(snap("20"), 5), capabilities: serves, bound: 10 * GB },
+        ];
+
+        expect(await as(member, grow(20))).toMatchObject({ ok: false, refusal: { code: "approval_required" } });
+        expect(await rows()).toEqual([]);
+      });
+
+      it("someone who can protect it grows unasked", async () => {
+        expect(await as({ ...caller, via: "cli" }, grow(20))).toMatchObject({ ok: true });
+      });
     });
 
     it("someone who can protect it moves unasked, and a member still mirrors unasked", async () => {

@@ -1,4 +1,4 @@
-import type { Asks, ConfigCommand, DestructiveEffect, DestructiveKind, DiffView, JsonValue } from "@ployz/sdk";
+import type { Asks, ConfigCommand, DestructiveEffect, DestructiveKind, DiffView, EnvironmentRef, JsonValue } from "@ployz/sdk";
 import { Schema } from "effect";
 import type { Caller } from "#/modules/identity/actor";
 import { rollbackConfirm } from "#/modules/config-store/store-deployments";
@@ -7,13 +7,16 @@ export const APPROVAL_STATUSES = ["pending", "approved", "denied", "superseded"]
 export type ApprovalStatus = (typeof APPROVAL_STATUSES)[number];
 
 /** The operations `ployz` and agents run through Cloud that may wait for a human. Upgrade and a Service start never do. */
-export type OperationVerb = "drain" | "set" | "clean" | "remove" | "forget" | "release" | "remove_mirror" | "stop" | "restart" | "unprotect" | "move" | "restore";
+export type OperationVerb = "drain" | "set" | "clean" | "remove" | "forget" | "release" | "remove_mirror" | "stop" | "restart" | "unprotect" | "move" | "restore" | "resize";
 
 /** An operation as a human approves it: its verb, what it acts on by name, and the preview its digest covers. */
 export type OperationReview = { verb: OperationVerb; name: string; preview: JsonValue };
 
 /** A stop or restart the dashboard asked for, run as its asker once a protector approves it. */
 export type ServiceApply = { environmentId: string; service: string; verb: "stop" | "restart" };
+
+/** A Volume resize the dashboard asked for, run as its asker once a protector approves it. */
+export type VolumeApply = { volumeId: string; environment: EnvironmentRef; maximum_bytes: number };
 
 /**
  * An ask into the Protected Environment `environment` by someone who can't protect it: someone who can, other than its
@@ -30,7 +33,7 @@ export type Redeploy = { deployment: number; rolls_back: number[] };
  */
 export type ApprovalReview =
   | { effects: DestructiveEffect[]; diff: DiffView; protected?: Guarded; apply?: ConfigCommand; redeploy?: Redeploy }
-  | { effects: DestructiveEffect[]; operation: OperationReview; protected?: Guarded; apply?: ServiceApply };
+  | { effects: DestructiveEffect[]; operation: OperationReview; protected?: Guarded; apply?: ServiceApply | VolumeApply };
 
 const capitalized = (word: string) => `${word.charAt(0).toUpperCase()}${word.slice(1).replaceAll("_", " ")}`;
 
@@ -77,6 +80,7 @@ export function approvalBadge(command: string, review: ApprovalReview) {
   if (command === "cancel") return "Cancels deploy";
   if (command === "move") return "Moves volume";
   if (command === "restore") return "Restores volume";
+  if (command === "resize") return "Resizes volume";
   if (command === "release" && effects.length === 0) return "Releases volume";
   if (effects.length === 0) return "Deploys";
   if (effects.every((effect) => effect.kind === "deletes_volume")) {

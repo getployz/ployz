@@ -46,7 +46,7 @@ import {
   alreadyOn, newestGuid, type PlanInput, type Planned, planForwardRelease, planFromCopies, type Refusal, type RefusalCode, type ReleaseFrom, restoreSource,
   roleOf, writerRemovedMessage,
 } from "#/modules/volume-run/plan";
-import { deployingMessage, resizeRequirements, sizeDirection } from "#/modules/volume-run/resize";
+import { deployingMessage, gb, resizeRequirements, sizeDirection } from "#/modules/volume-run/resize";
 import { isBehind, isCurrent, releaseLine } from "#/modules/server-upgrade/server-upgrade";
 import { channelRelease, organizationReleaseChannel } from "#/modules/server-upgrade/server-upgrade.server";
 import { volumeRun } from "#/modules/volume-run/tables";
@@ -474,38 +474,61 @@ const VERBS = {
 } satisfies Record<VolumeRunKind, OperationVerb | null>;
 
 /**
- * The verb a run asks under in a Protected Environment, for one by someone who can't protect it that interrupts or takes
- * off what runs there: a move stops its Service for the last copy, a restore drops writes.
+ * The verb a run asks under in a Protected Environment, for one by someone who can't protect it that interrupts, takes
+ * off or resizes what runs there: a move stops its Service for the last copy, a restore drops writes, and a resize changes
+ * live storage, where a grow can't shrink back. It asks whatever step the run plans first, since the worker plans again:
+ * a run admitted to seal an older second primary may move or resize once that copy is gone. A mirror, a sync and a seed
+ * leave what runs alone.
  */
 const PROTECTED_VERBS = {
   ...VERBS,
   move: "move",
   restore: "restore",
+  resize: "resize",
 } satisfies Record<VolumeRunKind, OperationVerb | null>;
 
 /**
- * The phases that interrupt or take off what runs. A mirror, a sync, a seed and a resize leave it running. A demote seals
- * an older second primary, which Ployz's own sync does unasked too.
+ * What a guarded run was asked to do, as its approval binds it: the Server it moves to or restores from, or the sizes it
+ * resizes from and to. It comes from the request, not the step admission plans first, so an approval holds whichever
+ * step the worker reaches and covers no other Server or size.
  */
-const INTERRUPTS: ReadonlySet<string> = new Set(["move", "landed", "restore", "release", "delete_mirror"]);
-
-/** The Server a guarded phase moves to or restores from, so its approval covers no other. */
-function phaseServer(phase: PlannedPhase): JsonObject {
-  const named = (member: AnsweredMember) => ({ machine: member.machine.id, name: member.machine.name });
-  switch (phase.kind) {
+function requestPreview(volume: ResolvedVolume, input: VolumeRunInput, members: readonly Member[]): JsonObject {
+  // A Server by its name and the Machine that name resolves to now, or the one the request named by id.
+  const server = (name: string, machine: string | undefined) =>
+    ({ name, machine: machine ?? members.find((member) => member.machine.name === name)?.machine.id ?? null });
+  switch (input.kind) {
     case "move":
-    case "landed":
-      return { to: named(phase.target) };
+      return { to: server(input.args.to, input.args.machine) };
     case "restore":
-      return { from: named(phase.from) };
-    case "delete_mirror":
-    case "release":
+      return { from: server(input.args.from, input.args.machine) };
+    case "resize":
+      return { recorded_bytes: volume.recordedBytes, maximum_bytes: input.args.maximum_bytes };
     case "mirror":
     case "sync":
-    case "demote":
+    case "delete_mirror":
+    case "release":
     case "seed":
-    case "resize":
       return {};
+  }
+}
+
+/** What a guarded run acts on as its approval names it: "pg-data to fsn-2", "pg-data from 10 GB to 20 GB". */
+function requestName(volume: ResolvedVolume, input: VolumeRunInput): string {
+  switch (input.kind) {
+    case "move":
+      return `${volume.volumeName} to ${input.args.to}`;
+    case "restore":
+      return `${volume.volumeName} from ${input.args.from}`;
+    case "resize":
+      return volume.recordedBytes === 0
+        ? `${volume.volumeName} to ${gb(input.args.maximum_bytes)}`
+        : `${volume.volumeName} from ${gb(volume.recordedBytes)} to ${gb(input.args.maximum_bytes)}`;
+    case "mirror":
+    case "sync":
+    case "delete_mirror":
+    case "release":
+    case "seed":
+      return volume.volumeName;
   }
 }
 
@@ -625,13 +648,13 @@ export const planOnCluster = Effect.fn("VolumeRun.planOnCluster")(function* (
   const askedAs = (verb: OperationVerb): OperationAsked => ({
     subject: `volume:${input.volumeId}`,
     verb,
-    name: volume.volumeName,
-    preview: { volume: input.volumeId, copies: effects.map((effect) => effect.node), ...phaseServer(phase) },
+    name: requestName(volume, input),
+    preview: { volume: input.volumeId, copies: effects.map((effect) => effect.node), ...requestPreview(volume, input, members.value) },
     effects,
   });
   const asked = verb === null ? null : askedAs(verb);
   const guarding = PROTECTED_VERBS[input.kind];
-  const guard = asked ?? (guarding !== null && INTERRUPTS.has(phase.kind) ? askedAs(guarding) : null);
+  const guard = asked ?? (guarding === null ? null : askedAs(guarding));
   const ids = (members: readonly AnsweredMember[]) => members.map((member) => member.machine.id);
   const pinned = input.kind === "release" ? { ...input, args: { plan: { sources: ids(release.sources), forgets: ids(release.forgets) } } } : resolved;
   return { ok: true, volume, asked, guard, input: pinned } satisfies ClusterPlan;
