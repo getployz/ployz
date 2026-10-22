@@ -454,3 +454,54 @@ Ployz colors its output in a terminal. With `CI` set or `TERM=dumb`, it prints p
 one. Set `NO_COLOR=1` or pass `--color never` to turn color off, or `--color always` to keep it
 when you pipe the output. A piped list stays plain tab-separated text either way. Put `--color` before `--`, and before the command `ployz exec` runs;
 after either, it belongs to that command.
+
+## Follow and inspect deployments
+
+`ployz deployment ls` lists the environment's deployments, newest first, with each one's status
+and saved revision. `ployz deploy` keeps following a queued deployment. If it is still queued after
+30 seconds, the CLI names the deployment it waits for, like
+`Deployment #2 waits for Deployment #1 to finish.`, with the `ployz deployment show` command for
+that one. If nothing is ahead of it, the CLI says no server has started it yet and points at
+`ployz server ls`.
+
+To inspect per-server progress, run:
+
+```sh
+ployz --json deployment show 37
+```
+
+Each service's `nodes[].rows[]` records the servers where work ran, its state, and its start
+and finish times. Each row identifies its server with `machine_id`. The `server` field is a
+display name and can repeat across servers. Volume rows use the same server IDs to group
+the work of services that mount them. A running row also names its phase. Failed rows retain
+the cause chain and up to ten final container log lines when available, with sealed variables
+and secret-shaped values such as `password=…` replaced. Other values, such as `NODE_ENV` from
+the image, show as the container printed them. These outcomes stay with that deployment
+when you deploy again. Unchanged services have no rows because no server work ran.
+
+Work your cancel stopped reads `cancelled`. In `--json`, its row keeps `"state": "failed"` with
+`"cancelled": true`, and so does its service: `"outcome": "failed"` with `"cancelled": true`. Work
+Ployz stopped because the deployment lost its runner reads `interrupted`, and its row keeps
+`"state": "failed"` with `"interrupted": true`. Older Ployz versions ignore both markers and read
+the work as failed. If the runner stops reporting, unfinished rows read `unknown`. Completed and
+failed rows keep their recorded outcomes.
+
+`ployz deployment redeploy`, `start` and `cancel` do what the buttons on a deployment's page do.
+Before a rollback, `ployz deployment redeploy 4` asks in a terminal; outside one, or with `--json`,
+it needs `--yes`. A rollback that deletes volume data also needs `--accept-volume-loss <volume>`
+and the `--expect-version` it prints.
+
+`ployz history` lists the environment's saved versions with when and by whom each was saved, the
+settings it changed and its message; the live one says `(live)`.
+`ployz history restore 2 --preview` reviews a rollback without writing. `ployz history undo 2` stages an Undo. One that
+would overwrite draft changes refuses, names those fields and gives the same command with
+`--accept-overwrite`; run it only after reviewing them. Both list each variable that came back Not
+set, and `--json` carries them as `not_set`. The agent's `history` tool does the same by revision
+number; one that would overwrite draft changes refuses and names them first.
+
+When a deploy would delete a volume's data, `ployz deploy` and `ployz deploy --skip-deploy` stop
+and print the command to run instead. It names each volume that loses data, like
+`ployz deploy --skip-deploy --accept-volume-loss postgres-data --expect-version …`. Run it only if
+you mean it. If Ployz can't check your servers for that data and you passed `--connect`, the
+refusal names the address you gave when Ployz doesn't know which server that is. With `--json`,
+the error's `cause` lists it.

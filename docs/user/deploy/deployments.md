@@ -126,14 +126,6 @@ A variable that was ever sealed can't come back as plain text. A version that on
 values has nothing to undo, so its Undo is disabled and says **Sealed. Nothing to undo.** History does not recover deleted Volume data or undo private-image credential rotations.
 An accepted deployment and its redeploys keep their original snapshot while you edit the draft.
 
-From the CLI, `ployz history` lists versions with when and by whom each was saved, the settings
-it changed and its message; the live one says `(live)`. `ployz history restore 2 --preview`
-reviews a rollback without writing. `ployz history undo 2` stages an Undo. One that would overwrite
-draft changes refuses, names those fields and gives the same command with `--accept-overwrite`;
-run it only after reviewing them. Both list each variable that came back Not set, and
-`--json` carries them as `not_set`. The agent's `history` tool does the same by revision
-number; one that would overwrite draft changes refuses and names them first.
-
 ## When another deployment is running
 
 An environment runs one deployment at a time. While one runs, **Deploy** reads **Deploy next**
@@ -142,11 +134,6 @@ place.
 
 A deploy started outside that queue can still reach a service after a newer deploy did. It fails for that service and leaves the newer version serving.
 See [A newer deploy is already serving](../troubleshooting/deployments.md#a-newer-deploy-is-already-serving).
-
-From the CLI, `ployz deploy` keeps following a queued deployment. If it is still queued after 30
-seconds, the CLI names the deployment it waits for, like `Deployment #2 waits for Deployment #1 to
-finish.`, with the `ployz deployment show` command for that one. If nothing is ahead of it, the CLI
-says no Server has started it yet and points at `ployz server ls`.
 
 On the canvas, **Deploying** shows only on the services the running deployment restarts. A service
 it leaves running keeps its staged changes on its card.
@@ -197,36 +184,17 @@ A replica left running keeps serving alongside the new ones once its server is b
 to stop it. CLI deployments clean up while they run, report a replica left running at the end, and
 show no **Cleanup** card.
 
-From the CLI, `ployz deployment ls` lists the environment's deployments, newest first, with
-each one's status and saved revision. To inspect per-server progress, run:
+Work your cancel stopped reads **Cancelled**. Work that failed on its own reads Failed, even in a
+cancelled deployment. So does work Ployz stopped for another reason, such as another service
+failing. A service reads **Cancelled** when your cancel stopped its work, even if another service
+failed.
 
-```sh
-ployz --json deployment show 37
-```
+Work Ployz stopped because the deployment lost its runner reads **Interrupted**. That happens when
+another deployment takes the environment over, or when the runner stops reporting in time. The
+deployment then reads **Unknown**.
 
-Each service's `nodes[].rows[]` records the servers where work ran, its state, and its start
-and finish times. Each row identifies its server with `machine_id`. The `server` field is a
-display name and can repeat across servers. Volume rows use the same Machine IDs to group
-the work of services that mount them. A running row also names its phase. Failed rows retain
-the cause chain and up to ten final container log lines when available, with sealed variables
-and secret-shaped values such as `password=…` replaced. Other values, such as `NODE_ENV` from
-the image, show as the container printed them. These outcomes stay with that deployment
-when you deploy again. Unchanged services have no rows because no server work ran.
-
-Work your cancel stopped reads **Cancelled** in the dashboard and `cancelled` in the CLI. In
-`--json`, its row keeps `"state": "failed"` with `"cancelled": true`, and so does its service:
-`"outcome": "failed"` with `"cancelled": true`. Older Ployz versions ignore the marker and read
-it Failed. Work that failed on its own reads Failed, even in a cancelled deployment. So does work
-Ployz stopped for another reason, such as another service failing. A service reads **Cancelled**
-when your cancel stopped its work, even if another service failed.
-
-Work Ployz stopped because the deployment lost its runner reads **Interrupted** in the dashboard
-and `interrupted` in the CLI. That happens when another deployment takes the environment over, or
-when the runner stops reporting in time. The deployment then reads **Unknown**. In `--json`, the
-row keeps `"state": "failed"` with `"interrupted": true`, and older Ployz versions read it Failed.
-
-If the runner stops reporting, unfinished rows read `unknown`. Completed and failed rows keep
-their recorded outcomes.
+To follow and inspect deployments from the CLI, see
+[Follow and inspect deployments](../cli/overview.md#follow-and-inspect-deployments).
 
 ## Redeploy or cancel a deployment
 
@@ -259,11 +227,7 @@ their recorded outcomes.
   Cancel deployment…** takes it out of the queue. With no server in your organization, it refuses
   and says to add one, as a deploy does.
 
-The CLI does the same with `ployz deployment redeploy`, `start` and `cancel`. Before a rollback,
-`ployz deployment redeploy 4` asks in a terminal; outside one, or with `--json`, it needs `--yes`.
-A rollback that deletes volume data also needs `--accept-volume-loss <volume>` and the
-`--expect-version` it prints.
-[The agent](../account/agent-sidebar.md) can too, and its redeploys wait for you to approve.
+[The agent](../account/agent-sidebar.md) can do the same, and its redeploys wait for you to approve.
 
 ## Deploy without downtime
 
@@ -383,13 +347,8 @@ another server starts holding that data, or someone stages a different copy chan
 A Git push can't ask, so it keeps the data instead, and so does a push when Ployz can't reach your
 servers to check. Your next deploy then asks.
 
-From the CLI, `ployz deploy` and `ployz deploy --skip-deploy` stop and print the command to run
-instead. It names each volume that loses data, like
-`ployz deploy --skip-deploy --accept-volume-loss postgres-data --expect-version …`. Run it only if
-you mean it.
-
 If Ployz can't check your servers for that data, the deploy refuses and deletes nothing. It names
 the server it couldn't reach, or the server that answered with an error, and shows that error on the
-`cause:` line. When you passed `--connect` and Ployz doesn't know which server that is, it names the
-address you gave instead. With `--json`, the error's `cause` lists it. Try again once that server is back or
-the error is fixed.
+`cause:` line. Try again once that server is back or the error is fixed. For the commands that
+accept the loss from the CLI, see
+[Follow and inspect deployments](../cli/overview.md#follow-and-inspect-deployments).
