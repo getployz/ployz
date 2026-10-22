@@ -350,6 +350,9 @@ impl Daemon {
         let roster = replicated_store
             .clone()
             .map(|store| Arc::new(store) as Arc<dyn management::Roster>);
+        let fence_endpoint = management_endpoint.clone();
+        let fence_relay = config.management.relay_url.clone();
+        let fence_admin = corrosion.as_ref().map(RunningCorrosion::admin_client);
         let socket_path = config.socket.clone();
         let ingress_admin = corrosion.as_ref().map(RunningCorrosion::admin_client);
         let boot_admin = corrosion.as_ref().map(RunningCorrosion::admin_client);
@@ -485,6 +488,31 @@ impl Daemon {
                 }
                 Ok(())
             };
+            let forgotten_fence = async {
+                if !wait_for_participation(records.clone(), shutdown.clone()).await? {
+                    return Ok(());
+                }
+                let (Some(runtime), Some(replicated), Some(machines), Some(admin)) = (
+                    containers.clone(),
+                    replicated_store.clone(),
+                    machine_view.clone(),
+                    fence_admin,
+                ) else {
+                    return Ok(());
+                };
+                let host = crate::forgotten_fence::DaemonHost {
+                    machine_id: local_id,
+                    machine: crate::machine::LocalMachine::new(local.clone())
+                        .with_containers(Some(runtime))
+                        .with_plugin(plugin.clone())
+                        .with_cluster(Some((replicated, admin))),
+                    machines,
+                    endpoint: fence_endpoint,
+                    relay: fence_relay,
+                };
+                crate::forgotten_fence::run(host, shutdown.clone()).await;
+                Ok(())
+            };
             tokio::try_join!(
                 async { rpc.await.map_err(io::Error::other) },
                 publisher,
@@ -495,6 +523,7 @@ impl Daemon {
                 ingress,
                 certificates,
                 boot_pass,
+                forgotten_fence,
             )
             .map(|_| ())
         });
