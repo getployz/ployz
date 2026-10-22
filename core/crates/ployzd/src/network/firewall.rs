@@ -81,13 +81,12 @@ pub fn apply_firewall_rules(
 }
 
 /// Docker's NAT66 would rewrite a container's IPv6 into the mesh to this Machine's
-/// management address, which every peer trusts. Replies to a connection DNAT'd into
-/// a container pass. Container IPv4 into the mesh keeps its own source and reaches
-/// only containers, so it stays open.
+/// management address, which every peer trusts. Nothing in the mesh dials a
+/// container over IPv6, so even replies drop: a container can forge the state of a
+/// DNAT'd connection through hairpin NAT. Container IPv4 into the mesh keeps its own
+/// source and reaches only containers, so it stays open.
 fn container_mesh_fence() -> String {
-    format!(
-        "-i {DOCKER_NETWORK_NAME} -o {WIREGUARD_INTERFACE_NAME} -m conntrack ! --ctstate DNAT -j DROP"
-    )
+    format!("-i {DOCKER_NETWORK_NAME} -o {WIREGUARD_INTERFACE_NAME} -j DROP")
 }
 
 fn container_mesh_fence_document() -> Result<String, NetworkError> {
@@ -665,10 +664,7 @@ mod tests {
 
     #[test]
     fn containers_never_reach_the_mesh_over_ipv6() {
-        assert_eq!(
-            container_mesh_fence(),
-            "-i ployz -o ployz-wg -m conntrack ! --ctstate DNAT -j DROP"
-        );
+        assert_eq!(container_mesh_fence(), "-i ployz -o ployz-wg -j DROP");
     }
 
     #[test]
