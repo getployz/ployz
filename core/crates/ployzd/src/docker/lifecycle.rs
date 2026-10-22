@@ -327,10 +327,14 @@ impl ContainerRuntime {
         key: &str,
     ) -> Result<Option<ContainerCreated>, Error> {
         let name = creation_name(&machine.id, namespace, &spec.name, kind, key);
+        // Wait for an in-flight create to persist its spec, as a create does before comparing.
+        let _operation = self.specs.config_operation().await;
         self.matching_creation(machine, namespace, kind, spec, &name, key)
             .await
     }
 
+    /// The Container an earlier create under `key` made. Every caller holds the spec
+    /// store's config lock, so no create is between Docker's create and its spec's write.
     async fn matching_creation(
         &self,
         machine: &Machine,
@@ -340,8 +344,16 @@ impl ContainerRuntime {
         name: &str,
         key: &str,
     ) -> Result<Option<ContainerCreated>, Error> {
-        let Some(existing) = self.keyed_container(&machine.id, name, key).await? else {
-            return Ok(None);
+        let existing = match self.keyed_container(&machine.id, name, key).await {
+            Ok(Some(existing)) => existing,
+            Ok(None) => return Ok(None),
+            // A daemon killed between Docker's create and the spec's write left it. Only a
+            // Container never started is made again: a start needs the spec.
+            Err(Error::SpecNotFound(container_id)) if self.never_started(&container_id).await? => {
+                self.force_remove_container(&container_id).await?;
+                return Ok(None);
+            }
+            Err(error) => return Err(error),
         };
         if !same_creation(&existing, namespace, kind, spec) {
             return Err(Error::SlotNameOccupied(name.into()));
@@ -350,6 +362,17 @@ impl ContainerRuntime {
             container_id: existing.container_id,
             display_name: existing.into_parts().display_name,
         }))
+    }
+
+    async fn never_started(&self, container_id: &ContainerId) -> Result<bool, Error> {
+        let inspected = self
+            .docker
+            .client
+            .inspect_container(container_id.as_str(), None)
+            .await
+            .map_err(|error| docker_error(container_id, error))?;
+        Ok(inspected.state.and_then(|state| state.status)
+            == Some(ContainerStateStatusEnum::CREATED))
     }
 
     pub(crate) async fn inspect_slot(
