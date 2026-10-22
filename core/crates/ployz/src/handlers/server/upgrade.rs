@@ -539,6 +539,15 @@ async fn run_all(
     (Some(result), outcome)
 }
 
+/// Ask before an exact `release` moves any of `machines` to an older version than it runs.
+fn confirm_downgrades(
+    _machines: &[Machine],
+    _release: &MachineRelease,
+    _allowed: bool,
+) -> Result<(), Error> {
+    Ok(())
+}
+
 async fn selected_machines(
     client: &mut Client,
     selectors: &[String],
@@ -1378,6 +1387,46 @@ mod tests {
             captured.pointer("/follow_up_error/message").unwrap(),
             "Could not reach Cloud."
         );
+    }
+
+    fn running(id: char, version: &str) -> Machine {
+        let mut machine = machine(id, 1);
+        machine.runtime.daemon_version = version.into();
+        machine
+    }
+
+    #[test]
+    fn an_older_target_needs_allow_downgrade_without_a_terminal() {
+        // #2991: `server upgrade 0.3.0-beta.6` moved a beta.7 Server back with no prompt.
+        let older = MachineRelease::parse("0.3.0").unwrap();
+        let servers = [running('a', "0.3.0"), running('b', "0.3.1")];
+        let refused = confirm_downgrades(&servers, &older, false)
+            .unwrap_err()
+            .report();
+        assert_eq!(refused.code, RpcErrorCode::ConfirmationRequired);
+        assert!(
+            refused.message.contains("downgrade")
+                && refused.message.contains("Server b")
+                && !refused.message.contains("Server a")
+                && refused.message.contains("--allow-downgrade"),
+            "{}",
+            refused.message
+        );
+        assert!(confirm_downgrades(&servers, &older, true).is_ok());
+    }
+
+    #[test]
+    fn a_same_or_newer_target_never_asks() {
+        for target in ["0.3.1", "0.3.2", "stable", "beta"] {
+            let release = MachineRelease::parse(target).unwrap();
+            assert!(
+                confirm_downgrades(&[running('a', "0.3.1")], &release, false).is_ok(),
+                "{target}"
+            );
+        }
+        // A version Ployz never published can't be compared, so the daemon decides.
+        let older = MachineRelease::parse("0.3.0").unwrap();
+        assert!(confirm_downgrades(&[running('a', "dev")], &older, false).is_ok());
     }
 
     fn machine(id: char, subnet: u8) -> Machine {
