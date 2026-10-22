@@ -87,7 +87,7 @@ impl<'snapshot> VolumePlan<'snapshot> {
                 .collect(),
             assignments: BTreeMap::new(),
         };
-        plan.validate_provisioned_volume_definitions(target)?;
+        plan.validate_provisioned_volume_definitions(target, requested)?;
         Ok(plan)
     }
 
@@ -384,6 +384,7 @@ impl VolumePlan<'_> {
     fn validate_provisioned_volume_definitions(
         &self,
         target: &[RequestedServiceSpec],
+        requested: &[RequestedServiceSpec],
     ) -> Result<(), PlanError> {
         let snapshot = self.snapshot;
         let mut definitions = BTreeMap::new();
@@ -409,7 +410,10 @@ impl VolumePlan<'_> {
                     return Ok(());
                 }
                 self.validate_provisioned_volumes(spec, &machines, snapshot)?;
-                volume_constraints(spec, snapshot, self, &mut machines)?;
+                // Locality of a Service this Deploy leaves alone must not hold it.
+                if requested.iter().any(|applied| applied.name == spec.name) {
+                    volume_constraints(spec, snapshot, self, &mut machines)?;
+                }
                 Ok(())
             })();
             result.map_err(|source| {

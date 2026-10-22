@@ -630,7 +630,9 @@ fn failure(view: &DeploymentView, command: impl Fn(&[&str]) -> String) -> Failur
     if same_again || bad_image {
         return failure;
     }
-    failure.hint(Hint::Retry(command(&[&["deploy"][..], &scope].concat())))
+    let services = view.deployment.services.iter().map(ServiceName::as_str);
+    let words = ["deploy"].into_iter().chain(services).chain(scope);
+    failure.hint(Hint::Retry(command(&words.collect::<Vec<_>>())))
 }
 
 #[cfg(test)]
