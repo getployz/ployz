@@ -366,15 +366,37 @@ impl ContainerRuntime {
         }))
     }
 
+    /// Removes a Container a daemon killed between Docker's create and the spec's write
+    /// left, so nothing stays bound to its Volumes. Creates hold the config lock across
+    /// both, so under it a missing spec is never one still being written.
+    pub(super) async fn discard_half_made(
+        &self,
+        container_id: &ContainerId,
+    ) -> Result<bool, Error> {
+        let _operation = self.specs.config_operation().await;
+        if self.specs.get(container_id).await?.is_some()
+            || !self.never_started(container_id).await?
+        {
+            return Ok(false);
+        }
+        self.force_remove_container(container_id).await?;
+        Ok(true)
+    }
+
+    /// Whether Docker never ran the Container. One already gone ran nothing either.
     async fn never_started(&self, container_id: &ContainerId) -> Result<bool, Error> {
-        let inspected = self
+        match self
             .docker
             .client
             .inspect_container(container_id.as_str(), None)
             .await
-            .map_err(|error| docker_error(container_id, error))?;
-        Ok(inspected.state.and_then(|state| state.status)
-            == Some(ContainerStateStatusEnum::CREATED))
+            .map_err(|error| docker_error(container_id, error))
+        {
+            Ok(inspected) => Ok(inspected.state.and_then(|state| state.status)
+                == Some(ContainerStateStatusEnum::CREATED)),
+            Err(Error::ContainerNotFound(_)) => Ok(true),
+            Err(error) => Err(error),
+        }
     }
 
     pub(crate) async fn inspect_slot(

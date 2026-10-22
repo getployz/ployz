@@ -512,6 +512,11 @@ impl ContainerRuntime {
         while let Some((container_id, result)) = inspected.next().await {
             match result {
                 Ok(observation) => observations.push(observation),
+                Err(Error::SpecNotFound(_)) if self.discard_half_made(&container_id).await? => {
+                    eprintln!(
+                        "removed container {container_id}, which a crash left without its spec before it started"
+                    );
+                }
                 Err(error) if malformed_container(&error) => {
                     eprintln!(
                         "ignoring malformed managed container {container_id}: {error}",
