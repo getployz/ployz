@@ -835,6 +835,10 @@ export const completeMachineEnrollment = Effect.fn(
     // Shared negotiation verifies machine_id before this transaction can make it ready. Bounded so the Server hears why.
     yield* Effect.scoped(Effect.gen(function* () {
       const opened = yield* (yield* OrganizationRuntime).open(token.organizationId, { only: machineId });
+      if (opened.status === "unreachable" && opened.error !== null && unlessAnswered(opened.error) === opened.error) {
+        // Still retryable, as every failed completion is, but a Server that answered isn't blamed on the relay.
+        return yield* new Unavailable({ message: "This Server refused Cloud's connection.", userFacing: true, cause: opened.error });
+      }
       if (opened.status !== "connected") return yield* cantReachServer(opened);
     })).pipe(
       Effect.catchIf((error) => error instanceof ClusterOutOfTime, (error) => Effect.fail(cantReachServer(error))),

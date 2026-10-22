@@ -800,15 +800,15 @@ describe("organization enrollment coordinator", () => {
     expect(statusForPublicError(encodePublicError(completed.failure))).toBe(503);
   }, 45_000);
 
-  it("keeps a Server's refusal of completion, so the Server doesn't retry it as unreachable", async () => {
+  it("names a Server's refusal of completion instead of blaming the relay", async () => {
     const fake = fakeSession(harness.database);
     const attempt = await pendingFounder(fake);
     await fake.coordinator.publish({ ...attempt, capability });
     fake.connection.error = refused();
     const completed = await fake.coordinator.completeFounding(attempt);
     if (!Result.isFailure(completed)) throw new Error("Completion succeeded past the Server's refusal");
-    expect(completed.failure).toMatchObject({ _tag: "PloyzProviderError" });
-    expect(statusForPublicError(encodePublicError(completed.failure))).not.toBe(503);
+    expect(completed.failure).toMatchObject({ _tag: "Unavailable", message: "This Server refused Cloud's connection." });
+    expect(statusForPublicError(encodePublicError(completed.failure))).toBe(503);
   });
 
   const keyed = (key: number, secret = 0xee) => `ployz1:${Buffer.concat([Buffer.alloc(32, key), Buffer.alloc(32, secret)]).toString("base64url")}`;
