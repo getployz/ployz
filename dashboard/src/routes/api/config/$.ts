@@ -1,4 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
+import { fromClient } from "#/routes/api/cli/-handlers";
 import { handleConfigRequest } from "#/routes/api/config/-config.handler";
 import { publicErrorResponse, methodNotAllowed } from "#/server/public-error";
 import { runAppEffect } from "#/server/run.server";
@@ -8,7 +9,7 @@ export const Route = createFileRoute("/api/config/$")({
   server: {
     handlers: {
       POST: async ({ request }) =>
-        runAppEffect(handleConfigRequest(request), { signal: request.signal }).catch(publicErrorResponse),
+        runAppEffect(fromClient(request, handleConfigRequest(request)), { signal: request.signal }).catch(publicErrorResponse),
       ANY: (): Response => methodNotAllowed(Route),
     },
   },

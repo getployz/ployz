@@ -29,8 +29,10 @@ export class Validation extends Data.TaggedError("Validation")<{
   readonly publicErrorCategory = "validation" as const;
 }
 
+/** `retryAfterSeconds`, when set, goes out as the reply's `Retry-After`. */
 export class RateLimited extends Data.TaggedError("RateLimited")<{
   readonly message: string;
+  readonly retryAfterSeconds?: number;
 } & UserFacing> {
   readonly publicErrorCategory = "rate-limited" as const;
 }
@@ -278,9 +280,13 @@ export function publicErrorResponse(
   },
 ) {
   const error = encodePublicBoundaryError(cause, { report: init?.report });
+  const headers = new Headers(init?.headers);
+  if (cause instanceof RateLimited && cause.retryAfterSeconds !== undefined && !headers.has("retry-after")) {
+    headers.set("retry-after", String(cause.retryAfterSeconds));
+  }
   return Response.json(error, {
     status: init?.status ?? statusForPublicError(error),
-    headers: init?.headers,
+    headers,
   });
 }
 
