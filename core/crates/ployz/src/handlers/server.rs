@@ -1225,6 +1225,7 @@ mod tests {
             "224.0.0.1",
             "ff02::1",
             "255.255.255.255",
+            "::ffff:127.0.0.1",
         ] {
             let refused = set(unreachable).unwrap_err();
             assert_eq!(

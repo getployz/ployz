@@ -38,7 +38,7 @@ pub(super) fn public_ip(value: &str) -> Result<IpAddr, Error> {
     let ip = value
         .parse::<IpAddr>()
         .map_err(|_| Error::usage(format!("invalid public IP {value:?}")))?;
-    let unreachable = match ip {
+    let unreachable = match ip.to_canonical() {
         ip if ip.is_unspecified() => Some("an unspecified"),
         ip if ip.is_loopback() => Some("a loopback"),
         ip if ip.is_multicast() => Some("a multicast"),
@@ -52,7 +52,7 @@ pub(super) fn public_ip(value: &str) -> Result<IpAddr, Error> {
             "{ip} is {kind} address, which no visitor can reach. Give the address the internet reaches this Server at, or none."
         )));
     }
-    let private = match ip {
+    let private = match ip.to_canonical() {
         IpAddr::V4(v4) => v4.is_private(),
         IpAddr::V6(v6) => v6.is_unique_local(),
     };
