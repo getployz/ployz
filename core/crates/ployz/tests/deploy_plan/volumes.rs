@@ -946,6 +946,38 @@ fn a_volume_no_deploy_applied_yet_is_created() {
 }
 
 #[test]
+fn a_deployed_volume_no_member_holds_leaves_a_deploy_of_another_service_alone() {
+    let mut db = requested(ServiceMode::Replicated {
+        replicas: NonZeroU32::new(1).unwrap(),
+    });
+    db.name = ServiceName::parse("db").unwrap();
+    add_named_volume(&mut db, "data");
+    make_provisioned(&mut db, "data", 1_073_741_824);
+    let web = requested(ServiceMode::Replicated {
+        replicas: NonZeroU32::new(1).unwrap(),
+    });
+    let intent = DeployIntent::apply_all(
+        Namespace::parse("app").unwrap(),
+        [&web, &db],
+        PlanOptions {
+            selected: vec![ServiceAttempt {
+                name: web.name.clone(),
+            }],
+            ..PlanOptions::default()
+        },
+    )
+    .with_deployed_volumes([app_volume("data")].into());
+
+    let preview = preview_deploy(&intent, &copies_snapshot(&[], vec![])).unwrap();
+
+    assert!(
+        operations(&preview)
+            .iter()
+            .all(|operation| operation.service_name() != Some(&db.name))
+    );
+}
+
+#[test]
 fn unselected_provisioned_service_leaves_stateless_machine_unchanged() {
     let applied = requested(ServiceMode::Replicated {
         replicas: NonZeroU32::new(1).unwrap(),

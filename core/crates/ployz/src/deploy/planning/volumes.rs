@@ -30,7 +30,9 @@ pub(super) struct VolumePlan<'snapshot> {
     snapshot: &'snapshot DeploySnapshot,
     namespace: Namespace,
     volume_names: &'snapshot BTreeMap<DockerVolumeName, String>,
-    deployed_volumes: &'snapshot BTreeSet<DockerVolumeName>,
+    /// Deployed Volumes the applied Services mount. A lost one an unselected Service
+    /// mounts leaves this Deploy alone.
+    deployed_volumes: BTreeSet<DockerVolumeName>,
     assignments: BTreeMap<MachineId, BTreeMap<ServiceName, ServiceStorageSpec>>,
 }
 
@@ -70,7 +72,7 @@ impl<'snapshot> VolumePlan<'snapshot> {
         snapshot: &'snapshot DeploySnapshot,
         namespace: &Namespace,
         volume_names: &'snapshot BTreeMap<DockerVolumeName, String>,
-        deployed_volumes: &'snapshot BTreeSet<DockerVolumeName>,
+        deployed_volumes: &BTreeSet<DockerVolumeName>,
         target: &[RequestedServiceSpec],
         requested: &[RequestedServiceSpec],
     ) -> Result<Self, PlanError> {
@@ -79,7 +81,10 @@ impl<'snapshot> VolumePlan<'snapshot> {
             snapshot,
             namespace: namespace.clone(),
             volume_names,
-            deployed_volumes,
+            deployed_volumes: managed_volume_uses(requested)
+                .into_keys()
+                .filter(|name| deployed_volumes.contains(name))
+                .collect(),
             assignments: BTreeMap::new(),
         };
         plan.validate_provisioned_volume_definitions(target)?;
