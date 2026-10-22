@@ -74,7 +74,11 @@ pub(in crate::handlers) fn requested_name(
     MachineName::parse(requested.as_str())
         .map(Some)
         .map_err(|error| match MachineName::from_hostname(requested) {
-            Some(suggested) => Error::usage(format!("{error}. Try --name {suggested}")),
+            Some(suggested) => Error::caused(
+                RpcErrorCode::InvalidArgument,
+                format!("{requested:?} is not a Server name. Try --name {suggested}."),
+                error,
+            ),
             None => error.into(),
         })
 }
@@ -321,10 +325,8 @@ mod tests {
                 .get_matches_from(["add", "--name", name])
         };
         assert_eq!(
-            requested_name(&matches("HP-WIN11"))
-                .unwrap_err()
-                .to_string(),
-            "invalid Machine Name \"HP-WIN11\": a 1-63 character lowercase DNS label. Try --name hp-win11"
+            crate::ui::chain_text(&requested_name(&matches("HP-WIN11")).unwrap_err()),
+            "\"HP-WIN11\" is not a Server name. Try --name hp-win11: invalid Machine Name \"HP-WIN11\": a 1-63 character lowercase DNS label"
         );
         assert_eq!(
             requested_name(&matches("___")).unwrap_err().to_string(),
