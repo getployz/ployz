@@ -274,7 +274,10 @@ grep -Fq 'Run it as root: curl -fsSL https://ployz.sh | sudo sh -s -- 1.2.3 --en
 [ ! -e "$TMP/install/ployz" ]
 [ ! -e "$FLEET_TOKEN_FILE" ]
 
-for value in "${TOKEN%?}" "${TOKEN}0" "${TOKEN%?}!" cet_abc123 PFLT_abc123; do
+for case in "${TOKEN%?}:this one is 47 characters" "${TOKEN}0:this one is 49 characters" \
+    "${TOKEN%?}!:this one has other characters" "PFLT_${TOKEN#pflt_}:this one has other characters" \
+    "cet_abc123:this one is 10 characters"; do
+    value=${case%%:*}
     for flag in '' --enroll; do
         printf '%s\n' "$value" > "$TMP/dev/tty"
         if [ -n "$flag" ]; then
@@ -283,7 +286,8 @@ for value in "${TOKEN%?}" "${TOKEN}0" "${TOKEN%?}!" cet_abc123 PFLT_abc123; do
             echo "accepted $value" >&2
             exit 1
         fi
-        grep -Fq "That isn't a Fleet Token" "$TMP/err"
+        grep -Fqx "ERROR: A Fleet Token is pflt_ and 43 more letters, digits, - or _; ${case#*:}. Copy it again." "$TMP/err"
+        if grep -Fq "$value" "$TMP/err"; then echo "printed $value" >&2; exit 1; fi
         [ ! -e "$TMP/install/ployz" ]
         [ ! -e "$FLEET_TOKEN_FILE" ]
     done

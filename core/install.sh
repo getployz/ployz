@@ -164,8 +164,15 @@ check_in() {
     [ "$(id -u)" = 0 ] || error "Run it as root: curl -fsSL https://ployz.sh | sudo sh -s -- ${VERSION_ARG:+$VERSION_ARG }--enroll"
     command -v systemctl >/dev/null 2>&1 || error "A Fleet Token needs a server that runs systemd."
     [ -n "$FLEET_TOKEN" ] || read_fleet_token
-    is_fleet_token "$FLEET_TOKEN" ||
-        error "That isn't a Fleet Token. It is pflt_ and 43 more characters. Copy it again."
+    if ! is_fleet_token "$FLEET_TOKEN"; then
+        # Say only its length: the token is a secret.
+        if [ "${#FLEET_TOKEN}" -eq 48 ]; then
+            why="this one has other characters"
+        else
+            why="this one is ${#FLEET_TOKEN} characters"
+        fi
+        error "A Fleet Token is pflt_ and 43 more letters, digits, - or _; $why. Copy it again."
+    fi
     install_cli
     # printf is a builtin, so the token reaches ployz on stdin without entering any process's argv.
     printf '%s\n' "$FLEET_TOKEN" |
