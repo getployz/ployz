@@ -606,10 +606,16 @@ fn context_config_org_removal_hint_ignores_the_context_environment() {
         "acme",
         "--json",
     ]));
-    let retry = asked["error"]["details"]["retry"].as_str().unwrap();
+    let retry = asked
+        .pointer("/error/details/retry")
+        .unwrap()
+        .as_str()
+        .unwrap();
     assert!(!retry.contains("--context"), "{retry}");
     let words = shell_words::split(retry).unwrap();
-    let args = words[1..]
+    let args = words
+        .get(1..)
+        .unwrap()
         .iter()
         .map(String::as_str)
         .chain(["--json"])

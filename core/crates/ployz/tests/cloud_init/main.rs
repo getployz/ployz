@@ -1353,61 +1353,68 @@ async fn a_token_of_another_kind_is_refused_before_any_request() {
 
 #[tokio::test]
 async fn context_config_standalone_refills_the_selected_empty_context_signed_out() {
-    let home = tempfile::tempdir().unwrap();
-    let path = home.path().join("config.yaml");
-    ployz::context::Config::new(
-        &path,
-        Some("other".into()),
-        ["verify", "other"]
-            .into_iter()
-            .map(|name| {
-                (
-                    name.into(),
-                    ployz::context::Context {
-                        connections: vec![],
-                    },
-                )
-            })
-            .collect(),
-    )
-    .save()
-    .unwrap();
-    let daemon = JoinDaemon::new(registration());
-    let address = serve_machine(daemon).await;
-    let output = harness::cli()
-        .args([
-            "server",
-            "add",
-            "--standalone",
-            &format!("tcp://{address}"),
-            "--context",
-            "verify",
-            "--name",
-            "verify-server",
-            "--no-install",
-            "--storage",
-            "none",
-            "--accepts-ingress=false",
-            "--yes",
-            "--json",
-        ])
-        .env("HOME", home.path())
-        .env("XDG_CONFIG_HOME", home.path())
-        .env("PLOYZ_CONFIG", &path)
-        .env_remove("PLOYZ_TOKEN")
-        .env_remove("PLOYZ_ENROLL_TOKEN")
-        .env_remove("PLOYZ_CONTEXT")
-        .env_remove("PLOYZ_CONNECT")
-        .output()
-        .await
+    for current in ["other", "verify"] {
+        let home = tempfile::tempdir().unwrap();
+        let path = home.path().join("config.yaml");
+        ployz::context::Config::new(
+            &path,
+            Some(current.into()),
+            ["verify", "other"]
+                .into_iter()
+                .map(|name| {
+                    (
+                        name.into(),
+                        ployz::context::Context {
+                            connections: vec![],
+                        },
+                    )
+                })
+                .collect(),
+        )
+        .save()
         .unwrap();
-    assert!(output.status.success(), "{output:?}");
-    let config = ployz::context::Config::load(&path).unwrap();
-    assert_eq!(config.current_context(), Some("verify"));
-    assert_eq!(config.contexts["verify"].connections.len(), 1);
-    assert!(config.contexts["other"].connections.is_empty());
-    assert_eq!(
-        config.contexts["verify"].connections[0].to_string(),
-        format!("tcp://{address}")
-    );
+        let daemon = JoinDaemon::new(registration());
+        let address = serve_machine(daemon).await;
+        let output = harness::cli()
+            .args([
+                "server",
+                "add",
+                "--standalone",
+                &format!("tcp://{address}"),
+                "--name",
+                "verify-server",
+                "--no-install",
+                "--storage",
+                "none",
+                "--accepts-ingress=false",
+                "--yes",
+                "--json",
+            ])
+            .args(if current == "other" {
+                &["--context", "verify"][..]
+            } else {
+                &[]
+            })
+            .env("HOME", home.path())
+            .env("XDG_CONFIG_HOME", home.path())
+            .env("PLOYZ_CONFIG", &path)
+            .env_remove("PLOYZ_TOKEN")
+            .env_remove("PLOYZ_ENROLL_TOKEN")
+            .env_remove("PLOYZ_CONTEXT")
+            .env_remove("PLOYZ_CONNECT")
+            .output()
+            .await
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        let config = ployz::context::Config::load(&path).unwrap();
+        assert_eq!(config.current_context(), Some("verify"));
+        let selected = config.contexts.get("verify").unwrap();
+        assert_eq!(selected.connections.len(), 1);
+        assert!(config.contexts.get("other").unwrap().connections.is_empty());
+        assert_eq!(
+            selected.connections.first().unwrap().to_string(),
+            format!("tcp://{address}")
+        );
+        assert_eq!(config.contexts.len(), 2);
+    }
 }

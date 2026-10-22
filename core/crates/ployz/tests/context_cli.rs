@@ -1269,7 +1269,8 @@ fn context_config_management_refuses_explicit_context_before_mutation() {
         let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
         assert_eq!(output.status.code(), Some(2), "{args:?}: {json}");
         assert!(
-            json["error"]["message"]
+            json.pointer("/error/message")
+                .unwrap()
                 .as_str()
                 .unwrap()
                 .contains("doesn't use a context"),
@@ -1289,7 +1290,8 @@ fn context_config_cloud_commands_refuse_root_context_in_the_process() {
         let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
         assert_eq!(output.status.code(), Some(2), "{json}");
         assert!(
-            json["error"]["message"]
+            json.pointer("/error/message")
+                .unwrap()
                 .as_str()
                 .unwrap()
                 .contains("doesn't use a context"),
