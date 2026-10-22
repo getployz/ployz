@@ -115,8 +115,17 @@ if PATH="$TMP/bin:$PATH" FAKE_OS=Linux FAKE_ARCH=x86_64 FAKE_RELEASE="$TMP/relea
     echo "installed into a missing directory" >&2
     exit 1
 fi
-grep -Fq "INSTALL_BIN_DIR $TMP/nonexistent is not a directory" "$TMP/error"
+grep -Fq "$TMP/nonexistent is not a directory" "$TMP/error"
 [ ! -s "$FAKE_CURL_LOG" ]
+# Real curl over file://, as verify-release.sh installs: it reports status 000 on success.
+mkdir -p "$TMP/real-curl-bin"
+cp "$TMP/bin/uname" "$TMP/real-curl-bin/uname"
+pack_release 1.2.3
+mkdir -p "$TMP/mirror/releases/download/v1.2.3" "$TMP/mirror-install"
+cp "$TMP/release/ployz_linux_amd64.tar.gz" "$TMP/release/checksums.txt" "$TMP/mirror/releases/download/v1.2.3/"
+PATH="$TMP/real-curl-bin:$PATH" FAKE_OS=Linux FAKE_ARCH=x86_64 INSTALL_BIN_DIR="$TMP/mirror-install" \
+    PLOYZ_GITHUB_URL="file://$TMP/mirror" sh "$ROOT/install.sh" 1.2.3 > /dev/null
+[ "$("$TMP/mirror-install/ployz" --version)" = 1.2.3 ]
 
 # Missing and mismatched binaries must fail before replacing the installed one.
 for defect in missing wrong-version; do

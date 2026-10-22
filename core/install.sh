@@ -87,7 +87,7 @@ resolve_install() {
 
 install_cli() {
     [ -d "$INSTALL_BIN_DIR" ] ||
-        error "INSTALL_BIN_DIR $INSTALL_BIN_DIR is not a directory. Create it first, or unset INSTALL_BIN_DIR to install to /usr/local/bin."
+        error "$INSTALL_BIN_DIR is not a directory. Create it first, or set INSTALL_BIN_DIR to a directory that exists."
     tmp_dir=$(mktemp -d)
     trap 'rm -rf "$tmp_dir"' EXIT
     trap 'exit 130' HUP INT TERM
@@ -99,9 +99,10 @@ install_cli() {
     base_url="$PLOYZ_GITHUB_URL/releases/download/v$version"
 
     # Every release has checksums.txt, so a 404 for it means the release doesn't exist.
+    # A file:// mirror, as verify-release.sh uses, answers 000 when curl succeeds.
     status=$(curl -sSL -w '%{http_code}' -o "$tmp_dir/checksums.txt" "$base_url/checksums.txt") || status=
     case "$status" in
-        2??) ;;
+        2??|000) ;;
         404) error "There's no Ployz release $version. Releases: $PLOYZ_GITHUB_URL/releases" ;;
         *) error "Failed to download checksums.txt${status:+ (HTTP $status)}" ;;
     esac
