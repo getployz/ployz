@@ -1325,8 +1325,18 @@ fn no_server_answering() -> (Target, tempfile::TempDir) {
 
 /// Run `ployz ARGS` from `home`; returns (stdout, stderr).
 fn run_in(store: &Target, home: &tempfile::TempDir, args: &[&str]) -> (String, String) {
+    run_in_exiting(store, home, args, 0)
+}
+
+/// [`run_in`], expecting exit `code`.
+fn run_in_exiting(
+    store: &Target,
+    home: &tempfile::TempDir,
+    args: &[&str],
+    code: i32,
+) -> (String, String) {
     let output = store.command(home.path()).args(args).output().unwrap();
-    assert!(output.status.success(), "{args:?}: {output:?}");
+    assert_eq!(output.status.code(), Some(code), "{args:?}: {output:?}");
     (
         String::from_utf8(output.stdout).unwrap(),
         String::from_utf8(output.stderr).unwrap(),
@@ -1336,7 +1346,8 @@ fn run_in(store: &Target, home: &tempfile::TempDir, args: &[&str]) -> (String, S
 #[test]
 fn status_names_the_server_that_isnt_answering() {
     let (store, home) = no_server_answering();
-    let (status, _) = run_in(&store, &home, &["--json", "status"]);
+    // No Server answered, so the result is partial.
+    let (status, _) = run_in_exiting(&store, &home, &["--json", "status"], 3);
     let status: Value = serde_json::from_str(&status).unwrap();
     assert_eq!(
         status["attention"][0],
@@ -1347,7 +1358,7 @@ fn status_names_the_server_that_isnt_answering() {
         }),
         "{status}"
     );
-    let (shown, _) = run_in(&store, &home, &["status"]);
+    let (shown, _) = run_in_exiting(&store, &home, &["status"], 3);
     assert!(
         shown.contains("needs attention = Server machine-1 isn't answering."),
         "{shown}"
@@ -1370,12 +1381,18 @@ fn status_leaves_a_local_socket_to_this_servers_row() {
         ),
     )
     .unwrap();
-    let (status, _) = run_in(&store, &home, &["--json", "status"]);
+    // No row, but status warns it couldn't check, so the result is partial.
+    let (status, _) = run_in_exiting(&store, &home, &["--json", "status"], 3);
     let status: Value = serde_json::from_str(&status).unwrap();
     assert_eq!(status["attention"], json!([]), "{status}");
 
     let connect = format!("unix://{}", socket.display());
-    let (status, _) = run_in(&store, &home, &["--json", "status", "--connect", &connect]);
+    let (status, _) = run_in_exiting(
+        &store,
+        &home,
+        &["--json", "status", "--connect", &connect],
+        3,
+    );
     let status: Value = serde_json::from_str(&status).unwrap();
     assert_eq!(status["attention"], json!([]), "{status}");
 }
@@ -1398,7 +1415,8 @@ fn status_leaves_a_local_socket_cloud_hands_out_alone() {
         .args(["--json", "status"])
         .output()
         .unwrap();
-    assert!(output.status.success(), "{output:?}");
+    // It warns that it couldn't check the Server, so the result is partial.
+    assert_eq!(output.status.code(), Some(3), "{output:?}");
     let status: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(status["attention"], json!([]), "{status}");
 }
@@ -1490,7 +1508,7 @@ fn status_tries_each_silent_server_once_within_its_bound() {
     )
     .unwrap();
     let started = std::time::Instant::now();
-    let (status, _) = run_in(&store, &home, &["--json", "status"]);
+    let (status, _) = run_in_exiting(&store, &home, &["--json", "status"], 3);
     let elapsed = started.elapsed();
     let status: Value = serde_json::from_str(&status).unwrap();
     assert_eq!(
