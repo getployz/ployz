@@ -294,7 +294,7 @@ describe("VolumeCopiesPanel", () => {
     expect(screen.getByRole("alert").className).not.toContain("text-destructive");
     expect(useMirror()).toBeNull();
     cleanup();
-    panel([{ ...lacking, lack: "Volume move needs a newer Ployz on web-1. 0.3.1 is out.", outdated: true }, mirrorAsOf("web-2", fiveAgo())], row(["web-2"]));
+    panel([{ ...lacking, lack: "Volume move needs a newer Ployz on web-1, which runs 0.3.0. Upgrade it to 0.3.1.", outdated: true }, mirrorAsOf("web-2", fiveAgo())], row(["web-2"]));
     expect(screen.getByText("web-1 needs a newer Ployz")).toBeTruthy();
   });
 

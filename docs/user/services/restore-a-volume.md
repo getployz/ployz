@@ -77,8 +77,8 @@ approve it.
   like "Volume restore is not available on web-2." for a server that holds a copy but whose Ployz
   doesn't report it can take part, or "data has two writers, data-web-1 and data-web-2". Staging refuses the same way
   and names the server's version when Ployz knows it, like "Volume restore is not in Ployz
-  0.3.0-beta.1 on web-2 yet.", or "Volume restore needs a newer Ployz on web-2. 0.3.1 is out." once
-  a newer release is out.
+  0.3.0-beta.1 on web-2 yet.", or "Volume restore needs a newer Ployz on web-2, which runs 0.3.0.
+  Upgrade it to 0.3.1." once a newer release is out.
 - **An old primary that came back holds a restore back.** A server that held the volume before a
   move or **Use mirror** can answer again with its old copy. The point then says "data-web-1 is an
   old primary that came back; restore once a mirror refresh makes it a mirror" in place of
