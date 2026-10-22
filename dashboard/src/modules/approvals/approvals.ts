@@ -41,7 +41,7 @@ const capitalized = (word: string) => `${word.charAt(0).toUpperCase()}${word.sli
 export function approvalSubject(command: string, review: ApprovalReview) {
   if ("operation" in review) return { verb: capitalized(review.operation.verb), name: review.operation.name, project: null };
   const verb = command === "publish" ? "Save" : command === "retry" ? (rollsBack(review) ? "Roll back" : "Redeploy") : command === "remove" ? "Remove"
-    : command === "shut_down" ? "Shut down" : command === "sync" ? "Sync" : command === "take" ? "Take" : "Deploy";
+    : command === "shut_down" ? "Shut down" : command === "sync" ? "Sync" : command === "take" ? "Take" : command === "cancel" ? "Cancel" : "Deploy";
   return { verb, name: review.diff.environment.name, project: review.diff.environment.project };
 }
 
@@ -71,6 +71,7 @@ export function approvalBadge(command: string, review: ApprovalReview) {
   if (command === "unprotect") return "Unprotects";
   if (command === "sync") return "Syncs";
   if (command === "take") return "Takes";
+  if (command === "cancel") return "Cancels deploy";
   if (effects.length === 0) return "Deploys";
   if (effects.every((effect) => effect.kind === "deletes_volume")) {
     return `Deletes ${effects.length} ${effects.length === 1 ? "volume" : "volumes"}`;
@@ -89,14 +90,16 @@ const agentShips = (via: Caller["via"], command: ConfigCommand) =>
 
 /**
  * Cloud can't tell a person running `ployz` from an agent running it, so only a dashboard confirm stands as the approval.
- * A retry counts: retrying a shutdown takes its Environment off the Servers again, and the Store asks only then.
+ * A retry counts, since a shutdown's retry or a rollback takes Services off, and so does a cancel, which a member asks
+ * an admin for in a Protected Environment. The Store decides which of them ask.
  */
 const askedRemoval = (via: Caller["via"], command: ConfigCommand) =>
-  via !== "dashboard" && (command.command === "remove" || (command.command === "admit" && (command.admit === "shut_down" || command.admit === "retry")));
+  via !== "dashboard" && (command.command === "remove" || command.command === "cancel"
+    || (command.command === "admit" && (command.admit === "shut_down" || command.admit === "retry")));
 
 /**
  * The writes that may wait for a human: a Save (the Store's publish), a manual Deploy, a Sync or Take (into a Protected
- * Environment), a retry, and a Project or Environment removal or shutdown from `ployz` or an agent.
+ * Environment), a retry, a cancel, and a Project or Environment removal or shutdown from `ployz` or an agent.
  */
 export function asksApproval(via: Caller["via"], command: ConfigCommand) {
   return command.command === "publish" || (command.command === "admit" && command.admit === "deploy")

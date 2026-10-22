@@ -150,8 +150,9 @@ How you answer depends on where the command runs:
   [Ployz agent](agent-sidebar.md), `ployz mcp` and an agent you
   [connected to Ployz Cloud](connect-an-agent.md). An agent's save still asks only when it removes
   something, and one approval covers one deploy or redeploy. Redeploying from the CLI or the
-  dashboard never asks, except that redeploying a `ployz env shutdown` from the CLI asks as the
-  shutdown did.
+  dashboard never asks, except from the CLI when it takes something off: redeploying a
+  `ployz env shutdown`, or rolling back to a deploy from before a service was added, asks as a
+  deploy that removes the same would.
 - `ployz project rm`, `ployz env rm` and `ployz env shutdown` ask when they would take something
   off the servers. `ployz org rm`, `ployz server forget` with no server named and
   `ployz env protect --off` always ask.

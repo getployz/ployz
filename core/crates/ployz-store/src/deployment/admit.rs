@@ -18,7 +18,7 @@ use crate::registry;
 use crate::review;
 use crate::scope::{self, EnvironmentRef};
 use crate::storage::Tx;
-use crate::{Actor, Trusted};
+use crate::{Actor, Approval, Trusted};
 
 /// Queue a Deployment: a Deploy of Saved State, a retry of an ended Deployment, or
 /// the removal of an Environment from the Servers.
@@ -205,7 +205,7 @@ enum Asked<'a> {
     /// A removal's retry takes its Environment off the Servers again, so it asks as
     /// a shutdown does, about what the Environment runs now.
     Removal(scope::Environment, review::Review),
-    /// Any other retry, when [`review::Gate::asks_retry`]: the review it approves.
+    /// Any other retry that may ask: the review it approves.
     Retry(review::Review, review::Gate<'a>),
     Nothing,
 }
@@ -221,7 +221,8 @@ fn retry_review<'a>(
     let summary = deployment::owned(tx, who, source)?.summary;
     let id = summary.environment_id;
     let gate = review::Gate::new(tx, &id, trusted)?;
-    if !summary.remove && !gate.asks_retry() {
+    // Where Cloud requires approval, a retry that takes something off asks too.
+    if !summary.remove && !gate.asks_retry() && trusted.approval == Approval::NotRequired {
         return Ok(Asked::Nothing);
     }
     scope::lock_all(tx, [id.clone()])?;

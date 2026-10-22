@@ -487,11 +487,41 @@ pub(crate) fn approve_shut_down(
     gate.require(bound, message, (effects, diff))
 }
 
+/// Refuse cancelling Deployment `deployment`, which someone else admitted, into an
+/// Environment that is Protected for the caller, unless Cloud holds an admin's
+/// approval of exactly this cancel: it stops what they shipped partway.
+///
+/// # Errors
+/// `approval_required`, naming the `version:digest` to approve, the fresh `diff`
+/// and `protected`.
+pub(crate) fn approve_cancel(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    deployment: &crate::DeploymentSummary,
+    trusted: &Trusted,
+) -> Result<(), RpcError> {
+    let gate = Gate::new(tx, &deployment.environment_id, trusted)?;
+    if !gate.protected {
+        return Ok(());
+    }
+    crate::scope::lock_all(tx, [deployment.environment_id.clone()])?;
+    let environment = crate::scope::load_by_id(tx, &deployment.environment_id)?;
+    let review = super::review(tx, &environment)?;
+    let effects = BTreeSet::new();
+    let mut bound = bound(who, "cancel", &deployment.environment_id, &effects);
+    if let Some(bound) = bound.as_object_mut() {
+        bound.insert("deployment".to_owned(), json!(deployment.id));
+    }
+    let message = gate.message(&review.view, "cancel", String::new);
+    gate.require(bound, message, (&effects, &review.view))
+}
+
 /// Refuse retrying Deployment `source` unless Cloud holds a human's approval of this
-/// retry, when [`Gate::asks_retry`]: a retry ships nothing a review hasn't.
-/// `review` is taken before the retry queues, so its version moves once it does: one
-/// approval admits one retry. The approval binds the Deployments a rollback undoes,
-/// the Volumes it removes and the losses the caller accepted, and says so.
+/// retry, when [`Gate::asks_retry`] or when it takes a deployed Service or a Volume
+/// off. `review` is taken before the retry queues, so its version moves once it
+/// does: one approval admits one retry. The approval binds the Deployments a
+/// rollback undoes, the Services it retires, the Volumes it removes and the losses
+/// the caller accepted, and says so.
 ///
 /// # Errors
 /// `approval_required`, naming the `version:digest` to approve, the `diff` and the
@@ -502,7 +532,20 @@ pub(crate) fn approve_retry(
     (retry, rollback): (&crate::Retry, &crate::deployment::Rollback),
     gate: &Gate<'_>,
 ) -> Result<(), RpcError> {
-    // The Volumes a rollback removes, as a Deploy's card shows them.
+    // The Volumes a rollback removes and the deployed Services it retires, as a
+    // Deploy's card shows them.
+    let deployed = self::deployed(&review.head);
+    let retired = deployed
+        .services
+        .iter()
+        .filter(|service| rollback.retires.iter().any(|id| id.as_str() == service.id))
+        .map(|service| DestructiveEffect {
+            kind: DestructiveKind::RemovesService,
+            name: service.slug.clone(),
+            node: service.id.clone(),
+            path: service.slug.clone(),
+            lost_after: None,
+        });
     let effects: BTreeSet<DestructiveEffect> = rollback
         .removes
         .iter()
@@ -513,7 +556,15 @@ pub(crate) fn approve_retry(
             path: format!("volumes.{}", loss.volume.name),
             lost_after: None,
         })
+        .chain(retired)
         .collect();
+    // Beyond where every retry asks, a retry asks only when it takes something off.
+    if !gate.asks_retry() && effects.is_empty() {
+        return Ok(());
+    }
+    if !effects.is_empty() {
+        gate.trusted.admit(Permission::ChangesDestroy)?;
+    }
     let accepted: BTreeSet<&VolumeName> = retry.accept_volume_loss.iter().collect();
     let bound = json!({
         "organization": who.organization,

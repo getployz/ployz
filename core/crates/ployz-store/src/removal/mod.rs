@@ -820,12 +820,19 @@ pub(crate) fn cancel_removal(
 }
 
 /// Cancel a Deployment. Cancelling one that removes a marked target stops the
-/// whole removal, as [`cancel_removal`] does.
+/// whole removal, as [`cancel_removal`] does. In a Protected Environment, a caller
+/// who can't protect it asks an admin before cancelling someone else's.
 pub(crate) fn cancel(
     tx: &mut dyn Tx,
     who: &Actor,
     id: &DeploymentId,
+    trusted: &Trusted,
 ) -> Result<DeploymentSummary, RpcError> {
+    let summary = deployment::owned(tx, who, id)?.summary;
+    let theirs = summary.admitted_by.is_none() || summary.admitted_by != who.principal;
+    if theirs && summary.in_flight {
+        approval::approve_cancel(tx, who, &summary, trusted)?;
+    }
     let cancelled = deployment::cancel(tx, who, id)?;
     if cancelled.remove
         && let Some(mut mark) = mark::naming(tx, &cancelled.environment_id)?

@@ -373,7 +373,7 @@ commands! {
     Cancel(Cancel) -> Deployment(crate::DeploymentSummary)
         needs ChangesDeploy
         agent [DeploymentCancel]
-        => crate::removal::cancel(tx, who, &c.deployment);
+        => crate::removal::cancel(tx, who, &c.deployment, trusted);
     /// Give a Service a generated or custom public domain.
     AddDomain(crate::AddDomain) -> DomainAdded(crate::DomainAdded)
         needs ChangesStage
