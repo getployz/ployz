@@ -484,3 +484,28 @@ fn migrate(
     }
     Ok(converted)
 }
+
+#[cfg(test)]
+mod mixed_version_tests {
+    use super::Storage;
+
+    /// A Cloud from before 0024 still running beside one that migrated their shared
+    /// database: its Store opens it, skipping the migration it doesn't know, and every
+    /// Deployment it admits leaves `admitted_by_user` NULL, which reads by name.
+    #[test]
+    fn a_store_from_before_admitted_by_user_opens_a_database_migrated_past_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let url = format!("sqlite:{}", dir.path().join("store.db").display());
+        drop(Storage::open(&url).unwrap());
+        let older = Storage::open_through(&url, "0023_build_server").unwrap();
+        let migrated = older
+            .read(|tx| {
+                tx.query(
+                    "SELECT name FROM config_migration WHERE name = ?1",
+                    &["0024_deployment_admitted_by_user".into()],
+                )
+            })
+            .unwrap();
+        assert_eq!(migrated.len(), 1);
+    }
+}
