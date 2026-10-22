@@ -573,7 +573,8 @@ impl LocalMachine {
     /// Publish a client-selected assignment from a participating Entry Machine.
     ///
     /// # Errors
-    /// Rejects absent assignments, invalid assignments, or unavailable storage.
+    /// Rejects absent assignments, invalid assignments, unavailable storage, or
+    /// a Cluster network not yet published.
     pub async fn register(&self, request: RegisterRequest) -> Result<Registered, Error> {
         let local = self.clone();
         self.finish_mutation(async move {
@@ -613,7 +614,9 @@ impl LocalMachine {
     ///
     /// Returns [`Error::NotParticipating`] when this Machine is not
     /// participating, [`Error::ClusterStoreUnavailable`] when the Cluster
-    /// store is missing, and [`Error::Cluster`] when replicated I/O fails.
+    /// store is missing, [`Error::ClusterNetworkUnpublished`] before the
+    /// founder publishes the Cluster network, and [`Error::Cluster`] when
+    /// replicated I/O fails.
     pub async fn list_machines(&self) -> Result<MachineList, Error> {
         let local = self.record();
         if local.phase() != LocalMachinePhase::Participating {
