@@ -150,7 +150,7 @@ How you answer depends on where the command runs:
   [Ployz agent](agent-sidebar.md), `ployz mcp` and an agent you
   [connected to Ployz Cloud](connect-an-agent.md). An agent's save still asks only when it removes
   something, and one approval covers one deploy or redeploy. Outside a
-  [Protected environment](../environments/environments.md), redeploying from the CLI or the
+  [Protected environment](../environments/environments.md#protect-an-environment), redeploying from the CLI or the
   dashboard never asks, except from the CLI when it takes something off: redeploying a
   `ployz env shutdown`, or rolling back to a deploy from before a service was added, asks as a
   deploy that removes the same would. In a Protected environment, a member's redeploy asks an
