@@ -269,7 +269,8 @@ pub(crate) fn gate(
 
 /// Refuse to deploy `environment`'s generated domains without the Cluster Domain
 /// they expand under: Cloud reserves it at a Deploy. Without Cloud, removing them is
-/// the way on, so the refusal names each and the commands that remove them.
+/// the way on, so the refusal names each and the commands that remove them. A Cloud
+/// Deploy that comes before any Cluster Domain is reserved sees only the message.
 fn needs_cluster_domain(
     environment: &scope::Environment,
     intent: &SavedEnvironmentIntent,
@@ -294,7 +295,7 @@ fn needs_cluster_domain(
         code: RpcErrorCode::Unsupported,
         message: format!(
             "{} has generated domains ({}), which need the Cluster Domain Ployz Cloud \
-             reserves at a Deploy: remove them, or deploy through Ployz Cloud",
+             reserves at a Deploy: deploy through Ployz Cloud, or remove them",
             summary.name,
             prefixes.join(", ")
         ),

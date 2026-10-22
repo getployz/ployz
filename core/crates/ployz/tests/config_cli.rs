@@ -1683,34 +1683,54 @@ fn an_agent_renames_a_project() {
 
 #[test]
 fn an_agent_adds_checks_and_removes_domains() {
-    // Only Cloud reserves the Cluster Domain a generated domain needs: the local Store
-    // refuses one (`standalone_refuses_a_generated_domain`).
-    let [_, store] = targets();
-    {
-        let store = &store;
+    for store in &targets() {
+        // Only Cloud reserves the Cluster Domain a generated domain lives under; the local
+        // Store refuses one (`standalone_refuses_a_generated_domain`), so there web's
+        // first domain is a hostname it owns.
+        let cloud = matches!(store, Target::Cloud { .. });
+        let (domain, hostname) = if cloud {
+            ("web", "web.acme.ployz.app")
+        } else {
+            ("web.example.com", "web.example.com")
+        };
         ok(store, &["project", "new", "shop"]);
         ok(store, &["service", "add", "web", "--image", "nginx:1"]);
 
-        let generated = ok(store, &["domain", "add", "web", "--port", "8080"]);
-        assert_eq!(generated["domain"]["kind"], json!("generated"));
-        assert_eq!(generated["domain"]["prefix"], json!("web"));
-        assert_eq!(generated["domain"]["hostname"], json!("web.acme.ployz.app"));
-        assert_eq!(generated["staged"], json!(["web"]));
-        assert_eq!(generated["next"], json!("ployz deploy"));
-        let again = ok(store, &["domain", "add", "web"]);
+        let add = if cloud {
+            ["domain", "add", "web", "--port", "8080"].to_vec()
+        } else {
+            ["domain", "add", "web", hostname, "--port", "8080"].to_vec()
+        };
+        let added = ok(store, &add);
+        let (kind, prefix) = if cloud {
+            ("generated", json!("web"))
+        } else {
+            ("custom", json!(null))
+        };
+        assert_eq!(added["domain"]["kind"], json!(kind));
+        assert_eq!(added["domain"]["prefix"], prefix);
+        assert_eq!(added["domain"]["hostname"], json!(hostname));
+        assert_eq!(added["staged"], json!(["web"]));
+        assert_eq!(added["next"], json!("ployz deploy"));
+        let again = ok(store, &add);
         assert_eq!((&again["staged"], again.get("next")), (&json!([]), None));
 
-        let set = ok(store, &["domain", "set", "web", "Shop"]);
-        assert_eq!(set["domain"]["prefix"], json!("shop"));
-        assert_eq!(set["staged"], json!(["web"]));
-        assert_eq!(set["next"], json!("ployz deploy"));
-        ok(store, &["service", "add", "api", "--image", "api:1"]);
-        ok(store, &["domain", "add", "api"]);
-        let taken = error(store, &["domain", "set", "api", "shop"]);
-        assert_eq!(taken["code"], json!("conflict"));
-        let label = failed(store, &["domain", "set", "api", "not.one-label"], 2);
+        if cloud {
+            let set = ok(store, &["domain", "set", "web", "Shop"]);
+            assert_eq!(set["domain"]["prefix"], json!("shop"));
+            assert_eq!(set["staged"], json!(["web"]));
+            assert_eq!(set["next"], json!("ployz deploy"));
+            ok(store, &["service", "add", "api", "--image", "api:1"]);
+            ok(store, &["domain", "add", "api"]);
+            let taken = error(store, &["domain", "set", "api", "shop"]);
+            assert_eq!(taken["code"], json!("conflict"));
+            ok(store, &["domain", "set", "web", "web"]);
+        } else {
+            let none = error(store, &["domain", "set", "web", "shop"]);
+            assert_eq!(none["code"], json!("not_found"));
+        }
+        let label = failed(store, &["domain", "set", "web", "not.one-label"], 2);
         assert!(!label["message"].as_str().unwrap().contains("not.one-label"));
-        ok(store, &["domain", "set", "web", "web"]);
 
         assert_eq!(
             ok(store, &["domain", "add", "web", "App.Example.com"])["domain"]["hostname"],
@@ -1722,13 +1742,14 @@ fn an_agent_adds_checks_and_removes_domains() {
         // `SERVICE.domains` reads like a Setting; the domain commands change it.
         let got = ok(store, &["get", "web.domains"]);
         assert_eq!(got["settings"], json!([]));
-        let hostnames = got["domains"]
+        let mut hostnames = got["domains"]
             .as_array()
             .unwrap()
             .iter()
             .map(|row| row["prefix"].as_str().or(row["hostname"].as_str()))
             .collect::<Vec<_>>();
-        assert_eq!(hostnames, [Some("app.example.com"), Some("web")]);
+        hostnames.sort_unstable();
+        assert_eq!(hostnames, [Some("app.example.com"), Some(domain)]);
         let explained = ok(store, &["explain", "web.domains"]);
         assert_eq!(explained["path"], json!("web.domains"));
         assert_eq!(explained["schema"]["readOnly"], json!(true));
@@ -1747,8 +1768,8 @@ fn an_agent_adds_checks_and_removes_domains() {
                 "{edit:?}"
             );
         }
-        // A generated domain reads as its full hostname.
-        let generated = "added web.acme.ployz.app on port 8080";
+        // web's first domain reads as its full hostname.
+        let added_line = format!("added {hostname} on port 8080");
         let reads = [
             ok(store, &["diff"]),
             ok(store, &["deploy", "--plan"]),
@@ -1756,7 +1777,7 @@ fn an_agent_adds_checks_and_removes_domains() {
         ];
         for read in reads {
             let changes = read["domain_changes"].as_array().unwrap();
-            for change in ["added app.example.com", generated] {
+            for change in ["added app.example.com", &added_line] {
                 let line = json!({ "path": "web.domains", "change": change });
                 assert!(changes.contains(&line), "{read}");
             }
@@ -1767,7 +1788,7 @@ fn an_agent_adds_checks_and_removes_domains() {
             .is_some_and(|causes| !causes.is_empty());
         assert_eq!(
             (planned["ingress"].is_array(), unchecked),
-            (true, false),
+            (cloud, !cloud),
             "{planned}"
         );
         let unreached = ok(
@@ -1789,7 +1810,7 @@ fn an_agent_adds_checks_and_removes_domains() {
         assert_eq!(first["status"], json!("setting_up"));
         assert_eq!(first["action"], json!({ "type": "deploy" }));
         assert_eq!(listed["next"], json!("ployz deploy"));
-        let checked = ok(store, &["domain", "check", "web"]);
+        let checked = ok(store, &["domain", "check", domain]);
         assert_eq!(
             checked["domain"]["reason"],
             json!("Live after your next deploy")
@@ -1797,7 +1818,7 @@ fn an_agent_adds_checks_and_removes_domains() {
         let missing = error(store, &["domain", "check", "nope"]);
         assert_eq!(missing["code"], json!("not_found"));
 
-        let removed = ok(store, &["domain", "rm", "web"]);
+        let removed = ok(store, &["domain", "rm", domain]);
         assert_eq!(removed["domain"]["port"], json!(8080));
         assert_eq!(removed["next"], json!("ployz deploy"));
     }
@@ -1833,6 +1854,9 @@ fn standalone_refuses_a_generated_domain() {
         );
     }
     assert_eq!(ok(store, &["get", "web.domains"])["domains"], json!([]));
+    // A Service that isn't there is named missing, not given a hostname.
+    let missing = error(store, &["domain", "add", "nope"]);
+    assert_eq!(missing["code"], json!("not_found"), "{missing}");
     let home = tempfile::tempdir().unwrap();
     let (code, stderr) = person(store, home.path(), &["domain", "add", "web"]);
     assert_eq!(code, Some(1), "{stderr}");
@@ -1923,7 +1947,7 @@ fn a_standalone_deploy_names_the_generated_domains_to_remove() {
             refused["message"],
             json!(
                 "production has generated domains (web, shop), which need the Cluster Domain \
-                 Ployz Cloud reserves at a Deploy: remove them, or deploy through Ployz Cloud"
+                 Ployz Cloud reserves at a Deploy: deploy through Ployz Cloud, or remove them"
             ),
             "{deploy:?}"
         );

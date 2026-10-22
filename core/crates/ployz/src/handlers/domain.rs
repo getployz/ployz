@@ -99,6 +99,11 @@ pub(super) fn add(root: &ArgMatches) -> Result<(), Error> {
     // Only Cloud reserves the Cluster Domain a generated one lives under, so without
     // it one could never deploy: refuse it rather than stage what blocks every Deploy.
     if add.hostname.is_none() && store.local().is_some() {
+        // A Service that isn't there is refused as missing, before it's told what to add.
+        store.read(&DomainsQuery {
+            environment: add.environment.clone(),
+            service: Some(add.service.clone()),
+        })?;
         let service = add.service.as_str();
         return Err(Error::coded(
             RpcErrorCode::Unsupported,
