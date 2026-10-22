@@ -6077,4 +6077,18 @@ fn cancelling_someone_elses_deployment_in_protected_production_asks_an_admin() {
     )
     .unwrap();
     cancel_as(&grace, 3, &protector(Approval::Required, Asks::Destroys)).unwrap();
+
+    // Cancelling one already stopping changes nothing, so nobody is asked.
+    deploy_trusted(
+        &store,
+        &grace,
+        4,
+        &protector(Approval::NotRequired, Asks::Destroys),
+    )
+    .unwrap();
+    store.claim(&id(4), &runner("runner-a")).unwrap();
+    let stopping = cancel_as(&grace, 4, &protector(Approval::Required, Asks::Destroys)).unwrap();
+    assert_eq!(stopping.status, DeploymentStatus::Cancelling);
+    let again = cancel_as(&linus, 4, &member(Approval::Required, Asks::Destroys)).unwrap();
+    assert_eq!(again.status, DeploymentStatus::Cancelling);
 }
