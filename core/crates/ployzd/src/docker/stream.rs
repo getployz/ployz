@@ -264,8 +264,11 @@ async fn stop_abandoned_exec(docker: &bollard::Docker, exec_id: &str) {
     if rustix::process::pidfd_send_signal(&process, rustix::process::Signal::TERM).is_err() {
         return;
     }
-    let exited = tokio::time::timeout(ABANDONED_EXEC_GRACE, wait_for_exec_exit(docker, exec_id));
-    if !matches!(exited.await, Ok(Ok(_))) {
+    // A failed inspect says nothing about the command, so keep watching it.
+    let exited = tokio::time::timeout(ABANDONED_EXEC_GRACE, async {
+        while wait_for_exec_exit(docker, exec_id).await.is_err() {}
+    });
+    if exited.await.is_err() {
         let _ = rustix::process::pidfd_send_signal(&process, rustix::process::Signal::KILL);
     }
 }
